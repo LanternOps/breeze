@@ -1,3 +1,4 @@
+import { isDeviceOwned } from '../alertOwner';
 /**
  * CONTRACT (C2 fix, P2-1 wave B task 16d): never re-read a row the
  * publishing transaction wrote — it may not be committed yet (the
@@ -101,7 +102,7 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 interface AlertVerdictContextRow {
   id: string;
-  deviceId: string;
+  deviceId: string | null;
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
   ruleId: string | null;
   resolvedAt: Date | null;
@@ -195,6 +196,11 @@ export async function enqueueVerdictRunForAlert(
     console.info('[alertVerdictSubscriber] skipping verdict run — alert not found (or not in org)', {
       alertId, orgId, reason,
     });
+    return;
+  }
+
+  if (!isDeviceOwned(alert)) {
+    recordAgentRunSkip({ orgId, alertId, reason: 'alert_has_no_device', kind: 'triage', triggerKind: 'alert' });
     return;
   }
 

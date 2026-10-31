@@ -51,7 +51,7 @@ interface Gates {
 
 function mockServer({ aiOperatorTasks = false, toolSources = false, aiForOfficeEnabled = false, wispEnabled = false }: Gates) {
   useFeaturesStore.setState({
-    features: { billing: false, support: false, aiOperatorTasks, aiAgentsSweepAct: false, toolSources, flows: false, preAssignmentEnrollment: false, callerVerification: false },
+    features: { billing: false, support: false, aiOperatorTasks, aiAgentsSweepAct: false, toolSources, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false },
     loaded: true,
   });
   fetchWithAuthMock.mockImplementation((url: string) => {
@@ -285,14 +285,16 @@ describe('Sidebar — the Wisp entry is locked when the server has Wisp off (#10
     expect(container.querySelector('[data-testid="nav-wisp-locked"]')).toBeNull();
   });
 
-  it('does not lock Wisp for a non-partner token, which never asks', async () => {
+  it('hides Wisp for a non-partner token, which never asks: grants are partner-staff only and /wisp would only forward to the chat (#10200)', async () => {
     state.scope = 'organization';
     state.user.permissions = AI_SESSIONS_ONLY;
-    mockServer({ wispEnabled: false });
+    mockServer({ wispEnabled: true });
     const { container } = render(<Sidebar currentPath="/" />);
-    await waitFor(() => expect(container.querySelector('a[href="/wisp"]')).not.toBeNull());
+    // The chat door stays: it is the built-in AI an org user does have.
+    await waitFor(() => expect(container.querySelector('a[href="/ai/chat"]')).not.toBeNull());
     await settle();
     expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/orgs/partners/me');
+    expect(container.querySelector('a[href="/wisp"]')).toBeNull();
     expect(container.querySelector('[data-testid="nav-wisp-locked"]')).toBeNull();
   });
 });

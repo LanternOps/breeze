@@ -100,4 +100,19 @@ describe('inline settings reference round-trip', () => {
     expect(reference).toContain('"monitor" only reports');
     expect(reference).toContain('software_presence');
   });
+
+  // #10397: the model told a user it could not say which day a weekly window
+  // opens, and that rebootIfPending was undocumented. The evaluator fixes the
+  // day (featureConfigResolver.maintenanceOccurrenceStart) and the reboot
+  // sweep only reaches online devices (maintenanceRebootWorker), so the
+  // reference must say both.
+  it('maintenance: the reference names the fixed weekly/monthly day, rebootIfPending, and the online requirement', () => {
+    const reference = POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.maintenance;
+    expect(reference).toMatch(/weekly[^.]*Sunday/);
+    expect(reference).toMatch(/monthly[^.]*1st/);
+    expect(reference).toMatch(/no day-of-week or day-of-month field/);
+    expect(reference).toMatch(/\brebootIfPending\b/);
+    expect(reference).toMatch(/online/);
+    expect(reference).toMatch(/"" or null = 00:00/);
+  });
 });

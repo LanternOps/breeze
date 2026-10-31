@@ -7,13 +7,16 @@ const BADGE = "inline-flex items-center rounded-full border px-2 py-0.5 text-xs 
 /**
  * Owner + status badges for a rule set, shared by the Detection rules list and
  * editor and the Security tab picker. Status badges ("Has errors", "Not
- * published", "Disabled") describe the set; they never mean "unavailable".
+ * published", "Disabled") describe the set. A stale set the server could not
+ * check (`staleReason: checker_unavailable`, #10306) shows "Compiler
+ * unavailable" instead of "Has errors": a missing compiler is not an error in
+ * the user's rules.
  */
 export default function RuleSetBadges({
   set,
   testIdPrefix = "rule-set-badge",
 }: {
-  set: Pick<YaraRuleSetSummary, "isBuiltin" | "orgId" | "stale" | "publishedVersion" | "enabled">;
+  set: Pick<YaraRuleSetSummary, "isBuiltin" | "orgId" | "stale" | "staleReason" | "publishedVersion" | "enabled">;
   testIdPrefix?: string;
 }) {
   const { t } = useTranslation("security");
@@ -30,7 +33,15 @@ export default function RuleSetBadges({
           {t("detectionRules.badges.allOrgs")}
         </span>
       )}
-      {set.stale && (
+      {set.stale && set.staleReason === "checker_unavailable" && (
+        <span
+          data-testid={`${testIdPrefix}-checker-unavailable`}
+          className={`${BADGE} border-amber-500/40 bg-amber-500/10 text-amber-700`}
+        >
+          {t("detectionRules.badges.checkerUnavailable")}
+        </span>
+      )}
+      {set.stale && set.staleReason !== "checker_unavailable" && (
         <span data-testid={`${testIdPrefix}-errors`} className={`${BADGE} border-destructive/40 bg-destructive/10 text-destructive`}>
           {t("detectionRules.badges.errors")}
         </span>

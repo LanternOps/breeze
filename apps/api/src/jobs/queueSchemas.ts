@@ -303,14 +303,23 @@ export const automationQueueJobDataSchema = z.discriminatedUnion('type', [
     automationId: z.string().min(1),
     slotKey: z.string().min(1),
     scanAt: z.string().min(1),
+    // #5221 B2 (Decision 6): `false` only when the scan read the row as
+    // SWITCHED. Absent ⇒ true: the scan read it unswitched, or the job predates
+    // the field (no row could be switched before this field existed). Legacy
+    // attempts such a job; the occurrence claim dedupes it against the flow.
+    enqueuedWhileUnswitched: z.boolean().optional(),
   }).strict(),
   z.object({
     type: z.literal('trigger-event'),
     automationId: z.string().min(1),
     eventType: z.string().min(1),
     eventId: z.string().min(1).optional(),
+    // Preserve the event tenant for partner-wide automation skip diagnostics.
+    eventOrgId: z.string().min(1).optional(),
     eventPayload: z.record(z.string(), z.unknown()).optional(),
     eventTimestamp: z.string().min(1),
+    // #5221 B2 — as trigger-schedule's: false only from the switched-row fan-out.
+    enqueuedWhileUnswitched: z.boolean().optional(),
   }).strict(),
   z.object({
     type: z.literal('execute-run'),

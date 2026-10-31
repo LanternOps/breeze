@@ -61,12 +61,13 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
     ],
   },
   {
-    text: 'Every 5 min: security status, four serial PowerShell calls (SecurityCenter2 AntiVirusProduct, Get-MpComputerStatus, Get-NetFirewallProfile, Get-LocalGroupMember); the slow probes (Get-BitLockerVolume twice, Win32_AccountPolicy) are cached 30 min (10 min after an error), and the recovery-key Get-BitLockerVolume runs at most every 30 min.',
+    text: 'Every 5 min: security status, four serial PowerShell calls (SecurityCenter2 AntiVirusProduct, Get-MpComputerStatus, Get-NetFirewallProfile, Get-LocalGroupMember); the slow probes (Get-BitLockerVolume twice, secedit /export) are cached 30 min (10 min after an error), and the recovery-key Get-BitLockerVolume runs at most every 30 min.',
     anchors: [
       { file: 'internal/heartbeat/heartbeat.go', contains: ['shouldSendSecurity := now.Sub(h.lastSecurityUpdate) > 5*time.Minute', 'go h.sendRecoveryKeys()'] },
       { file: 'internal/security/windows_security_center_windows.go', contains: ['root/SecurityCenter2 -ClassName AntiVirusProduct'] },
       { file: 'internal/security/defender_windows.go', contains: ['Get-MpComputerStatus'] },
-      { file: 'internal/security/status.go', contains: ['Get-NetFirewallProfile', 'Get-BitLockerVolume -MountPoint $env:SystemDrive', 'Get-BitLockerVolume | Select-Object MountPoint', 'Get-LocalGroupMember', 'Win32_AccountPolicy'] },
+      { file: 'internal/security/status.go', contains: ['Get-NetFirewallProfile', 'Get-BitLockerVolume -MountPoint $env:SystemDrive', 'Get-BitLockerVolume | Select-Object MountPoint', 'Get-LocalGroupMember'] },
+      { file: 'internal/security/password_policy_windows.go', contains: ['"secedit.exe"', '"/export", "/areas", "SECURITYPOLICY"'] },
       { file: 'internal/security/slow_probe.go', contains: ['slowProbeTTL = 30 * time.Minute', 'slowProbeErrorTTL = 10 * time.Minute'] },
       { file: 'internal/heartbeat/handlers_encryption.go', contains: ['recoveryKeyCollectInterval = 30 * time.Minute'] },
       { file: 'internal/security/recoverykeys.go', contains: ['Get-BitLockerVolume'] },
@@ -89,10 +90,12 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
     ],
   },
   {
-    text: 'Every 15 min (server can set 1 to 60): event logs, up to four concurrent Get-WinEvent queries. Every 15 min: dsregcmd /status.',
+    text: 'Every 15 min (server can set 1 to 60): event logs, up to five concurrent Get-WinEvent queries, each resuming from a saved record-ID bookmark. Every 15 min: dsregcmd /status.',
     anchors: [
       { file: 'internal/collectors/eventlogs.go', contains: ['intervalMinutes: 15', 'intervalMinutes >= 1 && intervalMinutes <= 60'] },
-      { file: 'internal/collectors/eventlogs_windows.go', contains: ['Get-WinEvent', 'wg.Add(len(active))'] },
+      { file: 'internal/collectors/eventlogs_winquery.go', contains: ['Get-WinEvent', '-Oldest'] },
+      { file: 'internal/collectors/eventlogs_winstreams.go', contains: ['wg.Add(1)'] },
+      { file: 'internal/collectors/eventlogs_bookmarks.go', contains: ['NewPersistentEventLogCollector', 'readEventLogBookmarks'] },
       { file: 'internal/heartbeat/heartbeat.go', contains: ['shouldSendPosture := now.Sub(h.lastPostureUpdate) > 15*time.Minute'] },
       { file: 'internal/mgmtdetect/deep_identity_windows.go', contains: ['"dsregcmd", "/status"'] },
     ],

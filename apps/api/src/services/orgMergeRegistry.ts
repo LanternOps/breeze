@@ -871,6 +871,7 @@ const REPOINT_TABLES: readonly string[] = [
   "ai_usage_charge_claims",
   "ai_usage_charges",
   "alert_correlation_members",
+  "alert_external_refs",
   "alert_rules",
   "alert_templates",
   "alerts",
@@ -1029,6 +1030,13 @@ const REPOINT_TABLES: readonly string[] = [
   "device_memory_modules",
   "device_metrics",
   "device_network",
+  // device_network_isolations (#10089): plain repoint — its only unique index
+  // is (device_id) WHERE unresolved, which cannot collide across orgs because
+  // a device belongs to one org. Its composite FKs to devices, incidents and
+  // incident_actions are DEFERRABLE INITIALLY IMMEDIATE, so the merge's
+  // SET CONSTRAINTS ALL DEFERRED lets parents and this row repoint in separate
+  // statements; breeze_network_isolation_device_moved skips a merging org.
+  "device_network_isolations",
   "device_patches",
   "device_process_samples",
   "device_recovery_keys",

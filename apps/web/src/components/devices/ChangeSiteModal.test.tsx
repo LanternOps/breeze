@@ -61,6 +61,18 @@ describe('ChangeSiteModal', () => {
     });
   });
 
+  it('marks the current site with a space before "(current)" and names the close button (#10082)', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [SITE_A, SITE_B] }));
+
+    render(
+      <ChangeSiteModal device={device} isOpen onClose={vi.fn()} onSaved={vi.fn()} />
+    );
+
+    expect(await screen.findByRole('option', { name: 'HQ (current)' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'Branch' })).toBeTruthy();
+    expect(screen.getByTestId('change-site-close')).toHaveAccessibleName('Cancel');
+  });
+
   it('disables the move button until a different site is chosen', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [SITE_A, SITE_B] }));
 

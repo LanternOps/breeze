@@ -121,6 +121,11 @@ export interface OperatorTaskListQuery {
   limit: number;
   deviceId?: string;
   state?: AiOperatorTaskState;
+  /**
+   * Narrow to one org. The CALLER must have checked `auth.canAccessOrg` first;
+   * the caller's own `orgCondition` still applies, so this can only narrow.
+   */
+  orgId?: string;
 }
 
 export type OperatorTaskListResult =
@@ -129,7 +134,7 @@ export type OperatorTaskListResult =
 
 /** `GET /ai/operator/tasks`: the org-wide keyset-paginated list (newest-created first). */
 export async function listOperatorTasks(auth: AuthContext, params: OperatorTaskListQuery): Promise<OperatorTaskListResult> {
-  const { cursorToken, limit, deviceId, state } = params;
+  const { cursorToken, limit, deviceId, state, orgId } = params;
 
   const cursor = decodeOperatorTasksCursor(cursorToken);
   if (cursorToken && !cursor) {
@@ -140,6 +145,7 @@ export async function listOperatorTasks(auth: AuthContext, params: OperatorTaskL
     auth.orgCondition(aiOperatorTasks.orgId),
     siteVisibilityCondition(auth.allowedSiteIds),
   ];
+  if (orgId) conditions.push(eq(aiOperatorTasks.orgId, orgId));
   if (deviceId) conditions.push(eq(aiOperatorTasks.deviceId, deviceId));
   if (state) conditions.push(eq(aiOperatorTasks.state, state));
   if (cursor) conditions.push(buildOperatorTasksKeysetPredicate(cursor));

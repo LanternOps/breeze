@@ -569,7 +569,9 @@
       "after": "est après",
       "between": "est entre",
       "withinLast": "dans la fin",
-      "notWithinLast": "Pas dans la dernière"
+      "notWithinLast": "Pas dans la dernière",
+      "below": "inférieure à",
+      "atLeast": "au moins"
     },
     "value": {
       "noValue": "Aucune valeur nécessaire",
@@ -591,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Retiré"
-      }
+      },
+      "softwareName": "Nom du logiciel",
+      "softwareVersion": "Version du logiciel"
     }
   },
   "account": {
@@ -1080,6 +1084,68 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Tickets d’alerte",
+        "scopeNote": "Valable pour tout le partenaire; aucune dérogation par organisation.",
+        "pausedBanner": "En pause : le PSA a refusé les identifiants. Lancez « Tester la connexion » pour reprendre.",
+        "yes": "Activés",
+        "no": "Désactivés",
+        "selectPlaceholder": "Sélectionner…",
+        "priorityDefault": "Valeur par défaut du PSA",
+        "closedSuffix": "{{name}} (fermé)",
+        "saved": "Paramètres des tickets d’alerte enregistrés",
+        "saving": "Enregistrement…",
+        "save": "Enregistrer",
+        "conflict": "Ces paramètres ont été modifiés ailleurs. Les valeurs les plus récentes ont été chargées ; vérifiez-les et enregistrez à nouveau.",
+        "errors": {
+          "save": "Impossible d’enregistrer les paramètres des tickets d’alerte"
+        },
+        "status": {
+          "active": "Les tickets d’alerte sont activés pour cette connexion.",
+          "notExternal": "Liez cette connexion comme PSA de gestion des services (mode externe) pour utiliser les tickets d’alerte.",
+          "disabled": "Les tickets d’alerte sont désactivés.",
+          "paused": "Les tickets d’alerte sont en pause jusqu’à ce que la connexion au PSA fonctionne de nouveau.",
+          "companyLinksUnverified": "Confirmez les liens d’entreprises pour cette instance du PSA.",
+          "invalidConfig": "Les paramètres enregistrés des tickets d’alerte ne sont pas valides. Vérifiez-les et enregistrez à nouveau.",
+          "unsupportedProvider": "Les tickets d’alerte ne sont pas disponibles pour ce fournisseur de PSA.",
+          "credentialsUnusable": "Les identifiants de cette connexion sont incomplets ou illisibles. Modifiez la connexion et saisissez-les à nouveau."
+        },
+        "fields": {
+          "enabled": "Activer les tickets d’alerte",
+          "board": "Tableau",
+          "openStatus": "Statut des nouveaux tickets",
+          "closedStatus": "Statut fermé",
+          "priorityHeading": "Priorité du PSA selon la gravité de l’alerte",
+          "minSeverity": "Gravité minimale",
+          "minSeverityHelp": "Faible inclut les moniteurs de niveau avertissement",
+          "closeOnResolve": "Fermer le ticket lorsque l’alerte est résolue",
+          "noteOnAcknowledge": "Ajouter une note lorsque l’alerte est prise en compte",
+          "confirmCompanyLinks": "Les liens d’entreprises des organisations correspondent à cette instance du PSA"
+        },
+        "severity": {
+          "critical": "Critique",
+          "high": "Élevée",
+          "medium": "Moyenne",
+          "low": "Faible",
+          "info": "Information"
+        },
+        "options": {
+          "error": "Impossible de charger les options du PSA",
+          "retry": "Réessayer",
+          "truncated": "Seuls les premiers résultats du PSA sont affichés."
+        },
+        "readOnly": {
+          "enabled": "Tickets d’alerte"
+        },
+        "loadError": {
+          "message": "Impossible de charger les paramètres des tickets d’alerte",
+          "retry": "Réessayer"
+        },
+        "configInvalid": {
+          "warning": "Les paramètres enregistrés des tickets d’alerte sont illisibles. L’enregistrement les remplacera.",
+          "confirm": "Remplacer les paramètres illisibles"
+        }
+      },
       "PsaCompanyImport": {
         "title": "Importer les entreprises",
         "subtitle": "Créez des organisations à partir des entreprises de {{name}}.",
@@ -1292,7 +1358,7 @@
           "waiting": "En attente"
         },
         "ticketCount": "{{filtered}} de {{total}} tickets",
-        "title": "Tickets synchronisés",
+        "title": "Tickets PSA",
         "unlinked": "Non lié"
       }
     },
@@ -1552,7 +1618,8 @@
           "enabled": "Webhook activé",
           "retryQueued": "Nouvelle tentative de livraison mise en file d’attente",
           "testQueued": "Livraison de test mise en file d’attente",
-          "updated": "Webhook mis à jour"
+          "updated": "Webhook mis à jour",
+          "deleted": "Webhook \"{{name}}\" supprimé"
         },
         "title": "Webhooks"
       }

@@ -5,7 +5,7 @@ import { z } from 'zod';
  *
  * This file is in `packages/shared` because three consumers need the same
  * objects: the API's recipe (which freezes the input at admission), the web
- * start form, and the eval corpus. It holds NO logic — the ordering contract,
+ * start form, and the eval corpus. It holds NO recipe logic — the ordering contract,
  * the effect catalog and the degradation rules all live in the recipe, which
  * is the only place that may know them.
  */
@@ -46,6 +46,40 @@ export const IDENTITY_OFFBOARDING_EFFECT_TOGGLES = Object.freeze([
   'autoReply', 'forwarding', 'mailDelegate', 'removeGroups',
   'removeLicenses', 'revokeSessions', 'wipeMobile', 'disableAccount',
 ] as const);
+
+/**
+ * The refusal text when the person leaving is named as their own inheritor.
+ * One string for the validator, the draft route and admission, so the form
+ * shows the same reason whichever layer caught it.
+ */
+export const SELF_INHERITANCE_MESSAGE = 'The person leaving cannot inherit their own mail. Choose someone else, or no one.';
+
+const sameText = (a: string | null | undefined, b: string | null | undefined): boolean => {
+  const x = a?.trim().toLowerCase();
+  const y = b?.trim().toLowerCase();
+  return !!x && !!y && x === y;
+};
+
+/**
+ * Which inheritor field names the person who is leaving, or null (#10076).
+ *
+ * Forwarding a mailbox to itself routes nothing and delegating it to its owner
+ * grants nothing, yet the plan would still read as "mail continuity handled".
+ * Contact ids and addresses compare case-insensitively (a uuid is the same
+ * contact in either case; mailbox addresses are case-insensitive in practice).
+ *
+ * `person` is what is known about the leaver at the caller's layer: the
+ * validator knows only the named contact id and a hint that may be an address;
+ * the draft route and admission know the RESOLVED contact and its address.
+ */
+export function selfInheritanceField(
+  input: { inheritorContactId: string | null; forwardTo: string | null },
+  person: { contactId: string | null; email: string | null },
+): 'inheritorContactId' | 'forwardTo' | null {
+  if (sameText(input.inheritorContactId, person.contactId)) return 'inheritorContactId';
+  if (sameText(input.forwardTo, person.email)) return 'forwardTo';
+  return null;
+}
 
 export const identityOffboardingInputSchema = z.object({
   /** The resolved person, when the technician already knows who they mean. */
@@ -96,6 +130,11 @@ export const identityOffboardingInputSchema = z.object({
         message: 'Provide at most one of inheritorContactId or forwardTo.',
       });
     }
+    // A hint that is not an address can never equal a valid `forwardTo`, so
+    // passing it as the person's address is safe. The draft route and
+    // admission repeat this check once the hint resolves to a contact.
+    const self = selfInheritanceField(v, { contactId: v.contactId, email: v.personHint });
+    if (self) ctx.addIssue({ code: 'custom', path: [self], message: SELF_INHERITANCE_MESSAGE });
   });
 export type IdentityOffboardingInput = z.infer<typeof identityOffboardingInputSchema>;
 

@@ -8,6 +8,9 @@
  * wiring — the event-org partner lookup and the trigger-event enqueue.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+// #5221 B2 — no automation here has a conversion: today's admission path.
+vi.mock('../services/flows/conversion/claims', async () =>
+  (await import('../__tests__/helpers/noConversionClaims')).noConversionClaims());
 
 const { queueAddMock, workerCapture } = vi.hoisted(() => ({
   queueAddMock: vi.fn(),
@@ -159,6 +162,7 @@ describe('queueEventTriggers — partner-wide fan-out wiring (#2133)', () => {
         type: 'trigger-event',
         automationId: 'auto-pw',
         eventType: 'device.offline',
+        eventOrgId: 'org-member-1',
       }),
       expect.objectContaining({ jobId: 'automation-event-auto-pw-evt-1' }),
     );

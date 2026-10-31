@@ -213,3 +213,48 @@ describe("BackupProviderConnectionCard", () => {
     expect(onChanged).not.toHaveBeenCalled();
   });
 });
+
+describe("Dropsuite card", () => {
+  function renderCard() {
+    render(<BackupProviderConnectionCard connection={connection({ provider: "dropsuite", status: "reauth_required" })} onChanged={onChanged} onTestResult={onTestResult} />);
+  }
+
+  it("labels its provider and workloads without device-link counters", () => {
+    renderCard();
+    expect(screen.getByTestId("backup-connection-provider")).toHaveTextContent("NinjaOne SaaS Backup (Dropsuite)");
+    expect(screen.getByTestId("backup-connection-devices")).toHaveTextContent("Workloads");
+    expect(screen.getByTestId("backup-connection-customers")).toHaveTextContent("Customers");
+    expect(screen.getByTestId("backup-connection-unmapped-devices")).toHaveTextContent("Unmapped workloads");
+    expect(screen.queryByTestId("backup-connection-linked")).toBeNull();
+    expect(screen.queryByTestId("backup-connection-ambiguous")).toBeNull();
+  });
+
+  it("PATCHes both masked token fields and clears them after saving", async () => {
+    renderCard();
+    fireEvent.click(screen.getByTestId("backup-connection-reauth"));
+    expect(screen.queryByTestId("backup-connection-password")).toBeNull();
+    for (const field of ["reseller-token", "auth-token"]) {
+      expect(screen.getByTestId(`backup-connection-${field}`)).toHaveAttribute("type", "password");
+      expect(screen.getByTestId(`backup-connection-${field}`)).toHaveAttribute("autoComplete", "new-password");
+      fireEvent.change(screen.getByTestId(`backup-connection-${field}`), { target: { value: field } });
+    }
+    fireEvent.click(screen.getByTestId("backup-connection-save"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(JSON.parse(fetchMock.mock.calls.at(-1)![1]!.body as string).credentials).toEqual({ resellerToken: "reseller-token", authToken: "auth-token" });
+    fireEvent.click(screen.getByTestId("backup-connection-reauth"));
+    expect(screen.getByTestId("backup-connection-auth-token")).toHaveValue("");
+    expect(screen.getByTestId("backup-connection-reseller-token")).toHaveValue("");
+  });
+
+  it("keeps stored credentials when both tokens are blank and requires a complete replacement", async () => {
+    renderCard();
+    fireEvent.click(screen.getByTestId("backup-connection-reauth"));
+    expect(screen.getByTestId("backup-connection-auth-token")).toHaveValue("");
+    fireEvent.change(screen.getByTestId("backup-connection-auth-token"), { target: { value: "new-token" } });
+    expect(screen.getByTestId("backup-connection-save")).toBeDisabled();
+    fireEvent.change(screen.getByTestId("backup-connection-auth-token"), { target: { value: "" } });
+    fireEvent.click(screen.getByTestId("backup-connection-save"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(JSON.parse(fetchMock.mock.calls.at(-1)![1]!.body as string)).not.toHaveProperty("credentials");
+  });
+});

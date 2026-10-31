@@ -4038,9 +4038,10 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
   });
 
   // #8928 — the user-outcome notice capability is same-heartbeat, non-sticky
-  // truth like every other protocol column: anything but exactly 1 is 0.
+  // truth like every other protocol column. #10190 W07 adds version 2 (the
+  // agent also decodes decidedBy on pam_apply_v2); anything but 1 or 2 is 0.
   it.each([
-    [1, 1], [0, 0], [2, 0], ['1', 0], [undefined, 0], [1.5, 0], [null, 0],
+    [1, 1], [0, 0], [2, 2], [3, 0], ['1', 0], ['2', 0], [undefined, 0], [1.5, 0], [null, 0],
   ])('normalizePamUserNotifyProtocolVersion(%j) === %j', (input, expected) => {
     expect(normalizePamUserNotifyProtocolVersion(input)).toBe(expected);
   });
@@ -4050,7 +4051,8 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     { capabilities: undefined, expected: 0 },
     { capabilities: {}, expected: 0 },
     { capabilities: { pamUserNotifyProtocolVersion: 0 }, expected: 0 },
-    { capabilities: { pamUserNotifyProtocolVersion: 2 }, expected: 0 },
+    { capabilities: { pamUserNotifyProtocolVersion: 2 }, expected: 2 },
+    { capabilities: { pamUserNotifyProtocolVersion: 3 }, expected: 0 },
   ])('rewrites the PAM user-notify capability every beat: %j', async ({ capabilities, expected }) => {
     const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
     await setupMocks(setSpy);
@@ -4820,6 +4822,7 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
       collect_categories: ['security', 'system'],
       minimum_level: 'warning',
       collection_interval_minutes: 15,
+      application_providers: [],
     };
     vi.mocked(buildEventLogConfigUpdate).mockResolvedValueOnce(settings);
 
@@ -4921,6 +4924,7 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
       hyperv_enabled: true,
       proxmox_enabled: true,
       interval_minutes: 60,
+      accepts_image_provenance: true as const,
     };
     vi.mocked(buildWorkloadInventoryConfigUpdate).mockResolvedValueOnce(payload);
     const res = await buildApp().request('/agents/device-1/heartbeat', {

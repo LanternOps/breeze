@@ -37,7 +37,7 @@ export function bounded(value: unknown): string {
  */
 export function auditToolWrite(
   auth: AuthContext,
-  event: { orgId: string | null; partnerId?: string | null; action: string; resourceType: string; resourceId?: string; resourceName?: string; details?: Record<string, unknown> },
+  event: { orgId: string | null; partnerId?: string | null; action: string; resourceType: string; resourceId?: string; resourceName?: string; details?: Record<string, unknown>; result?: 'success' | 'failure' },
 ): void {
   const actor = auth.aiOrigin
     ? aiOriginAuditActor(auth.aiOrigin, { agentActorId: auth.user.id, humanActorId: auth.user.id })
@@ -54,7 +54,7 @@ export function auditToolWrite(
     ...(event.resourceId ? { resourceId: event.resourceId } : {}),
     ...(event.resourceName ? { resourceName: event.resourceName } : {}),
     details: { ...(event.details ?? {}), ...actor.originDetails },
-    result: 'success',
+    result: event.result ?? 'success',
   });
 }
 

@@ -1043,6 +1043,13 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
           <button
             type="button"
             onClick={() => setAcceptOpen(true)}
+            // An item-less quote has nothing to accept (#9963): the server
+            // refuses it (422 QUOTE_EMPTY) rather than issue a $0 invoice, so
+            // say why here instead of opening a dialog that can only fail.
+            disabled={isEmpty}
+            title={!isEmpty ? undefined
+              : isDraft ? t('quotes.actions.acceptOnBehalf.emptyDraftTitle')
+              : t('quotes.actions.acceptOnBehalf.emptySentTitle')}
             data-testid="quote-accept-on-behalf"
             className={`${btnBase} border hover:bg-muted disabled:opacity-50`}
           >

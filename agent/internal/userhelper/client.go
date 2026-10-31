@@ -126,7 +126,11 @@ func NewWithOptions(socketPath string, role ipc.HelperRole, binaryKind, context 
 		executor:   executor.New(nil),
 		pending:    make(map[string]chan *ipc.Envelope),
 	}
-	c.prompts = newNativePromptRenderer(advertisedNativePromptKinds(role), showNativePromptOS, c.sendPromptMessage, time.Now)
+	show := showNativePromptOS
+	if role == ipc.HelperRoleSystem {
+		show = showSystemPromptOS // W07: the elevation first question (P14)
+	}
+	c.prompts = newNativePromptRenderer(advertisedNativePromptKinds(role), show, c.sendPromptMessage, time.Now)
 	return c
 }
 
@@ -663,6 +667,31 @@ func safeGo(name string, fn func()) {
 	}()
 }
 
+// runCommandRecovered runs a command handler and converts a panic into a
+// failed result. safeGo already keeps a panic from killing the helper, but it
+// cannot reply: without this the agent waits out its whole IPC budget (65 s for
+// take_screenshot) and reports a timeout instead of the real failure (#10304).
+func runCommandRecovered(cmd ipc.IPCCommand, fn func() ipc.IPCCommandResult) (result ipc.IPCCommandResult) {
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 4096)
+			n := runtime.Stack(buf, false)
+			log.Error("recovered panic in command handler",
+				"command", cmd.Type,
+				"commandId", cmd.CommandID,
+				"panic", fmt.Sprintf("%v", r),
+				"stack", string(buf[:n]),
+			)
+			result = ipc.IPCCommandResult{
+				CommandID: cmd.CommandID,
+				Status:    "failed",
+				Error:     fmt.Sprintf("%s failed: internal panic in user helper: %v", cmd.Type, r),
+			}
+		}
+	}()
+	return fn()
+}
+
 func (c *Client) handleCommand(env *ipc.Envelope) {
 	var cmd ipc.IPCCommand
 	if err := json.Unmarshal(env.Payload, &cmd); err != nil {
@@ -690,21 +719,22 @@ func (c *Client) handleCommand(env *ipc.Envelope) {
 	// Dispatch based on command type. Screenshot/computer_action need to run
 	// in the user session (this process) since the service runs in Session 0
 	// and has no display for DXGI/GDI/SendInput.
-	var result ipc.IPCCommandResult
-	switch cmd.Type {
-	case tools.CmdTakeScreenshot, tools.CmdComputerAction:
-		result = c.executeToolCommand(cmd)
-	case "exec":
-		result = c.executeProcess(cmd)
-	case tools.CmdScript, tools.CmdRunScript, tools.CmdScriptCancel, tools.CmdScriptListRunning:
-		result = c.executeScript(cmd)
-	default:
-		result = ipc.IPCCommandResult{
-			CommandID: cmd.CommandID,
-			Status:    "failed",
-			Error:     fmt.Sprintf("unsupported command type: %s", cmd.Type),
+	result := runCommandRecovered(cmd, func() ipc.IPCCommandResult {
+		switch cmd.Type {
+		case tools.CmdTakeScreenshot, tools.CmdComputerAction:
+			return c.executeToolCommand(cmd)
+		case "exec":
+			return c.executeProcess(cmd)
+		case tools.CmdScript, tools.CmdRunScript, tools.CmdScriptCancel, tools.CmdScriptListRunning:
+			return c.executeScript(cmd)
+		default:
+			return ipc.IPCCommandResult{
+				CommandID: cmd.CommandID,
+				Status:    "failed",
+				Error:     fmt.Sprintf("unsupported command type: %s", cmd.Type),
+			}
 		}
-	}
+	})
 	if err := c.conn.SendTyped(env.ID, ipc.TypeCommandResult, result); err != nil {
 		log.Warn("failed to send command result", "id", env.ID, "error", err)
 	}

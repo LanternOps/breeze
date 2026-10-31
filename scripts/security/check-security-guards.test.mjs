@@ -42,6 +42,8 @@ const PIN_FILES = [
   // #6263 W03a: the API images build breeze-yarac from agent/ sources.
   'apps/api/Dockerfile',
   'docker/Dockerfile.api',
+  // #10306: the dev API image builds it too, so dev stacks can publish rules.
+  'docker/Dockerfile.api.dev',
   // #6263 W03b: the built-in YARA pack filter is its own Go module.
   'scripts/security/yara-pack/go.mod',
 ];

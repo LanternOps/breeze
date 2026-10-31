@@ -558,7 +558,6 @@
     "largeFolderSelectionTitle": "Große Auswahl",
     "selectFolder": "Ordner {{name}} auswählen",
     "confirmLargeFolderSelection": "Diese Auswahl umfasst etwa {{formatted}} Dateien und die Wiederherstellung kann einige Zeit dauern. Fortfahren?",
-    "unknownDevice": "Unbekanntes Gerät",
     "kindVm": "Als VM wiederherstellen",
     "kindInstantBoot": "Sofortstart",
     "kindSelective": "Selektive Wiederherstellung",
@@ -1111,10 +1110,14 @@
       "hyperv": "Hyper-V",
       "vmware": "VMware",
       "bare_metal": "Bare Metal",
+      "m365_mail": "Microsoft 365-E-Mail",
       "m365_sharepoint": "SharePoint",
       "m365_exchange": "Exchange",
       "m365_onedrive": "OneDrive",
       "m365_teams": "Teams",
+      "gws_mail": "Google Workspace-E-Mail",
+      "gws_drive": "Google Drive",
+      "gws_shared_drive": "Geteilte Google-Ablagen",
       "other": "Sonstige"
     },
     "noObservation": "Keine Beobachtung",
@@ -1133,7 +1136,12 @@
       "errorUnlink": "Verknüpfung des Anbietergeräts konnte nicht gelöst werden",
       "error": "Externer Sicherungsstatus konnte nicht geladen werden",
       "alsoCheck": "Prüfen Sie auch die Verbindungen zu externen Backup-Produkten unter \"Integrationen\"."
-    }
+    },
+    "saasAccountsSubtitle": "Microsoft 365 / Google Workspace",
+    "saas": "SaaS",
+    "saasAccounts": "{{value}} SaaS-Konten",
+    "workloadBackup": "{{workload}}-Backup",
+    "sourceProvider": "Backup-Anbieter"
   },
   "restoreResultNotices": {
     "systemStateRequiresRebuildTitle": "Der Systemstatus wird durch einen Bare-Metal-Neuaufbau angewendet",
@@ -1171,5 +1179,10 @@
     "checking": "Wird geprüft",
     "unverified": "Nicht verifiziert",
     "failed": "Integritätsprüfung fehlgeschlagen"
+  },
+  "reparseSkipNotice": {
+    "summary_one": "{{count}} Analysepunkt übersprungen: Junctions und Bereitstellungspunkte werden nicht verfolgt und nicht wiederhergestellt. Das ist erwartet, kein Fehler.",
+    "summary_other": "{{count}} Analysepunkte übersprungen: Junctions und Bereitstellungspunkte werden nicht verfolgt und nicht wiederhergestellt. Das ist erwartet, kein Fehler.",
+    "showDetails": "Übersprungene Pfade anzeigen"
   }
 }

@@ -128,6 +128,7 @@ export async function handleDnsThreatBlocked(
   const [inserted] = await db
     .insert(alerts)
     .values({
+      ownerKind: 'device',
       ruleId: null,
       deviceId: payload.deviceId,
       orgId,
