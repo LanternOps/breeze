@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { devices, organizations } from '../db/schema';
+import { metricsRegistry } from '../services/metricsRegistry';
 
 const { selectMock, createRunMock, addMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
@@ -206,6 +207,7 @@ describe('processTriggerEvent device binding', () => {
     automationId: automation.id,
     eventType: 'alert.triggered',
     eventId: 'event-1',
+    eventOrgId: orgId,
     eventTimestamp: '2026-09-15T12:00:00Z',
     eventPayload,
   });
@@ -260,6 +262,8 @@ describe('processTriggerEvent device binding', () => {
     ['automation with explicit device targets', { ...automation, conditions: { type: 'devices', deviceIds: [deviceId] } }],
   ])('skips an %s for a device-less alert', async (_label, row) => {
     selectRows([row]);
+    const metric = metricsRegistry.getSingleMetric('alert_device_consumer_skipped_total');
+    const before = (await metric?.get())?.values.find(v => v.labels.consumer === 'automation')?.value ?? 0;
     const result = await __testOnly.processTriggerEvent(event({
       alertId: 'alert-1', deviceId: null, owner: { kind: 'backup_workload', ref: 'workload-1' },
     }));
@@ -267,8 +271,12 @@ describe('processTriggerEvent device binding', () => {
     expect(createRunMock).not.toHaveBeenCalled();
     expect(addMock).not.toHaveBeenCalled();
     expect(selectMock).toHaveBeenCalledTimes(1);
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('alert_has_no_device'));
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining(automation.id));
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining(automation.id), expect.objectContaining({
+      reason: 'alert_has_no_device', alertId: 'alert-1', eventId: 'event-1', orgId,
+      owner: { kind: 'backup_workload', ref: 'workload-1' },
+    }));
+    expect((await metricsRegistry.getSingleMetric('alert_device_consumer_skipped_total')?.get())?.values
+      .find(v => v.labels.consumer === 'automation')?.value).toBe(before + 1);
   });
 
   it.each([undefined, 123])('skips an alert without a string deviceId (%s)', async (value) => {
