@@ -16,12 +16,13 @@ export const WISP_ENTITY_KINDS: readonly WispEntityKind[] = [
 
 export interface WispBriefSection { heading: string; lines: string[] }
 export interface WispThreadLink {
-  id: string;
+  id: string | null;
   ref: { kind: WispEntityKind; id: string; orgId: string | null };
   label: string;
   status: string | null;
   href: string;
-  addedBy: 'user' | 'wisp';
+  source: 'user_pin' | 'wisp_pin' | 'auto' | 'concern';
+  lastTouchedAt: string;
   createdAt: string;
 }
 const MAX_SECTIONS = 12;
@@ -88,14 +89,15 @@ export function homeSectionsFromPayload(raw: unknown): WispHomeSections {
 }
 
 export function normalizeLink(raw: unknown): WispThreadLink | null {
-  if (!isObj(raw) || typeof raw.id !== 'string' || raw.id.length === 0) return null;
+  if (!isObj(raw)) return null;
+  if (!(raw.id === null && raw.source === 'concern') && (typeof raw.id !== 'string' || raw.id.length === 0)) return null;
   const ref = raw.ref;
   if (!isObj(ref)) return null;
   if (!WISP_ENTITY_KINDS.includes(ref.kind as WispEntityKind)) return null;
   if (typeof ref.id !== 'string' || ref.id.length === 0) return null;
   if (typeof raw.label !== 'string' || raw.label.length === 0) return null;
   return {
-    id: raw.id,
+    id: raw.id as string | null,
     ref: {
       kind: ref.kind as WispEntityKind,
       id: ref.id,
@@ -104,7 +106,8 @@ export function normalizeLink(raw: unknown): WispThreadLink | null {
     label: raw.label,
     status: typeof raw.status === 'string' ? raw.status : null,
     href: typeof raw.href === 'string' ? raw.href : '',
-    addedBy: raw.addedBy === 'wisp' ? 'wisp' : 'user',
+    source: raw.source === 'wisp_pin' || raw.source === 'auto' || raw.source === 'concern' ? raw.source : 'user_pin',
+    lastTouchedAt: typeof raw.lastTouchedAt === 'string' ? raw.lastTouchedAt : '',
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : '',
   };
 }
@@ -126,7 +129,7 @@ function newestFirst(a: string, b: string): number {
 }
 
 export function linksForDisplay(links: readonly WispThreadLink[]): WispThreadLink[] {
-  const rank = (l: WispThreadLink) => (l.addedBy === 'wisp' ? 1 : 0);
+  const rank = (l: WispThreadLink) => (l.source === 'wisp_pin' ? 1 : 0);
   const sorted = [...links].sort((a, b) => rank(a) - rank(b) || newestFirst(a.createdAt, b.createdAt));
   const seen = new Set<string>();
   const out: WispThreadLink[] = [];
