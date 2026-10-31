@@ -58,7 +58,7 @@ async function seedMovedOrigin() {
   }).returning();
   const base = { orgId: orgA.id, deviceId: device.id, severity: 'high' as const, status: 'active' as const };
   const [owned, plain] = await seed.insert(alerts).values([
-    { ...base, title: 'gateway unreachable', topologySiteId: siteA.id, topologySourceKey: `topology:${'a'.repeat(64)}` },
+    { ...base, title: 'gateway unreachable', ownerKind: 'topology_site', topologySiteId: siteA.id, topologySourceKey: `topology:${'a'.repeat(64)}` },
     { ...base, title: 'device-bound alert' },
   ]).returning();
   const [channel] = await seed.insert(notificationChannels).values({

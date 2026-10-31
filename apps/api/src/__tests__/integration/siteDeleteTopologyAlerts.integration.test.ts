@@ -44,8 +44,8 @@ describe('DELETE /orgs/sites/:id with site-owned topology alerts (T3)', () => {
     }).returning();
     const base = { orgId: org.id, deviceId: device.id, severity: 'high' as const, status: 'active' as const };
     const [owned, keptOwned, plain] = await seed.insert(alerts).values([
-      { ...base, title: 'owned by doomed', topologySiteId: doomed.id, topologySourceKey: `topology:${'1'.repeat(64)}` },
-      { ...base, title: 'owned by kept', topologySiteId: keptSite.id, topologySourceKey: `topology:${'2'.repeat(64)}` },
+      { ...base, title: 'owned by doomed', ownerKind: 'topology_site', topologySiteId: doomed.id, topologySourceKey: `topology:${'1'.repeat(64)}` },
+      { ...base, title: 'owned by kept', ownerKind: 'topology_site', topologySiteId: keptSite.id, topologySourceKey: `topology:${'2'.repeat(64)}` },
       { ...base, title: 'device alert' },
     ]).returning();
     const [channel] = await seed.insert(notificationChannels).values({ orgId: org.id, name: 'mail', type: 'email', config: { recipients: ['ops@example.test'] } }).returning();
