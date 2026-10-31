@@ -7,6 +7,7 @@ import { useStableT } from '@/lib/i18n/useStableT';
 import { ActionError, runAction } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 
 type KnownGuest = {
   id: string;
@@ -22,6 +23,7 @@ const toLogin = () => { void navigateTo('/login', { replace: true }); };
 /**
  * Partner-wide known guests (MAC list). List kind (spec §3.1): each row's add
  * and remove save on their own through runAction, which toasts the outcome.
+ * Remove asks first (#9950): a removed MAC stops auto-approving at every org.
  */
 export default function KnownGuestsSettings() {
   const { t } = useTranslation('settings');
@@ -33,6 +35,8 @@ export default function KnownGuestsSettings() {
   const [label, setLabel] = useState('');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  const [pendingRemove, setPendingRemove] = useState<KnownGuest | null>(null);
+  const [removing, setRemoving] = useState(false);
 
   const fetchGuests = useCallback(async () => {
     setLoading(true);
@@ -79,18 +83,26 @@ export default function KnownGuestsSettings() {
     }
   };
 
-  const handleRemove = async (id: string) => {
+  // The dialog stays open (and Confirm retryable) on failure; runAction has
+  // already toasted why.
+  const handleConfirmRemove = async () => {
+    const guest = pendingRemove;
+    if (!guest) return;
+    setRemoving(true);
     try {
       await runAction({
-        request: () => fetchWithAuth(`/partner/known-guests/${id}`, { method: 'DELETE' }),
+        request: () => fetchWithAuth(`/partner/known-guests/${guest.id}`, { method: 'DELETE' }),
         successMessage: t('partnerSettingsPage.knownGuests.removed'),
         errorFallback: t('knownGuestsSettings.errors.remove'),
         onUnauthorized: toLogin,
       });
+      setPendingRemove(null);
       await fetchGuests();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('knownGuestsSettings.errors.remove') });
+    } finally {
+      setRemoving(false);
     }
   };
 
@@ -165,7 +177,7 @@ export default function KnownGuestsSettings() {
                 <td className="px-4 py-3 text-right">
                   <button
                     type="button"
-                    onClick={() => void handleRemove(guest.id)}
+                    onClick={() => setPendingRemove(guest)}
                     data-testid={`known-guests-remove-${guest.macAddress}`}
                     className="flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 ml-auto"
                     title={t('common:actions.remove')}
@@ -178,6 +190,19 @@ export default function KnownGuestsSettings() {
           </tbody>
         </table>
       </div>
+
+      <ConfirmDialog
+        open={pendingRemove !== null}
+        onClose={() => { if (!removing) setPendingRemove(null); }}
+        onConfirm={() => void handleConfirmRemove()}
+        title={t('knownGuestsSettings.removeConfirm.title')}
+        message={pendingRemove
+          ? t('knownGuestsSettings.removeConfirm.message', { label: pendingRemove.label, mac: pendingRemove.macAddress })
+          : ''}
+        confirmLabel={t('common:actions.remove')}
+        isLoading={removing}
+        confirmTestId="known-guests-remove-confirm"
+      />
     </div>
   );
 }

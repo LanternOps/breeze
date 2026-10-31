@@ -1179,5 +1179,10 @@
     "checking": "Verifica in corso",
     "unverified": "Non verificato",
     "failed": "Controllo di integrità non superato"
+  },
+  "reparseSkipNotice": {
+    "summary_one": "{{count}} reparse point ignorato: giunzioni e punti di montaggio non vengono seguiti né ripristinati. È previsto, non è un errore.",
+    "summary_other": "{{count}} reparse point ignorati: giunzioni e punti di montaggio non vengono seguiti né ripristinati. È previsto, non è un errore.",
+    "showDetails": "Mostra percorsi ignorati"
   }
 }

@@ -47,7 +47,7 @@ describe('alert external refs follow alert lifecycle', () => {
     const f = await seedAlertRefFixture();
     const [topologyAlert] = await getTestDb().insert(alerts).values({
       orgId: f.orgA.id, deviceId: f.device.id, severity: 'high', status: 'active',
-      title: 'gateway unreachable', topologySiteId: f.site.id,
+      title: 'gateway unreachable', ownerKind: 'topology_site', topologySiteId: f.site.id,
       topologySourceKey: `topology:${'a'.repeat(64)}`,
     }).returning();
     await getTestDb().execute(insertAlertRef({ ...f, alert: topologyAlert! }));

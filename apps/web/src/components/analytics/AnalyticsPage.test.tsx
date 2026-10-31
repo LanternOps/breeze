@@ -9,6 +9,7 @@ vi.mock('../../stores/auth', () => ({
     statusText: 'OK',
     json: vi.fn().mockResolvedValue({ data: [] }),
   }),
+  registerOrgIdProvider: vi.fn(),
 }));
 
 import AnalyticsPage from './AnalyticsPage';

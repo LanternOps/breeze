@@ -38,8 +38,8 @@
     "title": "Komut Dosyası Önerileri",
     "proposalsPerDay": "Günlük öneriler",
     "reviewerDisagreements": "İnceleyici anlaşmazlıkları",
-    "humanRejectedAfterApprove": "Yapay zeka onayladıktan sonra insan reddetti",
-    "humanApprovedAfterReject": "Yapay zeka reddettikten sonra insan onayladı",
+    "humanRejectedAfterApprove": "İnsan reddetti, yapay zeka onay önerdi",
+    "humanApprovedAfterReject": "İnsan onayladı, yapay zeka ret önerdi",
     "unattendedRuns": "Gözetimsiz çalıştırmalar",
     "laneState": "Gözetimsiz şerit",
     "laneOpen": "Açık (tekrarlanan doğrulama hatalarından sonra duraklatıldı)",
@@ -55,6 +55,14 @@
     "noTier3ToolExecutionsFound": "Seviye 3 araç uygulaması bulunamadı.",
     "pending": "Beklemede",
     "rejected": "Reddedildi",
+    "status": {
+      "pending": "Beklemede",
+      "approved": "Onaylandı",
+      "executing": "Yürütülüyor",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "rejected": "Reddedildi"
+    },
     "session": "Oturum: {{sessionId}}",
     "tempPasswordAlreadyRevealed": "Geçici şifre zaten açıklandı.",
     "tempPasswordCopied": "Kopyalandı",
@@ -89,12 +97,12 @@
   },
   "aiRiskRejectionDenialLog": {
     "all2": "Hepsi",
-    "denied": "Reddedildi",
+    "denied": "Engellendi",
     "error": "Hata",
     "failed": "Başarısız",
-    "noRejectionsOrDenialsFound": "Reddetme veya reddetme bulunamadı.",
+    "noRejectionsOrDenialsFound": "Reddedilen, engellenen veya başarısız eylem bulunamadı.",
     "rejected": "Reddedildi",
-    "rejectionsAndDenials": "Reddetmeler ve İnkarlar",
+    "rejectionsAndDenials": "Reddedilenler ve engellenenler",
     "search": "Ara...",
     "session": "Oturum",
     "status": "Durum",
@@ -1739,13 +1747,18 @@
       "totalQueries": "Toplam sorgu",
       "blocked": "Engellendi",
       "allowed": "İzin veriliyor",
-      "redirected": "Yönlendirildi"
+      "redirected": "Yönlendirildi",
+      "notStored": "Depolanmıyor"
     },
     "topBlocked": {
       "title": "En çok engellenen alan adları",
       "empty": "Geçerli pencerede engellenen alan adı yok."
     },
-    "loading": "Yükleniyor…"
+    "loading": "Yükleniyor…",
+    "allowedTraffic": {
+      "none": "Bu entegrasyonlar için izin verilen sorgular depolanmıyor, bu nedenle yalnızca engellenen ve yönlendirilen sorgular sayılır. Bunları saymak için bir entegrasyonun depolanan veri ayarlarında \"İzin verilen trafiği depola\" seçeneğini açın.",
+      "some": "İzin verilen sorgular yalnızca bazı entegrasyonlar için depolanıyor, bu nedenle izin verilen sayısı kısmidir."
+    }
   },
   "dnsSecurityDnsSecurityIntegrationsTab": {
     "title": "Yapılandırılmış entegrasyonlar",
@@ -1762,7 +1775,7 @@
       "addIntegration": "Entegrasyon ekle",
       "syncNow": "Şimdi senkronize et",
       "deleteIntegration": "Entegrasyonu sil",
-      "editRetention": "Saklama süresini değiştir"
+      "editRetention": "Depolanan veriler"
     },
     "messages": {
       "loadHttpError": "Entegrasyonlar yüklenemedi (HTTP {{status}})",
@@ -1771,7 +1784,8 @@
       "syncQueued": "Senkronizasyon {{name}} için sıraya alındı",
       "deleteConfirm": "{{name}} silinsin mi? İlkeleri, olayları ve istatistikleri arka planda kaldırılır.",
       "deleteFailed": "{{name}} silinemedi",
-      "deleteSuccess": "{{name}} arka planda siliniyor"
+      "deleteSuccess": "{{name}} arka planda siliniyor",
+      "deleteComplete": "{{name}} silindi"
     },
     "loading": "Entegrasyonlar yükleniyor…",
     "empty": {
@@ -1787,12 +1801,13 @@
     },
     "lastSyncFailedSuffix": "— başarısız oldu",
     "lastSyncPartialSuffix": " — yetişiyor",
+    "lastSyncTruncatedSuffix": " — bazı olaylar alınamadı",
     "never": "Hiçbir zaman",
     "deletingInBackground": "Siliniyor…"
   },
   "dnsSecurityEditDnsRetentionModal": {
-    "title": "Veri saklama",
-    "description": "Daha eski olaylar ve günlük istatistikler gece çalışan saklama temizliğiyle silinir.",
+    "title": "Depolanan veriler",
+    "description": "Breeze'in bu entegrasyon için hangi DNS sorgularını depolayacağını ve ne kadar süre saklayacağını seçin.",
     "fieldLabel": "DNS olaylarını ve istatistiklerini sakla (gün)",
     "fieldHelp": "1–365 gün. Kurulumun varsayılanını kullanmak için boş bırakın (yöneticiniz değiştirmediyse 90 gün).",
     "invalid": "1 ile 365 arasında tam sayı bir gün değeri girin veya boş bırakın.",
@@ -1802,8 +1817,13 @@
       "saving": "Kaydediliyor…"
     },
     "messages": {
-      "saved": "{{name}} için saklama süresi güncellendi",
-      "saveFailed": "{{name}} için saklama süresi güncellenemedi"
+      "saved": "{{name}} için depolanan veri ayarları güncellendi",
+      "saveFailed": "{{name}} için depolanan veri ayarları güncellenemedi"
+    },
+    "storeAllowedTraffic": {
+      "label": "İzin verilen trafiği depola",
+      "helpOff": "Yalnızca engellenen ve yönlendirilen sorgular depolanır. İzin verilen sorgular genellikle trafiğin neredeyse tamamıdır ve DNS sağlayıcınız bunları kendi raporlarında tutar.",
+      "helpOn": "İzin verilen sorgular da depolanır; bu genellikle yaklaşık 100 kat daha fazla satır demektir. Daha sonra kapatmak, zaten depolanmış izin verilen sorguları silmez; saklama süresi bunları kaldırır."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
@@ -2041,19 +2061,17 @@
       "statusFilterLabel": "Durum"
     },
     "status": {
-      "pendingApproval": "Onay Bekleniyor",
-      "pending_approval": "onay bekleniyor",
-      "queued": "sıraya alındı",
-      "inProgress": "Devam Ediyor",
-      "in_progress": "devam ediyor",
-      "completed": "tamamlandı",
-      "failed": "başarısız oldu",
-      "cancelled": "iptal edildi"
+      "pending_approval": "Onay bekleniyor",
+      "queued": "Sırada",
+      "in_progress": "Devam ediyor",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "cancelled": "İptal edildi"
     },
     "approval": {
-      "pending": "beklemede",
-      "approved": "onaylandı",
-      "rejected": "reddedildi"
+      "pending": "Beklemede",
+      "approved": "Onaylandı",
+      "rejected": "Reddedildi"
     },
     "actions": {
       "apply": "başvur",
@@ -2421,7 +2439,18 @@
     "sweepNowUnpublished": "Bu kural kümesini toplu taramada kullanmadan önce yayımlayın.",
     "sweepNowDisabled": "Bu kural kümesini toplu taramada kullanmadan önce etkinleştirin.",
     "progress": {
-      "label": "{{total}} cihazdan {{done}} tanesi tamamlandı"
+      "finished_one": "{{count}} cihazdan {{finished}} tanesi bitti",
+      "finished_other": "{{count}} cihazdan {{finished}} tanesi bitti",
+      "completed_one": "{{count}} tamamlandı",
+      "completed_other": "{{count}} tamamlandı",
+      "timedOut_one": "{{count}} zaman aşımına uğradı",
+      "timedOut_other": "{{count}} zaman aşımına uğradı",
+      "failed_one": "{{count}} başarısız",
+      "failed_other": "{{count}} başarısız",
+      "cancelled_one": "{{count}} iptal edildi",
+      "cancelled_other": "{{count}} iptal edildi",
+      "expired_one": "{{count}} süresi doldu",
+      "expired_other": "{{count}} süresi doldu"
     },
     "errors": {
       "orgOutOfScope": "Bir veya daha fazla kuruluş erişiminizin dışında.",
@@ -2438,9 +2467,12 @@
       "rateLimited": "Kısa süre önce çok fazla toplu tarama başlatıldı. Daha sonra tekrar deneyin."
     },
     "skipReasons": {
-      "agent_too_old": "ajanı çok eski olan cihazlar",
-      "busy_same_sweep": "bu toplu taramayı zaten çalıştıran cihazlar",
-      "rule_set_not_eligible": "kural kümelerinin geçerli olmadığı cihazlar"
+      "agent_too_old_one": "ajanı çok eski olan {{count}} cihaz",
+      "agent_too_old_other": "ajanı çok eski olan {{count}} cihaz",
+      "busy_same_sweep_one": "bu toplu taramayı zaten çalıştıran {{count}} cihaz",
+      "busy_same_sweep_other": "bu toplu taramayı zaten çalıştıran {{count}} cihaz",
+      "rule_set_not_eligible_one": "kural kümelerinin geçerli olmadığı {{count}} cihaz",
+      "rule_set_not_eligible_other": "kural kümelerinin geçerli olmadığı {{count}} cihaz"
     },
     "skipExplain": {
       "agent_too_old": "Ajanın YARA kural kümelerini çalıştırabilmesi için güncellenmesi gerekir.",
@@ -2450,13 +2482,21 @@
     "dialog": {
       "title": "Cihazlarda IOC eşleşmesi tara",
       "ruleSets": "Kural kümeleri: {{names}}",
-      "rescopeNote": "Toplu tarama cihazlarını hatırlamaz. Kapsamı yeniden seçin; kural kümeleri ve tarama türü korunur.",
+      "rescopeNote": "Toplu tarama cihazlarını hatırlamaz. Kapsamı yeniden seçin; kural kümeleri, tarama türü ve özel yollar korunur.",
       "back": "Geri",
       "next": "İleri",
       "previewAction": "Önizle",
-      "confirm": "{{targeted}} cihazı tara",
+      "confirm_one": "{{count}} cihazı tara",
+      "confirm_other": "{{count}} cihazı tara",
       "viewRunning": "Çalışan toplu taramayı görüntüle",
-      "confirmSummary": "{{orgs}} kuruluştaki {{targeted}} cihaz, önizlemede gösterilen kural kümesi sürümleriyle taranacak. Eşleşmeler tehdit olarak bildirilir; cihazlarda hiçbir şey değiştirilmez.",
+      "confirmSummary_one": "{{orgs}}taki {{devices}}, önizlemede gösterilen kural kümesi sürümleriyle taranacak. Eşleşmeler tehdit olarak bildirilir; cihazda hiçbir şey değiştirilmez.",
+      "confirmSummary_other": "{{orgs}}taki {{devices}}, önizlemede gösterilen kural kümesi sürümleriyle taranacak. Eşleşmeler tehdit olarak bildirilir; cihazlarda hiçbir şey değiştirilmez.",
+      "counts": {
+        "devices_one": "{{count}} cihaz",
+        "devices_other": "{{count}} cihaz",
+        "orgs_one": "{{count}} kuruluş",
+        "orgs_other": "{{count}} kuruluş"
+      },
       "steps": {
         "scope": "Kapsam",
         "type": "Tarama türü",
@@ -2485,15 +2525,19 @@
         "full": "Tam",
         "custom": "Özel yollar",
         "paths": "Yollar, her satıra bir tane",
-        "pathsHelp": "En fazla {{max}} yol, her biri {{chars}} karakter."
+        "pathsHelp": "En fazla {{max}} yol, her biri {{chars}} karakter.",
+        "pathsCount": "{{paths}} / {{max}} yol",
+        "pathsTooMany": "{{paths}} / {{max}} yol: {{remove}} tanesini kaldırın.",
+        "pathTooLong": "{{line}}. satır {{chars}} karakterden uzun."
       },
       "duration": {
         "label": "Çalışma süresi (saat)",
-        "help": "Çevrimdışı cihazlar, bu süre içinde geri geldiklerinde taramayı çalıştırır. 1 ile {{max}} saat arasında."
+        "help": "Çevrimdışı cihazlar, bu süre içinde geri geldiklerinde taramayı çalıştırır. 1 ile {{max}} saat arasında.",
+        "invalid": "1 ile {{max}} arasında tam sayı olarak saat girin."
       },
       "preview": {
-        "targeted": "{{orgs}} kuruluşta {{devices}} cihaz",
-        "org": "{{org}}: {{devices}} cihaz",
+        "targeted": "{{orgs}}ta {{devices}}",
+        "org": "{{org}}: {{devices}}",
         "ruleSets": "Kural kümeleri",
         "skipped": "Atlananlar",
         "scopeChanged": "Cihazlar veya kural kümeleri önizlemeden sonra değişti. Yeni sayıları gözden geçirin, ardından yeniden onaylayın."
@@ -2509,6 +2553,7 @@
       "resweep": "Güncel kurallarla yeniden tara",
       "rulesChanged": "Bu toplu tarama başladığından beri kurallar değişti",
       "queued": "Sırada: {{queued}}",
+      "running": "Çalışıyor: {{running}}",
       "columns": {
         "ruleSets": "Kural kümeleri",
         "origin": "Başlatıldığı yer",
@@ -2565,6 +2610,7 @@
       "builtin": "Yerleşik",
       "allOrgs": "Tüm kuruluşlar",
       "errors": "Hatalı",
+      "checkerUnavailable": "Derleyici kullanılamıyor",
       "unpublished": "Yayımlanmadı",
       "disabled": "Devre dışı"
     },
@@ -2621,7 +2667,7 @@
       "autoQuarantineOnly": "Otomatik karantina artık cihazlarda kapalı. Diğer değişiklikleriniz henüz etkin değil.",
       "published": "Kaydedildi ve {{version}} sürümü olarak yayımlandı",
       "savedDisabled": "Kaydedildi. Küme devre dışı olduğu için cihazlar onu kullanmıyor.",
-      "checkerUnavailable": "Kaydedildi, yayımlanmadı: kural denetleyicisi kullanılamıyor. {{devices}}",
+      "checkerUnavailable": "Kaydedildi, yayımlanmadı: YARA derleyicisi bu sunucuda kullanılamıyor, bu yüzden kurallar denetlenemedi. {{devices}}",
       "compileErrors_one": "Kaydedildi, yayımlanmadı: {{count}} kuralda hata var. {{devices}}",
       "compileErrors_other": "Kaydedildi, yayımlanmadı: {{count}} kuralda hata var. {{devices}}",
       "setErrors": "Kaydedildi, yayımlanmadı: {{message}}. {{devices}}",
@@ -2630,7 +2676,8 @@
       "devicesKeep": "Cihazlar {{version}} sürümünü kullanmaya devam ediyor.",
       "neverPublished": "Bu küme henüz yayımlanmadı, bu nedenle cihazlar onu kullanmıyor.",
       "setDisabled": "Küme devre dışı olduğu için cihazlar onu kullanmıyor.",
-      "staleBanner": "Yayımlanmadı: aşağıdaki hataları düzeltin. {{devices}}"
+      "staleBanner": "Yayımlanmadı: aşağıdaki hataları düzeltin. {{devices}}",
+      "staleCheckerUnavailable": "Yayımlanmadı: YARA derleyicisi bu sunucuda kullanılamıyor, bu yüzden kural değişiklikleri denetlenemez veya yayımlanamaz. {{devices}}"
     },
     "editor": {
       "tabs": {
@@ -2725,5 +2772,35 @@
   },
   "sensitiveDataAccess": {
     "noOrgAccess": "Bu kuruluşa erişiminiz yok"
+  },
+  "sensitiveDataLabels": {
+    "risk": {
+      "critical": "Kritik",
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük"
+    },
+    "findingStatus": {
+      "open": "Açık",
+      "remediated": "Giderildi",
+      "accepted": "Kabul edildi",
+      "falsePositive": "Yanlış pozitif"
+    },
+    "scanStatus": {
+      "queued": "Kuyrukta",
+      "running": "Çalışıyor",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "cancelled": "İptal edildi"
+    },
+    "dataType": {
+      "credential": "Kimlik bilgileri",
+      "financial": "Finansal"
+    },
+    "a11y": {
+      "editPolicy": "{{name}} ilkesini düzenle",
+      "deletePolicy": "{{name}} ilkesini sil",
+      "togglePolicyActive": "Etkin: {{name}}"
+    }
   }
 }

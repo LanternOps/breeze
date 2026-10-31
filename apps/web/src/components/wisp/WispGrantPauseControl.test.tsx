@@ -56,6 +56,53 @@ describe('WispGrantPauseControl (W06 T15, w00 A29)', () => {
     expect(screen.queryByTestId('wisp-paused-by-you')).toBeNull();
   });
 
+  it('says why a budget pause holds Resume, with the reset time, tied by aria-describedby (#10106)', () => {
+    const budgetResetsAt = new Date(Date.now() + 20 * 3600_000 - 60_000).toISOString();
+    render(<WispGrantPauseControl wisp={wisp({ status: 'paused', pausedReason: 'budget_exhausted', budgetResetsAt })} onChange={vi.fn()} />);
+    const reason = screen.getByTestId('wisp-paused-system');
+    expect(reason).toHaveAttribute('data-reason', 'budget_exhausted');
+    expect(reason).toHaveTextContent("today's budget is used up");
+    expect(reason).toHaveTextContent('20 h');
+    // No server path resumes a budget_exhausted grant, so the line must not promise one.
+    expect(reason).not.toHaveTextContent(/resume/i);
+    const resume = screen.getByTestId('wisp-resume') as HTMLButtonElement;
+    expect(resume.disabled).toBe(true);
+    expect(reason.id).not.toBe('');
+    expect(resume.getAttribute('aria-describedby')).toBe(reason.id);
+  });
+
+  it('a budget pause with no reset time still gives the reason (#10106)', () => {
+    render(<WispGrantPauseControl wisp={wisp({ status: 'paused', pausedReason: 'budget_exhausted' })} onChange={vi.fn()} />);
+    const reason = screen.getByTestId('wisp-paused-system');
+    expect(reason).toHaveTextContent("today's budget is used up");
+    expect(reason.textContent).not.toMatch(/\d+ h/);
+  });
+
+  it.each([
+    ['grantor_access_lost', 'your access'],
+    ['grantor_suspended', 'suspended'],
+    ['factor_expired', 'sign-in check'],
+    ['entitlement_lost', 'plan no longer includes Wisp'],
+  ])('names the system pause %s next to the disabled Resume (#10106)', (pausedReason, text) => {
+    render(<WispGrantPauseControl wisp={wisp({ status: 'paused', pausedReason })} onChange={vi.fn()} />);
+    expect(screen.getByTestId('wisp-paused-system')).toHaveTextContent(text);
+    expect((screen.getByTestId('wisp-resume') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('an unrecognised system reason falls back to "Paused by Breeze" (#10106)', () => {
+    render(<WispGrantPauseControl wisp={wisp({ status: 'paused', pausedReason: 'entitlement_lapsed' })} onChange={vi.fn()} />);
+    const reason = screen.getByTestId('wisp-paused-system');
+    expect(reason).toHaveAttribute('data-reason', 'unknown');
+    expect(reason).toHaveTextContent('Paused by Breeze');
+  });
+
+  it('shows no reason while the pause reason is still being looked up', () => {
+    h.fetchWithAuth.mockReturnValue(new Promise(() => {}));
+    render(<WispGrantPauseControl wisp={wisp({ status: 'paused', pausedReason: undefined })} onChange={vi.fn()} />);
+    expect(screen.queryByTestId('wisp-paused-system')).toBeNull();
+    expect(screen.getByTestId('wisp-resume').hasAttribute('aria-describedby')).toBe(false);
+  });
+
   it('offers no Resume for a partner-disabled pause and says why (#10145)', () => {
     render(<WispGrantPauseControl wisp={wisp({ status: 'paused', pausedReason: 'partner_disabled' })} onChange={vi.fn()} />);
     expect(screen.queryByTestId('wisp-resume')).toBeNull();

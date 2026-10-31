@@ -92,6 +92,16 @@ export const flowInputDeclSchema = z.object({
   description: z.string().max(500).optional(),
 }).strict();
 
+/**
+ * Step fields the schema fills in when a document omits them. The flow detail
+ * page reads the stored definition as-is, so it shows these for a step saved
+ * without them (#9937) — the same values the runner gets from the parse.
+ */
+export const FLOW_STEP_DEFAULTS = {
+  onFailure: 'stop',
+  timeoutSec: FLOW_LIMITS.defaultTimeoutSec,
+} as const;
+
 export const flowStepSchema = z.object({
   id: z.string().regex(FLOW_STEP_ID_RE),
   tool: z.string().min(1).max(64),
@@ -104,8 +114,8 @@ export const flowStepSchema = z.object({
     concurrency: z.number().int().min(1).max(FLOW_LIMITS.maxConcurrency).default(1),
   }).strict().optional(),
   approval: z.enum(['default', 'pre_approved']).default('default'),
-  onFailure: z.enum(['stop', 'continue']).default('stop'),
-  timeoutSec: z.number().int().min(1).max(FLOW_LIMITS.maxTimeoutSec).default(FLOW_LIMITS.defaultTimeoutSec),
+  onFailure: z.enum(['stop', 'continue']).default(FLOW_STEP_DEFAULTS.onFailure),
+  timeoutSec: z.number().int().min(1).max(FLOW_LIMITS.maxTimeoutSec).default(FLOW_STEP_DEFAULTS.timeoutSec),
 }).strict();
 
 export const flowDocumentV1Schema = z.object({
@@ -166,10 +176,17 @@ export interface FlowIssue {
   pointer?: string;
 }
 
+/**
+ * A step's source as the validator reports it: a catalog source, or `unknown`
+ * when the tool name resolves to nothing this owner can run (#9937). Display
+ * only — run pins keep `FlowToolSource`.
+ */
+export type FlowStepSource = FlowToolSource | 'unknown';
+
 export interface FlowStepSummary {
   id: string;
   tool: string;
-  source: FlowToolSource;
+  source: FlowStepSource;
   tier: 1 | 2 | 3 | null;
   approval: 'default' | 'pre_approved';
 }

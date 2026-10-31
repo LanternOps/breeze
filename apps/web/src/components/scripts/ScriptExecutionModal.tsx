@@ -72,9 +72,15 @@ export default function ScriptExecutionModal({
   onExecute,
   initialDeviceIds,
   initialParameters,
-  orgId
+  orgId: callerOrgId
 }: ScriptExecutionModalProps) {
   const { t } = useTranslation('scripts');
+  // #9934 — an org-owned script can only run on devices in its own org (the
+  // server denies anything else with `script_org_mismatch`), so the pickers
+  // are pinned to the script's org and never offer another org's devices or
+  // groups. A partner-wide or system script (orgId null) falls back to the
+  // caller's pin (#7479) or the top-bar org scope.
+  const orgId = script.orgId ?? callerOrgId;
   const [query, setQuery] = useState('');
   const [siteFilter, setSiteFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('online');
@@ -296,6 +302,14 @@ export default function ScriptExecutionModal({
   const selectedTargetCount = groupMode ? selectedGroupIds.length : selectedDeviceIds.size;
   // Unique devices across the chosen groups, once their membership has loaded.
   const groupDeviceCount = groupMode && groupSummary?.status === 'ready' ? groupSummary.uniqueDevices : null;
+  // #9934 — the confirm copy must not promise an immediate start for a target
+  // that is offline; those runs wait in the queue until the device checks in.
+  const groupOfflineCount = groupMode && groupSummary?.status === 'ready' ? groupSummary.offlineCompatible : 0;
+  const runAsLabel = runAs === 'system' ? t('scriptExecutionModal.runAs.system') : t('scriptExecutionModal.runAs.user');
+  const selectedOfflineCount = useMemo(
+    () => deviceOptions.options.filter((option) => selectedDeviceIds.has(option.id) && option.status === 'offline').length,
+    [deviceOptions.options, selectedDeviceIds]
+  );
   const overGroupCap = groupDeviceCount !== null && groupDeviceCount > MAX_SCRIPT_RUN_TARGETS;
   const groupNames = groupSummary?.groupNames ?? new Map<string, string>();
 
@@ -722,22 +736,36 @@ export default function ScriptExecutionModal({
               </p>
               {groupMode ? (
                 <p data-testid="group-confirm-text" className="text-sm text-warning/80 mt-1">
-                  {t('scriptExecutionModal.groups.confirmDescription', {
-                    name: script.name,
-                    groups: selectedGroupIds.length,
-                    runAs: runAs === 'system' ? t('scriptExecutionModal.runAs.system') : t('scriptExecutionModal.runAs.user')
-                  })}{' '}
+                  {groupOfflineCount > 0
+                    ? t('scriptExecutionModal.groups.confirmDescriptionOffline', {
+                      name: script.name,
+                      groups: selectedGroupIds.length,
+                      offline: groupOfflineCount,
+                      runAs: runAsLabel
+                    })
+                    : t('scriptExecutionModal.groups.confirmDescription', {
+                      name: script.name,
+                      groups: selectedGroupIds.length,
+                      runAs: runAsLabel
+                    })}{' '}
                   {groupDeviceCount !== null
                     ? t('scriptExecutionModal.groups.confirmMembers', { count: groupDeviceCount })
                     : t('scriptExecutionModal.groups.confirmMembersUnknown')}
                 </p>
               ) : (
-                <p className="text-sm text-warning/80 mt-1">
-                  {t('scriptExecutionModal.confirm.description', {
-                    name: script.name,
-                    count: selectedDeviceIds.size,
-                    runAs: runAs === 'system' ? t('scriptExecutionModal.runAs.system') : t('scriptExecutionModal.runAs.user')
-                  })}
+                <p data-testid="device-confirm-text" className="text-sm text-warning/80 mt-1">
+                  {selectedOfflineCount > 0
+                    ? t('scriptExecutionModal.confirm.descriptionOffline', {
+                      name: script.name,
+                      count: selectedDeviceIds.size,
+                      offline: selectedOfflineCount,
+                      runAs: runAsLabel
+                    })
+                    : t('scriptExecutionModal.confirm.description', {
+                      name: script.name,
+                      count: selectedDeviceIds.size,
+                      runAs: runAsLabel
+                    })}
                 </p>
               )}
             </div>

@@ -110,6 +110,12 @@ export interface DnsIntegrationConfig {
   // egress on the hosted platform. Enabling it is recorded in the audit log via
   // the integration create/update route.
   allowCarrierNatEgress?: boolean;
+  // #10054 — per-integration opt-in to store ALLOWED DNS queries. Absent/false
+  // (the default) stores blocked + redirected events only; allowed traffic is
+  // ~99% of a provider's log. Resolved only through
+  // services/dnsProviders/syncScope.ts. Applies to future syncs; rows already
+  // stored are left to retention.
+  storeAllowedTraffic?: boolean;
   // Sync state, not a setting: the time-slice width (ms) the last sliced
   // provider walk (Cisco Umbrella) ended on. Written only by the DNS sync job,
   // read back as the next run's starting width so a backlog does not pay its

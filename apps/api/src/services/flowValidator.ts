@@ -157,9 +157,17 @@ function coreStepTier(name: string, input: Record<string, unknown>, stepId: stri
 
 // ── main ───────────────────────────────────────────────────────────────────
 
+/**
+ * A step's source before the catalog lookup (and the whole answer when a
+ * structure error skips it). A bare name is `core` only when the core registry
+ * has it; anything else is `unknown`, never a guessed "Core tool" (#9937). A
+ * `slug__name` stays `tenant` here: without the catalog that is only its shape.
+ */
 function inferredSource(tool: string): FlowStepSummary['source'] {
   if (isFlowBuiltin(tool)) return 'builtin';
-  return tool.includes('__') ? 'tenant' : 'core';
+  if (isFlowToolName(tool)) return 'unknown';
+  if (tool.includes('__')) return 'tenant';
+  return isRegisteredCoreTool(tool) ? 'core' : 'unknown';
 }
 
 function result(issues: FlowIssue[], steps: FlowStepSummary[], document?: FlowDocumentV1): FlowDocumentValidation {
@@ -279,6 +287,8 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
       } else {
         // Same text for "not enabled", "another tenant's" and "nonexistent".
         issues.push(issue('tool_not_found', TOOL_NOT_FOUND_MESSAGE(step.tool), { stepId: step.id, pointer: `/steps/${i}/tool` }));
+        // The catalog has no such tool for this owner: no source to name (#9937).
+        source = 'unknown';
       }
     } else if (entry.source === 'builtin') {
       source = 'builtin';

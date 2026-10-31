@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BreezeEvent } from '../eventBus';
+import { metricsRegistry } from '../metricsRegistry';
 
 /**
  * Tool catalog W04 (#5219), plan Task A9 — the durable event trigger.
@@ -63,7 +64,7 @@ const LIVE = [{ id: ORG }];
 function event(over: Partial<BreezeEvent> = {}): BreezeEvent {
   return {
     id: EVENT_ID, type: 'alert.triggered', orgId: ORG, source: 'test', priority: 'normal',
-    payload: { severity: 'critical', alert: { ruleId: 'r1' } },
+    payload: { deviceId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', severity: 'critical', alert: { ruleId: 'r1' } },
     metadata: { timestamp: '2026-10-25T10:00:00.000Z' },
     ...over,
   } as BreezeEvent;
@@ -110,6 +111,32 @@ describe('flowEventTriggerSubscriber', () => {
     expect(flowEventTriggerSubscriber.id).toBe('flow-event-trigger');
     expect(flowEventTriggerSubscriber.eventTypes).toBe('*');
     expect(flowEventTriggerSubscriber.retry).toEqual({ attempts: 5, backoffMs: 30_000 });
+  });
+
+  it.each([
+    ['org-owned', {}],
+    ['partner-wide', { orgId: null, partnerId: PARTNER }],
+  ])('skips a %s flow for a device-less alert before target resolution', async (_name, ownership) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const metric = metricsRegistry.getSingleMetric('alert_device_consumer_skipped_total');
+      const before = (await metric?.get())?.values.find(v => v.labels.consumer === 'flow')?.value ?? 0;
+      selects.push([candidate(ownership)], LIVE);
+      await handle(event({ payload: {
+        severity: 'critical', alertId: 'alert-1', deviceId: null,
+        owner: { kind: 'backup_workload', ref: 'workload-1' },
+      } }));
+      expect(createFlowRun).not.toHaveBeenCalled();
+      expect(buildTriggerScope).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(FLOW_A), expect.objectContaining({
+        reason: 'alert_has_no_device', alertId: 'alert-1', eventId: EVENT_ID, orgId: ORG,
+        owner: { kind: 'backup_workload', ref: 'workload-1' },
+      }));
+      expect((await metricsRegistry.getSingleMetric('alert_device_consumer_skipped_total')?.get())?.values
+        .find(v => v.labels.consumer === 'flow')?.value).toBe(before + 1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('matching filter creates a run', async () => {

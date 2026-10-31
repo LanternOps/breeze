@@ -20,7 +20,7 @@ Integrations connect Breeze to your existing DNS filtering infrastructure. Each 
 <Steps>
 1. **Connect a DNS filter provider** by creating an integration with the provider's API credentials. Breeze encrypts all secrets at rest.
 
-2. **Breeze syncs events** from the provider on a configurable interval. Each DNS query event is stored with its action (allowed, blocked, redirected), threat category, source device, and domain.
+2. **Breeze syncs events** from the provider on a configurable interval. Blocked and redirected queries are stored with their action, threat category, source device, and domain. Allowed queries are stored only when the integration opts in; see [Stored traffic](#stored-traffic).
 
 3. **Create policies** to define allowlists and blocklists. Policies are linked to a specific integration and contain domain entries with optional reasons.
 
@@ -137,6 +137,7 @@ Authorization: Bearer <token>
 | `config.piholeVersion` | string | Pi-hole API version: `v5` or `v6`. **Defaults to `v5` if unset.** Determines whether `apiKey` is treated as the legacy admin token (v5) or the app password (v6) |
 | `config.syncInterval` | integer | Event sync interval in minutes (5-1440, default varies by provider) |
 | `config.retentionDays` | integer | Days to keep this integration's security events and daily statistics (1-365). Unset uses the deployment default, 90 days. See [Data retention](#data-retention) |
+| `config.storeAllowedTraffic` | boolean | Also store allowed queries. Unset or `false` (the default) stores blocked and redirected queries only. See [Stored traffic](#stored-traffic) |
 | `config.categories` | string[] | Threat categories to sync (max 100 entries) |
 | `config.blocklistId` | string | Provider-specific blocklist identifier for policy sync |
 | `config.allowlistId` | string | Provider-specific allowlist identifier for policy sync |
@@ -154,7 +155,53 @@ The response includes a `jobId` for tracking the sync task in BullMQ.
 
 ### Sync Status and Catching Up
 
-Each integration records the outcome of its last sync run in `lastSyncStatus`: `success`, `error` (with a reason in `lastSyncError`), or `partial`. Cisco Umbrella can only return a limited number of records per request, so one run makes at most 100 requests to its activity feed and saves the events in time slices as it goes. A run that uses up those requests before reaching the present stops and records `partial`, and `lastSyncError` names the time range that has not been fetched yet, for example `Reached the per-run request budget; 2026-10-22T04:25:27.166Z..2026-10-24T16:00:00.187Z not yet fetched, resumes next run`. `lastSync` then shows how far the data reaches. The dashboard marks the integration as **catching up** and shows that range on hover. Nothing is skipped: the next scheduled run starts where the last one stopped and keeps the slice size that worked, so a backlog left by an outage or a paused integration catches up over the following runs. When a run reaches the present, the status returns to `success`. Each sync covers at most the last 30 days, because the Umbrella reporting API does not return older activity.
+Each integration records the outcome of its last sync run in `lastSyncStatus`: `success`, `error` (with a reason in `lastSyncError`), `partial`, or `truncated`. Cisco Umbrella can only return a limited number of records per request, so one run makes at most 100 requests to its activity feed and saves the events in time slices as it goes. A run that uses up those requests before reaching the present stops and records `partial`, and `lastSyncError` names the time range that has not been fetched yet, for example `Reached the per-run request budget; 2026-10-22T04:25:27.166Z..2026-10-24T16:00:00.187Z not yet fetched, resumes next run`. `lastSync` then shows how far the data reaches. The dashboard marks the integration as **catching up** and shows that range on hover. Nothing is skipped: the next scheduled run starts where the last one stopped and keeps the slice size that worked, so a backlog left by an outage or a paused integration catches up over the following runs. When a run reaches the present, the status returns to `success`. Each sync covers at most the last 30 days, because the Umbrella reporting API does not return older activity.
+
+The Umbrella activity feed also stops paging at 10,000 records per request window, so a sync narrows the window until each one fits, down to a minimum of one second. If more than about 10,000 records fall inside a single second, the records past that limit cannot be fetched at all. The run keeps what it could fetch, moves on, and records `truncated`. `lastSyncError` lists the affected windows and how many records were fetched from each, for example `1 window held more records than the provider lets a sync page through; records past that limit were not fetched and will not be retried: 2026-10-22T04:00:00.000Z..2026-10-22T04:00:01.000Z (11000 fetched)`. The dashboard marks the integration as **some events not fetched** and shows those windows on hover. Unlike `partial`, a later run does not recover these records. If the same run also used up its request budget, the status is `truncated` and `lastSyncError` names the not-yet-fetched range as well. The status describes the last run only: the next run that loses no records sets it back to `success`, or to `partial` if that run runs out of requests.
+
+### Stored traffic
+
+By default Breeze stores only **blocked** and **redirected** queries. Those are the events it acts on: threat alerts, the events list, and device context. **Allowed** queries are usually about 99% of a provider's log (around a million rows a day for a busy tenant), and your provider already keeps them in its own reporting, so Breeze does not store them unless you ask it to.
+
+To store allowed queries for an integration, open **DNS Security → Integrations**, click the **Stored data** button (the clock icon) on its row, and turn on **Store allowed traffic**. Or call the API:
+
+```bash
+PATCH /dns-security/integrations/:id
+Content-Type: application/json
+
+{ "storeAllowedTraffic": true }
+```
+
+The setting applies to syncs from then on. It does not fetch allowed queries for time already synced, and turning it off does not delete allowed queries that are already stored; the retention job removes them as they age out.
+
+How each provider handles it:
+
+| Provider | Where the action comes from | With allowed traffic off |
+|----------|-----------------------------|--------------------------|
+| Cisco Umbrella | Each activity record's `verdict` (`proxied` is stored as `redirected`) | Breeze asks Umbrella for the `blocked` and `proxied` verdicts only, so allowed records are not downloaded and do not use the per-run request budget |
+| Cloudflare Gateway | Each sampled group's `resolverDecision` | Allowed groups are downloaded and discarded before they are stored |
+| DNSFilter | Each record's `action` / `decision` | Downloaded and discarded before they are stored |
+| Pi-hole (v5 and v6) | Each query's status | Downloaded and discarded before they are stored |
+| AdGuard Home | Each query's filtering reason | Downloaded and discarded before they are stored |
+
+When no active integration in scope stores allowed traffic, `GET /dns-security/stats` returns `"allowedTraffic": "none"` with `allowedQueries` and `blockedRate` set to `null`, and the Overview tab shows **Not stored** instead of a zero. When only some integrations store it, the response says `"some"` and the counts are partial. The `get_dns_security` AI tool reports the same field with a short note.
+
+The coverage follows the integrations' current setting, not the history of the rows in the window. After you turn **Store allowed traffic** off, allowed rows that are still stored no longer appear in the totals, which show **Not stored**. After you turn it on, the allowed count covers only the time since then.
+
+#### Removing allowed queries stored before this change
+
+Breeze does not delete allowed queries that earlier versions stored. The nightly retention job removes them as they pass `retentionDays`. To free the space sooner, an operator can delete them by hand. Connect to the database as its owner (the API's `breeze_app` role cannot see rows outside a tenant scope), then run this in batches until it reports `DELETE 0`:
+
+```sql
+DELETE FROM dns_security_events
+WHERE ctid IN (
+  SELECT ctid FROM dns_security_events
+  WHERE action = 'allowed'
+  LIMIT 5000
+);
+```
+
+Add `AND integration_id = '<integration id>'` to the inner query to limit it to one integration. Each statement commits on its own, so it does not hold a long lock on the table the sync writes to. Run `VACUUM (ANALYZE) dns_security_events;` afterwards so Postgres can reuse the space. The daily statistics in `dns_event_aggregations` keep their historical allowed counts until retention removes them.
 
 ### Data retention
 
@@ -169,7 +216,7 @@ Content-Type: application/json
 { "retentionDays": 30 }
 ```
 
-Send `"retentionDays": null` to clear the override and fall back to the default. This requires MFA and the `orgs:write` permission. Only `retentionDays` can be changed after an integration is created.
+Send `"retentionDays": null` to clear the override and fall back to the default. This requires MFA and the `orgs:write` permission. Only `retentionDays` and `storeAllowedTraffic` can be changed after an integration is created.
 
 The job deletes in batches, and each batch commits on its own, so it never holds a long lock on the tables the sync writes to. On a large backlog, the first runs after an upgrade may not reach the window in one night: the job logs a warning, reports the backlog to Sentry, and continues the next night. These environment variables control it:
 
@@ -375,12 +422,15 @@ The response includes:
     "redirectedQueries": 300,
     "blockedRate": 2.56
   },
+  "allowedTraffic": "all",
   "topBlockedDomains": [...],
   "topCategories": [...],
   "topDevices": [...],
   "source": "aggregated"
 }
 ```
+
+`allowedTraffic` says whether the active integrations in scope store allowed queries: `all`, `some` (the allowed count and blocked rate are partial), or `none`. With `none`, `allowedQueries` and `blockedRate` are `null` rather than a misleading zero and 100%. See [Stored traffic](#stored-traffic).
 
 <Aside>
   For time ranges longer than 7 days, Breeze automatically queries pre-computed aggregation tables (`dns_event_aggregations`) instead of scanning raw events. The `source` field in the response indicates whether results came from `raw` event data or `aggregated` summaries.
@@ -444,7 +494,7 @@ Control D endpoints that you delete in the Control D dashboard also uninstall th
 |--------|------|-------------|
 | GET | `/dns-security/integrations` | List all integrations for the organization |
 | POST | `/dns-security/integrations` | Create a new DNS filter integration (requires MFA, `orgs:write`) |
-| PATCH | `/dns-security/integrations/:id` | Change `retentionDays` (requires MFA, `orgs:write`) |
+| PATCH | `/dns-security/integrations/:id` | Change `retentionDays` and/or `storeAllowedTraffic` (requires MFA, `orgs:write`) |
 | DELETE | `/dns-security/integrations/:id` | Delete the integration and all associated data in the background; answers 202 (requires MFA, `orgs:write`) |
 | POST | `/dns-security/integrations/:id/sync` | Trigger immediate event sync from the provider |
 

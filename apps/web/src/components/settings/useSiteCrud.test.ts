@@ -151,6 +151,52 @@ describe('useSiteCrud', () => {
     expect(result.current.guidingFirstSite).toBe(false);
   });
 
+  it('openAdd guides the first site only once the bound org is confirmed to have none (#9868)', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ data: [] }));
+    const { result } = renderHook(() => useSiteCrud(ORG_ID, { onUnauthorized, t }));
+
+    // Before any listing has loaded, an empty list is not evidence of zero sites.
+    act(() => result.current.openAdd());
+    expect(result.current.guidingFirstSite).toBe(false);
+    act(() => result.current.close());
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+    act(() => result.current.openAdd());
+    expect(result.current.guidingFirstSite).toBe(true);
+
+    act(() => result.current.close());
+    expect(result.current.guidingFirstSite).toBe(false);
+  });
+
+  it('openAdd does not guide when the org already has sites, the listing failed, or in fleet mode', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ data: [SITE] }));
+    const withSites = renderHook(() => useSiteCrud(ORG_ID, { onUnauthorized, t }));
+    await act(async () => {
+      await withSites.result.current.refresh();
+    });
+    act(() => withSites.result.current.openAdd());
+    expect(withSites.result.current.guidingFirstSite).toBe(false);
+
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'boom' }, false));
+    const failed = renderHook(() => useSiteCrud(ORG_ID, { onUnauthorized, t }));
+    await act(async () => {
+      await failed.result.current.refresh();
+    });
+    expect(failed.result.current.sitesFailed).toBe(true);
+    act(() => failed.result.current.openAdd());
+    expect(failed.result.current.guidingFirstSite).toBe(false);
+
+    fetchMock.mockResolvedValue(jsonResponse({ data: [] }));
+    const fleet = renderHook(() => useSiteCrud(ORG_ID, { onUnauthorized, t, fleet: true }));
+    await act(async () => {
+      await fleet.result.current.refresh();
+    });
+    act(() => fleet.result.current.openAdd());
+    expect(fleet.result.current.guidingFirstSite).toBe(false);
+  });
+
   it('submit() in add mode POSTs /orgs/sites with orgId in the body, then refreshes and closes', async () => {
     fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
       if (String(url) === '/orgs/sites' && init?.method === 'POST') return jsonResponse({ id: 'new-site' });
@@ -172,6 +218,8 @@ describe('useSiteCrud', () => {
     // depend on that staying true.
     expect((postCall![1] as { orgIdOverride?: string }).orgIdOverride).toBe(ORG_ID);
     expect(result.current.siteModalMode).toBe('closed');
+    // #10084: a successful create confirms itself instead of just closing.
+    expect(showToastMock).toHaveBeenCalledWith({ type: 'success', message: 'settings:sites.toasts.created' });
   });
 
   it('submit() in edit mode PATCHes /orgs/sites/:id', async () => {
@@ -191,6 +239,7 @@ describe('useSiteCrud', () => {
     );
     expect(patchCall).toBeTruthy();
     expect((patchCall![1] as { orgIdOverride?: string }).orgIdOverride).toBe(ORG_ID);
+    expect(showToastMock).toHaveBeenCalledWith({ type: 'success', message: 'settings:sites.toasts.saved' });
   });
 
   it('confirmDelete() DELETEs the selected site, then refreshes and closes', async () => {
@@ -211,6 +260,7 @@ describe('useSiteCrud', () => {
     expect(deleteCall).toBeTruthy();
     expect((deleteCall![1] as { orgIdOverride?: string }).orgIdOverride).toBe(ORG_ID);
     expect(result.current.siteModalMode).toBe('closed');
+    expect(showToastMock).toHaveBeenCalledWith({ type: 'success', message: 'settings:sites.toasts.deleted' });
   });
 
   it('a non-401 submit failure leaves the modal open and surfaces a toast (via runAction, not a thrown rejection)', async () => {

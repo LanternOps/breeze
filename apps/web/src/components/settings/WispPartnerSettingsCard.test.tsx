@@ -1,5 +1,5 @@
 /**
- * W08 (#9921) — the partner "Wisp enabled" switch (w00 A35; settings rule 9:
+ * W08 (#9921) — the partner "Allow Wisp" switch (w00 A35; settings rule 9:
  * home Settings → AI Agents, partner level only, one place). Autosave with a
  * toast (rule 7): the PUT goes through runAction.
  */
@@ -52,7 +52,7 @@ describe('WispPartnerSettingsCard (W08)', () => {
   it('shows the stored value; an admin flips it with autosave', async () => {
     h.set.mockResolvedValue(false);
     render(<WispPartnerSettingsCard />);
-    const toggle = await screen.findByRole('switch', { name: 'Wisp enabled' });
+    const toggle = await screen.findByRole('switch', { name: 'Allow Wisp' });
     await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
     fireEvent.click(toggle);
     await waitFor(() => expect(h.set).toHaveBeenCalledWith(false));
@@ -62,7 +62,7 @@ describe('WispPartnerSettingsCard (W08)', () => {
   it('a refused save (ActionError, already toasted) keeps the old value; no second toast', async () => {
     h.set.mockRejectedValue(new ActionError('Only partner admins', 403, 'partner_admin_required'));
     render(<WispPartnerSettingsCard />);
-    const toggle = await screen.findByRole('switch', { name: 'Wisp enabled' });
+    const toggle = await screen.findByRole('switch', { name: 'Allow Wisp' });
     await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
     fireEvent.click(toggle);
     await waitFor(() => expect(h.set).toHaveBeenCalled());
@@ -74,7 +74,7 @@ describe('WispPartnerSettingsCard (W08)', () => {
   it('a non-admin sees the value read-only with the reason', async () => {
     h.canManagePartnerWide = false;
     render(<WispPartnerSettingsCard />);
-    const toggle = await screen.findByRole('switch', { name: 'Wisp enabled' });
+    const toggle = await screen.findByRole('switch', { name: 'Allow Wisp' });
     expect(toggle).toBeDisabled();
     expect(screen.getByTestId('wisp-partner-switch-admin-only')).toHaveTextContent('Only partner administrators can change this.');
   });
