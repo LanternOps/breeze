@@ -26,10 +26,12 @@
  *  - severity, the documented lossy map (plan "Conversion map"): legacy
  *    critical → critical, high and medium → warning, low and info → info; a
  *    flow `warning` reaches the senders as `medium`;
- *  - the on-failure notice TEXT: legacy sends the action's failure reason and
- *    names the device only by id (deviceName = the device UUID); the converted
- *    step (PR A) sends "Automation <name> action <n> failed on <hostname>".
- *    Same recipients, title, device and count — the message body differs.
+ *  - the on-failure notice TEXT: legacy sends the action's generic failure
+ *    line ("Failed to queue run_script action command") and names the device
+ *    only by id (deviceName = the device UUID); the converted step sends
+ *    "Automation <name> action <n> failed on <hostname>: <reason>", the reason
+ *    being the device's own dispatch error (#10705). Same recipients, title,
+ *    device and count — the message body differs.
  *
  * Mocked: the BullMQ producers (adds are recorded and `execute-run` jobs are
  * drained by calling the runtime), the automation.started publish, the
@@ -53,7 +55,8 @@ interface DispatchRecord {
 interface NoticeRecord { seq: number; to: string; title: string; message: string; severity: string; deviceName: string | null }
 interface AlertRecord { seq: number; deviceId: string; severity: string; title: string; message: string }
 
-const { trace } = vi.hoisted(() => ({
+const { trace, INJECTED_FAILURE } = vi.hoisted(() => ({
+  INJECTED_FAILURE: 'Injected dispatch failure (parity fixture)',
   trace: {
     seq: 0,
     dispatches: [] as DispatchRecord[],
@@ -121,7 +124,8 @@ vi.mock('../../services/scriptDispatch', async (importOriginal) => {
       trace.dispatches.push(record);
       if (trace.failDevices.has(input.device.id)) {
         record.result = 'injected_failure';
-        return { ok: false, code: 'insert_failed', message: 'Injected dispatch failure (parity fixture)' } as unknown as Awaited<ReturnType<typeof real.dispatchScriptToDevice>>;
+        // The real failure shape (`error` carries the reason both engines record).
+        return { ok: false, code: 'insert_failed', error: INJECTED_FAILURE } as unknown as Awaited<ReturnType<typeof real.dispatchScriptToDevice>>;
       }
       const r = await real.dispatchScriptToDevice(input);
       record.result = r.ok ? 'ok' : r.code;
@@ -541,9 +545,10 @@ describe('legacy ↔ converted flow effect parity (real Postgres, #5221 B7)', ()
     // the flow's warning reaches the sender as medium (critical is unchanged).
     expect(legacy.rawNoticeSeverities).toEqual(['critical', 'critical', 'high']);
     expect(flow.rawNoticeSeverities).toEqual(['critical', 'critical', 'medium']);
-    // Text: legacy carries the action's failure reason; the flow names the action and the device.
+    // Text: legacy sends its generic action failure line; the flow names the action, the device
+    // and the device's own failure reason (#10705).
     expect(legacy.rawFailureNoticeMessages).toEqual(['Failed to queue run_script action command']);
-    expect(flow.rawFailureNoticeMessages).toEqual([`Automation ${row.name} action 1 failed on <dev1>`]);
+    expect(flow.rawFailureNoticeMessages).toEqual([`Automation ${row.name} action 1 failed on <dev1>: ${INJECTED_FAILURE}`]);
   }, 120_000);
 
   runDb('event + send_notification with a filter: a matching event notifies, a non-matching one does nothing', async () => {

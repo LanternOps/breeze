@@ -69,7 +69,7 @@ Behind `FLOWS_ENABLED` (default off). No new environment variables.
 - **Converted Jobs are frozen.** Editing, deleting, enabling, triggering or running a switched Job returns `409 automation_converted { flowId }` (the AI tool refuses the same way).
 - **Revert** re-enables the Job immediately and stops the flow admitting anything new; flow runs already started, including ones waiting for approval, finish. A reverted flow is disabled once it has drained.
 - **`resolve_targets` also takes `deviceIds`**, so an event Job whose first action is a notice or an alert converts (it bound the triggering device and was refused before).
-- **Known differences from the Job** (verified by the parity suite): a notice's severity `high` or `medium` becomes `warning` (`low` becomes `info`), and an on-failure notice says "Automation <name> action <n> failed on <host>" instead of the action's failure reason.
+- **Known differences from the Job** (verified by the parity suite): a notice's severity `high` or `medium` becomes `warning` (`low` becomes `info`), and an on-failure notice says "Automation <name> action <n> failed on <host>: <reason>", where the reason is that device's own dispatch error (the Job sent its action's log line, such as "Failed to queue run_script action command", and named the device only by id).
 
 **PR C — Jobs move to Flows (R1).** No migration.
 
