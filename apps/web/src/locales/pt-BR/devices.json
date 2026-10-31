@@ -1895,7 +1895,10 @@
     "moveToSite": "Mover para o site",
     "moveSelectedToSite": "Mover para o site",
     "moveSiteMixedOrgs": "Os dispositivos selecionados pertencem a mais de uma organização",
-    "moveSiteOverCap": "Selecione no máximo {{count}} dispositivos para mover de uma vez"
+    "moveSiteOverCap": "Selecione no máximo {{count}} dispositivos para mover de uma vez",
+    "addToGroup": "Adicionar ao grupo…",
+    "removeFromGroup": "Remover do grupo…",
+    "groupMembershipOverCap": "Selecione no máximo {{count}} dispositivos para alterar a associação ao grupo de uma vez"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Falha ao buscar os logs do dispositivo",
@@ -4724,5 +4727,25 @@
     "membersError": "Não foi possível carregar os membros do grupo.",
     "retry": "Tentar novamente",
     "emptyMembers": "Nenhum dispositivo neste grupo."
+  },
+  "bulkGroupMembership": {
+    "titleAdd": "Adicionar ao grupo",
+    "titleRemove": "Remover do grupo",
+    "selectionSummary": "Dispositivos selecionados: {{n}} · Organização: {{org}}",
+    "groupLabel": "Grupo estático",
+    "selectGroup": "Selecione um grupo",
+    "loadingGroups": "Carregando grupos…",
+    "noGroups": "Nenhum grupo estático desta organização pode receber esta seleção.",
+    "scopeHint": "Somente os grupos estáticos desta organização são listados. Um grupo de site aparece apenas quando todos os dispositivos selecionados estão nesse site. Grupos dinâmicos não são listados: suas regras decidem quem é membro.",
+    "cancel": "Cancelar",
+    "saving": "Salvando…",
+    "submitAdd": "Adicionar dispositivos",
+    "submitRemove": "Remover dispositivos",
+    "failedToLoadGroups": "Falha ao carregar os grupos",
+    "failedToUpdate": "Falha ao atualizar a associação ao grupo",
+    "addResult": "{{group}}: {{added}} adicionados, {{skipped}} já estavam no grupo",
+    "removeResult": "{{group}}: {{removed}} removidos, {{notMember}} não estavam no grupo",
+    "removeResultForbidden": "{{group}}: {{removed}} removidos, {{notMember}} não estavam no grupo. Não removidos (sem acesso ao site do dispositivo): {{devices}}",
+    "andMore": "{{names}} e mais {{n}}"
   }
 }

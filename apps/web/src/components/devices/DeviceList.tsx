@@ -51,7 +51,9 @@ import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 // verified API contract lives next to it — read that before changing this.
 import {
   actionGateHint,
+  BULK_GROUP_MEMBERSHIP_CAP,
   BULK_SITE_MOVE_CAP,
+  bulkGroupMembershipBlock,
   bulkMoveSiteBlock,
   classifyBulkSelection,
   isCommandQueueable,
@@ -902,6 +904,8 @@ export default function DeviceList({
   const canWake = can("devices", "execute"); // UX gate; POST /devices/:id/commands requires devices.execute
   // UX gate; PATCH /devices/:id and POST /devices/bulk/site (#9796) both require devices.write (+ MFA).
   const canMoveSite = can("devices", "write");
+  // UX gate; POST /device-groups/:id/devices and .../devices/remove (#9866) require devices.write (+ MFA).
+  const canEditGroupMembership = can("devices", "write");
   // UX gate; the terminal session (routes/remote) requires remote.access.
   const canRemoteTerminal = can("remote", "access");
   // Use provided timezone or browser default
@@ -1365,6 +1369,17 @@ export default function DeviceList({
       : moveSiteBlock === "over_cap"
         ? t("deviceList.moveSiteOverCap", { count: BULK_SITE_MOVE_CAP })
         : moveSiteBlock === "no_agents"
+          ? t("deviceList.agentOnlyBulkAction")
+          : undefined;
+  // Bulk "Add to group" / "Remove from group" (#9866): same one-org agent rule
+  // as Move to site, its own cap; one visible reason under both items.
+  const groupBlock = useMemo(() => bulkGroupMembershipBlock(selectedDevices), [selectedDevices]);
+  const groupBlockReason =
+    groupBlock === "mixed_org"
+      ? t("deviceList.moveSiteMixedOrgs")
+      : groupBlock === "over_cap"
+        ? t("deviceList.groupMembershipOverCap", { count: BULK_GROUP_MEMBERSHIP_CAP })
+        : groupBlock === "no_agents"
           ? t("deviceList.agentOnlyBulkAction")
           : undefined;
   const agentOnlyTitle = agentOnlyDisabled
@@ -3090,6 +3105,41 @@ export default function DeviceList({
                         className="px-4 pb-2 text-xs text-muted-foreground"
                       >
                         {moveSiteBlockReason}
+                      </p>
+                    )}
+                  </>
+                )}
+                {canEditGroupMembership && (
+                  <>
+                    <button
+                      type="button"
+                      data-testid="devices-bulk-add-to-group"
+                      onClick={() => handleBulkAction("add-to-group")}
+                      disabled={filterBlocked || groupBlock !== null}
+                      aria-describedby={groupBlock ? "devices-bulk-group-disabled-reason" : undefined}
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {t("deviceList.addToGroup")}
+                      {agentOnlySuffix}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="devices-bulk-remove-from-group"
+                      onClick={() => handleBulkAction("remove-from-group")}
+                      disabled={filterBlocked || groupBlock !== null}
+                      aria-describedby={groupBlock ? "devices-bulk-group-disabled-reason" : undefined}
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {t("deviceList.removeFromGroup")}
+                      {agentOnlySuffix}
+                    </button>
+                    {groupBlockReason && (
+                      <p
+                        id="devices-bulk-group-disabled-reason"
+                        data-testid="devices-bulk-group-disabled-reason"
+                        className="px-4 pb-2 text-xs text-muted-foreground"
+                      >
+                        {groupBlockReason}
                       </p>
                     )}
                   </>

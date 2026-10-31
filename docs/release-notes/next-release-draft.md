@@ -219,3 +219,10 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Device list: add to group / remove from group (#9866)
+
+- The device list's bulk actions now include **Add to group…** and **Remove from group…** for static groups. Select agent devices of one organization, pick one of that organization's static groups, and the whole selection is added or removed in one request. Dynamic groups and partner-wide groups are not offered; a site group is offered only when every selected device is at that site.
+- The items need the `devices.write` permission (and MFA, like other group membership changes). They are disabled, with the reason shown, when the selection spans organizations or exceeds 500 devices.
+- New API route `POST /device-groups/:id/devices/remove` (body `{ deviceIds }`, up to 500) removes several devices from a static group and returns one outcome per device: `removed`, `not_member`, or `forbidden` (no access to the device's site). Audited as `device_group.device.remove`.
+- No migration, setting, or environment variable.

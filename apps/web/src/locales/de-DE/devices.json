@@ -1895,7 +1895,10 @@
     "moveToSite": "An Standort verschieben",
     "moveSelectedToSite": "An Standort verschieben",
     "moveSiteMixedOrgs": "Die ausgewählten Geräte gehören zu mehr als einer Organisation",
-    "moveSiteOverCap": "Wählen Sie höchstens {{count}} Geräte zum gleichzeitigen Verschieben aus"
+    "moveSiteOverCap": "Wählen Sie höchstens {{count}} Geräte zum gleichzeitigen Verschieben aus",
+    "addToGroup": "Zu Gruppe hinzufügen…",
+    "removeFromGroup": "Aus Gruppe entfernen…",
+    "groupMembershipOverCap": "Wählen Sie höchstens {{count}} Geräte aus, um die Gruppenmitgliedschaft gleichzeitig zu ändern"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Geräteprotokolle konnten nicht abgerufen werden",
@@ -4724,5 +4727,25 @@
     "membersError": "Gruppenmitglieder konnten nicht geladen werden.",
     "retry": "Erneut versuchen",
     "emptyMembers": "Keine Geräte in dieser Gruppe."
+  },
+  "bulkGroupMembership": {
+    "titleAdd": "Zu Gruppe hinzufügen",
+    "titleRemove": "Aus Gruppe entfernen",
+    "selectionSummary": "Ausgewählte Geräte: {{n}} · Organisation: {{org}}",
+    "groupLabel": "Statische Gruppe",
+    "selectGroup": "Gruppe auswählen",
+    "loadingGroups": "Gruppen werden geladen…",
+    "noGroups": "Keine statische Gruppe dieser Organisation kann diese Auswahl aufnehmen.",
+    "scopeHint": "Es werden nur statische Gruppen dieser Organisation angezeigt. Eine Standortgruppe erscheint nur, wenn sich alle ausgewählten Geräte an diesem Standort befinden. Dynamische Gruppen werden nicht angezeigt: Ihre Regeln bestimmen die Mitglieder.",
+    "cancel": "Abbrechen",
+    "saving": "Wird gespeichert…",
+    "submitAdd": "Geräte hinzufügen",
+    "submitRemove": "Geräte entfernen",
+    "failedToLoadGroups": "Gruppen konnten nicht geladen werden",
+    "failedToUpdate": "Gruppenmitgliedschaft konnte nicht aktualisiert werden",
+    "addResult": "{{group}}: {{added}} hinzugefügt, {{skipped}} bereits in der Gruppe",
+    "removeResult": "{{group}}: {{removed}} entfernt, {{notMember}} waren nicht in der Gruppe",
+    "removeResultForbidden": "{{group}}: {{removed}} entfernt, {{notMember}} waren nicht in der Gruppe. Nicht entfernt (kein Zugriff auf den Standort des Geräts): {{devices}}",
+    "andMore": "{{names}} und {{n}} weitere"
   }
 }

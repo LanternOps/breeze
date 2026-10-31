@@ -900,3 +900,47 @@ export async function addManualGroupMemberships(params: {
 
   return { added, skipped: existingSet.size };
 }
+
+export interface ManualMembershipRemoval {
+  /** Device ids whose membership row this call deleted. */
+  removed: string[];
+  /** Requested devices that had no membership row in the group. */
+  notMember: string[];
+}
+
+/**
+ * Deletes the membership rows of `deviceIds` in a STATIC group in ONE
+ * statement (#9866), the bulk sibling of `DELETE /:id/devices/:deviceId`.
+ *
+ * `RETURNING` decides what was removed, so a device that stopped being a
+ * member between the caller's read and this write reads as `notMember` rather
+ * than being reported as removed. Callers MUST have applied the site gate
+ * first: this function only knows the group, not the caller.
+ */
+export async function removeManualGroupMemberships(params: {
+  groupId: string;
+  group?: GroupOwner;
+  deviceIds: readonly string[];
+}, database: GroupMembershipDatabase = db): Promise<ManualMembershipRemoval> {
+  const { groupId } = params;
+  const requested = [...new Set(params.deviceIds)];
+  if (requested.length === 0) return { removed: [], notMember: [] };
+  await requireOrgOwnedGroup(groupId, database, params.group);
+
+  const deleted = await database
+    .delete(deviceGroupMemberships)
+    .where(
+      and(
+        eq(deviceGroupMemberships.groupId, groupId),
+        inArray(deviceGroupMemberships.deviceId, requested)
+      )
+    )
+    .returning({ deviceId: deviceGroupMemberships.deviceId });
+
+  const removedSet = new Set(deleted.map((row) => row.deviceId));
+  const removed = requested.filter((deviceId) => removedSet.has(deviceId));
+  if (removed.length > 0) {
+    await schedulePeripheralMembershipChanges(removed, 'manual_membership_changed');
+  }
+  return { removed, notMember: requested.filter((deviceId) => !removedSet.has(deviceId)) };
+}
