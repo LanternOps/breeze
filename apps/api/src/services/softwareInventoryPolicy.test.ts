@@ -36,7 +36,14 @@ vi.mock('./softwarePolicyService', () => ({
   recordSoftwarePolicyAudit: vi.fn(() => Promise.resolve()),
 }));
 
+// #9635 placement guard: real resolver behaviour is pinned on Postgres by
+// softwarePolicyTie.integration.test.ts; here only its contract with the writes.
+vi.mock('./softwarePolicyCoverage', () => ({
+  checkDefaultListPlacement: vi.fn(async () => ({ ok: true, overrides: [] })),
+}));
+
 import { db } from '../db';
+import { checkDefaultListPlacement } from './softwarePolicyCoverage';
 import { recordSoftwarePolicyAudit } from './softwarePolicyService';
 import {
   approveInventorySoftware,
@@ -161,6 +168,42 @@ describe('softwareInventoryPolicy writes', () => {
 
     expect(result).toEqual({ status: 200, body: { success: true, policyId: 'p1' } });
     expect(db.update).not.toHaveBeenCalled(); // already present, rules unchanged
+  });
+
+  it('#9635: a refused placement answers 409 with the guard body and writes nothing', async () => {
+    const refusal = { error: 'would apply to no devices', code: 'SOFTWARE_POLICY_WOULD_NOT_APPLY', winners: [] };
+    vi.mocked(checkDefaultListPlacement).mockResolvedValueOnce({ ok: false, body: refusal });
+    const audit = vi.fn();
+
+    const result = await denyInventorySoftware({ auth, orgId: ORG, softwareName: 'TeamViewer', actorUserId: USER, audit });
+
+    expect(result).toEqual({ status: 409, body: refusal });
+    expect(checkDefaultListPlacement).toHaveBeenCalledWith({
+      orgId: ORG, mode: 'blocklist', policyName: 'Default Blocklist', configPolicyName: 'Default Blocklist Config',
+    });
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it('#9635: overrides from the placement check ride on the success body', async () => {
+    const overrides = [{ policyId: 'pw', name: 'MSP Blocklist', mode: 'blocklist', partnerWide: true, configPolicyId: 'c', configPolicyName: 'MSP', deviceCount: 3 }];
+    vi.mocked(checkDefaultListPlacement).mockResolvedValueOnce({ ok: true, overrides });
+    mockLockedSelect([], vi.fn());
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: () => ({ returning: () => Promise.resolve([{ id: 'p-new', name: 'Default Allowlist' }]) }),
+    } as any);
+    mockSelect([{ id: 'cfg-1' }], true);
+    vi.mocked(db.insert).mockReturnValue({
+      values: () => ({ onConflictDoUpdate: () => Promise.resolve(), onConflictDoNothing: () => Promise.resolve() }),
+    } as any);
+
+    const result = await approveInventorySoftware({ auth, orgId: ORG, softwareName: 'Zoom', actorUserId: USER, audit: vi.fn() });
+
+    expect(result).toEqual({ status: 201, body: { success: true, policyId: 'p-new', overrides } });
+    expect(checkDefaultListPlacement).toHaveBeenCalledWith({
+      orgId: ORG, mode: 'allowlist', policyName: 'Default Allowlist', configPolicyName: 'Default Allowlist Config',
+    });
   });
 
   it('clear locks both default rows FOR UPDATE and reports cleared', async () => {

@@ -24,21 +24,7 @@ func readTargetReleaseState() (targetReleaseState, error) {
 	}
 	defer k.Close()
 
-	st := targetReleaseState{keyExists: true}
-	if v, _, e := k.GetIntegerValue(targetReleaseVersionValue); e == nil {
-		st.targetPresent = true
-		st.targetEnabled = v == 1
-	}
-	if v, _, e := k.GetStringValue(targetReleaseVersionInfoValue); e == nil {
-		st.targetVersion = v
-	}
-	if v, _, e := k.GetStringValue(productVersionValue); e == nil {
-		st.productVersion = v
-	}
-	if v, _, e := k.GetIntegerValue(breezeManagedTargetReleaseValue); e == nil && v == 1 {
-		st.breezeManaged = true
-	}
-	return st, nil
+	return observeTargetRelease(k, func(err error) bool { return errors.Is(err, registry.ErrNotExist) }), nil
 }
 
 // ApplyTargetRelease converges the endpoint to the desired target-release pin.
