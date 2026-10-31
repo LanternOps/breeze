@@ -62,6 +62,7 @@ type fakeIsolator struct {
 	applies   int
 
 	applyErr     error
+	failApplyN   int // fail the n-th Apply call (1-based), once
 	releaseErr   error
 	verifyErr    error
 	ownedErr     error
@@ -87,6 +88,9 @@ func (f *fakeIsolator) Apply(_ context.Context, spec ResolvedSpec) (Digest, erro
 	f.applies++
 	if f.applyErr != nil {
 		return "", f.applyErr
+	}
+	if f.failApplyN != 0 && f.applies == f.failApplyN {
+		return "", errors.New("injected apply failure")
 	}
 	f.installed, f.spec, f.digest = true, spec, spec.Digest()
 	return f.digest, nil

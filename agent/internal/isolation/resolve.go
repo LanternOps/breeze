@@ -8,10 +8,20 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"time"
 )
 
 // MaxAddrsPerHost bounds the last-known-good address set kept per host.
 const MaxAddrsPerHost = 16
+
+// Resolution runs under the machine-wide isolation lock (preflight, refresh,
+// re-verify), and a release must never wait behind a hung resolver. Each
+// lookup is bounded, and so is the whole call; a host that times out falls
+// back to its last-known-good set.
+var (
+	resolveHostTimeout  = 3 * time.Second
+	resolveTotalTimeout = 10 * time.Second
+)
 
 // LookupFunc resolves one host name. Production wiring (W1e) passes the
 // agent's own resolver path, the one its control-plane dials use.
@@ -54,6 +64,8 @@ func (r *Resolver) Seed(host string, addrs []netip.Addr) {
 func (r *Resolver) Resolve(ctx context.Context, hosts []string) (map[string][]netip.Addr, error) {
 	out := make(map[string][]netip.Addr, len(hosts))
 	var errs []error
+	ctx, cancel := context.WithTimeout(ctx, resolveTotalTimeout)
+	defer cancel()
 	for _, raw := range hosts {
 		host := normaliseHost(raw)
 		if host == "" {
@@ -67,7 +79,15 @@ func (r *Resolver) Resolve(ctx context.Context, hosts []string) (map[string][]ne
 			out[host] = []netip.Addr{addr.Unmap()}
 			continue
 		}
-		fresh, lookupErr := r.lookup(ctx, host)
+		var fresh []netip.Addr
+		var lookupErr error
+		if ctx.Err() != nil {
+			lookupErr = ctx.Err()
+		} else {
+			hctx, hcancel := context.WithTimeout(ctx, resolveHostTimeout)
+			fresh, lookupErr = r.lookup(hctx, host)
+			hcancel()
+		}
 		fresh = usable(fresh)
 
 		r.mu.Lock()

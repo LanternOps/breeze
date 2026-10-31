@@ -1,6 +1,8 @@
 package isolation
 
 import (
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/isolation/journal"
@@ -79,11 +81,50 @@ func expired(f clockFacts, c Clock) (bool, string) {
 	return false, ""
 }
 
-// SystemClock is the real clock.
-func SystemClock() Clock { return systemClock{} }
+// SystemClock is the real clock: the OS boot-relative monotonic clock and
+// boot identity, latched to the process clock if the OS clock ever fails.
+func SystemClock() Clock { return systemClockOnce() }
 
-type systemClock struct{}
+var systemClockOnce = sync.OnceValue(func() Clock { return newLatchingClock(systemMono, systemBootID) })
 
-func (systemClock) Now() time.Time      { return time.Now() }
-func (systemClock) Mono() time.Duration { return systemMono() }
-func (systemClock) BootID() string      { return systemBootID() }
+// latchingClock never mixes time bases. While the OS monotonic clock works,
+// Mono and BootID come from the OS. On its first failure the clock switches
+// both, for good, to the process clock and a per-process boot ID, so a
+// process-relative Mono is never compared with a boot-relative anchor (the
+// changed boot ID makes the monotonic clause inapplicable; the wall and
+// high-water clauses still apply).
+type latchingClock struct {
+	mono     func() (time.Duration, bool)
+	boot     func() string
+	degraded atomic.Bool
+	warn     sync.Once
+}
+
+func newLatchingClock(mono func() (time.Duration, bool), boot func() string) *latchingClock {
+	return &latchingClock{mono: mono, boot: boot}
+}
+
+func (c *latchingClock) Now() time.Time { return time.Now() }
+
+func (c *latchingClock) Mono() time.Duration {
+	if !c.degraded.Load() {
+		if d, ok := c.mono(); ok {
+			return d
+		}
+		c.degraded.Store(true)
+		c.warn.Do(func() {
+			log.Warn("system monotonic clock unavailable; isolation expiry falls back to the process clock")
+		})
+	}
+	return processMono()
+}
+
+func (c *latchingClock) BootID() string {
+	// Probe the monotonic clock first, so a caller that reads BootID before
+	// Mono never pairs the OS boot ID with a process-relative reading.
+	_ = c.Mono()
+	if c.degraded.Load() {
+		return processBootID()
+	}
+	return c.boot()
+}

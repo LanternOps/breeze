@@ -15,12 +15,12 @@ var procGetTickCount64 = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetTi
 
 // systemMono is GetTickCount64: milliseconds since boot, counting sleep and
 // hibernation.
-func systemMono() time.Duration {
+func systemMono() (time.Duration, bool) {
 	if err := procGetTickCount64.Find(); err != nil {
-		return processMono()
+		return 0, false
 	}
 	ms, _, _ := procGetTickCount64.Call()
-	return time.Duration(ms) * time.Millisecond
+	return time.Duration(ms) * time.Millisecond, true
 }
 
 var bootIDOnce = sync.OnceValue(func() string {
@@ -33,11 +33,12 @@ var bootIDOnce = sync.OnceValue(func() string {
 			return fmt.Sprintf("windows:%d", id)
 		}
 	}
-	if procGetTickCount64.Find() != nil {
+	mono, ok := systemMono()
+	if !ok {
 		return processBootID()
 	}
 	// Fall back to the boot time, rounded so tick-count jitter is absorbed.
-	boot := time.Now().Add(-systemMono()).Truncate(time.Minute)
+	boot := time.Now().Add(-mono).Truncate(time.Minute)
 	return fmt.Sprintf("windows-boottime:%d", boot.Unix())
 })
 

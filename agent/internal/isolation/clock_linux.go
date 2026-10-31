@@ -12,12 +12,12 @@ import (
 )
 
 // systemMono is CLOCK_BOOTTIME: monotonic and counting suspend.
-func systemMono() time.Duration {
+func systemMono() (time.Duration, bool) {
 	var ts unix.Timespec
 	if err := unix.ClockGettime(unix.CLOCK_BOOTTIME, &ts); err != nil {
-		return processMono()
+		return 0, false
 	}
-	return time.Duration(ts.Nano())
+	return time.Duration(ts.Nano()), true
 }
 
 var bootIDOnce = sync.OnceValue(func() string {

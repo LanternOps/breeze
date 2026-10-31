@@ -208,7 +208,14 @@ func NewHTTPVerifier(cfg HTTPVerifierConfig) func(ctx context.Context, isolation
 		if resp.StatusCode < 200 || resp.StatusCode > 299 {
 			return time.Time{}, fmt.Errorf("verify returned HTTP %d", resp.StatusCode)
 		}
-		serverTime, _ := http.ParseTime(resp.Header.Get("Date"))
+		serverTime, perr := http.ParseTime(resp.Header.Get("Date"))
+		if perr != nil {
+			// The server-time anchor for HighWaterWall is lost for this probe
+			// (a proxy may strip Date); the clock rule still has the local
+			// high-water mark and the monotonic clause.
+			log.Warn("isolation verify response had no usable Date header; HighWaterWall not advanced from server time")
+			return time.Time{}, nil
+		}
 		return serverTime, nil
 	}
 }

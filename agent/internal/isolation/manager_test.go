@@ -92,7 +92,7 @@ func TestManagerCapabilityZeroTouchesNothing(t *testing.T) {
 	h := newHarness(t)
 	h.iso.set(func(f *fakeIsolator) { f.cap = Capability{Version: 0, UnsupportedReason: "not here"} })
 	out := h.isolate(idA, 1)
-	if out.ErrorCode != wire.ErrCodeIsolationUnsupportedPlatform || out.Result == nil || out.Result.ErrorCode != FailUnsupportedPlatform {
+	if out.ErrorCode != wire.ErrCodeIsolationUnsupportedPlatform || out.Result == nil || out.Result.FailureCode != FailUnsupportedPlatform {
 		t.Fatalf("outcome %+v", out)
 	}
 	if calls := h.log.all(); !reflect.DeepEqual(calls, []string{"iso:Capability"}) {
@@ -184,7 +184,7 @@ func TestManagerApplyAndProbeFailuresRollBack(t *testing.T) {
 			h := newHarness(t)
 			tc.setup(h)
 			out := h.isolate(idA, 1)
-			if !out.Failed() || out.ErrorCode != failureErrorCode(tc.code) || out.Result == nil || out.Result.ErrorCode != tc.code || out.Result.State != StateFailed {
+			if !out.Failed() || out.ErrorCode != failureErrorCode(tc.code) || out.Result == nil || out.Result.FailureCode != tc.code || out.Result.State != StateFailed {
 				t.Fatalf("outcome %+v result %+v", out, out.Result)
 			}
 			if tc.code != FailApplyError || tc.name != "apply error" {
@@ -726,8 +726,13 @@ func TestManagerReportsUnsupportedReasonViaCapability(t *testing.T) {
 	if _, err := iso.Apply(context.Background(), ResolvedSpec{}); err == nil {
 		t.Fatal("unsupported isolator applied")
 	}
-	if owned, err := iso.Owned(context.Background()); owned || err != nil {
-		t.Fatalf("unsupported isolator Owned = %v, %v", owned, err)
+	// It cannot see the engine, so it must never confirm absence (a build
+	// without an isolator may inherit rules a capable build installed).
+	if owned, err := iso.Owned(context.Background()); owned || err == nil {
+		t.Fatalf("unsupported isolator Owned = %v, %v; want an error", owned, err)
+	}
+	if err := iso.Release(context.Background()); err == nil {
+		t.Fatal("unsupported isolator claimed to release rules it cannot see")
 	}
 	if ok, why := NewPlatformScheduler(t.TempDir()).Ready(); ok || why == "" {
 		t.Fatalf("platform scheduler Ready = %v %q", ok, why)

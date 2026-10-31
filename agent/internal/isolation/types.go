@@ -151,7 +151,9 @@ type CommandResultBody struct {
 	AppliedAt   *time.Time `json:"appliedAt,omitempty"`
 	VerifiedAt  *time.Time `json:"verifiedAt,omitempty"`
 	Rollback    bool       `json:"rollback"`
-	ErrorCode   string     `json:"errorCode,omitempty"`
+	// FailureCode is the bare episode failure code (spec §3.3 result
+	// `errorCode`), not the wire.CommandErrorCode on CommandOutcome.
+	FailureCode string `json:"errorCode,omitempty"`
 }
 
 // CommandOutcome is what HandleIsolate and HandleRelease return. It carries
@@ -233,6 +235,15 @@ func (r ResolvedSpec) Digest() Digest {
 
 // Isolator is one OS mechanism. Every method acts only on Breeze-owned
 // objects (own WFP provider/sublayer, own nft table, own pf anchor).
+//
+// Contract the manager relies on:
+//   - Verify of an unchanged rule set returns exactly the digest Apply
+//     returned (the commit check compares them); ResolvedSpec.Digest is one
+//     way to compute it, but a real isolator should digest what it reads back
+//     from the engine.
+//   - Owned and Release must never report success they cannot observe: an
+//     isolator that cannot see the engine returns an error, so a release is
+//     never confirmed falsely.
 type Isolator interface {
 	Capability() Capability
 	// Apply atomically replaces the Breeze-owned rule set with spec (both

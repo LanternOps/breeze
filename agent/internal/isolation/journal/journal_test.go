@@ -263,3 +263,20 @@ func itoa(n int) string {
 	b, _ := json.Marshal(n)
 	return string(b)
 }
+
+// A newer writer's additive field must not read as corruption: corruption
+// deletes every rule, so a version skew would un-isolate the device.
+func TestLoadToleratesUnknownFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	data := []byte(`{"schemaVersion":1,"phase":"committed","nextSeq":3,"futureField":{"x":1},"episode":{"isolationId":"6f1c2a9e-4b3d-4c5e-8f70-1a2b3c4d5e6f","generation":1,"expiresAt":"2026-11-01T00:00:00Z","deadManSeconds":0,"remoteRelay":false,"allow":[],"newEpisodeField":true}}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	j, err := Load(path)
+	if err != nil {
+		t.Fatalf("an additive field was treated as corruption: %v", err)
+	}
+	if j.Phase != PhaseCommitted || j.Episode == nil {
+		t.Fatalf("loaded %+v", j)
+	}
+}

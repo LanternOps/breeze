@@ -13,12 +13,12 @@ import (
 
 // systemMono is CLOCK_MONOTONIC, which on macOS is mach_continuous_time:
 // monotonic and counting sleep.
-func systemMono() time.Duration {
+func systemMono() (time.Duration, bool) {
 	var ts unix.Timespec
 	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
-		return processMono()
+		return 0, false
 	}
-	return time.Duration(ts.Nano())
+	return time.Duration(ts.Nano()), true
 }
 
 var bootIDOnce = sync.OnceValue(func() string {

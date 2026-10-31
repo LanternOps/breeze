@@ -25,8 +25,12 @@ func (unsupportedIsolator) Apply(context.Context, ResolvedSpec) (Digest, error) 
 func (unsupportedIsolator) Verify(context.Context, ResolvedSpec) (Digest, error) {
 	return "", ErrUnsupported
 }
-func (unsupportedIsolator) Release(context.Context) error        { return nil }
-func (unsupportedIsolator) Owned(context.Context) (bool, error)  { return false, nil }
+
+// Release and Owned fail rather than claim absence: a build without an
+// isolator may have inherited rules a capable build installed, and only an
+// isolator that can see the engine may confirm they are gone.
+func (unsupportedIsolator) Release(context.Context) error        { return ErrUnsupported }
+func (unsupportedIsolator) Owned(context.Context) (bool, error)  { return false, ErrUnsupported }
 func (unsupportedIsolator) Mark(context.Context) (Marker, error) { return Marker{}, ErrUnsupported }
 func (unsupportedIsolator) DropObserved(context.Context, Marker) (bool, error) {
 	return false, ErrUnsupported

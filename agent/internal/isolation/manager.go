@@ -93,9 +93,14 @@ type Manager struct {
 	probeBudget      time.Duration
 	reverifyInterval time.Duration
 
+	// expiryUnarmed is true after an ArmExpiry failure on a committed episode;
+	// the next Tick retries it. Guarded by opMu.
+	expiryUnarmed bool
+
 	// Test seams.
 	beforeEffect func(Effect) error
 	onPersist    func(*journal.Journal)
+	saveJournal  func(path string, j *journal.Journal) error
 }
 
 // NewManager builds a Manager. It reads the journal for Report and Active but
@@ -124,6 +129,7 @@ func NewManager(deps ManagerDeps) *Manager {
 		negativeTimeout:  NegativeProbeTimeout,
 		probeBudget:      ProbeBudget,
 		reverifyInterval: ReverifyInterval,
+		saveJournal:      journal.Save,
 	}
 	if j, err := journal.Load(m.path()); err == nil {
 		m.setSnapshot(j)
@@ -157,11 +163,26 @@ func (m *Manager) Active() bool {
 }
 
 // Report is the heartbeat's containment.networkIsolation report. It never
-// carries the break-glass secret.
+// carries the break-glass secret. It is always one of the two shapes the
+// server accepts (networkIsolationReportSchema): an episode report, or the
+// "nothing Breeze-owned is installed" form (no isolationId, phase none). It
+// returns nil when neither is true — rules are being removed that belong to
+// no journalled episode (an orphan cleanup) — and the caller omits the field
+// rather than claim absence before it is confirmed.
 func (m *Manager) Report() *Report {
 	s := m.snapshot()
 	if s == nil {
 		return &Report{Phase: journal.PhaseNone}
+	}
+	if ep := s.Episode; ep == nil || ep.IsolationID == "" || ep.Generation < 1 || !reportableState(ep.State) {
+		if activePhase(s.Phase) {
+			return nil
+		}
+		r := &Report{JournalSeq: s.LastSeq(), Phase: journal.PhaseNone}
+		if len(s.Events) > 0 {
+			r.Events = append([]ReportEvent(nil), s.Events...)
+		}
+		return r
 	}
 	r := &Report{JournalSeq: s.LastSeq(), Phase: s.Phase}
 	if len(s.Events) > 0 {
@@ -269,7 +290,9 @@ func (o *op) load() error {
 		o.state = stateFromJournal(o.j)
 	case errors.Is(err, journal.ErrCorrupt) || errors.Is(err, journal.ErrUnknownSchema):
 		log.Warn("isolation journal unreadable; deleting every Breeze-owned rule", "error", err.Error())
-		_ = os.Rename(o.m.path(), o.m.path()+".corrupt")
+		if rerr := os.Rename(o.m.path(), o.m.path()+".corrupt"); rerr != nil {
+			log.Warn("could not set the unreadable isolation journal aside; it will be overwritten", "error", rerr.Error())
+		}
 		o.j, o.missing = journal.New(), false
 		o.j.Append(o.now(), "journal_reset", "", 0, truncate(err.Error(), 300))
 		o.state = stateFromJournal(o.j)
@@ -293,7 +316,11 @@ func (o *op) load() error {
 // missing or terminal but the isolator still owns rules.
 func (o *op) cleanupOrphans(checkOwned bool) {
 	if checkOwned && !o.state.RulesMayExist && !activePhase(o.state.Phase) && o.cap.Version >= 1 {
-		if owned, err := o.m.deps.Isolator.Owned(o.ctx); err == nil && owned {
+		owned, err := o.m.deps.Isolator.Owned(o.ctx)
+		if err != nil {
+			log.Warn("could not check for Breeze-owned isolation rules", "error", err.Error())
+		}
+		if err == nil && owned {
 			log.Warn("Breeze-owned isolation rules found with no active episode; deleting them")
 			o.j.Append(o.now(), "orphan_rules", "", 0, "")
 			o.state.RulesMayExist = true
@@ -342,10 +369,14 @@ func (o *op) run(ev Event) {
 // committed episode is left alone (expiry and recovery still bound it).
 func (o *op) journalWriteFailed(err error) {
 	log.Error("isolation journal write failed", "error", err.Error())
-	o.report = &Effect{Kind: EffReport, Refusal: wire.ErrCodeIsolationMechanismUnavailable, Detail: "journal write failed: " + err.Error()}
+	detail := "journal write failed: " + err.Error()
 	if o.state.Phase == journal.PhaseProvisional {
-		_ = o.m.deps.Isolator.Release(o.ctx)
+		if rerr := o.m.deps.Isolator.Release(o.ctx); rerr != nil {
+			log.Error("removing uncommitted isolation rules after a journal write failure also failed; the one-shot rollback is the backstop", "error", rerr.Error())
+			detail += "; removing the uncommitted rules also failed: " + rerr.Error()
+		}
 	}
+	o.report = &Effect{Kind: EffReport, Refusal: wire.ErrCodeIsolationMechanismUnavailable, Detail: detail}
 }
 
 func (o *op) attemptFailed(attemptID, code, detail string) Event {
@@ -360,6 +391,29 @@ func (o *op) noteError(msg string) {
 	}
 }
 
+// armExpiry arms the expiry task for the journalled episode and ensures the
+// poll. A failure is noted and remembered so the next Tick retries it.
+func (o *op) armExpiry() error {
+	sched := o.m.deps.Scheduler
+	err := sched.ArmExpiry(o.state.IsolationID, o.state.Generation, o.state.ExpiresAt)
+	if err == nil {
+		err = sched.EnsurePoll()
+	}
+	o.m.expiryUnarmed = err != nil
+	if err != nil {
+		o.noteError("arm the expiry task: " + err.Error())
+	}
+	return err
+}
+
+func reportableState(s string) bool {
+	switch s {
+	case StateApplying, StateApplied, StateVerified, StateReleased, StateExpired, StateFailed, StateReleasedLocally, StateSelfReleased:
+		return true
+	}
+	return false
+}
+
 func (o *op) exec(e Effect) Event {
 	iso, sched := o.m.deps.Isolator, o.m.deps.Scheduler
 	switch e.Kind {
@@ -368,15 +422,8 @@ func (o *op) exec(e Effect) Event {
 			return o.attemptFailed(e.AttemptID, FailMechanismUnavailable, "arm the provisional rollback: "+err.Error())
 		}
 	case EffArmExpiry:
-		err := sched.ArmExpiry(o.state.IsolationID, o.state.Generation, o.state.ExpiresAt)
-		if err == nil {
-			err = sched.EnsurePoll()
-		}
-		if err != nil {
-			if o.state.Phase == journal.PhaseProvisional {
-				return o.attemptFailed(o.state.AttemptID, FailMechanismUnavailable, "arm the expiry task: "+err.Error())
-			}
-			o.noteError("arm the expiry task: " + err.Error())
+		if err := o.armExpiry(); err != nil && o.state.Phase == journal.PhaseProvisional {
+			return o.attemptFailed(o.state.AttemptID, FailMechanismUnavailable, "arm the expiry task: "+err.Error())
 		}
 	case EffApplyRules:
 		a := o.attempt
@@ -413,7 +460,10 @@ func (o *op) exec(e Effect) Event {
 				_, err = iso.Apply(o.ctx, prior)
 			}
 			if err != nil {
+				// The engine may hold the candidate rules or a mix: re-verify on
+				// the next tick rather than wait out the interval.
 				o.noteError("restore the last verified rules: " + err.Error())
+				o.m.forceReverify.Store(true)
 			}
 			return Event{}
 		}
@@ -542,8 +592,8 @@ func stateFromJournal(j *journal.Journal) LocalState {
 		switch {
 		case ep == nil:
 			s.Release = ReleaseIntent{Kind: ReleaseSystem}
-		case ep.ReleaseKind == "" && ep.FailureCode != "":
-			s.Release = ReleaseIntent{Rollback: true, FailureCode: ep.FailureCode}
+		case ep.RollbackCode != "":
+			s.Release = ReleaseIntent{Rollback: true, FailureCode: ep.RollbackCode}
 			if s.AttemptID != "" {
 				s.AttemptKind = AttemptApply
 			}
@@ -573,12 +623,12 @@ func toJournal(j *journal.Journal, s LocalState, newEp *journal.EpisodeRecord) {
 		}
 		ep := j.Episode
 		ep.Generation, ep.ExpiresAt = s.Generation, s.ExpiresAt
-		ep.State, ep.FailureCode, ep.ReleaseKind = s.State, s.FailureCode, s.ReleaseKind
+		ep.State, ep.FailureCode, ep.ReleaseKind, ep.RollbackCode = s.State, s.FailureCode, s.ReleaseKind, ""
 		if s.Phase == journal.PhaseReleasing {
 			if s.Release.Rollback {
-				ep.FailureCode, ep.ReleaseKind = s.Release.FailureCode, ""
+				ep.RollbackCode, ep.ReleaseKind = s.Release.FailureCode, ""
 			} else {
-				ep.FailureCode, ep.ReleaseKind = "", s.Release.Kind
+				ep.ReleaseKind = s.Release.Kind
 			}
 		}
 	}
@@ -709,7 +759,7 @@ func (o *op) persist(next LocalState, ev Event, effects []Effect) error {
 			Kind: next.ReleaseKind, FailureCode: next.FailureCode, At: now, JournalSeq: terminalSeq,
 		}
 	}
-	if err := journal.Save(o.m.path(), j); err != nil {
+	if err := o.m.saveJournal(o.m.path(), j); err != nil {
 		return err
 	}
 	o.j, o.state, o.missing, o.dirty = j, next, false, false
@@ -724,7 +774,7 @@ func (o *op) persist(next LocalState, ev Event, effects []Effect) error {
 }
 
 func (o *op) save() error {
-	if err := journal.Save(o.m.path(), o.j); err != nil {
+	if err := o.m.saveJournal(o.m.path(), o.j); err != nil {
 		return err
 	}
 	o.missing, o.dirty = false, false
@@ -1032,7 +1082,7 @@ func (o *op) body(reqID string, reqGen int) *CommandResultBody {
 				b.VerifiedAt = &t
 			}
 			if ep.State == StateFailed {
-				b.ErrorCode = ep.FailureCode
+				b.FailureCode = ep.FailureCode
 				switch ep.FailureCode {
 				case FailApplyError, FailControlPlaneUnreachable, FailEnforcementNotObserved:
 					b.Rollback = true
@@ -1065,7 +1115,7 @@ func (o *op) outcome(reqID string, reqGen int) CommandOutcome {
 	case r == nil:
 		return fail(wire.ErrCodeIsolationBusy, "superseded by a concurrent release or rollback")
 	case r.State == StateFailed:
-		b.State, b.ErrorCode = StateFailed, r.FailureCode
+		b.State, b.FailureCode = StateFailed, r.FailureCode
 		msg := r.FailureCode
 		if o.failDetail != "" {
 			msg += ": " + o.failDetail
@@ -1085,7 +1135,7 @@ func unsupportedOutcome(id string, gen int, c Capability) CommandOutcome {
 	}
 	return CommandOutcome{
 		Status: "failed", Error: msg, ErrorCode: wire.ErrCodeIsolationUnsupportedPlatform,
-		Result: &CommandResultBody{IsolationID: id, Generation: gen, State: StateFailed, ErrorCode: FailUnsupportedPlatform},
+		Result: &CommandResultBody{IsolationID: id, Generation: gen, State: StateFailed, FailureCode: FailUnsupportedPlatform},
 	}
 }
 
@@ -1407,6 +1457,9 @@ func (o *op) tick() {
 	if o.crashed || o.lockLost {
 		return
 	}
+	if o.state.Phase == journal.PhaseCommitted && o.m.expiryUnarmed {
+		_ = o.armExpiry()
+	}
 	force := o.m.forceReverify.Swap(false)
 	if o.state.Phase == journal.PhaseCommitted && (force || !o.now().Before(o.m.lastReverify.Add(o.m.reverifyInterval))) {
 		o.reverify()
@@ -1452,14 +1505,7 @@ func (m *Manager) Startup(ctx context.Context) {
 		return
 	}
 	if o.state.Phase == journal.PhaseCommitted {
-		sched := o.m.deps.Scheduler
-		err := sched.EnsurePoll()
-		if err == nil {
-			err = sched.ArmExpiry(o.state.IsolationID, o.state.Generation, o.state.ExpiresAt)
-		}
-		if err != nil {
-			o.noteError("re-arm recovery at startup: " + err.Error())
-		}
+		_ = o.armExpiry() // a failure is noted and retried by the next tick
 	}
 	o.m.forceReverify.Store(true)
 	o.tick()

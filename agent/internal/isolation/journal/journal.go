@@ -15,7 +15,6 @@
 package journal
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -51,7 +50,7 @@ var (
 	// ErrNotFound: there is no journal file.
 	ErrNotFound = errors.New("isolation journal not found")
 	// ErrCorrupt: the file exists but is not a readable journal (truncated,
-	// not JSON, or carrying values this build does not recognise).
+	// not JSON, or carrying a phase this build does not recognise).
 	ErrCorrupt = errors.New("isolation journal is corrupt")
 	// ErrUnknownSchema: the file is JSON but its schemaVersion is not
 	// SchemaVersion.
@@ -116,8 +115,12 @@ type EpisodeRecord struct {
 	LastError      string    `json:"lastError,omitempty"`
 	// State is the episode state this device reports (AGENT_REPORTABLE_STATES).
 	State string `json:"state,omitempty"`
-	// FailureCode is set with State "failed".
+	// FailureCode is set with State "failed" (the outcome only).
 	FailureCode string `json:"failureCode,omitempty"`
+	// RollbackCode is set while phase is releasing because an uncommitted
+	// apply is being undone: the failure the rollback will report. Empty for
+	// a release. The recovery binary reads it to tell the two apart.
+	RollbackCode string `json:"rollbackCode,omitempty"`
 	// ReleaseKind is set once a release has been decided.
 	ReleaseKind string `json:"releaseKind,omitempty"`
 }
@@ -156,7 +159,8 @@ type Journal struct {
 	AttemptID           string    `json:"attemptId,omitempty"`
 	ProvisionalDeadline time.Time `json:"provisionalDeadline,omitzero"`
 	// AttemptBootID and AttemptMono let an overdue provisional apply be
-	// detected without trusting the wall clock.
+	// detected without trusting the wall clock. Every *Mono field is the
+	// Clock.Mono reading in nanoseconds, comparable only within one boot.
 	AttemptBootID string `json:"attemptBootId,omitempty"`
 	AttemptMono   int64  `json:"attemptMono,omitempty"`
 	// AppliedAtWall / AppliedAtMono / BootID anchor the monotonic expiry
@@ -254,10 +258,12 @@ func Load(path string) (*Journal, error) {
 	if *probe.SchemaVersion != SchemaVersion {
 		return nil, fmt.Errorf("%w: %d", ErrUnknownSchema, *probe.SchemaVersion)
 	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
+	// Unknown fields are tolerated: an additive field from a newer agent or
+	// recovery binary must not read as corruption, because corruption deletes
+	// every rule. A change an older binary must not silently drop (it would
+	// rewrite the file without the field) needs a schemaVersion bump instead.
 	var j Journal
-	if err := dec.Decode(&j); err != nil {
+	if err := json.Unmarshal(data, &j); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrCorrupt, err)
 	}
 	if !j.Phase.Valid() {
