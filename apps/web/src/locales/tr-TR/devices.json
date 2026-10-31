@@ -354,7 +354,7 @@
     "currentSite": "Mevcut site",
     "newSite": "Yeni site",
     "loadingSites": "Siteler yükleniyor...",
-    "thisOrganizationOnlyHasOneSite": "Bu kuruluşun yalnızca bir sitesi var. Taşımayı etkinleştirmek için Ayarlar → Kuruluşlar'dan daha fazla site ekleyin.",
+    "thisOrganizationOnlyHasOneSite": "Bu kuruluşun yalnızca bir sitesi var. Taşımayı etkinleştirmek için kuruluşun Siteler sekmesinden (Kuruluşlar → kuruluşu açın → Siteler) daha fazla site ekleyin.",
     "current": "(güncel)",
     "cancel": "İptal",
     "moving": "Taşınıyor...",
@@ -376,23 +376,6 @@
     "moveDevices_other": "{{count}} cihazı taşı",
     "bulkPolicyNote": "Taşıma, bu cihazlara uygulanan site yapılandırma ilkelerini, bakım pencerelerini, uyarı yönlendirmesini ve raporları değiştirir. Breeze onları otomatik olarak geri taşımaz.",
     "failedToMoveDevices": "Cihazlar taşınamadı"
-  },
-  "createGroupModal": {
-    "failedToCreateGroup": "Grup oluşturulamadı",
-    "newDeviceGroup": "Yeni Cihaz Grubu",
-    "name": "İsim",
-    "eGProductionServers": "ör. Üretim Sunucuları",
-    "type": "Tür",
-    "static": "Statik",
-    "dynamic": "Dinamik",
-    "manuallyAddAndRemoveDevicesAfter": "Cihazları oluşturduktan sonra manuel olarak ekleyin ve kaldırın.",
-    "devicesAreAutoAssignedBasedOn": "Cihazlar, filtre kurallarına göre otomatik olarak atanır.",
-    "filterRules": "Filtre Kuralları",
-    "cancel": "İptal",
-    "creating": "Oluşturuluyor...",
-    "createGroup": "Grup Oluştur",
-    "created": "Cihaz grubu oluşturuldu",
-    "missingGroupId": "Grup oluşturuldu ancak sunucu yanıtında grup kimliği eksik. Lütfen sayfayı yenileyin."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} çıkarılan gizlendi",
@@ -2408,7 +2391,9 @@
       "completed": "Tamamlandı",
       "failed": "Başarısız",
       "queued": "Sıraya alındı",
-      "running": "Çalışıyor"
+      "running": "Çalışıyor",
+      "cancelled": "İptal edildi",
+      "expired": "Süresi doldu"
     },
     "scanType": "{{type}} tarama",
     "scanTypes": {
@@ -2430,7 +2415,13 @@
       "quarantined": "Karantinaya alındı",
       "removed": "Kaldırıldı"
     },
-    "threatsFound": "Bulunan tehditler: {{count}}"
+    "threatsFound": "Bulunan tehditler: {{count}}",
+    "waitingForSlot": "Boş bir tarama yuvası bekleniyor. Bitiş: {{date}}.",
+    "cancelScan": "Taramayı iptal et",
+    "scanCancelled": "Tarama iptal edildi",
+    "cancelScanFailed": "Tarama iptal edilemedi",
+    "scanAlreadyRunning": "Tarama cihazda zaten çalışıyor ve iptal edilemez.",
+    "scanAlreadyQueued": "Bu cihaz için zaten kuyrukta bekleyen bir tarama var."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Bir etiket ekleyin...",
@@ -4338,6 +4329,7 @@
       "pending": "Henüz denetlenmedi",
       "private": "Özel kayıt defteri — kimlik bilgileri gerekli",
       "unsupported_registry": "Kayıt defteri desteklenmiyor",
+      "provenance_unknown": "Kaynak bilinmiyor — imaj adı hiçbir kayıt defterine gönderilmez",
       "error": "Kayıt defteri denetimi başarısız — yeniden denenecek",
       "behind": "Bu etiket için daha yeni bir imaj yayımlandı",
       "current": "Kayıt defteriyle eşleşiyor",

@@ -135,6 +135,148 @@ export interface PSACompanyList {
   malformed: number;
 }
 
+/**
+ * How an adapter call failed, at the adapter boundary (#10499 W2-A). The alert
+ * ticketing worker (W2-B) decides retry, pause and give-up from `errorClass`
+ * alone:
+ *
+ * - `auth`            401/403 — pause ticketing for the connection.
+ * - `rate_limited`    429 — back off, honouring `retryAfterMs`.
+ * - `transient`       retry with backoff: a 503, any 5xx on an idempotent call,
+ *                     a network failure that cannot have reached the PSA, or a
+ *                     network failure / unreadable body on an idempotent call.
+ * - `rejected`        terminal: any other 4xx, a URL the SSRF guard refused, or a
+ *                     response that is not the expected shape.
+ * - `unknown_outcome` a non-idempotent call (create, note) whose request may have
+ *                     been processed: a timeout or reset after sending, a
+ *                     500/502/504, or a success body without a usable id. Never
+ *                     re-POST; look up by marker instead.
+ *
+ * Retry-safety by call: list*, findTicketsByMarker and closeTicket (set a status
+ * id) are idempotent; createAlertTicket and addNote are not.
+ *
+ * `message` never contains the PSA response body (it reaches logs and Sentry).
+ * `bodySnippet` is for display to a partner admin only: the ADAPTER must scrub
+ * it of credential material before constructing the error; the constructor
+ * only caps its length.
+ */
+export const PSA_ADAPTER_ERROR_CLASSES = ['auth', 'rate_limited', 'transient', 'rejected', 'unknown_outcome'] as const;
+export type PsaAdapterErrorClass = (typeof PSA_ADAPTER_ERROR_CLASSES)[number];
+
+export const PSA_ADAPTER_ERROR_BODY_MAX = 500;
+
+export class PsaAdapterError extends Error {
+  readonly provider: string;
+  readonly errorClass: PsaAdapterErrorClass;
+  readonly httpStatus: number | null;
+  readonly retryAfterMs: number | null;
+  readonly bodySnippet: string;
+
+  constructor(input: {
+    provider: string;
+    errorClass: PsaAdapterErrorClass;
+    httpStatus: number | null;
+    retryAfterMs?: number | null;
+    bodySnippet?: string;
+    message: string;
+  }) {
+    super(input.message);
+    this.name = 'PsaAdapterError';
+    this.provider = input.provider;
+    this.errorClass = input.errorClass;
+    this.httpStatus = input.httpStatus;
+    // Meaningful only for rate_limited, and only as a finite delay: a NaN or
+    // infinite value would poison W2-B's backoff arithmetic.
+    const retryAfter = input.retryAfterMs;
+    this.retryAfterMs = input.errorClass === 'rate_limited' && typeof retryAfter === 'number' && Number.isFinite(retryAfter)
+      ? Math.max(0, retryAfter)
+      : null;
+    this.bodySnippet = (input.bodySnippet ?? '').slice(0, PSA_ADAPTER_ERROR_BODY_MAX);
+  }
+}
+
+/** A PSA record id (board, status, priority, type). ConnectWise ids are integers. */
+export type PsaRecordId = number;
+
+export interface PSAPickerOption {
+  id: PsaRecordId;
+  name: string;
+}
+
+export interface PSAStatusOption extends PSAPickerOption {
+  /** True when the PSA marks this status as closing the ticket; null when it does not say. */
+  closed: boolean | null;
+}
+
+export interface PSAPickerList<T extends PSAPickerOption = PSAPickerOption> {
+  options: T[];
+  /** True when the PSA had more records than one listing returns. */
+  truncated: boolean;
+}
+
+export interface PSAAlertTicketCreate {
+  /** Breeze alert id; the adapter derives the lookup marker from it. */
+  alertId: string;
+  /** Already built and truncated with `alertTicketLimits` (`psaAlertTicketing/summary.ts`). */
+  summary: string;
+  description: string;
+  /** The org's external company id (`organization_external_links.external_id`). */
+  companyId: string;
+  boardId: PsaRecordId;
+  statusId: PsaRecordId;
+  priorityId?: PsaRecordId;
+  typeId?: PsaRecordId;
+}
+
+export interface PSAAlertTicketRef {
+  ticketId: string;
+  ticketNumber: string | null;
+  /** The PSA's own UI link for the ticket, when the adapter can build one. */
+  externalUrl: string | null;
+  createdAt: string | null;
+}
+
+export interface PSAAlertTicketLimits {
+  /** Maximum ticket summary length, in Unicode code points. */
+  summaryMaxCodePoints: number;
+  /**
+   * Text the summary must end with so `findTicketsByMarker` can find the ticket,
+   * or null when the adapter marks tickets some other way (a reference field).
+   */
+  summaryMarkerSuffix(alertId: string): string | null;
+}
+
+/**
+ * Optional capability: the provider can create, close and annotate tickets for
+ * Breeze alerts with ids (never names), and find a ticket it may have created
+ * when a create's outcome is unknown. Only ConnectWise implements it in W2;
+ * the Alert tickets card is shown only for a capable provider.
+ */
+export interface PSAAlertTicketing {
+  readonly alertTicketLimits: PSAAlertTicketLimits;
+  createAlertTicket(input: PSAAlertTicketCreate): Promise<PSAAlertTicketRef>;
+  closeTicket(ticketId: string, statusId: PsaRecordId): Promise<void>;
+  /** Posts an internal note (never a customer-visible update). */
+  addNote(ticketId: string, text: string): Promise<void>;
+  /** Tickets carrying this alert's marker, oldest first. */
+  findTicketsByMarker(alertId: string): Promise<PSAAlertTicketRef[]>;
+  listBoards(): Promise<PSAPickerList>;
+  listStatuses(boardId: PsaRecordId): Promise<PSAPickerList<PSAStatusOption>>;
+  listPriorities(): Promise<PSAPickerList>;
+}
+
+export function supportsAlertTicketing(provider: PSAProvider): provider is PSAProvider & PSAAlertTicketing {
+  const candidate = provider as Partial<PSAAlertTicketing>;
+  return typeof candidate.createAlertTicket === 'function'
+    && typeof candidate.closeTicket === 'function'
+    && typeof candidate.addNote === 'function'
+    && typeof candidate.findTicketsByMarker === 'function'
+    && typeof candidate.listBoards === 'function'
+    && typeof candidate.listStatuses === 'function'
+    && typeof candidate.listPriorities === 'function'
+    && typeof candidate.alertTicketLimits === 'object' && candidate.alertTicketLimits !== null;
+}
+
 export interface PSAProvider {
   testConnection(): Promise<PSAConnectionTest>;
   /**

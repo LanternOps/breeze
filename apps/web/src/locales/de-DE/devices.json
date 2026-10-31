@@ -354,7 +354,7 @@
     "currentSite": "Aktueller Standort",
     "newSite": "Neuer Standort",
     "loadingSites": "Standorte werden geladen...",
-    "thisOrganizationOnlyHasOneSite": "Diese Organisation hat nur einen Standort. Unter Einstellungen → Organisationen weitere Standorte hinzufügen, um Verschiebungen zu ermöglichen.",
+    "thisOrganizationOnlyHasOneSite": "Diese Organisation hat nur einen Standort. Auf der Registerkarte „Standorte“ der Organisation (Organisationen → Organisation öffnen → Standorte) weitere Standorte hinzufügen, um Verschiebungen zu ermöglichen.",
     "current": "(aktuell)",
     "cancel": "Abbrechen",
     "moving": "Wird verschoben...",
@@ -376,23 +376,6 @@
     "moveDevices_other": "{{count}} Geräte verschieben",
     "bulkPolicyNote": "Durch das Verschieben ändern sich die Konfigurationsrichtlinien, Wartungsfenster, Alarmweiterleitung und Berichte des Standorts, die für diese Geräte gelten. Breeze verschiebt sie nicht automatisch zurück.",
     "failedToMoveDevices": "Geräte konnten nicht verschoben werden"
-  },
-  "createGroupModal": {
-    "failedToCreateGroup": "Gruppe konnte nicht erstellt werden",
-    "newDeviceGroup": "Neue Gerätegruppe",
-    "name": "Name",
-    "eGProductionServers": "z. B. Produktionsserver",
-    "type": "Typ",
-    "static": "Statisch",
-    "dynamic": "Dynamisch",
-    "manuallyAddAndRemoveDevicesAfter": "Geräte nach der Erstellung manuell hinzufügen und entfernen.",
-    "devicesAreAutoAssignedBasedOn": "Geräte werden anhand von Filterregeln automatisch zugewiesen.",
-    "filterRules": "Filterregeln",
-    "cancel": "Abbrechen",
-    "creating": "Wird erstellt...",
-    "createGroup": "Gruppe erstellen",
-    "created": "Gerätegruppe erstellt",
-    "missingGroupId": "Die Gruppe wurde erstellt, aber die Serverantwort enthielt keine Gruppen-ID. Bitte laden Sie die Seite neu."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} Entfernte ausgeblendet",
@@ -2408,7 +2391,9 @@
       "completed": "Abgeschlossen",
       "failed": "Fehlgeschlagen",
       "queued": "In der Warteschlange",
-      "running": "Wird ausgeführt"
+      "running": "Wird ausgeführt",
+      "cancelled": "Abgebrochen",
+      "expired": "Abgelaufen"
     },
     "scanType": "{{type}} scannen",
     "scanTypes": {
@@ -2430,7 +2415,13 @@
       "quarantined": "Unter Quarantäne gestellt",
       "removed": "Entfernt"
     },
-    "threatsFound": "Gefundene Bedrohungen: {{count}}"
+    "threatsFound": "Gefundene Bedrohungen: {{count}}",
+    "waitingForSlot": "Wartet auf einen freien Scan-Platz. Läuft ab: {{date}}.",
+    "cancelScan": "Scan abbrechen",
+    "scanCancelled": "Scan abgebrochen",
+    "cancelScanFailed": "Der Scan konnte nicht abgebrochen werden",
+    "scanAlreadyRunning": "Der Scan läuft bereits auf dem Gerät und kann nicht abgebrochen werden.",
+    "scanAlreadyQueued": "Für dieses Gerät ist bereits ein Scan in der Warteschlange."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Tag hinzufügen...",
@@ -4338,6 +4329,7 @@
       "pending": "Noch nicht geprüft",
       "private": "Private Registry – Anmeldedaten erforderlich",
       "unsupported_registry": "Registry wird nicht unterstützt",
+      "provenance_unknown": "Herkunft unbekannt — der Image-Name wird an keine Registry gesendet",
       "error": "Registry-Prüfung fehlgeschlagen – wird wiederholt",
       "behind": "Für diesen Tag ist ein neueres Image veröffentlicht",
       "current": "Entspricht der Registry",

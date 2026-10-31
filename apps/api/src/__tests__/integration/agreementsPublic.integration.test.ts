@@ -143,7 +143,12 @@ describe('public agreement signing (HTTP, real Postgres + Redis)', () => {
 
     // Replay — the Redis marker AND the durable column both refuse it.
     expect((await post(token, 'accept', SIGN)).status).toBe(401);
-    expect((await get(token)).status).toBe(401);
+    // Reopening the link renders the signed state read-only (#10199), never re-stamped.
+    const reopened = await get(token);
+    expect(reopened.status).toBe(200);
+    const reopenedBody = await reopened.json() as { data: { request: { status: string; signedAt: string | null } } };
+    expect(reopenedBody.data.request).toMatchObject({ status: 'signed', signedAt: expect.any(String) });
+    expect(JSON.stringify(reopenedBody)).not.toContain('customer-browser');
     expect(await documentsFor(requestId)).toHaveLength(1);
   });
 

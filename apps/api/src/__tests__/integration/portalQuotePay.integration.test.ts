@@ -175,6 +175,8 @@ describe('POST /portal/quotes/:id/pay — no DB context across Stripe (#1448)', 
     });
     const actor: QuoteActor = { userId: null, partnerId: partner.id, accessibleOrgIds: [org.id] };
     const created = await withSystemDbAccessContext(() => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    // One item: an empty quote can't be sent (#9963).
+    await withSystemDbAccessContext(() => addManualLine(created.id, { sourceType: 'manual', description: 'Setup', quantity: 1, unitPrice: 250, taxable: false, customerVisible: true, recurrence: 'one_time' } as any, actor));
     await withSystemDbAccessContext(() => sendQuote(created.id, actor));
 
     const res = await app(org.id).request(`/api/v1/portal/quotes/${created.id}/pay`, { method: 'POST' });

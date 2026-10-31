@@ -197,12 +197,17 @@ const AREA_DIRS = {
 const OWNED_DIRS = [...Object.values(AREA_DIRS).flat(), 'apps/mobile'];
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'target', 'coverage', 'gen', 'locales', 'build']);
 const SOURCE_EXT = /\.(ts|tsx|mts|cts|js|mjs|cjs|astro|json|toml|rs|sh|ya?ml)$/u;
+// Generated data that embeds documentation prose verbatim. A quoted repo path
+// in it (e.g. the docs mentioning `'apps/mobile'`) is text served to the AI
+// search tool, not a path the code reads.
+const SKIP_FILES = new Set(['apps/api/src/data/docsIndex.json']);
 function* walk(dir) {
   let entries;
   try { entries = readdirSync(join(REPO_ROOT, dir), { withFileTypes: true }); } catch { return; }
   for (const e of entries) {
     if (SKIP_DIRS.has(e.name) || e.name.startsWith('.')) continue;
     const p = `${dir}/${e.name}`;
+    if (SKIP_FILES.has(p)) continue;
     if (e.isDirectory()) yield* walk(p);
     else if (SOURCE_EXT.test(e.name)) yield p;
   }

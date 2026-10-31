@@ -138,12 +138,14 @@ export function buildPortalApiUrl(path: string): string {
 export function buildServerForwardHeaders(request: Request): Headers {
   const headers = new Headers();
   const cookie = request.headers.get('cookie');
-  const host = request.headers.get('host');
   const forwardedHost = request.headers.get('x-forwarded-host');
   const forwardedProto = request.headers.get('x-forwarded-proto');
 
   if (cookie) headers.set('cookie', cookie);
-  if (host) headers.set('host', host);
+  // No Host (#9700): undici drops a caller-set Host, so the API always sees the
+  // INTERNAL_API_URL host, which its FORCE_HTTPS internal-service exemption
+  // keys on. The forwarded headers below are ignored by the API unless the
+  // caller is a trusted proxy (it is not).
   if (forwardedHost) headers.set('x-forwarded-host', forwardedHost);
   if (forwardedProto) headers.set('x-forwarded-proto', forwardedProto);
 
@@ -429,7 +431,9 @@ export interface TicketDetails extends TicketSummary {
  */
 export interface PortalMergedTicket {
   merged: true;
-  mergedInto: { id: string; internalNumber: string | null } | null;
+  // ticketNumber is always present from a current API; optional so a payload
+  // from an older API (which sent internalNumber instead) still type-checks.
+  mergedInto: { id: string; ticketNumber?: string } | null;
   mergedAt: string | null;
   survivorDeleted: boolean;
 }
@@ -830,7 +834,15 @@ export interface PortalAgreementSummary {
 export type PortalAgreementDetail = PublicAgreementDetail & {
   canSign: boolean;
   signedAgreementId: string | null;
+  /** The org's zone (org → partner → UTC): format the request's instants in it (#10291). */
+  timezone: string;
 };
+
+/** GET /portal/agreements and /portal/signed-agreements: rows plus the org zone their instants format in (#10291). */
+export interface PortalAgreementListResponse<T> {
+  data: T[];
+  timezone: string;
+}
 
 export interface PortalSignedAgreement {
   id: string;
@@ -1573,8 +1585,8 @@ export const portalApi = {
 
   getAgreements: async (
     config: ApiRequestConfig = {}
-  ): Promise<ApiResponse<{ data: PortalAgreementSummary[] }>> => {
-    return apiGet<{ data: PortalAgreementSummary[] }>('/portal/agreements', config);
+  ): Promise<ApiResponse<PortalAgreementListResponse<PortalAgreementSummary>>> => {
+    return apiGet<PortalAgreementListResponse<PortalAgreementSummary>>('/portal/agreements', config);
   },
 
   getAgreement: async (
@@ -1610,8 +1622,8 @@ export const portalApi = {
 
   getSignedAgreements: async (
     config: ApiRequestConfig = {}
-  ): Promise<ApiResponse<{ data: PortalSignedAgreement[] }>> => {
-    return apiGet<{ data: PortalSignedAgreement[] }>('/portal/signed-agreements', config);
+  ): Promise<ApiResponse<PortalAgreementListResponse<PortalSignedAgreement>>> => {
+    return apiGet<PortalAgreementListResponse<PortalSignedAgreement>>('/portal/signed-agreements', config);
   },
 
   // Public, token-gated agreement signing (no portal account). Hits

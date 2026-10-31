@@ -8,7 +8,9 @@ vi.mock('../externalDeviceMatching', async (importOriginal) => ({
 }));
 
 import { loadCandidateDevices } from '../externalDeviceMatching';
-import { endpointMatchName, matchEdrEndpoints } from './deviceMatching';
+import { endpointMatchName, matchEdrEndpoints, strictMatchingFor } from './deviceMatching';
+import { bitdefenderAdapter } from './bitdefender/adapter';
+import { emsisoftAdapter } from './emsisoft/adapter';
 
 const CONN = '00000000-0000-4000-8000-0000000000c1';
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -152,5 +154,63 @@ describe('matchEdrEndpoints', () => {
       executeError: Object.assign(new Error('deadlock detected'), { code: '40P01' }),
     });
     await expect(matchEdrEndpoints(tx, CONN)).rejects.toThrow(/deadlock/);
+  });
+});
+
+describe('strict-unique matching for identifier-poor vendors (A3)', () => {
+  const DEV = (id: string, claimed = false) => ({ deviceId: id, matchName: 'pc04', orgId: ORG, macAddresses: [], claimed });
+  const EP = (id: string, extra: Record<string, unknown> = {}) =>
+    ({ id, orgId: ORG, hostname: 'PC04', fqdn: null, macAddresses: [], breezeDeviceId: null, deviceMatchSource: null, ...extra });
+
+  it('strictMatchingFor: strict exactly when the vendor offers neither mac nor serial', () => {
+    expect(strictMatchingFor(emsisoftAdapter.capabilities.endpointIdentifiers)).toBe(true);
+    expect(strictMatchingFor(bitdefenderAdapter.capabilities.endpointIdentifiers)).toBe(false);
+    expect(strictMatchingFor(['hostname', 'serial'])).toBe(false);
+  });
+
+  it('twins in Breeze (two devices named PC04): the row stays unlinked and counts ambiguous', async () => {
+    vi.mocked(loadCandidateDevices).mockResolvedValue([DEV('d1'), DEV('d2')]);
+    const { tx, ops } = makeTx({ selects: [[EP('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')], [{ n: 0 }]] });
+    expect(await matchEdrEndpoints(tx, CONN, { strictUnique: true })).toEqual({ linked: 0, ambiguous: 1 });
+    expect(ops.some((o) => o.kind === 'execute')).toBe(false);
+  });
+
+  it('a manual link on one twin never auto-links the other by elimination (rule b counts linked rows)', async () => {
+    // d1 is claimed by the manually linked endpoint; d2 is free. Today's resolver would hand d2 to the second row.
+    vi.mocked(loadCandidateDevices).mockResolvedValue([DEV('d1', true), DEV('d2')]);
+    const { tx, ops } = makeTx({
+      selects: [[
+        EP('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', { breezeDeviceId: 'd1', deviceMatchSource: 'manual' }),
+        EP('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'),
+      ], [{ n: 1 }]],
+    });
+    const out = await matchEdrEndpoints(tx, CONN, { strictUnique: true });
+    expect(out.ambiguous).toBe(1);
+    expect(ops.some((o) => o.kind === 'execute')).toBe(false);
+  });
+
+  it('one machine listed twice in the vendor console (2 rows, 1 device) -> neither links', async () => {
+    vi.mocked(loadCandidateDevices).mockResolvedValue([DEV('d1')]);
+    const { tx, ops } = makeTx({ selects: [[EP('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'), EP('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')], [{ n: 0 }]] });
+    expect(await matchEdrEndpoints(tx, CONN, { strictUnique: true })).toEqual({ linked: 0, ambiguous: 2 });
+    expect(ops.some((o) => o.kind === 'execute')).toBe(false);
+  });
+
+  it('a unique row/device pair still links, and an already-linked unique row is not re-reported', async () => {
+    vi.mocked(loadCandidateDevices).mockResolvedValue([DEV('d1'), { ...DEV('d3', true), matchName: 'pc07' }]);
+    const { tx, ops } = makeTx({
+      selects: [[
+        EP('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),
+        EP('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', { hostname: 'PC07', breezeDeviceId: 'd3', deviceMatchSource: 'auto_hostname' }),
+      ], [{ n: 2 }]],
+    });
+    expect(await matchEdrEndpoints(tx, CONN, { strictUnique: true })).toEqual({ linked: 2, ambiguous: 0 });
+    expect(ops.find((o) => o.kind === 'execute')!.sql).toContain('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+  });
+
+  it('default (non-strict) behaviour is unchanged: the free twin links', async () => {
+    vi.mocked(loadCandidateDevices).mockResolvedValue([DEV('33333333-3333-4333-8333-333333333333', true), DEV('44444444-4444-4444-8444-444444444444')]);
+    const { tx } = makeTx({ selects: [[EP('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')], [{ n: 1 }]] });
+    expect(await matchEdrEndpoints(tx, CONN)).toEqual({ linked: 1, ambiguous: 0 });
   });
 });

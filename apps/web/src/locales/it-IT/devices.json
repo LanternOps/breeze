@@ -354,7 +354,7 @@
     "currentSite": "Sito attuale",
     "newSite": "Nuovo sito",
     "loadingSites": "Caricamento siti...",
-    "thisOrganizationOnlyHasOneSite": "Questa organizzazione ha un solo sito. Aggiungi altri siti da Impostazioni → Organizzazioni per abilitare gli spostamenti.",
+    "thisOrganizationOnlyHasOneSite": "Questa organizzazione ha un solo sito. Aggiungi altri siti dalla scheda Siti dell'organizzazione (Organizzazioni → apri l'organizzazione → Siti) per abilitare gli spostamenti.",
     "current": "(corrente)",
     "cancel": "Annulla",
     "moving": "Spostamento...",
@@ -376,23 +376,6 @@
     "moveDevices_other": "Sposta {{count}} dispositivi",
     "bulkPolicyNote": "Lo spostamento cambia le policy di configurazione, le finestre di manutenzione, l'instradamento degli avvisi e i report del sito che si applicano a questi dispositivi. Breeze non li riporterà indietro automaticamente.",
     "failedToMoveDevices": "Impossibile spostare i dispositivi"
-  },
-  "createGroupModal": {
-    "failedToCreateGroup": "Impossibile creare il gruppo",
-    "newDeviceGroup": "Nuovo gruppo di dispositivi",
-    "name": "Nome",
-    "eGProductionServers": "ad es. server di produzione",
-    "type": "Tipo",
-    "static": "Statico",
-    "dynamic": "Dinamico",
-    "manuallyAddAndRemoveDevicesAfter": "Aggiungi e rimuovi manualmente i dispositivi dopo la creazione.",
-    "devicesAreAutoAssignedBasedOn": "I dispositivi vengono assegnati automaticamente in base alle regole di filtro.",
-    "filterRules": "Regole di filtro",
-    "cancel": "Annulla",
-    "creating": "Creazione...",
-    "createGroup": "Crea gruppo",
-    "created": "Gruppo di dispositivi creato",
-    "missingGroupId": "Il gruppo è stato creato, ma la risposta del server non conteneva l’ID del gruppo. Aggiorna la pagina."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} rimossi nascosti",
@@ -2408,7 +2391,9 @@
       "completed": "Completata",
       "failed": "Non riuscita",
       "queued": "In coda",
-      "running": "In esecuzione"
+      "running": "In esecuzione",
+      "cancelled": "Annullata",
+      "expired": "Scaduta"
     },
     "scanType": "Scansione {{type}}",
     "scanTypes": {
@@ -2430,7 +2415,13 @@
       "quarantined": "In quarantena",
       "removed": "Rimossa"
     },
-    "threatsFound": "Minacce trovate: {{count}}"
+    "threatsFound": "Minacce trovate: {{count}}",
+    "waitingForSlot": "In attesa di uno slot di scansione libero. Scade il {{date}}.",
+    "cancelScan": "Annulla scansione",
+    "scanCancelled": "Scansione annullata",
+    "cancelScanFailed": "Impossibile annullare la scansione",
+    "scanAlreadyRunning": "La scansione è già in esecuzione sul dispositivo e non può essere annullata.",
+    "scanAlreadyQueued": "Per questo dispositivo è già in coda una scansione."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Aggiungi un tag...",
@@ -4338,6 +4329,7 @@
       "pending": "Non ancora verificata",
       "private": "Registro privato: credenziali richieste",
       "unsupported_registry": "Registro non supportato",
+      "provenance_unknown": "Provenienza sconosciuta: il nome dell'immagine non viene inviato a nessun registro",
       "error": "Verifica del registro non riuscita: verrà ritentata",
       "behind": "Per questo tag è pubblicata un'immagine più recente",
       "current": "Corrisponde al registro",

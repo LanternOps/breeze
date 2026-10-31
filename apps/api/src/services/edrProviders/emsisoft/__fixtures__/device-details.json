@@ -1,0 +1,34 @@
+{
+  "name": "PC01",
+  "domain": "corp.example.test",
+  "protectionStatus": "Protected",
+  "os": "Windows 11 Pro",
+  "version": "2026.9.0.1",
+  "updateStatus": {
+    "online": "Online"
+  },
+  "networkAdapters": [
+    {
+      "iPv4Addresses": [
+        "192.0.2.10",
+        "192.0.2.11"
+      ],
+      "iPv6Addresses": [
+        "2001:db8::10"
+      ]
+    },
+    {
+      "iPv4Addresses": [
+        "192.0.2.10"
+      ],
+      "iPv6Addresses": []
+    }
+  ],
+  "settings": {
+    "networkLockdown": {
+      "value": false,
+      "enabledOnGroupLevel": false,
+      "groupGuid": null
+    }
+  }
+}
