@@ -982,7 +982,8 @@
     },
     "confirm": {
       "title": "Confirmer l’exécution",
-      "description": "Exécuter « {{name}} » sur {{count}} appareil(s) en tant que {{runAs}}. Les scripts sont mis en file d’attente et commencent à s’exécuter immédiatement."
+      "description": "Exécuter « {{name}} » sur {{count}} appareil(s) en tant que {{runAs}}. Les scripts sont mis en file d’attente et commencent à s’exécuter immédiatement.",
+      "descriptionOffline": "Exécuter « {{name}} » sur {{count}} appareil(s) en tant que {{runAs}}. Les scripts sont mis en file d’attente maintenant : les appareils en ligne démarrent tout de suite, et {{offline}} appareil(s) hors ligne s’exécuteront lorsqu’ils seront de nouveau en ligne."
     },
     "selectedCount": "{{count}} appareil(s) sélectionné(s)",
     "executeBlocked": "L’exécution est indisponible : un appareil sélectionné ne peut pas exécuter ce script ici (il appartient peut-être à une autre organisation que celle affichée, ou il n’est plus accessible).",
@@ -1027,6 +1028,7 @@
       "submitting": "Envoi à {{count}} groupe(s)...",
       "warningsTitle": "Remarques du serveur",
       "confirmDescription": "Exécuter « {{name}} » sur {{groups}} groupe(s) d'appareils en tant que {{runAs}}. Les scripts sont mis en file d'attente et démarrent immédiatement.",
+      "confirmDescriptionOffline": "Exécuter « {{name}} » sur {{groups}} groupe(s) d’appareils en tant que {{runAs}}. Les scripts sont mis en file d’attente maintenant : les appareils en ligne démarrent tout de suite, et {{offline}} appareil(s) hors ligne s’exécuteront lorsqu’ils seront de nouveau en ligne.",
       "confirmMembers": "{{count}} appareil(s) unique(s) font partie de ces groupes en ce moment ; l'appartenance est relue lorsque vous confirmez.",
       "confirmMembersUnknown": "Le nombre d'appareils n'est pas encore connu ; l'appartenance est lue lorsque vous confirmez.",
       "errors": {

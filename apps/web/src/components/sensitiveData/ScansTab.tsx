@@ -4,6 +4,7 @@ import { Plus, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { SCAN_STATUS_COLORS } from './constants';
+import { useSensitiveDataLabels } from './useSensitiveDataLabels';
 import CreateScanModal from './CreateScanModal';
 import SensitiveDataAccessDenied from './SensitiveDataAccessDenied';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -24,6 +25,7 @@ type Scan = {
 
 export default function ScansTab() {
   const { t } = useTranslation('security');
+  const { scanStatusLabel } = useSensitiveDataLabels();
   const [scans, setScans] = useState<Scan[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -143,8 +145,8 @@ export default function ScansTab() {
                 <td className="px-4 py-3 font-mono text-xs">{scan.id.slice(0, 8)}</td>
                 <td className="px-4 py-3 text-xs">{scan.deviceName ?? scan.deviceId.slice(0, 8)}</td>
                 <td className="px-4 py-3">
-                  <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${SCAN_STATUS_COLORS[scan.status] ?? ''}`}>
-                    {scan.status}
+                  <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${SCAN_STATUS_COLORS[scan.status] ?? ''}`}>
+                    {scanStatusLabel(scan.status)}
                   </span>
                 </td>
                 <td className="px-4 py-3 text-xs">{scan.summary?.findings?.total ?? '-'}</td>

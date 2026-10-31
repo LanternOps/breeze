@@ -635,3 +635,67 @@ describe("DeploymentProgress restore-point badge (#4759)", () => {
     expect(screen.queryByTestId("restore-point-badge")).not.toBeInTheDocument();
   });
 });
+
+describe("DeploymentProgress — vendor output beside the exit code (#10307)", () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    showToast.mockReset();
+  });
+
+  const ESC = "\u001b";
+  const RESULT_POST_SCRIPT_FAILED = {
+    ...RESULT_FAILED_NO_HOSTNAME,
+    id: "res-ctrld",
+    hostname: "WS-CTRLD",
+    exitCode: 1,
+    errorMessage: "post_install_script_failed: post-install script exited with code 1",
+    output: [
+      ...Array.from({ length: 30 }, (_, i) => `${ESC}[90mINF${ESC}[0m step ${i + 1}`),
+      `${ESC}[31mERR${ESC}[0m failed to provision: Invalid provisioning code <img src=x onerror=alert(1)>`,
+      "",
+    ].join("\n"),
+  };
+
+  it("shows a bounded, ANSI-free tail of the device output as plain text", async () => {
+    routeFetch({
+      detail: detailPayload("failed", { failed: 1, total: 1 }),
+      results: { data: [RESULT_POST_SCRIPT_FAILED], total: 1 },
+    });
+
+    const { container } = render(<DeploymentProgress deploymentId={DEP_ID} />);
+    await screen.findByText("Chrome Rollout");
+
+    const excerpt = screen.getByTestId(`deployment-result-output-${RESULT_POST_SCRIPT_FAILED.id}`);
+    expect(excerpt).toHaveTextContent("Device output (last lines)");
+    const text = excerpt.textContent ?? "";
+    // The vendor's reason is visible...
+    expect(text).toContain("ERR failed to provision: Invalid provisioning code <img src=x onerror=alert(1)>");
+    // ...ANSI is gone...
+    expect(text).not.toContain(ESC);
+    expect(text).not.toContain("[90m");
+    // ...the excerpt is the tail, not all 31 lines...
+    expect(text).not.toContain("step 20");
+    expect(text).toContain("step 30");
+    // ...and the output is text, never markup.
+    expect(container.querySelector("img")).toBeNull();
+    // The agent's error stays alongside it.
+    const row = screen.getByTestId(`deployment-result-row-${RESULT_POST_SCRIPT_FAILED.id}`);
+    expect(row).toHaveTextContent("post_install_script_failed");
+  });
+
+  it("shows no excerpt for a successful row or a failed row with no output", async () => {
+    routeFetch({
+      detail: detailPayload("completed_with_errors", { completed: 1, failed: 1, total: 2 }),
+      results: {
+        data: [{ ...RESULT_COMPLETED, output: "installed ok" }, RESULT_FAILED_NO_HOSTNAME],
+        total: 2,
+      },
+    });
+
+    render(<DeploymentProgress deploymentId={DEP_ID} />);
+    await screen.findByText("Chrome Rollout");
+
+    expect(screen.queryByTestId(`deployment-result-output-${RESULT_COMPLETED.id}`)).toBeNull();
+    expect(screen.queryByTestId(`deployment-result-output-${RESULT_FAILED_NO_HOSTNAME.id}`)).toBeNull();
+  });
+});

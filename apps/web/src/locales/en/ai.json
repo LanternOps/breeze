@@ -28,6 +28,9 @@
     "deny": "Deny",
     "verificationFailed": "Verification failed. Try again.",
     "alreadyDecided": "This request was already decided.",
+    "resolvedApproved": "This request was approved.",
+    "resolvedNotApproved": "This request was not approved, so the action did not run.",
+    "resolvedEnded": "This request is no longer waiting for a decision here.",
     "contentChanged": "This request's details changed after it was created, so it can no longer be approved.",
     "expired": "This request expired before it could be decided.",
     "notSoleApprover": "Another approver is now required — you can no longer approve your own request.",
@@ -145,9 +148,9 @@
     "dashboard": "Dashboard"
   },
   "aiCostIndicator": {
-    "messageCount": "{{count}} msgs",
-    "messageCount_one": "{{count}} msg",
-    "messageCount_other": "{{count}} msgs",
+    "messageCount": "{{count}} msgs this month",
+    "messageCount_one": "{{count}} msg this month",
+    "messageCount_other": "{{count}} msgs this month",
     "thisMonth": "{{amount}} this month",
     "credits_one": "{{formatted}} credit",
     "credits_other": "{{formatted}} credits"
@@ -631,6 +634,7 @@
     },
     "header": {
       "scopeAll": "All organizations",
+      "scopeFallback": "this organization",
       "status": {
         "active": "Active",
         "paused": "Paused",
@@ -640,7 +644,7 @@
       },
       "refresh": "Refresh grant",
       "revoke": "Turn off Wisp",
-      "revokeConfirm": "Turn off Wisp for this scope? Open threads stay readable.",
+      "revokeConfirm": "Turn off Wisp for this scope? Wisp stops working for you and its threads close. Their conversations, concerns and activity are no longer shown.",
       "widening": "You can do more than this grant allows — refresh it to let Wisp keep up.",
       "refreshKeepsTerms": "This conversation keeps the previous grant terms. Start a new conversation to use the refreshed grant.",
       "startNewConversation": "Start a new conversation",
@@ -860,7 +864,8 @@
       "workersTitle": "Workers",
       "workersEmpty": "No specialists running.",
       "allRuns": "All runs",
-      "details": "Details"
+      "details": "Details",
+      "ended": "This delegation has ended, so its concerns, workers and activity are no longer shown."
     },
     "composer": {
       "placeholder": "Message Wisp",

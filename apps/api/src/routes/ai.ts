@@ -27,6 +27,7 @@ import {
   getSessionMessages,
   handleApproval,
   isIntentBackedExecution,
+  getDecidedExecutionOutcome,
   searchSessions,
   listM365Connections,
   sanitizeErrorForClient,
@@ -1267,6 +1268,17 @@ aiRoutes.post(
           via: 'intent',
           message: 'This action needs approval in the Approvals area or the Breeze mobile app.',
         });
+      }
+      // #9431: a stale card (decided in another window, in Approvals, on
+      // mobile, or timed out). handleApproval's CAS already refused a second
+      // decision; say so, with the outcome, so the card can show it.
+      const decided = await getDecidedExecutionOutcome(executionId, sessionId);
+      if (decided) {
+        return c.json({
+          error: 'This request was already decided.',
+          code: 'approval_already_decided',
+          outcome: decided,
+        }, 409);
       }
       return c.json({ error: 'Execution not found or already processed' }, 404);
     }

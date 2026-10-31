@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "ör. İş istasyonu yönetimi",
         "unitPrice": "Birim fiyatı",
         "quantity": "Adet",
+        "quantityInvalid": "Bir miktar girin (en fazla 2 ondalık basamak).",
+        "quantityTooLarge": "Miktar çok büyük (ondalık ayırıcıdan önce en fazla 10 basamak).",
         "siteOptional": "Site (isteğe bağlı — cihaz sayısını kapsar)",
         "allSites": "Tüm siteler",
         "linkCatalogItemOptional": "Katalog öğesine bağlantı (isteğe bağlı)",
@@ -769,6 +771,7 @@
       "fileWrongType": "Bir PDF, PNG veya JPEG dosyası ekleyin.",
       "variables": "Anlaşma bilgileri",
       "unresolved": "Şunlar için bir değer girin: {{names}}",
+      "needsSignedCopy": "Breeze, teklif olmadan {{names}} alanını dolduramaz. Bu sözleşmeyi kaydetmek için imzalı kopyayı ekleyin.",
       "consequence": "Bu işlem {{org}} için imzalı bir anlaşma kaydeder. Sonradan silinemez.",
       "submit": "İmzalı anlaşmayı kaydet",
       "success": "İmzalı anlaşma kaydedildi.",
@@ -1302,6 +1305,7 @@
         "noPublishedVersion": "Bu şablonun henüz yayınlanmış bir sürümü yok. Bir teklife eklemeden önce yayınlayın.",
         "pinnedVersion": "v{{version}}'ye sabitlendi",
         "autoVariablesTitle": "Alıntıdan otomatik olarak doldurulur",
+        "autoValueBlank": "Boş",
         "autoHint": "Bu değerler, teklif gönderildiğinde tekliften çözümlenir.",
         "manualVariablesTitle": "Bu teklifi doldurun",
         "labelFieldLabel": "Bölüm etiketi",
@@ -1468,6 +1472,9 @@
       "currencyUnknown": "Stripe hesabınızın ödeme para birimi henüz önbelleğe alınmadığından bu {{documentCurrency}} teklifle karşılaştırılamadı. Uyuşmazlık kontrolünü etkinleştirmek için Ayarlar → Entegrasyonlar altından Stripe hesap bilgilerinizi yenileyin.",
       "acceptOnBehalf": {
         "button": "Müşteri adına kabul et",
+        "emptyDraftTitle": "Kabul etmeden önce en az bir öğe ekleyin.",
+        "emptySentTitle": "Bu teklifte öğe yok. Öğeler içeren bir sürüm düzenlemek için Teklifi revize et seçeneğini kullanın.",
+        "errorQuoteEmpty": "Bu teklifte öğe yok. Bu iletişim kutusunu kapatıp bir öğe ekleyin veya teklif zaten gönderildiyse Teklifi revize et seçeneğini kullanın.",
         "title": "Müşterinin kabulünü kaydedin",
         "methodLabel": "Müşteri nasıl onay verdi?",
         "method": {
@@ -2103,6 +2110,7 @@
       "title": "Bu fatura gönderilsin mi?",
       "message": "{{amount}} tutarındaki fatura {{customer}} adresine e-postayla gönderilir."
     },
+    "sourceHeldForHourBlock": "Bu taslaktaki sürenin bir kısmı bu kuruluşun saat paketi için bekletiliyor ve paket dönemi kapandığında faturalanacak. Bu satırları kaldırın, ardından faturayı kesin.",
     "unsavedHint": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Kaydedildiğinde sorunun kilidi açılıyor.",
     "unsavedTitle": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Sorun kaydedildiğinde kilidi açılıyor."
   },

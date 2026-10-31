@@ -137,8 +137,33 @@ describe('RuleSetEditor publish outcome (W04-3, Review Focus #1)', () => {
     await editAndSave();
 
     expect(successToasts()).toHaveLength(0);
-    expect(screen.getByTestId('rule-set-publish-banner').textContent).toMatch(/checker is unavailable/i);
+    expect(screen.getByTestId('rule-set-publish-banner').textContent).toMatch(
+      /YARA compiler is unavailable on this server/i,
+    );
     expect(screen.queryByTestId('rule-error-r1')).toBeNull();
+  });
+
+  it('a set left unpublished by a missing compiler reloads as "compiler unavailable", not "Has errors" (#10306)', async () => {
+    current = setDetail({ stale: true, staleReason: 'checker_unavailable', publishedVersion: 0 });
+    renderEditor();
+    await settle();
+
+    const banner = screen.getByTestId('rule-set-publish-banner').textContent ?? '';
+    expect(banner).toMatch(/YARA compiler is unavailable on this server/i);
+    expect(banner).not.toMatch(/fix the errors/i);
+    expect(screen.getByTestId('rule-set-badge-checker-unavailable')).toBeInTheDocument();
+    expect(screen.queryByTestId('rule-set-badge-errors')).toBeNull();
+    expect(screen.queryByTestId('rule-error-r1')).toBeNull();
+  });
+
+  it('a stale set whose rules failed to compile still reads "Has errors"', async () => {
+    current = setDetail({ stale: true, staleReason: 'errors', rules: [{ ...RULE, compileError: 'compile: x' }] });
+    renderEditor();
+    await settle();
+
+    expect(screen.getByTestId('rule-set-badge-errors')).toBeInTheDocument();
+    expect(screen.queryByTestId('rule-set-badge-checker-unavailable')).toBeNull();
+    expect(screen.getByTestId('rule-set-publish-banner').textContent).toMatch(/fix the errors/i);
   });
 
   it('a clean publish toasts the success copy and shows no banner', async () => {

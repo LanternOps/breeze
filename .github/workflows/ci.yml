@@ -206,7 +206,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: pnpm
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -288,10 +290,17 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Test community README automation
         run: pnpm test:community-readme
+
+      # AGENTS.md (Codex and other agents) is generated from CLAUDE.md so the two
+      # cannot drift; this fails when a CLAUDE.md edit was not regenerated.
+      - name: AGENTS.md matches CLAUDE.md
+        run: pnpm test:agents-md
 
       # The Tauri CLI refuses to build when the `tauri` / `tauri-plugin-*`
       # crates and their `@tauri-apps/*` npm packages differ in major.minor.
@@ -317,6 +326,20 @@ jobs:
 
       - name: Test per-area job gating contract
         run: node --test .github/scripts/ci-area-gating.test.mjs
+
+      - name: CI cache policy contract
+        run: node --test .github/scripts/ci-cache-policy.test.mjs
+
+      - name: Test shard retry wrapper
+        run: node --test .github/scripts/retry-shard.test.mjs
+
+      # Also validates the committed .github/flaky-tests.json (W1, #10744).
+      - name: Test flaky-test ledger
+        run: node --test .github/scripts/flaky-ledger.test.mjs
+
+      # security-audit's base/head advisory comparison (W1, #10744).
+      - name: Test dependency audit comparison
+        run: node --test .github/scripts/new-findings.test.mjs .github/scripts/security-audit-compare.test.mjs
 
       # The Windows viewer update bundle must be a STORED zip — the updater
       # cannot decompress Deflate, so a compressed one never installs (#7681).
@@ -349,10 +372,9 @@ jobs:
       - name: Test dev tooling scripts (wt-stack / test-stack)
         run: pnpm test:dev-scripts
 
-      - name: Check for schema drift
-        working-directory: apps/api
-        continue-on-error: true
-        run: pnpm db:check-drift
+      # The schema-drift check runs in `check-migrations` below, against the
+      # database that job just migrated. It used to sit here with no database
+      # and continue-on-error, so it could only exit 2 unseen (#10357).
 
   typecheck:
     name: Type Check
@@ -380,7 +402,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -417,12 +441,39 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8]
-    timeout-minutes: 30
+    # Room for a whole-shard retry (W1, #10744): the "Run API tests" step
+    # measured 10.5 min median / 11.7 max, setup + post steps ≤ 2.5 min
+    # (shard 1), across six CI runs 2026-10-29..30. 2 × 11.7 + 5 ≈ 28.
+    # retry-shard's --budget-minutes is this minus a 5-min setup allowance.
+    timeout-minutes: 40
+    # The flaky ledger is read from the BASE commit, never the PR head
+    # (retry-shard + flaky-ledger.mjs, W1 #10744). Empty for other events →
+    # nothing quarantined.
+    env:
+      CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      # The depth-1 checkout lacks the base commit that retry-shard reads the
+      # flaky ledger from and diffs against (W1, #10744). Bounded retry; a
+      # failed fetch only disables quarantine (fail closed), never the job.
+      - name: Fetch base commit for the flaky ledger
+        if: env.CI_BASE_SHA != ''
+        run: |
+          for attempt in 1 2 3; do
+            if git fetch --no-tags --depth=1 origin "${CI_BASE_SHA}"; then
+              exit 0
+            fi
+            echo "git fetch of the base commit failed (attempt ${attempt}/3)" >&2
+            # No sleep after the final attempt — there is no fourth.
+            if [ "${attempt}" -lt 3 ]; then
+              sleep $(( attempt * 5 ))
+            fi
+          done
+          echo "::warning title=Quarantine disabled::Could not fetch base ${CI_BASE_SHA}; no flaky-ledger test is quarantined in this job."
 
       - name: Setup pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -433,7 +484,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -464,7 +517,21 @@ jobs:
         # pnpm forwards args after the script name to the script itself (no
         # bare `--`, which would make vitest ignore --shard and run
         # everything — see integration-test's identical --shard usage).
-        run: pnpm --filter=@breeze/api test:run --shard=${{ matrix.shard }}/8
+        # retry-shard re-runs the whole shard once when it failed with visible
+        # test failures, and writes flake-report-<label>.json (W1, #10744).
+        run: node .github/scripts/retry-shard.mjs --runner vitest --label api-${{ matrix.shard }} --budget-minutes 35 -- pnpm --filter=@breeze/api test:run --shard=${{ matrix.shard }}/8
+
+      # Retry wrapper report (W1, #10744): written only when attempt 1 failed.
+      - name: Upload flake report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: flake-report-api-${{ matrix.shard }}
+          path: flake-report-*.json
+          if-no-files-found: ignore
+          retention-days: 14
+          # A "re-run failed jobs" attempt uploads under the same name.
+          overwrite: true
 
       # Timezone-correctness regression gate (#4046): GitHub-hosted runners
       # default to UTC, and nothing else in this job or in vitest.config.ts
@@ -564,7 +631,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -592,7 +661,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -634,7 +705,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -694,7 +767,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -713,8 +788,32 @@ jobs:
       - name: Migration filename convention guard
         run: bash scripts/check-migration-naming.sh
 
+      # Non-bypassable backstop for the pre-push hook (`--against-ref`): the
+      # migrations this PR / queue entry ADDS must sort after the newest one
+      # on its base, and it must not delete or rename a migration that exists
+      # on its base (a shipped file's ledger row is keyed on its filename —
+      # #10015, where #9997 renamed one to appease the commit hook). Files the
+      # base already has — e.g. main's migrations a branch merged in — are
+      # never judged. pull_request checks out the merge commit, so HEAD^1 is
+      # the base it was built on; a queue entry names its base explicitly.
+      - name: Migration order and shipped-rename guard vs base
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        env:
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          base_ref="${MERGE_GROUP_BASE_SHA:-HEAD^1}"
+          echo "Base for this check: $base_ref = $(git rev-parse --short "$base_ref")"
+          bash scripts/check-migration-naming.sh --against-ref "$base_ref"
+
       - name: Apply migrations against empty Postgres
         run: pnpm --filter @breeze/api run check:migrations
+
+      # Ledger-vs-disk drift on the database the step above just migrated:
+      # every core migration file must have a ledger row and vice versa
+      # (apps/api/scripts/check-drift.ts). Blocking; exit 2 (no database) is a
+      # failure here, never a silent pass (#10357).
+      - name: Check for schema drift
+        run: pnpm --filter @breeze/api run db:check-drift
 
   # Real-Postgres apply of every migration as a NON-SUPERUSER role that mirrors
   # a managed-Postgres admin (DigitalOcean doadmin / AWS RDS). The class-complete
@@ -777,7 +876,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -798,11 +899,39 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
+    # Room for a whole-shard retry (W1, #10744): "Run Web tests" measured
+    # 10.7 min median / 11.9 max, setup ≤ 1 min, across six CI runs
+    # 2026-10-29..30. Explicit so retry-shard's --budget-minutes (this minus a
+    # 5-min setup allowance) has a real ceiling to fit a retry inside.
+    timeout-minutes: 40
+    # The flaky ledger is read from the BASE commit, never the PR head
+    # (retry-shard + flaky-ledger.mjs, W1 #10744). Empty for other events →
+    # nothing quarantined.
+    env:
+      CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      # The depth-1 checkout lacks the base commit that retry-shard reads the
+      # flaky ledger from and diffs against (W1, #10744). Bounded retry; a
+      # failed fetch only disables quarantine (fail closed), never the job.
+      - name: Fetch base commit for the flaky ledger
+        if: env.CI_BASE_SHA != ''
+        run: |
+          for attempt in 1 2 3; do
+            if git fetch --no-tags --depth=1 origin "${CI_BASE_SHA}"; then
+              exit 0
+            fi
+            echo "git fetch of the base commit failed (attempt ${attempt}/3)" >&2
+            # No sleep after the final attempt — there is no fourth.
+            if [ "${attempt}" -lt 3 ]; then
+              sleep $(( attempt * 5 ))
+            fi
+          done
+          echo "::warning title=Quarantine disabled::Could not fetch base ${CI_BASE_SHA}; no flaky-ledger test is quarantined in this job."
 
       - name: Setup pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -813,7 +942,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -821,7 +952,20 @@ jobs:
       - name: Run Web tests
         # Source aliases in vitest.config.ts avoid a production Astro build.
         # build-web still runs prebuild (checksums/Monaco assets) and Astro.
-        run: pnpm --filter=@breeze/web test --run --shard=${{ matrix.shard }}/4
+        # Whole-shard retry once on visible test failures (W1, #10744).
+        run: node .github/scripts/retry-shard.mjs --runner vitest --label web-${{ matrix.shard }} --budget-minutes 35 -- pnpm --filter=@breeze/web test --run --shard=${{ matrix.shard }}/4
+
+      # Retry wrapper report (W1, #10744): written only when attempt 1 failed.
+      - name: Upload flake report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: flake-report-web-${{ matrix.shard }}
+          path: flake-report-*.json
+          if-no-files-found: ignore
+          retention-days: 14
+          # A "re-run failed jobs" attempt uploads under the same name.
+          overwrite: true
 
   # REQUIRED check: asserted in ci-success (see #3941, and #3139 for the
   # original gap).
@@ -845,7 +989,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -981,7 +1127,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install mobile dependencies
         run: pnpm install --filter breeze-mobile... --frozen-lockfile
@@ -1057,7 +1205,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1092,7 +1242,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1129,7 +1281,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1157,7 +1311,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1191,7 +1347,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1222,7 +1380,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1250,7 +1410,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1281,7 +1443,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1321,7 +1485,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1378,11 +1544,35 @@ jobs:
     runs-on: ubuntu-latest
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
+    # The dependency audit compares head against the BASE commit and blocks
+    # only on advisories the change introduces (W1, #10744). Empty for other
+    # events (workflow_dispatch) → every blocking advisory blocks.
+    env:
+      CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      # The depth-1 checkout lacks the base commit whose lockfile and
+      # exceptions file the dependency audit compares against (W1, #10744).
+      # Bounded retry; a failed fetch only disables the comparison (fail
+      # closed: every blocking advisory blocks), never the job.
+      - name: Fetch base commit for the dependency audit comparison
+        if: env.CI_BASE_SHA != ''
+        run: |
+          for attempt in 1 2 3; do
+            if git fetch --no-tags --depth=1 origin "${CI_BASE_SHA}"; then
+              exit 0
+            fi
+            echo "git fetch of the base commit failed (attempt ${attempt}/3)" >&2
+            # No sleep after the final attempt — there is no fourth.
+            if [ "${attempt}" -lt 3 ]; then
+              sleep $(( attempt * 5 ))
+            fi
+          done
+          echo "::warning title=Audit comparison disabled::Could not fetch base ${CI_BASE_SHA}; every blocking advisory blocks this run."
 
       - name: Setup pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -1393,7 +1583,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1420,8 +1612,15 @@ jobs:
       - name: Test npm-audit exceptions logic
         run: pnpm test:npm-audit-exceptions
 
-      - name: Run dependency audit (high+critical gate)
-        run: bash scripts/security/check-npm-audit.sh
+      # Same reason: a regression in the base/head comparison could wave a
+      # new advisory through.
+      - name: Test dependency audit base/head comparison
+        run: node --test .github/scripts/new-findings.test.mjs .github/scripts/security-audit-compare.test.mjs
+
+      # Blocks only on advisories the change introduces (W1, #10744); the
+      # decision tree is in the script header and its test.
+      - name: Run dependency audit (high+critical gate, new advisories only)
+        run: bash .github/scripts/security-audit-compare.sh
 
       - name: Run supply-chain hardening guard
         run: bash scripts/security/check-supply-chain-hardening.sh
@@ -1529,7 +1728,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1575,7 +1776,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1609,7 +1812,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1645,7 +1850,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1681,7 +1888,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1724,7 +1933,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1783,7 +1994,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
 
       - name: Download Go dependencies
         working-directory: agent
@@ -1891,7 +2105,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
 
       - name: Assert Windows manifests
         working-directory: agent
@@ -1928,25 +2145,69 @@ jobs:
     runs-on: ubuntu-latest
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    # Room for a package retry (W1, #10744): "Run Go tests" measured 5.8 min
+    # median / 5.9 max, setup + loopback/edition steps ≤ 1.5 min, across six
+    # CI runs 2026-10-29..30. Explicit so retry-shard's --budget-minutes (this
+    # minus a 5-min setup allowance) has a real ceiling.
+    timeout-minutes: 30
+    # The flaky ledger is read from the BASE commit, never the PR head
+    # (retry-shard + flaky-ledger.mjs, W1 #10744). Empty for other events →
+    # nothing quarantined.
+    env:
+      CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
+      # The depth-1 checkout lacks the base commit that retry-shard reads the
+      # flaky ledger from and diffs against (W1, #10744). Bounded retry; a
+      # failed fetch only disables quarantine (fail closed), never the job.
+      - name: Fetch base commit for the flaky ledger
+        if: env.CI_BASE_SHA != ''
+        run: |
+          for attempt in 1 2 3; do
+            if git fetch --no-tags --depth=1 origin "${CI_BASE_SHA}"; then
+              exit 0
+            fi
+            echo "git fetch of the base commit failed (attempt ${attempt}/3)" >&2
+            # No sleep after the final attempt — there is no fourth.
+            if [ "${attempt}" -lt 3 ]; then
+              sleep $(( attempt * 5 ))
+            fi
+          done
+          echo "::warning title=Quarantine disabled::Could not fetch base ${CI_BASE_SHA}; no flaky-ledger test is quarantined in this job."
+
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
 
       - name: Download Go dependencies
         working-directory: agent
         run: go mod download
 
+      # retry-shard runs `go test -json` (re-printing human output) and re-runs
+      # a failed shard once, uncached, overwriting coverage.out (W1, #10744).
       - name: Run Go tests
-        working-directory: agent
-        run: CGO_ENABLED=0 go test -v -coverprofile=coverage.out ./...
+        run: CGO_ENABLED=0 node .github/scripts/retry-shard.mjs --runner go --go-dir agent --label agent --budget-minutes 25 -- go test -v -coverprofile=coverage.out ./...
+
+      # Retry wrapper report (W1, #10744): written only when attempt 1 failed.
+      - name: Upload flake report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: flake-report-agent
+          path: flake-report-*.json
+          if-no-files-found: ignore
+          retention-days: 14
+          # A "re-run failed jobs" attempt uploads under the same name.
+          overwrite: true
 
       - name: Rebuild engine loopback test (root)
         if: runner.os == 'Linux'
@@ -1999,7 +2260,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
 
       - name: Download Go dependencies
         working-directory: agent
@@ -2795,7 +3059,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
 
       - name: Toolchain
         run: |
@@ -2905,7 +3172,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
 
       - name: go vet
         working-directory: agent
@@ -2941,7 +3211,7 @@ jobs:
       # skips the install (and its network calls) entirely.
       - name: Cache golangci-lint binary
         id: golangci-lint-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/go/bin/golangci-lint
           key: golangci-lint-v2.12.2-${{ runner.os }}
@@ -2986,28 +3256,70 @@ jobs:
     runs-on: macos-latest
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
-    timeout-minutes: 35
+    # Room for a package retry (W1, #10744): "go test -race" measured 16.5 min
+    # median / 19.2 max, setup ≤ 2.1 min, across six CI runs 2026-10-29..30
+    # (macOS runners vary ~2×). 2 × 19.2 + 5 ≈ 43. retry-shard's
+    # --budget-minutes is this minus a 5-min setup allowance.
+    timeout-minutes: 50
+    # The flaky ledger is read from the BASE commit, never the PR head
+    # (retry-shard + flaky-ledger.mjs, W1 #10744). Empty for other events →
+    # nothing quarantined.
+    env:
+      CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
+      # The depth-1 checkout lacks the base commit that retry-shard reads the
+      # flaky ledger from and diffs against (W1, #10744). Bounded retry; a
+      # failed fetch only disables quarantine (fail closed), never the job.
+      - name: Fetch base commit for the flaky ledger
+        if: env.CI_BASE_SHA != ''
+        run: |
+          for attempt in 1 2 3; do
+            if git fetch --no-tags --depth=1 origin "${CI_BASE_SHA}"; then
+              exit 0
+            fi
+            echo "git fetch of the base commit failed (attempt ${attempt}/3)" >&2
+            # No sleep after the final attempt — there is no fourth.
+            if [ "${attempt}" -lt 3 ]; then
+              sleep $(( attempt * 5 ))
+            fi
+          done
+          echo "::warning title=Quarantine disabled::Could not fetch base ${CI_BASE_SHA}; no flaky-ledger test is quarantined in this job."
+
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
 
       - name: Download Go dependencies
         working-directory: agent
         run: go mod download
 
+      # A failed shard re-runs once, uncached, via retry-shard (W1, #10744).
       - name: go test -race ./...
-        working-directory: agent
         env:
           CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
-        run: CGO_ENABLED=1 go test -race -count=1 -timeout 20m ./...
+        run: CGO_ENABLED=1 node .github/scripts/retry-shard.mjs --runner go --go-dir agent --label agent-race --budget-minutes 45 -- go test -race -count=1 -timeout 20m ./...
+
+      # Retry wrapper report (W1, #10744): written only when attempt 1 failed.
+      - name: Upload flake report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: flake-report-agent-race
+          path: flake-report-*.json
+          if-no-files-found: ignore
+          retention-days: 14
+          # A "re-run failed jobs" attempt uploads under the same name.
+          overwrite: true
 
   # ─── Windows runtime smoke (#1000) ────────────────────────────────────
   # CI cross-compiles the Windows agent (build-agent matrix) but never RAN
@@ -3048,7 +3360,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
 
       - name: Download Go dependencies
         working-directory: agent
@@ -3195,7 +3510,7 @@ jobs:
       # Restore the cached .deb closure so a normal run never touches the Ubuntu
       # mirror (#9753). The key lives in the shared composite action. Caches
       # are ref-scoped and CI does not run on push to main, so this job only
-      # READS what `tauri-apt-cache-seed.yml` saves from main; a run that
+      # READS what `ci-cache-seed.yml` saves from main; a run that
       # misses falls back to the network path below (and its own save is
       # visible only to that ref).
       - name: Cache Tauri apt packages
@@ -3309,6 +3624,9 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+          # Restore only: PR/queue refs cannot share caches and would evict
+          # main's (W1, #10744).
+          save-if: false
           workspaces: |
             apps/helper/src-tauri -> target
             apps/viewer/src-tauri -> target
@@ -3378,6 +3696,9 @@ jobs:
         if: steps.changes.outputs.cargo == 'true'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+          # Restore only: PR/queue refs cannot share caches and would evict
+          # main's (W1, #10744).
+          save-if: false
           workspaces: |
             apps/helper/src-tauri -> target
             apps/viewer/src-tauri -> target
@@ -3434,24 +3755,47 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-    # ~1/16 of the suite + env/container setup + one autoMigrate pass. Raised
-    # 25→40 on 2026-09-14 (back when this was 4-way): shard 3 hit exactly
-    # 25:00 on three consecutive merge-group runs (shards 1 and 4 at 23-24)
-    # after the day's integration suites landed, and a job timeout reports as
-    # `cancelled`, so every queue entry was silently dequeued with
-    # `failed_checks`. Before sharding this ceiling had been raised twice
-    # (30→40→55) as the sequential runtime grew; going 4→8→16 shards roughly
-    # halves each shard's share of the suite again (measured ~13.7 min/shard
-    # of tests at 8-way → ~7 min/shard at 16-way), so the 40-minute ceiling is
-    # kept as-is for now — when a shard passes ~32 min again, add more shards
-    # instead of raising it.
-    timeout-minutes: 40
+    # ~1/16 of the suite + env/container setup + one autoMigrate pass. A job
+    # timeout reports as `cancelled`, so every queue entry is silently
+    # dequeued with `failed_checks` (25→40 on 2026-09-14 after shard 3 hit
+    # exactly 25:00 three times running). Raised 40→55 for the whole-shard
+    # retry (W1, #10744): the "Run integration tests" step measured 17.6 min
+    # median / 24.3 max (whole job ≤ 26.7, setup + post steps ≤ 2.4) across
+    # six CI runs 2026-10-29..30 — the suite has grown well past the ~7
+    # min/shard measured when it went 16-way — so two attempts plus setup need
+    # ~54 min. retry-shard's --budget-minutes is this minus a 5-min setup
+    # allowance; a retry that would not fit is skipped, not started. When the
+    # slowest shard's step passes ~25 min, add shards rather than raise this.
+    timeout-minutes: 55
 
+    # The flaky ledger is read from the BASE commit, never the PR head
+    # (retry-shard + flaky-ledger.mjs, W1 #10744). Empty for other events →
+    # nothing quarantined.
+    env:
+      CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      # The depth-1 checkout lacks the base commit that retry-shard reads the
+      # flaky ledger from and diffs against (W1, #10744). Bounded retry; a
+      # failed fetch only disables quarantine (fail closed), never the job.
+      - name: Fetch base commit for the flaky ledger
+        if: env.CI_BASE_SHA != ''
+        run: |
+          for attempt in 1 2 3; do
+            if git fetch --no-tags --depth=1 origin "${CI_BASE_SHA}"; then
+              exit 0
+            fi
+            echo "git fetch of the base commit failed (attempt ${attempt}/3)" >&2
+            # No sleep after the final attempt — there is no fourth.
+            if [ "${attempt}" -lt 3 ]; then
+              sleep $(( attempt * 5 ))
+            fi
+          done
+          echo "::warning title=Quarantine disabled::Could not fetch base ${CI_BASE_SHA}; no flaky-ledger test is quarantined in this job."
 
       - name: Setup pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -3462,7 +3806,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -3517,7 +3863,22 @@ jobs:
         # pnpm forwards args after the script name to the script itself, so
         # --shard reaches vitest. Sharding only splits the file list; files
         # within a shard still run sequentially (fileParallelism: false).
-        run: pnpm --filter=@breeze/api test:integration --shard=${{ matrix.shard }}/16
+        # Whole-shard retry once on visible test failures (W1, #10744). A re-run
+        # starts from the same DB state: globalSetup runs once per `vitest run`
+        # and setup.ts TRUNCATEs around every test.
+        run: node .github/scripts/retry-shard.mjs --runner vitest --label integration-${{ matrix.shard }} --budget-minutes 50 -- pnpm --filter=@breeze/api test:integration --shard=${{ matrix.shard }}/16
+
+      # Retry wrapper report (W1, #10744): written only when attempt 1 failed.
+      - name: Upload flake report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: flake-report-integration-${{ matrix.shard }}
+          path: flake-report-*.json
+          if-no-files-found: ignore
+          retention-days: 14
+          # A "re-run failed jobs" attempt uploads under the same name.
+          overwrite: true
 
       # ee/workspace's integration suite expects its own tables
       # (workspace_sources, workspace_file_index, ...) to already exist on
@@ -3713,7 +4074,6 @@ jobs:
           build-args: ${{ matrix.build-args }}
           outputs: type=docker,dest=${{ runner.temp }}/${{ matrix.image }}.tar
           cache-from: type=gha,scope=ci-smoke-${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=ci-smoke-${{ matrix.image }}
 
       - name: Upload smoke image
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -4228,7 +4588,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
@@ -4313,7 +4675,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
@@ -4652,7 +5016,6 @@ jobs:
           load: true
           tags: breeze-ai-workspace:ci
           cache-from: type=gha,scope=workspace-runtime
-          cache-to: type=gha,mode=max,scope=workspace-runtime
 
       - name: Verify non-root offline document round trips
         run: |

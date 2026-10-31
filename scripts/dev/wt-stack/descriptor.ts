@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { descriptorPath } from './project';
 
 export interface StackDescriptor {
@@ -24,4 +24,29 @@ export function readDescriptor(worktreePath: string): StackDescriptor {
     throw new Error(`No stack descriptor at ${p}. Run \`wt-stack up\` first.`);
   }
   return JSON.parse(readFileSync(p, 'utf8')) as StackDescriptor;
+}
+
+/**
+ * #9864 — the project `up` recorded for this worktree, or null when there is no
+ * descriptor. A descriptor that exists but cannot be read is an error: guessing
+ * a name instead is how `down` ended up aimed at a stack that was not running.
+ */
+export function readRecordedProject(worktreePath: string): string | null {
+  const p = descriptorPath(worktreePath);
+  if (!existsSync(p)) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(p, 'utf8'));
+  } catch (err) {
+    throw new Error(`Stack descriptor ${p} is not valid JSON (${(err as Error).message}). Fix or delete it, or set BREEZE_WT_PROJECT.`);
+  }
+  const project = (parsed as { project?: unknown } | null)?.project;
+  if (typeof project !== 'string' || !project) {
+    throw new Error(`Stack descriptor ${p} has no "project". Fix or delete it, or set BREEZE_WT_PROJECT.`);
+  }
+  return project;
+}
+
+export function removeDescriptor(worktreePath: string): void {
+  rmSync(descriptorPath(worktreePath), { force: true });
 }

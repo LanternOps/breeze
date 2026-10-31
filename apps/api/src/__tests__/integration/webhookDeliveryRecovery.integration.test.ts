@@ -34,6 +34,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { partners, organizations, webhooks, webhookDeliveries } from '../../db/schema';
 import {
+  MAX_RECOVERABLE_AGE_MS,
   STALE_PENDING_MS,
   runWebhookDeliveryRecoverySweep,
   buildRecoveryClaimCas,
@@ -41,6 +42,7 @@ import {
 } from '../../jobs/webhookDeliveryRecovery';
 import {
   claimDeliveryForExecution,
+  recordDeliveryOutcome,
   recordWebhookDelivery
 } from '../../services/webhookDeliveryRecord';
 
@@ -363,6 +365,37 @@ describe('webhook delivery recovery against real Postgres', () => {
     expect(await queue.getJob(webhookAttemptJobId(futureId, 2))).toBeUndefined();
     expect((await queue.getJob(jobId))!.data).toMatchObject({ deliveryId: dueId, webhookId, generation: 1, attemptsMade: 2 });
     await (await queue.getJob(jobId))!.remove();
+  });
+
+  // #9946: failure_count counts failed DELIVERIES. A failed attempt that
+  // scheduled a retry is not counted, so when recovery abandons that delivery
+  // the terminal write must count it, or the stuck delivery vanishes from the count.
+  it('a delivery that fails attempt 1 and is then abandoned as too old counts as ONE failed delivery', async () => {
+    const failureCount = async () => (await withSystemDbAccessContext(() =>
+      db.select({ n: webhooks.failureCount, last: webhooks.lastDeliveryAt }).from(webhooks).where(eq(webhooks.id, webhookId))))[0]!;
+    const deliveryId = await insertDelivery(webhookId, {
+      status: 'retrying', attempts: 0, createdAt: new Date(NOW.getTime() - MAX_RECOVERABLE_AGE_MS - 60_000)
+    });
+    expect(await recordDeliveryOutcome({
+      deliveryId, webhookId, eventId: 'event-9946', eventType: 'alert.triggered', success: false, attempts: 1,
+      responseStatus: 500, nextAttemptAt: new Date(NOW.getTime() - 60 * 60_000)
+    })).toBe(true);
+    const afterAttempt = await failureCount();
+    expect(afterAttempt.n).toBe(0);
+
+    const summary = await runWebhookDeliveryRecoverySweep(NOW);
+    expect(summary).toMatchObject({ scheduledTooOld: 1, scheduledTerminalWriteLost: 0 });
+    const [row] = await withSystemDbAccessContext(() =>
+      db.select({ status: webhookDeliveries.status }).from(webhookDeliveries).where(eq(webhookDeliveries.id, deliveryId)));
+    expect(row!.status).toBe('failed');
+    const afterAbandon = await failureCount();
+    expect(afterAbandon.n).toBe(1);
+    // No attempt was made by the sweep, so "Last Triggered" stays put.
+    expect(afterAbandon.last).toEqual(afterAttempt.last);
+
+    // A second sweep finds nothing to resolve and counts nothing.
+    await runWebhookDeliveryRecoverySweep(NOW);
+    expect((await failureCount()).n).toBe(1);
   });
 
   it('the partial index the sweep depends on exists and is partial', async () => {

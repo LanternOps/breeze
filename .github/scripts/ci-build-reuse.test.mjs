@@ -25,7 +25,9 @@ test('unit tests avoid app compilation while dedicated builds remain required', 
     ['web', 'pnpm --filter=@breeze/web test --run'],
     ['portal', 'pnpm --filter=@breeze/portal test'],
   ]) {
-    assert.ok(job(`test-${app}`).includes(`run: ${command}`));
+    // test-api/test-web run under the whole-shard retry wrapper (W1, #10744).
+    const run = new RegExp(`run: (?:node \\.github/scripts/retry-shard\\.mjs [^\\n]*? -- )?${command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'u');
+    assert.match(job(`test-${app}`), run);
     assert.doesNotMatch(job(`test-${app}`), /run: pnpm test --filter=/u);
     assert.ok(job(`build-${app}`).includes(`pnpm build --filter=@breeze/${app}`));
     assert.ok(job('ci-success').includes(`[[ "\${BUILD_${app.toUpperCase()}_RESULT}" != "success" ]]`));
@@ -46,7 +48,8 @@ test('each smoke image is built once, with matching build args and its own cache
   assert.match(producer, /push: false/u);
   assert.doesNotMatch(producer, /packages: write|secrets\.|login-action/u);
   assert.match(producer, /cache-from: type=gha,scope=ci-smoke-\$\{\{ matrix.image \}\}/u);
-  assert.match(producer, /cache-to: type=gha,mode=max,scope=ci-smoke-\$\{\{ matrix.image \}\}/u);
+  // Restore-only: PR and queue refs never save buildx cache (W1, #10744); main seeds it.
+  assert.doesNotMatch(producer, /cache-to:/u);
   assert.match(producer, /outputs: type=docker,dest=\$\{\{ runner.temp \}\}\/\$\{\{ matrix.image \}\}.tar/u);
   assert.match(producer, /name: ci-smoke-image-\$\{\{ matrix.image \}\}/u);
   assert.match(producer, /if-no-files-found: error/u);

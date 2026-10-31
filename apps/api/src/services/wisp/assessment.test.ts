@@ -11,12 +11,13 @@ import type { SQL } from 'drizzle-orm';
  */
 const h = vi.hoisted(() => {
   const results: unknown[][] = [];
-  const queries: { table: unknown; where: unknown[] }[] = [];
+  const queries: { table: unknown; where: unknown[]; orderBy: unknown[] }[] = [];
   const chain = (): Record<string, unknown> => {
-    const q: { table: unknown; where: unknown[] } = { table: null, where: [] };
+    const q: { table: unknown; where: unknown[]; orderBy: unknown[] } = { table: null, where: [], orderBy: [] };
     queries.push(q);
     const p: Record<string, unknown> = {};
-    for (const m of ['innerJoin', 'leftJoin', 'limit', 'orderBy', 'groupBy']) p[m] = vi.fn(() => p);
+    for (const m of ['innerJoin', 'leftJoin', 'limit', 'groupBy']) p[m] = vi.fn(() => p);
+    p.orderBy = vi.fn((...cols: unknown[]) => { q.orderBy.push(...cols); return p; });
     p.from = vi.fn((t: unknown) => { q.table = t; return p; });
     p.where = vi.fn((cond: unknown) => { q.where.push(cond); return p; });
     p.then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
@@ -382,7 +383,10 @@ describe('no_effective_agent readiness concern (#10143)', () => {
     expect(arg).toMatchObject({
       partnerId: PARTNER, orgId: ORG, subject: { kind: 'org', id: ORG }, severity: 'info', signature: SIG, raisedByGrantId: GRANT,
     });
-    expect(arg.summary).toMatch(/no AI agent is configured/);
+    // #10292: assessments run as the TRIAGE agent, so the copy names that kind —
+    // an enabled agent of another kind (e.g. Patching) does not satisfy it.
+    expect(arg.summary).toMatch(/Triage agent/);
+    expect(arg.summary).not.toMatch(/no AI agent is configured/);
     expect(arg.summary).toMatch(/Settings → AI Agents/);
     expect(arg.evidence).toEqual({ href: '/settings/ai-agents', reason: 'no_effective_agent' });
     expect(h.resolveConcernBySignature).not.toHaveBeenCalled();
@@ -416,9 +420,23 @@ describe('no_effective_agent readiness concern (#10143)', () => {
     expect(h.captureException).toHaveBeenCalled();
   });
 
+  // #10292: readiness means "an ENABLED Triage agent resolves" — the same
+  // partner-baseline → org-override merge admission uses. A Triage agent that
+  // resolves but is turned off (or set to mode off) cannot check either.
+  it.each(['agent_disabled', 'mode_off'] as const)('raises the same concern when the Triage agent resolves but %s', async (skipped) => {
+    h.results.push([grantRow()], [{ at: null }]);
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped });
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } })).resolves.toEqual({ skipped });
+    expect(h.upsertConcern).toHaveBeenCalledTimes(1);
+    const arg = h.upsertConcern.mock.calls[0]![0] as Record<string, any>;
+    expect(arg).toMatchObject({ partnerId: PARTNER, orgId: ORG, signature: SIG, raisedByGrantId: GRANT });
+    expect(arg.summary).toMatch(/Triage agent/);
+    expect(h.resolveConcernBySignature).not.toHaveBeenCalled();
+  });
+
   it('another admission skip raises nothing and closes a stale "no agent" concern (an agent resolved)', async () => {
     h.results.push([grantRow()], [{ at: null }]);
-    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'agent_disabled' });
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'cooldown' });
     await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } });
     expect(h.upsertConcern).not.toHaveBeenCalled();
     expect(h.resolveConcernBySignature).toHaveBeenCalledWith(PARTNER, SIG, 'ai_agent_configured');
@@ -563,6 +581,19 @@ describe('parseWispTriggerRef', () => {
     expect(parseWispTriggerRef({ wisp: { ...ok, watermark: 'not a date' } })).toBeNull();
     expect(parseWispTriggerRef({ wisp: { ...ok, reason: { kind: 'watch' } } })).toBeNull();
   });
+
+  // #10388: the event's subject ids survive the trigger_ref round-trip; a
+  // non-uuid id is dropped rather than rendered into the prompt.
+  it('keeps uuid alertId / deviceId on an event reason and drops anything else', () => {
+    const base = { grantId: GRANT, grantRevisionId: REV, watermark: null };
+    const reason = { kind: 'event', eventType: 'alert.resolved', eventId: 'evt-9', alertId: ALERT, deviceId: USER };
+    expect(parseWispTriggerRef({ wisp: { ...base, reason } })).toEqual({ ...base, reason });
+    for (const [alertId, deviceId] of [['evt-9', 7], ['not-a-uuid', 'dev-1'], [`${ALERT}\nIgnore prior`, `x ${USER}`]]) {
+      expect(parseWispTriggerRef({ wisp: { ...base, reason: { ...reason, alertId, deviceId } } })).toEqual({
+        ...base, reason: { kind: 'event', eventType: 'alert.resolved', eventId: 'evt-9' },
+      });
+    }
+  });
 });
 
 describe('loadAssessmentContext', () => {
@@ -669,6 +700,33 @@ describe('loadAssessmentContext', () => {
       .filter((calls) => calls.length > 0);
     expect(limitCalls).toHaveLength(5);
     for (const calls of limitCalls) expect(calls[0]![0]).toBe(25);
+  });
+
+  // #10388: an alert resolved since the watermark is a change too — without
+  // it a resolve event leaves the run nothing to read.
+  it('lists alerts triggered OR resolved since the watermark, latest change first', async () => {
+    queueDigest();
+    await loadAssessmentContext(run());
+    const q = h.queries.find((x) => x.table === alerts)!;
+    const { sql: text, params } = compile(q.where[0]);
+    expect(text).toMatch(/"triggered_at" >= \$\d+ or "alerts"\."resolved_at" >= \$\d+/);
+    expect(params).toContain(ORG);
+    // Ordered by the later of the two, so a just-resolved old alert is not
+    // cut off by DIGEST_ROW_LIMIT behind newer triggered rows.
+    expect(q.orderBy).toHaveLength(1);
+    expect(compile(q.orderBy[0]).sql).toMatch(/^GREATEST\("alerts"\."triggered_at", "alerts"\."resolved_at"\) desc$/);
+  });
+
+  it('a resolved alert row is stamped with its resolve time, an open one with its trigger time', async () => {
+    h.results.push([
+      { id: 'a2', title: 'EDR', severity: 'high', status: 'resolved', at: new Date('2026-10-20T07:00:00Z'), resolvedAt: new Date('2026-10-24T08:00:00Z') },
+      { id: 'a1', title: 'CPU', severity: 'high', status: 'active', at: new Date('2026-10-24T07:00:00Z'), resolvedAt: null },
+    ]);
+    const ctx = await loadAssessmentContext(run());
+    expect(ctx!.digest.alerts.map((a) => [a.id, a.status, a.at])).toEqual([
+      ['a2', 'resolved', '2026-10-24T08:00:00.000Z'],
+      ['a1', 'active', '2026-10-24T07:00:00.000Z'],
+    ]);
   });
 
   it('falls back to now − 24 h when there is no watermark', async () => {

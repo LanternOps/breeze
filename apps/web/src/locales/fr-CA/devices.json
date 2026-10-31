@@ -354,7 +354,7 @@
     "currentSite": "Site actuel",
     "newSite": "Nouveau site",
     "loadingSites": "Sites de chargement...",
-    "thisOrganizationOnlyHasOneSite": "Cette organisation ne possède qu’un seul site. Ajoutez plus de sites depuis Paramètres → Organisations pour permettre les déplacements.",
+    "thisOrganizationOnlyHasOneSite": "Cette organisation ne possède qu’un seul site. Ajoutez d’autres sites dans l’onglet Sites de l’organisation (Organisations → ouvrir l’organisation → Sites) pour permettre les déplacements.",
     "current": "(actuel)",
     "cancel": "Annuler",
     "moving": "En mouvement...",
@@ -376,23 +376,6 @@
     "moveDevices_other": "Déplacer {{count}} appareils",
     "bulkPolicyNote": "Le déplacement modifie les politiques de configuration, les fenêtres de maintenance, le routage des alertes et les rapports du site qui s’appliquent à ces appareils. Breeze ne les remettra pas en place automatiquement.",
     "failedToMoveDevices": "Impossible de déplacer les appareils"
-  },
-  "createGroupModal": {
-    "failedToCreateGroup": "Impossible de créer un groupe",
-    "newDeviceGroup": "Nouveau groupe de dispositifs",
-    "name": "Nom",
-    "eGProductionServers": "par exemple les serveurs de production",
-    "type": "Type",
-    "static": "Statique",
-    "dynamic": "Dynamique",
-    "manuallyAddAndRemoveDevicesAfter": "Ajoutez et supprimez manuellement les appareils après la création.",
-    "devicesAreAutoAssignedBasedOn": "Les appareils sont automatiquement assignés selon des règles de filtrage.",
-    "filterRules": "Règles de filtrage",
-    "cancel": "Annuler",
-    "creating": "Création…",
-    "createGroup": "Créer un groupe",
-    "created": "Groupe d’appareils créé",
-    "missingGroupId": "Le groupe a été créé, mais la réponse du serveur ne contenait pas son identifiant. Veuillez actualiser la page."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} retirés masqués",
@@ -2408,7 +2391,9 @@
       "completed": "Terminée",
       "failed": "Échec",
       "queued": "En file d’attente",
-      "running": "En cours"
+      "running": "En cours",
+      "cancelled": "Annulée",
+      "expired": "Expirée"
     },
     "scanType": "Analyse {{type}}",
     "scanTypes": {
@@ -2430,7 +2415,13 @@
       "quarantined": "En quarantaine",
       "removed": "Supprimé"
     },
-    "threatsFound": "Menaces trouvées : {{count}}"
+    "threatsFound": "Menaces trouvées : {{count}}",
+    "waitingForSlot": "En attente d'un créneau d'analyse libre. Expire le {{date}}.",
+    "cancelScan": "Annuler l'analyse",
+    "scanCancelled": "Analyse annulée",
+    "cancelScanFailed": "Impossible d'annuler l'analyse",
+    "scanAlreadyRunning": "L'analyse est déjà en cours sur l'appareil et ne peut pas être annulée.",
+    "scanAlreadyQueued": "Une analyse est déjà en file d'attente pour cet appareil."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Ajoutez une balise...",
@@ -2980,8 +2971,10 @@
     "title": "Raccourcis de filtre"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Choisissez une valeur pour voir les appareils correspondants",
     "counting": "… Comptage",
-    "matches": "~{{count}} dispositifs correspondent",
+    "matches_one": "~{{count}} appareil correspond",
+    "matches_other": "~{{count}} appareils correspondent",
     "unavailable": "Aperçu indisponible"
   },
   "filterSentenceBuilder": {
@@ -4336,6 +4329,7 @@
       "pending": "Pas encore vérifiée",
       "private": "Registre privé — identifiants requis",
       "unsupported_registry": "Registre non pris en charge",
+      "provenance_unknown": "Provenance inconnue — le nom de l'image n'est envoyé à aucun registre",
       "error": "Échec de la vérification du registre — nouvelle tentative prévue",
       "behind": "Une image plus récente est publiée pour ce tag",
       "current": "Correspond au registre",

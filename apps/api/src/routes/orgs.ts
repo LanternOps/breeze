@@ -27,13 +27,13 @@ import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
 // on the mock") before a single test runs.
 import { psaConnections } from '../db/schema/integrations';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import { markPermissionGate } from '../middleware/permissionGate';
 import { wispEnabled } from '../config/env';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
 import {
   clampSessionTimeoutInSettings,
-  sessionTimeoutMinutesSchema,
   sessionTimeoutSettingsError,
 } from '../services/sessionTimeoutLimits';
 import { getAiApprovalTimeout } from '../services/aiApprovalTimeout';
@@ -84,7 +84,7 @@ import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/
 import { escapeLike } from '../utils/sql';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlField, keptSecretOrHttpUrlValue, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml, portalCustomCssSchema } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlField, keptSecretOrHttpUrlValue, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml, securityLimitSchemas, portalCustomCssSchema } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE, DEFAULT_LAUNCH_PURCHASE_SELECTION } from '@breeze/shared';
 import { siteLocationRoutes } from './siteLocation';
@@ -812,9 +812,11 @@ const partnerSettingsSchema = z.object({
     // The scalar limits below accept an explicit `null` meaning "clear back to
     // the inherited default" (#8976). The handler deep-merges `security`, so an
     // omitted key keeps the stored value; `null` is the only way to unset one.
-    minLength: z.number().int().min(6).max(128).nullable().optional(),
+    // The numeric bounds live in @breeze/shared (securityLimits.ts) so the
+    // partner settings form validates against the same limits (#10081).
+    minLength: securityLimitSchemas.minLength.nullable().optional(),
     complexity: z.enum(['standard', 'strict', 'passphrase']).nullable().optional(),
-    expirationDays: z.number().int().min(0).nullable().optional(),
+    expirationDays: securityLimitSchemas.expirationDays.nullable().optional(),
     requireMfa: z.boolean().optional(),
     // #5306 — how long a user whose ROLE forces MFA (roles.force_mfa) may keep
     // working before enrolment is enforced. Optional on purpose: a PATCH that
@@ -834,8 +836,8 @@ const partnerSettingsSchema = z.object({
     // `allowedMethods` at write time (foldAllowedMfaMethodsAlias) and never
     // persisted as a second source of truth.
     allowedMfaMethods: z.object({ totp: z.boolean().optional(), sms: z.boolean().optional() }).optional(),
-    sessionTimeout: sessionTimeoutMinutesSchema.nullable().optional(),
-    maxSessions: z.number().int().min(1).nullable().optional(),
+    sessionTimeout: securityLimitSchemas.sessionTimeout.nullable().optional(),
+    maxSessions: securityLimitSchemas.maxSessions.nullable().optional(),
     ipAllowlist: z
       .array(z.string())
       .optional()
@@ -1785,17 +1787,43 @@ async function resolveArchivedOrgScope(
   return null;
 }
 
+// Requests on GET /organizations that passed WITHOUT organizations:read and
+// must be served the name-level projection only (see the gate below).
+const nameLevelOrgListRequests = new WeakSet<Context>();
+
 // Org-scope callers may read their OWN org's name-level row without the
 // organizations:read permission (UI shell / tickets cold load, #1245 residual)
 // — every org user implicitly needs their org's name to render the app shell.
-// Partner/system scope still requires the permission: they list many orgs and
-// receive full rows. The handler's organization branch is hard-scoped to
-// auth.orgId and projects to safe fields only.
+// The handler's organization branch is hard-scoped to auth.orgId and projects
+// to safe fields only.
+//
+// Partner-scope callers get full rows only with organizations:read. Without it
+// (#9528: an org-restricted technician on a custom "Remote Control" role) they
+// still need the NAMES of the orgs they can already reach — the top-nav org
+// switcher and the /devices org filter are fed by this route — so they fall
+// back to the same name-level projection, limited to auth.accessibleOrgIds and
+// never including the archived block. organizations:read stays the permission
+// for managing orgs and for reading full org rows.
+//
+// The strict gate is PROBED (its `next` only records success) rather than
+// re-implemented, so whatever it grants keeps the full-row path and any
+// non-403 failure still propagates. Automation principals never get the
+// fallback: requirePermission denies them outright, and so does this gate.
+// System scope is unchanged — it is not tied to an accessible-org set.
 const requireOrgReadUnlessOwnOrg = async (c: Context, next: Next) => {
   const auth = c.get('auth') as AuthContext | undefined;
   if (!auth) throw new HTTPException(401, { message: 'Not authenticated' });
   if (auth.scope === 'organization') return next();
-  return requireOrgRead(c, next);
+  if (auth.scope !== 'partner' || isAutomationPrincipal(auth)) return requireOrgRead(c, next);
+
+  let granted = false;
+  try {
+    await requireOrgRead(c, async () => { granted = true; });
+  } catch (err) {
+    if (!(err instanceof HTTPException) || err.status !== 403) throw err;
+  }
+  if (!granted) nameLevelOrgListRequests.add(c);
+  return next();
 };
 
 orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'), requireOrgReadUnlessOwnOrg, zValidator('query', listOrganizationsSchema), async (c) => {
@@ -1845,7 +1873,10 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
   // they are read through the READ ONLY archived context and appended. A
   // partner-scope caller is hard-pinned to its own verified partner id; a
   // partner token with no partnerId gets nothing rather than every partner's.
-  const archivedScope = includeArchived === 'true'
+  // #9528 — a partner caller admitted without organizations:read (see
+  // requireOrgReadUnlessOwnOrg): name-level rows of its accessible orgs only.
+  const nameLevelOnly = nameLevelOrgListRequests.has(c);
+  const archivedScope = includeArchived === 'true' && !nameLevelOnly
     ? await resolveArchivedOrgScope(auth, queryPartnerId)
     : null;
 
@@ -1952,6 +1983,26 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
   // `created_at, id` the tiebreaker, so LIMIT/OFFSET slices the intended
   // sequence. `buildOrganizationListQuery` owns that shape and is pinned on the
   // compiled SQL in `orgs.listQuery.test.ts`.
+  if (nameLevelOnly) {
+    // Same population, order and pagination as the full list — only the
+    // projection differs, and no device counts or archived block ride along.
+    const data = noLiveOrgs
+      ? []
+      : await buildOrganizationListQuery({
+          conditions,
+          limit,
+          offset,
+          preferredOrder,
+          columns: {
+            id: organizations.id,
+            name: organizations.name,
+            slug: organizations.slug,
+            status: organizations.status,
+          },
+        });
+    return c.json({ data, pagination: { page, limit, total: Number(count) } });
+  }
+
   const ordered = noLiveOrgs
     ? []
     : await buildOrganizationListQuery({ conditions, limit, offset, preferredOrder });

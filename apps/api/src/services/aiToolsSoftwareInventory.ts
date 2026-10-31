@@ -23,6 +23,7 @@ import type { RouteAuditInput } from './auditEvents';
 import type { AiTool } from './aiTools';
 import { mfaGatedToolError } from './aiToolMfaGate';
 import { isHoldingOrg } from './unassignedPool/protectedOrg';
+import { SOFTWARE_POLICY_WOULD_NOT_APPLY } from './softwarePolicyCoverage';
 import {
   approveInventorySoftware, clearInventorySoftware, denyInventorySoftware, listInventory, listInventoryDevices,
   searchInventoryNames,
@@ -129,6 +130,12 @@ export function registerSoftwareInventoryTools(aiTools: Map<string, AiTool>): vo
           : action === 'deny'
             ? await denyInventorySoftware(params)
             : await clearInventorySoftware(params);
+        // #9635: keep the refusal's structure (which policy wins, same mode or
+        // not) so the model can explain it instead of a bare CONFLICT.
+        const body = result.body as { code?: unknown } | null;
+        if (result.status === 409 && body?.code === SOFTWARE_POLICY_WOULD_NOT_APPLY) {
+          return bounded(result.body);
+        }
         return httpResult(result);
       } catch (error) {
         return thrown(TOOL, error);

@@ -33,6 +33,7 @@ export * from './aiToolOutputTombstone';
 export * from './aiToolLabels';
 export * from './scriptSecurityPatterns';
 export * from './scriptLaneGrant';
+export * from './commandOutput';
 // Deliberately NOT `export *`. `compileExcludeMatcher` is a code-point port of
 // the agent's matcher and knowingly diverges from Go on mid-rune byte offsets
 // and Unicode special-casing (see matcherPortLimitations in
@@ -64,4 +65,5 @@ export * from './paymentMethodLabel';
 export * from './discoverySubnetLimit';
 export * from './networkProxyOptIn';
 export * from './forceReboot';
+export * from './networkIsolation';
 export * from './businessTime';
