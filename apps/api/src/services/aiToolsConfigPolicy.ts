@@ -24,6 +24,7 @@ import { deviceScopeCondition } from './aiToolsSiteScope';
 import { describeFirstZodIssue } from '../lib/zodIssues';
 import { INLINE_SETTINGS_EXAMPLES } from './aiToolsConfigPolicyExamples';
 import { resolveWritableToolOrgId } from './aiToolWriteOrg';
+import { describeMaintenanceSchedule } from './maintenanceWindowProjection';
 import {
   resolveEffectiveConfig,
   previewEffectiveConfig,
@@ -249,7 +250,7 @@ export const MAINTENANCE_LINK_FEATURE_TYPE_REQUIRED =
 /** Per-feature inline settings reference, returned on demand by describe. */
 export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFeatureType, string>> = {
   patch: `{ sources: ["os","third_party"], scheduleFrequency: "daily"|"weekly"|"monthly", scheduleTime: "02:00", scheduleDayOfWeek?: "tue", scheduleDayOfMonth?: 1, rebootPolicy: "never"|"if_required"|"always"|"maintenance_window" } for schedule/reboot only; set featurePolicyId → existing update ring UUID to attach approval behaviour. Approval (auto-approve severities, deferral) and per-app block/pin rules live on the linked Update Ring (manage_update_rings), not on the policy.`,
-  maintenance: `{ recurrence: "once"|"daily"|"weekly"|"monthly", windowStart?: "naive ISO-8601 local datetime for once (e.g. 2026-03-15T02:00) | HH:MM local time of day for daily/weekly/monthly (omit or null = 00:00). Never pass a Z-suffixed or offset-bearing instant for a recurring cadence — it is rejected and the window falls back to midnight.", durationHours: 1-72, timezone: "America/New_York", suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false, notifyBeforeMinutes?: 15, notifyOnStart: true, notifyOnEnd: true }`,
+  maintenance: `{ recurrence: "once"|"daily"|"weekly"|"monthly", windowStart?: "naive ISO-8601 local datetime for once (e.g. 2026-03-15T02:00) | HH:MM local time of day for daily/weekly/monthly (omitted, "" or null = 00:00; a blank windowStart never means the window is off). Never pass a Z-suffixed or offset-bearing instant for a recurring cadence — it is rejected and the window falls back to midnight.", durationHours: 1-72, timezone: "America/New_York", suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false, rebootIfPending: false, notifyBeforeMinutes?: 15, notifyOnStart: true, notifyOnEnd: true }. The day is fixed: weekly opens every Sunday and monthly on the 1st, at windowStart in timezone. There is no day-of-week or day-of-month field, so a window cannot be moved to another day. rebootIfPending: true reboots (after the usual reboot warning) Windows and Linux devices that report a pending reboot while the window is open. The check runs every 10 minutes and only reaches devices that are online during the window, so a laptop that is off or asleep then is not rebooted. macOS never reports a pending reboot. get_effective_configuration with includeSettings returns the resolved schedule (day, start time, next window) as effectiveSchedule.`,
   automation: `{ items: [{ name, enabled: true, triggerType: "schedule"|"event"|"manual", cronExpression?: "0 2 * * *", timezone?: "America/New_York", eventType?: "device.offline"|"alert.triggered"|"compliance.failed"|"patch.available", actions: [{ type: "run_script"|"send_notification"|"create_alert"|"execute_command", scriptId?|channelId?|severity?|message?|command? }], onFailure: "stop"|"continue"|"notify" }] }`,
   event_log: `{ retentionDays: 30, maxEventsPerCycle: 100, collectCategories: ["security","hardware","application","system"], minimumLevel: "info"|"warning"|"error"|"critical", collectionIntervalMinutes: 15, rateLimitPerHour: 12000, applicationProviders: [] /* up to 20 extra Application-log Warning/Information providers; only the winning policy applies */ }`,
   compliance: `{ items: [{ name, enforcementLevel?: "monitor"|"warn"|"enforce" (default "monitor"; enforce also runs the rule's remediation), checkIntervalMinutes?: 60, rules: 1-50 of [ { type: "required_software", softwareName: "Contoso Agent" (case-insensitive name match against installed software), softwareVersion?: "7.0", versionOperator?: "any"|"eq"|"gte"|"gt"|"lte" (omit or "any" = presence only; any other operator REQUIRES softwareVersion; "gt" is evaluated as >=) } | { type: "prohibited_software", prohibitedName } | { type: "disk_space_minimum", minGb: number (minimum FREE space in GB), diskPath?: "C:" (default: every disk) } | { type: "os_version", osType?: "windows"|"macos"|"linux"|"any" (default "any"), minOsVersion?: "10.0.19045" } | { type: "registry_check", registryPath, registryValueName, registryExpectedValue? (omit = the value only has to exist) } | { type: "config_check", configFilePath, configKey, configExpectedValue? } ] }] }. Each rule may also carry description? and remediation?. A failing rule marks the device non-compliant (see configuration_policy_compliance). enforcementLevel "warn" and "enforce" also raise an alert per device (medium / high) that auto-resolves once the device is compliant again; "monitor" only reports. To be alerted when an app is missing or removed, use a required_software rule with enforcementLevel "warn", or a software_presence monitor (manage_monitor_definitions, condition { name, presence: "not_installed" }).`,
@@ -311,8 +312,16 @@ function shapeEffectiveConfig(
     // The compact default page drops sourceTargetId: inheritanceChain carries
     // the (level, target, policy) triple for every winning assignment, and one
     // id per feature type is what kept the page from fitting the chat budget.
+    // #10397: the stored maintenance settings cannot say which day a window
+    // opens (weekly = Sunday, monthly = the 1st) and a blank windowStart means
+    // midnight, not "never". Ship the schedule the evaluator runs beside them.
+    // Described from the same inlineSettings blob shown next to it, so the two
+    // can never contradict each other on the page.
+    const effectiveSchedule = opts.includeSettings && featureType === 'maintenance'
+      ? describeMaintenanceSchedule(inlineSettings)
+      : null;
     features[featureType] = opts.includeSettings
-      ? { ...rest, sourceTargetId, ...inherited, inlineSettings }
+      ? { ...rest, sourceTargetId, ...inherited, inlineSettings, ...(effectiveSchedule ? { effectiveSchedule } : {}) }
       : { ...rest, ...inherited, hasInlineSettings };
   }
   const inheritanceChain = opts.featureType

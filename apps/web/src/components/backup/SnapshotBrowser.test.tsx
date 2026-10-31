@@ -109,7 +109,7 @@ describe('SnapshotBrowser', () => {
     render(<SnapshotBrowser />);
     fireEvent.click(await screen.findByText('Documents'));
     const row = (await screen.findByText('big.bin')).closest('tr')!;
-    expect(row.textContent).toContain('4.6 MB');
+    expect(row.textContent).toContain('4.60 MB');
     expect(row.textContent).not.toContain('4823117 B');
     expect(row.textContent).not.toContain('2026-10-21T01:12:44.000Z');
   });

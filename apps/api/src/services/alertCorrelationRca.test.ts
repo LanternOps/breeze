@@ -389,6 +389,17 @@ describe('alert correlation RCA evidence builder', () => {
     }];
   });
 
+  it('excludes device-less alerts and never renders a null device in RCA text', async () => {
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const result = await buildAlertCorrelationRca({ orgId: ORG_ID, groupId: 'group-1', alerts: [
+      { id: ALERT_1, orgId: ORG_ID, deviceId: null, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: { threshold: 90, observed: 96 }, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), ownerKind: 'backup_workload', ownerRef: 'workload-1', partnerFeedXid: '1' }
+    ] });
+    expect(result.scope.deviceIds).toEqual([]);
+    expect(result.timeline).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain('null');
+    expect(log).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ alertId: ALERT_1, reason: 'alert_has_no_device' }));
+  });
+
   it('builds bounded evidence and likely-cause candidates for grouped alerts', async () => {
     const result = await buildAlertCorrelationRca({
       orgId: ORG_ID,
@@ -397,8 +408,8 @@ describe('alert correlation RCA evidence builder', () => {
       windowHours: 4,
       maxEvidenceItems: 20,
       alerts: [
-        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: { threshold: 90, observed: 96 }, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), partnerFeedXid: '1' },
-        { id: ALERT_2, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: null, configPolicyId: 'cpar-1', configItemName: 'ram_percent', status: 'active', severity: 'high', title: 'Memory high', message: 'RAM over 90%', context: { threshold: 90, observed: 94 }, triggeredAt: new Date('2026-06-18T12:02:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:02:00Z'), partnerFeedXid: '1' },
+        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: { threshold: 90, observed: 96 }, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), ownerKind: 'device', ownerRef: null, partnerFeedXid: '1' },
+        { id: ALERT_2, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: null, configPolicyId: 'cpar-1', configItemName: 'ram_percent', status: 'active', severity: 'high', title: 'Memory high', message: 'RAM over 90%', context: { threshold: 90, observed: 94 }, triggeredAt: new Date('2026-06-18T12:02:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:02:00Z'), ownerKind: 'device', ownerRef: null, partnerFeedXid: '1' },
       ],
     });
 
@@ -571,7 +582,7 @@ describe('alert correlation RCA evidence builder', () => {
       // change must survive even though 5 of the 8 context items are earlier in time.
       maxEvidenceItems: 5,
       alerts: [
-        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), partnerFeedXid: '1' },
+        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), ownerKind: 'device', ownerRef: null, partnerFeedXid: '1' },
       ],
     });
 
@@ -621,7 +632,7 @@ describe('alert correlation RCA evidence builder', () => {
       windowHours: 4,
       maxEvidenceItems: 20,
       alerts: [
-        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-01-15T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-01-15T12:00:00Z'), partnerFeedXid: '1' },
+        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-01-15T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-01-15T12:00:00Z'), ownerKind: 'device', ownerRef: null, partnerFeedXid: '1' },
       ],
     });
 
@@ -685,8 +696,8 @@ describe('alert correlation RCA evidence builder', () => {
       windowHours: 4,
       maxEvidenceItems: 30,
       alerts: [
-        { id: ALERT_1, orgId: ORG_ID, deviceId: QUIET_DEVICE, ruleId: null, configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), partnerFeedXid: '1' },
-        { id: ALERT_2, orgId: ORG_ID, deviceId: NOISY_DEVICE, ruleId: null, configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:01:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:01:00Z'), partnerFeedXid: '1' },
+        { id: ALERT_1, orgId: ORG_ID, deviceId: QUIET_DEVICE, ruleId: null, configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), ownerKind: 'device', ownerRef: null, partnerFeedXid: '1' },
+        { id: ALERT_2, orgId: ORG_ID, deviceId: NOISY_DEVICE, ruleId: null, configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:01:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:01:00Z'), ownerKind: 'device', ownerRef: null, partnerFeedXid: '1' },
       ],
     });
 
@@ -725,7 +736,7 @@ describe('alert correlation RCA evidence builder', () => {
       windowHours: 4,
       maxEvidenceItems: 20,
       alerts: [
-        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), partnerFeedXid: '1' },
+        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), ownerKind: 'device', ownerRef: null, partnerFeedXid: '1' },
       ],
       canReadSensitiveCategory: false,
     });
@@ -742,7 +753,7 @@ describe('alert correlation RCA evidence builder', () => {
       windowHours: 4,
       maxEvidenceItems: 20,
       alerts: [
-        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), partnerFeedXid: '1' },
+        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), ownerKind: 'device', ownerRef: null, partnerFeedXid: '1' },
       ],
       canReadSensitiveCategory: true,
     });
@@ -770,7 +781,7 @@ describe('alert correlation RCA evidence builder', () => {
       windowHours: 4,
       maxEvidenceItems: 20,
       alerts: [
-        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), partnerFeedXid: '1' },
+        { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), ownerKind: 'device', ownerRef: null, partnerFeedXid: '1' },
       ],
     });
 

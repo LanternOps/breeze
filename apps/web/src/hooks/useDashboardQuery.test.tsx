@@ -200,3 +200,64 @@ describe('useDashboardQuery staleScope', () => {
     expect(lastState?.staleScope).toBe(false);
   });
 });
+
+// #10295: a role without the endpoint's permission skips the request instead
+// of firing it on every tick and logging a 403.
+describe('useDashboardQuery enabled: false', () => {
+  function GatedProbe({ token, enabled }: { token: number; enabled: boolean }) {
+    lastState = useDashboardQuery<number>('/audit-logs/logs', token, (j: any) => j.data.total, { enabled });
+    return null;
+  }
+
+  it('never fetches and reports the slot unavailable', async () => {
+    const { rerender } = render(<GatedProbe token={0} enabled={false} />);
+    await waitFor(() => expect(lastState?.unavailable).toBe(true));
+    expect(lastState?.isLoading).toBe(false);
+    expect(lastState?.isFetching).toBe(false);
+    expect(lastState?.data).toBeNull();
+    expect(lastState?.error).toBeNull();
+
+    // Neither a tick nor an org-scope flip issues the request.
+    rerender(<GatedProbe token={1} enabled={false} />);
+    mockOrgState.currentOrgId = null;
+    rerender(<GatedProbe token={2} enabled={false} />);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+  });
+
+  it('fetches once the permission arrives', async () => {
+    const { rerender } = render(<GatedProbe token={0} enabled={false} />);
+    await waitFor(() => expect(lastState?.unavailable).toBe(true));
+
+    rerender(<GatedProbe token={0} enabled />);
+    await waitFor(() => expect(lastState?.data).toBe(7));
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+    expect(lastState?.unavailable).toBe(false);
+  });
+
+  it('drops loaded data when the permission is revoked', async () => {
+    const { rerender } = render(<GatedProbe token={0} enabled />);
+    await waitFor(() => expect(lastState?.data).toBe(7));
+
+    rerender(<GatedProbe token={0} enabled={false} />);
+    await waitFor(() => expect(lastState?.unavailable).toBe(true));
+    expect(lastState?.data).toBeNull();
+  });
+
+  it('ignores an in-flight response when the permission is revoked', async () => {
+    let resolvePending!: (r: Response) => void;
+    fetchWithAuthMock.mockReturnValueOnce(
+      new Promise<Response>((r) => (resolvePending = r)) as any
+    );
+    const { rerender } = render(<GatedProbe token={0} enabled />);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
+
+    rerender(<GatedProbe token={0} enabled={false} />);
+    await act(async () => {
+      resolvePending(jsonResponse({ data: { total: 9 } }));
+      await Promise.resolve();
+    });
+    expect(lastState?.unavailable).toBe(true);
+    expect(lastState?.data).toBeNull();
+  });
+});

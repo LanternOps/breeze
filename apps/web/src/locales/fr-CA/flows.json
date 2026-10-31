@@ -57,7 +57,8 @@
     "source": {
       "core": "Outil de base",
       "tenant": "Source d’outils",
-      "builtin": "Intégré"
+      "builtin": "Intégré",
+      "unknown": "Outil inconnu"
     },
     "preApprovedBadge": "Préapprouvé",
     "builtin": {

@@ -108,7 +108,9 @@ describe('billing stampers take ticket locks in the billing chain\'s order (#897
     const gen = await withSystemDbAccessContext(() => generateDueInvoice(f.contractId, at('2026-08-01')));
     expect(gen.generated).toBe(true);
     const ticketId = await insertTicket(f);
-    const entryId = await seedEntry(f, { minutes: 60, endedAt: '2026-08-10T12:00:00Z', ticketId });
+    // Ended before the block's first period: no hold window covers it, so
+    // Issue may bill it (#8970 refuses held time before any lock is at stake).
+    const entryId = await seedEntry(f, { minutes: 60, endedAt: '2026-06-20T12:00:00Z', ticketId });
     const [contractLine] = await getTestDb().select().from(invoiceLines)
       .where(eq(invoiceLines.invoiceId, gen.invoiceId!)).limit(1);
     const { id: _id, ...base } = contractLine!;

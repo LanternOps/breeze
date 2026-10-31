@@ -41,7 +41,7 @@ export function checkoutSessionExpiry(now: Date = new Date()): { expiresAt: numb
 
 // Statuses whose balance can be collected online. Mirrors the customer-portal
 // PAYABLE set (routes/portal/invoices.ts) — drafts/paid/void are excluded.
-const PAYABLE = new Set(['sent', 'partially_paid', 'overdue']);
+export const PAYABLE: ReadonlySet<string> = new Set(['sent', 'partially_paid', 'overdue']);
 
 /** Internal publication gate shared by the portal and partner Checkout producers.
  * Caller must keep this transaction open through mapping and revocation intent.

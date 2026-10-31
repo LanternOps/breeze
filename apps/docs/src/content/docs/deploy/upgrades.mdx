@@ -1866,15 +1866,20 @@ By default (`AGENT_AUTO_PROMOTE=true`), syncing a new agent release immediately 
 
 ### Pinning Agent and Watchdog Versions
 
-Instead of always tracking the latest promoted release, you can pin the fleet — or a single customer — to a specific version. **Settings → Partner Defaults** and **Settings → Org Defaults** each expose an **Update version targets** card with independent **Agent target** and **Watchdog target** selectors. Each selector offers every registered version plus **Latest promoted** (track the globally promoted release, the default behavior).
+Instead of always tracking the latest promoted release, you can pin the fleet — or a single customer — to a specific version. **Settings → Partner Defaults** and **Settings → Org Defaults** each expose an **Update version targets** card with independent **Agent target** and **Watchdog target** selectors. Each selector offers every registered version. At the partner level it also offers **Latest promoted**, which tracks the globally promoted release. This is the default behavior.
 
-Pin precedence is **inherit-with-override** — deliberately different from the lock model used by the update policy and maintenance window below:
+Pin precedence is **inherit-with-override**. This is deliberately different from the lock model used by the update policy and maintenance window below:
 
 - A **partner pin** is the inherited default for all of that partner's organizations.
-- Any **org can override** the partner pin with its own value — including explicitly re-selecting **Latest promoted** to move that org back to the promoted release while the rest of the fleet stays pinned.
+- At the org level, **Inherit partner default** stores no org value for that component. The org follows the partner pin, including a hold or canary pin the partner sets later. With no partner pin, the org tracks the latest promoted release.
+- Any **org can override** the partner pin with its own value. This can be a specific version, or **Always latest promoted, ignore partner pin**, which keeps that org on the promoted release while the rest of the fleet stays pinned. An org that has this override shows the caption **Overrides partner default**. Select **Inherit partner default** to go back to inheriting.
 - Agent and watchdog pins resolve independently.
 
-This is what lets a partner pilot a new version on one customer: pin the fleet to the known-good version at the partner level, then override a single org to the candidate version (or to Latest promoted).
+This is what lets a partner pilot a new version on one customer: pin the fleet to the known-good version at the partner level, then override a single org to the candidate version (or to **Always latest promoted, ignore partner pin**).
+
+<Aside type="note">
+  Before the inherit fix, the org selector's "Inherit partner default" option actually saved an explicit **latest** override. An org that chose it then now shows **Always latest promoted, ignore partner pin**. Check these orgs and switch any that should follow the partner pin back to **Inherit partner default**.
+</Aside>
 
 <Aside type="caution">
   **Pins fail closed.** If the resolved pin has no registered build for a device's platform and architecture, the update — including watchdog-recovery pushes — is withheld: the device simply stays on its current version and retries on the next heartbeat. This is surfaced only in server logs and error tracking; there is no dashboard badge for a frozen device. Before pinning broadly, verify the pinned version has builds registered for every platform/architecture in your fleet.

@@ -1,5 +1,5 @@
 import { flowBuiltinTierFor, isFlowBuiltin, isTenantToolName, remediationTriggerSchema, type RemediationTrigger, AI_APPROVAL_TIMEOUT_MAX_MINUTES, AI_APPROVAL_TIMEOUT_MIN_MINUTES } from '@breeze/shared';
-import { buildActionLabel, hasDeviceIdStub } from './actionLabel';
+import { buildActionLabel, describePax8Action, hasDeviceIdStub } from './actionLabel';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
@@ -38,6 +38,7 @@ import { aiTools, resolveWritableToolOrgId } from '../aiTools';
 import {
   checkAgentGuardrails,
   checkGuardrails,
+  needsRegistryTier3Approval,
   type AgentGuardrailPolicy,
   type GuardrailCheck,
   type GuardrailContext,
@@ -354,9 +355,11 @@ export interface CreateActionIntentInput {
    * would answer tier 4 "unknown tool" for a qualified name. The external
    * tool is always Tier 3 / `supervised` here (Tier 1-2 external calls
    * auto-execute in-session and never mint an intent; the caller passes
-   * only Tier-3 descriptors). Chat/MCP principals only: an ai_agent
-   * principal is refused (`external_tool_not_allowed_for_agent`) — agents
-   * calling tenant tools is W5 work (flows-as-tools).
+   * only Tier-3 descriptors). Chat/MCP principals, and a flow principal
+   * parking its own Tier-3 external step (#10288 — the step row must be that
+   * tool, pinned Tier 3); an ai_agent principal is refused
+   * (`external_tool_not_allowed_for_agent`) — agents calling tenant tools is
+   * W5 work (flows-as-tools).
    */
   externalTool?: { toolSourceToolId: string; revision: string; sourceName: string };
   /**
@@ -411,6 +414,14 @@ export interface CreateActionIntentInput {
    * (W04) consumes — keep the field name.
    */
   guardrailContext?: GuardrailContext;
+  /**
+   * #10027: set only by `createMcpActionIntent` (source `mcp_api`). A call to
+   * a registry-Tier-3 tool whose action is rated below Tier 3 and is NOT
+   * read-only (`needsRegistryTier3Approval`) is then approved at Tier 3,
+   * supervised, instead of being refused as `tool_not_tier3`. It changes
+   * nothing for any other call. TRUSTED, INTERNAL-ONLY.
+   */
+  mcpRegistryTierApproval?: true;
 }
 
 export type ActionIntentSnapshot = {
@@ -629,6 +640,8 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
   },
   manage_quotes: (input) =>
     nonEmptyString(input.action) === 'send' ? 'Sends the quote to the customer.' : null,
+  manage_pax8_subscriptions: (input) => describePax8Action('manage_pax8_subscriptions', nonEmptyString(input.action)),
+  manage_pax8_orders: (input) => describePax8Action('manage_pax8_orders', nonEmptyString(input.action)),
   manage_contracts: (input) => {
     switch (nonEmptyString(input.action)) {
       case 'activate': return 'Activates the contract so billing starts.';
@@ -1674,7 +1687,7 @@ export async function createActionIntent(
     };
   }
 
-  const { check: guardrail, context: guardrailContext } = externalTool
+  const { check: classified, context: guardrailContext } = externalTool
     ? {
         check: {
           tier: 3,
@@ -1715,6 +1728,22 @@ export async function createActionIntent(
         input.orgId ?? auth.orgId ?? null,
         input.guardrailContext,
       );
+  // #10027: an MCP filing of a NON-read action that a per-action table rates
+  // below Tier 3 on a registry-Tier-3 tool (edr_endpoint_action scan). The MCP
+  // gate runs only read-only below-Tier-3 actions directly and files every
+  // other one, so this is approved at the tool's registry Tier 3, the tier
+  // release revalidation compares against (`getToolTier > riskTier` fails it
+  // as tier_escalated). One supervised approver, like P2-1's agent Tier-2
+  // lane: the action's own classification is below Tier 3, and four_eyes
+  // would make a scan harder to approve than an isolate. A read-only call, a
+  // registry tier below 3, or any other source keeps the tier gate below.
+  const guardrail: GuardrailCheck = input.mcpRegistryTierApproval === true
+    && input.source === 'mcp_api'
+    && !externalTool && !invokedFlow && !builtinIntent
+    && classified.allowed
+    && needsRegistryTier3Approval(input.toolName, classified)
+    ? { ...classified, tier: 3, requiresApproval: true, readOnly: false, approvalScope: 'supervised' }
+    : classified;
   if (!guardrail.allowed || guardrail.tier >= 4) {
     throw new ActionIntentTierError(
       `Tool "${input.toolName}" is not permitted on the action-intent path: ${guardrail.reason ?? 'blocked'}`,
@@ -1767,6 +1796,11 @@ export async function createActionIntent(
       // W05 (#5220): a built-in intent is for exactly this step row's built-in at its pinned tier.
       || (builtinIntent && (
         facts.step.tool !== input.toolName || facts.step.toolSource !== 'builtin' || facts.step.tier !== guardrail.tier
+      ))
+      // #10288: likewise an external intent is for exactly this step row's
+      // tool-source tool, pinned Tier 3 (the binding's fixed verdict).
+      || (externalTool && (
+        facts.step.tool !== input.toolName || facts.step.toolSource !== 'tenant' || facts.step.tier !== 3
       ))
     ) {
       throw new ActionIntentError(

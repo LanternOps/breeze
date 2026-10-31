@@ -9,7 +9,14 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }),
 }));
 
-type BannerUser = { id: string; canManagePartnerWide?: boolean } | null;
+type BannerUser = {
+  id: string;
+  canManagePartnerWide?: boolean;
+  permissions?: Array<{ resource: string; action: string }>;
+} | null;
+
+// PATCH /orgs/partners/me requires organizations:write (#10295).
+const ORGS_WRITE = [{ resource: 'organizations', action: 'write' }];
 type Scope = 'system' | 'partner' | 'organization' | null;
 
 const state = vi.hoisted(() => ({
@@ -60,7 +67,7 @@ beforeEach(() => {
   // partners/me reads are shared while in flight (#9172); a test that leaves one
   // pending must not hand it to the next test.
   invalidatePartnersMe();
-  state.user = { id: 'user-1', canManagePartnerWide: true };
+  state.user = { id: 'user-1', canManagePartnerWide: true, permissions: ORGS_WRITE };
   state.claims = { status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p1' } };
   fetchWithAuthMock.mockReset();
   window.localStorage.clear();
@@ -114,11 +121,57 @@ describe('MfaPolicyOffBanner', () => {
   });
 
   it('renders nothing (and never fetches) for a partner user who cannot manage partner-wide policies', async () => {
-    state.user = { id: 'user-1', canManagePartnerWide: false };
+    state.user = { id: 'user-1', canManagePartnerWide: false, permissions: ORGS_WRITE };
     render(<MfaPolicyOffBanner />);
     await act(async () => {});
     expect(fetchWithAuthMock).not.toHaveBeenCalled();
     expect(screen.queryByTestId(TEST_ID)).not.toBeInTheDocument();
+  });
+
+  // #10295: a Partner Viewer has full partner access (canManagePartnerWide) but
+  // only organizations:read, so the "Require MFA" CTA leads to a form it cannot save.
+  it('renders nothing (and never fetches) for a partner user without organizations:write', async () => {
+    state.user = {
+      id: 'user-1',
+      canManagePartnerWide: true,
+      permissions: [{ resource: 'organizations', action: 'read' }],
+    };
+    render(<MfaPolicyOffBanner />);
+    await act(async () => {});
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId(TEST_ID)).not.toBeInTheDocument();
+  });
+
+  it('renders nothing (and never fetches) while the permission list has not loaded', async () => {
+    state.user = { id: 'user-1', canManagePartnerWide: true };
+    render(<MfaPolicyOffBanner />);
+    await act(async () => {});
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId(TEST_ID)).not.toBeInTheDocument();
+  });
+
+  it('appears once permissions land, and hides again when organizations:write is revoked', async () => {
+    state.user = { id: 'user-1', canManagePartnerWide: true };
+    fetchWithAuthMock.mockResolvedValue(partnerResponse(undefined));
+    const { rerender } = render(<MfaPolicyOffBanner />);
+    await act(async () => {});
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+
+    state.user = { id: 'user-1', canManagePartnerWide: true, permissions: ORGS_WRITE };
+    rerender(<MfaPolicyOffBanner />);
+    expect(await screen.findByTestId(TEST_ID)).toBeInTheDocument();
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+
+    state.user = { id: 'user-1', canManagePartnerWide: true, permissions: [{ resource: 'organizations', action: 'read' }] };
+    rerender(<MfaPolicyOffBanner />);
+    await waitFor(() => expect(screen.queryByTestId(TEST_ID)).not.toBeInTheDocument());
+  });
+
+  it('renders for a wildcard (*:*) admin grant', async () => {
+    state.user = { id: 'user-1', canManagePartnerWide: true, permissions: [{ resource: '*', action: '*' }] };
+    fetchWithAuthMock.mockResolvedValueOnce(partnerResponse(undefined));
+    render(<MfaPolicyOffBanner />);
+    expect(await screen.findByTestId(TEST_ID)).toBeInTheDocument();
   });
 
   it('renders nothing when there is no authenticated user', async () => {
