@@ -697,6 +697,8 @@ describe('submit_suggestions tool (W2)', () => {
 describe('assessment outcome tools (Wisp W05b)', () => {
   const ASSESSMENT_TOOLS = ['record_concern', 'update_concern', 'nudge', 'propose_action', 'request_specialist'] as const;
   const CONCERN_ID = '00000000-0000-4000-8000-0000000000c1';
+  const RUN_ORG_ID = '00000000-0000-4000-8000-0000000000c9';
+  const ASSESSMENT_REFS = { assessment: { orgId: RUN_ORG_ID } };
 
   it('registers the five names in OUTCOME_TOOL_NAMES and OUTCOME_MCP_TOOL_NAMES', () => {
     for (const name of ASSESSMENT_TOOLS) {
@@ -722,7 +724,8 @@ describe('assessment outcome tools (Wisp W05b)', () => {
 
   it('the real createBreezeMcpServer accepts the five as extraTools', () => {
     expect(() => createBreezeMcpServer(
-      () => ({}) as never, undefined, undefined, undefined, buildOutcomeSdkTools(outcomeToolsForProfile('assessment')),
+      () => ({}) as never, undefined, undefined, undefined,
+      buildOutcomeSdkTools(outcomeToolsForProfile('assessment'), ASSESSMENT_REFS),
     )).not.toThrow();
   });
 
@@ -749,7 +752,7 @@ describe('assessment outcome tools (Wisp W05b)', () => {
   });
 
   it('builds all five SDK tools', () => {
-    const tools = buildOutcomeSdkTools(outcomeToolsForProfile('assessment'));
+    const tools = buildOutcomeSdkTools(outcomeToolsForProfile('assessment'), ASSESSMENT_REFS);
     expect(tools.map((t) => t.name)).toEqual([...ASSESSMENT_TOOLS]);
   });
 
@@ -776,10 +779,40 @@ describe('assessment outcome tools (Wisp W05b)', () => {
   });
 
   it('the recording tools validate and ack without executing anything', async () => {
-    const [record] = buildOutcomeSdkTools(['record_concern']);
-    const ok = await record!.handler({ subject: { kind: 'org', id: CONCERN_ID }, summary: 's', severity: 'low' }, {});
+    const [record] = buildOutcomeSdkTools(['record_concern'], ASSESSMENT_REFS);
+    const ok = await record!.handler({ subject: { kind: 'org', id: RUN_ORG_ID }, summary: 's', severity: 'low' }, {});
     expect(JSON.stringify(ok)).toContain('recorded');
-    await expect(record!.handler({ subject: { kind: 'org', id: CONCERN_ID }, summary: '', severity: 'low' }, {}))
+    await expect(record!.handler({ subject: { kind: 'org', id: RUN_ORG_ID }, summary: '', severity: 'low' }, {}))
       .rejects.toThrow();
+  });
+
+  // #10387: the tool acked `recorded` for an org subject that was not the
+  // run's org, and the finalizer then dropped it. It now refuses at call time
+  // with the id the model needs, and the refusal is an error result, so the
+  // run loop's post hook (which captures only non-error results) never records it.
+  it('record_concern needs the run org at wiring time', () => {
+    expect(() => buildOutcomeSdkTools(['record_concern'])).toThrow(/requires the run's org id/);
+  });
+
+  it('record_concern refuses an org subject that is not the run org, naming the right id', async () => {
+    const [record] = buildOutcomeSdkTools(['record_concern'], ASSESSMENT_REFS);
+    for (const wrong of ['00000000-0000-0000-0000-000000000000', CONCERN_ID]) {
+      const result = await record!.handler({ subject: { kind: 'org', id: wrong }, summary: 'Patch hygiene', severity: 'high' }, {}) as {
+        isError?: boolean; content: Array<{ text: string }>;
+      };
+      expect(result.isError).toBe(true);
+      const body = JSON.parse(result.content[0]!.text) as { error: string };
+      expect(body.error).toContain(RUN_ORG_ID);
+      expect(JSON.stringify(result)).not.toContain('"status":"recorded"');
+    }
+  });
+
+  it('record_concern still records a non-org subject (its org is pinned by the finalizer)', async () => {
+    const [record] = buildOutcomeSdkTools(['record_concern'], ASSESSMENT_REFS);
+    const result = await record!.handler({ subject: { kind: 'device', id: CONCERN_ID }, summary: 'Disk full', severity: 'medium' }, {}) as {
+      isError?: boolean; content: Array<{ text: string }>;
+    };
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.content[0]!.text)).toEqual({ status: 'recorded' });
   });
 });

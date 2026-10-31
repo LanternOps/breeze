@@ -1179,5 +1179,10 @@
     "checking": "Denetleniyor",
     "unverified": "Doğrulanmadı",
     "failed": "Bütünlük denetimi başarısız"
+  },
+  "reparseSkipNotice": {
+    "summary_one": "{{count}} yeniden ayrıştırma noktası atlandı: bağlantılar (junction) ve bağlama noktaları izlenmez ve geri yüklenmez. Bu beklenen bir durumdur, hata değildir.",
+    "summary_other": "{{count}} yeniden ayrıştırma noktası atlandı: bağlantılar (junction) ve bağlama noktaları izlenmez ve geri yüklenmez. Bu beklenen bir durumdur, hata değildir.",
+    "showDetails": "Atlanan yolları göster"
   }
 }

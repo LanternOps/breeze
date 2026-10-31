@@ -83,6 +83,10 @@ describe('WebhooksPage delete confirmation (#3531)', () => {
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Delete Webhook' })).toBeNull());
     expect(listFetches()).toBe(2);
     expect(toastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    // #9950: delete used to close the modal with no success toast.
+    expect(toastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success', message: 'Webhook "Alert relay" deleted' }),
+    );
   });
 
   it('delete 404 (already gone): toasts, closes the modal, and refetches the list (sweep A2)', async () => {

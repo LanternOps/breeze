@@ -181,8 +181,14 @@ export function formatPublishOutcome(o: PublishOutcome): { message: string; deta
 }
 
 /** Persistent banner for a set the server reports as `stale` (GET), e.g. after a reload. */
-export function staleBannerText(set: { publishedVersion: number; enabled: boolean }): string {
-  return i18n.t(/* i18n-dynamic */ `${NS}.staleBanner`, { devices: devicesText(devicesFor(set.publishedVersion, set.enabled)) });
+export function staleBannerText(set: {
+  publishedVersion: number;
+  enabled: boolean;
+  staleReason?: 'errors' | 'checker_unavailable' | null;
+}): string {
+  // A missing compiler is not an error in the user's rules (#10306).
+  const key = set.staleReason === 'checker_unavailable' ? 'staleCheckerUnavailable' : 'staleBanner';
+  return i18n.t(/* i18n-dynamic */ `${NS}.${key}`, { devices: devicesText(devicesFor(set.publishedVersion, set.enabled)) });
 }
 
 /**

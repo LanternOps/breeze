@@ -436,7 +436,7 @@ export type PatchApprovalDecision =
    * is held until it can.
    */
   | { denied: 'held_by_deferral'; holdUntil: Date | null }
-  | { denied: Exclude<PatchIneligibleReason, 'not_outstanding' | 'superseded' | 'blocked_by_source' | 'blocked_by_category' | 'blocked_by_app_rule' | 'blocked_by_feature_update_policy' | 'device_not_in_org' | 'held_by_deferral' | 'ring_reference_invalid'> };
+  | { denied: Exclude<PatchIneligibleReason, 'not_outstanding' | 'superseded' | 'blocked_by_source' | 'blocked_by_category' | 'blocked_by_app_rule' | 'blocked_by_feature_update_policy' | 'device_not_in_org' | 'held_by_deferral' | 'ring_reference_invalid' | 'unsupported_user_scope'> };
 
 export function evaluatePatchApproval(
   patch: PatchCandidate,

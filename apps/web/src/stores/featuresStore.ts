@@ -24,6 +24,10 @@ export interface Features {
   /** The server's CALLER_VERIFICATION_ENABLED switch (#6354). Off ⇒ every
    *  caller-verification surface stays unmounted and makes no requests. */
   callerVerification: boolean;
+  /** Partner sending domains (#9949): true only while the server has an
+   *  EMAIL_DOMAINS_PROVIDER. Off ⇒ every /partner/sending-domains route
+   *  answers 404, so the Sender Addresses tab stays hidden and is never probed. */
+  sendingDomains: boolean;
 }
 
 export interface CfAccessLoginConfig {
@@ -44,6 +48,10 @@ interface FeaturesState {
   registration: RegistrationConfig;
   softwarePackages: SoftwarePackagesConfig;
   loaded: boolean;
+  /** True only once /config answered and parsed. `loaded` is also true after a
+   *  failed read (the defaults stand); a gate that can recover on its own,
+   *  such as the sending-domains probe, reads this to tell the two apart. */
+  configOk: boolean;
   load: () => Promise<void>;
 }
 
@@ -52,7 +60,7 @@ interface FeaturesState {
 // flags are off by default (decision D2). An unreachable or older /config
 // (missing the field) must hide the "Delegate to Operator" button, never
 // show it.
-const DEFAULT_FEATURES: Features = { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false };
+const DEFAULT_FEATURES: Features = { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false };
 const DEFAULT_CF_ACCESS: CfAccessLoginConfig = { enabled: false };
 // Default closed: until /config confirms registration is open we hide the
 // registration UI rather than flash a link that may be disabled (#1308).
@@ -62,78 +70,82 @@ const DEFAULT_REGISTRATION: RegistrationConfig = { enabled: false };
 // worst case the user hits the same 503 the upload routes already return.
 const DEFAULT_SOFTWARE_PACKAGES: SoftwarePackagesConfig = { uploadsEnabled: true };
 
-// One /config request at a time. Every gate hook below calls load() from its
-// own mount effect, and a page mounts several before the first response lands
-// (the sidebar alone mounts four) — `loaded` only short-circuits AFTER that,
-// so without this each caller fired its own GET /config (#9939).
-let inFlightLoad: Promise<void> | null = null;
+// The read in flight, shared by every caller that asks before it settles: a
+// page that mounts several gated surfaces at once (the partner settings page
+// reads caller verification and sending domains) issues one /config, not one
+// per gate (#9949). Cleared on settle, so a later reset-and-load reads again.
+let inflight: Promise<void> | null = null;
 
-export const useFeaturesStore = create<FeaturesState>()((set, get) => ({
-  features: DEFAULT_FEATURES,
-  cfAccessLogin: DEFAULT_CF_ACCESS,
-  registration: DEFAULT_REGISTRATION,
-  softwarePackages: DEFAULT_SOFTWARE_PACKAGES,
-  loaded: false,
-  load: async () => {
-    if (get().loaded) return;
-    if (inFlightLoad) return inFlightLoad;
-    inFlightLoad = loadConfig(set).finally(() => {
-      inFlightLoad = null;
-    });
-    return inFlightLoad;
-  },
-}));
-
-async function loadConfig(set: (partial: Partial<FeaturesState>) => void): Promise<void> {
-  try {
-    const res = await fetchWithAuth('/config', { method: 'GET' });
-    if (!res.ok) {
-      console.error('[features] /config fetch failed:', { status: res.status });
-      set({ loaded: true });
-      return;
+export const useFeaturesStore = create<FeaturesState>()((set, get) => {
+  const readConfig = async (): Promise<void> => {
+    try {
+      const res = await fetchWithAuth('/config', { method: 'GET' });
+      if (!res.ok) {
+        console.error('[features] /config fetch failed:', { status: res.status });
+        set({ loaded: true, configOk: false });
+        return;
+      }
+      const data = (await res.json()) as {
+        features?: Partial<Features>;
+        cfAccessLogin?: Partial<CfAccessLoginConfig>;
+        registration?: Partial<RegistrationConfig>;
+        softwarePackages?: Partial<SoftwarePackagesConfig>;
+      };
+      set({
+        features: {
+          billing: !!data.features?.billing,
+          support: !!data.features?.support,
+          aiOperatorTasks: !!data.features?.aiOperatorTasks,
+          aiAgentsSweepAct: data.features?.aiAgentsSweepAct === true,
+          // Default CLOSED: an older or unreachable /config skips the prefetch.
+          aiAgentsPolicyDecide: data.features?.aiAgentsPolicyDecide === true,
+          // Default CLOSED, like aiOperatorTasks: an older or unreachable
+          // /config must hide a surface that authors credentials reaching
+          // customer systems, never flash it.
+          toolSources: !!data.features?.toolSources,
+          // Default CLOSED: only an exact boolean true mounts the Flows surface.
+          flows: data.features?.flows === true,
+          // Default CLOSED: an older or unreachable /config hides the surface.
+          preAssignmentEnrollment: data.features?.preAssignmentEnrollment === true,
+          // Default CLOSED: only an exact boolean true mounts the feature.
+          callerVerification: data.features?.callerVerification === true,
+          // Default CLOSED: an older or unreachable /config hides the tab and
+          // skips the list read that would 404.
+          sendingDomains: data.features?.sendingDomains === true,
+        },
+        cfAccessLogin: {
+          enabled: !!data.cfAccessLogin?.enabled,
+        },
+        registration: {
+          enabled: !!data.registration?.enabled,
+        },
+        softwarePackages: {
+          // Missing field (older API) keeps the open default.
+          uploadsEnabled: data.softwarePackages?.uploadsEnabled !== false,
+        },
+        loaded: true,
+        configOk: true,
+      });
+    } catch (err) {
+      console.error('[features] /config fetch failed:', err instanceof Error ? err.message : err);
+      set({ loaded: true, configOk: false });
     }
-    const data = (await res.json()) as {
-      features?: Partial<Features>;
-      cfAccessLogin?: Partial<CfAccessLoginConfig>;
-      registration?: Partial<RegistrationConfig>;
-      softwarePackages?: Partial<SoftwarePackagesConfig>;
-    };
-    set({
-      features: {
-        billing: !!data.features?.billing,
-        support: !!data.features?.support,
-        aiOperatorTasks: !!data.features?.aiOperatorTasks,
-        aiAgentsSweepAct: data.features?.aiAgentsSweepAct === true,
-        // Default CLOSED: an older or unreachable /config skips the prefetch.
-        aiAgentsPolicyDecide: data.features?.aiAgentsPolicyDecide === true,
-        // Default CLOSED, like aiOperatorTasks: an older or unreachable
-        // /config must hide a surface that authors credentials reaching
-        // customer systems, never flash it.
-        toolSources: !!data.features?.toolSources,
-        // Default CLOSED: only an exact boolean true mounts the Flows surface.
-        flows: data.features?.flows === true,
-        // Default CLOSED: an older or unreachable /config hides the surface.
-        preAssignmentEnrollment: data.features?.preAssignmentEnrollment === true,
-        // Default CLOSED: only an exact boolean true mounts the feature.
-        callerVerification: data.features?.callerVerification === true,
-      },
-      cfAccessLogin: {
-        enabled: !!data.cfAccessLogin?.enabled,
-      },
-      registration: {
-        enabled: !!data.registration?.enabled,
-      },
-      softwarePackages: {
-        // Missing field (older API) keeps the open default.
-        uploadsEnabled: data.softwarePackages?.uploadsEnabled !== false,
-      },
-      loaded: true,
-    });
-  } catch (err) {
-    console.error('[features] /config fetch failed:', err instanceof Error ? err.message : err);
-    set({ loaded: true });
-  }
-}
+  };
+
+  return {
+    features: DEFAULT_FEATURES,
+    cfAccessLogin: DEFAULT_CF_ACCESS,
+    registration: DEFAULT_REGISTRATION,
+    softwarePackages: DEFAULT_SOFTWARE_PACKAGES,
+    loaded: false,
+    configOk: false,
+    load: () => {
+      if (get().loaded) return Promise.resolve();
+      inflight ??= readConfig().finally(() => { inflight = null; });
+      return inflight;
+    },
+  };
+});
 
 export function useFeatures(): Features {
   return useFeaturesStore((s) => s.features);

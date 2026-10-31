@@ -312,6 +312,64 @@ describe('public accept → durable invoice link → pay', () => {
     expect(q!.status).toBe('converted');
   });
 
+  // #3740 (b): accepting spends the quote link, so the view answers 401 — but
+  // the SAME link still reaches this quote's invoice payment, and only that.
+  runDb('the spent accept link still pays the converted invoice, in the same session family', async () => {
+    const { token } = await seedSentQuote();
+    const res = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Pat Prospect' });
+    expect(res.status).toBe(200);
+    expect((await app().request(`/quotes/public/${token}`)).status).toBe(401); // the proposal is gone to it
+
+    const summary = await app().request(`/quotes/public/${token}/payment`);
+    expect(summary.status).toBe(200);
+    const summaryBody = await summary.json() as { data: { payment: { amount: string; isDeposit: boolean } | null } };
+    expect(summaryBody.data.payment).toMatchObject({ amount: '250.00', isDeposit: false });
+
+    const pay = await postJson(`/quotes/public/${token}/pay`, {});
+    expect(pay.status).toBe(200);
+    expect(((await pay.json()) as { data: { url: string } }).data.url).toBe('https://checkout.stripe.com/c/pay/pub');
+    // Same request + idempotency key as the accept-time Sign & pay mint: one
+    // payable session, never a second competing one.
+    const [acceptArgs, acceptOpts] = sessionsCreateMock.mock.calls[0]!;
+    const [payArgs, payOpts] = sessionsCreateMock.mock.calls[1]!;
+    expect(payOpts.idempotencyKey).toBe(acceptOpts.idempotencyKey);
+    expect(payArgs).toEqual(acceptArgs);
+  });
+
+  runDb('the spent accept link offers nothing once the invoice is paid', async () => {
+    const { quoteId, token } = await seedSentQuote();
+    await postJson(`/quotes/public/${token}/accept`, { signerName: 'Pat Prospect' });
+    await withSystemDbAccessContext(async () => {
+      const [q] = await db.select({ invoiceId: quotes.convertedInvoiceId }).from(quotes).where(eq(quotes.id, quoteId));
+      await db.update(invoices).set({ status: 'paid', amountPaid: '250.00', balance: '0.00' }).where(eq(invoices.id, q!.invoiceId!));
+    });
+    sessionsCreateMock.mockClear();
+
+    const summary = await app().request(`/quotes/public/${token}/payment`);
+    expect(summary.status).toBe(200);
+    expect(((await summary.json()) as { data: { payment: unknown } }).data.payment).toBeNull();
+    const pay = await postJson(`/quotes/public/${token}/pay`, {});
+    expect(pay.status).toBe(409);
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
+  });
+
+  // Tenancy: a validly signed token whose org claim does not own the quote (a
+  // different tenant) never resolves the row, so it reaches no invoice at all.
+  runDb('a token claiming another tenant\'s org reaches no payment', async () => {
+    const victim = await seedSentQuote();
+    await postJson(`/quotes/public/${victim.token}/accept`, { signerName: 'Pat Prospect' });
+    const other = await seedSentQuote();
+    const { token: crossToken } = await withSystemDbAccessContext(async () => {
+      const [o] = await db.select({ partnerId: quotes.partnerId }).from(quotes).where(eq(quotes.id, other.quoteId));
+      return createQuoteAcceptToken({ quoteId: victim.quoteId, orgId: other.orgId, partnerId: o!.partnerId });
+    });
+    sessionsCreateMock.mockClear();
+
+    expect((await app().request(`/quotes/public/${crossToken}/payment`)).status).toBe(401);
+    expect((await postJson(`/quotes/public/${crossToken}/pay`, {})).status).toBe(401);
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
+  });
+
   // A link-mint failure after the accept committed must not roll back the accept,
   // and must be distinguishable (payDeferred) so a silently-lost payment path is
   // observable rather than looking identical to "nothing to pay".
@@ -327,6 +385,8 @@ describe('public accept → durable invoice link → pay', () => {
     // No durable page to return to → no checkout either.
     expect(body.data.checkoutUrl).toBeNull();
     expect(sessionsCreateMock).not.toHaveBeenCalled();
+    // #3740 (a): the confirmation page still gets the payment step to show.
+    expect((body.data as { payment?: { amount: string } | null }).payment).toMatchObject({ amount: '250.00' });
     const [q] = await withSystemDbAccessContext(() => db.select({ status: quotes.status }).from(quotes).where(eq(quotes.id, quoteId)));
     expect(q!.status).toBe('converted'); // accept committed despite the failure
   });

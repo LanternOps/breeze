@@ -131,6 +131,25 @@ describe('embedCardView (#9257): the card follows the frozen page locale', () =>
       expect(v.viewFull).toBe('View the full trust page');
     }
   });
+  // #9964: "Last verified" followed the page locale but the date stayed ISO.
+  it('formats the verified date in the page locale, keeping the ISO date for <time datetime>', () => {
+    const de = embedCardView({ ...CARD, locale: 'de-DE', frameAncestors: [] });
+    expect(de.verifiedOnIso).toBe('2026-10-16');
+    expect(de.verifiedOn).toBe('16.10.2026');
+    const en = embedCardView({ ...CARD, locale: 'en', frameAncestors: [] });
+    expect(en.verifiedOn).toBe('Oct 16, 2026');
+    const fr = embedCardView({ ...CARD, locale: 'fr-FR', frameAncestors: [] });
+    expect(fr.verifiedOn).toBe('16 oct. 2026');
+  });
+  it('falls back to publishedAt, and renders the date in UTC (no day shift at midnight)', () => {
+    const v = embedCardView({ ...CARD, lastEvaluatedAt: null, publishedAt: '2026-10-01T00:00:00.000Z', locale: 'en', frameAncestors: [] });
+    expect(v.verifiedOnIso).toBe('2026-10-01');
+    expect(v.verifiedOn).toBe('Oct 1, 2026');
+  });
+  it('an unparseable timestamp falls back to its date part rather than a blank', () => {
+    const v = embedCardView({ ...CARD, lastEvaluatedAt: 'not-a-date', locale: 'en', frameAncestors: [] });
+    expect(v.verifiedOn).toBe('not-a-date');
+  });
 });
 
 describe('embed shell sources (#9257)', () => {
@@ -141,5 +160,10 @@ describe('embed shell sources (#9257)', () => {
     expect(layout).not.toMatch(/<html lang="en">/);
     expect(read('../pages/trust/embed/[partnerSlug]/[orgSlug].astro')).toMatch(/lang=\{view\.lang\}/);
     expect(read('../pages/trust/embed/[partnerSlug]/index.astro')).toMatch(/lang=\{view\.lang\}/);
+  });
+  it('the card renders the localized verified date, not a sliced ISO string (#9964)', () => {
+    const card = read('../components/trust/TrustEmbedCard.astro');
+    expect(card).toMatch(/<time datetime=\{view\.verifiedOnIso\}>\{view\.verifiedOn\}<\/time>/);
+    expect(card).not.toMatch(/\.slice\(0, 10\)/);
   });
 });

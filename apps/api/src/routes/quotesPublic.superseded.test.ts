@@ -394,6 +394,19 @@ describe('quotesPublic token-route liveness enumeration', () => {
         path: '/:token/decline',
         queuedReads: [[revokedQuote], [{ id: QUOTE_ID }]],
       },
+      // #3740 payment routes: even a converted quote's payment dies with its link.
+      {
+        name: 'payment summary',
+        method: 'GET',
+        path: '/:token/payment',
+        queuedReads: [[{ ...revokedQuote, status: 'converted', convertedInvoiceId: QUOTE_ID }], [partnerRow]],
+      },
+      {
+        name: 'pay',
+        method: 'POST',
+        path: '/:token/pay',
+        queuedReads: [[{ ...revokedQuote, status: 'converted', convertedInvoiceId: QUOTE_ID }]],
+      },
     ];
 
     const registeredRoutes = Array.from(new Set(

@@ -361,6 +361,7 @@ export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps)
 
       {showFilters && (
         <AuditFilters
+          initialFilters={activeFilters}
           onApply={handleApplyFilters}
           onClear={handleClearFilters}
         />

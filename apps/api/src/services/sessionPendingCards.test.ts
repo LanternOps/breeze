@@ -16,7 +16,7 @@ import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
 import { decideHelperToolAction } from './pamToolActionGovernance';
 import { SessionEventBus } from './sessionEventBus';
-import { publishPendingCard, resolvePendingCard } from './sessionPendingCards';
+import { publishPendingCard, resolveApprovalCard, resolvePendingCard } from './sessionPendingCards';
 import type { ActiveSession } from './streamingSessionManager';
 import type { AiPendingCardEvent } from '@breeze/shared/types/ai';
 
@@ -517,5 +517,140 @@ describe('helper (PAM) approval card (#9427)', () => {
     decide('exec-h', true);
     await result;
     expect(cards(session).size).toBe(0);
+  });
+});
+
+// ============================================
+// #9431: every listener learns that an approval card's wait ended
+// ============================================
+
+function resolvedEvents(session: ActiveSession) {
+  return session.eventBus.snapshot().replay.filter((e) => e.type === 'approval_resolved');
+}
+
+describe('resolveApprovalCard (#9431)', () => {
+  it('publishes approval_resolved once, and only for a tracked card', () => {
+    const session = makeActiveSession() as ActiveSession;
+    publishPendingCard(session, 'approval:a', { type: 'approval_required', executionId: 'a', toolName: 't', input: {}, description: 'd' });
+
+    resolveApprovalCard(session, 'a', 'approved');
+    resolveApprovalCard(session, 'a', 'not_approved');
+    resolveApprovalCard(session, 'unknown', 'ended');
+
+    expect(cards(session).size).toBe(0);
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'a', outcome: 'approved' }]);
+  });
+});
+
+describe('approval_resolved at the tier-2 legacy card (#9431)', () => {
+  beforeEach(() => {
+    tier2Guardrail();
+    mockInsertReturning({ id: 'exec-1' });
+    mockUpdateChain();
+    controlledApprovalWaits();
+  });
+
+  async function blocked(session: ActiveSession) {
+    const result = createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
+    await until(() => approvalWaits.has('exec-1'));
+    return { result };
+  }
+
+  it('says approved when the wait sees an approval (made here or anywhere else)', async () => {
+    const session = makeActiveSession() as ActiveSession;
+    const { result } = await blocked(session);
+    decide('exec-1', true);
+    await result;
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-1', outcome: 'approved' }]);
+  });
+
+  it('says not_approved on a denial or timeout', async () => {
+    const session = makeActiveSession() as ActiveSession;
+    const { result } = await blocked(session);
+    decide('exec-1', false);
+    await result;
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-1', outcome: 'not_approved' }]);
+  });
+
+  it('says ended when the wait is settled by a new message or interrupt', async () => {
+    const session = makeActiveSession() as ActiveSession;
+    const { result } = await blocked(session);
+    settleApprovalWaits(session);
+    await result;
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-1', outcome: 'ended' }]);
+  });
+
+  it('says ended when the wait throws', async () => {
+    vi.mocked(waitForApproval).mockRejectedValue(new Error('db down'));
+    const session = makeActiveSession() as ActiveSession;
+    await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' }).catch(() => undefined);
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-1', outcome: 'ended' }]);
+  });
+});
+
+describe('approval_resolved at the tier-3 intent-backed card (#9431)', () => {
+  it.each([
+    ['rejected', 'not_approved'],
+    ['expired', 'not_approved'],
+    ['cancelled', 'not_approved'],
+    // The chat stopped waiting; the intent can still be decided in Approvals.
+    ['pending_approval', 'ended'],
+  ])('maps a %s decision to %s', async (status, outcome) => {
+    tier3Guardrail('supervised');
+    mockInsertReturning({ id: 'exec-3' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-3' }));
+    mockWaitForIntentDecision.mockResolvedValue(status);
+    const session = makeActiveSession() as ActiveSession;
+
+    await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' }).catch(() => undefined);
+
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-3', outcome }]);
+  });
+
+  it('maps an approved decision to approved', async () => {
+    tier3Guardrail('supervised');
+    mockInsertReturning({ id: 'exec-3' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-3' }));
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(false); // the release worker won the claim
+    const session = makeActiveSession() as ActiveSession;
+
+    await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' }).catch(() => undefined);
+
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-3', outcome: 'approved' }]);
+  });
+});
+
+describe('approval_resolved at the helper (PAM) card (#9431)', () => {
+  function helperSession() {
+    return makeActiveSession({
+      auth: { ...makeAuth(), helperDeviceId: 'device-7', user: { id: 'device-7', email: 'helper@host', name: 'HOST' } },
+    }) as ActiveSession;
+  }
+
+  beforeEach(() => {
+    tier2Guardrail();
+    mockInsertReturning({ id: 'exec-h' });
+    mockUpdateChain();
+    controlledApprovalWaits();
+  });
+
+  it('says not_approved when policy denies it before any wait', async () => {
+    vi.mocked(decideHelperToolAction).mockResolvedValue('denied');
+    const session = helperSession();
+    await createSessionPreToolUse(session)('take_screenshot', {});
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-h', outcome: 'not_approved' }]);
+  });
+
+  it('says approved when PAM approves', async () => {
+    vi.mocked(decideHelperToolAction).mockResolvedValue('pending' as never);
+    const session = helperSession();
+    const result = createSessionPreToolUse(session)('take_screenshot', {});
+    await until(() => approvalWaits.has('exec-h'));
+    decide('exec-h', true);
+    await result;
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-h', outcome: 'approved' }]);
   });
 });

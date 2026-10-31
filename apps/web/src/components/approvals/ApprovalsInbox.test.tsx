@@ -1693,7 +1693,7 @@ describe('ApprovalsInbox — batch scope naming (finding #2)', () => {
     fireEvent.click(screen.getByTestId(`approval-group-decline-${GROUP_KEY}`));
 
     expect(screen.getByTestId(`approval-group-deny-summary-${GROUP_KEY}`)).toHaveTextContent(
-      'This declines 2 requests for Acme Dental.',
+      'This denies 2 requests for Acme Dental.',
     );
   });
 });

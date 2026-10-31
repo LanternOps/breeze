@@ -58,6 +58,7 @@ import { costEstimator, settleInvocation } from '../../aiModels/settleInvocation
 import { turnBindingFrom, type TurnBinding } from '../../aiModels/turnBinding';
 import { legacyThinksWhenOmitted } from '../../aiModel';
 import { aiTools, executeTool, toolManagesDbContext } from '../../aiTools';
+import { stripPageResumeJson } from '../../aiToolPageResume';
 import { redactSecretsFromOutput } from '../../secretRedaction';
 import { captureException } from '../../sentry';
 import { executeTenantToolDetailed } from '../../toolSources/execute';
@@ -224,7 +225,9 @@ export async function executeAiStep(input: AiStepInput, ctx: BuiltinContext): Pr
         const check = checkGuardrails(tool.name, args);
         if (!check.allowed || check.tier !== 1) return refuse(`Only read actions of '${tool.name}' are available to this step.`);
         const call = () => executeTool(tool.name, args, ctx.auth);
-        text = await (toolManagesDbContext(aiTools.get(tool.name), args) ? runOutsideDbContext(call) : withAuthDbAccessContext(ctx.auth, call));
+        // #10385: the page-resume descriptor is chat-compaction input; this
+        // step hands the raw result to its model, so it must not ride along.
+        text = stripPageResumeJson(await (toolManagesDbContext(aiTools.get(tool.name), args) ? runOutsideDbContext(call) : withAuthDbAccessContext(ctx.auth, call)));
       } else {
         // Re-checked at call time: an admin can raise a tenant tool's tier or
         // change it mid-step; only the exact Tier-1 revision allowed at the
