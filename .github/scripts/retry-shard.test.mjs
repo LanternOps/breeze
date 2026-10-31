@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { budgetSkipReason, decide, goRetryArgs, ledgerRunner, mergeCoverProfiles, parseFailures } from './retry-shard.mjs';
+import { budgetSkipReason, decide, goRetryCommand, ledgerRunner, parseFailures } from './retry-shard.mjs';
 
 // Whole-shard retry (W1, #10744). The merge queue has no retry, so one flaky
 // test ejects the PR and rebuilds every entry behind it. The wrapper re-runs a
@@ -427,46 +427,18 @@ test('budgetSkipReason: a second attempt that would overrun → reason naming th
   assert.notEqual(budgetSkipReason({ budgetMinutes: 10, elapsedMs: 12 * MIN, attemptMs: 1 * MIN }), null);
 });
 
-// ── Go retry command + coverage merge ────────────────────────────────────
+// ── Go retry command ─────────────────────────────────────────────────────
 
-test('goRetryArgs: keeps flags, swaps packages for the failed ones, rewrites -coverprofile', () => {
+test('goRetryCommand: same flags and packages, plus -count=1 so the test cache cannot replay passes', () => {
   assert.deepEqual(
-    goRetryArgs(['test', '-json', '-v', '-coverprofile=coverage.out', './...'], ['p/b', 'p/c']),
-    { args: ['test', '-json', '-v', '-coverprofile=coverage.out.retry', 'p/b', 'p/c'], coverProfile: 'coverage.out' },
+    goRetryCommand(['go', 'test', '-json', '-v', '-coverprofile=coverage.out', './...']),
+    ['go', 'test', '-count=1', '-json', '-v', '-coverprofile=coverage.out', './...'],
   );
+  // A command's own later -count still wins, and -args stays last.
   assert.deepEqual(
-    goRetryArgs(['test', '-json', '-race', '-count=1', '-timeout', '20m', './...'], ['p/b']),
-    { args: ['test', '-json', '-race', '-count=1', '-timeout', '20m', 'p/b'], coverProfile: null },
+    goRetryCommand(['go', 'test', '-json', '-race', '-count=1', '-timeout', '20m', './...', '-args', '-flag']),
+    ['go', 'test', '-count=1', '-json', '-race', '-count=1', '-timeout', '20m', './...', '-args', '-flag'],
   );
-  assert.deepEqual(
-    goRetryArgs(['test', '-json', '-coverprofile', 'c.out', '-run', '^TestX$', './internal/...', '-args', '-flag'], ['p/b']),
-    { args: ['test', '-json', '-coverprofile', 'c.out.retry', '-run', '^TestX$', 'p/b', '-args', '-flag'], coverProfile: 'c.out' },
-  );
-});
-
-test('mergeCoverProfiles: base A,B + retry B → A original, B retry, one mode header', () => {
-  const baseProfile = [
-    'mode: set',
-    'github.com/x/agent/a/a.go:3.10,5.2 1 1',
-    'github.com/x/agent/b/b.go:3.10,5.2 1 0',
-    'github.com/x/agent/b/b.go:7.10,9.2 1 0',
-    'github.com/x/agent/ab/ab.go:1.1,2.2 1 1',
-    '',
-  ].join('\n');
-  const retryProfile = ['mode: set', 'github.com/x/agent/b/b.go:3.10,5.2 1 1', 'github.com/x/agent/b/b.go:7.10,9.2 1 1', ''].join('\n');
-  const merged = mergeCoverProfiles(baseProfile, retryProfile);
-  assert.equal(
-    merged,
-    [
-      'mode: set',
-      'github.com/x/agent/a/a.go:3.10,5.2 1 1',
-      'github.com/x/agent/ab/ab.go:1.1,2.2 1 1',
-      'github.com/x/agent/b/b.go:3.10,5.2 1 1',
-      'github.com/x/agent/b/b.go:7.10,9.2 1 1',
-      '',
-    ].join('\n'),
-  );
-  assert.equal(merged.match(/^mode:/gm).length, 1);
 });
 
 // ── CLI ──────────────────────────────────────────────────────────────────
@@ -556,13 +528,15 @@ if (n === 1) {
   fs.writeFileSync(cov, 'mode: set\\np/a/a.go:1.1,2.2 1 1\\np/b/b.go:1.1,2.2 1 0\\n');
   process.exit(1);
 }
+ev({ Action: 'pass', Package: 'p/a', Test: 'TestA' });
+ev({ Action: 'pass', Package: 'p/a' });
 ev({ Action: 'output', Package: 'p/b', Test: 'TestB', Output: '--- PASS: TestB (0.01s)\\n' });
 ev({ Action: 'pass', Package: 'p/b', Test: 'TestB' });
 ev({ Action: 'pass', Package: 'p/b' });
-fs.writeFileSync(cov, 'mode: set\\np/b/b.go:1.1,2.2 1 1\\n');
+fs.writeFileSync(cov, 'mode: set\\np/a/a.go:1.1,2.2 1 1\\np/b/b.go:1.1,2.2 1 1\\n');
 `;
 
-test('CLI go: adds -json, re-prints Output, retries only failed packages, merges coverage', () => {
+test('CLI go: adds -json, re-prints Output, retries the whole shard uncached, keeps its coverage', () => {
   const root = mkdtempSync(join(tmpdir(), 'retry-shard-'));
   const bin = mkdtempSync(join(tmpdir(), 'retry-shard-bin-'));
   writeFileSync(join(bin, 'go'), FAKE_GO);
@@ -577,16 +551,49 @@ test('CLI go: adds -json, re-prints Output, retries only failed packages, merges
   const calls = readFileSync(join(godir, 'go-calls.json'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   assert.deepEqual(calls, [
     ['test', '-json', '-v', '-coverprofile=coverage.out', './...'],
-    ['test', '-json', '-v', '-coverprofile=coverage.out.retry', 'p/b'],
+    ['test', '-count=1', '-json', '-v', '-coverprofile=coverage.out', './...'],
   ]);
   assert.equal(readFileSync(join(godir, 'coverage.out'), 'utf8'), 'mode: set\np/a/a.go:1.1,2.2 1 1\np/b/b.go:1.1,2.2 1 1\n');
-  assert.equal(existsSync(join(godir, 'coverage.out.retry')), false);
   // Human-readable output, not raw JSON.
   assert.match(r.stdout, /^--- FAIL: TestB \(0\.01s\)$/m);
   assert.doesNotMatch(r.stdout, /"Action"/);
   assert.match(r.stdout, /^::warning title=Flaky test::p\/b\.TestB$/m);
   const report = JSON.parse(readFileSync(join(root, 'flake-report-agent.json'), 'utf8'));
   assert.deepEqual(report, { label: 'agent', attempts: 2, flaky: ['p/b.TestB'], quarantined: [], exitCode: 0 });
+});
+
+// A failure that needs the other packages running beside it: TestB fails only
+// when the whole shard really executes. Narrowing to p/b, or re-running with
+// the test cache replaying p/a, removes the contention and would turn it green.
+const FAKE_GO_CONTENTION = `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2);
+fs.appendFileSync('go-calls.json', JSON.stringify(args) + '\\n');
+const first = fs.readFileSync('go-calls.json', 'utf8').trim().split('\\n').length === 1;
+const contended = first || (args.includes('./...') && args.includes('-count=1'));
+const ev = (o) => console.log(JSON.stringify(o));
+if (args.includes('./...')) {
+  ev({ Action: 'pass', Package: 'p/a', Test: 'TestA' });
+  ev({ Action: 'pass', Package: 'p/a' });
+}
+ev({ Action: contended ? 'fail' : 'pass', Package: 'p/b', Test: 'TestB' });
+ev({ Action: contended ? 'fail' : 'pass', Package: 'p/b' });
+process.exit(contended ? 1 : 0);
+`;
+
+test('CLI go: a failure that reproduces on every full-shard run stays red', () => {
+  const root = mkdtempSync(join(tmpdir(), 'retry-shard-'));
+  const bin = mkdtempSync(join(tmpdir(), 'retry-shard-bin-'));
+  writeFileSync(join(bin, 'go'), FAKE_GO_CONTENTION);
+  chmodSync(join(bin, 'go'), 0o755);
+  const r = cli(['--runner', 'go', '--label', 'agent', '--', 'go', 'test', './...'], {
+    cwd: root,
+    env: { PATH: `${bin}:${process.env.PATH}` },
+  });
+  assert.equal(r.status, 1, r.stdout);
+  assert.doesNotMatch(r.stdout, /Flaky test/);
+  const report = JSON.parse(readFileSync(join(root, 'flake-report-agent.json'), 'utf8'));
+  assert.deepEqual(report, { label: 'agent', attempts: 2, flaky: [], quarantined: [], exitCode: 1 });
 });
 
 test('CLI go: a data race fails the job on attempt 1 with an ::error annotation, no retry', () => {

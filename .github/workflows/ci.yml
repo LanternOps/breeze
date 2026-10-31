@@ -2164,9 +2164,8 @@ jobs:
         working-directory: agent
         run: go mod download
 
-      # retry-shard runs `go test -json` (re-printing human output), re-runs only
-      # the failed packages once, and merges their coverage back into
-      # coverage.out (W1, #10744).
+      # retry-shard runs `go test -json` (re-printing human output) and re-runs
+      # a failed shard once, uncached, overwriting coverage.out (W1, #10744).
       - name: Run Go tests
         run: CGO_ENABLED=0 node .github/scripts/retry-shard.mjs --runner go --go-dir agent --label agent --budget-minutes 25 -- go test -v -coverprofile=coverage.out ./...
 
@@ -3276,7 +3275,7 @@ jobs:
         working-directory: agent
         run: go mod download
 
-      # Failed packages re-run once via retry-shard (W1, #10744).
+      # A failed shard re-runs once, uncached, via retry-shard (W1, #10744).
       - name: go test -race ./...
         env:
           CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'

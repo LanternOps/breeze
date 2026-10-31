@@ -213,3 +213,8 @@ test('CLI: writes a step summary when GITHUB_STEP_SUMMARY is set', () => {
   assert.match(md, /Already on base/);
   assert.match(md, /zod/);
 });
+
+test('findingsTable: a backslash before a pipe cannot unescape the pipe', () => {
+  const table = findingsTable({ schema: 1, findings: [{ id: 'GHSA-x', package: 'a\\|b', version: '1.0.0', ecosystem: 'npm', severity: 'HIGH', excepted: false, blocking: true }], exceptionProblems: [] });
+  assert.match(table, /\| a\\\\\\\|b \| 1\.0\.0 \|/);
+});

@@ -87,7 +87,7 @@ export function exceptionProblems(json) {
   return assertDoc(json).exceptionProblems.map(({ id, package: pkg, expires, status }) => ({ id, package: pkg, expires, status }));
 }
 
-const cell = (s) => String(s).replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ');
+const cell = (s) => String(s).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ');
 
 // Markdown: the document's blocking findings, then its exception problems.
 export function findingsTable(json) {

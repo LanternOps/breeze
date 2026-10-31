@@ -4,10 +4,12 @@
 // GitHub's merge queue has no retry: one flaky test fails a shard, `CI Success`
 // goes red, the PR is ejected and every entry queued behind it rebuilds. This
 // wrapper runs a test command and, when it failed with failures it can SEE,
-// runs it exactly once more:
-//   - vitest: the identical command, so the whole shard re-runs (never a
-//     subset of a shard — a subset would change test ordering/isolation);
-//   - go: the same `go test` flags restricted to the failed packages.
+// runs it exactly once more, always the whole shard. A subset would change
+// test ordering and isolation, so a failure that needs the rest of the shard
+// running beside it would pass the retry and read as a flake:
+//   - vitest: the identical command;
+//   - go: the identical command plus -count=1, because the test cache would
+//     otherwise replay the passed packages and run only the failed ones.
 // It never retries what it cannot see (no parsed failures: install error, DB
 // not ready, a crash before the summary), a build failure, a Go data race,
 // a Go package that hit `go test -timeout`, or a signal-killed run. A test
@@ -32,7 +34,7 @@
 // test. The exit code is decide().exitCode.
 
 import { spawn } from 'node:child_process';
-import { appendFileSync, createWriteStream, existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, createWriteStream, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -97,7 +99,7 @@ const GO_DATA_RACE = 'WARNING: DATA RACE';
 const GO_TIMED_OUT = /^panic: test timed out after /m;
 
 // The package-level fail is deduped out of `failures` when a test in that
-// package failed (it would only widen the retry). That must not let a failing
+// package failed (the test's failure already names it). That must not let a failing
 // package look fully explained by its failed tests, so `unattributed` is set
 // when a FAILED package shows anything beyond ordinary test failures:
 //   - a panic (`panic: …` at column 0, which t.Log never produces — the rest
@@ -107,7 +109,8 @@ const GO_TIMED_OUT = /^panic: test timed out after /m;
 //     framing, e.g. TestMain reporting a leak after m.Run();
 // and, in any package, a test that emitted `run` without ever reaching
 // pass/fail/skip.
-const GO_PKG_MARKER = /^panic: |test timed out after|\[setup failed\]/m;
+const GO_PANIC_LINE = /^panic: /m;
+const GO_PKG_MARKER = /test timed out after|\[setup failed\]/;
 const GO_STANDARD_PKG_LINE = [
   /^$/,
   /^(?:PASS|FAIL)$/,
@@ -157,7 +160,7 @@ function parseGo(output) {
     if (ev.Action === 'build-fail') buildFailed = true;
     if (ev.Action === 'output' && typeof ev.Output === 'string' && GO_BUILD_FAILED.test(ev.Output)) buildFailed = true;
     if (ev.Package && ev.Action === 'output' && typeof ev.Output === 'string') {
-      if (GO_PKG_MARKER.test(ev.Output)) markers.add(ev.Package);
+      if (GO_PANIC_LINE.test(ev.Output) || GO_PKG_MARKER.test(ev.Output)) markers.add(ev.Package);
       if (GO_TIMED_OUT.test(ev.Output)) timedOut = true;
       if (!ev.Test) {
         if (!pkgLines.has(ev.Package)) pkgLines.set(ev.Package, []);
@@ -302,78 +305,12 @@ function quarantineContext({ runner, label, goDir }) {
   return { quarantine, changedFiles: changed, paths };
 }
 
-// ── Go command rewriting + coverage merge ────────────────────────────────
+// ── Go retry command ─────────────────────────────────────────────────────
 
-// `go test` / build flags that take a separate value when written without `=`.
-const GO_VALUE_FLAGS = new Set([
-  'C', 'asmflags', 'bench', 'benchtime', 'blockprofile', 'blockprofilerate', 'compiler', 'count',
-  'covermode', 'coverpkg', 'coverprofile', 'cpu', 'cpuprofile', 'exec', 'fuzz', 'fuzzminimizetime',
-  'fuzztime', 'gccgoflags', 'gcflags', 'installsuffix', 'ldflags', 'list', 'memprofile',
-  'memprofilerate', 'mod', 'modfile', 'mutexprofile', 'mutexprofilefraction', 'o', 'outputdir',
-  'overlay', 'p', 'parallel', 'pgo', 'pkgdir', 'run', 'shuffle', 'skip', 'tags', 'timeout',
-  'toolexec', 'trace', 'vet',
-]);
-
-// `args` are the arguments after `go` (starting with `test`). Returns the
-// same flags with the package patterns replaced by `pkgs` and any
-// -coverprofile pointed at `<file>.retry`.
-export function goRetryArgs(args, pkgs) {
-  const out = [args[0]];
-  let coverProfile = null;
-  let placed = false;
-  const place = () => {
-    if (!placed) out.push(...pkgs);
-    placed = true;
-  };
-  for (let i = 1; i < args.length; i++) {
-    const a = args[i];
-    if (a === '-args' || a === '--args') {
-      place();
-      out.push(...args.slice(i));
-      return { args: out, coverProfile };
-    }
-    if (!a.startsWith('-')) {
-      place(); // a package pattern
-      continue;
-    }
-    const eq = a.indexOf('=');
-    const name = a.replace(/^--?/, '').split('=')[0];
-    if (eq !== -1) {
-      if (name === 'coverprofile') {
-        coverProfile = a.slice(eq + 1);
-        out.push(`${a.slice(0, eq)}=${coverProfile}.retry`);
-      } else {
-        out.push(a);
-      }
-    } else if (GO_VALUE_FLAGS.has(name) && i + 1 < args.length) {
-      const value = args[++i];
-      if (name === 'coverprofile') coverProfile = value;
-      out.push(a, name === 'coverprofile' ? `${value}.retry` : value);
-    } else {
-      out.push(a);
-    }
-  }
-  place();
-  return { args: out, coverProfile };
-}
-
-const COVER_LINE = /^(.+):\d+\.\d+,\d+\.\d+ \d+ \d+$/;
-const coverPkg = (line) => {
-  const m = COVER_LINE.exec(line);
-  if (!m) return null;
-  return m[1].slice(0, m[1].lastIndexOf('/'));
-};
-
-// Replace the retried packages' blocks in `base` with `retry`'s.
-export function mergeCoverProfiles(base, retry) {
-  const split = (text) => text.split('\n').filter((l) => l.trim() !== '');
-  const baseLines = split(base);
-  const retryLines = split(retry);
-  const mode = baseLines.find((l) => l.startsWith('mode:')) ?? retryLines.find((l) => l.startsWith('mode:')) ?? 'mode: set';
-  const retryBlocks = retryLines.filter((l) => !l.startsWith('mode:'));
-  const retried = new Set(retryBlocks.map(coverPkg).filter(Boolean));
-  const kept = baseLines.filter((l) => !l.startsWith('mode:') && !retried.has(coverPkg(l)));
-  return [mode, ...kept, ...retryBlocks].join('\n') + '\n';
+// `command` starts with `go test`. Placed first, so a later -count of the
+// command's own still wins.
+export function goRetryCommand(command) {
+  return [command[0], command[1], '-count=1', ...command.slice(2)];
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────────
@@ -567,19 +504,10 @@ async function main(argv) {
   }
 
   if (verdict.retry) {
-    let retryCommand = command;
-    let coverProfile = null;
-    let scope = 'the whole shard';
-    if (runner === 'go') {
-      const pkgs = [...new Set(p1.failures.map((f) => f.pkg))];
-      const r = goRetryArgs(command.slice(1), pkgs);
-      retryCommand = [command[0], ...r.args];
-      coverProfile = r.coverProfile;
-      scope = `package(s) ${pkgs.join(' ')}`;
-    }
+    const retryCommand = runner === 'go' ? goRetryCommand(command) : command;
     const n = p1.failures.length;
     process.stdout.write(
-      `::warning title=Retrying test shard::${escapeData(`${label}: attempt 1 failed with ${n} failing test(s); re-running ${scope} once`)}\n`,
+      `::warning title=Retrying test shard::${escapeData(`${label}: attempt 1 failed with ${n} failing test(s); re-running the whole shard once`)}\n`,
     );
     const second = await runAttempt(retryCommand, { cwd, runner });
     attempts = 2;
@@ -588,15 +516,6 @@ async function main(argv) {
     // The ledger is consulted only when the second attempt failed too.
     const ctx = second.code === 0 ? {} : quarantineContext({ runner, label, goDir: cwd });
     verdict = decide({ first: firstResult, second: secondResult, ...ctx });
-    if (coverProfile) {
-      const basePath = resolve(cwd, coverProfile);
-      const retryPath = `${basePath}.retry`;
-      if (existsSync(retryPath)) {
-        const baseText = existsSync(basePath) ? readFileSync(basePath, 'utf8') : '';
-        writeFileSync(basePath, mergeCoverProfiles(baseText, readFileSync(retryPath, 'utf8')));
-        unlinkSync(retryPath);
-      }
-    }
   }
 
   if (first.code !== 0) writeReport({ label, attempts, verdict, firstFailures: p1.failures });
