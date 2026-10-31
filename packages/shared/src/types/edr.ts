@@ -165,7 +165,23 @@ export interface EdrStatusProviderSummary {
   lastDetectionSyncAt: string | null;
 }
 
+/**
+ * A legacy per-vendor integration (Huntress, SentinelOne) that covers part of
+ * the scope outside the EDR provider framework (#10394). Its alerts are read
+ * with that integration's own tools, not the provider detection list.
+ */
+export interface EdrStatusIntegrationSummary {
+  integration: 'huntress' | 'sentinelone';
+  label: string;
+  /** Organizations in the caller's scope with at least one agent from this integration. */
+  orgs: number;
+  agents: number;
+}
+
 export interface EdrStatusSummary {
+  /** EDR provider-framework connections only (the web "Other EDR" tab keys off these). */
   providers: EdrStatusProviderSummary[];
+  /** Legacy integrations covering the scope. Absent from servers before #10394. */
+  integrations?: EdrStatusIntegrationSummary[];
   coverage: EdrCoverage;
 }

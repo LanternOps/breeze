@@ -223,3 +223,8 @@ Update agents to a release containing this change before relying on the provider
 ### PAM outcome notices are localized (#10696)
 
 - **When Breeze Assist is not installed, the approved, couldn't-start, denied and expired notices for an elevation request now use the same localized sentences as the Assist elevation card.** The language is the signed-in user's UI language in that Windows session, then the machine's, then English, the same rule as on-device prompts. English wording changes too, for example "Contoso IT denied the request for mmc.exe." instead of "mmc.exe was denied by Contoso IT.", and a couldn't-start notice is titled "The program couldn't start". A multi-line deny reason is shown on one line. The "Couldn't reach IT" offline notice stays English (no catalog sentence yet). Agent-only; no migration, setting or environment variable.
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.

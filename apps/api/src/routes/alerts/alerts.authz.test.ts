@@ -590,7 +590,7 @@ describe('POST /alerts/bulk site-axis scope (T3)', () => {
     expect(state.alerts.find((a) => a.id === ALERT_B)?.status).toBe('active');
   });
 
-  it('still acknowledges org-wide (deviceless) alerts for a SITE_A-restricted user', async () => {
+  it('refuses to acknowledge org-wide (deviceless) alerts for a SITE_A-restricted user', async () => {
     authRef.current = { ...authRef.current, allowedSiteIds: [SITE_A] } as typeof authRef.current;
 
     const res = await makeApp().request('/alerts/bulk', {
@@ -599,8 +599,8 @@ describe('POST /alerts/bulk site-axis scope (T3)', () => {
       body: JSON.stringify({ alertIds: [ALERT_ORGWIDE, ALERT_B], action: 'acknowledge' }),
     });
 
-    expect(res.status).toBe(200);
-    expect(state.alerts.find((a) => a.id === ALERT_ORGWIDE)?.status).toBe('acknowledged');
+    expect(res.status).toBe(404);
+    expect(state.alerts.find((a) => a.id === ALERT_ORGWIDE)?.status).toBe('active');
     expect(state.alerts.find((a) => a.id === ALERT_B)?.status).toBe('active');
   });
 

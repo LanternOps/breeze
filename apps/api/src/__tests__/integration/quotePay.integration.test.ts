@@ -87,6 +87,8 @@ describe('createQuotePayLink (breeze_app, real DB)', () => {
     const { partner, org } = await seed();
     const ctx = ctxFor(org.id, partner.id);
     const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, qActor(org.id, partner.id)));
+    // One item: an empty quote can't be sent (#9963).
+    await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Setup', quantity: 1, unitPrice: 250, taxable: false, customerVisible: true, recurrence: 'one_time' } as any, qActor(org.id, partner.id)));
     await withDbAccessContext(ctx, () => sendQuote(created.id, qActor(org.id, partner.id))); // sent, not converted
 
     await expect(createQuotePayLink(created.id, iActor(org.id, partner.id)))
