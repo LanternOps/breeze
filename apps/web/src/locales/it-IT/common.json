@@ -569,7 +569,9 @@
       "after": "è dopo",
       "between": "è tra",
       "withinLast": "negli ultimi",
-      "notWithinLast": "non negli ultimi"
+      "notWithinLast": "non negli ultimi",
+      "below": "inferiore a",
+      "atLeast": "almeno"
     },
     "value": {
       "noValue": "Nessun valore necessario",
@@ -591,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Rimosso"
-      }
+      },
+      "softwareName": "Nome del software",
+      "softwareVersion": "Versione del software"
     }
   },
   "account": {
@@ -1080,6 +1084,68 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Ticket di avviso",
+        "scopeNote": "Valido per l’intero partner; nessuna sostituzione per organizzazione.",
+        "pausedBanner": "In pausa: il PSA ha rifiutato le credenziali. Esegui “Testa connessione” per riprendere.",
+        "yes": "Attivi",
+        "no": "Disattivati",
+        "selectPlaceholder": "Seleziona…",
+        "priorityDefault": "Predefinito del PSA",
+        "closedSuffix": "{{name}} (chiuso)",
+        "saved": "Impostazioni dei ticket di avviso salvate",
+        "saving": "Salvataggio…",
+        "save": "Salva",
+        "conflict": "Queste impostazioni sono state modificate altrove. Sono stati caricati i valori più recenti; verificali e salva di nuovo.",
+        "errors": {
+          "save": "Impossibile salvare le impostazioni dei ticket di avviso"
+        },
+        "status": {
+          "active": "I ticket di avviso sono abilitati per questa connessione.",
+          "notExternal": "Associa questa connessione come PSA di gestione dei servizi (modalità esterna) per usare i ticket di avviso.",
+          "disabled": "I ticket di avviso sono disattivati.",
+          "paused": "I ticket di avviso sono in pausa finché la connessione al PSA non funziona di nuovo.",
+          "companyLinksUnverified": "Conferma i collegamenti delle aziende per questa istanza del PSA.",
+          "invalidConfig": "Le impostazioni salvate dei ticket di avviso non sono valide. Verificale e salvale di nuovo.",
+          "unsupportedProvider": "I ticket di avviso non sono disponibili per questo provider PSA.",
+          "credentialsUnusable": "Le credenziali di questa connessione sono incomplete o illeggibili. Modifica la connessione e inseriscile di nuovo."
+        },
+        "fields": {
+          "enabled": "Abilita i ticket di avviso",
+          "board": "Bacheca",
+          "openStatus": "Stato dei nuovi ticket",
+          "closedStatus": "Stato chiuso",
+          "priorityHeading": "Priorità del PSA in base alla gravità dell’avviso",
+          "minSeverity": "Gravità minima",
+          "minSeverityHelp": "Bassa include i monitor a livello di avvertenza",
+          "closeOnResolve": "Chiudi il ticket quando l’avviso viene risolto",
+          "noteOnAcknowledge": "Aggiungi una nota quando l’avviso viene preso in carico",
+          "confirmCompanyLinks": "I collegamenti alle aziende delle organizzazioni corrispondono a questa istanza del PSA"
+        },
+        "severity": {
+          "critical": "Critica",
+          "high": "Alta",
+          "medium": "Media",
+          "low": "Bassa",
+          "info": "Informazione"
+        },
+        "options": {
+          "error": "Impossibile caricare le opzioni dal PSA",
+          "retry": "Riprova",
+          "truncated": "Vengono mostrati solo i primi risultati del PSA."
+        },
+        "readOnly": {
+          "enabled": "Ticket di avviso"
+        },
+        "loadError": {
+          "message": "Impossibile caricare le impostazioni dei ticket di avviso",
+          "retry": "Riprova"
+        },
+        "configInvalid": {
+          "warning": "Le impostazioni salvate dei ticket di avviso non possono essere lette. Il salvataggio le sostituirà.",
+          "confirm": "Sostituisci le impostazioni illeggibili"
+        }
+      },
       "PsaCompanyImport": {
         "title": "Importa aziende",
         "subtitle": "Crea organizzazioni dalle aziende presenti in {{name}}.",
@@ -1292,11 +1358,19 @@
           "waiting": "In attesa"
         },
         "ticketCount": "{{filtered}} di {{total}} ticket",
-        "title": "Ticket sincronizzati",
+        "title": "Ticket PSA",
         "unlinked": "Scollegato"
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Proprietà",
+        "allOrganizations": "Tutte le organizzazioni",
+        "thisOrganizationOnly": "Solo questa organizzazione",
+        "all": "Tutte",
+        "organization": "Organizzazione",
+        "test": "Invio di prova"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} tentativi di consegna",
         "empty": "Nessun tentativo di consegna ancora.",
@@ -1388,6 +1462,14 @@
           "integrationHealthResolved": {
             "description": "Si attiva quando un incidente di stato di una connessione viene risolto.",
             "label": "Incidente di stato della connessione risolto"
+          },
+          "alertAcknowledged": {
+            "label": "Avviso preso in carico",
+            "description": "Attivato quando un avviso viene preso in carico."
+          },
+          "alertSuppressed": {
+            "label": "Avviso sospeso",
+            "description": "Attivato quando Breeze AI sospende un avviso. La sospensione dalla dashboard non invia ancora questo evento."
           }
         },
         "fields": {
@@ -1439,6 +1521,22 @@
           "secretRequired": "Il segreto è richiesto per l'autenticazione HMAC.",
           "tokenRequired": "Il token è obbligatorio per l'autenticazione bearer",
           "urlRequired": "L'URL è obbligatorio"
+        },
+        "neverDelivered": {
+          "marker": "Mai recapitato",
+          "explanation": "Breeze non invia mai questo evento. Verrà rimosso al salvataggio del webhook.",
+          "banner": "Breeze non invia mai questo evento, quindi questo webhook non ha mai effettuato una consegna. Scegli un altro evento prima di salvare."
+        },
+        "payloadVersion": {
+          "title": "Versione dei dati",
+          "v2": {
+            "label": "v2 (consigliata)",
+            "description": "Gli eventi di avviso includono nome host, sede, organizzazione, stato e un collegamento all’avviso."
+          },
+          "v1": {
+            "label": "v1 (originale)",
+            "description": "I dati di avviso originali, conservati per le integrazioni esistenti."
+          }
         }
       },
       "WebhookList": {
@@ -1520,7 +1618,8 @@
           "enabled": "Webhook abilitato",
           "retryQueued": "Nuovo tentativo di consegna in coda",
           "testQueued": "Consegna di prova in coda",
-          "updated": "Webhook aggiornato"
+          "updated": "Webhook aggiornato",
+          "deleted": "Webhook \"{{name}}\" eliminato"
         },
         "title": "Webhook"
       }

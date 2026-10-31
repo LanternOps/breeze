@@ -25,7 +25,8 @@ import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { PamActuationNotFoundError, requestPamCleanup } from '../services/pamActuationLifecycle';
-import { envInt } from '../utils/envInt';
+import { enqueuePamRequestNotify } from '../services/pamRequestNotify';
+import { pamPendingTtlMinutes } from './pamPendingTtl';
 import { attachWorkerObservability } from './workerObservability';
 
 const ENFORCER_QUEUE = 'pam-elevation-expiry-enforcer';
@@ -34,8 +35,6 @@ const STALE_QUEUE = 'pam-stale-request-expirer';
 const STALE_INTERVAL_MS = 5 * 60 * 1000; // every 5 min
 const MAX_PER_RUN = 500;
 
-// Pending requests older than this are expired. Overridable for ops via env.
-const STALE_PENDING_TTL_MINUTES = envInt('PAM_PENDING_REQUEST_TTL_MINUTES', 15);
 
 type PamJobData = { type: 'enforce-elevation-expiry' | 'expire-stale-requests'; queuedAt: string };
 
@@ -199,9 +198,9 @@ export async function enforceElevationExpiry(): Promise<number> {
  * Exported for tests.
  */
 export async function expireStaleRequests(): Promise<number> {
-  const ttlMinutes = Number.isFinite(STALE_PENDING_TTL_MINUTES) && STALE_PENDING_TTL_MINUTES > 0
-    ? STALE_PENDING_TTL_MINUTES
-    : 15;
+  // Pending requests older than this are expired (PAM_PENDING_REQUEST_TTL_MINUTES).
+  // The ingest 201's pendingExpiresAt is computed from the same function.
+  const ttlMinutes = pamPendingTtlMinutes();
   const rows = await db.transaction(async (tx) => {
     const transitioned = await tx.execute<TransitionedRow>(sql`
     WITH due AS (
@@ -237,6 +236,13 @@ export async function expireStaleRequests(): Promise<number> {
         details: { cause: 'stale', prior_status: row.prior_status },
         occurredAt: new Date(),
       })));
+      // #8928: tell each end user still waiting on IT that the request
+      // expired. Only uac_intercept rows have a user on the device; each
+      // enqueue is savepointed and best-effort, so it never undoes the expiry.
+      for (const row of expired) {
+        if (row.flow_type !== 'uac_intercept') continue;
+        await enqueuePamRequestNotify(tx, { id: row.id, deviceId: row.device_id }, 'expired');
+      }
     }
     return expired;
   });

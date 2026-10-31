@@ -17,6 +17,7 @@ import {
   loadContractBlockAuthoring,
   resolveAutoVariables,
   resolveQuoteAutoVariables,
+  resolveQuoteEditorAutoVariables,
   renderContextFromQuote,
   renderContextFromRequest,
   substituteVariables,
@@ -213,6 +214,40 @@ describe('resolveAutoVariables', () => {
     expect(values['client.name']).toBe('');
     expect(values['client.address']).toBe('');
     expect(values['seller.name']).toBe('');
+  });
+});
+
+// #9867: the quote editor shows each auto variable's resolved value, not its
+// {{token}}. A draft has no frozen bill-to/seller yet, so the editor resolves
+// them the way send will freeze them (getQuote's billTo + branding's live seller).
+describe('resolveQuoteEditorAutoVariables', () => {
+  const billTo = { name: 'Org Name Inc', address: { line1: '9 Elm St', line2: null, city: 'Dover', region: 'DE', postalCode: '19901', country: 'USA' } };
+  const seller = { name: 'Live Partner MSP', address: null, phone: null, email: null, website: null };
+
+  it('draft: client and seller come from the resolved bill-to and live seller', () => {
+    const values = resolveQuoteEditorAutoVariables(
+      fixtureQuote({ status: 'draft', billToName: null, billToAddress: null, sellerSnapshot: null }),
+      { billTo, seller, locale: 'en' },
+    );
+    expect(values['client.name']).toBe('Org Name Inc');
+    expect(values['client.address']).toBe('9 Elm St, Dover, DE, 19901, USA');
+    expect(values['seller.name']).toBe('Live Partner MSP');
+    expect(values['totals.total']).toBe('$810.00');
+    expect(values['quote.number']).toBe('Q-1001');
+  });
+
+  it('sent: the frozen snapshot wins over any live value', () => {
+    const values = resolveQuoteEditorAutoVariables(fixtureQuote({ status: 'sent' }), { billTo, seller, locale: 'en' });
+    expect(values['client.name']).toBe('Acme Co');
+    expect(values['seller.name']).toBe('Breeze MSP');
+  });
+
+  it('accepted: dates.effective is pinned to the accept date, like the display render', () => {
+    const values = resolveQuoteEditorAutoVariables(
+      fixtureQuote({ status: 'accepted', acceptedAt: new Date('2026-07-20T12:00:00Z') }),
+      { billTo: null, seller: null, locale: 'en' },
+    );
+    expect(values['dates.effective']).toBe('Jul 20, 2026');
   });
 });
 

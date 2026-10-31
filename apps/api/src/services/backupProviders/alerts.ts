@@ -133,6 +133,7 @@ interface ProviderAlertRow {
   provider: string;
   vendorDeviceId: string;
   vendorDeviceName: string;
+  accountType: string;
   status: ExternalBackupStatus;
   lastSuccessAt: Date | null;
   errorsCount: number;
@@ -195,6 +196,7 @@ export async function evaluateProviderAlerts(
         provider: backupProviderDevices.provider,
         vendorDeviceId: backupProviderDevices.vendorDeviceId,
         vendorDeviceName: backupProviderDevices.vendorDeviceName,
+        accountType: backupProviderDevices.accountType,
         status: backupProviderDevices.status,
         lastSuccessAt: backupProviderDevices.lastSuccessAt,
         errorsCount: backupProviderDevices.errorsCount,
@@ -209,10 +211,9 @@ export async function evaluateProviderAlerts(
       .leftJoin(backupProviderCustomers, eq(backupProviderCustomers.id, backupProviderDevices.customerId))
       .where(and(
         eq(backupProviderDevices.connectionId, connectionId),
-        // M365 backup accounts are never linked to a Breeze device and raise no
-        // alerts (spec, Non-goals). They are excluded here rather than filtered
-        // later so they never even acquire a pending_condition.
-        eq(backupProviderDevices.accountType, 'backup_manager'),
+        // SaaS workloads share endpoint condition evaluation and hysteresis.
+        // They have no linked device, so the event-only path below applies.
+        inArray(backupProviderDevices.accountType, ['backup_manager', 'm365', 'gws']),
         // No provider alert is raised under the holding org.
         notInHoldingOrgCondition(backupProviderDevices.orgId),
       ))) as ProviderAlertRow[];
@@ -246,6 +247,9 @@ export async function evaluateProviderAlerts(
     const keep = new Set<string>();
 
     for (const row of rows) {
+      // Even a legacy link cannot turn a SaaS workload into a device subject.
+      const isSaas = row.accountType === 'm365' || row.accountType === 'gws';
+      const deviceId = isSaas ? null : row.breezeDeviceId;
       const computed = computeProviderCondition(row, now);
       const prev = decodeConditionState(row.pendingCondition);
       const { next, raise, recoveredFrom } = nextConditionState(prev, computed);
@@ -269,7 +273,7 @@ export async function evaluateProviderAlerts(
             providerKey: row.provider,
             providerDeviceId: row.id,
             orgId: row.orgId,
-            deviceId: row.breezeDeviceId,
+            deviceId,
             vendorDeviceName: row.vendorDeviceName,
             status: row.status,
             health,
@@ -287,7 +291,7 @@ export async function evaluateProviderAlerts(
             providerKey: row.provider,
             providerDeviceId: row.id,
             orgId: row.orgId,
-            deviceId: row.breezeDeviceId,
+            deviceId,
             vendorDeviceName: row.vendorDeviceName,
             status: row.status,
             health,
@@ -296,10 +300,10 @@ export async function evaluateProviderAlerts(
         });
       }
 
-      // Alerts require a device (D3): an unlinked row gets the events above and
-      // nothing else. A LINKED row in the raised phase keeps (or gets) exactly
-      // one alert for its current condition.
-      if (next.phase !== 'raised' || !row.breezeDeviceId) continue;
+      // createSourcedAlert requires a device: SaaS and unlinked endpoint rows
+      // get events only. A linked endpoint in the raised phase keeps (or gets)
+      // exactly one alert for its current condition.
+      if (next.phase !== 'raised' || !deviceId) continue;
       keep.add(`${row.id}|${next.condition}`);
       if (!openByKey.has(`${row.id}|${next.condition}`)) {
         toRaise.push({ row, condition: next.condition });

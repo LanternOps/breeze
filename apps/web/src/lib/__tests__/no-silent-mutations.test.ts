@@ -33,6 +33,8 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 const TARGET_GLOBS = [
+  // Partner-wide groups: policy assignment mutations surface outcomes.
+  'src/components/configurationPolicies/PartnerGroupAssignmentSection.tsx',
   // Tool Catalog W4 (#5219): flow enable/disable/run/cancel mutations go through runAction.
   'src/components/flows/api.ts',
   // Trust Center W1 (#8768): publish/unpublish/preview/partner-home are the public-exposure
@@ -386,6 +388,9 @@ const TARGET_GLOBS = [
   // the connection list is empty — so a failed save on a populated page was
   // silent (#3291 review).
   'src/components/psa/PsaConnectionsPage.tsx',
+  // Alert -> PSA ticket settings (#10535): the PUT enables automatic ticket creation in the
+  // partner's PSA; a silent failure would leave the tech believing alerts are ticketed.
+  'src/components/psa/PsaAlertTicketingCard.tsx',
   // CIS hardening: the whole directory has exactly two mutations (baseline
   // create/update, trigger scan) and both now route through runAction. The scan
   // queues work that changes nothing on screen — the results land minutes later
@@ -1029,7 +1034,9 @@ describe('no silent mutations in targeted set', () => {
     // AI surface cohesion W05 (#10136) deletes WispToggle (the grant decides the panel's voice): 283 → 282.
     // Tool Catalog W4 flows/api.ts: 282 → 283.
     // Physical placement W1-D1 (#8134) adds devices/PhysicalPlacementCard.tsx: 283 → 284.
-    expect(absoluteFiles.length).toBe(284);
+    // Partner-wide groups W4 adds creation and partner group assignments: 284 → 286.
+    // #9865 deletes devices/CreateGroupModal.tsx (286 → 285); the alert ticketing card (#10535) adds PsaAlertTicketingCard.tsx: 285 → 286.
+    expect(absoluteFiles.length).toBe(286);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

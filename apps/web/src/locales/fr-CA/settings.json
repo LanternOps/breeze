@@ -69,7 +69,7 @@
           "executing": "En cours d'exécution",
           "completed": "Terminé",
           "failed": "Échoué",
-          "rejected": "Rejeté"
+          "rejected": "Refusé"
         }
       },
       "intents": {
@@ -217,6 +217,7 @@
       "enrollment-keys_write": "Générer des clés d'inscription d'appareils. Exige une date d'expiration et au moins une adresse IP source ou un CIDR.",
       "contracts_write": "Lire, créer et modifier des contrats et des lignes de contrat, et supprimer des lignes. Activation, mise en pause et annulation impossibles.",
       "tickets_write": "Créer, mettre à jour, assigner, changer le statut et commenter des billets. Suppression et déplacement de billets impossibles.",
+      "alerts_write": "Accuser réception et résoudre les alertes dans toutes les organisations accessibles au principal de service. Ne permet pas de lire les détails des alertes (alerts:read), de les suspendre, de les ignorer ni de les supprimer.",
       "ai_read": "Se connecter au point de terminaison MCP et utiliser les outils en lecture seule. Requis par toutes les autres portées ai:*.",
       "ai_write": "Outils MCP qui modifient des données.",
       "ai_execute": "Outils MCP qui exécutent des actions sur les appareils.",
@@ -278,8 +279,7 @@
       "actionPlan": "Plan d’action",
       "autoApprove": "Approbation automatique",
       "hybridPlan": "Plan hybride"
-    },
-    "overridesOrgTab": "Les champs que vous définissez ici remplacent et verrouillent le même champ dans l’onglet IA de chaque organisation."
+    }
   },
   "aiBudgetThresholds": {
     "invalid": "Saisissez jusqu'à cinq nombres entiers entre 1 et 99, séparés par des virgules."
@@ -761,9 +761,9 @@
     "enrollment": {
       "title": "Inscription des appareils",
       "ttl": "Durée de validité par défaut du lien",
-      "ttlHint": "Présélectionne la durée de validité des nouveaux liens d’inscription et programmes d’installation. Les organisations peuvent choisir une autre valeur par défaut.",
+      "ttlHint": "Présélectionne la durée de validité des nouveaux liens d’inscription et programmes d’installation.",
       "deviceCount": "Nombre d’appareils par lien par défaut",
-      "deviceCountHint": "Nombre de machines qu’un lien d’inscription peut inscrire par défaut. Les organisations peuvent choisir une autre valeur par défaut.",
+      "deviceCountHint": "Nombre de machines qu’un lien d’inscription peut inscrire par défaut.",
       "maxTtl": "Durée de vie maximale du lien",
       "maxTtlHint": "Un plafond sur la durée de vie des clés, et pas seulement sur ce qu’un administrateur peut demander : rien de ce qui est émis sous ce partenaire ne demeure utilisable plus longtemps — liens d’inscription, invitations de déploiement MCP et identifiants enfants émis lors de l’utilisation d’un programme d’installation.",
       "maxTtlWarning": "Les organisations ne peuvent pas l’augmenter. Un plafond court réduit aussi le temps dont dispose une machine pour terminer son inscription après avoir utilisé un lien, et pas seulement le temps de téléchargement."
@@ -789,13 +789,16 @@
   "agentVersionPins": {
     "title": "Objectifs de version de mise à jour",
     "description": "Épinglez l’agent et le watchdog sur une version enregistrée spécifique, ou laissez-le sur <strong>Dernières promotions</strong> pour suivre la sortie promue mondialement. Agent et chien de garde sont indépendants.",
-    "partnerDescription": " Un code PIN ici est la norme par défaut pour toutes vos organisations ; Une organisation peut passer outre ce sujet.",
     "organizationDescription": " Un code PIN d’organisation prend le dessus sur le défaut du partenaire.",
     "components": {
       "agent": "Agent cible",
       "watchdog": "Cible de surveillance"
     },
     "inheritDefault": "Héritage par défaut du partenaire ({{version}})",
+    "inheritDefaultLatest": "Hériter de la valeur par défaut du partenaire (dernière promue)",
+    "latestOverride": "Toujours la dernière promue, ignorer l’épinglage du partenaire",
+    "latestOverrideVersion": "Toujours la dernière promue ({{version}}), ignorer l’épinglage du partenaire",
+    "latestOrganization": "Défini pour cette organisation : toujours la dernière promue",
     "latestVersion": "Dernière promotion ({{version}})",
     "latest": "Dernières promotions",
     "pinnedAll": "Épinglé pour toutes les organisations",
@@ -907,12 +910,12 @@
     "logoPreview": "Aperçu du logo",
     "noLogo": "Pas de logo",
     "uploadImage": "Téléverser l’image",
-    "imageHelp": "PNG, JPEG ou WebP · max 400 Ko après encodage · Redimensionné pour 256×256",
+    "imageHelp": "PNG, JPEG ou WebP, jusqu’à 400 Ko après encodage; les grandes images sont réduites à 800 px.",
     "invalidSavedLogo": "Les données du logo enregistré sont invalides. Supprimez le logo ou téléversez-en un nouveau.",
     "pasteUrl": "Ou coller une image URL",
     "customCss": "Personnalisé CSS",
     "customCssPlaceholder": "/* Personnalisé CSS appliqué à toutes les organisations d’enfants */",
-    "customCssHelp": "CSS S’appliquent au portail pour toutes les organisations d’enfants."
+    "customCssHelp": "Ajouté au portail de chaque client, avant le CSS personnalisé propre à l’organisation, qui peut le remplacer. @import et les url() non HTTPS ne sont pas autorisés."
   },
   "partnerSecurity": {
     "notSet": "Non défini — les organisations se configurent individuellement",
@@ -933,7 +936,11 @@
     "allowlistPlaceholder": "Entrez une plage de IP ou CIDR par ligne. Laissez le vide pour que chaque organisation décide.",
     "allowlistHelp": "Laissez chaque organisation vide pour que chaque organisation soit configurée individuellement. Utilisez la notation CIDR pour les portées. Nécessite un reverse proxy configuré pour que le API puisse voir les vraies IP des clients.",
     "ipListed": "Votre IP ({{ip}}) est listé",
-    "addCurrentIp": "Ajoutez mon IP actuel ({{ip}})"
+    "addCurrentIp": "Ajoutez mon IP actuel ({{ip}})",
+    "errors": {
+      "range": "Entrez un nombre entier de {{min}} à {{max}}.",
+      "atLeast": "Entrez un nombre entier égal ou supérieur à {{min}}."
+    }
   },
   "partnerNotifications": {
     "notSet": "Non défini — les organisations se configurent individuellement",
@@ -997,7 +1004,7 @@
     "networkProxy": {
       "title": "Proxy réseau",
       "label": "Servir le proxy réseau depuis une origine dédiée",
-      "help": "S'applique à toutes les organisations; les organisations ne peuvent pas le remplacer. Ne prend effet que là où votre région offre une origine dédiée, et améliore la compatibilité avec les interfaces Web des appareils."
+      "help": "Ne prend effet que là où votre région offre une origine dédiée, et améliore la compatibilité avec les interfaces Web des appareils."
     }
   },
   "partnerSettingsPage": {
@@ -1113,6 +1120,7 @@
     },
     "saved": "Paramètres partenaires enregistrés",
     "saveFailed": "Impossible d’enregistrer les paramètres",
+    "fieldRejected": "Paramètres non enregistrés. Corrigez le champ en surbrillance et enregistrez de nouveau.",
     "permissionDenied": "Vous n’avez pas la permission de voir les paramètres du partenaire",
     "fetchFailed": "Impossible de récupérer les paramètres partenaires",
     "genericError": "Une erreur s’est produite",
@@ -1125,7 +1133,6 @@
     "description": "Configurez les paramètres par défaut pour {{name}}.",
     "yourMsp": "votre MSP",
     "saveSettings": "Enregistrer les paramètres",
-    "enforcedDescription": "Les valeurs que vous fixez ici sont appliquées dans toutes les organisations. Laissez les champs vides pour permettre à chaque organisation de configurer individuellement.",
     "ticketingDescription": "Configurez les statuts des billets, les priorités SLA par défaut, les catégories et les exportations de facturation. Ces éléments s’appliquent à toutes vos organisations.",
     "modules": {
       "title": "Modules du produit",
@@ -1173,6 +1180,106 @@
     "knownGuests": {
       "added": "Invité connu ajouté",
       "removed": "Invité connu retiré"
+    },
+    "inheritance": {
+      "badge": {
+        "locks": "Verrouille les organisations",
+        "locksConditional": "Verrouille les organisations si activé",
+        "overridable": "L’organisation peut le modifier",
+        "overridableCap": "L’organisation peut le modifier, jusqu’à {{limit}}",
+        "partnerOnly": "À l’échelle du partenaire"
+      },
+      "badgeHelp": {
+        "locks": "Tant que ce paramètre est défini, chaque organisation utilise votre valeur. La valeur propre de l’organisation est ignorée.",
+        "locksConditional": "Lorsqu’il est activé, chaque organisation utilise votre valeur au lieu de la sienne. Lorsqu’il est désactivé, les organisations utilisent la leur.",
+        "overridable": "Votre valeur est la valeur par défaut. Une organisation qui définit sa propre valeur utilise plutôt celle-ci.",
+        "overridableCap": "Votre valeur est la valeur par défaut. Une organisation peut définir sa propre valeur, jusqu’à {{limit}}.",
+        "partnerOnly": "Les organisations n’ont pas de paramètre propre. Votre valeur s’applique à toutes."
+      },
+      "badgeHelpLabel": "À propos de « {{badge}} » ({{field}})",
+      "legend": {
+        "title": "Portée des paramètres :",
+        "locks": "chaque organisation utilise votre valeur",
+        "overridable": "votre valeur est la valeur par défaut; une organisation peut définir la sienne",
+        "partnerOnly": "s’applique à toutes les organisations; aucun paramètre par organisation"
+      },
+      "value": {
+        "on": "Activé",
+        "off": "Désactivé",
+        "minutes_one": "{{count}} minute",
+        "minutes_other": "{{count}} minutes",
+        "hours_one": "{{count}} heure",
+        "hours_other": "{{count}} heures",
+        "days_one": "{{count}} jour",
+        "days_other": "{{count}} jours"
+      },
+      "line": {
+        "appliesToAll_one": "S’applique à {{count}} organisation",
+        "appliesToAll_other": "S’applique aux {{count}} organisations",
+        "hadOwnValue_one": "{{count}} avait sa propre valeur",
+        "hadOwnValue_other": "{{count}} avaient leur propre valeur",
+        "notSet": "Non défini.",
+        "someSetOwn_one": "{{count}} organisation sur {{total}} définit la sienne",
+        "someSetOwn_other": "{{count}} organisations sur {{total}} définissent la leur",
+        "restUsePlatformDefault": "les autres utilisent la valeur par défaut de la plateforme ({{value}})",
+        "orgsUsePlatformDefault": "Les organisations utilisent la valeur par défaut de la plateforme ({{value}})",
+        "noneSetOwn": "Aucune organisation n’a sa propre valeur",
+        "defaultFor_one": "Valeur par défaut pour {{count}} organisation",
+        "defaultFor_other": "Valeur par défaut pour {{count}} organisations",
+        "override_one": "{{count}} la remplace",
+        "override_other": "{{count}} la remplacent",
+        "setOwn_one": "{{count}} définit la sienne",
+        "setOwn_other": "{{count}} définissent la leur",
+        "clamped_one": "{{count}} est plafonnée à votre limite",
+        "clamped_other": "{{count}} sont plafonnées à votre limite",
+        "notInForce": "Non appliqué (destination désactivée).",
+        "orgsUseOwnDestination": "Les organisations utilisent leur propre destination",
+        "haveOne_one": "{{count}} en a une",
+        "haveOne_other": "{{count}} en ont une",
+        "partnerOnlyDefault": "La valeur par défaut de la plateforme ({{value}}) s’applique à toutes les organisations",
+        "partnerOnlyBlank": "Non défini. La valeur par défaut de la plateforme s’applique à toutes les organisations",
+        "consumerAll": "{{consumer}} : s’applique à toutes les organisations",
+        "consumerOwn_one": "{{consumer}} : {{count}} organisation utilise sa propre valeur",
+        "consumerOwn_other": "{{consumer}} : {{count}} organisations utilisent leur propre valeur",
+        "noOrgs": "Aucune organisation pour l’instant",
+        "savedValue": "Valeur enregistrée :",
+        "restricted": "La ventilation par organisation exige un accès partenaire complet"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Organisations ayant leur propre valeur",
+          "overrides": "Organisations qui remplacent votre valeur par défaut",
+          "shadowed": "Organisations dont la valeur propre ne s’applique pas",
+          "clamped": "Organisations plafonnées à votre limite"
+        },
+        "loading": "Chargement des organisations…",
+        "error": "Impossible de charger les organisations.",
+        "empty": "Aucune organisation dans cette liste.",
+        "loadMore": "Charger plus",
+        "set": "Défini",
+        "notSet": "Non défini",
+        "inEffect": "Appliqué",
+        "notInEffect": "Non appliqué",
+        "ownValue": "Valeur propre :",
+        "channels": "Canaux",
+        "readOnly": "Lecture seule. Modifiez la valeur d’une organisation dans ses propres paramètres."
+      },
+      "summary": {
+        "title": "Dans vos organisations",
+        "locks_one": "{{count}} paramètre verrouille les organisations",
+        "locks_other": "{{count}} paramètres verrouillent les organisations",
+        "overridable_one": "{{count}} peut être remplacé",
+        "overridable_other": "{{count}} peuvent être remplacés",
+        "differ_one": "{{count}} a des organisations qui diffèrent de vos valeurs par défaut",
+        "differ_other": "{{count}} ont des organisations qui diffèrent de vos valeurs par défaut",
+        "noneDiffer": "Toutes les organisations utilisent vos valeurs dans cet onglet.",
+        "hint": "Sélectionnez un paramètre, ou un nombre sous un champ, pour lister ses organisations.",
+        "unavailable": "La ventilation par organisation n’est pas disponible pour le moment.",
+        "back": "Retour au résumé"
+      },
+      "fields": {
+        "defaultProvider": "Fournisseur d’accès à distance par défaut"
+      }
     }
   },
   "partnerSendingDomains": {
@@ -1517,7 +1624,18 @@
       "ticket_approval_requested_approver": "Demande d’approbation de travaux (approbateur)",
       "ticket_approval_requested_notify": "Demande d’approbation de travaux (à titre informatif)",
       "ticket_approval_decided": "Décision d’approbation de travaux",
-      "ticket_merged": "Ticket fusionné"
+      "ticket_merged": "Billet fusionné",
+      "ticket_comment_notification": "Avis de réponse publique",
+      "ticket_autoresponse": "Accusé de réception du billet",
+      "ticket_resolved": "Billet résolu",
+      "quote_send": "Soumission / proposition",
+      "agreement_request_send": "Demande d’entente",
+      "invoice_send": "Facture",
+      "portal_invite": "Invitation au portail",
+      "staff_invite": "Invitation du personnel",
+      "invoice_autopay": "Facture avec avis de paiement automatique",
+      "payment_reminder": "Rappel de paiement",
+      "payment_overdue": "Rappel de paiement en retard"
     }
   },
   "inboundEmail": {
@@ -1746,7 +1864,11 @@
     },
     "colors": {
       "primary": "Couleur primaire",
-      "secondary": "Couleur secondaire"
+      "secondary": "Couleur secondaire",
+      "primaryInheritedSource": "Couleur de marque du partenaire",
+      "primaryHelp": "Couleur d'accent des soumissions, factures et autres documents clients de cette organisation. Laissez vide pour utiliser la couleur de marque du partenaire.",
+      "primaryInvalid": "Entrez une couleur hexadécimale, par exemple #2563eb.",
+      "primaryLoadError": "Impossible de charger la couleur primaire enregistrée. La modification est désactivée jusqu'à son chargement."
     },
     "theme": {
       "title": "Thème",
@@ -1789,6 +1911,12 @@
     "description": "Ajustez les politiques par défaut et le comportement d’inscription pour {{organization}}.",
     "save": "Enregistrer les paramètres par défaut",
     "managedByPartner": "Géré par un partenaire",
+    "inheritance": {
+      "inherited": "Valeur par défaut héritée",
+      "overridden": "Défini pour cette organisation",
+      "reset": "Rétablir la valeur par défaut",
+      "resetLabel": "Rétablir la valeur par défaut : {{setting}}"
+    },
     "policies": {
       "title": "Politiques par défaut",
       "fields": {
@@ -1976,6 +2104,49 @@
         "backups_no_data": "Sauvegardes est activé, mais il n’y a pas encore de données de sauvegarde à afficher.",
         "dashboard_security_no_data": "Tableau de bord est activé, mais le score de sécurité n’a pas encore de données : cette tuile est vide pour votre client.",
         "branding_unset": "L’image de marque du portail n’a jamais été définie (logo, couleurs, message d’accueil ou contact du soutien)."
+      },
+      "tiles": {
+        "awaitingYou": "En attente de votre client",
+        "devicesProtected": "Protection des points de terminaison",
+        "securityScore": "Score de sécurité",
+        "actionItems": "Actions à mener",
+        "patchesApplied": "Correctifs appliqués ce mois-ci",
+        "backup": "Dernière sauvegarde vérifiée",
+        "service": "Services rendus (90 jours)",
+        "support": "Soutien"
+      },
+      "tileStatus": {
+        "noData": "Pas encore disponible",
+        "notConfigured": "Non configuré",
+        "stale": "Peut-être périmé"
+      },
+      "bands": {
+        "strong": "Solide",
+        "good": "Bon",
+        "fair": "Moyen",
+        "at_risk": "À risque"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} sur {{total}} protégés",
+        "awaitingCounts": "Propositions : {{proposals}} · Factures : {{invoices}}",
+        "serviceCounts": "À temps : {{onTime}} · En retard : {{late}} · Manqués : {{missed}}",
+        "nextDue": "Prochaine échéance : {{name}}, {{date}}",
+        "openRequests_one": "{{count}} demande ouverte",
+        "openRequests_other": "{{count}} demandes ouvertes",
+        "threatCounts": "Détectés : {{detected}} · Résolus : {{resolved}}",
+        "unknownAll": "Pas encore connu pour les {{total}} appareils",
+        "unknownSome_one": "{{count}} pas encore connu",
+        "unknownSome_other": "{{count}} pas encore connus"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Vulnérabilités ouvertes",
+        "knownExploited": "Exploitées connues (KEV)",
+        "threatEvents": "Événements de menace sur les points de terminaison"
+      },
+      "backupRows": {
+        "devices": "Appareils sauvegardés",
+        "breaches": "Dépassements RPO / RTO ouverts",
+        "providers": "Sauvegarde tierce"
       }
     },
     "loading": "Chargement des paramètres du portail...",
@@ -2120,6 +2291,7 @@
       "email": "Courriel de soutien",
       "phone": "Téléphone d’assistance",
       "welcomeMessage": "Message de bienvenue",
+      "welcomeMessageHelp": "Affiché en haut de la page d'accueil du client dans le portail, et sur la page de connexion du portail lorsque l'organisation utilise un domaine personnalisé vérifié. Texte brut; les sauts de ligne sont conservés.",
       "footerText": "Texte du bas de page",
       "footerTextHelp": "Affiché au bas du portail client et imprimé sur les devis et factures de cette organisation, à la place du pied de page des documents du partenaire. Laissez vide pour imprimer le pied de page du partenaire.",
       "footerTextInheritedSource": "Pied de page des documents du partenaire"
@@ -2450,7 +2622,7 @@
     "failedToLoadData": "Impossible de charger les données",
     "failedToSaveBudget": "Impossible d’économiser son budget",
     "failedToSave": "Impossible d’enregistrer",
-    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Chaque outil nécessite des blocages d’approbation jusqu’à ce que l’utilisateur approuve ou rejette.",
+    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Chaque outil nécessitant une approbation reste bloqué jusqu’à ce que l’utilisateur approuve ou refuse.",
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "L’IA propose un plan en plusieurs étapes. L’utilisateur approuve tout le plan d’un coup, puis s’exécute automatiquement par procédés.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Les outils de niveau 2 s’exécutent automatiquement avec des journaux d’audit. Les outils de niveau 3 nécessitent toujours une approbation.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Comme Action Plan, plus des captures d’écran en direct entre les étapes et un bouton Stop persistant.",
@@ -2992,6 +3164,7 @@
           "explicitly_declined": "Refusé explicitement",
           "no_ring_resolved": "L'appareil n'a aucun anneau de mise à jour",
           "ring_reference_invalid": "L'anneau de mise à jour de la politique est invalide",
+          "unsupported_user_scope": "Installation par utilisateur que Breeze ne peut pas encore appliquer",
           "device_not_in_org": "Appareil absent de cette organisation"
         },
         "failureClasses": {
@@ -4171,7 +4344,9 @@
     "active": "Active",
     "revoked": "Révoquée",
     "expired": "Expirée",
-    "statusFilterLabel": "État de la clé"
+    "statusFilterLabel": "État de la clé",
+    "expires": "Expiration",
+    "neverExpires": "Jamais"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Chargement des clés API...",
@@ -4212,7 +4387,8 @@
     "rotating": "Tournant...",
     "rotateKey": "Renouveler la clé",
     "revoking": "Révoque...",
-    "revokeKey": "Révoquer la clé"
+    "revokeKey": "Révoquer la clé",
+    "revokedToast": "Clé API \"{{name}}\" révoquée"
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "Cet appareil peut désormais approuver les requêtes",
@@ -4518,6 +4694,9 @@
     "revoke": "Révoquer"
   },
   "mFASettings": {
+    "saveRecoveryCodesDescription": "Conservez ces codes en lieu sûr. Chaque code est utilisable une seule fois. Ils ne peuvent pas être affichés à nouveau.",
+    "saveRecoveryCodes": "Enregistrez vos codes de récupération",
+    "done": "Terminé",
     "verifyYourPhoneNumber": "Vérifiez votre numéro de téléphone",
     "enterYourPhoneNumberInE164FormatToReceiveAVerificationCo": "Saisissez votre numéro de téléphone au format E.164 pour recevoir un code de vérification.",
     "phoneNumber": "Numéro de téléphone",
@@ -4543,12 +4722,14 @@
     "sMSCodes": "Codes SMS",
     "phoneVerifiedLast4": "(téléphone vérifié : ...{{last4}})",
     "recoveryCodes": "Codes de récupération",
-    "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Utilisez ces codes pour accéder à votre compte si vous perdez votre authentificateur.",
+    "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Utilisez un code de récupération pour accéder à votre compte si vous ne pouvez pas utiliser votre clé d’accès ou votre application d’authentification.",
     "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Les codes de récupération ne s’affichent qu’une fois et ne peuvent pas être réaffichés.",
-    "regenerateRecoveryCodes": "Régénérer les codes de récupération",
-    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Les codes existants ne peuvent pas être réaffichés. La régénération émet une nouvelle série et invalide immédiatement l’ancienne.",
-    "regenerateRecoveryCodesQuestion": "Régénérer les codes de récupération?",
-    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "La régénération invalide immédiatement tous les codes de récupération que vous avez conservés, y compris les copies imprimées. Les nouveaux codes s’affichent une seule fois, juste après leur génération.",
+    "recoveryGenerationTitle": "Générer de nouveaux codes de récupération",
+    "generateNewCodesQuestion": "Générer de nouveaux codes?",
+    "saveGeneratedRecoveryCodes": "Conservez ces codes en lieu sûr. Chaque code est utilisable une fois et les codes ne peuvent pas être affichés à nouveau.",
+    "generateNewCodesWarning": "Vos codes de récupération actuels ne fonctionneront plus. Les nouveaux codes seront affichés une seule fois. Vos autres appareils seront déconnectés, mais celui-ci restera connecté.",
+    "regenerateRecoveryCodes": "Générer de nouveaux codes",
+    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Les codes existants ne peuvent pas être affichés à nouveau. Générez de nouveaux codes pour les remplacer.",
     "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "Ce code a été refusé. Votre code QR demeure valide : attendez le prochain code de votre authentificateur, puis réessayez.",
     "confirmYourPassword": "Confirmez votre mot de passe",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Saisissez à nouveau votre mot de passe de compte pour commencer à configurer une application d’authentification.",
@@ -4565,11 +4746,9 @@
     "enterThe6DigitCodeGeneratedByYourAuthenticatorApp": "Saisissez le code à 6 chiffres généré par votre application d’authentification.",
     "disableMFA": "Désactiver MFA",
     "reEnterYourAccountPasswordToConfirmThisChange": "Saisissez à nouveau votre mot de passe de compte pour confirmer ce changement.",
-    "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Enregistrez ces codes dans un endroit sûr. Vous pouvez les utiliser pour accéder à votre compte si vous perdez votre appareil authentificateur.",
     "copyCodes": "Copier les codes",
     "copiedCodes": "Copié",
     "copyCodesFailed": "Impossible de copier dans le presse-papiers. Sélectionnez les codes ci-dessus et copiez-les manuellement.",
-    "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Chaque code ne peut être utilisé qu’une seule fois. Générer de nouveaux codes invalidera tout code déjà généré.",
     "back": "Retour",
     "smsSentToPhone": "Des codes SMS envoyés au téléphone se terminant par {{last4}}.",
     "currentPasswordIsRequired": "Un mot de passe actuel est requis",
@@ -4582,7 +4761,7 @@
     "verifyPhone": "Vérifier le téléphone",
     "enabling": "Facilitant...",
     "yourAccountIsProtectedWithAnAuthenticatorApp": "Votre compte est protégé par une application d’authentification.",
-    "useAnAuthenticatorAppToGenerateVerificationCodesRecommen": "Utilisez une application d’authentification pour générer des codes de vérification. (Recommandé)",
+    "useAnAuthenticatorAppToGenerateVerificationCodesRecommen": "Utilisez une application d’authentification pour générer des codes de vérification.",
     "receiveVerificationCodesViaSMSAsABackup": "Recevez les codes de vérification par SMS comme solution de secours.",
     "continue": "Continuer",
     "verifyAndEnable": "Vérifier et activer",
@@ -4591,7 +4770,6 @@
     "enterThe6DigitCodeFromYourAuthenticatorApp": "Saisissez le code à 6 chiffres depuis votre application d’authentification.",
     "disabling": "Désactivant...",
     "generating": "Générer...",
-    "regenerateCodes": "Régénération des codes",
     "verifyYourIdentity": "Vérifiez votre identité",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Ce compte ouvre une session par l'entremise d'un fournisseur d'identité et n'a pas de mot de passe. Vérifiez de nouveau votre identité auprès de votre fournisseur pour commencer à configurer une application d'authentification.",
     "verifyWithYourIdentityProvider": "Vérifier avec votre fournisseur d'identité",
@@ -4609,6 +4787,11 @@
     "couldNotImportThePax8Product": "Impossible d’importer le produit Pax8."
   },
   "profilePage": {
+    "factorProofLabel": "Code MFA actuel ou code de récupération",
+    "passkeyRecoveryCodeHint": "Saisissez un code de récupération inutilisé.",
+    "recoveryCode": "Code de récupération",
+    "useRecoveryCode": "Vous ne pouvez pas utiliser votre clé d’accès? Utilisez un code de récupération",
+    "usePasskeyVerification": "Utiliser plutôt la vérification par clé d’accès",
     "nameMustBeAtLeast2Characters": "Le nom doit comporter au moins 2 caractères",
     "loadingProfile": "Chargement du profil...",
     "profileSettings": "Paramètres du profil",
@@ -4706,7 +4889,7 @@
     "ssoReauthFailed": "Impossible de vérifier avec votre fournisseur d'identité. Veuillez réessayer.",
     "couldNotStartIdentityProviderVerification": "Impossible de lancer la vérification par le fournisseur d'identité.",
     "deletePasskeyConfirmTitle": "Supprimer cette clé d'accès ?",
-    "deletePasskeyConfirmMessage": "Cette action supprime définitivement la clé d'accès « {{name}} », qui ne pourra plus servir à se connecter. Comme il s'agit d'une méthode multifacteur, sa suppression déconnecte aussi vos autres sessions sur tous les appareils. Action irréversible.",
+    "deletePasskeyConfirmMessage": "Cette action supprime définitivement la clé d'accès « <strong>{{name}}</strong> », qui ne pourra plus servir à se connecter. Comme il s'agit d'une méthode multifacteur, sa suppression déconnecte aussi vos autres sessions sur tous les appareils. Action irréversible.",
     "passkeyStepUpHeading": "Vérifiez votre facteur de connexion existant",
     "passkeyStepUpIntro": "L'authentification multifacteur est déjà activée pour ce compte. Confirmez-la avant d'ajouter une autre clé d'accès.",
     "passkeyStepUpNoUsableFactor": "Le facteur actuel de votre compte ne peut pas être confirmé ici. Contactez un administrateur pour ajouter une clé d'accès.",
@@ -4861,6 +5044,11 @@
     "eGOktaProduction": "par exemple, Okta Production",
     "providerPreset": "Préréglage fournisseur",
     "selectAPresetToAutoFillRecommendedSettings": "Sélectionnez un préréglage pour remplir automatiquement les réglages recommandés",
+    "replacePresetFields": {
+      "title": "Remplacer par les valeurs par défaut de {{preset}} ?",
+      "message": "L’application du préréglage {{preset}} remplace les champs d’action et la cartographie des attributs actuels, y compris vos modifications, et efface toute revendication que le préréglage ne définit pas, comme l’attribut des groupes. Rien n’est enregistré tant que vous n’enregistrez pas le fournisseur.",
+      "confirm": "Remplacer"
+    },
     "connectionSettings": "Paramètres de connexion",
     "issuerURL": "Émetteur URL",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",
@@ -6130,6 +6318,11 @@
       "fleetAddDescription": "Ajoutez un nouveau site et sélectionnez l'organisation à laquelle il appartient.",
       "empty": "Aucun site pour l'instant. Ajoutez un site à une organisation pour commencer.",
       "viewDevicesAt": "voir les appareils de {{name}}"
+    },
+    "toasts": {
+      "created": "Site {{name}} créé",
+      "saved": "Site {{name}} enregistré",
+      "deleted": "Site {{name}} supprimé"
     }
   },
   "siteList": {
@@ -6305,7 +6498,11 @@
       "label": "Libellé",
       "notes": "Notes"
     },
-    "empty": "Aucun invité connu pour l’instant."
+    "empty": "Aucun invité connu pour l’instant.",
+    "removeConfirm": {
+      "title": "Retirer l’invité connu?",
+      "message": "Retirer {{label}} ({{mac}})? Les appareils ayant cette adresse MAC ne seront plus approuvés automatiquement dans vos organisations gérées."
+    }
   },
   "userInviteForm": {
     "title": "Inviter l’utilisateur",
@@ -6326,7 +6523,8 @@
     },
     "placeholders": {
       "name": "Jane Smith",
-      "email": "name@company.com"
+      "email": "name@company.com",
+      "role": "Choisissez un rôle"
     },
     "orgAccess": {
       "title": "Accès à l’organisation",
@@ -6382,6 +6580,7 @@
     "title": "Utilisateurs",
     "description": "Gérer l’accès des utilisateurs, les rôles et les permissions.",
     "sessionTimeoutPointer": "Le délai d’inactivité de la session se configure sous Sécurité",
+    "linkedUserMissing": "L’utilisateur lié ne figure pas dans cette liste. Il a peut-être été supprimé, ou il ne fait pas partie des utilisateurs que vous pouvez voir.",
     "never": "Jamais",
     "actions": {
       "tryAgain": "Réessayer",
@@ -6426,7 +6625,8 @@
       "copyLink": "Copier le lien",
       "mfaReset": "MFA réinitialisé pour {{email}}",
       "roleUpdated": "Rôle mis à jour",
-      "orgAccessUpdated": "Accès aux organisations mis à jour"
+      "orgAccessUpdated": "Accès aux organisations mis à jour",
+      "userRemoved": "Utilisateur {{name}} retiré"
     },
     "resetMfa": {
       "title": "Réinitialiser MFA ?",
@@ -6905,7 +7105,6 @@
     "productDefault": "Valeur par défaut du produit ({{minutes}} minutes)",
     "range": "Choisissez {{min}}-{{max}} minutes.",
     "description": "Durée pendant laquelle un tour Breeze AI en cours attend qu'une personne approuve une action contrôlée (Tier 2/3) avant d'abandonner.",
-    "orgOverrideNote": "Les organisations peuvent remplacer cette valeur depuis leurs propres paramètres IA ; la valeur de l'organisation prévaut si elle est définie.",
     "notForUnattendedNote": "Ceci n'est pas destiné au travail de nuit ou sans surveillance — le travail de longue durée passe par la file d'approbations, qui a son propre délai d'expiration."
   },
   "orgAiApprovalTimeout": {

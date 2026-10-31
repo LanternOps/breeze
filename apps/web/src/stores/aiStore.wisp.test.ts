@@ -176,7 +176,7 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
   it('restoring a Wisp session after a reload (wisp null) rehydrates Wisp mode from its grant', async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url === '/ai/sessions/sess-w') return response({ session: { id: 'sess-w', type: 'general', status: 'active', orgId: 'org-a', wispGrantId: 'grant-pw' }, messages: [] });
-      if (url === '/wisp/thread?orgId=org-a') return response({ code: 'no_active_grant' }, 404);
+      if (url === '/wisp/thread?orgId=org-a') return response({ data: null });
       if (url === '/wisp/thread') return response(threadBody('grant-pw', null));
       return response({ data: [] });
     });
@@ -213,11 +213,11 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
     expect(useAiStore.getState().wisp).toBeNull();
   });
 
-  it('a Wisp session whose grant thread cannot be read (500) stays plain and says so in the console; a 404 is quiet', async () => {
+  it('a Wisp session whose grant thread cannot be read (500) stays plain and says so in the console; no grant is quiet', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     fetchMock.mockImplementation(async (url: string) => {
       if (url === '/ai/sessions/sess-w') return response({ session: { id: 'sess-w', type: 'general', status: 'active', orgId: 'org-a', wispGrantId: 'grant-pw' }, messages: [] });
-      if (url === '/wisp/thread?orgId=org-a') return response({ code: 'no_active_grant', error: 'none' }, 404);
+      if (url === '/wisp/thread?orgId=org-a') return response({ data: null });
       if (url === '/wisp/thread') return response({ error: 'boom' }, 500);
       return response({ data: [] });
     });

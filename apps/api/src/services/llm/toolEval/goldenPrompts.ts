@@ -140,4 +140,14 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g106', prompt: 'Look in the Application event log on FIN-LAPTOP-07 for errors from Outlook.', expect: [{ tool: 'browse_device_event_log', action: 'query' }, { tool: 'browse_device_event_log', action: 'list_logs' }, { tool: 'search_logs' }] },
   { id: 'g107', prompt: 'Which tenant variables do our scripts get for Contoso?', expect: [{ tool: 'manage_tenant_variables', action: 'list' }, { tool: 'list_organizations' }] },
   { id: 'g108', prompt: 'End the Quick Support session that is still open from this morning.', expect: [{ tool: 'manage_support_sessions', action: 'end' }, { tool: 'manage_support_sessions', action: 'list' }] },
+  // Full-control W14 (#6784, PR A); generate_invoice and the accounting push are PR B's g112-g113 below.
+  { id: 'g109', prompt: 'Which rate card is Contoso billed on, and what do we charge per hour for after-hours work?', expect: [{ tool: 'manage_billing_profiles', action: 'get_org_profile' }, { tool: 'manage_billing_profiles', action: 'list' }, { tool: 'list_organizations' }] },
+  { id: 'g110', prompt: 'Publish the draft version of the Contoso master services agreement template.', expect: [{ tool: 'manage_contract_templates', action: 'publish' }, { tool: 'manage_contract_templates', action: 'list' }, { tool: 'manage_contract_templates', action: 'get' }] },
+  { id: 'g111', prompt: 'Which contracts bill WS-ACCT-02, and is it covered at all?', expect: [{ tool: 'get_device_billing' }, { tool: 'resolve_device_context' }, { tool: 'query_devices' }] },
+  // Full-control W14 PR B (#6784): generate an invoice (preview first, then a four-eyes generate) and a Xero push (four-eyes).
+  { id: 'g112', prompt: "Generate this month's invoice for the Contoso managed services contract.", expect: [{ tool: 'manage_contracts', action: 'preview_invoice' }, { tool: 'manage_contracts', action: 'generate_invoice' }, { tool: 'list_contracts' }] },
+  { id: 'g113', prompt: 'Push invoice INV-1042 to Xero.', expect: [{ tool: 'manage_accounting_sync', action: 'push' }, { tool: 'manage_accounting_sync', action: 'status' }, { tool: 'list_invoices' }] },
+  // Full-control W15 PR A (#6785): seat drift and local order staging.
+  { id: 'g114', prompt: "Which Pax8 seat counts don't match what we bill?", expect: [{ tool: 'manage_pax8_subscriptions', action: 'drift' }] },
+  { id: 'g115', prompt: 'Stage 5 more Microsoft 365 Business Premium seats for Contoso in Pax8.', expect: [{ tool: 'search_pax8_products', action: 'search' }, { tool: 'manage_pax8_orders', action: 'create_draft' }, { tool: 'manage_pax8_orders', action: 'add_line' }] },
 ];

@@ -403,6 +403,11 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     globalMaxSize: 1 * MB,
     note: 'tighter than the gate — 8 KiB device-unable report (#9517), enforced on bytes read so a chunked body is capped too.',
   },
+  'agents/elevationWithdraw.ts': {
+    paths: ['/api/v1/agents/agent-1/elevation-requests/10000000-0000-4000-8000-000000000009/withdraw'],
+    globalMaxSize: 1 * MB,
+    note: 'tighter than the gate — 4 KiB withdraw body (#8971).',
+  },
   'agents/hardwareHealth.ts': {
     paths: ['/api/v1/agents/agent-1/hardware-health'],
     globalMaxSize: 2 * MB,

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus } from 'lucide-react';
+import { isPinnedLink } from '@/lib/wispLinksApi';
 import { WISP_THREAD_LINK_LIMIT, type WispThreadLink } from '@breeze/shared';
 import { useAiStore, type WispState } from '@/stores/aiStore';
 import { fetchWithAuth } from '@/stores/auth';
@@ -313,7 +314,7 @@ export default function WispHomeThread({
                   aria-label={t('wisp.composer.link')}
                   title={t('wisp.composer.link')}
                   onClick={() => setPickerOpen(true)}
-                  disabled={links.length >= WISP_THREAD_LINK_LIMIT}
+                  disabled={links.filter(isPinnedLink).length >= WISP_THREAD_LINK_LIMIT}
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
                 >
                   <Plus className="h-4 w-4" aria-hidden="true" />

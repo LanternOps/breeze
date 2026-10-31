@@ -7,11 +7,17 @@ import { users } from './users';
 export type MigrationWindowStatus = 'open' | 'closed';
 export type MigrationWindowClosedReason = 'expired' | 'closed_by_admin' | 'principal_inactive' | 'opener_inactive';
 
-/** Per-org counts written once at close (spec §3.5). */
+/**
+ * Per-org counts written once at close (spec §3.5). `attachmentsImported`
+ * (#8313 W1, spec 2026-10-19 §4.6) counts attached files; a summary frozen
+ * before it existed has none, and is read as 0 (services/migrationWindows.ts
+ * `storedSummary`).
+ */
 export type MigrationWindowSummary = {
-  orgs: Array<{ orgId: string; ticketsImported: number; commentsImported: number }>;
+  orgs: Array<{ orgId: string; ticketsImported: number; commentsImported: number; attachmentsImported: number }>;
   ticketsImported: number;
   commentsImported: number;
+  attachmentsImported: number;
 };
 
 /**

@@ -120,6 +120,7 @@ export async function createAutomationStyleAlert(input: AutomationStyleAlertInpu
   const [createdAlert] = await db
     .insert(alerts)
     .values({
+      ownerKind: 'device',
       id: alertId,
       subjectKey: `automation-alert:${alertId}`,
       ruleId,

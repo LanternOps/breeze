@@ -508,8 +508,9 @@ type DeviceRow = {
 
 /**
  * Devices: primary table `org_id`-pinned; `sites`/`device_group_memberships`/
- * `device_groups`/`device_reliability` are all ALSO org-pinned in their join
- * condition (shape 5's own tables carry `org_id` directly). `siteId`, when
+ * `device_reliability` are also org-pinned in their join conditions. Group names
+ * include org-owned groups and partner-owned groups of this org's partner;
+ * memberships remain pinned to the device org. `siteId`, when
  * given, narrows on `devices.site_id`. Ephemeral (Quick Support) and
  * decommissioned devices are excluded — a fleet design is not written about
  * a one-off support session or a device already retired.
@@ -523,7 +524,11 @@ async function loadDevices(orgId: string, siteId: string | null | undefined): Pr
            (
              SELECT array_agg(g.name ORDER BY g.name)
              FROM device_group_memberships m
-             JOIN device_groups g ON g.id = m.group_id AND g.org_id = ${orgId}
+             JOIN device_groups g ON g.id = m.group_id AND (
+               g.org_id = ${orgId} OR (g.org_id IS NULL AND g.partner_id = (
+                 SELECT o.partner_id FROM organizations o WHERE o.id = ${orgId}
+               ))
+             )
              WHERE m.device_id = d.id AND m.org_id = ${orgId}
            ) AS group_names,
            d.tags, d.custom_fields,

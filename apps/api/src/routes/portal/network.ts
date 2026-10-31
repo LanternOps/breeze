@@ -185,6 +185,7 @@ portalNetworkRoutes.get(
           .select({
             enableNetworkVisibility: portalBranding.enableNetworkVisibility,
             enableNetworkAlerts: portalBranding.enableNetworkAlerts,
+            enablePhysicalPlacement: portalBranding.enablePhysicalPlacement,
           })
           .from(portalBranding)
           .where(eq(portalBranding.orgId, orgId))
@@ -205,6 +206,8 @@ portalNetworkRoutes.get(
           },
           undefined,
           settings.enableNetworkAlerts === true,
+          // CPEV-W1: sensitive, fail-closed. Off => the block is never read or sent.
+          settings.enablePhysicalPlacement === true,
         );
 
         return cached(c, result);

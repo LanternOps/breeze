@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { ticketExternalRefs, tickets } from '../db/schema';
 import { pgErrorConstraint } from '../utils/pgErrors';
@@ -102,6 +102,10 @@ export async function upsertTicketExternalRef(input: {
             externalId: input.externalId,
             externalUrl: input.externalUrl ?? null,
             ...(input.externalNumber !== undefined ? { externalNumber: input.externalNumber } : {}),
+            // A ref a merge moved (#10120) keeps its origin only while it
+            // names the same external id: a new one is written here directly.
+            originTicketId: sql`CASE WHEN ticket_external_refs.external_id = excluded.external_id
+                                     THEN ticket_external_refs.origin_ticket_id END`,
             updatedAt: new Date(),
           },
         })

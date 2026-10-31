@@ -234,10 +234,11 @@ Organization users can be restricted to specific sites:
   "email": "tech@contoso.com",
   "name": "Tech User",
   "roleId": "uuid-of-role",
-  "siteIds": ["uuid-of-site-1"],
-  "deviceGroupIds": ["uuid-of-group-1"]
+  "siteIds": ["uuid-of-site-1"]
 }
 ```
+
+`deviceGroupIds` restrictions are not supported yet and return `400`. Partner-level invites reject `siteIds` and `deviceGroupIds` with `400`; use `orgAccess`/`orgIds` instead.
 
 ### 2.3 Managing User Accounts
 

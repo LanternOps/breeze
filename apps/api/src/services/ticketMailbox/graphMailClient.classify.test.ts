@@ -222,6 +222,7 @@ describe('sweep budget for one mailbox (#8308)', () => {
     expect(result.messages.map((m) => m.id)).toEqual(['m1', 'm2', 'm3']);
     expect(result.deltaLink).toBeNull();
     expect(result.resumeLink).toBe('https://graph.microsoft.com/next-3');
+    expect(result.resumeReason).toBe('deadline');
   });
 
   it('cuts the last request\'s timeout down to what is left of the budget', async () => {
@@ -380,6 +381,7 @@ describe('sweep budget for one mailbox (#8308)', () => {
     expect(result.messages).toHaveLength(GRAPH_DELTA_MAX_PAGES_PER_SWEEP);
     expect(result.deltaLink).toBeNull();
     expect(result.resumeLink).toBe(`https://graph.microsoft.com/next-${GRAPH_DELTA_MAX_PAGES_PER_SWEEP}`);
+    expect(result.resumeReason).toBe('page_cap');
   });
 
   it('fails instead of resuming when Graph repeats a nextLink in the same sweep', async () => {

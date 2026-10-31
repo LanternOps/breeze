@@ -102,8 +102,22 @@ func nativeRoleFor(kind string) ipc.HelperRole {
 // skipped, so the domain's legacy sender handles it exactly as today.
 // exclude lists renderer keys that already failed this prompt.
 func selectRenderer(kind string, agent []int, renderers []RendererSession, enabled EnabledKinds, exclude map[string]bool, hasLegacy, hasHeadless bool) Choice {
+	return selectRendererVia(kind, agent, nil, renderers, enabled, exclude, hasLegacy, hasHeadless)
+}
+
+// rolesFor is the renderer roles a prompt may use, in preference order: the
+// prompt's own Roles, else Assist then the kind's native role.
+func rolesFor(kind string, roles []ipc.HelperRole) []ipc.HelperRole {
+	if roles != nil {
+		return roles
+	}
+	return []ipc.HelperRole{ipc.HelperRoleAssist, nativeRoleFor(kind)}
+}
+
+// selectRendererVia is selectRenderer restricted to roles (nil = default).
+func selectRendererVia(kind string, agent []int, roles []ipc.HelperRole, renderers []RendererSession, enabled EnabledKinds, exclude map[string]bool, hasLegacy, hasHeadless bool) Choice {
 	if _, known := ipc.PromptKindClass(kind); known {
-		for _, role := range []ipc.HelperRole{ipc.HelperRoleAssist, nativeRoleFor(kind)} {
+		for _, role := range rolesFor(kind, roles) {
 			var best Choice
 			found := false
 			for _, r := range renderers {

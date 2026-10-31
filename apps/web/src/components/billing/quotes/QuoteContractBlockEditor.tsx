@@ -3,8 +3,48 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
-import { type QuoteBlock, type ContractBlockContent } from './quoteTypes';
+import { type QuoteBlock, type ContractBlockContent, type ContractVariable } from './quoteTypes';
 import { SrSaved } from './quoteEditorShared';
+
+/** Read-only list of a template's AUTO variables (#9867). Shows the value the
+ *  client will read (GET /quotes/:id `contractAutoValues`) next to each label,
+ *  so a tech can check it without switching to Preview. A resolved-but-empty
+ *  value reads "Blank"; with no resolved value at all (older payload, resolver
+ *  failure) it falls back to the `{{token}}`. The token stays in the tooltip. */
+export function ContractAutoVariableList({
+  variables, values, testIdPrefix,
+}: {
+  variables: ContractVariable[];
+  values: Record<string, string> | null | undefined;
+  testIdPrefix: string;
+}) {
+  const { t } = useTranslation('billing');
+  return (
+    <ul className="space-y-1">
+      {variables.map((v) => {
+        const token = `{{${v.name}}}`;
+        const value = values?.[v.name];
+        return (
+          <li
+            key={v.name}
+            data-testid={`${testIdPrefix}${v.name}`}
+            title={token}
+            className="flex items-center justify-between gap-2 rounded-md border bg-muted/40 px-2 py-1 text-xs"
+          >
+            <span className="font-medium">{v.label ?? v.name}</span>
+            {value === undefined ? (
+              <span className="font-mono text-muted-foreground">{token}</span>
+            ) : value.trim() === '' ? (
+              <span className="italic text-muted-foreground">{t('quotes.editor.contract.autoValueBlank')}</span>
+            ) : (
+              <span className="min-w-0 truncate text-right text-foreground">{value}</span>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 // A persisted `contract` block in the editor. The admin serialization attaches
 // the raw authoring fields (content.authoring), so — unlike portal/public — the
@@ -15,10 +55,12 @@ import { SrSaved } from './quoteEditorShared';
 // Without authoring (legacy / uploaded / read-only user) it degrades to a
 // read-only summary card.
 export function ContractBlockEditor({
-  block, canWrite, onEditBlock,
+  block, canWrite, onEditBlock, autoValues,
 }: {
   block: QuoteBlock;
   canWrite: boolean;
+  /** Resolved auto-variable values for this quote (#9867); see ContractAutoVariableList. */
+  autoValues?: Record<string, string> | null;
   onEditBlock: (block: QuoteBlock, content: Record<string, unknown>) => Promise<boolean>;
 }) {
   const { t } = useTranslation('billing');
@@ -120,18 +162,7 @@ export function ContractBlockEditor({
       {autoVars.length > 0 && (
         <div>
           <p className="mb-1 text-xs font-medium text-muted-foreground">{t('quotes.editor.contract.autoVariablesTitle')}</p>
-          <ul className="space-y-1">
-            {autoVars.map((v) => (
-              <li
-                key={v.name}
-                data-testid={`quote-block-contract-auto-${block.id}-${v.name}`}
-                className="flex items-center justify-between rounded-md border bg-muted/40 px-2 py-1 text-xs"
-              >
-                <span className="font-medium">{v.label ?? v.name}</span>
-                <span className="font-mono text-muted-foreground">{`{{${v.name}}}`}</span>
-              </li>
-            ))}
-          </ul>
+          <ContractAutoVariableList variables={autoVars} values={autoValues} testIdPrefix={`quote-block-contract-auto-${block.id}-`} />
         </div>
       )}
 
