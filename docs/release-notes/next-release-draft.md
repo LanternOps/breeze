@@ -222,5 +222,5 @@ Update agents to a release containing this change before relying on the provider
 
 ### AI tools: device and alert lists name the organization (#10408)
 
-- **Partner-wide AI sessions (Wisp, partner chat, MCP) now see each row's organization.** When the caller can reach more than one organization, `query_devices` and `manage_alerts` (`list`) rows carry `orgId`, and the result adds `organizations: [{ orgId, orgName }]`, one entry per organization on the page. Single-organization callers get the same rows as before.
-- **Smaller default pages.** `query_devices` now returns 20 devices by default (was 25) and `manage_alerts` `list` 12 alerts (was 15), so a page still fits the chat budget with the organization fields. `limit` up to 100 is unchanged. No migration, no new environment variable.
+- **Partner-wide AI sessions now see each row's organization.** When the caller can reach more than one organization (a partner user with several organizations, or a Wisp grant covering several), `query_devices` and `manage_alerts` (`list`) rows carry `orgId`, and the result adds `organizations: [{ orgId, orgName }]`, one entry per organization on the page. Single-organization callers get the same rows as before.
+- **Smaller default pages.** `query_devices` now returns 20 devices by default (was 25) and `manage_alerts` `list` 12 alerts (was 15), so a page spanning a handful of organizations still fits the chat budget with the organization fields. `limit` up to 100 is unchanged. No migration, no new environment variable.
