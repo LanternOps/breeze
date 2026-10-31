@@ -219,3 +219,10 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Quote-created contracts are visible (#10361)
+
+- **Contracts created by an accepted quote now link back to it.** When a quote with monthly or annual lines is accepted, its contracts are still created as drafts. The contracts list now marks each such draft **From Q-… · ready to activate**, with a link to the quote. An accepted quote's detail page lists the contracts it created and says how many drafts still need activating. A draft with no signed agreement also shows the **From quote** pill in its header.
+- **The "quote accepted" email** sent to the quote's creator now says how many recurring contracts were created as drafts and still need activating.
+- `GET /api/v1/contracts` rows gain `sourceQuoteId` and `sourceQuote` (`{ id, quoteNumber }` or `null`). `GET /api/v1/contracts/:id` gains `sourceQuote`. `GET /api/v1/quotes/:id` gains `contracts` (`[{ id, name, status, intervalMonths }]`, or `null` when the caller lacks `contracts:read`).
+- **Migration** `2027-01-17-150000-contracts-source-quote.sql`: adds the nullable `contracts.source_quote_id` (same-org foreign key to `quotes`, cleared when the quote is deleted) and a partial index. It backfills existing contracts from their executed agreement and from Pax8 orders. A contract with neither (for example the annual contract of a quote with no agreement and no Pax8 lines) stays unlinked. No environment variable or setting.

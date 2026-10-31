@@ -1,9 +1,10 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq } from 'drizzle-orm';
 import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
+import { listContracts } from '../../services/contractService';
 import {
   createQuoteSchema, cloneQuoteSchema, updateQuoteSchema, quoteLineInputSchema, catalogQuoteLineSchema,
   updateQuoteLineSchema, quoteBlockInputSchema, listQuotesQuerySchema,
@@ -125,6 +126,42 @@ quoteCrudRoutes.post('/:id/revise', scopes, writePerm, zValidator('param', idPar
     return c.json({ data: revision });
   } catch (err) { return handleServiceError(c, err); }
 });
+/** One contract a quote's accept created, as the quote detail callout names it. */
+type GeneratedContractSummary = { id: string; name: string; status: string; intervalMonths: number };
+
+/**
+ * #10361: the contracts this quote's accept created (contracts.source_quote_id),
+ * so an accepted quote can point at the draft(s) waiting to be activated.
+ *
+ * Gated on contracts:read — quotes:read alone does not grant contract reads —
+ * and read through listContracts with the CALLER's actor, so the org axis
+ * (accessibleOrgIds) and the site axis (contract lines) apply exactly as on
+ * the contracts list. `null` = not shown (no permission, or the lookup failed;
+ * display-only, so a failure degrades the callout rather than the page).
+ * `[]` without a query for a quote that was never accepted.
+ */
+async function loadGeneratedContracts(
+  c: Context,
+  quote: { id: string; orgId: string; status: string; acceptedAt?: Date | string | null },
+): Promise<GeneratedContractSummary[] | null> {
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  if (!perms || !hasPermission(perms, PERMISSIONS.CONTRACTS_READ.resource, PERMISSIONS.CONTRACTS_READ.action)) return null;
+  const accepted = quote.status === 'accepted' || quote.status === 'converted' || !!quote.acceptedAt;
+  if (!accepted) return [];
+  try {
+    const qa = quoteActorFrom(c);
+    const rows = await listContracts(
+      { orgId: quote.orgId, sourceQuoteId: quote.id },
+      // Read-only: no permission evidence, so no write gate could ever pass on it.
+      { userId: qa.userId, partnerId: qa.partnerId, accessibleOrgIds: qa.accessibleOrgIds, allowedSiteIds: qa.allowedSiteIds },
+    );
+    return rows.map((r) => ({ id: r.id, name: r.name, status: r.status, intervalMonths: r.intervalMonths }));
+  } catch (err) {
+    console.error('GET /quotes/:id: generated-contract lookup failed', { quoteId: quote.id, err });
+    return null;
+  }
+}
+
 quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), async (c) => {
   const id = c.req.valid('param').id;
   try {
@@ -275,9 +312,10 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
       console.error('GET /quotes/:id: partner auto-email lookup failed', { quoteId: id, partnerId: detail.quote.partnerId, err });
     }
     const autoEmailInvoiceOnAccept = partnerAutoEmailRow?.autoEmailInvoiceOnQuoteAccept ?? true;
+    const contracts = await loadGeneratedContracts(c, detail.quote);
     return c.json({ data: {
       ...detail, quote: quoteForClient, blocks: blocksForEditor, branding, presentation, recipients,
-      acceptance, contractAutoValues,
+      acceptance, contractAutoValues, contracts,
       stripeConnected, stripeAccountCurrency, currencyWarning,
       autoEmailInvoiceOnAccept,
       // #9256: whether the server has an email transport at all, so the web can

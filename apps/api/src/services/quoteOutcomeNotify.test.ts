@@ -87,6 +87,18 @@ describe('notifyQuoteOutcome', () => {
     expect(envelope.text).toContain('INV-2026-0099');
   });
 
+  it('#10361: accepted outcome says how many draft contracts are waiting to be activated', async () => {
+    dbResults.push([quoteRow({ declineReason: null, convertedInvoiceId: null })]);
+    dbResults.push([{ email: 'tech@lantern.test' }]);
+    dbResults.push([{ billingEmail: null }]);
+    dbResults.push([{ name: 'Acme Corp' }]);
+    dbResults.push([{ id: 'c-monthly' }, { id: 'c-annual' }]); // draft contracts from this quote
+    await notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'accepted', source: 'customer', signerName: 'Pat Prospect' });
+    const envelope = sendEmailMock.mock.calls[0]![0];
+    expect(envelope.text).toContain('2 recurring contracts were created as drafts');
+    expect(envelope.html).toContain('2 recurring contracts were created as drafts');
+  });
+
   it('skips quietly when no recipient can be resolved (still emits the event)', async () => {
     dbResults.push([quoteRow({ createdBy: null })]);
     dbResults.push([{ billingEmail: null }]);
@@ -128,6 +140,17 @@ describe('buildQuoteOutcomeTemplate', () => {
     });
     expect(t.html).not.toContain('<script>');
     expect(t.html).toContain('&lt;script&gt;');
+  });
+
+  it('#10361: names pending draft contracts on an accept, singular and plural, and nothing when there are none', () => {
+    const one = buildQuoteOutcomeTemplate({ outcome: 'accepted', quoteNumber: 'Q-1', orgName: 'Acme', draftContractCount: 1 });
+    expect(one.text).toContain('1 recurring contract was created as a draft. Review and activate it to start billing.');
+    const two = buildQuoteOutcomeTemplate({ outcome: 'accepted', quoteNumber: 'Q-1', orgName: 'Acme', draftContractCount: 2 });
+    expect(two.text).toContain('2 recurring contracts were created as drafts. Review and activate them to start billing.');
+    const none = buildQuoteOutcomeTemplate({ outcome: 'accepted', quoteNumber: 'Q-1', orgName: 'Acme', draftContractCount: 0 });
+    expect(none.text).not.toContain('recurring contract');
+    const declined = buildQuoteOutcomeTemplate({ outcome: 'declined', quoteNumber: 'Q-1', orgName: 'Acme', draftContractCount: 2 });
+    expect(declined.text).not.toContain('recurring contract');
   });
 
   it('omits the quote button when no app base url is configured', () => {

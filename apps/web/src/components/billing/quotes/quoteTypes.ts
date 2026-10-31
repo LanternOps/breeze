@@ -327,6 +327,14 @@ export interface QuoteAcceptance {
   evidence?: { filename: string; contentType: string; sizeBytes: number; uploadedAt: string } | null;
 }
 
+/** One contract a quote's accept created (#10361), as the quote detail lists it. */
+export interface QuoteGeneratedContract {
+  id: string;
+  name: string;
+  status: 'draft' | 'active' | 'paused' | 'cancelled' | 'expired';
+  intervalMonths: number;
+}
+
 /** Shape of `GET /quotes/:id` — `{ data: { quote, blocks, lines, branding, billTo } }`. */
 export interface QuoteDetail {
   quote: Quote;
@@ -375,6 +383,10 @@ export interface QuoteDetail {
    *  (or is about to be) superseded. null when none, or when the successor is
    *  outside the viewer's site scope. */
   successor?: { id: string; quoteNumber: string | null; status: QuoteStatus } | null;
+  /** #10361: the contracts this quote's accept created. `null` = not shown
+   *  (the viewer lacks contracts:read, or the lookup failed); `[]` = none.
+   *  Optional: older payloads and fixtures omit it. */
+  contracts?: QuoteGeneratedContract[] | null;
   /** Whether the quote's partner has a connected Stripe account (gates the
    *  send composer's deposit-can't-be-paid warning). `null` = the server could
    *  not look it up (show neither note); omitted on older payloads/fixtures,

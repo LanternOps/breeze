@@ -6,6 +6,12 @@ vi.mock('../../services/auditEvents', async (importActual) => ({
   writeRouteAudit: vi.fn(),
 }));
 
+// #10361: the detail route lists the contracts a quote's accept created.
+vi.mock('../../services/contractService', async (importActual) => ({
+  ...(await importActual<typeof import('../../services/contractService')>()),
+  listContracts: vi.fn(),
+}));
+
 // Mock the service layer — routes are thin; we assert wiring, validation, error mapping.
 vi.mock('../../services/quoteService', () => ({
   createQuote: vi.fn(),
@@ -143,6 +149,7 @@ import { QuoteServiceError } from '../../services/quoteTypes';
 import { renderContractBlocksForClient, loadContractBlockAuthoring, loadContractPdfInputs, resolveQuoteEditorAutoVariables } from '../../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { getConnection } from '../../services/stripeConnectService';
+import { listContracts } from '../../services/contractService';
 
 function app() {
   // quoteRoutes already applies authMiddleware internally
@@ -401,6 +408,72 @@ describe('quote crud + lines routes', () => {
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body.code).toBe('VERSION_NOT_FOUND');
+  });
+
+  describe('GET /:id generated contracts (#10361)', () => {
+    const withPerms = (perms: string[]) => {
+      gate.permGate = async (c: any, next: any) => {
+        c.set('permissions', {
+          permissions: perms.map((p) => { const [resource, action] = p.split(':'); return { resource, action }; }),
+          partnerId: 'p1', orgId: null, roleId: 'r1', scope: 'partner',
+        });
+        return next();
+      };
+    };
+
+    it('lists the contracts this quote created, scoped to the quote org and the caller, for a contracts:read holder', async () => {
+      withPerms(['quotes:read', 'contracts:read']);
+      (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'p1', status: 'converted' }, blocks: [], lines: [] });
+      vi.mocked(listContracts).mockResolvedValue([
+        { id: 'c-monthly', name: 'Q-1 — Monthly', status: 'draft', intervalMonths: 1, estimatedPeriodValue: '150.00', sourceQuote: { id: QUOTE_ID, quoteNumber: 'Q-1' } },
+        { id: 'c-annual', name: 'Q-1 — Annual', status: 'active', intervalMonths: 12, estimatedPeriodValue: '1200.00', sourceQuote: { id: QUOTE_ID, quoteNumber: 'Q-1' } },
+      ] as never);
+
+      const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Only what the callout renders — not the whole contract row.
+      expect(body.data.contracts).toEqual([
+        { id: 'c-monthly', name: 'Q-1 — Monthly', status: 'draft', intervalMonths: 1 },
+        { id: 'c-annual', name: 'Q-1 — Annual', status: 'active', intervalMonths: 12 },
+      ]);
+      expect(listContracts).toHaveBeenCalledWith(
+        { orgId: ORG_ID, sourceQuoteId: QUOTE_ID },
+        expect.objectContaining({ userId: 'u1', partnerId: 'p1', accessibleOrgIds: null }),
+      );
+    });
+
+    it('returns contracts: null and never reads contracts for a caller without contracts:read', async () => {
+      withPerms(['quotes:read']);
+      (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'p1', status: 'converted' }, blocks: [], lines: [] });
+      const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.contracts).toBeNull();
+      expect(listContracts).not.toHaveBeenCalled();
+    });
+
+    it('skips the read for a quote that was never accepted (no contract can exist yet)', async () => {
+      withPerms(['quotes:read', 'contracts:read']);
+      (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent' }, blocks: [], lines: [] });
+      const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+      const body = await res.json();
+      expect(body.data.contracts).toEqual([]);
+      expect(listContracts).not.toHaveBeenCalled();
+    });
+
+    it('degrades to contracts: null (not a failed page) when the contract read throws', async () => {
+      withPerms(['quotes:read', 'contracts:read']);
+      (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'p1', status: 'accepted' }, blocks: [], lines: [] });
+      vi.mocked(listContracts).mockRejectedValueOnce(new Error('db down'));
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.contracts).toBeNull();
+      expect(errSpy).toHaveBeenCalledWith('GET /quotes/:id: generated-contract lookup failed', expect.objectContaining({ quoteId: QUOTE_ID }));
+      errSpy.mockRestore();
+    });
   });
 
   it('POST /:id/lines adds a manual line', async () => {

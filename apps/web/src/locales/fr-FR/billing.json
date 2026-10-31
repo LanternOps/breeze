@@ -395,7 +395,9 @@
         "message_other": "Supprimer {{count}} contrats brouillon ? Seuls les brouillons sont supprimés{{untouched}} ; cette action est irréversible.",
         "untouchedSuffix": " — les contrats actifs ou suspendus de votre sélection restent inchangés",
         "confirm": "Supprimer les brouillons"
-      }
+      },
+      "fromQuoteReady": "Issu de {{number}} · prêt à activer",
+      "fromQuoteReadyUnnumbered": "Issu d’un devis · prêt à activer"
     },
     "contractPax8Drawer": {
       "title": "Lier un abonnement Pax8",
@@ -1664,6 +1666,13 @@
         "attachError": "Impossible de joindre le fichier justificatif.",
         "downloadError": "Impossible de télécharger le fichier justificatif.",
         "tooLarge": "Ce fichier dépasse 10 Mo. Choisissez un fichier plus petit."
+      },
+      "generatedContracts": {
+        "title_one": "Ce devis a créé {{count}} contrat",
+        "title_other": "Ce devis a créé {{count}} contrats",
+        "draftHint_one": "{{count}} brouillon ne facture rien tant qu’il n’est pas activé. Vérifiez-le et activez-le pour lancer la facturation.",
+        "draftHint_other": "{{count}} brouillons ne facturent rien tant qu’ils ne sont pas activés. Vérifiez-les et activez-les pour lancer la facturation.",
+        "ready": "Prêt à activer"
       }
     },
     "currency": {

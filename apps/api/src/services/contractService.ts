@@ -5,6 +5,7 @@ import {
   contracts, contractLines, contractBillingPeriods, contractBillingPeriodOutcomes,
   organizations, sites, deviceGroups, catalogItemPrices, catalogItemOrgPricing,
   invoices, invoiceLineDevices, contractHourPeriods, contractDocuments, serviceDeliverables,
+  quotes,
 } from '../db/schema';
 import { ContractServiceError, actorCan, type ContractActor, type ContractLineAudit } from './contractTypes';
 import type { ContractLineInput, HourBlockEstimate, InvoiceLineDeviceCountedAs, UpdateContractInput } from '@breeze/shared';
@@ -542,8 +543,13 @@ export async function getContract(
   const lines = visibleLinesOrDeny(actor, allLines);
   // After the site-axis deny above, so a reader denied this contract never
   // pays for (or learns anything from) its siblings.
+  // #10361: the page also names the contract's source quote, so a quote's
+  // pending draft says where it came from even with no executed agreement.
   const related = options.includeRelated
-    ? { relatedContracts: await listRelatedContracts(contract, actor) }
+    ? {
+        relatedContracts: await listRelatedContracts(contract, actor),
+        sourceQuote: (await withSourceQuotes([contract]))[0]!.sourceQuote,
+      }
     : {};
   // #6110 finding 3: a PARTIAL read must not look like a complete one. When any
   // line was hidden, say so, and withhold the billing-period history — every
@@ -602,12 +608,20 @@ export type ContractListRow = ContractRow & {
   linesFilteredBySiteScope?: boolean;
 };
 
+/** #10361: the quote whose accept created a contract, as the list names it.
+ *  `quoteNumber` is null for a quote accepted before it was ever numbered. */
+export interface ContractSourceQuote { id: string; quoteNumber: string | null }
+export type ContractListRowWithSource = ContractListRow & { sourceQuote: ContractSourceQuote | null };
+
 export async function listContracts(query: {
   orgId?: string; status?: string; limit?: number;
-}, actor: ContractActor): Promise<ContractListRow[]> {
+  /** #10361: only the contracts a given quote's accept created (quote detail). */
+  sourceQuoteId?: string;
+}, actor: ContractActor): Promise<ContractListRowWithSource[]> {
   const conds = [];
   if (query.orgId) { requireOrgAccess(actor, query.orgId); conds.push(eq(contracts.orgId, query.orgId)); }
   if (query.status) conds.push(eq(contracts.status, query.status as never));
+  if (query.sourceQuoteId) conds.push(eq(contracts.sourceQuoteId, query.sourceQuoteId));
   // Defense-in-depth: when the actor has a restricted org list, add an explicit app-level filter
   // so the query never depends solely on RLS (consistent with other billing list endpoints).
   // null accessibleOrgIds = system/admin context — no extra filter needed.
@@ -630,7 +644,29 @@ export async function listContracts(query: {
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(contracts.createdAt))
     .limit(Math.min(query.limit ?? 50, 100));
-  return withEstimatedPeriodValues(rows, actor);
+  return withSourceQuotes(await withEstimatedPeriodValues(rows, actor));
+}
+
+/**
+ * #10361: name each row's source quote so the list can mark a quote's pending
+ * draft. One query for the page, and none at all when no row came from a
+ * quote. The composite (source_quote_id, org_id) FK already guarantees the
+ * quote is in the contract's own org; the org predicate repeats that axis
+ * explicitly (as the other billing reads do) rather than leaning on RLS alone.
+ * A quote this context cannot read reads as "no source quote", never an error.
+ */
+async function withSourceQuotes<T extends ContractRow>(rows: T[]): Promise<Array<T & { sourceQuote: ContractSourceQuote | null }>> {
+  const quoteIds = [...new Set(rows.map((r) => r.sourceQuoteId).filter((id): id is string => !!id))];
+  if (quoteIds.length === 0) return rows.map((r) => ({ ...r, sourceQuote: null }));
+  const orgIds = [...new Set(rows.map((r) => r.orgId))];
+  const found = await db.select({ id: quotes.id, orgId: quotes.orgId, quoteNumber: quotes.quoteNumber })
+    .from(quotes)
+    .where(and(inArray(quotes.id, quoteIds), inArray(quotes.orgId, orgIds)));
+  const byKey = new Map(found.map((q) => [`${q.id}:${q.orgId}`, q]));
+  return rows.map((r) => {
+    const q = r.sourceQuoteId ? byKey.get(`${r.sourceQuoteId}:${r.orgId}`) : undefined;
+    return { ...r, sourceQuote: q ? { id: q.id, quoteNumber: q.quoteNumber ?? null } : null };
+  });
 }
 
 /**
@@ -2569,6 +2605,7 @@ export async function createContractWithLinesDetailed(
       notes: spec.notes ?? null,
       terms: spec.terms ?? null,
       createdBy: spec.createdBy ?? null,
+      sourceQuoteId: spec.sourceQuoteId ?? null,
     })
     .returning();
 

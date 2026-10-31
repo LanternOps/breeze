@@ -10,6 +10,7 @@ import { runAction, handleActionError, ActionError } from '../../../lib/runActio
 import { useAuthedImage } from './useQuoteImage';
 import QuoteActions, { QuoteSendOutcomeBanners } from './QuoteActions';
 import AcceptanceEvidenceControl from './AcceptanceEvidenceControl';
+import QuoteGeneratedContracts from './QuoteGeneratedContracts';
 import QuoteOrderBreakdown, { QuoteOrderExcludedNote, orderableLines, unorderableProductLines } from './QuoteOrderBreakdown';
 import { RecurringBillingNote, MarginPanel, MarginToggle, useShowMargin } from '../billingUi';
 import ChangeCurrencyDialog, { type CurrencyChangeMode } from '../ChangeCurrencyDialog';
@@ -359,6 +360,10 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
               </a>
             </aside>
           )}
+
+          {/* #10361: the draft contract(s) the accept created — the recurring
+              next step, as the invoice link above is the one-time one. */}
+          <QuoteGeneratedContracts contracts={detail.contracts} />
 
           {/* Recurring + totals summary — the rail's anchor (shadow + large figure). */}
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-detail-totals">
