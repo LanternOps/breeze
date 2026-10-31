@@ -328,6 +328,10 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'topology_device_presence',
   // W3 (#7887): same shape for the daily summaries — the same BEFORE trigger deletes them on an org change.
   'topology_device_presence_days',
+  // Network-isolation episodes (#10089): listed for the coverage contract, but never restamped — it is in
+  // CORE_DEVICE_ORG_MOVE_DELETE_TABLES (its (incident_id, org_id) names a source-org incident), and
+  // breeze_network_isolation_device_moved (BEFORE UPDATE OF org_id on devices) deletes resolved history first.
+  'device_network_isolations',
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts', 'asset_physical_placements',
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
@@ -471,6 +475,12 @@ export const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [
   'topology_device_presence',
   // W3 (#7887): day rows name source-org sites the same way; history does not cross orgs (prospective again).
   'topology_device_presence_days',
+  // Network isolation (#10089): (incident_id, org_id) and (incident_action_id, org_id) name SOURCE-org rows,
+  // so a restamp would 23503. Only resolved, confirmed history can reach this point: the BEFORE UPDATE OF
+  // org_id trigger breeze_network_isolation_device_moved deletes it before the flip and refuses a move while
+  // an episode is unresolved or a release tombstone is unconfirmed (the app-level refusal is W1c); audit_logs
+  // keep the record. This loop is the fallback.
+  'device_network_isolations',
 ];
 
 export function getDeviceOrgMoveDeleteTables(): readonly string[] {
@@ -702,6 +712,9 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // devices(id, org_id) ON DELETE CASCADE; leaf table, no children. Default
   // device_id predicate (no DEVICE_CASCADE_DELETE_PREDICATES entry).
   'device_restore_point_attempts',
+  // Network-isolation episodes (#10089) — FK (device_id, org_id) -> devices(id, org_id) ON DELETE CASCADE;
+  // leaf table, no children. Device delete with an unresolved episode is refused upstream (W1c).
+  'device_network_isolations',
   'device_commands', 'device_connections', 'device_boot_metrics',
   'device_sessions', 'device_change_log', 'device_warranty', 'device_vulnerabilities',
   // #3834 — workload inventory: leaf tables, FK (device_id, org_id) ->

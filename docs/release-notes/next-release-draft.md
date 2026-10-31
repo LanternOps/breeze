@@ -223,3 +223,8 @@ Update agents to a release containing this change before relying on the provider
 ### Windows physical-disk health (#10753)
 
 - **Agent:** `windows_physical_disk` now runs `Get-PhysicalDisk` (60 s) and `Get-StorageReliabilityCounter` (45 s, best-effort) as two separate PowerShell runs. A slow or failed reliability-counter query keeps the disk inventory, reports the source `ok` with a warning, and leaves only the unanswered disks without temperature/wear/error counters. Before, one 60 s deadline covered both, so slow counters failed the source, backed it off for 6 hours and raised **Hardware monitoring tool failing**. A `Get-PhysicalDisk` failure still fails the source and still alerts. Needs the new agent build; no server change, no migration.
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.
