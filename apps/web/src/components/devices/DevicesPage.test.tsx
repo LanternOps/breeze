@@ -250,6 +250,7 @@ vi.mock('./DeviceList', () => ({
       data-hardware-summary={JSON.stringify(devices.map(d => d.hardwareHealthSummary ?? null))}
     >
       <button data-testid="stub-show-warranty" onClick={() => onWarrantyRequiredChange?.(true)}>Show warranty</button>
+      <button data-testid="stub-hide-warranty" onClick={() => onWarrantyRequiredChange?.(false)}>Hide warranty</button>
       {/* #9035: the page hands its list/grid toggle to the table header strip. */}
       <div data-testid="device-list-header-actions">{headerActions}</div>
       {onClearFilters && (
@@ -419,6 +420,21 @@ describe('DevicesPage — optional warranty loading', () => {
     expect(fetchAllDevices).toHaveBeenLastCalledWith(expect.objectContaining({ includeWarranty: false }));
     fireEvent.click(screen.getByTestId('stub-show-warranty'));
     await waitFor(() => expect(fetchAllDevices).toHaveBeenLastCalledWith(expect.objectContaining({ includeWarranty: true })));
+  });
+
+  it('reloads in the background and never over an off toggle (review of #9863)', async () => {
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    const before = vi.mocked(fetchAllDevices).mock.calls.length;
+    fireEvent.click(screen.getByTestId('stub-show-warranty'));
+    await waitFor(() => expect(vi.mocked(fetchAllDevices).mock.calls.length).toBe(before + 1));
+    // The list stays mounted: a foreground reload would unmount it (spinner) and drop selection/page state.
+    expect(screen.getByTestId('device-list')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('stub-hide-warranty'));
+    fireEvent.click(screen.getByTestId('stub-show-warranty'));
+    await new Promise(r => setTimeout(r, 50));
+    // Rows already carry warranty data; hiding and re-showing the column is not a reload.
+    expect(vi.mocked(fetchAllDevices).mock.calls.length).toBe(before + 1);
   });
 
   it('requests warranty on the first walk when the column was remembered', async () => {

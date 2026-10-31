@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import DeviceList, { type Device, type DeviceStatus } from '@/components/devices/DeviceList';
@@ -65,37 +65,71 @@ export default function OrgDevicesTab({ orgId, orgName, orgFetch }: OrgDevicesTa
   const [statusFilter, setStatusFilter] = useState('');
   const [siteFilter, setSiteFilter] = useState('');
 
-  useEffect(() => {
-    let cancelled = false;
-    setDevices(null);
-    setTruncated(false);
-    void (async () => {
-      try {
-        const res = await orgFetch(`/devices?limit=${ORG_DEVICES_LIMIT}${warrantyRequested ? '&includeWarranty=true' : ''}`);
-        if (!res.ok) throw new Error(`devices load failed: ${res.status}`);
-        const body = await res.json();
-        const rows: ApiDeviceRow[] | null = Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : null;
-        // A 200 whose body isn't a parseable array tells us nothing about the
-        // real device count — treating it as `[]` would render "No devices
-        // found" (active guidance to adjust filters) for what is actually an
-        // API failure. Fail the same way a non-2xx response does.
-        if (rows === null) throw new Error('devices load: malformed response body');
-        if (cancelled) return;
-        setDevices(rows.map(toDeviceListRow));
-        // Cursor mode (no `page`) returns `nextCursor` when rows remain; a
-        // `total` (legacy/offset shape) says the same thing another way.
-        const pagination = body?.pagination;
-        const total = typeof pagination?.total === 'number' ? pagination.total : null;
-        setTruncated(Boolean(pagination?.nextCursor) || (total !== null && total > rows.length));
-      } catch (err) {
-        console.warn('[OrgDevicesTab] devices load failed', err);
-        if (!cancelled) setDevices('failed');
+  // Read through a ref so toggling the column never re-runs the mount load
+  // (which would blank the rows behind a spinner). `rowsHaveWarrantyRef`
+  // records whether the rows on screen carry warranty, so only an off→on
+  // toggle over warranty-less rows triggers a (background) reload.
+  const warrantyRequestedRef = useRef(warrantyRequested);
+  warrantyRequestedRef.current = warrantyRequested;
+  const rowsHaveWarrantyRef = useRef(false);
+  // Bumped by every load and by unmount / org change, so a stale response can
+  // never overwrite a newer one (the old per-effect `cancelled` flag).
+  const loadGenerationRef = useRef(0);
+
+  const loadDevices = useCallback(async ({ background }: { background: boolean }) => {
+    const generation = ++loadGenerationRef.current;
+    const isCurrent = () => generation === loadGenerationRef.current;
+    const includeWarranty = warrantyRequestedRef.current;
+    if (!background) {
+      setDevices(null);
+      setTruncated(false);
+    }
+    try {
+      const res = await orgFetch(`/devices?limit=${ORG_DEVICES_LIMIT}${includeWarranty ? '&includeWarranty=true' : ''}`);
+      if (!res.ok) throw new Error(`devices load failed: ${res.status}`);
+      const body = await res.json();
+      const rows: ApiDeviceRow[] | null = Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : null;
+      // A 200 whose body isn't a parseable array tells us nothing about the
+      // real device count — treating it as `[]` would render "No devices
+      // found" (active guidance to adjust filters) for what is actually an
+      // API failure. Fail the same way a non-2xx response does.
+      if (rows === null) throw new Error('devices load: malformed response body');
+      if (!isCurrent()) return;
+      setDevices(rows.map(toDeviceListRow));
+      rowsHaveWarrantyRef.current = includeWarranty;
+      // Cursor mode (no `page`) returns `nextCursor` when rows remain; a
+      // `total` (legacy/offset shape) says the same thing another way.
+      const pagination = body?.pagination;
+      const total = typeof pagination?.total === 'number' ? pagination.total : null;
+      setTruncated(Boolean(pagination?.nextCursor) || (total !== null && total > rows.length));
+    } catch (err) {
+      if (background) {
+        // Keep the rows already on screen; the warranty column just stays empty.
+        console.warn('[OrgDevicesTab] background devices load failed', err);
+        return;
       }
-    })();
+      console.warn('[OrgDevicesTab] devices load failed', err);
+      if (isCurrent()) setDevices('failed');
+    }
+  }, [orgFetch, orgId]);
+
+  useEffect(() => {
+    rowsHaveWarrantyRef.current = false;
+    void loadDevices({ background: false });
     return () => {
-      cancelled = true;
+      loadGenerationRef.current += 1;
     };
-  }, [orgFetch, orgId, warrantyRequested]);
+  }, [orgFetch, orgId]); // loadDevices has the same deps
+
+  // Column turned on over rows loaded without warranty → reload in the
+  // background. Off, or on again over warranty-bearing rows, is a no-op.
+  // Waiting for loaded rows covers a toggle during the first load (that load
+  // read the old flag); a failed load is left to the user's retry.
+  const rowsLoaded = Array.isArray(devices);
+  useEffect(() => {
+    if (!warrantyRequested || !rowsLoaded || rowsHaveWarrantyRef.current) return;
+    void loadDevices({ background: true });
+  }, [warrantyRequested, rowsLoaded, loadDevices]);
 
   useEffect(() => {
     let cancelled = false;

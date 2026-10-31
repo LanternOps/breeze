@@ -75,6 +75,23 @@ describe('OrgDevicesTab', () => {
     await waitFor(() => expect(calls).toContain(`/devices?limit=${ORG_DEVICES_LIMIT}&includeWarranty=true`));
   });
 
+  it('keeps the loaded rows on screen while warranty loads and skips a reload when the column is hidden', async () => {
+    const { orgFetch, calls } = makeRecordingOrgFetch({ '/devices': () => jsonResponse({ data: [DEVICE] }) });
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme" orgFetch={orgFetch} />);
+    await screen.findByText('acme-laptop-01');
+    fireEvent.click(screen.getByTestId('column-chooser-trigger'));
+    const warrantyToggle = () => within(screen.getByTestId('column-chooser-option-warranty')).getByRole('checkbox');
+    fireEvent.click(warrantyToggle());
+    // No spinner: the previous rows stay visible until the warranty-bearing response lands.
+    expect(screen.getByText('acme-laptop-01')).toBeInTheDocument();
+    await waitFor(() => expect(calls).toContain(`/devices?limit=${ORG_DEVICES_LIMIT}&includeWarranty=true`));
+    const after = calls.filter(c => c.startsWith('/devices')).length;
+    fireEvent.click(warrantyToggle());
+    fireEvent.click(warrantyToggle());
+    await new Promise(r => setTimeout(r, 50));
+    expect(calls.filter(c => c.startsWith('/devices')).length).toBe(after);
+  });
+
   it('requests remembered warranty visibility on its first pinned fetch', async () => {
     writeColumnVisibility([...ORG_TAB_COLUMN_PRESET.defaultVisible, 'warranty'], ORG_TAB_COLUMN_PRESET);
     const { orgFetch, calls } = makeRecordingOrgFetch({ '/devices': () => jsonResponse({ data: [DEVICE] }) });

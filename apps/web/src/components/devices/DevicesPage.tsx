@@ -403,6 +403,14 @@ export default function DevicesPage() {
   const purgePollTokenRef = useRef(0);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
   const [warrantyRequested, setWarrantyRequested] = useState(() => readColumnVisibility().has('warranty'));
+  // Read by fetchDevices through a ref so toggling the column never changes
+  // fetchDevices' identity (which would re-run the mount effect as a
+  // foreground reload and unmount the list). `rowsHaveWarrantyRef` records
+  // whether the rows on screen were loaded with warranty, so only an off→on
+  // toggle over warranty-less rows triggers a (background) refresh.
+  const warrantyRequestedRef = useRef(warrantyRequested);
+  warrantyRequestedRef.current = warrantyRequested;
+  const rowsHaveWarrantyRef = useRef(false);
   // v2 chip bar seeds its filter from the URL hash so a filtered view is
   // shareable; the legacy DeviceFilterBar owns its own state and ignores it.
   const [advancedFilter, setAdvancedFilter] = useHashState<FilterConditionGroup | null>(null, (h) => decodeFilterFromHash(h) ?? undefined);
@@ -690,10 +698,11 @@ export default function DevicesPage() {
       // `signal` is wired by the mount useEffect's AbortController so a
       // navigate-away mid-walk stops the next page request and prevents
       // setState on an unmounted component (#778 review).
+      const includeWarranty = warrantyRequestedRef.current;
       const [devicesResult, networkResult, manualResult, orgsResponse, sitesResult, groupsResponse] = await Promise.all([
         fetchAllDevices({
           includeDecommissioned: true,
-          includeWarranty: warrantyRequested,
+          includeWarranty,
           signal,
           // Surface the silent-cap case (#778 review). Without this, hitting
           // the safety ceiling would render an incomplete device list and
@@ -891,6 +900,7 @@ export default function DevicesPage() {
       setDeviceGroups(groupsList);
       setGroupMembershipMap(memberMap);
       setDevices(devicesWithNames);
+      rowsHaveWarrantyRef.current = includeWarranty;
       setOrgs(orgsList);
       setSites(sitesList);
 
@@ -943,7 +953,7 @@ export default function DevicesPage() {
         else setLoading(false);
       }
     }
-  }, [stableT, warrantyRequested]);
+  }, [stableT]);
 
   /**
    * The post-change refresh — use this, not `fetchDevices`, anywhere something
@@ -992,6 +1002,18 @@ export default function DevicesPage() {
     fetchDevices(controller.signal);
     return () => controller.abort();
   }, [fetchDevices, orgScopeResolving, orgContextFailed, orgScopeKey]);
+
+  // Column turned on over rows loaded without warranty → refresh in the
+  // background so the list (selection, page, column state) stays mounted.
+  // Turning it off, or back on over rows that already carry warranty, is a
+  // no-op. Waiting on `loading` covers a toggle during the first walk: that
+  // walk read the old flag, so this fires once it lands. An error card is left
+  // alone — the user's Retry reads the ref and asks for warranty itself.
+  useEffect(() => {
+    if (!warrantyRequested || rowsHaveWarrantyRef.current || loading || error) return;
+    if (orgScopeResolving || orgContextFailed) return;
+    void fetchDevices(undefined, { background: true });
+  }, [warrantyRequested, loading, error, fetchDevices, orgScopeResolving, orgContextFailed]);
 
   // Real-time device status updates
   const handleDeviceEvent = useCallback((event: { type: string; payload: Record<string, unknown> }) => {
