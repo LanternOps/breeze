@@ -34,7 +34,7 @@ function inFreshSystemContext<T>(label: string, fn: () => Promise<T>): Promise<T
 // Keep the literal predicate aligned with the partial deadline index.
 const openOutcome = sql`${deviceWakeAttempts.outcome} IN ('pending', 'sent')`;
 
-export async function resolveOpenWakeAttempts(now: Date, batchSize = 500): Promise<{ resolved: number }> {
+export async function resolveOpenWakeAttempts(clock: () => Date = () => new Date(), batchSize = 500): Promise<{ resolved: number }> {
   if (!Number.isInteger(batchSize) || batchSize < 1) throw new Error('batchSize must be a positive integer');
   let resolved = 0;
   let afterId: string | undefined;
@@ -42,6 +42,7 @@ export async function resolveOpenWakeAttempts(now: Date, batchSize = 500): Promi
   // fails to finalise. A failed row cannot starve later batches.
   for (;;) {
     const candidates = await inFreshSystemContext('wakeAttemptSweep.select', () => {
+      const now = clock();
       const cursor = afterId ? gt(deviceWakeAttempts.id, afterId) : undefined;
       // Separate the deadline range from the heartbeat join so the due branch
       // can use device_wake_attempts_deadline_idx. UNION deduplicates attempts
@@ -70,6 +71,7 @@ export async function resolveOpenWakeAttempts(now: Date, batchSize = 500): Promi
             .innerJoin(devices, and(eq(devices.id, deviceWakeAttempts.deviceId), eq(devices.orgId, deviceWakeAttempts.orgId)))
             .where(and(eq(deviceWakeAttempts.id, candidate.id), openOutcome));
           if (!row) return false;
+          const now = clock();
           const outcome = classifyWakeAttempt(row.attempt, row, now);
           if (!outcome) return false;
           const bootAfterSend = outcome === 'came_online' && row.lastSeenAt !== null && row.uptimeSeconds !== null
@@ -114,7 +116,7 @@ export function getWakeAttemptSweepQueue(): Queue {
 }
 export function createWakeAttemptSweepWorker(): Worker {
   // Each attempt owns its context; never wrap the whole run in one transaction.
-  return new Worker(QUEUE_NAME, async () => resolveOpenWakeAttempts(new Date()), {
+  return new Worker(QUEUE_NAME, async () => resolveOpenWakeAttempts(), {
     connection: getBullMQConnection(), concurrency: 1,
   });
 }
