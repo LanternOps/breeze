@@ -117,7 +117,7 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   { key: 'hardware.gpuModel', label: 'GPU Model', category: 'hardware', type: 'string', operators: OPERATORS_BY_TYPE.string },
   { key: 'hardware.health', label: 'Hardware Health', category: 'hardware', type: 'enum', operators: OPERATORS_BY_TYPE.enum, enumValues: ['ok', 'warning', 'critical', 'unknown'], description: 'Storage/RAID health rollup; devices with no hardware report match none' },
   // #9863 — stored device_warranty.status (the value the Warranty card shows).
-  { key: 'warranty.status', label: 'Warranty Status', category: 'hardware', type: 'enum', operators: OPERATORS_BY_TYPE.enum, enumValues: ['active', 'expiring', 'expired', 'unknown', 'subscription_active'], description: 'Warranty status from the last warranty sync; devices with no warranty record count as unknown' },
+  { key: 'warranty.status', label: 'Warranty Status', category: 'hardware', type: 'enum', operators: OPERATORS_BY_TYPE.enum, enumValues: ['active', 'expiring', 'expired', 'unknown', 'subscription_active'], description: 'Warranty status from the last warranty sync; devices with no warranty record count as unknown, so "not expired" includes them. Dynamic groups do not re-evaluate when a warranty sync changes the status' },
 
   // Network fields
   { key: 'network.ipAddress', label: 'IP Address', category: 'network', type: 'string', operators: OPERATORS_BY_TYPE.string },
