@@ -230,3 +230,9 @@ Update agents to a release containing this change before relying on the provider
 - **Upgrade behaviour:** alerts closed before the upgrade treat events ingested up to their close time as already seen, so the upgrade causes no burst of re-opened alerts. Open alerts start tracking on the next sweep.
 - An `after_delay` re-arm option arrives in the next release for anyone who wants reminders while an old event is still in the window.
 - Migration `2027-01-18-110000-alerts-rule-device-subject-closed-idx.sql` builds one index on `alerts` concurrently (no table lock). No setting or environment variable.
+
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.
