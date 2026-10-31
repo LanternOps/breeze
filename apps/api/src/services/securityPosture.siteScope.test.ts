@@ -129,8 +129,9 @@ describe('getSecurityPostureTrend — site ceiling', () => {
     expect(db.select).not.toHaveBeenCalled();
   });
 
-  it('rebuilds each posture run from visible-device snapshots, then groups by day', async () => {
+  it('rebuilds each posture run from visible-device snapshots, then keeps the latest run per day', async () => {
     const run = (iso: string, score: number) => ({
+      orgId: ORG,
       capturedAt: new Date(iso),
       overallScore: score,
       patchComplianceScore: score,
@@ -154,15 +155,20 @@ describe('getSecurityPostureTrend — site ceiling', () => {
     expect(state.joins).toEqual([devices]);
     expect(hasSitePredicate()).toBe(true);
     expect(state.groupBys[0]).toEqual([securityPostureSnapshots.orgId, securityPostureSnapshots.capturedAt]);
+    // 09-20 had runs at 10:00 (100) and 22:00 (80): the day point is the
+    // 22:00 run, not their average (#9926).
     expect(points.map((p) => [p.timestamp, p.overall])).toEqual([
-      ['2026-09-20', 90],
+      ['2026-09-20', 80],
       ['2026-09-21', 60],
     ]);
   });
 });
 
 describe('getSecurityPostureTrend — device weighting (#9643)', () => {
+  let nextOrg = 0;
   const row = (overall: number, devicesAudited: number) => ({
+    // One snapshot per org: weighting applies across organizations.
+    orgId: `org-${nextOrg++}`,
     capturedAt: new Date('2026-09-20T10:00:00Z'),
     devicesAudited,
     overallScore: overall,
@@ -193,5 +199,90 @@ describe('getSecurityPostureTrend — device weighting (#9643)', () => {
     const compiled = dialect.sqlToQuery(selection.devicesAudited as never);
     expect(compiled.sql).toContain('count(*)');
     expect(points.map((p) => p.overall)).toEqual([90]);
+  });
+});
+
+describe('getSecurityPostureTrend — latest snapshot per org per day (#9926)', () => {
+  const ORG_B = '33333333-3333-4333-8333-333333333333';
+  const snap = (orgId: string, iso: string, overall: number, devicesAudited: number) => ({
+    orgId,
+    capturedAt: new Date(iso),
+    devicesAudited,
+    overallScore: overall,
+    patchComplianceScore: overall,
+    encryptionScore: overall,
+    avHealthScore: overall,
+    firewallScore: overall,
+    openPortsScore: overall,
+    passwordPolicyScore: overall,
+    osCurrencyScore: overall,
+    adminExposureScore: overall,
+  });
+
+  it('uses the last of an org\'s same-day hourly snapshots, not their average', async () => {
+    // Issue repro shape: 62 (2 devices), 69 (4 devices), 55 (1 device) on one
+    // day. The device-weighted average is 65; the latest snapshot is 55.
+    state.rows = [
+      snap(ORG, '2026-09-20T20:00:00Z', 55, 1),
+      snap(ORG, '2026-09-20T12:00:00Z', 69, 4),
+      snap(ORG, '2026-09-20T08:00:00Z', 62, 2),
+    ];
+    const points = await getSecurityPostureTrend({ orgIds: [ORG], days: 7 });
+    expect(points.map((p) => [p.timestamp, p.overall])).toEqual([['2026-09-20', 55]]);
+  });
+
+  it('picks the latest snapshot regardless of row order', async () => {
+    state.rows = [
+      snap(ORG, '2026-09-20T08:00:00Z', 62, 2),
+      snap(ORG, '2026-09-20T20:00:00Z', 55, 1),
+      snap(ORG, '2026-09-20T12:00:00Z', 69, 4),
+    ];
+    const points = await getSecurityPostureTrend({ orgIds: [ORG], days: 7 });
+    expect(points.map((p) => p.overall)).toEqual([55]);
+  });
+
+  it('device-weights each org\'s latest snapshot across organizations', async () => {
+    // Org A latest 80 over 4 devices (earlier 20 ignored); org B latest 50
+    // over 1 device (earlier 100 ignored) => (80*4 + 50*1) / 5 = 74.
+    state.rows = [
+      snap(ORG, '2026-09-20T23:00:00Z', 80, 4),
+      snap(ORG_B, '2026-09-20T21:00:00Z', 50, 1),
+      snap(ORG_B, '2026-09-20T03:00:00Z', 100, 9),
+      snap(ORG, '2026-09-20T02:00:00Z', 20, 4),
+    ];
+    const points = await getSecurityPostureTrend({ orgIds: [ORG, ORG_B], days: 7 });
+    expect(points.map((p) => p.overall)).toEqual([74]);
+  });
+
+  it('keeps one point per day, each from that day\'s latest snapshot', async () => {
+    state.rows = [
+      snap(ORG, '2026-09-21T09:00:00Z', 40, 2),
+      snap(ORG, '2026-09-21T01:00:00Z', 90, 2),
+      snap(ORG, '2026-09-20T23:59:00Z', 70, 2),
+      snap(ORG, '2026-09-20T00:30:00Z', 10, 2),
+    ];
+    const points = await getSecurityPostureTrend({ orgIds: [ORG], days: 7 });
+    expect(points.map((p) => [p.timestamp, p.overall])).toEqual([
+      ['2026-09-20', 70],
+      ['2026-09-21', 40],
+    ]);
+  });
+
+  it('selects orgId on the org-snapshot path so runs can be keyed by org', async () => {
+    state.rows = [];
+    await getSecurityPostureTrend({ orgIds: [ORG], days: 7 });
+    const selection = (db.select as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    expect(selection).toHaveProperty('orgId', securityPostureOrgSnapshots.orgId);
+  });
+
+  it('selects orgId on the site-scoped path and keeps the latest run per org per day', async () => {
+    state.rows = [
+      snap(ORG, '2026-09-20T22:00:00Z', 30, 1),
+      snap(ORG, '2026-09-20T06:00:00Z', 90, 3),
+    ];
+    const points = await getSecurityPostureTrend({ orgIds: [ORG], siteIds: [SITE], days: 7 });
+    const selection = (db.select as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    expect(selection).toHaveProperty('orgId', securityPostureSnapshots.orgId);
+    expect(points.map((p) => p.overall)).toEqual([30]);
   });
 });

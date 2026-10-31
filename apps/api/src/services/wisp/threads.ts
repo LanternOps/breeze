@@ -21,14 +21,16 @@ import { aiSessions } from '../../db/schema/ai';
 import { organizations } from '../../db/schema/orgs';
 import { wispGrants } from '../../db/schema/wisp';
 import { wispThreadSessions, wispThreads, type WispThreadRow } from '../../db/schema/wispThreads';
-import { WISP_LINK_LABEL_MAX, type WispThreadLink } from '@breeze/shared';
+import { WISP_LINK_LABEL_MAX, WISP_SEED_AUTO_LINK_MAX_LINES, type WispThreadLink } from '@breeze/shared';
 import { sanitizeUntrustedText, wrapUntrustedData } from '../aiInputSanitizer';
 import type { AuthContext } from '../../middleware/auth';
 import { captureException } from '../sentry';
 import { assertWithinCeiling, inSystemContext, type GrantCeiling } from './grantAuthority';
 import { recallForGrant, renderMemoryForPrompt } from './memoryBroker';
 import { attachmentSeedLines, listThreadAttachments } from './threadAttachments';
-import { listLinks } from './threadLinks';
+import { listWorkingSet } from './threadLinks';
+import { listConcernsForCeiling } from './concerns';
+import type { ResolvedEntity } from './entityRefs';
 import { THREAD_SUMMARY_MAX_CHARS, truncateSummary } from './threadSummary';
 
 export type WispThread = {
@@ -85,23 +87,29 @@ const SEED_LINKS_HEADER = "Linked objects (by handle; call the object's own read
 /**
  * W08 Task 5: the thread's VISIBLE links, one line each by handle — kind,
  * label, status, id, org — never the record body or page link. The links are
- * re-resolved by `listLinks` in seed mode (no caller: the ceiling decides).
- * Lines are newest first and dropped whole past 50 lines / 4 KB; '' when
+ * re-resolved by `listWorkingSet` under the caller and grant ceiling.
+ * Lines preserve pins, concerns, then autos, with at most 15 autos,
+ * and are dropped whole past 50 lines / 4 KB; '' when
  * nothing is visible. Labels are tenant text: sanitized here and fenced.
  */
-function renderLinkSection(links: WispThreadLink[], flags: string[]): string {
+function renderLinkSection(links: WispThreadLink[], flags: string[], _opts?: { viewing?: ResolvedEntity | null }): string {
+  // Task 14 will render the optional viewing entity before the working set.
   const lines: string[] = [];
   let bytes = 0;
+  let autoLines = 0;
   for (const link of links) {
     if (lines.length >= SEED_LINK_MAX_LINES) break;
+    if (link.source === 'auto' && autoLines >= WISP_SEED_AUTO_LINK_MAX_LINES) continue;
     const label = sanitizeUntrustedText(link.label, WISP_LINK_LABEL_MAX, flags).replace(/\s+/g, ' ');
     const status = link.status === null
       ? ''
       : ` (status ${sanitizeUntrustedText(link.status, SEED_LINK_STATUS_MAX_CHARS, flags).replace(/\s+/g, ' ')})`;
-    const line = `- ${link.ref.kind} "${label}"${status} id=${link.ref.id} org=${link.ref.orgId ?? 'partner'}`;
+    const suffix = link.source === 'concern' ? ' (open concern)' : link.source === 'auto' ? ' (recent)' : '';
+    const line = `- ${link.ref.kind} "${label}"${status} id=${link.ref.id} org=${link.ref.orgId ?? 'partner'}${suffix}`;
     const cost = Buffer.byteLength(line, 'utf8') + (lines.length > 0 ? 1 : 0);
     if (bytes + cost > SEED_LINK_MAX_BYTES) break;
     lines.push(line);
+    if (link.source === 'auto') autoLines += 1;
     bytes += cost;
   }
   if (lines.length === 0) return '';
@@ -119,7 +127,10 @@ async function linkSeedSection(threadId: string, ceiling: GrantCeiling, auth: Au
   try {
     // A savepoint: the seed shares one system transaction, and a Postgres error
     // in the link reads/prunes must not abort the memory reads after it.
-    return renderLinkSection(await withDbTransaction(() => listLinks({ auth, ceiling }, threadId)), flags);
+    return renderLinkSection(await withDbTransaction(async () => {
+      const concerns = await listConcernsForCeiling(ceiling, { status: ['open', 'snoozed'] });
+      return listWorkingSet({ auth, ceiling }, threadId, { concerns });
+    }), flags);
   } catch (err) {
     console.error(`[wisp] seed: listing links of thread ${threadId} failed; omitting the section`, err);
     captureException(err, undefined, { threadId, grantId: ceiling.grantId, op: 'wisp.seed_links' });

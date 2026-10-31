@@ -223,3 +223,8 @@ Update agents to a release containing this change before relying on the provider
 ### Public proposal Download PDF (#9860)
 
 - **The public proposal link has a Download PDF button.** A client without a portal account can save the same PDF the portal offers, from the page where they sign. The new `GET /quotes/public/:token/pdf` uses the page's token checks. It returns 404 for a replaced or revoked proposal and `no-store` / `no-referrer` headers. Each proposal allows 10 downloads a minute. No migration, setting or environment variable.
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.

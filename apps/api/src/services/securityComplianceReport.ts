@@ -1,5 +1,5 @@
 import { securityCompliancePostureConfigSchema } from './reportConfigSchemas';
-import type { PostureSummary } from '@breeze/shared';
+import type { PostureDeviceRowKey, PostureSummary } from '@breeze/shared';
 import {
   assertReportExecutionPreflight,
   type ReportResult,
@@ -176,7 +176,7 @@ export async function generateSecurityCompliancePostureReport(
       openVulnHigh: vuln.high,
       cisPassRate: d.cisPassRate,
       posture: null
-    };
+    } satisfies Record<PostureDeviceRowKey, unknown>;
   });
 
   // An integration that exists but is failing to sync is not "active" for the

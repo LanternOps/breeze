@@ -1,18 +1,28 @@
-# Breeze RMM - Codex Context
+# Breeze RMM - Agent Context
 
-## Project Overview
+<!-- Generated from CLAUDE.md by scripts/agents/build-agents-md.mjs. Do not edit by hand: edit CLAUDE.md (shared rules) or docs/agents/agents-md-codex.md (Codex-only rules), then run `pnpm agents-md`. -->
 
-Breeze is a fast, modern Remote Monitoring and Management (RMM) platform for MSPs and internal IT teams. Target: 10,000+ agents with enterprise features.
+Breeze is a Remote Monitoring and Management (RMM) platform for MSPs and internal IT teams, targeting 10,000+ agents. Stack: Astro + React islands (web), Hono/TypeScript (API), PostgreSQL + Drizzle (queries only), BullMQ + Redis, Go agent, WebSocket + HTTP polling, WebRTC remote access.
 
-## Tech Stack
+This file holds rules and pointers. **The pointed-to docs are mandatory reading when their trigger applies** — the detail lives there, not here.
 
-- **Frontend**: Astro + React Islands
-- **API**: Hono (TypeScript)
-- **Database**: PostgreSQL + Drizzle ORM
-- **Queue**: BullMQ + Redis
-- **Agent**: Go (cross-platform)
-- **Real-time**: HTTP polling + WebSocket
-- **Remote Access**: WebRTC
+| Trigger | Read first |
+|---|---|
+| Adding a table, adding a column to an org-cascade table, or any config/policy table | `docs/agents/tenancy-rls.md` |
+| Writing or renaming a migration | `apps/api/migrations/README.md` |
+| Running a scoped test or a contract/integration suite; deciding which CI job catches what | `docs/agents/testing.md` (conventions: `.claude/skills/breeze-testing/SKILL.md`) |
+| Touching `pages/settings/**` or a `*Settings*` component | `docs/agents/settings.md` |
+| Merging a PR, or deploying to the EU/US droplets | `docs/agents/merge-and-deploy.md` |
+| Bringing up / tearing down a local Docker stack | `docs/agents/local-stacks.md` (per-worktree: `.claude/skills/worktree-stack/SKILL.md`) |
+| Choosing a model | `docs/agents/model-routing.md` |
+
+## Monorepo Layout
+
+- `apps/`: api, web, portal, mobile, viewer, helper, docs, Office add-ins, m365-graph-{read,actions}-executor
+- `packages/`: shared (`types/`, `validators/` (Zod), `utils/`), office-addin-core, extension-{sdk,web-sdk,testkit}
+- `ee/`: first-party extensions compiled into the API image; each loads only when its enable flag is set (`BREEZE_WORKSPACE_ENABLED`)
+- `agent/`: Go agent (own Makefile; `make run`)
+- Schema: `apps/api/src/db/schema/`. Routes: `apps/api/src/routes/`, each exports `xxxRoutes`, mounted in `index.ts`.
 
 ## Key Patterns
 
@@ -22,362 +32,93 @@ Partner (MSP) → Organization (Customer) → Site (Location) → Device Group �
 ```
 
 ### Tenant Isolation / RLS (READ BEFORE ADDING TABLES)
-API connects to Postgres as unprivileged `breeze_app`. Every tenant-scoped table MUST have RLS enabled + forced + policies — no app-layer-only fallback. Contract test: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`.
+Full contract, the six tenancy shapes, and the cascade/export registration table: **`docs/agents/tenancy-rls.md`**. The rules that bite:
 
-**Six tenancy shapes:**
+- API connects as unprivileged `breeze_app`. Every tenant-scoped table has RLS enabled + forced + policies **in the same migration that creates it**. No app-layer-only fallback.
+- **DB context helpers** (`apps/api/src/db/index.ts`): `withDbAccessContext` on the request path; `withSystemDbAccessContext` for background/seeds (call `runOutsideDbContext` first if inside a request). Bare pool in request code is forbidden.
+- Every composite FK referencing an `org_id` column is `DEFERRABLE INITIALLY IMMEDIATE` (org merge defers constraints).
+- **A new `org_id` table is not done until it is registered** in `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry.ts`, and `CORE_TENANT_EXPORT_POLICY` — plus the device/ticket lists when it has those columns. RLS coverage does not imply cascade coverage. Code review caught this 0/5 times; contract tests 5/5. Grep, don't judge.
+- **Adding a column** to an org-cascade table needs an export-policy classification; any `json`/`jsonb`/`bytea` column is `excludedOpen`.
+- The org-cascade and export-policy suites fail only under **Integration Tests**, never Test API. A stacked PR (base ≠ main) runs no CI: `gh workflow run CI --ref <branch>`.
 
-| # | Shape | Policy helper | Allowlist |
-|---|---|---|---|
-| 1 | Direct `org_id` column | `breeze_has_org_access(org_id)` | auto-discovered |
-| 2 | Id-keyed (`organizations`) | `breeze_has_org_access(id)` | `ORG_ID_KEYED_TENANT_TABLES` |
-| 3 | Partner-axis | `breeze_has_partner_access(partner_id)` (flat, never tree traversal) | `PARTNER_TENANT_TABLES` |
-| 4 | Dual-axis (`users`) | partner OR org OR `breeze_current_user_id()`; enforced by composite FK `(org_id, partner_id) → organizations(id, partner_id)` | — |
-| 5 | Device-id scoped | hot agent-write tables denormalize `org_id` (Phase 1-4); cold tables use `EXISTS` join policy (Phase 5) | `DEVICE_ID_JOIN_POLICY_TABLES` |
-| 6 | User-id scoped | `breeze_current_user_id()` | `USER_ID_SCOPED_TABLES` |
-
-**DB context helpers** (`apps/api/src/db/index.ts`): `withDbAccessContext` (request path), `withSystemDbAccessContext` (background/seeds — call `runOutsideDbContext` first if inside a request), bare pool is forbidden in request code.
-
-**Intentionally system-scoped:** `device_commands` (agent WS path). Anything else flagged `INTENTIONAL_UNSCOPED` in a plan doc.
-
-**Workflow for a new tenant-scoped table:**
-1. Pick a shape; add policies in the same migration that creates the table — never defer.
-2. Migration must be idempotent (`IF NOT EXISTS` / `DO $$`). Never edit a shipped migration.
-3. Add to the relevant allowlist in `rls-coverage.integration.test.ts` in the same PR (shapes 2-6).
-4. Run the contract test locally (needs real DB).
-5. Verify as `breeze_app`: `docker exec -it breeze-postgres psql -U breeze_app -d breeze` and forge a cross-tenant insert — must fail with `new row violates row-level security policy`.
-
-For production backfills of `org_id` on hot tables (>1M rows), batch via `UPDATE ... WHERE ctid IN (... LIMIT N)` loops before `SET NOT NULL`. Full narrative and rationale: `docs/superpowers/plans/tenancy-rls/2026-04-11-rls-coverage-gaps.md`.
-
-### Database Schema Location
-- `apps/api/src/db/schema/` - All Drizzle schema definitions
-- Key tables: devices, users, organizations, sites, alerts, scripts, automations
-
-### API Routes
-- `apps/api/src/routes/` - Hono route handlers
-- Pattern: Export `xxxRoutes` from each file, mount in `index.ts`
+### Partner-Wide First (config/policy tables) — epic #2135
+New config-ish tables (policies, templates, rules, windows, baselines) default to `org_id` XOR `partner_id`; `org_id NOT NULL` needs a stated justification in the PR. Org-first designs have needed painful retrofits every time (#1724, #2126–#2129). The 7-step playbook (migration, write gate `canManagePartnerWidePolicies`, SELECT-only partner read branch, config-policy linkage, worker fan-out by device org's partner, tests + UI, repo-wide `<table>.orgId` sweep) is in `docs/agents/tenancy-rls.md`.
 
 ### File Size Guideline
-- **Aim to keep files under 500 lines** as a soft guideline, not a hard rule. Use judgment — if a file is cohesive and readable at 600 lines, that's fine. Split when a file becomes hard to navigate or mixes unrelated concerns, not just because it crossed a line count.
-- **Declarative files** (e.g. `aiTools*.ts`, schema definitions) can naturally run longer since they're mostly self-contained registration blocks.
-- Follow the `aiTools*.ts` pattern: one thin hub file for registry/exports, per-domain files for implementations (e.g. `aiToolsDevice.ts`, `aiToolsNetwork.ts`).
-- For route files, split by resource. For service files, split by domain. Helpers used by multiple files can be duplicated locally or extracted to a shared utils file.
-- **Do not proactively split files** that are working well just to meet a line count target. Only split when it improves clarity or maintainability.
-
-### Context Preservation
-- **Prefer subagents (Agent tool) for research, exploration, and isolated tasks** to keep the main conversation context lean and avoid hitting context limits during long sessions.
-- Use subagents for: codebase searches, file reading/analysis, PR reviews, build log inspection, and any work that produces large output.
-- Keep the main context for: decision-making, coordinating work, and user interaction.
+Aim for files under ~500 lines, by judgment, not as a hard rule. Declarative files (`aiTools*.ts`, schemas) can run longer. Follow the `aiTools*.ts` pattern: a thin hub file plus per-domain files. Split route files by resource and services by domain. Do not proactively split working files just to meet a count.
 
 ### URL State in Components
-- Use `window.location.hash` (`#value`) for client-side UI state like selected tabs, selected items in lists, etc. See `DeviceDetails.tsx` and `OrganizationsPage.tsx` for examples.
-- Do **not** use query params (`?key=value`) for transient UI state — keep the pattern consistent.
+Use `window.location.hash` for transient UI state (selected tab, selected list item) — see `DeviceDetails.tsx`, `OrganizationsPage.tsx`. Not query params.
 
 ### No Internal Infrastructure Details in Public Code
-- **Never commit** IP addresses, server hostnames, datacenter regions, droplet IPs, or internal domain mappings to the public repo.
-- Region-specific values belong in `.env` files (gitignored), not in code or config templates.
-- `.env.example` files should use generic placeholders (`host`, `password`, `your-domain.example.com`), not real values.
-- The `internal/` directory is gitignored and safe for strategy docs, internal notes, and infra-specific details.
-
-### Shared Code
-- `packages/shared/src/types/` - TypeScript interfaces
-- `packages/shared/src/validators/` - Zod schemas
-- `packages/shared/src/utils/` - Utility functions
+Never commit IPs, hostnames, regions, droplet addresses, or internal domain mappings. Real values go in gitignored `.env`; `.env.example` uses generic placeholders. `internal/` is gitignored and safe for infra notes.
 
 ### Web Mutation Handlers — `runAction`
-
-**Mutation handlers must surface outcome via `runAction`.** Web action handlers that POST/PUT/PATCH/DELETE should wrap the request in `runAction` (`apps/web/src/lib/runAction.ts`) so success/failure is always shown to the user. `runAction` also treats HTTP-200 `{success:false}` / `{testResult:{success:false}}` response bodies as failures (not silent no-ops).
-
-Catch pattern for callers:
+POST/PUT/PATCH/DELETE handlers wrap the request in `runAction` (`apps/web/src/lib/runAction.ts`), which toasts outcomes and treats HTTP-200 `{success:false}` bodies as failures. Caller catch pattern:
 ```ts
-if (err instanceof ActionError && err.status === 401) return; // let auth redirect handle it
-if (!(err instanceof ActionError)) showToast({ type: 'error', ... }); // non-401 ActionError already toasted by runAction
+if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+if (!(err instanceof ActionError)) showToast({ type: 'error', ... }); // ActionError already toasted
 ```
+Guarded by `apps/web/src/lib/__tests__/no-silent-mutations.test.ts`; exceptions live in `runActionAllowlist.ts`.
 
-The `no-silent-mutations` test (`apps/web/src/lib/__tests__/no-silent-mutations.test.ts`) guards the adopted set. Legitimate exceptions (typed service layers, aggregate/partial-success handlers with inline error UI) are recorded in `apps/web/src/lib/runActionAllowlist.ts`. Spec: `docs/superpowers/specs/web-ui/2026-05-15-ws-a-action-feedback-design.md`.
-
----
-
-## Testing Standards
-
-### Frameworks & Configuration
-- **API**: Vitest — `apps/api/vitest.config.ts` (unit), `vitest.config.rls.ts` (RLS), `vitest.integration.config.ts` (integration)
-- **Web**: Vitest + jsdom — `apps/web/vitest.config.ts`
-- **Agent**: Go standard `testing` package — `go test -race ./...`
-- **Shared**: Vitest — `packages/shared/vitest.config.ts`
-- **E2E**: Playwright Test (TypeScript), `data-testid` based — `e2e-tests/playwright.config.ts`, specs under `e2e-tests/tests/*.spec.ts`, Page Objects under `e2e-tests/pages/`. Tests query DOM via `data-testid` attributes only (not text/role/CSS) — see `e2e-tests/README.md` for the convention.
-
-### Test File Placement
-- Place test files **alongside source files**, not in separate directories
-- API: `routes/devices.ts` → `routes/devices.test.ts`
-- Go: `internal/discovery/scanner.go` → `internal/discovery/scanner_test.go`
-- Shared: `validators/filters.ts` → `validators/filters.test.ts`
-
-### Writing API Route Tests (Vitest)
-- Mock Drizzle ORM query chains matching the exact chain pattern in the source (e.g., `select().from().where()`)
-- Always test **multi-tenant isolation** — verify org-scoped data can't be accessed cross-org
-- Test all HTTP methods, auth/authz, Zod validation failures, not-found, and error cases
-- Use proper UUIDs in mock data — Zod validates UUID format and will reject `'other-org'`
-- Avoid trailing slashes in test URLs — Hono sub-routers return 404 for trailing slashes
-- `vi.mock` factories are hoisted — don't reference module-level `const` values inside them; use literal values instead
-- Read 2-3 existing test files in the same directory before writing new ones to match patterns
-
-### Writing Go Agent Tests
-- Use **table-driven tests** for functions with multiple input/output combinations
-- Always run with `-race` flag to catch data races
-- Mock external dependencies (network, OS, filesystem) — never make real network calls
-- Use build tags for platform-specific tests: `//go:build !windows` or `//go:build darwin`
-- Test nil/empty inputs, error paths, and concurrency safety (spawn goroutines in tests)
-- Place test helpers in the same package, not in a separate `_test` package
-
-### Writing Shared Validator Tests
-- Test valid inputs, invalid inputs, boundary values, and Zod defaults/coercion
-- For discriminated unions, test each variant separately
-- Test `omitempty`/optional fields with both present and absent values
-- For schemas with `superRefine`, test all validation branches
-
-### What Every New Feature Must Test
-1. **Happy path** — basic success case
-2. **Auth/authz** — unauthenticated, wrong role, wrong org
-3. **Validation** — missing required fields, invalid types, boundary values
-4. **Multi-tenant isolation** — cross-org access denied
-5. **Error cases** — not found, conflict, server error
-6. **Edge cases** — empty arrays, nil inputs, concurrent access
-
-### CI Integration
-- All tests run automatically in CI (`.github/workflows/ci.yml`)
-- `test-api`, `test-web`, `test-agent` are **required** jobs on PRs
-- New test files are auto-discovered — no CI config changes needed
-- Go coverage is uploaded as artifact; no threshold enforced yet
-- Integration tests run in `smoke-test` job with `continue-on-error: true`
-
-### Running Tests Locally
-```bash
-# All tests
-pnpm test
-
-# API only
-pnpm test --filter=@breeze/api
-
-# Go agent (with race detection)
-cd agent && go test -race ./...
-
-# Specific Go package
-cd agent && go test -race ./internal/discovery/...
-
-# E2E
-cd e2e-tests && pnpm test
-```
-
----
-
-## Codex Delegation
-
-This project uses OpenAI Codex CLI for task delegation. Claude orchestrates complex work while Codex handles isolated tasks.
-
-### Quick Commands
-
-```bash
-# Standard task
-codex exec "<task>" --full-auto -C "$(git rev-parse --show-toplevel)"
-
-# With reasoning level (low/medium/high/xhigh)
-codex exec "<task>" --full-auto -c 'model_reasoning_effort="xhigh"'
-
-# Resume previous session
-codex exec resume --last "<follow-up>"
-```
-
-### Delegation Guidelines
-
-#### Delegate to Codex
-| Task | Reasoning | Example |
-|------|-----------|---------|
-| File operations | low | "Find all files importing X" |
-| Utility functions | medium | "Create a slugify utility" |
-| CRUD endpoints | medium | "Add DELETE /api/devices/:id" |
-| Test generation | medium | "Write tests for formatBytes" |
-| Lint/type fixes | medium | "Fix TypeScript errors in auth.ts" |
-| Code analysis | high | "Review this for security issues" |
-| Architecture | xhigh | "Design the caching strategy" |
-
-#### Keep with Claude
-- Multi-tenant data isolation
-- Authentication/authorization logic
-- Cross-module refactoring
-- Business logic implementation
-- Coordinating multiple Codex tasks
-- Final code review and integration
-
-### Reasoning Effort Findings
-
-| Level | Behavior | Use When |
-|-------|----------|----------|
-| `low` | Verbose, more tokens | Simple mechanical tasks |
-| `medium` | Balanced (default) | Standard code generation |
-| `high` | Thoughtful analysis | Code review, debugging |
-| `xhigh` | Strategic, concise, fewer tokens | Architecture decisions |
-
-### Token Costs (Tested)
-
-| Task Type | Approximate Tokens |
-|-----------|-------------------|
-| File search | ~1.3k |
-| Code comprehension | ~2.9k |
-| Utility generation | ~3.5k |
-| Security analysis | ~2.4-4.7k |
-| Architecture design | ~1.6-4.7k |
-
-### Codex Strengths (Observed)
-
-- Uses `rg` efficiently for searches
-- Proactively creates directories and updates exports
-- Follows existing project conventions
-- Good at isolated, well-scoped tasks
-- Excellent security analysis capabilities
-
----
-
-## Development Commands
-
-```bash
-# Install dependencies
-pnpm install
-
-# Start development servers
-pnpm dev
-
-# Database operations
-export DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze"
-pnpm db:check-drift  # Verify schema matches migrations (no drift)
-pnpm db:studio       # Open Drizzle Studio
-
-# Agent development
-cd agent && make run
-```
+### Settings — one concept, one home
+A setting is edited in one place per level, lives with its domain, and resolves partner default → org override → snapshot on the document. Full nine rules: `docs/agents/settings.md`. **Rule 9:** a PR that adds a setting states its home, level, resolver, and the count of places the concept is configured before and after (PR template checkbox). Nav registration enforced by `settingsPageRegistry.test.ts`.
 
 ### Schema Migration Workflow
-1. Edit schema files in `apps/api/src/db/schema/`
-2. Write a hand-written SQL migration in `apps/api/migrations/`. The runner accepts any filename matching `^\d{4}-.*\.sql$` and applies them in `localeCompare` (lexicographic) order, so the prefix has to sort correctly.
-   - **Naming:** use `YYYY-MM-DD-<slug>.sql` (the current convention). The legacy `NNNN-<slug>.sql` 4-digit form is still accepted but only for files predating the date-prefix switch — don't introduce new ones.
-   - **Same-day ordering:** if two migrations on the same date depend on each other (e.g. one creates a table, the other adds constraints or policies on it), insert an explicit `-a-`/`-b-` infix between the date and the slug: `2026-04-19-a-installer-bootstrap-tokens.sql`, `2026-04-19-b-installer-bootstrap-tokens-constraints.sql`. Don't rely on the slug to sort the files for you — `-` (0x2D) < `.` (0x2E), so `foo-bar.sql` sorts *after* `foo-bar-extra.sql`, which has bitten us before (issue #506). The `apps/api/src/db/autoMigrate.test.ts` regression test will catch most ordering bugs.
-   - **Idempotent:** `CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`, `DROP CONSTRAINT IF EXISTS` then re-add, `DO $$ BEGIN ... EXCEPTION`, `pg_policies` existence checks for policies. Re-applying must be a no-op.
-   - **No inner `BEGIN;`/`COMMIT;`:** `autoMigrate` wraps each file in `client.begin(...)`. Adding your own transaction blocks emits `NOTICE: there is already a transaction in progress` and serves no purpose.
-   - **Cleanup statements must report row counts:** a migration that UPDATEs/DELETEs suspect rows (e.g. before adding a constraint) should wrap the statement in `DO $$ ... GET DIAGNOSTICS n = ROW_COUNT; IF n > 0 THEN RAISE WARNING 'cleaned % <what>', n; END IF; END $$;` so the count lands in Postgres logs. Silently fixing bad data destroys the forensic trail — if those rows could evidence a tenant-isolation breach, you want a recorded count even when it's 0 (lesson from `2026-06-10-c`).
-   - **Never edit a shipped migration** — fix forward with a new migration. (Renaming is also editing for tracking purposes: `breeze_migrations` keys on filename, so a rename causes already-migrated DBs to re-apply under the new name. Only acceptable when the file is fully idempotent and re-application is a true no-op.)
-3. Run `pnpm db:check-drift` to verify schema matches migrations
-4. Commit the migration file
+Hand-written SQL in `apps/api/migrations/` — never `drizzle-kit generate`/`push`. **Read `apps/api/migrations/README.md` before writing one.** The rules that bite:
+- Name it to sort **after the newest committed migration** — check, don't assume today's date (shipped names run ahead of real time). Prefer `YYYY-MM-DD-HHMMSS-<slug>.sql`. `2026-08-06` is a closed block.
+- Idempotent; no inner `BEGIN;`/`COMMIT;`; never edit or rename a shipped migration.
+- Any file that writes rows elects system scope first: `SELECT set_config('breeze.scope', 'system', true);` — otherwise writes silently match zero rows under forced RLS (`migrationRlsScope.test.ts`).
+- Then `pnpm db:check-drift`.
 
-**Drizzle usage:** Drizzle ORM is used for type-safe queries only. `drizzle-kit` is retained for schema drift detection (`db:check-drift`) and Drizzle Studio (`db:studio`). **Do not use `drizzle-kit generate` or `drizzle-kit push` for migrations.**
+---
 
-For optional TimescaleDB setup, see `apps/api/migrations/optional/`.
+## Working Style
 
-### Docker Compose Modes
+### Design decisions
+- Choose the design that is best long-term, not fastest to implement.
+- For consequential, hard-to-reverse choices (new tables/tenancy shapes, cross-module contracts, public API surface), convene an advisor quorum: form your own position, get an independent read-only opinion from a second model (e.g. `claude -p`). Agree → proceed. Disagree → resolve on the merits or surface it to the user with a recommendation.
 
-Three named override files exist — no auto-applied `docker-compose.override.yml` by default.
+### When to ask vs. proceed
+- **Proceed** on reversible decisions inside the task's scope (naming, layout, test structure, choosing among repo patterns); note the default in one line.
+- **Ask first** for destructive or hard-to-reverse actions (data deletion, force-push, prod changes, closing issues/PRs, external comms), real scope changes, and product/UX calls with no precedent. Design-*quality* questions go to the advisor quorum, not the user.
+- Never block long-running work on a question: take the conservative default, keep going, batch open questions at the end.
+- When asking: bold one-sentence question first, options as short labeled bullets with pros/cons, then **Recommend X** — one-line why.
 
-| File | Purpose |
-|---|---|
-| `docker-compose.override.yml.dev` | Code-mounted hot-reload (builds from `Dockerfile.api.dev` / `Dockerfile.web.dev`) |
-| `docker-compose.override.yml.ghcr` | Pre-built GHCR images (linux/amd64) |
-| `docker-compose.override.yml.local-build` | Native arm64 local build from production Dockerfiles |
+### Verbosity
+Lead with the outcome. Detail belongs in PR descriptions and commits; chat gets what changed, what's risky, what needs input. One status line per milestone during long work.
 
+### Efficient coding & review
+Match rigor to blast radius: full ceremony for tenancy/RLS, auth, migrations, billing, agent-shipped code; implement + typecheck + targeted tests for mechanical work. Run targeted tests while developing, full + contract suites before PR (always when tenancy/cascade code was touched). At most one independent review round.
+
+### Subagents & main-context preservation
+Delegate exploration, large reads, log/test-output inspection, and reviews; keep the main context for decisions. Subagent prompts are self-contained (paths, question, return shape). **Never take a subagent's "done" at face value** — verify the commit exists, the tests ran, and it's on the right branch. Checkpoint-commit on long runs.
+
+## Testing
+Vitest (API, web, shared), Go `testing` (`go test -race ./...`), Playwright E2E (`data-testid` only). Tests sit alongside source. CI jobs `test-api`, `test-web`, `test-agent` and the 16-shard `integration-test` all block PRs. `pnpm test` does **not** run the RLS/integration contract suites. Scoped-run traps (never `pnpm --filter <pkg> test -- --run <path>`; vitest path filters are substring matches), contract-suite commands and CI job map: **`docs/agents/testing.md`**.
+
+## Development Commands
 ```bash
-# Dev mode (code-mounted, hot-reload)
-docker compose -f docker-compose.yml -f docker-compose.override.yml.dev up --build -d
-
-# GHCR mode (pre-built images)
-docker compose -f docker-compose.yml -f docker-compose.override.yml.ghcr up -d
-
-# Local build mode (native arm64)
-docker compose -f docker-compose.yml -f docker-compose.override.yml.local-build up --build -d
-
-# Do not create a root docker-compose.override.yml for shared commits;
-# Docker Compose auto-loads that filename and can weaken production defaults.
-#
-# For local-only use, symlink whichever mode you want as default, but do not commit it:
-# ln -sf docker-compose.override.yml.dev docker-compose.override.yml
-# docker compose up --build -d
+pnpm install && pnpm dev
+export DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze"
+pnpm db:migrate | db:seed | db:check-drift | db:studio
+cd agent && make run
 ```
+Node is pinned to 22.23.4 (`.nvmrc`). No root typecheck script — typecheck runs via turbo/CI.
 
-### PR Merge Process
-- Branch protection requires status checks, but the repo owner uses `--admin` to bypass when CI is green
-- Use `gh pr merge --squash --admin` (merge commits are disabled on this repo)
-- This is the normal workflow — do not wait for branch protection rules to be satisfied
+**Tear down what you bring up** (`pnpm wt-stack down`, `pnpm test-stack down`, compose `down -v`) and say what you left running — see `docs/agents/local-stacks.md`. Deleting a config file? Sweep compose bind mounts in the same PR (`composeBindMounts.test.ts`).
 
-### GitHub Naming
-- Do not use the `codex/` branch prefix for Breeze work. This applies even when Codex creates the branch or PR.
-- Follow the existing GitHub branch patterns: `fix/<issue>-<short-slug>`, `feat/<issue>-<short-slug>`, `docs/<short-slug>`, `chore/<short-slug>`, `ops/<short-slug>`, `hotfix/<short-slug>`, or `integration/<short-slug>`.
-- If there is no issue number, use the same prefix with a concise slug, e.g. `fix/<short-slug>` or `feat/<short-slug>`.
-- Use `pr-####` or `pr-####-review` only when the branch is specifically for inspecting or reviewing an existing PR.
-- Keep branch slugs lowercase, kebab-case, and specific to the work. Avoid agent/tool/vendor prefixes such as `codex/`, `claude/`, or similar.
-- PR titles should follow the existing convention where useful: `fix(scope): summary`, `feat(scope): summary`, `docs(scope): summary`, or `chore(scope): summary`. Include the issue number as `(#1234)` when the work is tied to an issue.
+## PR Merge & Deploy
+- Merge with `gh pr merge <N>` — the merge queue owns strategy. **Never `--admin`** except a declared emergency, followed by `gh workflow run CI --ref main`.
+- A production deploy updates `BREEZE_VERSION`, pulls/ups the named services, prunes images, then **asserts version parity across every running service** (the service list goes stale). Required env vars and the full runbook: `docs/agents/merge-and-deploy.md`.
+- Watchtower must never auto-update `breeze-api`/`breeze-web` (`scripts/security/check-supply-chain-hardening.sh`).
 
-### Linking Issues from a PR
+## Codex and Other Agents
 
-The PR **body** decides whether the issue survives the merge. Pick deliberately —
-this is not a stylistic choice.
+Everything above is shared with Claude Code (`CLAUDE.md`). This section applies to Codex and other agents that read `AGENTS.md`.
 
-- **`Closes #1234`** — the PR fully resolves the issue. Use this by default. The
-  issue closes automatically on merge and leaves the backlog.
-- **`Refs #1234`** — the PR resolves only part of the issue, or the issue is a
-  community report whose reporter still has to verify on their own hardware. When
-  you use `Refs`, **state in the PR body which half shipped and which did not** —
-  a bare `Refs` with no scope note is how a fixed issue becomes permanent backlog.
-
-`Refs` was the de-facto default for a long time and it does not close anything, so
-~15 fully-fixed issues sat open for weeks (#2728, #2814, #2894, #2895, #2896, #2913,
-#2950, #2974, #2997, #2999, #3000, #3006, #3201 among them). Default to `Closes`;
-reach for `Refs` only when one of the two reasons above actually applies.
-
-Mechanics: `Closes #X #Y` auto-closes **only** `#X`. Repeat the keyword per issue —
-`Closes #X, closes #Y`.
-
-### Production Deploy
-
-Production hosts pull from `/opt/breeze` and use mutable image tags driven by `BREEZE_VERSION` in `/opt/breeze/.env`. Keep hostnames, regions, and internal mappings out of tracked files; use placeholders in docs and examples.
-
-```bash
-ssh root@<host> "cd /opt/breeze && \
-  cp .env .env.bak-pre-<new-version> && \
-  sed -i 's/^BREEZE_VERSION=.*/BREEZE_VERSION=<new-version>/' .env && \
-  docker compose pull api web portal && \
-  docker compose up -d binaries-init api web portal && \
-  docker image prune -af --filter 'until=168h' && \
-  docker builder prune -af"
-```
-
-Then verify health with `curl -sf https://<host-or-domain>/health` (200 = healthy).
-
-**The service list is hand-maintained and WILL go stale — always assert version parity after deploying.** Services are named explicitly (not a bare `docker compose pull && up -d`) because the billing service builds from a local image with no registry to pull from, and a bare `up -d` would needlessly bounce the reverse proxy, redis and the tunnel. The cost is that a newly added first-party service is silently never rolled — the customer portal (a separate container serving `/portal/*`, which customers reach from quote and invite emails) stayed several versions behind for weeks while `/health` reported the new version. Watchtower is not a backstop: it is label-gated and no service carries the label.
-
-`/health` is served by the API and cannot detect this, so enumerate what is actually running:
-
-```bash
-ssh root@<host> "cd /opt/breeze && set -a && . ./.env && set +a && \
-  docker ps -a --format '{{.Names}}\t{{.Image}}' | grep 'ghcr.io/lanternops/breeze/' | \
-  while IFS=\$'\t' read -r n i; do t=\${i##*:}; \
-    [ \"\$t\" = \"\$BREEZE_VERSION\" ] && echo \"OK    \$n \$t\" || echo \"SKEW  \$n \$t (expected \$BREEZE_VERSION)\"; done"
-# every line must be OK; any SKEW means that service was never rolled.
-```
-
-**Required env vars added by v0.65+ — production hosts without these refuse to start:**
-
-- `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` — base64 SPKI of the Ed25519 release manifest signing key. Source: `internal/release-keys/release-manifest.ed25519.pub` (the base64 between `-----BEGIN PUBLIC KEY-----` and `-----END PUBLIC KEY-----`, single line). The API config validator refuses to boot in production without it when `BINARY_SOURCE=github`.
-- `IS_HOSTED` — must be explicitly set to `true` (hosted SaaS) or `false` (self-hosted) in production. Without this, a misconfigured deploy (e.g. `.env` value not mapped through compose) silently drops new partners straight to `status='active'`, bypassing the email-verification gate in `/auth/register-partner` (issue #570).
-
-When introducing a new required env var: add it to `/opt/breeze/.env` AND map it explicitly in the `api`/`web` service `environment:` block of `/opt/breeze/docker-compose.yml`. Compose interpolation only happens for vars listed there — having a value in `.env` is necessary but not sufficient.
-
-**Watchtower policy (#603):** repo-tracked compose files never include Watchtower (enforced by `check-supply-chain-hardening.sh`). On production hosts, Watchtower is acceptable for sidecars (caddy, redis, postgres-exporter, cloudflared) but **must not** auto-update `breeze-api` or `breeze-web`. Concretely, the `com.centurylinklabs.watchtower.enable: "true"` label is forbidden on those two services. The hardening check additionally rejects that label string in any tracked compose file as defense-in-depth.
-
-**Known drift:** the deployed `/opt/breeze/docker-compose.yml` may use Watchtower + mutable tags, while `deploy/docker-compose.prod.yml` in the repo uses digest-pinning + no Watchtower. The `check-supply-chain-hardening.sh` rule scans repo files only, so host drift isn't fully enforced. Reconciling this is tracked separately.
-
-## Current Status
-
-See `docs/PROJECT_STATUS.md` for implementation status and next steps.
-
-### Priority: Authentication System
-- Login/logout with JWT
-- MFA (TOTP)
-- Password reset flow
-- SSO integration
-- Rate limiting (Redis-backed sliding window)
+- **Skills.** Where a rule points at `.claude/skills/<name>/SKILL.md`, read that file; it is plain Markdown and applies to you too.
+- **Advisor quorum.** When a Claude session runs you with `codex exec` for a second opinion, stay read-only: no edits, commits, or GitHub writes. Report your position and the reasons.
+- **Branch names.** Never use a `codex/` (or any agent/vendor) prefix. Use `fix/<issue>-<slug>`, `feat/<issue>-<slug>`, `docs/<slug>`, `chore/<slug>`, `ops/<slug>`, `hotfix/<slug>`; lowercase kebab-case. `pr-<N>` / `pr-<N>-review` only for inspecting an existing PR.
+- **PR titles** follow `fix(scope): summary` / `feat(scope): summary` / `docs(scope): summary` / `chore(scope): summary`, with `(#1234)` when tied to an issue.
+- **Linking issues.** `Closes #1234` when the PR fully resolves the issue (the default). `Refs #1234` only for a partial fix or a community report the reporter must verify, and then say in the body which half shipped. Repeat the keyword per issue: `Closes #X, closes #Y`.
