@@ -7,6 +7,7 @@ import { alertTicketingCredentialState, resolveAlertTicketingConfig } from './co
 import { buildTicketDescription, buildTicketSummary } from './summary';
 import { ticketingDb } from './storage';
 import { wakeMapping } from './queue';
+import { pauseTicketingConnection } from './pause';
 import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
 import type { TicketingContext, TicketingDeps, MappingChanges } from './execution';
 import type { CreateSnapshot, TicketMapping } from './stateMachine';
@@ -76,9 +77,5 @@ export async function saveTicketing(id: string, token: string, changes: MappingC
     return !!row;
   });
 }
-export async function pauseTicketing(ctx: TicketingContext) {
-  await ticketingDb(() => db.update(psaConnections).set({ alertTicketingPausedReason: 'auth', alertTicketingPausedAt: new Date() })
-    .where(and(eq(psaConnections.id, ctx.connection.id), isNull(psaConnections.alertTicketingPausedReason))));
-}
 export const ticketingDeps: TicketingDeps = { load: loadTicketingContext, claim: claimTicketing, save: saveTicketing,
-  pause: pauseTicketing, wake: wakeMapping, report: () => {} };
+  pause: ctx => pauseTicketingConnection(ctx.connection.id), wake: wakeMapping, report: () => {} };

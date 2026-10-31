@@ -10,6 +10,7 @@ export interface TicketingContext {
   adapter: Pick<PSAAlertTicketing, 'createAlertTicket' | 'findTicketsByMarker' | 'closeTicket' | 'addNote'>;
 }
 export interface TicketingDeps {
+  beforeCreate?(context: TicketingContext): Promise<boolean>;
   load(id: string): Promise<TicketingContext | null>;
   claim(expected: TicketMapping, token: string, changes: MappingChanges, now: Date): Promise<boolean>;
   save(id: string, token: string, changes: MappingChanges, now: Date): Promise<boolean>;
@@ -60,6 +61,17 @@ export async function executeTicketing(mappingId: string, deps: TicketingDeps, n
   if ((op === 'note' && m.noteState === 'in_flight') || (op === 'close' && m.closeState === 'in_flight' && !snapshot.closeOnResolve)) {
     await finish({ [stateKey]: 'outcome_unknown', lastErrorClass: 'unknown_outcome', lastError: 'note_outcome_unknown' }); return;
   }
+  if (op === 'create' && deps.beforeCreate) {
+    let allowed: boolean;
+    try { allowed = await deps.beforeCreate(ctx); }
+    catch {
+      await finish({ createState: 'never_attempted', lastError: 'redis_unavailable' }, new Date(now.getTime()+30000)); return;
+    }
+    if (!allowed) {
+      const nextHour = new Date(now); nextHour.setUTCHours(nextHour.getUTCHours()+1,0,0,0);
+      await finish({ createState: 'never_attempted', lastError: 'hourly_create_cap', lastErrorClass: null }, nextHour); return;
+    }
+  }
   try {
     if (op === 'create') {
       const ref = await ctx.adapter.createAlertTicket(snapshot.input);
@@ -90,7 +102,7 @@ export async function executeTicketing(mappingId: string, deps: TicketingDeps, n
     const retryAt = new Date(now.getTime()+Math.max(30000, error instanceof PsaAdapterError ? error.retryAfterMs ?? 0 : 0,
       Math.min(3600000, 30000 * 2 ** Math.min(op === 'skip_resolved' ? 0 : (snapshot.operationAttempts?.[op] ?? 1)-1,7))));
     if (cls === 'auth') {
-      changes[stateKey] = op === 'create' ? 'never_attempted' : op === 'adopt_lookup' ? 'create_outcome_unknown' : 'pending' as never;
+      Object.assign(changes, { [stateKey]: op === 'create' ? 'never_attempted' : op === 'adopt_lookup' ? 'create_outcome_unknown' : 'pending' });
       await deps.pause(ctx); deps.report(ctx, 'PSA_ALERT_TICKET_AUTH_PAUSED');
     } else if (cls === 'unknown_outcome' && op !== 'adopt_lookup' && !(op === 'close' && snapshot.closeOnResolve)) {
       if (op === 'create') changes.createState = 'create_outcome_unknown';

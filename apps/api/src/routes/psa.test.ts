@@ -7,6 +7,9 @@ vi.mock('../services', () => ({}));
 
 // Service boundary: the routes construct adapters via createPSAProvider; the
 // adapters themselves are covered by their own unit tests.
+const { resumeTicketingMock } = vi.hoisted(() => ({ resumeTicketingMock: vi.fn(async () => {}) }));
+vi.mock('../services/psaAlertTicketing/pause', () => ({ resumeTicketingConnection: resumeTicketingMock }));
+
 const { createPSAProviderMock } = vi.hoisted(() => ({
   createPSAProviderMock: vi.fn(),
 }));
@@ -772,6 +775,7 @@ describe('psa routes', () => {
       { defaultQueue: 'OPS' }
     );
     expect(testConnection).toHaveBeenCalledTimes(1);
+    expect(resumeTicketingMock).toHaveBeenCalledWith('conn-1', expect.any(Function));
     const setArg = setSpy.mock.calls[0]![0] as { syncSettings: Record<string, unknown> };
     expect(setArg.syncSettings.status).toBe('verified');
     expect(typeof setArg.syncSettings.lastTestedAt).toBe('string');
@@ -790,6 +794,7 @@ describe('psa routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(false);
+    expect(resumeTicketingMock).not.toHaveBeenCalled();
     expect(body.error).toBe('Jira API error (401): bad token');
 
     const setArg = setSpy.mock.calls[0]![0] as { syncSettings: Record<string, unknown> };

@@ -37,6 +37,7 @@ import {
 } from '../services/partnerWideAccess';
 import { createPSAProvider } from '../services/psa';
 import { psaTicketMappingOrgCondition } from '../services/psa/ticketScope';
+import { resumeTicketingConnection } from '../services/psaAlertTicketing/pause';
 import { openPsaMappingCondition } from '../services/psaAlertTicketing/states';
 import { psaAlertTicketingRoutes } from './psaAlertTicketing';
 import {
@@ -988,6 +989,11 @@ psaRoutes.post(
         error: result.message || 'Connection test failed'
       });
     }
+
+    await resumeTicketingConnection(existing.id, () => writeRouteAudit(c, {
+      orgId: null, action: 'psa.alert_ticketing.resume', resourceType: 'psa_connection', resourceId: existing.id,
+      details: { reason: 'successful_connection_test', ...auditOwnerFields(existing) },
+    }));
 
     return c.json({
       success: true,
