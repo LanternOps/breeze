@@ -65,8 +65,8 @@ describe('partners.purchase_selection database boundary', () => {
     const [launch] = await insertSelection(selected);
     const [intent] = await insertSelection({ intent: 'cloud' });
     expect(launch?.selection).toEqual(selected);
-    await replayMigration('2027-01-18-140000-partner-purchase-selection-intent.sql');
-    await replayMigration('2027-01-18-140000-partner-purchase-selection-intent.sql');
+    await replayMigration('2027-01-18-171000-partner-purchase-selection-intent.sql');
+    await replayMigration('2027-01-18-171000-partner-purchase-selection-intent.sql');
     // The intent row is the real proof here: if the legacy file re-added its narrower
     // CHECK, that ADD would fail to validate this row. replayMigration re-applies later
     // files afterwards, so the rejects below pass either way.
