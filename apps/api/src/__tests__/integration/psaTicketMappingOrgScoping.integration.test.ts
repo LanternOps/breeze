@@ -357,7 +357,7 @@ describe('W08 PSA ledger follows alert/device lifecycle', () => {
       ? (await withDbAccessContext(SYSTEM_CTX, async () => {
         const site = await createSite({ orgId: sourceOrg.id });
         return db.insert(alerts).values({ orgId: sourceOrg.id, deviceId, severity: 'high',
-          title: 'Site-owned mapping move alert', topologySiteId: site.id,
+          title: 'Site-owned mapping move alert', ownerKind: 'topology_site', topologySiteId: site.id,
           topologySourceKey: `topology:${'a'.repeat(64)}` }).returning();
       }))[0]!.id
       : await seedAlert(sourceOrg.id, deviceId, 'Mapping move alert');
