@@ -258,6 +258,21 @@ export interface ReliabilityFactorDriver {
   weight: number;
   lostPoints: number;
   evidence: Record<string, number>;
+  /**
+   * #10053: the instant span this factor was scored over (ISO): 00:00Z of the
+   * factor window's first UTC day bucket, clamped to the later of enrolment
+   * and the baseline marker, through `computedAt`.
+   */
+  windowStart?: string;
+  windowEnd?: string;
+  /**
+   * #10053: the distinct event-log sources of every event this factor scored
+   * in its window (crashes, hangs, hardwareErrors only). Absent when the list
+   * could not cover every scored event (an event without a source, more
+   * sources than one link carries) or the snapshot predates it; empty when the
+   * factor scored no events.
+   */
+  eventLogSources?: string[];
 }
 
 export interface ReliabilityEvaluationInput {
@@ -1088,6 +1103,103 @@ function sumBucketsInWindow(
     .reduce((sum, bucket) => sum + getter(bucket), 0);
 }
 
+// #10053: the scoring windows the factor scorers sum over, published so the
+// UI links a factor to exactly the span it was scored on rather than
+// reconstructing it. Fault factors read FAULT_SCORING_WINDOW_DAYS of UTC day
+// buckets (bucketsInWindow); uptime reads 90 (computeUptimeAvailability).
+const FAULT_SCORING_WINDOW_DAYS = 30;
+const UPTIME_SCORING_WINDOW_DAYS = 90;
+// One link carries at most this many sources; matches the event-log list's
+// `source` filter cap (routes/devices/eventlogs.ts).
+const MAX_FACTOR_EVENT_LOG_SOURCES = 25;
+
+interface FactorScoringWindow {
+  windowStart: string;
+  windowEnd: string;
+}
+
+// Start = 00:00Z of the first day bucket bucketsInWindow keeps, moved forward
+// to `floor` (the later of enrolment and the baseline marker), never past the end.
+function factorScoringWindow(windowEnd: Date, days: number, floor: Date | null): FactorScoringWindow {
+  const endMs = windowEnd.getTime();
+  const firstBucketMs = Date.parse(`${toDayKey(new Date(endMs - days * DAY_MS))}T00:00:00.000Z`);
+  const floorMs = floor ? floor.getTime() : Number.NaN;
+  const startMs = Number.isFinite(floorMs) && floorMs > firstBucketMs ? Math.min(floorMs, endMs) : firstBucketMs;
+  return { windowStart: new Date(startMs).toISOString(), windowEnd: windowEnd.toISOString() };
+}
+
+type SourcedReliabilityFactor = 'crashes' | 'hangs' | 'hardwareErrors';
+
+function readEventSource(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
+/**
+ * #10053: the distinct event-log sources behind each sourced factor's count.
+ * Mirrors mergeRowsIntoDailyBuckets + bucketsInWindow (same dedupe keys and
+ * order, same genuine-hardware gate, same event-day window) so the list names
+ * the sources of the events that were scored and no others. Rows must already
+ * be baseline-cut. A factor whose scored events cannot all be named (an event
+ * with no source) or that spans more sources than one link carries gets
+ * `undefined`, never a partial list.
+ */
+function collectScoredEventLogSources(
+  rows: ScoringHistoryRow[],
+  windowEnd: Date,
+  days: number = FAULT_SCORING_WINDOW_DAYS,
+): Record<SourcedReliabilityFactor, string[] | undefined> {
+  const sinceKey = toDayKey(new Date(windowEnd.getTime() - days * DAY_MS));
+  const todayKey = toDayKey(windowEnd);
+  const seenKeys = new Set<string>();
+  const isNewEvent = (key: string): boolean => {
+    if (seenKeys.has(key)) return false;
+    seenKeys.add(key);
+    return true;
+  };
+  const inWindow = (timestamp: string | undefined, collectedAt: Date): boolean => {
+    const key = eventDayKey(timestamp, collectedAt);
+    return key >= sinceKey && key <= todayKey;
+  };
+  const found: Record<SourcedReliabilityFactor, { sources: Set<string>; complete: boolean }> = {
+    crashes: { sources: new Set(), complete: true },
+    hangs: { sources: new Set(), complete: true },
+    hardwareErrors: { sources: new Set(), complete: true },
+  };
+  const note = (factor: SourcedReliabilityFactor, source: string | null) => {
+    if (source === null) found[factor].complete = false;
+    else found[factor].sources.add(source);
+  };
+
+  for (const row of rows) {
+    for (const event of row.crashEvents) {
+      if (!isNewEvent(crashEventKey(event))) continue;
+      if (!inWindow(event.timestamp, row.collectedAt)) continue;
+      note('crashes', readEventSource(asObject(event.details)?.source));
+    }
+    for (const event of row.appHangs) {
+      if (!isNewEvent(appHangKey(event))) continue;
+      if (!inWindow(event.timestamp, row.collectedAt)) continue;
+      // The agent stores a hang event's provider (event-log source) as processName.
+      note('hangs', readEventSource(event.processName));
+    }
+    for (const event of row.hardwareErrors) {
+      if (!isGenuineHardwareError(event)) continue;
+      if (!isNewEvent(hardwareErrorKey(event))) continue;
+      if (!inWindow(event.timestamp, row.collectedAt)) continue;
+      note('hardwareErrors', readEventSource(event.source));
+    }
+  }
+
+  const finalize = ({ sources, complete }: { sources: Set<string>; complete: boolean }) => (
+    complete && sources.size <= MAX_FACTOR_EVENT_LOG_SOURCES ? [...sources].sort() : undefined
+  );
+  return {
+    crashes: finalize(found.crashes),
+    hangs: finalize(found.hangs),
+    hardwareErrors: finalize(found.hardwareErrors),
+  };
+}
+
 // Issue #1908: count of distinct in-window days the device actually reported
 // (sampleCount > 0). This is the rate-normalization denominator — days the
 // device had the opportunity to emit fault events. Mirrors observedUpDayKeys'
@@ -1290,7 +1402,33 @@ function computeTopIssues(input: {
     .slice(0, 5);
 }
 
-function buildReliabilityDrivers(details: unknown): ReliabilityFactorDriver[] {
+function readIsoInstant(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? undefined : new Date(ms).toISOString();
+}
+
+function readEventLogSources(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length > MAX_FACTOR_EVENT_LOG_SOURCES) return undefined;
+  const sources = value.map(readEventSource);
+  return sources.every((source): source is string => source !== null) ? sources : undefined;
+}
+
+function toValidDate(value: Date | string | null | undefined): Date | null {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/**
+ * `snapshot` (the row's computedAt + the device's enrolledAt) lets a snapshot
+ * scored before #10053 persisted its windows still report them, derived with
+ * the scorer's own factorScoringWindow.
+ */
+function buildReliabilityDrivers(
+  details: unknown,
+  snapshot?: { computedAt: Date | string; enrolledAt?: Date | string | null },
+): ReliabilityFactorDriver[] {
   const root = asObject(details);
   const factors = asObject(root?.factors);
   if (!factors) {
@@ -1313,13 +1451,28 @@ function buildReliabilityDrivers(details: unknown): ReliabilityFactorDriver[] {
     { factor: 'hardwareErrors', label: 'Hardware errors' },
   ];
 
+  const computedAt = toValidDate(snapshot?.computedAt);
+  const windowFloor = laterOf(toValidDate(snapshot?.enrolledAt), toValidDate(readBaselineDetails(details)?.baselineAt));
+
   return configs
-    .map(({ factor, label }) => {
+    .map(({ factor, label }): ReliabilityFactorDriver | null => {
       const raw = asObject(factors[factor]);
       if (!raw) return null;
       const score = coerceFiniteNumber(raw.score);
       const weight = coerceFiniteNumber(raw.weight);
       if (score === null || weight === null) return null;
+      const persistedStart = readIsoInstant(raw.windowStart);
+      const persistedEnd = readIsoInstant(raw.windowEnd);
+      const window = persistedStart && persistedEnd
+        ? { windowStart: persistedStart, windowEnd: persistedEnd }
+        : computedAt
+          ? factorScoringWindow(
+              computedAt,
+              factor === 'uptime' ? UPTIME_SCORING_WINDOW_DAYS : FAULT_SCORING_WINDOW_DAYS,
+              windowFloor,
+            )
+          : null;
+      const eventLogSources = readEventLogSources(raw.eventLogSources);
       return {
         factor,
         label,
@@ -1327,6 +1480,8 @@ function buildReliabilityDrivers(details: unknown): ReliabilityFactorDriver[] {
         weight: round2(weight),
         lostPoints: round2(((100 - clampScore(score)) * weight) / 100),
         evidence: coerceDriverEvidence(raw),
+        ...(window ?? {}),
+        ...(eventLogSources ? { eventLogSources } : {}),
       };
     })
     .filter((driver): driver is ReliabilityFactorDriver => driver !== null)
@@ -1571,6 +1726,10 @@ export function scoreDeviceReliability(input: ReliabilityScoringInput): Reliabil
     suppressUptimeIssue,
   });
 
+  const faultWindow = factorScoringWindow(windowEnd, FAULT_SCORING_WINDOW_DAYS, windowFloor);
+  const uptimeWindow = factorScoringWindow(windowEnd, UPTIME_SCORING_WINDOW_DAYS, windowFloor);
+  const eventLogSources = collectScoredEventLogSources(rows, windowEnd);
+
   const reportedDaysSinceBaseline = new Set(rows.map((row) => toDayKey(row.collectedAt))).size;
   const provisional = baseline !== null && reportedDaysSinceBaseline < BASELINE_PROVISIONAL_REPORTED_DAYS;
   const finalTrend = provisional ? { direction: 'stable' as const, confidence: 0 } : trend;
@@ -1600,12 +1759,21 @@ export function scoreDeviceReliability(input: ReliabilityScoringInput): Reliabil
     // the label can never drift from the weights actually applied.
     weightProfile,
     factors: {
-      uptime: { score: uptimeScore, weight: weights.uptime, uptime7d, uptime30d, uptime90d },
-      crashes: { score: crashScore, weight: weights.crashes, crashCount7d, crashCount30d, crashCount90d },
-      hangs: { score: hangScore, weight: weights.hangs, hangCount7d, hangCount30d, unresolvedHangCount30d },
+      // #10053: each factor also records the window it was scored over and,
+      // where its events carry one, the event-log sources of its scored events.
+      uptime: { score: uptimeScore, weight: weights.uptime, uptime7d, uptime30d, uptime90d, ...uptimeWindow },
+      crashes: {
+        score: crashScore, weight: weights.crashes, crashCount7d, crashCount30d, crashCount90d,
+        ...faultWindow, eventLogSources: eventLogSources.crashes,
+      },
+      hangs: {
+        score: hangScore, weight: weights.hangs, hangCount7d, hangCount30d, unresolvedHangCount30d,
+        ...faultWindow, eventLogSources: eventLogSources.hangs,
+      },
       serviceFailures: {
         score: serviceFailureScore,
         weight: weights.serviceFailures,
+        ...faultWindow,
         serviceFailureCount7d,
         serviceFailureCount30d,
         recoveredServiceCount30d,
@@ -1623,6 +1791,8 @@ export function scoreDeviceReliability(input: ReliabilityScoringInput): Reliabil
         criticalHardwareCount30d,
         errorHardwareCount30d,
         warningHardwareCount30d,
+        ...faultWindow,
+        eventLogSources: eventLogSources.hardwareErrors,
       },
     },
     aggregates: {
@@ -2009,7 +2179,7 @@ export async function getDeviceReliability(deviceId: string): Promise<Reliabilit
     mtbfHours: row.mtbfHours,
     topIssues: Array.isArray(row.topIssues) ? row.topIssues : [],
     computedAt: row.computedAt.toISOString(),
-    drivers: buildReliabilityDrivers(row.details),
+    drivers: buildReliabilityDrivers(row.details, { computedAt: row.computedAt, enrolledAt: row.enrolledAt }),
     enrolledAt: row.enrolledAt ? row.enrolledAt.toISOString() : null,
     provisional: baseline?.provisional ?? false,
     baseline,
@@ -2393,4 +2563,7 @@ export const reliabilityScoringInternals = {
   BREEZE_FIXED_SERVICE_NAMES,
   effectiveCrashLoad,
   RELIABILITY_APP_CRASH_WEIGHT,
+  factorScoringWindow,
+  collectScoredEventLogSources,
+  MAX_FACTOR_EVENT_LOG_SOURCES,
 };

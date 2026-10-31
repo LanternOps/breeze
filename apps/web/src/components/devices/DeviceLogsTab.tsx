@@ -40,7 +40,8 @@ type DeviceLogsTabProps = {
   osType?: OSType;
   /**
    * Filter carried by a `#eventlog[/<source>]&from=&to=` link (e.g. from the
-   * Reliability panel). Seeds the source + window; the ISO instants are sent
+   * Reliability panel; several sources ride a `source=` key). Seeds the
+   * source(s) + window; the ISO instants are sent
    * to the API verbatim.
    */
   linkedFilter?: EventLogFilter;
@@ -157,7 +158,12 @@ function isoToLocalInput(iso: string): string {
 }
 
 const linkedKey = (f: EventLogFilter | undefined) =>
-  f ? `${f.source ?? ""}\u0000${f.from}\u0000${f.to}` : "";
+  f ? `${(f.sources ?? []).join("\u0001")}\u0000${f.from}\u0000${f.to}` : "";
+
+// The source text input shows a linked multi-source filter as one
+// comma-separated line; the linked list itself is what gets sent.
+const sourcesInputValue = (f: EventLogFilter | undefined) =>
+  (f?.sources ?? []).join(", ");
 
 export default function DeviceLogsTab({
   deviceId,
@@ -176,7 +182,7 @@ export default function DeviceLogsTab({
   // Filters
   const [levelFilter, setLevelFilter] = useState<LogLevel | "">("");
   const [categoryFilter, setCategoryFilter] = useState<LogCategory | "">("");
-  const [sourceFilter, setSourceFilter] = useState(linkedFilter?.source ?? "");
+  const [sourceFilter, setSourceFilter] = useState(sourcesInputValue(linkedFilter));
   const [startDate, setStartDate] = useState(
     linkedFilter ? isoToLocalInput(linkedFilter.from) : "",
   );
@@ -189,8 +195,10 @@ export default function DeviceLogsTab({
     from: string;
     to: string;
   } | null>(linkedFilter ? { from: linkedFilter.from, to: linkedFilter.to } : null);
-  const [linkedSource, setLinkedSource] = useState<string | undefined>(
-    linkedFilter?.source,
+  // Every source the link selects (#10053: a reliability factor can name
+  // several); sent as repeated `source` params until a manual edit.
+  const [linkedSources, setLinkedSources] = useState<string[] | undefined>(
+    linkedFilter?.sources,
   );
 
   // Back/forward between two links (or a new link while mounted) re-seeds.
@@ -201,11 +209,11 @@ export default function DeviceLogsTab({
     appliedKey.current = key;
     setLevelFilter("");
     setCategoryFilter("");
-    setSourceFilter(linkedFilter.source ?? "");
+    setSourceFilter(sourcesInputValue(linkedFilter));
     setStartDate(isoToLocalInput(linkedFilter.from));
     setEndDate(isoToLocalInput(linkedFilter.to));
     setLinkedWindow({ from: linkedFilter.from, to: linkedFilter.to });
-    setLinkedSource(linkedFilter.source);
+    setLinkedSources(linkedFilter.sources);
     setPage(1);
     setExpandedId(null);
   }, [linkedFilter]);
@@ -215,7 +223,7 @@ export default function DeviceLogsTab({
   const dropLinked = () => {
     if (linkedWindow === null && linkedFilter === undefined) return;
     setLinkedWindow(null);
-    setLinkedSource(undefined);
+    setLinkedSources(undefined);
     appliedKey.current = "";
     if (linkedFilter !== undefined) window.location.hash = EVENTLOG_TAB_HASH;
   };
@@ -233,7 +241,11 @@ export default function DeviceLogsTab({
       params.set("limit", String(PAGE_SIZE));
       if (levelFilter) params.set("level", levelFilter);
       if (categoryFilter) params.set("category", categoryFilter);
-      if (sourceFilter) params.set("source", sourceFilter);
+      if (linkedSources && linkedSources.length > 0) {
+        for (const source of linkedSources) params.append("source", source);
+      } else if (sourceFilter) {
+        params.set("source", sourceFilter);
+      }
       const effectiveStart = linkedWindow ? linkedWindow.from : startDate;
       const effectiveEnd = linkedWindow ? linkedWindow.to : endDate;
       if (effectiveStart) params.set("startDate", effectiveStart);
@@ -273,6 +285,7 @@ export default function DeviceLogsTab({
     startDate,
     endDate,
     linkedWindow,
+    linkedSources,
   ]);
 
   useEffect(() => {
@@ -315,11 +328,11 @@ export default function DeviceLogsTab({
           className="flex items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/5 px-4 py-2 text-sm"
         >
           <span>
-            {linkedSource
+            {linkedSources && linkedSources.length > 0
               ? t("deviceLogsTab.linkedWindowWithSource", {
                   from: formatDateTime(linkedWindow.from, effectiveTimezone),
                   to: formatDateTime(linkedWindow.to, effectiveTimezone),
-                  source: linkedSource,
+                  source: linkedSources.join(", "),
                 })
               : t("deviceLogsTab.linkedWindow", {
                   from: formatDateTime(linkedWindow.from, effectiveTimezone),
