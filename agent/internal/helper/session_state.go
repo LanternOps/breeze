@@ -61,6 +61,11 @@ type sessionState struct {
 	// lastExit is the most recent Assist exit the watcher observed.
 	lastExit      assistExit
 	lastExitKnown bool
+
+	// brandingRejectLogged dedupes the WARN for a rejected branding decision.
+	brandingRejectLogged bool
+	// brandingReadLogged dedupes the WARN for an unreadable stored branding.
+	brandingReadLogged bool
 }
 
 func newSessionState(key, baseDir string) *sessionState {
@@ -82,7 +87,8 @@ func (s *sessionState) configUnchanged(cfg *Config) bool {
 		s.lastConfig.PortalUrl == cfg.PortalUrl &&
 		s.lastConfig.DeviceName == cfg.DeviceName &&
 		s.lastConfig.DeviceStatus == cfg.DeviceStatus &&
-		s.lastConfig.LastCheckin == cfg.LastCheckin
+		s.lastConfig.LastCheckin == cfg.LastCheckin &&
+		brandingEqual(s.lastConfig.Branding, cfg.Branding)
 }
 
 func (s *sessionState) refreshPID() {

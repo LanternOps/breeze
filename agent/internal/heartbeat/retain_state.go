@@ -147,6 +147,7 @@ func (h *Heartbeat) applyHelperAndRemoteManagement(resp *HeartbeatResponse) {
 			ShowDeviceInfo:     resp.HelperSettings.ShowDeviceInfo,
 			ShowRequestSupport: resp.HelperSettings.ShowRequestSupport,
 			PortalUrl:          resp.HelperSettings.PortalUrl,
+			Branding:           resp.HelperSettings.Branding,
 		})
 		// LifecycleMode is a sessionbroker concern, not an Assist setting, so it
 		// bypasses helperMgr and drives the lifecycle manager directly. Idempotent
