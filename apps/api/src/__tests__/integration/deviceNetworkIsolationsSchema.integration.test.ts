@@ -4,13 +4,15 @@
  * the breeze_app pool, which the first test proves is non-bypass, so a denial is real RLS, never vacuous.
  */
 import './setup';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { closeDb, db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { executeOrgMerge } from '../../services/orgMerge';
 import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
 import { orgContext } from './topology-fixtures';
+
+afterAll(() => closeDb());
 
 const admin = <T>(query: ReturnType<typeof sql>) => getTestDb().execute(query) as unknown as Promise<T[]>;
 const scoped = <T>(orgId: string, action: () => Promise<T>) => withDbAccessContext(orgContext(orgId), action);
