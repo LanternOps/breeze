@@ -1373,6 +1373,10 @@
             "description": "Triggered when a ticket is created.",
             "label": "Ticket Created"
           },
+          "ticketMerged": {
+            "description": "Triggered when a ticket is merged into another ticket.",
+            "label": "Ticket Merged"
+          },
           "ticketCommented": {
             "description": "Triggered when a comment or note is added to a ticket.",
             "label": "Ticket Commented"
