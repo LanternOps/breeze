@@ -13,7 +13,7 @@ export async function synchronizeEpisodeOutcome(
   tx: EpisodeTx, row: DeviceNetworkIsolation, prev: EpisodeSnapshot, next: EpisodeSnapshot, at: Date,
 ): Promise<void> {
   if (prev.state !== next.state && isUnresolvedTerminalIsolationState(next.state)) {
-    await tx.insert(alerts).values({ orgId: row.orgId, deviceId: row.deviceId, severity: 'critical', title: 'Network isolation released locally', message: 'Acknowledge the local release before starting a new isolation.', context: { isolationId: row.id, state: next.state }, triggeredAt: at });
+    await tx.insert(alerts).values({ orgId: row.orgId, ownerKind: 'device', deviceId: row.deviceId, severity: 'critical', title: 'Network isolation released locally', message: 'Acknowledge the local release before starting a new isolation.', context: { isolationId: row.id, state: next.state }, triggeredAt: at });
   }
   if (prev.state === next.state || !row.incidentId || !row.incidentActionId) return;
   const verified = next.state === 'verified';
