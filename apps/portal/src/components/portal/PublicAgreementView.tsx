@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Download } from 'lucide-react';
 import { DocumentAgreementBody, DocumentHeader, DocumentPaper } from '@breeze/document-ui';
 import type { AgreementBody, DocumentBranding, DocumentHeaderModel, SanitizedHtml } from '@breeze/shared/documents';
-import { portalApi, publicAgreementFilePath, type PublicAgreementDetail } from '@/lib/api';
+import { portalApi, publicAgreementFilePath, publicAgreementSignedCopyPath, type PublicAgreementDetail } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { portalAgreementHostComponents } from './documentHostComponents';
 import { SignaturePanel } from './SignaturePanel';
+import { BTN_SECONDARY } from './ui';
 
 type Status = PublicAgreementDetail['request']['status'];
 
@@ -224,12 +226,25 @@ export function PublicAgreementView({ token, initial = null }: PublicAgreementVi
           {signedEmail ? (
             `Signed. We're emailing a copy to ${signedEmail}. If it doesn't arrive, contact ${parties.partnerName}.`
           ) : (
-            <>
-              {signedOn
-                ? <>This agreement was signed on <time dateTime={signedOn.iso}>{signedOn.text}</time>.</>
-                : 'This agreement has been signed.'}
-              {` If you need a copy of the signed agreement, contact ${parties.partnerName}.`}
-            </>
+            <div className="space-y-3">
+              <p>
+                {signedOn
+                  ? <>This agreement was signed on <time dateTime={signedOn.iso}>{signedOn.text}</time>.</>
+                  : 'This agreement has been signed.'}
+                {/* #10695: the API offers the copy only to the link that signed it. */}
+                {!detail.signedCopyUrl && ` If you need a copy of the signed agreement, contact ${parties.partnerName}.`}
+              </p>
+              {detail.signedCopyUrl && (
+                <a
+                  href={publicAgreementSignedCopyPath(token)}
+                  data-testid="public-agreement-download-signed"
+                  className={BTN_SECONDARY}
+                >
+                  <Download className="h-4 w-4" />
+                  Download signed copy
+                </a>
+              )}
+            </div>
           )}
         </div>
       )}

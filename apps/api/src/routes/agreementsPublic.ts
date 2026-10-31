@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { acceptPublicAgreementSchema, declineQuoteSchema, ERROR_CODES } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
-import type { AgreementRequestRow } from '../db/schema/contractDocuments';
+import { contractDocuments, type AgreementRequestRow } from '../db/schema/contractDocuments';
 import {
   verifyAgreementAcceptToken,
   isAgreementAcceptJtiRevoked,
@@ -38,6 +38,7 @@ import { ContractTemplateServiceError } from '../services/contractTemplateServic
 import { resolveDocumentBrand } from '../services/partnerDocumentBrand';
 import { toPublicAgreementPresentation, type PublicAgreementStatus } from '../services/publicAgreementDto';
 import { contentDispositionFor } from '../services/attachmentFilename';
+import { buildSignedAgreementDownload } from '../services/signedAgreementDownload';
 import { captureException } from '../services/sentry';
 
 /**
@@ -184,6 +185,35 @@ function presentedStatus(status: AgreementRequestRow['status']): PublicAgreement
   return status as PublicAgreementStatus;
 }
 
+/**
+ * True when THIS link signed the request (#10695): the durable link
+ * consumption names this token's jti with an `accepted` outcome — the
+ * quotesPublic `acceptedByThisToken` rule. Only then does the link hand out the
+ * certified copy: its certificate prints the evidence the link holder typed
+ * and sent (name, email, IP, user agent). A request signed in the portal or
+ * recorded on behalf by the MSP carries someone else's evidence, so the link
+ * never serves it (the portal's Signed agreements page does, to org users).
+ */
+function signedByThisLink(request: AgreementRequestRow, jti: string): boolean {
+  return request.status === 'signed'
+    && request.publicResponseOutcome === 'accepted'
+    && request.publicResponseJti === jti;
+}
+
+/** The signed agreement of THIS request in its current org, a customer
+ *  acceptance only. Requests carry no signed_agreement_id: the document points
+ *  back (contract_documents.agreement_request_id, unique). System scope — the
+ *  caller already resolved the token to this request. */
+function linkSignedDocumentWhere(request: AgreementRequestRow) {
+  return and(
+    eq(contractDocuments.agreementRequestId, request.id),
+    eq(contractDocuments.orgId, request.orgId),
+    eq(contractDocuments.acceptanceOrigin, 'customer'),
+  );
+}
+
+const SIGNED_COPY_NOT_FOUND = { error: 'Signed copy not available', code: ERROR_CODES.NOT_FOUND } as const;
+
 // GET /:token — view. Stamps first_viewed_at + sent→viewed. A signed or
 // declined request renders read-only with its signed/declined date (#10199:
 // the signer reopening their link after answering — see the resolver's
@@ -201,7 +231,14 @@ agreementsPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c)
       const renderData = await loadTemplateVersionRenderData(request.templateVersionId);
       const { html } = renderRequestForClient(frozenRenderSnapshot(request, now), renderData, request.variableValues ?? {});
       const logoUrl = await loadLogoUrl(request.orgId, claims.partnerId);
-      return { renderData, html, logoUrl };
+      // #10695: offer the download only when it would succeed — never a dead button.
+      let signedCopy = false;
+      if (signedByThisLink(request, claims.jti)) {
+        const [doc] = await db.select({ id: contractDocuments.id }).from(contractDocuments)
+          .where(linkSignedDocumentWhere(request)).limit(1);
+        signedCopy = Boolean(doc);
+      }
+      return { renderData, html, logoUrl, signedCopy };
     }));
 
     // Cosmetic stamp, after the render (a page that failed to render is not
@@ -233,7 +270,10 @@ agreementsPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c)
       partnerName,
       logoUrl: view.logoUrl,
     });
-    return c.json({ data });
+    // Beside the allow-listed DTO, like the portal's signedAgreementId: a
+    // token-scoped path, never a document id.
+    const signedCopyUrl = view.signedCopy ? `/agreements/public/${encodeURIComponent(token)}/signed-copy` : null;
+    return c.json({ data: { ...data, signedCopyUrl } });
   } catch (err) {
     if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
     throw err;
@@ -275,10 +315,15 @@ agreementsPublicRoutes.get('/:token/file', zValidator('param', tokenParam), asyn
  *  per-IP 'agreementpublic' bucket caps the surface as a whole). */
 const RESPOND_LIMIT_PER_MINUTE = 10;
 
+/** Signed-copy downloads per token per minute (#10695): each one renders the
+ *  certificate page and merges it into the PDF, so one leaked token must not
+ *  turn into a CPU pump from many IPs. A signer needs one or two. */
+const SIGNED_COPY_LIMIT_PER_MINUTE = 10;
+
 /**
  * Per-token limiter, run BEFORE resolveAgreementLink() and before any DB
- * context. Keyed on sha256(token) — the raw bearer credential never lands in
- * Redis.
+ * context. Keyed on sha256(token) under a per-operation prefix — the raw
+ * bearer credential never lands in Redis.
  *
  * Redis outage behaviour, stated plainly: with no client configured the
  * limiter is skipped; with a client whose round-trip fails, rateLimiter itself
@@ -288,21 +333,65 @@ const RESPOND_LIMIT_PER_MINUTE = 10;
  * (rateLimiter catches Redis errors itself) is logged + captured and does not
  * block (invoicesPublic overPublicOpLimit shape).
  */
-async function overRespondLimit(token: string): Promise<boolean> {
+async function overTokenLimit(op: 'respond' | 'signed-copy', token: string, limit: number): Promise<boolean> {
   const redis = getRedis();
   if (!redis) return false;
   try {
-    const key = `agreement-public:respond:${createHash('sha256').update(token).digest('hex')}`;
-    const result = await rateLimiter(redis, key, RESPOND_LIMIT_PER_MINUTE, 60);
+    const key = `agreement-public:${op}:${createHash('sha256').update(token).digest('hex')}`;
+    const result = await rateLimiter(redis, key, limit, 60);
     return !result.allowed;
   } catch (err) {
-    console.error('[agreementsPublic] respond limiter threw — not blocking', err);
+    console.error(`[agreementsPublic] ${op} limiter threw — not blocking`, err);
     captureException(err instanceof Error ? err : new Error(String(err)));
     return false;
   }
 }
 
+const overRespondLimit = (token: string) => overTokenLimit('respond', token, RESPOND_LIMIT_PER_MINUTE);
+
 const TOO_MANY = { error: 'Too many attempts — please wait a minute and try again', code: 'RATE_LIMITED' } as const;
+
+// GET /:token/signed-copy — the certified copy of the agreement THIS link
+// signed (#10695): a signer whose confirmation email never arrived reopens the
+// link and downloads it. Gates, in order: the per-token limiter; the shared
+// resolver as a `view` (signature, stale jti, partner continuity, tenant gate
+// → 410 ORG_UNAVAILABLE, dead link → 410 LINK_REVOKED — the reopened view's
+// exact rules); signedByThisLink(); the one signed document of this request,
+// a customer acceptance. Any miss past the resolver is the same 404. The bytes
+// come from the shared builder (services/signedAgreementDownload.ts — the
+// staff and portal downloads), so the certificate is the only evidence the
+// response carries. Always an attachment; the router middleware overrides the
+// builder's cache header with no-store + no-referrer.
+agreementsPublicRoutes.get('/:token/signed-copy', zValidator('param', tokenParam), async (c) => {
+  const { token } = c.req.valid('param');
+  if (await overTokenLimit('signed-copy', token, SIGNED_COPY_LIMIT_PER_MINUTE)) return c.json(TOO_MANY, 429);
+  const resolved = await resolveAgreementLink(c, token, new Date(), 'view');
+  if (!resolved.ok) return resolved.response;
+  const { request, claims } = resolved.link;
+  if (!signedByThisLink(request, claims.jti)) return c.json(SIGNED_COPY_NOT_FOUND, 404);
+
+  const [doc] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+    .select({
+      id: contractDocuments.id,
+      mime: contractDocuments.mime,
+      pdfData: contractDocuments.pdfData,
+      acceptanceOrigin: contractDocuments.acceptanceOrigin,
+    })
+    .from(contractDocuments)
+    .where(linkSignedDocumentWhere(request))
+    .limit(1)));
+  // The WHERE already demands a customer acceptance; the row check keeps a
+  // query regression from serving an on-behalf record.
+  if (!doc || doc.acceptanceOrigin !== 'customer') return c.json(SIGNED_COPY_NOT_FOUND, 404);
+
+  // The certificate loader opens its own system context.
+  const download = await buildSignedAgreementDownload(c, {
+    documentId: doc.id, storedBytes: doc.pdfData, storedMime: doc.mime, copy: 'certified', area: 'public-link',
+  });
+  // Found a moment ago, gone now: same answer as never there.
+  if (!download) return c.json(SIGNED_COPY_NOT_FOUND, 404);
+  return download.response;
+});
 
 /** Post-commit Redis revoke. The durable column already holds, so a failure
  *  only costs a DB read on the next hit — but a lost marker is

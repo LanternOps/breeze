@@ -792,6 +792,10 @@ export interface PublicAgreementDetail {
   html: string | null;
   /** API-relative path '/agreements/public/<token>/file' (uploaded templates). */
   fileUrl: string | null;
+  /** API-relative path '/agreements/public/<token>/signed-copy' when THIS link
+   *  signed the agreement and its certified copy exists (#10695); null otherwise.
+   *  Absent on portal payloads, which download by signedAgreementId instead. */
+  signedCopyUrl?: string | null;
   parties: { partnerName: string; orgName: string | null };
   branding: {
     partnerName: string;
@@ -803,6 +807,11 @@ export interface PublicAgreementDetail {
 /** Browser-facing URL of an uploaded agreement's file (same-origin, token-scoped). */
 export function publicAgreementFilePath(token: string): PublicApiPath {
   return publicApiPath(`/agreements/public/${encodeURIComponent(token)}/file`);
+}
+
+/** Browser-facing download URL of the certified copy this public link signed (#10695). */
+export function publicAgreementSignedCopyPath(token: string): PublicApiPath {
+  return publicApiPath(`/agreements/public/${encodeURIComponent(token)}/signed-copy`);
 }
 
 /** Browser-facing URL of an uploaded agreement's file for the signed-in portal user. */

@@ -219,3 +219,7 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Agreements — signed copy from a reopened link (#10695)
+
+- A customer who reopens their agreement link after signing can download the certified signed copy from that page (`GET /api/v1/agreements/public/<token>/signed-copy`). Only the link that signed the agreement offers it. An agreement signed in the portal, or recorded on behalf of the customer, still says to contact the provider. Voiding or revoking the link turns the download off. The certificate shows what the emailed copy shows: the signer's name, email, IP and browser. No migration, no new environment variable.

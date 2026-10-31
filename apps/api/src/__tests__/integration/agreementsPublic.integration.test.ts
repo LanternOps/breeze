@@ -240,6 +240,47 @@ describe('public agreement signing (HTTP, real Postgres + Redis)', () => {
     expect(await documentsFor(l2.requestId)).toHaveLength(0);
   });
 
+  // #10695: the signer reopens the link and downloads the certified copy it
+  // signed — the real document lookup, certificate render and headers.
+  runDb('reopened after signing: the link downloads ITS certified copy; another link and a revoked link get nothing', async () => {
+    const s = await seed();
+    const { requestId, token } = await createAndSend(s);
+    const unsigned = await createAndSend(s);
+    // Before signing there is nothing to download.
+    expect((await get(token, '/signed-copy')).status).toBe(404);
+    expect((await post(token, 'accept', SIGN)).status).toBe(200);
+    const [doc] = await documentsFor(requestId);
+
+    const reopened = await get(token);
+    expect(reopened.status).toBe(200);
+    const reopenedBody = await reopened.json() as { data: { signedCopyUrl: string | null } };
+    expect(reopenedBody.data.signedCopyUrl).toBe(`/agreements/public/${encodeURIComponent(token)}/signed-copy`);
+    expect(JSON.stringify(reopenedBody)).not.toContain(doc!.id as string);
+
+    const res = await get(token, '/signed-copy');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+    expect(res.headers.get('content-type')).toBe('application/pdf');
+    expect(res.headers.get('x-agreement-copy')).toBe('certified');
+    expect(res.headers.get('content-disposition')).toMatch(new RegExp(`^attachment;.*signed-agreement-${doc!.id as string}\\.pdf`));
+    const stored = Buffer.from(doc!.pdf_data as Buffer);
+    const served = Buffer.from(await res.arrayBuffer());
+    // The certified copy: the frozen original plus one certificate page.
+    expect((await PDFDocument.load(served)).getPageCount()).toBe((await PDFDocument.load(stored)).getPageCount() + 1);
+
+    // Scoped to its own agreement: another live link of the same org has none.
+    expect((await get(unsigned.token, '/signed-copy')).status).toBe(404);
+    expect((await get(unsigned.token)).status).toBe(200);
+    expect((await (await get(unsigned.token)).json() as { data: { signedCopyUrl: string | null } }).data.signedCopyUrl).toBeNull();
+
+    // The MSP killing the link kills the download (isAgreementLinkDead).
+    await sys(() => db.execute(sql`UPDATE agreement_requests SET public_link_revoked_at = now() WHERE id = ${requestId}::uuid`));
+    const revoked = await get(token, '/signed-copy');
+    expect(revoked.status).toBe(410);
+    expect((await revoked.json() as { code: string }).code).toBe('LINK_REVOKED');
+  });
+
   runDb('post-commit mail runs its real SQL: signed copy to signer + recipients with the stored bytes; creator told', async () => {
     const s = await seed();
     const { requestId, token } = await createAndSend(s);
