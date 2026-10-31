@@ -239,6 +239,8 @@
       "hintPlaceholder": "ör. Dana Yılmaz veya dana@example.com",
       "contactChosen": "Kişi: {{name}}",
       "useHint": "Bunun yerine ad veya e-posta kullan",
+      "requesterSuggestion": "Talep sahibi: {{name}}. Bu genellikle başka birinin ayrılışını bildiren bir yöneticidir.",
+      "useRequester": "Ayrılan kişi olarak kullan",
       "readOnly": "Bu kişiden başlatıldı."
     },
     "inheritor": {
@@ -249,7 +251,8 @@
       "pickContact": "Bir kişi seçin",
       "addressPlaceholder": "ad@example.com",
       "contactsFailed": "Kişiler yüklenemedi.",
-      "loadMore": "Daha fazla kişi yükle"
+      "loadMore": "Daha fazla kişi yükle",
+      "self": "Ayrılan kişi kendi e-postalarını devralamaz. Başka birini seçin ya da hiç kimseyi seçmeyin."
     },
     "autoReply": {
       "label": "Otomatik yanıt iletisi",

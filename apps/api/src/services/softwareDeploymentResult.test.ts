@@ -342,6 +342,28 @@ describe('applySoftwareInstallResult', () => {
     expect(JSON.stringify(stored)).not.toContain('BEGIN PRIVATE KEY');
   });
 
+  it('strips ANSI colour escapes from output and errorMessage before persisting (#10307)', async () => {
+    const { setMock } = riggedUpdateWithReturning([{ id: 'dr-ansi' }]);
+    const ESC = '\u001b';
+
+    await applySoftwareInstallResult({
+      deploymentId: DEPLOYMENT_ID,
+      deviceId: DEVICE_ID,
+      status: 'failed',
+      exitCode: 1,
+      stdout: `${ESC}[90m14:03${ESC}[0m ${ESC}[31mERR${ESC}[0m Invalid provisioning code\r\n`,
+      stderr: `${ESC}[31mfatal${ESC}[0m`,
+    });
+
+    const stored = setMock.mock.calls[0]![0];
+    expect(stored.output).toBe('14:03 ERR Invalid provisioning code\n');
+    expect(stored.errorMessage).toBe('fatal');
+    const terminal = applyAutomationActionTerminalMock.mock.calls[0]![0];
+    expect(terminal.output).toBe('14:03 ERR Invalid provisioning code\n');
+    expect(terminal.error).toBe('fatal');
+    expect(JSON.stringify({ stored, terminal })).not.toContain(ESC);
+  });
+
   it('normalizes a manager_unavailable-prefixed error to the web-facing badge string', async () => {
     const { setMock } = riggedUpdate();
 

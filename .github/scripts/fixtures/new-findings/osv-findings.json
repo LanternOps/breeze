@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "tool": "osv-scanner",
+  "lockfile": "pnpm-lock.yaml",
+  "exceptionsFile": "scripts/security/npm-audit-exceptions.json",
+  "threshold": "LOW",
+  "today": "2026-10-30",
+  "scannedPackages": 2344,
+  "lockfilePackages": 2344,
+  "findings": [
+    {
+      "package": "deepmerge",
+      "version": "4.3.1",
+      "ecosystem": "npm",
+      "id": "GHSA-gcqx-w48m-w2h4",
+      "severity": "LOW",
+      "excepted": false,
+      "blocking": true
+    },
+    {
+      "package": "node-forge",
+      "version": "1.4.0",
+      "ecosystem": "npm",
+      "id": "GHSA-86w9-cpqp-85rv",
+      "severity": "HIGH",
+      "excepted": true,
+      "blocking": false
+    },
+    {
+      "package": "qs",
+      "version": "6.16.0",
+      "ecosystem": "npm",
+      "id": "GHSA-6pq8-jhm2-2vcw",
+      "severity": "MODERATE",
+      "excepted": false,
+      "blocking": true
+    },
+    {
+      "package": "zod",
+      "version": "3.25.76",
+      "ecosystem": "npm",
+      "id": "GHSA-mrhx-c7xc-m3w5",
+      "severity": "HIGH",
+      "excepted": true,
+      "blocking": false
+    }
+  ],
+  "exceptionProblems": []
+}

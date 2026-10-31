@@ -63,6 +63,7 @@ import { securityPolicyToolSchemas } from './aiToolSchemasSecurityPolicy';
 import { softwareToolSchemas } from './aiToolSchemasSoftware';
 import { deviceOpsToolSchemas } from './aiToolSchemasDeviceOps';
 import { billingToolSchemas } from './aiToolSchemasBilling';
+import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -605,6 +606,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   ...deviceOpsToolSchemas,
   // Full-control W14 (#6784): billing lifecycle tools (PR A).
   ...billingToolSchemas,
+  ...pax8ToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),
@@ -1195,6 +1197,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
 
   get_huntress_incidents: z.object({
+    incidentId: uuid.optional(),
     orgId: uuid.optional(),
     integrationId: uuid.optional(),
     status: z.enum(['open', 'in_progress', 'resolved', 'dismissed']).optional(),
@@ -1203,6 +1206,17 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     search: z.string().max(200).optional(),
     includeResolved: z.boolean().optional(),
     limit: z.number().int().min(1).max(500).optional(),
+    offset: z.number().int().min(0).max(100000).optional(),
+  }),
+
+  get_huntress_agents: z.object({
+    orgId: uuid.optional(),
+    integrationId: uuid.optional(),
+    mapping: z.enum(['mapped', 'unmapped', 'all']).optional(),
+    offlineOnly: z.boolean().optional(),
+    deviceId: uuid.optional(),
+    search: z.string().max(200).optional(),
+    limit: z.number().int().min(1).max(200).optional(),
     offset: z.number().int().min(0).max(100000).optional(),
   }),
 

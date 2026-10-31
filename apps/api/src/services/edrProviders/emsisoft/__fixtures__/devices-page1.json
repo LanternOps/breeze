@@ -1,0 +1,27 @@
+{
+  "data": [
+    {
+      "guid": "00000000-0000-4000-8000-0000000000d1",
+      "name": "PC01",
+      "status": "Idle",
+      "lastUpdate": "2026-10-20T08:00:00Z",
+      "lastScan": "2026-10-19T08:00:00Z",
+      "lastAlert": null,
+      "protectionPolicyGroup": "Default",
+      "protectionPolicyGroupGuid": "00000000-0000-4000-8000-0000000000e1",
+      "lastUser": "user1"
+    },
+    {
+      "guid": "00000000-0000-4000-8000-0000000000d2",
+      "name": "srv01.corp.example.test",
+      "status": "Scanning",
+      "lastUpdate": "2026-10-20T08:00:00Z",
+      "lastScan": null,
+      "lastAlert": null,
+      "protectionPolicyGroup": "Servers",
+      "protectionPolicyGroupGuid": "00000000-0000-4000-8000-0000000000e2",
+      "lastUser": null
+    }
+  ],
+  "totalCount": 2
+}

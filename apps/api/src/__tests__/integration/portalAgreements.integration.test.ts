@@ -212,8 +212,14 @@ describe('portal agreements (assembled portal router, breeze_app + Redis)', () =
     expect(row.public_response_consumed_at).toBeNull();
     // …so the certificate reads it as a portal acceptance (real loader SQL).
     expect((await loadCertifiedAgreementInput(data.signedAgreementId))?.how).toMatchObject({ kind: 'customer', channel: 'portal' });
-    // The emailed link is revoked post-commit: a reload is the generic 401.
-    expect((await app().request(`/agreements/public/${encodeURIComponent(token)}`)).status).toBe(401);
+    // The emailed link is revoked post-commit for ANSWERING: a second sign is the generic 401…
+    expect((await app().request(`/agreements/public/${encodeURIComponent(token)}/accept`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ signerName: 'Dana Buyer', signerEmail: users.recipientEmail }),
+    })).status).toBe(401);
+    // …while a reload renders the signed state read-only (#10199).
+    const reopened = await app().request(`/agreements/public/${encodeURIComponent(token)}`);
+    expect(reopened.status).toBe(200);
+    expect((await reopened.json()).data.request).toMatchObject({ status: 'signed', signedAt: expect.any(String) });
     // Second answer from the portal: the honest 409, still one document.
     const again = await users.recipient.post(`/portal/agreements/${requestId}/accept`, { signerName: 'Dana Buyer' });
     expect(again.status).toBe(409);
@@ -341,7 +347,14 @@ describe('portal agreements (assembled portal router, breeze_app + Redis)', () =
     expect(await res.json()).toEqual({ data: { status: 'declined' } });
     const row = await requestRow(requestId);
     expect(row).toMatchObject({ status: 'declined', decline_reason: 'Wrong entity name', public_response_jti: null });
-    expect((await app().request(`/agreements/public/${encodeURIComponent(token)}`)).status).toBe(401);
+    // The emailed link can no longer answer…
+    expect((await app().request(`/agreements/public/${encodeURIComponent(token)}/accept`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ signerName: 'Dana Buyer', signerEmail: users.recipientEmail }),
+    })).status).toBe(401);
+    // …but reopening it shows the declined state read-only (#10199).
+    const reopened = await app().request(`/agreements/public/${encodeURIComponent(token)}`);
+    expect(reopened.status).toBe(200);
+    expect((await reopened.json()).data.request).toMatchObject({ status: 'declined', declinedAt: expect.any(String) });
     // Declined stays readable history.
     expect((await (await users.recipient.get(`/portal/agreements/${requestId}`)).json()).data.request.status).toBe('declined');
   });

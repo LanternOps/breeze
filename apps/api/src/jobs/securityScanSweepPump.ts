@@ -11,10 +11,14 @@
  *        - the command terminalized undelivered (looked up by
  *          `security_scans.command_id`, `device_commands.executed_at IS NULL`)
  *          -> `expired`;
+ *        - the command went terminal with a final result the scan never
+ *          received (#10376) -> `failed`;
  *        - no result 720 + SECURITY_SWEEP_RUNNING_GRACE_MINUTES after the
  *          claim -> `failed`. The command's own 30-minute server timeout is
  *          NOT used: scans legitimately run up to 720 minutes, and a late
  *          result still lands (the result handler overwrites the status).
+ *      Then scheduled and manual (non-sweep) scans, by the same two clocks
+ *      (jobs/securityScanOrphanFinalize.ts, #10057).
  *   3. Complete active sweeps with no queued or running child.
  *   4. Admit queued scans of online, unparked devices with nothing else in
  *      flight, oldest sweep first, at most
@@ -28,6 +32,10 @@ import { and, asc, eq, inArray, lte, gt, notInArray, sql, type SQL } from 'drizz
 import * as dbModule from '../db';
 import { devices, organizations, securityScans, securityScanSweeps } from '../db/schema';
 import { ANONYMOUS_ACTOR_ID } from '../services/auditEvents';
+import {
+  RESULT_PROCESSING_FAILED_RESULT_STATUS,
+  SERVER_TIMEOUT_RESULT_STATUS,
+} from '../services/commandResultAcceptance';
 import { createAuditLogAsync, type CreateAuditLogParams } from '../services/auditService';
 import {
   parsePositiveIntEnv,
@@ -37,12 +45,19 @@ import {
   sweepRunningGraceMinutes,
 } from '../services/securityScanSweepConfig';
 import { stopSweepChildren } from '../services/securityScanSweepStop';
+import { finalizeOrphanedDeviceScans } from './securityScanOrphanFinalize';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 import type { SecurityScanQueueJobData } from './queueSchemas';
 
 const { db } = dbModule;
 
 export type SweepDispatchJob = Extract<SecurityScanQueueJobData, { type: 'dispatch-scan'; origin: 'sweep' }>;
+/** #10057 gap 2: a waiting Scan now re-admitted to the claim. */
+export type ManualDispatchJob = Extract<SecurityScanQueueJobData, { type: 'dispatch-scan'; origin: 'manual' }>;
+export type PumpDispatchJob = SweepDispatchJob | ManualDispatchJob;
+
+/** At most this many waiting Scan now rows re-admitted per tick. */
+const MANUAL_READMIT_BATCH = 200;
 
 export interface PumpResult {
   skipped: boolean;
@@ -50,11 +65,15 @@ export interface PumpResult {
   finalized: number;
   completed: number;
   admitted: number;
+  /** #10057: scheduled/manual scans finalized this tick (not part of `finalized`, which is sweep scans). */
+  deviceScansFinalized: number;
+  /** #10057 gap 2: waiting Scan now rows handed back to the claim this tick (idempotent per scan job id). */
+  manualReadmitted: number;
 }
 
 const orgCap = () => parsePositiveIntEnv('SECURITY_SCAN_ORG_CONCURRENCY_CAP', 40);
 
-async function defaultEnqueue(jobs: SweepDispatchJob[]): Promise<void> {
+async function defaultEnqueue(jobs: PumpDispatchJob[]): Promise<void> {
   // Dynamic: securityScanJobs imports this module for its worker.
   const { enqueueSweepDispatches } = await import('./securityScanJobs');
   await enqueueSweepDispatches(jobs);
@@ -80,16 +99,19 @@ function systemAudit(
 
 export async function pumpSweeps(
   now: Date = new Date(),
-  deps: { enqueue?: (jobs: SweepDispatchJob[]) => Promise<void> } = {},
+  deps: { enqueue?: (jobs: PumpDispatchJob[]) => Promise<void> } = {},
 ): Promise<PumpResult> {
   const audits: CreateAuditLogParams[] = [];
   const jobs: SweepDispatchJob[] = [];
+  const manualJobs: ManualDispatchJob[] = [];
 
   const result = await dbModule.withSystemDbAccessContext(async (): Promise<PumpResult> => {
     const [lock] = (await db.execute(
       sql`SELECT pg_try_advisory_xact_lock(hashtext('security-sweep-pump')) AS locked`,
     )) as unknown as Array<{ locked: boolean }>;
-    if (!lock?.locked) return { skipped: true, expired: 0, finalized: 0, completed: 0, admitted: 0 };
+    if (!lock?.locked) {
+      return { skipped: true, expired: 0, finalized: 0, completed: 0, admitted: 0, deviceScansFinalized: 0, manualReadmitted: 0 };
+    }
 
     // 1. Expire. Lock the expiring rows in id order first (a group cancel
     // locks its rows in id order too, so the two cannot deadlock); the lock
@@ -135,6 +157,39 @@ export async function pumpSweeps(
          AND c.executed_at IS NULL
       RETURNING s.id
     `)) as unknown as Array<{ id: string }>;
+    // #10376: the command went terminal with a FINAL result (typically the
+    // agent's own completed/failed report, e.g. "agent restarted while command
+    // was running") yet the scan is still running — the result never reached
+    // handleSecurityCommandResult, which runs in the same transaction as the
+    // command's terminal write. Such a row accepts no further result, so
+    // nothing will ever finish the scan; waiting out the 720-minute ceiling
+    // only holds the sweep (and an org/partner concurrency slot) for 12 hours.
+    // Results were not recorded, so it is `failed`, never `completed`. The two
+    // reopenable shapes are excluded exactly as commandAcceptsAgentResult
+    // defines them — a server timeout (`timedOutBy` stamped) and a parked
+    // processing failure (`processingFailedAt` stamped) — so the agent's
+    // result can still land on them.
+    const answered = (await db.execute(sql`
+      UPDATE security_scans s SET status = 'failed', completed_at = ${now.toISOString()}
+        FROM device_commands c, security_scan_sweeps w
+       WHERE s.sweep_id = w.id AND w.org_id = s.org_id
+         AND s.status = 'running'
+         AND c.id = s.command_id
+         AND c.status IN ('completed', 'failed')
+         AND NOT coalesce(c.status = 'failed' AND c.result->>'status' = ${SERVER_TIMEOUT_RESULT_STATUS}
+                          AND c.result->>'timedOutBy' IS NOT NULL, false)
+         AND NOT coalesce(c.status = 'failed' AND c.result->>'status' = ${RESULT_PROCESSING_FAILED_RESULT_STATUS}
+                          AND c.result->>'processingFailedAt' IS NOT NULL, false)
+      RETURNING s.id
+    `)) as unknown as Array<{ id: string }>;
+    if (answered.length > 0) {
+      // After this fix a nonzero count means a result was lost on the way to
+      // the scan row (rows stuck before the fix also drain here once).
+      console.warn('[securityScanSweepPump] failed sweep scan(s) whose command finished without a recorded result', {
+        count: answered.length,
+        scanIds: answered.slice(0, 20).map((r) => r.id),
+      });
+    }
     const ceiling = new Date(
       now.getTime() - (SECURITY_SCAN_TIMEOUT_CEILING_MINUTES + sweepRunningGraceMinutes()) * 60_000,
     );
@@ -146,6 +201,24 @@ export async function pumpSweeps(
          AND s.started_at < ${ceiling.toISOString()}
       RETURNING s.id
     `)) as unknown as Array<{ id: string }>;
+    // #10057: the same backstop for scans outside any sweep.
+    const orphans = await finalizeOrphanedDeviceScans(now);
+
+    // #10057 gap 2: hand every Scan now still waiting for a slot back to the
+    // claim. The dispatch job id is stable per scan, so a job that is already
+    // waiting or delayed (a throttle retry) is left alone; this only matters
+    // when the request-time enqueue failed or its job ran before the row
+    // committed and found nothing to claim.
+    const waitingManual = (await db.execute(sql`
+      SELECT id FROM security_scans
+       WHERE sweep_id IS NULL
+         AND status = 'queued'
+         AND command_id IS NULL
+         AND queue_expires_at > ${now.toISOString()}
+       ORDER BY queue_expires_at
+       LIMIT ${MANUAL_READMIT_BATCH}
+    `)) as unknown as Array<{ id: string }>;
+    for (const row of waitingManual) manualJobs.push({ type: 'dispatch-scan', scanId: row.id, origin: 'manual' });
 
     // 3. Complete.
     const completed = await db
@@ -250,16 +323,19 @@ export async function pumpSweeps(
     return {
       skipped: false,
       expired: expired.length,
-      finalized: undelivered.length + stale.length,
+      finalized: undelivered.length + answered.length + stale.length,
       completed: completed.length,
       admitted: jobs.length,
+      deviceScansFinalized: orphans.expired + orphans.failed,
+      manualReadmitted: manualJobs.length,
     };
   }, 'securityScanSweepPump');
 
   for (const audit of audits) void createAuditLogAsync(audit);
   if (result.finalized > 0) {
-    console.warn(`[securityScanSweepPump] finalized ${result.finalized} sweep scan(s) the agent will not answer (undelivered or past the scan ceiling)`);
+    console.warn(`[securityScanSweepPump] finalized ${result.finalized} sweep scan(s) the agent will not answer (undelivered, answered without a recorded result, or past the scan ceiling)`);
   }
-  if (jobs.length > 0) await (deps.enqueue ?? defaultEnqueue)(jobs);
+  const allJobs: PumpDispatchJob[] = [...jobs, ...manualJobs];
+  if (allJobs.length > 0) await (deps.enqueue ?? defaultEnqueue)(allJobs);
   return result;
 }

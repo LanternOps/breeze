@@ -58,12 +58,12 @@ async function fixture() {
   // Two hidden site-B alerts originate on devA, so a device-derived gate
   // miscounts (3) where the ownership gate counts 2.
   const [hiddenOwned, visibleOwned, plainA, plainB] = await seed.insert(alerts).values([
-    { ...base, deviceId: devA!.id, topologySiteId: siteB.id, topologySourceKey: `topology:${'b'.repeat(64)}`, title: 'zzown hidden owned' },
-    { ...base, deviceId: devB!.id, topologySiteId: siteA.id, topologySourceKey: `topology:${'a'.repeat(64)}`, title: 'zzown visible owned' },
+    { ...base, deviceId: devA!.id, ownerKind: 'topology_site', topologySiteId: siteB.id, topologySourceKey: `topology:${'b'.repeat(64)}`, title: 'zzown hidden owned' },
+    { ...base, deviceId: devB!.id, ownerKind: 'topology_site', topologySiteId: siteA.id, topologySourceKey: `topology:${'a'.repeat(64)}`, title: 'zzown visible owned' },
     { ...base, deviceId: devA!.id, title: 'zzown plain a' },
     { ...base, deviceId: devB!.id, title: 'zzown plain b' },
   ]).returning();
-  await seed.insert(alerts).values({ ...base, deviceId: devA!.id, topologySiteId: siteB.id, topologySourceKey: `topology:${'c'.repeat(64)}`, title: 'zzown hidden owned two' });
+  await seed.insert(alerts).values({ ...base, deviceId: devA!.id, ownerKind: 'topology_site', topologySiteId: siteB.id, topologySourceKey: `topology:${'c'.repeat(64)}`, title: 'zzown hidden owned two' });
   await seed.update(organizationUsers).set({ siteIds: [siteA.id] }).where(eq(organizationUsers.userId, user.id));
   await clearPermissionCache(user.id);
   const expected = [visibleOwned!.id, plainA!.id].sort();

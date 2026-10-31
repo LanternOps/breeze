@@ -57,7 +57,8 @@
     "source": {
       "core": "Core tool",
       "tenant": "Tool source",
-      "builtin": "Built-in"
+      "builtin": "Built-in",
+      "unknown": "Unknown tool"
     },
     "preApprovedBadge": "Pre-approved",
     "builtin": {

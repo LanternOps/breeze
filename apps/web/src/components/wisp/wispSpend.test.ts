@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canPause, canResume, hoursUntil, spendMeterState } from './wispSpend';
+import { atBudgetCeiling, canPause, canResume, hoursUntil, spendMeterState, systemPauseKind } from './wispSpend';
 
 describe('spendMeterState (w00 A32)', () => {
   it('is ok below 80 %, warn from 80 %, exhausted at 100 %', () => {
@@ -40,5 +40,37 @@ describe('pause / resume gating (w00 A29)', () => {
     expect(canResume('paused', null)).toBe(false);
     expect(canResume('paused', undefined)).toBe(false);
     expect(canResume('active', 'user_paused')).toBe(false);
+  });
+});
+
+describe('systemPauseKind (#10106)', () => {
+  it('names the known system reasons', () => {
+    for (const r of ['budget_exhausted', 'grantor_access_lost', 'grantor_suspended', 'factor_expired', 'entitlement_lost'] as const) {
+      expect(systemPauseKind('paused', r)).toBe(r);
+    }
+  });
+
+  it('has no system reason for a user pause, a partner switch, a pending lookup, or a live grant', () => {
+    expect(systemPauseKind('paused', 'user_paused')).toBeNull();
+    expect(systemPauseKind('paused', 'partner_disabled')).toBeNull();
+    expect(systemPauseKind('paused', undefined)).toBeNull();
+    expect(systemPauseKind('active', 'budget_exhausted')).toBeNull();
+  });
+
+  it('reads a null, unrecognised or prototype-key reason as unknown', () => {
+    expect(systemPauseKind('paused', null)).toBe('unknown');
+    expect(systemPauseKind('paused', 'entitlement_lapsed')).toBe('unknown');
+    expect(systemPauseKind('paused', 'toString')).toBe('unknown');
+    expect(systemPauseKind('paused', 'constructor')).toBe('unknown');
+  });
+});
+
+describe('atBudgetCeiling (#10106)', () => {
+  it('is true at or above the ceiling, false below it or when the ceiling is unknown', () => {
+    expect(atBudgetCeiling(2500, 2500)).toBe(true);
+    expect(atBudgetCeiling(2600, 2500)).toBe(true);
+    expect(atBudgetCeiling(2499, 2500)).toBe(false);
+    expect(atBudgetCeiling(2500, null)).toBe(false);
+    expect(atBudgetCeiling(2500, undefined)).toBe(false);
   });
 });
