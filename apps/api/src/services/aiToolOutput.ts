@@ -1043,6 +1043,11 @@ function asCaptureEnvelope(value: unknown): { artifact: Record<string, unknown>;
  * external vendor feed, or portal/email submission.
  */
 export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
+  // W15: vendor/person text never becomes instructions (including provisioned field values).
+  get_pax8_status: new Set(['name', 'pax8CompanyName', 'mappedOrgName', 'lastSyncError', 'error']),
+  search_pax8_products: new Set(['productName', 'vendorName', 'catalogName', 'catalogDescription', 'label', 'description', 'possibleValues', 'error']),
+  manage_pax8_subscriptions: new Set(['pax8CompanyName', 'mappedOrgName', 'productName', 'vendorName', 'error']),
+  manage_pax8_orders: new Set(['name', 'productName', 'error', 'provisioningDetails']),
   // Windows/syslog event text: writable by any local unprivileged process.
   search_logs: new Set(['message']),
   get_log_trends: new Set(['source']),

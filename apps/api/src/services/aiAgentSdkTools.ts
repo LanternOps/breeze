@@ -44,6 +44,7 @@ import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listConcernsShape, listLinksShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
+import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
@@ -5159,6 +5160,14 @@ export function buildBreezeSdkTools(
       makeHandler('manage_org_documents', getAuth, onPreToolUse, onPostToolUse)
     ),
 
+    tool('get_pax8_status', registryDescription('get_pax8_status'), pax8ToolSchemas.get_pax8_status.shape,
+      makeHandler('get_pax8_status', getAuth, onPreToolUse, onPostToolUse)),
+    tool('search_pax8_products', registryDescription('search_pax8_products'), pax8ToolSchemas.search_pax8_products.shape,
+      makeHandler('search_pax8_products', getAuth, onPreToolUse, onPostToolUse)),
+    tool('manage_pax8_subscriptions', registryDescription('manage_pax8_subscriptions'), pax8ToolSchemas.manage_pax8_subscriptions.shape,
+      makeHandler('manage_pax8_subscriptions', getAuth, onPreToolUse, onPostToolUse)),
+    tool('manage_pax8_orders', registryDescription('manage_pax8_orders'), pax8ToolSchemas.manage_pax8_orders.shape,
+      makeHandler('manage_pax8_orders', getAuth, onPreToolUse, onPostToolUse)),
     tool(
       'manage_contracts',
       registryDescription('manage_contracts'),
