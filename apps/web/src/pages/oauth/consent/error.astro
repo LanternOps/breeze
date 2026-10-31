@@ -1,0 +1,24 @@
+---
+// #9938: where the OAuth authorization server sends a browser when an error
+// must not go back to the client (unknown or refused app, unregistered return
+// address). Only `reason` is read; the copy comes from a fixed map.
+import AuthLayout from '../../../layouts/AuthLayout.astro';
+import { tServer } from '../../../lib/i18n/server';
+import { oauthErrorCopy, resolveOauthErrorView } from '../../../lib/oauthErrorPage';
+
+Astro.response.status = 400;
+
+const locale = Astro.locals.locale;
+const view = resolveOauthErrorView(Astro.url.searchParams.get('reason'));
+const { headingKey, bodyKey } = oauthErrorCopy(view);
+---
+
+<AuthLayout titleKey="titles.oauthError">
+  <div class="rounded-lg border bg-card p-6 shadow-xs" data-testid="oauth-error" data-reason={view}>
+    <h2 class="text-base font-semibold tracking-tight">{tServer(locale, /* i18n-dynamic */ headingKey)}</h2>
+    <div class="mt-4 space-y-4">
+      <p class="text-sm text-muted-foreground">{tServer(locale, /* i18n-dynamic */ bodyKey)}</p>
+      <p class="text-sm text-muted-foreground">{tServer(locale, 'oauthErrorPage.nextStep')}</p>
+    </div>
+  </div>
+</AuthLayout>

@@ -21,7 +21,10 @@ import SoftwareCatalogPicker, {
 } from "./SoftwareCatalogPicker";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
-import { duplicateComplianceItemNames } from "@breeze/shared/validators/complianceInlineSettings";
+import {
+  COMPLIANCE_RULE_SET_NAME_MAX_LENGTH,
+  duplicateComplianceItemNames,
+} from "@breeze/shared/validators/complianceInlineSettings";
 type RuleType =
   | "required_software"
   | "prohibited_software"
@@ -630,6 +633,7 @@ export default function ComplianceTab({
                     <input
                       ref={nameInputRef}
                       value={item.name}
+                      maxLength={COMPLIANCE_RULE_SET_NAME_MAX_LENGTH}
                       onChange={(e) =>
                         updateItem(index, { name: e.target.value })
                       }

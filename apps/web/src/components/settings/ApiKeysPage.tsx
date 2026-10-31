@@ -165,6 +165,7 @@ export default function ApiKeysPage() {
           fetchWithAuth(`/api-keys/${selectedKey.id}`, {
             method: 'DELETE'
           }),
+        successMessage: t('apiKeysPage.revokedToast', { name: selectedKey.name }),
         errorFallback: t('apiKeysPage.failedToRevokeAPIKey'),
         onUnauthorized: handleSessionExpired,
       });

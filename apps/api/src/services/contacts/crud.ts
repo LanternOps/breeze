@@ -37,7 +37,7 @@ import {
   type ContactExecutor,
 } from './compat';
 import { CONTACT_ROLES, type ContactRole } from './types';
-import { reconcileLegacyContactResponsibilities } from './responsibilities';
+import { syncLegacyContactRoles } from './responsibilities';
 import { recordDestinationChangeWithExecutor } from '../callerVerification/destinations';
 import type { DestinationSource } from '../callerVerification/types';
 
@@ -551,7 +551,7 @@ export async function createContact(
 
   if (created) {
     const createdContact = created as ContactRecord;
-    await reconcileLegacyContactResponsibilities(exec, {
+    await syncLegacyContactRoles(exec, {
       contactId: createdContact.id,
       orgId: input.orgId,
       siteId: createdContact.siteId,
@@ -702,14 +702,16 @@ export async function updateContact(
   // behind it, on a call the route answers 404.
   if (!updated) return null;
 
-  // While legacy writers still exist, either half of the legacy responsibility
-  // shape (`siteId` + `roles`) re-derives the complete canonical assignment set.
-  // Once those adapters retire, siteId can become affiliation-only metadata.
-  if (patch.siteId !== undefined || patch.roles !== undefined) {
-    await reconcileLegacyContactResponsibilities(exec, {
+  // Legacy compatibility adapter (spec §7.4/§8.3): either half of the legacy
+  // shape (`siteId` + `roles`) is applied to `contact_roles` in this same
+  // transaction. A re-pin re-scopes the legacy-derived assignments to the new
+  // Site and an un-pin widens them back to Organization; it must run before the billing re-projection below, which reads them.
+  if (patch.roles !== undefined || patch.siteId !== undefined) {
+    await syncLegacyContactRoles(exec, {
       contactId,
       orgId,
       siteId: updated.siteId,
+      previousSiteId: current.siteId,
       roles: updated.roles,
     });
   }

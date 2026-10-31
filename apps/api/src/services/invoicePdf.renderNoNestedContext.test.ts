@@ -144,3 +144,34 @@ describe('renderInvoicePdf online-payment availability (#9454)', () => {
     expect(pdfText(pdf)).toContain('pay.example.test/i/tok-9454');
   });
 });
+
+describe('renderInvoicePdf with a preloaded partner context (#9585, portal)', () => {
+  it('reads neither partners nor stripe_connect_accounts and opens no system context', async () => {
+    // The org-scoped portal sees 0 partner rows; the preloaded bundle stands in for them.
+    state.rows.partners = [];
+    const { pdf } = await renderInvoicePdf(invoice.id, { partnerContext: { partnerId: 'p-1', partner: partner as never, onlinePaymentAvailable: true } });
+
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+    const tables = state.selects.map((s) => s.table);
+    expect(tables).not.toContain('partners');
+    expect(tables).not.toContain('stripe_connect_accounts');
+    expect(pdfText(pdf)).toContain('pay.example.test/i/tok-9454');
+    expect(pdfText(pdf)).toContain('Example MSP');
+  });
+
+  it('a preloaded context that found no partner row still opens no system context', async () => {
+    state.rows.partners = [];
+    await renderInvoicePdf(invoice.id, { partnerContext: { partnerId: 'p-1', partner: null, onlinePaymentAvailable: false } });
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+    expect(getOrMintInvoiceLink).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['partnerId', { partnerId: 'p-other', partner: partner as never, onlinePaymentAvailable: true }],
+    ['partner row', { partnerId: 'p-1', partner: { ...partner, id: 'p-other' } as never, onlinePaymentAvailable: true }],
+  ])('refuses a context whose %s is not the invoice partner, before rendering anything', async (_what, partnerContext) => {
+    await expect(renderInvoicePdf(invoice.id, { partnerContext })).rejects.toThrow(/not invoice inv-9454's partner/);
+    expect(state.inserts).toBe(0);
+  });
+});

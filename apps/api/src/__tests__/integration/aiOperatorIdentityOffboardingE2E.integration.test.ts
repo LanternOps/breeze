@@ -579,6 +579,18 @@ async function mergeTaskOrgAway(t: Tenant): Promise<{ survivorId: string }> {
 }
 
 /** The whole path to a settled task, ticking every manual item as the approver. */
+/**
+ * Stop the task the way every `stopping` writer does today (the org-merge
+ * fence, device delete / move / reinstall): state -> stopping, lease and wake
+ * cleared. There is no cancel route yet (P3-5), so this IS the stop.
+ */
+async function stopTask(a: Admitted): Promise<void> {
+  await system(() => db.execute(sql`
+    UPDATE ai_operator_tasks
+       SET state = 'stopping', lease_owner = NULL, lease_expires_at = NULL, next_wake_at = NULL, updated_at = now()
+     WHERE id = ${a.taskId}`));
+}
+
 async function driveToSettled(t: Tenant): Promise<Admitted> {
   const a = await driveToApprovedAndHeld(t);
   await openWindow(a);
@@ -903,56 +915,81 @@ describe('identity_offboarding end to end (R1a)', () => {
     expect(survivorIntents).toHaveLength(0);
   }, 60_000);
 
-  // BUG: a merge-fenced (`stopping`) task can never settle. The org-merge
-  // fence (orgMergeCustomExecutors.ts ~315) moves every live task to
-  // `stopping`; the next wake claims it (taskCoordinator.ts:243, `stopping` &&
-  // lease expired), runs `advanceTask`, the targets gate correctly reports
-  // "task target … (contact) was detached", and `settle({event:'hand_off'})`
-  // (taskCoordinator.ts:879 -> :411 `nextTaskState(state, event)`) THROWS
-  //   TaskTransitionError: transition 'hand_off' is not allowed from task state 'stopping'
-  // because TASK_TRANSITIONS.stopping only allows claim / settle_cancelled /
-  // settle_expired / settle_handed_off (taskTransitions.ts:126-131), and no
-  // code anywhere writes a settle_* event. Observed row after the wake: state
-  // 'stopping', lease held by this coordinator for 60 s, no child intent. The
-  // reconciler's set 3 (running/stopping past lease) re-wakes it and it throws
-  // again, forever. Nothing dispatches (the gate runs first), but the task is
-  // never terminal and never hands off.
-  skipDb('strict detach, org merge: the next wake hands the fenced task off and nothing dispatches under the dead tenant', async () => {
+  // #9980: a merge-fenced (`stopping`) task used to throw TaskTransitionError
+  // ('hand_off' is not allowed from 'stopping') on its next wake and loop
+  // forever. `advanceTask` now settles a `stopping` task through the
+  // stopping-path arms before it reaches any gate or advancer.
+  runDb('strict detach, org merge: the next wake hands the fenced task off and nothing dispatches under the dead tenant', async () => {
     const t = await seedTenant();
     const a = await driveToApprovedAndHeld(t);
     const { survivorId } = await mergeTaskOrgAway(t);
     await openWindow(a);
+    gate.forTargets.mockClear();
     await wake(a);
     const task = await readTask(a);
-    expect(task.state).toBe('handed_off');
-    expect(task.outcomeDetail).toMatch(/requester access lost: .*detached/);
+    expect(task).toMatchObject({ state: 'handed_off', outcome: 'unresolved', leaseOwner: null, nextWakeAt: null });
+    expect(task.outcomeDetail).toMatch(/^stopped: task target .* \(contact\) was detached \(org_merged\)/);
+    // The fence's own note survives the settle.
+    expect(task.outcomeDetail).toMatch(/Fenced by an organization merge/);
+    expect(task.handoffSummary).toMatch(/stopped this task before it finished/);
     expect(await childIntents(a)).toHaveLength(0);
+    expect(await operations(a)).toHaveLength(0);
+    // The requester gate never ran: a stopping task is settled before any gate.
+    expect(gate.forTargets).not.toHaveBeenCalled();
     const survivorIntents = await system(() => db.select().from(actionIntents)
       .where(and(eq(actionIntents.orgId, survivorId), sql`${actionIntents.actionName} <> 'operator_plan'`)));
     expect(survivorIntents).toHaveLength(0);
+    // Terminal: a further wake cannot claim it.
+    await expect(wake(a)).resolves.toBe('skipped (not_claimable)');
   }, 60_000);
 
-  // BUG (missing surface): there is no task-cancel path in this build. No
-  // service, route or job writes the `stop` / `settle_cancelled` transitions
-  // (taskTransitions.ts:101-131 declares them; `grep -rn "settle_cancelled'"`
-  // finds only the table). routes/aiOperatorTasks.ts:8-9 says "Answers,
-  // pause/resume/cancel and retry are still later waves (P3-5)". The only
-  // writer of `stopping` is the org-merge fence (orgMergeCustomExecutors.ts
-  // ~315). So "cancel through the real cancel path" cannot be exercised.
-  //
-  // And when a cancel IS built, the coordinator is not ready for it. A
-  // one-off probe (not kept) wrote what a cancel's `stop` transition writes —
-  // state 'stopping', lease cleared — onto a task held at the cutoff, opened
-  // the window and woke it once. Observed: the wake MINTED the next child
-  // (google_set_vacation, intent status 'approved', operation 'pending'), then
-  // threw "TaskTransitionError: transition 'wait' is not allowed from task
-  // state 'stopping'" from yieldToWait; the row stayed 'stopping' with the
-  // lease held. advanceTask (taskCoordinator.ts:760-892) never consults
-  // admissionFenced()/isTaskFenced() for the task's own state, so only the
-  // release-time dispatch claim (dispatchClaim.ts, refuses 'stopping') would
-  // stop that child from executing.
+  // #9979: the R1a probe. A stop written onto a task held at the cutoff (the
+  // exact write every `stopping` writer makes: state, lease cleared, wake
+  // cleared) used to MINT the next child when the window opened, then throw
+  // from yieldToWait. It now mints nothing and settles.
+  runDb('stopped while held at the cutoff: opening the window mints nothing and the wake settles the task', async () => {
+    const t = await seedTenant();
+    const a = await driveToApprovedAndHeld(t);
+    await stopTask(a);
+    await openWindow(a);
+    await expect(wake(a)).resolves.toMatch(/^handed off: stopped/);
+    const task = await readTask(a);
+    expect(task).toMatchObject({ state: 'handed_off', outcome: 'unresolved', leaseOwner: null });
+    expect(task.outcomeDetail).toMatch(/^stopped: /);
+    expect(await childIntents(a)).toHaveLength(0);
+    expect(await operations(a)).toHaveLength(0);
+    await expect(wake(a)).resolves.toBe('skipped (not_claimable)');
+    expect(await childIntents(a)).toHaveLength(0);
+  }, 60_000);
+
+  runDb('stopped mid-plan with an effect dispatched but unreported: hands off unknown_effect and mints nothing more', async () => {
+    const t = await seedTenant();
+    const a = await driveToApprovedAndHeld(t);
+    await openWindow(a);
+    await wake(a);
+    expect(await childIntents(a)).toHaveLength(1);
+    const [op] = await operations(a);
+    // The release worker claimed it; no result has landed yet.
+    await system(() => db.update(aiOperatorOperations)
+      .set({ dispatchState: 'dispatched', dispatchedAt: new Date() })
+      .where(eq(aiOperatorOperations.id, op!.id)));
+    await stopTask(a);
+    await wake(a);
+    const task = await readTask(a);
+    expect(task).toMatchObject({ state: 'handed_off', outcome: 'unknown_effect' });
+    expect(task.handoffSummary).toMatch(/may still complete/);
+    expect(await childIntents(a)).toHaveLength(1);
+    expect(await operations(a)).toHaveLength(1);
+  }, 60_000);
+
+  // Still BLOCKED on the cancel ROUTE (missing surface, P3-5): no service,
+  // route or job writes the `stop` transition on a human's request -
+  // routes/aiOperatorTasks.ts says "Answers, pause/resume/cancel and retry are
+  // still later waves (P3-5)". The coordinator half of #9979 is fixed and
+  // pinned above (a `stopping` task never mints and always settles); this case
+  // is "cancel through the real cancel path" and waits for that path.
   skipDb('cancel during the not-before wait settles the task and nothing dispatches after the window', async () => {
-    // Intentionally empty: see the BUG note above.
+    // Intentionally empty: see the note above.
   });
 
   runDb('world drift after discovery: the seal holds, the new group is not removed, verify fails naming it, the task settles partial', async () => {
@@ -1032,9 +1069,9 @@ describe('identity_offboarding end to end (R1a)', () => {
     expect(await childIntents(a)).toHaveLength(3);
   }, 60_000);
 
-  // BUG (missing surface): same as the cancel case above — no task-cancel
-  // path exists (routes/aiOperatorTasks.ts:8-9; no writer of the `stop` /
-  // `settle_cancelled` transitions anywhere outside taskTransitions.ts).
+  // BLOCKED on the cancel route (P3-5), same as the cancel case above. The
+  // coordinator's handling of a `stopping` task is pinned by the stopped-*
+  // cases above; this one needs a real cancel request to drive it.
   skipDb('stop mid-plan: cancelled after the Google mail effects, before the suspend; nothing dispatches afterwards', async () => {
     // Intentionally empty: see the BUG note above.
   });

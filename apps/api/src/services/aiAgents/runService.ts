@@ -649,10 +649,12 @@ async function deviceMatchesAnyGroup(
 /**
  * #6749 — alert sources that are lifecycle/administrative (date-driven, not
  * fault-driven) and must NEVER admit a triage run, regardless of how the
- * agent's other filters are configured. `warrantyAlertEvaluator.ts` hard-
- * codes warranty alerts `critical`/`high` (an expired warranty is urgent to
- * see, not urgent to investigate), so severity alone can't exclude them —
- * every fleet's warranty alerts would otherwise burn a full triage run each.
+ * agent's other filters are configured. Warranty alerts are graded
+ * `info`/`low`/`medium` since #10371, but any agent whose `alertSeverities`
+ * includes one of those levels would still admit them (an expired warranty is
+ * worth seeing, never worth investigating), so severity alone can't exclude
+ * them — every such fleet's warranty alerts would otherwise burn a full
+ * triage run each.
  * Unconditional exclusion (not an opt-in `alertSources` filter) because
  * there is nothing for a triage agent to ever usefully do with one of these:
  * no tenant should have to remember to opt out per agent.

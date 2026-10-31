@@ -1849,16 +1849,16 @@ mod tests {
     const CLOSED_FAILED: &str =
         include_str!("../../../../../packages/shared/src/fixtures/prompt-host/closed.render_failed.json");
 
-    /// Rule 4: a kind this build does not advertise (anything but
-    /// notice.info@1 (W04), the restart kinds (W05) and the remote kinds (W06)),
-    /// arriving anyway, is answered
-    /// `prompt_closed{render_failed, unadvertised_kind}` on the same envelope
-    /// id -- never dropped silently.
+    /// Rule 4: a kind@version this build does not advertise (every registry
+    /// kind is advertised at @1 since W07; @2 of any is not), arriving anyway,
+    /// is answered `prompt_closed{render_failed, unadvertised_kind}` on the
+    /// same envelope id -- never dropped silently.
     #[tokio::test]
     async fn test_prompt_show_without_advertisement_is_answered_render_failed() {
         let (session, mut broker, key, mut send, mut recv) = prompt_session().await;
         let mut elevation = serde_json::from_str::<serde_json::Value>(SHOW_NOTICE).unwrap();
         elevation["kind"] = serde_json::json!("elevation.request");
+        elevation["kindVersion"] = serde_json::json!(2);
         write_frame(&mut broker, &key, &mut send, "show-1", "prompt_show", Some(raw(&elevation.to_string())))
             .await
             .expect("write prompt_show");
@@ -2214,8 +2214,8 @@ mod tests {
     }
 
     /// Auth on the wire: speaks prompt protocol 1, advertises `notice.info@1`
-    /// (W04), the two restart kinds (W05) and the two remote kinds (W06) and
-    /// nothing else, names its version.
+    /// (W04), the two restart kinds (W05), the two remote kinds (W06) and
+    /// `elevation.request@1` (W07) and nothing else, names its version.
     #[tokio::test]
     async fn test_auth_request_carries_the_prompt_advertisement() {
         let (client_half, mut broker_half) = tokio::io::duplex(8192);
@@ -2233,9 +2233,10 @@ mod tests {
                 "restart.prompt@1",
                 "restart.final@1",
                 "remote.consent@1",
-                "remote.session@1"
+                "remote.session@1",
+                "elevation.request@1"
             ]),
-            "W04 + W05 + W06 kinds only"
+            "W04 + W05 + W06 + W07 kinds only"
         );
         assert_eq!(v["rendererVersion"], env!("CARGO_PKG_VERSION"));
         drop(broker_half);
@@ -2387,23 +2388,27 @@ mod prompt_auth_tests {
         assert_eq!(req.renderer_version, env!("CARGO_PKG_VERSION"));
     }
 
-    // #10190 W04 (Task 4.2) + W05 (Task 5.2) + W06 (Task 6.4): this build
-    // draws notice cards, the restart cards, the remote consent card and the
-    // remote session pill, so the live authentication advertises exactly
-    // these five kinds at version 1.
+    // #10190 W04 (Task 4.2) + W05 (Task 5.2) + W06 (Task 6.4) + W07 (Task
+    // 7.3): this build draws notice cards, the restart cards, the remote
+    // consent card, the remote session pill and the elevation request cards,
+    // so the live authentication advertises exactly these six kinds at
+    // version 1, in wave order (append-only).
     #[test]
     fn advertises_shipped_kinds_v1() {
-        let want = ["notice.info@1", "restart.prompt@1", "restart.final@1", "remote.consent@1", "remote.session@1"];
+        let want = [
+            "notice.info@1",
+            "restart.prompt@1",
+            "restart.final@1",
+            "remote.consent@1",
+            "remote.session@1",
+            "elevation.request@1",
+        ];
         let id = PeerIdentity { uid: 501, sid: String::new(), username: "tester".into(), pid: 7 };
         let req = build_auth_request(&id);
         assert_eq!(req.prompt_kinds, want.map(String::from).to_vec());
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["promptKinds"], serde_json::json!(want));
         assert_eq!(json["promptProtocolVersion"], 1);
-        // Nothing from a later wave: elevation (W07) stays legacy.
-        for later in ["elevation.request"] {
-            assert!(!req.prompt_kinds.iter().any(|k| k.starts_with(later)), "{later} is not advertised yet");
-        }
     }
 
     #[test]

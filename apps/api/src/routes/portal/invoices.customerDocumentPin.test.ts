@@ -22,6 +22,8 @@ vi.mock('../../db', async () => {
     getCurrentDbAccessContext: () => undefined,
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: async (fn: () => Promise<unknown>) => fn(),
+    // The route opens its own org transactions (#9585).
+    withDbAccessContext: async (_ctx: unknown, fn: () => Promise<unknown>) => fn(),
   };
 });
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));

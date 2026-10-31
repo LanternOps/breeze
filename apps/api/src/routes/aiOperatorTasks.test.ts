@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import type { SQL } from 'drizzle-orm';
+import { eq as sqlEq, type SQL } from 'drizzle-orm';
 import { AI_OPERATOR_TASK_LEAK_TRIPWIRE_KEYS } from '@breeze/shared';
 
 const {
@@ -229,6 +229,72 @@ describe('GET /ai/operator/tasks (org-wide keyset list)', () => {
     // proves the route actually built a site-scoped predicate rather than
     // silently trusting the mocked db to filter.
     expect(sqlText(capturedPredicate)).toContain('site_id');
+  });
+
+  // #10112: `fetchWithAuth` injects `?orgId=<selected>` whenever the org
+  // switcher has one org selected. The query schema used to strip it, so the
+  // Wisp entity picker's Tasks tab (and /operator) listed every accessible
+  // org's tasks. The filter narrows within the caller's orgs; it never widens.
+  describe('orgId filter (#10112)', () => {
+    it('narrows the list to the named org, on top of the caller\'s org scope', async () => {
+      let capturedPredicate: unknown;
+      selectMock.mockReturnValueOnce(selectChain([taskRow()], (p) => { capturedPredicate = p; }));
+      const res = await buildApp({ scope: 'partner', orgId: null, partnerId: 'p-1', accessibleOrgIds: [ORG_ID, OTHER_ORG_ID] })
+        .request(`/ai/operator/tasks?orgId=${ORG_ID}`);
+      expect(res.status).toBe(200);
+      const q = dialect.sqlToQuery(capturedPredicate as SQL);
+      expect(q.sql).toContain('"ai_operator_tasks"."org_id" = $');
+      expect(q.params).toContain(ORG_ID);
+    });
+
+    it('combines with the deviceId and state filters', async () => {
+      let capturedPredicate: unknown;
+      selectMock.mockReturnValueOnce(selectChain([taskRow()], (p) => { capturedPredicate = p; }));
+      const res = await buildApp().request(`/ai/operator/tasks?orgId=${ORG_ID}&deviceId=${DEVICE_ID}&state=running`);
+      expect(res.status).toBe(200);
+      const q = dialect.sqlToQuery(capturedPredicate as SQL);
+      expect(q.sql).toContain('"ai_operator_tasks"."org_id" = $');
+      expect(q.sql).toContain('"ai_operator_tasks"."device_id" = $');
+      expect(q.sql).toContain('"ai_operator_tasks"."state" = $');
+      expect(q.params).toEqual(expect.arrayContaining([ORG_ID, DEVICE_ID, 'running']));
+    });
+
+    it('keeps the caller\'s own org condition alongside the filter', async () => {
+      let capturedPredicate: unknown;
+      selectMock.mockReturnValueOnce(selectChain([taskRow()], (p) => { capturedPredicate = p; }));
+      const scopeMarker = '77777777-7777-4777-8777-777777777777';
+      const res = await buildApp({
+        canAccessOrg: () => true,
+        orgCondition: (col: never) => sqlEq(col, scopeMarker),
+      }).request(`/ai/operator/tasks?orgId=${ORG_ID}`);
+      expect(res.status).toBe(200);
+      const { params } = dialect.sqlToQuery(capturedPredicate as SQL);
+      expect(params).toContain(scopeMarker);
+      expect(params).toContain(ORG_ID);
+    });
+
+    it('refuses an org the caller cannot access with 403, before any query', async () => {
+      const res = await buildApp({ canAccessOrg: (id: string) => id === ORG_ID })
+        .request(`/ai/operator/tasks?orgId=${OTHER_ORG_ID}`);
+      expect(res.status).toBe(403);
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed orgId with 400', async () => {
+      const res = await buildApp().request('/ai/operator/tasks?orgId=not-a-uuid');
+      expect(res.status).toBe(400);
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+
+    it('adds no org filter when none is named (All organizations)', async () => {
+      let capturedPredicate: unknown;
+      selectMock.mockReturnValueOnce(selectChain([taskRow()], (p) => { capturedPredicate = p; }));
+      const res = await buildApp().request('/ai/operator/tasks');
+      expect(res.status).toBe(200);
+      // orgCondition and the site predicate are both `undefined` for this
+      // caller, so with no filter there is no predicate at all.
+      expect(capturedPredicate).toBeUndefined();
+    });
   });
 
   it('never leaks a tripwire key on any list-item DTO', async () => {

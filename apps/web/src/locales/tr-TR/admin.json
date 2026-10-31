@@ -993,6 +993,7 @@
       "changesSnapshot": "Anlık Görüntüyü Değiştirir",
       "before": "Önce",
       "after": "Sonra",
+      "noFieldChanges": "Bu işlem için kaydedilmiş alan değişikliği yok.",
       "userInfo": "Kullanıcı Bilgileri",
       "requestMetadata": "Meta Veri İste",
       "fields": {

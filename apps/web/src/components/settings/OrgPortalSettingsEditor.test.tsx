@@ -101,6 +101,15 @@ describe('OrgPortalSettingsEditor', () => {
       expect(await screen.findByTestId('org-portal-footer-help')).toHaveTextContent(/quotes and invoices/i);
     });
 
+    it('says where the welcome message appears and that it is plain text (#9675)', async () => {
+      mockApi(SETTINGS);
+      render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      const help = await screen.findByTestId('org-portal-welcome-help');
+      expect(help).toHaveTextContent(/sign-in page/i);
+      expect(help).toHaveTextContent(/plain text/i);
+      expect(screen.getByTestId('org-portal-welcome')).toHaveAttribute('aria-describedby', 'portal-welcome-help');
+    });
+
     it('shows the inherited partner footer and its source while the org footer is blank', async () => {
       mockApi({ ...SETTINGS, footerText: null, partnerInvoiceFooter: 'Thanks for your business' });
       render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);

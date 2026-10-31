@@ -8,6 +8,7 @@
  */
 
 import { captureException } from '../services/sentry';
+import { recordAlertDeviceConsumerSkipped } from '../services/alertDeviceConsumerMetrics';
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import { groupOwnerMatchesMembershipOrg } from '../services/deviceGroupOwnership';
@@ -832,6 +833,18 @@ async function admitTriggerEvent(
   }
   if (!shouldTriggerEventAutomation(trigger, data.eventType, payload)) {
     return { skipped: 'filter_mismatch' };
+  }
+
+  // Alert events without a device must never fall back to static/org targets.
+  if (data.eventType.startsWith('alert.') && typeof payload.deviceId !== 'string') {
+    console.warn(`[AutomationWorker] Skipping automation ${automation.id}: alert_has_no_device`, {
+      reason: 'alert_has_no_device', automationId: automation.id,
+      alertId: payload.alertId ?? null, eventId: data.eventId ?? null,
+      orgId: data.eventOrgId ?? payload.orgId ?? automation.orgId,
+      owner: payload.owner ?? { kind: payload.ownerKind ?? null, ref: payload.ownerRef ?? null },
+    });
+    recordAlertDeviceConsumerSkipped('automation');
+    return { skipped: 'alert_has_no_device' };
   }
 
   // `typeof === 'string'` rather than `!== null`: an absent property (a
@@ -1738,6 +1751,7 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
         automationId: automation.id,
         eventType: event.type,
         eventId: event.id,
+        eventOrgId: event.orgId,
         eventPayload: payload,
         eventTimestamp: event.metadata.timestamp,
         ...(switched ? { enqueuedWhileUnswitched: false } : {}),

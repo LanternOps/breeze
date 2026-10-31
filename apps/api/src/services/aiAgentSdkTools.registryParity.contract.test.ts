@@ -513,6 +513,32 @@ describe('W14 billing lifecycle wiring (#6784, PR A)', () => {
   });
 });
 
+describe('W14 PR B wiring (#6784)', () => {
+  it.each(['manage_accounting_sync', 'manage_contracts'])('%s: declared, SDK shape keys === Zod keys === registry keys', (name) => {
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    const sdkKeys = Object.keys(decl!.inputSchema).sort();
+    expect(sdkKeys).toEqual(
+      Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort(),
+    );
+    const registryKeys = Object.keys(
+      (aiTools.get(name)!.definition.input_schema as { properties?: Record<string, unknown> }).properties ?? {},
+    ).sort();
+    expect(sdkKeys).toEqual(registryKeys);
+  });
+
+  it('manage_accounting_sync is tier 1 at the registry and TOOL_TIERS, not alwaysLoad, self-managed', () => {
+    expect(TOOL_TIERS.manage_accounting_sync).toBe(getToolTier('manage_accounting_sync'));
+    expect(getToolTier('manage_accounting_sync')).toBe(1);
+    expect(aiTools.get('manage_accounting_sync')!.alwaysLoad ?? false).toBe(false);
+    expect(aiTools.get('manage_accounting_sync')!.selfManagedDbContext).toBe(true);
+  });
+
+  it('manage_contracts opts only generate_invoice out of the per-call transaction', () => {
+    expect(aiTools.get('manage_contracts')!.selfManagedDbContext).toEqual(['generate_invoice']);
+  });
+});
+
 describe('W13 device inventory and ops wiring (#6783)', () => {
   it.each(W13_TOOLS)('%s: TOOL_TIERS === registry tier, declared, SDK shape keys === Zod keys === registry keys', (name) => {
     expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));

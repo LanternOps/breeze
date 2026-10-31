@@ -117,7 +117,11 @@ function spread(count: number, start: number, end: number): number[] {
 }
 
 async function collectSlices(provider: UmbrellaProvider, since: Date, until: Date) {
-  const slices: Array<{ events: Array<{ timestamp: Date }>; until: Date }> = [];
+  const slices: Array<{
+    events: Array<{ timestamp: Date }>;
+    until: Date;
+    truncated?: { from: Date; to: Date; reachableRecords: number };
+  }> = [];
   for await (const slice of provider.syncEventSlices(since, until)) slices.push(slice);
   return slices;
 }
@@ -255,6 +259,32 @@ describe('UmbrellaProvider offset cap — time-sliced activity sync (#7207)', ()
     expect(new Set(all.filter((ts) => ts > burst))).toEqual(new Set(tail));
     expect(warnings()).toMatch(/offset cap/);
     expect(Math.max(...offsetsSent())).toBeLessThanOrEqual(OFFSET_CAP);
+
+    // The loss is carried to the caller on the slice that lost it, so the job
+    // can record it on the integration instead of a plain success (#10047).
+    const truncatedSlices = slices.filter((s) => s.truncated);
+    expect(truncatedSlices).toHaveLength(1);
+    const marker = truncatedSlices[0]!.truncated!;
+    expect(marker.to.getTime()).toBe(truncatedSlices[0]!.until.getTime());
+    expect(marker.to.getTime() - marker.from.getTime()).toBeLessThanOrEqual(1000);
+    expect(marker.from.getTime()).toBeLessThanOrEqual(burst);
+    expect(marker.to.getTime()).toBeGreaterThanOrEqual(burst);
+    expect(marker.reachableRecords).toBeGreaterThan(OFFSET_CAP);
+  });
+
+  it('does not flag a one-second window that ends inside the page at the offset cap (#10047)', async () => {
+    // 10,005 events in one millisecond: the page at offset 10000 holds the last
+    // five, and a page shorter than the server's page size is the end of the
+    // window — nothing lies past the cap, so nothing was dropped.
+    const burst = SINCE.getTime() + 60 * 60 * 1000;
+    fakeActivityApi(Array.from({ length: 10_005 }, () => burst));
+
+    const slices = await collectSlices(makeProvider(), SINCE, UNTIL);
+
+    const all = slices.flatMap((s) => s.events.map((e) => e.timestamp.getTime()));
+    expect(all.filter((ts) => ts === burst)).toHaveLength(10_005);
+    expect(slices.some((s) => s.truncated)).toBe(false);
+    expect(warnings()).not.toMatch(/offset cap/);
   });
 
   it('ends at the request budget on a slice boundary, never yielding a partial slice', async () => {

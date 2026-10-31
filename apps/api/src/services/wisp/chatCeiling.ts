@@ -237,12 +237,18 @@ export async function enforceWispCeiling(args: {
  * `pageContext`). '' when the grant is no longer active or the thread's focus
  * fell outside the ceiling — the seed is context, never authority, so dropping
  * it is the safe side; the next tool call refuses on the same ceiling. A
+ * A supplied ceiling reuses the live snapshot already resolved for this turn's
+ * record prompt; callers without one keep the existing lookup behavior. A
  * CORRUPT pin also yields '' but is logged and captured (grantAuthority's
  * contract) — the next tool call fails closed on it as gate-unavailable.
  */
-export async function wispSeedForSession(grant: WispSessionGrant, auth: AuthContext | null = null): Promise<string> {
+export async function wispSeedForSession(
+  grant: WispSessionGrant,
+  auth: AuthContext | null = null,
+  ceiling?: GrantCeiling,
+): Promise<string> {
   try {
-    return await seedContextForSession(grant.threadId, await resolveGrantCeiling(grant.grantId, grant.revisionId), auth);
+    return await seedContextForSession(grant.threadId, ceiling ?? await resolveGrantCeiling(grant.grantId, grant.revisionId), auth);
   } catch (err) {
     if (err instanceof GrantInactiveError && err.kind === 'corrupt') {
       console.error(`[Wisp] grant ${err.grantId} has a corrupt ceiling pin (thread seed): ${err.message}`);

@@ -383,6 +383,7 @@ async function createInTransaction(
       orgName: targets.orgNames.get(p.orgId) ?? null,
       ruleSets,
       scanType: request.scanType,
+      paths: request.scanType === 'custom' && targets.paths ? [...targets.paths] : null,
       state: 'active',
       targeted: p.remaining.length,
       skipped: p.skipped,
@@ -585,6 +586,7 @@ const summaryFields = () => ({
   createdBy: securityScanSweeps.createdBy,
   ruleSetPins: securityScanSweeps.ruleSetPins,
   scanType: securityScanSweeps.scanType,
+  paths: securityScanSweeps.paths,
   targetedCount: securityScanSweeps.targetedCount,
   skipped: securityScanSweeps.skipped,
   origin: securityScanSweeps.origin,
@@ -603,6 +605,7 @@ type SummaryRow = {
   createdBy: string | null;
   ruleSetPins: unknown;
   scanType: string;
+  paths: string[] | null;
   targetedCount: number;
   skipped: unknown;
   origin: string;
@@ -755,6 +758,7 @@ async function loadSummaries(
       orgName: row.orgName ?? null,
       ruleSets: parsePins(row.ruleSetPins).map((pin) => ({ id: pin.id, name: nameById.get(pin.id) ?? null, version: pin.version })),
       scanType: row.scanType as SecuritySweepScanType,
+      paths: row.scanType === 'custom' && Array.isArray(row.paths) ? [...row.paths] : null,
       state: row.state as SecuritySweepState,
       targeted: restrictedOrgs.has(row.orgId) ? Number(p?.total ?? 0) : row.targetedCount,
       // A restricted caller sees only its slice; the stored org-wide skip

@@ -246,10 +246,13 @@ export default function DeviceActivityFeed({
   // the rail when it's empty. Skip while loading OR errored: an error is not
   // "no content", and collapsing on error would shove the "Couldn't load /
   // Retry" pane into a narrow strip. On error the parent keeps its prior layout.
+  // Open alerts alone do not count: they already have a home in the Overview
+  // state card beside this rail, so a device with an alert and no recent
+  // actions collapses to the bar instead of opening a near-empty column.
   useEffect(() => {
     if (loading || error) return;
-    onHasContentChange?.(events.length > 0 || activeAlerts > 0);
-  }, [loading, error, events.length, activeAlerts, onHasContentChange]);
+    onHasContentChange?.(events.length > 0);
+  }, [loading, error, events.length, onHasContentChange]);
 
   // Retry the whole pane from page 1 on a fresh controller (the mount effect's
   // controller is aborted once its cleanup runs).

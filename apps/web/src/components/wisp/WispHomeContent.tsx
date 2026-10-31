@@ -121,7 +121,9 @@ export default function WispHomeContent() {
   }, [load]);
 
   // A check starting or finishing is when new activity appears: refresh the timeline then.
-  const liveKey = view.kind === 'ready' ? (view.current?.startedAt ?? 'idle') : null;
+  // So is a grant status change (#10104): Resume, or a poll that finds the
+  // grant paused / resumed, re-runs the rail's concerns and activity reads.
+  const liveKey = view.kind === 'ready' ? `${view.wisp.status}|${view.current?.startedAt ?? 'idle'}` : null;
   const lastLiveKey = useRef<string | null>(null);
   useEffect(() => {
     if (liveKey === null) return;
@@ -182,7 +184,7 @@ export default function WispHomeContent() {
 
   if (view.kind === 'forbidden') {
     return (
-      <HomeFrame>
+      <HomeFrame links={false}>
         <p className="p-6 text-sm text-muted-foreground" data-testid="wisp-home-forbidden" role="status">{t('wisp.home.noAccess')}</p>
       </HomeFrame>
     );
@@ -278,7 +280,8 @@ export default function WispHomeContent() {
   );
 }
 
-function HomeFrame({ children }: { children: React.ReactNode }) {
+/** `links` false: the caller may not use the chats or Wisp memory either (a Partner Viewer, #10200), so no links into them. */
+function HomeFrame({ children, links = true }: { children: React.ReactNode; links?: boolean }) {
   const { t } = useTranslation(['pages', 'ai']);
   return (
     <div className="mx-auto max-w-7xl space-y-4 p-4" data-testid="wisp-home">
@@ -287,16 +290,18 @@ function HomeFrame({ children }: { children: React.ReactNode }) {
           <Sparkles className="h-5 w-5 text-primary" aria-hidden="true" />
           {t('pages:titles.wisp')}
         </h1>
-        <nav className="flex items-center gap-1 text-sm" aria-label={t('pages:titles.wisp')}>
-          <a href={CHATS_HREF} data-testid="wisp-home-chats" className="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-muted">
-            <MessagesSquare className="h-4 w-4" aria-hidden="true" />
-            {t('ai:wisp.home.openChats')}
-          </a>
-          <a href={MEMORY_HREF} data-testid="wisp-home-memory" className="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-muted">
-            <Brain className="h-4 w-4" aria-hidden="true" />
-            {t('ai:wisp.home.memory')}
-          </a>
-        </nav>
+        {links && (
+          <nav className="flex items-center gap-1 text-sm" aria-label={t('pages:titles.wisp')}>
+            <a href={CHATS_HREF} data-testid="wisp-home-chats" className="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-muted">
+              <MessagesSquare className="h-4 w-4" aria-hidden="true" />
+              {t('ai:wisp.home.openChats')}
+            </a>
+            <a href={MEMORY_HREF} data-testid="wisp-home-memory" className="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-muted">
+              <Brain className="h-4 w-4" aria-hidden="true" />
+              {t('ai:wisp.home.memory')}
+            </a>
+          </nav>
+        )}
       </div>
       {children}
     </div>

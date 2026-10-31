@@ -523,11 +523,17 @@ To make sure `run_script` executes exactly the content you reviewed, take `conte
 | `browse_device_event_log` | 2/3 | Live event-log browse on one online device (`devices:execute`, MFA): `list_logs` is Tier 2 read-only; `query` and `get_event` are Tier 3, supervised. |
 | `manage_tenant_variables` | 1/3 | `list` is Tier 1 (`variables:read`; secret values are never returned); `create`, `update`, `delete` are Tier 3, supervised (`variables:manage`, MFA). Secret and existing partner-wide variables are not changed here. Not offered to AI agents for writes. |
 | `manage_support_sessions` | 1/3 | `list` and `get` are Tier 1; `end` is Tier 3, supervised (`remote:access`, MFA). Partner scope only. Starting a session is not available over MCP. |
+| `get_pax8_status` | 1 | Integration health and companies; full partner access. |
+| `search_pax8_products` | 1 | Mapped products and product-only provisioning, commitment and live pricing reads. |
+| `manage_pax8_subscriptions` | 1/3 | `list` and `drift` are reads; `sync`, `link`, `unlink` are supervised and MFA-gated. Full partner access on every action. |
+| `manage_pax8_orders` | 1/2/3 | `list`, `get`, `preview` are reads; draft and line edits are Tier 2; `preflight` is supervised and sends staged content for an isMock dry run. Writes need MFA and whole-org access. |
 | `manage_billing_profiles` | 1/3 | Rate cards, work types and an organization's card. `list`, `get`, `list_work_types`, `get_org_profile` are Tier 1 (`billing_profiles:read`); every write is Tier 3, supervised (`billing_profiles:write`, MFA; rate-card and work-type writes also need full partner access). Partner scope only. |
 | `manage_billing_settings` | 1/3 | `get_partner` and `get_org` are Tier 1 (`organizations:read`), `currency_impact` Tier 1 (`invoices:write`), `reporting_totals` Tier 1 (`invoices:read`); `update_partner` and `update_org` Tier 3, supervised (`invoices:write`, MFA). Partner scope only. |
 | `manage_contract_templates` | 1/2/3 | `list`, `get`, `get_version`, `usage` are Tier 1 (`agreements:read`); `create` and `update` Tier 2 for an organization's template, supervised with `ownerScope: partner` (`agreements:write`); `create_version`, `publish`, `archive` Tier 3, supervised, organization templates only. Not offered to AI agents for writes. |
 | `manage_contract_documents` | 1/3 | `list` is Tier 1 (`agreements:read`, no signer email); `link` Tier 3, supervised (`agreements:write`). Not offered to AI agents for `link`. |
 | `get_device_billing` | 1 | Contract lines that bill one device. Requires `devices:read` and `contracts:read`, partner scope. |
+| `manage_contracts` | 2/3 | New actions: `preview_invoice` (Tier 2, read-only, `contracts:read`) and `generate_invoice` (Tier 3, four-eyes, `contracts:manage`; pass the preview's `generateWith` values). Not offered to AI agents for `generate_invoice`. |
+| `manage_accounting_sync` | 1/3 | QuickBooks or Xero (`provider`). `status`, `owed_operations`, `customers`, `mappings`, `income_accounts`, `remote_candidates` are Tier 1 (`accounting:read`); `link_mapping`, `unlink_mapping`, `sync_mapping` Tier 3, supervised (`accounting:manage`, `organizations:write`, `catalog:write`, MFA); `push` and `push_bulk` (up to 10) Tier 3, four-eyes (`accounting:manage`, `invoices:write`, MFA). Partner scope with access to every organization. Not offered to AI agents for writes. |
 | `get_contract` / `list_contracts` / `get_invoice` | 2 | New optional selectors: `periodId` (a period's outcome), `view: currency_mismatches`, and `lineId` (an invoice line's billed devices, paged). Same permissions as before. |
 | `get_fleet_health` | 1 | Also takes `action`: `history` and `offenders` (a `deviceId`), `evaluation`, and `org_summary` (an `orgId`), alongside the default fleet list. |
 | `list_time_entries` | 1 | List logged work by ticket, user, organization, dates, billing status, or approval. Requires partner or system scope; non-admins see their own entries. |
@@ -665,6 +671,7 @@ The call returns a normal result (not an error) whose `structuredContent` says t
 - **Nothing runs until a person approves** in the Breeze mobile or web app. Requests expire after 24 hours.
 - **The release runs under the live credential that asked.** If you revoke the API key or OAuth grant, remove `ai:execute` from it, or narrow its tool areas before the approved action is released, the action fails instead of running.
 - **Repeating an identical call** while the request is live returns the same `actionId` rather than filing a second request.
+- **A read-only action rated below Tier 3 on a Tier 3 tool runs directly.** For example, `execute_command` with `commandType` `list_processes`, `file_list` or `event_logs_list`, and `manage_services` `list`, are not filed for approval. The tool's description in `tools/list` names these actions. An action rated below Tier 3 that changes something, such as `edr_endpoint_action` `scan` (it starts a scan on the endpoint), is still filed for approval. The reads still need what the tool's Tier 3 needs: `ai:execute`, and in production `ai:execute_admin` and the production allowlist. They are recorded in the Tier 3 execution ledger. With the flag off they are refused like any other call to a Tier 3 tool.
 
 ### Checking and cancelling a request
 
@@ -1271,3 +1278,5 @@ The tool name in `tools/call` does not match any registered tool. Use `tools/lis
 ### Stale SSE session
 
 SSE sessions expire after 30 minutes. If you see errors about missing sessions, the client should reconnect to `/api/v1/mcp/sse` to obtain a new session.
+
+Pax8 tools require `billing:manage` and partner or system scope (system callers pass `partnerId`). Device-bound sessions are refused. Supervised actions return `MCP_APPROVAL_REQUIRED` by default over MCP. Credential save/test and company mapping remain in the web app.
