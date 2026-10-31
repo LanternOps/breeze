@@ -1937,7 +1937,7 @@
       "windows": "Windows",
       "macOS": "macOS",
       "linux": "Linux",
-      "noFileSelectedMsiExeDmgDeb": "Hiçbir dosya seçilmedi (.msi, .exe, .dmg, .deb, .pkg)",
+      "noFileSelectedMsiExeDmgDeb": "Hiçbir dosya seçilmedi (.msi, .exe, .dmg, .deb, .pkg, .zip)",
       "saving": "Kaydediliyor...",
       "uploadSave": "Yükle ve Kaydet",
       "saveVersion": "Sürümü Kaydet",
@@ -1952,8 +1952,8 @@
       "failedToUpdateVersion": "Sürüm güncellenemedi",
       "replaceFileAddNewVersion": "Yükleyici dosyasını değiştirmek için bunun yerine yeni bir sürüm ekleyin.",
       "inactiveStoredScripts": "Kayıtlı yükleme betikleri etkin değil; etkinleştirmek için sürümü yeniden oluşturun.",
-      "addZipFromAddPackage": "zip paketlerini Paket Ekle bölümünden ekleyin.",
-      "builtinVersionsReadOnly": "Breeze tarafından yönetilir. Dahili paketlerin sürümleri burada eklenemez veya değiştirilemez."
+      "builtinVersionsReadOnly": "Breeze tarafından yönetilir. Dahili paketlerin sürümleri burada eklenemez veya değiştirilemez.",
+      "installScriptsReadOnlyOnEdit": "Mevcut bir sürümün yükleme betikleri değiştirilemez ve hedef işletim sistemini sabitler. Değiştirmek için yeni bir sürüm ekleyin: yeni sürüm bu betiklerle başlar."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Dağıtım zamanı değişkeni ekleyin",

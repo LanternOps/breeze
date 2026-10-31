@@ -219,3 +219,7 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Software version manager: install scripts and zip (#10037)
+
+Adding a version to an existing package now has the pre/post-install script fields and accepts zip, as Add Package does; the form checks the same rules before saving (zip needs a post-install script, scripts need exactly one target OS). A new version starts with the latest version's active scripts. Silent-install arguments are no longer offered for pkg, dmg, deb or zip. Editing a version shows its scripts read-only (they cannot change after creation) and locks the target OS while its scripts are active. No API change, no migration.
