@@ -128,7 +128,7 @@ describe('SessionsTab', () => {
     expect(screen.getByText('B2:B4')).toBeInTheDocument();
   });
 
-  it('shows a platform-refused tool call as refused, never as applied (#10411)', async () => {
+  it('shows a platform-refused tool call as stopped, never as applied (#10411)', async () => {
     mockApi();
     const refusedExec = {
       ...DETAIL.toolExecutions[0],
@@ -155,7 +155,8 @@ describe('SessionsTab', () => {
     await waitFor(() => expect(screen.getByTestId('ai-office-tool-exec-t-refused')).toBeInTheDocument());
 
     const card = screen.getByTestId('ai-office-tool-exec-t-refused');
-    expect(card.textContent).toMatch(/refused/i);
+    expect(card.textContent).toMatch(/stopped/i);
+    expect(card.textContent).not.toMatch(/refused/i);
     expect(card.textContent).not.toMatch(/applied/i);
   });
 

@@ -81,7 +81,7 @@ describe('RejectionDenialLog platform refusals (#10411)', () => {
   it('filters refusals apart from approval rejections', () => {
     render(<RejectionDenialLog executions={executions} securityEvents={[]} loading={false} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Refused' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stopped' }));
     expect(screen.getByText('Rate limit exceeded for query_devices')).toBeTruthy();
     expect(screen.queryByText('Denied by approver')).toBeNull();
 

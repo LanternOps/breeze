@@ -350,7 +350,7 @@
       "pending": "pendiente",
       "approved": "aprobado",
       "rejected": "denegado",
-      "refused": "bloqueado",
+      "stopped": "detenido",
       "completed": "terminado",
       "failed": "fallido"
     },
@@ -393,7 +393,7 @@
     "requestedAt": "solicitado {{time}}",
     "approvedAt": "aprobado {{time}}",
     "rejectedAt": "denegado {{time}}",
-    "refusedAt": "bloqueado {{time}}",
+    "stoppedAt": "detenido {{time}}",
     "appliedAt": "aplicado {{time}}",
     "flagDialog": {
       "title": "Marcar sesión",

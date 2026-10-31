@@ -162,7 +162,7 @@ function ledgerStatusLabel(t: (key: string) => string, value: AiAgentRunLedgerEn
     case 'rejected':
       return t('aiAgentsRuns.detail.ledger.statuses.rejected');
     case 'refused':
-      return t('aiAgentsRuns.detail.ledger.statuses.refused');
+      return t('aiAgentsRuns.detail.ledger.statuses.stopped');
     default:
       return value;
   }

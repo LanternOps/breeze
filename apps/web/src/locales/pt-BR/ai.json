@@ -350,7 +350,7 @@
       "pending": "pendente",
       "approved": "aprovado",
       "rejected": "negado",
-      "refused": "bloqueado",
+      "stopped": "interrompido",
       "completed": "concluído",
       "failed": "com falha"
     },
@@ -393,7 +393,7 @@
     "requestedAt": "solicitado em {{time}}",
     "approvedAt": "aprovado em {{time}}",
     "rejectedAt": "negado em {{time}}",
-    "refusedAt": "bloqueado em {{time}}",
+    "stoppedAt": "interrompido em {{time}}",
     "appliedAt": "aplicado em {{time}}",
     "flagDialog": {
       "title": "Sinalizar sessão",

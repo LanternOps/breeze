@@ -96,7 +96,7 @@ export function RejectionDenialLog({
   const statusLabel: Record<LogEntry["status"], string> = {
     failed: t("aiRiskRejectionDenialLog.failed"),
     rejected: t("aiRiskRejectionDenialLog.rejected"),
-    refused: t("aiRiskRejectionDenialLog.refused"),
+    refused: t("aiRiskRejectionDenialLog.stopped"),
     denied: t("aiRiskRejectionDenialLog.denied"),
   };
   const filters: {

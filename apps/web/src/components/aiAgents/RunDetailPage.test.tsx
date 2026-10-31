@@ -1079,13 +1079,13 @@ describe('RunDetailPage ledger status labels', () => {
     expect(row).toHaveTextContent('Completed');
   });
 
-  it('labels a platform-refused ledger row Refused, not with the raw token (#10411)', async () => {
+  it('labels a platform-refused ledger row Stopped, not with the raw token (#10411)', async () => {
     mockEndpoints({ detail: { ...RUN_DETAIL, ledger: [{ ...RUN_DETAIL.ledger[0], status: 'refused' as never }] } });
     render(<RunDetailPage runId="run-1" />);
 
     await waitFor(() => expect(screen.getByTestId('run-detail-ledger')).toBeInTheDocument());
     const row = screen.getByTestId('run-detail-ledger').querySelector('tbody tr');
-    expect(row).toHaveTextContent('Refused');
+    expect(row).toHaveTextContent('Stopped');
     expect(row).not.toHaveTextContent(/\brefused\b/);
   });
 });

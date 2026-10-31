@@ -103,7 +103,7 @@
     "noRejectionsOrDenialsFound": "Nessuna azione negata, bloccata o non riuscita trovata.",
     "rejected": "Negato",
     "rejectionsAndDenials": "Negati e bloccati",
-    "refused": "Bloccato",
+    "stopped": "Interrotto",
     "search": "Cerca...",
     "session": "Sessione",
     "status": "Stato",

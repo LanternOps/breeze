@@ -70,7 +70,7 @@
           "completed": "Tamamlandı",
           "failed": "Başarısız",
           "rejected": "Reddedildi",
-          "refused": "Engellendi"
+          "stopped": "Durduruldu"
         }
       },
       "intents": {

@@ -70,7 +70,7 @@
           "completed": "Completato",
           "failed": "Non riuscito",
           "rejected": "Negato",
-          "refused": "Bloccato"
+          "stopped": "Interrotto"
         }
       },
       "intents": {
