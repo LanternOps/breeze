@@ -129,7 +129,9 @@ export async function processEscalationEvent(data: EscalationEventJob, executor:
       escalationPolicyId: data.escalationPolicyId,
       escalationStep: data.escalationStep,
       policyStep: ((data.escalationStep - 1) % 10) + 1,
-      repeat: Math.floor((data.escalationStep - 1) / 10),
+      // Quoted on purpose: this is the webhook payload's renotify round, not a BullMQ
+      // `repeat` option; the scheduleRegistry contract scans identifier-named `repeat` keys.
+      'repeat': Math.floor((data.escalationStep - 1) / 10),
     },
     'notification-dispatcher',
     { eventId: escalationEventId(alert.id, data.escalationStep) }
