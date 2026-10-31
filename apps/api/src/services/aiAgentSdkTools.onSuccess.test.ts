@@ -49,6 +49,23 @@ for (const variant of ['registry', 'session-aware'] as const) {
         expect(onSuccess).not.toHaveBeenCalled();
       },
     );
+    it('keeps the existing success/data/configured error-envelope classification', async () => {
+      for (const raw of ['{"error":"warning","success":true}', '{"error":"warning","data":{}}', '{"error":"not configured","configured":false}']) {
+        h.execute.mockResolvedValue(raw);
+        const onSuccess = vi.fn(async () => {});
+        const result = await make(async () => ({ allowed: true, onSuccess }))(input);
+        expect(onSuccess).toHaveBeenCalledTimes(1);
+        expect(result.isError).toBeUndefined();
+      }
+    });
+    if (variant === 'session-aware') {
+      it('does not notify for an explicit error carrier with a plain-text message', async () => {
+        h.execute.mockResolvedValue({ kind: 'error', llmText: 'The provider refused this action.' });
+        const onSuccess = vi.fn(async () => {});
+        await make(async () => ({ allowed: true, onSuccess }))(input);
+        expect(onSuccess).not.toHaveBeenCalled();
+      });
+    }
     it('does not call onSuccess on a thrown tool error or a pre-tool denial', async () => {
       const onSuccess = vi.fn(async () => {});
       h.execute.mockRejectedValueOnce(new Error('unavailable'));

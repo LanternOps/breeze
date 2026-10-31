@@ -27,7 +27,8 @@ describe('focal tool subject manifest', () => {
 
   it('every focal action is in the real tool action enum', () => {
     for (const [name, subjects] of Object.entries(WISP_TOOL_SUBJECTS)) {
-      const action = definitions.get(name)?.input_schema.properties?.action as { enum?: string[] } | undefined;
+      const properties = definitions.get(name)?.input_schema.properties as Record<string, { enum?: string[] }> | undefined;
+      const action = properties?.action;
       for (const subject of subjects) {
         for (const value of subject.actions ?? []) expect(action?.enum, `${name}.${value}`).toContain(value);
       }

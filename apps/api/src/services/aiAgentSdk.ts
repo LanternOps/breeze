@@ -1204,7 +1204,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       return { allowed: false, error: WISP_GATE_UNAVAILABLE_MESSAGE };
     }
     const { ceiling, permissionKeys, narrow } = wispCall.current;
-    return { ...result, toolAuth: narrow(session.toolAuth, ceiling, session.breezeSessionId, permissionKeys) };
+    const toolAuth = narrow(session.toolAuth, ceiling, session.breezeSessionId, permissionKeys);
+    return {
+      ...result,
+      toolAuth,
+      onSuccess: async (callInput) => {
+        const { autoLinkFocalAct } = await import('./wisp/autoLink');
+        await autoLinkFocalAct({ session, toolName, input: callInput, auth: toolAuth, ceiling });
+      },
+    };
   };
 }
 

@@ -14,6 +14,8 @@ const wisp = vi.hoisted(() => ({
   resolveGrantCeiling: vi.fn(),
   wispSeedForSession: vi.fn(),
 }));
+const autoLink = vi.hoisted(() => ({ focal: vi.fn() }));
+vi.mock('./wisp/autoLink', () => ({ autoLinkFocalAct: autoLink.focal }));
 vi.mock('./wisp/grantAuthority', async (importOriginal) => ({
   ...await importOriginal<typeof import('./wisp/grantAuthority')>(),
   resolveGrantCeiling: (...args: unknown[]) => wisp.resolveGrantCeiling(...args),
@@ -495,6 +497,20 @@ describe('createSessionPreToolUse — Wisp delegation ceiling (W04 Task 4)', () 
     allowTier(1);
   });
 
+  it('hands onSuccess the exact per-call auth/ceiling even after session auth changes', async () => {
+    const session = wispSession();
+    const input = { deviceId: '00000000-0000-4000-8000-000000000001' };
+    const result = await createSessionPreToolUse(session)('get_device_details', input);
+    expect(result.allowed).toBe(true);
+    if (!result.allowed) throw new Error('unexpected denial');
+    expect(result.onSuccess).toBeTypeOf('function');
+    const toolAuth = result.toolAuth;
+    session.toolAuth = { marker: 'later-call' };
+    autoLink.focal.mockResolvedValueOnce({ added: 1, touched: 0 });
+    await result.onSuccess?.(input);
+    expect(autoLink.focal).toHaveBeenCalledExactlyOnceWith({ session, toolName: 'get_device_details', input, auth: toolAuth, ceiling: CEILING });
+  });
+
   it('runs enforceWispCeiling BEFORE checkGuardrails for a Tier-1 tool when session.wispGrant is set', async () => {
     const session = wispSession();
     const result = await createSessionPreToolUse(session)('get_device_details', { deviceId: 'd-1' });
@@ -574,6 +590,7 @@ describe('createSessionPreToolUse — Wisp delegation ceiling (W04 Task 4)', () 
     expect(wisp.narrowAuthToCeiling).toHaveBeenCalledWith(sharedBefore, CEILING, 'session-1', ['devices:read']);
     expect(result).toEqual({
       allowed: true,
+      onSuccess: expect.any(Function),
       toolAuth: { ...sharedBefore, narrowedFrom: 'unmarked', narrowedFor: 'session-1', narrowedKeys: ['devices:read'] },
     });
     expect(session.toolAuth).toBe(sharedBefore);
@@ -630,8 +647,8 @@ describe('createSessionPreToolUse — Wisp delegation ceiling (W04 Task 4)', () 
     release();
     const firstResult = await first;
 
-    expect(second).toEqual({ allowed: true, toolAuth: { ceilingTag: 'c2', keys: ['alerts:read'] } });
-    expect(firstResult).toEqual({ allowed: true, toolAuth: { ceilingTag: 'c1', keys: ['devices:read'] } });
+    expect(second).toEqual({ allowed: true, onSuccess: expect.any(Function), toolAuth: { ceilingTag: 'c2', keys: ['alerts:read'] } });
+    expect(firstResult).toEqual({ allowed: true, onSuccess: expect.any(Function), toolAuth: { ceilingTag: 'c1', keys: ['devices:read'] } });
   });
 
   it.each([

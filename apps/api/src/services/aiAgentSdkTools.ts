@@ -1014,7 +1014,10 @@ function notifyToolSuccess(
   }
   try {
     const parsed: unknown = JSON.parse(payload);
-    if (parsed && typeof parsed === 'object' && ('refused' in parsed || 'error' in parsed)) return;
+    if (parsed && typeof parsed === 'object') {
+      if ('refused' in parsed) return;
+      if ('error' in parsed && !('success' in parsed) && !('data' in parsed) && !('configured' in parsed)) return;
+    }
   } catch { /* Plain text successes have no JSON envelope. */ }
   const logAndCapture = (err: unknown) => {
     console.error(`[AI-SDK] onSuccess failed for ${toolName}:`, err);
@@ -1430,7 +1433,7 @@ function makeSessionAwareHandler(
 
       const durationMs = Date.now() - startTime;
       await safePostToolUse(postToolUse, toolName, args, compactResult, isToolError, durationMs, sealed);
-      notifyToolSuccess(onSuccess, toolName, args, result, isToolError);
+      notifyToolSuccess(onSuccess, toolName, args, result, isToolError || (typeof handlerResult !== 'string' && handlerResult.kind === 'error'));
       return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
     } catch (err) {
       const durationMs = Date.now() - startTime;
