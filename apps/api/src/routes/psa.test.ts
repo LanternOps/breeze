@@ -1,12 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { psaRoutes } from './psa';
+import { writeRouteAudit } from '../services/auditEvents';
+import { captureException } from '../services/sentry';
+vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 import { PsaConfigError } from '../services/psa/credentials';
 
 vi.mock('../services', () => ({}));
 
 // Service boundary: the routes construct adapters via createPSAProvider; the
 // adapters themselves are covered by their own unit tests.
+const { resumeTicketingMock } = vi.hoisted(() => ({ resumeTicketingMock: vi.fn(async (_id: string, _audit?: () => void) => {}) }));
+vi.mock('../services/psaAlertTicketing/pause', () => ({ resumeTicketingConnection: resumeTicketingMock }));
+
 const { createPSAProviderMock } = vi.hoisted(() => ({
   createPSAProviderMock: vi.fn(),
 }));
@@ -772,9 +778,29 @@ describe('psa routes', () => {
       { defaultQueue: 'OPS' }
     );
     expect(testConnection).toHaveBeenCalledTimes(1);
+    expect(resumeTicketingMock).toHaveBeenCalledWith('conn-1', expect.any(Function));
+    const auditResume = vi.mocked(resumeTicketingMock).mock.calls[0]![1] as unknown as () => void;
+    auditResume();
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'psa.alert_ticketing.resume', details: expect.objectContaining({ reason: 'successful_connection_test' }),
+    }));
     const setArg = setSpy.mock.calls[0]![0] as { syncSettings: Record<string, unknown> };
     expect(setArg.syncSettings.status).toBe('verified');
     expect(typeof setArg.syncSettings.lastTestedAt).toBe('string');
+  });
+
+  it('returns verified success with a warning when ticketing resume fails', async () => {
+    selectMock.mockReturnValueOnce(makeChain([connectionRow()]) as never);
+    createPSAProviderMock.mockReturnValueOnce({ testConnection: vi.fn(async () => ({ success: true })) });
+    const error = new Error('resume failed');
+    resumeTicketingMock.mockRejectedValueOnce(error);
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await app.request('/psa/connections/conn-1/test', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ success: true, warning: expect.any(String) });
+    expect(log).toHaveBeenCalledWith('[psa] Failed to resume alert ticketing', expect.objectContaining({ connectionId: 'conn-1' }));
+    expect(captureException).toHaveBeenCalledWith(error, undefined, { psa_connection_id: 'conn-1' });
+    log.mockRestore();
   });
 
   it('returns success:false and persists failed when the provider rejects the credentials', async () => {
@@ -790,6 +816,7 @@ describe('psa routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(false);
+    expect(resumeTicketingMock).not.toHaveBeenCalled();
     expect(body.error).toBe('Jira API error (401): bad token');
 
     const setArg = setSpy.mock.calls[0]![0] as { syncSettings: Record<string, unknown> };

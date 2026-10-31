@@ -32,7 +32,7 @@
  */
 import './setup';
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 // psaRoutes applies authMiddleware itself (`psaRoutes.use('*', ...)`), so the
@@ -43,10 +43,11 @@ import {
   alerts,
   devices,
   partnerUsers,
+  partners,
   psaConnections,
   psaTicketMappings,
 } from '../../db/schema';
-import { createIntegrationTestClient, createOrganization, createSite } from './db-utils';
+import { createIntegrationTestClient, createOrganization, createPartner, createSite } from './db-utils';
 
 function buildApp(): Hono {
   const app = new Hono();
@@ -97,11 +98,11 @@ async function seedPartnerConnection(partnerId: string) {
     db
       .insert(psaConnections)
       .values({
-        name: 'MSP Jira',
+        name: 'Example PSA',
         provider: 'jira',
         orgId: null,
         partnerId,
-        credentials: { baseUrl: 'https://acme.atlassian.net', apiToken: 'tok' },
+        credentials: { baseUrl: 'https://example-psa.test', apiToken: 'tok' },
       })
       .returning(),
   );
@@ -266,5 +267,242 @@ describe('GET /psa/tickets — org scoping of partner-wide connection data', () 
     const res = await client.get('/psa/tickets?limit=50');
     expect(res.status).toBe(200);
     expect(ticketIds(await res.json())).not.toContain('OTHER-ORG-SECRET');
+  });
+});
+
+// W08 admission guard: the actual partial unique index and binding resolver,
+// without a Redis wake-up (the reconciler repairs a lost enqueue).
+import { loadAdmission, insertAdmission, admissionCandidates } from '../../services/psaAlertTicketing/storage';
+import { encryptCredentials } from '../../services/psa/credentials';
+import { claimTicketing, loadTicketingContext, saveTicketing } from '../../services/psaAlertTicketing/workerStorage';
+import { randomUUID } from 'node:crypto';
+import { psaInstanceKey } from '../../services/psaAlertTicketing/config';
+describe('W08 committed admission ledger', () => {
+  it('dedupes concurrent admissions and rejects a non-external binding', async () => {
+    const client = await createIntegrationTestClient(buildApp(), { scope: 'partner' });
+    const org = client.env.organization;
+    const partnerId = client.env.partner.id;
+    const credentials = { baseUrl: 'https://example-psa.test', companyId: 'example', publicKey: 'public', privateKey: 'private' };
+    const [connection] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(psaConnections).values({
+      name: 'Example PSA', provider: 'connectwise', partnerId, orgId: null,
+      credentials: encryptCredentials(credentials), alertTicketingRev: 1, alertTicketingEnabledAt: new Date(),
+      alertTicketing: { enabled: true, boardId: 1, openStatusId: 2, closedStatusId: 3,
+        companyLinksConfirmedFor: psaInstanceKey('connectwise', credentials) },
+    }).returning());
+    await withDbAccessContext(SYSTEM_CTX, () => db.update(partners).set({ serviceManagementMode: 'external',
+      serviceManagementPsaConnectionId: connection!.id }).where(eq(partners.id, partnerId)));
+    const device = await seedDevice(org.id, 'admission-host');
+    const alert = await seedAlert(org.id, device, 'Admission alert');
+    const loaded = await loadAdmission(alert);
+    expect(loaded).not.toBeNull();
+    // More than one batch of filtered rows cannot hide a qualifying alert.
+    await withDbAccessContext(SYSTEM_CTX, () => db.insert(alerts).values(Array.from({length:501}, (_,i)=>({
+      orgId:org.id,deviceId:device,severity:'info' as const,title:`Filtered alert ${i}`,triggeredAt:new Date(Date.now()-60000),
+    }))));
+    expect(await admissionCandidates(connection!.id,new Date(Date.now()-3600000),{...loaded!.target.config,minSeverity:'high'})).toContain(alert);
+    const results = await Promise.all([insertAdmission(loaded!.alert, loaded!.target, 'auto'), insertAdmission(loaded!.alert, loaded!.target, 'auto')]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    const rows = await withDbAccessContext(SYSTEM_CTX, () => db.select().from(psaTicketMappings).where(eq(psaTicketMappings.alertId, alert)));
+    expect(rows).toHaveLength(1);
+    const context=await loadTicketingContext(rows[0]!.id);
+    expect(context).not.toBeNull();
+    // Even an otherwise eligible create loses its claim after a config edit.
+    await withDbAccessContext(SYSTEM_CTX,()=>db.update(psaConnections).set({alertTicketingRev:2}).where(eq(psaConnections.id,connection!.id)));
+    expect(await claimTicketing(context!.mapping,randomUUID(),{createState:'create_in_flight',createSnapshot:context!.snapshot},new Date())).toBe(false);
+    // Two replicas observing the same row still grant one permission to send.
+    await withDbAccessContext(SYSTEM_CTX,()=>db.update(psaConnections).set({alertTicketingRev:1}).where(eq(psaConnections.id,connection!.id)));
+    await withDbAccessContext(SYSTEM_CTX,()=>db.update(psaTicketMappings).set({nextAttemptAt:null}).where(eq(psaTicketMappings.id,rows[0]!.id)));
+    const refreshed=await loadTicketingContext(rows[0]!.id);
+    const tokens=[randomUUID(),randomUUID()];
+    const claims=await Promise.all(tokens.map(token=>claimTicketing(refreshed!.mapping,token,{createState:'create_in_flight',createSnapshot:refreshed!.snapshot},new Date())));
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    expect(await saveTicketing(rows[0]!.id,randomUUID(),{createState:'failed'},new Date())).toBe(false);
+    await withDbAccessContext(SYSTEM_CTX, () => db.update(partners).set({ serviceManagementMode: 'native' }).where(eq(partners.id, partnerId)));
+    expect(await loadAdmission(alert)).toBeNull();
+  });
+});
+
+import { moveDeviceOrgInTransaction } from '../../services/deviceOrgMove/moveDeviceOrgInTransaction';
+import { createSourcedAlert } from '../../services/alertService';
+import { drainSubjectAlertOutbox } from '../../services/subjectAlertOutbox';
+import * as eventBus from '../../services/eventBus';
+
+
+async function mappingRows(id: string) {
+  return withDbAccessContext(SYSTEM_CTX, () =>
+    db.select({ id: psaTicketMappings.id, connectionId: psaTicketMappings.connectionId })
+      .from(psaTicketMappings).where(eq(psaTicketMappings.id, id)));
+}
+
+async function alertRows(id: string) {
+  return withDbAccessContext(SYSTEM_CTX, () =>
+    db.select({ id: alerts.id, orgId: alerts.orgId }).from(alerts).where(eq(alerts.id, id)));
+}
+
+describe('W08 PSA ledger follows alert/device lifecycle', () => {
+  it.each([
+    [false, 'device'], [false, 'alert'], [true, 'device'], [true, 'alert'],
+    [true, 'topology_alert'],
+  ] as const)('device mover crossPartner=%s anchor=%s', async (crossPartner, anchor) => {
+    const client = await createIntegrationTestClient(buildApp(), { scope: 'partner' });
+    const sourceOrg = client.env.organization;
+    const sourcePartner = client.env.partner;
+    const targetPartner = crossPartner ? await createPartner() : sourcePartner;
+    const targetOrg = await createOrganization({ partnerId: targetPartner.id });
+    const targetSite = await createSite({ orgId: targetOrg.id });
+    const connectionId = await seedPartnerConnection(sourcePartner.id);
+    const deviceId = await seedDevice(sourceOrg.id, 'mapping-move-device');
+    const alertId = anchor === 'topology_alert'
+      ? (await withDbAccessContext(SYSTEM_CTX, async () => {
+        const site = await createSite({ orgId: sourceOrg.id });
+        return db.insert(alerts).values({ orgId: sourceOrg.id, deviceId, severity: 'high',
+          title: 'Site-owned mapping move alert', topologySiteId: site.id,
+          topologySourceKey: `topology:${'a'.repeat(64)}` }).returning();
+      }))[0]!.id
+      : await seedAlert(sourceOrg.id, deviceId, 'Mapping move alert');
+    const anchors = anchor === 'device' ? { deviceId } : { alertId };
+    const mappingId = await seedMapping(connectionId, 'MOVE-1', anchors);
+
+    // A second device proves the deletion is scoped to the moving device.
+    const otherDevice = await seedDevice(sourceOrg.id, 'mapping-stays-device');
+    const otherAlert = await seedAlert(sourceOrg.id, otherDevice, 'Mapping remains alert');
+    const otherId = await seedMapping(connectionId, 'STAY-1',
+      anchor === 'device' ? { deviceId: otherDevice } : { alertId: otherAlert });
+
+    // A row already pinned to the destination partner must survive. This
+    // catches a deletion that tests only cross-partner=true and omits the
+    // connection.partner_id mismatch predicate.
+    const destinationConnectionId = crossPartner
+      ? await seedPartnerConnection(targetPartner.id) : null;
+    const destinationMappingId = destinationConnectionId
+      ? await seedMapping(destinationConnectionId, 'DEST-1', anchors) : null;
+
+    await withDbAccessContext(SYSTEM_CTX, () => db.transaction((tx) =>
+      moveDeviceOrgInTransaction(tx, {
+        deviceId, sourceOrgId: sourceOrg.id, targetOrgId: targetOrg.id,
+        targetSiteId: targetSite.id, targetOrgName: targetOrg.name,
+        deviceLinkGroupId: null, acceptCurrencyMismatch: false,
+        actor: { userId: client.env.user.id, allowedSiteIds: undefined },
+        stepUp: null, via: 'generic_move',
+      })));
+
+    expect(await mappingRows(mappingId)).toEqual(crossPartner && anchor !== 'topology_alert' ? [] : [{ id: mappingId, connectionId }]);
+    expect(await mappingRows(otherId)).toEqual([{ id: otherId, connectionId }]);
+    if (destinationMappingId) {
+      expect(await mappingRows(destinationMappingId))
+        .toEqual([{ id: destinationMappingId, connectionId: destinationConnectionId }]);
+    }
+    expect(await alertRows(alertId)).toEqual([{ id: alertId, orgId: anchor === 'topology_alert' ? sourceOrg.id : targetOrg.id }]);
+    expect(await withDbAccessContext(SYSTEM_CTX, () =>
+      db.select({ orgId: devices.orgId }).from(devices).where(eq(devices.id, deviceId))))
+      .toEqual([{ orgId: targetOrg.id }]);
+  });
+
+  it.each([
+    [true, 'create_in_flight', 'none', 'none', true],
+    [true, 'create_outcome_unknown', 'none', 'none', true],
+    [true, 'needs_attention', 'none', 'none', true],
+    [true, 'created', 'none', 'none', true],
+    [true, 'created', 'pending', 'none', true],
+    [true, 'created', 'in_flight', 'none', true],
+    [true, 'created', 'outcome_unknown', 'none', true],
+    [true, 'created', 'closed', 'pending', true],
+    [true, 'created', 'closed', 'in_flight', true],
+    [true, 'created', 'closed', 'outcome_unknown', true],
+    [true, 'created', 'closed', 'posted', false],
+    [true, 'failed', 'none', 'none', false],
+    [true, 'never_attempted', 'none', 'none', false],
+    [false, 'created', 'none', 'none', false],
+  ] as const)('PSA move guard crossPartner=%s %s/%s/%s refused=%s', async (crossPartner, createState, closeState, noteState, refused) => {
+    const client = await createIntegrationTestClient(buildApp(), { scope: 'partner' });
+    const sourceOrg = client.env.organization;
+    const connectionId = await seedPartnerConnection(client.env.partner.id);
+    const targetPartner = crossPartner ? await createPartner() : client.env.partner;
+    const targetOrg = await createOrganization({ partnerId: targetPartner.id });
+    const targetSite = await createSite({ orgId: targetOrg.id });
+    const deviceId = await seedDevice(sourceOrg.id, 'open-psa-device');
+    const mappingId = await seedMapping(connectionId, 'OPEN-PSA-1', { deviceId });
+    await withDbAccessContext(SYSTEM_CTX, () => db.update(psaTicketMappings)
+      .set({ createState, closeState, noteState }).where(eq(psaTicketMappings.id, mappingId)));
+    const move = withDbAccessContext(SYSTEM_CTX, () => db.transaction(tx => moveDeviceOrgInTransaction(tx, {
+      deviceId, sourceOrgId: sourceOrg.id, targetOrgId: targetOrg.id,
+      targetSiteId: targetSite.id, targetOrgName: targetOrg.name,
+      deviceLinkGroupId: null, acceptCurrencyMismatch: false,
+      actor: { userId: client.env.user.id, allowedSiteIds: undefined }, stepUp: null, via: 'generic_move',
+    })));
+    if (refused) {
+      await expect(move).rejects.toMatchObject({ code: 'PSA_TICKETING_OPEN', message: expect.stringContaining('PSA ticketing') });
+    } else {
+      await move;
+    }
+    expect(await mappingRows(mappingId)).toEqual(refused || !crossPartner ? [{ id: mappingId, connectionId }] : []);
+    expect(await withDbAccessContext(SYSTEM_CTX, () => db.select({ orgId: devices.orgId })
+      .from(devices).where(eq(devices.id, deviceId)))).toEqual([{ orgId: refused ? sourceOrg.id : targetOrg.id }]);
+  });
+
+  it.each(['alert', 'both'] as const)('deleting an alert cascades a %s-anchored mapping', async (anchor) => {
+    const client = await createIntegrationTestClient(buildApp(), { scope: 'partner' });
+    const connectionId = await seedPartnerConnection(client.env.partner.id);
+    const deviceId = await seedDevice(client.env.organization.id, 'mapping-delete-device');
+    const alertId = await seedAlert(client.env.organization.id, deviceId, 'Delete mapped alert');
+    const mappingId = await seedMapping(connectionId, 'DELETE-1',
+      anchor === 'both' ? { alertId, deviceId } : { alertId });
+    await withDbAccessContext(SYSTEM_CTX, () => db.delete(alerts).where(eq(alerts.id, alertId)));
+    expect(await alertRows(alertId)).toEqual([]);
+    expect(await mappingRows(mappingId)).toEqual([]);
+  });
+
+  it('legacy publish compensation deletes an alert even when a subscriber admitted its mapping', async () => {
+    const client = await createIntegrationTestClient(buildApp(), { scope: 'partner' });
+    const connectionId = await seedPartnerConnection(client.env.partner.id);
+    const deviceId = await seedDevice(client.env.organization.id, 'mapping-rollback-device');
+    let publishedAlertId: string | undefined;
+    let mappingId: string | undefined;
+    const publish = vi.spyOn(eventBus, 'publishEvent').mockImplementation(async (_type, _orgId, payload) => {
+      publishedAlertId = (payload as Record<string, unknown>).alertId as string;
+      mappingId = await seedMapping(connectionId, 'ROLLBACK-1', { alertId: publishedAlertId, deviceId });
+      throw new Error('Fixture publication failure after admission');
+    });
+    try {
+      const result = await withDbAccessContext(SYSTEM_CTX, () => createSourcedAlert({
+        deviceId, orgId: client.env.organization.id, severity: 'high',
+        title: 'Mapped rollback alert', message: 'Fixture message',
+        context: { source: 'network_monitor' }, publisher: 'monitor-worker',
+      }));
+      expect(result).toBeNull();
+      expect(publish).toHaveBeenCalledTimes(1);
+      expect(publishedAlertId).toBeTruthy();
+      expect(mappingId).toBeTruthy();
+      expect(await alertRows(publishedAlertId!)).toEqual([]);
+      expect(await mappingRows(mappingId!)).toEqual([]);
+    } finally {
+      publish.mockRestore();
+    }
+  });
+
+  it('subject outbox compensation deletes a committed mapped alert on publication failure', async () => {
+    const client = await createIntegrationTestClient(buildApp(), { scope: 'partner' });
+    const connectionId = await seedPartnerConnection(client.env.partner.id);
+    const deviceId = await seedDevice(client.env.organization.id, 'mapping-outbox-device');
+    const alertId = await seedAlert(client.env.organization.id, deviceId, 'Mapped outbox alert');
+    const mappingId = await seedMapping(connectionId, 'OUTBOX-1', { alertId, deviceId });
+    await withDbAccessContext(SYSTEM_CTX, () => db.update(alerts).set({
+      context: { _subjectDispatch: {
+        eventId: alertId, eventType: 'alert.triggered', siteId: null,
+        cooldownMinutes: 0, payload: { alertId, deviceId },
+      } },
+    }).where(eq(alerts.id, alertId)));
+    const publish = vi.spyOn(eventBus, 'publishEvent')
+      .mockRejectedValue(new Error('Fixture outbox publication failure'));
+    try {
+      // Must be called OUTSIDE any ambient DB context; it opens its own
+      // short system contexts and a new compensation transaction.
+      await drainSubjectAlertOutbox(deviceId);
+      expect(publish).toHaveBeenCalledTimes(1);
+      expect(await alertRows(alertId)).toEqual([]);
+      expect(await mappingRows(mappingId)).toEqual([]);
+    } finally {
+      publish.mockRestore();
+    }
   });
 });
