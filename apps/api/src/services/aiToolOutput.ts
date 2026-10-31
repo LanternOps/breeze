@@ -1167,10 +1167,12 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.
-  manage_alerts: new Set(['title', 'message']),
+  // #10408: `orgName` (multi-org callers) is a tenant-set name read into a
+  // session that spans other tenants — fenced as data, never instructions.
+  manage_alerts: new Set(['title', 'message', 'orgName']),
   // A device's own hostname/display name are self-reported at enrollment,
   // not admin-assigned.
-  query_devices: new Set(['hostname', 'displayName']),
+  query_devices: new Set(['hostname', 'displayName', 'orgName']),
   get_device_details: new Set(['hostname', 'displayName']),
   // get_device_context's CURRENT result is plain text (device memory —
   // issues/quirks/follow-ups), never a JSON `hostname`/`displayName` field,
