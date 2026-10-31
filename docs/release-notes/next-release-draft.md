@@ -219,3 +219,9 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Remote desktop idle timeout default (#10422)
+
+- **Desktop sessions now idle out after 30 minutes instead of 5** on devices with no Remote Access policy, and under any policy that does not set an idle timeout. Watching an install, a reboot prompt or a long script no longer drops the session. An idle timeout a policy sets explicitly, including a stored `5`, is unchanged, and so is max session duration (8 h).
+- **New Remote Access policies start at a 30-minute idle timeout** in the policy editor. The restrictive fallback used when policy resolution fails keeps 5 minutes.
+- No migration, environment variable or agent update.
