@@ -59,8 +59,8 @@ func TestSendElevationRequestParsesIngestDecision(t *testing.T) {
 // cover the non-2xx status branch — see
 // TestSendElevationRequestErrorsOnNonRetryableStatus for that.
 //
-// We pin MaxRetries:0 so the test makes a single attempt and returns in ~ms
-// instead of burning DefaultRetryConfig's ~7s of real backoff (1+2+4s). The
+// We pin MaxRetries:0 so the test makes a single attempt (asserted via the
+// server-side attempt counter) with no backoff sleep, instead of burning DefaultRetryConfig's ~7s of real backoff (1+2+4s). The
 // retryable-500 error branch is identical with 0 retries — Do still returns a
 // non-nil error after the lone attempt — so the assertion is unchanged.
 func TestSendElevationRequestErrorsOnServerError(t *testing.T) {
