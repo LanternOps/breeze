@@ -773,7 +773,7 @@ export function buildSuppressAlertCas(alertId: string) {
  * logged and reported as `false` for callers that surface a warning.
  */
 export async function publishAlertSuppressed(input: {
-  alert: { id: string; orgId: string; ruleId: string | null; deviceId: string | null };
+  alert: { id: string; orgId: string; ruleId: string | null; deviceId: string };
   suppressedBy: string;
   suppressedUntil: Date | null;
   durationHours?: number | null;
@@ -802,7 +802,11 @@ export async function publishAlertSuppressed(input: {
     );
     return true;
   } catch (error) {
-    console.error(`[AlertService] Failed to publish alert.suppressed for alert ${alert.id}:`, error);
+    console.error(
+      `[AlertService] Failed to publish alert.suppressed for alert ${alert.id} (org ${alert.orgId}, source ${source}) — `
+      + 'the suppression is saved; the event is not retried:',
+      error
+    );
     return false;
   }
 }

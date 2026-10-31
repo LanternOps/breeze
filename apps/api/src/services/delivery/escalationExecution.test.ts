@@ -190,5 +190,8 @@ describe('processEscalationEvent', () => {
     expect(id).not.toBe(escalationEventId('alert-1', 2));
     expect(id).not.toBe(escalationEventId('alert-2', 12));
     expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    // Pinned: webhook delivery dedupes on (webhook_id, event_id), so the id
+    // must not change across deploys for a job retried after an upgrade.
+    expect(id).toBe('8a5ada06-8a4d-5fdc-a72b-e3ee71057aa9');
   });
 });

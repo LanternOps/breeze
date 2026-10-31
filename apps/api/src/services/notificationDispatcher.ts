@@ -1252,15 +1252,24 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
     }
     // #10565: the occurrence's single alert.escalated publisher. Only for an
     // occurrence that pages someone; one with no surviving target is not an
-    // escalation anyone sees.
+    // escalation anyone sees. The event is secondary to paging: a failed
+    // enqueue is logged and must not stop later occurrences from scheduling.
     if (channelIds.length > 0 || userIds.length > 0) {
-      const job = await queue.add('escalation-event', {
-        type: 'escalation-event', alertId, escalationStep: step.escalationStep, escalationPolicyId: policyId,
-      }, {
-        delay: step.delayMs, jobId: `escalation-${alertId}-step${step.escalationStep}-event`,
-        attempts: 3, backoff: { type: 'exponential', delay: 30000 }, removeOnComplete: true, removeOnFail: { age: 3600 },
-      });
-      await retryIfFailedJob(job, `alert ${alertId} escalation event ${step.escalationStep}`);
+      try {
+        const job = await queue.add('escalation-event', {
+          type: 'escalation-event', alertId, escalationStep: step.escalationStep, escalationPolicyId: policyId,
+        }, {
+          delay: step.delayMs, jobId: `escalation-${alertId}-step${step.escalationStep}-event`,
+          attempts: 3, backoff: { type: 'exponential', delay: 30000 }, removeOnComplete: true, removeOnFail: { age: 3600 },
+        });
+        await retryIfFailedJob(job, `alert ${alertId} escalation event ${step.escalationStep}`);
+      } catch (err) {
+        console.error(
+          `[NotificationDispatcher] Failed to schedule alert.escalated for alert ${alertId} `
+          + `step ${step.escalationStep} (policy ${policyId}) — its sends are scheduled; the event will not be published:`,
+          err
+        );
+      }
     }
   }
 

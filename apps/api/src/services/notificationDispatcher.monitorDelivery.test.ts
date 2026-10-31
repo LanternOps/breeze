@@ -37,14 +37,25 @@ vi.mock('../db', () => {
   };
 });
 
+const workerProcessorRef = vi.hoisted(() => ({ current: null as null | ((job: unknown) => Promise<unknown>) }));
 vi.mock('bullmq', () => ({
   Queue: class {
     addBulk = queueAddBulkMock;
     add = queueAddMock;
     getDelayed = queueDelayedMock;
   },
-  Worker: class {},
-  Job: class {}
+  // Captures the processor so the worker's job-type switch can be driven.
+  Worker: class {
+    constructor(_name: string, processor: (job: unknown) => Promise<unknown>) { workerProcessorRef.current = processor; }
+  },
+  Job: class {},
+  UnrecoverableError: class extends Error {}
+}));
+
+const publishEventMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => 'evt'));
+vi.mock('./eventBus', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./eventBus')>()),
+  publishEvent: (...args: unknown[]) => publishEventMock(...args),
 }));
 
 vi.mock('./redis', () => ({
@@ -90,7 +101,8 @@ vi.mock('./notificationSenders/smsSender', () => ({
   sendSmsNotification: vi.fn()
 }));
 
-import { processAlertNotifications, cancelAlertEscalations } from './notificationDispatcher';
+import { processAlertNotifications, cancelAlertEscalations, createNotificationWorker } from './notificationDispatcher';
+import * as dbModule from '../db';
 
 function makeAlert(overrides: Record<string, unknown> = {}) {
   return {
@@ -449,5 +461,41 @@ describe('alert.escalated scheduling (#10565)', () => {
     await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
     expect(deliveryAddCalls()).toHaveLength(0);
     expect(eventAddCalls()).toHaveLength(0);
+  });
+});
+
+describe('alert.escalated delivery path (#10565)', () => {
+  const eventJob = { type: 'escalation-event', alertId: 'alert-1', escalationStep: 1, escalationPolicyId: 'ep1' };
+
+  it('the worker dispatches escalation-event to the publisher inside system DB access', async () => {
+    createNotificationWorker();
+    vi.mocked(dbModule.withSystemDbAccessContext).mockClear();
+    publishEventMock.mockClear().mockResolvedValue('evt');
+    selectQueue.push([{ id: 'alert-1', orgId: 'org-1', ruleId: null, deviceId: 'device-1', status: 'active' }]);
+    await workerProcessorRef.current!({ name: 'escalation-event', data: eventJob });
+    expect(dbModule.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    expect(publishEventMock).toHaveBeenCalledTimes(1);
+    expect(publishEventMock.mock.calls[0]![0]).toBe('alert.escalated');
+  });
+
+  it('the worker propagates a publish failure so BullMQ retries the job', async () => {
+    createNotificationWorker();
+    publishEventMock.mockClear().mockRejectedValueOnce(new Error('redis down'));
+    selectQueue.push([{ id: 'alert-1', orgId: 'org-1', ruleId: null, deviceId: 'device-1', status: 'active' }]);
+    await expect(workerProcessorRef.current!({ name: 'escalation-event', data: eventJob })).rejects.toThrow('redis down');
+  });
+
+  it('a failed event enqueue does not stop later occurrences from scheduling their sends', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    queueReviewPolicy([{ ...REVIEW_STEP, renotify: { everyMinutes: 10, maxTimes: 1 } }]);
+    queueAddMock.mockImplementation(async (name: string) => {
+      if (name === 'escalation-event') throw new Error('redis blip');
+      return makeJobStub('job-1');
+    });
+    try {
+      await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+      expect(deliveryAddCalls().map(([, data]) => data.escalationStep)).toEqual([1, 11]);
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('alert.escalated for alert alert-1 step 1'), expect.any(Error));
+    } finally { error.mockRestore(); }
   });
 });

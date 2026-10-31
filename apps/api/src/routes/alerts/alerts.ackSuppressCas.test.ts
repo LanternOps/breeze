@@ -369,7 +369,13 @@ describe('POST /alerts/bulk suppress — alert.suppressed (#10573)', () => {
     selectRows.push([alertRow, second]);
     updateReturns.push([{ id: alertRow.id }], []); // second alert lost the race
 
-    const res = await bulkSuppress({ alertIds: [alertRow.id, second.id], until: suppressUntil });
+    vi.useFakeTimers({ now: new Date('2098-12-31T22:00:00.000Z'), toFake: ['Date'] });
+    let res: Response;
+    try {
+      res = await bulkSuppress({ alertIds: [alertRow.id, second.id], until: suppressUntil });
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({ updated: 1, skipped: 1 });
@@ -381,8 +387,26 @@ describe('POST /alerts/bulk suppress — alert.suppressed (#10573)', () => {
       deviceId: alertRow.deviceId,
       suppressedBy: 'user-1',
       suppressedUntil: suppressUntil,
+      durationHours: 2,
     });
     expect(publishEvent.mock.calls[0]?.[3]).toBe('alerts-route');
+  });
+
+  it('keeps suppressing the rest of the batch when one publish fails', async () => {
+    selectRows.push([alertRow, second]);
+    updateReturns.push([{ id: alertRow.id }], [{ id: second.id }]);
+    publishEvent.mockRejectedValueOnce(new Error('redis down'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await bulkSuppress({ alertIds: [alertRow.id, second.id] });
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toMatchObject({ updated: 2, failed: 0 });
+    } finally {
+      error.mockRestore();
+    }
+    expect(publishEvent).toHaveBeenCalledTimes(2);
+    expect(publishEvent.mock.calls[1]?.[2]).toMatchObject({ alertId: second.id, durationHours: null });
+    expect(emitAlertStateFeedback).toHaveBeenCalledTimes(2);
   });
 
   it('skips terminal alerts without publishing', async () => {
