@@ -4,6 +4,7 @@
  * row locking, RLS visibility, and a state-machine round trip through the table's CHECKs.
  */
 import './setup';
+import { randomUUID } from 'node:crypto';
 import { afterAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { closeDb, db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
@@ -190,6 +191,14 @@ describe('store guards', () => {
     const sneaky = { ...episodeValues(orgId, deviceId), state: 'verified', generation: 9, desiredState: 'released' } as unknown as CreateEpisodeInput;
     const created = await withDbAccessContext(orgContext(orgId), () => db.transaction((tx) => createEpisode(tx, sneaky)));
     expect(created.ok && created.episode).toMatchObject({ state: 'requested', generation: 1, desiredState: 'isolated', lastJournalSeq: 0 });
+  });
+
+  it('accepts a caller-minted id, so the row-bound secret can be sealed before the insert', async () => {
+    const { orgId, deviceId } = await deviceInOrg();
+    const id = randomUUID();
+    const created = await withDbAccessContext(orgContext(orgId), () => db.transaction((tx) =>
+      createEpisode(tx, { ...episodeValues(orgId, deviceId), id, breakGlassSecretEnc: `sealed-for:${id}` })));
+    expect(created.ok && created.episode).toMatchObject({ id, breakGlassSecretEnc: `sealed-for:${id}` });
   });
 
   it('listEpisodes never returns the break-glass ciphertext', async () => {

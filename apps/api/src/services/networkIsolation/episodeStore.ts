@@ -50,10 +50,12 @@ export async function withEpisodeLock<T>(
  * What a new episode may be created with. The lifecycle (state, desired state, generation, ordering,
  * outcome and acknowledgement fields) always starts at the table defaults — isolate, generation 1,
  * `requested` — and only ever moves through `applyEpisodeEvent`.
+ *
+ * `id` stays settable on purpose: `breakGlassSecretEnc` is row-bound (its AAD is the episode id), so
+ * the caller mints the id, seals the secret with `columnAad(spec, id)`, then inserts both.
  */
 export type CreateEpisodeInput = Omit<
   NewDeviceNetworkIsolation,
-  | 'id'
   | 'state'
   | 'desiredState'
   | 'generation'
