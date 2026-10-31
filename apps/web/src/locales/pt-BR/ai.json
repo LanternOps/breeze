@@ -179,7 +179,8 @@
     "input": "Entrada:",
     "error": "Erro:",
     "output": "Saída:",
-    "outputExpired": "Saída expirada conforme a política de retenção"
+    "outputExpired": "Saída expirada conforme a política de retenção",
+    "unknownTool": "Ferramenta desconhecida · não executada"
   },
   "aiForOfficePage": {
     "title": "Breeze AI for Office",

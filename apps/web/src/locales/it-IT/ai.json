@@ -179,7 +179,8 @@
     "input": "Input:",
     "error": "Errore:",
     "output": "Output:",
-    "outputExpired": "Output scaduto in base al criterio di conservazione"
+    "outputExpired": "Output scaduto in base al criterio di conservazione",
+    "unknownTool": "Strumento sconosciuto · non eseguito"
   },
   "aiForOfficePage": {
     "title": "Breeze AI for Office",
