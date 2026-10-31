@@ -1438,3 +1438,4 @@ export * from './flowRuns';
 export * from './flowBudgets';
 export * from './flowWebhooks';
 export * from './flowConversions';
+export * from './networkIsolation';
