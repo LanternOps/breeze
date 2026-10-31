@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import LoginForm from './LoginForm';
 import MFAVerifyForm from './MFAVerifyForm';
@@ -11,7 +12,8 @@ import {
   apiSendSmsMfaCode,
   fetchAndApplyPreferences
 } from '../../stores/auth';
-import type { MfaChallenge, MfaMethod } from '../../stores/auth';
+import type { MfaChallenge, MfaMethod, Tokens, User } from '../../stores/auth';
+import { useAvatarBlobUrl } from '../../lib/avatarBlobCache';
 import { navigateTo } from '../../lib/navigation';
 import { postLoginDestination } from '../../lib/purchaseHandoff';
 import { getSafeNext } from '../../lib/authNext';
@@ -165,6 +167,7 @@ export default function LoginPage({ next, partnerSlug }: LoginPageProps = {}) {
   const { t } = useTranslation('auth');
   const safeNext = getSafeNext(next);
   const [error, setError] = useState<string>();
+  const [welcomeUser, setWelcomeUser] = useState<User | null>(null);
   const registrationNotice = getRegistrationDisabledNotice(t);
   const ssoLoginNotice = getSsoLoginNotice(t);
   // An SSO bounce carries the more specific, more actionable copy — when both
@@ -205,6 +208,16 @@ export default function LoginPage({ next, partnerSlug }: LoginPageProps = {}) {
   const discoverySeq = useRef(0);
 
   const login = useAuthStore((state) => state.login);
+  const welcomeAvatarUrl = useAvatarBlobUrl(welcomeUser?.avatarUrl);
+
+  const completeSignIn = async (user: User, tokens: Tokens, requiresSetup?: boolean) => {
+    setWelcomeUser(user);
+    login(user, tokens);
+    fetchAndApplyPreferences();
+    await new Promise((resolve) => window.setTimeout(resolve, 900));
+    // Setup wizard wins over `next` — user can't do anything useful before setup completes.
+    await navigateTo(postLoginDestination(requiresSetup, safeNext));
+  };
 
   // Partner SSO: the (memoized) login context tells us whether this deployment
   // resolves to a single partner with an active SSO provider — or, on a
@@ -294,10 +307,7 @@ export default function LoginPage({ next, partnerSlug }: LoginPageProps = {}) {
     }
 
     if (result.user && result.tokens) {
-      login(result.user, result.tokens);
-      fetchAndApplyPreferences();
-      // Setup wizard wins over `next` — user can't do anything useful before setup completes.
-      await navigateTo(postLoginDestination(result.requiresSetup, safeNext));
+      await completeSignIn(result.user, result.tokens, result.requiresSetup);
       return;
     }
 
@@ -320,10 +330,7 @@ export default function LoginPage({ next, partnerSlug }: LoginPageProps = {}) {
 
     if (result.user && result.tokens) {
       setMfaChallenge(undefined);
-      login(result.user, result.tokens);
-      fetchAndApplyPreferences();
-      // Setup wizard wins over `next` — user can't do anything useful before setup completes.
-      await navigateTo(postLoginDestination(result.requiresSetup, safeNext));
+      await completeSignIn(result.user, result.tokens, result.requiresSetup);
       return;
     }
 
@@ -346,9 +353,7 @@ export default function LoginPage({ next, partnerSlug }: LoginPageProps = {}) {
 
     if (result.user && result.tokens) {
       setMfaChallenge(undefined);
-      login(result.user, result.tokens);
-      fetchAndApplyPreferences();
-      await navigateTo(postLoginDestination(result.requiresSetup, safeNext));
+      await completeSignIn(result.user, result.tokens, result.requiresSetup);
       return;
     }
 
@@ -419,6 +424,32 @@ export default function LoginPage({ next, partnerSlug }: LoginPageProps = {}) {
       setSsoBootstrapping(false);
     }
   };
+
+  if (welcomeUser) {
+    const displayName = welcomeUser.name.trim() || welcomeUser.email;
+    return (
+      <div data-testid="login-welcome" className="py-2">
+        <p className="text-center text-xl font-medium text-muted-foreground">{t('login.eyebrow', { defaultValue: 'Welcome back' })}</p>
+        <div className="mt-6 flex items-center justify-center gap-6">
+          <div className="flex h-36 w-36 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary text-4xl font-semibold text-primary-foreground">
+            {welcomeAvatarUrl ? (
+              <img src={welcomeAvatarUrl} alt="" width={144} height={144} className="h-full w-full object-cover" />
+            ) : (
+              displayName.charAt(0).toUpperCase()
+            )}
+          </div>
+          <div className="min-w-0 max-w-full">
+            <p className="truncate text-xl font-bold tracking-tight">{displayName}</p>
+            <p className="mt-1 truncate text-sm text-muted-foreground">{welcomeUser.email}</p>
+          </div>
+        </div>
+        <div role="status" aria-live="polite" className="mt-8 flex h-12 w-full items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground">
+          <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+          {t('login.signingIn', { defaultValue: 'Signing in...' })}
+        </div>
+      </div>
+    );
+  }
 
   // While the CF Access config check is in flight, render an empty placeholder
   // so the user doesn't see the password form flash before a redirect kicks in.

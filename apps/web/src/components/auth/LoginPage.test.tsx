@@ -103,6 +103,13 @@ describe('LoginPage navigation after login', () => {
 
     await fillAndSubmit();
 
+    const welcome = await screen.findByTestId('login-welcome');
+    expect(welcome).toHaveTextContent('Welcome back');
+    expect(welcome).toHaveTextContent('Jane');
+    expect(welcome).toHaveTextContent('jane@example.com');
+    expect(screen.queryByLabelText(/email/i)).toBeNull();
+    expect(screen.queryByLabelText(/password/i)).toBeNull();
+    expect(navigateTo).not.toHaveBeenCalled();
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
     expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc');
   });
