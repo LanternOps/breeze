@@ -42,7 +42,7 @@ export async function insertAdmission(alert: AdmissionAlert, target: AdmissionTa
     if (!partner || !resolveAlertTicketingConfig(connection, partner, alertTicketingCredentialState(connection.provider, decryptCredentials(connection.credentials))).active) return null;
     const [current] = await db.select().from(alerts).where(and(eq(alerts.id, alert.id), eq(alerts.orgId, alert.orgId))).for('share');
     const [org] = await db.select().from(organizations).where(eq(organizations.id, alert.orgId)).for('share');
-    if (!current || !['active', 'acknowledged'].includes(current.status) || org?.partnerId !== connection.partnerId) return null;
+    if (!current || !['active', 'acknowledged'].includes(current.status) || org?.partnerId !== connection.partnerId || org.type === 'unassigned_pool') return null;
     const [row] = await db.insert(psaTicketMappings).values({ connectionId: target.connectionId, alertId: alert.id,
       deviceId: alert.deviceId, source, configRev: target.rev, nextAttemptAt: new Date(), deadlineAt: new Date(Date.now() + 24 * 3600000) })
       .onConflictDoNothing({ target: [psaTicketMappings.connectionId, psaTicketMappings.alertId], where: sql`${psaTicketMappings.alertId} IS NOT NULL` })

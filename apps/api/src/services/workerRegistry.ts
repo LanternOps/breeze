@@ -87,6 +87,13 @@ export interface StartWorkersHooks {
  */
 export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
+    name: 'psaTicketingWorker', placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/psaTicketingWorker');
+      return { init: m.initializePsaTicketingWorker, shutdown: m.shutdownPsaTicketingWorker };
+    },
+  },
+  {
     name: 'psaTicketingReconciler', placement: 'global', runsWithoutRedis: true,
     load: async () => {
       const m = await import('../jobs/psaTicketingReconciler');
