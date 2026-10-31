@@ -213,7 +213,7 @@ describe('loadManagedRuleApplicability — SentinelOne rule (#6960 W04, vendor-g
     ['a latest version that is not an MSI', [{ ...S1_MSI, fileType: 'exe' }]],
     ['a latest MSI without the site-token placeholder', [{ ...S1_MSI, silentInstallArgs: '/qn' }]],
     ['a deployable MSI on some OTHER catalog row', [{ ...S1_MSI, catalogId: 'cat-other' }]],
-  ])('%s → installer_missing on every Windows device, even in a ready org', async (_name, versions) => {
+  ])('%s → installer_missing for a Windows device without the agent, even in a ready org', async (_name, versions) => {
     prime({ catalog: [{ id: S1_CATALOG, integrationProvider: 'sentinelone' }], link: S1_LINK });
     queued.push(versions);
     orgReadiness.mockResolvedValueOnce(new Map([['org-mapped', { ok: true }], ['org-unmapped', { ok: false, reason: 'org_not_mapped' }]]));
@@ -222,16 +222,41 @@ describe('loadManagedRuleApplicability — SentinelOne rule (#6960 W04, vendor-g
       { deviceId: 'd-unmapped', orgId: 'org-unmapped', osType: 'windows' },
       { deviceId: 'd-mac', orgId: 'org-mapped', osType: 'macos' },
     ]);
+    // The install is refused: the `missing` violation is not applicable.
     expect(a.filterViolations('d-mapped', [s1Missing])).toEqual({
       violations: [],
       notApplicable: [{ catalogId: S1_CATALOG, vendor: 'sentinelone', reason: 'installer_missing' }],
     });
-    expect(a.evaluateDevice('d-unmapped')).toEqual([
+    // A device without the agent reads installer_missing on its coverage row.
+    const missingHere = { missingCatalogIds: new Set([S1_CATALOG]) };
+    expect(a.evaluateDevice('d-mapped', missingHere)).toEqual([
       { catalogId: S1_CATALOG, vendor: 'sentinelone', result: { ok: false, reason: 'installer_missing' } },
     ]);
-    expect(a.isRuleApplicable('d-mapped', S1_CATALOG)).toBe(false);
+    // Presence unknown → treated as missing (visible, never silently "ready").
+    expect(a.evaluateDevice('d-mapped')[0]?.result).toEqual({ ok: false, reason: 'installer_missing' });
+    // The org's own blocker comes first: mapping is needed whatever the installer.
+    expect(a.evaluateDevice('d-unmapped', missingHere)[0]?.result).toEqual({ ok: false, reason: 'org_not_mapped' });
     // Platform still outranks it: a Mac is not a SentinelOne target at all.
-    expect(a.evaluateDevice('d-mac')[0]?.result).toEqual({ ok: false, reason: 'platform_unsupported' });
+    expect(a.evaluateDevice('d-mac', missingHere)[0]?.result).toEqual({ ok: false, reason: 'platform_unsupported' });
+  });
+
+  // Review of #10823: the missing installer blocks only an INSTALL. A device
+  // that already runs the agent keeps reconciling (covered / offline / gap),
+  // keeps its service watch, and keeps its service violations.
+  it('installer_missing never touches a device that already has the agent', async () => {
+    prime({ catalog: [{ id: S1_CATALOG, integrationProvider: 'sentinelone' }], link: S1_LINK });
+    queued.push([]);
+    orgReadiness.mockResolvedValueOnce(new Map([['org-mapped', { ok: true }]]));
+    const a = await loadManagedRuleApplicability(S1_POLICY, [{ deviceId: 'd-installed', orgId: 'org-mapped', osType: 'windows' }]);
+    expect(a.evaluateDevice('d-installed', { missingCatalogIds: new Set() })).toEqual([
+      { catalogId: S1_CATALOG, vendor: 'sentinelone', result: { ok: true } },
+    ]);
+    expect(a.isRuleApplicable('d-installed', S1_CATALOG)).toBe(true);
+    const notRunning: SoftwarePolicyViolation = {
+      type: 'not_running', rule: { name: 'Sentinel Agent*', catalogId: S1_CATALOG },
+      service: { name: 'SentinelAgent', observedStatus: 'stopped', observedAt: null }, severity: 'high', detectedAt: '2026-01-01T00:00:00Z',
+    } as SoftwarePolicyViolation;
+    expect(a.filterViolations('d-installed', [notRunning])).toEqual({ violations: [notRunning], notApplicable: [] });
   });
 
   it('Huntress (derivable installer URL) never reads software_versions', async () => {

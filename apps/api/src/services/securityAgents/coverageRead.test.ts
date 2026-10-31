@@ -70,6 +70,26 @@ describe('readSecurityAgentCoverage — installer_missing deep link (#9247)', ()
     expect(selectMock).toHaveBeenCalledTimes(3);
   });
 
+  it("two policies (partner-wide + org) each link to their own policy's package", async () => {
+    const otherPolicy = { id: 'policy-2', rules: { software: [{ name: 'Sentinel Agent*', catalogId: 'cat-s1-b' }] } };
+    prime(
+      [row({ id: 'r-1' }), row({ id: 'r-2', deviceId: 'dev-2', policyId: 'policy-2' })],
+      [[POLICY, otherPolicy], [...CATALOGS, { id: 'cat-s1-b', integrationProvider: 'sentinelone', builtinPackageKey: null }]],
+    );
+    const { rows } = await readSecurityAgentCoverage(SCOPE, Q);
+    expect(rows.map((r) => r.setupPath)).toEqual([`/software#versions=${S1_CATALOG}`, '/software#versions=cat-s1-b']);
+  });
+
+  it.each<[string, unknown]>([
+    ['null rules', null],
+    ['software not an array', { software: 'x' }],
+    ['a rule without a catalogId', { software: [{ name: 'Sentinel Agent*' }] }],
+  ])('malformed policy rules (%s) yield no link and do not throw', async (_name, rules) => {
+    prime([row({})], [[{ id: 'policy-1', rules }]]);
+    const { rows } = await readSecurityAgentCoverage(SCOPE, Q);
+    expect(rows[0]?.setupPath).toBeNull();
+  });
+
   it('falls back to no link when the policy (or its vendor rule) is not readable', async () => {
     prime([row({}), row({ id: 'r-2', policyId: null })], [[], []]);
     const { rows } = await readSecurityAgentCoverage(SCOPE, Q);

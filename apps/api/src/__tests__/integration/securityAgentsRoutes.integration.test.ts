@@ -20,9 +20,12 @@ import {
   configPolicyFeatureLinks,
   configurationPolicies,
   softwarePolicies,
+  s1Integrations,
+  s1OrgMappings,
   softwarePolicyAudit,
   softwareVersions,
 } from '../../db/schema';
+import { encryptSecret } from '../../services/secretCrypto';
 import { repairManagedSoftwarePolicies } from '../../services/securityAgents/managedPolicyGenerator';
 import { loadManagedRuleApplicability } from '../../services/securityAgents/managedRuleApplicability';
 import { withSystemDbAccessContext } from '../../db';
@@ -491,6 +494,20 @@ describe('SentinelOne: the partner-uploaded MSI gate through the real route (#69
     expect(policy).toMatchObject({ isActive: true, enforceMode: true, remediationOptions: { autoInstall: true, autoUninstall: false } });
     expect(policy!.rules.software).toEqual([expect.objectContaining({ name: 'Sentinel Agent*', catalogId })]);
 
+    // Map the org to an S1 site with a token, so the org itself is ready and
+    // only the installer can block (the org's own blocker reads first).
+    const [integration] = await (getTestDb() as any).insert(s1Integrations).values({
+      partnerId,
+      name: 'SentinelOne (test)',
+      apiTokenEncrypted: encryptSecret('<s1-api-token>', { aad: 's1_integrations.api_token_encrypted' })!,
+      managementUrl: 'https://<s1-mgmt-url>.example.invalid',
+      isActive: true,
+      lastSyncAt: new Date(),
+    }).returning({ id: s1Integrations.id });
+    await (getTestDb() as any).insert(s1OrgMappings).values({
+      integrationId: integration.id, partnerId, orgId, s1SiteId: `site-${orgId.slice(0, 8)}`,
+      registrationToken: encryptSecret('<site-token>', { aad: 's1_org_mappings.registration_token' })!,
+    });
     const device = { deviceId: randomUUID(), orgId, osType: 'windows' };
     const readiness = () => withSystemDbAccessContext(async () => (await loadManagedRuleApplicability(
       { id: policy!.id, managedByLinkId: link.id, rules: policy!.rules },
@@ -512,13 +529,12 @@ describe('SentinelOne: the partner-uploaded MSI gate through the real route (#69
       { catalogId, vendor: 'sentinelone', result: { ok: false, reason: 'installer_missing' } },
     ]);
 
-    // Re-uploading the MSI clears it: readiness falls through to the org check.
+    // Re-uploading the MSI clears it: the mapped org is ready again.
     await (getTestDb() as any).update(softwareVersions).set({ isLatest: true }).where(eq(softwareVersions.id, versionId));
     await withSystemDbAccessContext(() => repairManagedSoftwarePolicies());
     const [afterReupload] = await generatedFor(link.id);
     expect(afterReupload).toMatchObject({ id: policy!.id, isActive: true, approvalGeneration: policy!.approvalGeneration });
-    const [after] = await readiness();
-    expect(after?.result).not.toEqual({ ok: false, reason: 'installer_missing' });
+    expect(await readiness()).toEqual([{ catalogId, vendor: 'sentinelone', result: { ok: true } }]);
   });
 
   it("a partner-wide link is refused when the PARTNER's package has no MSI, and armed once it has one", async () => {

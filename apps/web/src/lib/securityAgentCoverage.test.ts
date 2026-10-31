@@ -51,7 +51,8 @@ describe('installer_missing (#9247)', () => {
 
   it('a setup path is a link target only when it is a same-site absolute path', () => {
     expect(coverageSetupPath({ setupPath: '/software#versions=cat-1' })).toBe('/software#versions=cat-1');
-    for (const unsafe of ['//evil.example/x', '/\\evil.example', 'https://evil.example', 'javascript:alert(1)', '', null, undefined, 42]) {
+    // Browsers strip tab/CR/LF from URLs, so "/\t/evil" would become "//evil".
+    for (const unsafe of ['//evil.example/x', '/\\evil.example', '/\t/evil.example', '/\n/evil.example', '/ /x', 'https://evil.example', 'javascript:alert(1)', '', null, undefined, 42]) {
       expect(coverageSetupPath({ setupPath: unsafe as never })).toBeNull();
     }
     expect(coverageSetupPath({})).toBeNull();

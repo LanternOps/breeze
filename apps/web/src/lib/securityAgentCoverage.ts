@@ -176,11 +176,15 @@ export function coverageSetupLinkLabel(t: TFn, code: string | null): string {
 /**
  * A row's setup path as a link target, or null. The value comes from the
  * server, so only a same-site absolute path is used (no protocol-relative or
- * backslash forms a browser would normalize to another host).
+ * backslash forms a browser would normalize to another host, and no
+ * whitespace or control characters, which browsers strip: "/\t/x" → "//x").
  */
 export function coverageSetupPath(row: { setupPath?: unknown }): string | null {
   const value = row.setupPath;
-  return typeof value === "string" && /^\/(?![\/\\])/.test(value) && !value.includes("\\")
+  return typeof value === "string" &&
+    /^\/(?![\/\\])/.test(value) &&
+    !value.includes("\\") &&
+    !/[\u0000- \u007f]/.test(value)
     ? value
     : null;
 }
