@@ -28,6 +28,7 @@ import {
   Plug,
   Link2,
   MapPin,
+  Download,
 } from "lucide-react";
 import type {
   BatteryStatus,
@@ -123,7 +124,14 @@ import { getAgentVersionRelation } from "./agentVersionRelation";
 import { EntityLink } from "@/components/shared/EntityLink";
 import { ColumnChooser, type ColumnGateReason } from "./ColumnChooser";
 import { readSortFromHash, writeSortToHash } from "./deviceListSort";
-import { DeviceAttentionPills, useDeviceAttentionCounts } from "./deviceAttentionCounts";
+import {
+  DeviceAttentionPills,
+  loadDeviceAttentionCounts,
+  useDeviceAttentionCounts,
+} from "./deviceAttentionCounts";
+import { buildDevicesCsv, devicesCsvFilename, type AttentionExportValue } from "./deviceCsvExport";
+import { downloadBlob } from "../../lib/downloadBlob";
+import { showToast } from "../shared/Toast";
 import { helperInstallIssueKey, helperInstalledDespiteIssue } from "./promptRenderer";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
@@ -1514,6 +1522,63 @@ export default function DeviceList({
     attentionIds,
     renderedColumns.includes("attention"),
   );
+
+  // #9726 Export CSV. Scope: the checked rows when any are checked, else EVERY
+  // device the current view matches (sortedDevices = all filters applied, in
+  // the drawn order, before paging — the page size only controls what is
+  // drawn). Columns: exactly what is drawn, in drawn order.
+  const [exportingCsv, setExportingCsv] = useState(false);
+  const exportInFlight = useRef(false);
+  const handleExportCsv = async () => {
+    if (exportInFlight.current) return;
+    exportInFlight.current = true;
+    setExportingCsv(true);
+    try {
+      const rows =
+        selectedIds.size > 0
+          ? sortedDevices.filter((d) => selectedIds.has(d.id))
+          : sortedDevices;
+      let attention: Map<string, AttentionExportValue> | undefined;
+      let attentionFailed = false;
+      if (renderedColumns.includes("attention")) {
+        // Same loader + 100-id batching the column uses; only agent rows have
+        // counts, and only a rendered column pays for the request.
+        const ids = rows
+          .filter((d) => (d.deviceClass ?? "agent") === "agent")
+          .map((d) => d.id);
+        const { counts, failed } = await loadDeviceAttentionCounts(ids);
+        attentionFailed = failed.size > 0;
+        attention = new Map<string, AttentionExportValue>();
+        for (const id of ids) {
+          attention.set(id, failed.has(id) ? "failed" : (counts[id] ?? null));
+        }
+      }
+      const csv = buildDevicesCsv({
+        devices: rows,
+        columns: renderedColumns,
+        customFieldDefs: visibleCustomFieldDefs,
+        statusLabel: (d) => t(/* i18n-dynamic */ statusFullLabelKeys[d.status]),
+        attention,
+      });
+      downloadBlob(
+        new Blob([csv], { type: "text/csv;charset=utf-8" }),
+        devicesCsvFilename(),
+      );
+      if (attentionFailed) {
+        showToast({
+          type: "warning",
+          message: t("deviceList.exportCsvAttentionPartial"),
+          duration: 8000,
+        });
+      }
+    } catch (err) {
+      console.error("[devices] CSV export failed", err);
+      showToast({ type: "error", message: t("deviceList.exportCsvFailed") });
+    } finally {
+      exportInFlight.current = false;
+      setExportingCsv(false);
+    }
+  };
 
   // sortHeader factors out the repeated header pattern for sortable
   // columns to keep the column-defs table below readable. The column id
@@ -2931,6 +2996,20 @@ export default function DeviceList({
               visibleCustomFieldKeys={visibleCustomFieldKeys}
               onToggleCustomField={toggleCustomFieldColumn}
             />
+            <button
+              type="button"
+              data-testid="device-list-export-csv"
+              onClick={() => void handleExportCsv()}
+              disabled={exportingCsv || sortedDevices.length === 0}
+              className="flex h-8 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 text-sm font-medium text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Download className="h-3.5 w-3.5" aria-hidden="true" />
+              {exportingCsv
+                ? t("deviceList.exportingCsv")
+                : selectedIds.size > 0
+                  ? t("deviceList.exportCsvSelected", { count: selectedIds.size })
+                  : t("deviceList.exportCsv")}
+            </button>
             {headerActions}
             {/* A per-page picker only earns its slot when some page size could
                 split the list; below the smallest option it is a dead control
