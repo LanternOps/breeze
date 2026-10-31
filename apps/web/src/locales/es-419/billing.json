@@ -395,7 +395,9 @@
         "message_other": "¿Eliminar borradores de contratos {{count}}? Sólo se eliminan borradores{{untouched}}; esto no se puede deshacer.",
         "untouchedSuffix": "— cualquier contrato activo o pausado en su selección no se modifica",
         "confirm": "Eliminar borradores"
-      }
+      },
+      "fromQuoteReady": "De {{number}} · listo para activar",
+      "fromQuoteReadyUnnumbered": "De una cotización · listo para activar"
     },
     "contractPax8Drawer": {
       "title": "Vincular una suscripción a Pax8",
@@ -1664,6 +1666,14 @@
         "attachError": "No se pudo adjuntar el archivo de evidencia.",
         "downloadError": "No se pudo descargar el archivo de evidencia.",
         "tooLarge": "Este archivo supera los 10 MB. Elige un archivo más pequeño."
+      },
+      "generatedContracts": {
+        "title_one": "Esta cotización creó {{count}} contrato",
+        "title_other": "Esta cotización creó {{count}} contratos",
+        "draftHint_one": "{{count}} borrador no factura nada hasta que se active. Revísalo y actívalo para empezar a facturar.",
+        "draftHint_other": "{{count}} borradores no facturan nada hasta que se activen. Revísalos y actívalos para empezar a facturar.",
+        "ready": "Listo para activar",
+        "unavailable": "No se pudieron cargar los contratos que creó esta cotización. Vuelve a cargar la página para intentarlo de nuevo."
       }
     },
     "currency": {

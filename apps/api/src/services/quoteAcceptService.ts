@@ -669,6 +669,7 @@ export async function acceptQuote(
   const startDate = effectiveDate; // accept date, date-only UTC (shared with the snapshot)
   const contractSpecs = buildContractSpecsFromQuote(
     {
+      quoteId: quote.id,
       orgId: quote.orgId,
       partnerId: quote.partnerId,
       quoteNumber: quote.quoteNumber ?? quote.id,

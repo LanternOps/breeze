@@ -395,7 +395,9 @@
         "message_other": "{{count}} Vertragsentwürfe löschen? Es werden nur Entwürfe gelöscht{{untouched}}; Dies kann nicht rückgängig gemacht werden.",
         "untouchedSuffix": "— Alle aktiven oder pausierten Verträge in Ihrer Auswahl bleiben davon unberührt",
         "confirm": "Entwürfe löschen"
-      }
+      },
+      "fromQuoteReady": "Aus {{number}} · bereit zur Aktivierung",
+      "fromQuoteReadyUnnumbered": "Aus einem Angebot · bereit zur Aktivierung"
     },
     "contractPax8Drawer": {
       "title": "Verknüpfen Sie ein Pax8-Abonnement",
@@ -1664,6 +1666,14 @@
         "attachError": "Die Nachweisdatei konnte nicht angehängt werden.",
         "downloadError": "Die Nachweisdatei konnte nicht heruntergeladen werden.",
         "tooLarge": "Diese Datei ist größer als 10 MB. Wählen Sie eine kleinere Datei."
+      },
+      "generatedContracts": {
+        "title_one": "Aus diesem Angebot wurde {{count}} Vertrag erstellt",
+        "title_other": "Aus diesem Angebot wurden {{count}} Verträge erstellt",
+        "draftHint_one": "{{count}} Entwurf rechnet nichts ab, bis er aktiviert wird. Prüfen und aktivieren Sie ihn, um die Abrechnung zu starten.",
+        "draftHint_other": "{{count}} Entwürfe rechnen nichts ab, bis sie aktiviert werden. Prüfen und aktivieren Sie sie, um die Abrechnung zu starten.",
+        "ready": "Bereit zur Aktivierung",
+        "unavailable": "Die aus diesem Angebot erstellten Verträge konnten nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen."
       }
     },
     "currency": {

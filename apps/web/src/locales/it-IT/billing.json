@@ -395,7 +395,9 @@
         "message_other": "Eliminare {{count}} contratti in bozza? Vengono eliminate solo le bozze{{untouched}}; l'operazione non può essere annullata.",
         "untouchedSuffix": " — eventuali contratti attivi o in pausa nella selezione restano invariati",
         "confirm": "Elimina bozze"
-      }
+      },
+      "fromQuoteReady": "Da {{number}} · pronto da attivare",
+      "fromQuoteReadyUnnumbered": "Da un preventivo · pronto da attivare"
     },
     "contractPax8Drawer": {
       "title": "Collega un abbonamento Pax8",
@@ -1664,6 +1666,14 @@
         "attachError": "Impossibile allegare il file di prova.",
         "downloadError": "Impossibile scaricare il file di prova.",
         "tooLarge": "Questo file supera i 10 MB. Scegli un file più piccolo."
+      },
+      "generatedContracts": {
+        "title_one": "Questo preventivo ha creato {{count}} contratto",
+        "title_other": "Questo preventivo ha creato {{count}} contratti",
+        "draftHint_one": "{{count}} bozza non fattura nulla finché non viene attivata. Verificala e attivala per avviare la fatturazione.",
+        "draftHint_other": "{{count}} bozze non fatturano nulla finché non vengono attivate. Verificale e attivale per avviare la fatturazione.",
+        "ready": "Pronto da attivare",
+        "unavailable": "Impossibile caricare i contratti creati da questo preventivo. Ricarica la pagina per riprovare."
       }
     },
     "currency": {
