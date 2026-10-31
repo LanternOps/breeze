@@ -371,7 +371,6 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_deployments (pause/resume)', description: 'Pause or resume deployments', category: 'Fleet Operations' },
       { name: 'manage_patches (approve/decline/defer)', description: 'Patch approval decisions', category: 'Fleet Operations' },
       { name: 'ioc_hunt (cancel_sweep)', description: 'Cancel an IOC sweep', category: 'Security & Compliance' },
-      { name: 'manage_groups (add_devices/remove_devices)', description: 'Manage group membership', category: 'Fleet Operations' },
       { name: 'manage_automations (enable/disable)', description: 'Toggle automation status', category: 'Fleet Operations' },
       { name: 'generate_report (create/update/delete/generate)', description: 'Report management', category: 'Fleet Operations' },
       // Ticketing (P2-4, #4191) — pre-existing gap, manage_tickets had zero
@@ -536,6 +535,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_deployments (create/start/cancel)', description: 'Create, start, or cancel deployments', category: 'Fleet Operations' },
       { name: 'manage_patches (install/rollback)', description: 'Install or rollback patches', category: 'Fleet Operations' },
       { name: 'manage_groups (create/update/delete)', description: 'Create, update, or delete device groups', category: 'Fleet Operations' },
+      // #10149: membership writes feed group-targeted policies and agent run scope.
+      { name: 'manage_groups (add_devices/remove_devices)', description: 'Add devices to or remove devices from a static group', category: 'Fleet Operations' },
       { name: 'manage_automations (run)', description: 'Run an automation on demand', category: 'Fleet Operations' },
       // Ticketing (P2-4, #4191)
       { name: 'manage_tickets (move_org)', description: 'Move a ticket to a different organization', category: 'Ticketing' },

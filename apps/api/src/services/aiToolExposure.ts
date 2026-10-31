@@ -193,11 +193,10 @@ export const AGENT_DENIED_READ_TOOLS: ReadonlyMap<string, string> = new Map<stri
  * either. Entries are added only with Todd's sign-off.
  */
 export const AGENT_HUMAN_ONLY_ACTIONS: ReadonlyMap<string, string> = new Map<string, string>([
-  // Full-control W04 (#6758, W04-D8 — the W02 Task 16 follow-up): the group
-  // analogue of manage_tags. Membership is a live read at run admission and
-  // before tool use (runResourceScope.ts), so these are the same self-scope path.
-  ['manage_groups:add_devices', 'Group membership feeds agent run scope (triggers.deviceGroupIds, a live read in runResourceScope.ts): an allowlisted tier-2 add would let an agent put devices inside its own or another agent\'s future reach unattended.'],
-  ['manage_groups:remove_devices', 'Removing a device from a group changes which group-scoped agents, config-policy assignments and peripheral policies reach it; the same run-scope path as manage_tags:remove.'],
+  // manage_groups add_devices/remove_devices were here (W04-D8, #6758) until
+  // #10149 (QW9) made them supervised with org/site scope guards: an agent's
+  // allowlisted call is now a tier-3 proposal a person approves, never an
+  // unattended membership write, and neither is in ACT_MANIFEST.
   ['manage_tags:add', 'Device tags feed the agent\'s own run scope (triggers.deviceTags, runResourceScope.ts) and dynamic-group membership (triggers.deviceGroupIds): an allowlisted tier-2 add would let an agent widen its future reach unattended.'],
   ['manage_tags:remove', 'Removing a tag can ADMIT a device to a dynamic group whose rule is negative (isEmpty / notContains, filterEngine.ts); membership is re-evaluated on every tag change and feeds the agent\'s run scope through triggers.deviceGroupIds.'],
   // Full-control W11 (#6781, W11-D8, quorum QW5/QW9): both write auth.user.id into a users FK, and a user-owned

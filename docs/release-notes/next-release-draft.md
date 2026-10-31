@@ -219,3 +219,8 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### AI device-group membership (#10149)
+
+- **AI `manage_groups` `add_devices` / `remove_devices` now ask for approval** (supervised, tier 3; previously tier 2 auto-execute). AI agents can now be granted them, and a granted call becomes a proposal a person approves; neither is act-eligible.
+- **They refuse the whole call instead of skipping devices.** A device in another organization (or one you cannot see), a device outside a site-bound group's site, or a device outside your own site or device scope returns an error and nothing is written. Previously such devices were dropped and reported as `skipped`. A site-restricted user cannot change membership of an organization-wide group, and dynamic groups refuse manual edits — both as in the groups API. Responses now report `alreadyMembers` / `notMembers` instead of `skipped`. No migration, no new environment variable.
