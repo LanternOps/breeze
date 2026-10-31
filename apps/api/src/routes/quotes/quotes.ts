@@ -5,6 +5,7 @@ import { and, desc, eq } from 'drizzle-orm';
 import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
 import { listContracts } from '../../services/contractService';
+import { captureException } from '../../services/sentry';
 import {
   createQuoteSchema, cloneQuoteSchema, updateQuoteSchema, quoteLineInputSchema, catalogQuoteLineSchema,
   updateQuoteLineSchema, quoteBlockInputSchema, listQuotesQuerySchema,
@@ -136,18 +137,22 @@ type GeneratedContractSummary = { id: string; name: string; status: string; inte
  * Gated on contracts:read — quotes:read alone does not grant contract reads —
  * and read through listContracts with the CALLER's actor, so the org axis
  * (accessibleOrgIds) and the site axis (contract lines) apply exactly as on
- * the contracts list. `null` = not shown (no permission, or the lookup failed;
- * display-only, so a failure degrades the callout rather than the page).
- * `[]` without a query for a quote that was never accepted.
+ * the contracts list. `contracts: null` = not shown: either no permission, or
+ * the lookup failed, which `contractsUnavailable` says so the page can tell the
+ * operator instead of implying no contract exists (display-only, so a failure
+ * degrades the callout rather than the page). `[]` without a query for a quote
+ * that was never accepted.
  */
 async function loadGeneratedContracts(
   c: Context,
   quote: { id: string; orgId: string; status: string; acceptedAt?: Date | string | null },
-): Promise<GeneratedContractSummary[] | null> {
+): Promise<{ contracts: GeneratedContractSummary[] | null; contractsUnavailable: boolean }> {
   const perms = c.get('permissions') as UserPermissions | undefined;
-  if (!perms || !hasPermission(perms, PERMISSIONS.CONTRACTS_READ.resource, PERMISSIONS.CONTRACTS_READ.action)) return null;
+  if (!perms || !hasPermission(perms, PERMISSIONS.CONTRACTS_READ.resource, PERMISSIONS.CONTRACTS_READ.action)) {
+    return { contracts: null, contractsUnavailable: false };
+  }
   const accepted = quote.status === 'accepted' || quote.status === 'converted' || !!quote.acceptedAt;
-  if (!accepted) return [];
+  if (!accepted) return { contracts: [], contractsUnavailable: false };
   try {
     const qa = quoteActorFrom(c);
     const rows = await listContracts(
@@ -155,10 +160,14 @@ async function loadGeneratedContracts(
       // Read-only: no permission evidence, so no write gate could ever pass on it.
       { userId: qa.userId, partnerId: qa.partnerId, accessibleOrgIds: qa.accessibleOrgIds, allowedSiteIds: qa.allowedSiteIds },
     );
-    return rows.map((r) => ({ id: r.id, name: r.name, status: r.status, intervalMonths: r.intervalMonths }));
+    return {
+      contracts: rows.map((r) => ({ id: r.id, name: r.name, status: r.status, intervalMonths: r.intervalMonths })),
+      contractsUnavailable: false,
+    };
   } catch (err) {
     console.error('GET /quotes/:id: generated-contract lookup failed', { quoteId: quote.id, err });
-    return null;
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return { contracts: null, contractsUnavailable: true };
   }
 }
 
@@ -312,10 +321,10 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
       console.error('GET /quotes/:id: partner auto-email lookup failed', { quoteId: id, partnerId: detail.quote.partnerId, err });
     }
     const autoEmailInvoiceOnAccept = partnerAutoEmailRow?.autoEmailInvoiceOnQuoteAccept ?? true;
-    const contracts = await loadGeneratedContracts(c, detail.quote);
+    const { contracts, contractsUnavailable } = await loadGeneratedContracts(c, detail.quote);
     return c.json({ data: {
       ...detail, quote: quoteForClient, blocks: blocksForEditor, branding, presentation, recipients,
-      acceptance, contractAutoValues, contracts,
+      acceptance, contractAutoValues, contracts, contractsUnavailable,
       stripeConnected, stripeAccountCurrency, currencyWarning,
       autoEmailInvoiceOnAccept,
       // #9256: whether the server has an email transport at all, so the web can

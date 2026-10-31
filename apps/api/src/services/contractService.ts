@@ -548,7 +548,7 @@ export async function getContract(
   const related = options.includeRelated
     ? {
         relatedContracts: await listRelatedContracts(contract, actor),
-        sourceQuote: (await withSourceQuotes([contract]))[0]!.sourceQuote,
+        sourceQuote: (await withSourceQuotes([contract], actor))[0]!.sourceQuote,
       }
     : {};
   // #6110 finding 3: a PARTIAL read must not look like a complete one. When any
@@ -644,7 +644,7 @@ export async function listContracts(query: {
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(contracts.createdAt))
     .limit(Math.min(query.limit ?? 50, 100));
-  return withSourceQuotes(await withEstimatedPeriodValues(rows, actor));
+  return withSourceQuotes(await withEstimatedPeriodValues(rows, actor), actor);
 }
 
 /**
@@ -653,15 +653,30 @@ export async function listContracts(query: {
  * quote. The composite (source_quote_id, org_id) FK already guarantees the
  * quote is in the contract's own org; the org predicate repeats that axis
  * explicitly (as the other billing reads do) rather than leaning on RLS alone.
- * A quote this context cannot read reads as "no source quote", never an error.
+ * A quote this actor cannot read reads as "no source quote", never an error.
+ *
+ * SITE AXIS (app-layer only — RLS does not defend it): reaching a contract
+ * through one of its lines does not make its quote readable. A site-restricted
+ * actor is told about the quote only when the quote's own site is in their
+ * allowlist — byte-for-byte quoteTypes.assertSite, where a null quote site is
+ * DENIED to a restricted actor.
  */
-async function withSourceQuotes<T extends ContractRow>(rows: T[]): Promise<Array<T & { sourceQuote: ContractSourceQuote | null }>> {
+async function withSourceQuotes<T extends ContractRow>(
+  rows: T[],
+  actor: Pick<ContractActor, 'allowedSiteIds'>,
+): Promise<Array<T & { sourceQuote: ContractSourceQuote | null }>> {
   const quoteIds = [...new Set(rows.map((r) => r.sourceQuoteId).filter((id): id is string => !!id))];
-  if (quoteIds.length === 0) return rows.map((r) => ({ ...r, sourceQuote: null }));
+  const none = () => rows.map((r) => ({ ...r, sourceQuote: null }));
+  if (quoteIds.length === 0) return none();
+  if (actor.allowedSiteIds && actor.allowedSiteIds.length === 0) return none();
   const orgIds = [...new Set(rows.map((r) => r.orgId))];
   const found = await db.select({ id: quotes.id, orgId: quotes.orgId, quoteNumber: quotes.quoteNumber })
     .from(quotes)
-    .where(and(inArray(quotes.id, quoteIds), inArray(quotes.orgId, orgIds)));
+    .where(and(
+      inArray(quotes.id, quoteIds),
+      inArray(quotes.orgId, orgIds),
+      actor.allowedSiteIds ? inArray(quotes.siteId, actor.allowedSiteIds) : undefined,
+    ));
   const byKey = new Map(found.map((q) => [`${q.id}:${q.orgId}`, q]));
   return rows.map((r) => {
     const q = r.sourceQuoteId ? byKey.get(`${r.sourceQuoteId}:${r.orgId}`) : undefined;

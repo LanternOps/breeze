@@ -1672,7 +1672,8 @@
         "title_other": "Questo preventivo ha creato {{count}} contratti",
         "draftHint_one": "{{count}} bozza non fattura nulla finché non viene attivata. Verificala e attivala per avviare la fatturazione.",
         "draftHint_other": "{{count}} bozze non fatturano nulla finché non vengono attivate. Verificale e attivale per avviare la fatturazione.",
-        "ready": "Pronto da attivare"
+        "ready": "Pronto da attivare",
+        "unavailable": "Impossibile caricare i contratti creati da questo preventivo. Ricarica la pagina per riprovare."
       }
     },
     "currency": {

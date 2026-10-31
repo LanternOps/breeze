@@ -13,9 +13,9 @@ import { describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { quotes, quoteBlocks } from '../../db/schema/quotes';
-import { contracts } from '../../db/schema/contracts';
-import { contractTemplates, contractTemplateVersions, contractDocuments } from '../../db/schema';
-import { createPartner, createOrganization } from './db-utils';
+import { contracts, contractLines } from '../../db/schema/contracts';
+import { contractTemplates, contractTemplateVersions, contractDocuments, pax8Integrations, pax8Orders, pax8OrderLines } from '../../db/schema';
+import { createPartner, createOrganization, createSite } from './db-utils';
 import { createQuote, addManualLine } from '../../services/quoteService';
 import { sendQuote } from '../../services/quoteLifecycle';
 import { acceptQuote } from '../../services/quoteAcceptService';
@@ -128,6 +128,32 @@ describe('#10361 contracts.source_quote_id', () => {
     expect(seen).toEqual([]);
   });
 
+  runDb('a site-restricted reader learns the source quote only when it may read that quote', async () => {
+    const { partner, org } = await seedOrg();
+    const site = await withSystemDbAccessContext(() => createSite({ orgId: org.id }));
+    const quoteId = await seedSentRecurringQuote(org.id, partner.id);
+    const ctx = ctxFor(org.id, partner.id);
+    const res = await withDbAccessContext(ctx, () => acceptQuote({ quoteId, signerName: 'Jane Buyer' }));
+    const contractId = res.contractIds[0]!;
+    // Give the contract a line on the reader's site so the contract itself is visible to them.
+    await withSystemDbAccessContext(() => db.insert(contractLines).values({
+      contractId, orgId: org.id, lineType: 'per_device', description: 'Site endpoints',
+      unitPrice: '10.00', siteId: site.id, siteName: site.name, taxable: false, sortOrder: 9,
+    }));
+    const restricted: ContractActor = { ...contractActor(org.id, partner.id), allowedSiteIds: [site.id] };
+
+    // The quote has no site: a site-restricted actor may not read it (assertSite), so the list must not name it.
+    const hidden = await withDbAccessContext(ctx, () => listContracts({ orgId: org.id }, restricted));
+    const row = hidden.find((c) => c.id === contractId);
+    expect(row).toBeDefined();
+    expect(row!.sourceQuote).toBeNull();
+
+    // Once the quote sits on the reader's site, it is theirs to see.
+    await withSystemDbAccessContext(() => db.update(quotes).set({ siteId: site.id }).where(eq(quotes.id, quoteId)));
+    const shown = await withDbAccessContext(ctx, () => listContracts({ orgId: org.id }, restricted));
+    expect(shown.find((c) => c.id === contractId)!.sourceQuote?.id).toBe(quoteId);
+  });
+
   runDb('the FK is same-tenant: a contract cannot point at another org\'s quote', async () => {
     const { partner, org } = await seedOrg();
     const other = await withSystemDbAccessContext(() => createOrganization({ partnerId: partner.id }));
@@ -203,5 +229,50 @@ describe('#10361 contracts.source_quote_id', () => {
     const [row] = await withSystemDbAccessContext(() =>
       db.select({ sourceQuoteId: contracts.sourceQuoteId }).from(contracts).where(eq(contracts.id, contractId)));
     expect(row!.sourceQuoteId).toBe(created.id);
+  });
+
+  runDb('the migration backfills from a Pax8 order (the annual contract too) and never overwrites a link', async () => {
+    // Cross-org pairing cannot be built here: pax8_order_lines_contract_line_org_fkey
+    // already pins a Pax8 line to a contract line of its own org, and the
+    // backfill re-checks the org on both joins.
+    const { partner, org } = await seedOrg();
+    const ctx = ctxFor(org.id, partner.id);
+    const quoteId = await seedSentRecurringQuote(org.id, partner.id);
+    const res = await withDbAccessContext(ctx, () => acceptQuote({ quoteId, signerName: 'Jane Buyer' }));
+    expect(res.contractIds).toHaveLength(2);
+    const [monthlyId, annualId] = res.contractIds as [string, string];
+
+    const keepQuoteId = await withSystemDbAccessContext(async () => {
+      const [integration] = await db.insert(pax8Integrations).values({
+        partnerId: partner.id, name: 'Backfill test', clientIdEncrypted: 'enc:c', clientSecretEncrypted: 'enc:s',
+        tokenUrl: 'https://api.pax8.com/v1/token', isActive: true,
+      }).returning({ id: pax8Integrations.id });
+      const [order] = await db.insert(pax8Orders).values({
+        integrationId: integration!.id, partnerId: partner.id, orgId: org.id, status: 'awaiting_details',
+        source: 'quote', sourceQuoteId: quoteId, dedupeKey: `quote:${quoteId}`,
+      }).returning({ id: pax8Orders.id });
+      // One Pax8 line per contract, each pointing at that contract's line.
+      for (const contractId of [monthlyId, annualId]) {
+        const [line] = await db.select({ id: contractLines.id }).from(contractLines).where(eq(contractLines.contractId, contractId));
+        await db.insert(pax8OrderLines).values({
+          orderId: order!.id, partnerId: partner.id, orgId: org.id, action: 'new_subscription',
+          pax8ProductId: 'prod-1', billingTerm: 'Annual', quantity: '1', contractLineId: line!.id,
+        });
+      }
+      // Pre-column state for the annual contract; the monthly one carries a
+      // DIFFERENT (valid, same-org) link the backfill must leave alone.
+      const keep = await createQuote({ orgId: org.id, currencyCode: 'USD' }, quoteActor(org.id, partner.id));
+      await db.update(contracts).set({ sourceQuoteId: keep.id }).where(eq(contracts.id, monthlyId));
+      await db.update(contracts).set({ sourceQuoteId: null }).where(eq(contracts.id, annualId));
+      return keep.id;
+    });
+
+    await replayMigration(MIGRATION);
+
+    const rows = await withSystemDbAccessContext(() =>
+      db.select({ id: contracts.id, sourceQuoteId: contracts.sourceQuoteId }).from(contracts).where(eq(contracts.orgId, org.id)));
+    const byId = new Map(rows.map((r) => [r.id, r.sourceQuoteId]));
+    expect(byId.get(annualId)).toBe(quoteId);
+    expect(byId.get(monthlyId)).toBe(keepQuoteId);
   });
 });

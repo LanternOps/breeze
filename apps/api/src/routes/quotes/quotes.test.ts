@@ -6,6 +6,7 @@ vi.mock('../../services/auditEvents', async (importActual) => ({
   writeRouteAudit: vi.fn(),
 }));
 
+vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
 // #10361: the detail route lists the contracts a quote's accept created.
 vi.mock('../../services/contractService', async (importActual) => ({
   ...(await importActual<typeof import('../../services/contractService')>()),
@@ -150,6 +151,7 @@ import { renderContractBlocksForClient, loadContractBlockAuthoring, loadContract
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { getConnection } from '../../services/stripeConnectService';
 import { listContracts } from '../../services/contractService';
+import { captureException } from '../../services/sentry';
 
 function app() {
   // quoteRoutes already applies authMiddleware internally
@@ -443,6 +445,25 @@ describe('quote crud + lines routes', () => {
       );
     });
 
+    it('reads with the caller\'s site allowlist, so the site axis applies (#10361)', async () => {
+      gate.permGate = async (c: any, next: any) => {
+        c.set('auth', { user: { id: 'u1' }, partnerId: 'p1', orgId: null, scope: 'partner', accessibleOrgIds: [ORG_ID], allowedSiteIds: ['site-a'] });
+        c.set('permissions', {
+          permissions: [{ resource: 'quotes', action: 'read' }, { resource: 'contracts', action: 'read' }],
+          partnerId: 'p1', orgId: null, roleId: 'r1', scope: 'partner',
+        });
+        return next();
+      };
+      (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'p1', status: 'converted' }, blocks: [], lines: [] });
+      vi.mocked(listContracts).mockResolvedValue([] as never);
+      const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      expect(listContracts).toHaveBeenCalledWith(
+        { orgId: ORG_ID, sourceQuoteId: QUOTE_ID },
+        { userId: 'u1', partnerId: 'p1', accessibleOrgIds: [ORG_ID], allowedSiteIds: ['site-a'] },
+      );
+    });
+
     it('returns contracts: null and never reads contracts for a caller without contracts:read', async () => {
       withPerms(['quotes:read']);
       (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'p1', status: 'converted' }, blocks: [], lines: [] });
@@ -450,6 +471,7 @@ describe('quote crud + lines routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.contracts).toBeNull();
+      expect(body.data.contractsUnavailable).toBe(false);
       expect(listContracts).not.toHaveBeenCalled();
     });
 
@@ -471,7 +493,11 @@ describe('quote crud + lines routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.contracts).toBeNull();
+      // Distinct from "no permission": the web says the list could not load
+      // rather than implying no contract exists.
+      expect(body.data.contractsUnavailable).toBe(true);
       expect(errSpy).toHaveBeenCalledWith('GET /quotes/:id: generated-contract lookup failed', expect.objectContaining({ quoteId: QUOTE_ID }));
+      expect(captureException).toHaveBeenCalledOnce();
       errSpy.mockRestore();
     });
   });

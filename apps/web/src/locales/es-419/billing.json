@@ -1672,7 +1672,8 @@
         "title_other": "Esta cotización creó {{count}} contratos",
         "draftHint_one": "{{count}} borrador no factura nada hasta que se active. Revísalo y actívalo para empezar a facturar.",
         "draftHint_other": "{{count}} borradores no facturan nada hasta que se activen. Revísalos y actívalos para empezar a facturar.",
-        "ready": "Listo para activar"
+        "ready": "Listo para activar",
+        "unavailable": "No se pudieron cargar los contratos que creó esta cotización. Vuelve a cargar la página para intentarlo de nuevo."
       }
     },
     "currency": {

@@ -79,6 +79,14 @@ describe('QuoteDetail — contracts created by the accept (#10361)', () => {
     expect(panel).not.toHaveTextContent('until');
   });
 
+  it('says the list could not load instead of implying no contract exists', async () => {
+    render(<QuoteDetail detail={convertedDetail({ contracts: null, contractsUnavailable: true })} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-generated-contracts-unavailable'))
+      .toHaveTextContent("Couldn't load the contracts this quote created. Reload to try again.");
+    expect(screen.queryByTestId('quote-generated-contracts')).not.toBeInTheDocument();
+  });
+
   it('renders nothing when the accept created no contract, or the viewer cannot read contracts', async () => {
     const { unmount } = render(<QuoteDetail detail={convertedDetail({ contracts: [] })} />);
     await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
@@ -88,5 +96,6 @@ describe('QuoteDetail — contracts created by the accept (#10361)', () => {
     render(<QuoteDetail detail={convertedDetail({ contracts: null })} />);
     await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
     expect(screen.queryByTestId('quote-generated-contracts')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-generated-contracts-unavailable')).not.toBeInTheDocument();
   });
 });

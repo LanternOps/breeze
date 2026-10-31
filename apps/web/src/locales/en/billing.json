@@ -1672,7 +1672,8 @@
         "title_other": "This quote created {{count}} contracts",
         "draftHint_one": "{{count}} draft bills nothing until it is activated. Review and activate it to start billing.",
         "draftHint_other": "{{count}} drafts bill nothing until they are activated. Review and activate them to start billing.",
-        "ready": "Ready to activate"
+        "ready": "Ready to activate",
+        "unavailable": "Couldn't load the contracts this quote created. Reload to try again."
       }
     },
     "currency": {

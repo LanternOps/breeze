@@ -9,8 +9,20 @@ import type { QuoteGeneratedContract } from './quoteTypes';
  * when there are none, or when the server withheld the list (`null`: the viewer
  * lacks contracts:read).
  */
-export default function QuoteGeneratedContracts({ contracts }: { contracts: QuoteGeneratedContract[] | null | undefined }) {
+export default function QuoteGeneratedContracts({ contracts, unavailable }: {
+  contracts: QuoteGeneratedContract[] | null | undefined;
+  /** The server tried and failed to read them — say so, rather than render a
+   *  silence that reads as "this quote created no contract". */
+  unavailable?: boolean;
+}) {
   const { t } = useTranslation('billing');
+  if (unavailable) {
+    return (
+      <p className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground" data-testid="quote-generated-contracts-unavailable">
+        {t('quotes.detail.generatedContracts.unavailable')}
+      </p>
+    );
+  }
   if (!contracts || contracts.length === 0) return null;
   const drafts = contracts.filter((c) => c.status === 'draft').length;
 

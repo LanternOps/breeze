@@ -1,13 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Queued select-chain db mock (invoiceResend.test.ts pattern).
-const { dbResults } = vi.hoisted(() => ({ dbResults: [] as unknown[][] }));
+const { dbResults } = vi.hoisted(() => ({ dbResults: [] as Array<unknown[] | Error> }));
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
     for (const m of ['select', 'from', 'where', 'limit']) chain[m] = vi.fn(() => chain);
-    (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) =>
-      Promise.resolve(dbResults.shift() ?? []).then(resolve);
+    // A queued Error rejects that one query (the draft-count isolation test).
+    (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => {
+      const next = dbResults.shift() ?? [];
+      return next instanceof Error ? Promise.reject(next).then(resolve, reject) : Promise.resolve(next).then(resolve, reject);
+    };
     return chain;
   };
   return {
@@ -97,6 +100,33 @@ describe('notifyQuoteOutcome', () => {
     const envelope = sendEmailMock.mock.calls[0]![0];
     expect(envelope.text).toContain('2 recurring contracts were created as drafts');
     expect(envelope.html).toContain('2 recurring contracts were created as drafts');
+  });
+
+  it('#10361: a failed draft-contract count never costs the accept email — the line is just omitted', async () => {
+    dbResults.push([quoteRow({ declineReason: null, convertedInvoiceId: null })]);
+    dbResults.push([{ email: 'tech@lantern.test' }]);
+    dbResults.push([{ billingEmail: null }]);
+    dbResults.push([{ name: 'Acme Corp' }]);
+    dbResults.push(new Error('lock timeout')); // the draft-contract count
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'accepted', source: 'customer', signerName: 'Pat Prospect' });
+    expect(sendEmailMock).toHaveBeenCalledOnce();
+    const envelope = sendEmailMock.mock.calls[0]![0];
+    expect(envelope.text).toContain('Pat Prospect at Acme Corp has accepted');
+    expect(envelope.text).not.toContain('recurring contract');
+    expect(errSpy).toHaveBeenCalledWith('[quoteOutcomeNotify] draft-contract count failed', expect.objectContaining({ quoteId: QUOTE_ID }), 'lock timeout');
+    errSpy.mockRestore();
+  });
+
+  it('#10361: a declined outcome never runs the draft-contract query', async () => {
+    dbResults.push([quoteRow()]);
+    dbResults.push([{ email: 'tech@lantern.test' }]);
+    dbResults.push([{ billingEmail: null }]);
+    dbResults.push([{ name: 'Acme Corp' }]);
+    dbResults.push(new Error('must not be consumed'));
+    await notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'declined', source: 'customer' });
+    expect(sendEmailMock).toHaveBeenCalledOnce();
+    expect(dbResults).toHaveLength(1); // the sentinel is still queued
   });
 
   it('skips quietly when no recipient can be resolved (still emits the event)', async () => {

@@ -78,14 +78,21 @@ export async function notifyQuoteOutcome(input: {
       }
       // #10361: the draft contracts this accept created. System context, so the
       // org predicate is explicit; the composite FK already pins them to q.orgId.
+      // An extra line, not the point of the email: a failed count is reported
+      // and the line omitted, never the accept notification itself.
       let draftContractCount = 0;
       if (input.outcome === 'accepted') {
-        const drafts = await db.select({ id: contracts.id }).from(contracts).where(and(
-          eq(contracts.sourceQuoteId, input.quoteId),
-          eq(contracts.orgId, q.orgId),
-          eq(contracts.status, 'draft'),
-        ));
-        draftContractCount = drafts.length;
+        try {
+          const drafts = await db.select({ id: contracts.id }).from(contracts).where(and(
+            eq(contracts.sourceQuoteId, input.quoteId),
+            eq(contracts.orgId, q.orgId),
+            eq(contracts.status, 'draft'),
+          ));
+          draftContractCount = drafts.length;
+        } catch (err) {
+          console.error('[quoteOutcomeNotify] draft-contract count failed', { quoteId: input.quoteId }, err instanceof Error ? err.message : err);
+          captureException(err instanceof Error ? err : new Error(String(err)));
+        }
       }
       return { recipient, quoteNumber: q.quoteNumber ?? 'Quote', orgName: org?.name ?? 'A customer', declineReason: q.declineReason, invoiceNumber, draftContractCount };
     }));

@@ -387,6 +387,9 @@ export interface QuoteDetail {
    *  (the viewer lacks contracts:read, or the lookup failed); `[]` = none.
    *  Optional: older payloads and fixtures omit it. */
   contracts?: QuoteGeneratedContract[] | null;
+  /** #10361: true when the server could not read those contracts (as opposed
+   *  to the viewer lacking permission). Optional: older payloads omit it. */
+  contractsUnavailable?: boolean;
   /** Whether the quote's partner has a connected Stripe account (gates the
    *  send composer's deposit-can't-be-paid warning). `null` = the server could
    *  not look it up (show neither note); omitted on older payloads/fixtures,

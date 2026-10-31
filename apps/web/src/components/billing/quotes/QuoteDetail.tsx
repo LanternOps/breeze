@@ -363,7 +363,7 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
 
           {/* #10361: the draft contract(s) the accept created — the recurring
               next step, as the invoice link above is the one-time one. */}
-          <QuoteGeneratedContracts contracts={detail.contracts} />
+          <QuoteGeneratedContracts contracts={detail.contracts} unavailable={detail.contractsUnavailable} />
 
           {/* Recurring + totals summary — the rail's anchor (shadow + large figure). */}
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-detail-totals">
