@@ -51,9 +51,9 @@ export interface DeviceFilterToolbarProps {
   groups?: Group[];
   softwareOptions?: string[];
   onSoftwareSearch?: (q: string) => void;
-  // Opens the create-group flow (CreateGroupModal in DevicesPage); surfaced as a
-  // "+ New group…" shortcut in the Add-filter picker.
-  onCreateGroup?: () => void;
+  // Link to the Device Groups page create flow; surfaced as a "+ New group…"
+  // shortcut in the Add-filter picker (#9865).
+  createGroupHref?: string;
 }
 
 const EMPTY_GROUP: FilterConditionGroup = { operator: "AND", conditions: [] };
@@ -206,7 +206,7 @@ export function DeviceFilterToolbar({
   groups = [],
   softwareOptions,
   onSoftwareSearch,
-  onCreateGroup,
+  createGroupHref,
 }: DeviceFilterToolbarProps) {
   const { t } = useTranslation("devices");
   // #6594 — this toolbar, not <FilterChipBar>, is the surface actually
@@ -439,7 +439,7 @@ export function DeviceFilterToolbar({
         <div className="flex shrink-0 items-center gap-2">
           <FilterAddDropdown
             align="right"
-            onCreateGroup={onCreateGroup}
+            createGroupHref={createGroupHref}
             onSelect={(field) => addCondition(defaultConditionForField(field))}
             renderTrigger={({ open, toggle }) => (
               <button
