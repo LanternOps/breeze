@@ -17,6 +17,7 @@ import { withAcceptedAutopayDisclosure, buildAutopayDisclosure } from './consent
 import { isAutopayEnabledForPartner } from './autopayGate';
 import { AUTOPAY_CHECKOUT_WALLET_OPTIONS } from './feeDisclosure';
 import { holdsClientMoney } from './reservation';
+import { isBillingEnabledForOrg } from '../billingEnabled';
 
 export const payAndSaveSchema = z.object({
   saveForAutopay: z.boolean().default(false),
@@ -59,6 +60,9 @@ export function cardSaveStripeFields(
 
 export async function prepareCardPayAndSave(invoiceId: string, orgId: string, input: CardSaveInput, checkoutKey: string) {
   if (!input.saveForAutopay) return null;
+  // Billing off: the offer is hidden, so a stale payload that still asks to save
+  // pays normally without enrolling (spec §3.8) instead of failing the payment.
+  if (!await withSystemDbAccessContext(() => isBillingEnabledForOrg(orgId))) return null;
   if (input.consentAccepted !== true || !input.disclosureHash) {
     throw new InvoiceServiceError('Authorize automatic payments first', 400, 'INVALID_STATE');
   }
@@ -76,6 +80,8 @@ export async function getInvoiceAutopayOffer(orgId: string, invoiceId?: string):
   // orgId comes only from an authorized invoice or the verified portal identity.
   // The complete disclosure also reads partner-axis settings invisible to portal RLS.
   return readWithPartnerAxisVisibility(async () => {
+    // Billing off: no save-for-autopay box on public or portal /pay (spec §3.8).
+    if (!await isBillingEnabledForOrg(orgId)) return null;
     // Same guard as the bank offer: no new payment offer while this invoice's money is in flight or unapplied.
     if (invoiceId && await holdsClientMoney(db, invoiceId)) return null;
     const [enrollment] = await db.select().from(orgAutopayEnrollments)

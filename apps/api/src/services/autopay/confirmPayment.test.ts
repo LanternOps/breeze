@@ -1,4 +1,13 @@
 import { beforeEach, expect, it, vi } from 'vitest';
+// Partner billing master switch: tests flip billingSwitch.enabled to simulate billing_enabled=false.
+const billingSwitch = vi.hoisted(() => ({ enabled: true }));
+vi.mock('../billingEnabled', () => {
+  const assertOn = async (_id: unknown, make: (m: string, s: 404, c: 'BILLING_DISABLED') => Error) => {
+    if (!billingSwitch.enabled) throw make('Not found', 404, 'BILLING_DISABLED');
+  };
+  return { assertBillingEnabledForOrg: assertOn, assertBillingEnabledForPartner: assertOn };
+});
+beforeEach(() => { billingSwitch.enabled = true; });
 const h=vi.hoisted(()=>({rows:new Map<unknown,any[]>(),writes:[] as unknown[],depth:0,
  resolve:vi.fn(),resume:vi.fn(),history:vi.fn(),mint:vi.fn()}));
 vi.mock('../../db',()=>{
@@ -33,6 +42,12 @@ it('GET resolves the frozen attempt without provider or mutation work',async()=>
  expect(await getConfirmPaymentView('token')).toEqual({state:'requires_action',amount:'100.00',fee:'0.00',currency:'USD',invoiceNumber:null,invoiceStatus:'sent',balance:'100.00',
   methodLabel:null,partnerName:'',logoUrl:null,supportEmail:null,invoiceUrl:'https://portal.example.test/invoice/token'});
  expect(h.resume).not.toHaveBeenCalled();expect(h.writes).toEqual([]);
+});
+it('billing off: confirm answers 404 BILLING_DISABLED before any provider work; GET stays open',async()=>{
+ billingSwitch.enabled=false;
+ await expect(confirmInvoicePayment('token')).rejects.toMatchObject({status:404,code:'BILLING_DISABLED',message:'Not found'});
+ expect(h.resume).not.toHaveBeenCalled();expect(h.writes).toEqual([]);expect(h.mint).not.toHaveBeenCalled();
+ await expect(getConfirmPaymentView('token')).resolves.toMatchObject({state:'requires_action'});
 });
 it('cancels the exact original before consuming once and returning the invoice URL',async()=>{
  expect(await confirmInvoicePayment('token')).toEqual({url:'https://portal.example.test/invoice/token'});
