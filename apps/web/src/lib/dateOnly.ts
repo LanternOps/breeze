@@ -20,3 +20,15 @@ export function formatDateOnly(value: string): string {
   const date = parseDateOnly(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
 }
+
+/**
+ * The UTC calendar date (`YYYY-MM-DD`) of an instant. Use it for server-side
+ * day buckets, which arrive as UTC-midnight instants but mean a calendar date:
+ * feed the result to `parseDateOnly` so it does not render a day early west of
+ * UTC. A bare date passes through; unparseable input is returned unchanged.
+ */
+export function utcDateOnly(value: string): string {
+  if (DATE_ONLY_RE.test(value)) return value;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toISOString().slice(0, 10);
+}
