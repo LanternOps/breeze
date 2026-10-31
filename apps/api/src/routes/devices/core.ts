@@ -14,6 +14,7 @@ import {
   deviceHardware,
   deviceHardwareHealth,
   deviceReliability,
+  deviceWarranty,
   deviceNetwork,
   deviceMetrics,
   deviceGroupMemberships,
@@ -1352,6 +1353,10 @@ coreRoutes.get(
         // Hardware & RAID rollup (#6854 W04) — null when no report yet.
         hardwareHealth: deviceHardwareHealth.health,
         hardwareHealthSummary: deviceHardwareHealth.summary,
+        // #9863 — Warranty column. Stored status, the same value the device's
+        // Warranty card shows; null when no warranty row exists yet.
+        warrantyEndDate: deviceWarranty.warrantyEndDate,
+        warrantyStatus: deviceWarranty.status,
         // RDS per-session helpers (plan 2 heartbeat ingest) — UI hint only,
         // see the truthy-guard comment in heartbeat.ts. Tasks 13/14 gate the
         // session picker on this being 'on-demand' at the list-row level.
@@ -1380,6 +1385,12 @@ coreRoutes.get(
       .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
       .leftJoin(deviceReliability, eq(devices.id, deviceReliability.deviceId))
       .leftJoin(deviceHardwareHealth, eq(devices.id, deviceHardwareHealth.deviceId))
+      // device_warranty holds at most one row per device: the partial unique
+      // index device_warranty_device_id_idx covers device_id IS NOT NULL, and a
+      // manual-asset row has device_id NULL so it never matches. The join
+      // therefore cannot fan a page out, and RLS (org-scoped) keeps it
+      // tenant-safe.
+      .leftJoin(deviceWarranty, eq(devices.id, deviceWarranty.deviceId))
       .where(whereCondition)
       .orderBy(...orderBy)
       .limit(fetchLimit)
@@ -1576,6 +1587,8 @@ coreRoutes.get(
         reliabilityProvisional: d.reliabilityProvisional === true,
         hardwareHealth: d.hardwareHealth ?? null,
         hardwareHealthSummary: d.hardwareHealthSummary ?? null,
+        warrantyEndDate: d.warrantyEndDate ?? null,
+        warrantyStatus: d.warrantyStatus ?? null,
         helperLifecycleMode: d.helperLifecycleMode ?? null,
         // Selected above but historically the mapper is where list fields
         // get silently dropped (#800/#1273/#2138/#5701) — the #7068 stuck-
