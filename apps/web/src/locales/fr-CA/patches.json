@@ -485,6 +485,11 @@
     "rebootRequired": "Requis",
     "rebootDone": "Terminé",
     "rebootNotRequired": "—",
+    "skipReasons": {
+      "ring_deleted": "Annulé avant l’envoi : l’anneau de mise à jour a été supprimé.",
+      "ring_disabled": "Annulé avant l’envoi : l’anneau de mise à jour a été désactivé.",
+      "ring_unavailable": "Ignoré : l’anneau de mise à jour a été supprimé ou désactivé avant l’envoi à cet appareil."
+    },
     "errors": {
       "load": "Échec du chargement de la tâche de correctif"
     }

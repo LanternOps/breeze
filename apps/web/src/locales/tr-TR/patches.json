@@ -485,6 +485,11 @@
     "rebootRequired": "Gerekli",
     "rebootDone": "Tamamlandı",
     "rebootNotRequired": "—",
+    "skipReasons": {
+      "ring_deleted": "Gönderimden önce iptal edildi: güncelleme halkası silindi.",
+      "ring_disabled": "Gönderimden önce iptal edildi: güncelleme halkası devre dışı bırakıldı.",
+      "ring_unavailable": "Atlandı: güncelleme halkası bu cihaza gönderilmeden önce silindi veya devre dışı bırakıldı."
+    },
     "errors": {
       "load": "Yama işi yüklenemedi"
     }

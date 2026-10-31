@@ -225,6 +225,7 @@ async function stagePendingSubjectEscalations(deviceId?: string): Promise<void> 
         },
       };
       await db.insert(alerts).values({
+        ownerKind: 'device',
         id, ruleId: null, deviceId: device.id, orgId: device.orgId,
         severity, title, message, monitorId: monitor.id, episodeId, requiresHuman: true,
         status: 'active', context: {

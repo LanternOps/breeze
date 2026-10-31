@@ -485,6 +485,11 @@
     "rebootRequired": "Necessária",
     "rebootDone": "Concluída",
     "rebootNotRequired": "—",
+    "skipReasons": {
+      "ring_deleted": "Cancelado antes do envio: o anel de atualização foi excluído.",
+      "ring_disabled": "Cancelado antes do envio: o anel de atualização foi desativado.",
+      "ring_unavailable": "Ignorado: o anel de atualização foi excluído ou desativado antes do envio para este dispositivo."
+    },
     "errors": {
       "load": "Falha ao carregar o trabalho de patch"
     }

@@ -434,7 +434,6 @@ describe('GET /alerts — aiVerdict (Task 14)', () => {
 describe('GET /alerts/:id — aiVerdict (Task 14)', () => {
   it('returns aiVerdict: null when no live verdict exists for the alert', async () => {
     getAlertWithOrgCheckMock.mockResolvedValue(baseAlertRow(ALERT_1));
-    dbState.selectQueue.push([]); // device
     dbState.selectQueue.push([]); // notifications
 
     const res = await makeApp().request(`/alerts/${ALERT_1}`);
@@ -446,7 +445,6 @@ describe('GET /alerts/:id — aiVerdict (Task 14)', () => {
 
   it('returns the projected aiVerdict when one exists for the alert', async () => {
     getAlertWithOrgCheckMock.mockResolvedValue(baseAlertRow(ALERT_1));
-    dbState.selectQueue.push([]); // device
     dbState.selectQueue.push([]); // notifications
     const verdictRow = { id: 'verdict-1', alertId: ALERT_1 };
     latestVerdictsForAlertsMock.mockResolvedValue(new Map([[ALERT_1, verdictRow]]));
@@ -464,7 +462,6 @@ describe('GET /alerts/:id — aiVerdict (Task 14)', () => {
   // a non-null feedbackBy through the real `withAlertActorNames` call.
   it('resolves feedbackByName for the single verdict on the detail route', async () => {
     getAlertWithOrgCheckMock.mockResolvedValue(baseAlertRow(ALERT_1));
-    dbState.selectQueue.push([]); // device
     dbState.selectQueue.push([]); // notifications
     dbState.selectQueue.push([{ id: 'user-a', name: 'Alice' }]); // feedbackBy -> feedbackByName lookup
     const verdictRow = { id: 'verdict-1', alertId: ALERT_1, feedbackBy: 'user-a' };

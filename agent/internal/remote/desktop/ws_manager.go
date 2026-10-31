@@ -141,6 +141,15 @@ func (m *WsSessionManager) IsCurrent(id string, stream *WsStreamSession) bool {
 	return m.sessions[id] == stream
 }
 
+// HasSession reports whether a stream is running under id (#10316: the
+// agent's banner sweep asks before hiding a session's banner).
+func (m *WsSessionManager) HasSession(id string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.sessions[id]
+	return ok
+}
+
 // StopSession stops and removes a session. It holds the manager lock through
 // physical stop completion so a racing redelivery cannot report
 // already_absent while capture is still shutting down.

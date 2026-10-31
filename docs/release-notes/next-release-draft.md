@@ -220,6 +220,12 @@ Add up to 20 Application event providers in an Event Logs configuration policy t
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
 
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.
+
 ### Update ring rules for Linux packages (#9370)
 
 Update ring **Application rules** can now block or pin a Linux OS package (apt or dnf/yum) by name, for example `docker-ce`. Pick the package from the search list or choose **Linux package** next to the manual entry box. The rule applies to scheduled patch runs and overrides a manual approval. Pins compare versions the way the package manager does, so enter the full version including any epoch. A blocked package can still be upgraded as a dependency of another approved package. API: `appRules[].source` accepts `linux`. No migration, setting or environment variable; no agent update needed.

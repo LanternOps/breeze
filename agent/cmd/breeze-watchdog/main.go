@@ -1409,28 +1409,52 @@ func processHeartbeatResponse(
 		return nil
 	}
 	if resp.UpgradeTo != "" {
-		journal.Log(watchdog.LevelInfo, "failover.upgrade_agent", map[string]any{
-			"version": resp.UpgradeTo,
+		runHeartbeatUpgrade(&heartbeatUpgradeBackoff, journal, "agent", resp.UpgradeTo, func() error {
+			return doUpdateAgent(resp.UpgradeTo, serverURL, tokens, journal)
 		})
-		if err := doUpdateAgent(resp.UpgradeTo, serverURL, tokens, journal); err != nil {
-			journal.Log(watchdog.LevelError, "failover.upgrade_agent_failed", map[string]any{
-				"version": resp.UpgradeTo,
-				"error":   err.Error(),
-			})
-		}
 	}
 	if resp.WatchdogUpgradeTo != "" {
-		journal.Log(watchdog.LevelInfo, "failover.upgrade_watchdog", map[string]any{
-			"version": resp.WatchdogUpgradeTo,
+		runHeartbeatUpgrade(&heartbeatUpgradeBackoff, journal, "watchdog", resp.WatchdogUpgradeTo, func() error {
+			return doUpdateWatchdog(resp.WatchdogUpgradeTo, serverURL, tokens, journal)
 		})
-		if err := doUpdateWatchdog(resp.WatchdogUpgradeTo, serverURL, tokens, journal); err != nil {
-			journal.Log(watchdog.LevelError, "failover.upgrade_watchdog_failed", map[string]any{
-				"version": resp.WatchdogUpgradeTo,
-				"error":   err.Error(),
-			})
-		}
 	}
 	return resp.Commands
+}
+
+// heartbeatUpgradeBackoff holds the per-target backoff for heartbeat-directed
+// upgrades in this watchdog process (#7516). In memory only: a watchdog
+// restart retries every target at once.
+var heartbeatUpgradeBackoff updater.TargetBackoff
+
+// runHeartbeatUpgrade applies a heartbeat-directed upgrade of component to
+// version unless that target is inside its backoff window. The server re-sends
+// the same directive on every failover poll (30 s by default). A failure that
+// cannot succeed on retry (checksum or manifest) therefore starts an
+// exponential per-target backoff instead of a re-download on every poll. A new
+// target version is attempted immediately. Skipped polls are not journaled:
+// the failure that started the backoff already was, with its retry time.
+func runHeartbeatUpgrade(b *updater.TargetBackoff, journal *watchdog.Journal, component, version string, update func() error) {
+	if _, active := b.Remaining(component, version); active {
+		return
+	}
+	journal.Log(watchdog.LevelInfo, "failover.upgrade_"+component, map[string]any{
+		"version": version,
+	})
+	err := update()
+	if err == nil {
+		b.Clear(component)
+		return
+	}
+	fields := map[string]any{
+		"version": version,
+		"error":   err.Error(),
+	}
+	if updater.IsDeterministicArtifactFailure(err) {
+		n, delay := b.NoteFailure(component, version)
+		fields["consecutive_failures"] = n
+		fields["retry_after"] = delay.String()
+	}
+	journal.Log(watchdog.LevelError, "failover.upgrade_"+component+"_failed", fields)
 }
 
 // failoverUpdateErrMsg renders an update_agent / update_watchdog failure for the
