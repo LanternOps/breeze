@@ -354,7 +354,7 @@
     "currentSite": "Sitio actual",
     "newSite": "Nuevo sitio",
     "loadingSites": "Cargando sitios...",
-    "thisOrganizationOnlyHasOneSite": "Esta organización solo tiene un sitio. Agregue más sitios desde Configuración → Organizaciones para habilitar movimientos.",
+    "thisOrganizationOnlyHasOneSite": "Esta organización solo tiene un sitio. Agregue más sitios en la pestaña Sitios de la organización (Organizaciones → abra la organización → Sitios) para habilitar movimientos.",
     "current": "(actual)",
     "cancel": "Cancelar",
     "moving": "Moviendo...",
@@ -376,23 +376,6 @@
     "moveDevices_other": "Mover {{count}} dispositivos",
     "bulkPolicyNote": "Al moverlos cambian las políticas de configuración, las ventanas de mantenimiento, el enrutamiento de alertas y los informes del sitio que se aplican a estos dispositivos. Breeze no los devolverá automáticamente.",
     "failedToMoveDevices": "No se pudieron mover los dispositivos"
-  },
-  "createGroupModal": {
-    "failedToCreateGroup": "No se pudo crear el grupo",
-    "newDeviceGroup": "Nuevo grupo de dispositivos",
-    "name": "Nombre",
-    "eGProductionServers": "p.ej. Servidores de producción",
-    "type": "Tipo",
-    "static": "Estático",
-    "dynamic": "Dinámica",
-    "manuallyAddAndRemoveDevicesAfter": "Agregue y elimine dispositivos manualmente después de la creación.",
-    "devicesAreAutoAssignedBasedOn": "Los dispositivos se asignan automáticamente según las reglas de filtrado.",
-    "filterRules": "Reglas de filtrado",
-    "cancel": "Cancelar",
-    "creating": "Creando...",
-    "createGroup": "Crear grupo",
-    "created": "Grupo de dispositivos creado",
-    "missingGroupId": "El grupo se creó, pero la respuesta del servidor no incluyó su ID. Actualiza la página."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} quitados ocultos",
@@ -2408,7 +2391,9 @@
       "completed": "Terminado",
       "failed": "Fallido",
       "queued": "En cola",
-      "running": "En ejecución"
+      "running": "En ejecución",
+      "cancelled": "Cancelado",
+      "expired": "Vencido"
     },
     "scanType": "escaneo {{type}}",
     "scanTypes": {
@@ -2430,7 +2415,13 @@
       "quarantined": "En cuarentena",
       "removed": "Eliminado"
     },
-    "threatsFound": "Amenazas encontradas: {{count}}"
+    "threatsFound": "Amenazas encontradas: {{count}}",
+    "waitingForSlot": "Esperando un espacio de análisis libre. Vence el {{date}}.",
+    "cancelScan": "Cancelar análisis",
+    "scanCancelled": "Análisis cancelado",
+    "cancelScanFailed": "No se pudo cancelar el análisis",
+    "scanAlreadyRunning": "El análisis ya se está ejecutando en el dispositivo y no se puede cancelar.",
+    "scanAlreadyQueued": "Ya hay un análisis en cola para este dispositivo."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Agregue una etiqueta...",

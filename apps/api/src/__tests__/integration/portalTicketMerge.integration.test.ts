@@ -186,9 +186,13 @@ describe('portal access after a merge (#8972 D1(b), real RLS)', () => {
     const s = await seed();
     const res = await get(s, s.tokenA, `/tickets/${s.source}`);
     expect(res.status).toBe(200);
-    const num = await one<{ n: string }>(sql`SELECT internal_number AS n FROM tickets WHERE id = ${s.survivor}::uuid`);
+    const num = await one<{ portal: string; staff: string }>(
+      sql`SELECT ticket_number AS portal, internal_number AS staff FROM tickets WHERE id = ${s.survivor}::uuid`,
+    );
     const body = await res.json();
-    expect(body).toMatchObject({ merged: true, mergedInto: { id: s.survivor, internalNumber: num.n } });
+    // #10072: the requester-facing number, never the staff-side internal one.
+    expect(body).toEqual({ merged: true, mergedInto: { id: s.survivor, ticketNumber: num.portal }, mergedAt: body.mergedAt });
+    expect(JSON.stringify(body)).not.toContain(num.staff);
     expect(typeof body.mergedAt).toBe('string');
   }, T);
 
