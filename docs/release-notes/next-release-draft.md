@@ -219,3 +219,9 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Backup key prefix for agent-side S3 tools (#9441)
+
+`breeze-backup rebuild --provider-config` takes `--key-prefix <prefix>` to read a snapshot stored under `<prefix>/snapshots/`. Pass the prefix the snapshot was written under; `providerConfig.prefix` in the file is not applied, and the command prints a note when it is set.
+The `agent.yaml` backup manager takes `backup_s3_prefix`. An invalid value disables that manager instead of writing at the bucket root.
+Server-dispatched backups and token-mode recovery are unchanged. No migration, no new environment variable.

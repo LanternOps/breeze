@@ -410,10 +410,19 @@ func initBackupManager(cfg *config.Config) *backup.BackupManager {
 	var backupProvider providers.BackupProvider
 	switch cfg.BackupProvider {
 	case "s3":
-		backupProvider = providers.NewS3Provider(
+		s3Provider := providers.NewS3Provider(
 			cfg.BackupS3Bucket, cfg.BackupS3Region,
 			cfg.BackupS3AccessKey, cfg.BackupS3SecretKey, "",
 		)
+		// #9441: backup_s3_prefix puts this manager's snapshots under
+		// <prefix>/snapshots/, the layout the API uses for a prefixed
+		// destination. An invalid prefix disables the manager instead of
+		// writing at the bucket root, which the operator did not ask for.
+		if err := s3Provider.SetKeyPrefix(cfg.BackupS3Prefix); err != nil {
+			slog.Error("agent.yaml backup manager disabled: backup_s3_prefix is invalid", "error", err.Error())
+			return nil
+		}
+		backupProvider = s3Provider
 	default:
 		localPath := cfg.BackupLocalPath
 		if localPath == "" {
