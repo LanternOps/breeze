@@ -188,7 +188,10 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 			dialog = ipc.PamDialogResult{Approved: false, DismissedByUser: true, Reason: "dialog_roundtrip_error"}
 			// The helper's own dialog may still be open (the broker's timeout
 			// starts before the helper's countdown). Take it down before the
-			// deny below dismisses consent.exe (#10370).
+			// deny below dismisses consent.exe (#10370). Only this path
+			// needs it: a user answer already closed the dialog, hard-deny
+			// shows none, and the prompt-host path above withdraws its own
+			// question (promptHost.Close) before returning.
 			h.closePamDialog(session, outcome.RequestID)
 		}
 	}

@@ -177,6 +177,36 @@ func TestRunPamFlowDialogTimeoutCloseFailureStillDenies(t *testing.T) {
 	}
 }
 
+func TestRunPamFlowAnyDialogErrorClosesDialogFirst(t *testing.T) {
+	// Not only a timeout: a helper error or a garbled result leaves the
+	// dialog's state unknown, so it is taken down too.
+	session := &sessionbroker.Session{SessionID: "helper", WinSessionID: "2", SupportsPamDialogClose: true}
+	h, r := newDenyRig(t, session, ipc.PamDialogResult{}, errors.New("decode PAM dialog result: unexpected EOF"))
+
+	h.RunPamFlow(context.Background(), pendingEvent(2, etwlua.ConsentInstance{}),
+		etwlua.ElevationOutcome{RequestID: "req-10", Status: etwlua.ElevationPending})
+
+	if want := []string{"dialog", "close_dialog", "dismiss_untargeted"}; !reflect.DeepEqual(r.got(), want) {
+		t.Fatalf("deny sequence = %v, want %v", r.got(), want)
+	}
+}
+
+func TestRunPamFlowDialogStillOpenStillDenies(t *testing.T) {
+	session := &sessionbroker.Session{SessionID: "helper", WinSessionID: "2", SupportsPamDialogClose: true}
+	h, r := newDenyRig(t, session, ipc.PamDialogResult{}, sessionbroker.ErrCommandTimeout)
+	h.pamCloseDialog = func(*sessionbroker.Session, string, string, time.Duration) (ipc.PamCloseDialogResult, error) {
+		r.add("close_dialog")
+		return ipc.PamCloseDialogResult{Closed: false, WasOpen: true, Reason: "dialog_still_open"}, nil
+	}
+
+	h.RunPamFlow(context.Background(), pendingEvent(2, etwlua.ConsentInstance{}),
+		etwlua.ElevationOutcome{RequestID: "req-11", Status: etwlua.ElevationPending})
+
+	if want := []string{"dialog", "close_dialog", "dismiss_untargeted"}; !reflect.DeepEqual(r.got(), want) {
+		t.Fatalf("deny sequence = %v, want %v", r.got(), want)
+	}
+}
+
 func TestDenyConsentTargetedFallsBackOnlyWhenHelperCannotTarget(t *testing.T) {
 	session := &sessionbroker.Session{SessionID: "helper", WinSessionID: "2", SupportsTargetedPamDismiss: true}
 	h, r := newDenyRig(t, session, ipc.PamDialogResult{}, nil)

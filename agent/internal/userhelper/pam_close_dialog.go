@@ -38,15 +38,28 @@ type openPamDialog struct {
 	done   chan struct{} // closed once the dialog has returned
 }
 
-// open registers a dialog for id and returns its entry.
+// open registers a dialog for id and returns its entry. A dialog already open
+// under id is closed: the agent only re-sends an id after abandoning its
+// waiter, so nobody is listening to the older one, and it would otherwise
+// stay up holding the foreground where pam_close_dialog cannot reach it.
+//
+// Accepted gap: a pam_close_dialog that arrives before its dialog was ever
+// registered finds nothing, and the late dialog then opens with no waiter.
+// The agent sends the close only after the dialog round-trip failed (a
+// timeout is 90 s), so this needs a pam_request_dialog delayed that long.
 func (r *pamDialogRegistry) open(id string, cancel context.CancelFunc) *openPamDialog {
 	d := &openPamDialog{cancel: cancel, done: make(chan struct{})}
 	r.mu.Lock()
 	if r.entries == nil {
 		r.entries = make(map[string]*openPamDialog)
 	}
+	stale := r.entries[id]
 	r.entries[id] = d
 	r.mu.Unlock()
+	if stale != nil {
+		log.Warn("pam: a newer elevation dialog reused an open dialog's id; closing the older one", "dialogId", id)
+		stale.cancel()
+	}
 	return d
 }
 
@@ -69,6 +82,17 @@ func (r *pamDialogRegistry) lookup(id string) *openPamDialog {
 // handlePamCloseDialog takes down the open dialog for the requested id and
 // replies once it has returned, or once pamDialogCloseWait passes.
 func (c *Client) handlePamCloseDialog(env *ipc.Envelope) {
+	// Always answer, so the agent learns why instead of waiting out its
+	// timeout (safeGo only logs a panic).
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("PAM dialog close handler panicked", "id", env.ID, "panic", fmt.Sprintf("%v", r))
+			if err := c.conn.SendError(env.ID, ipc.TypePamCloseDialogResult, "PAM dialog close handler panicked"); err != nil {
+				log.Warn("failed to send PAM dialog close panic response", "id", env.ID, "error", err)
+			}
+		}
+	}()
+
 	if c.role != ipc.HelperRoleSystem || !c.hasScope(ipc.ScopePam) {
 		if err := c.conn.SendError(env.ID, ipc.TypePamCloseDialogResult, "pam_close_dialog requires SYSTEM helper with pam scope"); err != nil {
 			log.Warn("failed to send unauthorized PAM dialog close response", "id", env.ID, "error", err)
@@ -100,8 +124,16 @@ func (c *Client) handlePamCloseDialog(env *ipc.Envelope) {
 		}
 		timer.Stop()
 	}
-	log.Info("pam: elevation dialog close requested", "dialogId", req.DialogID,
-		"wasOpen", result.WasOpen, "closed", result.Closed)
+	if result.Closed {
+		log.Info("pam: elevation dialog close requested", "dialogId", req.DialogID,
+			"wasOpen", result.WasOpen, "closed", true)
+	} else {
+		// The dialog is still on screen and can take the Escape meant for
+		// the UAC prompt (e.g. the MessageBox fallback, which cannot be closed
+		// from outside).
+		log.Warn("pam: elevation dialog did not close when asked; it may take input meant for the UAC prompt",
+			"dialogId", req.DialogID, "reason", result.Reason)
+	}
 	if err := c.conn.SendTyped(env.ID, ipc.TypePamCloseDialogResult, result); err != nil {
 		log.Warn("failed to send PAM dialog close result", "id", env.ID, "error", err)
 	}

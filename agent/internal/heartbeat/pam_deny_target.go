@@ -73,7 +73,8 @@ func (h *Heartbeat) denyDismisser(session *sessionbroker.Session, requestID, tar
 		if untargeted == nil {
 			return res, err
 		}
-		log.Info("pam: helper cannot dismiss one specific UAC prompt; denying with the untargeted dismissal",
+		// Degraded: the untargeted Escape can land on another window.
+		log.Warn("pam: helper cannot dismiss one specific UAC prompt; denying with the untargeted dismissal",
 			"elevationRequestId", requestID, "helperPid", s.PID)
 		return untargeted(s, id, timeout)
 	}
@@ -88,13 +89,17 @@ func (h *Heartbeat) closePamDialog(session *sessionbroker.Session, dialogID stri
 		return
 	}
 	if !session.SupportsPamDialogClose {
-		log.Info("pam: helper cannot close its elevation dialog on request; it may still be open while consent.exe is dismissed",
+		// Degraded (an older helper): an untargeted deny can still press its
+		// Escape into the dialog — the #10370 failure.
+		log.Warn("pam: helper cannot close its elevation dialog on request; it may still be open while consent.exe is dismissed",
 			"elevationRequestId", dialogID, "helperPid", session.PID)
 		return
 	}
 	closeDialog := h.pamCloseDialog
 	if closeDialog == nil {
 		if h.sessionBroker == nil {
+			log.Warn("pam: no session broker to close the elevation dialog before denying; it may still be open",
+				"elevationRequestId", dialogID)
 			return
 		}
 		closeDialog = h.sessionBroker.ClosePamDialog

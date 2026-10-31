@@ -195,6 +195,33 @@ func TestPamCloseDialogRequiresSystemHelperWithPamScope(t *testing.T) {
 	}
 }
 
+func TestPamDialogRegistryReopenCancelsTheStaleDialog(t *testing.T) {
+	// A second dialog under the same id means the agent abandoned the first
+	// (its waiter is gone). The first must not stay up holding the
+	// foreground, and finishing it must not drop the newer entry.
+	var r pamDialogRegistry
+	ctxA, cancelA := context.WithCancel(context.Background())
+	defer cancelA()
+	a := r.open("req", cancelA)
+	_, cancelB := context.WithCancel(context.Background())
+	defer cancelB()
+	b := r.open("req", cancelB)
+
+	select {
+	case <-ctxA.Done():
+	default:
+		t.Fatal("reopening the id left the stale dialog open")
+	}
+	r.finish("req", a)
+	if got := r.lookup("req"); got != b {
+		t.Fatalf("lookup after finishing the stale dialog = %p, want the newer dialog %p", got, b)
+	}
+	r.finish("req", b)
+	if got := r.lookup("req"); got != nil {
+		t.Fatalf("lookup after both finished = %p, want nil", got)
+	}
+}
+
 func TestSupportsPamDialogCloseForAuth(t *testing.T) {
 	if !supportsPamDialogCloseForAuth(ipc.HelperRoleSystem) {
 		t.Fatal("the SYSTEM helper shows the PAM dialog and must advertise pam_close_dialog")
