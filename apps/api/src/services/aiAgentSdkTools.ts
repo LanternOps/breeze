@@ -726,6 +726,11 @@ export const TOOL_TIERS = {
   get_device_billing: 1,
   // W14 PR B (#6784): accounting sync. Reads tier 1; link / unlink / sync supervised, push four-eyes (aiGuardrails).
   manage_accounting_sync: 1,
+  // W15 PR A (#6785): per-action Pax8 classes are resolved in aiGuardrails.
+  get_pax8_status: 1,
+  search_pax8_products: 1,
+  manage_pax8_subscriptions: 1,
+  manage_pax8_orders: 1,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
