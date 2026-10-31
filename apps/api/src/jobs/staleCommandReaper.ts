@@ -354,9 +354,8 @@ export async function propagateTimedOutDeviceCommand(params: {
   // still require the generic finalizer to stop waiting for a terminal transport row.
   if (params.commandType === CommandTypes.EXECUTE_CONTAINMENT || params.commandType === CommandTypes.RELEASE_CONTAINMENT) {
     const finalize = async () => {
-      const { findEpisodeByCommand } = await import('../services/networkIsolation/episodeStore');
       const episode = (payload?.actionType === 'network_isolation' || params.commandType === CommandTypes.RELEASE_CONTAINMENT)
-        ? await findEpisodeByCommand(db, commandId) : null;
+        ? await (await import('../services/networkIsolation/episodeStore')).findEpisodeByCommand(db, commandId) : null;
       if (episode) {
         const { journalIsolationEvent } = await import('../services/networkIsolation/reconcile');
         await journalIsolationEvent(db, episode, 'isolate_command_timed_out', completedAt);

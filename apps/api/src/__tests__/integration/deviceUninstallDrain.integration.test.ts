@@ -338,7 +338,9 @@ describe('#3986 delivery — a Removed device collects its uninstall and nothing
     // watchdog upgrade targets, manifest trust keys, renewCert and
     // rotateToken. Asserting the exact key set is what stops any of those
     // being re-added to a machine that is being uninstalled.
-    expect(Object.keys(beatBody)).toEqual(['commands']);
+    // #4618: drain beats explicitly clear containment without policy or episode work.
+    expect(Object.keys(beatBody)).toEqual(['commands', 'containment']);
+    expect(beatBody.containment).toEqual({ networkIsolation: null });
     const delivered = beatBody.commands as Array<{ id: string; type: string }>;
     expect(delivered.map((cmd) => cmd.type)).toEqual(['self_uninstall']);
 

@@ -311,9 +311,8 @@ export async function propagateCancelledDeviceCommand(params: {
   // Ownership, rather than the payload string, distinguishes W1 episodes from
   // the existing AI network-isolation action. Cancelling delivery cannot prove absence.
   if (type === 'execute_containment' || type === 'release_containment') {
-    const { findEpisodeByCommand } = await import('./networkIsolation/episodeStore');
     const episode = (payload?.actionType === 'network_isolation' || type === 'release_containment')
-      ? await findEpisodeByCommand(executor, commandId) : null;
+      ? await (await import('./networkIsolation/episodeStore')).findEpisodeByCommand(executor, commandId) : null;
     if (episode) {
       const { journalIsolationEvent } = await import('./networkIsolation/reconcile');
       await journalIsolationEvent(executor, episode, 'isolate_command_cancelled', completedAt);

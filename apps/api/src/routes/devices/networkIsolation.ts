@@ -6,7 +6,7 @@ import { authMiddleware, requireInteractiveSession, requireScope, requirePermiss
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getDeviceWithOrgCheck, canAccessDeviceSite } from './helpers';
-import { startNetworkIsolation, releaseNetworkIsolation, extendNetworkIsolation, acknowledgeNetworkIsolation, getBreakGlassCodes, listDeviceIsolations, type IsolationRefusalCode } from '../../services/networkIsolation/service';
+import type { IsolationRefusalCode } from '../../services/networkIsolation/service';
 
 export const networkIsolationRoutes = new Hono();
 networkIsolationRoutes.use('*', authMiddleware);
@@ -51,6 +51,7 @@ networkIsolationRoutes.post(
     if ('response' in found) return found.response;
     const { device } = found;
     const auth = c.get('auth') as AuthContext;
+    const { startNetworkIsolation } = await import('../../services/networkIsolation/service');
     const result = await startNetworkIsolation(auth, device.id, c.req.valid('json'), { requestedByKind: 'user' });
     if (!('error' in result)) writeRouteAudit(c, { orgId: device.orgId, action: 'device.isolation.request', resourceType: 'device', resourceId: device.id, details: { isolationId: 'episode' in result ? result.episode.id : c.req.param('isolationId') } });
     return response(c, result, true);
@@ -70,6 +71,7 @@ networkIsolationRoutes.post(
     if ('response' in found) return found.response;
     const { device } = found;
     const auth = c.get('auth') as AuthContext;
+    const { releaseNetworkIsolation } = await import('../../services/networkIsolation/service');
     const result = await releaseNetworkIsolation(auth, device.id, c.req.param('isolationId')!, c.req.valid('json'), { kind: 'console' });
     if (!('error' in result)) writeRouteAudit(c, { orgId: device.orgId, action: 'device.isolation.release', resourceType: 'device', resourceId: device.id, details: { isolationId: 'episode' in result ? result.episode.id : c.req.param('isolationId') } });
     return response(c, result, false);
@@ -89,6 +91,7 @@ networkIsolationRoutes.post(
     if ('response' in found) return found.response;
     const { device } = found;
     const auth = c.get('auth') as AuthContext;
+    const { extendNetworkIsolation } = await import('../../services/networkIsolation/service');
     const result = await extendNetworkIsolation(auth, device.id, c.req.param('isolationId')!, c.req.valid('json').ttlHours);
     if (!('error' in result)) writeRouteAudit(c, { orgId: device.orgId, action: 'device.isolation.extend', resourceType: 'device', resourceId: device.id, details: { isolationId: 'episode' in result ? result.episode.id : c.req.param('isolationId') } });
     return response(c, result, false);
@@ -107,6 +110,7 @@ networkIsolationRoutes.post(
     if ('response' in found) return found.response;
     const { device } = found;
     const auth = c.get('auth') as AuthContext;
+    const { acknowledgeNetworkIsolation } = await import('../../services/networkIsolation/service');
     const result = await acknowledgeNetworkIsolation(auth, device.id, c.req.param('isolationId')!);
     return response(c, result, false);
   },
@@ -124,6 +128,7 @@ networkIsolationRoutes.get(
     if ('response' in found) return found.response;
     const { device } = found;
     const auth = c.get('auth') as AuthContext;
+    const { getBreakGlassCodes } = await import('../../services/networkIsolation/service');
     const result = await getBreakGlassCodes(auth, device.id, c.req.param('isolationId')!, c);
     return response(c, result, false);
   },
@@ -141,6 +146,7 @@ networkIsolationRoutes.get(
     if ('response' in found) return found.response;
     const { device } = found;
     const auth = c.get('auth') as AuthContext;
+    const { listDeviceIsolations } = await import('../../services/networkIsolation/service');
     const result = await listDeviceIsolations(auth, device.id);
     return response(c, result, false);
   },

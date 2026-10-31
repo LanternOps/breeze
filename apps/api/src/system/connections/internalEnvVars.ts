@@ -36,6 +36,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AGENT_ORG_RATE_LIMIT_PER_MIN: 'rate limit knob',
   AGENT_ROLLBACK_DENYLISTED_VERSIONS: 'agent rollback safety list',
   AGENT_ROLLBACK_MIN_VERSION: 'agent rollback safety floor',
+  AGENT_SERVER_URL: 'network isolation management-plane allowlist fallback URL',
   AGENT_TOKEN_ROTATION_MAX_AGE_DAYS: 'agent token rotation window',
   AGENT_WS_COMMAND_RESULT_MESSAGE_BUDGET_CAPACITY: 'agent WS message budget knob',
   AGENT_WS_COMMAND_RESULT_MESSAGE_BUDGET_REFILL_PER_SECOND: 'agent WS message budget knob',
@@ -383,6 +384,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // MONITOR_*
   MONITOR_EPISODE_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   MONITOR_EPISODE_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
+  // NETWORK_*
+  NETWORK_ISOLATION_ENABLED: 'network isolation rollout kill switch',
+  NETWORK_ISOLATION_ENABLED_PARTNER_IDS: 'network isolation partner canary allowlist',
   // NODE_*
   NODE_ENV: 'runtime mode',
   // NO_*

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { setupHeartbeatHarness, beat as heartbeat } from './heartbeatTestHarness';
+import { setupHeartbeatHarness, heartbeatSavepointDepth, beat as heartbeat } from './heartbeatTestHarness';
 import { buildContainmentHeartbeatBlock, reconcileContainmentReport, noteIsolationReportDropped } from '../../services/networkIsolation/reconcile';
 import { heartbeatSchema } from './schemas';
 const beat = { status: 'ok', agentVersion: '999.0.0', metrics: { cpuPercent: 1, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 } };
@@ -27,6 +27,39 @@ describe('heartbeat isolation fault containment', () => {
     vi.mocked(buildContainmentHeartbeatBlock).mockResolvedValue({ networkIsolation: null });
     vi.mocked(reconcileContainmentReport).mockResolvedValue(undefined);
   });
+  it('does not open a savepoint or build a block for a beat with no report and no episode (#4618)', async () => {
+    let lookupDepth: number | undefined;
+    vi.mocked(reconcileContainmentReport).mockImplementationOnce(async (_tx, _device, _report, _at, context) => {
+      lookupDepth = heartbeatSavepointDepth();
+      context!.row = null;
+    });
+    const response = await heartbeat();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toHaveProperty('containment', { networkIsolation: null });
+    expect(reconcileContainmentReport).toHaveBeenCalledTimes(1);
+    expect(buildContainmentHeartbeatBlock).not.toHaveBeenCalled();
+    expect(vi.mocked(reconcileContainmentReport).mock.calls[0]?.[2]).toBeUndefined();
+    expect(lookupDepth).toBe(0);
+  });
+  it('keeps a savepoint around real report reconciliation and block work', async () => {
+    let reconcileDepth: number | undefined;
+    let buildDepth: number | undefined;
+    vi.mocked(reconcileContainmentReport).mockImplementationOnce(async (_tx, _device, _report, _at, context) => {
+      reconcileDepth = heartbeatSavepointDepth();
+      context!.row = row as never;
+    });
+    vi.mocked(buildContainmentHeartbeatBlock).mockImplementationOnce(async () => {
+      buildDepth = heartbeatSavepointDepth();
+      return { networkIsolation: null };
+    });
+    const response = await heartbeat({ containment: { networkIsolation: { isolationId: null, phase: 'none' } } });
+    expect(response.status).toBe(200);
+    expect(reconcileContainmentReport).toHaveBeenCalledTimes(1);
+    expect(buildContainmentHeartbeatBlock).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(reconcileContainmentReport).mock.calls[0]?.[2]).toEqual({ isolationId: null, phase: 'none' });
+    expect(reconcileDepth).toBe(1);
+    expect(buildDepth).toBe(1);
+  });
   it('keeps heartbeat 200 and the stored containment block when decrypt/build throws', async () => {
     vi.mocked(buildContainmentHeartbeatBlock).mockImplementationOnce(async (_tx, _device, context) => {
       context!.row = row as never;
@@ -40,8 +73,13 @@ describe('heartbeat isolation fault containment', () => {
     expect(body.configUpdate).not.toHaveProperty('containment');
   });
   it('keeps heartbeat 200 and containment present when reconciliation throws', async () => {
-    vi.mocked(reconcileContainmentReport).mockRejectedValueOnce(new Error('SQL fault'));
-    const response = await heartbeat();
+    let reconcileDepth: number | undefined;
+    vi.mocked(reconcileContainmentReport).mockImplementationOnce(async () => {
+      reconcileDepth = heartbeatSavepointDepth();
+      throw new Error('SQL fault');
+    });
+    const response = await heartbeat({ containment: { networkIsolation: { isolationId: null, phase: 'none' } } });
+    expect(reconcileDepth).toBe(1);
     expect(response.status).toBe(200);
     expect(await response.json()).toHaveProperty('containment', { networkIsolation: null });
     expect(buildContainmentHeartbeatBlock).toHaveBeenCalledTimes(1);

@@ -76,7 +76,6 @@ import { handleNotifyUserResult, handleRetractMessageResult } from './endpointMe
 import { handleChatMessageResult, handleChatOpenResult } from './endpointMessaging/chatResults';
 // #9662: AI/incident containment actions follow their command's real outcome.
 import { handleExecuteContainmentResult } from './incidentContainmentResults';
-import { handleReleaseContainmentResult } from './networkIsolation/finalizer';
 
 export type CommandResultHandlerOutcome =
   | { kind: 'pam'; classification: PamActuationResultClassification }
@@ -1300,5 +1299,8 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   // #9662: the incident action (and, on success, the incident) follows the
   // agent's containment result.
   execute_containment: handleExecuteContainmentResult,
-  release_containment: handleReleaseContainmentResult,
+  release_containment: async args => {
+    const { handleReleaseContainmentResult } = await import('./networkIsolation/finalizer');
+    return handleReleaseContainmentResult(args);
+  },
 };

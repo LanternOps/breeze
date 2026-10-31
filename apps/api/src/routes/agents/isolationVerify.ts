@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { isActiveIsolationState } from '@breeze/shared';
 import { db, withDbTransaction } from '../../db';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
-import { withEpisodeLock, toEpisodeSnapshot, writeEpisodeSnapshot, type EpisodeTx } from '../../services/networkIsolation/episodeStore';
+import type { EpisodeTx } from '../../services/networkIsolation/episodeStore';
 import { applyEpisodeEvent } from '../../services/networkIsolation/stateMachine';
 import { captureException } from '../../services/sentry';
 import { PG_UUID_REGEX } from '../../utils/uuid';
@@ -16,6 +16,7 @@ isolationVerifyRoutes.post('/:id/isolation/:isolationId/verify', async c => {
   if (agent.agentId !== c.req.param('id')) return c.json({ error: 'Forbidden' }, 403);
   const id = c.req.param('isolationId');
   if (!PG_UUID_REGEX.test(id)) return c.json({ error: 'Invalid isolation id' }, 400);
+  const { withEpisodeLock, toEpisodeSnapshot, writeEpisodeSnapshot } = await import('../../services/networkIsolation/episodeStore');
   const result = await withDbTransaction(() => withEpisodeLock(db as unknown as EpisodeTx, id, async row => {
     if (row.deviceId !== agent.deviceId || row.orgId !== agent.orgId) {
       console.warn('[isolation] verify ownership mismatch', { agentId: agent.agentId, isolationId: id });

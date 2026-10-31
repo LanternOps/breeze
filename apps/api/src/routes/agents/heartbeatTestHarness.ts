@@ -14,6 +14,8 @@ const ingestRollbackObservationMock = vi.hoisted(() => vi.fn());
 // manifest-trust-keyset fetch happens AFTER the org DB context closes
 // (the #1105 pool-poison fix). Reset per test.
 const callOrder: string[] = [];
+let savepointDepth = 0;
+export function heartbeatSavepointDepth(): number { return savepointDepth; }
 // #4673 W02 — org contexts opened by the heartbeat's self-managed wrap.
 const orgDbContexts: Array<Record<string, unknown>> = [];
 
@@ -91,7 +93,8 @@ vi.mock('../../db', () => ({
   // in savepoints; a savepoint is a pass-through here.
   withDbTransaction: async (fn: () => Promise<unknown>) => {
     callOrder.push('savepoint');
-    return fn();
+    savepointDepth++;
+    try { return await fn(); } finally { savepointDepth--; }
   },
 }));
 

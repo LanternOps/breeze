@@ -1,4 +1,4 @@
-import { buildContainmentHeartbeatBlock, reconcileContainmentReport, storedContainmentHeartbeatBlock, noteIsolationReportDropped, type HeartbeatEpisodeContext } from '../../services/networkIsolation/reconcile';
+import type { HeartbeatEpisodeContext } from '../../services/networkIsolation/reconcile';
 import { topologyHeartbeat, topologyHeartbeatWithoutMaterialization } from '../../services/topology/heartbeat';
 import { loadAgentTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from '../../services/topology/flags';
 import { Hono } from 'hono';
@@ -22,7 +22,7 @@ import {
 } from '../../db/schema';
 import { ownDeviceRowChangedHands, selectOwnDeviceRowForUpdate, updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
-import type { BatteryStatus, DesktopAccessState, TCCPermissions } from '@breeze/shared';
+import type { BatteryStatus, ContainmentDesiredBlock, DesktopAccessState, TCCPermissions } from '@breeze/shared';
 import { ERROR_CODES } from '@breeze/shared';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { refreshReadinessAfterRecovery } from '../../services/bareMetalReadinessRefresh';
@@ -2406,23 +2406,37 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   }
 
   const isolationContext: HeartbeatEpisodeContext = {};
-  // Informational input may have collapsed under .catch(undefined); report paths, never values.
-  const rawBeat = await c.req.json();
-  const rawIsolation = rawBeat?.containment?.networkIsolation;
-  if (data.containment?.networkIsolation === undefined) noteIsolationReportDropped(device.id, rawIsolation);
+  let isolation: typeof import('../../services/networkIsolation/reconcile') | undefined;
   try {
-    await withDbTransaction(() => reconcileContainmentReport(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device, data.containment?.networkIsolation, new Date(), isolationContext));
+    // Load inside the fault boundary: isolation must not prevent other heartbeat work.
+    isolation = await import('../../services/networkIsolation/reconcile');
+    const { reconcileContainmentReport, noteIsolationReportDropped } = isolation;
+    // Informational input may have collapsed under .catch(undefined); report paths, never values.
+    const rawBeat = await c.req.json();
+    const rawIsolation = rawBeat?.containment?.networkIsolation;
+    if (data.containment?.networkIsolation === undefined) noteIsolationReportDropped(device.id, rawIsolation);
+    const reconcile = () => reconcileContainmentReport(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device, data.containment?.networkIsolation, new Date(), isolationContext);
+    // #4618: without a report reconciliation only does the indexed episode SELECT.
+    // Keep that common path at one statement; real reconciliation retains its savepoint.
+    if (data.containment?.networkIsolation === undefined) await reconcile();
+    else await withDbTransaction(reconcile);
   } catch (err) {
     console.error('[heartbeat] isolation reconcile failed', { deviceId: device.id, isolationId: isolationContext.row?.id });
     captureException(err, undefined, { phase: 'isolation_heartbeat_block', deviceId: device.id, isolationId: isolationContext.row?.id ?? 'unknown' });
   }
-  let containment;
-  try {
-    containment = await withDbTransaction(() => buildContainmentHeartbeatBlock(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device, isolationContext));
-  } catch (err) {
-    console.error('[heartbeat] isolation block failed', { deviceId: device.id, isolationId: isolationContext.row?.id });
-    captureException(err, undefined, { phase: 'isolation_heartbeat_block', deviceId: device.id, isolationId: isolationContext.row?.id ?? 'unknown' });
-    containment = storedContainmentHeartbeatBlock(isolationContext.row);
+  let containment: ContainmentDesiredBlock = { networkIsolation: null };
+  if (isolation) {
+    const { buildContainmentHeartbeatBlock, storedContainmentHeartbeatBlock } = isolation;
+    try {
+      // A cached absence needs no block build (and no SAVEPOINT / RELEASE).
+      containment = isolationContext.row === null
+        ? storedContainmentHeartbeatBlock(null)
+        : await withDbTransaction(() => buildContainmentHeartbeatBlock(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device, isolationContext));
+    } catch (err) {
+      console.error('[heartbeat] isolation block failed', { deviceId: device.id, isolationId: isolationContext.row?.id });
+      captureException(err, undefined, { phase: 'isolation_heartbeat_block', deviceId: device.id, isolationId: isolationContext.row?.id ?? 'unknown' });
+      containment = storedContainmentHeartbeatBlock(isolationContext.row);
+    }
   }
 
   // Main-branch response payload — built inside the org context, but the
