@@ -66,6 +66,7 @@ import {
   type SpecialistRefusal,
 } from './specialistLaunchers';
 import { SPECIALIST_KIND_POLICY, isSpecialistKind, type SpecialistKind } from './specialistPolicy';
+import { specialistRefusalMessage } from './specialistRefusalMessages';
 import { bulkReplyDigest } from './specialists/bulkTicketReply';
 
 export type { SpecialistRefusal } from './specialistLaunchers';
@@ -91,7 +92,7 @@ export type SpecialistRequestInput = {
 export type RequestSpecialistResult =
   | { admitted: true; runId?: string; taskId?: string; report?: unknown }
   | { needsApproval: true; intentId: string }
-  | { refused: SpecialistRefusal; detail?: string; report?: unknown };
+  | { refused: SpecialistRefusal; detail?: string; message?: string; report?: unknown };
 
 /** Fixed namespace for `deriveRequestId` (uuid v5). Never change it: ids are durable. */
 export const WISP_REQUEST_NS = '6f1c2a3e-7b4d-5c8e-9a0f-1d2e3f4a5b6c';
@@ -134,7 +135,17 @@ const missingToRefusal = (key: string): SpecialistRefusal =>
 
 export type SpecialistPrecheckResult =
   | { ok: true; orgName: string | null }
-  | { ok: false; refused: SpecialistRefusal; detail?: string };
+  | { ok: false; refused: SpecialistRefusal; detail?: string; message: string };
+
+/** A precheck refusal with its person-facing sentence (#10193): an explicit one (it can name the agent) wins. */
+function precheckRefusal(refused: SpecialistRefusal, detail?: string, message?: string): SpecialistPrecheckResult {
+  return {
+    ok: false,
+    refused,
+    ...(detail ? { detail } : {}),
+    message: message ?? specialistRefusalMessage(refused, detail),
+  };
+}
 
 /**
  * #10144 — the cheap, deterministic gates for a chat `launch_specialist` call,
@@ -142,7 +153,8 @@ export type SpecialistPrecheckResult =
  * request the coordinator would refuse never asks the person first: a known
  * kind (gate 6), params that parse (gate 6, with a detail the model can act
  * on), the sandbox for analysis, and the kind's prerequisite (a sweep schedule,
- * an effective agent, a device in the org — SPECIALIST_PREREQUISITES).
+ * an effective agent that is switched on (#10193), a device in the org —
+ * SPECIALIST_PREREQUISITES). Every refusal carries a `message` for the person.
  *
  * Advisory only. The grant, entitlement, ceiling, budget and permission gates
  * are not repeated here (the chat ceiling gate already ran), and
@@ -156,17 +168,14 @@ export async function precheckSpecialistRequest(input: {
   kind: string;
   params: Record<string, unknown>;
 }): Promise<SpecialistPrecheckResult> {
-  if (!isSpecialistKind(input.kind)) return { ok: false, refused: 'unknown_kind' };
+  if (!isSpecialistKind(input.kind)) return precheckRefusal('unknown_kind');
   const params = parseSpecialistParams(input.kind, input.params);
-  if (!params) {
-    const detail = specialistParamsError(input.kind, input.params);
-    return detail ? { ok: false, refused: 'invalid_params', detail } : { ok: false, refused: 'invalid_params' };
-  }
+  if (!params) return precheckRefusal('invalid_params', specialistParamsError(input.kind, input.params) ?? undefined);
   if (input.kind === 'analysis' && !aiWorkspaceEnabled()) {
-    return { ok: false, refused: 'admission_skipped', detail: 'analysis_not_available' };
+    return precheckRefusal('admission_skipped', 'analysis_not_available');
   }
   const prerequisite = await SPECIALIST_PREREQUISITES[input.kind]({ orgId: input.orgId, partnerId: input.partnerId, params });
-  if (prerequisite) return { ok: false, ...prerequisite };
+  if (prerequisite) return precheckRefusal(prerequisite.refused, prerequisite.detail, prerequisite.message);
 
   const [org] = await systemRead(() => db
     .select({ name: organizations.name })

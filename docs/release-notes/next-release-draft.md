@@ -223,3 +223,8 @@ Update agents to a release containing this change before relying on the provider
 ### Export the Devices list to CSV
 
 The Devices list (and an organization's Devices tab) has an **Export CSV** button. It exports every device matching the current search and filters, not just the page on screen, or only the checked rows when any are checked. Columns are the visible ones in their current order, plus any custom-field columns turned on; Attention counts are fetched only when that column is visible. Hostnames starting with `=`, `+`, `-` or `@` are neutralised so they cannot run as spreadsheet formulas. No migration, setting or environment variable.
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.

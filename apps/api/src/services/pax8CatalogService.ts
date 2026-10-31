@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import { db, withDbAccessContext, type DbAccessContext } from '../db';
+import { db, runOutsideDbContext, withDbAccessContext, type DbAccessContext } from '../db';
 import { pax8Integrations, pax8ProductMappings } from '../db/schema/pax8';
 import { createPax8ClientForIntegration } from './pax8SyncService';
 import { applyImportedPricingBySku, createCatalogItem, CatalogServiceError, type CatalogActor } from './catalogService';
@@ -74,11 +74,17 @@ export async function searchPax8Products(
   return matched.slice(0, input.limit);
 }
 
-export async function getPax8ProductPricing(productId: string, actor: CatalogActor): Promise<Pax8ProductPriceRecord[]> {
-  const integration = await getActiveIntegration(actor);
-  if (!integration) throw new Pax8CatalogError('Pax8 is not connected', 400, 'PAX8_NOT_CONFIGURED');
-  const { client } = await createPax8ClientForIntegration(integration.id);
-  return client.getProductPricing(productId);
+export async function getPax8ProductPricing(productId: string, actor: CatalogActor, dbCtx?: DbAccessContext): Promise<Pax8ProductPriceRecord[]> {
+  const resolveClient = async () => {
+    const integration = await getActiveIntegration(actor);
+    if (!integration) throw new Pax8CatalogError('Pax8 is not connected', 400, 'PAX8_NOT_CONFIGURED');
+    return createPax8ClientForIntegration(integration.id);
+  };
+  // The client constructor only reads credentials. Token refresh and product HTTP happen below, after this short context closes.
+  const { client } = dbCtx
+    ? await runOutsideDbContext(() => withDbAccessContext(dbCtx, resolveClient))
+    : await resolveClient();
+  return dbCtx ? runOutsideDbContext(() => client.getProductPricing(productId)) : client.getProductPricing(productId);
 }
 
 export interface Pax8ImportInput {
