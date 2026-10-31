@@ -106,6 +106,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('filesystemCleanupRunRetention'),
   // #8581. Plain Redis-required consumer, no feature flag.
   consumers('restorePointAttemptRetention'),
+  consumers('wakeAttemptSweep'),
+  consumers('wakeAttemptRetention'),
   // #9128. Plain Redis-required consumer, no feature flag.
   consumers('webhookDeliveryRetention'),
   // #10019/#10020. Plain Redis-required consumer, no feature flag.

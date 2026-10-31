@@ -57,6 +57,7 @@ export const RETENTION_JOB_NAMES = [
   'snmp_retention',
   'ticket_outbox_retention',
   'user_risk_retention',
+  'wake_attempt_retention',
   'webhook_delivery_retention',
 ] as const;
 
