@@ -425,3 +425,45 @@ describe('GET /scans/:deviceId — timed_out filter', () => {
     expect(res.status).not.toBe(400);
   });
 });
+
+describe('GET /scans/:deviceId — sweep id and rule-set errors (#10049)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      allowedSiteIds: undefined,
+    });
+  });
+
+  function mockScanRows(rows: unknown[]) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue(rows) }),
+      }),
+    } as any);
+  }
+
+  const base = {
+    scanType: 'quick', threatsFound: 0, duration: null,
+    startedAt: new Date('2026-10-24T10:00:00.000Z'), completedAt: null,
+  };
+
+  it('projects sweepId and ruleSetErrors so a sweep child failed by a republish is identifiable', async () => {
+    const errors = [{ id: 'set-1', version: 1, code: 'rule_set_changed' }];
+    mockDeviceSelect();
+    mockScanRows([
+      { ...base, id: 'scan-1', status: 'failed', sweepId: 'sweep-1', ruleSetErrors: errors },
+      { ...base, id: 'scan-2', status: 'completed', sweepId: null, ruleSetErrors: null },
+      // A pre-W03 row whose rule_set_errors is not an array is reported as none.
+      { ...base, id: 'scan-3', status: 'completed', sweepId: null, ruleSetErrors: { bogus: true } },
+    ]);
+    const res = await buildApp().request(`/security/scans/${DEVICE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.map((s: any) => [s.id, s.sweepId, s.ruleSetErrors])).toEqual([
+      ['scan-1', 'sweep-1', errors],
+      ['scan-2', null, null],
+      ['scan-3', null, null],
+    ]);
+  });
+});
