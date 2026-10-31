@@ -219,3 +219,7 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Export the Devices list to CSV
+
+The Devices list (and an organization's Devices tab) has an **Export CSV** button. It exports every device matching the current search and filters, not just the page on screen, or only the checked rows when any are checked. Columns are the visible ones in their current order, plus any custom-field columns turned on; Attention counts are fetched only when that column is visible. Hostnames starting with `=`, `+`, `-` or `@` are neutralised so they cannot run as spreadsheet formulas. No migration, setting or environment variable.
