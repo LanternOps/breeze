@@ -1,3 +1,4 @@
+vi.mock('../../services/networkIsolation/reconcile', () => ({ buildContainmentHeartbeatBlock: vi.fn(async () => ({ networkIsolation: null })), reconcileContainmentReport: vi.fn(async () => undefined) }));
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { Hono } from 'hono';
 
@@ -538,6 +539,24 @@ describe('POST /agents/:id/heartbeat — ECH (#8869)', () => {
       body: JSON.stringify({ status: 'ok', ...minimalHeartbeatBody, ...extra }),
     });
   }
+
+  it('persists all four capability fields non-sticky on consecutive heartbeats', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    updateMock.mockReturnValue({ set: setSpy });
+    await beat({ securityCapabilities: { networkIsolationVersion: 1, networkIsolationMechanism: 'wfp', networkIsolationUnsupportedReason: 'diagnostic', networkIsolationReady: true } });
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ networkIsolationVersion: 1, networkIsolationMechanism: 'wfp', networkIsolationUnsupportedReason: 'diagnostic', networkIsolationReady: true }));
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    await beat();
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ networkIsolationVersion: 0, networkIsolationMechanism: null, networkIsolationUnsupportedReason: null, networkIsolationReady: false }));
+  });
+
+  it('always returns containment at top level, tolerating a malformed report', async () => {
+    const resp = await beat({ containment: { networkIsolation: { state: 'garbage' } } });
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as any;
+    expect(body.containment).toEqual({ networkIsolation: null });
+    expect(body.configUpdate).not.toHaveProperty('containment');
+  });
 
   it('zero-initialises both ECH counters at registration', async () => {
     expect(await counterValues('breeze_agent_heartbeat_ech_total')).toEqual(

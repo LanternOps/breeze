@@ -1,3 +1,4 @@
+import { buildContainmentHeartbeatBlock, reconcileContainmentReport } from '../../services/networkIsolation/reconcile';
 import { topologyHeartbeat, topologyHeartbeatWithoutMaterialization } from '../../services/topology/heartbeat';
 import { loadAgentTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from '../../services/topology/flags';
 import { Hono } from 'hono';
@@ -658,7 +659,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }),
     );
 
-    return c.json({ commands: drainCommands });
+    return c.json({ commands: drainCommands, containment: { networkIsolation: null } });
   }
 
   // Pre-assignment — a device parked in its partner's
@@ -1137,6 +1138,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           data.securityCapabilities?.scriptSecretEnvVersion,
         ),
       }),
+      containment: { networkIsolation: null },
       watchdogUpgradeTo,
       upgradeTo: agentUpgradeTo,
     });
@@ -1159,6 +1161,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // a downgrade FROM a capable build back to an old one — correctly
     // reports back down to 0 rather than leaving a stale capability claim
     // that Task 5's dispatch gate would wrongly trust.
+    networkIsolationVersion: data.securityCapabilities?.networkIsolationVersion ?? 0,
+    networkIsolationMechanism: data.securityCapabilities?.networkIsolationMechanism ?? null,
+    networkIsolationUnsupportedReason: data.securityCapabilities?.networkIsolationUnsupportedReason ?? null,
+    networkIsolationReady: data.securityCapabilities?.networkIsolationReady ?? false,
     outboundNetworkPolicyVersion: data.securityCapabilities?.outboundNetworkPolicyVersion === 1 ? 1 : 0,
     // #3409 PR4 — same non-sticky contract as the line above: written every
     // beat so a downgrade is detected. PR4c re-checks this at CLAIM time too,
@@ -2399,6 +2405,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
   }
 
+  await reconcileContainmentReport(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device, data.containment?.networkIsolation, new Date());
+
   // Main-branch response payload — built inside the org context, but the
   // manifest-trust-keyset and policy probe config are fetched AFTER this
   // context closes (see below).
@@ -2409,6 +2417,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceId: device.id,
     remoteManagement,
     mainResponse: {
+      containment: await buildContainmentHeartbeatBlock(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device),
       commands: deliverableCommands,
       configUpdate: mergedConfigUpdate,
       networkContextReceipt,

@@ -45,6 +45,11 @@ describe('execute_containment cancel propagation (#9662)', () => {
     })).rejects.toThrow('db down');
   });
 
+  it('never changes the isolation episode or its action when a transport command is cancelled', async () => {
+    await propagateCancelledDeviceCommand({ commandId: 'cmd-1', type: 'execute_containment', payload: { ...payload, actionType: 'network_isolation' }, completedAt });
+    expect(finalizeMock).not.toHaveBeenCalled();
+  });
+
   it('is not consulted for other command types', async () => {
     await propagateCancelledDeviceCommand({ commandId: 'cmd-1', type: 'script', payload: {}, completedAt });
     expect(finalizeMock).not.toHaveBeenCalled();

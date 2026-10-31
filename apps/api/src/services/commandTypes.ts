@@ -239,6 +239,7 @@ export const CommandTypes = {
   // Incident response
   COLLECT_EVIDENCE: 'collect_evidence',
   EXECUTE_CONTAINMENT: 'execute_containment',
+  RELEASE_CONTAINMENT: 'release_containment',
 
   // Caller verification (#6354 W02): a short, interactive confirmation card
   // for the explicitly selected console user. Never queued (see LIVE).

@@ -45,6 +45,8 @@ export const LIFECYCLE_COMMAND_TYPES = [
   'restart_agent',
   // Endpoint messaging W02 (#8742): carries only a message id, no content.
   'retract_message',
+  // Reduces only Breeze-owned capability; reason is audit text.
+  'release_containment',
   'script_cancel',
   'script_list_running',
   'security_collect_status',

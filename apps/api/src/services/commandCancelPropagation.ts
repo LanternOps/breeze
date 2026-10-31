@@ -308,7 +308,8 @@ export async function propagateCancelledDeviceCommand(params: {
   // `in_progress` forever otherwise. DYNAMIC import, like the branches above,
   // to keep this module a leaf. Not try/caught, for the same reason: a
   // failure rolls the caller's cancel back with it.
-  if (type === 'execute_containment') {
+  // Cancellation of a transport row never changes a network-isolation episode.
+  if (type === 'execute_containment' && payload?.actionType !== 'network_isolation') {
     const { finalizeContainmentAction } = await import('./incidentContainmentResults');
     await finalizeContainmentAction({
       commandId,

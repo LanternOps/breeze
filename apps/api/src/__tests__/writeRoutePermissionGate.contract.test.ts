@@ -64,6 +64,7 @@ vi.hoisted(() => {
  *   no state change — writes nothing despite the method.
  */
 const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
+  'POST /api/v1/agents/:id/isolation/:isolationId/verify': 'device credential: agentAuthMiddleware and requireAgentRole; episode device/org checked under row lock',
   // routes/accounting/connectionSetupRoutes.ts
   'POST /api/v1/accounting/:provider/tenants/select': 'equivalent check: guard chain: requireAccountingManage (accounting:manage) + partner authority + MFA',
   'POST /api/v1/accounting/:provider/tenants/cancel': 'equivalent check: guard chain: requireAccountingManage (accounting:manage) + partner authority + MFA',

@@ -160,7 +160,8 @@ const DRAIN_EXEMPT_TYPES: ReadonlySet<string> = new Set(DRAIN_CLAIM_TYPE_ALLOWLI
  * `LIFECYCLE_COMMAND_TYPES` in partnerTrust.ts).
  *
  * Membership rule: a type is listed ONLY if it reduces capability and carries
- * no operator-chosen content, target, credential or binary. Nothing that
+ * no device-executed operator content, target, credential or binary. A release
+ * reason is audit text only. Nothing that
  * starts, executes, changes or reveals anything may be added (kill_process,
  * stop_service, task_disable and software_uninstall act on the customer's own
  * workload with an operator-chosen target and are deliberately NOT here).
@@ -182,6 +183,7 @@ export const TEARDOWN_CLAIM_EXEMPT_TYPES: ReadonlySet<string> = new Set([
   'backup_stop',
   'pam_cleanup_v2',
   'cancel_reboot',
+  'release_containment',
 ]);
 
 /** Device states in which ordinary queued work must never be delivered. */
