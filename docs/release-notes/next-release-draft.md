@@ -225,3 +225,8 @@ Update agents to a release containing this change before relying on the provider
 `breeze-backup rebuild --provider-config` takes `--key-prefix <prefix>` to read a snapshot stored under `<prefix>/snapshots/`. Pass the prefix the snapshot was written under; `providerConfig.prefix` in the file is not applied, and the command prints a note when it is set.
 The `agent.yaml` backup manager takes `backup_s3_prefix`. An invalid value disables that manager instead of writing at the bucket root.
 Server-dispatched backups and token-mode recovery are unchanged. No migration, no new environment variable.
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.

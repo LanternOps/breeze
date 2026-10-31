@@ -714,6 +714,8 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'TRUST_PROXY_HEADERS', secret: false },
       { name: 'TRUSTED_PROXY_CIDRS', secret: false },
       { name: 'TRUST_CF_CONNECTING_IP', secret: false },
+      { name: 'INTERNAL_SERVICE_CIDRS', secret: false },
+      { name: 'INTERNAL_API_HOSTS', secret: false },
     ],
     status: { kind: 'custom', fn: transportSecurityStatus },
   }),

@@ -18,7 +18,7 @@ vi.mock('../services/psa', () => ({
 const { permissionGate, orgsWriteGate, mfaGate, selectMock, insertMock, updateMock, deleteMock } = vi.hoisted(() => {
   function chainMock(resolvedValue: unknown = []) {
     const chain: Record<string, any> = {};
-    for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin', 'leftJoin', 'orderBy', 'offset']) {
+    for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin', 'leftJoin', 'orderBy', 'offset', 'for']) {
       chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
     }
     return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -76,6 +76,9 @@ vi.mock('../db/schema', () => ({
     lastSyncAt: 'psa_ticket_mappings.last_sync_at',
     updatedAt: 'psa_ticket_mappings.updated_at',
     createdAt: 'psa_ticket_mappings.created_at',
+    createState: 'psa_ticket_mappings.create_state',
+    closeState: 'psa_ticket_mappings.close_state',
+    noteState: 'psa_ticket_mappings.note_state',
   },
   devices: {
     id: 'devices.id',
@@ -308,7 +311,7 @@ describe('psa routes', () => {
 
   const makeChain = (rows: unknown[]) => {
     const chain: Record<string, any> = {};
-    for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin', 'leftJoin', 'orderBy', 'offset']) {
+    for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin', 'leftJoin', 'orderBy', 'offset', 'for']) {
       chain[method] = vi.fn(() => Object.assign(Promise.resolve(rows), chain));
     }
     return Object.assign(Promise.resolve(rows), chain);
@@ -717,6 +720,36 @@ describe('psa routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
+    expect(deleteMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses (409) to delete a connection while alert-ticket mappings are mid-operation (#10499 W2-A)', async () => {
+    const lockChain = makeChain([{ id: 'conn-1' }]);
+    selectMock
+      .mockReturnValueOnce(makeChain([connectionRow()]) as never)
+      .mockReturnValueOnce(lockChain as never)
+      .mockReturnValueOnce(makeChain([{ count: 2 }]) as never);
+
+    const res = await app.request('/psa/connections/conn-1', { method: 'DELETE' });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body).toMatchObject({ code: 'psa_connection_has_open_alert_tickets', openMappings: 2 });
+    // The connection row is locked first, so a concurrent W2-B admission
+    // (whose FK check takes KEY SHARE on it) cannot slip a mapping in.
+    expect(lockChain.for).toHaveBeenCalledWith('update');
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it('deletes terminal mappings with the connection when none are mid-operation', async () => {
+    selectMock
+      .mockReturnValueOnce(makeChain([connectionRow()]) as never)
+      .mockReturnValueOnce(makeChain([{ id: 'conn-1' }]) as never)
+      .mockReturnValueOnce(makeChain([{ count: 0 }]) as never);
+
+    const res = await app.request('/psa/connections/conn-1', { method: 'DELETE' });
+
+    expect(res.status).toBe(200);
     expect(deleteMock).toHaveBeenCalledTimes(2);
   });
 

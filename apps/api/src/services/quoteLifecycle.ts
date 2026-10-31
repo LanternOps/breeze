@@ -425,7 +425,25 @@ export async function resolveParentToSupersede(
 }
 
 /**
- * The two hard gates a DRAFT must clear before it is claimed to 'sent'.
+ * A quote must carry at least one customer-visible line item to be sent or
+ * accepted (#9963). Internal-only lines (customerVisible false) never reach the
+ * customer's document or the converted invoice, so they do not count.
+ * 422 QUOTE_EMPTY — the same code `/schedule-send` has always returned.
+ */
+export function assertQuoteHasCustomerVisibleLine(
+  lines: readonly { customerVisible: boolean | null }[],
+  action: 'send' | 'accept',
+): void {
+  if (lines.some((l) => l.customerVisible)) return;
+  throw new QuoteServiceError(
+    action === 'send' ? 'Add at least one item before sending' : 'Add at least one item before accepting',
+    422,
+    'QUOTE_EMPTY',
+  );
+}
+
+/**
+ * The hard gates a DRAFT must clear before it is claimed to 'sent'.
  *
  * ONE copy, shared by `sendQuote` and by the on-behalf accept of a draft
  * (spec 2026-09-21 §5) — that path claims the draft with the same
@@ -448,6 +466,13 @@ export function assertQuoteSendGates(
   contractRenderData: readonly ContractBlockRenderData[],
   action: 'send' | 'accept',
 ): void {
+  // Empty-quote gate (#9963) first: it is the most basic thing wrong with the
+  // quote, and an item-less quote that got through converted on accept into a
+  // $0 draft invoice. Before this lived here only `/schedule-send` and the web
+  // Send button checked it, so `/send`, the AI send tool and the on-behalf
+  // accept of a draft all let one out.
+  assertQuoteHasCustomerVisibleLine(lines, action);
+
   // Contract-variable gate (Task 12): a contract block's declared variables
   // (auto or manual) can be left unresolved — issuing would ship a raw
   // `{{token}}` placeholder into a legal document, or (on the accept path)
