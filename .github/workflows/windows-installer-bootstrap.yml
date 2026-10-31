@@ -1,0 +1,39 @@
+name: Windows installer bootstrap
+
+on:
+  pull_request:
+    paths:
+      - 'apps/api/src/services/windowsInstall*.ts'
+      - 'apps/web/src/lib/installCommands.ts'
+      - 'scripts/windows-installer-bootstrap.test.mjs'
+      - '.github/workflows/windows-installer-bootstrap.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/api/src/services/windowsInstall*.ts'
+      - 'apps/web/src/lib/installCommands.ts'
+      - 'scripts/windows-installer-bootstrap.test.mjs'
+      - '.github/workflows/windows-installer-bootstrap.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    name: Installer bootstrap (${{ matrix.powershell }})
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        powershell: [powershell.exe, pwsh.exe]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+      - run: node --test scripts/windows-installer-bootstrap.test.mjs
+        env:
+          BREEZE_POWERSHELL: ${{ matrix.powershell }}

@@ -334,19 +334,24 @@ describe('agent routes', () => {
 
   describe('GET /agents/install.sh', () => {
     it('serves public install and uninstall scripts without agent-token auth', async () => {
+      vi.stubEnv('PUBLIC_API_URL', 'https://rmm.example.com');
       const installRes = await app.request('/agents/install.sh');
+      const windowsInstallRes = await app.request('/agents/install.ps1');
       const uninstallRes = await app.request('/agents/uninstall.sh');
 
       expect(installRes.status).toBe(200);
+      expect(windowsInstallRes.status).toBe(200);
       expect(uninstallRes.status).toBe(200);
       expect(await uninstallRes.text()).toContain('case "$uname_s"');
       expect(agentAuthMiddleware).not.toHaveBeenCalled();
     });
 
-    it('does not apply script auth bypasses to nested paths', async () => {
+    it('does not apply script auth bypasses to nested or lookalike paths', async () => {
       await app.request('/agents/install.sh/heartbeat');
+      await app.request('/agents/install.ps1/heartbeat');
+      await app.request('/agents/install.ps1x/heartbeat');
 
-      expect(agentAuthMiddleware).toHaveBeenCalledTimes(1);
+      expect(agentAuthMiddleware).toHaveBeenCalledTimes(3);
     });
 
     it('requires Linux agent checksum metadata verification before install', async () => {

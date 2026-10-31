@@ -67,6 +67,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { downloadRoutes } from './download';
+import { getWindowsInstaller } from '../../services/windowsInstaller';
 import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl } from '../../services/binarySource';
 import { isS3Configured, getPresignedUrl, getObjectStream } from '../../services/s3Storage';
 import { getPromotedComponentVersion, getRegisteredComponentVersion } from '../../services/promotedAgentVersion';
@@ -1263,6 +1264,167 @@ describe('GET /install.sh — generated installer script', () => {
   it('documents --token usage in the script header', async () => {
     const script = await fetchScript();
     expect(script).toContain('--token YOUR_ENROLLMENT_TOKEN');
+  });
+});
+
+describe('GET /install.ps1 — generated Windows installer', () => {
+  it('serves a credential-free function from the configured server URL', async () => {
+    const originalBreezeServer = process.env.BREEZE_SERVER;
+    const originalPublicApiUrl = process.env.PUBLIC_API_URL;
+    const originalApiUrl = process.env.API_URL;
+    process.env.BREEZE_SERVER = 'https://internal.example.net';
+    process.env.PUBLIC_API_URL = 'https://rmm.example.com///';
+    delete process.env.API_URL;
+
+    try {
+      const res = await downloadRoutes.request('/install.ps1');
+      const bytes = await res.arrayBuffer();
+      const script = new TextDecoder().decode(bytes);
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+      expect(res.headers.get('cache-control')).toBe('no-store, no-transform');
+      expect(createHash('sha256').update(new Uint8Array(bytes)).digest('hex'))
+        .toBe(getWindowsInstaller('https://rmm.example.com')?.integrity.sha256);
+      expect(script).toMatch(/^function Install-BreezeAgent\s*\{/);
+      expect(script).toContain('param(');
+      expect(script).toContain('[string]$Token');
+      expect(script).toContain('[string]$EnrollmentSecret');
+      expect(script).toContain("$serverUrl = 'https://rmm.example.com'");
+      expect(script).toContain('$serverUrl/api/v1/agent-versions/latest?platform=windows&arch=amd64&component=agent');
+      expect(script).toContain('$serverUrl/api/v1/agents/download/windows/amd64');
+      expect(script).not.toContain('enroll_abc123');
+      expect(script).not.toContain('Install-BreezeAgent -Token');
+      expect(script).not.toMatch(/ServerCertificateValidationCallback|SkipCertificateCheck/);
+      expect(script).not.toContain('github.com');
+      expect(script).not.toMatch(/\bservice\s+start\b/i);
+      expect(script).not.toMatch(/-OutFile\s+['"]?breeze-agent\.exe\b|\$pwd/i);
+      expect(script).toContain('breeze-install-$guid');
+      expect(script).not.toMatch(/New-Item[^\r\n]*-Force/i);
+
+      const knownDriveQualifiedPrefixes = new Set([
+        'env', 'global', 'script', 'local', 'private', 'function', 'variable', 'alias',
+        'cert', 'hklm', 'hkcu', 'hkcr', 'hkey_local_machine', 'hkey_current_user', 'wsman',
+      ]);
+      const offenders: string[] = [];
+      for (const doubleQuoted of script.match(/"(?:[^"\\]|\\.)*"/g) ?? []) {
+        for (const match of doubleQuoted.matchAll(/\$([A-Za-z_][A-Za-z0-9_]*):/g)) {
+          if (!knownDriveQualifiedPrefixes.has(match[1]?.toLowerCase() ?? '')) offenders.push(`${match[0]} in ${doubleQuoted}`);
+        }
+      }
+      expect(offenders).toEqual([]);
+    } finally {
+      if (originalBreezeServer === undefined) delete process.env.BREEZE_SERVER;
+      else process.env.BREEZE_SERVER = originalBreezeServer;
+      if (originalPublicApiUrl === undefined) delete process.env.PUBLIC_API_URL;
+      else process.env.PUBLIC_API_URL = originalPublicApiUrl;
+      if (originalApiUrl === undefined) delete process.env.API_URL;
+      else process.env.API_URL = originalApiUrl;
+    }
+  });
+
+  it('keeps the Windows install safeguards and their failure messages in the generated function', async () => {
+    const originalPublicApiUrl = process.env.PUBLIC_API_URL;
+    process.env.PUBLIC_API_URL = 'https://rmm.example.com';
+
+    try {
+      const res = await downloadRoutes.request('/install.ps1');
+      const script = await res.text();
+
+      expect(res.status).toBe(200);
+      expect(script).toContain('$osv.Major -lt 10');
+      expect(script).toContain('Windows 10 or Windows Server 2016 or later is required');
+      expect(script.indexOf('$osv.Major -lt 10')).toBeLessThan(script.indexOf('Invoke-RestMethod'));
+      expect(script).toContain('[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12');
+      expect(script).toContain('New-Item -ItemType Directory');
+      expect(script).toContain('[guid]::NewGuid()');
+      expect(script).toContain('/inheritance:r');
+      expect(script).toContain('S-1-5-18');
+      expect(script).toContain('icacls $d');
+      expect(script).toContain('if ($LASTEXITCODE -ne 0)');
+      expect(script).toContain('0x4D');
+      expect(script).toContain('0x5A');
+      expect(script).toContain('Get-AuthenticodeSignature');
+      expect(script).toContain("$sig.Status -ne 'NotSigned' -and $sig.Status -ne 'Valid'");
+      expect(script).toContain("$expectedSha -notmatch '^[A-Fa-f0-9]{64}$'");
+      expect(script).toContain('[string]::IsNullOrWhiteSpace($version)');
+      expect(script).toContain('Get-FileHash -Algorithm SHA256');
+      expect(script).toContain('[uri]::EscapeDataString($version)');
+      expect(script.indexOf('Get-FileHash')).toBeLessThan(script.indexOf('& $exe @enrollArgs'));
+      expect(script.indexOf('& $exe @enrollArgs')).toBeLessThan(script.indexOf('& $exe service install'));
+      expect(script.match(/if \(\$LASTEXITCODE\) \{\s+throw/g)).toHaveLength(2);
+      expect(script).toContain('Breeze: release metadata did not include a valid SHA-256 checksum - refusing to install');
+      expect(script).toContain('Breeze: release metadata did not include a version - refusing to install without a pinned download');
+      expect(script).toContain('Breeze: downloaded file is not a Windows executable - a captive portal or web filter may be intercepting this network');
+      expect(script).toContain('Breeze: downloaded agent binary checksum does not match the server\'s release metadata - refusing to install');
+      expect(script).toContain('remote certificate is invalid|establish trust relationship for the SSL/TLS');
+      expect(script).toContain('Breeze: this machine rejected the TLS certificate of $serverUrl');
+      expect(script).toContain('Cert:\\LocalMachine\\Root');
+      expect(script).toContain('matches the server name and has not expired');
+      expect(script).toContain('throw\n    }');
+      expect(script).toContain('Breeze: enrollment failed (exit code $LASTEXITCODE)');
+      expect(script).toContain('Breeze: service install failed (exit code $LASTEXITCODE)');
+      expect(script).not.toMatch(/\[string\]\$Server\b/);
+      expect(script).not.toContain('$env:BREEZE_ENROLL_TOKEN');
+    } finally {
+      if (originalPublicApiUrl === undefined) delete process.env.PUBLIC_API_URL;
+      else process.env.PUBLIC_API_URL = originalPublicApiUrl;
+    }
+  });
+
+  it('uses its own public-download bucket and does not cache rate-limit errors', async () => {
+    const originalPublicApiUrl = process.env.PUBLIC_API_URL;
+    process.env.PUBLIC_API_URL = 'https://rmm.example.com';
+
+    try {
+      const unix = await downloadRoutes.request('/install.sh');
+      const windows = await downloadRoutes.request('/install.ps1');
+      const bucketKeys = rateLimiterMock.mock.calls.map((call) => call[1]);
+
+      expect(unix.status).toBe(200);
+      expect(windows.status).toBe(200);
+      expect(bucketKeys[0]).toContain('install-script-download');
+      expect(bucketKeys[1]).toContain('windows-install-script-download');
+      expect(bucketKeys[0]).not.toBe(bucketKeys[1]);
+
+      rateLimiterMock.mockImplementationOnce(async () => ({ allowed: false, remaining: 0, resetAt: new Date() }));
+      const limited = await downloadRoutes.request('/install.ps1');
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get('cache-control')).toBe('no-store');
+    } finally {
+      if (originalPublicApiUrl === undefined) delete process.env.PUBLIC_API_URL;
+      else process.env.PUBLIC_API_URL = originalPublicApiUrl;
+    }
+  });
+
+  it('does not cache configuration errors or derive a production URL from the request host', async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalBreezeServer = process.env.BREEZE_SERVER;
+    const originalPublicApiUrl = process.env.PUBLIC_API_URL;
+    const originalApiUrl = process.env.API_URL;
+
+    try {
+      process.env.NODE_ENV = 'production';
+      delete process.env.BREEZE_SERVER;
+      delete process.env.PUBLIC_API_URL;
+      delete process.env.API_URL;
+
+      const res = await downloadRoutes.request('https://attacker.example/install.ps1');
+      const body = await res.text();
+
+      expect(res.status).toBe(503);
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(body).not.toContain('attacker.example');
+    } finally {
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+      if (originalBreezeServer === undefined) delete process.env.BREEZE_SERVER;
+      else process.env.BREEZE_SERVER = originalBreezeServer;
+      if (originalPublicApiUrl === undefined) delete process.env.PUBLIC_API_URL;
+      else process.env.PUBLIC_API_URL = originalPublicApiUrl;
+      if (originalApiUrl === undefined) delete process.env.API_URL;
+      else process.env.API_URL = originalApiUrl;
+    }
   });
 });
 

@@ -9,6 +9,7 @@ import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubU
 import { getPromotedComponentVersion, getRegisteredComponentVersion, type PromotedComponent } from '../../services/promotedAgentVersion';
 import { fetchVerifiedMacosPkg, fetchVerifiedHelperInstaller } from '../../services/installerBuilder';
 import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp';
+import { getWindowsInstaller } from '../../services/windowsInstaller';
 
 export const downloadRoutes = new Hono();
 
@@ -23,9 +24,9 @@ export const downloadRoutes = new Hono();
 // One bucket PER ROUTE (keyed on `logTag`, e.g. `agent-download`,
 // `install-script-download`), not one shared bucket across every route. A
 // single office/site rollout behind one NAT IP legitimately calls several of
-// these routes back-to-back (install.sh, then the agent binary, then
+// these routes back-to-back (install.sh/install.ps1, then the agent binary, then
 // watchdog/backup), so a shared bucket means the busiest route (typically
-// install.sh, hit once per machine) uses up capacity meant for every other route's
+// installer scripts, hit once per machine) use up capacity meant for every other route's
 // legitimate traffic on the same IP. None of these routes carry an
 // enrollment/download key or any other form of caller identity to key on
 // instead — they are deliberately unauthenticated (see each route's own
@@ -108,7 +109,7 @@ async function enforcePublicAgentDownloadRateLimit(
 // for objectStorageDelivery 'stream' (either way a NotFound falls through to
 // disk and any other fault is a 500) → disk stream. registerComponentDownloadRoute hoists that
 // shape into one place so a future fix (e.g. stream backpressure) lands
-// once. The .pkg and install.sh/uninstall.sh routes have real behavioral
+// once. The .pkg and install.sh/install.ps1/uninstall.sh routes have real behavioral
 // differences (macOS-only, different validation/response shape) and are
 // deliberately NOT folded in here.
 interface ComponentDownloadConfig {
@@ -579,7 +580,7 @@ downloadRoutes.get('/download/:os/:arch/pkg', async (c) => {
 // ============================================
 // Deliberately NOT folded into registerComponentDownloadRoute like the
 // agent/watchdog/backup/user-helper routes below: those binaries are each
-// independently checksum- or signature-verified downstream (install.sh, or
+// independently checksum- or signature-verified downstream (install.sh/install.ps1, or
 // the agent's own Ed25519-pinned self-updater), so a dumb-pipe serve is safe
 // there. The Helper installer has no such downstream check — no client-side
 // updater/signature-pin mechanism exists for it — so this route is the only
@@ -756,6 +757,38 @@ downloadRoutes.get('/install.sh', async (c) => {
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
       'Cache-Control': 'no-cache',
+    },
+  });
+});
+
+downloadRoutes.get('/install.ps1', async (c) => {
+  const rateLimited = await enforcePublicAgentDownloadRateLimit(c, 'windows-install-script-download');
+  if (rateLimited) {
+    const headers = new Headers(rateLimited.headers);
+    headers.set('Cache-Control', 'no-store');
+    return new Response(rateLimited.body, {
+      status: rateLimited.status,
+      statusText: rateLimited.statusText,
+      headers,
+    });
+  }
+
+  const installer = getWindowsInstaller();
+  if (!installer) {
+    return new Response('Installer script unavailable: a valid HTTPS server URL is required', {
+      status: 503,
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-store',
+      },
+    });
+  }
+
+  return new Response(installer.body, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-store, no-transform',
     },
   });
 });
