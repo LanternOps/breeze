@@ -159,3 +159,37 @@ describe('DELETE /thread/:id/links/:linkId', () => {
     expect(h.writeRouteAudit).not.toHaveBeenCalled();
   });
 });
+
+
+describe('POST /thread/:id/links/:linkId/pin', () => {
+  it('pin promotes an auto link and audits the server-resolved ref', async () => {
+    h.listWorkingSet.mockResolvedValue([{ ...link, source: 'auto' }]);
+    h.addLink.mockResolvedValue(link);
+    const res = await req('POST', `/thread/${THREAD}/links/${LINK}/pin`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { link } });
+    expect(h.listWorkingSet).toHaveBeenCalledWith({ auth, ceiling }, THREAD, { concerns: [] });
+    expect(h.addLink).toHaveBeenCalledWith({ auth, ceiling }, THREAD, link.ref, { source: 'user_pin', addedByGrantId: null });
+    expect(h.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'wisp.thread.link_added', details: { threadId: THREAD, kind: 'ticket', entityId: TICKET, source: 'user_pin' },
+    }));
+  });
+
+  it.each(['missing', 'malformed', 'foreign thread', 'inactive', 'cap', 'outside_ceiling'])('refuses %s without auditing', async (reason) => {
+    h.listWorkingSet.mockResolvedValue(reason === 'missing' ? [] : [{ ...link, source: 'auto' }]);
+    if (reason === 'foreign thread') h.loadOwnThread.mockResolvedValue(null);
+    if (reason === 'inactive') h.ceilingOf.mockResolvedValue({ ok: false, reason: 'inactive' });
+    if (reason === 'cap' || reason === 'outside_ceiling') h.addLink.mockRejectedValue(new h.ThreadLinkError(reason === 'cap' ? 'link_limit' : 'outside_ceiling'));
+    const res = await req('POST', `/thread/${THREAD}/links/${reason === 'malformed' ? 'bad' : LINK}/pin`);
+    expect(res.status).toBe(reason === 'inactive' || reason === 'cap' ? 409 : reason === 'outside_ceiling' ? 403 : 404);
+    expect(h.writeRouteAudit).not.toHaveBeenCalled();
+    if (!['cap', 'outside_ceiling'].includes(reason)) expect(h.addLink).not.toHaveBeenCalled();
+  });
+});
+
+it('GET returns derived concern subjects with null ids', async () => {
+  const concern = { ...link, id: null, source: 'concern' };
+  h.listWorkingSet.mockResolvedValue([concern]);
+  const res = await req('GET', `/thread/${THREAD}/links`);
+  expect(await res.json()).toEqual({ data: { links: [concern] } });
+});

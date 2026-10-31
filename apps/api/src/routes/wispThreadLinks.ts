@@ -87,6 +87,38 @@ wispThreadLinkRoutes.post('/:id/links', zValidator('json', linkEntitySchema), as
   return c.json({ data: { link } }, 201);
 });
 
+// Pin by stored row id, re-resolving under the caller's live ceiling before promotion.
+wispThreadLinkRoutes.post('/:id/links/:linkId/pin', async (c) => {
+  const params = threadLinkParamsSchema.safeParse({ id: c.req.param('id'), linkId: c.req.param('linkId') });
+  if (!params.success) return c.json(NOT_FOUND, 404);
+  const own = await loadOwnThread(c);
+  if (!own) return c.json(NOT_FOUND, 404);
+  const outcome = await ceilingOf(own);
+  if (!outcome.ok) return ceilingRefusal(c, outcome.reason);
+  const ctx = { auth: authOf(c), ceiling: outcome.ceiling };
+  const stored = await listWorkingSet(ctx, own.thread.id, { concerns: [] });
+  const target = stored.find((item) => item.id === params.data.linkId);
+  if (!target) return c.json({ error: 'Link not found', code: 'not_found' }, 404);
+  let link;
+  try {
+    link = await addLink(ctx, own.thread.id, target.ref, { source: 'user_pin', addedByGrantId: null });
+  } catch (err) {
+    if (err instanceof ThreadLinkError) {
+      return c.json({ error: REFUSAL_MESSAGE[err.code], code: err.code }, THREAD_LINK_REFUSAL_STATUS[err.code]);
+    }
+    throw err;
+  }
+  writeRouteAudit(c, {
+    orgId: link.ref.orgId,
+    partnerId: own.thread.partnerId,
+    action: 'wisp.thread.link_added',
+    resourceType: 'wisp_thread',
+    resourceId: own.thread.id,
+    details: { threadId: own.thread.id, kind: link.ref.kind, entityId: link.ref.id, source: 'user_pin' },
+  });
+  return c.json({ data: { link } });
+});
+
 wispThreadLinkRoutes.delete('/:id/links/:linkId', async (c) => {
   const params = threadLinkParamsSchema.safeParse({ id: c.req.param('id'), linkId: c.req.param('linkId') });
   if (!params.success) return c.json(NOT_FOUND, 404);
