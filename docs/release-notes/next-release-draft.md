@@ -224,3 +224,9 @@ Update agents to a release containing this change before relying on the provider
 
 - **AI `manage_groups` `add_devices` / `remove_devices` now ask for approval** (supervised, tier 3; previously tier 2 auto-execute). AI agents can now be granted them, and a granted call becomes a proposal a person approves; neither is act-eligible.
 - **They refuse the whole call instead of skipping devices.** A device in another organization (or one you cannot see), a device outside a site-bound group's site, or a device outside your own site or device scope returns an error and nothing is written. Previously such devices were dropped and reported as `skipped`. A site-restricted user cannot change membership of an organization-wide group, and dynamic groups refuse manual edits — both as in the groups API. Responses now report `alreadyMembers` / `notMembers` instead of `skipped`. No migration, no new environment variable.
+
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.

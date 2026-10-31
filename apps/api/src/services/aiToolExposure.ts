@@ -11,6 +11,13 @@
  * self-granted-authority denial; a tool can be human-only here while still
  * being tiered and chat-reachable is NOT allowed — see the registryParity
  * contract. Entries are added only with Todd's sign-off.
+ *
+ * W15 PR A (#6785): Pax8 credential save (POST /pax8/integration), connection
+ * test (POST /pax8/integration/test) and company mapping (POST /pax8/companies/map)
+ * are human-only routes with NO tool action. Do not add them to these lists:
+ * registryParity requires HUMAN_ONLY_TOOLS entries to name registered tools.
+ * Pax8 reads are reachable and PR A writes require explicit grants; the
+ * partner-scope, partner-wide and device-bound handler gates also apply.
  */
 export const HUMAN_ONLY_TOOLS: ReadonlyMap<string, string> = new Map<string, string>([
   // Empty at W01 (spec 2026-09-23 W01-D4) until the AI Operator plan approval.

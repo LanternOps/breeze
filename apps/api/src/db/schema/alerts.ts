@@ -1,3 +1,4 @@
+import type { AlertOwnerKind } from '../../services/alertOwner';
 import {
   pgTable,
   uuid,
@@ -128,7 +129,9 @@ export const alerts = pgTable('alerts', {
   // alert must survive that even though it already carries its own
   // title/message/context.
   ruleId: uuid('rule_id').references(() => alertRules.id, { onDelete: 'set null' }),
-  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  deviceId: uuid('device_id').references(() => devices.id),
+  ownerKind: varchar('owner_kind', { length: 30 }).$type<AlertOwnerKind>().notNull().default('device'),
+  ownerRef: varchar('owner_ref', { length: 128 }),
   // W03 (hardware & RAID monitoring, migration 2026-10-30-110300): identifies
   // the specific subject (e.g. a component) an open alert covers, so multiple
   // independently-breaching subjects under the same rule/device can each hold
@@ -191,6 +194,14 @@ export const alerts = pgTable('alerts', {
   suppressedExpiryIdx: index('idx_alerts_suppressed_expiry')
     .on(table.suppressedUntil)
     .where(sql`status = 'suppressed' AND suppressed_until IS NOT NULL`),
+  ownerCheck: check('alerts_owner_chk', sql`
+    (${table.ownerKind} = 'device' AND ${table.deviceId} IS NOT NULL AND ${table.topologySiteId} IS NULL)
+    OR (${table.ownerKind} = 'topology_site' AND ${table.topologySiteId} IS NOT NULL)
+    OR (${table.ownerKind} = 'backup_workload' AND ${table.deviceId} IS NULL AND ${table.ownerRef} IS NOT NULL)
+  `),
+  openOwnerUidx: uniqueIndex('alerts_open_owner_uidx')
+    .on(table.orgId, table.ownerKind, table.ownerRef)
+    .where(sql`owner_kind NOT IN ('device', 'topology_site') AND status IN ('active', 'acknowledged', 'suppressed')`),
   subjectKeyNonempty: check('alerts_subject_key_nonempty_chk', sql`${table.subjectKey} <> ''`),
   openRuleDeviceSubjectUidx: uniqueIndex('alerts_open_rule_device_subject_uidx')
     .on(table.ruleId, table.deviceId, sql`COALESCE(${table.subjectKey}, '')`)
