@@ -6,6 +6,7 @@ const m = vi.hoisted(() => ({
   getOrderWithLines: vi.fn(), createClient: vi.fn(), resolvePrice: vi.fn(),
   dependencies: vi.fn(), pricing: vi.fn(), contextDepth: 0, outsideDepth: 0,
   withContext: vi.fn(), outside: vi.fn(),
+  accessibleOrgIds: null as string[] | null,
 }));
 vi.mock('../db', () => ({
   db: { select: m.select, insert: m.insert, update: m.update, delete: m.delete },
@@ -42,20 +43,23 @@ const run = () => previewPax8Order({ partnerId, orderId, client: client as never
 beforeEach(() => {
   vi.clearAllMocks();
   m.material.mockImplementation(async () => { expect(m.contextDepth).toBeGreaterThan(0); return { local: true }; });
-  m.contextDepth = 0; m.outsideDepth = 0;
+  m.contextDepth = 0; m.outsideDepth = 0; m.accessibleOrgIds = null;
   m.outside.mockImplementation(async (fn) => {
     const saved = m.contextDepth; m.contextDepth = 0; m.outsideDepth++;
     try { return await fn(); } finally { m.outsideDepth--; m.contextDepth = saved; }
   });
-  m.withContext.mockImplementation(async (_ctx, fn) => {
+  m.withContext.mockImplementation(async (ctx, fn) => {
+    const previousOrgIds = m.accessibleOrgIds;
+    m.accessibleOrgIds = ctx.accessibleOrgIds;
     m.contextDepth++;
-    try { return await fn(); } finally { m.contextDepth--; }
+    try { return await fn(); } finally { m.contextDepth--; m.accessibleOrgIds = previousOrgIds; }
   });
   order = { id: orderId, partnerId, orgId, integrationId, pax8CompanyId: null, source: 'direct', status: 'draft' };
   lines = [{ id: lineId, action: 'new_subscription', submitState: 'pending', pax8ProductId: 'fixture-product',
     quantity: '5', billingTerm: 'Monthly', commitmentTermId: 'fixture-term', contractLineId: null,
     authorizedBaselineQuantity: null, targetSubscriptionId: null }];
   rows = {
+    pax8_orders: [{ orgId }],
     pax8_company_mappings: [{ pax8CompanyId: 'fixture-company', pax8CompanyName: 'Fixture Company', status: 'Active',
       metadata: { contacts: [{ types: ['Admin', 'Billing', 'Technical'].map(type => ({ type, primary: true })) }] } }],
     pax8_product_mappings: [{ productName: 'Fixture Product', vendorSkuId: 'fixture-sku' }],
@@ -69,7 +73,11 @@ beforeEach(() => {
     let table = '';
     chain.from = vi.fn((value) => { table = getTableName(value); return chain; });
     for (const method of ['where', 'limit', 'orderBy']) chain[method] = vi.fn(() => chain);
-    chain.then = (resolve: (v: unknown[]) => unknown) => resolve(rows[table] ?? []);
+    chain.then = (resolve: (v: unknown[]) => unknown) => {
+      // These tables use org-axis forced RLS, even for a partner-scoped caller.
+      const hidden = ['contract_lines', 'contracts'].includes(table) && !m.accessibleOrgIds?.includes(orgId);
+      return resolve(hidden ? [] : rows[table] ?? []);
+    };
     return chain;
   });
   m.getOrderWithLines.mockImplementation(async () => {
@@ -107,6 +115,36 @@ describe('previewPax8Order', () => {
     const result = await run();
     expect(result.blocked).toContainEqual({ lineId, code: 'CONTRACT_LINE_MISSING' });
     expect(result.submitWith).toBeUndefined();
+  });
+  it('reads an existing linked contract line and its price with order-org RLS visibility', async () => {
+    lines[0]!.contractLineId = 'fixture-contract-line';
+    const result = await run();
+    expect(result.blocked).toEqual([]);
+    expect(result.lines[0]).toMatchObject({ sellUnitPrice: '15.00', sellCurrency: 'CAD' });
+    expect(result.submitWith).toBeDefined();
+    expect(m.withContext).toHaveBeenCalledWith(expect.objectContaining({
+      scope: 'partner', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [partnerId],
+    }), expect.any(Function), { isolationLevel: 'repeatable read' });
+  });
+  it('refuses an order whose org changed after discovery before collecting preview evidence', async () => {
+    order.orgId = '10000000-0000-4000-8000-000000000099';
+    await expect(run()).rejects.toMatchObject({ status: 409 });
+    expect(m.material).not.toHaveBeenCalled();
+    expect(m.dependencies).not.toHaveBeenCalled();
+    expect(m.pricing).not.toHaveBeenCalled();
+  });
+  it('pins org discovery to the requested partner and refuses an unavailable order', async () => {
+    rows.pax8_orders = [];
+    await expect(run()).rejects.toMatchObject({ status: 404 });
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const discovery = m.select.mock.results[0]!.value;
+    const query = new PgDialect().sqlToQuery(discovery.where.mock.calls[0]![0]);
+    expect(query.sql).toContain('"pax8_orders"."partner_id" =');
+    expect(query.sql).toContain('"pax8_orders"."id" =');
+    expect(query.params).toEqual([orderId, partnerId]);
+    expect(m.withContext).toHaveBeenCalledTimes(1);
+    expect(m.getOrderWithLines).not.toHaveBeenCalled();
+    expect(m.dependencies).not.toHaveBeenCalled();
   });
   it('blocked previews never offer submitWith', async () => {
     m.pricing.mockResolvedValue([]);

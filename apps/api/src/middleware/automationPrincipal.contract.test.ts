@@ -59,6 +59,9 @@ export const REVIEWED_AI_AGENT_SITES: Record<string, Classification> = {
   // human-only; neither an agent nor a flow is a person who can own the row.
   'services/aiToolsAuditBaselines.ts:if (isAutomationPrincipal(auth)) return automationRefusal(action);': 'automation',
   "services/aiToolsPamRules.ts:if (isAutomationPrincipal(auth)) return jsonError('PAM policy is changed by a person, not an automated run', 'AGENT_REFUSED');": 'automation',
+  // Pax8 submit needs a human requester and approval surface; agents and flows
+  // are both refused before preparing a submit intent.
+  "services/aiToolsPax8Orders.ts:if (isAutomationPrincipal(auth)) return jsonError('A person must request Pax8 order submission', 'AGENT_HUMAN_ONLY');": 'automation',
   'services/aiToolsTicketOpsShared.ts:return isAutomationPrincipal(auth);': 'automation',
   // Same upstream-approval-instead-of-MFA rule for delivery-rail writes.
   "services/aiToolsDelivery.ts:if (!isAutomationPrincipal(auth) && !hasSatisfiedMfa(auth)) fail(403, 'MFA required');": 'automation',

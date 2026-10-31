@@ -630,19 +630,31 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
         };
       });
     const rollbackService = serviceWithClient(rollbackClient);
-    await expect(rollbackService.submitOrder({
+    const missingLineResult = await rollbackService.submitOrder({
       partnerId: rollbackFixture.partner.id,
       orderId: rollbackFixture.order.id,
       actorUserId: rollbackFixture.user.id,
       mode: { kind: 'rest' },
-    })).rejects.toMatchObject({ status: 409 });
+    });
+    expect(missingLineResult).toMatchObject({
+      kind: 'executed',
+      status: 'partially_failed',
+      lines: [{ lineId: rollbackFixture.line.id, submitState: 'succeeded', error: expect.stringContaining('billing_conflict:line_missing:') }],
+      billingConflicts: [{ lineId: rollbackFixture.line.id, reason: 'line_missing' }],
+    });
     const rollbackState = await withSystemDbAccessContext(async () => {
       const [order] = await db.select().from(pax8Orders).where(eq(pax8Orders.id, rollbackFixture.order.id));
       const [line] = await db.select().from(pax8OrderLines).where(eq(pax8OrderLines.id, rollbackFixture.line.id));
-      return { order, line };
+      const [contractLine] = await db.select().from(contractLines).where(eq(contractLines.id, rollbackFixture.contractLine.id));
+      return { order, line, contractLine };
     });
-    expect(rollbackState.order?.status).toBe('submitting');
-    expect(rollbackState.line?.submitState).toBe('in_flight');
+    expect(rollbackState.order?.status).toBe('partially_failed');
+    expect(rollbackState.order?.pax8OrderId).toBe('pax-order-rollback');
+    expect(rollbackState.line?.submitState).toBe('succeeded');
+    expect(rollbackState.line?.resultSubscriptionId).toBe('subscription-rollback');
+    expect(rollbackState.line?.error).toContain('billing_conflict:line_missing:');
+    expect(rollbackState.contractLine).toBeUndefined(); // billing must not be recreated after deletion
+    expect(rollbackClient.createOrder).toHaveBeenCalledTimes(2); // one dry run and one vendor send
 
     const duplicateFixture = await seedOrder({ action: 'cancel' });
     await withSystemDbAccessContext(() => db.insert(pax8OrderLines).values({

@@ -2,12 +2,12 @@
 import { and, eq } from 'drizzle-orm';
 import { PAX8_BILLING_TERMS, type Pax8BillingTerm, type Pax8OrderAction, type Pax8OrderStatus } from '@breeze/shared';
 import { db, runOutsideDbContext, withDbAccessContext } from '../db';
-import { contracts, contractLines, pax8CompanyMappings, pax8ProductMappings, pax8SubscriptionSnapshots } from '../db/schema';
+import { contracts, contractLines, pax8CompanyMappings, pax8Orders, pax8ProductMappings, pax8SubscriptionSnapshots } from '../db/schema';
 import { pax8OrderDigestMaterial, hashPax8OrderMaterial } from './actionIntents/pax8OrderDigest';
 import type { z } from 'zod';
 import type { pax8SubmitAssertionsSchema } from './aiToolSchemasPax8';
 import { isSubmittableStatus } from './pax8OrderTypes';
-import { getOrderWithLines, snapshotActiveCommitmentEvidence } from './pax8OrderService';
+import { getOrderWithLines, Pax8OrderError, snapshotActiveCommitmentEvidence } from './pax8OrderService';
 import { createPax8ClientForIntegration } from './pax8SyncService';
 import { pax8CompanyOrderReadiness } from './pax8CompanyReadiness';
 import { CatalogServiceError, resolvePrice } from './catalogService';
@@ -81,13 +81,25 @@ export async function previewPax8Order(input: {
   orderId: string;
   client?: Pax8Client;
 }): Promise<Pax8OrderPreview> {
+  // Discover the org through the partner-axis parent before authorizing any
+  // org-axis reads. A partner grant alone cannot see contracts/contract_lines.
+  const [discovered] = await runOutsideDbContext(() => withDbAccessContext({
+    scope: 'partner', orgId: null, accessibleOrgIds: null,
+    accessiblePartnerIds: [input.partnerId], userId: null, currentPartnerId: input.partnerId,
+  }, () => db.select({ orgId: pax8Orders.orgId }).from(pax8Orders).where(and(
+    eq(pax8Orders.id, input.orderId), eq(pax8Orders.partnerId, input.partnerId),
+  )).limit(1)));
+  if (!discovered) throw new Pax8OrderError('Pax8 order not found.', 404);
   // Defensively escape an accidental ambient caller before opening the short read transaction.
   const local = await runOutsideDbContext(() => withDbAccessContext({
-    scope: 'partner', orgId: null, accessibleOrgIds: null,
+    scope: 'partner', orgId: discovered.orgId, accessibleOrgIds: [discovered.orgId],
     accessiblePartnerIds: [input.partnerId], userId: null, currentPartnerId: input.partnerId,
   }, async () => {
     const bundle = await getOrderWithLines(input);
     const { order } = bundle;
+    if (order.orgId !== discovered.orgId) {
+      throw new Pax8OrderError('The Pax8 order organization changed while previewing it.', 409);
+    }
     const companies = await db.select({
       pax8CompanyId: pax8CompanyMappings.pax8CompanyId,
       pax8CompanyName: pax8CompanyMappings.pax8CompanyName,
