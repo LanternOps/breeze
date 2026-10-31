@@ -8,7 +8,7 @@ const h = vi.hoisted(() => ({ fetchWithAuth: vi.fn(), showToast: vi.fn() }));
 vi.mock('../stores/auth', () => ({ fetchWithAuth: h.fetchWithAuth }));
 vi.mock('../components/shared/Toast', () => ({ showToast: h.showToast }));
 
-import { addWispLink, listWispLinks, removeWispLink } from './wispLinksApi';
+import { addWispLink, listWispLinks, removeWispLink, pinWispLink } from './wispLinksApi';
 import { getWispPartnerEnabled, setWispPartnerEnabled } from './wispPartnerSettingsApi';
 import { ActionError } from './runAction';
 
@@ -78,4 +78,12 @@ describe('wispPartnerSettingsApi', () => {
     h.fetchWithAuth.mockResolvedValueOnce(res(403, { error: 'Only partner admins', code: 'partner_admin_required' }));
     await expect(setWispPartnerEnabled(false)).rejects.toBeInstanceOf(ActionError);
   });
+});
+
+it('pins through runAction without ambient org and encodes both ids', async () => {
+  h.fetchWithAuth.mockResolvedValue(res(200, { data: { link } }));
+  expect(await pinWispLink('th/1', 'l/1')).toEqual(link);
+  expect(h.fetchWithAuth).toHaveBeenCalledWith('/wisp/thread/th%2F1/links/l%2F1/pin', { method: 'POST', skipOrgIdInjection: true });
+  h.fetchWithAuth.mockResolvedValue(res(409, { error: 'Pin limit', code: 'link_limit' }));
+  await expect(pinWispLink('th1', 'l1')).rejects.toMatchObject({ status: 409, code: 'link_limit' });
 });

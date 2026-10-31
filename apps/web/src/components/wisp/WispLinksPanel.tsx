@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link2, Plus, Sparkles, X } from 'lucide-react';
+import { Link2, Plus } from 'lucide-react';
 import { WISP_THREAD_LINK_LIMIT, type WispThreadLink } from '@breeze/shared';
-import { isPinnedLink, removeWispLink } from '@/lib/wispLinksApi';
+import { isPinnedLink, removeWispLink, pinWispLink } from '@/lib/wispLinksApi';
 import { ActionError } from '@/lib/runAction';
 import { showToast } from '@/components/shared/Toast';
 import WispEntityPicker from './WispEntityPicker';
+import WispLinkPill from './WispLinkPill';
 import { linkKey } from './wispEntitySources';
 
 /**
@@ -29,7 +30,14 @@ export default function WispLinksPanel({
   const { t } = useTranslation('ai');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
-  const linkedKeys = useMemo(() => new Set(links.map((l) => linkKey(l.ref.kind, l.ref.id))), [links]);
+  const [expanded, setExpanded] = useState(false);
+  const linkedKeys = useMemo(() => new Set(links.filter((l) => l.id !== null).map((l) => linkKey(l.ref.kind, l.ref.id))), [links]);
+  const groups = [
+    { id: 'pinned', title: 'groupPinned', items: links.filter(isPinnedLink) },
+    { id: 'concerns', title: 'groupConcerns', items: links.filter((l) => l.source === 'concern') },
+    { id: 'recent', title: 'groupRecent', items: links.filter((l) => l.source === 'auto') },
+  ];
+  let remaining = expanded ? links.length : 12;
   const pinCount = links.filter(isPinnedLink).length;
   const atLimit = pinCount >= WISP_THREAD_LINK_LIMIT;
 
@@ -48,11 +56,23 @@ export default function WispLinksPanel({
   };
 
   const onLinked = (link: WispThreadLink) => {
-    // The add is idempotent server-side: a re-add returns the existing row
-    // (with a refreshed label), so replace by id rather than append twice.
-    const exists = links.some((l) => l.id === link.id);
-    onLinksChange(exists ? links.map((l) => (l.id === link.id ? link : l)) : [...links, link]);
+    const key = linkKey(link.ref.kind, link.ref.id);
+    const exists = links.some((l) => linkKey(l.ref.kind, l.ref.id) === key);
+    onLinksChange(exists ? links.map((l) => (linkKey(l.ref.kind, l.ref.id) === key ? link : l)) : [...links, link]);
     setPickerOpen(false);
+  };
+
+  const pin = async (link: WispThreadLink) => {
+    if (removingId || link.id === null || !canAdd || atLimit) return;
+    setRemovingId(link.id);
+    try {
+      onLinked(await pinWispLink(threadId, link.id));
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('wisp.links.addFailed') });
+    } finally {
+      setRemovingId(null);
+    }
   };
 
   return (
@@ -84,32 +104,22 @@ export default function WispLinksPanel({
       {links.length === 0 ? (
         <p className="text-xs text-muted-foreground" data-testid="wisp-links-empty">{t('wisp.links.empty')}</p>
       ) : (
-        <ul className="flex flex-wrap gap-1.5">
-          {links.map((link) => (
-            <li
-              key={link.id ?? linkKey(link.ref.kind, link.ref.id)}
-              data-testid={`wisp-link-chip-${link.id ?? linkKey(link.ref.kind, link.ref.id)}`}
-              data-link-kind={link.ref.kind}
-              className="flex max-w-full items-center gap-1 rounded-full border bg-background py-0.5 pl-2.5 pr-1 text-xs"
-            >
-              {link.source === 'wisp_pin' && (
-                <Sparkles className="h-3 w-3 shrink-0 text-primary" aria-label={t('wisp.links.addedByWisp')} data-testid="wisp-link-added-by-wisp" />
-              )}
-              <a href={link.href} className="truncate font-medium hover:underline">{link.label}</a>
-              {link.status && <span className="shrink-0 text-[11px] text-muted-foreground">{link.status}</span>}
-              {link.id !== null && <button
-                type="button"
-                data-testid={`wisp-link-remove-${link.id ?? linkKey(link.ref.kind, link.ref.id)}`}
-                aria-label={t('wisp.links.remove', { label: link.label })}
-                disabled={removingId !== null}
-                onClick={() => void remove(link)}
-                className="rounded-full p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
-              >
-                <X className="h-3 w-3" aria-hidden="true" />
-              </button>}
-            </li>
-          ))}
-        </ul>
+        <div className="space-y-2">
+          {groups.map((group) => {
+            const visible = group.items.slice(0, remaining);
+            remaining -= visible.length;
+            if (!visible.length) return null;
+            return <div key={group.id} data-testid={`wisp-links-group-${group.id}`}>
+              <h3 className="mb-1 text-xs font-medium text-muted-foreground">{t(`wisp.links.${group.title}`)}</h3>
+              <ul className="flex flex-wrap gap-1.5">
+                {visible.map((link) => <WispLinkPill key={linkKey(link.ref.kind, link.ref.id)} threadId={threadId} link={link}
+                  busy={removingId !== null} onRemove={() => void remove(link)} onDismiss={() => void remove(link)}
+                  onPin={canAdd && !atLimit ? () => void pin(link) : undefined} />)}
+              </ul>
+            </div>;
+          })}
+          {!expanded && links.length > 12 && <button type="button" data-testid="wisp-links-more" onClick={() => setExpanded(true)} className="rounded px-2 py-1 text-xs font-medium text-primary hover:bg-muted">{t('wisp.links.more')}</button>}
+        </div>
       )}
 
       <WispEntityPicker

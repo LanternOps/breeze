@@ -63,3 +63,21 @@ export async function removeWispLink(threadId: string, linkId: string): Promise<
     successMessage: i18n.t('ai:wisp.links.removed'),
   });
 }
+
+/** Promote an auto row; source and pin-cap enforcement belong to the server. */
+export async function pinWispLink(threadId: string, linkId: string): Promise<WispThreadLink> {
+  const body = await runAction<{ data?: { link?: WispThreadLink } }>({
+    request: () => fetchWithAuth(`${linksPath(threadId)}/${encodeURIComponent(linkId)}/pin`, {
+      method: 'POST', skipOrgIdInjection: true,
+    }),
+    errorFallback: i18n.t('ai:wisp.links.addFailed'),
+    successMessage: i18n.t('ai:wisp.links.added'),
+  });
+  if (!body?.data?.link) throw new Error('wisp link pin: response has no link');
+  return body.data.link;
+}
+
+// W04-D1: wired after W02 (#10366) merges
+export async function listWispNeighbours(_threadId: string, _ref: { kind: WispEntityKind; id: string }): Promise<WispThreadLink[]> {
+  throw new Error('Wisp neighbours are not wired yet');
+}
