@@ -136,3 +136,49 @@ func TestScanWithContextLeavesThreatsInPlaceWhenDisabled(t *testing.T) {
 		t.Fatalf("original should still be on disk: %v", err)
 	}
 }
+
+// #10057 — the scan deadline is never unbounded. With no budget in the payload
+// (no policy governs the device) the scanner used to run with no deadline,
+// while the server releases the device's scan slot at the 720-minute policy
+// ceiling: a second scan could then overlap one still running. A budget above
+// the ceiling is clamped for the same reason.
+func TestEffectiveTimeoutDefaultsAndClampsToCeiling(t *testing.T) {
+	if MaxScanTimeout != 720*time.Minute {
+		t.Fatalf("MaxScanTimeout = %v, want 720m (the policy ceiling, SECURITY_SCAN_TIMEOUT_MINUTES_RANGE)", MaxScanTimeout)
+	}
+	cases := []struct {
+		name string
+		in   time.Duration
+		want time.Duration
+	}{
+		{"zero means the ceiling, not no deadline", 0, MaxScanTimeout},
+		{"negative means the ceiling", -time.Minute, MaxScanTimeout},
+		{"a policy budget is kept", 90 * time.Minute, 90 * time.Minute},
+		{"the ceiling itself is kept", MaxScanTimeout, MaxScanTimeout},
+		{"above the ceiling is clamped", 24 * time.Hour, MaxScanTimeout},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &SecurityScanner{Timeout: tc.in}
+			if got := s.effectiveTimeout(); got != tc.want {
+				t.Fatalf("effectiveTimeout() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// #10057 — with no budget the scan context still carries a deadline at the
+// ceiling (it used to be context.Background(), i.e. none).
+func TestScanContextAlwaysHasDeadline(t *testing.T) {
+	s := &SecurityScanner{}
+	before := time.Now()
+	ctx, cancel := s.scanContext(context.Background())
+	defer cancel()
+	dl, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("scan context has no deadline")
+	}
+	if got := dl.Sub(before); got < MaxScanTimeout-time.Second || got > MaxScanTimeout+time.Second {
+		t.Fatalf("deadline in %v, want ~%v", got, MaxScanTimeout)
+	}
+}

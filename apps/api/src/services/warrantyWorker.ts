@@ -27,7 +27,7 @@ interface SyncBatchJob {
   type: 'sync-batch';
 }
 
-type WarrantyJobData = SyncSingleJob | SyncBatchJob;
+export type WarrantyJobData = SyncSingleJob | SyncBatchJob;
 
 export function getWarrantyQueue(): Queue {
   if (!warrantyQueue) {
@@ -36,33 +36,43 @@ export function getWarrantyQueue(): Queue {
   return warrantyQueue;
 }
 
+export async function processWarrantyJob(data: WarrantyJobData): Promise<Record<string, unknown>> {
+  switch (data.type) {
+    case 'sync-single':
+      return runWithSystemDbAccess(async () => {
+        await syncWarrantyForDevice(data.deviceId, { force: data.force === true });
+        return { deviceId: data.deviceId };
+      });
+
+    case 'sync-batch': {
+      // #4622 — subjects, not device ids: the sweep now covers manual
+      // assets with a manufacturer + serial alongside agent devices.
+      const subjects = await runWithSystemDbAccess(() => getDevicesNeedingWarrantySync(50));
+      if (subjects.length === 0) {
+        return { synced: 0, failed: 0 };
+      }
+      // #10403 — NOT inside the select's context: syncWarrantyBatch opens one
+      // transaction per subject, because the partner-export lock hierarchy
+      // cannot hold across orgs of different partners in one transaction.
+      const { synced, failed } = await syncWarrantyBatch(subjects);
+      if (synced === 0) {
+        // Nothing on the page committed: a systemic fault (each subject was
+        // already captured). Fail the job so it shows as failed, not completed.
+        throw new Error(`[WarrantyWorker] Batch sync: all ${subjects.length} subjects failed`);
+      }
+      console.log(`[WarrantyWorker] Batch synced ${synced}/${subjects.length} warranty subjects (${failed} failed)`);
+      return { synced, failed };
+    }
+
+    default:
+      throw new Error(`Unknown warranty job type: ${(data as { type: string }).type}`);
+  }
+}
+
 function createWarrantyWorker(): Worker<WarrantyJobData> {
   return new Worker<WarrantyJobData>(
     WARRANTY_QUEUE,
-    async (job: Job<WarrantyJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        switch (job.data.type) {
-          case 'sync-single':
-            await syncWarrantyForDevice(job.data.deviceId, { force: job.data.force === true });
-            return { deviceId: job.data.deviceId };
-
-          case 'sync-batch': {
-            // #4622 — subjects, not device ids: the sweep now covers manual
-            // assets with a manufacturer + serial alongside agent devices.
-            const subjects = await getDevicesNeedingWarrantySync(50);
-            if (subjects.length === 0) {
-              return { synced: 0 };
-            }
-            await syncWarrantyBatch(subjects);
-            console.log(`[WarrantyWorker] Batch synced ${subjects.length} warranty subjects`);
-            return { synced: subjects.length };
-          }
-
-          default:
-            throw new Error(`Unknown warranty job type: ${(job.data as { type: string }).type}`);
-        }
-      });
-    },
+    async (job: Job<WarrantyJobData>) => processWarrantyJob(job.data),
     {
       connection: getBullMQConnection(),
       concurrency: 3,

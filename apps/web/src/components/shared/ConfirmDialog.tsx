@@ -8,7 +8,7 @@ export interface ConfirmDialogProps {
   onClose: () => void;
   onConfirm: () => void;
   title: string;
-  message: string;
+  message: ReactNode;
   confirmLabel?: string;
   variant?: 'destructive' | 'warning';
   isLoading?: boolean;

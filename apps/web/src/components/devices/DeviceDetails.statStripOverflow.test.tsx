@@ -51,44 +51,29 @@ const device: Device = {
 } as Device;
 
 describe('DeviceDetails overview stat strip (#7153)', () => {
-  it('lets the Health (CPU/RAM/Uptime) block shrink so it does not force the Activity block to overflow', () => {
+  it('lays the six stats on one even grid that narrows by breakpoint', () => {
     render(<DeviceDetails device={device} />);
-    const cpuLabel = screen.getByText('CPU');
-    // cpuLabel's div ancestors: label row -> "shrink-0" stat wrapper ->
-    // Health block wrapper (flex flex-1 gap-x-6), which must be able to
-    // shrink below its content width (min-w-0) or it starves the sibling
-    // Activity block.
-    const healthBlock = cpuLabel.closest('div')?.parentElement?.parentElement;
-    expect(healthBlock).not.toBeNull();
-    expect(healthBlock).toHaveClass('min-w-0');
+    const strip = screen.getByTestId('device-health-strip');
+    expect(strip.className).toMatch(/\bgrid\b/);
+    expect(strip.className).toMatch(/grid-cols-2/);
+    expect(strip.className).toMatch(/sm:grid-cols-3/);
+    expect(strip.className).toMatch(/xl:grid-cols-6/);
   });
 
-  it('truncates the "Logged-in User" label instead of letting it overflow under the Activity panel', () => {
+  it('truncates the username and its "Logged-in User" label instead of overflowing the cell', () => {
     render(<DeviceDetails device={device} />);
-    const label = screen.getByText(/logged-in user/i);
-    // The label text must be allowed to truncate (not a bare
-    // whitespace-nowrap element with no overflow handling), and its row
-    // must permit shrinking so the truncation can actually engage.
+    const value = screen.getByTestId('device-stat-user');
+    expect(value.className).toMatch(/truncate/);
+    expect(value).toHaveAttribute('title', device.lastUser);
+    expect(value.parentElement).toHaveClass('min-w-0');
+    const label = screen.getByText('Logged-in User');
     expect(label.className).toMatch(/truncate/);
-    const labelRow = label.closest('div');
-    expect(labelRow).not.toBeNull();
-    expect(labelRow!.className).not.toMatch(/whitespace-nowrap/);
   });
 
-  // 1024px: the Activity rail sits beside the strip (lg:flex-row), so the
-  // strip is narrow. Both groups must stack and wrap below xl so labels and
-  // values never collide or clip.
-  it('stacks the Health/Activity groups below xl and lets each group wrap', () => {
-    render(<DeviceDetails device={device} />);
-    const healthBlock = screen.getByText('CPU').closest('div')!.parentElement!.parentElement!;
-    const strip = healthBlock.parentElement!;
-    expect(strip.className).toMatch(/xl:flex-row/);
-    expect(strip.className).not.toMatch(/(^|\s)sm:flex-row/);
-    expect(healthBlock).toHaveClass('flex-wrap');
-    const activityBlock = healthBlock.nextElementSibling!.nextElementSibling!;
-    expect(activityBlock).toHaveClass('flex-wrap');
-    // The divider is only meaningful when the groups sit side by side.
-    expect(healthBlock.nextElementSibling!.className).toMatch(/xl:block/);
-    expect(healthBlock.nextElementSibling!.className).not.toMatch(/sm:block/);
+  it('mutes unknown values so the stats that are present stand out', () => {
+    render(<DeviceDetails device={{ ...device, status: 'offline', lastUser: '' }} />);
+    expect(screen.getByTestId('device-stat-cpu')).toHaveTextContent('—');
+    expect(screen.getByTestId('device-stat-cpu').className).toMatch(/text-muted-foreground/);
+    expect(screen.getByTestId('device-stat-user').className).toMatch(/text-muted-foreground/);
   });
 });

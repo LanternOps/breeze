@@ -162,7 +162,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const emptyKeysetPage = (extra: Record<string, unknown> = {}) =>
           JSON.stringify({
             ...keysetEnvelope<{ triggeredAtText: string; id: string }>({
-              key: 'alerts', items: [], limit, fingerprint, total: 0,
+              key: 'alerts', items: [], limit, fingerprint, after, total: 0,
               keyOf: (r) => ({ t: r.triggeredAtText, i: r.id }),
             }),
             ...extra,
@@ -263,7 +263,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         });
 
         const envelope = keysetEnvelope({
-          key: 'alerts', items, limit, fingerprint, total,
+          key: 'alerts', items, limit, fingerprint, after, total,
           keyOf: (r) => ({ t: r.triggeredAtText, i: r.id }),
         });
         const outAlerts = (envelope.alerts as Array<Record<string, unknown>>).map(

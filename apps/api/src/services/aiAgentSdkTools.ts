@@ -123,8 +123,11 @@ export type PreToolUseResult =
    * `detail`: an optional model-actionable elaboration of a denial, published
    * beside `error` as `{ error, detail }` — the same shape the tool's own
    * handler returns (#10144, the launch_specialist pre-approval refusal).
+   *
+   * `message`: an optional person-facing sentence for the refusal, published
+   * as `{ error, detail, message }` — again the handler's own shape (#10193).
    */
-  | { allowed: false; error: string; detail?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
+  | { allowed: false; error: string; detail?: string; message?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
 
 /**
  * A Wisp call reached a registry handler with no per-call `toolAuth`: denied,
@@ -265,6 +268,7 @@ export const TOOL_TIERS = {
   get_dns_security: 1,
   get_huntress_status: 1,
   get_huntress_incidents: 1,
+  get_huntress_agents: 1,
   manage_dns_policy: 2,
   get_s1_status: 1,
   get_s1_threats: 1,
@@ -824,13 +828,14 @@ export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
  */
 function preToolUseDenialResult(
   toolName: string,
-  check: { error: string; detail?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload },
+  check: { error: string; detail?: string; message?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload },
 ): { text: string; isError: boolean } {
   const payload = check.handoff
     ? buildToolHandoffResult(check.handoff, check.error)
     : {
         error: check.error,
         ...(check.detail ? { detail: check.detail } : {}),
+        ...(check.message ? { message: check.message } : {}),
         ...(check.requiresCallerVerification
           ? { requiresCallerVerification: check.requiresCallerVerification }
           : {}),
@@ -2353,6 +2358,7 @@ export function buildBreezeSdkTools(
       'get_huntress_incidents',
       registryDescription('get_huntress_incidents'),
       {
+        incidentId: uuid.optional(),
         orgId: uuid.optional(),
         integrationId: uuid.optional(),
         status: z.string().max(30).optional(),
@@ -2364,6 +2370,22 @@ export function buildBreezeSdkTools(
         offset: z.number().int().min(0).optional(),
       },
       makeHandler('get_huntress_incidents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_huntress_agents',
+      registryDescription('get_huntress_agents'),
+      {
+        orgId: uuid.optional(),
+        integrationId: uuid.optional(),
+        mapping: z.enum(['mapped', 'unmapped', 'all']).optional(),
+        offlineOnly: z.boolean().optional(),
+        deviceId: uuid.optional(),
+        search: z.string().max(200).optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+      makeHandler('get_huntress_agents', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

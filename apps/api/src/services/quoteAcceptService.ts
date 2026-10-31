@@ -39,6 +39,7 @@ import {
 // One-way import: quoteLifecycle does NOT import this module, so there is no
 // cycle (verify with `grep -n quoteAcceptService services/quoteLifecycle.ts`).
 import {
+  assertQuoteHasCustomerVisibleLine,
   assertQuoteSendGates,
   claimQuoteSent,
   resolveParentToSupersede,
@@ -273,6 +274,22 @@ export async function acceptQuote(
     .from(quoteLines)
     .where(eq(quoteLines.quoteId, quote.id))
     .orderBy(quoteLines.sortOrder);
+
+  // Empty-quote gate (#9963), for EVERY status and origin, before anything is
+  // written: an item-less quote used to convert into a $0 draft invoice. A
+  // draft refuses through the shared send gate's wording; a quote that already
+  // went out empty (sent before the send gate existed) cannot be edited, so the
+  // copy names the way forward for whoever is looking at it.
+  if (!lines.some((l) => l.customerVisible)) {
+    if (quote.status === 'draft') assertQuoteHasCustomerVisibleLine(lines, 'accept');
+    throw new QuoteServiceError(
+      origin === 'on_behalf'
+        ? 'This quote has no items, so there is nothing to accept — use Revise to issue a version with items.'
+        : 'This quote has no items to accept. Please contact your provider for an updated quote.',
+      422,
+      'QUOTE_EMPTY',
+    );
+  }
 
   // Draft claim (spec §5). Inside the caller's transaction, so a later failure
   // rolls the claim back with everything else.

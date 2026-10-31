@@ -61,6 +61,46 @@ const (
 	// this agent; the new one was refused rather than started alongside it
 	// (#8509). Transient — retry once the running scan finishes.
 	ErrCodeScanInProgress CommandErrorCode = "scan_in_progress"
+
+	// Network-isolation containment (#10088). One code per episode failure
+	// code (ISOLATION_FAILURE_CODES in packages/shared, prefixed), so the
+	// server's finalizer classifies an isolate result on the code alone.
+	// not_delivered and agent_unsupported are decided server-side and never
+	// emitted by an agent; they are listed so the two sets stay one-to-one.
+
+	// ErrCodeIsolationUnsupportedPlatform: this agent build cannot isolate on
+	// this OS (capability 0). Nothing was touched.
+	ErrCodeIsolationUnsupportedPlatform CommandErrorCode = "isolation_unsupported_platform"
+	// ErrCodeIsolationMechanismUnavailable: the firewall engine, recovery
+	// scheduler, journal or allowlist resolution was not ready, so the apply
+	// was refused (or rolled back before any rule took effect).
+	ErrCodeIsolationMechanismUnavailable CommandErrorCode = "isolation_mechanism_unavailable"
+	// ErrCodeIsolationApplyError: installing the rules failed; rolled back.
+	ErrCodeIsolationApplyError CommandErrorCode = "isolation_apply_error"
+	// ErrCodeIsolationControlPlaneUnreachable: the positive probe failed
+	// through the new rules; rolled back.
+	ErrCodeIsolationControlPlaneUnreachable CommandErrorCode = "isolation_control_plane_unreachable"
+	// ErrCodeIsolationEnforcementNotObserved: the negative probe was not
+	// dropped by a Breeze-owned rule; rolled back.
+	ErrCodeIsolationEnforcementNotObserved CommandErrorCode = "isolation_enforcement_not_observed"
+	// ErrCodeIsolationNotDelivered: server-side only (the isolate never
+	// reached the agent).
+	ErrCodeIsolationNotDelivered CommandErrorCode = "isolation_not_delivered"
+	// ErrCodeIsolationAgentUnsupported: server-side only (version or
+	// capability gate; never dispatched).
+	ErrCodeIsolationAgentUnsupported CommandErrorCode = "isolation_agent_unsupported"
+	// ErrCodeIsolationEpisodeMismatch: the command names an episode this
+	// device does not hold.
+	ErrCodeIsolationEpisodeMismatch CommandErrorCode = "isolation_episode_mismatch"
+	// ErrCodeIsolationStaleGeneration: the command's generation is older than
+	// the journalled one, or the episode already ended on this device.
+	ErrCodeIsolationStaleGeneration CommandErrorCode = "isolation_stale_generation"
+	// ErrCodeIsolationInvalidSpec: the isolate payload failed validation.
+	ErrCodeIsolationInvalidSpec CommandErrorCode = "isolation_invalid_spec"
+	// ErrCodeIsolationBusy: another apply or release holds the episode (or
+	// the machine-wide isolation lock). Transient — the heartbeat's desired
+	// state retries it.
+	ErrCodeIsolationBusy CommandErrorCode = "isolation_busy"
 )
 
 // AllCommandErrorCodes lists every code above. It is what the cross-language
@@ -81,4 +121,15 @@ var AllCommandErrorCodes = []CommandErrorCode{
 	ErrCodeUnsupportedEncoding,
 	ErrCodeInvalidArgument,
 	ErrCodeScanInProgress,
+	ErrCodeIsolationUnsupportedPlatform,
+	ErrCodeIsolationMechanismUnavailable,
+	ErrCodeIsolationApplyError,
+	ErrCodeIsolationControlPlaneUnreachable,
+	ErrCodeIsolationEnforcementNotObserved,
+	ErrCodeIsolationNotDelivered,
+	ErrCodeIsolationAgentUnsupported,
+	ErrCodeIsolationEpisodeMismatch,
+	ErrCodeIsolationStaleGeneration,
+	ErrCodeIsolationInvalidSpec,
+	ErrCodeIsolationBusy,
 }
