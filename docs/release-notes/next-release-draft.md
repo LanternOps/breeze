@@ -219,3 +219,7 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Org settings — partner locks follow the settings catalog (#9762)
+
+- `GET /orgs/organizations/:id/effective-settings` now lists a partner-set field in `locked` only when the partner value actually wins. Partner defaults an org may override (agent version pins, enrollment defaults, Pushover fill-blank defaults) move to a new `partnerDefaults` list. A partner Event Logs destination is reported as locking the org's Event Logs fields only while it is enabled with a URL (the destination the runtime actually uses), so the org Event Logs editor no longer disables its fields when the partner's destination is disabled or incomplete. API clients that read `locked` as "the partner set this" should also read `partnerDefaults`. No migration, no new environment variable.
