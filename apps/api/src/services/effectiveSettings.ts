@@ -384,7 +384,8 @@ export async function getEffectiveOrgSettings(
     }
   }
 
-  // Partner JSONB wins and locks
+  // Partner JSONB wins and locks. Every `aiBudgets.*` catalog entry is kind
+  // `locks`, so these go straight to `locked` without classifyPartnerKey.
   for (const field of AI_BUDGET_FIELDS) {
     if (field in partnerBudget && partnerBudget[field] !== undefined) {
       mergedBudget[field] = partnerBudget[field];
@@ -419,10 +420,14 @@ export async function getEffectiveOrgSettings(
  * is always present in the `defaults` payload, so it locked the whole category).
  *
  * This guard is still presence-based: it does not consult the catalog the way
- * `locked` reporting does (#9762). The org PATCH route exempts the overridable
- * `defaults` fields before calling it; other partner defaults (Pushover, a
- * not-in-force Event Logs destination) have no org-side value under these
- * categories that a runtime resolver reads.
+ * `locked` reporting does (#9762). The org PATCH route (routes/orgs.ts) strips
+ * a hard-coded exemption list before calling it — `agentVersionPins`,
+ * `defaultEnrollmentTtlMinutes`, `defaultEnrollmentDeviceCount`, the catalog's
+ * overridable `defaults` entries today; a new overridable `defaults` field must
+ * be added there too or it stays write-locked. The other partner defaults
+ * (Pushover, a not-in-force Event Logs destination) have no org value under
+ * these categories: the org's own lives on its Pushover channels and in
+ * `settings.logForwarding` (see the `orgSource` of their inheritance bindings).
  */
 export async function assertNotLocked(
   orgId: string,
