@@ -91,6 +91,11 @@ export async function cancelDeviceCommands(params: {
   completedAt?: Date;
   executor?: DbExecutor;
   isolateFailures?: boolean;
+  /**
+   * The reason recorded on an owning `patch_job_results` row (#8909, e.g.
+   * `ring_deleted`). Omitted → the generic `cancelled`.
+   */
+  patchCancelReason?: string;
   /** Override the per-command hook (tests). */
   propagate?: typeof propagateCancelledDeviceCommand;
 }): Promise<DeviceCommandCancelSubject[]> {
@@ -145,6 +150,7 @@ export async function cancelDeviceCommands(params: {
         payload: subject.payload,
         completedAt,
         executor: hookExecutor,
+        ...(params.patchCancelReason ? { patchCancelReason: params.patchCancelReason } : {}),
       });
     if (!isolateFailures) {
       await run(executor);
@@ -183,6 +189,8 @@ export async function propagateCancelledDeviceCommand(params: {
    * with a `script_executions` / `deployment_results` row still `pending`.
    */
   executor?: DbExecutor;
+  /** Reason for the owning `patch_job_results` row; default `cancelled` (#8909). */
+  patchCancelReason?: string;
 }): Promise<void> {
   const { commandId, type, payload, completedAt } = params;
   const executor: DbExecutor = params.executor ?? db;
@@ -231,7 +239,7 @@ export async function propagateCancelledDeviceCommand(params: {
     await finalizePatchDeviceForCommand({
       commandId,
       payload,
-      terminal: { kind: 'cancelled', reason: 'cancelled' },
+      terminal: { kind: 'cancelled', reason: params.patchCancelReason ?? 'cancelled' },
       completedAt,
       executor,
     });

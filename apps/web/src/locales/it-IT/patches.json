@@ -485,6 +485,11 @@
     "rebootRequired": "Richiesto",
     "rebootDone": "Completato",
     "rebootNotRequired": "—",
+    "skipReasons": {
+      "ring_deleted": "Annullato prima dell’invio: l’anello di aggiornamento è stato eliminato.",
+      "ring_disabled": "Annullato prima dell’invio: l’anello di aggiornamento è stato disattivato.",
+      "ring_unavailable": "Saltato: l’anello di aggiornamento è stato eliminato o disattivato prima dell’invio a questo dispositivo."
+    },
     "errors": {
       "load": "Impossibile caricare il job di patch"
     }
