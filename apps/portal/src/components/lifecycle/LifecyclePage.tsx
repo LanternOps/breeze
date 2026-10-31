@@ -116,7 +116,10 @@ export function LifecyclePage({
       className={hasEverGeneratedARun ? BTN_SECONDARY : BTN_PRIMARY}
     >
       <RefreshCw className={busy ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} aria-hidden="true" />
-      {busy ? 'Refreshing…' : 'Refresh'}
+      {/* With no plan yet the click creates the first one, so say so (#9868). */}
+      {hasEverGeneratedARun
+        ? busy ? 'Refreshing…' : 'Refresh'
+        : busy ? 'Generating…' : 'Generate plan'}
     </button>
   );
 

@@ -339,7 +339,8 @@ aiOperatorTasksRoutes.post(
 /**
  * Org-wide keyset-paginated task list — every task the caller's accessible
  * orgs admitted, newest-created first. Optional `deviceId`/`state` filters
- * per spec §12's `GET /tasks` contract.
+ * per spec §12's `GET /tasks` contract, plus an optional `orgId` that narrows
+ * to one accessible org (#10112).
  *
  * Sorted by `created_at`, not `updated_at` (review fix, PR #5254) — see
  * `operatorTasksListCursor.ts`'s header for why a keyset needs an immutable
@@ -353,9 +354,18 @@ aiOperatorTasksRoutes.get(
   zValidator('query', operatorTaskListQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const { cursor: cursorToken, limit, deviceId, state } = c.req.valid('query');
+    const { cursor: cursorToken, limit, deviceId, state, orgId } = c.req.valid('query');
 
-    const result = await listOperatorTasks(auth, { cursorToken, limit, deviceId, state });
+    // Optional single-org filter (#10112) — same contract as `GET /ai/agents/runs`.
+    // `fetchWithAuth` injects `?orgId=<selected>` whenever the org switcher has
+    // one org selected; the schema used to strip it, so the switcher (and the
+    // Wisp entity picker's Tasks tab) never narrowed this list. It must name an
+    // org the caller can already see: the filter narrows, never widens.
+    if (orgId && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+
+    const result = await listOperatorTasks(auth, { cursorToken, limit, deviceId, state, orgId });
     if (!result.ok) return c.json({ error: 'Invalid or malformed cursor' }, 400);
     return c.json({ data: result.data, nextCursor: result.nextCursor });
   },

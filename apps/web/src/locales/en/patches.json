@@ -485,6 +485,11 @@
     "rebootRequired": "Required",
     "rebootDone": "Completed",
     "rebootNotRequired": "—",
+    "skipReasons": {
+      "ring_deleted": "Cancelled before dispatch: the update ring was deleted.",
+      "ring_disabled": "Cancelled before dispatch: the update ring was disabled.",
+      "ring_unavailable": "Skipped: the update ring was deleted or disabled before this device was dispatched."
+    },
     "errors": {
       "load": "Failed to load patch job"
     }
