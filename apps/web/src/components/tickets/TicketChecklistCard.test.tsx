@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react';
 
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
@@ -572,6 +572,45 @@ describe('operator_task items (recipe spec §6.5)', () => {
       fireEvent.click(screen.getByTestId('ticket-checklist-save-template-submit'));
       await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
       expect(screen.getByTestId('ticket-checklist-save-template-form')).toBeTruthy();
+    });
+  });
+
+  describe('readOnly (merged tombstone ticket, #10025)', () => {
+    it('keeps the steps readable but offers no write control', async () => {
+      fetchWithAuth.mockImplementation(fakeServer(
+        [item({ id: 'i-1', done: true }), item({ id: 'i-2', label: 'Second step' })],
+        [template()],
+      ));
+      render(<TicketChecklistCard ticketId="tk-1" readOnly />);
+      expect(await screen.findByTestId('ticket-checklist-progress')).toHaveTextContent('1 / 2');
+      expect(screen.getByTestId('ticket-checklist-item-i-2')).toHaveTextContent('Second step');
+      expect(screen.getByTestId('ticket-checklist-toggle-i-1')).toBeDisabled();
+      expect(screen.getByTestId('ticket-checklist-toggle-i-2')).toBeDisabled();
+      for (const id of [
+        'ticket-checklist-edit-i-1', 'ticket-checklist-delete-i-1', 'ticket-checklist-up-i-1',
+        'ticket-checklist-down-i-1', 'ticket-checklist-add-form', 'ticket-checklist-apply-template',
+        'ticket-checklist-save-template',
+      ]) {
+        expect(screen.queryByTestId(id), id).toBeNull();
+      }
+      const writes = fetchWithAuth.mock.calls.filter(([, init]) => init?.method && init.method !== 'GET');
+      expect(writes).toEqual([]);
+    });
+
+    it('renders nothing for an empty checklist and never fetches templates', async () => {
+      fetchWithAuth.mockImplementation(fakeServer([], [template()]));
+      const { container } = render(<TicketChecklistCard ticketId="tk-1" readOnly />);
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(checklistUrl()));
+      await act(async () => { await Promise.resolve(); });
+      expect(container.querySelector('[data-testid="ticket-checklist-card"]')).toBeNull();
+      expect(fetchWithAuth.mock.calls.some(([u]) => String(u).startsWith('/ticket-checklist-templates'))).toBe(false);
+    });
+
+    it('still surfaces a failed load with a retry (GET only)', async () => {
+      fetchWithAuth.mockImplementation(async () => ({ ok: false, status: 500, json: async () => ({}) }) as Response);
+      render(<TicketChecklistCard ticketId="tk-1" readOnly />);
+      expect(await screen.findByTestId('ticket-checklist-error')).toBeTruthy();
+      expect(screen.getByTestId('ticket-checklist-retry')).toBeTruthy();
     });
   });
 });

@@ -306,7 +306,12 @@ export default function AlertList({
             </span>
           )}
         </button>
-        <span className="text-xs text-muted-foreground whitespace-nowrap">
+        <span
+          data-testid="alert-list-count"
+          data-filtered={filteredAlerts.length}
+          data-total={alerts.length}
+          className="text-xs text-muted-foreground whitespace-nowrap"
+        >
           {filteredAlerts.length} {t('alertList.of')} {alerts.length}
         </span>
       </div>
