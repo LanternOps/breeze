@@ -22,9 +22,6 @@ Last release: **v0.125.0** (2026-10-27).
 
 ## Features / API
 
-### Org-subject alerts (#10725)
-
-- Alerts, notification templates and API payloads identify backup workloads and topology sites, with links to their health pages and device actions shown only for device alerts.
 ### Wisp working set (#10364)
 
 - Wisp now adds records to its thread working set after successful focal tool calls, keeps pins ahead of recent auto links, and names the authorized record or device being viewed in the turn seed.
