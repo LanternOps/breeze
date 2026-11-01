@@ -2410,6 +2410,7 @@
       "platformNotSelected": "Platform not selected",
       "varMissing": "Deployment variable missing",
       "varSecret": "Deployment variable is marked secret",
+      "installerMissing": "Installer not uploaded",
       "vendorUnavailable": "Vendor unavailable",
       "installFailed": "Install failed",
       "installNotArmed": "Install not armed",
@@ -2417,6 +2418,10 @@
       "awaitingVendorReport": "Awaiting vendor report",
       "awaitingEvaluation": "Awaiting evaluation",
       "vendorOrgMismatch": "Vendor reports a different organization"
+    },
+    "setupLink": {
+      "installerMissing": "Upload the installer",
+      "default": "Open setup"
     }
   },
   "sweeps": {

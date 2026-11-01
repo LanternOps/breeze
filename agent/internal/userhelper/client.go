@@ -68,6 +68,10 @@ type Client struct {
 	desktopMgr          *helperDesktopManager
 	prompts             *nativePromptRenderer // prompt host renderer (#10190)
 
+	// pamDialogs holds the open PAM elevation dialogs, for pam_close_dialog
+	// (#10370).
+	pamDialogs pamDialogRegistry
+
 	// agentHandlesTCCNotice is this connection's
 	// AuthResponse.AgentHandlesTCCNotice (#10190 W04), set at authentication.
 	agentHandlesTCCNotice bool
@@ -364,6 +368,7 @@ func (c *Client) authenticate() error {
 		// consentProtocolFromAuth applies the same condition).
 		ConsentProtocolVersion:     consentProtocolForAuth(supportsConsent),
 		SupportsTargetedPamDismiss: supportsTargetedPamDismissForAuth(c.role),
+		SupportsPamDialogClose:     supportsPamDialogCloseForAuth(c.role),
 		// Prompt host (#10190): protocol 1 with zero kinds in W02, so the
 		// broker grants no prompt scope and every prompt stays legacy.
 		PromptProtocolVersion: promptProtocol,
@@ -521,6 +526,9 @@ func (c *Client) commandLoop() error {
 
 		case ipc.TypePamDismissConsent:
 			safeGo("pam_dismiss_consent", func() { c.handlePamDismissConsent(env) })
+
+		case ipc.TypePamCloseDialog:
+			safeGo("pam_close_dialog", func() { c.handlePamCloseDialog(env) })
 
 		case ipc.TypeConsentRequest:
 			safeGo("consent_request", func() { c.handleConsentRequest(env) })
@@ -1233,7 +1241,17 @@ func (c *Client) handlePamDialog(env *ipc.Envelope) {
 		return
 	}
 
-	result := showPamDialog(req)
+	// Registered so pam_close_dialog can take the window down before the
+	// agent dismisses consent.exe on a deny (#10370).
+	ctx, cancel := context.WithCancel(context.Background())
+	open := c.pamDialogs.open(env.ID, cancel)
+	result := func() ipc.PamDialogResult {
+		defer func() {
+			c.pamDialogs.finish(env.ID, open)
+			cancel()
+		}()
+		return showPamDialogFn(ctx, req)
+	}()
 	if err := c.conn.SendTyped(env.ID, ipc.TypePamDialogResult, result); err != nil {
 		log.Warn("failed to send PAM dialog result", "id", env.ID, "error", err)
 	}
@@ -1300,7 +1318,7 @@ func (c *Client) handlePamDismissConsent(env *ipc.Envelope) {
 // an actuator that cannot target one consent.exe. Nothing is pressed.
 const reasonTargetedDismissUnsupported = "targeted_dismiss_unsupported"
 
-// dismissPamConsent runs the deny path's untargeted Dismiss, or — when the
+// dismissPamConsent runs the untargeted Dismiss, or — when the
 // agent named a consent.exe instance (#8995) — dismisses only that instance. A
 // targeted request never falls back to the untargeted Escape, which would
 // cancel whichever UAC prompt happened to be found first.

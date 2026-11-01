@@ -84,6 +84,15 @@ describe('in-app sender', () => {
     });
   });
 
+  it.each([true, false])('renders the subject in the in-app body (workload=%s)', async (workload) => {
+    const valuesMock = vi.fn().mockReturnValue({ onConflictDoNothing: vi.fn().mockResolvedValue(undefined) });
+    insertMock.mockReturnValue({ values: valuesMock });
+    selectMock.mockReturnValueOnce(createOrgSelect([{ partnerId: null }])).mockReturnValueOnce(createUserSelect([{ userId: 'org-user-1' }]));
+    const subjectName = workload ? 'Microsoft 365 mail backup · Example customer' : 'Server-1';
+    await sendInAppNotification({ alertId: 'alert-1', alertName: 'Alert', severity: 'high', message: 'Failed', orgId: 'org-1', subjectName, ownerKind: workload ? 'backup_workload' : 'device', deviceName: workload ? undefined : 'Server-1' });
+    expect(valuesMock.mock.calls[0]?.[0][0]).toMatchObject({ title: 'Alert', message: workload ? `${subjectName}: Failed` : 'Failed', metadata: { subjectName, ownerKind: workload ? 'backup_workload' : 'device' } });
+  });
+
   it('includes selected-org partner users and deduplicates recipients', async () => {
     const payload = {
       alertId: 'alert-1',

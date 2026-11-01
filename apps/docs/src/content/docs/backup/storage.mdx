@@ -107,7 +107,12 @@ Each snapshot records the location it was written to, and Breeze reads, verifies
 
 A valid prefix is at most 256 characters, made of `/`-separated segments that use only letters, digits and `! _ . * ' ( ) -`. Leading and trailing slashes are ignored. Empty segments (`a//b`), `.` and `..` are not allowed, and no segment may be `snapshots` (in any letter case), so one prefix can never contain another prefix's snapshots. The form flags an invalid prefix as you type and the API rejects it on save. A destination saved with an invalid prefix by an older version is not backed up to the bucket root instead: its backups fail with a message asking you to correct the prefix, and **Test connection** fails naming the rule the prefix breaks.
 
-Bare-metal recovery of a snapshot stored under a prefix always downloads through Breeze (token-mode download), which is the default for recovery media. Agent-side tools that read a bucket directly with a hand-supplied configuration (the `breeze-backup rebuild --provider-config` command and the `agent.yaml` backup manager) do not apply the prefix.
+Bare-metal recovery of a snapshot stored under a prefix always downloads through Breeze (token-mode download), which is the default for recovery media. Agent-side tools that read a bucket directly with a hand-supplied configuration take the prefix as their own option, and never read it from a pasted `providerConfig.prefix`:
+
+- **`breeze-backup rebuild --provider-config`**: pass `--key-prefix <prefix>`, where `<prefix>` is the path in front of `snapshots/<snapshot-id>/` in the bucket. That is the prefix the snapshot was **written** under. After a prefix change it differs from the destination's current Path Prefix. Snapshots taken before the prefix was set sit at the bucket root and need no `--key-prefix`. If the configuration file has a `providerConfig.prefix` and you leave out `--key-prefix`, the command prints a note and reads from the bucket root.
+- **The `agent.yaml` backup manager** (`backup_provider: s3`): set `backup_s3_prefix: <prefix>` to write and read its snapshots under `<prefix>/snapshots/`. Snapshots it took before you set the prefix stay at the bucket root, and the manager no longer sees them. If the prefix is invalid, the manager is disabled: backup commands that need it fail with a message naming `backup_s3_prefix`, and a local vault that uses it as its source does not start. It never falls back to the bucket root.
+
+Both options follow the same prefix rules as the destination form, and the agent maps keys under the prefix exactly as the server does.
 
 ### How destination credentials are stored
 

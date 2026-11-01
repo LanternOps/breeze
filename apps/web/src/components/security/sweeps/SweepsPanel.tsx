@@ -9,7 +9,6 @@ import { ActionError } from "@/lib/runAction";
 import { friendlyFetchError } from "@/lib/utils";
 import AccessDenied from "../../shared/AccessDenied";
 import { showToast } from "../../shared/Toast";
-import { listRuleSets } from "../detectionRules/ruleSetsApi";
 import SweepDialog, { type SweepDialogPrefill } from "./SweepDialog";
 import { describeSweepProgress } from "./sweepProgress";
 import { cancelSweep, cancelSweepGroup, getSweepGroup, listSweeps } from "./sweepsApi";
@@ -41,7 +40,6 @@ export default function SweepsPanel({
   const [loading, setLoading] = useState(true);
   const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
   const [loadError, setLoadError] = useState<string>();
-  const [currentVersions, setCurrentVersions] = useState<Map<string, number>>(new Map());
   const [busyId, setBusyId] = useState<string | null>(null);
   const [resweep, setResweep] = useState<SweepDialogPrefill | null>(null);
   const loadedRef = useRef(false);
@@ -56,16 +54,6 @@ export default function SweepsPanel({
       setErrorKind("none");
       setLoadError(undefined);
       loadedRef.current = true;
-      // One published-version read per list, never per row (anchor C3-1).
-      if (rows.length > 0) {
-        try {
-          const sets = await listRuleSets();
-          if (seq !== requestSeq.current) return;
-          setCurrentVersions(new Map(sets.map((s) => [s.id, s.publishedVersion])));
-        } catch {
-          // Without current versions the rules-changed hint is simply absent.
-        }
-      }
     } catch (err) {
       if (seq !== requestSeq.current) return;
       console.error("[SweepsPanel] load:", err);
@@ -93,15 +81,6 @@ export default function SweepsPanel({
     const timer = setInterval(() => void load(), POLL_MS);
     return () => clearInterval(timer);
   }, [hasActive, load]);
-
-  const rulesChanged = useCallback(
-    (s: SweepSummary) =>
-      s.ruleSets.some((pin) => {
-        const current = currentVersions.get(pin.id);
-        return current !== undefined && current > pin.version;
-      }),
-    [currentVersions],
-  );
 
   const cancelOne = async (s: SweepSummary) => {
     setBusyId(s.id);
@@ -224,7 +203,9 @@ export default function SweepsPanel({
             <tbody>
               {sweeps.map((s) => {
                 const progress = describeSweepProgress(s);
-                const changed = rulesChanged(s);
+                // Server-counted children the claim failed because a pinned
+                // set was republished (#10049) — not inferred from versions.
+                const changed = s.progress.ruleSetChanged > 0;
                 const skippedTotal = Object.values(s.skipped).reduce((a, b) => a + (b ?? 0), 0);
                 const restricted = Object.keys(s.skipped).length === 0;
                 return (
@@ -296,7 +277,7 @@ export default function SweepsPanel({
                           {t("sweeps.panel.cancel")}
                         </button>
                       )}
-                      {changed && (s.state === "active" || s.progress.failed > 0) && (
+                      {changed && (
                         <button
                           type="button"
                           data-testid={`sweep-resweep-${s.id}`}
