@@ -25,6 +25,7 @@ import {
   buildAcknowledgeAlertCas,
   buildResolveAlertCas,
   buildSuppressAlertCas,
+  publishAlertSuppressed,
 } from './alertService';
 import { deviceIdSiteDenied, resolveSiteAllowedDeviceIds, siteAllowlistOf } from './aiToolsSiteScope';
 import { emitAlertStateFeedback } from './mlFeedbackEmitters';
@@ -503,26 +504,12 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: ALERT_SUPPRESS_CAS_LOST_MESSAGE });
         }
 
-        let suppressEventWarning: string | undefined;
-        try {
-          await publishEvent(
-            'alert.suppressed',
-            alert.orgId,
-            {
-              alertId: alert.id,
-              ruleId: alert.ruleId,
-              deviceId: alert.deviceId,
-              suppressedBy: auth.user.id,
-              suppressedUntil: suppressedUntil ? suppressedUntil.toISOString() : null,
-              durationHours
-            },
-            'ai-tools',
-            { userId: auth.user.id }
-          );
-        } catch (error) {
-          console.error('[AiTools] Failed to publish alert.suppressed event:', error);
-          suppressEventWarning = 'Alert was suppressed but event notification may be delayed';
-        }
+        const suppressEventPublished = await publishAlertSuppressed({
+          alert, suppressedBy: auth.user.id, suppressedUntil, durationHours, source: 'ai-tools',
+        });
+        const suppressEventWarning = suppressEventPublished
+          ? undefined
+          : 'Alert was suppressed but event notification may be delayed';
 
         await emitAlertStateFeedback({
           orgId: alert.orgId,
