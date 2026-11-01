@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   DEMO_LAKESIDE_SITE_ID, DEMO_SITE_ID, assertLocalDevDatabase, demoAssets, demoDevices, demoDiscoveryProfiles, demoLegacyPins, demoPresenceHistory,
@@ -140,5 +142,37 @@ describe('seed-topology-demo synthetic presence history (site location W3)', () 
       expect(Date.parse(r.lastObservedAt)).toBeLessThan(now.getTime());
       expect(r.state === 'visiting').toBe(r.matched !== null);
     }
+  });
+});
+
+describe('seed-topology-demo synthetic VPN addresses (#9858)', () => {
+  // The seed script runs main() on import and does not export its device
+  // builder, so scan the source of the `tailscale` extra block instead.
+  const source = readFileSync(join(__dirname, 'seed-topology-demo.ts'), 'utf8');
+  const start = source.indexOf("d.extras.includes('tailscale')");
+  const end = source.indexOf("d.extras.includes('vpn_full_tunnel')");
+  const block = source.slice(start, end);
+  const v4 = [...block.matchAll(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g)].map(m => m[0]);
+
+  it('locates the tailscale extra block', () => {
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(v4.length).toBeGreaterThan(0);
+  });
+
+  it('uses no CGNAT (100.64.0.0/10) or Tailscale ULA (fd7a:115c:a1e0::/48) addresses', () => {
+    for (const ip of v4) {
+      const [a, b] = ip.split('.').map(Number);
+      expect(a === 100 && b >= 64 && b <= 127, `${ip} is in 100.64.0.0/10`).toBe(false);
+    }
+    expect(block.toLowerCase()).not.toContain('fd7a:115c:a1e0');
+  });
+
+  it('uses only RFC 5737 / RFC 3849 documentation addresses', () => {
+    for (const ip of v4) expect(/^(192\.0\.2|198\.51\.100|203\.0\.113)\./.test(ip), `${ip} is not a documentation address`).toBe(true);
+    // Every quoted IPv6 literal (anything with 2+ colons) must be in 2001:db8::/32.
+    const v6 = [...block.matchAll(/'([0-9a-f]*:[0-9a-f:]*:[0-9a-f:]*)'/gi)].map(m => m[1]);
+    expect(v6.length).toBeGreaterThan(0);
+    for (const ip of v6) expect(/^2001:db8:/i.test(ip), `${ip} is not in 2001:db8::/32`).toBe(true);
   });
 });

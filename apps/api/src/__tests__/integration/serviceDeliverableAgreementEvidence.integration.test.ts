@@ -19,7 +19,7 @@ import './setup';
 import { describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { addEvidence } from '../../services/serviceDeliverableService';
+import { addEvidence, getOccurrenceOr404 } from '../../services/serviceDeliverableService';
 import {
   insertRequest, insertRequestDocument, rows, seedPublishedTemplate, seedTwoOrgs, sqlstate, sys,
 } from './agreementRequestsFixtures';
@@ -80,6 +80,38 @@ describe('signed agreement as deliverable evidence (#9312, live DB)', () => {
     // No copy: the library is untouched.
     const docs = await sys(async () => rows(await db.execute(sql`SELECT count(*)::int AS n FROM org_documents`)));
     expect(docs[0]!.n).toBe(0);
+  });
+
+  // #9961: the chip names the agreement — through the real join chain
+  // (contract_documents → template + version) as the app role — but only for
+  // a caller that may read agreements.
+  runDb('names the linked agreement for an agreements:read caller; ids only without it (#9961)', async () => {
+    const s = await seed();
+    const labelled = await withDbAccessContext(s.partnerCtx, () =>
+      addEvidence(s.orgA.id, s.occA, { kind: 'contract_document', contractDocumentId: s.agreementA },
+        { ...s.actor, evidenceLabelAccess: { documents: false, reports: false, agreements: true } }));
+    expect(labelled.evidence).toEqual([
+      expect.objectContaining({ contractDocumentId: s.agreementA, label: 'Fixture MSA v1' }),
+    ]);
+    const plain = await withDbAccessContext(s.partnerCtx, () => getOccurrenceOr404(s.orgA.id, s.occA, s.actor));
+    expect(plain.evidence).toEqual([
+      expect.objectContaining({ contractDocumentId: s.agreementA, label: null }),
+    ]);
+  });
+
+  runDb('names a linked library document for a documents:read caller; null once it is soft-deleted (#9961)', async () => {
+    const s = await seed();
+    const docId = rows(await sys(() => db.execute(sql`
+      INSERT INTO org_documents (org_id, title, category, storage_backend, data, content_type, byte_size, sha256, original_filename)
+      VALUES (${s.orgA.id}::uuid, 'Q3 backup restore test', 'evidence', 'db', '\\x255044462d'::bytea, 'application/pdf', 5, ${'a'.repeat(64)}, 'scan.pdf')
+      RETURNING id`)))[0]!.id as string;
+    const withDocs = { ...s.actor, evidenceLabelAccess: { documents: true, reports: false, agreements: false } };
+    const view = await withDbAccessContext(s.partnerCtx, () =>
+      addEvidence(s.orgA.id, s.occA, { kind: 'document', documentId: docId }, withDocs));
+    expect(view.evidence).toEqual([expect.objectContaining({ documentId: docId, label: 'Q3 backup restore test' })]);
+    await sys(() => db.execute(sql`UPDATE org_documents SET deleted_at = now() WHERE id = ${docId}::uuid`));
+    const after = await withDbAccessContext(s.partnerCtx, () => getOccurrenceOr404(s.orgA.id, s.occA, withDocs));
+    expect(after.evidence).toEqual([expect.objectContaining({ documentId: docId, label: null })]);
   });
 
   runDb('another org\'s signed agreement is 404 even when RLS can see both orgs; nothing is inserted', async () => {
