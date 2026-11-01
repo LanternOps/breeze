@@ -183,6 +183,16 @@ describe('listLinks', () => {
       }
     },
   );
+  it('keeps all 50 pins before 20 newer autos without losing the auto count', async () => {
+    h.rows = [
+      ...Array.from({ length: 20 }, (_, i) => row('auto-' + i, 'auto', 9)),
+      ...Array.from({ length: 50 }, (_, i) => row('pin-' + i, i % 2 ? 'user_pin' : 'wisp_pin', 5)),
+    ];
+    const links = await listLinks(ctx, 'thread');
+    expect(links).toHaveLength(70);
+    expect(links.slice(0, 50).every((l) => l.source !== 'auto')).toBe(true);
+    expect(links.slice(50).every((l) => l.source === 'auto')).toBe(true);
+  });
 
   it('reads stored rows only, ordered by last_touched_at descending', async () => {
     h.rows = [row('stored', 'auto', 9)];

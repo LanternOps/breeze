@@ -394,10 +394,10 @@ function rejectUnsupportedAuthFields(
 // a publisher exists.
 const PUBLISHED_EVENT_TYPES: ReadonlySet<string> = new Set<string>(Object.values(EVENT_TYPES));
 
-// Registered names known to have no publisher; currently only alert.escalated
-// (#10500). A follow-up implements it. Remove it from this set in the same PR
-// that adds a publisher.
-export const NEVER_PUBLISHED_EVENT_TYPES: ReadonlySet<string> = new Set(['alert.escalated']);
+// Registered names known to have no publisher. Empty since alert.escalated
+// gained one (#10565). Add a name here only together with the web form's
+// NEVER_DELIVERED_EVENTS, and remove it in the same PR that adds a publisher.
+export const NEVER_PUBLISHED_EVENT_TYPES: ReadonlySet<string> = new Set([]);
 
 // Names that were offered for subscription but are not what the bus publishes.
 // The web form offered `alert.created` while alerts publish `alert.triggered`
