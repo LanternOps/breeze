@@ -1435,6 +1435,10 @@
             "description": "Se activa cuando se crea un ticket.",
             "label": "Ticket creado"
           },
+          "ticketMerged": {
+            "description": "Se activa cuando un ticket se combina con otro ticket.",
+            "label": "Ticket combinado"
+          },
           "ticketCommented": {
             "description": "Se activa cuando se agrega un comentario o una nota a un ticket.",
             "label": "Ticket comentado"
