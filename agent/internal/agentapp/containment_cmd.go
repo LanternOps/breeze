@@ -19,6 +19,13 @@ type containmentCommandManager interface {
 	Tick(context.Context)
 }
 
+// errContainmentMaintenanceUnavailable: Startup/Tick report no outcome, and a
+// local process has no authenticated verifier, so a drift re-apply would fail
+// its positive probe and roll the rules back. Until W1g adds confirmable
+// recovery operations these subcommands refuse rather than claim success; the
+// running agent performs both on its own schedule.
+var errContainmentMaintenanceUnavailable = errors.New("not implemented on this platform yet (W1g); the running agent performs this automatically")
+
 func newContainmentCommand(dataDir func() string) *cobra.Command {
 	return newContainmentCommandWithFactory(func() containmentCommandManager {
 		dir := dataDir()
@@ -58,11 +65,11 @@ func newContainmentCommandWithFactory(manager func() containmentCommandManager) 
 	group.AddCommand(release)
 	group.AddCommand(&cobra.Command{
 		Use: "boot-apply", Short: "Reconcile isolation state after startup", Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error { manager().Startup(cmd.Context()); return nil },
+		RunE: func(*cobra.Command, []string) error { return errContainmentMaintenanceUnavailable },
 	})
 	group.AddCommand(&cobra.Command{
 		Use: "expire-check", Short: "Evaluate isolation expiry and pending recovery", Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error { manager().Tick(cmd.Context()); return nil },
+		RunE: func(*cobra.Command, []string) error { return errContainmentMaintenanceUnavailable },
 	})
 	return group
 }

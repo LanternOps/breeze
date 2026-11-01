@@ -14,9 +14,16 @@ func init() { handlerRegistry[tools.CmdReleaseContainment] = handleReleaseContai
 
 func handleReleaseContainment(h *Heartbeat, cmd Command) tools.CommandResult {
 	if h == nil || h.containment == nil {
-		return invalidContainmentResult()
+		return unavailableContainmentResult()
 	}
 	return containmentCommandResult(h.containment.manager.HandleRelease(context.Background(), cmd.Payload))
+}
+
+// unavailableContainmentResult: the isolation runtime never initialised.
+func unavailableContainmentResult() tools.CommandResult {
+	r := tools.NewErrorResult(errors.New("network isolation runtime unavailable"), 0)
+	r.ErrorCode = wire.ErrCodeIsolationMechanismUnavailable
+	return r
 }
 
 func invalidContainmentResult() tools.CommandResult {

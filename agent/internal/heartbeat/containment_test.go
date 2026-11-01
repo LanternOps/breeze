@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -68,6 +69,35 @@ func TestContainmentPayloadValidation(t *testing.T) {
 		{"secret newline", func(p, q, e map[string]any) { p["breakGlassSecret"] = p["breakGlassSecret"].(string) + "\n" }, false},
 		{"nil parameters", func(p, q, e map[string]any) { p["parameters"] = nil }, false},
 		{"bad port", func(p, q, e map[string]any) { e["ports"] = []any{65536, 443} }, false},
+		{"unknown parameter", func(p, q, e map[string]any) { q["surprise"] = true }, false},
+		{"unknown entry field", func(p, q, e map[string]any) { e["surprise"] = true }, false},
+		{"duplicate port", func(p, q, e map[string]any) { e["ports"] = []any{443, 443} }, false},
+		{"port zero", func(p, q, e map[string]any) { e["ports"] = []any{0, 443} }, false},
+		{"too many ports", func(p, q, e map[string]any) {
+			ports := []any{443}
+			for i := 1; i <= 16; i++ {
+				ports = append(ports, 1000+i)
+			}
+			e["ports"] = ports
+		}, false},
+		{"too many entries", func(p, q, e map[string]any) {
+			allow := q["allow"].([]any)
+			for i := 0; i < 64; i++ {
+				allow = append(allow, map[string]any{"kind": "cidr", "cidr": "198.51.100." + strconv.Itoa(i) + "/32", "proto": "tcp", "ports": []any{443}, "scope": "breeze"})
+			}
+			q["allow"] = allow
+		}, false},
+		{"bad kind", func(p, q, e map[string]any) { e["kind"] = "url" }, false},
+		{"bad proto", func(p, q, e map[string]any) { e["proto"] = "icmp" }, false},
+		{"cidr with host", func(p, q, e map[string]any) {
+			q["allow"] = append(q["allow"].([]any), map[string]any{"kind": "cidr", "cidr": "198.51.100.0/24", "host": "relay.example.test", "proto": "tcp", "ports": []any{443}, "scope": "breeze"})
+		}, false},
+		{"zero prefix", func(p, q, e map[string]any) {
+			q["allow"] = append(q["allow"].([]any), map[string]any{"kind": "cidr", "cidr": "0.0.0.0/0", "proto": "tcp", "ports": []any{443}, "scope": "breeze"})
+		}, false},
+		{"bad host label", func(p, q, e map[string]any) {
+			q["allow"] = append(q["allow"].([]any), map[string]any{"kind": "host", "host": "relay_example.test", "proto": "tcp", "ports": []any{443}, "scope": "breeze"})
+		}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -112,6 +142,7 @@ func TestContainmentControlPlaneValidation(t *testing.T) {
 		{"https://control.example.test:0", "control.example.test", "", "tcp", []uint16{443}, false},
 		{"ftp://control.example.test", "control.example.test", "", "tcp", []uint16{443}, false},
 		{"bad", "control.example.test", "", "tcp", []uint16{443}, false},
+		{"https://user@control.example.test", "control.example.test", "", "tcp", []uint16{443}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.server+tc.cidr, func(t *testing.T) {
@@ -157,6 +188,9 @@ func TestContainmentWireCapabilitiesAndAbsentReport(t *testing.T) {
 		h.reconcileContainment(response.Containment)
 		if h.containment.manager.Active() {
 			t.Fatal("empty response activated isolation")
+		}
+		if len(h.containment.desired) != 0 {
+			t.Fatalf("response %s queued a desired state", raw)
 		}
 	}
 }

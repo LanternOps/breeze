@@ -1727,6 +1727,11 @@ func (u *Updater) replaceBinary(newPath string) error {
 // temp file. Used by dev_push when updating a non-agent binary (e.g. the
 // desktop helper) so the updater's automatic replace+restart flow is skipped.
 func (u *Updater) DownloadAndVerify(url, expectedChecksum string) (string, error) {
+	// Only a caller-supplied checksum, never a signed manifest (helper
+	// dev-pushes): containment refuses it, as it does UpdateFromURL.
+	if isolationActive() {
+		return "", ErrUpdateBlockedByIsolation
+	}
 	tempPath, err := u.downloadFromURL(url)
 	if err != nil {
 		return "", fmt.Errorf("failed to download binary: %w", err)

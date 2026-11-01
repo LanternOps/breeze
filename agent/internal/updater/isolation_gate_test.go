@@ -381,3 +381,22 @@ func TestIsolationGatePkgSignedSizeBinding(t *testing.T) {
 		t.Fatal("invalid manifest provided package size")
 	}
 }
+
+// DownloadAndVerify trusts only a caller-supplied checksum (helper dev-pushes),
+// so containment refuses it before any request, even to the control plane.
+func TestIsolationGateDownloadAndVerifyRefused(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("binary"))
+	}))
+	defer srv.Close()
+	setTestIsolation(t, true)
+	u := New(&Config{ServerURL: func() string { return srv.URL }, AuthToken: secmem.NewSecureString("t")})
+	if _, err := u.DownloadAndVerify(srv.URL+"/helper", strings.Repeat("0", 64)); !errors.Is(err, ErrUpdateBlockedByIsolation) {
+		t.Fatalf("error = %v, want ErrUpdateBlockedByIsolation", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatal("a containment-refused download still reached the server")
+	}
+}

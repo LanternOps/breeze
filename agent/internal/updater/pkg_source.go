@@ -66,6 +66,9 @@ func (u *Updater) fetchVerifiedPkg(urls []string, expectedSHA256 string) (string
 		return "", err
 	}
 	if len(urls) == 0 {
+		if isolationActive() {
+			return "", fmt.Errorf("%w: no control-plane package source", ErrUpdateBlockedByIsolation)
+		}
 		return "", fmt.Errorf("no package download sources available")
 	}
 	var errs []error
@@ -135,6 +138,8 @@ func (u *Updater) withVerifiedPkgSize(payload []byte) *Updater {
 	copyUpdater.signedPkgSize = 0
 	var manifest releaseArtifactManifest
 	if err := json.Unmarshal(payload, &manifest); err != nil {
+		// Fails closed under containment (size 0 is refused); visible otherwise.
+		log.Warn("signed release manifest unreadable; .pkg size not bound", "error", err.Error())
 		return &copyUpdater
 	}
 	for _, asset := range manifest.Assets {

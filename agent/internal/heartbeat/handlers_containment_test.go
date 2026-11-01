@@ -191,3 +191,30 @@ func TestContainmentResponseRejectsUnsafeDesired(t *testing.T) {
 		t.Fatal("release tombstone was dropped")
 	}
 }
+
+func TestContainmentBlocksUpgradeWhileActive(t *testing.T) {
+	if (&Heartbeat{}).containmentBlocksUpgrade() {
+		t.Fatal("no containment runtime must not block upgrades")
+	}
+	if (&Heartbeat{containment: &containmentRuntime{manager: &containmentFake{}}}).containmentBlocksUpgrade() {
+		t.Fatal("inactive containment must not block upgrades")
+	}
+	if !(&Heartbeat{containment: &containmentRuntime{manager: activeContainmentFake{&containmentFake{}}}}).containmentBlocksUpgrade() {
+		t.Fatal("active containment must block upgrades")
+	}
+}
+
+type activeContainmentFake struct{ *containmentFake }
+
+func (activeContainmentFake) Active() bool { return true }
+
+func TestContainmentRuntimeUnavailableIsNotInvalidSpec(t *testing.T) {
+	r := handlerRegistry[tools.CmdReleaseContainment](&Heartbeat{}, Command{Payload: map[string]any{}})
+	if r.Status != "failed" || r.ErrorCode != wire.ErrCodeIsolationMechanismUnavailable {
+		t.Fatalf("unavailable runtime outcome: %+v", r)
+	}
+	r = handlerRegistry[tools.CmdExecuteContainment](&Heartbeat{}, Command{Payload: map[string]any{"actionType": "network_isolation"}})
+	if r.Status != "failed" || r.ErrorCode != wire.ErrCodeIsolationMechanismUnavailable {
+		t.Fatalf("unavailable runtime outcome: %+v", r)
+	}
+}

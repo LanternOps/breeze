@@ -8832,6 +8832,10 @@ func (h *Heartbeat) noteCodeSignatureFailure(targetVersion string) {
 
 // doUpgrade contains the actual upgrade logic, called by handleUpgrade.
 func (h *Heartbeat) doUpgrade(targetVersion string) {
+	if h.containmentBlocksUpgrade() {
+		log.Info("upgrade skipped: network isolation is active", "targetVersion", targetVersion)
+		return
+	}
 	// Checked before sendUpdateStatus and before any download work: the server
 	// re-sends the same upgradeTo on every heartbeat, so without this the
 	// device would keep announcing "Updating" and re-running the whole

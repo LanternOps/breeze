@@ -136,11 +136,14 @@ func TestContainmentMaintenanceCommands(t *testing.T) {
 			fake := &containmentCommandFake{}
 			cmd := newContainmentCommandWithFactory(func() containmentCommandManager { return fake })
 			cmd.SetArgs([]string{name})
-			if err := cmd.Execute(); err != nil {
-				t.Fatal(err)
+			cmd.SetErr(&bytes.Buffer{})
+			// Until W1g gives Startup/Tick a confirmable outcome (and a verifier),
+			// these must exit nonzero and must not touch local state.
+			if err := cmd.Execute(); err == nil {
+				t.Fatal("maintenance command claimed success")
 			}
-			if (name == "boot-apply" && fake.startup != 1) || (name == "expire-check" && fake.tick != 1) {
-				t.Fatal("manager operation not called")
+			if fake.startup != 0 || fake.tick != 0 {
+				t.Fatal("maintenance command ran the manager")
 			}
 		})
 	}

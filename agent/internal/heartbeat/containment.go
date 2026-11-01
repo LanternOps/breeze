@@ -337,8 +337,10 @@ func (h *Heartbeat) reconcileContainment(d *isolation.DesiredBlock) {
 	if h.containment == nil || d == nil || d.NetworkIsolation == nil {
 		return
 	}
-	if validateContainmentDesired(d.NetworkIsolation, h.serverURL(), time.Now()) != nil {
-		log.Warn("ignoring invalid containment desired state")
+	if err := validateContainmentDesired(d.NetworkIsolation, h.serverURL(), time.Now()); err != nil {
+		n := d.NetworkIsolation
+		log.Warn("ignoring invalid containment desired state", "isolationId", n.IsolationID,
+			"generation", n.Generation, "desired", n.Desired, "error", err.Error())
 		return
 	}
 	h.containment.enqueue(d)
@@ -346,9 +348,19 @@ func (h *Heartbeat) reconcileContainment(d *isolation.DesiredBlock) {
 
 func containmentCapabilities(c *SecurityCapabilities) {
 	cap := isolation.NewPlatformIsolator().Capability()
-	ready, _ := isolation.NewPlatformScheduler(config.GetDataDir()).Ready()
+	ready, why := isolation.NewPlatformScheduler(config.GetDataDir()).Ready()
 	c.NetworkIsolationVersion = cap.Version
 	c.NetworkIsolationMechanism = cap.Mechanism
 	c.NetworkIsolationUnsupportedReason = cap.UnsupportedReason
 	c.NetworkIsolationReady = cap.Version >= 1 && cap.Ready && ready
+	if c.NetworkIsolationUnsupportedReason == "" && cap.Version >= 1 && !ready {
+		c.NetworkIsolationUnsupportedReason = "recovery not ready: " + why
+	}
+}
+
+// containmentBlocksUpgrade: no self-update starts while isolated. Companion
+// binaries carry no signed metadata and most artifact hosts are firewalled,
+// so an attempt could only fail (and burn companion failure budgets).
+func (h *Heartbeat) containmentBlocksUpgrade() bool {
+	return h.containment != nil && h.containment.manager.Active()
 }
