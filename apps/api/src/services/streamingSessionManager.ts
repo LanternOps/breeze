@@ -540,6 +540,8 @@ export interface ActiveSession {
    * after every flush (normal `result` or the abandoned-turn fallback below).
    */
   pendingTurnToolExecutionCount: number;
+  /** Synchronously reserved focal auto-link slots; shares the tool-count reset lifecycle. */
+  pendingTurnAutoLinkCount: number;
   /**
    * tool_use id → bare tool name for each pending call in toolUseIdQueue.
    * Removed when the call's result is recorded, or used by the dropped-call
@@ -1171,6 +1173,7 @@ export class StreamingSessionManager {
       toolUseIdQueue: [],
       pendingTurnUsage: emptyPendingTurnUsage(),
       pendingTurnToolExecutionCount: 0,
+      pendingTurnAutoLinkCount: 0,
       toolUseNames: new Map(),
       resultedToolUseIds: new Set(),
       resultedWithoutIdByName: new Map(),
@@ -2137,6 +2140,7 @@ export class StreamingSessionManager {
   ): Promise<{ inputTokens: number; outputTokens: number; costCents: number; outcome: TurnOutcome }> {
     const toolExecutionCount = session.pendingTurnToolExecutionCount;
     session.pendingTurnToolExecutionCount = 0;
+    session.pendingTurnAutoLinkCount = 0;
     session.pendingTurnUsage = emptyPendingTurnUsage();
     const observation = session.refusalObservation;
     session.refusalObservation = newSdkTurnObservation();
