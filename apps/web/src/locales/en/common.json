@@ -1473,7 +1473,11 @@
           },
           "alertSuppressed": {
             "label": "Alert Suppressed",
-            "description": "Triggered when Breeze AI suppresses an alert. Suppressing from the dashboard does not send it yet."
+            "description": "Triggered when an alert is suppressed."
+          },
+          "alertEscalated": {
+            "label": "Alert Escalated",
+            "description": "Triggered when an escalation policy step fires for an alert that is still active."
           }
         },
         "fields": {

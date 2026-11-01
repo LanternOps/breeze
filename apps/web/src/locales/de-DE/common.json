@@ -1473,7 +1473,11 @@
           },
           "alertSuppressed": {
             "label": "Alarm unterdrückt",
-            "description": "Wird ausgelöst, wenn Breeze AI einen Alarm unterdrückt. Das Unterdrücken im Dashboard sendet dieses Ereignis noch nicht."
+            "description": "Wird ausgelöst, wenn ein Alarm unterdrückt wird."
+          },
+          "alertEscalated": {
+            "label": "Alarm eskaliert",
+            "description": "Wird ausgelöst, wenn ein Schritt einer Eskalationsrichtlinie für einen noch aktiven Alarm ausgeführt wird."
           }
         },
         "fields": {

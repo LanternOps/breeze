@@ -31,7 +31,7 @@ describe('webhook form event options', () => {
   });
 
   it('offers acknowledged and suppressed alerts', () => {
-    expect(formEventValues()).toEqual(expect.arrayContaining(['alert.acknowledged', 'alert.suppressed']));
+    expect(formEventValues()).toEqual(expect.arrayContaining(['alert.acknowledged', 'alert.suppressed', 'alert.escalated']));
   });
 
   it('keeps the API and form never-delivered lists identical and never offers them', () => {
@@ -42,7 +42,7 @@ describe('webhook form event options', () => {
     expect(formBlock).toBeDefined();
     expect(apiBlock).toBeDefined();
     const values = (block: string | undefined) => [...(block ?? '').matchAll(/'([^']+)'/g)].map(m => m[1]).sort();
-    expect(values(formBlock)).toEqual(['alert.escalated']);
+    expect(values(formBlock)).toEqual([]);
     expect(values(formBlock)).toEqual(values(apiBlock));
     expect(formEventValues().filter(value => values(apiBlock).includes(value))).toEqual([]);
   });

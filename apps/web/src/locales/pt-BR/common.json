@@ -1473,7 +1473,11 @@
           },
           "alertSuppressed": {
             "label": "Alerta suprimido",
-            "description": "Disparado quando o Breeze AI suprime um alerta. Suprimir pelo painel ainda não envia este evento."
+            "description": "Disparado quando um alerta é suprimido."
+          },
+          "alertEscalated": {
+            "label": "Alerta escalado",
+            "description": "Disparado quando uma etapa de uma política de escalonamento é executada para um alerta ainda ativo."
           }
         },
         "fields": {
