@@ -244,6 +244,7 @@ const EXEMPT: Record<string, string> = {
   'jobs/backupRetention.ts': 'retention of existing snapshots, not target selection',
   'jobs/backupSlaWorker.ts': 'evaluates org-owned SLA configurations; the holding org owns none',
   'jobs/deviceBulkPurge.ts': 'lifecycle removal must reach every device',
+  'jobs/decommissionedGroupMembershipReconcile.ts': 'selects only decommissioned devices that still hold a dynamic group row (#9933) and hands each to the device-group re-evaluation, which removes rows; a parked device is not decommissioned and the holding org owns no groups',
   'jobs/deviceGroupJobs.ts': 'device groups are org-owned; the holding org has none',
   'jobs/dnsSyncJob.ts': 'syncs org-owned DNS integrations; the holding org owns none',
   'jobs/hardwareHealthRetention.ts': 'retention, not target selection',
