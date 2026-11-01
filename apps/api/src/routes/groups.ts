@@ -1379,7 +1379,9 @@ groupRoutes.post(
       preview = await evaluateFilterWithPreview(filter, {
         orgId: group.orgId,
         allowedSiteIds: group.siteId ? [group.siteId] : null,
-        previewLimit: limit
+        previewLimit: limit,
+        // Same population membership evaluation uses (#9933).
+        excludeDecommissioned: true
       });
     } catch (error) {
       // The fourth preview endpoint, and the one most likely to time out: a
