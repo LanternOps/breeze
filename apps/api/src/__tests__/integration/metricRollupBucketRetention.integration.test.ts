@@ -134,6 +134,25 @@ async function queuedLocks(): Promise<number> {
   return rows[0]!.n;
 }
 
+/**
+ * Wait until another backend is running `fn`, then give it time for several
+ * lock attempts (or, with a waiting body, to queue). Without this, a slow start
+ * could let the blocker commit before the call ever tried its locks.
+ */
+async function waitForCall(fn: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const rows = (await getTestDb().execute(sql`
+      SELECT count(*)::int AS n FROM pg_stat_activity
+      WHERE pid <> pg_backend_pid() AND state = 'active' AND query LIKE ${`%${fn}%`}
+    `)) as unknown as Array<{ n: number }>;
+    if (rows[0]!.n > 0) break;
+    if (Date.now() > deadline) throw new Error(`${fn} never started`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 300));
+}
+
 async function upsertHourly(bucketStart: string, avgValue: number): Promise<void> {
   await getTestDb()
     .insert(metricRollups)
@@ -401,7 +420,7 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
       await tx.execute(sql`SELECT 1 FROM devices LIMIT 1`);
       rePrepared = prepare();
       // Let the prepare make several attempts while devices is held.
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await waitForCall('breeze_prepare_metric_rollup_compaction');
       // NOWAIT: nothing queues on the referenced tables.
       expect(await queuedLocks()).toBe(0);
       // The request's second read completes; with the old code this is the
@@ -471,7 +490,7 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
       compacted = withSystemDbAccessContext(() =>
         db.execute(sql`SELECT public.breeze_compact_metric_rollup_partition(${month}::timestamp, true) AS "name"`),
       );
-      await new Promise((resolve) => setTimeout(resolve, 700));
+      await waitForCall('breeze_compact_metric_rollup_partition');
       expect(await queuedLocks()).toBe(0);
     });
 
@@ -502,7 +521,7 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
         const e = err as { code?: string; cause?: { code?: string } };
         code = e.cause?.code ?? e.code;
       });
-      await new Promise((resolve) => setTimeout(resolve, 700));
+      await waitForCall('breeze_compact_metric_rollup_partition');
       expect(await queuedLocks()).toBe(0);
       await attempt;
     });
@@ -526,7 +545,7 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
       dropped = withSystemDbAccessContext(() =>
         db.execute(sql`SELECT public.breeze_drop_metric_rollup_partition(${month}::timestamp) AS "name"`),
       );
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await waitForCall('breeze_drop_metric_rollup_partition');
       expect(await queuedLocks()).toBe(0);
       await tx.execute(sql`SELECT 1 FROM organizations LIMIT 1`);
     });
@@ -557,7 +576,7 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
       dropped = withSystemDbAccessContext(() =>
         db.execute(sql`SELECT public.breeze_drop_metric_rollup_partition(${month}::timestamp) AS "name"`),
       );
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await waitForCall('breeze_drop_metric_rollup_partition');
       expect(await queuedLocks()).toBe(0);
       const started = Date.now();
       await tx.execute(sql`SELECT 1 FROM devices LIMIT 1`);
