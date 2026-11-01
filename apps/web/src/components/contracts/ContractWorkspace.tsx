@@ -18,7 +18,7 @@ import { listContractDocuments, type ContractDocument } from '../../lib/api/cont
 import { StatusPill } from '../billing/shared/StatusPill';
 import { useStableT } from '@/lib/i18n/useStableT';
 import HashLink from '@/components/shared/HashLink';
-import WispLinkButton from '@/components/wisp/WispLinkButton';
+import WispTalkButton from '@/components/wisp/WispTalkButton';
 import { usePageItemName } from '../layout/usePageItemName';
 import { showToast } from '../shared/Toast';
 
@@ -219,7 +219,7 @@ export default function ContractWorkspace({ contractId }: Props) {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-        <WispLinkButton kind="contract" id={contract.id} orgId={contract.orgId} size="sm" />
+        <WispTalkButton kind="contract" id={contract.id} orgId={contract.orgId} label={contract.name} size="sm" />
         {canSendAgreement && (
           <button
             type="button"
