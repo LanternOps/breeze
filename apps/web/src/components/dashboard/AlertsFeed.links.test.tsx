@@ -39,7 +39,7 @@ const baseRow: AlertRow = {
   deviceId: 'd1',
   deviceHostname: 'DESKTOP-8UG65K6',
   orgId: 'org-1',
-  orgName: 'A1 Quality Transmission',
+  orgName: 'Example organization',
   createdAt: '2026-09-16T00:00:00.000Z',
   triggeredAt: '2026-09-16T00:00:00.000Z',
 };
@@ -61,6 +61,30 @@ beforeEach(() => {
 });
 
 describe('AlertsFeed row links (ui-flow W03)', () => {
+  it('links a workload subject and its row to backup health without a device link', () => {
+    const workload = { ...baseRow, title: 'Backup failed', deviceId: null, deviceHostname: null,
+      ownerKind: 'backup_workload' as const, ownerLabel: 'Microsoft 365 mail backup',
+      subjectName: 'Microsoft 365 mail backup · Example organization' };
+    const { container } = renderFeed(workload);
+    const chip = screen.getByTestId('alert-subject-chip');
+    expect(chip).toHaveAttribute('href', '/backup');
+    expect(chip).toHaveTextContent(workload.subjectName);
+    expect(screen.queryByTestId('device-record-link')).toBeNull();
+    expect(container.querySelector('a[href*="/devices/null"]')).toBeNull();
+    fireEvent.click(screen.getByText('Backup failed'));
+    expect(navigateTo).toHaveBeenCalledExactlyOnceWith('/backup');
+  });
+
+  it('links a topology subject to its site instead of its provenance device', () => {
+    const topology = { ...baseRow, title: 'Site changed', ownerKind: 'topology_site' as const,
+      topologySiteId: 'site-1', ownerLabel: 'Primary site', subjectName: 'Primary site' };
+    renderFeed(topology);
+    expect(screen.getByTestId('alert-subject-chip')).toHaveAttribute('href', '/discovery#topology/site/site-1');
+    expect(screen.queryByTestId('device-record-link')).toBeNull();
+    fireEvent.click(screen.getByText('Site changed'));
+    expect(navigateTo).toHaveBeenCalledExactlyOnceWith('/discovery#topology/site/site-1');
+  });
+
   it('navigates to the device on row click and renders hostname and org as sibling links', () => {
     renderFeed(baseRow);
     fireEvent.click(screen.getByText('DESKTOP-8UG65K6 offline'));
@@ -100,6 +124,6 @@ describe('AlertsFeed row links (ui-flow W03)', () => {
     const { orgId: _omit, ...noOrgId } = baseRow;
     renderFeed(noOrgId);
     expect(screen.queryByTestId('org-record-link')).toBeNull();
-    expect(screen.getByText(/A1 Quality Transmission/)).toBeInTheDocument();
+    expect(screen.getByText(/Example organization/)).toBeInTheDocument();
   });
 });

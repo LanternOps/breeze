@@ -970,5 +970,10 @@
       "body": "Os modelos existentes continuam editáveis aqui e serão convertidos na próxima versão.",
       "link": "Abrir Monitores"
     }
+  },
+  "subject": {
+    "label": "Assunto",
+    "backupWorkload": "Carga de backup",
+    "topologySite": "Site de topologia"
   }
 }

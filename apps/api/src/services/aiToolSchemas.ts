@@ -489,7 +489,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     siteId: uuid.optional(),
     search: z.string().max(200).optional(),
     tags: z.array(z.string().max(100)).max(20).optional(),
-    ...pageZodShape(25, 100),
+    ...pageZodShape(20, 100),
   }),
 
   get_device_details: z.object({
@@ -715,10 +715,16 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'list_links',
       'link_ticket',
       'unlink_ticket',
+      // #8972 ticket merge: ticketId is the source, intoTicketId the survivor.
+      'merge_preview',
+      'merge',
       // W06 (#6776): assign/status/priority over up to 50 tickets of one org.
       'bulk_update',
     ]),
     ticketId: uuid.optional(),
+    // merge_preview / merge (#10161: was registry-only, so the chat SDK stripped it).
+    intoTicketId: uuid.optional(),
+    notifyRequester: z.boolean().optional(),
     ticketIds: z.array(uuid).min(1).max(50).optional(),
     // create: the type; list: one type or several (#8596).
     ticketType: z.union([ticketTypeSchema, z.array(ticketTypeSchema).min(1)]).optional(),
@@ -1147,7 +1153,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
     severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
     deviceId: uuid.optional(),
-    ...keysetZodShape(15, 100),
+    ...keysetZodShape(12, 100),
     resolutionNote: z.string().max(1000).optional(),
     suppressDuration: z.number().int().min(0).max(720).optional(),
   }).refine(
@@ -1709,7 +1715,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
    */
   system_cleanup: z.object({
     deviceId: uuid,
-    action: z.enum(['list', 'run', 'status']),
+    action: z.enum(['list', 'run', 'status', 'cancel']),
     actionIds: z
       .array(z.enum(SYSTEM_CLEANUP_ACTION_IDS))
       .min(1)
@@ -1723,7 +1729,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       })
       .strict()
       .optional(),
-    /** run's handle, for `status`. */
+    /** run's handle, for `status` and `cancel`. */
     cleanupRunId: uuid.optional(),
     /** A pending catalog request's id, for a `list` re-check. */
     commandId: uuid.optional(),

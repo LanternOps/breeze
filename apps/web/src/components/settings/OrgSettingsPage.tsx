@@ -300,7 +300,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   usePageItemName(orgDetails?.name);
   const [locked, setLocked] = useState<string[]>([]);
   // Issue #2124: registered versions for the pin selectors + the partner's
-  // effective pins (shown when `defaults.agentVersionPins` is partner-locked).
+  // effective pins (shown when the partner has set `defaults.agentVersionPins`).
   const [pinnableVersions, setPinnableVersions] = useState<PinnableVersions | null>(null);
   const [partnerPins, setPartnerPins] = useState<AgentVersionPinsValue | undefined>(undefined);
   // Issue #2776: the partner's enrollment-link lifetime cap, for the read-only
@@ -410,13 +410,14 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         setEffectiveDefaults(effData.effective?.defaults);
         setAiApprovalTimeout(effData.aiApprovalTimeout ?? null);
         // Issue #2124: pins are inherit-with-override, NOT enforced-locked (see the
-        // assertNotLocked exemption in the org PATCH). But `locked` still carries
-        // `defaults.agentVersionPins` when the PARTNER set one — we use that purely
-        // as a "partner has a pin" signal so the effective value is the partner's
-        // (not the org's own, which mergeCategory would surface when the partner
-        // hasn't pinned). The org selector is never disabled by this.
+        // assertNotLocked exemption in the org PATCH), so since #9762 they are
+        // reported in `partnerDefaults`, never in `locked`. That entry is the
+        // "partner has a pin" signal: only then is the merged effective value the
+        // partner's (otherwise it is the org's own, which mergeCategory surfaces
+        // when the partner hasn't pinned). The org selector is never disabled.
+        const partnerDefaultsList: string[] = effData.partnerDefaults || [];
         setPartnerPins(
-          lockedList.includes('defaults.agentVersionPins')
+          partnerDefaultsList.includes('defaults.agentVersionPins')
             ? effData.effective?.defaults?.agentVersionPins
             : undefined,
         );

@@ -20,6 +20,7 @@ const localStorageStub = vi.hoisted(() => {
 
 import CorrelatedAlertGroups from './CorrelatedAlertGroups';
 import AlertsTabStrip from './AlertsTabStrip';
+import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 
@@ -35,6 +36,12 @@ vi.mock('../shared/Toast', () => ({ showToast: (toast: unknown) => showToast(toa
 const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));
 
+vi.mock('../remediation/RemediationSuggestionsPanel', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../remediation/RemediationSuggestionsPanel')>();
+  return { ...actual, default: vi.fn(actual.default) };
+});
+
+const remediationPanelMock = vi.mocked(RemediationSuggestionsPanel);
 const fetchMock = vi.mocked(fetchWithAuth);
 
 const ORG_ID = '55555555-5555-4555-8555-555555555555';
@@ -197,7 +204,7 @@ const mlFlags = (rcaEnabled: boolean, alertCorrelationEnabled = true) => ({
   },
 });
 
-function mockGroupsResponse(options: { rcaEnabled?: boolean; alertCorrelationEnabled?: boolean } = {}) {
+function mockGroupsResponse(options: { rcaEnabled?: boolean; alertCorrelationEnabled?: boolean; group?: unknown } = {}) {
   const rcaEnabled = options.rcaEnabled ?? true;
   const alertCorrelationEnabled = options.alertCorrelationEnabled ?? true;
   fetchMock.mockImplementation((input, init) => {
@@ -207,7 +214,7 @@ function mockGroupsResponse(options: { rcaEnabled?: boolean; alertCorrelationEna
       return Promise.resolve(makeJsonResponse(mlFlags(rcaEnabled, alertCorrelationEnabled)));
     }
     if (url === '/alerts/correlations' && method === 'GET') {
-      return Promise.resolve(makeJsonResponse({ groups: [groupPayload] }));
+      return Promise.resolve(makeJsonResponse({ groups: [options.group ?? groupPayload] }));
     }
     if (url === `/alerts/correlations/${GROUP_ID}/acknowledge` && method === 'POST') {
       return Promise.resolve(makeJsonResponse({ updated: 2, skipped: 1 }));
@@ -622,4 +629,36 @@ describe('CorrelatedAlertGroups', () => {
     expect(await screen.findByText('Correlations disabled')).toHaveAttribute('aria-disabled', 'true');
     expect(screen.queryByRole('link', { name: 'Correlations' })).toBeNull();
   });
+});
+
+
+it.each([
+  ['topology_site', 'Branch', '/discovery#topology/site/site-1'],
+  ['backup_workload', 'Microsoft 365 mail backup · Customer', '/backup'],
+] as const)('links a %s correlation to its subject and omits device remediation', async (ownerKind, subjectName, href) => {
+  vi.clearAllMocks();
+  useOrgStore.setState({ currentOrgId: 'org-1' });
+  const subject = { ownerKind, topologySiteId: ownerKind === 'topology_site' ? 'site-1' : null, subjectName, deviceId: ownerKind === 'topology_site' ? 'origin-1' : null };
+  mockGroupsResponse({ group: {
+    ...groupPayload,
+    rootCause: { ...groupPayload.rootCause, ...subject },
+    alerts: [{ ...groupPayload.alerts[0], ...subject }],
+  } });
+  const { container } = render(<CorrelatedAlertGroups />);
+  const subjectLinks = await screen.findAllByRole('link', { name: subjectName });
+  for (const link of subjectLinks) {
+    expect(link).toHaveAttribute('href', href);
+    expect(link.closest('button')).toBeNull();
+  }
+  expect(container.querySelector('a[href*="/devices/"]')).toBeNull();
+
+  fireEvent.click(screen.getAllByRole('button', { name: /Explain incident/i })[0]);
+  await waitFor(() => expect(remediationPanelMock).toHaveBeenCalled());
+  for (const [props] of remediationPanelMock.mock.calls) {
+    expect(props).toEqual(expect.objectContaining({ sourceType: 'rca', sourceId: GROUP_ID, orgId: ORG_ID }));
+    expect(props.deviceId).toBeUndefined();
+  }
+
+  fireEvent.click(screen.getByRole('button', { name: /High CPU on SRV-01/ }));
+  expect(screen.getByRole('link', { name: subjectName })).toHaveAttribute('href', href);
 });

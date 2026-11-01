@@ -970,5 +970,10 @@
       "body": "Las plantillas existentes siguen siendo editables aquí y se convertirán en la próxima versión.",
       "link": "Abrir Monitores"
     }
+  },
+  "subject": {
+    "label": "Elemento afectado",
+    "backupWorkload": "Carga de respaldo",
+    "topologySite": "Sitio de topología"
   }
 }

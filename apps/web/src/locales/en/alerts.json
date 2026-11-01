@@ -970,5 +970,10 @@
       "body": "Existing templates stay editable here and convert in the next release.",
       "link": "Open Monitors"
     }
+  },
+  "subject": {
+    "label": "Subject",
+    "backupWorkload": "Backup workload",
+    "topologySite": "Topology site"
   }
 }

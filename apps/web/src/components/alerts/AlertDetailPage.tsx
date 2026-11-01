@@ -21,6 +21,7 @@ import { useOrgStore } from '@/stores/orgStore';
 import type { TicketStatus, TicketPriority } from '../tickets/ticketConfig';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
 import AlertDeviceInfo from './AlertDeviceInfo';
+import { isDeviceAlert, type AlertSubjectFields } from './AlertSubjectChip';
 import { DelegateToOperatorButton } from '../aiOperator/DelegateToOperatorButton';
 import { extractServiceNameFromAlert } from '../aiOperator/alertServiceName';
 import {
@@ -36,13 +37,13 @@ import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
 
-type Alert = {
+type Alert = AlertSubjectFields & {
   id: string;
   title: string;
   message: string;
   severity: AlertSeverity;
   status: AlertStatus;
-  deviceId: string;
+  deviceId: string | null;
   deviceName: string;
   /**
    * The alert's OWN org. W08 (#5246): the delegate action targets this org,
@@ -144,7 +145,9 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       }
 
       const data = await response.json();
-      const deviceName = data.device?.hostname || data.deviceName || stableT('alertDetailPage.unknownDevice');
+      const deviceName = isDeviceAlert({ ownerKind: data.ownerKind, deviceId: data.deviceId })
+        ? data.device?.hostname || data.deviceName || stableT('alertDetailPage.unknownDevice')
+        : data.subjectName || data.ownerLabel || stableT(data.ownerKind === 'topology_site' ? 'subject.topologySite' : 'subject.backupWorkload');
       // Map API response to component structure
       setAlert({
         ...data,
@@ -338,7 +341,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
   const StatusIcon = statusIcons[alert.status];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-testid="alert-detail-page">
       <Breadcrumbs items={[
         { label: t('alertDetailPage.alertsBreadcrumb'), href: '/alerts' },
         { label: alert.title || t('alertDetailPage.alertFallback') }
@@ -441,14 +444,14 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                 the alert as its source so the verification criterion gets a
                 recurrence signal (without one, the best achievable outcome is
                 `investigation_complete`, never `verified_resolved`). */}
-            {(alert.status === 'active' || alert.status === 'acknowledged') && (
-              <DelegateToOperatorButton
+            {isDeviceAlert(alert) && (alert.status === 'active' || alert.status === 'acknowledged') && (
+              <span data-testid="alert-device-action"><DelegateToOperatorButton
                 orgId={alert.orgId}
                 deviceId={alert.deviceId}
                 deviceLabel={alert.deviceName}
                 source={{ kind: 'alert', id: alert.id }}
                 defaultServiceName={extractServiceNameFromAlert(alert) ?? undefined}
-              />
+              /></span>
             )}
             {can('alerts', 'write') && (alert.status === 'active' || alert.status === 'acknowledged') && (
               <button
@@ -473,7 +476,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
 
       <RemediationSuggestionsPanel sourceType="alert" sourceId={alert.id} orgId={alert.orgId} />
 
-      {alert.anomalyContext && (
+      {isDeviceAlert(alert) && alert.anomalyContext && (
         <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-6 shadow-xs">
           <h3 className="text-sm font-semibold text-muted-foreground mb-4">{t('alertDetailPage.mlAnomalyEvidence')}</h3>
           <div className="grid gap-4 sm:grid-cols-3">
@@ -577,9 +580,10 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       <div className="grid gap-6 md:grid-cols-2">
         {/* Device Info */}
         <div className="rounded-lg border bg-card p-6 shadow-xs">
-          <h3 className="text-sm font-semibold text-muted-foreground mb-4">{t('alertDetailPage.deviceInformation')}</h3>
+          <h3 className="text-sm font-semibold text-muted-foreground mb-4">{isDeviceAlert(alert) ? t('alertDetailPage.deviceInformation') : t('subject.label')}</h3>
           <div className="space-y-3">
             <AlertDeviceInfo
+              {...alert}
               deviceId={alert.deviceId}
               deviceName={alert.deviceName}
               ruleName={alert.ruleName}
