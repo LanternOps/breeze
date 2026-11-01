@@ -1122,6 +1122,7 @@
       "script_tag": "Betik etiketi",
       "security_policy": "Güvenlik ilkesi",
       "security_recommendation": "Güvenlik önerisi",
+      "security_scan": "Güvenlik taraması",
       "security_scan_sweep": "Güvenlik taraması dalgası",
       "sensitive_data_finding": "Hassas veri bulgusu",
       "sensitive_data_policy": "Hassas veri ilkesi",

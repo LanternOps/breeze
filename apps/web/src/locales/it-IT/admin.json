@@ -1122,6 +1122,7 @@
       "script_tag": "Tag di script",
       "security_policy": "Criterio di sicurezza",
       "security_recommendation": "Raccomandazione di sicurezza",
+      "security_scan": "Scansione di sicurezza",
       "security_scan_sweep": "Scansione di sicurezza completa",
       "sensitive_data_finding": "Rilevamento di dati sensibili",
       "sensitive_data_policy": "Criterio dati sensibili",
