@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Reads changed-file paths on stdin (one per line) and prints thirteen lines in
+# Reads changed-file paths on stdin (one per line) and prints fifteen lines in
 # GITHUB_OUTPUT form: `code`, `docs`, `agent`, `app`, the six area flags
 # `api`, `web`, `portal`, `addins`, `m365`, `rust`, `topology_browser`,
-# `agent_code`, then `integration` — each `true|false`. One optional argument:
+# `agent_code`, `integration`, `path_readers` (booleans), then `reader_tests`
+# (sorted space-separated test paths; empty with path_readers=true means all).
+# One optional argument:
 # `--pull-request` (path-gates `integration`; see below).
 #
 # `agent_code=true` means "agent code (or the CI that tests it) changed": any
@@ -83,7 +85,7 @@
 # Every path it matches also falls outside the tooling allowlist, so it implies
 # `app=true` as well.
 #
-# `integration` (#5936, printed LAST) gates the 16-shard real-Postgres
+# `integration` (#5936) gates the 16-shard real-Postgres
 # `integration-test` job. It is path-gated ONLY when the caller passes
 # `--pull-request` — ci.yml does that on the `pull_request` branch and nowhere
 # else, so the merge queue (the real gate) and every other event run the full
@@ -170,6 +172,26 @@ floor_hit() {
   return 1
 }
 
+# Docs-only changes can affect tests which read documentation by path.
+READER_MAP_FILE="$(dirname "${BASH_SOURCE[0]}")/path-reader-map.txt"
+reader_files=()
+reader_patterns=()
+reader_hits=()
+readers_unknown=false
+if [[ -r "${READER_MAP_FILE}" ]]; then
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line%%#*}"
+    read -r reader pattern <<< "${line}"
+    [[ -z "${reader}" ]] && continue
+    reader_files+=("${reader}")
+    reader_patterns+=("${pattern}")
+  done < "${READER_MAP_FILE}"
+fi
+if [[ ${#reader_files[@]} -eq 0 ]]; then
+  echo "classify-pr-paths: path-reader-map.txt missing or empty beside the classifier; path_readers=true with no reader list (fail-closed: the runner runs every mapped test)" >&2
+  readers_unknown=true
+fi
+
 code=false
 docs=false
 agent=false
@@ -190,7 +212,14 @@ all_areas() {
 while IFS= read -r path; do
   [[ -z "${path}" ]] && continue
   seen=true
+  for ((i=0; i<${#reader_files[@]}; i++)); do
+    # Deliberately unquoted: these are Bash globs, including slash-matching *.
+    if [[ "${path}" == ${reader_patterns[$i]} ]]; then
+      reader_hits+=("${reader_files[$i]}")
+    fi
+  done
   case "${path}" in
+    apps/docs/package.json) docs=true; code=true ;;
     docs/*|apps/docs/*|*.md|*.mdx) docs=true; continue ;;
     *) code=true ;;
   esac
@@ -205,7 +234,7 @@ while IFS= read -r path; do
     apps/excel-addin/*|apps/word-addin/*|apps/powerpoint-addin/*|apps/outlook-addin/*) addins=true ;;
     apps/m365-graph-read-executor/*|apps/m365-graph-actions-executor/*|apps/m365-communications-executor/*) m365=true ;;
     apps/viewer/*|apps/helper/*|Cargo.*|rust-toolchain*) rust=true ;;
-    apps/mobile/*) : ;;
+    apps/mobile/*|apps/docs/*) : ;;
     *) all_areas ;;
   esac
   # Cross-area reads: the READING area must also run when these change.
@@ -271,6 +300,7 @@ while IFS= read -r path; do
     integration=true
   else
     case "${path}" in
+      apps/*/package.json|packages/*/package.json|ee/*/package.json|package.json|pnpm-workspace.yaml|pnpm-lock.yaml|.npmrc|*/.npmrc|.nvmrc|*/.nvmrc|.node-version|*/.node-version|patches/*) integration=true ;;
       agent/*|\
       apps/web/*|apps/portal/*|apps/viewer/*|apps/helper/*|apps/mobile/*|\
       apps/excel-addin/*|apps/word-addin/*|apps/powerpoint-addin/*|apps/outlook-addin/*|\
@@ -282,6 +312,16 @@ while IFS= read -r path; do
   fi
 done
 
+# Indexed arrays plus sort -u keep set semantics on macOS Bash 3.2 too.
+path_readers=false
+reader_tests=
+if [[ "${readers_unknown}" == "true" ]]; then
+  path_readers=true
+elif [[ ${#reader_hits[@]} -gt 0 ]]; then
+  path_readers=true
+  reader_tests=$(printf '%s\n' "${reader_hits[@]}" | LC_ALL=C sort -u | paste -sd ' ' -)
+fi
+
 if [[ "${seen}" != "true" ]]; then
   echo "classify-pr-paths: no changed files listed; treating as a code+docs+agent+app+topology_browser+integration change in every area (fail-closed)" >&2
   code=true
@@ -292,6 +332,8 @@ if [[ "${seen}" != "true" ]]; then
   topology_browser=true
   agent_code=true
   integration=true
+  path_readers=true
+  reader_tests=
 fi
 
 echo "code=${code}"
@@ -307,3 +349,5 @@ echo "rust=${rust}"
 echo "topology_browser=${topology_browser}"
 echo "agent_code=${agent_code}"
 echo "integration=${integration}"
+echo "path_readers=${path_readers}"
+echo "reader_tests=${reader_tests}"

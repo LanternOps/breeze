@@ -61,7 +61,7 @@ test('classifier: emits every area output, in order, after code/docs/agent/app, 
     run.stdout.trim().split('\n').map((l) => l.split('=')[0]),
     // topology_browser (#6117) is a single-job gate, not an area; it trails the areas.
     // integration (#5936) gates one job, not an area; it trails everything.
-    ['code', 'docs', 'agent', 'app', ...AREAS, 'topology_browser', 'agent_code', 'integration'],
+    ['code', 'docs', 'agent', 'app', ...AREAS, 'topology_browser', 'agent_code', 'integration', 'path_readers', 'reader_tests'],
   );
 });
 
@@ -283,7 +283,6 @@ test('every app Dockerfile and package.json sets api (test-api enumerates them)'
   for (const app of apps) {
     for (const file of ['Dockerfile', 'package.json']) {
       if (!existsSync(join(REPO_ROOT, 'apps', app, file))) continue;
-      if (app === 'docs') continue; // docs-only classification owns apps/docs/**
       assert.equal(classify([`apps/${app}/${file}`]).api, 'true', `apps/${app}/${file}`);
     }
   }
@@ -447,7 +446,7 @@ const STACK_VARS = STACK_JOBS.map(resultVar);
 // jobs skipped, exactly as their `if:` would leave them.
 const onlyAreas = (on, { isPr = 'true' } = {}) => {
   const env = {
-    ...allResults('success'),
+    ...allResults('success'), PATH_READERS_CHANGED: 'true',
     CHANGES_RESULT: 'success', CODE_CHANGED: 'true', DOCS_CHANGED: 'false', DOCS_CHECK_RESULT: 'skipped',
     APP_CHANGED: 'true', AGENT_CHANGED: 'false', RECOVERY_MEDIA_E2E_RESULT: 'skipped',
     MOBILE_NATIVE_REQUIRED: 'false', BUILD_MOBILE_IOS_RESULT: 'skipped', IS_PR: isPr,

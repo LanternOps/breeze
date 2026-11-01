@@ -112,6 +112,10 @@ jobs:
       # any code change, so the queue always runs the full integration suite.
       # Fail-safe like the rest: anything unresolvable turns it on.
       integration: ${{ steps.classify.outputs.integration }}
+      # Docs-only PRs can break tests reading docs by path; the map declares them.
+      # path_readers=true with an empty reader_tests list runs every mapped test.
+      path_readers: ${{ steps.classify.outputs.path_readers }}
+      reader_tests: ${{ steps.classify.outputs.reader_tests }}
     steps:
       - name: Checkout (classifier script only)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -144,7 +148,7 @@ jobs:
           # a code change through as docs-only.
           full_suite() {
             echo "$1" >&2
-            printf 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true\n' | tee -a "${GITHUB_OUTPUT}"
+            printf 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true\npath_readers=true\nreader_tests=\n' | tee -a "${GITHUB_OUTPUT}"
           }
           if [[ "${EVENT_NAME}" == "pull_request" ]]; then
             # The PR files API needs no checkout and sees renames/deletes too; a
@@ -326,6 +330,9 @@ jobs:
 
       - name: Test per-area job gating contract
         run: node --test .github/scripts/ci-area-gating.test.mjs
+
+      - name: Test reader-test runner
+        run: node --test .github/scripts/run-reader-tests.test.mjs
 
       - name: Test PR selection contract (W3)
         run: node --test .github/scripts/ci-pr-selection.test.mjs
@@ -4715,6 +4722,39 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  path-read-contracts:
+    name: Path-read contracts
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.path_readers == 'true'
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run reader tests
+        env:
+          READER_TESTS: ${{ needs.changes.outputs.reader_tests }}
+        run: node .github/scripts/run-reader-tests.mjs
+
   # ─── Portal dev-mode hydration guard (#3906) ─────────────────────────────
   # Regression cover for #3906: every portal React island SSR'd correctly
   # behind Caddy in a dev-mode stack and then silently failed to hydrate, so
@@ -5034,7 +5074,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [changes, workspace-runtime, docs-check, lint, release-ledger, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-shared, test-document-ui, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, lint-agent, test-agent, agent-windows-manifest-guard, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract, topology-browser-gate]
+    needs: [path-read-contracts, changes, workspace-runtime, docs-check, lint, release-ledger, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-shared, test-document-ui, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, lint-agent, test-agent, agent-windows-manifest-guard, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract, topology-browser-gate]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -5099,6 +5139,8 @@ jobs:
           TOPOLOGY_BROWSER_CHANGED: ${{ needs.changes.outputs.topology_browser }}
           AGENT_CODE_CHANGED: ${{ needs.changes.outputs.agent_code }}
           INTEGRATION_CHANGED: ${{ needs.changes.outputs.integration }}
+          PATH_READERS_CHANGED: ${{ needs.changes.outputs.path_readers }}
+          PATH_READ_CONTRACTS_RESULT: ${{ needs.path-read-contracts.result }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
           # Fail closed: only a successful path check may skip native compilation. The
@@ -5122,6 +5164,9 @@ jobs:
           esac
           if [[ "${CHANGES_RESULT}" != "success" ]] || \
              { [[ "${DOCS_CHANGED}" != "false" ]] && [[ "${DOCS_CHECK_RESULT}" != "success" ]]; } || \
+             { [[ "${PATH_READERS_CHANGED}" == "true" ]] && [[ "${PATH_READ_CONTRACTS_RESULT}" != "success" ]]; } || \
+             { [[ "${PATH_READERS_CHANGED}" != "true" ]] && [[ "${PATH_READERS_CHANGED}" != "false" ]]; } || \
+             { [[ "${PATH_READERS_CHANGED}" == "false" ]] && [[ "${PATH_READ_CONTRACTS_RESULT}" != "skipped" ]]; } || \
              { [[ "${CODE_CHANGED}" != "false" ]] && { \
              [[ "${LINT_RESULT}" != "success" ]] || \
              [[ "${RELEASE_LEDGER_RESULT}" != "success" ]] || \

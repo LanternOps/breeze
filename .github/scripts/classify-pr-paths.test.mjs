@@ -41,17 +41,24 @@ test('classifier: docs-only path sets report code=false docs=true agent=false ap
   ]) {
     const run = classify(paths);
     assert.equal(run.status, 0, run.stderr);
-    assert.equal(run.stdout.trim(), 'code=false\ndocs=true\nagent=false\napp=false\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=false', paths.join(', '));
+    const readers = paths.includes('apps/docs/src/content/docs/agent.mdx')
+      ? 'apps/api/src/config/redisEvictionPolicyDocs.test.ts apps/web/src/lib/__tests__/alertingDocs.test.ts'
+      : paths.includes('README.md')
+        ? 'apps/api/src/db/bootstrapDocs.test.ts'
+        : paths.includes('apps/docs/astro.config.mjs')
+          ? 'apps/web/src/components/devices/hardware/hardwareMonitoringDocs.test.ts apps/web/src/components/devices/time/timeSyncDocs.test.ts apps/web/src/lib/__tests__/alertingDocs.test.ts'
+          : '';
+    assert.equal(run.stdout.trim(), 'code=false\ndocs=true\nagent=false\napp=false\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=false\npath_readers=' + (readers ? 'true' : 'false') + '\nreader_tests=' + readers, paths.join(', '));
   }
 });
 
 test('classifier: any non-docs path reports code=true; docs=true only when a docs path is present', () => {
   for (const [paths, expected] of [
-    [['apps/api/src/index.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true'],
-    [['README.md', 'apps/web/src/App.tsx'], 'code=true\ndocs=true\nagent=false\napp=true\napi=true\nweb=true\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true'],
-    [['docs/guide.md', '.github/workflows/ci.yml'], 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true'],
-    [['apps/mobile/docs.md.bak'], 'code=true\ndocs=false\nagent=false\napp=true\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true'],
-    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=false\nagent_code=false\nintegration=true'],
+    [['apps/api/src/index.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true\npath_readers=false\nreader_tests='],
+    [['README.md', 'apps/web/src/App.tsx'], 'code=true\ndocs=true\nagent=false\napp=true\napi=true\nweb=true\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true\npath_readers=true\nreader_tests=apps/api/src/db/bootstrapDocs.test.ts'],
+    [['docs/guide.md', '.github/workflows/ci.yml'], 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true\npath_readers=false\nreader_tests='],
+    [['apps/mobile/docs.md.bak'], 'code=true\ndocs=false\nagent=false\napp=true\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true\npath_readers=false\nreader_tests='],
+    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=false\nagent_code=false\nintegration=true\npath_readers=false\nreader_tests='],
   ]) {
     const run = classify(paths);
     assert.equal(run.status, 0, run.stderr);
@@ -62,7 +69,7 @@ test('classifier: any non-docs path reports code=true; docs=true only when a doc
 test('classifier: an empty file list fails closed to code=true docs=true agent=true app=true', () => {
   const run = classify([]);
   assert.equal(run.status, 0, run.stderr);
-  assert.equal(run.stdout.trim(), 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true');
+  assert.equal(run.stdout.trim(), 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true\npath_readers=true\nreader_tests=');
   assert.match(run.stderr, /fail-closed/u);
 });
 
@@ -180,7 +187,7 @@ test('classifier: a docs file under the topology directory is still docs-only', 
   // web app, which is meaningless on a PR the code jobs skip entirely.
   const run = classify(['apps/web/src/components/topology/README.md']);
   assert.equal(run.status, 0, run.stderr);
-  assert.equal(run.stdout.trim(), 'code=false\ndocs=true\nagent=false\napp=false\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=false');
+  assert.equal(run.stdout.trim(), 'code=false\ndocs=true\nagent=false\napp=false\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=false\npath_readers=false\nreader_tests=');
 });
 
 // ─── merge_group classification ──────────────────────────────────────
@@ -247,7 +254,7 @@ test('merge_group: a docs-only entry is classified docs-only', () => {
     { seed: { 'docs/guide.md': 'a\n', 'apps/docs/src/content/docs/agent.mdx': 'b\n', 'README.md': 'c\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=false\ndocs=true\nagent=false\napp=false\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=false');
+  assert.equal(output, 'code=false\ndocs=true\nagent=false\napp=false\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=false\npath_readers=true\nreader_tests=apps/api/src/config/redisEvictionPolicyDocs.test.ts apps/api/src/db/bootstrapDocs.test.ts apps/web/src/lib/__tests__/alertingDocs.test.ts');
 });
 
 test('merge_group: a mixed entry is classified as code', () => {
@@ -256,7 +263,7 @@ test('merge_group: a mixed entry is classified as code', () => {
     { seed: { 'docs/guide.md': 'a\n', 'apps/api/src/index.ts': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=true\nagent=false\napp=true\napi=true\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true');
+  assert.equal(output, 'code=true\ndocs=true\nagent=false\napp=true\napi=true\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true\npath_readers=false\nreader_tests=');
 });
 
 test('merge_group: a code-only entry is classified as code', () => {
@@ -265,7 +272,7 @@ test('merge_group: a code-only entry is classified as code', () => {
     { seed: { 'apps/api/src/index.ts': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true');
+  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true\npath_readers=false\nreader_tests=');
 });
 
 test('merge_group: a topology-browser entry turns the production-browser gate on', () => {
@@ -274,7 +281,7 @@ test('merge_group: a topology-browser entry turns the production-browser gate on
     { seed: { 'apps/web/src/components/topology/layout.worker.ts': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=true\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=true\nagent_code=false\nintegration=true');
+  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=true\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=true\nagent_code=false\nintegration=true\npath_readers=false\nreader_tests=');
 });
 
 test('merge_group: an agent-only entry is classified as code and agent', () => {
@@ -283,7 +290,7 @@ test('merge_group: an agent-only entry is classified as code and agent', () => {
     { seed: { 'agent/internal/foo.go': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=false\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=false\nagent_code=true\nintegration=true');
+  assert.equal(output, 'code=true\ndocs=false\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=false\nagent_code=true\nintegration=true\npath_readers=false\nreader_tests=');
 });
 
 test('merge_group: a tooling-only entry is classified as code but not app', () => {
@@ -292,7 +299,7 @@ test('merge_group: a tooling-only entry is classified as code but not app', () =
     { seed: { 'scripts/security/check-npm-audit.sh': 'a\n', '.github/workflows/release.yml': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=false\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=false\nagent_code=false\nintegration=true');
+  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=false\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=false\nagent_code=false\nintegration=true\npath_readers=false\nreader_tests=');
 });
 
 test('merge_group: an unresolvable base sha fails safe to the full suite', () => {
@@ -304,21 +311,21 @@ test('merge_group: an unresolvable base sha fails safe to the full suite', () =>
   ]) {
     const { execution, output } = runClassifier(env, { seed: { 'docs/guide.md': 'a\n' } });
     assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-    assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true', JSON.stringify(env));
+    assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true\npath_readers=true\nreader_tests=', JSON.stringify(env));
   }
 });
 
 test('merge_group: an empty diff fails closed to the full suite', () => {
   const { execution, output } = runClassifier({ EVENT_NAME: 'merge_group' });
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true');
+  assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true\npath_readers=true\nreader_tests=');
 });
 
 test('workflow_dispatch and any other event still run the full suite', () => {
   for (const EVENT_NAME of ['workflow_dispatch', 'push', 'schedule']) {
     const { execution, output } = runClassifier({ EVENT_NAME }, { seed: { 'docs/guide.md': 'a\n' } });
     assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-    assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true', EVENT_NAME);
+    assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true\npath_readers=true\nreader_tests=', EVENT_NAME);
   }
 });
 
@@ -345,6 +352,7 @@ test('every code job is gated on the classifier', () => {
   const jobs = [...workflow.slice(workflow.indexOf('\njobs:\n')).matchAll(/^  ([a-z][\w-]*):$/gmu)].map((m) => m[1]);
   assert.ok(jobs.length > 35, 'job parser is stale');
   const exempt = new Set([
+    'path-read-contracts', // gated on path_readers, independent of code; pinned in ci-pr-selection.test.mjs
     'changes', // the classifier itself
     'ci-success', // must report on docs-only PRs — that is the whole point
     'main-red-alert', // workflow_dispatch on main only
@@ -404,7 +412,7 @@ test('the topology production-browser gate is gated on its own classifier output
   assert.match(body, /--config=playwright\.topology-worker\.config\.ts --project=chromium/u);
   assert.match(job('changes'), /^      topology_browser: \$\{\{ steps\.classify\.outputs\.topology_browser \}\}$/mu);
   // Fail-safe: the merge-group fallback must turn the gate ON, never off.
-  assert.match(job('changes'), /printf 'code=true\\ndocs=true\\nagent=true\\napp=true\\napi=true\\nweb=true\\nportal=true\\naddins=true\\nm365=true\\nrust=true\\ntopology_browser=true\\nagent_code=true\\nintegration=true\\n'/u);
+  assert.match(job('changes'), /printf 'code=true\\ndocs=true\\nagent=true\\napp=true\\napi=true\\nweb=true\\nportal=true\\naddins=true\\nm365=true\\nrust=true\\ntopology_browser=true\\nagent_code=true\\nintegration=true\\npath_readers=true\\nreader_tests=\\n'/u);
   assert.match(summary, /TOPOLOGY_BROWSER_CHANGED: \$\{\{ needs\.changes\.outputs\.topology_browser \}\}/u);
   assert.match(summary, /TOPOLOGY_BROWSER_GATE_RESULT: \$\{\{ needs\.topology-browser-gate\.result \}\}/u);
 });
@@ -511,12 +519,14 @@ const summaryScript = summary.split('        run: |\n')[1]
 const resultVars = [...summary.matchAll(/^          (\w+_RESULT):/gmu)].map((m) => m[1]);
 const allOf = (value) => Object.fromEntries(resultVars.map((v) => [v, value]));
 const passing = {
+  PATH_READERS_CHANGED: 'true',
   ...allOf('success'), MOBILE_NATIVE_REQUIRED: 'false', BUILD_MOBILE_IOS_RESULT: 'skipped', AGENT_CHANGED: 'true', APP_CHANGED: 'true',
   // Every per-area flag true: the per-area tri-state lives in ci-area-gating.test.mjs.
   API_CHANGED: 'true', WEB_CHANGED: 'true', PORTAL_CHANGED: 'true', ADDINS_CHANGED: 'true', M365_CHANGED: 'true', RUST_CHANGED: 'true',
   INTEGRATION_CHANGED: 'true',
 };
 const docsOnlySkipped = {
+  PATH_READERS_CHANGED: 'false',
   ...allOf('skipped'), CHANGES_RESULT: 'success', MOBILE_NATIVE_REQUIRED: '', AGENT_CHANGED: '', DOCS_CHANGED: 'true', DOCS_CHECK_RESULT: 'success',
 };
 
@@ -581,6 +591,7 @@ const heavyResultVars = [
   'AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT',
 ];
 const toolingOnlyPassing = {
+  PATH_READERS_CHANGED: 'false',
   ...allOf('skipped'), // everything defaults to skipped for a tooling-only PR...
   ...Object.fromEntries(['LINT_RESULT', 'RELEASE_LEDGER_RESULT', 'CHECK_MIGRATIONS_RESULT', 'SECURITY_AUDIT_RESULT'].map((v) => [v, 'success'])),
   CHANGES_RESULT: 'success',
@@ -817,7 +828,7 @@ test('classifier: agent_code is true for agent/**, ci.yml and the classifier, fa
 test('changes job exposes agent_code and the merge-group fallback turns it on', () => {
   const body = job('changes');
   assert.match(body, /^      agent_code: \$\{\{ steps\.classify\.outputs\.agent_code \}\}$/mu);
-  assert.match(body, /topology_browser=true\\nagent_code=true\\nintegration=true\\n' \| tee/u);
+  assert.match(body, /topology_browser=true\\nagent_code=true\\nintegration=true\\npath_readers=true\\nreader_tests=\\n' \| tee/u);
   assert.match(summary, /AGENT_CODE_CHANGED: \$\{\{ needs\.changes\.outputs\.agent_code \}\}/u);
 });
 
@@ -867,11 +878,12 @@ for (const [label, paths, want] of [
   // Cannot affect the integration suite → false on a PR.
   ['agent-only', ['agent/internal/heartbeat/heartbeat.go', 'agent/go.mod'], 'false'],
   ['web-only', ['apps/web/src/components/Foo.tsx'], 'false'],
-  ['web package.json', ['apps/web/package.json'], 'false'],
+  ['web package.json', ['apps/web/package.json'], 'true'],
   ['portal-only', ['apps/portal/src/pages/index.astro'], 'false'],
   ['viewer-only', ['apps/viewer/src/lib/protocol.ts', 'apps/viewer/src-tauri/src/main.rs'], 'false'],
   ['helper-only', ['apps/helper/src-tauri/src/main.rs'], 'false'],
-  ['mobile-only', ['apps/mobile/src/App.tsx', 'apps/mobile/package.json'], 'false'],
+  ['mobile-only', ['apps/mobile/src/App.tsx'], 'false'],
+  ['mobile package.json (install input)', ['apps/mobile/package.json'], 'true'],
   ['add-in-only', ['apps/excel-addin/src/x.ts', 'apps/outlook-addin/src/x.ts'], 'false'],
   ['m365-executor-only', ['apps/m365-graph-read-executor/src/index.ts', 'apps/m365-communications-executor/Dockerfile'], 'false'],
   ['root Rust manifests', ['Cargo.lock', 'rust-toolchain.toml'], 'false'],
