@@ -171,15 +171,49 @@ func decodeTaskXML(data []byte) ([]byte, error) {
 	return []byte(string(utf16.Decode(units))), nil
 }
 
+// taskShape is everything that decides whether a recovery task will actually
+// run the recovery binary: its single Exec action, the SYSTEM principal, the
+// enabled flags, catch-up after downtime, and the trigger set. Start
+// boundaries are left out: schtasks may re-render them in local time.
+type taskShape struct {
+	Command, Arguments string
+	UserID             string
+	Enabled            bool
+	StartWhenAvailable bool
+	Triggers           []string
+}
+
 // parseTaskAction accepts schtasks output in either console encoding. Requiring
 // exactly one Exec action prevents a read-back with additional actions passing.
 func parseTaskAction(data []byte) (string, string, error) {
-	data, err := decodeTaskXML(data)
+	shape, err := parseTaskShape(data)
 	if err != nil {
 		return "", "", err
 	}
+	return shape.Command, shape.Arguments, nil
+}
+
+type taskTrigger struct {
+	XMLName  xml.Name
+	Enabled  string `xml:"Enabled"`
+	Interval string `xml:"Repetition>Interval"`
+}
+
+func parseTaskShape(data []byte) (taskShape, error) {
+	data, err := decodeTaskXML(data)
+	if err != nil {
+		return taskShape{}, err
+	}
 	var document struct {
-		XMLName xml.Name `xml:"Task"`
+		XMLName  xml.Name `xml:"Task"`
+		Triggers []struct {
+			Items []taskTrigger `xml:",any"`
+		} `xml:"Triggers"`
+		UserIDs  []string `xml:"Principals>Principal>UserId"`
+		Settings struct {
+			Enabled            string `xml:"Enabled"`
+			StartWhenAvailable string `xml:"StartWhenAvailable"`
+		} `xml:"Settings"`
 		Actions []struct {
 			Items []struct {
 				XMLName   xml.Name
@@ -196,7 +230,7 @@ func parseTaskAction(data []byte) (string, string, error) {
 		return nil, fmt.Errorf("unsupported task XML encoding %q", label)
 	}
 	if err := decoder.Decode(&document); err != nil {
-		return "", "", fmt.Errorf("parse task XML: %w", err)
+		return taskShape{}, fmt.Errorf("parse task XML: %w", err)
 	}
 	for {
 		token, err := decoder.Token()
@@ -204,20 +238,47 @@ func parseTaskAction(data []byte) (string, string, error) {
 			break
 		}
 		if err != nil {
-			return "", "", fmt.Errorf("parse trailing task XML: %w", err)
+			return taskShape{}, fmt.Errorf("parse trailing task XML: %w", err)
 		}
 		if text, ok := token.(xml.CharData); !ok || len(bytes.TrimSpace(text)) != 0 {
-			return "", "", errors.New("extra content after task XML")
+			return taskShape{}, errors.New("extra content after task XML")
 		}
 	}
 	if len(document.Actions) != 1 || len(document.Actions[0].Items) != 1 {
-		return "", "", errors.New("task must contain exactly one action")
+		return taskShape{}, errors.New("task must contain exactly one action")
 	}
 	action := document.Actions[0].Items[0]
 	if action.XMLName.Local != "Exec" || strings.TrimSpace(action.Command) == "" {
-		return "", "", errors.New("task must contain a nonempty Exec command")
+		return taskShape{}, errors.New("task must contain a nonempty Exec command")
 	}
-	return action.Command, action.Arguments, nil
+	if len(document.UserIDs) != 1 {
+		return taskShape{}, errors.New("task must contain exactly one principal")
+	}
+	// Task Scheduler treats an absent <Enabled> as true and an absent
+	// <StartWhenAvailable> as false.
+	enabled := func(v string, def bool) bool {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return def
+		}
+		return strings.EqualFold(v, "true")
+	}
+	shape := taskShape{
+		Command:            action.Command,
+		Arguments:          action.Arguments,
+		UserID:             strings.TrimSpace(document.UserIDs[0]),
+		Enabled:            enabled(document.Settings.Enabled, true),
+		StartWhenAvailable: enabled(document.Settings.StartWhenAvailable, false),
+	}
+	if len(document.Triggers) != 1 {
+		return taskShape{}, errors.New("task must contain exactly one trigger list")
+	}
+	for _, trigger := range document.Triggers[0].Items {
+		shape.Triggers = append(shape.Triggers, fmt.Sprintf("%s|enabled=%t|every=%s",
+			trigger.XMLName.Local, enabled(trigger.Enabled, true), strings.TrimSpace(trigger.Interval)))
+	}
+	sort.Strings(shape.Triggers)
+	return shape, nil
 }
 
 // windowsScheduler keeps decisions portable so CI tests every error path with
@@ -314,16 +375,22 @@ func (s *windowsScheduler) readback(expected recoveryTask) error {
 	if err != nil {
 		return fmt.Errorf("schtasks /Query %s: %w", expected.Name, err)
 	}
-	command, args, err := parseTaskAction(data)
+	got, err := parseTaskShape(data)
 	if err != nil {
 		return fmt.Errorf("read back %s: %w", expected.Name, err)
 	}
-	wantCommand, wantArgs, err := parseTaskAction(expected.XML)
+	want, err := parseTaskShape(expected.XML)
 	if err != nil {
 		return err
 	}
-	if command != wantCommand || args != wantArgs {
+	if got.Command != want.Command || got.Arguments != want.Arguments {
 		return fmt.Errorf("read back %s: recovery action does not match journal", expected.Name)
+	}
+	// A task that still names the recovery binary but is disabled, lost a
+	// trigger, or no longer runs as SYSTEM will never fire: not armed.
+	if !strings.EqualFold(got.UserID, want.UserID) || got.Enabled != want.Enabled ||
+		got.StartWhenAvailable != want.StartWhenAvailable || strings.Join(got.Triggers, ";") != strings.Join(want.Triggers, ";") {
+		return fmt.Errorf("read back %s: task principal, triggers or settings do not match", expected.Name)
 	}
 	return nil
 }

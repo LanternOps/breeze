@@ -3,6 +3,7 @@ package isolation
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/netip"
 	"slices"
 	"sort"
@@ -50,7 +51,11 @@ func buildWindowsRules(rs ResolvedSpec, bins []string, prevBins []string, baseli
 			Action: action, Conditions: conditions, Persistent: !boot, BootTime: boot}
 		// Include every predicate, lifetime and layer in identity. The key does
 		// not depend on input order, resolver answer order, or the episode ID.
-		identity, _ := json.Marshal(f)
+		identity, err := json.Marshal(f)
+		if err != nil {
+			// Keys would collapse onto one identity; never build such a policy.
+			panic(fmt.Sprintf("marshal WFP filter identity: %v", err))
+		}
 		f.Key = wfp.FilterKey(string(identity))
 		byKey[f.Key] = f
 	}

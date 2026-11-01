@@ -50,7 +50,7 @@ func newWindowsIsolator(bins func() []string) Isolator {
 		bins = func() []string {
 			paths := make([]string, 0, len(windowsBinaryNames))
 			for _, name := range windowsBinaryNames {
-				path, err := serviceinstall.ProtectedBinaryPathIn(os.Getenv("ProgramFiles"), name)
+				path, err := serviceinstall.ProtectedBinaryPath(name)
 				if err != nil {
 					log.Warn("cannot choose isolation binary path", "error", err)
 					return nil
