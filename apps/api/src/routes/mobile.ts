@@ -1251,9 +1251,14 @@ mobileRoutes.post(
       return c.json({ error: ALERT_CAS_LOST_MESSAGE }, 409);
     }
 
+    // Cooldowns are keyed by device; a skip must preserve the resolve fan-out.
+    if (alert.ruleId && !isDeviceOwned(alert)) {
+      console.warn('[MobileRoutes] Skipping device cooldown on resolve', {
+        alertId: alert.id, orgId: alert.orgId, ownerKind: alert.ownerKind, reason: 'alert_has_no_device',
+      });
+    }
     try {
-      if (alert.ruleId) {
-      if (!isDeviceOwned(alert)) throw new Error('alert_has_no_device');
+      if (alert.ruleId && isDeviceOwned(alert)) {
         const [rule] = await db
           .select()
           .from(alertRules)
