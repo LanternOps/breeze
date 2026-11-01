@@ -19,6 +19,7 @@ Last release: **v0.125.0** (2026-10-27).
 - **On-device notices are opt-in (#10190 W04).** `PROMPT_HOST_ENABLED_KINDS` is optional. Unset (or `default`) means the code default, which enables nothing in this release. Set it to `notice.info` on the `api` service to opt in. Enable it only after this release's Breeze Assist build is published. No migration.
 - **Restart prompts are opt-in too (#10190 W05).** Add `restart.prompt,restart.final` to `PROMPT_HOST_ENABLED_KINDS` (for example `notice.info,restart.prompt,restart.final`) only after the W05 Breeze Assist build is published. Unset still enables nothing. No migration.
 - **DNS Security stores blocked and redirected queries only, by default (#10054).** DNS sync no longer stores allowed queries (about 99% of rows; around 1M a day on a busy tenant) unless the integration opts in with `config.storeAllowedTraffic: true` (**DNS Security → Integrations → Stored data → Store allowed traffic**). This applies to every existing integration on upgrade. Cisco Umbrella integrations also stop downloading allowed records, which saves request budget. The Overview tab and `GET /dns-security/stats` now say **Not stored** (`allowedTraffic: "none"`, `allowedQueries: null`, `blockedRate: null`) instead of showing zero allowed queries. Allowed rows stored before the upgrade are **not** deleted; retention removes them as they age out, and the docs (DNS Security → Stored traffic) show how to delete them by hand in batches. No migration, no new environment variable.
+- **Discovery auto-link is MAC-only.** A scan links a discovered asset to an enrolled device only when its MAC matches one of the device's NICs; IP-only matches no longer link, and a MAC reported by two devices links nothing. Existing automatic links whose MAC is not on the linked device are dropped on the asset's next scan (the asset reappears in the Devices → Network list), and a device role that link stamped on is reset so the agent's heartbeat restores it. A real server mislabelled this way stays `unknown` until an admin sets it — the heartbeat never auto-promotes to a privileged role. Manual and pre-provenance links are untouched. (PR #10323)
 
 ## Features / API
 
@@ -73,7 +74,7 @@ Behind `FLOWS_ENABLED` (default off). No new environment variables.
 - **Converted Jobs are frozen.** Editing, deleting, enabling, triggering or running a switched Job returns `409 automation_converted { flowId }` (the AI tool refuses the same way).
 - **Revert** re-enables the Job immediately and stops the flow admitting anything new; flow runs already started, including ones waiting for approval, finish. A reverted flow is disabled once it has drained.
 - **`resolve_targets` also takes `deviceIds`**, so an event Job whose first action is a notice or an alert converts (it bound the triggering device and was refused before).
-- **Known differences from the Job** (verified by the parity suite): a notice's severity `high` or `medium` becomes `warning` (`low` becomes `info`), and an on-failure notice says "Automation <name> action <n> failed on <host>" instead of the action's failure reason.
+- **Known differences from the Job** (verified by the parity suite): a notice's severity `high` or `medium` becomes `warning` (`low` becomes `info`), and an on-failure notice says "Automation <name> action <n> failed on <host>: <reason>", where the reason is that device's own dispatch error (the Job sent its action's log line, such as "Failed to queue run_script action command", and named the device only by id). (PR #10791)
 
 **PR C — Jobs move to Flows (R1).** No migration.
 
@@ -234,6 +235,152 @@ Update agents to a release containing this change before relying on the provider
 - `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
 - `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
 - `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.
+- Submit Pax8 orders with two-person approval of estimated costs and terminal cancellations; reconcile unknown outcomes while preserving concurrent billing quantity edits. (PR #10832)
+
 ### Partner settings copy matches the inheritance badges (#10372)
 
 The default-expiry and maximum-lifetime selects and the partner agent-pin caption no longer say organizations "configure individually" or are "pinned for all"; each now agrees with its Org can override / Partner-wide badge.
+
+## In-flight PRs (consolidated 2026-11-01)
+
+<!-- Agent -->
+
+### Linux and macOS event-log ids (#10731) — PR #10779
+
+- **Repeated events from one process are no longer dropped.** Linux and macOS event ids were the source plus the process id, so the server kept only the first event from a long-running process (for example the first sshd authentication failure) and ignored the rest. Ids now end in a hash of the entry's own journald cursor (Linux) or unified-log mach timestamp, thread and trace id (macOS), so every entry is stored and a re-collected entry still deduplicates. macOS crash-report ids are unchanged unless longer than 100 characters.
+- **Upgrade behaviour:** events collected just before and after an agent upgrade can appear twice, once with the old id and once with the new one. Rows already stored keep their old ids. Needs an agent update.
+- **API:** an uploaded event id longer than 100 characters (the column size) now drops only that row, counted in `invalidDropped`. Before, it failed the insert of every row in the same batch of 100.
+- No migration, environment variable or setting.
+
+### Windows physical-disk health (#10753) — PR #10776
+
+- **Agent:** `windows_physical_disk` now runs `Get-PhysicalDisk` (60 s) and `Get-StorageReliabilityCounter` (45 s, best-effort) as two separate PowerShell runs. A slow or failed reliability-counter query keeps the disk inventory, reports the source `ok` with a warning, and leaves only the unanswered disks without temperature/wear/error counters. Before, one 60 s deadline covered both, so slow counters failed the source, backed it off for 6 hours and raised **Hardware monitoring tool failing**. A `Get-PhysicalDisk` failure still fails the source and still alerts. Needs the new agent build; no server change, no migration.
+
+### Agent helper IPC desync (#10541, #10423) — PR #10775
+
+- **The user helper no longer drops its agent connection when a read times out mid-message.** The helper (and `breeze-backup`) wake every few seconds to check for shutdown; if that fired while a message was half-read, the next read started inside the message and the helper logged `recv: ipc: message too large: 2065852772 > 16777216` and reconnected, which could end an active desktop session. Reads now resume the same message. Fixed in the agent; no server change, no wire-format change, no migration. If an impossible length is still seen for any other reason, the error now includes the raw header bytes (`(header 7b226964)`).
+
+### PAM outcome notices are localized (#10696) — PR #10786
+
+- **When Breeze Assist is not installed, the approved, couldn't-start, denied and expired notices for an elevation request now use the same localized sentences as the Assist elevation card.** The language is the signed-in user's UI language in that Windows session, then the machine's, then English, the same rule as on-device prompts. English wording changes too, for example "Contoso IT denied the request for mmc.exe." instead of "mmc.exe was denied by Contoso IT.", and a couldn't-start notice is titled "The program couldn't start". A multi-line deny reason is shown on one line. The "Couldn't reach IT" offline notice stays English (no catalog sentence yet). Agent-only; no migration, setting or environment variable.
+
+### Breeze Assist crash-loop detection (#10302) — PR #10806
+
+- **A crash-looping Breeze Assist is now reported.** The agent used to clear its count of Assist restarts whenever it found Assist running. An Assist that crashed a few seconds after each start, or that the heartbeat relaunched just before a check, was restarted forever and never reported. The count now clears only after Assist has stayed up for 60 seconds since the agent last launched it. A device whose Assist keeps closing now reaches the `crash_loop` install issue ("Unavailable: keeps closing") and the six-hour back-off from #10183. Agent-side only. No migration, environment variable or setting.
+
+<!-- Devices and inventory -->
+
+### Export the Devices list to CSV — PR #10780
+
+The Devices list (and an organization's Devices tab) has an **Export CSV** button. It exports every device matching the current search and filters, not just the page on screen, or only the checked rows when any are checked. Columns are the visible ones in their current order, plus any custom-field columns turned on; Attention counts are fetched only when that column is visible. Hostnames starting with `=`, `+`, `-` or `@` are neutralised so they cannot run as spreadsheet formulas. No migration, setting or environment variable.
+
+### Device list warranty column (#9863) — PR #10800
+
+- The device list has an opt-in **Warranty Ends** column (Column chooser → Inventory) showing each device's warranty end date and status, sortable by date. The filter bar has a **Warranty Status** field (Active / Expiring / Expired / Unknown / Subscription Active); a device with no warranty record counts as unknown. `GET /devices?includeWarranty=true` rows carry `warrantyEndDate` and `warrantyStatus` (null when there is no record). The default list query skips the warranty join. No migration, no new environment variable.
+
+### Device list: add to group / remove from group (#9866) — PR #10805
+
+- The device list's bulk actions now include **Add to group…** and **Remove from group…** for static groups. Select agent devices of one organization, pick one of that organization's static groups, and the whole selection is added or removed in one request. Dynamic groups and partner-wide groups are not offered; a site group is offered only when every selected device is at that site.
+- The items need the `devices.write` permission (and MFA, like other group membership changes). They are disabled, with the reason shown, when the selection spans organizations or exceeds 500 devices.
+- New API route `POST /device-groups/:id/devices/remove` (body `{ deviceIds }`, up to 500) removes several devices from a static group and returns one outcome per device: `removed`, `not_member`, or `forbidden` (no access to the device's site). Audited as `device_group.device.remove`.
+- No migration, setting, or environment variable.
+
+### Reliability factor event-log links (#10053) — PR #10816
+
+- **Crashes, Application hangs and Hardware errors now link to their own events.** On a device's Reliability panel, these factor rows open the Event log filtered to every source the scored events came from ("View in event log"), over the window the API scored. Before, they opened an unfiltered window ("Open event log"). The panel now takes each factor's window from the API instead of working it out in the browser. A snapshot gets the source list when it is next scored; until then the row keeps the window-only link.
+- `GET /api/v1/reliability/:deviceId` drivers add `windowStart`, `windowEnd` and, for `crashes`, `hangs` and `hardwareErrors`, `eventLogSources`. `GET /api/v1/devices/:id/eventlogs` accepts `source` more than once (`?source=a&source=b` matches any of them, up to 25); one `source` works as before. No migration or environment variable.
+
+<!-- AI tools -->
+
+### AI tools: device and alert lists name the organization (#10408) — PR #10784
+
+- **Partner-wide AI sessions now see each row's organization.** When the caller can reach more than one organization (a partner user with several organizations, or a Wisp grant covering several), `query_devices` and `manage_alerts` (`list`) rows carry `orgId`, and the result adds `organizations: [{ orgId, orgName }]`, one entry per organization on the page. Single-organization callers get the same rows as before.
+- **Smaller default pages.** `query_devices` now returns 20 devices by default (was 25) and `manage_alerts` `list` 12 alerts (was 15), so a page spanning a handful of organizations still fits the chat budget with the organization fields. `limit` up to 100 is unchanged. No migration, no new environment variable.
+
+### AI assistant — ticket merge and cleanup cancel in chat (#10161) — PR #10813
+
+- **Merging tickets works from chat.** `manage_tickets` `merge_preview` and `merge` (with `intoTicketId` and `notifyRequester`) were offered to the model but rejected or stripped by chat's input check; chat now accepts them. MCP behaviour is unchanged. `merge` still needs approval.
+- **`system_cleanup` gains `cancel`.** It ends a running OS-native cleanup run, the same path as the panel's cancel. The run is marked failed and a command the device has not picked up is cancelled; a cleaner the device already started can still finish. Needs approval (supervised Tier 3), so it is not available over MCP.
+- No migration, setting or environment variable.
+
+### AI per-device script history (#10417) — PR #10817
+
+- `get_script_execution_history` takes `deviceId` (and an optional `since`) in place of, or together with, `scriptId`, so the assistant can answer "did my script run on device X?". Each row now carries the script name, source and trigger type. Same `scripts:read` permission as the device Scripts tab. No migration, no new environment variable.
+
+### AI: partner settings inheritance read tool (#9763) — PR #10820
+
+- New Tier 1 AI/MCP tool `get_partner_settings_inheritance` answers "which organizations override this partner setting, and to what?". With a settings tab it returns per-setting counts; with a setting id it lists the organizations behind one count. It uses the same gate and projection as the partner settings inheritance view: partner scope with full partner organization access only, and secret settings show set or not set only. No migration, environment variable or setting.
+
+### AI device-group membership (#10149) — PR #10822
+
+- **AI `manage_groups` `add_devices` / `remove_devices` now ask for approval** (supervised, tier 3; previously tier 2 auto-execute). AI agents can now be granted them, and a granted call becomes a proposal a person approves; neither is act-eligible.
+- **They refuse the whole call instead of skipping devices.** A device in another organization (or one you cannot see), a device outside a site-bound group's site, or a device outside your own site or device scope returns an error and nothing is written. Previously such devices were dropped and reported as `skipped`. A site-restricted user cannot change membership of an organization-wide group, and dynamic groups refuse manual edits — both as in the groups API. Responses now report `alreadyMembers` / `notMembers` instead of `skipped`. No migration, no new environment variable.
+
+<!-- Agreements, quotes and billing -->
+
+### Public proposal Download PDF (#9860) — PR #10787
+
+- **The public proposal link has a Download PDF button.** A client without a portal account can save the same PDF the portal offers, from the page where they sign. The new `GET /quotes/public/:token/pdf` uses the page's token checks. It returns 404 for a replaced or revoked proposal and `no-store` / `no-referrer` headers. Each proposal allows 10 downloads a minute. No migration, setting or environment variable.
+
+### Quote-created contracts are visible (#10361) — PR #10790
+
+- **Contracts created by an accepted quote now link back to it.** When a quote with monthly or annual lines is accepted, its contracts are still created as drafts. The contracts list now marks each such draft **From Q-… · ready to activate**, with a link to the quote. An accepted quote's detail page lists the contracts it created and says how many drafts still need activating. A draft with no signed agreement also shows the **From quote** pill in its header.
+- **The "quote accepted" email** sent to the quote's creator now says how many recurring contracts were created as drafts and still need activating.
+- `GET /api/v1/contracts` rows gain `sourceQuoteId` and `sourceQuote` (`{ id, quoteNumber }` or `null`). `GET /api/v1/contracts/:id` gains `sourceQuote`. `GET /api/v1/quotes/:id` gains `contracts` (`[{ id, name, status, intervalMonths }]`, or `null` when the caller lacks `contracts:read`).
+- **Migration** `2027-01-18-161000-contracts-source-quote.sql.sql`: adds the nullable `contracts.source_quote_id` (same-org foreign key to `quotes`, cleared when the quote is deleted) and a partial index. It backfills existing contracts from their executed agreement and from Pax8 orders. A contract with neither (for example the annual contract of a quote with no agreement and no Pax8 lines) stays unlinked. No environment variable or setting.
+
+### Agreements — signed copy from a reopened link (#10695) — PR #10798
+
+- A customer who reopens their agreement link after signing can download the certified signed copy from that page (`GET /api/v1/agreements/public/<token>/signed-copy`). Only the link that signed the agreement offers it. An agreement signed in the portal, or recorded on behalf of the customer, still says to contact the provider. Voiding or revoking the link turns the download off. The certificate shows what the emailed copy shows: the signer's name, email, IP and browser. No migration, no new environment variable.
+
+<!-- Security -->
+
+### IOC sweeps — rules-changed signal (#10049) — PR #10811
+
+- Sweep summaries (`GET /security/sweeps`, `/security/sweeps/:id`, `/security/sweeps/groups/:groupId`, and the AI `ioc_hunt` sweep reads) carry `progress.ruleSetChanged`: the failed scans whose rule set was republished after the sweep was approved. It is counted under the same site and device restrictions as the rest of `progress`.
+- `GET /security/scans/:deviceId` now returns each scan's `sweepId` and `ruleSetErrors`.
+- The Sweeps tab shows **Rules changed since this sweep started** and **Sweep again** only when a scan actually failed for that reason. It no longer compares pinned and published versions, so a sweep that finished cleanly before a republish is no longer marked.
+
+### Security agents: SentinelOne installer missing (#9247) — PR #10823
+
+- **A SentinelOne package with no deployable MSI is now shown on the coverage panels instead of silently stopping enforcement.** If the partner's SentinelOne package loses its deployable installer after the vendor was enabled, the generated software policy keeps its SentinelOne rule. Every reached Windows device that does not have SentinelOne yet (in an organization whose site mapping is ready) shows **Not applicable · Installer not uploaded** on the device EDR panel and the software compliance coverage table, with an **Upload the installer** link to the package's Versions tab. Nothing is installed until a deployable MSI is uploaded again; devices already running SentinelOne keep their Covered / Vendor offline / Gap state. Previously the repair sweep removed the rule, deactivated the policy and sent a Sentry event.
+- `GET /api/v1/edr/security-agents/coverage` rows now carry `setupPath` (`/software#versions=<catalogId>` for `installer_missing` rows, otherwise `null`), and coverage rows can carry the new reason code `installer_missing`.
+- The repair sweep no longer sends the `security_agents_repair` / `binary_missing` Sentry event; it logs an info line instead. No migration, environment variable or setting.
+
+<!-- Alerts and PSA -->
+
+### Alert → PSA ticket (#10528) — PR #10830
+
+ConnectWise Manage alert tickets (opt-in per connection) — not yet verified against a live ConnectWise Manage tenant.
+
+### Org-subject alerts (#10725) — PR #10836, PR #10837
+
+- Deleting a topology alert’s origin device now preserves the site-owned alert, notification and correlation history, and PSA ticket mappings (#7269). (PR #10836)
+- Alerts, notification templates and API payloads identify backup workloads and topology sites, with links to their health pages and device actions shown only for device alerts. (PR #10837)
+
+<!-- Settings, web, remote and backup -->
+
+### Webhook picker offers Ticket Merged — PR #10793
+
+The webhook event picker now lists **Ticket Merged** (`ticket.merged`), so subscribers can opt in from the UI. No migration or setting.
+
+### Remote desktop idle timeout default (#10422) — PR #10797
+
+- **Desktop sessions now idle out after 30 minutes instead of 5** on devices with no Remote Access policy, and under any policy that does not set an idle timeout. Watching an install, a reboot prompt or a long script no longer drops the session. An idle timeout a policy sets explicitly, including a stored `5`, is unchanged, and so is max session duration (8 h).
+- **New Remote Access policies start at a 30-minute idle timeout** in the policy editor. The restrictive fallback used when policy resolution fails keeps 5 minutes.
+- No migration, environment variable or agent update.
+
+### Org settings — partner locks follow the settings catalog (#9762) — PR #10814
+
+- `GET /orgs/organizations/:id/effective-settings` now lists a partner-set field in `locked` only when the partner value actually wins. Partner defaults an org may override (agent version pins, enrollment defaults, Pushover fill-blank defaults) move to a new `partnerDefaults` list. A partner Event Logs destination is reported as locking the org's Event Logs fields only while it is enabled with a URL (the destination the runtime actually uses), so the org Event Logs editor no longer disables its fields when the partner's destination is disabled or incomplete. API clients that read `locked` as "the partner set this" should also read `partnerDefaults`. No migration, no new environment variable.
+
+### Backup key prefix for agent-side S3 tools (#9441) — PR #10815
+
+`breeze-backup rebuild --provider-config` takes `--key-prefix <prefix>` to read a snapshot stored under `<prefix>/snapshots/`. Pass the prefix the snapshot was written under; `providerConfig.prefix` in the file is not applied, and the command prints a note when it is set.
+The `agent.yaml` backup manager takes `backup_s3_prefix`. An invalid value disables that manager instead of writing at the bucket root.
+Server-dispatched backups and token-mode recovery are unchanged. No migration, no new environment variable.
+
+### Reserved brand names on device prompts (#10325) — PR #10818
+
+- **A partner or organization name that is only a reserved brand is refused.** Saving a name such as "Microsoft", "Windows Security", "Apple Help Desk" or "Microsoft 365 Support" (also run together, letter-spaced, or with accents or a ™/®/© sign) now returns `400` with a message asking for the company's own name. This applies to `PATCH /orgs/partners/me`, `POST /orgs/partners`, `PATCH /orgs/partners/:id`, `POST /orgs/organizations`, `PATCH`/`PUT /orgs/organizations/:id` and Partner API `POST /organizations`. Self-service signup, the AI organization tool and organization import do not check yet. A name that only mentions a brand next to other words ("Northwind Microsoft Partner", "Apple Valley IT") is unchanged.
+- **Device prompts show "Your IT support team" when the partner name is such a name**, including for partners already saved with one. The partner name is the only MSP name shown on prompts; customer organization names never appear there. Prompts that take the name from the heartbeat's `promptIdentity` block (restart, elevation) change as soon as the API is upgraded. The remote-session consent prompt changes once the agent is updated, because the agent sanitizes that name itself; older agents still show the saved name there. The brand and qualifier word lists live in `packages/shared/src/promptCatalog/sanitize.ts` and are mirrored in the agent. No migration, no new environment variable.
