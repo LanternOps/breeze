@@ -25,6 +25,11 @@ const h = vi.hoisted(() => {
     nextId: 1,
     currentId: 0,
     labels: [] as Array<string | undefined>,
+    /**
+     * Models postgres.js: a SQL error inside a transaction poisons it, so its
+     * COMMIT throws even when the caller caught the original error.
+     */
+    poisoned: false,
   };
   /** Every DB read and every mocked service call, tagged with its context id (0 = none). */
   const trace: Array<{ op: string; ctxId: number }> = [];
@@ -72,11 +77,15 @@ const h = vi.hoisted(() => {
       ctx.depth++;
       ctx.maxDepth = Math.max(ctx.maxDepth, ctx.depth);
       ctx.currentId = id;
+      ctx.poisoned = false;
       try {
-        return await fn();
+        const result = await fn();
+        if (ctx.poisoned) throw new Error('current transaction is aborted (COMMIT)');
+        return result;
       } finally {
         ctx.depth--;
         ctx.currentId = 0;
+        ctx.poisoned = false;
       }
     }),
     withDbTransaction: vi.fn(async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -260,6 +269,7 @@ beforeEach(() => {
   h.ctx.nextId = 1;
   h.ctx.currentId = 0;
   h.ctx.labels.length = 0;
+  h.ctx.poisoned = false;
   vi.clearAllMocks();
   h.resolveMonitorsForDeviceMock.mockResolvedValue({
     kind: 'resolved',
@@ -364,6 +374,48 @@ describe('evaluateDeviceAlerts — DB context scoping (#10859)', () => {
       expect.objectContaining({ errorId: 'alert-rule-evaluation-failed', ruleId: 'rule-2' }),
     );
     expect(h.detachMonitorFromDeviceMock).not.toHaveBeenCalled();
+  });
+
+  it('a SQL error the rule swallows still fails that rule at COMMIT — and only that rule', async () => {
+    // Episode bookkeeping catches its own errors ("must never cost the device
+    // its alert"), but a SQL error has already poisoned the rule's
+    // transaction, so the rule's COMMIT throws. That throw comes from the
+    // context itself: only a catch OUTSIDE the context can contain it. Inside
+    // the old single device transaction it took every later rule down too.
+    pushSweep(THREE_RULES);
+    h.recordMonitorEvaluationMock.mockImplementation(async (input: { monitor: { id: string } }) => {
+      if (input.monitor.id === 'monitor-1') {
+        h.ctx.poisoned = true;
+        throw new Error('deadlock detected');
+      }
+      return { episodeId: null, latched: false, needsEscalationAlert: false, episodesInWindow: 0 };
+    });
+
+    await expect(evaluateDeviceAlerts(DEVICE_ID)).resolves.toEqual([]);
+
+    expect(opsIn(3)).toEqual(['evaluateConditions:rule-2', 'recordMonitorEvaluation:monitor-2']);
+    expect(opsIn(4)).toEqual(['evaluateConditions:rule-3', 'recordMonitorEvaluation:monitor-3']);
+    expect(opsIn(5)).toEqual(['select:detachScan']);
+    expect(h.captureExceptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'current transaction is aborted (COMMIT)' }),
+      undefined,
+      expect.objectContaining({ errorId: 'alert-rule-evaluation-failed', ruleId: 'rule-1' }),
+    );
+  });
+
+  it('a COMMIT failure in the detach scan is reported, not thrown, after the rules have committed', async () => {
+    pushSweep(THREE_RULES, [{ monitorId: 'monitor-stale' }]);
+    h.detachMonitorFromDeviceMock.mockImplementation(async () => {
+      h.ctx.poisoned = true;
+    });
+
+    await expect(evaluateDeviceAlerts(DEVICE_ID)).resolves.toEqual([]);
+
+    expect(h.captureExceptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'current transaction is aborted (COMMIT)' }),
+      undefined,
+      expect.objectContaining({ issue: 'episode_detach_failed', deviceId: DEVICE_ID }),
+    );
   });
 
   it('keeps the subject branch\'s savepoint + advisory lock inside that rule\'s own context', async () => {

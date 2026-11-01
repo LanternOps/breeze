@@ -221,6 +221,8 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
   skipped: number;
   /** #6353 — orgs handed to the device-independent network_check sweep. */
   networkCheckOrgsQueued: number;
+  /** #10859 — alert jobs still pending when this tick started (0 = keeping up). */
+  pendingFromPreviousTick?: number;
   durationMs: number;
 }> {
   const startTime = Date.now();
@@ -276,6 +278,19 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
   const queue = getAlertQueue();
   let totalQueued = 0;
   let cursor: string | null = null;
+
+  // #10859 — sweep jobs are keyed by device, so a device whose previous
+  // evaluation is still waiting, delayed or running is silently skipped by
+  // BullMQ this tick. Make that visible: anything still pending when a new
+  // tick starts means the worker is not keeping up with the fleet.
+  const pendingFromPreviousTick = await countPendingAlertJobs(queue);
+  if (pendingFromPreviousTick > 0) {
+    console.warn(
+      `[AlertWorker] ${pendingFromPreviousTick} alert jobs still pending from the previous tick; `
+      + 'devices with a pending evaluation are skipped this tick. '
+      + `Raise ALERT_WORKER_CONCURRENCY (now ${resolveAlertWorkerConcurrency()}) if this persists.`
+    );
+  }
 
   while (true) {
     const remaining = cap > 0 ? Math.max(0, cap - totalQueued) : chunkSize;
@@ -374,8 +389,24 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
     queued: totalQueued,
     skipped: 0,
     networkCheckOrgsQueued,
+    pendingFromPreviousTick,
     durationMs: Date.now() - startTime
   };
+}
+
+/**
+ * Waiting + delayed + active jobs on the alert queue, minus the evaluate-all
+ * job that is running this count. Best-effort: a Redis error reads as 0 and
+ * never fails the sweep.
+ */
+async function countPendingAlertJobs(queue: Queue): Promise<number> {
+  try {
+    const counts = await queue.getJobCounts('waiting', 'delayed', 'active');
+    return (counts.waiting ?? 0) + (counts.delayed ?? 0) + Math.max(0, (counts.active ?? 0) - 1);
+  } catch (error) {
+    console.warn('[AlertWorker] Could not read alert queue backlog:', error);
+    return 0;
+  }
 }
 
 /**

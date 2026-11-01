@@ -10,6 +10,7 @@ import { submitConnectionsSchema } from './schemas';
 import { pgErrorNode } from '../../utils/pgErrors';
 import { envInt } from '../../utils/envInt';
 import { BULK_INSERT_CHUNK_ROWS, chunkRows } from '../../utils/chunkRows';
+import { createReportThrottle } from '../../utils/reportThrottle';
 
 // Hard caps that match the device_connections column widths. Agent
 // collectors emit kernel-bound values (TCP states, /proc comm names) that
@@ -37,6 +38,9 @@ export const CONNECTION_INSERT_CHUNK_SIZE = BULK_INSERT_CHUNK_ROWS;
 // selectConnectionsToStore). The schema still accepts up to 10,000, so setting
 // the env var to 10000 stores everything.
 const DEFAULT_MAX_CONNECTIONS_PER_DEVICE = 2000;
+
+/** Exported only as a test seam (`.reset()`). */
+export const connectionCapLogThrottle = createReportThrottle(60 * 60 * 1000);
 
 export function maxStoredConnectionsPerDevice(): number {
   const configured = envInt('AGENT_CONNECTIONS_MAX_PER_DEVICE', DEFAULT_MAX_CONNECTIONS_PER_DEVICE);
@@ -132,7 +136,9 @@ connectionsRoutes.put(
   const max = maxStoredConnectionsPerDevice();
   const toStore = selectConnectionsToStore(data.connections, max);
   const truncated = toStore.length < data.connections.length;
-  if (truncated) {
+  // A capped device stays capped on every report, so log it once an hour per
+  // device. The response's `truncated` flag carries it every time.
+  if (truncated && connectionCapLogThrottle.shouldReport(device.id)) {
     console.warn('[connections] capped connection inventory', {
       agentId,
       deviceId: device.id,

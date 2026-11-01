@@ -44,6 +44,7 @@ import { db } from '../../db';
 import {
   connectionsRoutes,
   CONNECTION_INSERT_CHUNK_SIZE,
+  connectionCapLogThrottle,
   maxStoredConnectionsPerDevice,
   selectConnectionsToStore,
 } from './connections';
@@ -442,6 +443,7 @@ describe('connections routes', () => {
 
     beforeEach(() => {
       warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      connectionCapLogThrottle.reset();
     });
 
     afterEach(() => {
@@ -500,6 +502,13 @@ describe('connections routes', () => {
       expect(warnSpy).toHaveBeenCalledTimes(1);
       expect(String(warnSpy.mock.calls[0]![0])).toContain('capped');
       expect(warnSpy.mock.calls[0]![1]).toMatchObject({ deviceId: DEVICE_ID, received: 6, stored: 4, max: 4 });
+
+      // The same device's next capped report is still capped and flagged, but
+      // not logged again within the hour.
+      mockKnownDeviceTransaction();
+      const again = await putConnections(connections);
+      expect(await again.json()).toMatchObject({ count: 4, truncated: true });
+      expect(warnSpy).toHaveBeenCalledTimes(1);
     });
 
     it('selects the same rows whatever order the agent reports them in', () => {

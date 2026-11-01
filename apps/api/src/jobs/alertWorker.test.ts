@@ -138,6 +138,7 @@ vi.mock('bullmq', () => ({
     addBulk = addBulkMock;
     add = addMock;
     getJob = getJobMock;
+    getJobCounts = getJobCountsMock;
   },
   Worker: class {
     constructor(_name: string, processor: (job: { data: unknown }) => Promise<unknown>, opts: { concurrency?: number }) {
@@ -161,6 +162,10 @@ vi.mock('../services/alertService', () => ({
 vi.mock('../services/bullmqUtils', () => ({
   isReusableState: vi.fn(() => false),
   bullmqJobId: (...parts: Array<string | number>) => parts.map((part) => String(part).replace(/:/g, '-')).join('-'),
+}));
+
+const { getJobCountsMock } = vi.hoisted(() => ({
+  getJobCountsMock: vi.fn(async () => ({ waiting: 0, delayed: 0, active: 1 } as Record<string, number>)),
 }));
 
 const { networkCheckOrgIdsMock, evaluateNetworkCheckAlertsForOrgMock } = vi.hoisted(() => ({
@@ -619,6 +624,26 @@ describe('alertWorker evaluate-all stagger (#10859)', () => {
     }
     expect(evaluateDeviceStaggerDelayMs('device-000007', 50_000))
       .toBe(evaluateDeviceStaggerDelayMs('device-000007', 50_000));
+  });
+
+  it('warns when jobs from the previous tick are still pending — device-keyed ids would otherwise skip them silently', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    fleetState.fleet = buildFleet(5);
+
+    // Only the running evaluate-all job itself: keeping up, no warning.
+    getJobCountsMock.mockResolvedValueOnce({ waiting: 0, delayed: 0, active: 1 });
+    expect(await processEvaluateAll({ type: 'evaluate-all' })).toMatchObject({ pendingFromPreviousTick: 0 });
+    expect(warn).not.toHaveBeenCalled();
+
+    fleetState.chunkCalls = 0;
+    getJobCountsMock.mockResolvedValueOnce({ waiting: 3, delayed: 40, active: 6 });
+    expect(await processEvaluateAll({ type: 'evaluate-all' })).toMatchObject({ pendingFromPreviousTick: 48 });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('48 alert jobs still pending'));
+
+    // A Redis error never fails the sweep.
+    fleetState.chunkCalls = 0;
+    getJobCountsMock.mockRejectedValueOnce(new Error('redis down'));
+    expect(await processEvaluateAll({ type: 'evaluate-all' })).toMatchObject({ queued: 5, pendingFromPreviousTick: 0 });
   });
 
   it('enqueues with no delay when the window is 0', async () => {
