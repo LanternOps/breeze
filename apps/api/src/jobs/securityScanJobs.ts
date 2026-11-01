@@ -45,8 +45,6 @@ const SECURITY_SWEEP_PUMP_INTERVAL_MS = parsePositiveIntEnv('SECURITY_SWEEP_PUMP
 const SECURITY_SCAN_THROTTLE_REQUEUE_SECONDS =
   parsePositiveIntEnv('SECURITY_SCAN_THROTTLE_REQUEUE_SECONDS', 20);
 
-type SchedulePoliciesJobData = Extract<SecurityScanQueueJobData, { type: 'schedule-policies' }>;
-
 let securityScanQueue: Queue<SecurityScanQueueJobData> | null = null;
 let securityScanWorker: Worker<SecurityScanQueueJobData> | null = null;
 
@@ -293,13 +291,10 @@ export async function schedulePolicyScans(
   return created.length;
 }
 
-async function processSchedulePolicies(data: SchedulePoliciesJobData): Promise<{
+async function processSchedulePolicies(now: Date): Promise<{
   scheduledPolicies: number;
   scansQueued: number;
 }> {
-  const parsed = new Date(data.scanAt);
-  const now = Number.isFinite(parsed.getTime()) ? parsed : new Date();
-
   const entries = await resolveAllSecurityScanScheduledDevices();
   let scheduledPolicies = 0;
   let scansQueued = 0;
@@ -347,7 +342,10 @@ export function createSecurityScanWorker(): Worker<SecurityScanQueueJobData> {
         return pumpSweeps(new Date(), { enqueue: enqueueSweepDispatches });
       }
       assertQueueJobName(SECURITY_SCAN_QUEUE, job, 'schedule-policies');
-      return runWithSystemDbAccess(() => processSchedulePolicies(data));
+      // The wall clock, never `data.scanAt`: same repeatable-job reuse as
+      // pump-sweeps above, so `scanAt` is the registration (boot) time on
+      // every tick and cron due-ness would never advance (#10031).
+      return runWithSystemDbAccess(() => processSchedulePolicies(new Date()));
     },
     {
       connection: getBullMQConnection(),
