@@ -267,6 +267,11 @@ func noVideoStopReason(capturer ScreenCapturer) string {
 	if reason := swallowedCaptureError(capturer); reason != "" {
 		return reason
 	}
+	// #10874: a display that is asleep or gone explains the outage better
+	// than the generic text, and the two need opposite fixes.
+	if reason := displayStateStopReason(displayPower); reason != "" {
+		return reason
+	}
 	return noVideoStopReasonFallback
 }
 
@@ -367,6 +372,8 @@ func (s *Session) captureLoopDXGI() captureMode {
 				s.mu.RLock()
 				capForReattach := s.capturer
 				s.mu.RUnlock()
+				// Wake the display before the rebuild (#10874).
+				s.displayWake.nudge()
 				if r, ok := capForReattach.(interface{ ForceReattach() }); ok {
 					r.ForceReattach()
 					// Reset GPU path state so the encoder rebinds to the new
@@ -680,6 +687,8 @@ func (s *Session) captureLoopTicker() captureMode {
 					s.mu.RLock()
 					capForReattach := s.capturer
 					s.mu.RUnlock()
+					// Wake the display before the rebuild (#10874).
+					s.displayWake.nudge()
 					if r, ok := capForReattach.(interface{ ForceReattach() }); ok {
 						r.ForceReattach()
 						// Rebind the encoder to whatever D3D11 device

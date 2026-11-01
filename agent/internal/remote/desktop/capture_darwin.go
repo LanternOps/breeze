@@ -795,6 +795,12 @@ func (s sckStreamShim) start(refreshFilter bool) error {
 	refresh := C.int(0)
 	if refreshFilter {
 		refresh = 1
+		// A restart (#10874): wake the display first. If the lock screen
+		// switched it off, the rebuilt filter would otherwise find zero
+		// displays. The session's assertion keeps it on once it is lit.
+		if err := displayPower.declareUserActivity(); err != nil {
+			slog.Debug("could not declare user activity before restarting the stream", "error", err.Error())
+		}
 	}
 	var nsCode C.long
 	code := int(C.sckStartStream(C.int(s.displayIndex), refresh, &nsCode))
@@ -802,6 +808,10 @@ func (s sckStreamShim) start(refreshFilter bool) error {
 		return nil
 	}
 	err := translateDarwinError(code)
+	if code == captureErrNoDisplayAttached {
+		state, counts := readDisplayState(displayPower)
+		err = describeDisplayStateError(err, state, counts)
+	}
 	if nsCode != 0 {
 		return fmt.Errorf("%w (SCStreamError %d)", err, int64(nsCode))
 	}

@@ -47,6 +47,10 @@ type Session struct {
 	cursorDC      *webrtc.DataChannel
 	controlDC     *webrtc.DataChannel
 
+	// displayWake keeps the display on for the session (#10874). Set in
+	// StartSession before the capture loop starts; released in doCleanup.
+	displayWake *displayWakeHold
+
 	// viewerChannels maps each viewer data-channel label to the channel now
 	// serving it. A replaced channel's messages are ignored and its late close
 	// does not reset the stream its successor carries. Guarded by mu.
@@ -656,6 +660,9 @@ func (s *Session) doCleanup() {
 		if s.capturer != nil {
 			s.capturer.Close()
 		}
+		// After the capturer: the display may sleep again only once nothing
+		// captures it (#10874).
+		s.displayWake.release()
 		if s.peerConn != nil {
 			s.peerConn.Close()
 		}

@@ -84,6 +84,8 @@ func TestNoVideoStopReason_UsesSwallowedCaptureError(t *testing.T) {
 }
 
 func TestNoVideoStopReason_FallsBackWhenNothingSwallowed(t *testing.T) {
+	// Hermetic: on a Mac the real display state would otherwise be read.
+	withDisplayPower(t, &fakeDisplayPower{unknown: true})
 	cases := []struct {
 		name     string
 		capturer ScreenCapturer

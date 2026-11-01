@@ -225,7 +225,12 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		capConfig.DisplayIndex = displayIndex
 	}
 	capturerStart := time.Now()
-	capturer, err := NewScreenCapturer(capConfig)
+	// Keep the display on for the session's whole life and wake it before
+	// the first capture (#10874): a locked Mac's lock screen switches the
+	// display off ~30 s after the last input, and a sleeping display reads as
+	// zero displays. Released in doCleanup, which a failed start reaches too.
+	session.displayWake = acquireDisplayWakeHold(displayPower, sessionID)
+	capturer, err := openSessionCapturer(capConfig)
 	if err != nil {
 		return "", fmt.Errorf("failed to create screen capturer: %w", err)
 	}

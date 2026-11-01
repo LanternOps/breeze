@@ -49,9 +49,12 @@ func translateCaptureError(code int) error {
 	case captureErrDisplayList:
 		return fmt.Errorf("failed to get display list")
 	case captureErrNoDisplayAttached:
-		return fmt.Errorf("%w: the system reported zero displays — nothing is attached to capture "+
-			"(on a headless Mac this is normal once a Screen Sharing session ends; "+
-			"attach a display or a dummy plug). This is NOT a permissions failure",
+		// Deliberately does not say why (#10874): a display that is attached
+		// but asleep drops out of the active list too, so zero here is both
+		// "nothing attached" and "the lock screen switched the display off".
+		// A session open (display_power.go) reads the online display list
+		// and prefixes the case it found.
+		return fmt.Errorf("%w: the system reported zero displays to capture. This is NOT a permissions failure",
 			ErrDisplayNotFound)
 	case captureErrContentUnavailable:
 		return fmt.Errorf("%w: the shareable-content request failed. Causes: Screen Recording "+
