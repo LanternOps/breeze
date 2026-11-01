@@ -10439,6 +10439,74 @@ describe('org routes', () => {
       });
     });
   });
+
+  // #10325: the partner name heads every device prompt (and the org name shows
+  // on remote prompts), so a plain reserved brand is refused at save.
+  describe('reserved brand names are refused at save (#10325)', () => {
+    async function send(method: 'POST' | 'PATCH', path: string, body: unknown) {
+      const res = await app.request(path, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return { status: res.status, body: (await res.json()) as { error?: string } };
+    }
+
+    function expectReservedRefusal(r: { status: number; body: { error?: string } }) {
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/reserved/i);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    }
+
+    it('PATCH /orgs/partners/me refuses "Microsoft Support"', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      expectReservedRefusal(await send('PATCH', '/orgs/partners/me', { name: 'Microsoft Support' }));
+    });
+
+    it('PATCH /orgs/partners/me refuses a spaced-out "Windows"', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      expectReservedRefusal(await send('PATCH', '/orgs/partners/me', { name: '  W i n d o w s ' }));
+    });
+
+    it('POST /orgs/partners refuses "Apple Help Desk"', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      expectReservedRefusal(await send('POST', '/orgs/partners', { name: 'Apple Help Desk', slug: 'apple-hd' }));
+    });
+
+    it('PATCH /orgs/partners/:id refuses "Google"', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      expectReservedRefusal(await send('PATCH', '/orgs/partners/partner-1', { name: 'Google' }));
+    });
+
+    it('POST /orgs/organizations refuses "Microsoft"', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      expectReservedRefusal(await send('POST', '/orgs/organizations', { name: 'Microsoft', slug: 'ms' }));
+    });
+
+    it('PATCH /orgs/organizations/:id refuses "Windows Security"', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      expectReservedRefusal(await send('PATCH', '/orgs/organizations/org-1', { name: 'Windows Security' }));
+    });
+  });
+});
+
+describe('reserved brand org names (#10325)', () => {
+  it('keeps a name that only mentions a brand next to the company name', () => {
+    expect(createOrganizationSchema.safeParse({ name: 'Northwind Microsoft Partner', slug: 'nw' }).success).toBe(true);
+    expect(updateOrganizationSchema.safeParse({ name: 'Pineapple IT' }).success).toBe(true);
+  });
+
+  it('refuses a reserved brand on create and update, on the name field', () => {
+    for (const r of [
+      createOrganizationSchema.safeParse({ name: 'Microsoft 365 Support', slug: 'm' }),
+      updateOrganizationSchema.safeParse({ name: 'macOS' }),
+    ]) {
+      expect(r.success).toBe(false);
+      expect(r.error!.issues.map((i) => i.path[0])).toEqual(['name']);
+    }
+  });
 });
 
 describe('org status is not manually settable to lifecycle states', () => {
