@@ -5,8 +5,11 @@
  * (registryCutover.ts → ensurePartnerCutover). A partner gets its registry rows
  * exactly once, in the same transaction that inserts its
  * ai_model_registry_partner_cutover row: one offering of the platform default
- * model and a partner-level `default` assignment for every surface. Nothing
- * here reads a legacy table or column.
+ * model and a partner-level `default` assignment for every configurable
+ * surface. Platform-only surfaces (patch_test) get no row: the resolver serves
+ * them from the partnerless platform default and never reads an assignment, so
+ * a row would be inert yet count as a model's default and pin it (#9496).
+ * Nothing here reads a legacy table or column.
  *
  * Destination (spec §9.1, §10 — funding never moves implicitly): a partner that
  * already owns exactly one live (not soft-disconnected) anthropic_byok/catalog
@@ -14,7 +17,6 @@
  * W02 migration copied a legacy key but which never ran W03's cutover (it
  * upgraded straight past R0); the caller reports it. More than one such
  * connection fails closed (no defaults). Everyone else starts on the platform.
- * patch_test always stays on the platform key (#5557).
  *
  * Default model (spec §11): on self-host ANTHROPIC_MODEL when set; otherwise
  * the operator's is_platform_default row, else the code fallback. A missing
@@ -23,8 +25,8 @@
  */
 import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm';
 import {
-  AI_SURFACES,
   ANTHROPIC_API_CONNECTION_KINDS,
+  CONFIGURABLE_AI_SURFACES,
   type AiSurface,
   type AnthropicApiConnectionKind,
   type ModelRates,
@@ -44,8 +46,6 @@ export const ENV_DEFAULT_MODEL_BOOTSTRAP_RATES: Readonly<ModelRates> = Object.fr
 
 /** Surfaces whose techs may pick among permitted models from day one (W02 projection values). */
 const USER_CHOICE_SURFACES: ReadonlySet<AiSurface> = new Set<AiSurface>(['chat']);
-/** Never moved onto a partner connection (legacy: patch tests always use the platform key, #5557). */
-const PLATFORM_PINNED: ReadonlySet<AiSurface> = new Set<AiSurface>(['patch_test']);
 
 export interface BootstrapPlanInput {
   modelId: string;
@@ -70,7 +70,7 @@ export interface BootstrapReport {
   destination: 'platform' | 'connection' | 'ambiguous';
   connectionId: string | null;
   defaultModelId: string;
-  /** The offering the non-pinned surfaces point at; null when nothing could be offered. */
+  /** The offering the surfaces point at; null when nothing could be offered. */
   offeringId: string | null;
   platformOfferingId: string | null;
   assignmentsCreated: number;
@@ -82,13 +82,13 @@ export function planBootstrap(input: BootstrapPlanInput): BootstrapPlan {
   if (input.connections.length > 1) {
     // Unreachable through the app (connections are created only after the gate),
     // but if it happens, choosing one connection or the platform would both move
-    // funding implicitly. Every non-pinned surface gets no default instead.
+    // funding implicitly. Every surface gets no default instead.
     return {
       destination: 'ambiguous',
       connectionOffering: null,
-      assignments: AI_SURFACES.map((surface) => ({
+      assignments: CONFIGURABLE_AI_SURFACES.map((surface) => ({
         surface,
-        target: PLATFORM_PINNED.has(surface) && input.platformRow ? 'platform' as const : null,
+        target: null,
         allowUserChoice: USER_CHOICE_SURFACES.has(surface),
       })),
     };
@@ -104,9 +104,9 @@ export function planBootstrap(input: BootstrapPlanInput): BootstrapPlan {
   return {
     destination: connection ? 'connection' : 'platform',
     connectionOffering,
-    assignments: AI_SURFACES.map((surface) => ({
+    assignments: CONFIGURABLE_AI_SURFACES.map((surface) => ({
       surface,
-      target: connection && !PLATFORM_PINNED.has(surface) ? 'connection' as const : platformTarget,
+      target: connection ? 'connection' as const : platformTarget,
       allowUserChoice: USER_CHOICE_SURFACES.has(surface),
     })),
   };

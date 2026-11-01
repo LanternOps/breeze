@@ -1,3 +1,5 @@
+import { getTableName, type SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
@@ -16,6 +18,8 @@ const h = vi.hoisted(() => ({
   dbUpdateReturning: vi.fn(),
   dbInsertReturning: vi.fn(),
   dbDeleteReturning: vi.fn(),
+  dbDeleteAssignmentsReturning: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
+  assignmentDeleteWhere: undefined as unknown,
   lastSet: undefined as Record<string, unknown> | undefined,
   insertedValues: undefined as Record<string, unknown> | undefined,
   systemContexts: 0,
@@ -57,8 +61,16 @@ vi.mock('../../db', () => {
           return { where: () => ({ returning: (...a: unknown[]) => { h.calls.push('update'); return h.dbUpdateReturning(...a); } }) };
         },
       }),
-      delete: () => ({
-        where: () => ({ returning: (...a: unknown[]) => { h.calls.push('delete'); return h.dbDeleteReturning(...a); } }),
+      delete: (table: unknown) => ({
+        where: (cond: unknown) => ({
+          returning: (...a: unknown[]) => {
+            // Name the table: removeOffering may delete inert platform-only assignment rows first (#9496).
+            const name = getTableName(table as Parameters<typeof getTableName>[0]);
+            h.calls.push(name === 'partner_ai_models' ? 'delete' : `delete:${name}`);
+            if (name !== 'partner_ai_models') h.assignmentDeleteWhere = cond;
+            return name === 'partner_ai_models' ? h.dbDeleteReturning(...a) : h.dbDeleteAssignmentsReturning(...a);
+          },
+        }),
       }),
       insert: () => ({
         values: (v: Record<string, unknown>) => {
@@ -75,7 +87,7 @@ vi.mock('../../db', () => {
   };
 });
 
-import { ensurePlatformOffering, removeOffering, setOfferingEnabled, updateOfferingDetails } from './offeringWrites';
+import { ensurePlatformOffering, listOfferingDefaultUses, removeOffering, setOfferingEnabled, updateOfferingDetails } from './offeringWrites';
 import { RegistryWriteError } from './registryWriteErrors';
 
 const P = '22222222-2222-4222-8222-222222222222';
@@ -117,6 +129,7 @@ beforeEach(() => {
   h.calls = [];
   h.lastSet = undefined;
   h.insertedValues = undefined;
+  h.assignmentDeleteWhere = undefined;
   h.systemContexts = 0;
   h.getPlatformModelById.mockResolvedValue(null);
   h.getPlatformInferenceGeo.mockResolvedValue(null);
@@ -219,6 +232,20 @@ describe('setOfferingEnabled', () => {
     const r = await setOfferingEnabled({ partnerId: P, offeringId: OFF, enabled: false, force: true });
     expect(r.inUse).toEqual([{ surface: 'chat', level: 'partner', orgId: null }]);
     expect(h.enableOffering).toHaveBeenCalledWith({ partnerId: P, offeringId: OFF, enabled: false });
+  });
+});
+
+describe('listOfferingDefaultUses (#9496)', () => {
+  it('lists configurable partner and org defaults and drops platform-only (patch_test) rows', async () => {
+    h.dbSelectRows = [[
+      { surface: 'patch_test', orgId: null },
+      { surface: 'chat', orgId: null },
+      { surface: 'helper', orgId: 'org-1' },
+    ]];
+    expect(await listOfferingDefaultUses(P, OFF)).toEqual([
+      { surface: 'chat', level: 'partner', orgId: null },
+      { surface: 'helper', level: 'org', orgId: 'org-1' },
+    ]);
   });
 });
 
@@ -628,6 +655,61 @@ describe('removeOffering (#8510)', () => {
       { surface: 'chat', level: 'org', orgId: 'org-2', via: 'permitted' },
     ]);
     expect(h.dbDeleteReturning).not.toHaveBeenCalled();
+  });
+
+  // patch_test is platform-only: the resolver never reads its assignment, no UI
+  // row manages it, and the default FK has no cascade. A leftover partner row
+  // must neither block the removal nor survive it as a dangling reference (#9496).
+  it('ignores platform-only (patch_test) assignment references and deletes those inert rows before the offering', async () => {
+    h.getOffering.mockResolvedValue(manual());
+    h.dbSelectRows = [
+      [{ providerConfig: null }],
+      [{ surface: 'patch_test', orgId: null, defaultOfferingId: OFF, fallbackOfferingIds: null, permittedOfferingIds: null }],
+      [], [],
+    ];
+    h.dbDeleteAssignmentsReturning.mockResolvedValueOnce([{ id: 'a-1' }]);
+    h.dbDeleteReturning.mockResolvedValue([manual()]);
+    const r = await removeOffering({ partnerId: P, offeringId: OFF });
+    expect(r.id).toBe(OFF);
+    expect(h.calls).toEqual([`lock:${P}`, 'delete:ai_model_assignments', 'delete']);
+    // The inert delete is pinned to this partner, to the platform-only surfaces
+    // seen, and to rows that reference this offering (never a configurable row).
+    const q = new PgDialect().sqlToQuery(h.assignmentDeleteWhere as SQL);
+    expect(q.sql).toContain('"offering_partner_id" = $1');
+    expect(q.sql).toMatch(/"surface" in \(\$2\)/);
+    expect(q.sql).toContain('"default_offering_id" =');
+    expect(q.sql).toMatch(/ANY\("ai_model_assignments"\."fallback_offering_ids"\)/);
+    expect(q.sql).toMatch(/ANY\("ai_model_assignments"\."permitted_offering_ids"\)/);
+    expect(q.params.slice(0, 2)).toEqual([P, 'patch_test']);
+    expect(q.params).toContain(OFF);
+  });
+
+  it('also drops an inert patch_test row that names it only as a fallback (no dangling id)', async () => {
+    h.getOffering.mockResolvedValue(manual());
+    h.dbSelectRows = [
+      [{ providerConfig: null }],
+      [{ surface: 'patch_test', orgId: null, defaultOfferingId: FB, fallbackOfferingIds: [OFF], permittedOfferingIds: null }],
+      [], [],
+    ];
+    h.dbDeleteReturning.mockResolvedValue([manual()]);
+    expect((await removeOffering({ partnerId: P, offeringId: OFF })).id).toBe(OFF);
+    expect(h.calls).toEqual([`lock:${P}`, 'delete:ai_model_assignments', 'delete']);
+  });
+
+  it('still refuses when a configurable surface references it alongside a platform-only row, and deletes nothing', async () => {
+    h.getOffering.mockResolvedValue(manual());
+    h.dbSelectRows = [
+      [{ providerConfig: null }],
+      [
+        { surface: 'patch_test', orgId: null, defaultOfferingId: OFF, fallbackOfferingIds: null, permittedOfferingIds: null },
+        { surface: 'chat', orgId: null, defaultOfferingId: OFF, fallbackOfferingIds: null, permittedOfferingIds: null },
+      ],
+      [], [],
+    ];
+    const err = await removeOffering({ partnerId: P, offeringId: OFF }).catch((e) => e);
+    expect(err).toMatchObject({ code: 'offering_in_use', status: 409 });
+    expect(err.details.inUse).toEqual([{ surface: 'chat', level: 'partner', orgId: null, via: 'default' }]);
+    expect(h.calls).toEqual([`lock:${P}`]);
   });
 
   it('409 offering_in_use when another offering uses it as its refusal fallback', async () => {
