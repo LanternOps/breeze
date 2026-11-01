@@ -75,7 +75,8 @@ export interface CertifiedAgreementDocument {
 
 export interface CertifiedAgreementInput {
   document: CertifiedAgreementDocument;
-  /** `name` = the request label, else the template name. */
+  /** `name` = the template name as it was at signing (never the staff-internal
+   *  request label, never a later rename, #10294). */
   agreement: { name: string; templateName: string; versionNumber: number | null };
   parties: { seller: string | null; client: string | null };
   source: { kind: 'quote'; quoteNumber: string | null } | { kind: 'request'; requestId: string | null };
@@ -491,10 +492,10 @@ export async function loadCertifiedAgreementInput(documentId: string): Promise<C
         contentSha256: contractDocuments.contentSha256,
         contentHashVersion: contractDocuments.contentHashVersion,
         acceptanceRenderLocale: contractDocuments.acceptanceRenderLocale,
+        templateNameSnapshot: contractDocuments.templateNameSnapshot,
         templateName: contractTemplates.name,
         versionNumber: contractTemplateVersions.versionNumber,
         versionSha256: contractTemplateVersions.sha256,
-        requestLabel: agreementRequests.label,
         requestSeller: agreementRequests.sellerSnapshot,
         requestClient: agreementRequests.clientNameSnapshot,
         requestPublicResponseJti: agreementRequests.publicResponseJti,
@@ -543,7 +544,10 @@ export async function loadCertifiedAgreementInput(documentId: string): Promise<C
   // is gone do the live org/partner names stand in (never a blank party).
   const seller = isRequest ? snapshotName(row.requestSeller) : snapshotName(row.quoteSeller);
   const client = isRequest ? nonBlank(row.requestClient) : nonBlank(row.quoteBillTo);
-  const templateName = nonBlank(row.templateName) ?? 'Agreement';
+  // The name frozen at signing (#10294): a later template rename must not
+  // change signed evidence. The live name stands in only for a row written
+  // without the snapshot (an instance on older code during a rolling deploy).
+  const templateName = nonBlank(row.templateNameSnapshot) ?? nonBlank(row.templateName) ?? 'Agreement';
 
   return {
     document: {
@@ -561,7 +565,10 @@ export async function loadCertifiedAgreementInput(documentId: string): Promise<C
       contentHashVersion: row.contentHashVersion,
       acceptanceRenderLocale: row.acceptanceRenderLocale,
     },
-    agreement: { name: nonBlank(row.requestLabel) ?? templateName, templateName, versionNumber: row.versionNumber ?? null },
+    // Named by the template (as it was at signing), never the staff-internal
+    // request label: the certificate and its attachment filename reach the
+    // customer (#10294).
+    agreement: { name: templateName, templateName, versionNumber: row.versionNumber ?? null },
     parties: { seller: seller ?? nonBlank(row.partnerName), client: client ?? nonBlank(row.orgName) },
     source: isRequest ? { kind: 'request', requestId: row.agreementRequestId } : { kind: 'quote', quoteNumber: row.quoteNumber ?? null },
     how,

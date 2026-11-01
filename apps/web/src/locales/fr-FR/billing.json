@@ -861,8 +861,10 @@
       "expiryDefaultHint_other": "Par défaut : {{count}} jours, d’après Paramètres de facturation → Conventions.",
       "autoReminderHint_one": "Les rappels automatiques sont envoyés chaque jour, jusqu’à {{max}} au total.",
       "autoReminderHint_other": "Les rappels automatiques sont envoyés tous les {{count}} jours, jusqu’à {{max}} au total.",
-      "expiryDefaultUnavailable": "Impossible de charger l'expiration par défaut depuis les Paramètres de facturation ; la valeur par défaut intégrée est affichée.",
+      "expiryDefaultUnavailable": "Impossible de charger votre échéance par défaut depuis les Paramètres de facturation. Laissez la date vide et votre valeur par défaut s’appliquera à la création de la convention.",
+      "expiryBlankHint": "Laissez vide pour utiliser votre valeur par défaut de Paramètres de facturation → Conventions.",
       "label": "Libellé (facultatif)",
+      "labelHint": "Usage interne uniquement. Les clients voient le nom du modèle.",
       "createDraft": "Créer le brouillon et prévisualiser",
       "creating": "Création…",
       "preview": {
