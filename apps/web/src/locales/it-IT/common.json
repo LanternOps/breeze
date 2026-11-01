@@ -1469,7 +1469,11 @@
           },
           "alertSuppressed": {
             "label": "Avviso sospeso",
-            "description": "Attivato quando Breeze AI sospende un avviso. La sospensione dalla dashboard non invia ancora questo evento."
+            "description": "Attivato quando un avviso viene sospeso."
+          },
+          "alertEscalated": {
+            "label": "Avviso escalato",
+            "description": "Attivato quando viene eseguito un passaggio di una policy di escalation per un avviso ancora attivo."
           }
         },
         "fields": {
