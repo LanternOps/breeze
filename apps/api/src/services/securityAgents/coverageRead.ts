@@ -3,11 +3,14 @@ import { db } from '../../db';
 import {
   devices,
   securityAgentDeviceStatus as t,
+  softwareCatalog,
+  softwarePolicies,
   SECURITY_AGENT_COVERAGE_STATES,
   type SecurityAgentCoverageState,
   type SecurityAgentStatusVendor,
 } from '../../db/schema';
 import { edrOrgCondition, type EdrReadScope } from '../edrProviders/read';
+import { vendorForCatalogPackage } from './securityAgentVendors';
 
 /**
  * Read model for security agent coverage (#6960 W03): the rows behind the EDR
@@ -41,6 +44,12 @@ export interface CoverageRowDto {
   state: SecurityAgentCoverageState;
   reasonCode: string | null;
   detail: string | null;
+  /**
+   * Where the partner fixes the row's cause, when the read can say. Today only
+   * `installer_missing` (#9247): the Versions tab of the package the row's
+   * policy installs the vendor from (`/software#versions=<catalogId>`).
+   */
+  setupPath: string | null;
   lastEvaluatedAt: string;
   stateChangedAt: string;
 }
@@ -103,6 +112,7 @@ export async function readSecurityAgentCoverage(scope: EdrReadScope, q: Coverage
       state: t.state,
       reasonCode: t.reasonCode,
       detail: t.detail,
+      policyId: t.policyId,
       lastEvaluatedAt: t.lastEvaluatedAt,
       stateChangedAt: t.stateChangedAt,
     })
@@ -118,13 +128,68 @@ export async function readSecurityAgentCoverage(scope: EdrReadScope, q: Coverage
     .limit(q.limit)
     .offset(q.offset);
 
+  const installerPaths = await installerMissingSetupPaths(rows);
   return {
     summary: Array.from(byVendor.values()).sort((a, b) => a.vendor.localeCompare(b.vendor)),
-    rows: rows.map((r) => ({
+    rows: rows.map(({ policyId, ...r }) => ({
       ...r,
+      setupPath: (policyId && installerPaths.get(`${policyId}|${r.vendor}`)) || null,
       lastEvaluatedAt: r.lastEvaluatedAt.toISOString(),
       stateChangedAt: r.stateChangedAt.toISOString(),
     })),
     total: Number(total),
   };
+}
+
+/**
+ * `policyId|vendor` → the Versions-tab link of the package that policy's rule
+ * for the vendor installs from, for the page's `installer_missing` rows only
+ * (#9247). Read in the caller's request context: a policy or catalog row RLS
+ * hides yields no link, and the row still carries its reason. No query when
+ * the page has no such row.
+ */
+async function installerMissingSetupPaths(
+  rows: ReadonlyArray<{ vendor: SecurityAgentStatusVendor; reasonCode: string | null; policyId: string | null }>,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const policyIds = Array.from(new Set(rows
+    .filter((r) => r.reasonCode === 'installer_missing' && r.policyId)
+    .map((r) => r.policyId!)));
+  if (policyIds.length === 0) return out;
+
+  const policies = await db
+    .select({ id: softwarePolicies.id, rules: softwarePolicies.rules })
+    .from(softwarePolicies)
+    .where(inArray(softwarePolicies.id, policyIds));
+  const catalogIdsByPolicy = new Map(policies.map((p) => [p.id, ruleCatalogIds(p.rules)] as const));
+  const catalogIds = Array.from(new Set(Array.from(catalogIdsByPolicy.values()).flat()));
+  if (catalogIds.length === 0) return out;
+
+  const catalogs = await db
+    .select({
+      id: softwareCatalog.id,
+      integrationProvider: softwareCatalog.integrationProvider,
+      builtinPackageKey: softwareCatalog.builtinPackageKey,
+    })
+    .from(softwareCatalog)
+    .where(inArray(softwareCatalog.id, catalogIds));
+  const vendorByCatalog = new Map(catalogs.map((c) => [c.id, vendorForCatalogPackage(c)?.vendor ?? null] as const));
+
+  for (const [policyId, ids] of catalogIdsByPolicy) {
+    for (const catalogId of ids) {
+      const vendor = vendorByCatalog.get(catalogId);
+      const key = `${policyId}|${vendor}`;
+      // First rule per vendor, in rule order (an uploaded-installer vendor has one).
+      if (vendor && !out.has(key)) out.set(key, `/software#versions=${catalogId}`);
+    }
+  }
+  return out;
+}
+
+function ruleCatalogIds(rules: unknown): string[] {
+  const software = (rules as { software?: unknown } | null)?.software;
+  if (!Array.isArray(software)) return [];
+  return software
+    .map((rule) => (rule && typeof rule === 'object' ? (rule as { catalogId?: unknown }).catalogId : undefined))
+    .filter((id): id is string => typeof id === 'string' && id.length > 0);
 }
