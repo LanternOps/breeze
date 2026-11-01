@@ -150,7 +150,7 @@ const namespaceDuplicateBaselines = {
     // "Webhooks" in both languages.
     'scripts.json': 64, // +3 W01 #10132: script-editor panel title, empty-state title, button "Breeze AI" brand name
     // +3 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'security.json': 144, // +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name
+    'security.json': 145, // +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name; +1 #10080: sweeps.dialog.preview.org "{{org}}: {{devices}}" is placeholders only
     // +1: the it-IT locale's self-name is intentionally identical in every catalog.
     // +1: bulkOrgImport.preview.status — "Status" is the same cognate in pt-BR
     // (already accepted for billing.json).
@@ -342,7 +342,7 @@ const namespaceDuplicateBaselines = {
     // in es-419.
     'scripts.json': 64, // +3 W01 #10132: script-editor panel title, empty-state title, button "Breeze AI" brand name
     // +2 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'security.json': 117, // +1 (#9606): page title "CIS Benchmarks" is the product term, identical to nav
+    'security.json': 118, // +1 #10080: sweeps.dialog.preview.org "{{org}}: {{devices}}" is placeholders only; +1 (#9606): page title "CIS Benchmarks" is the product term, identical to nav
     // +1: tenantVariablesPage.title — "Variables" is identical in Spanish.
     // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
     // standard loanword in es-419 technical UI.
@@ -968,7 +968,7 @@ const namespaceDuplicateBaselines = {
     // +1 #6263 W01: securityScansPage.scansTab — "Scans" is the standard
     // German loanword in this locale, same root cause as "Status" above.
     // +4 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'security.json': 173, // +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name
+    'security.json': 175, // +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name; +2 #10080: sweeps.dialog.preview.org "{{org}}: {{devices}}" and .targeted "{{devices}} in {{orgs}}" are placeholders only
     // +1: bulkOrgImport.preview.status — "Status" is the German word too.
     // +1: aiAgentsPage.fields.name — "Name" is the German word too.
     // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
@@ -1137,7 +1137,7 @@ const namespaceDuplicateBaselines = {
     // wording, and "Script" is the standard loanword in this locale (#3162).
     'scripts.json': 62, // +3 W01 #10132: script-editor panel title, empty-state title, button "Breeze AI" brand name
     // +3 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'security.json': 167,
+    'security.json': 169, // +2 #10080: sweeps.dialog.preview.org "{{org}}: {{devices}}" and .targeted "{{devices}} in {{orgs}}" are placeholders only
     // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
     // standard loanword in it-IT technical UI.
     // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
@@ -1281,7 +1281,7 @@ const namespaceDuplicateBaselines = {
     'reports.json': 32, // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
     'restorePoints.json': 0,
     'scripts.json': 41, // +3 W01 #10132: script-editor panel title, empty-state title, button "Breeze AI" brand name
-    'security.json': 88, // +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name
+    'security.json': 89, // +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name; +1 #10080: sweeps.dialog.preview.org "{{org}}: {{devices}}" is placeholders only
     // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
     // (see the pt-BR block's note above — same root cause, carried forward
     // rather than root-caused here). aiAgentsPage.runs (#3828 Task 4) itself

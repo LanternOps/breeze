@@ -22,9 +22,16 @@ const ON_HOLD = new Set(['charging_disabled', 'stripe_unavailable']);
  * (spec 6.4 decision: hide the save-card and bank offers while enrolled).
  *
  * The caller has authorized the invoice for this org. Read-only.
+ *
+ * `partnerAutopayEnabled`: the partner's rollout flag (isAutopayEnabledForPartner), read
+ * by a caller that holds an org-scoped transaction open and so cannot read it here without
+ * escaping to a second connection (#9585: the portal preloads it before its transaction).
+ * Called only when a schedule needs it; a rejection propagates as a failed read would.
  */
-export async function getCustomerInvoiceAutopay(db: Tx, ids: { invoiceId: string; orgId: string })
-  : Promise<{ enrolled: boolean; status: CustomerInvoiceAutopayStatus | null }> {
+export async function getCustomerInvoiceAutopay(
+  db: Tx, ids: { invoiceId: string; orgId: string },
+  opts: { partnerAutopayEnabled?: (partnerId: string) => Promise<boolean> } = {},
+): Promise<{ enrolled: boolean; status: CustomerInvoiceAutopayStatus | null }> {
   const [invoice] = await db.select().from(invoices).where(and(eq(invoices.id, ids.invoiceId), eq(invoices.orgId, ids.orgId))).limit(1);
   if (!invoice || invoice.orgId !== ids.orgId) return { enrolled: false, status: null };
   const [enrollment] = await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId, invoice.orgId)).limit(1);
@@ -99,7 +106,9 @@ export async function getCustomerInvoiceAutopay(db: Tx, ids: { invoiceId: string
   if (!OPEN.has(invoice.status)) return { enrolled, status: null };
   // FP-9: switched off, nothing is charged automatically; never promise a date.
   if (['awaiting_notice', 'scheduled', 'retry_scheduled'].includes(schedule.state)
-    && !await isAutopayEnabledForPartner(db, invoice.partnerId)) return status('delayed', 'on_hold');
+    && !await (opts.partnerAutopayEnabled
+      ? opts.partnerAutopayEnabled(invoice.partnerId)
+      : isAutopayEnabledForPartner(db, invoice.partnerId))) return status('delayed', 'on_hold');
   switch (schedule.state) {
     // V2-1: a first bank still waiting for verification (the only kind that is the autopay
     // method while pending, F-1) is the caveat from the start, as the notice says.

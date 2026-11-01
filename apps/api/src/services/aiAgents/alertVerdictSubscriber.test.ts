@@ -180,6 +180,17 @@ beforeEach(() => {
 });
 
 describe('ai-agent-alert-verdict subscriber', () => {
+  it('records alert_has_no_device and never loads device context for a workload', async () => {
+    queueAlert([{ ...BASE_ALERT_ROW, deviceId: null }]);
+    queueDevice([BASE_DEVICE_ROW]);
+    await enqueueVerdictRunForAlert(ORG_ID, ALERT_ID, 'ungrouped');
+    expect(recordAgentRunSkip).toHaveBeenCalledWith(expect.objectContaining({
+      alertId: ALERT_ID, orgId: ORG_ID, reason: 'alert_has_no_device',
+    }));
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
   describe('alert.correlation_group.created', () => {
     it('admits one verdict run per created group with the root alert as run alert', async () => {
       mockCleanGroup();

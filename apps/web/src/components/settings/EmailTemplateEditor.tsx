@@ -191,7 +191,6 @@ interface Props {
 
 export default function EmailTemplateEditor({ templateId, value, onBack, onSaved }: Props) {
   const { t } = useTranslation('settings');
-  const { t: tBilling } = useTranslation('billing');
   const hasCta = emailTemplateHasCta(templateId);
   const insertVariables = [...new Set([...varsForEmailTemplate(templateId), ...(hasCta ? ['cta_button'] : [])])];
   const initial = shownFields(templateId, value);
@@ -255,10 +254,9 @@ export default function EmailTemplateEditor({ templateId, value, onBack, onSaved
   return (
     <div className="space-y-4" data-testid="email-template-editor">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold">{templateId === 'payment_reminder' ? tBilling('reminders.templates.paymentReminder')
-          : templateId === 'payment_overdue' ? tBilling('reminders.templates.paymentOverdue')
-          : templateId === 'invoice_autopay' ? tBilling('autopay.noticeTemplate')
-          : t(/* i18n-dynamic */ `emailTemplates.labels.${templateId}`, { defaultValue: emailTemplateLabel(templateId) })}</h2>
+        <h2 className="text-sm font-semibold">
+          {t(/* i18n-dynamic */ `emailTemplates.labels.${templateId}`, { defaultValue: emailTemplateLabel(templateId) })}
+        </h2>
         <button
           type="button"
           onClick={onBack}

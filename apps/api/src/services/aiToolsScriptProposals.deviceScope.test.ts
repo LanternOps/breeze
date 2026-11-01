@@ -12,11 +12,12 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_c: unknown, fn: () => Promise<unknown>) => fn()),
 }));
-// #7918: get_script_proposal also echoes the proposal's runs; that read is
-// not what this suite is about, so it returns none.
+// #7918 / #10399: get_script_proposal also echoes the proposal's runs and its
+// latest model review; neither read is what this suite is about, so both are empty.
 vi.mock('./scriptProposals/queries', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   selectProposalExecutions: vi.fn(async () => []),
+  selectLatestModelReview: vi.fn(async () => null),
 }));
 vi.mock('../config/env', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),

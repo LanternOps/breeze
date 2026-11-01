@@ -130,10 +130,17 @@ describe('LifecyclePage', () => {
     expect(screen.queryByTestId('lifecycle-plan-table-servers')).toBeNull();
   });
 
-  it('renders the empty state with a Refresh button when no run has ever completed', () => {
+  it('keeps the Refresh label once a plan exists', () => {
+    render(<LifecyclePage initialRun={RUN} initialSummary={summaryWith([SAM4])} />);
+    expect(screen.getByTestId('lifecycle-refresh')).toHaveTextContent('Refresh');
+  });
+
+  it('renders the empty state with a Generate plan button when no run has ever completed (#9868)', () => {
     render(<LifecyclePage initialRun={null} initialSummary={null} />);
     expect(screen.getByText('We have not generated your hardware lifecycle plan yet.')).toBeInTheDocument();
-    expect(screen.getByTestId('lifecycle-refresh')).toBeInTheDocument();
+    // The first click creates the plan, so the empty state must not call it "Refresh".
+    expect(screen.getByTestId('lifecycle-refresh')).toHaveTextContent('Generate plan');
+    expect(screen.getByTestId('lifecycle-refresh')).not.toHaveTextContent('Refresh');
     expect(screen.queryByTestId('lifecycle-status-bar')).toBeNull();
   });
 

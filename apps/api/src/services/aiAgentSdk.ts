@@ -22,7 +22,7 @@ import { actionIntents } from '../db/schema/actionIntents';
 import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions, approvalRequests } from '../db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
-import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
+import type { AiPageContext, AiApprovalMode, AiApprovalOutcome } from '@breeze/shared/types/ai';
 import { DIAGNOSTIC_STATES } from '@breeze/shared/validators/topology';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements, describeSpecialistRequest, type GuardrailContext } from './aiGuardrails';
 import {
@@ -56,6 +56,8 @@ import { isFlowToolName } from './flows/toolNames';
 import type { FlowToolCallInput, FlowToolDescriptor } from './flows/flowTools';
 import type { GrantCeiling } from './wisp/grantAuthority';
 import type { WispCeilingRefusal } from './wisp/chatCeiling';
+// Leaf data module (no imports): loading it never pulls in the Wisp graph.
+import { WISP_SELF_STATE_TOOLS } from './wisp/selfStateTools';
 import { compactToolResultForChat, redactSensitiveToolInput } from './aiToolOutput';
 import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
 import { applyHelperDeviceScope } from './helperToolFilter';
@@ -108,7 +110,7 @@ import type { ResolveFailureReason } from './aiModels/eligibility';
 import type { ModelUnavailable, ResolvedModel } from './aiModels/resolveModel';
 import { resolveSessionTurn } from './aiModels/sessionModel';
 import { resolveLiveSessionToolAuthority } from './aiSessionLiveAuthority';
-import { approvalCardKey, publishPendingCard, resolvePendingCard } from './sessionPendingCards';
+import { approvalCardKey, publishPendingCard, resolveApprovalCard } from './sessionPendingCards';
 
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS } from './aiAgentSessionLimits';
 
@@ -196,6 +198,35 @@ function beginApprovalWait(session: ActiveSession): {
       session.pendingApprovalWaits = Math.max(0, (session.pendingApprovalWaits ?? 1) - 1);
     },
   };
+}
+
+/**
+ * #9431: a legacy `waitForApproval` result as a card outcome. `false` means
+ * denied or timed out — unless the wait was settled (new message, interrupt,
+ * teardown), in which case nothing was decided.
+ */
+function approvalWaitOutcome(approved: boolean, signal: AbortSignal): AiApprovalOutcome {
+  if (approved) return 'approved';
+  return signal.aborted ? 'ended' : 'not_approved';
+}
+
+/** #9431: an intent status read by `waitForIntentDecision` as a card outcome. */
+function intentDecisionOutcome(status: Awaited<ReturnType<typeof waitForIntentDecision>>): AiApprovalOutcome {
+  switch (status) {
+    case 'approved':
+    case 'executing':
+    case 'completed':
+    case 'failed':
+      return 'approved';
+    case 'rejected':
+    case 'expired':
+    case 'cancelled':
+      return 'not_approved';
+    default:
+      // pending_approval: the chat stopped waiting, but the intent can still
+      // be decided in Approvals.
+      return 'ended';
+  }
 }
 
 /**
@@ -315,7 +346,8 @@ type ApprovalMethod =
   | 'pam' // helper session — PAM elevation policy/approver decision
   | 'plan_step' // pre-authorized step of a human-approved action plan
   | 'auto_approve_mode' // session runs auto_approve; Tier 2 executes unprompted
-  | 'read_only_auto'; // #3130 read-only Tier-2 allowlist; auto-executes in any un-paused mode
+  | 'read_only_auto' // #3130 read-only Tier-2 allowlist; auto-executes in any un-paused mode
+  | 'wisp_self_state_auto'; // #10392 Wisp bookkeeping write under a live grant (wisp/selfStateTools.ts)
 const lastApprovalBySession = new WeakMap<ActiveSession, { toolName: string; method: ApprovalMethod }>();
 
 // Methods that represent an explicit decision on this specific call (a human
@@ -477,8 +509,31 @@ function scheduleWispSummaryFinalize(sessionId: string): void {
 }
 
 /**
+ * Runs one DB phase of the pre-flight inside a short RLS context — the route's
+ * `inRequestDb` (a fresh caller-scoped `withAuthDbAccessContext`).
+ */
+export type PreFlightDbPhaseRunner = <T>(fn: () => Promise<T>) => Promise<T>;
+
+/** No runner: each phase runs in whatever context the caller already holds. */
+const runPreFlightPhaseInAmbientContext: PreFlightDbPhaseRunner = (fn) => fn();
+
+type PreFlightSession = NonNullable<Awaited<ReturnType<typeof getSession>>>;
+
+/**
  * Validates rate limits, budget, session status, expiration, and sanitizes input.
  * Returns all values needed to proceed with message processing, or an error.
+ *
+ * #10415 / #1105: the per-user and per-org message rate limits are Redis
+ * round-trips, so they must not run while a `withDbAccessContext` transaction
+ * is held — that pins a pooled connection idle-in-transaction for the
+ * round-trip, and for any event-loop stall that lands on it. With `inDb` the
+ * checks run as two DB phases with the rate limit BETWEEN them and no
+ * connection checked out. The order is unchanged: the session read and turn
+ * resolution still precede the rate limit (a missing session or an unresolved
+ * model consumes no capacity), and the rate limit still precedes the budget
+ * and session-state checks (a request those refuse still consumes capacity).
+ * Callers that pass `inDb` must NOT also wrap this call in a context, or the
+ * rate limit runs inside it again.
  */
 export async function runPreFlightChecks(
   sessionId: string,
@@ -488,7 +543,31 @@ export async function runPreFlightChecks(
   requestContext?: RequestLike,
   /** W05: the composer's model choice on this message (chat only; strict user resolution). */
   choice?: AiModelChoice,
+  inDb: PreFlightDbPhaseRunner = runPreFlightPhaseInAmbientContext,
 ): Promise<PreFlightResult> {
+  const loaded = await inDb(() => loadPreFlightTurn(sessionId, auth, choice));
+  if (!loaded.ok) return loaded;
+  const { session, model } = loaded;
+
+  // Rate limits — between the DB phases (see above). checkAiRateLimit
+  // self-contexts its effective-budget read when no context is held (#2190).
+  try {
+    const rateLimitError = await checkAiRateLimit(auth.user.id, session.orgId);
+    if (rateLimitError) return { ok: false, error: rateLimitError };
+  } catch (err) {
+    console.error('[AI-SDK] Rate limit check failed:', err);
+    return { ok: false, error: 'Unable to verify rate limits. Please try again.' };
+  }
+
+  return inDb(() => runPreFlightAdmission(sessionId, content, auth, session, model, pageContext, requestContext));
+}
+
+/** Pre-flight DB phase 1: the caller's session and this turn's resolved model. */
+async function loadPreFlightTurn(
+  sessionId: string,
+  auth: AuthContext,
+  choice: AiModelChoice | undefined,
+): Promise<{ ok: true; session: PreFlightSession; model: ResolvedModel } | Extract<PreFlightResult, { ok: false }>> {
   const session = await getSession(sessionId, auth);
   if (!session) {
     return { ok: false, error: 'Session not found' };
@@ -508,16 +587,23 @@ export async function runPreFlightChecks(
     return { ok: false, error: 'AI configuration could not be loaded. Try again.', status: 503 };
   }
   if (!turn.ok) return unresolvedTurn(turn);
-  const model: ResolvedModel = turn;
+  return { ok: true, session, model: turn };
+}
 
-  // Rate limits
-  try {
-    const rateLimitError = await checkAiRateLimit(auth.user.id, orgId);
-    if (rateLimitError) return { ok: false, error: rateLimitError };
-  } catch (err) {
-    console.error('[AI-SDK] Rate limit check failed:', err);
-    return { ok: false, error: 'Unable to verify rate limits. Please try again.' };
-  }
+/**
+ * Pre-flight DB phase 2, after the rate limit: budget, session state and
+ * expiry, input sanitisation and the system prompt.
+ */
+async function runPreFlightAdmission(
+  sessionId: string,
+  content: string,
+  auth: AuthContext,
+  session: PreFlightSession,
+  model: ResolvedModel,
+  pageContext: AiPageContext | undefined,
+  requestContext: RequestLike | undefined,
+): Promise<PreFlightResult> {
+  const orgId = session.orgId;
 
   // Budget
   try {
@@ -617,23 +703,31 @@ export async function runPreFlightChecks(
       });
     }
   }
-  let systemPrompt = sanitizedPageContext
-    ? await buildSystemPrompt(auth, sanitizedPageContext)
-    : (session.systemPrompt ?? await buildSystemPrompt(auth));
-
-  // Wisp W04 (Review Focus 1): a pageContext turn rebuilds the prompt from
-  // scratch, which would drop the thread seed appended at create — re-seed it
-  // from the live ceiling. A pinned session that cannot be resolved is refused
-  // here, as getOrCreate would refuse it.
+  let systemPrompt: string;
+  // Resolve the live ceiling BEFORE rebuilding a Wisp prompt: record context
+  // and the thread seed must both respect the grant, not just the caller.
   if (sanitizedPageContext && session.wispGrantId) {
     const { lookupWispGrant, wispSeedForSession, WispSessionUnavailableError } = await import('./wisp/chatCeiling');
+    const { resolveGrantCeiling, GrantInactiveError } = await import('./wisp/grantAuthority');
     try {
       const grant = await lookupWispGrant(sessionId);
-      if (grant) systemPrompt = [systemPrompt, await wispSeedForSession(grant, auth)].filter(Boolean).join('\n');
+      if (!grant) throw new WispSessionUnavailableError('grant_unpinned', sessionId);
+      const ceiling = await resolveGrantCeiling(grant.grantId, grant.revisionId);
+      systemPrompt = [
+        await buildSystemPrompt(auth, sanitizedPageContext, undefined, ceiling),
+        await wispSeedForSession(grant, auth, ceiling, sanitizedPageContext),
+      ].filter(Boolean).join('\n');
     } catch (err) {
       if (err instanceof WispSessionUnavailableError) return { ok: false, error: err.message, status: 409 };
+      if (err instanceof GrantInactiveError && err.kind !== 'corrupt') {
+        return { ok: false, error: 'Your Wisp grant is no longer active. Start a new Wisp conversation to continue.', status: 409 };
+      }
       throw err;
     }
+  } else {
+    systemPrompt = sanitizedPageContext
+      ? await buildSystemPrompt(auth, sanitizedPageContext)
+      : (session.systemPrompt ?? await buildSystemPrompt(auth));
   }
 
   // A durable reservation is acquired immediately before provider dispatch by
@@ -981,6 +1075,15 @@ async function runWispCeilingGate(
 }
 
 /**
+ * #10193 — who an approval raised from this chat session is attributed to on
+ * the approval row, the mobile push and the intent: Wisp under a grant (the
+ * grant-driven voice, #10131), Breeze AI otherwise.
+ */
+function chatApprovalClientLabel(session: ActiveSession): string {
+  return session.wispGrant ? 'Wisp' : 'Breeze AI';
+}
+
+/**
  * The org reach of ONE tool call: the session's tool auth, cut to the Wisp
  * ceiling when a grant governs the session (the same narrowing the allowed
  * exit of `createSessionPreToolUse` hands the handler). Used to resolve a
@@ -999,8 +1102,9 @@ function callReach(session: ActiveSession, wispState: WispCallState | null): Aut
  * `launch_specialist` call, run after RBAC and the rate limit but before any
  * approval card: a call the coordinator would refuse (`wisp_grant_required`,
  * `unknown_kind`, `invalid_params`, `no_sweep_schedule`, `no_effective_agent`,
- * …) is refused here with the SAME code the tool's handler returns, and nobody
- * is asked to approve a request that cannot run. Runs after the Wisp ceiling
+ * `agent_disabled` (#10193), …) is refused here with the SAME code (and
+ * `message`) the tool's handler returns, and nobody is asked to approve a
+ * request that cannot run. Runs after the Wisp ceiling
  * gate, so the target org is already inside the grant; on a pass it returns
  * that org's name for the card.
  *
@@ -1013,7 +1117,7 @@ async function specialistPreApprovalGate(
   session: ActiveSession,
   input: Record<string, unknown>,
   wispState: WispCallState | null,
-): Promise<{ ok: true; orgName: string | null } | { ok: false; denial: { allowed: false; error: string; detail?: string } }> {
+): Promise<{ ok: true; orgName: string | null } | { ok: false; denial: { allowed: false; error: string; detail?: string; message?: string } }> {
   // The tool is inert without a grant (aiToolsWisp: GRANT_REQUIRED) — a plain
   // chat session must not ask for approval first.
   if (!session.wispGrant || !wispState) {
@@ -1031,12 +1135,51 @@ async function specialistPreApprovalGate(
     if (result.ok) return { ok: true, orgName: result.orgName };
     return {
       ok: false,
-      denial: { allowed: false, error: result.refused, ...(result.detail ? { detail: result.detail } : {}) },
+      denial: {
+        allowed: false,
+        error: result.refused,
+        ...(result.detail ? { detail: result.detail } : {}),
+        // #10193: the sentence the model reads back (names a switched-off agent).
+        ...(result.message ? { message: result.message } : {}),
+      },
     };
   } catch (err) {
     console.error(`[AI-SDK] launch_specialist precheck failed (session ${session.breezeSessionId}); asking for approval as before`, err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'aiAgentSdk', orgId: session.orgId });
     return { ok: true, orgName: null };
+  }
+}
+
+/**
+ * #10392 — may this Wisp bookkeeping call run without the per_step card? The
+ * per-tool scopes live in wisp/selfStateTools.ts. Any doubt keeps the card:
+ * a tool outside the map, a memory owner other than the grantor, a missing
+ * concernId, a concern this grant did not raise, or a lookup that fails.
+ */
+async function wispSelfStateSkipsCard(
+  session: ActiveSession,
+  toolName: string,
+  input: Record<string, unknown>,
+  wispState: WispCallState,
+): Promise<boolean> {
+  switch (WISP_SELF_STATE_TOOLS.get(toolName)) {
+    case 'adds_row':
+      return true;
+    case 'own_memory':
+      return input.ownerKind === 'user';
+    case 'own_concern': {
+      if (typeof input.concernId !== 'string') return false;
+      try {
+        const { isLiveConcernRaisedByGrant } = await import('./wisp/concerns');
+        return await isLiveConcernRaisedByGrant(wispState.ceiling, input.concernId);
+      } catch (err) {
+        console.error(`[AI-SDK] Wisp own-concern lookup failed for '${toolName}' (session ${session.breezeSessionId}); asking for approval`, err);
+        captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'aiAgentSdk', orgId: session.orgId });
+        return false;
+      }
+    }
+    default:
+      return false;
   }
 }
 
@@ -1061,7 +1204,34 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       return { allowed: false, error: WISP_GATE_UNAVAILABLE_MESSAGE };
     }
     const { ceiling, permissionKeys, narrow } = wispCall.current;
-    return { ...result, toolAuth: narrow(session.toolAuth, ceiling, session.breezeSessionId, permissionKeys) };
+    const toolAuth = narrow(session.toolAuth, ceiling, session.breezeSessionId, permissionKeys);
+    const autoLinkTags = {
+      op: 'wisp.auto_link', toolName, threadId: session.wispGrant.threadId,
+      grantId: ceiling.grantId, sessionId: session.breezeSessionId,
+    };
+    // Load while the gate is still awaited. The detached success hook must
+    // enter autoLinkFocalAct (and reserve its slots) synchronously, before the
+    // tool result can reach the SDK and settlement can reset the turn count.
+    let autoLinkFocalAct: typeof import('./wisp/autoLink').autoLinkFocalAct;
+    try {
+      ({ autoLinkFocalAct } = await import('./wisp/autoLink'));
+    } catch (err) {
+      console.error(`[AI-SDK] Auto-link module unavailable for ${toolName}:`, err);
+      captureException(err, undefined, autoLinkTags);
+      return { ...result, toolAuth };
+    }
+    return {
+      ...result,
+      toolAuth,
+      onSuccess: async (callInput) => {
+        try {
+          await autoLinkFocalAct({ session, toolName, input: callInput, auth: toolAuth, ceiling });
+        } catch (err) {
+          console.error(`[AI-SDK] Auto-link failed for ${toolName}:`, err);
+          captureException(err, undefined, autoLinkTags);
+        }
+      },
+    };
   };
 }
 
@@ -1405,6 +1575,8 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         });
 
         let approved: boolean;
+        // #9431: how the card's wait ended, for every other listener.
+        let helperOutcome: AiApprovalOutcome = 'ended';
         try {
           const decision = await decideHelperToolAction({
             orgId: session.orgId,
@@ -1417,6 +1589,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           });
 
           if (decision === 'denied') {
+            helperOutcome = 'not_approved';
             return { allowed: false, error: 'This action was denied by organization policy' };
           }
 
@@ -1432,11 +1605,12 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               helperApprovalWait.timeoutMs,
               helperApprovalWait.signal,
             );
+            helperOutcome = approvalWaitOutcome(approved, helperApprovalWait.signal);
           } finally {
             helperApprovalWait.end();
           }
         } finally {
-          resolvePendingCard(session, helperCardKey);
+          resolveApprovalCard(session, helperExec.id, helperOutcome);
         }
         if (!approved) {
           // Mirrors the tier-2/tier-3 close-out below: on an early settle
@@ -1506,11 +1680,27 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       //     auto-execute through the plan branch below anyway (tier < 3);
       //     an UNmatched read during a plan is a deviation and deliberately
       //     still prompts, same as before this change.
-      const readOnlyAutoExec =
-        guardrailCheck.readOnly === true &&
-        !session.isPaused &&
-        !(session.activePlanId && (effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan'));
-      if (guardrailCheck.tier === 2 && (effectiveMode === 'auto_approve' || readOnlyAutoExec)) {
+      const planInFlight = Boolean(session.activePlanId)
+        && (effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan');
+      const readOnlyAutoExec = guardrailCheck.readOnly === true && !session.isPaused && !planInFlight;
+      // #10392: Wisp's own bookkeeping writes (wisp/selfStateTools.ts —
+      // memory, concerns, thread links; never a device) skip the card the
+      // same way, with the same two carve-outs, but only for a call that
+      // passed the live Wisp ceiling gate this turn (`wispCall.current`) and
+      // only within the tool's scope (the grantor's own memory, a concern
+      // this grant raised, or a pure add). Tier 2 only, so a Tier-3
+      // resolution never takes this path. Evaluated last so the own-concern
+      // lookup runs only when nothing else already decided the call.
+      const wispSelfStateAutoExec = guardrailCheck.tier === 2
+        && effectiveMode !== 'auto_approve'
+        && !readOnlyAutoExec
+        && wispCall.current !== null
+        && !tenant
+        && !flowTool
+        && !session.isPaused
+        && !planInFlight
+        && await wispSelfStateSkipsCard(session, toolName, input, wispCall.current);
+      if (guardrailCheck.tier === 2 && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec)) {
         const liveDenial = await refreshTier2Authority(
           'Authorization changed before execution; the action was not executed.',
         );
@@ -1532,7 +1722,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         }
         lastApprovalBySession.set(session, {
           toolName,
-          method: effectiveMode === 'auto_approve' ? 'auto_approve_mode' : 'read_only_auto',
+          method: effectiveMode === 'auto_approve'
+            ? 'auto_approve_mode'
+            : readOnlyAutoExec ? 'read_only_auto' : 'wisp_self_state_auto',
         });
         return { allowed: true, ...(verifiedToolContext ? { context: verifiedToolContext } : {}) };
       }
@@ -1955,6 +2147,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               source: 'chat',
               reason: riskSummary,
               actionLabel: riskSummary,
+              // #10193: a Wisp session's approval is Wisp's; otherwise the
+              // intent service's chat default ("Breeze AI") applies.
+              ...(session.wispGrant ? { requestingClientLabel: chatApprovalClientLabel(session) } : {}),
               orgId: flowBinding ? flowBinding.orgId : intentOrgId,
               ...(flowBinding ? { invokedFlow: flowBinding.invokedFlow } : {}),
               // #6475 — a supervised chat intent expires with the org's
@@ -2110,6 +2305,8 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // execute it — after this session has moved on or died. This is the
           // new durable capability the design adds (spec §6.1).
           let decisionStatus: Awaited<ReturnType<typeof waitForIntentDecision>>;
+          // #9431: how the card's wait ended, for every other listener.
+          let intentOutcome: AiApprovalOutcome = 'ended';
           try {
             const approvalWait = beginApprovalWait(session);
             try {
@@ -2118,12 +2315,13 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 approvalWait.timeoutMs,
                 approvalWait.signal,
               );
+              intentOutcome = intentDecisionOutcome(decisionStatus);
             } finally {
               approvalWait.end();
             }
           } finally {
             // A no-op for the unattended-release branch, which recorded no card.
-            resolvePendingCard(session, approvalCardKey(approvalExec.id));
+            resolveApprovalCard(session, approvalExec.id, intentOutcome);
           }
 
           if (decisionStatus === 'pending_approval') {
@@ -2691,7 +2889,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                   .values({
                     userId: session.auth.user.id,
                     executionId: approvalExec!.id,
-                    requestingClientLabel: 'Breeze AI',
+                    requestingClientLabel: chatApprovalClientLabel(session),
                     requestingMachineLabel: null,
                     actionLabel,
                     actionToolName: stripMcpPrefix(toolName),
@@ -2736,7 +2934,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               await dispatchApprovalPushToTokens(tokens, {
                 approvalId: approvalRequestId,
                 actionLabel,
-                requestingClientLabel: 'Breeze AI',
+                requestingClientLabel: chatApprovalClientLabel(session),
               });
             } catch (err) {
               console.error('[AI-SDK] Failed to dispatch approval push notification:', err);
@@ -2766,14 +2964,17 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // Block until user clicks Approve/Reject, the cycle's shared approval
           // wait budget (the org's interactive approval timeout) elapses, or the wait is settled early
           // (session teardown / new user message / interrupt — #3089).
+          // #9431: how the card's wait ended, for every other listener.
+          let cardOutcome: AiApprovalOutcome = 'ended';
           try {
             approved = await waitForApproval(
               approvalExec.id,
               approvalWait.timeoutMs,
               approvalWait.signal,
             );
+            cardOutcome = approvalWaitOutcome(approved, approvalWait.signal);
           } finally {
-            resolvePendingCard(session, cardKey);
+            resolveApprovalCard(session, approvalExec.id, cardOutcome);
           }
         } finally {
           approvalWait.end();

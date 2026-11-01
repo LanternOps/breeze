@@ -55,10 +55,23 @@ export const WORKLOAD_INVENTORY_MAX_INTERVAL_MINUTES = 1440;
 export const WORKLOAD_INVENTORY_DEFAULT_INTERVAL_MINUTES = 60;
 
 /**
+ * Image provenance (#9067): the agent's evidence, per container, for where its
+ * image came from. `confirmed` = a registry digest the engine vouches for;
+ * `local` = never pulled from this repository (a build, a load, a retag);
+ * `unknown` = the engine cannot say (Docker's containerd image store before
+ * Engine API 1.54). Agents that predate #9067 send nothing (stored as NULL),
+ * which keeps the behaviour from before the field existed.
+ */
+export const WORKLOAD_IMAGE_PROVENANCES = ['confirmed', 'local', 'unknown'] as const;
+export type WorkloadImageProvenance = (typeof WORKLOAD_IMAGE_PROVENANCES)[number];
+
+/**
  * Image currency (#3813, spec §9.1): per container row, how its local image
  * compares with the registry's current digest for the same tag. The
- * unknown-class statuses (pending, private, unsupported_registry, error) never
- * count as current (spec §10).
+ * unknown-class statuses (pending, private, unsupported_registry, error,
+ * provenance_unknown) never count as current (spec §10). `provenance_unknown`
+ * (#9067): the agent could not tell where the image came from, so its name was
+ * never sent to any registry.
  */
 export const WORKLOAD_UPSTREAM_STATUSES = [
   'pending',
@@ -70,6 +83,7 @@ export const WORKLOAD_UPSTREAM_STATUSES = [
   'unsupported_registry',
   'not_found',
   'error',
+  'provenance_unknown',
 ] as const;
 export type WorkloadUpstreamStatus = (typeof WORKLOAD_UPSTREAM_STATUSES)[number];
 
@@ -77,7 +91,8 @@ export type WorkloadUpstreamStatus = (typeof WORKLOAD_UPSTREAM_STATUSES)[number]
  * How a status counts toward patch compliance (spec §10.1, OD-2 option b):
  * - `stale`   (behind)  → a pending item;
  * - `current`           → an installed item;
- * - `unknown` (pending, private, unsupported_registry, error) → outside the
+ * - `unknown` (pending, private, unsupported_registry, error,
+ *   provenance_unknown) → outside the
  *   denominator, surfaced as "N images not checked";
  * - `not_applicable` (pinned, local, not_found) → neither stale nor current,
  *   and not a coverage gap either: there is nothing to compare.
@@ -89,6 +104,7 @@ export const WORKLOAD_UPSTREAM_UNKNOWN_STATUSES = [
   'private',
   'unsupported_registry',
   'error',
+  'provenance_unknown',
 ] as const satisfies readonly WorkloadUpstreamStatus[];
 
 export function workloadUpstreamStatusClass(status: WorkloadUpstreamStatus): WorkloadUpstreamStatusClass {
@@ -105,6 +121,7 @@ export function workloadUpstreamStatusClass(status: WorkloadUpstreamStatus): Wor
     case 'private':
     case 'unsupported_registry':
     case 'error':
+    case 'provenance_unknown':
       return 'unknown';
   }
 }

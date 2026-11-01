@@ -1001,7 +1001,10 @@ describe('device patch routes', () => {
         source: 'third_party',
         externalId: 'winget:Google.Chrome',
         packageId: 'winget:Google.Chrome',
-        title: 'Google Chrome'
+        title: 'Google Chrome',
+        // #10249: a machine-scope row passes the per-user gate, and its scope
+        // must not leak into the command payload asserted below.
+        scope: 'machine'
       }
     ]);
     const observationFrom = vi.fn().mockReturnValue({
@@ -1037,6 +1040,32 @@ describe('device patch routes', () => {
       },
       { userId: USER_ID, preferHeartbeat: false }
     );
+  });
+
+  // #10249: the web UI disables Install for per-user rows, but the route
+  // itself never checked scope, so a direct API call dispatched them.
+  it('rejects a per-user (scope=user) patch with 409 before the approval check, queueing nothing', async () => {
+    const OTHER_PATCH_ID = '55555555-5555-5555-5555-555555555555';
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereResult([
+        { id: PATCH_ID, source: 'third_party', externalId: 'winget:Zoom.Zoom', packageId: 'winget:Zoom.Zoom', title: 'Zoom', scope: 'user' },
+        { id: OTHER_PATCH_ID, source: 'third_party', externalId: 'winget:Google.Chrome', packageId: 'winget:Google.Chrome', title: 'Google Chrome', scope: 'machine' }
+      ]) as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches/install`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patchIds: [PATCH_ID, OTHER_PATCH_ID] })
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe('Per-user (user scope) patches cannot be installed by the agent');
+    expect(body.userScopePatchIds).toEqual([PATCH_ID]);
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+    // Refused before the approvals read: only the observation query ran.
+    expect(db.select).toHaveBeenCalledTimes(1);
   });
 
   it('rejects install when any requested patch is not approved', async () => {

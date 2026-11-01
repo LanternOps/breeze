@@ -1268,6 +1268,7 @@
       "changesSnapshot": "Snapshot de alterações",
       "before": "Antes",
       "after": "Depois",
+      "noFieldChanges": "Nenhuma alteração de campo foi registrada para esta ação.",
       "userInfo": "Informações do usuário",
       "requestMetadata": "Metadados da solicitação",
       "fields": {

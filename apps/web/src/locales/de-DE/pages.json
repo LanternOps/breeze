@@ -85,6 +85,7 @@
     "logs": "Protokolle",
     "monitoring": "Netzwerk",
     "oauthConsent": "Zugriff autorisieren",
+    "oauthError": "App-Verbindung fehlgeschlagen",
     "onedrive": "OneDrive",
     "organizations": "Organisationen",
     "organizationsDetail": "Organisation",
@@ -210,6 +211,33 @@
     "referenceIdLabel": "Referenz-ID:",
     "dashboardLink": "Zum Dashboard",
     "signInLink": "Anmelden"
+  },
+  "oauthErrorPage": {
+    "invalidClient": {
+      "heading": "Diese App kann keine Verbindung herstellen",
+      "body": "Breeze erkennt die App nicht, die Sie hierher geleitet hat, oder die App darf sich nicht mit diesem Breeze-Server verbinden. Prüfen Sie, ob die App mit der Adresse dieses Servers eingerichtet ist, und versuchen Sie es dann erneut."
+    },
+    "invalidRedirectUri": {
+      "heading": "Die Rücksprungadresse dieser App ist nicht registriert",
+      "body": "Die App hat Breeze gebeten, Sie an eine Adresse zurückzuleiten, die sie nie registriert hat. Breeze hat hier angehalten, um Ihr Konto zu schützen. Der Entwickler der App oder Ihr Administrator muss die Weiterleitungs-URL der App korrigieren."
+    },
+    "sessionExpired": {
+      "heading": "Diese Anmeldung ist abgelaufen",
+      "body": "Die Verbindung hat zu lange gedauert oder wurde in einem anderen Browser gestartet. Kehren Sie zur App zurück und verbinden Sie sich erneut."
+    },
+    "invalidRequest": {
+      "heading": "Die App hat eine Anfrage gesendet, die Breeze nicht annehmen kann",
+      "body": "Die Verbindungsanfrage der App war unvollständig oder hat etwas angefordert, das dieser Server nicht unterstützt. Kehren Sie zur App zurück und versuchen Sie es erneut. Wenn das Problem weiterhin besteht, wenden Sie sich an den Entwickler der App."
+    },
+    "serverError": {
+      "heading": "Breeze konnte die Verbindung nicht abschließen",
+      "body": "Auf unserer Seite ist ein Fehler aufgetreten. Warten Sie einige Minuten, kehren Sie dann zur App zurück und versuchen Sie es erneut."
+    },
+    "generic": {
+      "heading": "Diese Verbindung konnte nicht hergestellt werden",
+      "body": "Kehren Sie zur App zurück und starten Sie die Verbindung erneut. Wenn das Problem weiterhin besteht, wenden Sie sich an Ihren Breeze-Administrator."
+    },
+    "nextStep": "Es wurde kein Zugriff gewährt. Sie können diese Seite schließen."
   },
   "settingsIndex": {
     "heading": "Einstellungen",

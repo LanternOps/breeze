@@ -24,6 +24,7 @@ import {
   buildAcknowledgeAlertCas,
   buildResolveAlertCas,
   buildSuppressAlertCas,
+  publishAlertSuppressed,
 } from './alertService';
 import { deviceIdSiteDenied, resolveSiteAllowedDeviceIds, siteAllowlistOf } from './aiToolsSiteScope';
 import { emitAlertStateFeedback } from './mlFeedbackEmitters';
@@ -114,6 +115,7 @@ export async function findAlertWithAccess(alertId: string, auth: AuthContext) {
     const allowedSites = siteAllowlistOf(auth);
     return allowedSites !== undefined && !allowedSites.includes(alert.topologySiteId) ? null : alert;
   }
+  if (!alert.deviceId && siteAllowlistOf(auth) !== undefined) return null;
   if (alert.deviceId && (await deviceIdSiteDenied(auth, alert.deviceId))) return null;
   return alert;
 }
@@ -278,13 +280,13 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         if (!alert) return JSON.stringify({ error: 'Alert not found or access denied' });
 
         // Get device info
-        const [device] = await db
+        const [device] = alert.deviceId === null ? [] : await db
           .select({ hostname: devices.hostname, osType: devices.osType, status: devices.status })
           .from(devices)
           .where(eq(devices.id, alert.deviceId))
           .limit(1);
 
-        return JSON.stringify({ alert: presentNetworkMonitorAlert(alert), device });
+        return JSON.stringify({ alert: presentNetworkMonitorAlert(alert), device: device ?? null });
       }
 
       if (action === 'acknowledge') {
@@ -492,26 +494,12 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: ALERT_SUPPRESS_CAS_LOST_MESSAGE });
         }
 
-        let suppressEventWarning: string | undefined;
-        try {
-          await publishEvent(
-            'alert.suppressed',
-            alert.orgId,
-            {
-              alertId: alert.id,
-              ruleId: alert.ruleId,
-              deviceId: alert.deviceId,
-              suppressedBy: auth.user.id,
-              suppressedUntil: suppressedUntil ? suppressedUntil.toISOString() : null,
-              durationHours
-            },
-            'ai-tools',
-            { userId: auth.user.id }
-          );
-        } catch (error) {
-          console.error('[AiTools] Failed to publish alert.suppressed event:', error);
-          suppressEventWarning = 'Alert was suppressed but event notification may be delayed';
-        }
+        const suppressEventPublished = await publishAlertSuppressed({
+          alert, suppressedBy: auth.user.id, suppressedUntil, durationHours, source: 'ai-tools',
+        });
+        const suppressEventWarning = suppressEventPublished
+          ? undefined
+          : 'Alert was suppressed but event notification may be delayed';
 
         await emitAlertStateFeedback({
           orgId: alert.orgId,

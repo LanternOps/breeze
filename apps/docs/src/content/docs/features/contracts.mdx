@@ -121,7 +121,9 @@ A customer can have **one live block at a time**, across all of their contracts,
 
 **Rollover.** Unused hours (the period's included hours plus anything carried in, minus the hours used) carry forward under **Carry forward**, up to the cap if you set one. Carried hours do not expire separately, and the first period of a block carries nothing in.
 
-**Held entries on ad-hoc invoices.** While a period is open, the time it will draw is reserved for the block. A hand-built invoice or a ticket invoice leaves those entries out and reports how many hours were held, so the customer is not charged ad hoc for hours the block already covers.
+**Held entries on ad-hoc invoices.** While a period is open, the time it will draw is reserved for the block. A hand-built invoice or a ticket invoice leaves those entries out and reports how many hours were held, so the customer is not charged ad hoc for hours the block already covers. A draft that picked up those entries before the hold applied (for example, it was built while the contract was paused, or before the block line was added) cannot be issued while they are held: **Issue** is refused (`SOURCE_HELD_FOR_HOUR_BLOCK`) until you remove those lines, and the period close draws them from the block instead.
+
+**Used hours and drafts.** The contract page's used hours leave out time that sits on a draft invoice and that no open period holds, because that draft can still bill it by the hour. Held time on a draft still counts, because the draft cannot be issued with it.
 
 **Entries made after a period closed.** A closed period never reopens. Time that was entered for work done in a period that has already closed is not drawn from the block; it bills ad hoc as usual, and the contract page shows how many hours were entered after close.
 
@@ -202,7 +204,7 @@ Service deliverables (v0.113.0+) track the recurring work a customer is paying f
 5. Optionally set an **Owner** and a **Ticket category** — the daily sweep opens a ticket for each occurrence that comes due, assigned and categorised from these — and **Show in customer portal**.
 </Steps>
 
-Each deliverable rolls up to a status of **On track**, **Due soon**, **Late**, **Missed** or **Inactive**. Each occurrence is **Scheduled**, **Open**, **Awaiting evidence**, **Delivered**, **Missed** or **Waived**; from an occurrence you can **Mark delivered**, **Waive**, **Reopen**, **Reschedule**, or **Add** / **Remove evidence**. Evidence is a PDF, JPEG, PNG or WebP up to 10 MB and is filed in the organization's [document library](/features/portal/#documents) as it is attached.
+Each deliverable rolls up to a status of **On track**, **Due soon**, **Late**, **Missed** or **Inactive**. Each occurrence is **Scheduled**, **Open**, **Awaiting evidence**, **Delivered**, **Missed** or **Waived**; from an occurrence you can **Mark delivered**, **Waive**, **Reopen**, **Reschedule**, or **Add** / **Remove evidence**. Rescheduling a **Missed** occurrence to a date inside its grace period revives it: if it already has a ticket it becomes **Open** and the ticket's due date follows; if it never had one it goes back to **Scheduled**, and the daily sweep opens its ticket once the new date's lead time arrives. Evidence is a PDF, JPEG, PNG or WebP up to 10 MB and is filed in the organization's [document library](/features/portal/#documents) as it is attached.
 
 ### Key dates
 

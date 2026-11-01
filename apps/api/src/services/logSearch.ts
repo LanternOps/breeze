@@ -1156,6 +1156,7 @@ export async function persistCorrelationForRule(
       const [createdAlert] = await db
         .insert(alerts)
         .values({
+          ownerKind: 'device',
           orgId: rule.orgId,
           deviceId: primaryDevice.deviceId,
           severity: mapCorrelationSeverityToAlertSeverity(rule.severity),

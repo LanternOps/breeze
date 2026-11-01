@@ -1179,5 +1179,10 @@
     "checking": "Wird geprüft",
     "unverified": "Nicht verifiziert",
     "failed": "Integritätsprüfung fehlgeschlagen"
+  },
+  "reparseSkipNotice": {
+    "summary_one": "{{count}} Analysepunkt übersprungen: Junctions und Bereitstellungspunkte werden nicht verfolgt und nicht wiederhergestellt. Das ist erwartet, kein Fehler.",
+    "summary_other": "{{count}} Analysepunkte übersprungen: Junctions und Bereitstellungspunkte werden nicht verfolgt und nicht wiederhergestellt. Das ist erwartet, kein Fehler.",
+    "showDetails": "Übersprungene Pfade anzeigen"
   }
 }

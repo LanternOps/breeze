@@ -130,6 +130,12 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
 
   const issue = useCallback(async (alsoSend: boolean, opts?: ComposedInvoiceEmail) => {
     if (issuing) return;
+    // Issue's own 409 refusals: held for a block of hours (#8970), then the
+    // customer-approval codes (409 SOURCE_AWAITING_APPROVAL, #8196).
+    const approval = approvalFriendly(stableT);
+    const issueFriendly = (code: string) => (code === 'SOURCE_HELD_FOR_HOUR_BLOCK'
+      ? stableT('invoiceActions.sourceHeldForHourBlock')
+      : approval(code));
     setIssuing(true);
     try {
       if (alsoSend) {
@@ -143,7 +149,7 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
             body: JSON.stringify(opts ?? {}),
           }),
           errorFallback: stableT('invoiceActions.issueSendError'),
-          friendly: approvalFriendly(stableT), // 409 SOURCE_AWAITING_APPROVAL (#8196)
+          friendly: issueFriendly,
           onUnauthorized: UNAUTHORIZED,
         });
         if (result?.data?.reason === 'notice_queued') {
@@ -158,7 +164,7 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
           request: () => fetchWithAuth(`/invoices/${invoice.id}/issue`, { method: 'POST' }),
           errorFallback: stableT('invoiceActions.issueError'),
           successMessage: stableT('invoiceActions.issueSuccess'),
-          friendly: approvalFriendly(stableT), // 409 SOURCE_AWAITING_APPROVAL (#8196)
+          friendly: issueFriendly,
           onUnauthorized: UNAUTHORIZED,
         });
       }

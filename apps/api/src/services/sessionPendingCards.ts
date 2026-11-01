@@ -1,4 +1,4 @@
-import type { AiPendingCardEvent } from '@breeze/shared/types/ai';
+import type { AiApprovalOutcome, AiPendingCardEvent } from '@breeze/shared/types/ai';
 // Type-only: this leaf module is imported by both aiAgentSdk.ts and
 // aiAgentSdkTools.ts, and aiAgentSdk.ts already imports aiAgentSdkTools.ts —
 // a value import of either (or of the manager) from here would be a cycle.
@@ -26,6 +26,21 @@ export function publishPendingCard(session: ActiveSession, key: string, event: A
 /** The card's wait has ended, however it ended. Idempotent. */
 export function resolvePendingCard(session: ActiveSession, key: string): void {
   session.pendingCards?.delete(key);
+}
+
+/**
+ * #9431: resolve an approval card AND tell every listener on the session how
+ * its wait ended. Without this a surface that did not make the decision (a
+ * second window, a chat open while the user decides in Approvals or on
+ * mobile) kept showing Approve / Deny until something else happened to clear
+ * it. Publishes only when the card was still tracked, so a second resolve of
+ * the same card is silent.
+ */
+export function resolveApprovalCard(session: ActiveSession, executionId: string, outcome: AiApprovalOutcome): void {
+  const key = approvalCardKey(executionId);
+  if (!session.pendingCards?.has(key)) return;
+  session.pendingCards.delete(key);
+  session.eventBus.publish({ type: 'approval_resolved', executionId, outcome });
 }
 
 export function approvalCardKey(executionId: string): string {

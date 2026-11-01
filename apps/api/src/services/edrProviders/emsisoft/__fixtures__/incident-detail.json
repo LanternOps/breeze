@@ -1,0 +1,16 @@
+{
+  "verdict": "ConfirmedBenign",
+  "actionTaken": "Allowed",
+  "actionsTaken": [
+    "Allowed"
+  ],
+  "severity": "Unwanted",
+  "detections": [
+    {
+      "dateTime": "2026-10-20T07:00:00Z"
+    },
+    {
+      "dateTime": "2026-10-21T09:30:00Z"
+    }
+  ]
+}
