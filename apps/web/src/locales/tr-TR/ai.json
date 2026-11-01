@@ -910,7 +910,8 @@
       "quote": "Teklif",
       "invoice": "Fatura",
       "contract": "Sözleşme",
-      "site": "Konum"
+      "site": "Konum",
+      "readiness": "Hazırlık"
     },
     "reviewApproval": "Onayı incele",
     "openLink": "Aç",
