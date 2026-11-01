@@ -747,6 +747,8 @@
   },
   "partnerDefaults": {
     "notSet": "Not set — orgs configure individually",
+    "notSetTtl": "Not set — platform default; organizations can set their own",
+    "notSetMaxTtl": "Not set — platform maximum applies to all organizations",
     "updatePolicy": "Agent Update Policy",
     "automatic": "Automatic",
     "manual": "Manual (block automatic updates)",
@@ -802,7 +804,7 @@
     "latestOrganization": "Set for this organization: always latest promoted",
     "latestVersion": "Latest promoted ({{version}})",
     "latest": "Latest promoted",
-    "pinnedAll": "Pinned for all organizations",
+    "pinnedAll": "Partner default — organizations can override",
     "overridesDefault": "Overrides partner default ({{version}})",
     "pinnedOrganization": "Pinned for this organization",
     "inherited": "Inherited from partner: {{version}}",

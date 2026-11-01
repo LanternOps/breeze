@@ -747,6 +747,8 @@
   },
   "partnerDefaults": {
     "notSet": "No configurado: las organizaciones se configuran individualmente",
+    "notSetTtl": "No configurado: se usa el valor predeterminado de la plataforma; las organizaciones pueden definir el suyo",
+    "notSetMaxTtl": "No configurado: el máximo de la plataforma se aplica a todas las organizaciones",
     "updatePolicy": "Política de actualización del agente",
     "automatic": "Automático",
     "manual": "Manual (bloquear actualizaciones automáticas)",
@@ -802,7 +804,7 @@
     "latestOrganization": "Definido para esta organización: siempre el último promocionado",
     "latestVersion": "Último promocionado ({{version}})",
     "latest": "Último promocionado",
-    "pinnedAll": "Fijado para todas las organizaciones",
+    "pinnedAll": "Valor predeterminado del socio: las organizaciones pueden anularlo",
     "overridesDefault": "Anula el valor predeterminado del socio ({{version}})",
     "pinnedOrganization": "Fijado para esta organización",
     "inherited": "Heredado del socio: {{version}}",

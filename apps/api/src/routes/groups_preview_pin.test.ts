@@ -202,10 +202,12 @@ describe('groups routes', () => {
       });
 
       expect(res.status).toBe(200);
+      // #9933: a group preview leaves out removed devices, like membership does.
       expect(evaluateFilterWithPreview).toHaveBeenCalledWith(filter, {
         orgId: ORG_ID,
         allowedSiteIds: [SITE_ID],
-        previewLimit: 10
+        previewLimit: 10,
+        excludeDecommissioned: true
       });
     });
 
