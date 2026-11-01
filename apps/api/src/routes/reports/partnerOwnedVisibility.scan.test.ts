@@ -288,6 +288,7 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
   ['src/services/serviceDeliverableService.ts', new Map([
     ['validateReferences', pinned(1, `evidence linkage validates eq(reports.orgId, <deliverable org>) — ${ORG_PIN}`, AUD_EVIDENCE_REFUSES)],
     ['insertEvidenceRef', pinned(2, `run evidence joins reports and pins eq(reports.orgId, orgId); ${ORG_PIN}`, AUD_EVIDENCE_REFUSES)],
+    ['selectEvidence', pinned(1, `#9961 evidence display-name LEFT JOIN pins eq(reports.orgId, service_deliverable_evidence.orgId) on top of the id; only reports.name is read, and only for a reports:read caller; ${ORG_PIN}`, AUD_EVIDENCE_LINKED)],
   ])],
   ['src/jobs/reportScheduleWorker.ts', new Map([
     ['findDueReports', pinned(2, 'system DB context due scan; nothing selected is shown to anyone — every due row is re-authorized per run (#3198 W01 Task 6)', AUD_WORKER)],
