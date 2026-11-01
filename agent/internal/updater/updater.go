@@ -91,6 +91,8 @@ type Updater struct {
 	// handle. The failure mode is closed: client is nil whenever clientErr
 	// is set, and every download entry point checks clientErr first.
 	clientErr error
+	// signedPkgSize belongs to the per-install copy populated from a verified manifest.
+	signedPkgSize int64
 }
 
 // New creates a new Updater. The returned client enforces netpolicy on every
@@ -991,6 +993,9 @@ func (u *Updater) UpdateToWithOptions(version string, opts UpdateOptions) error 
 // UpdateToWithOptions. opts.UserHelper, when non-nil, is threaded through to
 // RestartWithHelper on Windows.
 func (u *Updater) updateTo(version string, opts UpdateOptions) error {
+	if err := checkIsolationCompanions(opts); err != nil {
+		return err
+	}
 	log.Info("starting update", "targetVersion", version)
 
 	// Pre-flight: verify we can write to the binary's directory.
@@ -1015,6 +1020,17 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 		return fmt.Errorf("checksum verification failed: %w", err)
 	}
 
+	if err := checkIsolationCompanions(opts); err != nil {
+		removeCleanup(tempPath)
+		return err
+	}
+
+	// Refuse legacy size-less artifacts if containment began during download.
+	if err := verifyIsolationSize(tempPath, manifest.Size); err != nil {
+		removeCleanup(tempPath)
+		return err
+	}
+
 	// 3. Backup current binary
 	if err := u.backupCurrentBinary(); err != nil {
 		removeCleanup(tempPath)
@@ -1025,6 +1041,10 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 	//    The script handles: stop service -> copy new binary -> start service.
 	//    The agent exits normally after spawning the script.
 	if runtime.GOOS == "windows" {
+		if err := u.checkIsolationInstall(tempPath, &manifest, opts); err != nil {
+			removeCleanup(tempPath)
+			return err
+		}
 		writeUpdateMarker(version)
 		// User-helper and backup swaps are wired in by the heartbeat-layer
 		// caller (heartbeat.doUpgrade), not here — the updater package is
@@ -1068,10 +1088,11 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 	if runtime.GOOS == "darwin" {
 		defer removeCleanup(tempPath)
 		writeUpdateMarker(version)
+		pkgUpdater := u.withVerifiedPkgSize(manifestPayload)
 		pkgChecksum, pkgErr := pkgAssetChecksum(manifestPayload, version)
 		if pkgErr != nil {
 			log.Warn("signed .pkg checksum unavailable, falling back to verified-binary replacement", "error", pkgErr.Error())
-		} else if installErr := u.installViaPkg(version, pkgChecksum); installErr != nil {
+		} else if installErr := pkgUpdater.installViaPkg(version, pkgChecksum); installErr != nil { //nolint:staticcheck // SA4023: unreachable on Windows, where installViaPkg is an always-error stub.
 			// installViaPkg downloads the signed .pkg (pkg_darwin.go), so this
 			// error chain can be a *url.Error carrying the presigned asset URL.
 			key, value := SafeDownloadErrorFields(installErr)
@@ -1094,6 +1115,9 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 	}
 
 	// 6. Non-macOS or pkg fallback: replace binary inline and restart
+	if err := u.checkIsolationInstall(tempPath, &manifest, opts); err != nil {
+		return err
+	}
 	if err := u.replaceBinary(tempPath); err != nil {
 		if isCodeSignatureErr(err) {
 			// The darwin branch above already wrote the update marker before
@@ -1363,6 +1387,10 @@ func (u *Updater) DownloadBinary(version string) (string, error) {
 	if err := u.verifyChecksum(tempPath, manifest.Checksum); err != nil {
 		removeCleanup(tempPath)
 		return "", fmt.Errorf("checksum verification failed: %w", err)
+	}
+	if err := verifyIsolationSize(tempPath, manifest.Size); err != nil {
+		removeCleanup(tempPath)
+		return "", err
 	}
 	return tempPath, nil
 }
@@ -1722,6 +1750,10 @@ func (u *Updater) DownloadAndVerify(url, expectedChecksum string) (string, error
 // u.extras, which was a real footgun for any future dev-push surface that
 // shared an Updater instance with the heartbeat upgrade path.
 func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOptions) error {
+	// This path has only a caller-supplied checksum, never a signed manifest.
+	if isolationActive() {
+		return ErrUpdateBlockedByIsolation
+	}
 	lease, ok := TryBeginProcessMutation("agent-dev-update")
 	if !ok {
 		return ErrProcessMutationInProgress
@@ -1760,6 +1792,11 @@ func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOpti
 		return fmt.Errorf("checksum verification failed: %w", err)
 	}
 
+	if isolationActive() {
+		removeCleanup(tempPath)
+		return ErrUpdateBlockedByIsolation
+	}
+
 	// 3. Backup current binary
 	if err := u.backupCurrentBinary(); err != nil {
 		removeCleanup(tempPath)
@@ -1768,6 +1805,10 @@ func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOpti
 
 	// 4. Windows: spawn helper script for binary swap
 	if runtime.GOOS == "windows" {
+		if err := u.checkIsolationInstall(tempPath, nil, opts); err != nil {
+			removeCleanup(tempPath)
+			return err
+		}
 		if err := RestartWithHelper(BinaryPair{Temp: tempPath, Target: u.config.BinaryPath}, opts.UserHelper, opts.Backup); err != nil {
 			removeCleanup(tempPath)
 			if rbErr := u.Rollback(); rbErr != nil {
@@ -1780,6 +1821,9 @@ func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOpti
 
 	// 5. Non-Windows: replace binary inline and restart
 	defer removeCleanup(tempPath)
+	if err := u.checkIsolationInstall(tempPath, nil, opts); err != nil {
+		return err
+	}
 	if err := u.replaceBinary(tempPath); err != nil {
 		if isCodeSignatureErr(err) {
 			logCodeSignatureRejection("", err)
@@ -1811,10 +1855,8 @@ func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOpti
 // signed-manifest flow legitimately follows a control-plane URL to a public
 // CDN — so this method does NOT compare origins itself. All destination
 // safety (scheme, dial-time address, redirect chain, credential stripping on
-// origin change) is enforced by u.client, which netpolicy.NewClient built
-// from updaterPolicy(u.config); this is the single, dial-time-authoritative
-// check. A local host/scheme comparison here would be redundant at best and
-// a silent divergence risk at worst — removed, not duplicated (#SSRF-AGENT-001).
+// origin change) is enforced by the netpolicy client. During containment,
+// artifactRequest additionally restricts every hop to control-plane hosts.
 func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 	if err := u.checkClient(); err != nil {
 		return "", err
@@ -1829,7 +1871,7 @@ func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+u.config.AuthToken.Reveal())
 
-	resp, err := u.client.Do(req)
+	resp, err := u.artifactRequest(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to download binary: %w", err)
 	}

@@ -146,3 +146,11 @@ func TestSystemCleanupRunRequiresElevation(t *testing.T) {
 		t.Fatal("system_cleanup_list must not require elevation")
 	}
 }
+
+func TestContainmentCommandsRequireElevation(t *testing.T) {
+	for _, cmd := range []string{"execute_containment", "release_containment"} {
+		if !RequiresElevation(cmd) {
+			t.Errorf("%s must require elevation", cmd)
+		}
+	}
+}
