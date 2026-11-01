@@ -304,7 +304,12 @@ export default function AlertList({
             </span>
           )}
         </button>
-        <span className="text-xs text-muted-foreground whitespace-nowrap">
+        <span
+          data-testid="alert-list-count"
+          data-filtered={filteredAlerts.length}
+          data-total={alerts.length}
+          className="text-xs text-muted-foreground whitespace-nowrap"
+        >
           {filteredAlerts.length} {t('alertList.of')} {alerts.length}
         </span>
       </div>
@@ -562,6 +567,7 @@ export default function AlertList({
                 return (
                   <tr
                     key={alert.id}
+                    data-testid={`alert-row-${alert.id}`}
                     onClick={() => onSelect?.(alert)}
                     className={cn(
                       'cursor-pointer transition hover:bg-muted/40',
