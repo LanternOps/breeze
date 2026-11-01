@@ -1174,7 +1174,22 @@
     "updateCollector": "Recolector de actualizaciones",
     "enableDeepTelemetry": "Habilitar telemetría profunda",
     "wired": "cableado",
-    "agentListTruncated": "Esta lista de agentes se truncó en un límite de seguridad y puede estar incompleta."
+    "agentListTruncated": "Esta lista de agentes se truncó en un límite de seguridad y puede estar incompleta.",
+    "online": "En línea",
+    "offline": "Sin conexión",
+    "controllerState": "Estado del controlador",
+    "uptime": "Tiempo de actividad",
+    "wirelessClients": "clientes inalámbricos",
+    "cpu": "CPU",
+    "memory": "Memoria",
+    "uplinkRx": "Uplink RX",
+    "uplinkTx": "Uplink TX",
+    "lastReportedStale": "Último reporte / desactualizado",
+    "asOf": "Al",
+    "channel": "Canal",
+    "width": "Ancho",
+    "wlanStandard": "Estándar WLAN",
+    "txRetries": "Reintentos TX"
   },
   "webhookEditor": {
     "failedToSaveWebhook": "No se pudo guardar el webhook",
