@@ -234,14 +234,6 @@ Update agents to a release containing this change before relying on the provider
 - `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
 - `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
 - `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.
-
-### Wisp — home thread model menu and turn-limit rollover
-
-No new environment variables or migrations.
-
-- **Model menu on the Wisp home thread.** The thread's composer now shows the same model menu as the docked chat panel, so a partner whose assignment allows user choice can pick an offering (and its effort / fast / thinking options) for Wisp turns. Which models are offered, and the default, stay what Settings → AI models says.
-- **No more "New conversation" on the Wisp home.** The column is the whole thread (one thread per grant), so the button changed nothing visible. Removed.
-- **Wisp rolls to a fresh session at the turn limit.** A session that spends its turn budget (`max_turns_per_session`, every model round-trip counts) used to answer every later message with "Maximum conversation turns reached." Under Wisp the chat now closes that session (its summary lands on the thread), opens the next one under the same grant and focus, and re-sends the refused message; when the limit is hit in the middle of a turn it opens the next session and asks for the message again. Plain chat gets a coded refusal (`409 turn_limit_reached` before the turn; `code: "turn_limit_reached"` on the stream error) and keeps its "New conversation" button.
 ### Partner settings copy matches the inheritance badges (#10372)
 
 The default-expiry and maximum-lifetime selects and the partner agent-pin caption no longer say organizations "configure individually" or are "pinned for all"; each now agrees with its Org can override / Partner-wide badge.
