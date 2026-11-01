@@ -12,6 +12,7 @@ import {
   type AuthContext
 } from '../middleware/auth';
 import { db } from '../db';
+import { PSA_MAPPING_CREATE_STATES } from '../db/schema/integrations';
 import { devices, organizationExternalLinks, organizations, psaConnections as psaConnectionsTable, psaTicketMappings } from '../db/schema';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { requireOrgWideIntegrationAccess } from '../middleware/integrationConnectionScope';
@@ -40,7 +41,7 @@ import { createPSAProvider } from '../services/psa';
 import { psaTicketMappingOrgCondition } from '../services/psa/ticketScope';
 import { resumeTicketingConnection } from '../services/psaAlertTicketing/pause';
 import { openPsaMappingCondition } from '../services/psaAlertTicketing/states';
-import { psaAlertTicketingRoutes } from './psaAlertTicketing';
+import { psaAlertTicketingRoutes, psaTicketMappingActionRoutes } from './psaAlertTicketing';
 import {
   PsaConfigError,
   decryptCredentials,
@@ -109,6 +110,12 @@ const updateConnectionSchema = z.object({
 const listTicketsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional()
+});
+
+const ledgerListTicketsSchema = listTicketsSchema.extend({
+  connectionId: z.string().uuid().optional(),
+  createState: z.string().transform(value => value.split(',')).pipe(z.array(z.enum(PSA_MAPPING_CREATE_STATES)).min(1)).optional(),
+  includeCounts: z.enum(['true', 'false']).optional(),
 });
 
 function getPagination(query: { page?: string; limit?: string }) {
@@ -376,6 +383,16 @@ function mapTicketRow(row: {
   lastSyncAt: Date | null;
   updatedAt: Date;
   createdAt: Date;
+  createState?: string;
+  closeState?: string;
+  noteState?: string;
+  lastError?: string | null;
+  lastErrorClass?: string | null;
+  externalTicketNumber?: string | null;
+  source?: string;
+  attempts?: number;
+  nextAttemptAt?: Date | null;
+  createAnywayUsed?: boolean;
 }) {
   const syncedAt = row.lastSyncAt ?? row.updatedAt ?? row.createdAt;
 
@@ -385,6 +402,14 @@ function mapTicketRow(row: {
     title: row.externalTicketId ? `Ticket ${row.externalTicketId}` : `Ticket ${row.id.slice(0, 8)}`,
     status: row.status ?? undefined,
     syncedAt,
+    ...(row.createState !== undefined ? {
+      connectionId: row.connectionId, alertId: row.alertId,
+      createState: row.createState, closeState: row.closeState, noteState: row.noteState,
+      lastError: row.lastError, lastErrorClass: row.lastErrorClass,
+      externalTicketNumber: row.externalTicketNumber, externalTicketUrl: row.externalTicketUrl,
+      source: row.source, attempts: row.attempts, nextAttemptAt: row.nextAttemptAt,
+      createAnywayUsed: row.createAnywayUsed ?? false,
+    } : {}),
     raw: {
       externalTicketId: row.externalTicketId,
       externalTicketUrl: row.externalTicketUrl,
@@ -438,6 +463,7 @@ psaRoutes.use('*', authMiddleware);
 
 // Alert → PSA ticket config (#10499 W2-A): /connections/:id/alert-ticketing[/options].
 psaRoutes.route('/connections', psaAlertTicketingRoutes);
+psaRoutes.route('/', psaTicketMappingActionRoutes);
 
 psaRoutes.get(
   '/connections',
@@ -1080,7 +1106,7 @@ psaRoutes.get(
   '/tickets',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
-  zValidator('query', listTicketsSchema),
+  zValidator('query', ledgerListTicketsSchema),
   async (c) => {
     const auth = c.get('auth');
     const perms = c.get('permissions') as UserPermissions | undefined;
@@ -1107,6 +1133,9 @@ psaRoutes.get(
       )!);
     }
 
+    if (query.connectionId) conditions.push(eq(psaTicketMappings.connectionId, query.connectionId));
+    const countsWhere = conditions.length > 0 ? and(...conditions) : undefined;
+    if (query.createState) conditions.push(inArray(psaTicketMappings.createState, query.createState));
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
     const rowsQuery = db
@@ -1116,6 +1145,16 @@ psaRoutes.get(
         externalTicketId: psaTicketMappings.externalTicketId,
         externalTicketUrl: psaTicketMappings.externalTicketUrl,
         status: psaTicketMappings.status,
+        createState: psaTicketMappings.createState,
+        closeState: psaTicketMappings.closeState,
+        noteState: psaTicketMappings.noteState,
+        lastError: psaTicketMappings.lastError,
+        lastErrorClass: psaTicketMappings.lastErrorClass,
+        externalTicketNumber: psaTicketMappings.externalTicketNumber,
+        source: psaTicketMappings.source,
+        attempts: psaTicketMappings.attempts,
+        nextAttemptAt: psaTicketMappings.nextAttemptAt,
+        createAnywayUsed: sql<boolean>`coalesce(${psaTicketMappings.createSnapshot}->>'createAnywayUsed', 'false') = 'true'`,
         alertId: psaTicketMappings.alertId,
         deviceId: psaTicketMappings.deviceId,
         lastSyncAt: psaTicketMappings.lastSyncAt,
@@ -1137,9 +1176,19 @@ psaRoutes.get(
       ? countQuery.leftJoin(devices, eq(psaTicketMappings.deviceId, devices.id)).where(whereClause)
       : countQuery.where(whereClause));
 
+    let counts: Record<string, number> | undefined;
+    if (query.includeCounts === 'true') {
+      const grouped = db.select({ state: psaTicketMappings.createState, count: sql<number>`count(*)` }).from(psaTicketMappings);
+      const stateCounts = await (perms?.allowedSiteIds
+        ? grouped.leftJoin(devices, eq(psaTicketMappings.deviceId, devices.id)).where(countsWhere)
+        : grouped.where(countsWhere)).groupBy(psaTicketMappings.createState);
+      counts = Object.fromEntries(stateCounts.map(row => [row.state, Number(row.count)]));
+    }
+    const total = Number(countRows[0]?.count ?? 0);
     return c.json({
       data: rows.map(mapTicketRow),
-      pagination: { page, limit, total: Number(countRows[0]?.count ?? 0) }
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      ...(counts ? { counts } : {}),
     });
   }
 );

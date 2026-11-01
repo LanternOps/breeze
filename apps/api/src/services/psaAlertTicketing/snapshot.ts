@@ -14,4 +14,6 @@ export interface CreateSnapshot {
   operationAttempts?: Partial<Record<'create' | 'adopt_lookup' | 'close' | 'note', number>>;
   unknownDeadline?: string;
   duplicateTicketIds?: string[];
+  /** Permanent: one human-authorized retry after an uncertain create. */
+  createAnywayUsed?: boolean;
 }
