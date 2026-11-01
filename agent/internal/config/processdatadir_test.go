@@ -82,8 +82,10 @@ func TestProcessDataDirMatrix(t *testing.T) {
 	}
 }
 
-// TestProcessDataDirOnThisHost pins the wrapper's wiring: the host's GOOS,
-// euid and HOME reach the pure core, and every other host keeps GetDataDir.
+// TestProcessDataDirOnThisHost pins the wrapper's wiring. It is only
+// discriminating on a non-root macOS host (a developer machine): there the
+// host's GOOS, euid and HOME must reach the pure core. Elsewhere it reduces
+// to GetDataDir == GetDataDir; the matrix test above carries CI.
 func TestProcessDataDirOnThisHost(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

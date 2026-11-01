@@ -251,3 +251,77 @@ func TestWallpaper_RecoveryPathIsPerUserOnDarwin(t *testing.T) {
 		t.Fatalf("Restore: %v", err)
 	}
 }
+
+// A startup recovery whose Restore fails (on macOS: no main screen yet at
+// login) must keep both the record and the saved wallpaper. Deleting the
+// record, or letting the next Suppress capture the still-black desktop as
+// "current", would lose the user's wallpaper for good (#10870 review).
+func TestWallpaper_FailedRecoveryKeepsRecordAndOriginal(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "Library", "Application Support", "Breeze")
+	useWallpaperStateDir(t, stateDir)
+	recordPath := filepath.Join(stateDir, wallpaperRecoveryFile)
+
+	crashed := newWallpaperManager(&stubWallpaperBackend{current: &WallpaperState{WallpaperPath: "/Users/canary/Pictures/beach.heic"}})
+	if err := crashed.Suppress(); err != nil {
+		t.Fatalf("Suppress: %v", err)
+	}
+
+	// Next start: the desktop is still black and Restore fails.
+	failing := &stubWallpaperBackend{current: &WallpaperState{WallpaperPath: "/tmp/breeze_black_wallpaper.png"}, failRestore: true}
+	restarted := newWallpaperManager(failing)
+	if failing.restoreCount != 1 {
+		t.Fatalf("recovery Restore calls = %d, want 1", failing.restoreCount)
+	}
+	if _, err := os.Stat(recordPath); err != nil {
+		t.Fatalf("record must survive a failed recovery so the next start retries: %v", err)
+	}
+
+	// A session starts on the same process: the saved original, not the
+	// black desktop, is what gets recorded and later restored.
+	failing.failRestore = false
+	if err := restarted.Suppress(); err != nil {
+		t.Fatalf("Suppress: %v", err)
+	}
+	data, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatalf("read record: %v", err)
+	}
+	var saved WallpaperState
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("decode record: %v", err)
+	}
+	if saved.WallpaperPath != "/Users/canary/Pictures/beach.heic" {
+		t.Fatalf("record after Suppress = %q, want the original wallpaper", saved.WallpaperPath)
+	}
+	if err := restarted.Restore(); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if failing.lastRestored == nil || failing.lastRestored.WallpaperPath != "/Users/canary/Pictures/beach.heic" {
+		t.Fatalf("restored %+v, want the original wallpaper", failing.lastRestored)
+	}
+	if _, err := os.Stat(recordPath); !os.IsNotExist(err) {
+		t.Fatalf("record should be removed after a successful restore, stat err = %v", err)
+	}
+}
+
+// A record kept by a failed recovery is retried, and cleared, by the next
+// process start.
+func TestWallpaper_FailedRecoveryRetriedOnNextStart(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "Breeze")
+	useWallpaperStateDir(t, stateDir)
+
+	crashed := newWallpaperManager(&stubWallpaperBackend{current: &WallpaperState{WallpaperPath: "/Users/canary/Pictures/beach.heic"}})
+	if err := crashed.Suppress(); err != nil {
+		t.Fatalf("Suppress: %v", err)
+	}
+	_ = newWallpaperManager(&stubWallpaperBackend{failRestore: true})
+
+	third := &stubWallpaperBackend{}
+	_ = newWallpaperManager(third)
+	if third.restoreCount != 1 || third.lastRestored == nil || third.lastRestored.WallpaperPath != "/Users/canary/Pictures/beach.heic" {
+		t.Fatalf("next start should retry recovery of the original, got %d calls, %+v", third.restoreCount, third.lastRestored)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, wallpaperRecoveryFile)); !os.IsNotExist(err) {
+		t.Fatalf("record should be removed after the retry succeeds, stat err = %v", err)
+	}
+}

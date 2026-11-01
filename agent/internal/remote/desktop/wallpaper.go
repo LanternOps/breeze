@@ -2,6 +2,8 @@ package desktop
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -31,6 +33,11 @@ type WallpaperManager struct {
 	savedState   *WallpaperState
 	backend      wallpaperBackend
 	recoveryPath string
+	// pendingRecovery is a crash-recovery record whose startup Restore
+	// failed (on macOS, no main screen yet at login). The record file is
+	// kept so the next start retries, and the next Suppress saves this
+	// original instead of capturing the still-black desktop as "current".
+	pendingRecovery *WallpaperState
 }
 
 var (
@@ -84,10 +91,19 @@ func (m *WallpaperManager) Suppress() error {
 		return nil // already suppressed
 	}
 
-	state, err := m.backend.GetCurrent()
-	if err != nil {
-		m.refCount--
-		return err
+	var state *WallpaperState
+	if m.pendingRecovery != nil {
+		// The desktop is still the black we set before a crash: the
+		// original is the one recovery could not put back.
+		cp := *m.pendingRecovery
+		state = &cp
+	} else {
+		var err error
+		state, err = m.backend.GetCurrent()
+		if err != nil {
+			m.refCount--
+			return err
+		}
 	}
 	state.Suppressed = true
 	m.savedState = state
@@ -100,9 +116,16 @@ func (m *WallpaperManager) Suppress() error {
 	if err := m.backend.SetSolidBlack(); err != nil {
 		m.refCount--
 		m.savedState = nil
-		_ = m.deleteRecoveryFile()
+		if m.pendingRecovery != nil {
+			// Keep the record: it still describes the original that a
+			// crash left unrestored.
+			_ = m.writeRecoveryFile(m.pendingRecovery)
+		} else {
+			_ = m.deleteRecoveryFile()
+		}
 		return err
 	}
+	m.pendingRecovery = nil
 
 	slog.Info("Wallpaper suppressed to solid black")
 	return nil
@@ -142,30 +165,47 @@ func (m *WallpaperManager) Restore() error {
 }
 
 // recoverIfNeeded checks for a leftover recovery file from a crash and
-// restores the wallpaper if found.
+// restores the wallpaper if found. A failed Restore keeps the record (the
+// next start retries) and remembers the original for the next Suppress.
 func (m *WallpaperManager) recoverIfNeeded() {
 	data, err := os.ReadFile(m.recoveryPath)
 	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			slog.Warn("Wallpaper recovery record unreadable; a wallpaper left black by a crash will not be restored",
+				"path", m.recoveryPath, "error", err.Error())
+		}
 		return // no recovery file — normal startup
 	}
 
 	var state WallpaperState
 	if err := json.Unmarshal(data, &state); err != nil {
 		slog.Warn("Invalid wallpaper recovery file, removing", "error", err.Error())
-		_ = os.Remove(m.recoveryPath)
+		m.removeRecoveryRecord()
 		return
 	}
 
 	if !state.Suppressed {
-		_ = os.Remove(m.recoveryPath)
+		m.removeRecoveryRecord()
 		return
 	}
 
 	slog.Info("Recovering wallpaper from previous crash", "path", state.WallpaperPath)
 	if err := m.backend.Restore(&state); err != nil {
-		slog.Warn("Failed to recover wallpaper", "error", err.Error())
+		slog.Warn("Failed to recover wallpaper; keeping the record to retry on the next start",
+			"path", m.recoveryPath, "error", err.Error())
+		m.pendingRecovery = &state
+		return
 	}
-	_ = os.Remove(m.recoveryPath)
+	slog.Info("Wallpaper recovered from previous crash")
+	m.removeRecoveryRecord()
+}
+
+// removeRecoveryRecord deletes the record, warning when it cannot: a record
+// that will not go away is re-restored on every start.
+func (m *WallpaperManager) removeRecoveryRecord() {
+	if err := os.Remove(m.recoveryPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		slog.Warn("Failed to remove wallpaper recovery record", "path", m.recoveryPath, "error", err.Error())
+	}
 }
 
 func (m *WallpaperManager) writeRecoveryFile(state *WallpaperState) error {
