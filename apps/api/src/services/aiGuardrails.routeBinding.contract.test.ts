@@ -824,6 +824,8 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'list_scripts', routeFile: 'scripts.ts', method: 'get', path: '/' },
   { tool: 'get_script_details', routeFile: 'scripts.ts', method: 'get', path: '/:id' },
   { tool: 'get_script_execution_history', routeFile: 'scripts.ts', method: 'get', path: '/:id/executions' },
+  // #10417: the deviceId form mirrors the device Scripts tab's history read.
+  { tool: 'get_script_execution_history', routeFile: 'devices/scripts.ts', method: 'get', path: '/:id/scripts' },
 
   // Full-control W06 (#6776): every PSA configuration / ticket-ops action binds to the route a technician uses for the same act.
   { tool: 'manage_ticket_config', action: 'get_org_settings', routeFile: 'orgTicketSettings.ts', method: 'get', path: '/organizations/:id/ticket-settings' },
