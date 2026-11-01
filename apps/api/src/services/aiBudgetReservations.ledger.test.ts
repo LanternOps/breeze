@@ -295,6 +295,29 @@ describe('settleAiBudgetReservation with ledger rows', () => {
     })).rejects.toThrow(/does not match the turn binding/);
   });
 
+  it('#10413: accepts the CLI background call (model_role background, fallback_used false) at its own current platform rate only', async () => {
+    const BG = 'claude-haiku-4-5-20251001';
+    const BG_RATE = { inputCentsPerM: 80, outputCentsPerM: 400, cacheReadCentsPerM: 8, cacheWriteCentsPerM: 100 };
+    hoisted.getPlatformModelByModelId.mockResolvedValue({ rates: BG_RATE, optionRates: null });
+    primeSettle();
+    await expect(settleAiBudgetReservation({
+      orgId: ORG_ID, reservationId: RESERVATION_ID,
+      invocations: [
+        invocation({ modelRole: 'primary' }),
+        invocation({ requestedModel: BG, servedModel: BG, fallbackUsed: false, modelRole: 'background', rateSnapshot: { source: 'platform', standard: BG_RATE } }),
+      ],
+    })).resolves.toMatchObject({ kind: 'settled' });
+    expect(hoisted.recordInvocation).toHaveBeenCalledWith(expect.objectContaining({ requestedModel: BG, modelRole: 'background', fallbackUsed: false }));
+
+    // A primary-labelled unbound row is still never accepted at an unbound rate.
+    dbMock.execute.mockReset();
+    dbMock.execute.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([reservationRow({ model_binding: BINDING })]);
+    await expect(settleAiBudgetReservation({
+      orgId: ORG_ID, reservationId: RESERVATION_ID,
+      invocations: [invocation({ requestedModel: BG, fallbackUsed: false, modelRole: 'primary', rateSnapshot: { source: 'platform', standard: BG_RATE } })],
+    })).rejects.toThrow(/does not match the turn binding/);
+  });
+
   describe('an unbound BYOK refusal-fallback key at its own offering rate (#7773)', () => {
     const CONN_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
     const OTHER = { inputCentsPerM: 300, outputCentsPerM: 1500, cacheReadCentsPerM: 30, cacheWriteCentsPerM: 375 };

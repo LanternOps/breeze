@@ -25,6 +25,7 @@ import { deliverCreditDebit, type CreditDebitOutcome } from '../aiCreditDebitOut
 import { readConnectionOfferingRate } from './connectionOfferingRate';
 import type { BilledUsage, SdkUsageNote, SdkUsageSnapshot, SpeedServed, TurnOutcome } from './invocationUsage';
 import type { NewInvocation } from './invocationLedgerWrite';
+import type { AiInvocationModelRole } from '../../db/schema/aiInvocations';
 import { getPlatformModelByModelId } from './platformModels';
 import { platformRateSnapshot, priceInvocation, type RateSnapshot } from './pricing';
 import type { PromptProvenance } from './promptProfiles';
@@ -70,7 +71,8 @@ function boundModels(binding: TurnBinding): Set<string> {
  *   model's enabled, priced offering on the binding's OWN connection
  *   (`connectionRates`). Both are pre-fetched by settleInvocation and re-checked
  *   inside the settlement transaction. No such rate → the bound rate. Never a
- *   guess, and flagged `unboundModel` so the ledger marks it fallbackUsed.
+ *   guess, and flagged `unboundModel` so the ledger marks it fallbackUsed —
+ *   or, for the CLI's own helper call, model_role 'background' (#10413).
  * Fast is billed only when the provider CONFIRMED it (`speedServed`); the
  * Agent SDK never can, so SDK usage is always standard.
  */
@@ -219,6 +221,29 @@ export function consistentPromptVariant(variant: string | null, surface: AiSurfa
   return null;
 }
 
+/**
+ * #10413: a usage key is the Agent SDK CLI's background call (a small model it
+ * runs once per query, e.g. for a title) when it is none of the models that
+ * can carry the turn: not the bound model, not its bound refusal fallback,
+ * not a model this session switched away from (carried), and not the model
+ * that served the turn. One exception keeps the old label: a turn that fell
+ * back but could not name the model that served it (the outcome still reads
+ * the bound model) cannot tell the fallback key from the helper key, so every
+ * unbound key stays a fallback there.
+ */
+export function isBackgroundCall(b: TurnBinding, outcome: TurnOutcome, p: Pick<BilledUsage, 'model' | 'providerModel'>): boolean {
+  // Only the Agent SDK reports no provider model, and only its CLI makes a
+  // helper call: a Messages API row (which names the model that served it) is
+  // never background, so an alias/dated-id mismatch cannot hide a fallback.
+  if (p.providerModel !== null) return false;
+  const model = p.model;
+  if (model === b.wireModel || model === outcome.servedModel) return false;
+  if (b.refusalFallback && model === b.refusalFallback.wireModel) return false;
+  if (b.carriedRates?.some((c) => c.wireModel === model)) return false;
+  if (outcome.fallbackUsed && outcome.servedModel === b.wireModel) return false;
+  return true;
+}
+
 export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsage[]): NewInvocation[] {
   const b = input.binding;
   const promptProfile = input.prompt?.profile ?? b.promptProfile ?? null;
@@ -241,7 +266,12 @@ export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsa
     const outcome = p.callOutcome ?? input.outcome;
     const callRows = p.call === undefined ? priced : priced.filter((x) => x.call === p.call);
     const multi = callRows.length > 1;
-    const servedByFallback = p.unboundModel || (outcome.fallbackUsed && p.model !== b.wireModel);
+    // #10413: the CLI's own helper call is billed (at its own rate, via the
+    // unbound-model path) but is not a fallback: nothing served the turn in
+    // its place.
+    const background = isBackgroundCall(b, outcome, p);
+    const servedByFallback = !background && (p.unboundModel || (outcome.fallbackUsed && p.model !== b.wireModel));
+    const modelRole: AiInvocationModelRole = background ? 'background' : servedByFallback ? 'fallback' : 'primary';
     const refusedLeg = outcome.fallbackUsed && multi && p.model === b.wireModel;
     // The speed the row was BILLED at: a requested 'fast' the provider served
     // as standard is recorded as standard (not applied).
@@ -270,6 +300,7 @@ export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsa
       stopReason: refusedLeg ? 'refusal' : outcome.stopReason,
       refusalCategory: refusedLeg || servedByFallback || outcome.refused ? outcome.refusalCategory : null,
       fallbackUsed: servedByFallback,
+      modelRole,
       // W09 (F5): this row is the SERVED hop's (offering/connection/funding
       // above come from its own binding); these record where it failed over from.
       failoverFromOfferingId: b.failover?.fromOfferingId ?? null,
