@@ -45,7 +45,8 @@ const defaults: RemoteAccessSettings = {
   defaultAllowedPorts: [80, 443, 8080, 8443],
   autoEnableProxy: false,
   maxConcurrentTunnels: 5,
-  idleTimeoutMinutes: 5,
+  // Matches the API's no-policy baseline (policyBaselineDefaults.ts, #10422).
+  idleTimeoutMinutes: 30,
   maxSessionDurationHours: 8,
   sessionPromptMode: "notify",
   consentUnavailableBehavior: "proceed",

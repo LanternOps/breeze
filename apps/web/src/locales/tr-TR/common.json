@@ -1435,6 +1435,10 @@
             "description": "Bir bilet oluşturulduğunda tetiklenir.",
             "label": "Bilet Oluşturuldu"
           },
+          "ticketMerged": {
+            "description": "Bir bilet başka bir bilete birleştirildiğinde tetiklenir.",
+            "label": "Bilet Birleştirildi"
+          },
           "ticketCommented": {
             "description": "Bir bilete yorum veya not eklendiğinde tetiklenir.",
             "label": "Bilete Yorum Yapıldı"

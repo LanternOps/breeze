@@ -796,6 +796,10 @@ export interface PublicAgreementDetail {
   html: string | null;
   /** API-relative path '/agreements/public/<token>/file' (uploaded templates). */
   fileUrl: string | null;
+  /** API-relative path '/agreements/public/<token>/signed-copy' when THIS link
+   *  signed the agreement and its certified copy exists (#10695); null otherwise.
+   *  Absent on portal payloads, which download by signedAgreementId instead. */
+  signedCopyUrl?: string | null;
   parties: { partnerName: string; orgName: string | null };
   branding: {
     partnerName: string;

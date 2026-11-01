@@ -86,7 +86,7 @@ Every remote desktop session has a hard limit of **12 hours**, enforced both by 
   "Unlimited" is no longer a valid setting. A policy that stored `0` (formerly "no maximum") or a value above 12 hours now behaves as 12 hours, and saving a new value outside the 1–12 hour range is rejected. Existing policies keep working — they are simply capped.
 </Aside>
 
-The separate **Idle timeout** setting is unchanged, including `0` meaning "no idle timeout".
+The separate **Idle timeout** ends a desktop session after that many minutes with no mouse or keyboard input from the viewer. A device with no remote-access policy uses the Breeze Defaults value of **30 minutes**, and so does a policy that does not set an idle timeout. The policy editor offers 1, 2, 5, 10, 15 or 30 minutes. A policy written through the API or the AI tools accepts 1 to 1,440 minutes, and `0` means "no idle timeout". If the policy lookup itself fails when a session starts (for example, a database error), the session gets a restrictive fallback instead: clipboard off in both directions and a 5-minute idle timeout.
 
 ### Windows Session 0 Support
 

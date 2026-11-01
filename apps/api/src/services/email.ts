@@ -1,3 +1,4 @@
+import type { AlertOwnerKind } from '@breeze/shared';
 import nodemailer, { type Transporter } from 'nodemailer';
 import { Resend } from 'resend';
 import { captureException } from './sentry';
@@ -233,6 +234,8 @@ export interface AlertNotificationEmailParams {
   severity: AlertSeverity;
   summary: string;
   deviceName?: string;
+  subjectName?: string;
+  ownerKind?: AlertOwnerKind;
   occurredAt?: Date | string;
   dashboardUrl?: string;
   orgName?: string;
@@ -1370,19 +1373,21 @@ export function buildQuoteOutcomeTemplate(params: QuoteOutcomeEmailParams): Emai
 }
 
 function buildAlertNotificationTemplate(params: AlertNotificationEmailParams): EmailTemplate {
+  const subjectName = params.subjectName || params.deviceName;
+  const subjectLabel = params.ownerKind && params.ownerKind !== 'device' ? 'Subject' : 'Device';
   const severityLabel = params.severity.toUpperCase();
   const subject = `Alert ${severityLabel}: ${params.alertName}`;
   const timestamp = formatTimestamp(params.occurredAt);
   const { bg: pillBg, fg: pillFg } = alertSeverityPalette(params.severity);
   const preheader = [
     severityLabel,
-    params.deviceName ? `on ${params.deviceName}` : null,
+    subjectName ? `on ${subjectName}` : null,
     timestamp ? `at ${timestamp}` : null,
   ]
     .filter(Boolean)
     .join(' ');
   const details = [
-    params.deviceName ? `Device: ${params.deviceName}` : null,
+    subjectName ? `${subjectLabel}: ${subjectName}` : null,
     `Severity: ${severityLabel}`,
     timestamp ? `Detected: ${timestamp}` : null,
   ].filter(Boolean) as string[];
@@ -1412,7 +1417,7 @@ function buildAlertNotificationTemplate(params: AlertNotificationEmailParams): E
   const text = [
     `${params.alertName} (${severityLabel})`,
     params.summary,
-    params.deviceName ? `Device: ${params.deviceName}` : undefined,
+    subjectName ? `${subjectLabel}: ${subjectName}` : undefined,
     timestamp ? `Detected: ${timestamp}` : undefined,
     params.dashboardUrl ? `View details: ${params.dashboardUrl}` : undefined,
   ]

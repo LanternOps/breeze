@@ -56,6 +56,9 @@ export interface TicketComment {
   portalUserId: string | null;
   authorName: string | null;
   authorType: string | null;
+  /** Who wrote the row: 'user', 'ai_agent', 'service_principal', 'system', …
+   *  'system' marks a note Breeze posted itself (#9960). Absent on older payloads. */
+  originPrincipalKind?: string | null;
   commentType: 'comment' | 'internal' | 'status_change' | 'assignment' | 'time_entry' | 'system';
   content: string;
   isPublic: boolean;
