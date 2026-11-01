@@ -24,7 +24,10 @@ const idParam = z.object({ id: z.string().guid() });
 // invoice balance (to share with the customer). Gated on the partner's Stripe
 // Connect being active; 409 STRIPE_NOT_CONNECTED otherwise.
 invoiceStripeRoutes.post('/:id/pay-link', scopes, sendPerm, zValidator('param', idParam), async (c) => {
-  try { return c.json({ data: await createInvoicePayLink(c.req.valid('param').id, invoiceActorFrom(c)) }); }
+  try {
+    const id = c.req.valid('param').id;
+    return c.json({ data: await createInvoicePayLink(id, invoiceActorFrom(c)) });
+  }
   catch (err) { return handleServiceError(c, err); }
 });
 

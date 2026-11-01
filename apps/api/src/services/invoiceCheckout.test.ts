@@ -82,6 +82,8 @@ const { requireOrgAccessMock, requireSiteAccessMock } = vi.hoisted(() => ({
   requireOrgAccessMock: vi.fn(),
   requireSiteAccessMock: vi.fn(),
 }));
+const { billingGateMock } = vi.hoisted(() => ({ billingGateMock: vi.fn(async (_orgId: string) => undefined) }));
+vi.mock('./invoiceBillingGate', () => ({ assertInvoiceBillingEnabled: billingGateMock }));
 vi.mock('./invoiceService', () => ({
   requireOrgAccess: requireOrgAccessMock,
   requireSiteAccess: requireSiteAccessMock,
@@ -153,7 +155,39 @@ it('checked card payments retain card-only Checkout and a stable save-enabled re
     dbResults.length = 0;
     insertValuesMock.mockReset(); mappings.clear();
     prepareSaveMock.mockResolvedValue(null);
+    billingGateMock.mockReset(); billingGateMock.mockResolvedValue(undefined);
   });
+
+const sentInvoice = { id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent', currencyCode: 'USD', balance: '100.00', depositDue: null, amountPaid: '0.00', invoiceNumber: 'INV-BE' };
+
+it('billing off: 404 BILLING_DISABLED after the access checks and before any session', async () => {
+  dbResults.push([sentInvoice]);
+  billingGateMock.mockRejectedValueOnce(new InvoiceServiceError('Not found', 404, 'BILLING_DISABLED'));
+  await expect(createInvoicePayLink(INV_ID, actor)).rejects.toMatchObject({ status: 404, code: 'BILLING_DISABLED' });
+  expect(billingGateMock).toHaveBeenCalledWith(ORG_ID);
+  expect(sessionsCreateMock).not.toHaveBeenCalled();
+  expect(prepareSaveMock).not.toHaveBeenCalled();
+});
+
+it('another partner invoice answers the access error whether billing is on or off (no oracle)', async () => {
+  for (const off of [false, true]) {
+    dbResults.push([sentInvoice]);
+    requireOrgAccessMock.mockImplementationOnce(() => { throw new InvoiceServiceError('Access denied', 403, 'ORG_DENIED'); });
+    if (off) billingGateMock.mockRejectedValueOnce(new InvoiceServiceError('Not found', 404, 'BILLING_DISABLED'));
+    await expect(createInvoicePayLink(INV_ID, actor)).rejects.toMatchObject({ status: 403, code: 'ORG_DENIED' });
+  }
+  expect(billingGateMock).not.toHaveBeenCalled();
+});
+
+it('the public pay path opts out of the gate, so an issued invoice stays payable with billing off', async () => {
+  dbResults.push([sentInvoice], [{ id: '44444444-4444-4444-8444-444444444444' }], []);
+  getPartnerStripeClientMock.mockResolvedValue(partnerClient());
+  sessionsCreateMock.mockResolvedValue({ id: 'cs_pub', url: 'https://checkout.stripe.com/c/cs_pub', payment_intent: 'pi_pub' });
+  billingGateMock.mockRejectedValue(new InvoiceServiceError('Not found', 404, 'BILLING_DISABLED'));
+  const link = await createInvoicePayLink(INV_ID, actor, {}, { billingGate: false });
+  expect(link.url).toBe('https://checkout.stripe.com/c/cs_pub');
+  expect(billingGateMock).not.toHaveBeenCalled();
+});
 
 it('refuses a reserved invoice before calling Stripe', async () => {
   dbResults.push([{ id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent', currencyCode: 'USD', balance: '100.00' }]);

@@ -57,6 +57,7 @@ describe('resolveAcceptCheckoutUrl', () => {
       'inv-1',
       { userId: null, partnerId: null, accessibleOrgIds: ['o-1'] },
       { ...publicInvoiceCheckoutUrls(), ip: '203.0.113.9', userAgent: 'UA' },
+      { billingGate: false },
     );
   });
 

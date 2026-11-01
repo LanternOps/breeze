@@ -21,6 +21,7 @@ import { Hono } from 'hono';
 import { authMiddleware, requireScope, requirePermission, type AuthContext } from '../middleware/auth';
 import { hasPermission, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { getServiceManagementMode, type ServiceManagementMode } from '../services/serviceManagement';
+import { isBillingEnabledForPartner } from '../services/billingEnabled';
 import {
   loadAccountReadiness,
   resolveAcceptedOrgs,
@@ -56,13 +57,13 @@ export interface AccountReadinessCapabilities {
   contacts: boolean;
   /** users:read */
   portalUsers: boolean;
-  /** invoices:read AND service_management_mode = 'native' */
+  /** invoices:read AND partners.billing_enabled (independent of service_management_mode) */
   invoices: boolean;
   /** tickets:read AND service_management_mode = 'native' */
   tickets: boolean;
   /** W03: connected_apps:read. */
   integrations: boolean;
-  /** W03: contracts:read AND service_management_mode = 'native'. */
+  /** W03: contracts:read AND partners.billing_enabled (independent of service_management_mode). */
   contracts: boolean;
   /** W03: backup:read. */
   backup: boolean;
@@ -227,16 +228,20 @@ orgAccountReadinessRoutes.get(
     // SELECT policy.
     const serviceManagementMode = await getServiceManagementMode(partnerId);
     const native = serviceManagementMode === 'native';
+    // Billing surfaces (invoices/contracts) follow the partner billing master
+    // switch, not service_management_mode; tickets keep following the mode.
+    // Fails open to true (services/billingEnabled.ts).
+    const billingEnabled = await isBillingEnabledForPartner(partnerId);
     const capabilities: AccountReadinessCapabilities = {
       sites: can(PERMISSIONS.SITES_READ),
       devices: can(PERMISSIONS.DEVICES_READ),
       policies: true,
       contacts: true,
       portalUsers: can(PERMISSIONS.USERS_READ),
-      invoices: can(PERMISSIONS.INVOICES_READ) && native,
+      invoices: can(PERMISSIONS.INVOICES_READ) && billingEnabled,
       tickets: can(PERMISSIONS.TICKETS_READ) && native,
       integrations: can(PERMISSIONS.CONNECTED_APPS_READ),
-      contracts: can(PERMISSIONS.CONTRACTS_READ) && native,
+      contracts: can(PERMISSIONS.CONTRACTS_READ) && billingEnabled,
       backup: can(PERMISSIONS.BACKUP_READ),
     };
 

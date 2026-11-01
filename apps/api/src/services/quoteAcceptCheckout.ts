@@ -125,6 +125,7 @@ export async function resolveAcceptCheckoutUrl(
       res.invoiceId,
       { userId: null, partnerId: null, accessibleOrgIds: [res.quote.orgId] },
       { ...publicInvoiceCheckoutUrls(), ip: client.ip, userAgent: client.userAgent },
+      { billingGate: false },
     ))
     .then((link) => ({ url: link.url }), (err: unknown) => ({ err }));
 

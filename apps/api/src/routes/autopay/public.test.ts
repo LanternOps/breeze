@@ -11,6 +11,8 @@ vi.mock('../../services/autopay/consentText',()=>({withAcceptedAutopayDisclosure
 vi.mock('../../services/autopay/autopayGate',()=>({requireAutopayEnabled:()=>async(c:any,next:any)=>c.req.header('x-disabled')?c.json({code:'autopay_not_enabled'},404):next()}));
 vi.mock('../../services/clientIp',()=>({getTrustedClientIpOrUndefined:()=>undefined}));
 const sentry=vi.hoisted(()=>vi.fn());
+const confirm=vi.hoisted(()=>vi.fn());
+vi.mock('../../services/autopay/confirmPayment',async importOriginal=>({...await importOriginal<typeof import('../../services/autopay/confirmPayment')>(),confirmInvoicePayment:confirm}));
 vi.mock('../../services/sentry',()=>({captureException:sentry}));
 vi.mock('../../services/autopay/enrollmentLifecycle',()=>({withAutopayStopToken:h.stopToken}));
 import { InvoiceServiceError } from '../../services/invoiceTypes';
@@ -151,5 +153,26 @@ describe('client pages are told why a link cannot be used',()=>{
     expect(view.status).toBe(200);expect(await view.json()).toMatchObject({invoiceNumber:'INV-1'});
     const skipped=await app.request('/autopay/public/token/skip',{method:'POST',headers:{...headers,'x-disabled':'1'},body:'{}'});
     expect(skipped.status).toBe(200);expect(h.skip).toHaveBeenCalledOnce();
+  });
+});
+
+describe('public confirm with billing off',()=>{
+  it('answers BILLING_DISABLED without a log line or a Sentry event',async()=>{
+    const log=vi.spyOn(console,'error').mockImplementation(()=>{});
+    confirm.mockRejectedValueOnce(new InvoiceServiceError('Not found',404,'BILLING_DISABLED'));
+    const res=await app.request('/autopay/public/token/confirm',{method:'POST',headers,body:'{}'});
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({error:'Not found',code:'BILLING_DISABLED'});
+    expect(sentry).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalled();
+    log.mockRestore();
+  });
+  it('still reports an unexpected confirm failure',async()=>{
+    const log=vi.spyOn(console,'error').mockImplementation(()=>{});
+    confirm.mockRejectedValueOnce(new InvoiceServiceError('boom',409,'INVALID_STATE'));
+    const res=await app.request('/autopay/public/token/confirm',{method:'POST',headers,body:'{}'});
+    expect(res.status).toBe(409);
+    expect(sentry).toHaveBeenCalledOnce();
+    log.mockRestore();
   });
 });

@@ -12,6 +12,7 @@ import { toMinorUnits } from './stripeMoney';
 import { mapStripeCheckoutError } from './stripeCheckoutErrors';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { requireOrgAccess, requireSiteAccess } from './invoiceService';
+import { assertInvoiceBillingEnabled } from './invoiceBillingGate';
 import { assertNoPendingRevocation, markSessionRevocationRequestedInTx } from './stripeSessionRevocation';
 import { portalBase } from './portalUrl';
 import { assertNoHeldDbContextForStripe } from './stripeSettle';
@@ -117,6 +118,9 @@ export interface InvoiceCheckoutUrls {
 
 export async function createInvoicePayLink(
   invoiceId: string, actor: InvoiceActor, urls: InvoiceCheckoutUrls = {},
+  // Public pay links keep issued invoices payable with billing off (spec §3.8);
+  // every other caller is gated, after the access checks below.
+  opts: { billingGate?: boolean } = {},
 ): Promise<{ url: string; warning?: StripeCurrencyWarning }> {
   const [inv] = await withSystemDbAccessContext(() =>
     db.select({ ...getTableColumns(invoices), partnerName: partners.name }).from(invoices)
@@ -127,6 +131,7 @@ export async function createInvoicePayLink(
   // Site-axis guard: a site-restricted caller must not mint a pay link for an
   // out-of-site invoice. No-op for unrestricted (partner/system/portal) actors.
   requireSiteAccess(actor, inv.siteId);
+  if (opts.billingGate !== false) await withSystemDbAccessContext(() => assertInvoiceBillingEnabled(inv.orgId));
   await withSystemDbAccessContext(async () => {
     await assertNoActiveCollection(db, inv.id);
     // Card Pay starts a new payment: refuse it while Stripe holds money captured for this
