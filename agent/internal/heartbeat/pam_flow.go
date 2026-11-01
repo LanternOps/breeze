@@ -142,7 +142,7 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 			"targetWinSession", targetWinSession)
 	}
 	if outcome.Status == etwlua.ElevationDenied {
-		h.denyConsent(session, outcome.RequestID, "policy_denied", targetWinSession) // policy hard-deny, no dialog
+		h.denyConsent(session, outcome.RequestID, "policy_denied", targetWinSession, ev.Consent) // policy hard-deny, no dialog
 		return
 	}
 	if alreadyDeclined {
@@ -150,7 +150,7 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		// dialog, just keep the prompt dismissed.
 		log.Info("pam: request already declined by the user; dismissing without a dialog",
 			"elevationRequestId", outcome.RequestID)
-		h.denyConsent(session, outcome.RequestID, "user_already_declined", targetWinSession)
+		h.denyConsent(session, outcome.RequestID, "user_already_declined", targetWinSession, ev.Consent)
 		return
 	}
 
@@ -186,6 +186,13 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 			log.Warn("pam: dialog round-trip error; treating as deny", "elevationRequestId", outcome.RequestID, "error", dialogErr.Error())
 			// Keep dialogErr: pamWithdrawReason tells a timeout from a failure.
 			dialog = ipc.PamDialogResult{Approved: false, DismissedByUser: true, Reason: "dialog_roundtrip_error"}
+			// The helper's own dialog may still be open (the broker's timeout
+			// starts before the helper's countdown). Take it down before the
+			// deny below dismisses consent.exe (#10370). Only this path
+			// needs it: a user answer already closed the dialog, hard-deny
+			// shows none, and the prompt-host path above withdraws its own
+			// question (promptHost.Close) before returning.
+			h.closePamDialog(session, outcome.RequestID)
 		}
 	}
 
@@ -203,7 +210,7 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		if decision != nil {
 			decision.decline(pamdecline.ReasonDialogError)
 		}
-		h.denyConsent(session, outcome.RequestID, "unexpected_status", targetWinSession)
+		h.denyConsent(session, outcome.RequestID, "unexpected_status", targetWinSession, ev.Consent)
 		return
 	}
 
@@ -235,7 +242,7 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 			reason = declineReason
 		}
 		decision.decline(reason)
-		h.denyConsent(session, outcome.RequestID, dialog.Reason, targetWinSession)
+		h.denyConsent(session, outcome.RequestID, dialog.Reason, targetWinSession, ev.Consent)
 		h.kickPamWithdrawDrain()
 	case sessionbroker.PamActionAwaitRemote:
 		// The user approved; the technician's apply may now proceed.
@@ -274,21 +281,18 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 // denyConsent cancels the live consent.exe prompt and logs the denial.
 // targetWinSession is retained so gate recovery can re-locate a capable helper
 // after the original session dies mid-dismiss.
-func (h *Heartbeat) denyConsent(session *sessionbroker.Session, requestID, reason, targetWinSession string) {
+func (h *Heartbeat) denyConsent(session *sessionbroker.Session, requestID, reason, targetWinSession string, consent etwlua.ConsentInstance) {
 	if session == nil {
 		log.Warn("pam: deny enforcement FAILED — no SYSTEM helper session; consent.exe may still be live",
 			"elevationRequestId", requestID, "reason", reason)
 		return
 	}
 
-	dismiss := h.pamDismissConsent
+	dismiss := h.denyDismisser(session, requestID, targetWinSession, consent)
 	if dismiss == nil {
-		if h.sessionBroker == nil {
-			log.Warn("pam: deny enforcement FAILED — dismissal IPC unavailable; consent.exe may still be live",
-				"elevationRequestId", requestID, "reason", reason)
-			return
-		}
-		dismiss = h.sessionBroker.DismissPamConsent
+		log.Warn("pam: deny enforcement FAILED — dismissal IPC unavailable; consent.exe may still be live",
+			"elevationRequestId", requestID, "reason", reason)
+		return
 	}
 
 	var (
@@ -307,7 +311,9 @@ func (h *Heartbeat) denyConsent(session *sessionbroker.Session, requestID, reaso
 			alreadyUncertain = true
 			return
 		}
-		res, err = dismiss(session, requestID, pamDismissTimeout)
+		// Its own IPC id (#10370): the dialog round-trip used requestID, and a
+		// late pam_dialog_result must never be routed to this waiter.
+		res, err = dismiss(session, requestID+pamDenyDismissIDSuffix, pamDismissTimeout)
 		var uncertain *sessionbroker.PamDismissUncertainError
 		if errors.As(err, &uncertain) {
 			// Invariant: the broker always builds this error with a non-nil
