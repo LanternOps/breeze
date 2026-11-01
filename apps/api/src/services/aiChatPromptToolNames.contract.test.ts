@@ -12,6 +12,7 @@
  * the prompt fails here instead of reaching a model as a callable name.
  */
 import { describe, expect, it } from 'vitest';
+import { AI_RECORD_KINDS, type AiPageContext } from '@breeze/shared';
 import './aiTools'; // populates the registry
 import { aiTools, getAllRegisteredToolNames } from './aiTools';
 import { listChatSurfaceToolNames } from './aiAgentSdkTools';
@@ -20,9 +21,29 @@ import { AI_SYSTEM_PROMPT_DIAGNOSIS } from './aiAgentDiagnosisPrompt';
 import {
   composeStaticSystemPrompt,
   DOMAIN_NOTES,
-  PAGE_CONTEXT_TOOL_DOMAINS,
+  pageContextToolDomains,
   renderPageContextToolBlocks,
 } from './aiToolIndex';
+
+/**
+ * One page context per page type, plus one record page per record kind, so
+ * every branch of `pageContextToolDomains` renders into the scan. The
+ * `satisfies` clause fails to compile when a new page type is added without
+ * a fixture here.
+ */
+const PAGE_FIXTURES = {
+  device: { type: 'device', id: 'dddddddd-1111-4222-8333-444455556666', hostname: 'WS-01' },
+  alert: { type: 'alert', id: 'aaaaaaaa-1111-4222-8333-444455556666', title: 'Disk full' },
+  dashboard: { type: 'dashboard' },
+  custom: { type: 'custom', label: 'Custom page', data: {} },
+  topology: { type: 'topology', siteId: 'bbbbbbbb-1111-4222-8333-444455556666', subject: { kind: 'node', id: 'node-1' }, view: 'overview', graphRevision: 'rev-1' },
+} as const satisfies Record<Exclude<AiPageContext['type'], 'record'>, AiPageContext>;
+const PAGE_CONTEXTS: ReadonlyArray<[string, AiPageContext]> = [
+  ...Object.entries(PAGE_FIXTURES),
+  ...AI_RECORD_KINDS.map((kind): [string, AiPageContext] => [`record:${kind}`, {
+    type: 'record', kind, id: 'dddddddd-1111-4222-8333-444455556666', label: 'Record', orgId: 'aaaaaaaa-1111-4222-8333-444455556666',
+  }]),
+];
 
 // Same tool-shaped token as mcpGuidancePromptTools.test.ts: snake_case with at
 // least one underscore. camelCase fields and `manage_*` globs never match.
@@ -70,8 +91,8 @@ function chatPromptTexts(): Array<[string, string]> {
     ['composeStaticSystemPrompt(full)', composeStaticSystemPrompt(names, 'full')],
   ];
   for (const [domain, note] of Object.entries(DOMAIN_NOTES)) texts.push([`DOMAIN_NOTES.${domain}`, note ?? '']);
-  for (const page of Object.keys(PAGE_CONTEXT_TOOL_DOMAINS) as Array<keyof typeof PAGE_CONTEXT_TOOL_DOMAINS>) {
-    texts.push([`page:${page}`, renderPageContextToolBlocks(page, names)]);
+  for (const [page, ctx] of PAGE_CONTEXTS) {
+    texts.push([`page:${page}`, renderPageContextToolBlocks(ctx, names)]);
   }
   return texts;
 }
@@ -88,7 +109,10 @@ describe('chat system prompt names only real tools (#9855)', () => {
     const all = tokensOf(texts.map(([, text]) => text).join('\n'));
     expect(all).toContain('execute_command');
     expect(all).toContain('get_device_context');
-    expect(renderPageContextToolBlocks('device', listChatSurfaceToolNames()).length).toBeGreaterThan(0);
+    expect(texts.filter(([source]) => source.startsWith('page:')).map(([source]) => source)).toEqual(
+      expect.arrayContaining(['page:device', 'page:alert', 'page:record:ticket']),
+    );
+    expect(renderPageContextToolBlocks(PAGE_FIXTURES.device, listChatSurfaceToolNames()).length).toBeGreaterThan(0);
   });
 
   it('every tool-shaped token is a registered tool, a schema enum value or a reviewed non-tool term', () => {
