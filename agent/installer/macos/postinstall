@@ -178,12 +178,14 @@ for uid in $(ps -axo uid= -o comm= | grep -i '[lL]oginwindow' | awk '{print $1}'
     reload_launch_agent "gui/$uid" com.breeze.desktop-helper-user "$DESKTOP_USER_PLIST" || true
 done
 
-# The login-window helper. While anyone is logged in, every launchctl
-# operation on the loginwindow domain answers "Operation not permitted", even
-# as root, so trying would only log a false failure. Its plist has
-# LimitLoadToSessionType=LoginWindow, so launchd loads it itself at the next
-# login window. With nobody logged in (a headless Mac at the login window),
-# load it now; it is not booted out first (it never was), and an
+# The login-window helper. While anyone is logged in, launchctl print,
+# bootstrap and kickstart on the loginwindow domain all answer "Operation not
+# permitted", even as root (measured on the lab mini), so trying would only
+# log a false failure. Its plist has LimitLoadToSessionType=LoginWindow, so
+# launchd loads it from /Library/LaunchAgents at the next login window; a
+# login-window helper already running (Fast User Switching) keeps the old
+# binary until then. With nobody logged in (a headless Mac at the login
+# window), load it now; it is not booted out first (it never was), and an
 # already-loaded one is restarted onto the new binary.
 if [ "$gui_users" -eq 0 ]; then
     load_launch_agent loginwindow com.breeze.desktop-helper-loginwindow "$DESKTOP_LOGINWINDOW_PLIST" || true
