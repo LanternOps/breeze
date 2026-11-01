@@ -136,6 +136,16 @@ BEGIN
     RETURN NULL;
   END IF;
 
+  -- #10829: serialize with every other maintenance call before looking at the
+  -- stages, so the lock mode chosen below cannot be invalidated by a
+  -- concurrent prepare/compact/drop. The maintenance job already holds this
+  -- (advisory locks are reentrant for its session); a concurrent direct
+  -- caller fails fast instead of waiting.
+  IF NOT pg_try_advisory_xact_lock(hashtext('metric_rollup_maintenance')) THEN
+    RAISE EXCEPTION '%: another metric rollup maintenance run is in progress', 'breeze_prepare_metric_rollup_compaction'
+      USING ERRCODE = '55P03';
+  END IF;
+
   -- #10829: every lock this transaction needs on the FK-referenced tables, up
   -- front and without waiting. Dropping a stage takes ACCESS EXCLUSIVE on
   -- them; adding the NOT VALID FKs needs SHARE ROW EXCLUSIVE.
@@ -245,6 +255,15 @@ BEGIN
   IF NOT public.breeze_metric_rollup_is_legacy_month(v_target.o_name) THEN
     RETURN NULL;
   END IF;
+  -- #10829: serialize with every other maintenance call before looking at the
+  -- stages, so the lock mode chosen below cannot be invalidated by a
+  -- concurrent prepare/compact/drop. The maintenance job already holds this
+  -- (advisory locks are reentrant for its session); a concurrent direct
+  -- caller fails fast instead of waiting.
+  IF NOT pg_try_advisory_xact_lock(hashtext('metric_rollup_maintenance')) THEN
+    RAISE EXCEPTION '%: another metric rollup maintenance run is in progress', 'breeze_compact_metric_rollup_partition'
+      USING ERRCODE = '55P03';
+  END IF;
   FOREACH v_bucket IN ARRAY v_target.o_keep LOOP
     v_leaf := v_target.o_name || '_' || public.breeze_metric_rollup_bucket_suffix(v_bucket);
     IF NOT public.breeze_metric_rollup_is_staged_leaf(v_leaf) THEN
@@ -334,6 +353,16 @@ BEGIN
   END IF;
 
   v_name := format('metric_rollups_y%sm%s', to_char(v_start, 'YYYY'), to_char(v_start, 'MM'));
+
+  -- #10829: serialize with every other maintenance call before looking at the
+  -- stages, so the lock mode chosen below cannot be invalidated by a
+  -- concurrent prepare/compact/drop. The maintenance job already holds this
+  -- (advisory locks are reentrant for its session); a concurrent direct
+  -- caller fails fast instead of waiting.
+  IF NOT pg_try_advisory_xact_lock(hashtext('metric_rollup_maintenance')) THEN
+    RAISE EXCEPTION '%: another metric rollup maintenance run is in progress', 'breeze_drop_metric_rollup_partition'
+      USING ERRCODE = '55P03';
+  END IF;
 
   v_staged := public.breeze_metric_rollup_is_staged_leaf(v_name || '_1h')
            OR public.breeze_metric_rollup_is_staged_leaf(v_name || '_1d');

@@ -540,4 +540,33 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
     `)) as unknown as Array<{ n: number }>;
     expect(leftover[0]!.n).toBe(0);
   }, 30_000);
+
+  it('a direct call while another maintenance run holds the advisory lock fails fast instead of racing it (#10829)', async () => {
+    await createLegacyMonth(LEGACY_LOCK_MONTH);
+    const month = LEGACY_LOCK_MONTH.start;
+    const codeOf = (err: unknown) => {
+      const e = err as { code?: string; cause?: { code?: string } };
+      return e.cause?.code ?? e.code;
+    };
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('metric_rollup_maintenance'))`);
+      for (const call of [
+        sql`SELECT public.breeze_prepare_metric_rollup_compaction(${month}::timestamp, true)`,
+        sql`SELECT public.breeze_compact_metric_rollup_partition(${month}::timestamp, true)`,
+        sql`SELECT public.breeze_drop_metric_rollup_partition(${month}::timestamp)`,
+      ]) {
+        const started = Date.now();
+        const code = await withSystemDbAccessContext(() => db.execute(call)).then(
+          () => 'ok',
+          (err) => codeOf(err),
+        );
+        expect(code).toBe('55P03');
+        expect(Date.now() - started).toBeLessThan(2000);
+      }
+    });
+    // The month was left alone: no stage, still the flat table.
+    expect(await relkind(LEGACY_LOCK_MONTH.name)).toBe('r');
+
+    await dropMonth(LEGACY_LOCK_MONTH.name);
+  });
 });
