@@ -89,7 +89,7 @@ jobs:
       actions: read
     outputs:
       selection_mode: ${{ steps.queue_shadow.outputs.selection_mode || (github.event_name == 'pull_request' && 'pr' || 'full') }}
-      selection_reason: ${{ steps.queue_shadow.outputs.selection_reason }}
+      selection_reason: ${{ steps.queue_shadow.outputs.selection_reason || (steps.queue_shadow.outcome == 'failure' && 'shadow_step_failed') || '' }}
       code: ${{ steps.classify.outputs.code }}
       docs: ${{ steps.classify.outputs.docs }}
       agent: ${{ steps.classify.outputs.agent }}
@@ -5505,8 +5505,9 @@ jobs:
     name: Record CI Provenance
     runs-on: ubuntu-latest
     needs: [changes, ci-success]
-    if: github.event_name == 'pull_request' && needs.ci-success.result == 'success'
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.result == 'success' && needs.ci-success.result == 'success' }}
     continue-on-error: true
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -5542,4 +5543,4 @@ jobs:
           name: ci-provenance-attempt-${{ github.run_attempt }}
           path: provenance.json
           retention-days: 7
-          if-no-files-found: ignore
+          if-no-files-found: error

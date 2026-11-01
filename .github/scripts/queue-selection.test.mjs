@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { dirname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
@@ -70,9 +70,14 @@ test('floor applied to P ∪ delta', () => {
 });
 test('never-thinned jobs keep the full value', () => {
   assert.deepEqual(queue.nonGatingJobs(workflow), NEVER);
-  const out = select(['apps/web/src/x.ts'], []);
-  for (const name of NEVER) assert.equal(out.thin_jobs.includes(name), out.full_jobs.includes(name), name);
-  for (const name of ['smoke-test', 'portal-dev-e2e']) assert.ok(out.thin_jobs.includes(name));
+  const P = ['docs/queue-notes.md'], delta = ['docs/another-note.md'];
+  assert.equal(classify([...P, ...delta]).code, 'false');
+  for (const value of ['true', 'false']) {
+    const full = Object.fromEntries(Object.keys(classify(P)).map(key => [key, key === 'reader_tests' ? '' : value]));
+    const out = select(P, delta, full);
+    for (const name of NEVER) assert.equal(out.thin_jobs.includes(name), out.full_jobs.includes(name), name);
+    assert.equal(out.thin_jobs.includes('smoke-test'), value === 'true');
+  }
 });
 test('e2e specs: named → that job; config-selected → that job; otherwise unrun, not a fallback', () => {
   assert.deepEqual(queue.configRoutes(context).map(r => r.config).sort(), [
@@ -169,12 +174,16 @@ test('record writes every provenance field from the checked-out merge and base p
   assert.ok(io.calls.some(args => args.join(' ') === `diff --name-only --no-renames ${B} ${M}`));
   assert.ok(io.calls.some(args => args[0] === 'ls-tree' && args[1] === B));
 });
-test('record head mismatch removes stale output, writes nothing and logs why', () => {
+test('record head mismatch removes stale output and throws with both heads', () => {
   const io = recordIO(); const git = io.git;
   io.git = args => args[0] === 'rev-parse' && args[1].endsWith('^2') ? BASE : git(args);
   io.writes.set('provenance.json', 'stale');
-  assert.equal(queue.record(io, recordInput()), null);
-  assert.equal(io.writes.size, 0); assert.match(io.errors.join(' '), /head.*mismatch/i);
+  assert.throws(() => queue.record(io, recordInput()), error => {
+    assert.match(error.message, /head.*mismatch/i);
+    for (const value of [M, BASE, H]) assert.ok(error.message.includes(value));
+    return true;
+  });
+  assert.equal(io.writes.size, 0);
 });
 test('record with policy paths has a null digest and policy_in_files true', () => {
   const io = recordIO(); const git = io.git;
@@ -183,11 +192,18 @@ test('record with policy paths has a null digest and policy_in_files true', () =
   const r = JSON.parse(io.writes.get('provenance.json'));
   assert.equal(r.policy_digest, null); assert.equal(r.policy_in_files, true);
 });
-test('record writes nothing unless this PR attempt passed CI Success', () => {
-  for (const ciSuccess of ['failure', 'cancelled', 'skipped', '', undefined]) {
-    const io = recordIO(); queue.record(io, { ...recordInput(), ciSuccess }); assert.equal(io.writes.size, 0);
+test('record removes stale output and throws with the wrong event or CI Success result', () => {
+  for (const change of [...['failure', 'cancelled', 'skipped', '', undefined].map(ciSuccess => ({ ciSuccess })),
+    { event: 'merge_group' }, { event: undefined }]) {
+    const io = recordIO(), input = { ...recordInput(), ...change };
+    io.writes.set('provenance.json', 'stale');
+    assert.throws(() => queue.record(io, input), error => {
+      assert.ok(error.message.includes(`event=${JSON.stringify(input.event)}`));
+      assert.ok(error.message.includes(`ciSuccess=${JSON.stringify(input.ciSuccess)}`));
+      return true;
+    });
+    assert.equal(io.writes.size, 0);
   }
-  const io = recordIO(); queue.record(io, { ...recordInput(), event: 'merge_group' }); assert.equal(io.writes.size, 0);
 });
 test('validateRecord rejects each invalid provenance field and unparseable JSON', () => {
   for (const value of ['{', null, [], ...[
@@ -241,7 +257,7 @@ function shadowIO(options = {}) {
   const io = {
     now: () => now, stdout: line => logs.push(line), stderr: line => errors.push(line), logs, errors, calls, writes,
     append: (path, content) => writes.set(path, (writes.get(path) ?? '') + content),
-    records: () => [r], exists: path => path === '.github/workflows/ci.yml',
+    records: () => ({ records: [r], stats: { runs: 1, artifacts: 1, expired: 0, rejected: [] } }), exists: path => path === '.github/workflows/ci.yml',
     prHead: pr => { assert.equal(pr, 12); return H; },
     read: path => readFileSync(join(REPO_ROOT, path), 'utf8'),
     exec: (cmd, args, stdin) => { assert.equal(cmd, 'bash'); return execFileSync(cmd, args, { cwd: REPO_ROOT, input: stdin, encoding: 'utf8' }); },
@@ -250,8 +266,13 @@ function shadowIO(options = {}) {
       if (args[0] === 'rev-parse') throw Object.assign(Error('a squash queue commit has no second parent'), { status: 128 });
       if (args[0] === 'show') return String(now / 1000 - 3600);
       if (args[0] === 'merge-base') return '';
-      if (args[0] === 'rev-list') return '1';
-      if (args[0] === 'diff') return args.at(-1) === M ? 'apps/web/src/x.ts\n' : 'apps/api/src/routes/x.ts\n';
+      const answer = {
+        [`rev-list --count --first-parent ${B}..${BASE}`]: '1',
+        [`rev-list --count --first-parent ${BASE}..${M}`]: '1',
+        [`diff --name-only --no-renames ${B} ${BASE}`]: 'apps/api/src/routes/x.ts\n',
+        [`diff --name-only --no-renames ${BASE} ${M}`]: 'apps/web/src/x.ts\n',
+      }[args.join(' ')];
+      if (answer !== undefined) return answer;
       if (args[0] === 'ls-tree') { assert.equal(args[1], BASE); return tree; }
       if (args[0] === 'hash-object') return 'e'.repeat(40);
       throw Error(`Unexpected git: ${args}`);
@@ -304,7 +325,7 @@ test('shadow checks base blobs before executing classifier or reading selection 
   assert.equal(queue.shadowCore(io, input).reason, 'policy_not_at_base');
 });
 test('shadow validates artifact records, counts invalid ones, and never refreshes B age from created_at', () => {
-  const { io, input, r } = shadowIO(); io.records = () => ['{', rawRecord({ head_sha: BASE }), r];
+  const { io, input, r } = shadowIO(); io.records = () => ({ records: ['{', rawRecord({ head_sha: BASE }), r], stats: { runs: 3, artifacts: 3, expired: 0, rejected: [] } });
   assert.equal(queue.shadowCore(io, input).invalid_records, 2);
   r.created_at = '2099-01-01T00:00:00Z'; const git = io.git;
   io.git = args => args[0] === 'show' ? String(io.now() / 1000 - 12 * 3600 - 1) : git(args);
@@ -370,7 +391,8 @@ function artifactIO() {
 }
 test('artifact discovery paginates exact-head PR workflow runs and all attempt records', () => {
   const io = artifactIO();
-  const records = queue.readRecords(io, { repository: 'owner/repo', head: H, pr: 12 });
+  const { records, stats } = queue.readRecords(io, { repository: 'owner/repo', head: H, pr: 12 });
+  assert.deepEqual(stats, { runs: 1, artifacts: 3, expired: 1, rejected: [] });
   assert.equal(records.length, 2); assert.equal(queue.pickRecord(records, H).run_attempt, 2);
   assert.ok(io.calls[0][1].includes(`head_sha=${H}`));
   for (const args of io.calls.filter(a => a[0] === 'api')) { assert.ok(args.includes('--paginate')); assert.ok(args.includes('--slurp')); }
@@ -380,7 +402,7 @@ test('artifact discovery paginates exact-head PR workflow runs and all attempt r
 test('artifact discovery skips invalid JSON/identity but propagates download failures and cleans up', () => {
   for (const contents of ['{', JSON.stringify(rawRecord({ run_id: 999 }))]) {
     const io = artifactIO(); io.read = () => contents;
-    assert.equal(queue.pickRecord(queue.readRecords(io, { repository: 'owner/repo', head: H }), H), null);
+    assert.equal(queue.pickRecord(queue.readRecords(io, { repository: 'owner/repo', head: H }).records, H), null);
   }
   const io = artifactIO(), gh = io.gh;
   io.gh = args => { if (args[0] === 'run') throw Error('download failed'); return gh(args); };
@@ -403,15 +425,15 @@ const CHECKOUT_SHA = '3d3c42e5aac5ba805825da76410c181273ba90b1';
 const UPLOAD_SHA = 'cf430e030ddbb5b0abf93d22962f4752f3646cd9';
 test('changes adds bounded advisory shadow after byte-identical classify', () => {
   const body = job('changes');
-  assert.match(body, /permissions:\n      contents: read\n      pull-requests: read\n      actions: read/);
+  assert.equal(body.match(/^    permissions:\n([\s\S]*?)(?=^    [a-z][\w-]*:)/m)[1], '      contents: read\n      pull-requests: read\n      actions: read\n');
   assert.ok(body.includes("selection_mode: ${{ steps.queue_shadow.outputs.selection_mode || (github.event_name == 'pull_request' && 'pr' || 'full') }}"));
-  assert.ok(body.includes('selection_reason: ${{ steps.queue_shadow.outputs.selection_reason }}'));
+  assert.ok(body.includes("selection_reason: ${{ steps.queue_shadow.outputs.selection_reason || (steps.queue_shadow.outcome == 'failure' && 'shadow_step_failed') || '' }}"));
   assert.ok(body.indexOf('id: queue_shadow') > body.indexOf('id: classify'));
   assert.match(body, /fetch-depth: \$\{\{ github.event_name == 'merge_group' && '0' \|\| '1' \}\}/);
   const step = body.slice(body.indexOf('      - name: Queue selection shadow'));
   assert.match(step, /id: queue_shadow\n        if: github.event_name == 'merge_group'\n        continue-on-error: true\n        timeout-minutes: 5/);
   assert.ok(step.includes('FULL_SELECTION: ${{ toJSON(steps.classify.outputs) }}'));
-  assert.match(step, /run: \|\n          node \.github\/scripts\/queue-selection\.mjs shadow/);
+  assert.equal(step.match(/^        run: \|\n([\s\S]*?)(?=^        env:)/m)[1], '          node .github/scripts/queue-selection.mjs shadow\n');
   const classifyStep = body.match(/      - name: Classify changed files\n[\s\S]*?(?=\n      - name:|\n  # ─── Docs check)/)[0].trimEnd() + '\n';
   // Snapshot from origin/main, including the complete full_suite printf and env.
   assert.equal(createHash('sha256').update(classifyStep).digest('hex'), '72d1c815b5dc6b2cc89d6c2acf4d4b59c3ec03038c2f41a3c6896c5f9c95b99a');
@@ -427,10 +449,11 @@ test('no gate or CI Success reads advisory selection outputs', () => {
 test('provenance-record runs only after PR CI Success with exact permissions and upload contract', () => {
   const body = job('provenance-record');
   assert.ok(workflow.indexOf('  provenance-record:') > workflow.indexOf('  main-red-alert:'));
-  assert.match(body, /needs: \[changes, ci-success\]/);
-  assert.match(body, /if: github.event_name == 'pull_request' && needs.ci-success.result == 'success'/);
-  assert.match(body, /continue-on-error: true/);
-  assert.match(body, /permissions:\n      contents: read\n    steps:/);
+  assert.match(body, /^    needs: \[changes, ci-success\]$/m);
+  assert.deepEqual(body.split('\n').filter(line => line.startsWith('    if:')), ["    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.result == 'success' && needs.ci-success.result == 'success' }}"]);
+  assert.match(body, /^    continue-on-error: true$/m);
+  assert.match(body, /^    timeout-minutes: 10$/m);
+  assert.equal(body.match(/^    permissions:\n([\s\S]*?)(?=^    [a-z][\w-]*:)/m)[1], '      contents: read\n');
   assert.ok(body.includes(`uses: actions/checkout@${CHECKOUT_SHA}`));
   assert.match(body, /ref: \$\{\{ github.sha \}\}/); assert.match(body, /fetch-depth: 2/);
   assert.match(body, /persist-credentials: false/); assert.match(body, /sparse-checkout-cone-mode: false/);
@@ -438,7 +461,7 @@ test('provenance-record runs only after PR CI Success with exact permissions and
   assert.ok(body.includes(`uses: actions/upload-artifact@${UPLOAD_SHA} # v7`));
   assert.ok(body.includes('name: ci-provenance-attempt-${{ github.run_attempt }}'));
   assert.match(body, /path: provenance.json/); assert.match(body, /retention-days: 7/);
-  assert.match(body, /if-no-files-found: ignore/);
+  assert.match(body, /^          if-no-files-found: error$/m);
   assert.ok(body.includes('CI_SUCCESS_RESULT: ${{ needs.ci-success.result }}'));
   assert.ok(body.includes('FULL_SELECTION: ${{ toJSON(needs.changes.outputs) }}'));
   assert.match(body, /run: node \.github\/scripts\/queue-selection\.mjs record/);
@@ -482,13 +505,14 @@ test('real sparse queue checkout verifies base policy and computes shadow withou
   io.prHead = pr => { assert.equal(pr, 12); return head; };
   git('sparse-checkout', 'set', '--no-cone', '.github/scripts');
   assert.ok(!existsSync(join(dir, '.github/workflows/ci.yml')));
-  io.records = (requestedHead, pr) => { assert.equal(requestedHead, head); assert.equal(pr, 12); return [r]; };
+  io.records = (requestedHead, pr) => { assert.equal(requestedHead, head); assert.equal(pr, 12); return { records: [r], stats: { runs: 1, artifacts: 1, expired: 0, rejected: [] } }; };
   const logs = []; io.stdout = line => logs.push(line);
   const out = queue.runCLI(io, ['shadow'], { EVENT_NAME: 'merge_group', HEAD_REF: 'refs/heads/gh-readonly-queue/main/pr-12-deadbeef',
     HEAD_SHA: queueHead, BASE_SHA: parent, FULL_SELECTION: JSON.stringify(classify(r.files)) });
   assert.equal(out.mode, 'shadow', JSON.stringify(out)); assert.equal(out.B, base);
   assert.deepEqual(out.delta, ['apps/api/src/routes/x.ts']); assert.equal(logs.length, 1);
   assert.ok(!out.thin_jobs.includes('test-web')); assert.ok(out.thin_jobs.includes('build-web'));
+  assert.ok(out.thin_jobs.includes('build-api'), 'builds include the delta area');
 }));
 
 test('base policy digest is logged on policy fallbacks', () => {
@@ -522,4 +546,196 @@ test('record CLI takes event and attempt identity only from env', () => {
   const r = JSON.parse(io.writes.get('provenance.json'));
   assert.equal(r.head_sha, H); assert.equal(r.run_id, 100); assert.equal(r.run_attempt, 2);
   assert.deepEqual(r.selection, selection);
+});
+
+
+test('T6: only the two advisory outputs reference shadow, classifier gates are pinned', () => {
+  const keys = ['code', 'docs', 'agent', 'app', 'api', 'web', 'portal', 'addins', 'm365', 'rust',
+    'topology_browser', 'agent_code', 'integration', 'path_readers', 'reader_tests'];
+  const body = job('changes');
+  for (const key of keys) {
+    assert.deepEqual(body.split('\n').filter(line => line.startsWith(`      ${key}:`)),
+      [`      ${key}: \${{ steps.classify.outputs.${key} }}`]);
+  }
+  const outputLines = workflow.split('\n').filter(line => line.includes('steps.queue_shadow.outputs.'));
+  assert.equal(outputLines.length, 2);
+  for (const line of outputLines) assert.match(line, /^      selection_(mode|reason):/);
+  for (const key of ['selection_mode', 'selection_reason']) {
+    assert.equal(workflow.split(key).length - 1, 2, key);
+    assert.equal(outputLines.filter(line => line.startsWith(`      ${key}:`)).length, 1);
+  }
+});
+
+
+test('F3: record CLI exits 1 and removes a previous artifact on invalid run context', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'queue-record-cli-'));
+  try {
+    writeFileSync(join(dir, 'provenance.json'), 'stale');
+    const result = spawnSync(process.execPath, [join(REPO_ROOT, '.github/scripts/queue-selection.mjs'), 'record'], {
+      cwd: dir, encoding: 'utf8', env: { ...process.env, EVENT_NAME: 'merge_group', CI_SUCCESS_RESULT: 'failure', FULL_SELECTION: '{}' },
+    });
+    assert.equal(result.status, 1); assert.match(result.stderr, /event="merge_group".*ciSuccess="failure"/);
+    assert.ok(!existsSync(join(dir, 'provenance.json')));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('F5: shadow reports input.error before any workflow read', () => {
+  const { io, input } = shadowIO(); let reads = 0;
+  io.read = () => { reads++; throw Error('later ENOENT'); };
+  const out = queue.shadowCore(io, { ...input, error: Error('first cause') });
+  assert.equal(out.reason, 'error'); assert.equal(out.error, 'first cause'); assert.equal(reads, 0);
+});
+test('F5: CLI labels the first parse or sparse-checkout failure without masking it', () => {
+  for (const full of ['{', '{}']) {
+    const { io } = shadowIO(); let reads = 0, gitCalls = 0;
+    io.read = () => { reads++; throw Error('later ENOENT'); };
+    io.git = () => { gitCalls++; throw Error('fetch unavailable'); };
+    const out = queue.runCLI(io, ['shadow'], { EVENT_NAME: 'merge_group', FULL_SELECTION: full });
+    assert.equal(out.reason, 'error'); assert.equal(reads, 0);
+    if (full === '{') { assert.match(out.error, /^FULL_SELECTION parse failed: /); assert.equal(gitCalls, 0); }
+    else { assert.equal(out.error, 'sparse-checkout add failed: fetch unavailable'); assert.equal(gitCalls, 1); }
+  }
+});
+
+
+const DELTA_COUNT = `rev-list --count --first-parent ${B}..${BASE}`;
+const ENTRY_COUNT = `rev-list --count --first-parent ${BASE}..${M}`;
+const DELTA_DIFF = `diff --name-only --no-renames ${B} ${BASE}`;
+const ENTRY_DIFF = `diff --name-only --no-renames ${BASE} ${M}`;
+for (const [reason, command, answer] of [
+  ['too_many_merges', DELTA_COUNT, '41'],
+  ['policy_path_in_delta', DELTA_DIFF, '.github/actions/x/action.yml\n'],
+  ['entry_not_single_commit', ENTRY_COUNT, '2'],
+  ['empty_change_set', ENTRY_DIFF, ''],
+]) test(`T5: shadowCore ${reason} uses the exact git range`, () => {
+  const { io, input } = shadowIO(); const git = io.git;
+  io.git = args => args.join(' ') === command ? answer : git(args);
+  assert.equal(queue.shadowCore(io, input).reason, reason);
+});
+for (const reason of ['empty_change_set', 'no_pr_number', 'no_valid_record', 'not_merge_group']) {
+  test(`T5: shadowCore ${reason} input fallback`, () => {
+    const { io, input, r } = shadowIO(); let headCalls = 0; const prHead = io.prHead;
+    io.prHead = pr => { headCalls++; return prHead(pr); };
+    if (reason === 'empty_change_set') r.files = [];
+    if (reason === 'no_pr_number') input.headRef = 'not-a-queue-ref';
+    if (reason === 'no_valid_record') io.records = () => ({ records: [], stats: { runs: 0, artifacts: 0, expired: 0, rejected: [] } });
+    if (reason === 'not_merge_group') input.event = 'pull_request';
+    const out = queue.shadowCore(io, input);
+    assert.equal(out.mode, 'full'); assert.equal(out.reason, reason);
+    assert.equal(headCalls, ['empty_change_set', 'no_valid_record'].includes(reason) ? 1 : 0);
+    assert.deepEqual(out.thin_jobs, out.full_jobs);
+  });
+}
+test('F6: empty P is full, but a nonempty entry with no delta can still be shadow', () => {
+  const full = Object.fromEntries(Object.keys(classify(['apps/web/src/x.ts'])).map(key => [key, 'true']));
+  const out = select([], [], full);
+  assert.equal(out.reason, 'empty_change_set'); assert.deepEqual(out.thin_jobs, out.full_jobs);
+  for (const change of [{ record: { files: [] } }, { entryFiles: [] }]) {
+    assert.equal(queue.fallbackReason({ ...validFacts(), ...change }), 'empty_change_set');
+  }
+  const { io, input } = shadowIO(); const git = io.git;
+  io.git = args => args.join(' ') === DELTA_DIFF ? '' : git(args);
+  assert.equal(queue.shadowCore(io, input).mode, 'shadow');
+});
+test('F7: delta diff failures retain their git error while falling back', () => {
+  const { io, input } = shadowIO(); const git = io.git;
+  io.git = args => { if (args.join(' ') === DELTA_DIFF) throw Error('delta diff: missing base object'); return git(args); };
+  const out = queue.shadowCore(io, input);
+  assert.equal(out.reason, 'delta_uncomputable'); assert.equal(out.error, 'delta diff: missing base object');
+});
+
+
+test('F8: artifact diagnostics identify each rejected record and keep invalid_records', () => {
+  for (const [contents, why] of [
+    ['{', 'invalid_json'], [JSON.stringify(rawRecord({ schema: 2 })), 'invalid_record'],
+    [JSON.stringify(rawRecord({ run_id: 999 })), 'run_id_mismatch'],
+    [JSON.stringify(rawRecord({ run_attempt: 99 })), 'attempt_mismatch'],
+    [JSON.stringify(rawRecord({ pr_number: 99 })), 'pr_number_mismatch'], [null, 'missing_provenance'],
+  ]) {
+    const artifacts = artifactIO();
+    artifacts.read = path => contents === null || contents === '{' || why === 'attempt_mismatch' ? contents
+      : JSON.stringify({ ...JSON.parse(contents), run_attempt: JSON.parse(artifacts.records.get(path)).run_attempt });
+    if (contents === null) artifacts.exists = () => false;
+    const result = queue.readRecords(artifacts, { repository: 'owner/repo', head: H, pr: 12 });
+    assert.deepEqual(result.records, [null, null]);
+    assert.deepEqual(result.stats, { runs: 1, artifacts: 3, expired: 1, rejected: [
+      { run_id: 100, attempt: 1, why }, { run_id: 100, attempt: 2, why },
+    ] });
+    const { io, input } = shadowIO(); io.records = () => result;
+    const out = queue.shadow(io, input, { summary: 'summary' });
+    assert.equal(out.reason, 'no_valid_record'); assert.equal(out.invalid_records, 2);
+    assert.deepEqual(out.record_stats, result.stats);
+    assert.ok(io.logs[0].includes(`record_stats=${JSON.stringify(result.stats)}`));
+    assert.ok(io.writes.get('summary').includes(`record_stats=${JSON.stringify(result.stats)}`));
+  }
+});
+test('F8: no matching workflow runs produce zero diagnostic counts', () => {
+  const io = artifactIO(); io.gh = () => JSON.stringify([{ workflow_runs: [] }]);
+  assert.deepEqual(queue.readRecords(io, { repository: 'owner/repo', head: H }), {
+    records: [], stats: { runs: 0, artifacts: 0, expired: 0, rejected: [] },
+  });
+});
+test('F4: errors and missing records get warning annotations and complete single-line logs', () => {
+  for (const reason of ['error', 'no_valid_record']) {
+    const { io, input } = shadowIO();
+    if (reason === 'error') input.error = Error('first cause 50%\nsecond line');
+    else io.records = () => ({ records: [], stats: { runs: 2, artifacts: 1, expired: 1, rejected: [] } });
+    const out = queue.shadow(io, input, { summary: 'summary' });
+    assert.equal(out.reason, reason); assert.equal(io.logs.length, 1);
+    assert.equal(io.logs[0].split('\n').length, 1);
+    assert.ok(io.logs[0].includes(`error=${JSON.stringify(out.error ?? null)}`));
+    assert.ok(io.writes.get('summary').includes(`error=${JSON.stringify(out.error ?? null)}`));
+    const warnings = io.errors.filter(line => line.startsWith('::warning title=queue-selection shadow::'));
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0], `::warning title=queue-selection shadow::${reason}: ${reason === 'error'
+      ? 'first cause 50%25%0Asecond line' : JSON.stringify(out.record_stats)}`);
+  }
+  const { io, input } = shadowIO(); input.headRef = 'bad'; queue.shadow(io, input);
+  assert.equal(io.errors.filter(line => line.startsWith('::warning')).length, 0);
+});
+
+
+const areaNames = ['api', 'web', 'portal', 'addins', 'm365', 'rust', 'agent_code'];
+const activeAreas = paths => areaNames.filter(area => classify(paths)[area] === 'true');
+const DISJOINT_DELTA = ['apps/m365-graph-read-executor/src/a.ts'];
+const floorRules = context.floor.split('\n').map(line => line.split('#')[0].trim()).filter(Boolean);
+const onFloor = path => floorRules.some(rule => rule.endsWith('/') ? path.startsWith(rule) : path === rule);
+test('T2: same-area units run without same-file overlap, truly disjoint areas do not', () => {
+  const P = ['apps/web/src/a.ts'];
+  assert.deepEqual(activeAreas(P), ['api', 'web']);
+  assert.deepEqual(activeAreas(['apps/api/src/b.ts']), ['api']);
+  const same = select(P, ['apps/web/src/b.ts']);
+  assert.deepEqual(same.overlap, []); assert.ok(same.thin_jobs.includes('test-web'));
+  const api = select(P, ['apps/api/src/b.ts']);
+  assert.ok(api.thin_jobs.includes('test-api')); assert.ok(!api.thin_jobs.includes('test-web'));
+  assert.deepEqual(activeAreas(DISJOINT_DELTA), ['m365']);
+  assert.deepEqual(activeAreas(P).filter(area => activeAreas(DISJOINT_DELTA).includes(area)), []);
+  const disjoint = select(P, DISJOINT_DELTA);
+  assert.ok(!disjoint.thin_jobs.includes('test-web')); assert.ok(!disjoint.thin_jobs.includes('test-api'));
+});
+test('T3: own test routes actually select unit and non-floor integration jobs', () => {
+  const P = ['apps/web/src/x.test.tsx'];
+  assert.deepEqual(activeAreas(P).filter(area => activeAreas(DISJOINT_DELTA).includes(area)), []);
+  assert.ok(select(P, DISJOINT_DELTA).thin_jobs.includes('test-web'));
+  const includeBlock = context.integrationConfig.match(/include:\s*\[([\s\S]*?)\]/)[1].replace(/\/\/[^\n]*/g, '');
+  const candidates = [...includeBlock.matchAll(/['"]([^'"]+)['"]/g)].map(m => `apps/api/${m[1]}`);
+  const ownIntegration = candidates.find(path => !/[?*{]/.test(path) && !onFloor(path));
+  assert.ok(ownIntegration, 'derive an integration include not covered by the floor');
+  assert.deepEqual(queue.routeOwnTest(ownIntegration, context).jobs, ['integration-test']);
+  assert.ok(select([ownIntegration], []).thin_jobs.includes('integration-test'));
+});
+test('T4: API overlap runs integration only when both PR classifiers request it', () => {
+  const P = ['apps/api/src/services/a.ts'], delta = ['apps/api/src/routes/b.ts'], web = ['apps/web/src/b.ts'];
+  for (const path of [...P, ...delta, ...web]) assert.ok(!onFloor(path), path);
+  assert.equal(classify(P, true).integration, 'true'); assert.equal(classify(delta, true).integration, 'true');
+  assert.ok(select(P, delta).thin_jobs.includes('integration-test'));
+  assert.equal(classify(web).api, 'true'); assert.equal(classify(web, true).integration, 'false');
+  assert.ok(!select(P, web).thin_jobs.includes('integration-test'));
+});
+test('T7: self-gated migrations/docs and shared path-area units remain selected', () => {
+  assert.ok(select(['apps/api/migrations/zzz.sql'], []).thin_jobs.includes('check-migrations'));
+  assert.ok(select(['docs/queue-notes.md'], []).thin_jobs.includes('docs-check'));
+  assert.ok(select(['packages/shared/src/a.ts'], ['packages/shared/src/b.ts']).thin_jobs.includes('test-shared'));
+  assert.equal(classify(DISJOINT_DELTA).api, 'false');
+  assert.ok(select(DISJOINT_DELTA, ['apps/api/src/routes/x.ts']).thin_jobs.includes('build-api'), 'a build area present only in delta');
 });

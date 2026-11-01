@@ -50,7 +50,7 @@ Every green `pull_request` run leaves a **provenance record**. Every `merge_grou
   - **Never-thinned jobs** keep the full selection's value: every job `CI Success` does not gate on for a `pull_request` event, because a green PR run proves nothing about them. Derived from `ci.yml`, not hand-listed: (a) jobs absent from `ci-success`'s `needs:` (today `test-agent-race`, `rust-check-windows`, `portal-dev-e2e`), and (b) jobs whose `ci-success` assertion is guarded by `"${IS_PR}" != "true"` (today `build-smoke-images`, `smoke-test`, `guided-setup-smoke`, `workspace-runtime`). The test asserts the derived set equals those seven today (guards a parse miss) — a future job that joins either group is never-thinned automatically.
   - Any job the table below does not classify → kept (conservative), and the contract test fails so it gets classified.
 - **Job classes** (`JOB_CLASSES` in `queue-selection.mjs`): every job whose `if:` reads `needs.changes.outputs.*` is in exactly one class — `always`, `build`, `unit`, `integration`, `readers`, `never_thinned`, `self_gated` (jobs with their own change detection: `docs-check`, `mobile-native-changes`, `recovery-media-e2e`, `topology-browser-gate`, … evaluated on `classify(P ∪ Δ)`). A job's thin value = its own `if:` expression (parsed from `ci.yml`: only `needs.changes.outputs.X == 'true'`, `&&`, `||`, parentheses) evaluated against the flag set its class implies. The full value = the same expression evaluated against the real `changes` outputs. `would_skip` = full − thin, `would_add` = thin − full.
-- **Fallbacks → full** (`selection_mode=full`, `selection_reason=<reason>`): `not_merge_group`; `no_pr_number` (head_ref does not parse); `no_head_sha`; `no_valid_record`; `stale_base` (`B` older than 12 h at queue time); `too_many_merges` (> 40 first-parent commits in `B..base_sha`); `delta_uncomputable` (`B` not an ancestor of `base_sha`, or the diff fails); `policy_digest_mismatch` (`R.policy_digest` null or ≠ current); `policy_not_at_base`; `policy_path_in_p`; `policy_path_in_delta`; `entry_not_single_commit` (`git rev-list --count --first-parent base_sha..head_sha` ≠ 1 — the run covers more than this PR); `entry_outside_p` (the queue entry's own diff `base_sha..head_sha` changes a file not in `R.files` — the PR changed after its green run); `unrouted_own_test`; `error` (any exception, any non-zero git/gh call). Thresholds are exported constants (`MAX_BASE_AGE_HOURS = 12`, `MAX_DELTA_MERGES = 40`).
+- **Fallbacks → full** (`selection_mode=full`, `selection_reason=<reason>`): `not_merge_group`; `no_pr_number` (head_ref does not parse); `no_head_sha`; `no_valid_record`; `empty_change_set` (record files or the queue entry diff is empty); `stale_base` (`B` older than 12 h at queue time); `too_many_merges` (> 40 first-parent commits in `B..base_sha`); `delta_uncomputable` (`B` not an ancestor of `base_sha`, or the diff fails); `policy_digest_mismatch` (`R.policy_digest` null or ≠ current); `policy_not_at_base`; `policy_path_in_p`; `policy_path_in_delta`; `entry_not_single_commit` (`git rev-list --count --first-parent base_sha..head_sha` ≠ 1 — the run covers more than this PR); `entry_outside_p` (the queue entry's own diff `base_sha..head_sha` changes a file not in `R.files` — the PR changed after its green run); `unrouted_own_test`; `error` (any exception, any non-zero git/gh call). Thresholds are exported constants (`MAX_BASE_AGE_HOURS = 12`, `MAX_DELTA_MERGES = 40`).
 - **`selection_mode`** — new `changes` output, never read by any `if:` or by `ci-success`: `pr` on `pull_request`, `full` on any other event or on fallback, `shadow` on a merge-group run whose thin selection was computed (full still runs). `selection_reason` carries the fallback reason (empty for `shadow`/`pr`).
 
 ## File ownership (W4)
@@ -308,3 +308,21 @@ Work continues uncommitted on operator checkpoint `aa02d76858`.
   failing contract tests needed `provenance-record` in their docs-only exempt
   sets; added with reasons (the job runs after a green CI Success on any PR
   and is never a gate).
+
+### Review fix round
+
+- Applied F1–F8 on `4c14773a15`: visible non-gating provenance failures,
+  explicit scheduling/timeout/upload requirements, shadow-step failure reason,
+  first-cause errors and warnings, artifact diagnostics, and empty-change fallback.
+- Red → green (passed/failed): F1–F2 57/2 → 59/0; F3 57/3 → 60/0;
+  F5 targeted 0/2 → 2/0; F6–F7 68/4 → 72/0; F4/F8 52/23 → 75/0.
+  Strengthened T1–T7: 23 mutations killed in temporary copies; restored suite
+  79/0. Added a disjoint M365/API build case because web already sets api.
+- Artifact stats count matching PR workflow runs and named provenance artifacts;
+  expired artifacts are counted separately and rejected records carry reasons.
+  Operator squash-head derivation and entry_outside_p remain unchanged.
+- Final verification: combined Node suite 589/0; focused W4 suite 79/0;
+  workflow security 132/0; API contract 13/0; actionlint and diff checks passed.
+  No fixes skipped, no hard constraint conflicts, no read-only/app edits,
+  no services/processes left running, and no commits made. Live PR/queue
+  verification remains operator-owned.

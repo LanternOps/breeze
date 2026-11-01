@@ -148,6 +148,8 @@ function areas(paths, flags) {
 export function computeSelection({ P, delta, full, workflow, classify, floor, integrationConfig, playwrightConfigs }) {
   const jobs = workflowJobs(workflow);
   const full_jobs = Object.entries(jobs).filter(([, j]) => j.condition?.includes('needs.changes.outputs.') && evaluateIf(j.condition, full)).map(([n]) => n);
+  if (!P.length) return { mode: 'full', reason: 'empty_change_set', full_jobs, thin_jobs: full_jobs,
+    overlap: [], unrun_own_tests: [], would_skip: [], would_add: [] };
   const union = unique([...P, ...delta]);
   const classifyPaths = (paths, pr = false) => paths.length ? classify(paths, pr) : {};
   const combined = classifyPaths(union), pFlags = classifyPaths(P), dFlags = classifyPaths(delta);
@@ -193,6 +195,7 @@ export function fallbackReason(f) {
   if (!f.pr) return 'no_pr_number';
   if (!f.head) return 'no_head_sha';
   if (!f.record) return 'no_valid_record';
+  if (!f.record.files.length || f.entryFiles?.length === 0) return 'empty_change_set';
   // Prefer the actionable path reason over the deliberately null digest.
   if (f.record.files.some(policyPath)) return 'policy_path_in_p';
   if (f.ageHours > MAX_BASE_AGE_HOURS) return 'stale_base';
@@ -240,9 +243,9 @@ export function shadowCore(io, input) {
     invalid_records: 0, unrun_own_tests: [] };
   const stop = reason => ({ ...out, reason, thin_jobs: out.full_jobs });
   try {
+    if (input.error) throw input.error;
     const workflow = io.read('.github/workflows/ci.yml');
     out.full_jobs = fullJobs(workflow, input.full);
-    if (input.error) throw input.error;
     if (input.event !== 'merge_group') return stop('not_merge_group');
     out.pr = Number(input.headRef?.match(/(?:^|\/)pr-(\d+)-[a-f\d]+$/i)?.[1]) || null;
     if (!out.pr) return stop('no_pr_number');
@@ -252,7 +255,8 @@ export function shadowCore(io, input) {
     // entry diff is checked against the record's P below (entry_outside_p).
     out.head = String(io.prHead(out.pr)).trim();
     if (!sha(out.head)) return stop('no_head_sha');
-    const records = io.records(out.head, out.pr);
+    const { records, stats } = io.records(out.head, out.pr);
+    out.record_stats = stats;
     out.invalid_records = records.filter(r => !validateRecord(r, out.head)).length;
     const record = pickRecord(records, out.head);
     if (!record) return stop('no_valid_record');
@@ -272,7 +276,7 @@ export function shadowCore(io, input) {
     if (!Number.isSafeInteger(out.merges) || out.merges < 0) throw Error('Invalid merge count');
     if ((reason = fallbackReason(facts))) return stop(reason);
     try { out.delta = lines(io.git(['diff', '--name-only', '--no-renames', out.B, input.baseSha])); }
-    catch { return stop('delta_uncomputable'); }
+    catch (error) { return { ...stop('delta_uncomputable'), error: String(error.message ?? error) }; }
     facts.delta = out.delta;
     facts.entryCommits = Number(io.git(['rev-list', '--count', '--first-parent', `${input.baseSha}..${input.headSha}`]).trim());
     facts.entryFiles = lines(io.git(['diff', '--name-only', '--no-renames', input.baseSha, input.headSha]));
@@ -306,12 +310,12 @@ export function record(io, input) {
   const output = input.output ?? 'provenance.json';
   io.remove(output); // A re-run must never upload a previous attempt's file.
   if (input.event !== 'pull_request' || input.ciSuccess !== 'success') {
-    io.stderr('provenance: no successful PR CI Success in this attempt; nothing written'); return null;
+    throw Error(`provenance: event=${JSON.stringify(input.event)} ciSuccess=${JSON.stringify(input.ciSuccess)}; expected pull_request/success`);
   }
   if (!sha(input.mergeSha) || !sha(input.headSha)) throw Error('Invalid merge/head SHA');
   const base = io.git(['rev-parse', `${input.mergeSha}^1`]).trim();
   const head = io.git(['rev-parse', `${input.mergeSha}^2`]).trim();
-  if (head !== input.headSha) { io.stderr('provenance: merge/head mismatch; nothing written'); return null; }
+  if (head !== input.headSha) throw Error(`provenance: head mismatch: merge_sha=${input.mergeSha} M^2=${head} head_sha=${input.headSha}`);
   if (!sha(base)) throw Error('Invalid merge base');
   const files = lines(io.git(['diff', '--name-only', '--no-renames', base, input.mergeSha]));
   const policy_in_files = files.some(policyPath);
@@ -367,33 +371,52 @@ export function readRecords(io, { repository, head, pr }) {
   };
   const runs = pages(`repos/${repository}/actions/workflows/ci.yml/runs?event=pull_request&head_sha=${head}&per_page=100`);
   if (runs.some(page => page.total_count > 1000)) throw Error('Workflow run search truncated');
-  const records = [];
+  const records = [], stats = { runs: 0, artifacts: 0, expired: 0, rejected: [] };
+  // Counts cover matching PR workflow runs and named provenance artifacts.
   for (const run of runs.flatMap(page => page.workflow_runs)) {
     if (run.event !== 'pull_request' || run.head_sha !== head || run.path !== '.github/workflows/ci.yml') continue;
     if (!Number.isSafeInteger(run.id) || run.id <= 0) throw Error('Invalid run id');
+    stats.runs++;
     const artifacts = pages(`repos/${repository}/actions/runs/${run.id}/artifacts?per_page=100`).flatMap(page => page.artifacts);
     for (const artifact of artifacts) {
       const attempt = artifact.name.match(/^ci-provenance-attempt-([1-9]\d*)$/)?.[1];
-      if (!attempt || artifact.expired) continue;
+      if (!attempt) continue;
+      stats.artifacts++;
+      if (artifact.expired) { stats.expired++; continue; }
       const dir = io.temp();
       try {
         io.gh(['run', 'download', String(run.id), '--repo', repository, '--name', artifact.name, '--dir', dir]);
         const path = join(dir, 'provenance.json');
-        const r = validateRecord(io.exists(path) ? io.read(path) : null, head);
-        records.push(r && r.run_id === run.id && r.run_attempt === Number(attempt) && (!pr || r.pr_number === pr) ? r : null);
+        let r, why;
+        if (!io.exists(path)) why = 'missing_provenance';
+        else {
+          const text = io.read(path);
+          try { r = JSON.parse(text); } catch { why = 'invalid_json'; }
+        }
+        if (!why && !validateRecord(r, head)) why = 'invalid_record';
+        if (!why && r.run_id !== run.id) why = 'run_id_mismatch';
+        if (!why && r.run_attempt !== Number(attempt)) why = 'attempt_mismatch';
+        if (!why && pr && r.pr_number !== pr) why = 'pr_number_mismatch';
+        records.push(why ? null : r);
+        if (why) stats.rejected.push({ run_id: run.id, attempt: Number(attempt), why });
       } finally { io.remove(dir); }
     }
   }
-  return records;
+  return { records, stats };
 }
 export function shadow(io, input, { output, summary } = {}) {
   const out = shadowCore(io, input);
   const fields = ['pr', 'head', 'B', 'parent', 'age_h', 'merges', 'p', 'delta', 'overlap', 'thin_jobs', 'full_jobs',
-    'would_skip', 'would_add', 'invalid_records', 'unrun_own_tests', 'policy_digest', 'reader_tests'];
+    'would_skip', 'would_add', 'invalid_records', 'unrun_own_tests', 'policy_digest', 'reader_tests', 'error', 'record_stats'];
   const log = `queue-selection: mode=${out.mode} reason=${out.reason} ` +
     fields.map(key => `${key}=${JSON.stringify(out[key] ?? null)}`).join(' ');
   io.stdout(log);
   if (out.error) io.stderr(`queue-selection error: ${JSON.stringify(out.error)}`);
+  if (out.reason === 'error' || out.reason === 'no_valid_record') {
+    const detail = String(out.error ?? JSON.stringify(out.record_stats ?? null));
+    const escaped = detail.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+    io.stderr(`::warning title=queue-selection shadow::${out.reason}: ${escaped}`);
+  }
   if (output) io.append(output, `selection_mode=${out.mode}\nselection_reason=${out.reason}\n`);
   if (summary) io.append(summary, `### Queue selection (shadow only)\n\n\`\`\`text\n${log}\n\`\`\`\n`);
   return out;
@@ -406,11 +429,13 @@ export function runCLI(io, args, env) {
   const input = { event: env.EVENT_NAME, headRef: env.HEAD_REF, headSha: env.HEAD_SHA, baseSha: env.BASE_SHA, full: {} };
   try {
     input.full = JSON.parse(env.FULL_SELECTION);
+  } catch (error) { input.error = Error(`FULL_SELECTION parse failed: ${error.message ?? error}`); }
+  try {
     // Preserve changes' shallow PR checkout and its classify step exactly.
     // Materialize candidate files, then prove each policy blob equals the base.
-    io.git(['sparse-checkout', 'add', '.github/workflows', '.github/flaky-tests.json',
+    if (!input.error) io.git(['sparse-checkout', 'add', '.github/workflows', '.github/flaky-tests.json',
       'apps/api/vitest.integration.config.ts', 'e2e-tests/playwright.*.config.ts']);
-  } catch (error) { input.error = error; }
+  } catch (error) { input.error = Error(`sparse-checkout add failed: ${error.message ?? error}`); }
   return shadow(io, input, { output: env.GITHUB_OUTPUT, summary: env.GITHUB_STEP_SUMMARY });
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
