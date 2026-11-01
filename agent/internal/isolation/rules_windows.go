@@ -107,7 +107,7 @@ func tcpProcessPath(pid uint32) string {
 	if err != nil {
 		return ""
 	}
-	defer windows.CloseHandle(handle)
+	defer func() { _ = windows.CloseHandle(handle) }()
 	buf := make([]uint16, 32768)
 	size := uint32(len(buf))
 	if windows.QueryFullProcessImageName(handle, 0, &buf[0], &size) != nil {

@@ -45,7 +45,7 @@ func TestDeleteOwnedPreservesForeignObjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer foreign.Close()
+	defer func() { _ = foreign.Close() }()
 	provider := FilterKey("live-foreign-provider")
 	sublayer := FilterKey("live-foreign-sublayer")
 	filterKey := FilterKey("live-foreign-filter")
@@ -83,7 +83,11 @@ func TestDeleteOwnedPreservesForeignObjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Tx(func(tx *Tx) error { return tx.DeleteOwned() })
+	defer func() {
+		if err := s.Tx(func(tx *Tx) error { return tx.DeleteOwned() }); err != nil {
+			t.Errorf("cleanup DeleteOwned: %v", err)
+		}
+	}()
 	err = s.Tx(func(tx *Tx) error {
 		if e := tx.AddProvider(true); e != nil {
 			return e

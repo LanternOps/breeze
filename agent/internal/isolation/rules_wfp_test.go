@@ -195,7 +195,8 @@ func TestWindowsBaseline(t *testing.T) {
 					if p.Uint != 17 || !hasLocal || !hasRemote {
 						t.Fatalf("invalid DHCP: %+v", f)
 					}
-					if !((local.Uint == 68 && remote.Uint == 67) || (local.Uint == 67 && remote.Uint == 68) || (local.Uint == 546 && remote.Uint == 547) || (local.Uint == 547 && remote.Uint == 546)) {
+					validPair := (local.Uint == 68 && remote.Uint == 67) || (local.Uint == 67 && remote.Uint == 68) || (local.Uint == 546 && remote.Uint == 547) || (local.Uint == 547 && remote.Uint == 546)
+					if !validPair {
 						t.Fatalf("invalid DHCP port pair: %+v", f)
 					}
 				}

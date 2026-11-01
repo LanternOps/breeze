@@ -41,6 +41,12 @@ type windowsIsolator struct {
 	window     *windowsDropWindow
 }
 
+// windowsBinaryNames are the installed Breeze binaries that get app-scoped permits.
+var windowsBinaryNames = []string{
+	"breeze-agent.exe", "breeze-watchdog.exe", "breeze-desktop-helper.exe",
+	"breeze-user-helper.exe", "breeze-backup.exe",
+}
+
 // NewPlatformIsolator provides real WFP release and inspection, even while
 // capability remains zero. An older build must still release inherited rules.
 func NewPlatformIsolator() Isolator { return newWindowsIsolator(nil) }

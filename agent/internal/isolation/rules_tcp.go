@@ -67,7 +67,7 @@ func selectTCPRowsToDelete(rows []tcpRow, rs ResolvedSpec, bins []string, baseli
 			if entry.Proto != ProtoTCP && entry.Proto != ProtoUDPTCP {
 				continue
 			}
-			if entry.Scope != ScopeAny && !(entry.Scope == ScopeBreeze && breeze) {
+			if entry.Scope != ScopeAny && (entry.Scope != ScopeBreeze || !breeze) {
 				continue
 			}
 			if !slices.Contains(entry.Ports, row.Remote.Port()) {

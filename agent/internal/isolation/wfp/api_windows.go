@@ -52,7 +52,8 @@ func free(p unsafe.Pointer) {
 	if p == nil {
 		return
 	}
-	freeMemory.Call(uintptr(unsafe.Pointer(&p)))
+	// FwpmFreeMemory0 returns void; there is no status to check.
+	_, _, _ = freeMemory.Call(uintptr(unsafe.Pointer(&p)))
 }
 
 // AppIDFromPath asks WFP for its canonical device-path application identifier.

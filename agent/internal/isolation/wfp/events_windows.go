@@ -66,23 +66,23 @@ func SubscribeClassifyDrops(filterIDs []uint64) (<-chan DropEvent, func(), error
 	if collection.users == 0 {
 		var old *nativeValue
 		if err = invoke(engineGetOption, s.handle, 0, uintptr(unsafe.Pointer(&old))); err != nil {
-			s.Close()
+			_ = s.Close() // already returning the primary error
 			return nil, nil, err
 		}
 		if old == nil {
-			s.Close()
+			_ = s.Close() // already returning the primary error
 			return nil, nil, fmt.Errorf("FwpmEngineGetOption0 returned nil value")
 		}
 		if old.Type != 3 {
 			free(unsafe.Pointer(old))
-			s.Close()
+			_ = s.Close() // already returning the primary error
 			return nil, nil, fmt.Errorf("FwpmEngineGetOption0 returned unexpected option type")
 		}
 		collection.previous = uintptr(old.uint32())
 		free(unsafe.Pointer(old))
 		if collection.previous == 0 {
 			if err = setCollection(s, 1); err != nil {
-				s.Close()
+				_ = s.Close() // already returning the primary error
 				return nil, nil, err
 			}
 		}
@@ -106,7 +106,7 @@ func SubscribeClassifyDrops(filterIDs []uint64) (<-chan DropEvent, func(), error
 				slog.Error("restore WFP net-event collection after subscription failure", "error", e)
 			}
 		}
-		s.Close()
+		_ = s.Close() // already returning the primary error
 		return nil, nil, err
 	}
 	collection.users++

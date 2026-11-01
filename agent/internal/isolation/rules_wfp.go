@@ -31,11 +31,6 @@ const (
 	windowsBlockWeight  uint64 = 1
 )
 
-var windowsBinaryNames = []string{
-	"breeze-agent.exe", "breeze-watchdog.exe", "breeze-desktop-helper.exe",
-	"breeze-user-helper.exe", "breeze-backup.exe",
-}
-
 // buildWindowsRules is deliberately portable: no filesystem access, name
 // resolution or native app-ID conversion can change a policy in this builder.
 // Boot-time policy contains only the system baseline, never a destination-only
