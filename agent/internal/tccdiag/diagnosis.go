@@ -50,7 +50,8 @@ const (
 	VerdictNotGranted Verdict = "not_granted"
 	// VerdictUnexplained: an allowed row whose requirement this code
 	// satisfies, yet the check denied. The cause is outside the TCC row
-	// (for example the responsible process); the row is not it.
+	// (for example the responsible process); the row is not it. Overall,
+	// only when every denied service is in this state.
 	VerdictUnexplained Verdict = "unexplained"
 	// VerdictUnobservable: the row could not be read (no Full Disk Access)
 	// or its requirement could not be evaluated.
@@ -58,13 +59,15 @@ const (
 )
 
 // verdictRank orders verdicts for the overall verdict: a definite cause
-// outranks "the row looks fine", which outranks "could not see".
+// outranks "could not see", which outranks "the rows look fine". Unexplained
+// is the overall verdict only when every denied service was seen and its row
+// matched; one unseen service could hold the cause.
 var verdictRank = map[Verdict]int{
 	VerdictRequirementMismatch: 0,
 	VerdictLegacyRowNoCsreq:    1,
 	VerdictNotGranted:          2,
-	VerdictUnexplained:         3,
-	VerdictUnobservable:        4,
+	VerdictUnobservable:        3,
+	VerdictUnexplained:         4,
 }
 
 // Service is a TCC service name as stored in the access table.
@@ -229,6 +232,19 @@ func Diagnose(env Env, services []Service) Diagnosis {
 		Signing:        env.Code.Signing(),
 	}
 
+	if len(env.Clients) == 0 {
+		// Nothing to look up: an empty query would read as "no row".
+		for _, svc := range services {
+			d.Services = append(d.Services, ServiceDiagnosis{
+				Service: svc,
+				Error:   "executable path unknown; no TCC client to look up",
+				Verdict: VerdictUnobservable,
+			})
+		}
+		d.Verdict = overallVerdict(d.Services)
+		return d
+	}
+
 	systemRows, systemErr := env.Rows.ReadRows(env.SystemDB, env.Clients, services)
 	var userRows []Row
 	var userErr error
@@ -326,9 +342,12 @@ func deriveServiceVerdict(s ServiceDiagnosis) Verdict {
 	}
 }
 
-// overallVerdict is the most definite of the services' verdicts.
+// overallVerdict is the highest-ranked of the services' verdicts.
 func overallVerdict(services []ServiceDiagnosis) Verdict {
-	best := VerdictUnobservable
+	if len(services) == 0 {
+		return VerdictUnobservable
+	}
+	best := VerdictUnexplained
 	for _, s := range services {
 		if r, ok := verdictRank[s.Verdict]; ok && r < verdictRank[best] {
 			best = s.Verdict

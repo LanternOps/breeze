@@ -253,12 +253,10 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 	wasAllGranted := false
 	firstCheck := true
 	promptFile := tccPromptFilePath()
+	var denials denialLog
 
 	check := func() {
-		status := checkTCCPermissions(desktopContext, policy.promptAccessibility, policy.reportRemoteDesktop)
-		if policy.diagnoseDenial {
-			attachDenialVerdict(status)
-		}
+		status := collectTCCStatus(policy, desktopContext, &denials)
 		allGranted = len(missingPermissions(status)) == 0
 		if err := sendTCCStatus(conn, status, &seq); err != nil {
 			consecutiveFailures++
@@ -330,6 +328,16 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 			}
 		}
 	}
+}
+
+// collectTCCStatus is one loop check: the permission state, plus the denial
+// verdict (#10300) when the policy allows it.
+func collectTCCStatus(policy tccLoopPolicy, desktopContext string, denials *denialLog) *ipc.TCCStatus {
+	status := checkTCCPermissions(desktopContext, policy.promptAccessibility, policy.reportRemoteDesktop)
+	if policy.diagnoseDenial {
+		denials.observe(attachDenialVerdict(status))
+	}
+	return status
 }
 
 // requestScreenRecordingAtLoopStart raises the Screen Recording consent

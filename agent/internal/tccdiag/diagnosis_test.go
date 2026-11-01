@@ -47,7 +47,9 @@ func TestOverallVerdict(t *testing.T) {
 		{"legacy outranks not granted", []Verdict{VerdictNotGranted, VerdictLegacyRowNoCsreq}, VerdictLegacyRowNoCsreq},
 		{"mismatch outranks legacy", []Verdict{VerdictLegacyRowNoCsreq, VerdictRequirementMismatch}, VerdictRequirementMismatch},
 		{"not granted outranks unexplained", []Verdict{VerdictUnexplained, VerdictNotGranted}, VerdictNotGranted},
-		{"unexplained outranks unobservable", []Verdict{VerdictUnobservable, VerdictUnexplained}, VerdictUnexplained},
+		// "The rows are fine" holds only when every denied service was seen.
+		{"unobservable outranks unexplained", []Verdict{VerdictUnexplained, VerdictUnobservable}, VerdictUnobservable},
+		{"all unexplained", []Verdict{VerdictUnexplained, VerdictUnexplained}, VerdictUnexplained},
 		{"all unobservable", []Verdict{VerdictUnobservable, VerdictUnobservable}, VerdictUnobservable},
 	}
 	for _, tc := range cases {
@@ -319,5 +321,23 @@ func TestDiagnosis_LogAttrsCarryVerdictAndBothRequirements(t *testing.T) {
 		if flat[k] != v {
 			t.Errorf("%s = %q, want %q (all: %v)", k, flat[k], v, flat)
 		}
+	}
+}
+
+// No executable path means nothing to look up: an empty query must not read
+// as "no row, so not granted".
+func TestDiagnose_NoClientPathIsUnobservable(t *testing.T) {
+	code := &fakeCode{signing: Signing{Kind: SigningDeveloperID}}
+	rows := &fakeRows{dbs: map[string][]Row{systemDB: nil}}
+	env := baseEnv(code, rows)
+	env.Clients = nil
+
+	d := Diagnose(env, []Service{ServiceScreenCapture})
+
+	if d.Verdict != VerdictUnobservable || d.Services[0].Error == "" {
+		t.Fatalf("diagnosis = %+v, want unobservable with a reason", d)
+	}
+	if len(rows.reads) != 0 {
+		t.Fatalf("read %v with no client to look up", rows.reads)
 	}
 }

@@ -215,6 +215,9 @@ func TestCollectProbeOutput_GrantedRunsNoDiagnosis(t *testing.T) {
 	if attrs := fmt.Sprint(startupProbeLogAttrs(out)); strings.Contains(attrs, "tccVerdict") {
 		t.Fatalf("granted startup line carries a verdict: %s", attrs)
 	}
+	if b, _ := json.Marshal(out); strings.Contains(string(b), "tccDiagnosis") {
+		t.Fatalf("granted probe JSON carries tccDiagnosis: %s", b)
+	}
 }
 
 // #10300 / #5953 Host B: preflight says denied, so the startup probe explains
@@ -252,6 +255,9 @@ func TestCollectProbeOutput_PreflightDeniedIsDiagnosed(t *testing.T) {
 			attrs := fmt.Sprint(startupProbeLogAttrs(out))
 			if !strings.Contains(attrs, "tccVerdict requirement_mismatch") || !strings.Contains(attrs, "24H32") {
 				t.Fatalf("startup line lacks the diagnosis: %s", attrs)
+			}
+			if b, _ := json.Marshal(out); !strings.Contains(string(b), `"tccDiagnosis":{"verdict":"requirement_mismatch"`) {
+				t.Fatalf("probe JSON lacks tccDiagnosis: %s", b)
 			}
 		})
 	}

@@ -25,18 +25,20 @@ type signingFacts struct {
 	devIDStatus   int32 // SecCodeCheckValidity against the Developer ID requirement
 }
 
+// classifySigning names the signature. Only Security.framework saying
+// errSecCSUnsigned makes a binary "unsigned"; signing information that could
+// not be read or copied out is "unknown", never a guess.
 func classifySigning(f signingFacts) SigningKind {
 	switch {
-	case f.drUnsigned:
+	case f.drUnsigned, f.devIDStatus == errSecCSUnsigned:
 		return SigningUnsigned
-	case !f.infoOK:
+	case f.devIDStatus == 0:
+		// The Developer ID requirement held: nothing else can be true.
+		return SigningDeveloperID
+	case !f.infoOK, !f.hasIdentifier, !f.hasFlags:
 		return SigningUnknown
-	case !f.hasIdentifier:
-		return SigningUnsigned
 	case f.adhoc:
 		return SigningAdhoc
-	case f.devIDStatus == 0:
-		return SigningDeveloperID
 	case f.devIDStatus == errSecCSReqFailed:
 		return SigningOther
 	default:

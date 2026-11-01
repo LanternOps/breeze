@@ -78,16 +78,40 @@ var tccDiagnoseFn = tccdiag.Run
 // attachDenialVerdict names the cause of a Screen Recording or Accessibility
 // denial in status. A grant, and macOS 26's unverified Screen Recording state
 // (preflight can misreport there, #8390), are not denials and cost nothing.
-func attachDenialVerdict(status *ipc.TCCStatus) {
+// It returns the diagnosis, or nil when nothing is denied.
+func attachDenialVerdict(status *ipc.TCCStatus) *tccdiag.Diagnosis {
 	if status == nil {
-		return
+		return nil
 	}
 	services := tccdiag.DeniedServices(
 		status.ScreenRecordingState == desktop.CaptureAccessDenied.String(),
 		!status.Accessibility,
 	)
 	if len(services) == 0 {
-		return
+		return nil
 	}
-	status.DenialVerdict = string(tccDiagnoseFn(services).Verdict)
+	d := tccDiagnoseFn(services)
+	status.DenialVerdict = string(d.Verdict)
+	return &d
+}
+
+// denialLog logs the TCC loop's diagnosis in full when its verdict changes.
+// Only the one-word verdict travels to the agent, so this line is where the
+// evidence behind a verdict reached after startup (or a changed one) lands.
+type denialLog struct{ last tccdiag.Verdict }
+
+// observe logs d when its verdict differs from the last one logged and
+// reports whether it did. A nil d (nothing denied) resets, so a later denial
+// is logged again.
+func (l *denialLog) observe(d *tccdiag.Diagnosis) bool {
+	if d == nil {
+		l.last = ""
+		return false
+	}
+	if d.Verdict == l.last {
+		return false
+	}
+	l.last = d.Verdict
+	log.Info("TCC denial diagnosis", d.LogAttrs()...)
+	return true
 }

@@ -40,7 +40,10 @@ func TestAttachDenialVerdict(t *testing.T) {
 			}
 
 			status := tc.status
-			attachDenialVerdict(&status)
+			d := attachDenialVerdict(&status)
+			if (d != nil) != (tc.wantServices != nil) {
+				t.Fatalf("attachDenialVerdict returned %+v, want a diagnosis only on a denial", d)
+			}
 
 			if status.DenialVerdict != tc.wantVerdict {
 				t.Fatalf("DenialVerdict = %q, want %q", status.DenialVerdict, tc.wantVerdict)
@@ -56,5 +59,31 @@ func TestAttachDenialVerdict(t *testing.T) {
 }
 
 func TestAttachDenialVerdictNilStatus(t *testing.T) {
-	attachDenialVerdict(nil)
+	if d := attachDenialVerdict(nil); d != nil {
+		t.Fatalf("diagnosed a nil status: %+v", d)
+	}
+}
+
+// The loop's diagnosis is logged in full once per verdict change, so the
+// evidence behind a later or changed verdict reaches the logs too, without a
+// line every two minutes.
+func TestDenialLogLogsOnVerdictChange(t *testing.T) {
+	mismatch := &tccdiag.Diagnosis{Verdict: tccdiag.VerdictRequirementMismatch}
+	unobservable := &tccdiag.Diagnosis{Verdict: tccdiag.VerdictUnobservable}
+	steps := []struct {
+		d    *tccdiag.Diagnosis
+		want bool
+	}{
+		{mismatch, true},
+		{mismatch, false},
+		{unobservable, true},
+		{nil, false}, // granted again
+		{unobservable, true},
+	}
+	var l denialLog
+	for i, st := range steps {
+		if got := l.observe(st.d); got != st.want {
+			t.Fatalf("step %d: observe(%+v) logged=%t, want %t", i, st.d, got, st.want)
+		}
+	}
 }

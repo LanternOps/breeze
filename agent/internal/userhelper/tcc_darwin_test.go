@@ -10,6 +10,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
+	"github.com/breeze-rmm/agent/internal/tccdiag"
 )
 
 // maybeRequestScreenRecording must never raise the macOS consent dialog when we
@@ -184,5 +185,30 @@ func TestRequestScreenRecordingAtLoopStart_OnlyDesktopHelper(t *testing.T) {
 				t.Fatalf("consent dialog requested = %v, want %v", requested, tc.want)
 			}
 		})
+	}
+}
+
+// #10300: the loop step attaches the verdict only for the desktop helper's
+// policy; any other helper's status is dropped by the broker, so it must not
+// pay for a diagnosis.
+func TestCollectTCCStatusDiagnosesOnlyUnderPolicy(t *testing.T) {
+	saveAccess, saveDiag := captureAccessFn, tccDiagnoseFn
+	t.Cleanup(func() { captureAccessFn, tccDiagnoseFn = saveAccess, saveDiag })
+	captureAccessFn = func(string) desktop.CaptureAccessReport {
+		return desktop.CaptureAccessReport{State: desktop.CaptureAccessDenied, Reason: "preflight"}
+	}
+	calls := 0
+	tccDiagnoseFn = func([]tccdiag.Service) tccdiag.Diagnosis {
+		calls++
+		return tccdiag.Diagnosis{Verdict: tccdiag.VerdictRequirementMismatch}
+	}
+
+	// promptAccessibility stays false: no consent prompt from a test.
+	var dl denialLog
+	if st := collectTCCStatus(tccLoopPolicy{diagnoseDenial: true}, "", &dl); st.DenialVerdict != "requirement_mismatch" || calls != 1 {
+		t.Fatalf("desktop policy: verdict %q after %d diagnoses, want requirement_mismatch once", st.DenialVerdict, calls)
+	}
+	if st := collectTCCStatus(tccLoopPolicy{}, "", &dl); st.DenialVerdict != "" || calls != 1 {
+		t.Fatalf("other helper: verdict %q after %d diagnoses, want none", st.DenialVerdict, calls)
 	}
 }

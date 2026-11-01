@@ -192,6 +192,7 @@ const SystemTCCDatabase = "/Library/Application Support/com.apple.TCC/TCC.db"
 
 // Run diagnoses a denial of services for the running process.
 func Run(services []Service) Diagnosis {
+	// On failure exe is "" and Diagnose reports every service unobservable.
 	exe, _ := os.Executable()
 	var userDB string
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
@@ -269,8 +270,16 @@ func readSelfSigning() Signing {
 		adhoc:         raw.hasFlags != 0 && raw.flags&kSecCodeSigAdhoc != 0,
 		devIDStatus:   int32(raw.devIDStatus),
 	})
-	if s.Kind == SigningUnknown && raw.devIDStatus != 0 && raw.devIDStatus != errSecCSReqFailed && raw.devIDStatus != errSecCSUnsigned {
-		problems = append(problems, fmt.Sprintf("SecCodeCheckValidity(Developer ID): OSStatus %d", int32(raw.devIDStatus)))
+	if s.Kind == SigningUnknown {
+		if raw.infoStatus == 0 && s.Identifier == "" {
+			problems = append(problems, "signing information has no readable identifier")
+		}
+		if raw.infoStatus == 0 && raw.hasFlags == 0 {
+			problems = append(problems, "signing information has no readable flags")
+		}
+		if raw.devIDStatus != 0 && raw.devIDStatus != errSecCSReqFailed && raw.devIDStatus != errSecCSUnsigned {
+			problems = append(problems, fmt.Sprintf("SecCodeCheckValidity(Developer ID): OSStatus %d", int32(raw.devIDStatus)))
+		}
 	}
 	s.Error = strings.Join(problems, "; ")
 	return s

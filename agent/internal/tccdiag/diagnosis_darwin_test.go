@@ -8,9 +8,25 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// skipOrFail skips locally but fails in CI: these are the only tests that
+// reach the real Security.framework and SQLite, so the macOS race job must
+// not go green without running them.
+func skipOrFail(t *testing.T, why string) {
+	t.Helper()
+	if os.Getenv("CI") != "" {
+		t.Fatalf("would skip in CI: %s", why)
+	}
+	t.Skip(why)
+}
+
+// wantAdhocTestBinary reports whether the test binary carries the arm64
+// linker's ad-hoc signature, which every arm64 build has.
+func wantAdhocTestBinary() bool { return runtime.GOARCH == "arm64" }
 
 // These run the real Security.framework and SQLite calls against the test
 // binary, which is ad-hoc (arm64 linker signature) or unsigned (amd64): no
@@ -23,7 +39,7 @@ const testDeveloperIDRequirement = `identifier "breeze-desktop-helper-darwin-amd
 func compileRequirement(t *testing.T, req string) []byte {
 	t.Helper()
 	if _, err := exec.LookPath("csreq"); err != nil {
-		t.Skip("csreq not available")
+		skipOrFail(t, "csreq not available")
 	}
 	out := filepath.Join(t.TempDir(), "req.bin")
 	if b, err := exec.Command("csreq", "-r="+req, "-b", out).CombinedOutput(); err != nil {
@@ -38,12 +54,18 @@ func compileRequirement(t *testing.T, req string) []byte {
 
 func TestSecurityInspector_SigningOfTestBinary(t *testing.T) {
 	s := securityInspector{}.Signing()
+	if wantAdhocTestBinary() && s.Kind != SigningAdhoc {
+		t.Fatalf("arm64 test binary signing = %+v, want adhoc (the linker signs every arm64 binary)", s)
+	}
 	switch s.Kind {
 	case SigningAdhoc:
 		if !strings.HasPrefix(s.DesignatedRequirement, "cdhash H\"") || s.CDHash == "" {
 			t.Fatalf("ad-hoc signing = %+v, want a cdhash designated requirement and a cdhash", s)
 		}
 	case SigningUnsigned:
+		if s.DesignatedRequirement != "" || s.Error != "" {
+			t.Fatalf("unsigned signing = %+v, want no requirement and no error", s)
+		}
 	default:
 		t.Fatalf("test binary signing = %+v, want adhoc or unsigned", s)
 	}
@@ -74,6 +96,9 @@ func TestSecurityInspector_DeveloperIDRequirementNotSatisfied(t *testing.T) {
 func TestSecurityInspector_OwnDesignatedRequirementSatisfied(t *testing.T) {
 	s := securityInspector{}.Signing()
 	if s.Kind != SigningAdhoc {
+		if wantAdhocTestBinary() {
+			t.Fatalf("arm64 test binary is %s, want adhoc", s.Kind)
+		}
 		t.Skipf("test binary is %s; no designated requirement to check", s.Kind)
 	}
 	blob := compileRequirement(t, s.DesignatedRequirement)
@@ -95,7 +120,7 @@ func TestSecurityInspector_GarbageBlobIsAnError(t *testing.T) {
 func makeTCCDB(t *testing.T, pragma string, csreq []byte) string {
 	t.Helper()
 	if _, err := exec.LookPath("sqlite3"); err != nil {
-		t.Skip("sqlite3 not available")
+		skipOrFail(t, "sqlite3 not available")
 	}
 	path := filepath.Join(t.TempDir(), "TCC.db")
 	hexBlob := "X'" + strings.ToUpper(hexString(csreq)) + "'"
@@ -165,6 +190,8 @@ func TestSQLiteRowReader_ReadsOnlyThisClientsServices(t *testing.T) {
 	}
 }
 
+// chmod 000 gives EACCES; TCC's refusal without Full Disk Access is EPERM.
+// Both are os.ErrPermission, which is what ReadRows maps.
 func TestSQLiteRowReader_PermissionDeniedIsNotReadable(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("root ignores file modes")
@@ -194,6 +221,9 @@ func TestSQLiteRowReader_MissingDatabaseIsAnError(t *testing.T) {
 // legacy shape.
 func TestDiagnose_RealPlatformLayer(t *testing.T) {
 	if (securityInspector{}).Signing().Kind != SigningAdhoc {
+		if wantAdhocTestBinary() {
+			t.Fatal("arm64 test binary is not ad-hoc signed")
+		}
 		t.Skip("needs an ad-hoc signed test binary (arm64)")
 	}
 	path := makeTCCDB(t, "", compileRequirement(t, testDeveloperIDRequirement))

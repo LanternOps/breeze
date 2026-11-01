@@ -9,12 +9,19 @@ func TestClassifySigning(t *testing.T) {
 		want SigningKind
 	}{
 		{"release helper", signingFacts{infoOK: true, hasIdentifier: true, hasFlags: true, devIDStatus: 0}, SigningDeveloperID},
+		{"release helper, flags unread", signingFacts{infoOK: true, hasIdentifier: true, devIDStatus: 0}, SigningDeveloperID},
 		{"codesign -s - copy", signingFacts{infoOK: true, hasIdentifier: true, hasFlags: true, adhoc: true, devIDStatus: errSecCSReqFailed}, SigningAdhoc},
 		{"apple development cert", signingFacts{infoOK: true, hasIdentifier: true, hasFlags: true, devIDStatus: errSecCSReqFailed}, SigningOther},
 		{"unsigned intel build", signingFacts{infoOK: true, drUnsigned: true, devIDStatus: errSecCSUnsigned}, SigningUnsigned},
-		{"no identifier in signing info", signingFacts{infoOK: true, devIDStatus: errSecCSUnsigned}, SigningUnsigned},
-		{"signing info unreadable", signingFacts{infoOK: false}, SigningUnknown},
-		{"developer id check errored", signingFacts{infoOK: true, hasIdentifier: true, devIDStatus: -67030}, SigningUnknown},
+		{"validity check says unsigned", signingFacts{infoOK: true, devIDStatus: errSecCSUnsigned}, SigningUnsigned},
+		// A signed binary whose identifier or flags could not be copied out
+		// must not be reported as unsigned or as a non-Developer ID signature.
+		{"identifier not copied", signingFacts{infoOK: true, hasFlags: true, devIDStatus: errSecCSReqFailed}, SigningUnknown},
+		{"flags not copied", signingFacts{infoOK: true, hasIdentifier: true, devIDStatus: errSecCSReqFailed}, SigningUnknown},
+		{"signing info unreadable", signingFacts{infoOK: false, devIDStatus: errSecCSReqFailed}, SigningUnknown},
+		// The requirement check runs on the code itself and is authoritative.
+		{"signing info unreadable, developer id held", signingFacts{infoOK: false, devIDStatus: 0}, SigningDeveloperID},
+		{"developer id check errored", signingFacts{infoOK: true, hasIdentifier: true, hasFlags: true, devIDStatus: -67030}, SigningUnknown},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
