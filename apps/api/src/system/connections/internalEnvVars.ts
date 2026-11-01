@@ -61,7 +61,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AI_TOOL_INDEX: 'AI chat system-prompt tool index (lazy/full)',
   // ALERT_*
   ALERT_WORKER_CHUNK_SIZE: 'worker throughput knob',
-  ALERT_WORKER_CONCURRENCY: 'worker concurrency knob (default DB_POOL_MAX/4)',
+  ALERT_WORKER_CONCURRENCY: 'worker concurrency knob (default DB_POOL_MAX/4; DB_POOL_MAX/2 when BREEZE_ROLE=worker)',
   ALERT_WORKER_MAX_DEVICES_PER_RUN: 'worker throughput knob',
   ALERT_WORKER_STAGGER_WINDOW_MS: 'evaluate-device stagger window',
   // API_*

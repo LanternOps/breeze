@@ -19,6 +19,7 @@ import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { attachWorkerObservability } from './workerObservability';
 import { envInt } from '../utils/envInt';
 import { getDbPoolMax } from '../db/poolSize';
+import { breezeRole } from '../config/env';
 import { captureException } from '../services/sentry';
 import {
   evaluateNetworkCheckAlertsForOrg,
@@ -43,14 +44,20 @@ const ON_DEMAND_ALERT_DEDUPE_WINDOW_MS = 30 * 1000;
  * An evaluate-device job opens its contexts one after another (the evaluator's
  * prelude, rules and detach scan, then the outbox drain), never nested, so it
  * holds one pooled connection at a time and this number bounds the alert
- * worker's peak pool occupancy. The default is a quarter
- * of DB_POOL_MAX (min 1) so alert evaluation can never starve heartbeats and
- * requests. The old hardcoded 10 was half of a 20-connection pool.
- * `ALERT_WORKER_CONCURRENCY` overrides it; zero, negative or unparseable
- * values fall back to the default.
+ * worker's peak pool occupancy. The default depends on the process role
+ * (`breezeRole()`):
+ *   - `all` (or `api`): the worker shares the pool with heartbeats and
+ *     requests, so it gets a quarter of DB_POOL_MAX (min 1) and can never
+ *     starve them. The old hardcoded 10 was half of a 20-connection pool.
+ *   - `worker`: a dedicated worker process has its own pool and no request
+ *     traffic to protect, so it gets half of DB_POOL_MAX (min 1). A quarter
+ *     would only cut its throughput.
+ * `ALERT_WORKER_CONCURRENCY` overrides either default; zero, negative or
+ * unparseable values fall back to the default.
  */
 export function resolveAlertWorkerConcurrency(): number {
-  const fallback = Math.max(1, Math.floor(getDbPoolMax() / 4));
+  const divisor = breezeRole() === 'worker' ? 2 : 4;
+  const fallback = Math.max(1, Math.floor(getDbPoolMax() / divisor));
   const configured = envInt('ALERT_WORKER_CONCURRENCY', fallback);
   return configured > 0 ? configured : fallback;
 }

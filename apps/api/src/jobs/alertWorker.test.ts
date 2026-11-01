@@ -511,12 +511,16 @@ describe('alertWorker concurrency (#10859)', () => {
   beforeEach(() => {
     delete process.env.ALERT_WORKER_CONCURRENCY;
     delete process.env.DB_POOL_MAX;
+    delete process.env.BREEZE_ROLE;
     workerState.opts = null;
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined); // BREEZE_ROLE=bogus
   });
 
   afterEach(() => {
     delete process.env.ALERT_WORKER_CONCURRENCY;
     delete process.env.DB_POOL_MAX;
+    delete process.env.BREEZE_ROLE;
+    vi.restoreAllMocks();
   });
 
   it('defaults to a quarter of the DB pool (default pool 30 → 7)', () => {
@@ -528,6 +532,30 @@ describe('alertWorker concurrency (#10859)', () => {
     expect(resolveAlertWorkerConcurrency()).toBe(5);
     process.env.DB_POOL_MAX = '2';
     expect(resolveAlertWorkerConcurrency()).toBe(1);
+  });
+
+  it('uses a quarter of the pool when the worker shares the process with the API (BREEZE_ROLE=all/api/unset)', () => {
+    process.env.DB_POOL_MAX = '20';
+    for (const role of [undefined, '', 'all', 'ALL', 'api', 'bogus']) {
+      if (role === undefined) delete process.env.BREEZE_ROLE;
+      else process.env.BREEZE_ROLE = role;
+      expect(resolveAlertWorkerConcurrency()).toBe(5);
+    }
+  });
+
+  it('uses half the pool on a dedicated BREEZE_ROLE=worker process — no heartbeats to protect', () => {
+    process.env.BREEZE_ROLE = 'worker';
+    expect(resolveAlertWorkerConcurrency()).toBe(15); // default pool 30
+    process.env.DB_POOL_MAX = '20';
+    expect(resolveAlertWorkerConcurrency()).toBe(10);
+    process.env.DB_POOL_MAX = '1';
+    expect(resolveAlertWorkerConcurrency()).toBe(1);
+    // The explicit override still wins on a worker process.
+    process.env.DB_POOL_MAX = '20';
+    process.env.ALERT_WORKER_CONCURRENCY = '3';
+    expect(resolveAlertWorkerConcurrency()).toBe(3);
+    process.env.ALERT_WORKER_CONCURRENCY = '0';
+    expect(resolveAlertWorkerConcurrency()).toBe(10);
   });
 
   it('honours ALERT_WORKER_CONCURRENCY and ignores non-positive or garbage values', () => {
