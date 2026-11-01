@@ -13,6 +13,7 @@ let openAlerts: unknown[] = [];
 const executed: string[] = [];
 const providerPredicates: Array<{ sql: string; params: unknown[] }> = [];
 const updates: Array<{ values: Record<string, unknown>; where: SQL }> = [];
+let updateReturning: Array<{ id: string }> = [{ id: 'updated' }];
 
 function chain(result: unknown, providerQuery = false) {
   const c: Record<string, unknown> = {};
@@ -39,11 +40,16 @@ vi.mock('../../db', () => ({
   db: {
     select: vi.fn(() => {
       const providerQuery = selectCall++ === 0;
-      return chain(providerQuery ? providerRows : openAlerts, providerQuery);
+      return chain(providerQuery
+        ? providerRows
+        : (openAlerts as Array<Record<string, unknown>>).map((alert) => ({ orgId: ORG, ...alert })), providerQuery);
     }),
     update: vi.fn(() => ({
       set: vi.fn((values: Record<string, unknown>) => ({
-        where: vi.fn(async (where: SQL) => { updates.push({ values, where }); return []; }),
+        where: vi.fn((where: SQL) => {
+          updates.push({ values, where });
+          return { returning: vi.fn(async () => updateReturning) };
+        }),
       })),
     })),
     execute: vi.fn((statement: { queryChunks?: unknown[] }) => {
@@ -100,6 +106,7 @@ beforeEach(() => {
   executed.length = 0;
   providerPredicates.length = 0;
   updates.length = 0;
+  updateReturning = [{ id: 'updated' }];
   createSourcedAlert.mockReset().mockResolvedValue('alert-1');
   resolveAlert.mockReset().mockResolvedValue(true);
   providerRows = [];
@@ -260,7 +267,8 @@ describe('evaluateProviderAlerts', () => {
     const predicate = new PgDialect().sqlToQuery(updates[0]!.where);
     expect(predicate.sql).toContain('"alerts"."id"');
     expect(predicate.sql).toContain('"alerts"."status"');
-    expect(predicate.params).toEqual(expect.arrayContaining(['muted-alert', 'active', 'acknowledged', 'suppressed']));
+    expect(predicate.params).toEqual(expect.arrayContaining(['muted-alert', 'suppressed']));
+    expect(predicate.sql).toContain('"alerts"."suppressed_until" is null');
 
     selectCall = 0;
     openAlerts = [{ id: 'muted-alert', status: 'suppressed', suppressedUntil: null, providerDeviceId: 'p1', condition: 'failed' }];
@@ -270,15 +278,16 @@ describe('evaluateProviderAlerts', () => {
     expect(createSourcedAlert).not.toHaveBeenCalled();
   });
 
-  it('does not report an owner-backed insert dedupe to Sentry', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('reports a workload alert that was not created, since every open owner alert is already in this pass', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     createSourcedAlert.mockResolvedValueOnce(null);
     providerRows = [row({ accountType: 'm365', breezeDeviceId: null, pendingCondition: 'failed' })];
     expect(await evaluateProviderAlerts(CONNECTION)).toEqual({ raised: 0, resolved: 0 });
     expect(createSourcedAlert).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalled();
-    expect(captureException).not.toHaveBeenCalled();
-    warn.mockRestore();
+    expect(captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({
+      service: 'backupProviders', operation: 'createSourcedAlert', providerDeviceId: 'p1', condition: 'failed',
+    }));
+    error.mockRestore();
   });
 
   it('takes the per-connection advisory lock before reading anything', async () => {
@@ -405,5 +414,59 @@ describe('evaluateProviderAlerts', () => {
     providerRows = [row({ pendingCondition: 'failed' })];
     const out = await evaluateProviderAlerts(CONNECTION);
     expect(out.raised).toBe(0);
+  });
+  it('resolves the old workload alert and raises the new condition in the same pass', async () => {
+    const saasRow = row({ accountType: 'm365', breezeDeviceId: null, dataSources: ['m365_mail'] });
+    openAlerts = [{ id: 'stale-alert', status: 'active', suppressedUntil: null, providerDeviceId: 'p1', condition: 'stale' }];
+    providerRows = [{ ...saasRow, pendingCondition: 'failed' }];
+    expect(await evaluateProviderAlerts(CONNECTION)).toEqual({ raised: 1, resolved: 1 });
+    expect(resolveAlert).toHaveBeenCalledWith('stale-alert', 'Condition cleared by provider sync', undefined, false, 'condition_cleared');
+    expect(createSourcedAlert).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      deviceId: null, owner: { kind: 'backup_workload', ref: 'p1' },
+    }));
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('never rewrites an active workload alert whose resolve lost the compare-and-swap', async () => {
+    const saasRow = row({ accountType: 'm365', breezeDeviceId: null, dataSources: ['m365_mail'] });
+    resolveAlert.mockResolvedValue(false);
+    openAlerts = [{ id: 'stale-alert', status: 'active', suppressedUntil: null, providerDeviceId: 'p1', condition: 'stale' }];
+    providerRows = [{ ...saasRow, pendingCondition: 'failed' }];
+    await evaluateProviderAlerts(CONNECTION);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(createSourcedAlert).toHaveBeenCalledTimes(1);
+  });
+
+  it('raises normally when the Forever-suppressed alert changed before the in-place update', async () => {
+    const saasRow = row({ accountType: 'm365', breezeDeviceId: null, dataSources: ['m365_mail'] });
+    updateReturning = [];
+    openAlerts = [{ id: 'muted-alert', status: 'suppressed', suppressedUntil: null, providerDeviceId: 'p1', condition: 'stale' }];
+    providerRows = [{ ...saasRow, pendingCondition: 'failed' }];
+    expect(await evaluateProviderAlerts(CONNECTION)).toEqual({ raised: 1, resolved: 0 });
+    expect(updates).toHaveLength(1);
+    expect(createSourcedAlert).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: null, owner: { kind: 'backup_workload', ref: 'p1' },
+    }));
+  });
+
+  it('never updates an endpoint alert in place when its condition changes', async () => {
+    openAlerts = [{ id: 'muted-endpoint', status: 'suppressed', suppressedUntil: null, providerDeviceId: 'p1', condition: 'stale' }];
+    providerRows = [row({ pendingCondition: 'failed' })];
+    await evaluateProviderAlerts(CONNECTION);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(createSourcedAlert).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'd1' }));
+    expect(createSourcedAlert.mock.calls[0]![0]).not.toHaveProperty('owner');
+  });
+
+  it('moves a workload alert to the new org when its customer is re-mapped', async () => {
+    const OTHER_ORG = '33333333-3333-4333-8333-333333333333';
+    const saasRow = row({ accountType: 'm365', breezeDeviceId: null, dataSources: ['m365_mail'], orgId: OTHER_ORG });
+    openAlerts = [{ id: 'old-org-alert', orgId: ORG, status: 'active', suppressedUntil: null, providerDeviceId: 'p1', condition: 'failed' }];
+    providerRows = [{ ...saasRow, pendingCondition: 'raised:failed' }];
+    expect(await evaluateProviderAlerts(CONNECTION)).toEqual({ raised: 1, resolved: 1 });
+    expect(resolveAlert).toHaveBeenCalledWith('old-org-alert', 'Condition cleared by provider sync', undefined, false, 'condition_cleared');
+    expect(createSourcedAlert).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: OTHER_ORG, deviceId: null, owner: { kind: 'backup_workload', ref: 'p1' },
+    }));
   });
 });
