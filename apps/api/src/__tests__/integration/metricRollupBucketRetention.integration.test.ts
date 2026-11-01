@@ -37,6 +37,7 @@ const RETENTION = { fiveMinute: 30, hourly: 5000, daily: 6000 } as const;
 const SUB_MONTH = { start: '2020-01-01 00:00:00', end: '2020-02-01 00:00:00', name: 'metric_rollups_y2020m01' };
 const LEGACY_MONTH = { start: '2020-03-01 00:00:00', end: '2020-04-01 00:00:00', name: 'metric_rollups_y2020m03' };
 const LEGACY_OLD_MONTH = { start: '2020-06-01 00:00:00', end: '2020-07-01 00:00:00', name: 'metric_rollups_y2020m06' };
+const LEGACY_LOCK_MONTH = { start: '2020-09-01 00:00:00', end: '2020-10-01 00:00:00', name: 'metric_rollups_y2020m09' };
 
 let orgId: string;
 let deviceId: string;
@@ -181,7 +182,7 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
       })
       .returning({ id: devices.id });
     deviceId = device!.id;
-    for (const name of [SUB_MONTH.name, 'metric_rollups_y2020m02', LEGACY_MONTH.name, LEGACY_OLD_MONTH.name]) {
+    for (const name of [SUB_MONTH.name, 'metric_rollups_y2020m02', LEGACY_MONTH.name, LEGACY_OLD_MONTH.name, LEGACY_LOCK_MONTH.name]) {
       await dropMonth(name);
     }
   });
@@ -368,4 +369,83 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
     await dropMonth('metric_rollups_y2035m01');
     await dropMonth('metric_rollups_y2019m07');
   });
+
+  it('re-staging a month never waits on devices/organizations, so it cannot deadlock a request that reads both (#10829)', async () => {
+    await createLegacyMonth(LEGACY_LOCK_MONTH);
+    await seedMonth(LEGACY_LOCK_MONTH.start);
+    const month = LEGACY_LOCK_MONTH.start;
+    const prepare = () =>
+      withSystemDbAccessContext(() =>
+        db.execute(sql`SELECT public.breeze_prepare_metric_rollup_compaction(${month}::timestamp, true) AS "name"`),
+      );
+    // A first run staged the month and its compaction never committed, so the
+    // next prepare must drop the stage: DROP TABLE on a table holding FKs takes
+    // ACCESS EXCLUSIVE on devices and organizations.
+    await prepare();
+
+    // The production deadlock: a request holds devices (the agent auth lookup)
+    // and then reads organizations (its sub-select). Before #10829 the prepare
+    // took organizations, queued for devices, and Postgres cancelled one side.
+    let rePrepared: Promise<unknown> | undefined;
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT 1 FROM devices LIMIT 1`);
+      rePrepared = prepare();
+      // Let the prepare make several attempts while devices is held.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const waiting = (await getTestDb().execute(sql`
+        SELECT count(*)::int AS n
+        FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+        WHERE NOT l.granted AND c.relname IN ('devices', 'organizations')
+      `)) as unknown as Array<{ n: number }>;
+      // NOWAIT: nothing queues on the referenced tables.
+      expect(waiting[0]!.n).toBe(0);
+      // The request's second read completes; with the old code this is the
+      // statement that hit 40P01 (or blocked until the prepare's did).
+      const started = Date.now();
+      await tx.execute(sql`SELECT 1 FROM organizations LIMIT 1`);
+      expect(Date.now() - started).toBeLessThan(1000);
+    });
+
+    // Once the request commits, the next attempt gets the locks and re-stages.
+    const rows = (await rePrepared) as unknown as Array<{ name: string }>;
+    expect(rows[0]?.name).toBe(LEGACY_LOCK_MONTH.name);
+    const staged = (await getTestDb().execute(sql`
+      SELECT c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'metric_rollups_staging' AND c.relkind = 'r' AND c.relname LIKE ${`${LEGACY_LOCK_MONTH.name}%`} ORDER BY 1
+    `)) as unknown as Array<{ name: string }>;
+    expect(staged.map((row) => row.name)).toEqual([`${LEGACY_LOCK_MONTH.name}_1d`, `${LEGACY_LOCK_MONTH.name}_1h`]);
+
+    await dropMonth(LEGACY_LOCK_MONTH.name);
+  });
+
+  it('gives up with lock_not_available instead of waiting when devices stays locked (#10829)', async () => {
+    await createLegacyMonth(LEGACY_LOCK_MONTH);
+    const month = LEGACY_LOCK_MONTH.start;
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT 1 FROM devices LIMIT 1`);
+      // No stage to drop, so the prepare needs SHARE ROW EXCLUSIVE only: a
+      // plain reader does not block it.
+      const name = (await withSystemDbAccessContext(() =>
+        db.execute(sql`SELECT public.breeze_prepare_metric_rollup_compaction(${month}::timestamp, true) AS "name"`),
+      )) as unknown as Array<{ name: string }>;
+      expect(name[0]?.name).toBe(LEGACY_LOCK_MONTH.name);
+    });
+
+    let code: string | undefined;
+    await getTestDb().transaction(async (tx) => {
+      // A writer on devices conflicts with every mode the prepare takes.
+      await tx.execute(sql`LOCK TABLE devices IN ROW EXCLUSIVE MODE`);
+      try {
+        await withSystemDbAccessContext(() =>
+          db.execute(sql`SELECT public.breeze_prepare_metric_rollup_compaction(${month}::timestamp, true)`),
+        );
+      } catch (err) {
+        const e = err as { code?: string; cause?: { code?: string } };
+        code = e.cause?.code ?? e.code;
+      }
+    });
+    expect(code).toBe('55P03');
+
+    await dropMonth(LEGACY_LOCK_MONTH.name);
+  }, 30_000);
 });
