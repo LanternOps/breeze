@@ -30,6 +30,7 @@ export * from './agentOutcome';
 export * from './agentUpdateAttempt';
 export * from './aiToolHandoff';
 export * from './aiToolOutputTombstone';
+export * from './aiUnknownToolOutput';
 export * from './aiToolLabels';
 export * from './scriptSecurityPatterns';
 export * from './scriptLaneGrant';

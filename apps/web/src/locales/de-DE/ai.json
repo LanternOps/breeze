@@ -179,7 +179,8 @@
     "input": "Eingabe:",
     "error": "Fehler:",
     "output": "Ausgabe:",
-    "outputExpired": "Ausgabe gemäß der Aufbewahrungsrichtlinie abgelaufen"
+    "outputExpired": "Ausgabe gemäß der Aufbewahrungsrichtlinie abgelaufen",
+    "unknownTool": "Unbekanntes Tool · nicht ausgeführt"
   },
   "aiForOfficePage": {
     "title": "Breeze AI for Office",
@@ -605,6 +606,7 @@
   },
   "wisp": {
     "title": "Wisp",
+    "turnLimitRolled": "Diese Unterhaltung hat ihr Zuglimit erreicht, deshalb hat Wisp eine neue Sitzung in diesem Thread geöffnet. Senden Sie Ihre Nachricht erneut.",
     "locked": {
       "why": "Wisp ist in Pro und höheren Tarifen verfügbar.",
       "server": "Wisp läuft in der Breeze Cloud. Auf diesem Server ist es nicht verfügbar."
