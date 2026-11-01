@@ -11,7 +11,7 @@
     "clean": "rm -rf dist .astro"
   },
   "dependencies": {
-    "@astrojs/node": "^11.1.7",
+    "@astrojs/node": "^11.1.9",
     "@astrojs/react": "^6.0.6",
     "@breeze/document-ui": "workspace:*",
     "@fontsource/barlow-condensed": "^5.3.0",
@@ -19,7 +19,7 @@
     "@fontsource/hanken-grotesk": "^5.3.0",
     "@fontsource/literata": "^5.3.0",
     "@hookform/resolvers": "^5.9.1",
-    "astro": "^7.3.8",
+    "astro": "^7.4.2",
     "clsx": "^2.1.1",
     "lucide-react": "^1.21.0",
     "react": "^19.3.1",
@@ -30,7 +30,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
-    "@astrojs/check": "^0.9.10",
+    "@astrojs/check": "^0.9.12",
     "@tailwindcss/forms": "^0.5.10",
     "@tailwindcss/node": "^4.3.3",
     "@tailwindcss/oxide": "^4.3.3",
