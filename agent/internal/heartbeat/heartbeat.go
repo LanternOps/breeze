@@ -9049,3 +9049,5 @@ func pamUserNotifyProtocolVersion() int {
 
 // pamUserNotifyProtocolCurrent is the Windows value (see above).
 const pamUserNotifyProtocolCurrent = 2
+
+// W03 live control: agent-only (throwaway)
