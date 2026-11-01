@@ -179,7 +179,8 @@
     "input": "Entrada:",
     "error": "Error:",
     "output": "Salida:",
-    "outputExpired": "La salida expiró según la política de retención"
+    "outputExpired": "La salida expiró según la política de retención",
+    "unknownTool": "Herramienta desconocida · no se ejecutó"
   },
   "aiForOfficePage": {
     "title": "Breeze AI for Office",
@@ -605,6 +606,7 @@
   },
   "wisp": {
     "title": "Wisp",
+    "turnLimitRolled": "Esta conversación alcanzó su límite de turnos, así que Wisp abrió una nueva sesión en este hilo. Envía tu mensaje de nuevo.",
     "locked": {
       "why": "Wisp está disponible en el plan Pro y superiores.",
       "server": "Wisp se ejecuta en Breeze Cloud. No está disponible en este servidor."

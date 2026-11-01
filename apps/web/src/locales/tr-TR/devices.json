@@ -1879,7 +1879,10 @@
     "moveToSite": "Siteye taşı",
     "moveSelectedToSite": "Siteye taşı",
     "moveSiteMixedOrgs": "Seçilen cihazlar birden fazla kuruluşa ait",
-    "moveSiteOverCap": "Aynı anda taşımak için en fazla {{count}} cihaz seçin"
+    "moveSiteOverCap": "Aynı anda taşımak için en fazla {{count}} cihaz seçin",
+    "addToGroup": "Gruba ekle…",
+    "removeFromGroup": "Gruptan kaldır…",
+    "groupMembershipOverCap": "Grup üyeliğini aynı anda değiştirmek için en fazla {{count}} cihaz seçin"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Cihaz günlükleri getirilemedi",
@@ -4716,5 +4719,25 @@
     "membersError": "Grup üyeleri yüklenemedi.",
     "retry": "Yeniden dene",
     "emptyMembers": "Bu grupta cihaz yok."
+  },
+  "bulkGroupMembership": {
+    "titleAdd": "Gruba ekle",
+    "titleRemove": "Gruptan kaldır",
+    "selectionSummary": "Seçili cihazlar: {{n}} · Kuruluş: {{org}}",
+    "groupLabel": "Statik grup",
+    "selectGroup": "Bir grup seçin",
+    "loadingGroups": "Gruplar yükleniyor…",
+    "noGroups": "Bu kuruluştaki hiçbir statik grup bu seçimi alamaz.",
+    "scopeHint": "Yalnızca bu kuruluşun statik grupları listelenir. Bir site grubu yalnızca seçili cihazların tümü o sitedeyse listelenir. Dinamik gruplar listelenmez: üyeleri kuralları belirler.",
+    "cancel": "İptal",
+    "saving": "Kaydediliyor…",
+    "submitAdd": "Cihazları ekle",
+    "submitRemove": "Cihazları kaldır",
+    "failedToLoadGroups": "Gruplar yüklenemedi",
+    "failedToUpdate": "Grup üyeliği güncellenemedi",
+    "addResult": "{{group}}: {{added}} eklendi, {{skipped}} zaten grupta",
+    "removeResult": "{{group}}: {{removed}} kaldırıldı, {{notMember}} grupta değildi",
+    "removeResultForbidden": "{{group}}: {{removed}} kaldırıldı, {{notMember}} grupta değildi. Kaldırılmayanlar (cihazın sitesine erişim yok): {{devices}}",
+    "andMore": "{{names}} ve {{n}} tane daha"
   }
 }

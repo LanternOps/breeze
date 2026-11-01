@@ -3544,7 +3544,7 @@ export function buildBreezeSdkTools(
         // the model; the handler ignores it and `get` strips it from responses.
         autoApprove: z.record(z.string(), z.unknown()).optional(),
         appRules: z.array(z.object({
-          source: z.enum(['third_party', 'custom']),
+          source: z.enum(['third_party', 'custom', 'linux']),
           packageId: z.string().min(1).max(256),
           action: z.enum(['block', 'pin']),
           pinnedVersion: z.string().min(1).max(64).optional(),
