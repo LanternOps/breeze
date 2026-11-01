@@ -44,9 +44,10 @@ export async function listAlertExternalTickets(
     externalId: psaTicketMappings.externalTicketId,
     externalUrl: psaTicketMappings.externalTicketUrl,
     externalNumber: psaTicketMappings.externalTicketNumber,
-    // W2-A backfilled pre-ledger mappings as handled; retain their remote
-    // status while new alert tickets expose the authoritative ledger state.
-    state: sql<string>`case when ${psaTicketMappings.createState} = 'handled' and ${psaTicketMappings.status} is not null then ${psaTicketMappings.status} else ${psaTicketMappings.createState} end`,
+    // `status` is the remote PSA status the Partner API contract has always
+    // returned (legacy/backfilled rows). The W2-B ledger worker never writes
+    // it, so ledger-driven rows report their create_state instead.
+    state: sql<string>`coalesce(${psaTicketMappings.status}, ${psaTicketMappings.createState})`,
     createdAt: psaTicketMappings.createdAt,
     updatedAt: psaTicketMappings.updatedAt,
   }).from(psaTicketMappings)

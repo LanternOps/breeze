@@ -913,7 +913,7 @@ describe('psa routes', () => {
     }
     expect(dialect.sqlToQuery(rows.where.mock.calls[0][0]).params).toContain('needs_attention');
     expect(dialect.sqlToQuery(counts.where.mock.calls[0][0]).params).not.toContain('needs_attention');
-    expect(selectMock.mock.calls[0][0]).toMatchObject({ createState: expect.anything(), createAnywayUsed: expect.anything() });
+    expect((selectMock.mock.calls[0] as unknown[])[0]).toMatchObject({ createState: expect.anything(), createAnywayUsed: expect.anything() });
   });
   it.each(['connectionId=invalid', 'createState=unknown', 'createState=', 'includeCounts=maybe'])('rejects invalid ticket filters %s', async query => {
     expect((await app.request(`/psa/tickets?${query}`)).status).toBe(400);

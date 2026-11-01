@@ -539,7 +539,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                     )}
                     {ticket.source === 'psa' && ticket.state && (
                       <span data-testid="alert-external-ticket-state" className="ml-2 text-xs text-muted-foreground">
-                        {t(`common:longTail.psa.PsaAlertTicketingActivity.states.${ticket.state}`, { defaultValue: ticket.state })}
+                        {t(/* i18n-dynamic */ `common:longTail.psa.PsaAlertTicketingActivity.states.${ticket.state}`, { defaultValue: ticket.state })}
                       </span>
                     )}
                   </li>

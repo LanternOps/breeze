@@ -451,7 +451,7 @@ for (const action of ['create-anyway', 'mark-handled'] as const) {
       if (isFailure(loaded)) return c.json({ error: loaded.error }, loaded.status);
       if (!canManagePartnerWidePolicies(auth)) return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
       const body = c.req.valid('json');
-      const expectedState = action === 'create-anyway' ? 'needs_attention' : (body as z.infer<typeof handledSchema>).expectedState;
+      const expectedState = action === 'create-anyway' ? 'needs_attention' as const : handledSchema.parse(body).expectedState;
       if (mapping.createState !== expectedState || (action === 'create-anyway' && mapping.createSnapshot?.createAnywayUsed)) {
         return c.json({ error: 'This action is no longer available. Reload the alert tickets.' }, 409);
       }

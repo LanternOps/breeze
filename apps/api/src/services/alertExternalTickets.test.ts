@@ -26,12 +26,12 @@ beforeEach(() => {
   });
 });
 describe('listAlertExternalTickets', () => {
-  it('projects the PSA number and ledger state while preserving legacy handled status', async () => {
+  it('projects the PSA number; a remote status (Partner API contract) wins over the ledger state', async () => {
     await listAlertExternalTickets(ALERT, PARTNER);
     const projection = mocks.select.mock.calls[1]![0];
     expect(projection.externalNumber).toBe(psaTicketMappings.externalTicketNumber);
     const state = new PgDialect().sqlToQuery(projection.state);
-    expect(state.sql).toBe(`case when "psa_ticket_mappings"."create_state" = 'handled' and "psa_ticket_mappings"."status" is not null then "psa_ticket_mappings"."status" else "psa_ticket_mappings"."create_state" end`);
+    expect(state.sql).toBe(`coalesce("psa_ticket_mappings"."status", "psa_ticket_mappings"."create_state")`);
   });
 
   it('returns the PSA ticket number, link and ledger state without adding pending rows', async () => {

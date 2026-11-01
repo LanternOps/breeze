@@ -68,14 +68,14 @@ export default function PsaAlertTicketingActivity({ connectionId, canManage }: {
     try {
       await runAction({
         request: () => fetchWithAuth(url, { method: 'POST', ...(body ? { body: JSON.stringify(body) } : {}) }),
-        errorFallback: t(`${PREFIX}.actionFailed`),
-        successMessage: t(`${PREFIX}.actionSucceeded`),
+        errorFallback: t(/* i18n-dynamic */ `${PREFIX}.actionFailed`),
+        successMessage: t(/* i18n-dynamic */ `${PREFIX}.actionSucceeded`),
       });
       setConfirmCreate(null);
       await load();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
-      handleActionError(err, t(`${PREFIX}.actionFailed`));
+      handleActionError(err, t(/* i18n-dynamic */ `${PREFIX}.actionFailed`));
       if (err instanceof ActionError && err.status === 409) { setConfirmCreate(null); await load(); }
     } finally {
       mutationPending.current = false;
@@ -87,49 +87,49 @@ export default function PsaAlertTicketingActivity({ connectionId, canManage }: {
   return (
     <div className="mt-6 border-t pt-5" data-testid="psa-ticketing-activity" aria-busy={loading || busy}>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold">{t(`${PREFIX}.title`)}</h3>
+        <h3 className="text-sm font-semibold">{t(/* i18n-dynamic */ `${PREFIX}.title`)}</h3>
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={buttonClass} disabled={loading || busy} onClick={() => void load()} data-testid="psa-ticketing-refresh">{t(`${PREFIX}.refresh`)}</button>
-          {canManage && <button type="button" className={buttonClass} disabled={loading || busy || !((activity?.counts.failed ?? 0) + (activity?.counts.skipped_no_company ?? 0))} onClick={() => void act(`/psa/connections/${connectionId}/alert-ticketing/redrive`, { states: ['failed', 'skipped_no_company'] })} data-testid="psa-ticketing-redrive">{t(`${PREFIX}.redrive`)}</button>}
+          <button type="button" className={buttonClass} disabled={loading || busy} onClick={() => void load()} data-testid="psa-ticketing-refresh">{t(/* i18n-dynamic */ `${PREFIX}.refresh`)}</button>
+          {canManage && <button type="button" className={buttonClass} disabled={loading || busy || !((activity?.counts.failed ?? 0) + (activity?.counts.skipped_no_company ?? 0))} onClick={() => void act(`/psa/connections/${connectionId}/alert-ticketing/redrive`, { states: ['failed', 'skipped_no_company'] })} data-testid="psa-ticketing-redrive">{t(/* i18n-dynamic */ `${PREFIX}.redrive`)}</button>}
         </div>
       </div>
-      {loading && <p role="status" className="mt-3 text-sm text-muted-foreground">{t(`${PREFIX}.loading`)}</p>}
-      {loadFailed && <p role="alert" className="mt-3 text-sm text-destructive">{t(`${PREFIX}.loadFailed`)}</p>}
+      {loading && <p role="status" className="mt-3 text-sm text-muted-foreground">{t(/* i18n-dynamic */ `${PREFIX}.loading`)}</p>}
+      {loadFailed && <p role="alert" className="mt-3 text-sm text-destructive">{t(/* i18n-dynamic */ `${PREFIX}.loadFailed`)}</p>}
       {activity && <>
         <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2 text-sm">
           {Object.entries(activity.counts).map(([state, count]) => <div key={state} className="flex gap-2" data-testid={`psa-ticketing-count-${state}`}>
-            <dt className="text-muted-foreground">{t(`${PREFIX}.states.${state}`, { defaultValue: state })}</dt>
+            <dt className="text-muted-foreground">{t(/* i18n-dynamic */ `${PREFIX}.states.${state}`, { defaultValue: state })}</dt>
             <dd className="font-medium tabular-nums">{count}</dd>
           </div>)}
         </dl>
-        <p className="mt-4 text-sm text-muted-foreground">{t(`${PREFIX}.help`)}</p>
-        {activity.data.length === 0 ? <p className="mt-3 text-sm" data-testid="psa-ticketing-empty">{t(`${PREFIX}.empty`)}</p> :
+        <p className="mt-4 text-sm text-muted-foreground">{t(/* i18n-dynamic */ `${PREFIX}.help`)}</p>
+        {activity.data.length === 0 ? <p className="mt-3 text-sm" data-testid="psa-ticketing-empty">{t(/* i18n-dynamic */ `${PREFIX}.empty`)}</p> :
           <ul className="mt-3 divide-y">
             {activity.data.map(row => <li key={row.id} className="py-3">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium">{t(`${PREFIX}.states.${row.createState}`)}</p>
+                  <p className="text-sm font-medium">{t(/* i18n-dynamic */ `${PREFIX}.states.${row.createState}`)}</p>
                   {row.lastError && <p className="mt-1 break-words text-sm text-muted-foreground">{row.lastError}</p>}
-                  {row.alertId && <a href={`/alerts/${row.alertId}`} className="mt-1 inline-block text-sm text-primary underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-ring" data-testid={`psa-ticketing-alert-${row.id}`}>{t(`${PREFIX}.viewAlert`)}</a>}
+                  {row.alertId && <a href={`/alerts/${row.alertId}`} className="mt-1 inline-block text-sm text-primary underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-ring" data-testid={`psa-ticketing-alert-${row.id}`}>{t(/* i18n-dynamic */ `${PREFIX}.viewAlert`)}</a>}
                 </div>
                 {canManage && <div className="flex flex-wrap gap-2">
-                  {row.createState === 'needs_attention' && !row.createAnywayUsed && <button type="button" className={buttonClass} disabled={busy || loading} onClick={() => setConfirmCreate(row.id)} data-testid={`psa-ticketing-create-anyway-${row.id}`}>{t(`${PREFIX}.createAnyway`)}</button>}
-                  <button type="button" className={buttonClass} disabled={busy || loading} onClick={() => void act(`/psa/ticket-mappings/${row.id}/mark-handled`, { expectedState: row.createState })} data-testid={`psa-ticketing-mark-handled-${row.id}`}>{t(`${PREFIX}.markHandled`)}</button>
+                  {row.createState === 'needs_attention' && !row.createAnywayUsed && <button type="button" className={buttonClass} disabled={busy || loading} onClick={() => setConfirmCreate(row.id)} data-testid={`psa-ticketing-create-anyway-${row.id}`}>{t(/* i18n-dynamic */ `${PREFIX}.createAnyway`)}</button>}
+                  <button type="button" className={buttonClass} disabled={busy || loading} onClick={() => void act(`/psa/ticket-mappings/${row.id}/mark-handled`, { expectedState: row.createState })} data-testid={`psa-ticketing-mark-handled-${row.id}`}>{t(/* i18n-dynamic */ `${PREFIX}.markHandled`)}</button>
                 </div>}
               </div>
               {canManage && confirmCreate === row.id && <div className="mt-3 space-y-2 rounded-md border p-3">
-                <p role="alert" className="text-sm">{t(`${PREFIX}.duplicateWarning`)}</p>
+                <p role="alert" className="text-sm">{t(/* i18n-dynamic */ `${PREFIX}.duplicateWarning`)}</p>
                 <div className="flex flex-wrap gap-2">
-                  <button type="button" className={buttonClass} disabled={busy || loading} onClick={() => void act(`/psa/ticket-mappings/${row.id}/create-anyway`)} data-testid={`psa-ticketing-confirm-create-${row.id}`}>{t(`${PREFIX}.confirmCreate`)}</button>
-                  <button type="button" className={buttonClass} disabled={busy} onClick={() => setConfirmCreate(null)} data-testid={`psa-ticketing-cancel-create-${row.id}`}>{t(`${PREFIX}.cancel`)}</button>
+                  <button type="button" className={buttonClass} disabled={busy || loading} onClick={() => void act(`/psa/ticket-mappings/${row.id}/create-anyway`)} data-testid={`psa-ticketing-confirm-create-${row.id}`}>{t(/* i18n-dynamic */ `${PREFIX}.confirmCreate`)}</button>
+                  <button type="button" className={buttonClass} disabled={busy} onClick={() => setConfirmCreate(null)} data-testid={`psa-ticketing-cancel-create-${row.id}`}>{t(/* i18n-dynamic */ `${PREFIX}.cancel`)}</button>
                 </div>
               </div>}
             </li>)}
           </ul>}
         {totalPages > 1 && <div className="mt-3 flex flex-wrap items-center justify-end gap-3 text-sm">
-          <button type="button" className={buttonClass} disabled={page <= 1 || loading || busy} onClick={() => setPage(value => value - 1)} data-testid="psa-ticketing-previous">{t(`${PREFIX}.previous`)}</button>
-          <span>{t(`${PREFIX}.page`, { page, total: totalPages })}</span>
-          <button type="button" className={buttonClass} disabled={page >= totalPages || loading || busy} onClick={() => setPage(value => value + 1)} data-testid="psa-ticketing-next">{t(`${PREFIX}.next`)}</button>
+          <button type="button" className={buttonClass} disabled={page <= 1 || loading || busy} onClick={() => setPage(value => value - 1)} data-testid="psa-ticketing-previous">{t(/* i18n-dynamic */ `${PREFIX}.previous`)}</button>
+          <span>{t(/* i18n-dynamic */ `${PREFIX}.page`, { page, total: totalPages })}</span>
+          <button type="button" className={buttonClass} disabled={page >= totalPages || loading || busy} onClick={() => setPage(value => value + 1)} data-testid="psa-ticketing-next">{t(/* i18n-dynamic */ `${PREFIX}.next`)}</button>
         </div>}
       </>}
     </div>
