@@ -341,6 +341,7 @@ DECLARE
   v_name     TEXT;
   v_staged   BOOLEAN;
   v_attached BOOLEAN;
+  v_rels     REGCLASS[];
 BEGIN
   IF p_month_start IS NULL THEN
     RAISE EXCEPTION 'breeze_drop_metric_rollup_partition: p_month_start must not be NULL';
@@ -375,11 +376,18 @@ BEGIN
   -- takes ACCESS EXCLUSIVE on the FK-referenced tables. Take them up front,
   -- without waiting. Dropping an attached month does not touch them (its FKs
   -- are partition clones), so a plain retention drop takes no extra lock.
+  -- Dropping an attached month does take ACCESS EXCLUSIVE on metric_rollups,
+  -- so when both happen the parent joins the same all-or-nothing call: holding
+  -- the referenced tables while queuing for the parent would deadlock a
+  -- request that reads metric_rollups and then devices. (The drop also locks
+  -- metric_rollups_default; requests reach it only through the parent, so
+  -- holding the parent is enough.)
   IF v_staged THEN
-    PERFORM public.breeze_metric_rollup_lock_nowait(
-      public.breeze_metric_rollup_fk_referenced(),
-      ARRAY['ACCESS EXCLUSIVE']
-    );
+    v_rels := public.breeze_metric_rollup_fk_referenced();
+    IF v_attached THEN
+      v_rels := v_rels || 'public.metric_rollups'::regclass;
+    END IF;
+    PERFORM public.breeze_metric_rollup_lock_nowait(v_rels, ARRAY['ACCESS EXCLUSIVE']);
   END IF;
 
   -- Staged compaction leaves for this month (a prepare whose compaction never

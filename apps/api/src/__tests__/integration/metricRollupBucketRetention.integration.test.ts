@@ -541,6 +541,34 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
     expect(leftover[0]!.n).toBe(0);
   }, 30_000);
 
+  it('drops an attached month with a stranded stage without holding devices while it waits for metric_rollups (#10829)', async () => {
+    await createLegacyMonth(LEGACY_LOCK_MONTH);
+    const month = LEGACY_LOCK_MONTH.start;
+    await withSystemDbAccessContext(() =>
+      db.execute(sql`SELECT public.breeze_prepare_metric_rollup_compaction(${month}::timestamp, true)`),
+    );
+
+    // A request that reads metric_rollups and then devices. Dropping the stage
+    // needs devices/organizations and dropping the attached month needs
+    // metric_rollups; taking the first and queuing for the second deadlocks it.
+    let dropped: Promise<unknown> | undefined;
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT 1 FROM metric_rollups LIMIT 1`);
+      dropped = withSystemDbAccessContext(() =>
+        db.execute(sql`SELECT public.breeze_drop_metric_rollup_partition(${month}::timestamp) AS "name"`),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(await queuedLocks()).toBe(0);
+      const started = Date.now();
+      await tx.execute(sql`SELECT 1 FROM devices LIMIT 1`);
+      expect(Date.now() - started).toBeLessThan(1000);
+    });
+
+    const rows = (await dropped) as unknown as Array<{ name: string }>;
+    expect(rows[0]?.name).toBe(LEGACY_LOCK_MONTH.name);
+    expect(await relkind(LEGACY_LOCK_MONTH.name)).toBeNull();
+  }, 30_000);
+
   it('a direct call while another maintenance run holds the advisory lock fails fast instead of racing it (#10829)', async () => {
     await createLegacyMonth(LEGACY_LOCK_MONTH);
     const month = LEGACY_LOCK_MONTH.start;
