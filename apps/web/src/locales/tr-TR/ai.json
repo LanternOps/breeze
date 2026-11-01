@@ -605,6 +605,7 @@
   },
   "wisp": {
     "title": "Wisp",
+    "turnLimitRolled": "Bu görüşme tur sınırına ulaştı, bu nedenle Wisp bu konu başlığında yeni bir oturum açtı. Mesajınızı yeniden gönderin.",
     "locked": {
       "why": "Wisp, Pro ve üzeri planlarda kullanılabilir.",
       "server": "Wisp, Breeze Cloud üzerinde çalışır. Bu sunucuda kullanılamaz."

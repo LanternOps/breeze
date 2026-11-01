@@ -605,6 +605,7 @@
   },
   "wisp": {
     "title": "Wisp",
+    "turnLimitRolled": "Questa conversazione ha raggiunto il limite di turni, quindi Wisp ha aperto una nuova sessione in questo thread. Invia di nuovo il tuo messaggio.",
     "locked": {
       "why": "Wisp è disponibile con i piani Pro e superiori.",
       "server": "Wisp funziona su Breeze Cloud. Non è disponibile su questo server."

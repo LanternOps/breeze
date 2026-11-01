@@ -66,6 +66,9 @@ vi.mock('./WispEntityPicker', () => ({
     ) : null,
 }));
 vi.mock('../ai/AiThinkingIndicator', () => ({ default: () => null }));
+vi.mock('../ai/AiModelPicker', () => ({
+  default: (p: { disabled?: boolean }) => <div data-testid="ai-model-picker-mock" data-disabled={String(!!p.disabled)} />,
+}));
 vi.mock('../ai/AiContinuationPrompt', () => ({ default: () => null }));
 vi.mock('../ai/BuyCreditsLink', () => ({ default: () => null }));
 
@@ -202,23 +205,29 @@ describe('WispHomeThread (W08 Task 9)', () => {
     expect(h.state.switchSession).toHaveBeenCalledTimes(1);
   });
 
-  // #10142: the home card can start over, like the side panel's "New conversation".
-  it('"New conversation" closes the live session and starts a fresh one on this grant', async () => {
-    const closeSession = vi.fn(async () => { Object.assign(h.state, { sessionId: null }); });
-    reset({ wisp, sessionId: 's-live', closeSession });
+  // The column is the whole thread (one thread per grant, companion spec):
+  // there is no "New conversation"; closing a session would change nothing on screen.
+  it('offers no "New conversation" control', async () => {
+    reset({ wisp, sessionId: 's-live' });
     render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
     expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('wisp-home-new-conversation'));
-    await waitFor(() => expect(h.state.enterWispMode).toHaveBeenCalledWith(wisp));
-    expect(closeSession).toHaveBeenCalledTimes(1);
-    expect(closeSession.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(h.state.enterWispMode as () => void).mock.invocationCallOrder[0]);
-    expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
-    expect(h.state.sessionId).toBe('s-new');
+    expect(screen.queryByTestId('wisp-home-new-conversation')).toBeNull();
+    expect(screen.queryByText('aiChatSidebar.newConversation')).toBeNull();
   });
 
-  it('offers no "New conversation" for a paused grant', () => {
+  // The model menu the docked panel shows (registry W05), above the composer; locked while a turn streams.
+  it('shows the model picker above the composer, disabled while streaming', async () => {
+    reset({ wisp, sessionId: 's-live', isStreaming: true });
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
+    const picker = screen.getByTestId('ai-model-picker-mock');
+    expect(picker.dataset.disabled).toBe('true');
+    expect(picker.compareDocumentPosition(screen.getByTestId('ai-chat-input-mock')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows no model picker for a paused grant', () => {
     render(<WispHomeThread {...extra} wisp={{ ...wisp, status: 'paused' }} lastSessionId={null} />);
-    expect(screen.queryByTestId('wisp-home-new-conversation')).toBeNull();
+    expect(screen.queryByTestId('ai-model-picker-mock')).toBeNull();
   });
 });
 

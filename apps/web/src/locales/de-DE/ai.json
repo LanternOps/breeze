@@ -605,6 +605,7 @@
   },
   "wisp": {
     "title": "Wisp",
+    "turnLimitRolled": "Diese Unterhaltung hat ihr Zuglimit erreicht, deshalb hat Wisp eine neue Sitzung in diesem Thread geöffnet. Senden Sie Ihre Nachricht erneut.",
     "locked": {
       "why": "Wisp ist in Pro und höheren Tarifen verfügbar.",
       "server": "Wisp läuft in der Breeze Cloud. Auf diesem Server ist es nicht verfügbar."

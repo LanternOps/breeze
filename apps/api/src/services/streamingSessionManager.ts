@@ -1995,7 +1995,11 @@ export class StreamingSessionManager {
               } else if (resultMsg.subtype === 'error_max_budget_usd') {
                 session.eventBus.publish({ type: 'error', message: 'AI budget limit reached for this query.' });
               } else if (resultMsg.subtype === 'error_max_turns') {
-                session.eventBus.publish({ type: 'error', message: 'Maximum conversation turns reached.' });
+                // Coded: the session's remaining turns ran out mid-loop, so the
+                // next send would be refused too (preflight). Wisp rolls to a
+                // fresh session on this code; the user re-sends by hand (work
+                // may have run partway, so never automatically).
+                session.eventBus.publish({ type: 'error', message: 'Maximum conversation turns reached.', code: 'turn_limit_reached' });
               } else {
                 session.eventBus.publish({
                   type: 'error',
