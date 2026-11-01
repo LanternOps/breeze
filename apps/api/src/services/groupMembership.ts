@@ -94,6 +94,18 @@ export interface EffectiveGroupMembers {
 const SLOW_GROUP_EVALUATION_MS = 250;
 
 /**
+ * Removed (decommissioned) devices are never members of a dynamic group
+ * (#9933): membership feeds policy and patch targeting, and /devices hides
+ * them. Passed to EVERY filter evaluation in this module — the whole-group
+ * resolver, its single-device billing twin, and the per-device evaluator — so
+ * the three cannot drift (groupMembership.parity.integration.test.ts).
+ * Decommission and restore enqueue a re-evaluation (services/deviceDecommission.ts,
+ * services/deviceLifecycle.ts), which is what drops and re-adds the rows.
+ * Pinned and static rows are explicit admin choices and are kept as they are.
+ */
+const GROUP_FILTER_SCOPE = { excludeDecommissioned: true } as const;
+
+/**
  * The one read-only definition of "who is in this group" (#3205 W02). Used by
  * evaluateGroupMembership (which then diffs and writes) and by contract billing
  * (which never writes). Every membership read predicates on group_id AND the
@@ -137,6 +149,7 @@ export async function resolveEffectiveGroupMembers(group: GroupForResolution, ev
     const result = await evaluateFilter(dynamicFilter, {
       orgId: evaluationOrgId,
       allowedSiteIds: group.orgId !== null && group.siteId ? [group.siteId] : null,
+      ...GROUP_FILTER_SCOPE,
     });
     matched = new Set(result.deviceIds);
   } catch (err) {
@@ -204,7 +217,7 @@ export async function groupIncludesDevice(group: GroupForResolution, device: Dev
   if (!hasFilter) return false;
   if (group.siteId !== null && group.siteId !== device.siteId) return false;
   try {
-    return await deviceMatchesFilter(device.id, filter as FilterConditionGroup);
+    return await deviceMatchesFilter(device.id, filter as FilterConditionGroup, GROUP_FILTER_SCOPE);
   } catch (err) {
     throw new GroupEvaluationError(group.id, 'engine_error', err);
   }
@@ -357,7 +370,7 @@ async function writeDeviceMembership(
   const groupId = group.id;
   const deviceId = device.id;
   const outsideSite = group.siteId !== null && device.siteId !== group.siteId;
-  const matches = !outsideSite && await deviceMatchesFilter(deviceId, filter);
+  const matches = !outsideSite && await deviceMatchesFilter(deviceId, filter, GROUP_FILTER_SCOPE);
   const predicate = and(eq(deviceGroupMemberships.groupId, groupId),
     eq(deviceGroupMemberships.orgId, device.orgId), eq(deviceGroupMemberships.deviceId, deviceId));
   const [membership] = await db.select({ deviceId: deviceGroupMemberships.deviceId, isPinned: deviceGroupMemberships.isPinned })
@@ -735,7 +748,7 @@ export async function pinDeviceToGroup(
     .limit(1);
 
   if (group?.type === 'dynamic' && isFilterConditionGroup(group.filterConditions)) {
-    const matchesFilter = await deviceMatchesFilter(deviceId, group.filterConditions);
+    const matchesFilter = await deviceMatchesFilter(deviceId, group.filterConditions, GROUP_FILTER_SCOPE);
     if (!matchesFilter) {
       await db
         .delete(deviceGroupMemberships)
