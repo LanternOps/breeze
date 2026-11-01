@@ -179,6 +179,11 @@ describe('ci-success gating contract', () => {
     const exempt = new Set([
       'changes', 'docs-check', 'ci-success', 'main-red-alert', 'build-mobile-ios', 'recovery-media-e2e',
       'topology-browser-gate',
+      // path-read-contracts runs ONLY the tests that read docs/config by path, and must run on
+      // a docs-only PR (that is the point: a docs edit can break such a test). It is gated on
+      // the classifier's `path_readers` output and asserted fail-closed in ci-success
+      // (ci-pr-selection.test.mjs pins its lines).
+      'path-read-contracts',
     ]);
     // lint/security-audit/release-ledger validate CI plumbing itself and must keep running on a
     // tooling-only PR, so they stay gated on `code` alone — never additionally on `app`.
@@ -188,9 +193,10 @@ describe('ci-success gating contract', () => {
     // docs-only or tooling-only PR still skips it. check-migrations is code AND api —
     // never app, it is the release-lineage guard for tooling-only PRs. integration-test
     // carries the single-job `integration` clause instead of an area (#5936; pinned by
-    // classify-pr-paths.test.mjs).
+    // classify-pr-paths.test.mjs). The seven agent jobs carry the `agent_code` area (W3, #10744;
+    // pinned by ci-area-gating.test.mjs).
     const areaClause =
-      "(?: && (?:needs\\.changes\\.outputs\\.(?:api|web|portal|addins|m365|rust|integration) == 'true'|" +
+      "(?: && (?:needs\\.changes\\.outputs\\.(?:api|web|portal|addins|m365|rust|integration|agent_code) == 'true'|" +
       "\\(needs\\.changes\\.outputs\\.api == 'true' \\|\\| needs\\.changes\\.outputs\\.web == 'true' \\|\\| needs\\.changes\\.outputs\\.portal == 'true'\\)))?";
     const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const ungated = workflowJobs.filter((job) => {
@@ -224,8 +230,8 @@ describe('ci-success gating contract', () => {
       LINT_AGENT_RESULT: 'lint-agent',
       AGENT_WINDOWS_MANIFEST_GUARD_RESULT: 'agent-windows-manifest-guard',
     };
-    // Branch placement matters: `!= success` belongs in the APP_CHANGED == true leg, and
-    // `!= skipped` in the APP_CHANGED == false leg. Swapping them would gate nothing on app
+    // Branch placement matters: `!= success` belongs in the APP_CHANGED == true leg (under the
+    // agent_code area guard), and `!= skipped` in the APP_CHANGED == false leg. Swapping them would gate nothing on app
     // changes (the #4261 defect) and red every tooling-only PR.
     const skippedLegMarker = '{ [[ "${APP_CHANGED}" == "false" ]] && { \\';
     const splitAt = blockingCondition.indexOf(skippedLegMarker);
@@ -235,12 +241,23 @@ describe('ci-success gating contract', () => {
     for (const [envVar, job] of Object.entries(expected)) {
       expect(neededJobs, `${job} is missing from ci-success needs:`).toContain(job);
       expect(resultEnvByName.get(envVar), `${envVar} is not mapped to ${job}`).toBe(job);
-      expect(appLeg, `${job} must be required when app code changed`).toContain(
-        `[[ "\${${envVar}}" != "success" ]]`,
+      // Agent area (W3, #10744): inside the app leg the job is required when agent_code is
+      // true, asserted skipped when it is false, and any other agent_code value fails closed.
+      expect(appLeg, `${job} must be required when agent code changed`).toContain(
+        `{ [[ "\${AGENT_CODE_CHANGED}" == "true" ]] && [[ "\${${envVar}}" != "success" ]]; }`,
       );
-      expect(appLeg, `${job} success check must not be in the tooling-only leg`).not.toContain(
-        `[[ "\${${envVar}}" != "skipped" ]]`,
+      expect(appLeg, `${job} must be asserted skipped when agent code did not change`).toContain(
+        `{ [[ "\${AGENT_CODE_CHANGED}" == "false" ]] && [[ "\${${envVar}}" != "skipped" ]]; }`,
       );
+      expect(appLeg, 'agent_code must be fail-closed (only true/false accepted)').toContain(
+        '{ [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; }',
+      );
+      // Every success/skipped check for the job in the app leg is guarded by agent_code — an
+      // unguarded `!= success` would red agent-free PRs, an unguarded `!= skipped` every agent PR.
+      const unguarded = appLeg
+        .split('\n')
+        .filter((line) => line.includes(`"\${${envVar}}"`) && !line.includes('"${AGENT_CODE_CHANGED}"'));
+      expect(unguarded, `${job} has an agent_code-unguarded check in the app leg`).toEqual([]);
       expect(toolingLeg, `${job} must be asserted skipped on a tooling-only change`).toContain(
         `[[ "\${${envVar}}" != "skipped" ]]`,
       );

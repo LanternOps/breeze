@@ -7,6 +7,10 @@ export interface Features {
   support: boolean;
   aiOperatorTasks: boolean;
   aiAgentsSweepAct: boolean;
+  /** #9939: the server's BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED switch. Off ⇒
+   *  "Approve and always allow" can never render, so the approvals inbox skips
+   *  its `GET /ai/agents/graduation` prefetch entirely. */
+  aiAgentsPolicyDecide: boolean;
   /** Tool catalog W01 (#5216): the server's TOOL_SOURCES_ENABLED kill switch.
    *  Off ⇒ every /tool-sources route answers 404, so the nav item and pages
    *  must be hidden rather than linking to a dead surface. */
@@ -56,7 +60,7 @@ interface FeaturesState {
 // flags are off by default (decision D2). An unreachable or older /config
 // (missing the field) must hide the "Delegate to Operator" button, never
 // show it.
-const DEFAULT_FEATURES: Features = { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false };
+const DEFAULT_FEATURES: Features = { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false };
 const DEFAULT_CF_ACCESS: CfAccessLoginConfig = { enabled: false };
 // Default closed: until /config confirms registration is open we hide the
 // registration UI rather than flash a link that may be disabled (#1308).
@@ -93,6 +97,8 @@ export const useFeaturesStore = create<FeaturesState>()((set, get) => {
           support: !!data.features?.support,
           aiOperatorTasks: !!data.features?.aiOperatorTasks,
           aiAgentsSweepAct: data.features?.aiAgentsSweepAct === true,
+          // Default CLOSED: an older or unreachable /config skips the prefetch.
+          aiAgentsPolicyDecide: data.features?.aiAgentsPolicyDecide === true,
           // Default CLOSED, like aiOperatorTasks: an older or unreachable
           // /config must hide a surface that authors credentials reaching
           // customer systems, never flash it.
@@ -171,6 +177,20 @@ export function useRegistrationGate(active = true): { enabled: boolean; loaded: 
 // flashing the button before the answer arrives (W08 of #5205, #5246).
 export function useAiOperatorTasksGate(): { enabled: boolean; loaded: boolean } {
   const enabled = useFeaturesStore((s) => s.features.aiOperatorTasks);
+  const loaded = useFeaturesStore((s) => s.loaded);
+  const load = useFeaturesStore((s) => s.load);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  return { enabled, loaded };
+}
+
+// #9939: whether policy-decide is on, i.e. whether the approvals inbox's
+// "Approve and always allow" affordance can exist at all. `loaded` lets the
+// caller hold its graduation prefetch until the answer is known rather than
+// firing it optimistically and discarding the result.
+export function useAiAgentsPolicyDecideGate(): { enabled: boolean; loaded: boolean } {
+  const enabled = useFeaturesStore((s) => s.features.aiAgentsPolicyDecide);
   const loaded = useFeaturesStore((s) => s.loaded);
   const load = useFeaturesStore((s) => s.load);
   useEffect(() => {

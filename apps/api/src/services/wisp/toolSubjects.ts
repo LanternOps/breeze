@@ -126,6 +126,7 @@ export const WISP_NON_FOCAL_TOOLS: ReadonlySet<string> = new Set([
   'get_network_asset',
   'get_network_asset_reachability',
   'get_network_changes',
+  'get_partner_settings_inheritance',
   'get_pax8_status',
   'get_peripheral_activity',
   'get_playbook_history',

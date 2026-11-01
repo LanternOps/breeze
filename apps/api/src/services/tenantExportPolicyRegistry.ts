@@ -164,6 +164,10 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // embed credentials or capabilities. Everything a customer must be able to
   // export therefore lives in a bounded text column here (objective,
   // outcome_detail, handoff_summary, target_label) and is `included`.
+  // #9981: which task held which provider account, and who released it.
+  // No json/jsonb/bytea column; external_id is the immutable provider id
+  // (same classification as ai_operator_task_target_accounts.external_id).
+  "ai_operator_account_reservations": tablePolicy("org_id", {"included":["id","org_id","task_id","provider","external_id","principal_label","reserved_at","released_at","release_reason","released_by_user_id","release_note","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "ai_operator_operations": tablePolicy("org_id", {"included":["id","org_id","task_id","task_step_key","operation_key","attempt_ordinal","intent_id","originating_run_id","argument_digest","execution_ref_kind","execution_ref_id","plan_revision","claimed_lease_epoch","dispatch_state","dispatch_detail","result_state","dispatched_at","cancel_requested_at","result_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["result"]}),
   // Recipe Library E4 (#6169). The approved effect SET is child rows rather
   // than jsonb precisely so it survives a tenant export: it is the record of

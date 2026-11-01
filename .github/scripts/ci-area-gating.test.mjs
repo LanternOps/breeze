@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize } from 'node:path';
@@ -22,6 +22,15 @@ import { fileURLToPath } from 'node:url';
 //     files change (the cross-area scan below keeps that list honest).
 
 const REPO_ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '..', '..'));
+// Deliberately omit the QEMU list: these harnesses retain its fail-closed behavior.
+function copyPolicyFiles(dir) {
+  mkdirSync(join(dir, '.github/scripts'), { recursive: true });
+  for (const file of ['classify-pr-paths.sh', 'integration-floor-paths.txt', 'path-reader-map.txt']) {
+    const source = new URL(`./${file}`, import.meta.url);
+    if (existsSync(source)) copyFileSync(source, join(dir, '.github/scripts', file));
+  }
+}
+
 const workflow = readFileSync(new URL('../workflows/ci.yml', import.meta.url), 'utf8');
 const job = (name) => {
   const match = workflow.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))`, 'm'));
@@ -52,7 +61,7 @@ test('classifier: emits every area output, in order, after code/docs/agent/app, 
     run.stdout.trim().split('\n').map((l) => l.split('=')[0]),
     // topology_browser (#6117) is a single-job gate, not an area; it trails the areas.
     // integration (#5936) gates one job, not an area; it trails everything.
-    ['code', 'docs', 'agent', 'app', ...AREAS, 'topology_browser', 'agent_code', 'integration'],
+    ['code', 'docs', 'agent', 'app', ...AREAS, 'topology_browser', 'agent_code', 'integration', 'path_readers', 'reader_tests'],
   );
 });
 
@@ -141,7 +150,6 @@ test('classifier: shared/global inputs set every area', () => {
 
 test('classifier: FAIL OPEN — a code path matching no area rule sets every area', () => {
   for (const path of [
-    'agent/internal/heartbeat/heartbeat.go',
     'e2e-tests/tests/login.spec.ts',
     'load-tests/k6/devices.js',
     'deploy/docker-compose.prod.yml',
@@ -189,6 +197,7 @@ test('classifier: a tooling-only (app=false) change always sets api, so check-mi
 // is a test that would be silently skipped. Directory enumeration
 // (readdirSync over apps/*) cannot be found this way; those are pinned below.
 const AREA_DIRS = {
+  agent: ['agent'],
   api: ['apps/api'],
   web: ['apps/web'],
   portal: ['apps/portal'],
@@ -198,7 +207,7 @@ const AREA_DIRS = {
 };
 const OWNED_DIRS = [...Object.values(AREA_DIRS).flat(), 'apps/mobile'];
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'target', 'coverage', 'gen', 'locales', 'build']);
-const SOURCE_EXT = /\.(ts|tsx|mts|cts|js|mjs|cjs|astro|json|toml|rs|sh|ya?ml)$/u;
+const SOURCE_EXT = /\.(ts|tsx|mts|cts|js|mjs|cjs|astro|json|toml|rs|go|sh|ya?ml)$/u;
 // Generated data that embeds documentation prose verbatim. A quoted repo path
 // in it (e.g. the docs mentioning `'apps/mobile'`) is text served to the AI
 // search tool, not a path the code reads.
@@ -223,24 +232,54 @@ const crossAreaRefs = () => {
           if (/^\s*(\/\/|\*|\/\*|#)/u.test(line)) return;
           const targets = [];
           for (const m of line.matchAll(/['"`]((?:\.\.\/)+[^'"`$\s]*)/gu)) targets.push(normalize(join(dirname(file), m[1])));
-          for (const m of line.matchAll(/['"`](apps\/[a-z0-9-]+(?:\/[^'"`$\s:]*)?)/gu)) targets.push(normalize(m[1]));
-          for (const m of line.matchAll(/['"`]apps['"`]\s*,\s*['"`]([a-z0-9-]+)['"`]/gu)) targets.push(`apps/${m[1]}`);
-          for (const target of targets) {
-            const owner = OWNED_DIRS.find((d) => target === d || target.startsWith(`${d}/`));
-            if (!owner || AREA_DIRS[area].includes(owner)) continue;
-            refs.push({ area, target: target.replace(/\/$/u, ''), at: `${file}:${i + 1}` });
-          }
+          for (const m of line.matchAll(/['"`]((?:apps|agent|packages)\/[a-z0-9-]+(?:\/[^'"`$\s:]*)?)/gu)) targets.push(normalize(m[1]));
+          // The `'apps', '<x>'` join form is apps-only: `'agent'`/`'packages'` are
+          // ordinary words in string arrays (`['agent', 'linux']`). Go joins are
+          // handled whole-file below (they span lines).
+          if (!file.endsWith('.go')) for (const m of line.matchAll(/['"`]apps['"`]\s*,\s*['"`]([a-z0-9-]+)['"`]/gu)) targets.push(`apps/${m[1]}`);
+          pushRefs(area, targets, `${file}:${i + 1}`);
         });
+        if (file.endsWith('.go')) {
+          // filepath.Join("..", "..", "apps", "api", ...) — collect every quoted
+          // segment of the call, across lines, and resolve it from the file's dir.
+          const text = readFileSync(join(REPO_ROOT, file), 'utf8');
+          for (const m of text.matchAll(/filepath\.Join\(([^)]*)\)/gu)) {
+            const segs = [...m[1].matchAll(/"([^"]+)"/gu)].map((s) => s[1]);
+            if (!segs.length) continue;
+            const line = text.slice(0, m.index).split('\n').length;
+            pushRefs(area, [normalize(join(dirname(file), ...segs))], `${file}:${line}`);
+          }
+        }
       }
     }
   }
   return refs;
+  function pushRefs(area, targets, at) {
+    for (const target of targets) {
+      // A literal that happens to start with agent/ or packages/ but names
+      // nothing in the tree (`'agent/linux'`, `"../packages/dpkg"`) is not a read.
+      if ((target.startsWith('agent/') || target.startsWith('packages/')) && !existsSync(join(REPO_ROOT, target))) continue;
+      const owner = OWNED_DIRS.find((d) => target === d || target.startsWith(`${d}/`));
+      if (!(area === 'agent' && target.startsWith('packages/')) && (!owner || AREA_DIRS[area].includes(owner))) continue;
+      refs.push({ area, target: target.replace(/\/$/u, ''), at });
+    }
+  }
 };
 
 test('cross-area scan finds the known references (guards against a vacuous scan)', () => {
   const refs = crossAreaRefs();
   const seen = new Set(refs.map((r) => `${r.area} ${r.target}`));
   for (const known of [
+    'agent apps/api/src/routes/agents/schemas.ts',
+    'agent apps/api/src/routes/agentWs.ts',
+    'agent apps/web/public/scripts/uninstall.sh',
+    'agent packages/shared/src/testing/topology-unifi-v1.json',
+    // Go filepath.Join across two lines (budget_contract_test.go:23-24).
+    'agent apps/api/src/__tests__/integration/agentHotPathQueryBudget.integration.test.ts',
+    // The reverse direction: API tests that parse agent sources.
+    'api agent/internal/heartbeat/heartbeat.go',
+    'api agent/installer',
+    'api agent/installer/breeze.wxs',
     'api apps/web/src/components/ai-risk/tierConfig',
     'api apps/viewer/src',
     'api apps/portal/src',
@@ -264,7 +303,7 @@ test('every cross-area reference sets the reading area when the referenced path 
       : existsSync(abs) ? [target] : ['.ts', '.tsx', '.js', '.mjs'].map((ext) => `${target}${ext}`).filter((p) => existsSync(join(REPO_ROOT, p)));
     if (probes.length === 0) missing.push(`${area} ← ${target} (${at}): referenced path does not exist; fix the scanner`);
     for (const probe of probes) {
-      if (classify([probe])[area] !== 'true') missing.push(`${area} ← ${probe} (${at})`);
+      if (classify([probe])[area === 'agent' ? 'agent_code' : area] !== 'true') missing.push(`${area} ← ${probe} (${at})`);
     }
   }
   assert.deepEqual(missing, [], 'add a cross-area rule to classify-pr-paths.sh for each of these');
@@ -276,7 +315,6 @@ test('every app Dockerfile and package.json sets api (test-api enumerates them)'
   for (const app of apps) {
     for (const file of ['Dockerfile', 'package.json']) {
       if (!existsSync(join(REPO_ROOT, 'apps', app, file))) continue;
-      if (app === 'docs') continue; // docs-only classification owns apps/docs/**
       assert.equal(classify([`apps/${app}/${file}`]).api, 'true', `apps/${app}/${file}`);
     }
   }
@@ -326,6 +364,7 @@ test('merge_group: an unresolvable entry and a non-PR event set every area (full
 // ─── Job gating ─────────────────────────────────────────────────────────
 const APP_IF = "needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'";
 const AREA_JOBS = {
+  agent_code: ['build-agent', 'lint-agent', 'test-agent', 'agent-windows-manifest-guard', 'test-agent-windows', 'windows-runtime-smoke'],
   // integration-test is NOT here: it has its own, narrower `integration` output
   // (#5936), asserted at the bottom of this file and in classify-pr-paths.test.mjs.
   api: ['test-api', 'check-migrations-nonsuperuser', 'build-api'],
@@ -389,13 +428,13 @@ test('ci-success needs test-document-ui and asserts it in both branches (#9414)'
 });
 test('jobs that must never be area-gated are not', () => {
   for (const name of ['changes', 'lint', 'typecheck', 'security-audit', 'workspace-runtime', 'docs-check', 'ci-success',
-    'auth-browser-transition-browser-contract', 'test-document-ui', 'test-viewer', 'test-mobile', 'test-agent', 'build-agent']) {
+    'auth-browser-transition-browser-contract', 'test-document-ui', 'test-viewer', 'test-mobile']) {
     assert.doesNotMatch(job(name), /^    if: .*outputs\.(api|web|portal|addins|m365|rust) ==/mu, name);
   }
 });
 
 // ─── ci-success tri-state ───────────────────────────────────────────────
-const FLAG = { api: 'API_CHANGED', web: 'WEB_CHANGED', portal: 'PORTAL_CHANGED', addins: 'ADDINS_CHANGED', m365: 'M365_CHANGED', rust: 'RUST_CHANGED' };
+const FLAG = { agent_code: 'AGENT_CODE_CHANGED', api: 'API_CHANGED', web: 'WEB_CHANGED', portal: 'PORTAL_CHANGED', addins: 'ADDINS_CHANGED', m365: 'M365_CHANGED', rust: 'RUST_CHANGED' };
 const resultVar = (name) => `${name.toUpperCase().replace(/-/gu, '_')}_RESULT`;
 const triState = (flag, rv) => new RegExp(
   `\\{ \\[\\[ "\\$\\{${flag}\\}" == "true" \\]\\] && \\[\\[ "\\$\\{${rv}\\}" != "success" \\]\\]; \\} \\|\\| \\\\\\n\\s*`
@@ -440,12 +479,12 @@ const STACK_VARS = STACK_JOBS.map(resultVar);
 // jobs skipped, exactly as their `if:` would leave them.
 const onlyAreas = (on, { isPr = 'true' } = {}) => {
   const env = {
-    ...allResults('success'),
+    ...allResults('success'), PATH_READERS_CHANGED: 'true',
     CHANGES_RESULT: 'success', CODE_CHANGED: 'true', DOCS_CHANGED: 'false', DOCS_CHECK_RESULT: 'skipped',
     APP_CHANGED: 'true', AGENT_CHANGED: 'false', RECOVERY_MEDIA_E2E_RESULT: 'skipped',
     MOBILE_NATIVE_REQUIRED: 'false', BUILD_MOBILE_IOS_RESULT: 'skipped', IS_PR: isPr,
   };
-  for (const area of AREAS) {
+  for (const area of [...AREAS, 'agent_code']) {
     const changed = on.includes(area);
     env[FLAG[area]] = changed ? 'true' : 'false';
     if (!changed) for (const v of gatedVars[area]) env[v] = 'skipped';
@@ -461,6 +500,8 @@ const onlyAreas = (on, { isPr = 'true' } = {}) => {
 const runSummary = (env) => spawnSync('bash', ['-e', '-c', summaryScript], { encoding: 'utf8', env: { ...process.env, ...env } });
 
 for (const [label, env, passes] of [
+  ['agent flag alone (api would be true on a real agent PR; the summary accepts the shape)', onlyAreas(['agent_code']), true],
+  ['agent flag alone, merge queue, integration ungated', { ...onlyAreas(['agent_code'], { isPr: 'false' }), INTEGRATION_CHANGED: 'true', INTEGRATION_TEST_RESULT: 'success' }, true],
   ['api-only PR, other areas skipped', onlyAreas(['api']), true],
   ['api-only merge-queue entry, other areas skipped', onlyAreas(['api'], { isPr: 'false' }), true],
   ['addins-only merge-queue entry: smoke jobs correctly skipped', onlyAreas(['addins'], { isPr: 'false' }), true],
@@ -541,7 +582,7 @@ test('merge_group: a rename out of an area sets that area too', () => {
     git('mv', 'apps/excel-addin/src/shared.ts', 'apps/web/src/shared.ts');
     git('commit', '-q', '-m', 'move');
     const head = git('rev-parse', 'HEAD');
-    writeFileSync(join(dir, '.github/scripts/classify-pr-paths.sh'), readFileSync(new URL('./classify-pr-paths.sh', import.meta.url)));
+    copyPolicyFiles(dir);
     const outputFile = join(dir, 'gh-output');
     writeFileSync(outputFile, '');
     const r = spawnSync('bash', ['-c', classifyScript], {

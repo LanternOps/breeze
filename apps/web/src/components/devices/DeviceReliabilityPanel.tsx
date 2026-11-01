@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 import type { AiPageContext } from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
-import { deviceEventLogHash, reliabilityScoringWindow } from '@/lib/deviceEventLogLink';
+import { deviceEventLogHash } from '@/lib/deviceEventLogLink';
 import { fetchWithAuth } from '../../stores/auth';
 import { createCancellableRequest, type CancellableRequest } from '../../lib/cancellableRequest';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
@@ -30,6 +30,11 @@ type ReliabilityDriver = {
   weight: number;
   lostPoints: number;
   evidence: Record<string, number>;
+  // #10053: the span the API scored this factor over, and (crashes, hangs,
+  // hardwareErrors) the event-log sources of every event it scored there.
+  windowStart?: string;
+  windowEnd?: string;
+  eventLogSources?: string[];
 };
 
 type ReliabilitySnapshot = {
@@ -247,34 +252,55 @@ const LINKED_FACTORS = new Set(['crashes', 'hangs', 'serviceFailures', 'hardware
 
 type OffenderGroupKey = keyof ReliabilityOffenders;
 
-// The Windows SCM source every service-failure event is stored under. The
-// event-log `source` filter is one exact value, so this is the only
-// factor-level source that can be named (R2).
+// The Windows SCM source every service-failure event is stored under. Service
+// failures carry a parsed service name, not a source, so this is the only
+// source a serviceFailures factor row can name (R2).
 const WINDOWS_SCM_SOURCE = 'Service Control Manager';
 
-type EventLogLink = { href: string; label: string; title: string; ariaLabel: string };
+// The factor whose scoring window an offender group's links carry.
+const OFFENDER_GROUP_FACTOR: Record<OffenderGroupKey, string> = {
+  services: 'serviceFailures',
+  hardware: 'hardwareErrors',
+  hangs: 'hangs',
+};
 
-// Which single event-log `source` a row's link carries, and whether that
-// filter is exactly the row's subject. Only an exact filter may read "View in
-// event log"; a link that merely narrows to a related source, or carries the
-// window only, reads "Open event log" (R2: never claim a view it does not
-// deliver).
-// - factor rows: only Windows serviceFailures maps to one source (SCM).
+type EventLogLink = { href: string; label: string; title: string; ariaLabel: string };
+type EventLogRow = { factor: string } | { group: OffenderGroupKey; key: string };
+
+// Which event-log sources a row's link carries, and whether that filter is
+// exactly the row's subject. Only an exact filter may read "View in event
+// log"; a link that merely narrows to a related source, or carries the window
+// only, reads "Open event log" (R2: never claim a view it does not deliver).
+// - factor rows: crashes/hangs/hardwareErrors name every source the API says
+//   their scored events came from (#10053); Windows serviceFailures names SCM.
 // - offenders: hardware/hang keys ARE the source; a service key is the source
 //   on macOS/Linux, but on Windows it is a service name parsed from the SCM
 //   message, so the link falls back to the SCM source (not exact).
-function eventLogSource(
+function eventLogSources(
   osType: ReliabilitySnapshot['osType'],
-  row: { factor: string } | { group: OffenderGroupKey; key: string },
-): { source?: string; exact: boolean } {
+  row: EventLogRow,
+  driver: ReliabilityDriver | undefined,
+): { sources?: string[]; exact: boolean } {
   if ('factor' in row) {
-    return row.factor === 'serviceFailures' && osType === 'windows'
-      ? { source: WINDOWS_SCM_SOURCE, exact: true }
-      : { exact: false };
+    if (row.factor === 'serviceFailures') {
+      return osType === 'windows' ? { sources: [WINDOWS_SCM_SOURCE], exact: true } : { exact: false };
+    }
+    const scored = driver?.eventLogSources;
+    return scored && scored.length > 0 ? { sources: scored, exact: true } : { exact: false };
   }
-  if (row.group !== 'services') return { source: row.key, exact: true };
-  if (osType === 'windows') return { source: WINDOWS_SCM_SOURCE, exact: false };
-  return osType ? { source: row.key, exact: true } : { exact: false };
+  if (row.group !== 'services') return { sources: [row.key], exact: true };
+  if (osType === 'windows') return { sources: [WINDOWS_SCM_SOURCE], exact: false };
+  return osType ? { sources: [row.key], exact: true } : { exact: false };
+}
+
+// The factor's scoring window as the API reported it, or null when it is
+// missing or not a valid span — the caller then renders text, not a link.
+function driverWindow(driver: ReliabilityDriver | undefined): { from: string; to: string } | null {
+  if (!driver?.windowStart || !driver.windowEnd) return null;
+  const from = Date.parse(driver.windowStart);
+  const to = Date.parse(driver.windowEnd);
+  if (Number.isNaN(from) || Number.isNaN(to) || from > to) return null;
+  return { from: driver.windowStart, to: driver.windowEnd };
 }
 
 const EVENT_LOG_LINK_CLASS =
@@ -598,23 +624,20 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   // Short form for inline evidence: "24 in 30d".
   const windowPhrase = `in ${OFFENDER_WINDOW_DAYS}d`;
 
-  // One scoring window per render, shared by every factor and offender link.
-  const scoringWindow = reliabilityScoringWindow({
-    computedAt: snapshot.computedAt,
-    enrolledAt: snapshot.enrolledAt,
-    baselineAt: snapshot.baseline?.baselineAt,
-  });
-  const buildEventLogLink = (
-    row: { factor: string } | { group: OffenderGroupKey; key: string },
-    subject: string,
-  ): EventLogLink | null => {
+  // Each link carries its factor's scoring window as the API reported it
+  // (#10053); offender rows use their group's factor.
+  const buildEventLogLink = (row: EventLogRow, subject: string): EventLogLink | null => {
+    const factor = 'factor' in row ? row.factor : OFFENDER_GROUP_FACTOR[row.group];
+    const driver = (snapshot.drivers ?? []).find((candidate) => candidate.factor === factor);
+    const scoringWindow = driverWindow(driver);
     if (!scoringWindow) return null;
-    const { source, exact } = eventLogSource(snapshot.osType, row);
+    const { sources, exact } = eventLogSources(snapshot.osType, row, driver);
+    const source = sources?.join(', ');
     const fmt = (iso: string) => formatDateTime(new Date(iso), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     const range = { from: fmt(scoringWindow.from), to: fmt(scoringWindow.to) };
     const label = exact ? t('deviceReliabilityPanel.eventLogLinkExact') : t('deviceReliabilityPanel.eventLogLinkWindow');
     return {
-      href: `#${deviceEventLogHash({ source, ...scoringWindow })}`,
+      href: `#${deviceEventLogHash({ sources, ...scoringWindow })}`,
       label,
       // Starts with the visible text (WCAG 2.5.3) and names the row so the
       // identical per-row links are distinguishable in a link list.

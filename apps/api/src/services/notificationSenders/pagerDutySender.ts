@@ -4,6 +4,8 @@
  * Sends alert notifications via PagerDuty Events API v2.
  */
 
+import type { AlertOwnerKind } from '@breeze/shared';
+
 import type { AlertSeverity } from '../email';
 import { formatHttpFailure, formatHttpFailureDetail } from '../httpFailureMessage';
 import { collectChannelSecretStrings } from '../notificationChannelSecrets';
@@ -31,6 +33,8 @@ export interface PagerDutyNotificationPayload {
   summary: string;
   deviceId?: string | null;
   deviceName?: string;
+  subjectName?: string;
+  ownerKind?: AlertOwnerKind;
   orgId: string;
   orgName?: string;
   triggeredAt: string;
@@ -137,9 +141,9 @@ export async function sendPagerDutyNotification(
     dedup_key: dedupKey,
     payload: {
       summary: `${payload.alertName}: ${payload.summary}`.slice(0, 1024),
-      source: config.source || payload.deviceName || 'breeze-rmm',
+      source: config.source || payload.subjectName || payload.deviceName || 'breeze-rmm',
       severity: normalizePagerDutySeverity(config.severity, payload.severity),
-      component: config.component || payload.deviceName,
+      component: config.component || payload.subjectName || payload.deviceName,
       group: config.group || payload.orgName,
       class: config.class || payload.ruleName,
       timestamp: payload.triggeredAt,
@@ -152,6 +156,8 @@ export async function sendPagerDutyNotification(
         orgName: payload.orgName,
         deviceId: payload.deviceId,
         deviceName: payload.deviceName,
+        subjectName: payload.subjectName,
+        ownerKind: payload.ownerKind,
         ruleId: payload.ruleId,
         ruleName: payload.ruleName,
         dashboardUrl: payload.dashboardUrl,

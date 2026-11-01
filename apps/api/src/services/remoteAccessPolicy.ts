@@ -378,7 +378,8 @@ export interface DesktopSessionPolicy {
 
 // Safe-but-restrictive policy shipped to the agent when policy resolution
 // fails. Clipboard is OFF in both directions (no silent exfil, no paste) and
-// the session gets a short idle timeout + the default max duration so a
+// the session gets a 5-minute idle timeout (deliberately shorter than the
+// 30-minute baseline in policyBaselineDefaults.ts) + the default max duration so a
 // resolution outage can't leave a long-lived, fully-permissive session. The
 // capability gate itself is already enforced fail-closed by `checkRemoteAccess`
 // (which the offer handlers call first), so this only governs the in-session
