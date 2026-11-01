@@ -746,6 +746,8 @@
   },
   "partnerDefaults": {
     "notSet": "Non impostato — le org si configurano singolarmente",
+    "notSetTtl": "Non impostato — predefinito della piattaforma; le organizzazioni possono impostare il proprio",
+    "notSetMaxTtl": "Non impostato — il massimo della piattaforma si applica a tutte le organizzazioni",
     "updatePolicy": "Criterio di aggiornamento agent",
     "automatic": "Automatico",
     "manual": "Manuale (blocca gli aggiornamenti automatici)",
@@ -801,7 +803,7 @@
     "latestOrganization": "Impostato per questa organizzazione: sempre l’ultima promossa",
     "latestVersion": "Ultima promossa ({{version}})",
     "latest": "Ultima promossa",
-    "pinnedAll": "Bloccata per tutte le organizzazioni",
+    "pinnedAll": "Predefinito del partner — le organizzazioni possono sostituirlo",
     "overridesDefault": "Sovrascrive predefinito partner ({{version}})",
     "pinnedOrganization": "Bloccata per questa organizzazione",
     "inherited": "Ereditata dal partner: {{version}}",

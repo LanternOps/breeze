@@ -746,6 +746,8 @@
   },
   "partnerDefaults": {
     "notSet": "Non défini — les organisations se configurent individuellement",
+    "notSetTtl": "Non défini — valeur par défaut de la plateforme ; les organisations peuvent définir la leur",
+    "notSetMaxTtl": "Non défini — le maximum de la plateforme s'applique à toutes les organisations",
     "updatePolicy": "Politique de mise à jour de l’agent",
     "automatic": "Automatique",
     "manual": "Manuel (mises à jour automatiques par blocage)",
@@ -801,7 +803,7 @@
     "latestOrganization": "Défini pour cette organisation : toujours la dernière promue",
     "latestVersion": "Dernière promotion ({{version}})",
     "latest": "Dernières promotions",
-    "pinnedAll": "Épinglé pour toutes les organisations",
+    "pinnedAll": "Valeur par défaut du partenaire — les organisations peuvent la remplacer",
     "overridesDefault": "Outrepasse le partenaire par défaut ({{version}})",
     "pinnedOrganization": "Épinglé pour cette organisation",
     "inherited": "Hérité de son partenaire : {{version}}",
