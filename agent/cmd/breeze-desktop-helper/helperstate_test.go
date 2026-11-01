@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -71,8 +72,8 @@ func TestEnsureHelperStateDirReportsMkdirFailure(t *testing.T) {
 // The HOME-unresolved fallback lands on a dir that exists but this user
 // cannot write; MkdirAll succeeds there, so only the write probe reports it.
 func TestEnsureHelperStateDirReportsUnwritableExistingDir(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root can write a 0500 dir")
+	if os.Geteuid() == 0 || runtime.GOOS == "windows" {
+		t.Skip("root can write a 0500 dir, and Windows ignores directory mode bits")
 	}
 	dir := filepath.Join(t.TempDir(), "data")
 	if err := os.Mkdir(dir, 0o500); err != nil {

@@ -137,38 +137,65 @@ func findOpenH264Library() (string, error) {
 		return "", fmt.Errorf("OpenH264: unsupported platform %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 
+	// On macOS every candidate must sit in a root-owned tree, not only the
+	// shared dir: /usr/local/{bin,lib} are often user-owned on Intel Homebrew
+	// hosts, and a hash check on a file its user can swap is no gate.
+	rootTree := s.goos == "darwin"
+
 	// 1. Next to the executable.
 	if dir, err := s.exeDir(); err == nil {
-		if p, ok := verifiedOpenH264(dir, v, false); ok {
+		if p, ok := verifiedOpenH264(dir, v, rootTree); ok {
 			return p, nil
 		}
 	}
 
 	// 2. The shared codec dir.
 	shared := s.sharedDir()
-	if p, ok := verifiedOpenH264(shared, v, s.goos == "darwin"); ok {
+	if p, ok := verifiedOpenH264(shared, v, rootTree); ok {
 		return p, nil
 	}
 
 	// 3. Standard library paths.
 	for _, dir := range s.systemDirs {
-		if p, ok := verifiedOpenH264(dir, v, false); ok {
+		if p, ok := verifiedOpenH264(dir, v, rootTree); ok {
 			return p, nil
 		}
 	}
 
-	// 4. Root stages the codec for everyone; anyone else downloads a private
-	// copy and never writes the shared dir.
+	// 4. Root stages the codec for everyone.
 	if s.euid() == 0 {
 		return stageOpenH264(v, shared)
 	}
+	// Off macOS a non-root process keeps the pre-#10870 rule: persist into
+	// the shared dir when it can write it.
+	if s.goos != "darwin" && isDirWritable(shared) {
+		slog.Info("OpenH264 library not found locally, downloading", "lib", v.libName, "dest", shared)
+		if err := s.download(v, shared); err != nil {
+			return "", fmt.Errorf("auto-download OpenH264: %w", err)
+		}
+		return filepath.Join(shared, v.libName), nil
+	}
+	// Anyone else downloads a private copy and never writes the shared dir.
 	tmp := s.tempDir()
-	slog.Warn("OpenH264: no verified root-staged codec; downloading a private copy to a temp dir",
+	slog.Warn("OpenH264: no verified shared codec; downloading a private copy to a temp dir",
 		"sharedDir", shared, "dest", tmp)
 	if err := s.download(v, tmp); err != nil {
 		return "", fmt.Errorf("auto-download OpenH264: %w", err)
 	}
 	return filepath.Join(tmp, v.libName), nil
+}
+
+// isDirWritable reports whether dir exists and this process can create a
+// file in it. It never creates dir.
+func isDirWritable(dir string) bool {
+	f, err := os.CreateTemp(dir, ".breeze-write-check-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return true
 }
 
 // verifiedOpenH264 returns dir/libName when it matches the pinned hash and,
@@ -240,30 +267,36 @@ func verifyRootOwnedTree(path, top string, uid uint32) error {
 func stageOpenH264(v openH264Variant, shared string) (string, error) {
 	s := openH264Seams
 	if s.goos == "darwin" {
-		if err := ensureOpenH264CodecDir(shared); err != nil {
+		if err := ensureOpenH264CodecDir(shared, s.trustedUID); err != nil {
+			slog.Error("OpenH264: cannot stage the codec for the desktop helper; it will download a private copy on each start",
+				"dir", shared, "error", err.Error())
 			return "", fmt.Errorf("stage OpenH264: %w", err)
 		}
 		// A pre-#10870 build kept the codec in the root-only data dir.
 		if legacy, ok := verifiedOpenH264(s.legacyDir(), v, false); ok {
-			if err := copyVerifiedLib(legacy, v, shared); err == nil {
+			err := copyVerifiedLib(legacy, v, shared)
+			if err == nil {
 				slog.Info("OpenH264: staged the existing codec for helpers", "from", legacy, "dir", shared)
 				return filepath.Join(shared, v.libName), nil
-			} else {
-				slog.Warn("OpenH264: could not stage the existing codec, downloading", "from", legacy, "error", err.Error())
 			}
+			slog.Warn("OpenH264: could not stage the existing codec, downloading", "from", legacy, "dir", shared, "error", err.Error())
 		}
 	}
 	slog.Info("OpenH264 library not found locally, downloading", "lib", v.libName, "dest", shared)
 	if err := s.download(v, shared); err != nil {
+		if s.goos == "darwin" {
+			slog.Error("OpenH264: could not stage the codec for the desktop helper; retrying later, helpers download a private copy meanwhile",
+				"dir", shared, "error", err.Error())
+		}
 		return "", fmt.Errorf("auto-download OpenH264: %w", err)
 	}
 	return filepath.Join(shared, v.libName), nil
 }
 
 // ensureOpenH264CodecDir creates the macOS shared codec dir 0755 and repairs
-// a looser mode. It refuses a symlink or a non-directory in its place rather
-// than staging through it.
-func ensureOpenH264CodecDir(dir string) error {
+// a looser mode. It refuses a symlink, a non-directory, or a directory owned
+// by anyone but uid (root) rather than staging through it.
+func ensureOpenH264CodecDir(dir string, uid uint32) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -273,6 +306,13 @@ func ensureOpenH264CodecDir(dir string) error {
 	}
 	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
 		return fmt.Errorf("%s is not a real directory", dir)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("%s: cannot read owner", dir)
+	}
+	if st.Uid != uid {
+		return fmt.Errorf("%s is owned by uid %d, want %d", dir, st.Uid, uid)
 	}
 	if fi.Mode().Perm() != 0o755 {
 		return os.Chmod(dir, 0o755)
@@ -322,16 +362,19 @@ func downloadAndVerifyLib(url string, v openH264Variant, destDir string) error {
 	return installVerifiedLib(bzip2.NewReader(resp.Body), v, destDir)
 }
 
-// installVerifiedLib writes src to destDir/libName.tmp (mode 0644), checks
+// installVerifiedLib writes src to a unique temp file in destDir (mode 0644), checks
 // its SHA-256 against the pinned hash, and only then renames it into place.
 func installVerifiedLib(src io.Reader, v openH264Variant, destDir string) error {
 	hasher := sha256.New()
 
-	tmpPath := filepath.Join(destDir, v.libName+".tmp")
-	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	// A unique temp name (O_EXCL, never followed through a planted link):
+	// two root stagers (the agent and the login-window helper) must not
+	// truncate each other's half-written file before its rename.
+	f, err := os.CreateTemp(destDir, v.libName+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create tmp file: %w", err)
 	}
+	tmpPath := f.Name()
 	// The file mode is masked by umask; a helper must be able to read it.
 	if err := f.Chmod(0o644); err != nil {
 		_ = f.Close()
@@ -363,4 +406,10 @@ func installVerifiedLib(src io.Reader, v openH264Variant, destDir string) error 
 	slog.Info("OpenH264 library installed and verified",
 		"path", finalPath, "size", written, "sha256", hash)
 	return nil
+}
+
+// openH264StagesForHelpers reports whether this process stages the codec for
+// other processes to load: the root agent on macOS (#10870).
+func openH264StagesForHelpers() bool {
+	return openH264Seams.goos == "darwin" && openH264Seams.euid() == 0
 }

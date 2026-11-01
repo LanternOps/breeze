@@ -24,6 +24,9 @@ type WallpaperState struct {
 	WallpaperPath string `json:"wallpaperPath"`
 	DesktopEnv    string `json:"desktopEnv,omitempty"` // Linux only
 	Suppressed    bool   `json:"suppressed"`
+	// RecoveryAttempts counts process starts whose recovery Restore failed;
+	// the record is dropped at maxWallpaperRecoveryAttempts.
+	RecoveryAttempts int `json:"recoveryAttempts,omitempty"`
 }
 
 // WallpaperManager provides refcounted wallpaper suppression with crash recovery.
@@ -48,6 +51,11 @@ var (
 // wallpaperRecoveryFile is the crash-recovery record's name inside the
 // process's state dir.
 const wallpaperRecoveryFile = "wallpaper_state.json"
+
+// maxWallpaperRecoveryAttempts bounds how many process starts retry a
+// recovery whose Restore keeps failing (for example, the original image was
+// deleted) before the record is dropped.
+const maxWallpaperRecoveryAttempts = 5
 
 // wallpaperStateDir resolves where the recovery record lives. It is the
 // process's own state dir, not the agent data dir: on macOS the wallpaper is
@@ -93,10 +101,11 @@ func (m *WallpaperManager) Suppress() error {
 
 	var state *WallpaperState
 	if m.pendingRecovery != nil {
-		// The desktop is still the black we set before a crash: the
-		// original is the one recovery could not put back.
+		// The desktop is still the black we set before a crash (or a failed
+		// restore): the original is the one we could not put back.
 		cp := *m.pendingRecovery
 		state = &cp
+		slog.Info("Suppressing wallpaper; keeping the original an earlier restore could not put back", "path", state.WallpaperPath)
 	} else {
 		var err error
 		state, err = m.backend.GetCurrent()
@@ -117,9 +126,11 @@ func (m *WallpaperManager) Suppress() error {
 		m.refCount--
 		m.savedState = nil
 		if m.pendingRecovery != nil {
-			// Keep the record: it still describes the original that a
-			// crash left unrestored.
-			_ = m.writeRecoveryFile(m.pendingRecovery)
+			// Keep the record: it still describes the original that an
+			// earlier restore could not put back.
+			if werr := m.writeRecoveryFile(m.pendingRecovery); werr != nil {
+				slog.Warn("Failed to rewrite wallpaper recovery record", "path", m.recoveryPath, "error", werr.Error())
+			}
 		} else {
 			_ = m.deleteRecoveryFile()
 		}
@@ -152,13 +163,17 @@ func (m *WallpaperManager) Restore() error {
 		return nil
 	}
 
-	err := m.backend.Restore(m.savedState)
-	m.savedState = nil
-	_ = m.deleteRecoveryFile()
-
-	if err != nil {
+	if err := m.backend.Restore(m.savedState); err != nil {
+		// Keep the record and the original: the desktop is still black, so
+		// the next Suppress must save this original rather than the black,
+		// and the next start retries the restore.
+		slog.Warn("Failed to restore wallpaper; keeping the record to retry", "path", m.recoveryPath, "error", err.Error())
+		m.pendingRecovery = m.savedState
+		m.savedState = nil
 		return err
 	}
+	m.savedState = nil
+	_ = m.deleteRecoveryFile()
 
 	slog.Info("Wallpaper restored")
 	return nil
@@ -191,8 +206,18 @@ func (m *WallpaperManager) recoverIfNeeded() {
 
 	slog.Info("Recovering wallpaper from previous crash", "path", state.WallpaperPath)
 	if err := m.backend.Restore(&state); err != nil {
-		slog.Warn("Failed to recover wallpaper; keeping the record to retry on the next start",
-			"path", m.recoveryPath, "error", err.Error())
+		state.RecoveryAttempts++
+		if state.RecoveryAttempts >= maxWallpaperRecoveryAttempts {
+			slog.Warn("Failed to recover wallpaper; giving up and removing the record",
+				"path", m.recoveryPath, "wallpaper", state.WallpaperPath, "attempts", state.RecoveryAttempts, "error", err.Error())
+			m.removeRecoveryRecord()
+			return
+		}
+		slog.Warn("Failed to recover wallpaper; keeping the record for the next session or start",
+			"path", m.recoveryPath, "attempts", state.RecoveryAttempts, "error", err.Error())
+		if werr := m.writeRecoveryFile(&state); werr != nil {
+			slog.Warn("Failed to update wallpaper recovery record", "path", m.recoveryPath, "error", werr.Error())
+		}
 		m.pendingRecovery = &state
 		return
 	}

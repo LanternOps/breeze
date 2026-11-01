@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 var fakeCodecBytes = []byte("not really a dylib, but the pinned hash says it is")
@@ -302,4 +303,134 @@ func (s openH264SeamSet) mustVariant(t *testing.T) openH264Variant {
 		t.Fatal("no variant")
 	}
 	return v
+}
+
+// On macOS every candidate, not only the shared dir, must sit in a
+// root-owned tree: on Intel Homebrew hosts /usr/local/{bin,lib} are often
+// user-owned, and a hash check on a user-swappable file is a TOCTOU before
+// dlopen in the TCC-privileged helper.
+func TestOpenH264_DarwinRejectsUntrustedExeDirCandidate(t *testing.T) {
+	f := newOpenH264Fixture(t, "darwin", 501)
+	exeDir := filepath.Join(f.top, "bin")
+	writeCodec(t, exeDir, 0o775, fakeCodecBytes) // group-writable
+	openH264Seams.exeDir = func() (string, error) { return exeDir, nil }
+
+	got, err := findOpenH264Library()
+	if err != nil {
+		t.Fatalf("findOpenH264Library: %v", err)
+	}
+	if filepath.Dir(got) != f.tmp {
+		t.Fatalf("loaded %q, want the untrusted exe-dir candidate skipped", got)
+	}
+}
+
+func TestOpenH264_DarwinRejectsUntrustedSystemDirCandidate(t *testing.T) {
+	f := newOpenH264Fixture(t, "darwin", 501)
+	sys := filepath.Join(f.top, "usr-local-lib")
+	writeCodec(t, sys, 0o777, fakeCodecBytes)
+	openH264Seams.systemDirs = []string{sys}
+
+	got, err := findOpenH264Library()
+	if err != nil {
+		t.Fatalf("findOpenH264Library: %v", err)
+	}
+	if filepath.Dir(got) != f.tmp {
+		t.Fatalf("loaded %q, want the untrusted system-dir candidate skipped", got)
+	}
+}
+
+func TestOpenH264_DarwinAcceptsTrustedExeDirCandidate(t *testing.T) {
+	f := newOpenH264Fixture(t, "darwin", 501)
+	exeDir := filepath.Join(f.top, "bin")
+	want := writeCodec(t, exeDir, 0o755, fakeCodecBytes)
+	openH264Seams.exeDir = func() (string, error) { return exeDir, nil }
+
+	got, err := findOpenH264Library()
+	if err != nil || got != want {
+		t.Fatalf("got %q, %v; want the trusted exe-dir codec %q", got, err, want)
+	}
+}
+
+// A non-root Linux process with a writable data dir keeps persisting the
+// codec there, as before #10870, instead of re-downloading on every start.
+func TestOpenH264_LinuxNonRootUsesWritableSharedDir(t *testing.T) {
+	f := newOpenH264Fixture(t, "linux", 1000)
+	if err := os.MkdirAll(f.shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := findOpenH264Library()
+	if err != nil {
+		t.Fatalf("findOpenH264Library: %v", err)
+	}
+	if got != filepath.Join(f.shared, "libopenh264-test.dylib") {
+		t.Fatalf("loaded %q, want the writable data dir", got)
+	}
+}
+
+// Root never stages into a codec dir it does not own.
+func TestOpenH264_RootRefusesForeignOwnedCodecDir(t *testing.T) {
+	f := newOpenH264Fixture(t, "darwin", 0)
+	if err := os.MkdirAll(f.shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	openH264Seams.trustedUID = uint32(os.Getuid()) + 1
+	if _, err := findOpenH264Library(); err == nil {
+		t.Fatal("expected staging into a foreign-owned codec dir to fail")
+	}
+	if len(f.downloads) != 0 {
+		t.Fatalf("must not download into a foreign-owned dir, got %v", f.downloads)
+	}
+}
+
+// Concurrent stagers (root agent and root login-window helper) must not
+// share a temp file: each writes its own and renames a complete, verified
+// file into place.
+func TestInstallVerifiedLib_LeavesNoFixedTempName(t *testing.T) {
+	f := newOpenH264Fixture(t, "darwin", 0)
+	v := openH264Seams.mustVariant(t)
+	if err := os.MkdirAll(f.shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A stale fixed-name temp from an older build must not be reused.
+	stale := filepath.Join(f.shared, v.libName+".tmp")
+	if err := os.Symlink("/nonexistent-target", stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := installVerifiedLib(bytes.NewReader(fakeCodecBytes), v, f.shared); err != nil {
+		t.Fatalf("installVerifiedLib: %v", err)
+	}
+	if fi, err := os.Lstat(stale); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("stale fixed-name temp should be left untouched (not written through), lstat err = %v", err)
+	}
+	ok, err := verifyFileSHA256(filepath.Join(f.shared, v.libName), v.sha256)
+	if err != nil || !ok {
+		t.Fatalf("installed codec does not verify (ok=%v err=%v)", ok, err)
+	}
+}
+
+func TestRetryOpenH264Preload(t *testing.T) {
+	var slept []time.Duration
+	calls := 0
+	load := func() error {
+		calls++
+		if calls < 2 {
+			return errors.New("network not up yet")
+		}
+		return nil
+	}
+	// The first load runs before the retry loop; these are the retries.
+	ok := retryOpenH264Preload(load, []time.Duration{time.Minute, 5 * time.Minute, time.Hour}, func(d time.Duration) { slept = append(slept, d) })
+	if !ok || calls != 2 {
+		t.Fatalf("retry = %v after %d loads, want success on the 2nd retry", ok, calls)
+	}
+	if len(slept) != 2 || slept[0] != time.Minute || slept[1] != 5*time.Minute {
+		t.Fatalf("slept %v, want [1m 5m]", slept)
+	}
+
+	calls = 0
+	slept = nil
+	ok = retryOpenH264Preload(func() error { calls++; return errors.New("down") }, []time.Duration{time.Second, time.Second}, func(d time.Duration) { slept = append(slept, d) })
+	if ok || calls != 2 || len(slept) != 2 {
+		t.Fatalf("exhausted retry = %v, %d loads, %d sleeps; want false, 2, 2", ok, calls, len(slept))
+	}
 }

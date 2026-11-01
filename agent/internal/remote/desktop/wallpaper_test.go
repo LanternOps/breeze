@@ -325,3 +325,65 @@ func TestWallpaper_FailedRecoveryRetriedOnNextStart(t *testing.T) {
 		t.Fatalf("record should be removed after the retry succeeds, stat err = %v", err)
 	}
 }
+
+// A session-end Restore that fails must not drop the original either: keep
+// the record and the original so a later Suppress or start puts it back.
+func TestWallpaper_FailedSessionRestoreKeepsOriginal(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "Breeze")
+	useWallpaperStateDir(t, stateDir)
+	recordPath := filepath.Join(stateDir, wallpaperRecoveryFile)
+
+	backend := &stubWallpaperBackend{current: &WallpaperState{WallpaperPath: "/Users/canary/Pictures/beach.heic"}}
+	mgr := newWallpaperManager(backend)
+	if err := mgr.Suppress(); err != nil {
+		t.Fatalf("Suppress: %v", err)
+	}
+	backend.failRestore = true
+	if err := mgr.Restore(); err == nil {
+		t.Fatal("Restore should report the backend failure")
+	}
+	if _, err := os.Stat(recordPath); err != nil {
+		t.Fatalf("record must survive a failed session-end restore: %v", err)
+	}
+
+	// Next session on the same process: the original is still what is saved.
+	backend.failRestore = false
+	backend.current = &WallpaperState{WallpaperPath: "/tmp/breeze_black_wallpaper.png"}
+	if err := mgr.Suppress(); err != nil {
+		t.Fatalf("Suppress: %v", err)
+	}
+	if err := mgr.Restore(); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if backend.lastRestored == nil || backend.lastRestored.WallpaperPath != "/Users/canary/Pictures/beach.heic" {
+		t.Fatalf("restored %+v, want the original", backend.lastRestored)
+	}
+}
+
+// A record whose restore keeps failing (say the original image was deleted)
+// is dropped after a bounded number of starts instead of being retried, and
+// pinned as the "original", forever.
+func TestWallpaper_RecoveryGivesUpAfterMaxAttempts(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "Breeze")
+	useWallpaperStateDir(t, stateDir)
+	recordPath := filepath.Join(stateDir, wallpaperRecoveryFile)
+
+	crashed := newWallpaperManager(&stubWallpaperBackend{current: &WallpaperState{WallpaperPath: "/gone.heic"}})
+	if err := crashed.Suppress(); err != nil {
+		t.Fatalf("Suppress: %v", err)
+	}
+	for i := 1; i <= maxWallpaperRecoveryAttempts; i++ {
+		_ = newWallpaperManager(&stubWallpaperBackend{failRestore: true})
+		_, err := os.Stat(recordPath)
+		if i < maxWallpaperRecoveryAttempts && err != nil {
+			t.Fatalf("record dropped after %d failed attempts, want it kept until %d", i, maxWallpaperRecoveryAttempts)
+		}
+		if i == maxWallpaperRecoveryAttempts && !os.IsNotExist(err) {
+			t.Fatalf("record should be dropped after %d failed attempts, stat err = %v", i, err)
+		}
+	}
+	last := newWallpaperManager(&stubWallpaperBackend{})
+	if last.pendingRecovery != nil {
+		t.Fatal("no pending original should remain after giving up")
+	}
+}
