@@ -746,6 +746,8 @@
   },
   "partnerDefaults": {
     "notSet": "Ayarlanmadı — kuruluşlar ayrı ayrı yapılandırılır",
+    "notSetTtl": "Ayarlanmadı — platform varsayılanı; kuruluşlar kendi değerini belirleyebilir",
+    "notSetMaxTtl": "Ayarlanmadı — platform azami değeri tüm kuruluşlar için geçerlidir",
     "updatePolicy": "Temsilci Güncelleme Politikası",
     "automatic": "Otomatik",
     "manual": "Manuel (otomatik güncellemeleri engelle)",
@@ -801,7 +803,7 @@
     "latestOrganization": "Bu kuruluş için ayarlandı: her zaman en son tanıtılan",
     "latestVersion": "En son tanıtılan ({{version}})",
     "latest": "En son tanıtılanlar",
-    "pinnedAll": "Tüm kuruluşlar için sabitlendi",
+    "pinnedAll": "İş ortağı varsayılanı — kuruluşlar geçersiz kılabilir",
     "overridesDefault": "İş ortağı varsayılanını geçersiz kılar ({{version}})",
     "pinnedOrganization": "Bu kuruluş için sabitlendi",
     "inherited": "İş ortağından devralındı: {{version}}",

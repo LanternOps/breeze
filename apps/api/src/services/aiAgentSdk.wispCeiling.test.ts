@@ -14,6 +14,13 @@ const wisp = vi.hoisted(() => ({
   resolveGrantCeiling: vi.fn(),
   wispSeedForSession: vi.fn(),
 }));
+const autoLink = vi.hoisted(() => ({ focal: vi.fn(), importError: null as Error | null }));
+vi.mock('./wisp/autoLink', () => ({
+  get autoLinkFocalAct() {
+    if (autoLink.importError) throw autoLink.importError;
+    return autoLink.focal;
+  },
+}));
 vi.mock('./wisp/grantAuthority', async (importOriginal) => ({
   ...await importOriginal<typeof import('./wisp/grantAuthority')>(),
   resolveGrantCeiling: (...args: unknown[]) => wisp.resolveGrantCeiling(...args),
@@ -174,6 +181,7 @@ vi.mock('./aiAgentSdkTools', () => ({
   TOOL_TIERS: {
     query_devices: 1,
     take_screenshot: 2,
+    manage_tickets: 2,
     execute_command: 3,
     m365_reset_password: 3,
     google_reset_password: 3,
@@ -486,6 +494,7 @@ function allowTier(tier: number) {
 describe('createSessionPreToolUse — Wisp delegation ceiling (W04 Task 4)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    autoLink.importError = null;
     vi.mocked(checkToolPermission).mockResolvedValue(null);
     vi.mocked(checkToolRateLimit).mockResolvedValue(null);
     mockGetUserPushTokens.mockResolvedValue([]);
@@ -493,6 +502,68 @@ describe('createSessionPreToolUse — Wisp delegation ceiling (W04 Task 4)', () 
     wisp.enforceWispCeiling.mockResolvedValue({ ok: true, toolAuth: { gate: true }, ceiling: CEILING, permissionKeys: ['devices:read'] });
     wisp.narrowAuthToCeiling.mockImplementation(tagNarrowed);
     allowTier(1);
+  });
+
+  it('starts the focal reservation synchronously before a detached hook can cross the turn reset', async () => {
+    const session = wispSession({ pendingTurnAutoLinkCount: 0 });
+    const result = await createSessionPreToolUse(session)('get_device_details', {});
+    if (!result.allowed || !result.onSuccess) throw new Error('expected a success hook');
+    let release!: () => void;
+    autoLink.focal.mockImplementationOnce(() => {
+      session.pendingTurnAutoLinkCount += 1;
+      return new Promise<void>((resolve) => { release = resolve; });
+    });
+    const pending = result.onSuccess({});
+    expect(session.pendingTurnAutoLinkCount).toBe(1);
+    // The tool result can now be returned and the turn settled. Finishing
+    // the detached I/O must not reserve a slot against the reset counter.
+    session.pendingTurnAutoLinkCount = 0;
+    release();
+    await pending;
+    expect(session.pendingTurnAutoLinkCount).toBe(0);
+  });
+
+  it('hands onSuccess the exact per-call auth/ceiling even after session auth changes', async () => {
+    const session = wispSession();
+    const input = { deviceId: '00000000-0000-4000-8000-000000000001' };
+    const result = await createSessionPreToolUse(session)('get_device_details', input);
+    expect(result.allowed).toBe(true);
+    if (!result.allowed) throw new Error('unexpected denial');
+    expect(result.onSuccess).toBeTypeOf('function');
+    const toolAuth = result.toolAuth;
+    session.toolAuth = { marker: 'later-call' };
+    autoLink.focal.mockResolvedValueOnce({ added: 1, touched: 0 });
+    await result.onSuccess?.(input);
+    expect(autoLink.focal).toHaveBeenCalledExactlyOnceWith({ session, toolName: 'get_device_details', input, auth: toolAuth, ceiling: CEILING });
+  });
+
+  it('captures success-hook failures with the call thread, grant and session tags', async () => {
+    const session = wispSession();
+    const failure = new Error('resolve unavailable');
+    const result = await createSessionPreToolUse(session)('get_device_details', {});
+    if (!result.allowed || !result.onSuccess) throw new Error('expected a success hook');
+    autoLink.focal.mockRejectedValueOnce(failure);
+
+    await expect(result.onSuccess({})).resolves.toBeUndefined();
+
+    expect(mockCaptureException).toHaveBeenCalledExactlyOnceWith(failure, undefined, {
+      op: 'wisp.auto_link', toolName: 'get_device_details', threadId: 'thread-1',
+      grantId: 'grant-1', sessionId: 'session-1',
+    });
+  });
+
+  it('keeps the allowed result without onSuccess and captures an unavailable auto-link import', async () => {
+    const failure = new Error('auto-link module unavailable');
+    autoLink.importError = failure;
+
+    const result = await createSessionPreToolUse(wispSession())('get_device_details', {});
+
+    expect(result).toMatchObject({ allowed: true, toolAuth: { narrowedFor: 'session-1' } });
+    expect(result).not.toHaveProperty('onSuccess');
+    expect(autoLink.focal).not.toHaveBeenCalled();
+    expect(mockCaptureException).toHaveBeenCalledWith(failure, undefined, expect.objectContaining({
+      op: 'wisp.auto_link', toolName: 'get_device_details',
+    }));
   });
 
   it('runs enforceWispCeiling BEFORE checkGuardrails for a Tier-1 tool when session.wispGrant is set', async () => {
@@ -574,6 +645,7 @@ describe('createSessionPreToolUse — Wisp delegation ceiling (W04 Task 4)', () 
     expect(wisp.narrowAuthToCeiling).toHaveBeenCalledWith(sharedBefore, CEILING, 'session-1', ['devices:read']);
     expect(result).toEqual({
       allowed: true,
+      onSuccess: expect.any(Function),
       toolAuth: { ...sharedBefore, narrowedFrom: 'unmarked', narrowedFor: 'session-1', narrowedKeys: ['devices:read'] },
     });
     expect(session.toolAuth).toBe(sharedBefore);
@@ -592,6 +664,32 @@ describe('createSessionPreToolUse — Wisp delegation ceiling (W04 Task 4)', () 
     expect(wisp.enforceWispCeiling).toHaveBeenCalledTimes(2);
     expect(wisp.enforceWispCeiling.mock.calls[1]![0]).toMatchObject({ toolAuth: liveToolAuth });
     expect(result).toMatchObject({ allowed: true, toolAuth: { narrowedFrom: 'live' } });
+  });
+
+  it('auto-links with the refreshed revision after a tier-2 live authority refresh', async () => {
+    allowTier(2);
+    mockInsertValues();
+    const session = wispSession({ approvalMode: 'auto_approve' });
+    const refreshedGrant = { ...GRANT, revisionId: 'rev-2' };
+    const refreshedCeiling = { ...CEILING, revisionId: 'rev-2' };
+    mockResolveLiveSessionToolAuthority.mockImplementationOnce(async () => {
+      session.wispGrant = refreshedGrant;
+      return { ok: true, auth: session.auth, toolAuth: session.toolAuth };
+    });
+    wisp.enforceWispCeiling
+      .mockResolvedValueOnce({ ok: true, ceiling: CEILING, permissionKeys: ['devices:read'] })
+      .mockResolvedValueOnce({ ok: true, ceiling: refreshedCeiling, permissionKeys: ['devices:read'] });
+    const input = { action: 'comment', ticketId: 't-1', isPublic: false, body: 'Internal note' };
+
+    const result = await createSessionPreToolUse(session)('manage_tickets', input);
+    if (!result.allowed || !result.onSuccess) throw new Error('expected a success hook');
+    autoLink.focal.mockResolvedValueOnce({ added: 1, touched: 0 });
+    await result.onSuccess(input);
+
+    expect(wisp.enforceWispCeiling.mock.calls[1]![0]).toMatchObject({ grant: refreshedGrant });
+    expect(autoLink.focal).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      session, toolName: 'manage_tickets', input, ceiling: refreshedCeiling,
+    }));
   });
 
   it('a grant revoked during the tier-2 approval window refuses at the post-refresh re-check', async () => {
@@ -630,8 +728,8 @@ describe('createSessionPreToolUse — Wisp delegation ceiling (W04 Task 4)', () 
     release();
     const firstResult = await first;
 
-    expect(second).toEqual({ allowed: true, toolAuth: { ceilingTag: 'c2', keys: ['alerts:read'] } });
-    expect(firstResult).toEqual({ allowed: true, toolAuth: { ceilingTag: 'c1', keys: ['devices:read'] } });
+    expect(second).toEqual({ allowed: true, onSuccess: expect.any(Function), toolAuth: { ceilingTag: 'c2', keys: ['alerts:read'] } });
+    expect(firstResult).toEqual({ allowed: true, onSuccess: expect.any(Function), toolAuth: { ceilingTag: 'c1', keys: ['devices:read'] } });
   });
 
   it.each([
@@ -1111,7 +1209,7 @@ describe('runPreFlightChecks — Wisp thread re-seed (Review Focus 1)', () => {
 
     expect(result).toMatchObject({ ok: true, systemPrompt: 'rebuilt prompt\n## Wisp thread\nsummary' });
     expect(wisp.lookupWispGrant).toHaveBeenCalledWith('session-1');
-    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, expect.objectContaining({ user: expect.anything() }), CEILING);
+    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, expect.objectContaining({ user: expect.anything() }), CEILING, { type: 'device', id: 'd-1' });
   });
 
   it('resolves and passes the ceiling before rebuilding record context, then reuses it for the seed', async () => {
@@ -1121,7 +1219,7 @@ describe('runPreFlightChecks — Wisp thread re-seed (Review Focus 1)', () => {
     expect(wisp.resolveGrantCeiling).toHaveBeenCalledWith(GRANT.grantId, GRANT.revisionId);
     expect(mockBuildSystemPrompt).toHaveBeenCalledWith(auth, page, undefined, CEILING);
     expect(wisp.resolveGrantCeiling.mock.invocationCallOrder[0]).toBeLessThan(mockBuildSystemPrompt.mock.invocationCallOrder[0]!);
-    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, auth, CEILING);
+    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, auth, CEILING, page);
   });
 
   it('refuses an inactive ceiling before building record context', async () => {
