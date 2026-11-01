@@ -3757,6 +3757,7 @@
         "get_fleet_health": "Fleet health",
         "get_flow": "Flow details",
         "get_flow_run": "Flow run details",
+        "get_huntress_agents": "Huntress agents",
         "get_huntress_incidents": "Huntress incidents",
         "get_huntress_status": "Huntress status",
         "get_hyperv_vm_details": "Hyper-V VM details",
@@ -3775,6 +3776,7 @@
         "get_network_asset": "Network asset details",
         "get_network_asset_reachability": "Network asset reachability",
         "get_network_changes": "Network changes",
+        "get_pax8_status": "Pax8 status",
         "get_peripheral_activity": "USB and peripheral activity",
         "get_playbook_history": "Playbook run history",
         "get_process_samples": "Process snapshot",
@@ -3886,6 +3888,8 @@
         "manage_org_documents": "Manage organization documents",
         "manage_organizations": "Manage organizations",
         "manage_patches": "Manage patches",
+        "manage_pax8_orders": "Manage Pax8 orders",
+        "manage_pax8_subscriptions": "Manage Pax8 subscriptions",
         "manage_peripheral_policies": "Manage peripheral policies",
         "manage_peripheral_policy": "Edit peripheral policies and exceptions",
         "manage_policy_feature_link": "Link a policy to a feature",
@@ -3969,6 +3973,7 @@
         "search_documentation": "Search documentation",
         "search_logs": "Search device logs",
         "search_packages": "Search software packages",
+        "search_pax8_products": "Search Pax8 products",
         "search_script_library": "Search the script library",
         "security_scan": "Security scan",
         "set_agent_log_level": "Set agent log level",
@@ -4718,6 +4723,29 @@
           "list": "List system cleanup actions",
           "run": "Run system cleanup",
           "status": "System cleanup run status"
+        },
+        "manage_pax8_orders": {
+          "list": "List Pax8 orders",
+          "get": "Get Pax8 order",
+          "create_draft": "Create Pax8 draft order",
+          "add_line": "Add Pax8 order line",
+          "update_line": "Update Pax8 order line",
+          "remove_line": "Remove Pax8 order line",
+          "preview": "Preview Pax8 order",
+          "preflight": "Run Pax8 order preflight"
+        },
+        "manage_pax8_subscriptions": {
+          "list": "List Pax8 subscriptions",
+          "drift": "Check Pax8 subscription drift",
+          "sync": "Sync Pax8 subscriptions",
+          "link": "Link Pax8 subscription",
+          "unlink": "Unlink Pax8 subscription"
+        },
+        "search_pax8_products": {
+          "search": "Search Pax8 products",
+          "provision_details": "Get Pax8 provisioning details",
+          "dependencies": "Get Pax8 product dependencies",
+          "pricing": "Get Pax8 product pricing"
         }
       },
       "alwaysOnCount_one": "{{count}} read-only tool",

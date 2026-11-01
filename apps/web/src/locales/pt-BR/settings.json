@@ -3757,6 +3757,7 @@
         "get_fleet_health": "Saúde da frota",
         "get_flow": "Detalhes do fluxo",
         "get_flow_run": "Detalhes da execução do fluxo",
+        "get_huntress_agents": "Agentes do Huntress",
         "get_huntress_incidents": "Incidentes do Huntress",
         "get_huntress_status": "Status do Huntress",
         "get_hyperv_vm_details": "Detalhes da VM do Hyper-V",
@@ -3775,6 +3776,7 @@
         "get_network_asset": "Detalhes do ativo de rede",
         "get_network_asset_reachability": "Alcançabilidade do ativo de rede",
         "get_network_changes": "Mudanças na rede",
+        "get_pax8_status": "Status do Pax8",
         "get_peripheral_activity": "Atividade de USB e periféricos",
         "get_playbook_history": "Histórico de execução do playbook",
         "get_process_samples": "Snapshot de processos",
@@ -3886,6 +3888,8 @@
         "manage_org_documents": "Gerenciar documentos da organização",
         "manage_organizations": "Gerenciar organizações",
         "manage_patches": "Gerenciar patches",
+        "manage_pax8_orders": "Gerenciar pedidos do Pax8",
+        "manage_pax8_subscriptions": "Gerenciar assinaturas do Pax8",
         "manage_peripheral_policies": "Gerenciar políticas de periféricos",
         "manage_peripheral_policy": "Editar políticas e exceções de periféricos",
         "manage_policy_feature_link": "Vincular uma política a um recurso",
@@ -3969,6 +3973,7 @@
         "search_documentation": "Pesquisar na documentação",
         "search_logs": "Pesquisar nos logs do dispositivo",
         "search_packages": "Pesquisar pacotes de software",
+        "search_pax8_products": "Pesquisar produtos do Pax8",
         "search_script_library": "Pesquisar na biblioteca de scripts",
         "security_scan": "Verificação de segurança",
         "set_agent_log_level": "Definir o nível de log do agente",
@@ -4718,6 +4723,29 @@
           "list": "Listar ações de limpeza do sistema",
           "run": "Executar limpeza do sistema",
           "status": "Status da limpeza do sistema"
+        },
+        "manage_pax8_orders": {
+          "list": "Listar pedidos do Pax8",
+          "get": "Obter pedido do Pax8",
+          "create_draft": "Criar rascunho de pedido do Pax8",
+          "add_line": "Adicionar linha ao pedido do Pax8",
+          "update_line": "Atualizar linha do pedido do Pax8",
+          "remove_line": "Remover linha do pedido do Pax8",
+          "preview": "Visualizar pedido do Pax8",
+          "preflight": "Executar verificação prévia do pedido do Pax8"
+        },
+        "manage_pax8_subscriptions": {
+          "list": "Listar assinaturas do Pax8",
+          "drift": "Verificar divergências das assinaturas do Pax8",
+          "sync": "Sincronizar assinaturas do Pax8",
+          "link": "Vincular assinatura do Pax8",
+          "unlink": "Desvincular assinatura do Pax8"
+        },
+        "search_pax8_products": {
+          "search": "Pesquisar produtos do Pax8",
+          "provision_details": "Obter detalhes de provisionamento do Pax8",
+          "dependencies": "Obter dependências de produtos do Pax8",
+          "pricing": "Obter preços de produtos do Pax8"
         }
       },
       "alwaysOnCount_one": "{{count}} ferramenta somente leitura",

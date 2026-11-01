@@ -3757,6 +3757,7 @@
         "get_fleet_health": "Filo sağlığı",
         "get_flow": "Akış ayrıntıları",
         "get_flow_run": "Akış çalıştırma ayrıntıları",
+        "get_huntress_agents": "Huntress ajanları",
         "get_huntress_incidents": "Huntress olayları",
         "get_huntress_status": "Huntress durumu",
         "get_hyperv_vm_details": "Hyper-V VM ayrıntıları",
@@ -3775,6 +3776,7 @@
         "get_network_asset": "Ağ varlığı ayrıntıları",
         "get_network_asset_reachability": "Ağ varlığı erişilebilirliği",
         "get_network_changes": "Ağ değişiklikleri",
+        "get_pax8_status": "Pax8 durumu",
         "get_peripheral_activity": "USB ve çevre birimi etkinliği",
         "get_playbook_history": "Playbook çalıştırma geçmişi",
         "get_process_samples": "Süreç anlık görüntüsü",
@@ -3886,6 +3888,8 @@
         "manage_org_documents": "Organizasyon belgelerini yönet",
         "manage_organizations": "Organizasyonları yönet",
         "manage_patches": "Yamaları yönet",
+        "manage_pax8_orders": "Pax8 siparişlerini yönet",
+        "manage_pax8_subscriptions": "Pax8 aboneliklerini yönet",
         "manage_peripheral_policies": "Çevre birimi politikalarını yönet",
         "manage_peripheral_policy": "Çevre birimi politikalarını ve istisnalarını düzenle",
         "manage_policy_feature_link": "Bir politikayı bir özelliğe bağla",
@@ -3969,6 +3973,7 @@
         "search_documentation": "Belgelerde ara",
         "search_logs": "Cihaz günlüklerinde ara",
         "search_packages": "Yazılım paketlerinde ara",
+        "search_pax8_products": "Pax8 ürünlerini ara",
         "search_script_library": "Betik kütüphanesinde ara",
         "security_scan": "Güvenlik taraması",
         "set_agent_log_level": "Aracı günlük düzeyini ayarla",
@@ -4718,6 +4723,29 @@
           "list": "Sistem temizleme eylemlerini listele",
           "run": "Sistem temizliğini çalıştır",
           "status": "Sistem temizliği durumu"
+        },
+        "manage_pax8_orders": {
+          "list": "Pax8 siparişlerini listele",
+          "get": "Pax8 siparişini getir",
+          "create_draft": "Pax8 taslak siparişi oluştur",
+          "add_line": "Pax8 siparişine satır ekle",
+          "update_line": "Pax8 sipariş satırını güncelle",
+          "remove_line": "Pax8 sipariş satırını kaldır",
+          "preview": "Pax8 siparişini önizle",
+          "preflight": "Pax8 sipariş ön kontrolünü çalıştır"
+        },
+        "manage_pax8_subscriptions": {
+          "list": "Pax8 aboneliklerini listele",
+          "drift": "Pax8 abonelik sapmalarını denetle",
+          "sync": "Pax8 aboneliklerini senkronize et",
+          "link": "Pax8 aboneliğini bağla",
+          "unlink": "Pax8 aboneliğinin bağlantısını kaldır"
+        },
+        "search_pax8_products": {
+          "search": "Pax8 ürünlerini ara",
+          "provision_details": "Pax8 sağlama ayrıntılarını getir",
+          "dependencies": "Pax8 ürün bağımlılıklarını getir",
+          "pricing": "Pax8 ürün fiyatlarını getir"
         }
       },
       "alwaysOnCount_one": "{{count}} salt okunur araç",
