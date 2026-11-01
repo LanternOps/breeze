@@ -316,6 +316,14 @@ The Devices list (and an organization's Devices tab) has an **Export CSV** butto
 - **AI `manage_groups` `add_devices` / `remove_devices` now ask for approval** (supervised, tier 3; previously tier 2 auto-execute). AI agents can now be granted them, and a granted call becomes a proposal a person approves; neither is act-eligible.
 - **They refuse the whole call instead of skipping devices.** A device in another organization (or one you cannot see), a device outside a site-bound group's site, or a device outside your own site or device scope returns an error and nothing is written. Previously such devices were dropped and reported as `skipped`. A site-restricted user cannot change membership of an organization-wide group, and dynamic groups refuse manual edits — both as in the groups API. Responses now report `alreadyMembers` / `notMembers` instead of `skipped`. No migration, no new environment variable.
 
+### Wisp — home thread model menu and turn-limit rollover — PR #10419
+
+No new environment variables or migrations.
+
+- **Model menu on the Wisp home thread.** The thread's composer now shows the same model menu as the docked chat panel, so a partner whose assignment allows user choice can pick an offering (and its effort / fast / thinking options) for Wisp turns. Which models are offered, and the default, stay what Settings → AI models says.
+- **No more "New conversation" on the Wisp home.** The column is the whole thread (one thread per grant), so the button changed nothing visible. Removed.
+- **Wisp rolls to a fresh session at the turn limit.** A session that spends its turn budget (`max_turns_per_session`, every model round-trip counts) used to answer every later message with "Maximum conversation turns reached." Under Wisp the chat now closes that session (its summary lands on the thread), opens the next one under the same grant and focus, and re-sends the refused message; when the limit is hit in the middle of a turn it opens the next session and asks for the message again. Plain chat gets a coded refusal (`409 turn_limit_reached` before the turn; `code: "turn_limit_reached"` on the stream error) and keeps its "New conversation" button.
+
 <!-- Agreements, quotes and billing -->
 
 ### Public proposal Download PDF (#9860) — PR #10787
@@ -384,3 +392,11 @@ Server-dispatched backups and token-mode recovery are unchanged. No migration, n
 
 - **A partner or organization name that is only a reserved brand is refused.** Saving a name such as "Microsoft", "Windows Security", "Apple Help Desk" or "Microsoft 365 Support" (also run together, letter-spaced, or with accents or a ™/®/© sign) now returns `400` with a message asking for the company's own name. This applies to `PATCH /orgs/partners/me`, `POST /orgs/partners`, `PATCH /orgs/partners/:id`, `POST /orgs/organizations`, `PATCH`/`PUT /orgs/organizations/:id` and Partner API `POST /organizations`. Self-service signup, the AI organization tool and organization import do not check yet. A name that only mentions a brand next to other words ("Northwind Microsoft Partner", "Apple Valley IT") is unchanged.
 - **Device prompts show "Your IT support team" when the partner name is such a name**, including for partners already saved with one. The partner name is the only MSP name shown on prompts; customer organization names never appear there. Prompts that take the name from the heartbeat's `promptIdentity` block (restart, elevation) change as soon as the API is upgraded. The remote-session consent prompt changes once the agent is updated, because the agent sanitizes that name itself; older agents still show the saved name there. The brand and qualifier word lists live in `packages/shared/src/promptCatalog/sanitize.ts` and are mirrored in the agent. No migration, no new environment variable.
+
+### Software version manager: install scripts and zip (#10037) — PR #10812
+
+Adding a version to an existing package now has the pre/post-install script fields and accepts zip, as Add Package does; the form checks the same rules before saving (zip needs a post-install script, scripts need exactly one target OS). A new version starts with the latest version's active scripts. Silent-install arguments are no longer offered for pkg, dmg, deb or zip. Editing a version shows its scripts read-only (they cannot change after creation) and locks the target OS while its scripts are active. No API change, no migration.
+
+### IOC sweep limits in Compose (#10050) — PR #10795
+
+The `SECURITY_SWEEP_*` limits and `IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD` are now passed to the API by both Compose files and listed, with their defaults, in `.env.example`. Set them in `.env` to tune sweeps; leaving them unset keeps the defaults. Earlier releases needed a manual edit of the `api` service to change them.
