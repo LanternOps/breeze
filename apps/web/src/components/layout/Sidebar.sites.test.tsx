@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // #9794 — the Sites nav item (spec §4.1, Decisions 1–2): shown to anyone with
@@ -83,5 +83,17 @@ describe('Sidebar — Sites entry (#9794)', () => {
     render(<Sidebar currentPath="/" />);
 
     expect(await screen.findByTestId('nav-sites')).toBeInTheDocument();
+  });
+
+  it('exposes the section header as a testid hook whose aria-expanded reflects the expanded state (#10040)', async () => {
+    state.user.permissions = ORG_TECH;
+    render(<Sidebar currentPath="/" />);
+
+    const header = await screen.findByTestId('nav-section-toggle-fleet-management');
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('nav-sites')).toBeInTheDocument();
+
+    fireEvent.click(header);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
   });
 });
