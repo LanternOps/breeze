@@ -19,3 +19,20 @@ describe('webhook copy has no stale payload-template wording (#9691)', () => {
     });
   }
 });
+
+// #10573 / #10565: every suppress path publishes alert.suppressed and
+// alert.escalated is published, so no locale may still say otherwise.
+describe('alert event copy matches what Breeze publishes', () => {
+  for (const locale of LOCALES) {
+    it(locale, () => {
+      const events = JSON.parse(
+        readFileSync(resolve(__dirname, `../../locales/${locale}/common.json`), 'utf8'),
+      ).longTail.webhooks.WebhookForm.events;
+      expect(events.alertSuppressed.description).not.toMatch(/Breeze AI/);
+      expect(typeof events.alertEscalated?.label).toBe('string');
+      expect(events.alertEscalated.label.length).toBeGreaterThan(0);
+      expect(typeof events.alertEscalated?.description).toBe('string');
+      expect(events.alertEscalated.description.length).toBeGreaterThan(0);
+    });
+  }
+});

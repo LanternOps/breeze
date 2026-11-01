@@ -131,7 +131,7 @@ describe('partner definitions after advisory admission', () => {
     mocks.matches.mockResolvedValue(false);
     if (mode === 'batch') await evaluateDeviceGroupMemberships(device.id, { all: true });
     else await evaluateDeviceMembershipForGroup(group.id, device.id);
-    expect(mocks.matches).toHaveBeenCalledWith(device.id, current.filterConditions);
+    expect(mocks.matches).toHaveBeenCalledWith(device.id, current.filterConditions, { excludeDecommissioned: true });
     expect(mocks.advisory.mock.invocationCallOrder[0]).toBeLessThan(mocks.select.mock.invocationCallOrder[2] ?? 0);
     expect(mocks.select.mock.invocationCallOrder[2]).toBeLessThan(mocks.matches.mock.invocationCallOrder[0] ?? 0);
   });

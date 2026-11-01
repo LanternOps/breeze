@@ -170,11 +170,13 @@ const partnerClient = (stripeAccountId = 'acct_9') => ({
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 const INV_ID = '11111111-1111-1111-1111-111111111111';
+// Anchors the Checkout expiry bucket (#10736): every invoice row the producer reads carries it.
+const INV_CREATED_AT = new Date('2026-10-01T10:17:42.000Z');
 
 // A raw invoices ROW, as getPortalInvoiceRowOr404 returns it.
 function invoiceRow(overrides: Record<string, unknown> = {}) {
   return {
-    id: INV_ID, orgId: ORG_ID, partnerId: 'p1', siteId: null, status: 'sent', invoiceNumber: 'INV-1',
+    id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', siteId: null, status: 'sent', invoiceNumber: 'INV-1',
     currencyCode: 'USD', issueDate: '2026-09-01', dueDate: '2026-09-30',
     subtotal: '100.00', taxRate: '0.0000', taxTotal: '0.00', total: '100.00', amountPaid: '0.00', balance: '100.00',
     depositDue: null, billToName: 'Acme', notes: null, sellerSnapshot: null, termsAndConditions: null,
@@ -220,7 +222,7 @@ describe('portal invoices routes', () => {
     ['unavailable enrollment', 409, 'Request automatic payments first', 'INVALID_STATE'],
     ['disabled rollout', 404, 'Automatic payments unavailable', 'autopay_not_enabled'],
   ] as const)('pay preserves the customer response for %s', async (_case, status, message, code) => {
-    dbResults.push([{ id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+    dbResults.push([{ id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '100.00', currencyCode: 'USD', invoiceNumber: 'INV-1' }]);
     vi.mocked(prepareCardPayAndSave).mockRejectedValueOnce(new InvoiceServiceError(message, status, 'INVALID_STATE'));
     const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST',
@@ -257,7 +259,7 @@ it('portal invoice pay rejects missing authorization before Stripe', async () =>
   });
 
 it('portal pay returns 409 while captured money for the invoice is unapplied, before contacting Stripe', async () => {
-  dbResults.push([{ id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent', currencyCode: 'USD', balance: '100.00' }]);
+  dbResults.push([{ id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent', currencyCode: 'USD', balance: '100.00' }]);
   reservation.held.mockResolvedValueOnce(true);
   const response = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
   expect(response.status).toBe(409);
@@ -265,7 +267,7 @@ it('portal pay returns 409 while captured money for the invoice is unapplied, be
   expect(sessionsCreateMock).not.toHaveBeenCalled();
 });
 it('portal pay returns 409 for a reservation before contacting Stripe', async () => {
-  dbResults.push([{ id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent', currencyCode: 'USD', balance: '100.00' }]);
+  dbResults.push([{ id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent', currencyCode: 'USD', balance: '100.00' }]);
   reservation.assert.mockRejectedValueOnce(new InvoiceServiceError('A payment is already processing', 409, 'COLLECTION_IN_PROGRESS'));
   const response = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
   expect(response.status).toBe(409);
@@ -531,7 +533,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
   it('POST /invoices/:id/pay charges directly on the partner key (no Connect) + carries session_id', async () => {
     // invoice SELECT → a payable sent invoice with a 100.00 balance
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '100.00', currencyCode: 'USD', invoiceNumber: 'INV-1',
     }]);
     getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));
@@ -549,7 +551,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
         // never arrives 'unpaid' from an async method.
         payment_method_types: ['card'],
         // metadata key matches the design spec (section 6 step 3).
-        expires_at: checkoutSessionExpiry().expiresAt,
+        expires_at: checkoutSessionExpiry(INV_CREATED_AT).expiresAt,
         metadata: expect.objectContaining({ invoice_balance_cents: '10000' }),
         // The return URL must carry {CHECKOUT_SESSION_ID} for verify-on-return settle.
         success_url: expect.stringContaining('session_id={CHECKOUT_SESSION_ID}'),
@@ -557,7 +559,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
       // No Connect stripeAccount option — the client is already the partner's. Only an
       // idempotency key keyed on (invoice, balance, phase) so a double-click reuses
       // the session.
-      { idempotencyKey: `inv_${INV_ID}_10000_bal_e${checkoutSessionExpiry().quantum}_pd` },
+      { idempotencyKey: `inv_${INV_ID}_10000_bal_e${checkoutSessionExpiry(INV_CREATED_AT).quantum}_pd` },
     );
     // the Stripe object → payment mapping row is recorded
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -569,7 +571,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     // A JPY invoice with a 1000-yen balance: JPY is zero-decimal, so unit_amount
     // must be 1000 (not 100000). The mapping amount stays the major-unit string.
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '1000.00', currencyCode: 'JPY', invoiceNumber: 'INV-JPY',
     }]);
     getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));
@@ -583,10 +585,10 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
         line_items: [expect.objectContaining({
           price_data: expect.objectContaining({ unit_amount: 1000, currency: 'jpy' }),
         })],
-        expires_at: checkoutSessionExpiry().expiresAt,
+        expires_at: checkoutSessionExpiry(INV_CREATED_AT).expiresAt,
         metadata: expect.objectContaining({ invoice_balance_cents: '1000' }),
       }),
-      { idempotencyKey: `inv_${INV_ID}_1000_bal_e${checkoutSessionExpiry().quantum}_pd` },
+      { idempotencyKey: `inv_${INV_ID}_1000_bal_e${checkoutSessionExpiry(INV_CREATED_AT).quantum}_pd` },
     );
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
       stripeObjectId: 'cs_jpy', amount: '1000.00', currency: 'JPY',
@@ -595,7 +597,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
 
   it('POST /invoices/:id/pay charges the deposit-remaining amount while the deposit is unmet', async () => {
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '10000.00', depositDue: '3000.00', amountPaid: '0.00',
       currencyCode: 'USD', invoiceNumber: 'INV-DEP',
     }]);
@@ -613,17 +615,17 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
             product_data: { name: 'Deposit — Invoice INV-DEP' },
           }),
         })],
-        expires_at: checkoutSessionExpiry().expiresAt,
+        expires_at: checkoutSessionExpiry(INV_CREATED_AT).expiresAt,
         metadata: expect.objectContaining({ invoice_balance_cents: '300000' }),
       }),
-      { idempotencyKey: `inv_${INV_ID}_300000_dep_e${checkoutSessionExpiry().quantum}_pd` },
+      { idempotencyKey: `inv_${INV_ID}_300000_dep_e${checkoutSessionExpiry(INV_CREATED_AT).quantum}_pd` },
     );
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ amount: '3000.00' }));
   });
 
   it('POST /invoices/:id/pay charges the remaining balance (plain name) once the deposit is satisfied', async () => {
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'partially_paid',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'partially_paid',
       balance: '7000.00', depositDue: '3000.00', amountPaid: '3000.00',
       currencyCode: 'USD', invoiceNumber: 'INV-DEP',
     }]);
@@ -641,10 +643,10 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
             product_data: { name: 'Invoice INV-DEP' },
           }),
         })],
-        expires_at: checkoutSessionExpiry().expiresAt,
+        expires_at: checkoutSessionExpiry(INV_CREATED_AT).expiresAt,
         metadata: expect.objectContaining({ invoice_balance_cents: '700000' }),
       }),
-      { idempotencyKey: `inv_${INV_ID}_700000_bal_e${checkoutSessionExpiry().quantum}_pd` },
+      { idempotencyKey: `inv_${INV_ID}_700000_bal_e${checkoutSessionExpiry(INV_CREATED_AT).quantum}_pd` },
     );
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ amount: '7000.00' }));
   });
@@ -654,7 +656,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     // where depositDue equals the eventual balance charge, so chargeMinor is
     // identical across the two sessions — only the dep/bal suffix disambiguates.
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '10000.00', depositDue: '5000.00', amountPaid: '0.00',
       currencyCode: 'USD', invoiceNumber: 'INV-EQ',
     }]);
@@ -663,11 +665,11 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     dbResults.push([{ id: 'connection' }]);
     await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
     const depositKey = (sessionsCreateMock.mock.calls[0]?.[1] as { idempotencyKey: string }).idempotencyKey;
-    expect(depositKey).toBe(`inv_${INV_ID}_500000_dep_e${checkoutSessionExpiry().quantum}_pd`);
+    expect(depositKey).toBe(`inv_${INV_ID}_500000_dep_e${checkoutSessionExpiry(INV_CREATED_AT).quantum}_pd`);
 
     vi.clearAllMocks();
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'partially_paid',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'partially_paid',
       balance: '5000.00', depositDue: '5000.00', amountPaid: '5000.00',
       currencyCode: 'USD', invoiceNumber: 'INV-EQ',
     }]);
@@ -676,7 +678,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     dbResults.push([{ id: 'connection' }]);
     await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
     const balanceKey = (sessionsCreateMock.mock.calls[0]?.[1] as { idempotencyKey: string }).idempotencyKey;
-    expect(balanceKey).toBe(`inv_${INV_ID}_500000_bal_e${checkoutSessionExpiry().quantum}_pd`);
+    expect(balanceKey).toBe(`inv_${INV_ID}_500000_bal_e${checkoutSessionExpiry(INV_CREATED_AT).quantum}_pd`);
 
     expect(depositKey).not.toBe(balanceKey);
   });
@@ -686,7 +688,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     // rejected BEFORE any Stripe work (the guard now fires on chargeMinor, the
     // computeChargeNow output, not the raw balance).
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '0.00', depositDue: null, amountPaid: '0.00',
       currencyCode: 'USD', invoiceNumber: 'INV-ZERO',
     }]);
@@ -701,7 +703,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
 
   it('POST /invoices/:id/pay returns 409 when the partner has no Stripe key configured', async () => {
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '100.00', currencyCode: 'USD', invoiceNumber: 'INV-2',
     }]);
     getPartnerStripeClientMock.mockRejectedValue(new PartnerStripeError('not connected', 'NO_STRIPE_KEY'));
@@ -715,7 +717,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     // A corrupt/undecryptable key is an internal fault — surfacing it as 409
     // "not available" would lie about why payment failed (mirrors createInvoicePayLink).
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '100.00', currencyCode: 'USD', invoiceNumber: 'INV-3',
     }]);
     getPartnerStripeClientMock.mockRejectedValue(new PartnerStripeError('unreadable', 'STRIPE_KEY_UNREADABLE'));
@@ -727,7 +729,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
 
   it('POST /invoices/:id/pay maps a Stripe currency rejection to a customer-safe 409 STRIPE_CURRENCY_UNSUPPORTED', async () => {
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '100.00', currencyCode: 'CHF', invoiceNumber: 'INV-CHF',
     }]);
     getPartnerStripeClientMock.mockResolvedValue({ ...partnerClient(), defaultCurrency: 'USD' });
@@ -749,7 +751,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
 
   it('POST /invoices/:id/pay never surfaces the partner currency-mismatch warning to the customer', async () => {
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '100.00', currencyCode: 'EUR', invoiceNumber: 'INV-EUR',
     }]);
     getPartnerStripeClientMock.mockResolvedValue({ ...partnerClient(), defaultCurrency: 'USD' });
@@ -763,7 +765,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
 
   it('does not return a Checkout URL when the connected account changes during session creation', async () => {
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '100.00', currencyCode: 'USD', invoiceNumber: 'INV-RACE',
     }]);
     dbResults.push([]); // final FOR SHARE revalidation sees replacement/disconnect
@@ -893,7 +895,7 @@ it('reuses a portal Checkout mapping on repeated create',async()=>{
  mappings.clear();dbResults.length=0;
  getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));sessionsCreateMock.mockResolvedValue({id:'cs_reuse',url:'https://checkout.stripe.com/c/cs_reuse'});
  for(let i=0;i<2;i++){
-  dbResults.push([{id:INV_ID,orgId:ORG_ID,partnerId:'p1',status:'sent',balance:'100.00',currencyCode:'USD'}],[{id:'connection'}],[]);if(i)dbResults.push([{invoiceId:INV_ID,stripeAccountId:'acct_9'}]);
+  dbResults.push([{id:INV_ID,orgId:ORG_ID,createdAt:INV_CREATED_AT,partnerId:'p1',status:'sent',balance:'100.00',currencyCode:'USD'}],[{id:'connection'}],[]);if(i)dbResults.push([{invoiceId:INV_ID,stripeAccountId:'acct_9'}]);
   const response=await app().request(`/invoices/${INV_ID}/pay`,{method:'POST'});
   expect(response.status).toBe(200);expect(await response.json()).toMatchObject({url:'https://checkout.stripe.com/c/cs_reuse'});
  }
@@ -905,7 +907,7 @@ it('portal pay-and-save forwards consent and binds card-only off-session Checkou
  mappings.clear();dbResults.length=0;
  const capture={id:'33333333-3333-4333-8333-333333333333',stripeCustomerId:'cus_saved'};
  vi.mocked(prepareCardPayAndSave).mockResolvedValueOnce(capture as any);
- dbResults.push([{id:INV_ID,orgId:ORG_ID,partnerId:'p1',status:'sent',balance:'100.00',currencyCode:'USD'}],[{id:'connection'}],[]);
+ dbResults.push([{id:INV_ID,orgId:ORG_ID,createdAt:INV_CREATED_AT,partnerId:'p1',status:'sent',balance:'100.00',currencyCode:'USD'}],[{id:'connection'}],[]);
  getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));sessionsCreateMock.mockResolvedValue({id:'cs_saved',url:'https://checkout.stripe.com/c/cs_saved',payment_intent:'pi_saved'});
  const response=await app().request(`/invoices/${INV_ID}/pay`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({saveForAutopay:true,consentAccepted:true,disclosureHash:'a'.repeat(64)})});
  expect(response.status).toBe(200);
@@ -917,7 +919,7 @@ it('portal pay-and-save forwards consent and binds card-only off-session Checkou
 });
 
 it('bank pay validates strict consent and preserves the setup envelope',async()=>{
- dbResults.length=0;dbResults.push([{id:INV_ID,orgId:ORG_ID,partnerId:'p1',status:'sent',balance:'100.00',currencyCode:'USD'}]);
+ dbResults.length=0;dbResults.push([{id:INV_ID,orgId:ORG_ID,createdAt:INV_CREATED_AT,partnerId:'p1',status:'sent',balance:'100.00',currencyCode:'USD'}]);
  bankRoutes.setup.mockResolvedValue({url:'https://checkout.stripe.com/setup'});
  const body={methodType:'us_bank_account',phase:'setup',consentAccepted:true,principal:'100.00',fee:'0.00',currency:'USD',disclosureHash:'a'.repeat(64)};
  const response=await app().request(`/invoices/${INV_ID}/pay`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
@@ -936,7 +938,7 @@ it('bank collect requires invoice admission and never treats the session ID as a
 });
 
 it.each(['refused','deferred','failed','canceled'])('bank %s is a conflict rather than a successful payment',async outcome=>{
- dbResults.length=0;dbResults.push([{id:INV_ID,orgId:ORG_ID,partnerId:'p1',status:'sent',balance:'100.00',currencyCode:'USD'}]);
+ dbResults.length=0;dbResults.push([{id:INV_ID,orgId:ORG_ID,createdAt:INV_CREATED_AT,partnerId:'p1',status:'sent',balance:'100.00',currencyCode:'USD'}]);
  bankRoutes.collect.mockResolvedValue({attemptId:null,outcome,reason:'unavailable'});
  const response=await app().request(`/invoices/${INV_ID}/pay`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
  methodType:'us_bank_account',phase:'collect',consentAccepted:true,principal:'100.00',fee:'0.00',currency:'USD',disclosureHash:'a'.repeat(64),setupSessionId:'cs_test'
@@ -949,7 +951,7 @@ it('portal Checkout PaymentIntents carry "Invoice … · MSP"', async () => {
   mappings.clear(); dbResults.length = 0;
   getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));
   sessionsCreateMock.mockResolvedValue({ id: 'cs_desc', url: 'https://checkout.stripe.com/c/cs_desc' });
-  dbResults.push([{ id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent', balance: '100.00', currencyCode: 'USD', invoiceNumber: 'INV-7', partnerName: 'Example MSP' }], [{ id: 'connection' }], []);
+  dbResults.push([{ id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent', balance: '100.00', currencyCode: 'USD', invoiceNumber: 'INV-7', partnerName: 'Example MSP' }], [{ id: 'connection' }], []);
   expect((await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' })).status).toBe(200);
   expect(sessionsCreateMock.mock.calls.at(-1)![0]).toMatchObject({ payment_intent_data: { description: 'Invoice INV-7 · Example MSP' } });
 });
