@@ -66,7 +66,8 @@ export const webhookEventOptions = [
   { value: 'alert.triggered', label: 'Alert Created', labelKey: 'longTail.webhooks.WebhookForm.events.alertCreated.label', description: 'Triggered when an alert is created.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertCreated.description' },
   { value: 'alert.resolved', label: 'Alert Resolved', labelKey: 'longTail.webhooks.WebhookForm.events.alertResolved.label', description: 'Triggered when an alert is resolved.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertResolved.description' },
   { value: 'alert.acknowledged', label: 'Alert Acknowledged', labelKey: 'longTail.webhooks.WebhookForm.events.alertAcknowledged.label', description: 'Triggered when an alert is acknowledged.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertAcknowledged.description' },
-  { value: 'alert.suppressed', label: 'Alert Suppressed', labelKey: 'longTail.webhooks.WebhookForm.events.alertSuppressed.label', description: 'Triggered when Breeze AI suppresses an alert. Suppressing from the dashboard does not send it yet.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertSuppressed.description' },
+  { value: 'alert.suppressed', label: 'Alert Suppressed', labelKey: 'longTail.webhooks.WebhookForm.events.alertSuppressed.label', description: 'Triggered when an alert is suppressed.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertSuppressed.description' },
+  { value: 'alert.escalated', label: 'Alert Escalated', labelKey: 'longTail.webhooks.WebhookForm.events.alertEscalated.label', description: 'Triggered when an escalation policy step fires for an alert that is still active.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertEscalated.description' },
   { value: 'script.completed', label: 'Script Completed', labelKey: 'longTail.webhooks.WebhookForm.events.scriptCompleted.label', description: 'Triggered when a script finishes.', descriptionKey: 'longTail.webhooks.WebhookForm.events.scriptCompleted.description' },
   { value: 'ticket.created', label: 'Ticket Created', labelKey: 'longTail.webhooks.WebhookForm.events.ticketCreated.label', description: 'Triggered when a ticket is created.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketCreated.description' },
   { value: 'ticket.commented', label: 'Ticket Commented', labelKey: 'longTail.webhooks.WebhookForm.events.ticketCommented.label', description: 'Triggered when a comment or note is added to a ticket.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketCommented.description' },
@@ -78,7 +79,10 @@ export const webhookEventOptions = [
   { value: 'integration.health_resolved', label: 'Connection health incident resolved', labelKey: 'longTail.webhooks.WebhookForm.events.integrationHealthResolved.label', description: 'Triggered when a connection health incident is resolved.', descriptionKey: 'longTail.webhooks.WebhookForm.events.integrationHealthResolved.description' }
 ];
 
-export const NEVER_DELIVERED_EVENTS: readonly string[] = ['alert.escalated'];
+// Registered events Breeze never publishes; must equal the API's
+// NEVER_PUBLISHED_EVENT_TYPES (webhookEventOptions.contract.test.ts). Empty
+// since alert.escalated gained a publisher (#10565).
+export const NEVER_DELIVERED_EVENTS: readonly string[] = [];
 
 const catalogEventValues = new Set<string>(webhookEventOptions.map(option => option.value));
 const ALL_EVENTS = '*';
