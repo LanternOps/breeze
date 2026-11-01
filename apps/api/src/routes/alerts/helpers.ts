@@ -1,3 +1,4 @@
+import { DEFAULT_ALERT_COOLDOWN_MINUTES } from '@breeze/shared';
 import { ensureOrgAccess } from '../../services/delivery/railContracts';
 export { ensureOrgAccess, resolveWriteOrgId, getEscalationPolicyWithOrgCheck } from '../../services/delivery/railContracts';
 import { and, eq, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
@@ -513,7 +514,7 @@ export function formatAlertRuleResponse(rule: AlertRuleRow, template?: AlertTemp
 
   const notificationChannelIds = getNotificationChannelIds(overrides);
   const severity = overrides.severity ?? template?.severity ?? 'medium';
-  const cooldownMinutes = overrides.cooldownMinutes ?? overrides.cooldown ?? template?.cooldownMinutes ?? 15;
+  const cooldownMinutes = overrides.cooldownMinutes ?? overrides.cooldown ?? template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
   const autoResolve = overrides.autoResolve ?? template?.autoResolve ?? false;
 
   return {
@@ -576,7 +577,7 @@ export async function resolveAlertTemplate(params: {
   const templateName = params.name?.trim() || 'Custom Alert Template';
   const templateSeverity = (params.severity ?? 'medium') as AlertTemplateRow['severity'];
   const templateConditions = params.conditions ?? {};
-  const templateCooldownMinutes = params.cooldownMinutes ?? 15;
+  const templateCooldownMinutes = params.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
   const templateAutoResolve = params.autoResolve ?? false;
 
   if (params.templateId) {

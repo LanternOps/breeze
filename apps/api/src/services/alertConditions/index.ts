@@ -8,7 +8,7 @@
  * patch compliance, cert expiry, and compound AND/OR logic.
  */
 
-import { interpolateAlertTemplate } from '@breeze/shared';
+import { interpolateAlertTemplate, type EvidenceCursor } from '@breeze/shared';
 import { conditionRegistry } from './registry';
 import { getLatestMetric, normalizeMetricName, getOperatorDisplay } from './utils';
 
@@ -85,7 +85,8 @@ export type {
   ConditionGroup,
   RootCondition,
   EvaluationResult,
-  ConditionResult
+  ConditionResult,
+  ConditionEvalContext
 } from './types';
 
 // Re-export utilities
@@ -101,6 +102,35 @@ import type {
   ThresholdCondition,
   SubjectEvidence,
 } from './types';
+
+export interface EvaluateOptions {
+  cursors?: Record<string, EvidenceCursor>;
+  side?: 'trigger' | 'resolve';
+  /** Applies to evidence leaves without a stored cursor. */
+  legacyIngestedBefore?: Date;
+}
+
+function normalizeConditions(conditions: unknown): RootCondition | undefined {
+  if (Array.isArray(conditions)) {
+    return { logic: 'and', conditions: conditions as AlertCondition[] };
+  }
+  return conditions && typeof conditions === 'object' ? conditions as RootCondition : undefined;
+}
+
+export function evidenceLeafPaths(conditions: unknown): string[] {
+  const root = normalizeConditions(conditions);
+  if (!root) return [];
+  const paths: string[] = [];
+  const visit = (condition: RootCondition, path: string): void => {
+    if (isConditionGroup(condition)) {
+      condition.conditions.forEach((child, i) => visit(child, path === 'root' ? String(i) : `${path}.${i}`));
+    } else if (conditionRegistry.get(condition.type)?.evidence === true) {
+      paths.push(path);
+    }
+  };
+  visit(root, 'root');
+  return paths;
+}
 
 function isConditionGroup(condition: RootCondition): condition is ConditionGroup {
   return 'logic' in condition && 'conditions' in condition;
@@ -121,6 +151,7 @@ type LeafActualValueCandidate = {
 };
 
 type EvaluationAccumulator = {
+  evidenceWatermarks: Record<string, EvidenceCursor>;
   met: string[];
   notMet: string[];
   /** Filled in by pickPrimaryActualValue() after the whole tree resolves. */
@@ -156,11 +187,15 @@ function pickPrimaryActualValue(candidates: LeafActualValueCandidate[]): number 
 async function evaluateConditionRecursive(
   condition: RootCondition,
   deviceId: string,
-  results: EvaluationAccumulator
+  results: EvaluationAccumulator,
+  path: string,
+  opts?: EvaluateOptions
 ): Promise<boolean> {
   if (isConditionGroup(condition)) {
     const evaluations = await Promise.all(
-      condition.conditions.map(c => evaluateConditionRecursive(c, deviceId, results))
+      condition.conditions.map((c, i) => evaluateConditionRecursive(
+        c, deviceId, results, path === 'root' ? String(i) : `${path}.${i}`, opts
+      ))
     );
 
     if (condition.logic === 'and') {
@@ -175,11 +210,22 @@ async function evaluateConditionRecursive(
     const slot: LeafActualValueCandidate = { type: (condition as { type?: string }).type };
     results.leafActualValues.push(slot);
 
+    const ctx = opts ? {
+      evidenceAfter: opts.cursors?.[path],
+      side: opts.side,
+      legacyIngestedBefore: opts.cursors?.[path] ? undefined : opts.legacyIngestedBefore,
+    } : undefined;
+
     // Evaluate via registry
     const result = await conditionRegistry.evaluate(
       condition as { type: string },
-      deviceId
+      deviceId,
+      ctx
     );
+
+    if (result.evidenceWatermark) {
+      results.evidenceWatermarks[path] = result.evidenceWatermark;
+    }
 
     // W03 — carry per-subject evidence, but only a single leaf's is ever
     // surfaced on the root result (see evaluateConditions below).
@@ -217,7 +263,8 @@ async function evaluateConditionRecursive(
  */
 export async function evaluateConditions(
   conditions: unknown,
-  deviceId: string
+  deviceId: string,
+  opts?: EvaluateOptions
 ): Promise<EvaluationResult> {
   const evaluatedAt = new Date().toISOString();
 
@@ -227,31 +274,25 @@ export async function evaluateConditions(
       conditionsMet: [],
       conditionsNotMet: ['No conditions defined'],
       dataState: 'unknown',
+      evidenceWatermarks: {},
       context: { deviceId, evaluatedAt }
     };
   }
 
-  let rootCondition: RootCondition;
-
-  if (Array.isArray(conditions)) {
-    rootCondition = {
-      logic: 'and',
-      conditions: conditions as AlertCondition[]
-    };
-  } else if (typeof conditions === 'object') {
-    rootCondition = conditions as RootCondition;
-  } else {
+  const rootCondition = normalizeConditions(conditions);
+  if (!rootCondition) {
     return {
       triggered: false,
       conditionsMet: [],
       conditionsNotMet: ['Invalid conditions format'],
       dataState: 'unknown',
+      evidenceWatermarks: {},
       context: { deviceId, evaluatedAt }
     };
   }
 
-  const results: EvaluationAccumulator = { met: [], notMet: [], leafActualValues: [] };
-  const triggered = await evaluateConditionRecursive(rootCondition, deviceId, results);
+  const results: EvaluationAccumulator = { met: [], notMet: [], leafActualValues: [], evidenceWatermarks: {} };
+  const triggered = await evaluateConditionRecursive(rootCondition, deviceId, results, 'root', opts);
   // Deterministic: chosen from leaf candidates recorded in tree order, never
   // from whichever sibling's Promise happened to settle first.
   results.primaryActualValue = pickPrimaryActualValue(results.leafActualValues);
@@ -324,6 +365,7 @@ export async function evaluateConditions(
 
   return {
     triggered,
+    evidenceWatermarks: results.evidenceWatermarks,
     conditionsMet: results.met,
     conditionsNotMet: results.notMet,
     dataState: results.sawUnknown ? 'unknown' : 'ok',
@@ -337,23 +379,28 @@ export async function evaluateConditions(
  */
 export async function evaluateAutoResolveConditions(
   conditions: unknown,
-  deviceId: string
-): Promise<{ shouldResolve: boolean; reason: string }> {
+  deviceId: string,
+  opts?: EvaluateOptions
+): Promise<{ shouldResolve: boolean; reason: string; evidenceWatermarks: Record<string, EvidenceCursor>; dataState: 'ok' | 'unknown' }> {
   if (!conditions) {
-    return { shouldResolve: false, reason: 'No auto-resolve conditions defined' };
+    return { shouldResolve: false, reason: 'No auto-resolve conditions defined', evidenceWatermarks: {}, dataState: 'unknown' };
   }
 
-  const result = await evaluateConditions(conditions, deviceId);
+  const result = await evaluateConditions(conditions, deviceId, opts);
 
   if (result.triggered) {
     return {
       shouldResolve: true,
+      evidenceWatermarks: result.evidenceWatermarks,
+      dataState: result.dataState,
       reason: `Conditions cleared: ${result.conditionsMet.join(', ')}`
     };
   }
 
   return {
     shouldResolve: false,
+    evidenceWatermarks: result.evidenceWatermarks,
+    dataState: result.dataState,
     reason: `Conditions still active: ${result.conditionsNotMet.join(', ')}`
   };
 }

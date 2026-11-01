@@ -1,17 +1,38 @@
+import { isAfterCursor, maxEvidence, type EvidenceCursor } from '@breeze/shared';
 import { db } from '../../../db';
 import { deviceEventLogs } from '../../../db/schema';
-import { eq, and, gte, ilike, sql } from 'drizzle-orm';
+import { eq, and, gt, gte, desc, ilike, sql } from 'drizzle-orm';
 import type { ConditionHandler } from '../registry';
-import type { EventLogCondition, ConditionResult } from '../types';
+import type { EventLogCondition, ConditionResult, ConditionEvalContext } from '../types';
 
 function escapeLikePattern(pattern: string): string {
   return pattern.replace(/[%_\\]/g, '\\$&');
 }
 
+interface EvidenceRow {
+  id: string;
+  timestamp: Date;
+  createdAt: Date;
+  logName: string | null;
+  recordId: string | null;
+}
+
+function toCursor(row: EvidenceRow): EvidenceCursor {
+  const recordId = Number(row.recordId);
+  return {
+    ts: row.timestamp.toISOString(),
+    createdAt: row.createdAt.toISOString(),
+    id: row.id,
+    ...(typeof row.logName === 'string' && row.logName.length > 0 ? { logName: row.logName } : {}),
+    ...(row.recordId != null && Number.isFinite(recordId) ? { recordId } : {}),
+  };
+}
+
 export const eventLogHandler: ConditionHandler = {
   type: 'event_log',
+  evidence: true,
 
-  async evaluate(condition: unknown, deviceId: string): Promise<ConditionResult> {
+  async evaluate(condition: unknown, deviceId: string, ctx?: ConditionEvalContext): Promise<ConditionResult> {
     const cond = condition as EventLogCondition;
     const windowStart = new Date(Date.now() - cond.windowMinutes * 60 * 1000);
 
@@ -50,12 +71,56 @@ export const eventLogHandler: ConditionHandler = {
     // forever and no breach episode would ever close. A device that has stopped
     // reporting entirely is covered by the `offline` monitor kind.
     const matchCount = Number(countResult[0]?.count ?? 0);
-    const passed = matchCount >= cond.countThreshold;
+    const thresholdMet = matchCount >= cond.countThreshold;
+    let evidenceWatermark: EvidenceCursor | undefined;
+    let someRowAfter = !ctx?.evidenceAfter && !ctx?.legacyIngestedBefore;
+    const evidenceColumns = {
+      id: deviceEventLogs.id,
+      timestamp: deviceEventLogs.timestamp,
+      createdAt: deviceEventLogs.createdAt,
+      logName: sql<string | null>`${deviceEventLogs.details}->>'logName'`,
+      recordId: sql<string | null>`${deviceEventLogs.details}->>'recordId'`,
+    };
+    const newestFirst = [desc(deviceEventLogs.timestamp), desc(deviceEventLogs.createdAt), desc(deviceEventLogs.id)];
+
+    // The watermark is only consumed when the leaf passes (cursor advance or
+    // freeze), so it is read only then: with a cursor the candidate rows
+    // already hold the newest row; otherwise one extra newest-row read.
+    const readNewest = async () => {
+      const [newest] = await db.select(evidenceColumns)
+        .from(deviceEventLogs)
+        .where(and(...conditions))
+        .orderBy(...newestFirst)
+        .limit(1);
+      if (newest) evidenceWatermark = toCursor(newest);
+    };
+
+    if (thresholdMet && ctx?.evidenceAfter) {
+      const candidates = await db.select(evidenceColumns)
+        .from(deviceEventLogs)
+        .where(and(...conditions, gte(deviceEventLogs.timestamp, new Date(Date.parse(ctx.evidenceAfter.ts) - 1000))))
+        .orderBy(...newestFirst)
+        .limit(50);
+      const cursors = candidates.map(toCursor);
+      someRowAfter = cursors.some(candidate => isAfterCursor(candidate, ctx.evidenceAfter, ctx.side ?? 'trigger'));
+      for (const candidate of cursors) evidenceWatermark = maxEvidence(evidenceWatermark, candidate);
+    } else if (thresholdMet && ctx?.legacyIngestedBefore) {
+      const rows = await db.select({ exists: sql<number>`1` })
+        .from(deviceEventLogs)
+        .where(and(...conditions, gt(deviceEventLogs.createdAt, ctx.legacyIngestedBefore)))
+        .limit(1);
+      someRowAfter = rows.length > 0;
+      if (someRowAfter) await readNewest();
+    } else if (thresholdMet) {
+      await readNewest();
+    }
+    const passed = thresholdMet && someRowAfter;
 
     return {
       passed,
-      description: `${cond.category}/${cond.level} events >= ${cond.countThreshold} in ${cond.windowMinutes}min (found ${matchCount})`,
+      description: `${cond.category}/${cond.level} events >= ${cond.countThreshold} in ${cond.windowMinutes}min (found ${matchCount})${thresholdMet && !someRowAfter ? ' (no new evidence since last episode)' : ''}`,
       actualValue: matchCount,
+      ...(evidenceWatermark ? { evidenceWatermark } : {}),
     };
   },
 
