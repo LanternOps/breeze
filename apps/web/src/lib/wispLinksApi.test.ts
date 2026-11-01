@@ -89,8 +89,16 @@ it('pins through runAction without ambient org and encodes both ids', async () =
 });
 
 
-it('keeps neighbours unused until W02 (W04-D1), without making a request', async () => {
-  h.fetchWithAuth.mockClear();
-  await expect(listWispNeighbours('th1', { kind: 'ticket', id: 't1' })).rejects.toThrow('Wisp neighbours are not wired yet');
-  expect(h.fetchWithAuth).not.toHaveBeenCalled();
+it('lists neighbours without ambient org, encodes ids, and surfaces failed or malformed reads', async () => {
+  h.showToast.mockClear();
+  const neighbour = { ...link, id: null, source: 'auto' };
+  h.fetchWithAuth.mockResolvedValueOnce(res(200, { data: { links: [neighbour] } }));
+  expect(await listWispNeighbours('th/1', { kind: 'ticket', id: 't/1&x=2' })).toEqual([neighbour]);
+  expect(h.fetchWithAuth).toHaveBeenLastCalledWith('/wisp/thread/th%2F1/links/neighbours?kind=ticket&id=t%2F1%26x%3D2', { skipOrgIdInjection: true });
+  expect(h.showToast).not.toHaveBeenCalled();
+  h.fetchWithAuth.mockResolvedValueOnce(res(200, { data: {} }));
+  await expect(listWispNeighbours('th1', { kind: 'ticket', id: 't1' })).rejects.toThrow(/no links array/);
+  h.fetchWithAuth.mockResolvedValueOnce(res(404, {}));
+  await expect(listWispNeighbours('th1', { kind: 'ticket', id: 't1' })).rejects.toThrow(/404/);
+  expect(h.showToast).not.toHaveBeenCalled();
 });

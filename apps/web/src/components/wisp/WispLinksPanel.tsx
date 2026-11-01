@@ -2,7 +2,7 @@ import { useMemo, useState, type Dispatch, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link2, Plus } from 'lucide-react';
 import { WISP_THREAD_LINK_LIMIT, type WispThreadLink } from '@breeze/shared';
-import { isPinnedLink, removeWispLink, pinWispLink } from '@/lib/wispLinksApi';
+import { addWispLink, isPinnedLink, removeWispLink, pinWispLink } from '@/lib/wispLinksApi';
 import { ActionError } from '@/lib/runAction';
 import { showToast } from '@/components/shared/Toast';
 import WispEntityPicker from './WispEntityPicker';
@@ -68,10 +68,12 @@ export default function WispLinksPanel({
   };
 
   const pin = async (link: WispThreadLink) => {
-    if (removingId || link.id === null || !canAdd || atLimit) return;
-    setRemovingId(link.id);
+    if (removingId || !canAdd || atLimit) return;
+    setRemovingId(link.id ?? linkKey(link.ref.kind, link.ref.id));
     try {
-      onLinked(await pinWispLink(threadId, link.id));
+      onLinked(link.id === null
+        ? await addWispLink(threadId, link.ref)
+        : await pinWispLink(threadId, link.id));
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('wisp.links.addFailed') });
@@ -117,8 +119,9 @@ export default function WispLinksPanel({
             return <div key={group.id} data-testid={`wisp-links-group-${group.id}`}>
               <h3 className="mb-1 text-xs font-medium text-muted-foreground">{group.title}</h3>
               <ul className="flex flex-wrap gap-1.5">
-                {visible.map((link) => <WispLinkPill key={linkKey(link.ref.kind, link.ref.id)} threadId={threadId} link={link}
+                {visible.map((link) => <WispLinkPill key={linkKey(link.ref.kind, link.ref.id)} threadId={threadId} link={link} linkedKeys={linkedKeys}
                   busy={removingId !== null} onRemove={() => void remove(link)} onDismiss={() => void remove(link)}
+                  onPinNeighbour={canAdd && !atLimit ? (neighbour) => void pin(neighbour) : undefined}
                   onPin={canAdd && !atLimit ? () => void pin(link) : undefined} />)}
               </ul>
             </div>;

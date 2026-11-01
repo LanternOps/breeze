@@ -7,6 +7,8 @@ import { ActionError } from '@/lib/runAction';
 const h = vi.hoisted(() => ({
   removeWispLink: vi.fn(),
   pinWispLink: vi.fn(),
+  addWispLink: vi.fn(),
+  listWispNeighbours: vi.fn(),
   showToast: vi.fn(),
   pickerProps: null as null | Record<string, unknown>,
 }));
@@ -14,6 +16,8 @@ vi.mock('@/lib/wispLinksApi', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/lib/wispLinksApi')>(),
   removeWispLink: h.removeWispLink,
   pinWispLink: h.pinWispLink,
+  addWispLink: h.addWispLink,
+  listWispNeighbours: h.listWispNeighbours,
 }));
 vi.mock('@/components/shared/Toast', () => ({ showToast: h.showToast }));
 vi.mock('./WispEntityPicker', () => ({
@@ -228,4 +232,57 @@ it('50 pins hide the pin action on auto rows', () => {
   expect(screen.getByTestId('wisp-link-chip-auto')).toBeInTheDocument();
   expect(screen.queryByTestId(/^wisp-link-pin-/)).toBeNull();
   expect(screen.getByTestId('wisp-link-dismiss-auto')).toBeInTheDocument();
+});
+
+
+describe('neighbour pins', () => {
+  beforeEach(() => vi.clearAllMocks());
+  const neighbour = link('2', { id: null, source: 'auto' });
+
+  it('pins an unstored neighbour through add and merges it into the pins group', async () => {
+    h.listWispNeighbours.mockResolvedValue([neighbour]);
+    h.addWispLink.mockResolvedValue(link('2'));
+    function Panel() {
+      const [links, setLinks] = useState([link('1')]);
+      return <WispLinksPanel threadId="th-1" links={links} onLinksChange={setLinks} />;
+    }
+    render(<Panel />);
+    fireEvent.click(screen.getByTestId('wisp-link-expand-1'));
+    fireEvent.click(await screen.findByTestId('wisp-link-pin-ticket:t-2'));
+    await waitFor(() => expect(screen.getByTestId('wisp-links-group-pinned')).toContainElement(screen.getByTestId('wisp-link-chip-2')));
+    expect(h.addWispLink).toHaveBeenCalledWith('th-1', neighbour.ref);
+    expect(h.pinWispLink).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('wisp-link-chip-ticket:t-2')).not.toBeInTheDocument();
+  });
+
+  it('toasts a neighbour pin failure not already handled by runAction', async () => {
+    h.listWispNeighbours.mockResolvedValue([neighbour]);
+    h.addWispLink.mockRejectedValue(new Error('malformed response'));
+    render(<WispLinksPanel threadId="th-1" links={[link('1')]} onLinksChange={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('wisp-link-expand-1'));
+    fireEvent.click(await screen.findByTestId('wisp-link-pin-ticket:t-2'));
+    await waitFor(() => expect(h.showToast).toHaveBeenCalledWith({ type: 'error', message: 'Could not link that item.' }));
+  });
+
+  it.each([401, 409])('does not toast a neighbour pin ActionError %s twice', async (status) => {
+    h.listWispNeighbours.mockResolvedValue([neighbour]);
+    h.addWispLink.mockRejectedValue(new ActionError('Refused', status));
+    render(<WispLinksPanel threadId="th-1" links={[link('1')]} onLinksChange={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('wisp-link-expand-1'));
+    const pin = await screen.findByTestId('wisp-link-pin-ticket:t-2');
+    fireEvent.click(pin);
+    await waitFor(() => expect(h.addWispLink).toHaveBeenCalled());
+    await waitFor(() => expect(pin).toBeEnabled());
+    expect(h.showToast).not.toHaveBeenCalled();
+  });
+
+  it.each(['paused', 'at limit'])('shows neighbours without Pin when %s', async (state) => {
+    h.listWispNeighbours.mockResolvedValue([neighbour]);
+    const rows = state === 'at limit' ? Array.from({ length: 50 }, (_, i) => link(`pin-${i}`)) : [link('pin-0')];
+    render(<WispLinksPanel threadId="th-1" links={rows} onLinksChange={vi.fn()} canAdd={state !== 'paused'} />);
+    fireEvent.click(screen.getByTestId('wisp-link-expand-pin-0'));
+    await screen.findByTestId('wisp-link-chip-ticket:t-2');
+    expect(screen.queryByTestId('wisp-link-pin-ticket:t-2')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('wisp-link-dismiss-ticket:t-2')).not.toBeInTheDocument();
+  });
 });

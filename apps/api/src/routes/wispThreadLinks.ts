@@ -2,6 +2,7 @@
  * Wisp W08 (feature #9906; w00 A35) — the objects linked to a Wisp thread:
  *
  *   GET    /wisp/thread/:id/links            → 200 { data: { links } }
+ *   GET    /wisp/thread/:id/links/neighbours → 200 { data: { links } } (read-only previews)
  *   POST   /wisp/thread/:id/links            → 201 { data: { link } }   body linkEntitySchema
  *   DELETE /wisp/thread/:id/links/:linkId    → 204
  *
@@ -18,7 +19,7 @@
  */
 import { Hono, type Context } from 'hono';
 import { and, eq } from 'drizzle-orm';
-import { linkEntitySchema, threadLinkParamsSchema, type WispLinkRefusal } from '@breeze/shared';
+import { linkEntitySchema, threadLinkParamsSchema, type WispLinkRefusal, type WispThreadLink } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import type { AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -32,6 +33,8 @@ import {
   ThreadLinkError,
   THREAD_LINK_REFUSAL_STATUS,
 } from '../services/wisp/threadLinks';
+import { isResolveFailure, resolveEntityRef } from '../services/wisp/entityRefs';
+import { neighbourRefs } from '../services/wisp/entityRelations';
 import { listConcernsForCeiling } from '../services/wisp/concerns';
 import { ceilingOf, ceilingRefusal, loadOwnThread } from './wispThreads';
 
@@ -57,6 +60,39 @@ wispThreadLinkRoutes.get('/:id/links', async (c) => {
   if (!outcome.ok) return ceilingRefusal(c, outcome.reason);
   const concerns = await listConcernsForCeiling(outcome.ceiling, { status: ['open', 'snoozed'] });
   const links = await listWorkingSet({ auth: authOf(c), ceiling: outcome.ceiling }, own.thread.id, { concerns });
+  return c.json({ data: { links } });
+});
+
+// Derived previews are authorized like stored links, but never inserted or touched.
+wispThreadLinkRoutes.get('/:id/links/neighbours', zValidator('query', linkEntitySchema.pick({ kind: true, id: true })), async (c) => {
+  const own = await loadOwnThread(c);
+  if (!own) return c.json(NOT_FOUND, 404);
+  const outcome = await ceilingOf(own);
+  if (!outcome.ok) return ceilingRefusal(c, outcome.reason);
+  const ctx = { auth: authOf(c), ceiling: outcome.ceiling };
+  const ref = c.req.valid('query');
+  const subject = await resolveEntityRef(ctx, ref);
+  if (isResolveFailure(subject)) return c.json(LINK_NOT_FOUND, 404);
+
+  const refs = await neighbourRefs(own.thread.partnerId, ref);
+  const links: WispThreadLink[] = [];
+  // Previews have no stored recency; this is when they were discovered.
+  const discoveredAt = new Date().toISOString();
+  for (const neighbour of refs) {
+    const resolved = await resolveEntityRef(ctx, neighbour);
+    if (isResolveFailure(resolved)) continue;
+    links.push({
+      id: null,
+      ref: resolved.ref,
+      label: resolved.label,
+      status: resolved.status,
+      href: resolved.href,
+      source: 'auto',
+      lastTouchedAt: discoveredAt,
+      createdAt: discoveredAt,
+    });
+    if (links.length === 8) break;
+  }
   return c.json({ data: { links } });
 });
 

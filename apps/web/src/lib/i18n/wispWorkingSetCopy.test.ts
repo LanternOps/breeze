@@ -8,7 +8,6 @@ describe('Wisp working-set copy', () => {
   it.each(locales)('%s supplies talk and working-set copy without retired link-button keys', (locale) => {
     const ai = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), `../../locales/${locale}/ai.json`), 'utf8'));
     for (const key of ['button', 'buttonPlain', 'draft', 'switchFocus', 'openFailed']) expect(ai.wisp.talk?.[key]).toBeTruthy();
-    // wisp.links.neighbours is reserved copy: intentionally unused until W02 (W04-D1).
     for (const key of ['groupPinned', 'groupConcerns', 'groupRecent', 'pin', 'dismiss', 'more', 'neighbours']) expect(ai.wisp.links[key]).toBeTruthy();
     expect(ai.wisp.talk.openFailed).toContain('{{message}}');
     expect(ai.wisp.talk.draft).toContain('{{label}}');

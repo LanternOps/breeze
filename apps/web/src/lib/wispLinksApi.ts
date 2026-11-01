@@ -77,8 +77,12 @@ export async function pinWispLink(threadId: string, linkId: string): Promise<Wis
   return body.data.link;
 }
 
-// W04-D1: listWispNeighbours and wisp.links.neighbours are intentionally unused
-// until W02 (#10366) merges. W04 adds no neighbours route or UI expansion.
-export async function listWispNeighbours(_threadId: string, _ref: { kind: WispEntityKind; id: string }): Promise<WispThreadLink[]> {
-  throw new Error('Wisp neighbours are not wired yet');
+/** Read authorized neighbour previews without storing links. */
+export async function listWispNeighbours(threadId: string, ref: { kind: WispEntityKind; id: string }): Promise<WispThreadLink[]> {
+  const query = new URLSearchParams({ kind: ref.kind, id: ref.id });
+  const res = await fetchWithAuth(`${linksPath(threadId)}/neighbours?${query}`, { skipOrgIdInjection: true });
+  if (!res.ok) throw new Error(`wisp neighbours list failed: ${res.status}`);
+  const body = (await res.json()) as { data?: { links?: unknown } } | null;
+  if (!Array.isArray(body?.data?.links)) throw new Error('wisp neighbours list: response has no links array');
+  return body.data.links as WispThreadLink[];
 }
