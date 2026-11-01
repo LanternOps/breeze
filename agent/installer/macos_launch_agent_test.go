@@ -32,6 +32,13 @@ import (
 //	broken125  bootstrap fails with a non-EIO error (no such domain)
 //	kickfail   kickstart always fails, even on a loaded service
 //
+//	nousers    nobody is logged in: ps lists only root's loginwindow
+//
+// While anyone is logged in (every scenario but nousers), every launchctl
+// operation on the loginwindow domain answers exit 1 "Operation not
+// permitted", even as root: measured on the lab mini for print, bootstrap
+// and kickstart, with real and bogus labels alike.
+//
 // kickstart of a service that is not loaded exits 37, as the lab agent saw.
 // print of a loginwindow/ service always fails: as non-root it answers
 // "Could not print domain: 1", and it is not known to work as root, so the
@@ -42,6 +49,11 @@ key() { printf '%s' "$1" | tr '/' '_'; }
 loaded() { [ -f "$FAKE_STATE/loaded.$(key "$1")" ]; }
 lag_left() { cat "$FAKE_STATE/lag.$(key "$1")" 2>/dev/null || echo 0; }
 eio() { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }
+lw_eperm() {
+  [ "$SCENARIO" != nousers ] || return 1
+  case "$*" in *loginwindow*) echo "Operation not permitted" >&2; exit 1 ;; esac
+}
+[ -n "$LW_DIRECT" ] || lw_eperm "$@"
 case "$1" in
   bootout)
     svc="$2"
@@ -114,7 +126,7 @@ func runAgentShell(t *testing.T, scenario, body string, preloaded ...string) age
 	write("launchctl", fakeAgentLaunchctl)
 	write("sleep", "#!/bin/sh\necho \"sleep $*\" >> \"$FAKE_STATE/calls\"\n")
 	// Two GUI users plus root's login-window process, which must be skipped.
-	write("ps", "#!/bin/sh\nprintf '%s\\n' '0 /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow' '501 /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow' '502 /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow' '501 /usr/local/bin/breeze-desktop-helper'\n")
+	write("ps", "#!/bin/sh\n[ \"$SCENARIO\" = nousers ] && { echo '0 /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow'; exit 0; }\nprintf '%s\\n' '0 /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow' '501 /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow' '502 /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow' '501 /usr/local/bin/breeze-desktop-helper'\n")
 	for _, svc := range preloaded {
 		if err := os.WriteFile(filepath.Join(state, "loaded."+strings.ReplaceAll(svc, "/", "_")), nil, 0o644); err != nil {
 			t.Fatal(err)
@@ -123,6 +135,11 @@ func runAgentShell(t *testing.T, scenario, body string, preloaded ...string) age
 	script := "set -e\n. '" + lib + "'\n" + body + "\n"
 	cmd := exec.Command(bash, "-c", script)
 	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "FAKE_STATE="+state, "SCENARIO="+scenario)
+	if strings.HasPrefix(body, "load_launch_agent loginwindow ") {
+		// The direct load_launch_agent tests exercise the function's own
+		// logic in a domain that answers, as at an empty login window.
+		cmd.Env = append(cmd.Env, "LW_DIRECT=1")
+	}
 	out, err := cmd.CombinedOutput()
 	code := 0
 	if ee, ok := err.(*exec.ExitError); ok {
@@ -220,8 +237,10 @@ func TestReloadLaunchAgentAcceptsAHelperLoadedByTheAgent(t *testing.T) {
 // installer, which is also the unattended self-update path.
 func TestReloadLaunchAgentWaitIsBounded(t *testing.T) {
 	r := runAgentShell(t, "stale", reloadUser, userSvc501)
-	if n := strings.Count(r.calls, "sleep 0.5"); n == 0 || n > 10 {
-		t.Errorf("want a bounded wait of at most 10 polls (~5 s), got %d\ncalls:\n%s", n, r.calls)
+	// 15 s: the lab mini's idle helper took 2.4-2.9 s to leave launchd, and
+	// launchd allows a slow exit (a helper mid-session) up to 20 s.
+	if n := strings.Count(r.calls, "sleep 0.5"); n != 30 {
+		t.Errorf("want a wait bounded at 30 polls (15 s), got %d\ncalls:\n%s", n, r.calls)
 	}
 	if !strings.Contains(r.out, "still loaded") {
 		t.Errorf("want a warning that the old instance never left\noutput:\n%s", r.out)
@@ -330,13 +349,18 @@ func postinstallHelperScript(t *testing.T) string {
 }
 
 // The block as shipped, end to end, on the #10868 upgrade: both users' helpers
-// and the loginwindow helper are loaded at the end, root is skipped.
+// are loaded at the end, root is skipped, and the loginwindow domain (which
+// refuses every operation while a user is logged in) is left alone instead of
+// producing a false "could not load" warning.
 func TestPostinstallReloadsEveryUsersHelperOnUpgrade(t *testing.T) {
-	r := runAgentShell(t, "lag", postinstallHelperScript(t), userSvc501, userSvc502, lwSvc)
+	r := runAgentShell(t, "lag", postinstallHelperScript(t), userSvc501, userSvc502)
 	if r.code != 0 {
 		t.Fatalf("exit %d\noutput:\n%s\ncalls:\n%s", r.code, r.out, r.calls)
 	}
-	for _, svc := range []string{userSvc501, userSvc502, lwSvc} {
+	if strings.Contains(r.calls, "loginwindow") || strings.Contains(r.out, "Warning") {
+		t.Errorf("with users logged in the loginwindow domain must not be touched or warned about\noutput:\n%s\ncalls:\n%s", r.out, r.calls)
+	}
+	for _, svc := range []string{userSvc501, userSvc502} {
 		if !r.loaded(svc) {
 			t.Errorf("%s is not loaded after the install\noutput:\n%s\ncalls:\n%s", svc, r.out, r.calls)
 		}
@@ -357,10 +381,20 @@ func TestPostinstallHelperFailureWarnsWithoutFailingTheInstall(t *testing.T) {
 	if !strings.Contains(r.out, "Bootstrap failed: 5: Input/output error") {
 		t.Errorf("launchctl stderr must reach the installer log\noutput:\n%s", r.out)
 	}
-	// One user's failure does not stop the next user or the login window.
-	for _, want := range []string{"launchctl bootstrap gui/502 ", "launchctl bootstrap loginwindow "} {
-		if !strings.Contains(r.calls, want) {
-			t.Errorf("want %q attempted after gui/501 failed\ncalls:\n%s", want, r.calls)
-		}
+	// One user's failure does not stop the next user.
+	if !strings.Contains(r.calls, "launchctl bootstrap gui/502 ") {
+		t.Errorf("want gui/502 attempted after gui/501 failed\ncalls:\n%s", r.calls)
+	}
+}
+
+// With nobody logged in (a headless Mac at the login window) the login-window
+// helper is still loaded by the install.
+func TestPostinstallLoadsTheLoginWindowHelperWhenNobodyIsLoggedIn(t *testing.T) {
+	r := runAgentShell(t, "nousers", postinstallHelperScript(t))
+	if r.code != 0 || !r.loaded(lwSvc) {
+		t.Fatalf("exit %d, loaded=%v\noutput:\n%s\ncalls:\n%s", r.code, r.loaded(lwSvc), r.out, r.calls)
+	}
+	if strings.Contains(r.calls, "gui/") {
+		t.Errorf("no GUI user, so no gui domain should be touched\ncalls:\n%s", r.calls)
 	}
 }

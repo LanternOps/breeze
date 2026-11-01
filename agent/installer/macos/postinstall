@@ -170,15 +170,26 @@ rm -f "$LEGACY_AGENT_USER_PLIST"
 # fails with EIO 5 and left upgraded Macs with no helper until re-login
 # (#10868). Not fatal: the agent is already up, and its post-update revival
 # bootstraps a helper it finds unloaded.
+gui_users=0
 for uid in $(ps -axo uid= -o comm= | grep -i '[lL]oginwindow' | awk '{print $1}' | sort -u); do
     # Skip root (uid 0) — LaunchAgents are user-session only
     [ "$uid" = "0" ] && continue
+    gui_users=$((gui_users + 1))
     reload_launch_agent "gui/$uid" com.breeze.desktop-helper-user "$DESKTOP_USER_PLIST" || true
 done
 
-# The login-window helper is not booted out first (it never was); an upgrade
-# finds it loaded, and load_launch_agent restarts it onto the new binary.
-load_launch_agent loginwindow com.breeze.desktop-helper-loginwindow "$DESKTOP_LOGINWINDOW_PLIST" || true
+# The login-window helper. While anyone is logged in, every launchctl
+# operation on the loginwindow domain answers "Operation not permitted", even
+# as root, so trying would only log a false failure. Its plist has
+# LimitLoadToSessionType=LoginWindow, so launchd loads it itself at the next
+# login window. With nobody logged in (a headless Mac at the login window),
+# load it now; it is not booted out first (it never was), and an
+# already-loaded one is restarted onto the new binary.
+if [ "$gui_users" -eq 0 ]; then
+    load_launch_agent loginwindow com.breeze.desktop-helper-loginwindow "$DESKTOP_LOGINWINDOW_PLIST" || true
+else
+    echo "Not loading the login-window helper now: $gui_users user(s) logged in; launchd loads it at the next login window"
+fi
 
 echo "Breeze Agent installed and started."
 exit 0
