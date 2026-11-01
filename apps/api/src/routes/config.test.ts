@@ -31,6 +31,7 @@ describe('GET /config', () => {
 
   beforeEach(() => {
     vi.stubEnv('BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED', undefined);
+    vi.stubEnv('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', undefined);
     vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'false');
     vi.stubEnv('EMAIL_DOMAINS_PROVIDER', undefined);
     delete process.env.BREEZE_BILLING_URL;
@@ -79,14 +80,14 @@ describe('GET /config', () => {
   it('returns both flags false when BREEZE_BILLING_URL unset', async () => {
     const { status, body } = await request();
     expect(status).toBe(200);
-    expect(body.features).toEqual({ billing: false, support: false, aiOperatorTasks: false, toolSources: false, flows: true, aiAgentsSweepAct: false, callerVerification: false, preAssignmentEnrollment: false, sendingDomains: false });
+    expect(body.features).toEqual({ billing: false, support: false, aiOperatorTasks: false, toolSources: false, flows: true, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, callerVerification: false, preAssignmentEnrollment: false, sendingDomains: false });
   });
 
   it('returns both flags true when BREEZE_BILLING_URL is set', async () => {
     process.env.BREEZE_BILLING_URL = 'http://localhost:4000';
     const { status, body } = await request();
     expect(status).toBe(200);
-    expect(body.features).toEqual({ billing: true, support: true, aiOperatorTasks: false, toolSources: false, flows: true, aiAgentsSweepAct: false, callerVerification: false, preAssignmentEnrollment: false, sendingDomains: false });
+    expect(body.features).toEqual({ billing: true, support: true, aiOperatorTasks: false, toolSources: false, flows: true, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, callerVerification: false, preAssignmentEnrollment: false, sendingDomains: false });
   });
 
   it.each(['true', 'false', '', 'garbage'])('returns caller verification readiness for %s', async (value) => {
@@ -134,6 +135,17 @@ describe('GET /config', () => {
     const { status, body } = await request();
     expect(status).toBe(200);
     expect(body.features.aiAgentsSweepAct).toBe(enabled);
+  });
+
+  it.each([
+    [undefined, false],
+    ['false', false],
+    ['true', true],
+  ])('features.aiAgentsPolicyDecide reflects deployment flag %s (#9939)', async (flag, enabled) => {
+    vi.stubEnv('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', flag);
+    const { status, body } = await request();
+    expect(status).toBe(200);
+    expect(body.features.aiAgentsPolicyDecide).toBe(enabled);
   });
 
   it('features.toolSources is false when TOOL_SOURCES_ENABLED is unset', async () => {
