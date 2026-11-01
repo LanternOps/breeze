@@ -5,12 +5,13 @@ import {
   backupProviderCustomers,
   backupProviderDevices,
   devices,
+  organizations,
 } from '../../db/schema';
 import { createSourcedAlert, resolveAlert } from '../alertService';
 import { EVENT_TYPES, publishEvent } from '../eventBus';
 import { captureException } from '../sentry';
 // Package ROOT — deriveBackupHealth is a VALUE import (see Global Constraints).
-import { deriveBackupHealth, type BackupProviderAlertCondition, type ExternalBackupStatus } from '@breeze/shared';
+import { deriveBackupHealth, saasWorkloadLabel, type BackupProviderAlertCondition, type ExternalBackupStatus } from '@breeze/shared';
 import { getBackupProvider } from './registry';
 import { notInHoldingOrgCondition } from '../unassignedPool/selectorPredicate';
 
@@ -34,6 +35,15 @@ export const PROVIDER_CONDITION_META: Record<
   no_backups: { severity: 'high', title: (n) => `No backups recorded for ${n}` },
   completed_with_errors: { severity: 'medium', title: (n) => `Backup completed with errors on ${n}` },
   stale: { severity: 'high', title: (n) => `No successful backup in 48 hours on ${n}` },
+};
+
+const SAAS_CONDITION_PHRASES: Record<BackupProviderAlertCondition, string> = {
+  failed: 'failed',
+  over_quota: 'over quota',
+  no_selection: 'has nothing selected',
+  no_backups: 'has no backups recorded',
+  completed_with_errors: 'completed with errors',
+  stale: 'has no successful run in 48 hours',
 };
 
 const CONDITIONS = Object.keys(PROVIDER_CONDITION_META) as BackupProviderAlertCondition[];
@@ -134,6 +144,7 @@ interface ProviderAlertRow {
   vendorDeviceId: string;
   vendorDeviceName: string;
   accountType: string;
+  dataSources: string[];
   status: ExternalBackupStatus;
   lastSuccessAt: Date | null;
   errorsCount: number;
@@ -142,6 +153,7 @@ interface ProviderAlertRow {
   deviceDisplayName: string | null;
   deviceHostname: string | null;
   customerName: string | null;
+  orgName: string | null;
 }
 
 interface OpenProviderAlert {
@@ -197,6 +209,7 @@ export async function evaluateProviderAlerts(
         vendorDeviceId: backupProviderDevices.vendorDeviceId,
         vendorDeviceName: backupProviderDevices.vendorDeviceName,
         accountType: backupProviderDevices.accountType,
+        dataSources: backupProviderDevices.dataSources,
         status: backupProviderDevices.status,
         lastSuccessAt: backupProviderDevices.lastSuccessAt,
         errorsCount: backupProviderDevices.errorsCount,
@@ -205,14 +218,16 @@ export async function evaluateProviderAlerts(
         deviceDisplayName: devices.displayName,
         deviceHostname: devices.hostname,
         customerName: backupProviderCustomers.vendorCustomerName,
+        orgName: organizations.name,
       })
       .from(backupProviderDevices)
       .leftJoin(devices, eq(devices.id, backupProviderDevices.breezeDeviceId))
       .leftJoin(backupProviderCustomers, eq(backupProviderCustomers.id, backupProviderDevices.customerId))
+      .leftJoin(organizations, eq(organizations.id, backupProviderDevices.orgId))
       .where(and(
         eq(backupProviderDevices.connectionId, connectionId),
         // SaaS workloads share endpoint condition evaluation and hysteresis.
-        // They have no linked device, so the event-only path below applies.
+        // Their alerts belong to the workload rather than a linked device.
         inArray(backupProviderDevices.accountType, ['backup_manager', 'm365', 'gws']),
         // No provider alert is raised under the holding org.
         notInHoldingOrgCondition(backupProviderDevices.orgId),
@@ -300,10 +315,9 @@ export async function evaluateProviderAlerts(
         });
       }
 
-      // createSourcedAlert requires a device: SaaS and unlinked endpoint rows
-      // get events only. A linked endpoint in the raised phase keeps (or gets)
-      // exactly one alert for its current condition.
-      if (next.phase !== 'raised' || !deviceId) continue;
+      // Raised SaaS workloads and linked endpoints keep (or get) an alert.
+      // Unlinked endpoints still get events only.
+      if (next.phase !== 'raised' || (!isSaas && !deviceId)) continue;
       keep.add(`${row.id}|${next.condition}`);
       if (!openByKey.has(`${row.id}|${next.condition}`)) {
         toRaise.push({ row, condition: next.condition });
@@ -336,8 +350,12 @@ export async function evaluateProviderAlerts(
     });
 
     let resolved = 0;
+    const resolvedIds = new Set<string>();
     for (const alert of resolvable) {
-      if (await resolveAlert(alert.id, PROVIDER_ALERT_RESOLUTION_NOTE, undefined, false, 'condition_cleared')) resolved += 1;
+      if (await resolveAlert(alert.id, PROVIDER_ALERT_RESOLUTION_NOTE, undefined, false, 'condition_cleared')) {
+        resolved += 1;
+        resolvedIds.add(alert.id);
+      }
     }
     // Losing an individual compare-and-swap is normal (a technician got there
     // first). Losing EVERY candidate is the shape an RLS write-policy divergence
@@ -357,17 +375,39 @@ export async function evaluateProviderAlerts(
       const name = deviceLabel(row);
       const label = providerLabel(row.provider);
       const lastSuccess = row.lastSuccessAt ? row.lastSuccessAt.toISOString() : 'never';
+      const isSaas = row.accountType === 'm365' || row.accountType === 'gws';
+      const title = (isSaas
+        ? `${saasWorkloadLabel(row.dataSources[0] ?? null)} backup ${SAAS_CONDITION_PHRASES[condition]} — ${row.customerName || row.orgName || row.vendorDeviceName}`
+        : meta.title(name)).slice(0, 500);
+      const message = `${label} reports status "${row.status}" for ${row.vendorDeviceName}`
+        + `${row.customerName ? ` (customer ${row.customerName})` : ''}. `
+        + `Last successful backup: ${lastSuccess}. Errors in the last session: ${row.errorsCount}.`;
+      // A Forever suppression survives condition changes. Preserve its mute and
+      // owner identity instead of colliding with the one-open-alert owner index.
+      const survivingAlert = isSaas ? openAlerts.find((alert) =>
+        alert.providerDeviceId === row.id && alert.condition !== condition && !resolvedIds.has(alert.id),
+      ) : undefined;
+      if (survivingAlert) {
+        await db.update(alerts).set({
+          context: sql`jsonb_set(${alerts.context}, '{condition}', to_jsonb(${condition}::text))`,
+          title,
+          severity: meta.severity,
+          message,
+        }).where(and(
+          eq(alerts.id, survivingAlert.id),
+          inArray(alerts.status, ['active', 'acknowledged', 'suppressed']),
+        ));
+        continue;
+      }
       const alertId = await createSourcedAlert({
-        deviceId: row.breezeDeviceId!,
-        // The provider row's org IS the linked device's org: the composite FK
-        // (breeze_device_id, org_id) -> devices(id, org_id) enforces it.
+        ...(isSaas
+          ? { deviceId: null, owner: { kind: 'backup_workload' as const, ref: row.id } }
+          : { deviceId: row.breezeDeviceId! }),
+        // For endpoints the composite device/org FK enforces the same org.
         orgId: row.orgId,
         severity: meta.severity,
-        title: meta.title(name).slice(0, 500),
-        message:
-          `${label} reports status "${row.status}" for ${row.vendorDeviceName}`
-          + `${row.customerName ? ` (customer ${row.customerName})` : ''}. `
-          + `Last successful backup: ${lastSuccess}. Errors in the last session: ${row.errorsCount}.`,
+        title,
+        message,
         context: {
           source: BACKUP_PROVIDER_ALERT_SOURCE,
           connectionId,
@@ -387,6 +427,13 @@ export async function evaluateProviderAlerts(
       });
       if (alertId) {
         raised += 1;
+      } else if (isSaas) {
+        // Owner-backed inserts can return null on dedupe as well as publish
+        // failure. The next sync checks for an open alert before retrying.
+        console.warn(
+          `[BackupProviderSync] no new ${condition} alert for backup workload ${row.id}; `
+          + 'deduplicated or not published, the next sync checks again',
+        );
       } else {
         // The insert produced no row or the publish rolled it back, so nothing
         // was announced. The row still sits in the `raised` phase, and the next

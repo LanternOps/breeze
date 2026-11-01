@@ -11,6 +11,8 @@ const { createSourcedAlert, resolveAlert, publishEvent } = vi.hoisted(() => ({
 let providerRows: unknown[] = [];
 let openAlerts: unknown[] = [];
 const executed: string[] = [];
+const providerPredicates: Array<{ sql: string; params: unknown[] }> = [];
+const updates: Array<{ values: Record<string, unknown>; where: SQL }> = [];
 
 function chain(result: unknown, providerQuery = false) {
   const c: Record<string, unknown> = {};
@@ -18,6 +20,10 @@ function chain(result: unknown, providerQuery = false) {
   if (providerQuery) c.where = vi.fn((condition: SQL) => {
     // Model the actual account-type restriction, so fixtures cannot bypass SQL.
     const query = new PgDialect().sqlToQuery(condition);
+    providerPredicates.push(query);
+    if (query.sql.includes("parked_org.type = 'unassigned_pool'")) {
+      result = (result as Array<{ orgId: string }>).filter((row) => row.orgId !== HOLDING_ORG);
+    }
     if (query.sql.includes('account_type')) {
       result = (result as Array<{ accountType: string }>).filter((row) => query.params.includes(row.accountType));
     }
@@ -35,6 +41,11 @@ vi.mock('../../db', () => ({
       const providerQuery = selectCall++ === 0;
       return chain(providerQuery ? providerRows : openAlerts, providerQuery);
     }),
+    update: vi.fn(() => ({
+      set: vi.fn((values: Record<string, unknown>) => ({
+        where: vi.fn(async (where: SQL) => { updates.push({ values, where }); return []; }),
+      })),
+    })),
     execute: vi.fn((statement: { queryChunks?: unknown[] }) => {
       executed.push(JSON.stringify(statement?.queryChunks ?? statement));
       return Promise.resolve([]);
@@ -56,8 +67,11 @@ vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./registry', () => ({ getBackupProvider: () => ({ key: 'cove', label: 'Cove Data Protection' }) }));
 
 import { evaluateProviderAlerts } from './alerts';
+import { captureException } from '../sentry';
+import { db } from '../../db';
 
 const CONNECTION = '00000000-0000-4000-8000-0000000000c1';
+const HOLDING_ORG = '22222222-2222-4222-8222-222222222222';
 const ORG = '11111111-1111-4111-8111-111111111111';
 
 const row = (over: Record<string, unknown> = {}) => ({
@@ -75,6 +89,8 @@ const row = (over: Record<string, unknown> = {}) => ({
   deviceDisplayName: 'Server One',
   deviceHostname: 'srv-01',
   customerName: 'Acme Ltd',
+  orgName: 'Acme Organization',
+  dataSources: [],
   ...over,
 });
 
@@ -82,62 +98,78 @@ beforeEach(() => {
   vi.clearAllMocks();
   selectCall = 0;
   executed.length = 0;
+  providerPredicates.length = 0;
+  updates.length = 0;
+  createSourcedAlert.mockReset().mockResolvedValue('alert-1');
+  resolveAlert.mockReset().mockResolvedValue(true);
   providerRows = [];
   openAlerts = [];
 });
 
 describe('evaluateProviderAlerts', () => {
-  it.each(['m365', 'gws'])('evaluates %s workload transitions with two-poll hysteresis and events only', async (accountType) => {
+  it.each([
+    ['m365', 'm365_mail', 'Microsoft 365 mail'],
+    ['gws', 'gws_drive', 'Google Drive'],
+  ])('raises one %s workload alert after two polls, then resolves on recovery', async (accountType, dataSource, label) => {
     const now = new Date('2026-10-28T12:00:00Z');
     const saasRow = row({ accountType, provider: 'dropsuite', breezeDeviceId: null,
-      deviceDisplayName: null, deviceHostname: null, vendorDeviceName: 'Mail backup' });
+      dataSources: [dataSource], deviceDisplayName: null, deviceHostname: null, vendorDeviceName: 'Mail backup' });
     providerRows = [saasRow];
     await evaluateProviderAlerts(CONNECTION, { now });
+    expect(createSourcedAlert).not.toHaveBeenCalled();
     expect(publishEvent).not.toHaveBeenCalled();
     expect(executed.some((statement) => statement.includes('pending_condition'))).toBe(true);
 
     selectCall = 0;
     providerRows = [{ ...saasRow, pendingCondition: 'failed' }];
-    await evaluateProviderAlerts(CONNECTION, { now });
+    expect(await evaluateProviderAlerts(CONNECTION, { now })).toEqual({ raised: 1, resolved: 0 });
+    expect(createSourcedAlert).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      deviceId: null, owner: { kind: 'backup_workload', ref: saasRow.id }, orgId: ORG,
+      severity: 'high', title: `${label} backup failed — Acme Ltd`,
+      context: { source: 'backup_provider', connectionId: CONNECTION, providerKey: 'dropsuite',
+        providerDeviceId: saasRow.id, vendorDeviceId: 'v1', condition: 'failed' },
+      configItemName: 'backup_provider', publisher: 'backup-provider-sync',
+      eventPayload: { connectionId: CONNECTION, providerKey: 'dropsuite', providerDeviceId: saasRow.id, condition: 'failed' },
+    }));
     expect(publishEvent).toHaveBeenCalledWith('backup.provider_device_unhealthy', ORG,
       expect.objectContaining({ deviceId: null, condition: 'failed', providerKey: 'dropsuite' }), 'backup-provider-sync');
-    expect(createSourcedAlert).not.toHaveBeenCalled();
 
     selectCall = 0;
     publishEvent.mockClear();
     providerRows = [{ ...saasRow, pendingCondition: 'raised:failed' }];
+    openAlerts = [{ id: 'workload-alert', status: 'active', suppressedUntil: null, providerDeviceId: 'p1', condition: 'failed' }];
     await evaluateProviderAlerts(CONNECTION, { now });
+    expect(createSourcedAlert).toHaveBeenCalledTimes(1);
+    expect(resolveAlert).not.toHaveBeenCalled();
     expect(publishEvent).not.toHaveBeenCalled();
 
     selectCall = 0;
     providerRows = [{ ...saasRow, pendingCondition: 'raised:failed', status: 'completed', lastSuccessAt: now, errorsCount: 0 }];
     await evaluateProviderAlerts(CONNECTION, { now });
+    expect(resolveAlert).toHaveBeenCalledWith('workload-alert', 'Condition cleared by provider sync', undefined, false, 'condition_cleared');
     expect(publishEvent).toHaveBeenCalledWith('backup.provider_device_recovered', ORG,
       expect.objectContaining({ deviceId: null, condition: 'failed' }), 'backup-provider-sync');
-    expect(createSourcedAlert).not.toHaveBeenCalled();
+    expect(createSourcedAlert).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['m365', 'gws'])('never treats a legacy-linked %s workload as a device alert', async (accountType) => {
+  it.each(['m365', 'gws'])('uses a workload owner even for a legacy-linked %s row', async (accountType) => {
     providerRows = [row({ accountType, pendingCondition: 'failed', breezeDeviceId: 'legacy-device' })];
     await evaluateProviderAlerts(CONNECTION);
-    expect(createSourcedAlert).not.toHaveBeenCalled();
+    expect(createSourcedAlert).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: null, owner: { kind: 'backup_workload', ref: 'p1' },
+    }));
     expect(publishEvent).toHaveBeenCalledWith('backup.provider_device_unhealthy', ORG,
       expect.objectContaining({ deviceId: null, condition: 'failed' }), 'backup-provider-sync');
+  });
 
-    selectCall = 0;
-    publishEvent.mockClear();
-    providerRows = [row({ accountType, pendingCondition: 'raised:failed', breezeDeviceId: 'legacy-device' })];
-    openAlerts = [{ id: 'legacy-alert', status: 'active', suppressedUntil: null, providerDeviceId: 'p1', condition: 'failed' }];
+  it('includes Cove M365 and falls back to the organization name', async () => {
+    providerRows = [row({ accountType: 'm365', provider: 'cove', breezeDeviceId: null,
+      pendingCondition: 'failed', customerName: null, dataSources: ['m365_mail'] })];
     await evaluateProviderAlerts(CONNECTION);
-    expect(resolveAlert).toHaveBeenCalledWith('legacy-alert', 'Condition cleared by provider sync', undefined, false, 'condition_cleared');
-    expect(publishEvent).not.toHaveBeenCalled();
-
-    selectCall = 0;
-    providerRows = [row({ accountType, pendingCondition: 'raised:failed', breezeDeviceId: 'legacy-device',
-      status: 'completed', lastSuccessAt: new Date(), errorsCount: 0 })];
-    await evaluateProviderAlerts(CONNECTION);
-    expect(publishEvent).toHaveBeenCalledWith('backup.provider_device_recovered', ORG,
-      expect.objectContaining({ deviceId: null, condition: 'failed' }), 'backup-provider-sync');
+    expect(createSourcedAlert).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: null, owner: { kind: 'backup_workload', ref: 'p1' },
+      title: 'Microsoft 365 mail backup failed — Acme Organization',
+    }));
   });
 
   it.each(['m365', 'gws'])('retains the 48-hour staleness threshold for %s workloads', async (accountType) => {
@@ -145,9 +177,108 @@ describe('evaluateProviderAlerts', () => {
     providerRows = [row({ accountType, breezeDeviceId: null, status: 'completed', errorsCount: 0,
       lastSuccessAt: new Date(now.getTime() - 49 * 3600_000), pendingCondition: 'stale' })];
     await evaluateProviderAlerts(CONNECTION, { now });
+    expect(createSourcedAlert).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: null, title: 'SaaS backup has no successful run in 48 hours — Acme Ltd', severity: 'high',
+    }));
     expect(publishEvent).toHaveBeenCalledWith('backup.provider_device_unhealthy', ORG,
       expect.objectContaining({ deviceId: null, condition: 'stale' }), 'backup-provider-sync');
+  });
+
+  it('resolves a deleted workload alert', async () => {
+    openAlerts = [{ id: 'workload-alert', status: 'active', suppressedUntil: null, providerDeviceId: 'deleted-workload', condition: 'failed' }];
+    expect(await evaluateProviderAlerts(CONNECTION)).toEqual({ raised: 0, resolved: 1 });
+    expect(resolveAlert).toHaveBeenCalledWith('workload-alert', 'Condition cleared by provider sync', undefined, false, 'condition_cleared');
+  });
+
+  it('excludes an unmapped customer in the holding org through the provider query', async () => {
+    providerRows = [row({ accountType: 'm365', orgId: HOLDING_ORG, pendingCondition: 'failed', breezeDeviceId: null })];
+    await evaluateProviderAlerts(CONNECTION);
+    expect(providerPredicates[0]!.sql).toContain("parked_org.type = 'unassigned_pool'");
+    expect(providerPredicates[0]!.sql).toContain('"backup_provider_devices"."org_id"');
+    expect(providerPredicates[0]!.params).toContain(CONNECTION);
     expect(createSourcedAlert).not.toHaveBeenCalled();
+    expect(publishEvent).not.toHaveBeenCalled();
+  });
+
+  it('resolves stale before raising failed and never has two open rows for the workload owner', async () => {
+    const saasRow = row({ accountType: 'm365', breezeDeviceId: null, dataSources: ['m365_mail'] });
+    const live = new Set(['stale-alert']);
+    openAlerts = [{ id: 'stale-alert', status: 'active', suppressedUntil: null, providerDeviceId: 'p1', condition: 'stale' }];
+    resolveAlert.mockImplementation(async (id) => {
+      live.delete(String(id));
+      expect(live.size).toBeLessThanOrEqual(1);
+      return true;
+    });
+    createSourcedAlert.mockImplementation(async () => {
+      expect(live.size).toBe(0);
+      live.add('failed-alert');
+      return 'failed-alert';
+    });
+    providerRows = [{ ...saasRow, pendingCondition: 'raised:stale' }];
+    await evaluateProviderAlerts(CONNECTION);
+    expect(resolveAlert).toHaveBeenCalledWith('stale-alert', 'Condition cleared by provider sync', undefined, false, 'condition_cleared');
+    expect(createSourcedAlert).not.toHaveBeenCalled();
+    expect(live.size).toBe(0);
+
+    selectCall = 0;
+    openAlerts = [];
+    providerRows = [{ ...saasRow, pendingCondition: 'failed' }];
+    await evaluateProviderAlerts(CONNECTION);
+    expect(createSourcedAlert).toHaveBeenCalledTimes(1);
+    expect(live.size).toBe(1);
+
+    selectCall = 0;
+    openAlerts = [{ id: 'failed-alert', status: 'active', suppressedUntil: null, providerDeviceId: 'p1', condition: 'failed' }];
+    providerRows = [{ ...saasRow, pendingCondition: 'raised:failed' }];
+    await evaluateProviderAlerts(CONNECTION);
+    expect(createSourcedAlert).toHaveBeenCalledTimes(1);
+    expect(live.size).toBe(1);
+  });
+
+  it('updates a Forever-suppressed workload in place when its condition changes', async () => {
+    const saasRow = row({ accountType: 'm365', breezeDeviceId: null, dataSources: ['m365_mail'] });
+    openAlerts = [{ id: 'muted-alert', status: 'suppressed', suppressedUntil: null, providerDeviceId: 'p1', condition: 'stale' }];
+    providerRows = [{ ...saasRow, pendingCondition: 'raised:stale' }];
+    await evaluateProviderAlerts(CONNECTION);
+    expect(resolveAlert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+
+    selectCall = 0;
+    providerRows = [{ ...saasRow, pendingCondition: 'failed' }];
+    expect(await evaluateProviderAlerts(CONNECTION)).toEqual({ raised: 0, resolved: 0 });
+    expect(resolveAlert).not.toHaveBeenCalled();
+    expect(createSourcedAlert).not.toHaveBeenCalled();
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.values).toMatchObject({
+      title: 'Microsoft 365 mail backup failed — Acme Ltd', severity: 'high',
+      message: expect.stringContaining('reports status "failed"'),
+    });
+    expect(updates[0]!.values).not.toHaveProperty('status');
+    const context = new PgDialect().sqlToQuery(updates[0]!.values.context as SQL);
+    expect(context.sql).toContain('jsonb_set');
+    expect(context.params).toContain('failed');
+    const predicate = new PgDialect().sqlToQuery(updates[0]!.where);
+    expect(predicate.sql).toContain('"alerts"."id"');
+    expect(predicate.sql).toContain('"alerts"."status"');
+    expect(predicate.params).toEqual(expect.arrayContaining(['muted-alert', 'active', 'acknowledged', 'suppressed']));
+
+    selectCall = 0;
+    openAlerts = [{ id: 'muted-alert', status: 'suppressed', suppressedUntil: null, providerDeviceId: 'p1', condition: 'failed' }];
+    providerRows = [{ ...saasRow, pendingCondition: 'raised:failed' }];
+    await evaluateProviderAlerts(CONNECTION);
+    expect(updates).toHaveLength(1);
+    expect(createSourcedAlert).not.toHaveBeenCalled();
+  });
+
+  it('does not report an owner-backed insert dedupe to Sentry', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    createSourcedAlert.mockResolvedValueOnce(null);
+    providerRows = [row({ accountType: 'm365', breezeDeviceId: null, pendingCondition: 'failed' })];
+    expect(await evaluateProviderAlerts(CONNECTION)).toEqual({ raised: 0, resolved: 0 });
+    expect(createSourcedAlert).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalled();
+    expect(captureException).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('takes the per-connection advisory lock before reading anything', async () => {
