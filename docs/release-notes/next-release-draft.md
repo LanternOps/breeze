@@ -404,3 +404,7 @@ The `SECURITY_SWEEP_*` limits and `IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD` are now 
 ### SaaS backup workloads raise alerts (#10725 W3) — PR #10856
 
 Microsoft 365 and Google Workspace backup failures, including Cove Microsoft 365 workloads, now create organization-level alerts that flow through notifications and automations. Endpoint alerts are unchanged. Device-only automations skip these workload alerts.
+
+### Alert tickets: manual create, counts, re-drive (#10528 W09) — PR #10861
+
+Alert tickets (ConnectWise Manage only, off per connection) now support manual creation from an alert, per-state counts, a failure list with re-drive, and audited Create anyway / Mark handled actions. Not yet verified against a live ConnectWise tenant (lab waived 2026-10-31); auto-resolve from recovery events depends on #10538.
