@@ -22,6 +22,10 @@ Last release: **v0.125.0** (2026-10-27).
 
 ## Features / API
 
+### Wisp working set (#10364)
+
+- Wisp now adds records to its thread working set after successful focal tool calls, keeps pins ahead of recent auto links, and names the authorized record or device being viewed in the turn seed.
+
 ## Migrations
 
 ### Flows W05 (#5215 / #5220, PR D — web, limits and egress audit)
@@ -113,7 +117,12 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 
 ### Webhooks
 
-- **Alert webhook payload v2.** Each webhook has a `payloadVersion`: existing webhooks stay on v1 byte for byte, and new webhooks default to v2, including webhooks created through the API without `payloadVersion`. V2 alert data adds status, hostname, site, organization name, an alert link, and more. Manual retries carry `X-Breeze-Replay-Of`. New `alert.escalated` subscriptions are rejected; `alert.acknowledged` and `alert.suppressed` are now offered in the form (`alert.suppressed` is sent only when Breeze AI suppresses an alert). Migration `2027-01-12-100000-webhook-payload-version.sql` adds three columns on `webhook_deliveries` and one on `webhooks`, with version CHECKs on both tables. The delivery CHECK is `NOT VALID`, enforces new or updated rows, and requires no table scan. DDL only, no backfill, and no new environment variables.
+- **Alert webhook payload v2.** Each webhook has a `payloadVersion`: existing webhooks stay on v1 byte for byte, and new webhooks default to v2, including webhooks created through the API without `payloadVersion`. V2 alert data adds status, hostname, site, organization name, an alert link, and more. Manual retries carry `X-Breeze-Replay-Of`. `alert.acknowledged`, `alert.suppressed` and `alert.escalated` are now offered in the form (see Alert webhook events). Migration `2027-01-12-100000-webhook-payload-version.sql` adds three columns on `webhook_deliveries` and one on `webhooks`, with version CHECKs on both tables. The delivery CHECK is `NOT VALID`, enforces new or updated rows, and requires no table scan. DDL only, no backfill, and no new environment variables.
+### Alert webhook events (#10573, #10565)
+
+- **`alert.suppressed` now fires for every suppress (#10573).** Suppressing from the dashboard, `POST /alerts/:id/suppress` and `POST /alerts/bulk` now publish `alert.suppressed`, with the same data Breeze AI's suppress already sent; before, only Breeze AI did. Webhooks and flows subscribed to `alert.suppressed` (or `*`) start receiving these events. For an end-time suppression `durationHours` is the time from the request to `suppressedUntil`.
+- **`alert.escalated` is published (#10565).** One event per alert per escalation step occurrence, when the step fires for an alert that is still active, with `escalationPolicyId`, `escalationStep`, `policyStep` and `repeat`; v2 webhooks get the enriched alert data. The API now accepts `alert.escalated` subscriptions and the form offers it; a stored subscription is no longer shown as "Never delivered" or dropped on save. Escalation policies scheduled before the upgrade publish no `alert.escalated` for their already-queued steps. No migration, no new environment variables.
+
 ### UniFi
 
 - **UniFi site mapping lists every site (#10491, #10492).** The cloud (Site Manager) mapping card now reads every page of hosts and sites instead of the first page only, lists sites on self-hosted UniFi Network Application servers (`network-server` hosts) that were previously hidden, and shows sites whose host is missing from Site Manager under "Unknown console". `GET /unifi/hosts` gains the additive fields `type`, `unknownConsole` and `omitted`. Each sync now reads `/v1/devices` and the ISP metrics once per run rather than once per mapping.
@@ -220,14 +229,11 @@ Add up to 20 Application event providers in an Event Logs configuration policy t
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
 
-### Quote-created contracts are visible (#10361)
-
-- **Contracts created by an accepted quote now link back to it.** When a quote with monthly or annual lines is accepted, its contracts are still created as drafts. The contracts list now marks each such draft **From Q-… · ready to activate**, with a link to the quote. An accepted quote's detail page lists the contracts it created and says how many drafts still need activating. A draft with no signed agreement also shows the **From quote** pill in its header.
-- **The "quote accepted" email** sent to the quote's creator now says how many recurring contracts were created as drafts and still need activating.
-- `GET /api/v1/contracts` rows gain `sourceQuoteId` and `sourceQuote` (`{ id, quoteNumber }` or `null`). `GET /api/v1/contracts/:id` gains `sourceQuote`. `GET /api/v1/quotes/:id` gains `contracts` (`[{ id, name, status, intervalMonths }]`, or `null` when the caller lacks `contracts:read`).
-- **Migration** `2027-01-18-161000-contracts-source-quote.sql.sql`: adds the nullable `contracts.source_quote_id` (same-org foreign key to `quotes`, cleared when the quote is deleted) and a partial index. It backfills existing contracts from their executed agreement and from Pax8 orders. A contract with neither (for example the annual contract of a quote with no agreement and no Pax8 lines) stays unlinked. No environment variable or setting.
 ### AI tools — Pax8 (#6754 W15)
 - `get_pax8_status`: inspect integration health and company readiness with full partner access.
 - `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
 - `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
 - `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.
+### Partner settings copy matches the inheritance badges (#10372)
+
+The default-expiry and maximum-lifetime selects and the partner agent-pin caption no longer say organizations "configure individually" or are "pinned for all"; each now agrees with its Org can override / Partner-wide badge.
