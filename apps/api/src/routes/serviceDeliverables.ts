@@ -20,7 +20,7 @@ import { Hono, type Context, type Next } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
 import { authMiddleware, requireScope, requirePermission, type AuthContext } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
 import {
   applyTemplateSetSchema,
   createDeliverableSchema, updateDeliverableSchema, listDeliverablesQuerySchema,
@@ -33,6 +33,7 @@ import {
   listOccurrences, deliverOccurrence, waiveOccurrence, reopenOccurrence, rescheduleOccurrence, rescheduleOccurrences,
   addEvidence, removeEvidence, getOccurrenceOr404,
   type DeliverableActor,
+  type EvidenceLabelAccess,
 } from '../services/serviceDeliverableService';
 import { applyTemplateSet } from '../services/deliverableTemplateService';
 import { templateActorFrom, handleTemplateError } from './deliverableTemplates';
@@ -68,12 +69,29 @@ const deliverableParam = orgParam.extend({ id: z.string().guid() });
 const occurrenceParam = orgParam.extend({ oId: z.string().guid() });
 const evidenceParam = occurrenceParam.extend({ eId: z.string().guid() });
 
+/**
+ * #9961: an evidence chip may name the record it cites only when the caller
+ * could open that record on its own surface. Read from the permissions the
+ * route's `requirePermission` gate already resolved onto the context; absent
+ * (no gate ran) → no labels.
+ */
+export function evidenceLabelAccessFrom(c: { get: (k: string) => unknown }): EvidenceLabelAccess {
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  const can = (p: { resource: string; action: string }) => !!perms && hasPermission(perms, p.resource, p.action);
+  return {
+    documents: can(PERMISSIONS.DOCUMENTS_READ),
+    reports: can(PERMISSIONS.REPORTS_READ),
+    agreements: can(PERMISSIONS.AGREEMENTS_READ),
+  };
+}
+
 export function deliverableActorFrom(c: { get: (k: string) => unknown }): DeliverableActor {
   const auth = c.get('auth') as AuthContext;
   return {
     userId: auth.user?.id ?? null,
     partnerId: auth.partnerId ?? null,
     accessibleOrgIds: auth.accessibleOrgIds,
+    evidenceLabelAccess: evidenceLabelAccessFrom(c),
   };
 }
 

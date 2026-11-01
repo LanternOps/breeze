@@ -76,7 +76,7 @@ const occurrence: Occurrence = {
   updatedAt: '2026-09-01T00:00:00Z',
   late: false,
   evidence: [
-    { id: 'ev-1', kind: 'report_run', documentId: null, reportId: 'r-1', reportRunId: 'run-1', contractDocumentId: null, createdAt: '2026-09-02T00:00:00Z' },
+    { id: 'ev-1', kind: 'report_run', documentId: null, reportId: 'r-1', reportRunId: 'run-1', contractDocumentId: null, label: null, createdAt: '2026-09-02T00:00:00Z' },
   ],
   checklist: null,
 };
@@ -176,6 +176,23 @@ describe('OccurrenceDrawer evidence upload (#5573 W03)', () => {
 });
 
 describe('OccurrenceDrawer', () => {
+  // #9961: a chip names what was cited; the 8-char id is only the fallback.
+  it('shows the cited record\'s name on an evidence chip, and the short id only when there is none', async () => {
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [{
+      ...occurrence,
+      evidence: [
+        { id: 'ev-doc', kind: 'document', documentId: '74b5d783-0000-4000-8000-000000000001', reportId: null, reportRunId: null, contractDocumentId: null, label: 'Q3 backup restore test', createdAt: '2026-09-02T00:00:00Z' },
+        { id: 'ev-agr', kind: 'contract_document', documentId: null, reportId: null, reportRunId: null, contractDocumentId: 'a1b2c3d4-0000-4000-8000-000000000002', label: null, createdAt: '2026-09-03T00:00:00Z' },
+      ],
+    }] }));
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    const named = await screen.findByTestId('evidence-chip-ev-doc');
+    expect(named).toHaveTextContent('Q3 backup restore test');
+    expect(named).not.toHaveTextContent('74b5d783');
+    // No label (no agreements:read, or the record is gone): the short id stays.
+    expect(screen.getByTestId('evidence-chip-ev-agr')).toHaveTextContent('a1b2c3d4');
+  });
+
   it('lists occurrences with status, rescheduled-from note and evidence chips', async () => {
     const fetcher = vi.fn(async () => jsonResp(200, { data: [occurrence] }));
     render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
