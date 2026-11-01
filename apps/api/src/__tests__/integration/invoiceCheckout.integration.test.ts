@@ -92,7 +92,18 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     // in the CI integration glob.
     expect(inv.sentAt).toBeNull();
 
-    const res = await createInvoicePayLink(inv.id, actor);
+    // Freeze the app clock so the expected key below is computed at the same
+    // instant the producer used, not across a bucket edge (#10736).
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now());
+    let res: Awaited<ReturnType<typeof createInvoicePayLink>>;
+    let expiry: ReturnType<typeof checkoutSessionExpiry>;
+    try {
+      res = await createInvoicePayLink(inv.id, actor);
+      expiry = checkoutSessionExpiry(inv.createdAt);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(res.url).toBe('https://checkout.stripe.com/c/pay/abc');
     expect(sessionsCreateMock).toHaveBeenCalledTimes(1);
     // currency-aware minor units: $100.00 → 10000
@@ -100,14 +111,14 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     expect(call[0].line_items[0].price_data.unit_amount).toBe(10000);
     // #2245 deposit invoicing: the idempotency key now carries a _dep/_bal
     // suffix. A plain payable (non-deposit) invoice charges the balance → `_bal`.
-    // Appends the hour quantum of the requested `expires_at`, because
-    // Stripe refuses an idempotent replay whose parameters moved — asserted
+    // Appends the invoice-anchored bucket start of the requested `expires_at`,
+    // because Stripe refuses an idempotent replay whose parameters moved — asserted
     // through checkoutSessionExpiry() so a drift between the two would fail here
     // rather than as an idempotency_key_in_use in production. FP-20 added the
     // PaymentIntent description, a parameter change, hence the `_pd` key family.
-    expect(call[1].idempotencyKey).toBe(`inv_${inv.id}_10000_bal_e${checkoutSessionExpiry().quantum}_pd`);
+    expect(call[1].idempotencyKey).toBe(`inv_${inv.id}_10000_bal_e${expiry.quantum}_pd`);
     expect(call[0].payment_intent_data?.description).toMatch(/^Invoice /);
-    expect(call[0].expires_at).toBe(checkoutSessionExpiry().expiresAt);
+    expect(call[0].expires_at).toBe(expiry.expiresAt);
 
     const mappings = await withSystemDbAccessContext(() =>
       db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.invoiceId, inv.id)));
