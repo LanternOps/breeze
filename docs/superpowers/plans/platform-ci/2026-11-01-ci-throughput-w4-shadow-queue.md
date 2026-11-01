@@ -42,7 +42,7 @@ Every green `pull_request` run leaves a **provenance record**. Every `merge_grou
 - **Selection (thin):**
   - Always: `lint`, `typecheck` (subject to their own `code`/`app` conditions evaluated on `P ∪ Δ`).
   - Builds of every area in `areas(P ∪ Δ)`.
-  - `P ∩ tests` (own test files: `*.test.{ts,tsx,mts,mjs,js}`, `*.spec.{ts,tsx}`, `*_test.go`) routed to the job that runs them: `apps/api/**` → `integration-test` if any `include` glob of `apps/api/vitest.integration.config.ts` (read from the working tree after the base-oid check) matches, else `test-api`; other apps/packages → their area or path-area unit job; `agent/**/*_test.go` → the agent unit jobs. Playwright specs under `e2e-tests/`: a spec named in a job's `run:` command (today only `portal-dev-e2e` names specs) routes to that job; every other `e2e-tests/**` spec is **not run by any CI job today** (neither PR nor queue), so it is recorded in `unrun_own_tests` in the log and is not a fallback — thin can never run less than full for it. Any other own test that routes to no job → fallback `unrouted_own_test`.
+  - `P ∩ tests` (own test files: `*.test.{ts,tsx,mts,mjs,js}`, `*.spec.{ts,tsx}`, `*_test.go`) routed to the job that runs them: `apps/api/**` → `integration-test` if any `include` glob of `apps/api/vitest.integration.config.ts` (read from the working tree after the base-oid check) matches, else `test-api`; other apps/packages → their area or path-area unit job; `agent/**/*_test.go` → the agent unit jobs. Playwright specs under `e2e-tests/`: a spec routes to a job when (a) the job's `run:` command names it (today `portal-dev-e2e`), or (b) the job's `run:` invokes `playwright test --config=<file>` and that config selects it — derived by reading the config's `testDir` string literal and optional `testMatch` regex literal (today `auth-browser-transition-browser-contract` → `playwright.auth-browser-transition.config.ts` → `browser-contracts/`, and `topology-browser-gate` → `playwright.topology-worker.config.ts` → `topology-(worker|baseline).spec.ts`). A config invoked by CI whose `testDir`/`testMatch` cannot be parsed makes **every** `e2e-tests/**` own test fall back `unrouted_own_test` (fail closed). Every other `e2e-tests/**` spec is **not run by any CI job today** (neither PR nor queue), so it is recorded in `unrun_own_tests` in the log and is not a fallback — thin can never run less than full for it. Any other own test that routes to no job → fallback `unrouted_own_test`.
   - Full unit jobs for every area in `(areas(Δ) ∩ areas(P)) ∪ areas(O)`.
   - Full `integration-test` if `api` is in that overlap **and** the classifier with `--pull-request` reports `integration=true` for both `P` and `Δ`; or the floor (`integration-floor-paths.txt`, same exact/prefix semantics as the classifier) is hit by any path in `P ∪ Δ`; or an own test routed to `integration-test`.
   - Reader map applied to `Δ`: `path_readers`/`reader_tests` = the classifier's output for `Δ` → `path-read-contracts` with that list.
@@ -92,7 +92,7 @@ Read-only (never edit): `.github/scripts/classify-pr-paths.sh`, `.github/scripts
   - `test('own tests are routed to the job that runs them')` — `apps/api/src/__tests__/integration/x.integration.test.ts` (or whatever path the integration config's include globs match — derive one from the config) → `integration-test`; `apps/api/src/services/x.test.ts` → `test-api`; `apps/web/src/x.test.tsx` → `test-web`; `agent/internal/x/x_test.go` → agent unit jobs; an unroutable test path → fallback `unrouted_own_test`.
   - `test('floor applied to P ∪ delta')` — `delta = ['apps/api/migrations/zzz.sql']`, `P = ['apps/web/src/x.ts']` → `integration-test` in thin.
   - `test('never-thinned jobs keep the full value')` — the derived never-thinned set equals the seven jobs named in Definitions; for a selection where full has `smoke-test`/`portal-dev-e2e` true, thin has them true.
-  - `test('e2e specs: named → that job; unnamed → unrun, not a fallback')` — `e2e-tests/tests/multi-currency.spec.ts` → `portal-dev-e2e`; `e2e-tests/tests/document-renderer.spec.ts` → `unrun_own_tests`, mode not `full`.
+  - `test('e2e specs: named → that job; config-selected → that job; otherwise unrun, not a fallback')` — `e2e-tests/tests/multi-currency.spec.ts` → `portal-dev-e2e`; `e2e-tests/browser-contracts/auth-browser-transition.spec.ts` → `auth-browser-transition-browser-contract`; `e2e-tests/tests/topology-worker.spec.ts` and `topology-baseline.spec.ts` → `topology-browser-gate`; `e2e-tests/tests/document-renderer.spec.ts` → `unrun_own_tests`, mode not `full`; the derived config routes equal exactly those two configs today (guards a parse miss); a fake CI config with an unparseable `testDir` → `unrouted_own_test`.
 - [ ] **Step 2:** run, expect FAIL (module missing).
 - [ ] **Step 3:** implement the pure core.
 - [ ] **Step 4:** run, expect PASS.
@@ -171,7 +171,8 @@ pnpm install --frozen-lockfile && pnpm --filter @breeze/api exec vitest run src/
 
 ## Execution record (W4)
 
-Stopped during premise verification on 2026-11-01, before implementation.
+Initial pass stopped during premise verification on 2026-11-01, before implementation.
+The resumed pass is recorded below.
 
 - Tasks 1–5: each 0 red / 0 green (not started); Task 6 remains operator-only.
   No test suites or final verification commands ran: the explicit STOP rule
@@ -201,3 +202,38 @@ Stopped during premise verification on 2026-11-01, before implementation.
   `IS_PR`-exempt) are derived from `ci.yml`, listed in the record as
   `non_gating_jobs`, and never thinned. Definitions, Selection and Task 1
   tests updated accordingly.
+
+
+### Resumed execution — 2026-11-01
+
+- Task 1: red 0 passed / 1 failed (module missing); green 7 passed / 0
+  failed. All seven unchanged fixtures produce a shadow selection containing
+  their required job. Core and tests are uncommitted, partial implementation.
+- Tasks 2–5: each 0 red / 0 green; not started after the new STOP below.
+- STOP: the updated blanket premise that unnamed `e2e-tests/**` specs are
+  unrun is false. `ci.yml:4628` invokes
+  `playwright.auth-browser-transition.config.ts`, whose `testDir` selects
+  `e2e-tests/browser-contracts/auth-browser-transition.spec.ts`.
+  `ci.yml:4711` invokes `playwright.topology-worker.config.ts`, whose
+  `testMatch` selects `topology-worker.spec.ts` and `topology-baseline.spec.ts`.
+  None is named in a job's `run:` command. This does not break the seven
+  fixtures, but contradicts the resumed Definitions and the claimed meaning
+  of `unrun_own_tests`. Verified independently against the workflow and both
+  configs; no routing exception or plan-rule relaxation was invented.
+- Operator: clarify how config-selected Playwright specs should be classified
+  before resuming Tasks 2–5. The Task 1 implementation currently follows the
+  literal named-spec rule and must be revisited under that ruling. Task 6 and
+  the API Vitest contract remain operator-only. No commits, network calls,
+  workflow edits, app edits, or services started.
+- Verification: the exact eight-file Node command passed 517 / 517 (0 failed);
+  `pnpm test:workflow-security` passed 132 / 132 (0 failed);
+  `actionlint -shellcheck= .github/workflows/ci.yml` passed;
+  `git diff --check` passed. Local Node was v22.23.2. All read-only files
+  and fixtures remain byte-identical; only the two new Task 1 files and this
+  execution record changed. No test process was left running.
+- **Operator ruling 3 (resume):** Playwright specs selected by a config that a
+  CI job invokes with `--config=` route to that job (derived from the config's
+  `testDir`/`testMatch`); an unparseable CI-invoked config fails closed
+  (`unrouted_own_test` for every `e2e-tests/**` own test). Only specs neither
+  named nor config-selected are `unrun_own_tests`. Revisit the Task 1
+  routing accordingly, then continue with Tasks 2–5.
