@@ -649,7 +649,11 @@
     "noMatches": "Pas d’allumettes.",
     "orEnterAPackageIDManually": "Ou entrer un colis ID manuellement",
     "removeRuleFor": "Supprimer la règle pour {{application}}",
-    "scopeNote": "Ces règles s'appliquent à chaque appareil dont la stratégie de configuration est liée à cet anneau."
+    "scopeNote": "Ces règles s'appliquent à chaque appareil dont la stratégie de configuration est liée à cet anneau.",
+    "linuxPackage": "Paquet Linux",
+    "appPackage": "Paquet d’application",
+    "manualRuleType": "Type de règle",
+    "linuxPinHint": "Saisissez la version complète de la liste des correctifs, y compris l’époque le cas échéant (par ex. 5:24.0.7-1)."
   },
   "patchDetails": {
     "unknown": "Inconnu",

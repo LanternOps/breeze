@@ -524,16 +524,18 @@ Each patch policy must declare which **patch sources** it manages, and at least 
 
 #### Application Rules
 
-Application rules give you per-app control over third-party and custom updates. They are part of the [update ring](/features/update-rings/) (the ring's `appRules` list, under **Application rules** in the ring editor), so they apply to every configuration policy that links that ring. Each rule targets a specific package and chooses one of two actions:
+Application rules give you per-app control over third-party and custom updates, and over individual Linux OS packages (apt and dnf/yum). They are part of the [update ring](/features/update-rings/) (the ring's `appRules` list, under **Application rules** in the ring editor), so they apply to every configuration policy that links that ring. Each rule targets a specific package and chooses one of two actions:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `source` | string | `third_party` or `custom` |
-| `packageId` | string | The catalog package identifier the rule applies to (e.g., `Mozilla.Firefox`) |
+| `source` | string | `third_party` or `custom` for applications; `linux` for a Linux OS package |
+| `packageId` | string | The catalog package identifier the rule applies to (e.g., `Mozilla.Firefox`), or the Linux package name (e.g., `docker-ce`) |
 | `action` | string | `block` to prevent the application from being updated, or `pin` to hold it at a specific version |
 | `pinnedVersion` | string | **Required when `action` is `pin`** — the version the application is held at. Updates beyond this version are withheld until the pin is changed |
 
 A **block** rule keeps the application off the approved/installable list entirely. A **pin** rule allows the application up to the pinned version but holds back anything newer, which is useful when a vendor's latest release is known to break a line-of-business workflow. A ring can carry up to 200 application rules, one per package. A rule overrides a manual approval: a blocked application is not installed by a scheduled run even when someone approved the patch.
+
+**Linux packages.** In the ring editor, pick a package from the search list (packages your Linux devices have reported as upgradable) or choose **Linux package** next to the manual entry box and type its name. A rule for `docker-ce` matches that package on both apt and dnf/yum devices. Pins compare versions the way the package manager does (epoch first, then version, then release), so enter the full version from the patch list, including any epoch, for example `5:24.0.7-1~ubuntu.22.04~jammy`. A pin without the epoch holds every candidate that has one. Breeze upgrades Linux packages one at a time (`apt-get install --only-upgrade <package>`, `dnf update <package>`). A blocked package is never requested by name, but the package manager can still upgrade it as a dependency of another approved package. Use `apt-mark hold` or the dnf `versionlock` plugin on the device if that must never happen.
 
 ### Creating a patch deployment job from a policy
 
