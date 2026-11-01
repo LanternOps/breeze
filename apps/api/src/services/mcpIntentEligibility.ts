@@ -28,9 +28,22 @@ export function mcpOriginRef(principal: PrincipalKind | undefined): McpOriginRef
   return null;
 }
 
-/** 'mcp:v1:' + 64 hex chars = 71 chars; `idempotency_key` is unbounded text. */
-export function mcpIntentIdempotencyKey(ref: McpOriginRef, toolName: string, argumentDigest: string): string {
-  return `mcp:v1:${createHash('sha256').update(`${ref}:${toolName}:${argumentDigest}`).digest('hex')}`;
+/**
+ * 'mcp:v1:' + 64 hex chars = 71 chars; `idempotency_key` is unbounded text.
+ *
+ * `authEpoch` (#9758) is passed for an OAuth origin only: release refuses an
+ * intent whose recorded auth_epoch no longer matches the user's, so a retry
+ * after a bump must file a fresh intent rather than converge on the stale
+ * live one. API-key keys are unchanged (no epoch in the preimage).
+ */
+export function mcpIntentIdempotencyKey(
+  ref: McpOriginRef,
+  toolName: string,
+  argumentDigest: string,
+  authEpoch?: number,
+): string {
+  const epochPart = authEpoch === undefined ? '' : `:e${authEpoch}`;
+  return `mcp:v1:${createHash('sha256').update(`${ref}${epochPart}:${toolName}:${argumentDigest}`).digest('hex')}`;
 }
 
 export type McpIntentEligibilityInput = {

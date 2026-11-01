@@ -286,6 +286,13 @@ export interface CreateActionIntentInput {
    */
   maxLiveForOrigin?: number;
   /**
+   * #9758: the requester's `auth_epoch` the OAuth bearer middleware verified
+   * on the filing MCP call. REQUIRED for an MCP-origin `oauth_grant` intent
+   * (refused with `principal_not_supported` without a safe integer) and
+   * stored as `origin_auth_epoch`; ignored for every other origin.
+   */
+  originAuthEpoch?: number;
+  /**
    * B-W04 (#6158, D-B27): churn charge, invoked outside any DB context only
    * when a NEW row is about to be inserted (a live replay is never charged).
    * Throws ActionIntentError('rate_limited') to refuse. MCP-origin only.
@@ -1516,6 +1523,17 @@ export async function createActionIntent(
   if (input.correlationId !== undefined && isMcpOrigin && !UUID_RE.test(input.correlationId)) {
     throw new ActionIntentError('correlationId must be a UUID', 'invalid_correlation_id');
   }
+  // #9758: an MCP-origin OAuth intent must carry the auth_epoch its filing
+  // call was admitted at — release compares it to the live row. Without one
+  // the intent could never be released, so refuse before anything is written.
+  const isMcpOAuthOrigin = isMcpOrigin && originPrincipalKind === 'oauth_grant';
+  if (isMcpOAuthOrigin && !Number.isSafeInteger(input.originAuthEpoch)) {
+    throw new ActionIntentError(
+      'An OAuth-originated MCP intent requires the verified auth epoch',
+      'principal_not_supported',
+    );
+  }
+  const originAuthEpoch = isMcpOAuthOrigin ? (input.originAuthEpoch as number) : null;
   const replayIdentity = {
     source: input.source,
     originPrincipalKind,
@@ -2771,6 +2789,8 @@ export async function createActionIntent(
                   : flowPrincipal
                     ? flowPrincipal.flowId
                     : null,
+          // #9758: set only for an MCP-origin oauth_grant intent; immutable.
+          originAuthEpoch,
           // #5022 W01: persist the AI origin at INSERT (these columns are
           // never updated — `action_intents_immutable_trg` blocks it). The
           // release worker rebuilds the AuthContext from scratch, so without
