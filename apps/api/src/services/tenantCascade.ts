@@ -421,6 +421,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_usage_charges',
   'alert_correlation_groups',
   'alert_correlation_members',
+  // Principal-namespaced external ticket refs cascade with their alert/org.
+  'alert_external_refs',
   'alert_rules',
   'alert_templates',
   'alerts',
@@ -619,6 +621,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // verifies it against pg_constraint at runtime regardless.
   'device_mtls_certificates',
   'device_network',
+  // Network-isolation episodes (#10089, feature #10088). Composite FKs to
+  // devices (ON DELETE CASCADE), incidents and incident_actions (ON DELETE
+  // SET NULL (col)), all DEFERRABLE INITIALLY IMMEDIATE; this alphabetical
+  // slot already precedes all three parents. Erasure while an episode is
+  // unresolved is refused upstream (W1c, spec §3.6 item 6).
+  'device_network_isolations',
   // PAM ownership-epoch lineage (#8203). Closures FK -> epochs
   // (device_id, org_id, epoch) ON DELETE CASCADE, so closures sort (and
   // delete) first. Epochs carry no FK to devices (spec §4.4).
@@ -1168,6 +1176,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'user_risk_scores',
   'users',
   'vault_snapshot_inventory',
+  'webhook_deliveries',
   'webhooks',
   // Wisp W02 (#9908): org-scoped grants only (partner-wide grants have org_id
   // NULL and leave with the partner). ai_agent_runs / ai_operator_tasks pin a

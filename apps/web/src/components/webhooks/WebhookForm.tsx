@@ -5,9 +5,12 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2, Sparkles, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
+import { useAuthStore } from '../../stores/auth';
+import { useJwtClaims } from '../../lib/authScope';
 
 const createWebhookSchema = (t: (key: string) => string) => z
   .object({
+    ownerScope: z.enum(['organization', 'partner']).optional(),
     name: z.string().min(1, t('longTail.webhooks.WebhookForm.validation.nameRequired')),
     url: z.string().url(t('longTail.webhooks.WebhookForm.validation.invalidUrl')).min(1, t('longTail.webhooks.WebhookForm.validation.urlRequired')),
     // At-least-one is enforced on submit against checked boxes + preserved
@@ -53,6 +56,7 @@ type WebhookFormProps = {
   defaultValues?: Partial<WebhookFormValues>;
   submitLabel?: string;
   loading?: boolean;
+  isEditing?: boolean;
 };
 
 export const webhookEventOptions = [
@@ -62,7 +66,8 @@ export const webhookEventOptions = [
   { value: 'alert.triggered', label: 'Alert Created', labelKey: 'longTail.webhooks.WebhookForm.events.alertCreated.label', description: 'Triggered when an alert is created.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertCreated.description' },
   { value: 'alert.resolved', label: 'Alert Resolved', labelKey: 'longTail.webhooks.WebhookForm.events.alertResolved.label', description: 'Triggered when an alert is resolved.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertResolved.description' },
   { value: 'alert.acknowledged', label: 'Alert Acknowledged', labelKey: 'longTail.webhooks.WebhookForm.events.alertAcknowledged.label', description: 'Triggered when an alert is acknowledged.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertAcknowledged.description' },
-  { value: 'alert.suppressed', label: 'Alert Suppressed', labelKey: 'longTail.webhooks.WebhookForm.events.alertSuppressed.label', description: 'Triggered when Breeze AI suppresses an alert. Suppressing from the dashboard does not send it yet.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertSuppressed.description' },
+  { value: 'alert.suppressed', label: 'Alert Suppressed', labelKey: 'longTail.webhooks.WebhookForm.events.alertSuppressed.label', description: 'Triggered when an alert is suppressed.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertSuppressed.description' },
+  { value: 'alert.escalated', label: 'Alert Escalated', labelKey: 'longTail.webhooks.WebhookForm.events.alertEscalated.label', description: 'Triggered when an escalation policy step fires for an alert that is still active.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertEscalated.description' },
   { value: 'script.completed', label: 'Script Completed', labelKey: 'longTail.webhooks.WebhookForm.events.scriptCompleted.label', description: 'Triggered when a script finishes.', descriptionKey: 'longTail.webhooks.WebhookForm.events.scriptCompleted.description' },
   { value: 'ticket.created', label: 'Ticket Created', labelKey: 'longTail.webhooks.WebhookForm.events.ticketCreated.label', description: 'Triggered when a ticket is created.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketCreated.description' },
   { value: 'ticket.commented', label: 'Ticket Commented', labelKey: 'longTail.webhooks.WebhookForm.events.ticketCommented.label', description: 'Triggered when a comment or note is added to a ticket.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketCommented.description' },
@@ -74,7 +79,10 @@ export const webhookEventOptions = [
   { value: 'integration.health_resolved', label: 'Connection health incident resolved', labelKey: 'longTail.webhooks.WebhookForm.events.integrationHealthResolved.label', description: 'Triggered when a connection health incident is resolved.', descriptionKey: 'longTail.webhooks.WebhookForm.events.integrationHealthResolved.description' }
 ];
 
-export const NEVER_DELIVERED_EVENTS: readonly string[] = ['alert.escalated'];
+// Registered events Breeze never publishes; must equal the API's
+// NEVER_PUBLISHED_EVENT_TYPES (webhookEventOptions.contract.test.ts). Empty
+// since alert.escalated gained a publisher (#10565).
+export const NEVER_DELIVERED_EVENTS: readonly string[] = [];
 
 const catalogEventValues = new Set<string>(webhookEventOptions.map(option => option.value));
 const ALL_EVENTS = '*';
@@ -97,9 +105,14 @@ export default function WebhookForm({
   onCancel,
   defaultValues,
   submitLabel,
-  loading
+  loading,
+  isEditing = false
 }: WebhookFormProps) {
   const { t } = useTranslation('common');
+  const claims = useJwtClaims();
+  const canManagePartnerWide = useAuthStore(state => state.user?.canManagePartnerWide === true);
+  const showOwnerScope = !isEditing && canManagePartnerWide
+    && claims.status === 'resolved' && claims.claims.scope === 'partner';
   const resolvedSubmitLabel = submitLabel ?? t('longTail.webhooks.WebhookForm.defaultSubmitLabel');
   const webhookSchema = useMemo(() => createWebhookSchema(t), [t]);
   const {
@@ -114,6 +127,7 @@ export default function WebhookForm({
   } = useForm<WebhookFormValues>({
     resolver: zodResolver(webhookSchema),
     defaultValues: {
+      ownerScope: 'organization',
       name: '',
       url: '',
       events: [],
@@ -202,6 +216,20 @@ export default function WebhookForm({
           {enabled ? t('common:states.enabled') : t('common:states.disabled')}
         </button>
       </div>
+
+      {showOwnerScope && (
+        <fieldset className="space-y-2 rounded-md border p-4" data-testid="webhook-owner" disabled={isLoading}>
+          <legend className="px-1 text-sm font-medium">{t('longTail.webhooks.ownership.label')}</legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="radio" value="partner" {...register('ownerScope')} data-testid="webhook-owner-partner" />
+            {t('longTail.webhooks.ownership.allOrganizations')}
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="radio" value="organization" {...register('ownerScope')} data-testid="webhook-owner-org" />
+            {t('longTail.webhooks.ownership.thisOrganizationOnly')}
+          </label>
+        </fieldset>
+      )}
 
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-2">

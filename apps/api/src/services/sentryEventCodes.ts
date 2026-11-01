@@ -464,6 +464,21 @@ export const SENTRY_EVENT_CODES = [
    *  line work dates were computed in UTC instead (assembly never blocks on
    *  it). Fix the partner's timezone setting; near-midnight lines may be a day off. */
   'invoice_work_date_invalid_timezone',
+
+  // --- legacy automation → flow conversion (#5221 W06) -------------------
+  /** `publishEvent` got a publisher-supplied `occurredAt` more than 60 s in the
+   *  future. Reported only (Decision 6 residual (b)): such an instant can land
+   *  after a conversion's `switch_at` and be attempted by both engines, where
+   *  the occurrence claim then dedupes it. A run of these is a publisher clock
+   *  or a bug in the publisher's timestamp. */
+  'event_occurred_at_future',
+  /** A converted automation's event had no usable `metadata.timestamp`; both
+   *  engines fall back to "legacy prefers it" (claims dedupe). */
+  'flow_conversion_event_instant_missing',
+  /** A converted automation's event id cannot be an occurrence key (not a
+   *  uuid): legacy admits it without a claim and a switched flow does not
+   *  attempt it, so exactly one engine runs it. */
+  'flow_conversion_event_key_unbuildable',
 ] as const;
 
 /**

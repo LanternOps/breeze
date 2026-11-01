@@ -635,9 +635,24 @@ describe('ALERT_CHILD_ORG_REWRITE_TABLES coverage (#4867)', () => {
     'network_change_events',
   ]);
 
+  // A composite alert/org FK with ON UPDATE CASCADE follows the alert
+  // inside breeze_cascade_device_org_id(); an application rewrite is neither
+  // needed nor desirable. Unlike producer exclusions, derive this from DDL.
+  const followsAlertOrgByForeignKey = (table: PgTable<any>): boolean =>
+    getTableConfig(table).foreignKeys.some((fk) => {
+      const ref = fk.reference();
+      return fk.onUpdate === 'cascade' && getTableName(ref.foreignTable) === 'alerts'
+        && ref.columns.some((column, index) => column.name === 'org_id' && ref.foreignColumns[index]?.name === 'org_id')
+        && ref.columns.some((column, index) => column.name === 'alert_id' && ref.foreignColumns[index]?.name === 'id');
+    });
+
+  it('derives alert refs as database-restamped through the composite alert/org FK', () => {
+    expect(followsAlertOrgByForeignKey(schema.alertExternalRefs)).toBe(true);
+  });
+
   function deriveAlertChildOrgTables(): string[] {
     const direct = allTables
-      .filter((t) => isOrgScopedWithoutDeviceId(t) && referencesTable(t, new Set(['alerts'])))
+      .filter((t) => isOrgScopedWithoutDeviceId(t) && referencesTable(t, new Set(['alerts'])) && !followsAlertOrgByForeignKey(t))
       .map(getTableName)
       .filter((name) => !customSet.has(name) && !ALERT_PRODUCERS_NOT_CHILDREN.has(name));
     const directSet = new Set(direct);

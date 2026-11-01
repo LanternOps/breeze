@@ -8,7 +8,12 @@ import TicketApprovalsPanel from './TicketApprovalsPanel';
  * the budget card and the approvals panel. Mutations broadcast the billing
  * event, which reloads this summary, the time list and the workbench feed.
  */
-export default function TicketApprovalRail({ ticketId }: { ticketId: string }) {
+export default function TicketApprovalRail({ ticketId, readOnly = false }: {
+  ticketId: string;
+  /** #10073: the ticket is a merged tombstone; the budget PATCH and every
+   *  approval write answer 409 TICKET_MERGED. Shown for reading only. */
+  readOnly?: boolean;
+}) {
   const { t } = useTranslation('tickets');
   const { summary, error, reload } = useTicketApprovalSummary(ticketId);
   if (!summary && !error) return null;
@@ -33,8 +38,8 @@ export default function TicketApprovalRail({ ticketId }: { ticketId: string }) {
       )}
       {summary && (
         <>
-          <TicketBudgetCard ticketId={ticketId} summary={summary} onChanged={notifyApprovalChanged} />
-          <TicketApprovalsPanel summary={summary} onChanged={notifyApprovalChanged} />
+          <TicketBudgetCard ticketId={ticketId} summary={summary} onChanged={notifyApprovalChanged} readOnly={readOnly} />
+          <TicketApprovalsPanel summary={summary} onChanged={notifyApprovalChanged} readOnly={readOnly} />
         </>
       )}
     </>

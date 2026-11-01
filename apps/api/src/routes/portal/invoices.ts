@@ -6,11 +6,12 @@ import { paymentIntentDescription } from '../../services/autopay/paymentDescript
 import { assertNoActiveCollection, holdsClientMoney, readInFlightCollection } from '../../services/autopay/reservation';
 import { releaseInvoiceConfirmation } from '../../services/autopay/confirmPayment';
 import { getCustomerInvoiceAutopay } from '../../services/autopay/customerInvoiceStatus';
+import { isAutopayEnabledForPartner } from '../../services/autopay/autopayGate';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { and, desc, eq, getTableColumns, ne, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { invoices, invoiceStripePayments, partners, stripeConnectAccounts } from '../../db/schema';
 import { listSchema, ticketParamSchema } from './schemas';
 import {
@@ -21,8 +22,9 @@ import {
   portalFinancialMutationGuard,
 } from './helpers';
 import { getPortalInvoiceRowOr404, markViewed } from '../../services/invoiceService';
-import { assembleCustomerInvoiceDocument } from '../../services/customerDocument';
-import { getInvoicePdf, renderInvoicePdf } from '../../services/invoicePdf';
+import { assembleCustomerInvoiceDocument, preloadCustomerDocumentBranding } from '../../services/customerDocument';
+import { getInvoicePdf, loadInvoiceRenderPartnerContext, renderInvoicePdf } from '../../services/invoicePdf';
+import { portalOrgDbAccessContext } from './portalDbContext';
 import { portalBase } from '../../services/portalUrl';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
@@ -118,70 +120,99 @@ invoiceRoutes.get('/invoices', zValidator('query', listSchema), async (c) => {
 // guard lives in getPortalInvoiceRowOr404 (404, not 403, so we don't leak
 // existence cross-tenant); the customer projection is the one assembler
 // (customerDocument.ts, #9402). markViewed stamps the open.
+//
+// #9585: self-managed DB context (selfManagedDbContextRoutes.ts). The partner-axis
+// reads below (branding, online-payment availability, the card and bank autopay
+// offers) are invisible to the portal's org scope, and each opens a system context
+// of its own. Under the middleware's request transaction every one of them took a
+// SECOND pooled connection while the first sat idle in transaction; behind a
+// pending ACCESS EXCLUSIVE lock (TRUNCATE, DDL) the two wait on each other. So the
+// handler runs its org-scoped work in short org transactions of its own (exactly
+// the middleware's scope: portalOrgDbAccessContext) and every system-context read
+// with no transaction open:
+//   1. org tx: authorize the row (RLS + the explicit org guard), refuse a draft;
+//   2. no tx:  branding, availability and the autopay rollout flag, keyed on that row;
+//   3. org tx: assemble, stamp the view, read in-flight and autopay status;
+//   4. no tx:  the autopay offers, gated on the status read in 3 as before.
 invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async (c) => {
   const auth = c.get('portalAuth');
   const { id } = c.req.valid('param');
+  const orgId = auth.user.orgId;
 
-  let row: Awaited<ReturnType<typeof getPortalInvoiceRowOr404>>;
-  try {
-    row = await getPortalInvoiceRowOr404(id, auth.user.orgId);
-  } catch (err) {
-    if (err instanceof InvoiceServiceError) {
-      return err.status === 404 ? c.json(INVOICE_NOT_FOUND_BODY, 404) : c.json({ error: err.message }, err.status);
-    }
-    throw err;
-  }
+  const row = await inPortalOrgScope(orgId, () => readPortalInvoiceRow(id, orgId));
+  if ('notFound' in row) return c.json(row.notFound.body, row.notFound.status);
+  const invoice = row.invoice;
 
-  // Drafts are never customer-visible even though the row read is org-scoped.
-  // Refused HERE, before the assembler (which would throw on a portal draft).
-  if (row.status === 'draft') return c.json(INVOICE_NOT_FOUND_BODY, 404);
-
-  // Header, customer-visible lines, branding (partner-axis reads in the system
-  // context, fail-soft) and the document locale — the same document the public
-  // link and the staff Preview render.
-  const doc = await assembleCustomerInvoiceDocument(row, 'portal');
-
-  // Best-effort view stamp — never fail the read if the stamp write hiccups.
-  try {
-    await markViewed(id, auth.user.orgId);
-  } catch (err) {
-    console.error('[portal] markViewed failed', { invoiceId: id, orgId: auth.user.orgId, err });
-  }
+  // Branding (partner-axis, fail-soft) for the assembler, read before its transaction.
+  const preloaded = await preloadCustomerDocumentBranding(invoice);
 
   // #7509: partner-axis read (invisible to this org scope) via the shared
   // resolver. On a lookup failure report "unavailable" — hiding a Pay button is
   // safer than showing one that 409s — and log it.
   let onlinePaymentAvailable = false;
   try {
-    onlinePaymentAvailable = await isPartnerOnlinePaymentAvailable(row.partnerId);
+    onlinePaymentAvailable = await isPartnerOnlinePaymentAvailable(invoice.partnerId);
   } catch (err) {
-    console.error('[portal/invoices] online-payment availability lookup failed', { invoiceId: id, partnerId: row.partnerId, err });
+    console.error('[portal/invoices] online-payment availability lookup failed', { invoiceId: id, partnerId: invoice.partnerId, err });
   }
 
-  // #7824: surface an in-flight autopay collection so the Pay button can be
-  // replaced by a "payment processing" state. Same reserving-state set the pay
-  // route's 409 uses; advisory only (the pay route still refuses). A failed read
-  // degrades to "nothing in flight" — the server refusal is the backstop.
-  let collectionInProgress: { amount: string; actionRequired: boolean } | null = null;
-  try {
-    const inFlight = await readInFlightCollection(db, id);
-    if (inFlight.inProgress) collectionInProgress = { amount: inFlight.amount, actionRequired: inFlight.actionRequired === true };
-  } catch (err) {
-    console.error('[portal/invoices] in-flight collection lookup failed', { invoiceId: id, err });
-  }
+  // The partner's autopay rollout flag, which the autopay status read in step 3 needs
+  // for an open schedule; under the org scope it would escape to a second connection.
+  // A failure is held and surfaces inside that read, so it fails closed as before (R9).
+  const autopayFlag = await runOutsideDbContext(() => withSystemDbAccessContext(() => isAutopayEnabledForPartner(db, invoice.partnerId)))
+    .then((enabled) => ({ enabled }), (error: unknown) => ({ error }));
+  const partnerAutopayEnabled = async (partnerId: string): Promise<boolean> => {
+    if (partnerId !== invoice.partnerId) throw new Error(`autopay flag preloaded for ${invoice.partnerId}, asked for ${partnerId}`);
+    if ('error' in autopayFlag) throw autopayFlag.error;
+    return autopayFlag.enabled;
+  };
 
-  // D-4: how this invoice will be paid; an enrolled client is not offered setup again.
-  // R9: when the status can't be read, enrollment is unknown, so fail closed: offer nothing
-  // that saves a method (it could silently replace an enrolled client's).
-  let customerAutopay: Awaited<ReturnType<typeof getCustomerInvoiceAutopay>> = { enrolled: false, status: null };
-  let autopayKnown = true;
-  try {
-    customerAutopay = await getCustomerInvoiceAutopay(db, { invoiceId: id, orgId: auth.user.orgId });
-  } catch (err) {
-    autopayKnown = false;
-    console.error('[portal/invoices] autopay status lookup failed', { invoiceId: id, err });
-    captureException(err, undefined, { autopay_phase: 'invoice_status' });
-  }
+  const { doc, collectionInProgress, customerAutopay, autopayKnown } = await inPortalOrgScope(orgId, async () => {
+    // Header, customer-visible lines, branding and the document locale — the same
+    // document the public link and the staff Preview render.
+    const doc = await assembleCustomerInvoiceDocument(invoice, 'portal', { preloaded });
+
+    // Best-effort view stamp — never fail the read if the stamp write hiccups.
+    try {
+      await markViewed(id, orgId);
+    } catch (err) {
+      console.error('[portal] markViewed failed', { invoiceId: id, orgId, err });
+    }
+
+    // #7824: surface an in-flight autopay collection so the Pay button can be
+    // replaced by a "payment processing" state. Same reserving-state set the pay
+    // route's 409 uses; advisory only (the pay route still refuses). A failed read
+    // degrades to "nothing in flight" — the server refusal is the backstop.
+    let collectionInProgress: { amount: string; actionRequired: boolean } | null = null;
+    try {
+      const inFlight = await readInFlightCollection(db, id);
+      if (inFlight.inProgress) collectionInProgress = { amount: inFlight.amount, actionRequired: inFlight.actionRequired === true };
+    } catch (err) {
+      console.error('[portal/invoices] in-flight collection lookup failed', { invoiceId: id, err });
+    }
+
+    // D-4: how this invoice will be paid; an enrolled client is not offered setup again.
+    // R9: when the status can't be read, enrollment is unknown, so fail closed: offer nothing
+    // that saves a method (it could silently replace an enrolled client's).
+    let customerAutopay: Awaited<ReturnType<typeof getCustomerInvoiceAutopay>> = { enrolled: false, status: null };
+    let autopayKnown = true;
+    try {
+      customerAutopay = await getCustomerInvoiceAutopay(db, { invoiceId: id, orgId }, { partnerAutopayEnabled });
+    } catch (err) {
+      autopayKnown = false;
+      console.error('[portal/invoices] autopay status lookup failed', { invoiceId: id, err });
+      captureException(err, undefined, { autopay_phase: 'invoice_status' });
+    }
+    return { doc, collectionInProgress, customerAutopay, autopayKnown };
+  });
+
+  // Both offers read partner-axis settings in system contexts of their own, keyed on
+  // the authenticated org (getBankAutopayOffer re-filters the invoice by it too). No
+  // transaction is open here; runOutsideDbContext only keeps getBankAutopayOffer's plain
+  // withSystemDbAccessContext from silently inheriting an ambient org scope should this
+  // handler ever run under one (it then takes the old second connection, not a 0-row read).
+  const autopay = customerAutopay.enrolled || !autopayKnown ? null : await getInvoiceAutopayOffer(orgId, id);
+  const bankAutopay = autopayKnown ? await runOutsideDbContext(() => getBankAutopayOffer(id, orgId)) : null;
 
   return c.json({
     invoice: doc.invoice,
@@ -190,13 +221,44 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
     collectionInProgress,
     autopayStatus: customerAutopay.status,
     autopayEnrolled: customerAutopay.enrolled,
-    autopay: customerAutopay.enrolled || !autopayKnown ? null : await getInvoiceAutopayOffer(auth.user.orgId, id),
-    bankAutopay: autopayKnown ? await runOutsideDbContext(()=>getBankAutopayOffer(id,auth.user.orgId)) : null,
+    autopay,
+    bankAutopay,
     // D14: theme + page size are the invoice's frozen presentation.
     branding: doc.branding,
     documentLocale: doc.documentLocale,
   });
 });
+
+/** Run `fn` in an org transaction of exactly the portal middleware's scope (#9585). */
+function inPortalOrgScope<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
+  return withDbAccessContext(portalOrgDbAccessContext(orgId), fn);
+}
+
+type PortalInvoiceRow = Awaited<ReturnType<typeof getPortalInvoiceRowOr404>>;
+
+/**
+ * The portal read of one invoice row: the org guard (getPortalInvoiceRowOr404, 404
+ * not 403) and the draft refusal, both answered with the one not-found body. Run it
+ * under the portal org scope.
+ */
+async function readPortalInvoiceRow(id: string, orgId: string): Promise<
+  | { invoice: PortalInvoiceRow }
+  | { notFound: { body: { error: string; code?: string }; status: InvoiceServiceError['status'] } }
+> {
+  let invoice: PortalInvoiceRow;
+  try {
+    invoice = await getPortalInvoiceRowOr404(id, orgId);
+  } catch (err) {
+    if (err instanceof InvoiceServiceError) {
+      return { notFound: err.status === 404 ? { body: INVOICE_NOT_FOUND_BODY, status: 404 } : { body: { error: err.message }, status: err.status } };
+    }
+    throw err;
+  }
+  // Drafts are never customer-visible even though the row read is org-scoped.
+  // Refused HERE, before the assembler (which would throw on a portal draft).
+  if (invoice.status === 'draft') return { notFound: { body: INVOICE_NOT_FOUND_BODY, status: 404 } };
+  return { invoice };
+}
 
 // POST /portal/invoices/:id/autopay-confirmation — the invoice page's way out of
 // an off-session payment waiting on bank authentication (3DS): cancels that
@@ -220,26 +282,30 @@ invoiceRoutes.post('/invoices/:id/autopay-confirmation', zValidator('param', tic
 });
 
 // GET /portal/invoices/:id/pdf — stream the stored PDF (render on demand if absent).
+// #9585: self-managed DB context, like the detail read above. An on-demand render
+// needs the partner row and online-payment availability, both invisible to the org
+// scope: they are preloaded in a system context with no transaction open, keyed on
+// the authorized row, and the render then runs in an org transaction of its own.
 invoiceRoutes.get('/invoices/:id/pdf', zValidator('param', ticketParamSchema), async (c) => {
   const auth = c.get('portalAuth');
   const { id } = c.req.valid('param');
+  const orgId = auth.user.orgId;
 
-  // Org-guard via the service (404 cross-tenant); the draft refusal follows.
-  let invoice: Awaited<ReturnType<typeof getPortalInvoiceRowOr404>>;
-  try {
-    invoice = await getPortalInvoiceRowOr404(id, auth.user.orgId);
-  } catch (err) {
-    if (err instanceof InvoiceServiceError) {
-      return err.status === 404 ? c.json(INVOICE_NOT_FOUND_BODY, 404) : c.json({ error: err.message }, err.status);
-    }
-    throw err;
-  }
-  if (invoice.status === 'draft') return c.json(INVOICE_NOT_FOUND_BODY, 404);
+  // Org-guard via the service (404 cross-tenant) and the draft refusal, then the stored artifact.
+  const stored = await inPortalOrgScope(orgId, async () => {
+    const row = await readPortalInvoiceRow(id, orgId);
+    return 'notFound' in row ? row : { invoice: row.invoice, pdf: await getInvoicePdf(id) };
+  });
+  if ('notFound' in stored) return c.json(stored.notFound.body, stored.notFound.status);
+  const { invoice } = stored;
 
-  let pdf = await getInvoicePdf(id);
+  let pdf = stored.pdf;
   if (!pdf) {
-    await renderInvoicePdf(id);
-    pdf = await getInvoicePdf(id);
+    const partnerContext = await loadInvoiceRenderPartnerContext(invoice.partnerId);
+    pdf = await inPortalOrgScope(orgId, async () => {
+      await renderInvoicePdf(id, { partnerContext });
+      return getInvoicePdf(id);
+    });
   }
   if (!pdf) return c.json({ error: 'Failed to generate invoice PDF' }, 500);
 
@@ -321,7 +387,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   // multiplied by 100, or the customer is over-charged 100x (see stripeMoney.ts).
   const chargeMinor = toMinorUnits(chargeNow.amount, inv.currencyCode);
   if (chargeMinor <= 0) return c.json({ error: 'Nothing to pay', code: ERROR_CODES.CONFLICT }, 409);
-  const { expiresAt: providerExpiresAtEpoch, quantum: expiryQuantum } = checkoutSessionExpiry();
+  const { expiresAt: providerExpiresAtEpoch, quantum: expiryQuantum } = checkoutSessionExpiry(inv.createdAt);
   let capture: Awaited<ReturnType<typeof prepareCardPayAndSave>>;
   try {
     capture = await prepareCardPayAndSave(inv.id, auth.user.orgId, {
@@ -426,7 +492,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     // balance charge (different product name but equal amount), so the amount alone
     // can't disambiguate — the explicit dep/bal discriminator does.
     // `_e<quantum>`: `expires_at` is part of the request and Stripe
-    // refuses an idempotent replay whose parameters moved, so the hour quantum
+    // refuses an idempotent replay whose parameters moved, so the invoice-anchored bucket start
     // is folded into the key — see checkoutSessionExpiry().
     // `_pd`: the request carries a PaymentIntent description (see services/invoiceCheckout.ts).
     idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${capture ? `_save_${capture.id}` : ''}_e${expiryQuantum}_pd`,

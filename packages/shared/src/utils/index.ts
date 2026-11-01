@@ -19,6 +19,7 @@ export * from './depositMath';
 export * from './laborMath';
 export * from './invoiceLineDetail';
 export * from './csvExport';
+export * from './xlsxExport';
 export * from './reportSchedule';
 export * from './s3Region';
 export * from './s3Endpoint';
@@ -33,6 +34,7 @@ export * from './aiUnknownToolOutput';
 export * from './aiToolLabels';
 export * from './scriptSecurityPatterns';
 export * from './scriptLaneGrant';
+export * from './commandOutput';
 // Deliberately NOT `export *`. `compileExcludeMatcher` is a code-point port of
 // the agent's matcher and knowingly diverges from Go on mid-rune byte offsets
 // and Unicode special-casing (see matcherPortLimitations in
@@ -50,6 +52,7 @@ export {
 } from './backupExclusionGlob';
 export * from './hardwareLifecycle';
 export * from './backupHealth';
+export * from './backupReparseSkips';
 export * from './identityAccess';
 export * from './threatDetection';
 export * from './endpointManagement';
@@ -63,4 +66,5 @@ export * from './paymentMethodLabel';
 export * from './discoverySubnetLimit';
 export * from './networkProxyOptIn';
 export * from './forceReboot';
+export * from './networkIsolation';
 export * from './businessTime';

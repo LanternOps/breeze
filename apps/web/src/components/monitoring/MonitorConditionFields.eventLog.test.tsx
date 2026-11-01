@@ -37,6 +37,8 @@ describe('MonitorConditionFields event_log collection warning (#8174)', () => {
     const warning = screen.getByTestId('event-log-collection-warning');
     expect(warning.textContent).toContain('Application Error');
     expect(warning.textContent).toContain('MsiInstaller');
+    expect(warning.textContent).toContain('unless an Event Logs configuration policy lists it');
+    expect(warning.textContent).toContain('Configuration policy → Event Logs → Application providers');
   });
 
   it('warns when an info-level Application rule names no source', () => {

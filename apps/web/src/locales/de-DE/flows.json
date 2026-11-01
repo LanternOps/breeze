@@ -39,7 +39,9 @@
     "inputs": "Eingaben",
     "steps": "Schritte",
     "version": "Version {{version}}",
-    "createdInChat": "In Breeze AI erstellt"
+    "createdInChat": "In Breeze AI erstellt",
+    "movedFromJob": "Aus Auftrag verschoben",
+    "movedFromJobReverted": "(zurückverschoben)"
   },
   "step": {
     "tool": "Werkzeug",
@@ -55,13 +57,17 @@
     "source": {
       "core": "Kernwerkzeug",
       "tenant": "Werkzeugquelle",
-      "builtin": "Integriert"
+      "builtin": "Integriert",
+      "unknown": "Unbekanntes Werkzeug"
     },
     "preApprovedBadge": "Vorab genehmigt",
     "builtin": {
       "notify": "Benachrichtigung senden",
       "http_request": "Externe API aufrufen",
-      "ai": "KI fragen"
+      "ai": "KI fragen",
+      "run_script_on_targets": "Skript auf Geräten ausführen",
+      "resolve_targets": "Geräte finden",
+      "create_alert": "Warnung auslösen"
     },
     "notify": {
       "channel": "Kanal: {{channel}}"
@@ -74,6 +80,28 @@
       "tools": "Werkzeuge: {{tools}}",
       "noTools": "Keine Werkzeuge",
       "output": "Ergebnisfelder: {{fields}}"
+    },
+    "fleet": {
+      "script": "Skript {{scriptId}}",
+      "target": {
+        "all": "Alle Geräte",
+        "devices": "Aufgelistete Geräte",
+        "groups": "Gerätegruppen",
+        "filter": "Geräte, die einem Filter entsprechen",
+        "other": "Ein Geräteziel"
+      },
+      "conditions": "Geräte, die den Auftragsbedingungen entsprechen",
+      "triggerDevice": "Das Gerät aus dem Ereignis",
+      "devices_one": "{{count}} Gerät",
+      "devices_other": "{{count}} Geräte",
+      "fromStep": {
+        "succeeded": "Geräte, die in {{stepId}} erfolgreich waren",
+        "dispatched": "Von {{stepId}} erreichte Geräte",
+        "failed": "Geräte, die in {{stepId}} fehlgeschlagen sind"
+      },
+      "offlineQueue": "Offline-Geräte: eingereiht",
+      "offlineSkip": "Offline-Geräte: übersprungen",
+      "alert": "Schweregrad {{severity}}"
     }
   },
   "issues": {
@@ -442,5 +470,308 @@
     "readOnly": "Sie können diese Limits ansehen, aber nicht ändern.",
     "partnerWideForbidden": "Zum Ändern des Partner-Standards ist Zugriff auf alle Organisationen erforderlich.",
     "orgScopeReadOnly": "Die Limits der Organisation legt Ihr Dienstleister fest."
+  },
+  "conversion": {
+    "fidelity": {
+      "exact": "Exakt",
+      "needs_review": "Prüfung nötig",
+      "unconvertible": "Noch nicht verschiebbar"
+    },
+    "fidelityBlocked": "Noch nicht verschiebbar: {{blocker}}",
+    "severity": {
+      "blocker": "Blockade",
+      "review": "Prüfen",
+      "info": "Hinweis"
+    },
+    "state": {
+      "shadow": "Schattenlauf",
+      "switched": "In Abläufe verschoben",
+      "reverted": "Zurückverschoben"
+    },
+    "actionNumber": "Aktion {{n}}",
+    "noFindings": "Nichts zu prüfen: Dieser Auftrag wird exakt übernommen.",
+    "finding": {
+      "flows_disabled": {
+        "title": "Abläufe sind hier ausgeschaltet",
+        "line": "Diese Installation läuft mit FLOWS_ENABLED=false, daher bleiben Aufträge unverändert."
+      },
+      "managed_row": {
+        "title": "Von Breeze verwaltet",
+        "line": "Ein KI-Agent oder ein Monitor besitzt diesen Auftrag; er wird mit seinem Besitzer verschoben, nicht einzeln."
+      },
+      "policy_workflow": {
+        "title": "Teil eines Richtlinien-Workflows",
+        "line": "Konfigurationsrichtlinien führen diesen Auftrag aus; er wird verschoben, sobald Richtlinien-Workflows verschoben werden."
+      },
+      "already_retired": {
+        "title": "Bereits ausgeschaltet",
+        "line": "Dieser Auftrag wurde stillgelegt und läuft nicht mehr."
+      },
+      "compliance_remediation_target": {
+        "title": "Für Compliance-Behebung genutzt",
+        "line": "Eine Compliance-Richtlinie führt diesen Auftrag aus, um Geräte zu korrigieren; er bleibt vorerst ein Auftrag."
+      },
+      "event_dispatch_not_durable": {
+        "title": "Ereigniszustellung ist hier nicht dauerhaft",
+        "line": "Ereignis-Aufträge werden nur mit EVENT_DISPATCH_MODE=enforce und abonniertem flow-event-trigger verschoben."
+      },
+      "event_filter_not_strict": {
+        "title": "Ereignisfilter lässt sich nicht exakt kopieren",
+        "line": "Der Filter verwendet Listen, Objekte, zu viele Schlüssel oder einen Schlüssel, den Abläufe nicht abgleichen können."
+      },
+      "event_filter_null": {
+        "title": "Ereignisfilter prüft auf leere Werte",
+        "line": "Aufträge unterscheiden einen leeren von einem fehlenden Wert; Abläufe nicht."
+      },
+      "cron_semantics_differ": {
+        "title": "Zeitplan würde zu anderen Zeiten ausgelöst",
+        "line": "Dieser cron-Ausdruck stimmt bei Sommerzeitwechseln nicht mit dem Zeitplaner der Abläufe überein."
+      },
+      "condition_unknown_type": {
+        "title": "Unbekannte Zielbedingung",
+        "line": "Ein Bedingungstyp, den der Auftragsläufer ignoriert; ein Ablauf kann ihn nicht sicher übernehmen."
+      },
+      "targets_over_cap": {
+        "title": "Zu viele Geräte",
+        "line": "Dieser Auftrag zielt auf mehr als 400 Geräte; ein Ablaufschritt führt höchstens 500 aus."
+      },
+      "partner_wide_group_target": {
+        "title": "Auftrag für alle Organisationen zielt auf Gruppen",
+        "line": "Gerätegruppen gehören zu einer Organisation, daher kann ein Auftrag für alle Organisationen sie nicht als Ziel nutzen."
+      },
+      "run_as_elevated": {
+        "title": "Läuft mit erhöhten Rechten",
+        "line": "Ein verschobenes Skript läuft nie mit erhöhten Rechten, ohne dass jemand zusieht."
+      },
+      "restart_service_monitor_only": {
+        "title": "Startet einen Dienst neu",
+        "line": "Dienstneustarts laufen nur über Monitore."
+      },
+      "command_mixed_os": {
+        "title": "Befehl ohne Shell auf gemischten Geräten",
+        "line": "Wählen Sie eine Shell oder beschränken Sie die Ziele auf ein Betriebssystem."
+      },
+      "notify_per_run_cap": {
+        "title": "Zu viele Benachrichtigungen pro Lauf",
+        "line": "Abläufe senden höchstens 20 Benachrichtigungen pro Lauf."
+      },
+      "channel_type_not_supported": {
+        "title": "Benachrichtigungskanal nicht unterstützt",
+        "line": "Ein Ablauf kann an diesen Kanaltyp noch nicht senden."
+      },
+      "deploy_software_unmapped": {
+        "title": "Verteilt Software",
+        "line": "Die Softwareverteilung wird noch nicht in Abläufe verschoben."
+      },
+      "monthly_cap_exceeded": {
+        "title": "Läuft öfter als das Monatslimit erlaubt",
+        "line": "Die geschätzten monatlichen Läufe liegen über dem Ablauflimit dieses Besitzers."
+      },
+      "reference_not_owned": {
+        "title": "Nutzt etwas, das diesem Besitzer nicht gehört",
+        "line": "Ein Skript, Kanal oder eine Gruppe gehört einem anderen Besitzer."
+      },
+      "partner_wide_webhook": {
+        "title": "Webhook-Auftrag für alle Organisationen",
+        "line": "Ein Ablauf-Webhook braucht eine Organisation, in der er läuft."
+      },
+      "text_template_unsupported": {
+        "title": "Text enthält Vorlagenklammern",
+        "line": "Ein Ablauf würde doppelte geschweifte Klammern im Text als Vorlage lesen."
+      },
+      "event_filter_string_coercion": {
+        "title": "Textfilterwert",
+        "line": "Aufträge vergleichen als Text, Abläufe exakt; bestätigen Sie, dass das Feld immer Text ist."
+      },
+      "approval_each_run": {
+        "title": "Freigabe bei jedem Webhook-Lauf",
+        "line": "Eine Vorabfreigabe gilt nie für Webhook-Läufe, daher wartet jeder Lauf auf eine Person."
+      },
+      "command_becomes_script": {
+        "title": "Befehl wird zum Skript",
+        "line": "Der Befehl wird als Bibliotheksskript gespeichert, das Sie vor dem Umschalten prüfen."
+      },
+      "partner_wide_org_set_differs": {
+        "title": "Läuft einmal pro Organisation",
+        "line": "Ein Ablauf überspringt gesperrte Organisationen und läuft in höchstens 500 davon."
+      },
+      "failure_notice_cap": {
+        "title": "Fehlermeldungen können begrenzt sein",
+        "line": "Mehr als 20 Fehlermeldungen in einem Lauf werden nicht gesendet."
+      },
+      "owner_cap_pressure": {
+        "title": "Nahe am Monatslimit",
+        "line": "Dieser Ablauf würde mehr als 80 % der monatlichen Läufe des Besitzers verbrauchen."
+      },
+      "site_ceiling_removed": {
+        "title": "Größerer Geräteumfang",
+        "line": "Der Auftrag war auf die Standorte seines Erstellers beschränkt; der Ablauf ist es nicht."
+      },
+      "webhook_body_shape": {
+        "title": "Webhook-Body muss ein JSON-Objekt sein",
+        "line": "Der Ablauf ignoriert Zustellungen, die keine JSON-Objekte sind."
+      },
+      "legacy_secret_header_possible": {
+        "title": "Geheimnis im einfachen Header",
+        "line": "Absender, die das Geheimnis im Klartext senden, müssen auf X-Breeze-Webhook-Token umstellen."
+      },
+      "name_truncated": {
+        "title": "Name gekürzt",
+        "line": "Ablaufnamen sind höchstens 120 Zeichen lang."
+      },
+      "duration_minutes_ignored": {
+        "title": "Dauer ignoriert",
+        "line": "Die Ereignisdauer hatte nie eine Wirkung und wird verworfen."
+      },
+      "schedule_outage_catch_up": {
+        "title": "Holt nach einem Ausfall auf",
+        "line": "Nach einer Ausfallzeit führt der Ablauf die letzte verpasste Zeit einmal aus; der Auftrag lief gar nicht."
+      },
+      "queued_is_success": {
+        "title": "In Warteschlange gilt als erledigt",
+        "line": "Wie bisher gilt ein Skript, das für ein Offline-Gerät eingereiht wurde, als zugestellt."
+      },
+      "severity_mapped": {
+        "title": "Schweregrad zugeordnet",
+        "line": "Hoch und mittel werden zu Warnung; niedrig und Info werden zu Info."
+      },
+      "notification_emails_unused": {
+        "title": "E-Mail-Liste verworfen",
+        "line": "Die E-Mail-Liste des Auftrags wurde nie verwendet und wird verworfen."
+      },
+      "webhook_url_changes": {
+        "title": "Webhook-Adresse",
+        "line": "Absender behalten die alte Adresse; sie leitet an den Ablauf weiter."
+      },
+      "delegator_pause": {
+        "title": "Pausiert, wenn Sie den Zugriff verlieren",
+        "line": "Der Ablauf läuft als Sie und pausiert, wenn Ihr Konto deaktiviert oder eingeschränkt wird."
+      }
+    },
+    "column": {
+      "heading": "In Abläufe verschieben",
+      "move": "In Abläufe verschieben",
+      "view": "Ansehen"
+    },
+    "panel": {
+      "title": "„{{name}}“ in Abläufe verschieben",
+      "subtitle": "Sehen Sie, was übernommen wird, beobachten Sie den Ablauf im Schattenlauf neben dem Auftrag und schalten Sie dann um.",
+      "close": "Schließen",
+      "loading": "Dieser Auftrag wird geprüft …",
+      "openFlow": "Ablauf öffnen",
+      "findingsHeading": "Was übernommen wird",
+      "stepsHeading": "Ablaufschritte",
+      "startShadow": "Schattenlauf starten",
+      "switch": "Umschalten …",
+      "switchedNote": "Der Ablauf führt diesen Auftrag jetzt aus. Der Auftrag ist schreibgeschützt, bis Sie ihn zurückverschieben.",
+      "flowUnavailable": "Der Ablauf konnte nicht geladen werden. Sie können den Auftrag trotzdem zurückverschieben."
+    },
+    "shadow": {
+      "heading": "Schattenlauf",
+      "explain": "Der Ablauf prüft jeden Lauf des Auftrags, ohne etwas auszuführen.",
+      "runs": "Geprüfte Läufe",
+      "divergences": "Abweichungen",
+      "startedAt": "Gestartet",
+      "divergence": {
+        "trigger_mismatch": "Letzte Abweichung: Ablauf und Auftrag waren sich uneinig, ob ausgeführt werden soll.",
+        "target_set_mismatch": "Letzte Abweichung: Der Ablauf hätte andere Geräte gewählt.",
+        "would_park": "Letzte Abweichung: Ein Schritt hätte auf eine Freigabe gewartet.",
+        "over_cap": "Letzte Abweichung: Der Lauf hätte ein Ablauflimit erreicht."
+      }
+    },
+    "switch": {
+      "title": "„{{name}}“ auf seinen Ablauf umschalten",
+      "body": "Eine Minute nach dem Umschalten führt der Ablauf jeden Termin aus und der Auftrag stoppt. Nichts läuft doppelt.",
+      "blocked": {
+        "shadow_too_new": "Das Umschalten ist möglich, sobald der Schattenlauf 10 Minuten alt ist.",
+        "shadow_too_short": "Der Schattenlauf hat weniger als 3 Läufe geprüft oder ist jünger als 7 Tage.",
+        "shadow_divergent": "Der Schattenlauf hat Abweichungen zwischen Ablauf und Auftrag festgestellt.",
+        "source_changed": "Der Auftrag wurde seit der Umwandlung geändert. Starten Sie einen neuen Schattenlauf.",
+        "unconvertible": "Dieser Auftrag kann noch nicht verschoben werden."
+      },
+      "acknowledge": "Trotzdem umschalten; ich akzeptiere die gezeigten Belege.",
+      "preApprovalsHeading": "Ohne Warten auf Freigabe ausführen",
+      "preApprovalsHelp": "Standardmäßig aus. Ohne diese Option wartet jeder Lauf eines Skriptschritts auf die Freigabe durch eine Person.",
+      "noPreApprovals": "Kein Skriptschritt kann ohne Freigabe laufen.",
+      "preApprove": "Skriptschritt vorab freigeben",
+      "currentTargets_one": "Zielt heute auf {{count}} Gerät.",
+      "currentTargets_other": "Zielt heute auf {{count}} Geräte.",
+      "maxTargets": "Höchstzahl Geräte pro Lauf (1–{{max}})",
+      "maxTargetsInvalid": "Geben Sie eine ganze Zahl von 1 bis {{max}} ein.",
+      "liveMembership": "Die Geräte werden bei jedem Lauf neu ermittelt. Wer die Mitglieder einer Gruppe ändern kann, kann ändern, wo dies läuft; ein Lauf über dem Limit pausiert den Ablauf.",
+      "frozenDevices": "Wartet ein Lauf auf eine Freigabe, sieht die freigebende Person die genauen Geräte, und nur diese werden ausgeführt.",
+      "perOrgMultiplies": "Dies ist ein Ablauf für alle Organisationen: Das Limit gilt in jeder Organisation, die Gesamtzahl kann also ein Vielfaches der Organisationsanzahl sein.",
+      "webhookApprovalEachRun": "Webhook-Läufe warten immer auf eine Freigabe, auch mit Vorabfreigabe.",
+      "generatedScriptsHeading": "Beim Umschalten erstellte Skripte",
+      "generatedScriptsHelp": "Jeder Befehl wird zu einem Bibliotheksskript mit demselben Besitzer wie der Auftrag.",
+      "acceptScripts": "Ich habe diese Skripte geprüft.",
+      "acceptScopeWidening": "Ich akzeptiere, dass der Ablauf nicht auf die Standorte des Auftragserstellers beschränkt ist.",
+      "webhookChange": "Absender behalten die alte Webhook-Adresse; sie leitet an den Ablauf weiter. Der Ablauf akzeptiert nur JSON-Objekte, und Absender des Geheimnisses im Klartext müssen X-Breeze-Webhook-Token verwenden.",
+      "acceptDelegatorLifecycle": "Der Ablauf läuft als ich. Wird mein Konto deaktiviert oder verliert es den Zugriff, pausiert der Ablauf (der Auftrag nicht).",
+      "confirm": "Umschalten",
+      "switching": "Wird umgeschaltet …"
+    },
+    "revert": {
+      "action": "Zurück zum Auftrag verschieben …",
+      "title": "„{{name}}“ zurück zum Auftrag verschieben?",
+      "body": "Der Auftrag wird wieder eingeschaltet und der Ablauf startet nichts Neues. Bereits gestartete Läufe des Ablaufs werden beendet.",
+      "confirm": "Zurückverschieben"
+    },
+    "toast": {
+      "created": "Schattenlauf gestartet.",
+      "bulkCreated_one": "Schattenlauf für {{count}} Auftrag gestartet.",
+      "bulkCreated_other": "Schattenlauf für {{count}} Aufträge gestartet.",
+      "switched": "Umgeschaltet. Der Ablauf führt diesen Auftrag ab jetzt aus.",
+      "reverted": "Zurückverschoben. Der Auftrag läuft wieder."
+    },
+    "errors": {
+      "loadFailed": "Die Verschiebung dieses Auftrags konnte nicht geladen werden.",
+      "createFailed": "Der Schattenlauf konnte nicht gestartet werden.",
+      "bulkFailed": "Die Schattenläufe konnten nicht gestartet werden.",
+      "switchFailed": "Umschalten fehlgeschlagen.",
+      "revertFailed": "Zurückverschieben fehlgeschlagen.",
+      "automation_not_found": "Dieser Auftrag existiert nicht mehr.",
+      "conversion_not_found": "Diese Verschiebung existiert nicht mehr.",
+      "conversion_exists": "Dieser Auftrag wird bereits verschoben.",
+      "source_changed": "Der Auftrag wurde geändert, seit Sie ihn geöffnet haben. Laden Sie neu und versuchen Sie es erneut.",
+      "unconvertible": "Dieser Auftrag kann noch nicht verschoben werden.",
+      "draft_rejected": "Der Ablaufentwurf wurde nicht akzeptiert.",
+      "partner_wide_forbidden": "Zum Verschieben von Aufträgen für alle Organisationen ist voller Partnerzugriff nötig.",
+      "owner_forbidden": "Wählen Sie zuerst eine Organisation.",
+      "interactive_session_required": "Melden Sie sich als Person an, um dies zu tun.",
+      "delegation_scope_restricted": "Ihr Zugriff ist auf einzelne Standorte beschränkt, daher können Sie nicht umschalten oder zurückverschieben.",
+      "not_shadow": "Nur ein Auftrag im Schattenlauf kann umgeschaltet werden.",
+      "not_switched": "Nur ein umgeschalteter Auftrag kann zurückverschoben werden.",
+      "version_conflict": "Der Ablauf wurde geändert. Laden Sie neu und versuchen Sie es erneut.",
+      "already_enabled": "Der Ablauf ist bereits eingeschaltet.",
+      "slug_unavailable": "Ein anderer Ablauf verwendet diesen Namen bereits.",
+      "shadow_too_new": "Das Umschalten ist möglich, sobald der Schattenlauf 10 Minuten alt ist.",
+      "shadow_too_short": "Noch nicht genug Belege aus dem Schattenlauf. Bestätigen Sie, um trotzdem umzuschalten.",
+      "shadow_divergent": "Der Schattenlauf hat Abweichungen festgestellt. Bestätigen Sie sie, um trotzdem umzuschalten.",
+      "scope_widening_not_accepted": "Akzeptieren Sie den größeren Geräteumfang, um umzuschalten.",
+      "automation_disabled": "Schalten Sie den Auftrag ein, bevor Sie ihn umschalten.",
+      "automation_converted": "Dieser Auftrag wurde in Abläufe verschoben. Ändern Sie ihn dort.",
+      "automations_moved_to_flows": "Neue Aufträge werden in Abläufen erstellt.",
+      "flow_not_found": "Der Ablauf dieses Auftrags existiert nicht mehr.",
+      "revert_closed": "Das Zurückverschieben ist auf dieser Installation geschlossen.",
+      "generated_script_rejected": "Ein Skript für diesen Auftrag konnte nicht erstellt werden.",
+      "permission_missing": "Ihnen fehlt mindestens eine Berechtigung, die der Ablauf braucht.",
+      "pre_approval_not_eligible": "Ein Schritt kann nicht vorab freigegeben werden.",
+      "invalid": "Der Ablauf ist ungültig.",
+      "event_dispatch_not_durable": "Die Ereigniszustellung ist hier nicht dauerhaft.",
+      "webhook_secret_missing": "Das Webhook-Geheimnis fehlt."
+    }
+  },
+  "jobs": {
+    "migration": {
+      "banner": {
+        "r1": "Aufträge wandern in Abläufe.",
+        "r1Body": "Neue Aufträge werden in Abläufen erstellt. Verschieben Sie jeden Auftrag, wenn sein Schattenlauf übereinstimmt; Sie können ihn zurückverschieben."
+      },
+      "convertAll": "Schattenlauf für alle umwandelbaren starten",
+      "converting": "Wird gestartet …",
+      "bulkSummary": "{{created}} gestartet, {{skipped}} übersprungen.",
+      "newJobOpensFlows": "Neuer Ablauf"
+    }
   }
 }

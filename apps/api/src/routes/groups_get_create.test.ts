@@ -14,6 +14,17 @@ const SITE_ID_2 = '12121212-1212-4121-8121-121212121212';
 
 vi.mock('../services', () => ({}));
 
+// These org-only route regressions do not enter the separate OD5 read view.
+// Preserve ownership/locking helpers used by the real membership code, while
+// keeping the new cross-owner lookups out of their queued Drizzle responses.
+vi.mock('../services/deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../services/deviceGroupOwnership')>(),
+  resolveOrgSessionPartnerId: vi.fn().mockResolvedValue(null),
+  readPartnerGroupsForOrgSession: vi.fn().mockResolvedValue([]),
+  findPartnerOwnedGroupIds: vi.fn().mockResolvedValue([]),
+}));
+
+
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
@@ -66,6 +77,9 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  // groupMembership schedules peripheral reconciliation after commit (#10521 W2b);
+  // there is no transaction here, so run it immediately.
+  runAfterDbContextCommit: vi.fn((_label: string, work: () => unknown) => { void work(); }),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -490,7 +504,7 @@ describe('groups routes', () => {
       expect(db.insert).not.toHaveBeenCalled();
     });
 
-    it('rejects ownerScope partner without orgId for a multi-org partner while partner creation is dark', async () => {
+    it('rejects ownerScope partner without orgId for a partner without full org access', async () => {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           user: { id: 'user-123', email: 'partner@example.com', name: 'Partner' },
@@ -509,9 +523,9 @@ describe('groups routes', () => {
         body: JSON.stringify({ name: 'Partner Group', ownerScope: 'partner' })
       });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(403);
       const body = await res.json();
-      expect(body.error).toContain('orgId is required when partner has multiple organizations');
+      expect(body.error).toBe('Managing partner-wide state requires full partner org access (orgAccess must be "all")');
       expect(db.insert).not.toHaveBeenCalled();
     });
 

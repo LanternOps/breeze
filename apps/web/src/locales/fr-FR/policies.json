@@ -674,7 +674,18 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "minimumLevel",
         "collectionIntervalMinutes2": "collectionIntervalMinutes",
-        "rateLimitPerHour2": "rateLimitPerHour"
+        "rateLimitPerHour2": "rateLimitPerHour",
+        "applicationProvidersHeading": "Fournisseurs d’applications (Avertissement et Information)",
+        "applicationProvidersHelp": "Les événements d’application de niveau Erreur et Critique sont collectés auprès de tous les fournisseurs ; ceux de niveau Avertissement et Information, uniquement auprès des fournisseurs intégrés ({{providers}}) et de ceux indiqués ici. Utilisez le nom exact du fournisseur affiché dans la colonne « Source » de l’Observateur d’événements ou dans Get-WinEvent -ListProvider.",
+        "applicationProvidersScope": "Seule la stratégie de journaux d’événements prioritaire pour un appareil s’applique. Les listes de fournisseurs des différentes stratégies ne sont pas combinées.",
+        "providerNameLabel": "Nom du fournisseur d’événements d’application",
+        "addProvider": "Ajouter un fournisseur",
+        "removeProvider": "Supprimer",
+        "removeProviderNamed": "Supprimer {{provider}}",
+        "providerNameInvalid": "Utilisez de 1 à {{max}} caractères, en commençant par une lettre ou un chiffre. Caractères autorisés : lettres, chiffres, espaces, points, traits de soulignement, signes dollar, parenthèses et traits d’union.",
+        "providerLimitReached": "Vous pouvez ajouter jusqu’à {{max}} fournisseurs supplémentaires. Supprimez-en un pour en ajouter un autre.",
+        "providerAlreadyListed": "Ce fournisseur figure déjà dans la liste.",
+        "providerLimit": "{{total}} sur {{max}} fournisseurs supplémentaires"
       },
       "featureTabShell": {
         "override": "Outremise",
@@ -1197,9 +1208,9 @@
         "enableWarrantyExpiryAlerts": "Activez les alertes d’expiration de garantie",
         "generateAlertsWhenFixedTermDeviceWarranties": "Générez des alertes lorsque les garanties à durée déterminée des dispositifs approchent de leur expiration.",
         "warningThresholdDays": "Seuil d’avertissement (jours)",
-        "generateAWarningAlertWhenWarrantyExpires": "Générez une alerte lorsque la garantie expire dans ce délai de jours.",
-        "criticalThresholdDays": "Seuil critique (jours)",
-        "generateACriticalAlertWhenWarrantyExpires": "Générez une alerte critique lorsque la garantie expire dans ce délai de jours.",
+        "warnThresholdHelp": "Générez une alerte de gravité Information lorsque la garantie expire dans ce délai de jours.",
+        "urgentThresholdDays": "Seuil d’urgence (jours)",
+        "urgentThresholdHelp": "Générez une alerte de gravité Faible lorsque la garantie expire dans ce délai de jours. Une garantie expirée génère une alerte de gravité Moyenne.",
         "enabled": "activé",
         "warnDays": "AvertissementsJours",
         "criticalDays": "Critical Days",
@@ -1219,6 +1230,20 @@
         "title": "Les appareils de cette politique alerteront deux fois",
         "body": "Ces conditions existent à la fois comme moniteur attaché et comme règle ou surveillance héritée : {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Groupes d’appareils (toutes les org.)",
+      "description": "Ciblez un groupe d’appareils à l’échelle du partenaire. Une affectation de groupe s’applique au niveau du groupe d’appareils et est donc prioritaire sur les affectations d’autres politiques au niveau de l’organisation et du site.",
+      "selectGroup": "Sélectionner un groupe d’appareils",
+      "assign": "Affecter",
+      "remove": "Retirer",
+      "assigned": "Groupe d’appareils affecté",
+      "removed": "Affectation du groupe d’appareils retirée",
+      "failedToLoad": "Impossible de charger les groupes d’appareils",
+      "failedToAssign": "Impossible d’affecter le groupe d’appareils",
+      "failedToRemove": "Impossible de retirer l’affectation du groupe d’appareils",
+      "empty": "Aucun groupe d’appareils à l’échelle du partenaire pour le moment. Créez-en un sous Groupes d’appareils → Toutes les org.",
+      "loading": "Chargement des groupes d’appareils…"
     }
   },
   "software": {
@@ -1526,7 +1551,8 @@
       "devicesFinished": "{{finished}} appareils sur {{total}} terminés",
       "setupNeeded": "Configuration requise",
       "managerUnavailableSummary_one": "Le gestionnaire de paquets est absent sur {{count}} appareil. Il s'agit d'une configuration ponctuelle : installez-y winget (Windows) ou Homebrew (macOS) ; d'ici là, tout déploiement par gestionnaire de paquets échouera.",
-      "managerUnavailableSummary_other": "Le gestionnaire de paquets est absent sur {{count}} appareils. Il s'agit d'une configuration ponctuelle : installez-y winget (Windows) ou Homebrew (macOS) ; d'ici là, tout déploiement par gestionnaire de paquets échouera."
+      "managerUnavailableSummary_other": "Le gestionnaire de paquets est absent sur {{count}} appareils. Il s'agit d'une configuration ponctuelle : installez-y winget (Windows) ou Homebrew (macOS) ; d'ici là, tout déploiement par gestionnaire de paquets échouera.",
+      "deviceOutputTail": "Sortie de l’appareil (dernières lignes)"
     },
     "deploymentWizard": {
       "selectSoftware": "Logiciel sélectionné",
@@ -1814,7 +1840,11 @@
       "deviceCount": "DeviceCount",
       "allowed2": "autorisé",
       "blocked2": "bloqué",
-      "summary": "Affichage {{range}} de {{total}}"
+      "summary": "Affichage {{range}} de {{total}}",
+      "policyWouldNotApply": "« {{policy}} » ne s'appliquerait à aucun appareil de cette organisation : rien n'a été modifié. Chaque appareil suit une seule stratégie logicielle, et {{winners}} l'emporte sur tous les appareils. Modifiez ou supprimez l'attribution de {{configPolicy}} dans Stratégies de configuration, puis réessayez.",
+      "policyWouldNotApplySameMode": "« {{policy}} » ne s'appliquerait à aucun appareil de cette organisation : rien n'a été modifié. Chaque appareil suit une seule stratégie logicielle, et {{winners}} l'emporte sur tous les appareils. Ajoutez plutôt le titre à {{winner}} dans Stratégies logicielles.",
+      "theWinningConfigPolicy": "la stratégie de configuration qui l'emporte",
+      "nowOverridesPolicies": "« {{policy}} » prévaut désormais sur {{names}} sur les appareils de cette organisation."
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "Impossible de récupérer l’inventaire logiciel",
@@ -1985,6 +2015,18 @@
       "uninstallCommandCopied": "Commande de désinstallation copiée",
       "breezeDoesNotUninstall": "Breeze ne désinstalle pas ces clients. Exécutez la commande sur l’appareil pour en supprimer un.",
       "copyFailed": "Échec de la copie. Sélectionnez la commande et copiez-la manuellement."
+    },
+    "policyCoverage": {
+      "appliesTo_one": "S'applique à {{count}} appareil",
+      "appliesTo_other": "S'applique à {{count}} appareils",
+      "appliesToNone": "S'applique à 0 appareil",
+      "notAssigned": "Attribuée par aucune stratégie de configuration",
+      "overriddenBy": "Remplacée par {{names}}",
+      "overriddenHint": "Chaque appareil suit une seule stratégie logicielle. Sur les appareils auxquels cette stratégie est attribuée, {{names}} l'emporte.",
+      "partlyOverriddenHint": "Chaque appareil suit une seule stratégie logicielle. {{names}} l'emporte sur les autres appareils attribués.",
+      "anotherPolicy": "une autre stratégie logicielle",
+      "partnerWide": "{{name}} (tout le partenaire)",
+      "unavailable": "Couverture indisponible"
     }
   }
 }

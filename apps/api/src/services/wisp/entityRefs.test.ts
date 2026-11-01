@@ -13,9 +13,10 @@ vi.mock('../permissions', () => ({
     p.permissions.some((x) => (x.resource === resource || x.resource === '*') && (x.action === action || x.action === '*')),
 }));
 
-const { createEntityResolver, ENTITY_READ_PERMISSION, resolveEntityRef } = await import('./entityRefs');
+const { createEntityResolver, ENTITY_READ_PERMISSION, resolveEntityRef, resolveEntityForCaller } = await import('./entityRefs');
 
 const PARTNER = '11111111-1111-4111-8111-111111111111';
+const OTHER_PARTNER = '22222222-2222-4222-8222-222222222222';
 const ORG_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const ORG_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const ENTITY = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
@@ -53,6 +54,13 @@ beforeEach(() => {
 });
 
 describe('resolveEntityRef', () => {
+  it('loads inside the grant partner even when the caller has another partner', async () => {
+    loadEntityForPartner.mockResolvedValue(entity('ticket', ORG_A));
+    expect(await resolveEntityRef({ auth: auth({ partnerId: OTHER_PARTNER }), ceiling: ceiling() }, { kind: 'ticket', id: ENTITY }))
+      .toMatchObject({ orgId: ORG_A });
+    expect(loadEntityForPartner).toHaveBeenCalledWith('ticket', ENTITY, PARTNER);
+  });
+
   it.each(WISP_ENTITY_KINDS.filter((k) => k !== 'user' && k !== 'organization'))(
     '%s: the org comes from the entity, read inside the ceiling partner',
     async (kind) => {
@@ -172,5 +180,88 @@ describe('resolveEntityRef', () => {
 
   it('every kind names a read permission', () => {
     for (const kind of WISP_ENTITY_KINDS) expect(ENTITY_READ_PERMISSION[kind]).toMatch(/^[a-z_]+:read$/);
+  });
+});
+
+describe('resolveEntityForCaller', () => {
+  it('rejects missing caller auth when there is no ceiling', () => {
+    // @ts-expect-error Deliberately exercise an invalid runtime caller.
+    expect(() => resolveEntityForCaller(null, { kind: 'ticket', id: ENTITY }))
+      .toThrow('Entity resolution requires caller auth or a grant ceiling');
+    expect(loadEntityForPartner).not.toHaveBeenCalled();
+    expect(getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('loads inside the caller partner without a ceiling', async () => {
+    loadEntityForPartner.mockResolvedValue(entity('ticket', ORG_A));
+    expect(await resolveEntityForCaller(auth({ partnerId: OTHER_PARTNER }), { kind: 'ticket', id: ENTITY }))
+      .toMatchObject({ orgId: ORG_A });
+    expect(loadEntityForPartner).toHaveBeenCalledWith('ticket', ENTITY, OTHER_PARTNER);
+  });
+
+  it('resolves a ticket the caller can read', async () => {
+    loadEntityForPartner.mockResolvedValue(entity('ticket', ORG_A));
+    getUserPermissions.mockResolvedValue({ permissions: [{ resource: 'tickets', action: 'read' }] });
+    expect(await resolveEntityForCaller(auth(), { kind: 'ticket', id: ENTITY })).toMatchObject({
+      ref: { kind: 'ticket', id: ENTITY, orgId: ORG_A },
+      orgId: ORG_A, label: 'ticket title', status: 'open',
+    });
+    expect(loadEntityForPartner).toHaveBeenCalledWith('ticket', ENTITY, PARTNER);
+    expect(getUserPermissions).toHaveBeenCalledTimes(1);
+    expect(getUserPermissions).toHaveBeenCalledWith('u', { partnerId: PARTNER, orgId: undefined, scope: 'partner' });
+  });
+
+  it('forbidden without tickets:read', async () => {
+    loadEntityForPartner.mockResolvedValue(entity('ticket', ORG_A));
+    getUserPermissions.mockResolvedValue({ permissions: [{ resource: 'devices', action: 'read' }] });
+    expect(await resolveEntityForCaller(auth(), { kind: 'ticket', id: ENTITY })).toEqual({ reason: 'forbidden' });
+  });
+
+  it('outside_token_scope for another org on an org token', async () => {
+    const caller = auth({ scope: 'organization', orgId: ORG_A });
+    loadEntityForPartner.mockResolvedValueOnce(entity('ticket', ORG_B));
+    expect(await resolveEntityForCaller(caller, { kind: 'ticket', id: ENTITY })).toEqual({ reason: 'outside_token_scope' });
+    loadEntityForPartner.mockResolvedValueOnce(entity('user', null));
+    expect(await resolveEntityForCaller(caller, { kind: 'user', id: ENTITY })).toEqual({ reason: 'outside_token_scope' });
+    loadEntityForPartner.mockResolvedValueOnce(entity('ticket', ORG_A));
+    expect(await resolveEntityForCaller(caller, { kind: 'ticket', id: ENTITY })).toMatchObject({ orgId: ORG_A });
+  });
+
+  it('forbidden precedes token scope for an org token without tickets:read on a foreign-org ticket', async () => {
+    loadEntityForPartner.mockResolvedValue(entity('ticket', ORG_B));
+    getUserPermissions.mockResolvedValue({ permissions: [{ resource: 'devices', action: 'read' }] });
+    expect(await resolveEntityForCaller(auth({ scope: 'organization', orgId: ORG_A }), { kind: 'ticket', id: ENTITY }))
+      .toEqual({ reason: 'forbidden' });
+  });
+
+  it("not_found for another partner's quote", async () => {
+    loadEntityForPartner.mockImplementation(async (kind: WispEntityKind, _id: string, partnerId: string) =>
+      partnerId === OTHER_PARTNER ? entity(kind, ORG_A) : null);
+    expect(await resolveEntityForCaller(auth(), { kind: 'quote', id: ENTITY })).toEqual({ reason: 'not_found' });
+    expect(loadEntityForPartner).toHaveBeenCalledWith('quote', ENTITY, PARTNER);
+  });
+
+  it('not_found without a partner or with a malformed id, without a DB read', async () => {
+    expect(await resolveEntityForCaller(auth({ partnerId: null }), { kind: 'ticket', id: ENTITY })).toEqual({ reason: 'not_found' });
+    expect(await resolveEntityForCaller(auth(), { kind: 'ticket', id: 'invalid' })).toEqual({ reason: 'not_found' });
+    expect(loadEntityForPartner).not.toHaveBeenCalled();
+    expect(getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('a device-pinned principal resolves only its allowlisted device', async () => {
+    const caller = auth({ allowedDeviceIds: [ENTITY] });
+    loadEntityForPartner.mockResolvedValue(entity('device', ORG_A, { siteId: SITE }));
+    expect(await resolveEntityForCaller(caller, { kind: 'device', id: ENTITY })).toMatchObject({ orgId: ORG_A });
+    expect(await resolveEntityForCaller(caller, { kind: 'device', id: SITE })).toEqual({ reason: 'forbidden' });
+    loadEntityForPartner.mockResolvedValue(entity('ticket', ORG_A));
+    expect(await resolveEntityForCaller(caller, { kind: 'ticket', id: ENTITY })).toEqual({ reason: 'forbidden' });
+  });
+
+  it('forbidden outside the caller org or site reach', async () => {
+    loadEntityForPartner.mockResolvedValue(entity('device', ORG_A, { siteId: SITE }));
+    expect(await resolveEntityForCaller(auth({ canAccessOrg: () => false }), { kind: 'device', id: ENTITY }))
+      .toEqual({ reason: 'forbidden' });
+    expect(await resolveEntityForCaller(auth({ canAccessSite: () => false }), { kind: 'device', id: ENTITY }))
+      .toEqual({ reason: 'forbidden' });
   });
 });
