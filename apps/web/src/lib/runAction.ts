@@ -223,3 +223,5 @@ export function handleActionError(err: unknown, fallback: string): void {
   if (err instanceof ActionError && err.status === 401) return;
   if (!(err instanceof ActionError)) showToast({ message: fallback, type: 'error' });
 }
+
+// W03 live control: web-only (throwaway)
