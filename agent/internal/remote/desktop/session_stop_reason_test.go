@@ -73,7 +73,7 @@ func TestStopWithReason_TruncatesOverlongReason(t *testing.T) {
 func TestNoVideoStopReason_UsesSwallowedCaptureError(t *testing.T) {
 	capturer := &reportingCapturer{lastErr: gdiCallError("GetDIBits", errnoForTest(87))}
 
-	got := noVideoStopReason(capturer)
+	got := noVideoStopReason(capturer, nil)
 
 	if !strings.Contains(got, "GetDIBits failed") {
 		t.Errorf("noVideoStopReason() = %q, want it to contain the swallowed GDI error", got)
@@ -96,7 +96,7 @@ func TestNoVideoStopReason_FallsBackWhenNothingSwallowed(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := noVideoStopReason(tc.capturer)
+			got := noVideoStopReason(tc.capturer, nil)
 			if got != noVideoStopReasonFallback {
 				t.Errorf("noVideoStopReason() = %q, want fallback %q", got, noVideoStopReasonFallback)
 			}
@@ -107,7 +107,7 @@ func TestNoVideoStopReason_FallsBackWhenNothingSwallowed(t *testing.T) {
 // The technician-facing reason must stay readable — no OS handle values, the
 // same bar describeCaptureFailure holds the startup path to (#5284).
 func TestNoVideoStopReason_StaysHandleFree(t *testing.T) {
-	got := noVideoStopReason(&reportingCapturer{lastErr: gdiCallError("GetDIBits", errnoForTest(5))})
+	got := noVideoStopReason(&reportingCapturer{lastErr: gdiCallError("GetDIBits", errnoForTest(5))}, nil)
 	for _, banned := range []string{"0x0000", "hdc", "HDC", "hBitmap", "memDC"} {
 		if strings.Contains(got, banned) {
 			t.Errorf("noVideoStopReason() leaks handle detail %q: %q", banned, got)
@@ -124,7 +124,7 @@ func TestNoVideoStopReason_WiredThroughToSession(t *testing.T) {
 	s := newTestSession("session-1")
 	capturer := &reportingCapturer{lastErr: gdiCallError("GetDIBits", errnoForTest(87))}
 
-	s.StopWithReason(noVideoStopReason(capturer))
+	s.StopWithReason(noVideoStopReason(capturer, nil))
 
 	got := s.LastStopReason()
 	if !strings.Contains(got, "GetDIBits failed") {

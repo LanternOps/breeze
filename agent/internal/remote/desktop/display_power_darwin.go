@@ -12,17 +12,20 @@ package desktop
 
 // breezeDisplayCounts reads the online display list (attached displays,
 // sleeping ones included), how many of those are asleep, and the active
-// (drawable) display count. Returns 0 on success.
-static int breezeDisplayCounts(uint32_t *online, uint32_t *active, uint32_t *asleep) {
+// (drawable) display count. Returns kCGErrorSuccess (0) or the failing
+// CGError.
+static CGError breezeDisplayCounts(uint32_t *online, uint32_t *active, uint32_t *asleep) {
     CGDirectDisplayID ids[32];
     uint32_t n = 0;
-    if (CGGetOnlineDisplayList(32, ids, &n) != kCGErrorSuccess) return 1;
+    CGError err = CGGetOnlineDisplayList(32, ids, &n);
+    if (err != kCGErrorSuccess) return err;
     uint32_t sleeping = 0;
     for (uint32_t i = 0; i < n; i++) {
         if (CGDisplayIsAsleep(ids[i])) sleeping++;
     }
     uint32_t a = 0;
-    if (CGGetActiveDisplayList(0, NULL, &a) != kCGErrorSuccess) return 1;
+    err = CGGetActiveDisplayList(0, NULL, &a);
+    if (err != kCGErrorSuccess) return err;
     *online = n;
     *asleep = sleeping;
     *active = a;
@@ -49,6 +52,7 @@ import "C"
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 )
 
@@ -65,7 +69,11 @@ func newPlatformDisplayPower() displayPowerOps { return &darwinDisplayPower{} }
 
 func (d *darwinDisplayPower) counts() (displayCounts, bool) {
 	var online, active, asleep C.uint32_t
-	if C.breezeDisplayCounts(&online, &active, &asleep) != 0 {
+	if rc := C.breezeDisplayCounts(&online, &active, &asleep); rc != 0 {
+		// Logged, not silent: without a reading the wake is skipped and a
+		// zero-displays failure goes out unlabelled.
+		slog.Warn("could not read the display lists; cannot tell an asleep display from a missing one",
+			"cgError", int(rc))
 		return displayCounts{}, false
 	}
 	return displayCounts{online: int(online), active: int(active), asleep: int(asleep)}, true

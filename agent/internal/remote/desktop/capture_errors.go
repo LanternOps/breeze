@@ -44,18 +44,22 @@ const (
 // Rule for every message here: report what was OBSERVED, and enumerate the
 // causes that produce it. Do not name a single cause. A message that guesses
 // sends every reader down that path, including the ones it is wrong for.
+// errZeroDisplays marks the zero-displays failure (code 11) so the display
+// state annotation (display_power.go) can tell it from every other capture
+// error. It wraps ErrDisplayNotFound, which existing callers match on.
+var errZeroDisplays = fmt.Errorf("%w: the system reported zero displays to capture", ErrDisplayNotFound)
+
 func translateCaptureError(code int) error {
 	switch code {
 	case captureErrDisplayList:
 		return fmt.Errorf("failed to get display list")
 	case captureErrNoDisplayAttached:
-		// Deliberately does not say why (#10874): a display that is attached
-		// but asleep drops out of the active list too, so zero here is both
-		// "nothing attached" and "the lock screen switched the display off".
-		// A session open (display_power.go) reads the online display list
-		// and prefixes the case it found.
-		return fmt.Errorf("%w: the system reported zero displays to capture. This is NOT a permissions failure",
-			ErrDisplayNotFound)
+		// Enumerates both causes instead of assuming headless (#10874): a
+		// display that is attached but asleep drops out of the active list
+		// too. A session open (display_power.go) reads the online display
+		// list and prefixes the case it actually found.
+		return fmt.Errorf("%w (nothing attached, or the attached display is asleep). "+
+			"This is NOT a permissions failure", errZeroDisplays)
 	case captureErrContentUnavailable:
 		return fmt.Errorf("%w: the shareable-content request failed. Causes: Screen Recording "+
 			"not granted to this process; the requested display index no longer exists; "+

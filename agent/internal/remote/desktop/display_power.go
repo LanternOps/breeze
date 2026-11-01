@@ -61,14 +61,16 @@ func (s displayState) String() string {
 	}
 }
 
-// classifyDisplays maps a reading to a state. Any sleeping display counts as
-// asleep even when another is awake: the session may be targeting it, and a
-// wake costs nothing when it was not.
+// classifyDisplays maps a reading to a state. Asleep means nothing is
+// drawable, or every attached display reports asleep. One sleeping display
+// beside an awake one is not asleep: a lid-closed MacBook keeps its panel
+// online and asleep, user activity cannot wake it, and treating it as asleep
+// would cost every session open the whole wake budget.
 func classifyDisplays(c displayCounts) displayState {
 	switch {
 	case c.online <= 0:
 		return displayStateAbsent
-	case c.asleep > 0 || c.active <= 0:
+	case c.active <= 0 || c.asleep >= c.online:
 		return displayStateAsleep
 	default:
 		return displayStateAwake
@@ -142,27 +144,34 @@ func openSessionCapturer(config CaptureConfig) (ScreenCapturer, error) {
 	})
 }
 
-// wake declares user activity and polls, within the budget, until no display
-// is asleep. It returns the last reading.
-func (w displayWaker) wake() (displayState, displayCounts) {
-	if err := w.ops.declareUserActivity(); err != nil && !errors.Is(err, errDisplayPowerUnsupported) {
-		slog.Warn("could not declare user activity to wake the display", "error", err.Error())
+// wake declares user activity and polls, within the budget, until the
+// display is no longer asleep. It returns the last reading and the
+// declaration's error: when the declaration itself failed, the display never
+// had a chance to wake, and the error must say so.
+func (w displayWaker) wake() (displayState, displayCounts, error) {
+	declareErr := w.ops.declareUserActivity()
+	if errors.Is(declareErr, errDisplayPowerUnsupported) {
+		declareErr = nil
+	}
+	if declareErr != nil {
+		slog.Warn("could not declare user activity to wake the display", "error", declareErr.Error())
 	}
 	state, c := readDisplayState(w.ops)
 	for waited := time.Duration(0); state == displayStateAsleep && waited < w.timeout; waited += w.poll {
 		w.sleep(w.poll)
 		state, c = readDisplayState(w.ops)
 	}
-	return state, c
+	return state, c, declareErr
 }
 
 func (w displayWaker) open(open func() (ScreenCapturer, error)) (ScreenCapturer, error) {
 	state, c := readDisplayState(w.ops)
 	waited := false
+	var wakeErr error
 	if state == displayStateAsleep {
 		slog.Info("display is asleep; declaring user activity before capture",
 			"online", c.online, "active", c.active, "asleep", c.asleep)
-		state, c = w.wake()
+		state, c, wakeErr = w.wake()
 		waited = true
 		slog.Info("display wake finished", "state", state.String(),
 			"online", c.online, "active", c.active, "asleep", c.asleep)
@@ -179,7 +188,7 @@ func (w displayWaker) open(open func() (ScreenCapturer, error)) (ScreenCapturer,
 		// between. Wake it and try once more.
 		slog.Info("capture open failed with the display asleep; waking it and retrying",
 			"error", err.Error(), "online", c.online, "active", c.active, "asleep", c.asleep)
-		state, c = w.wake()
+		state, c, wakeErr = w.wake()
 		if state == displayStateAwake {
 			capturer, retryErr := open()
 			if retryErr == nil {
@@ -189,48 +198,84 @@ func (w displayWaker) open(open func() (ScreenCapturer, error)) (ScreenCapturer,
 			state, c = readDisplayState(w.ops)
 		}
 	}
-	return nil, describeDisplayStateError(err, state, c)
+	return nil, describeDisplayStateError(err, state, c, wakeErr)
 }
 
 // displayStatePhrase is the technician-facing description of a display state
-// that explains a capture failure, or "" for a state that does not.
-func displayStatePhrase(state displayState, c displayCounts) string {
+// that explains a zero-displays failure, or "" for a state that does not.
+// wakeErr is the user-activity declaration's failure, if it failed.
+func displayStatePhrase(state displayState, c displayCounts, wakeErr error) string {
 	switch state {
 	case displayStateAbsent:
 		return "no display is attached (0 online); on a headless Mac this is normal once a Screen Sharing " +
-			"session ends, attach a display or a dummy plug. Not a permissions failure"
+			"session ends, attach a display or a dummy plug"
 	case displayStateAsleep:
+		if wakeErr != nil {
+			return fmt.Sprintf("a display is attached but asleep (%d online, %d asleep, %d active) and could not "+
+				"be woken (%v). Not a headless Mac", c.online, c.asleep, c.active, wakeErr)
+		}
 		return fmt.Sprintf("a display is attached but asleep (%d online, %d asleep, %d active) and did not wake "+
-			"when Breeze declared user activity. Not a headless Mac, not a permissions failure",
-			c.online, c.asleep, c.active)
+			"when Breeze declared user activity. Not a headless Mac", c.online, c.asleep, c.active)
 	default:
 		return ""
 	}
 }
 
-// describeDisplayStateError prefixes err with the display case when the
-// display state explains the failure, and returns err unchanged otherwise.
-// The case comes first so a truncated viewer message still carries it.
-func describeDisplayStateError(err error, state displayState, c displayCounts) error {
-	if err == nil {
-		return nil
+// describeDisplayStateError prefixes a zero-displays error with the display
+// case, so the viewer reads which one it was. Any other error — a permission
+// denial, a ScreenCaptureKit refusal — is returned unchanged even when the
+// display happens to be asleep: the display state does not explain it, and
+// labelling it would send the technician the wrong way. The case comes first
+// so a truncated viewer message still carries it.
+func describeDisplayStateError(err error, state displayState, c displayCounts, wakeErr error) error {
+	if err == nil || !errors.Is(err, errZeroDisplays) {
+		return err
 	}
-	phrase := displayStatePhrase(state, c)
+	phrase := displayStatePhrase(state, c, wakeErr)
 	if phrase == "" {
 		return err
 	}
 	return fmt.Errorf("%s: %w", phrase, err)
 }
 
-// displayStateStopReason is the no-video watchdog's reason when the display
-// state explains the outage, or "".
-func displayStateStopReason(ops displayPowerOps) string {
+// describeCurrentDisplayState annotates err with a fresh reading, without
+// waking anything. The ScreenCaptureKit stream restart uses it.
+func describeCurrentDisplayState(ops displayPowerOps, err error) error {
+	if err == nil || !errors.Is(err, errZeroDisplays) {
+		return err
+	}
 	state, c := readDisplayState(ops)
-	phrase := displayStatePhrase(state, c)
-	if phrase == "" {
+	return describeDisplayStateError(err, state, c, nil)
+}
+
+// declareForStreamRestart wakes the display before a capture stream is
+// rebuilt mid-session. It is reached only from a stream restart, which only a
+// live session's capturer performs: capability probes capture one frame and
+// close, so they never get here and never light a sleeping display.
+func declareForStreamRestart(ops displayPowerOps) {
+	if ops == nil {
+		return
+	}
+	if err := ops.declareUserActivity(); err != nil && !errors.Is(err, errDisplayPowerUnsupported) {
+		slog.Warn("could not declare user activity before restarting the capture stream", "error", err.Error())
+	}
+}
+
+// displayStopReason words a display state as the no-video watchdog's stop
+// reason, or "" for a state that does not explain the outage. Unlike
+// displayStatePhrase it makes no claim about permissions: the watchdog does
+// not know which capture error it is ending on.
+func displayStopReason(state displayState, c displayCounts) string {
+	var reason string
+	switch state {
+	case displayStateAbsent:
+		reason = "screen capture stopped: no display is attached (0 online); on a headless Mac attach a display or a dummy plug"
+	case displayStateAsleep:
+		reason = fmt.Sprintf("screen capture stopped: the display went to sleep (%d online, %d asleep, %d active) "+
+			"and did not wake for the session. Not a headless Mac", c.online, c.asleep, c.active)
+	default:
 		return ""
 	}
-	reason := "screen capture stopped: " + phrase
 	if len(reason) > maxStopReasonBytes {
 		reason = reason[:maxStopReasonBytes]
 	}
@@ -249,6 +294,12 @@ type displayWakeHold struct {
 	mu        sync.Mutex
 	releaseFn func() error
 	released  bool
+	// observed is the display state read by the latest nudge, before it
+	// declared activity: what the display was doing when a capture restart
+	// was needed. The watchdog's stop reason reads it, because by the time
+	// the watchdog gives up its own nudges may have lit the display again.
+	observed       displayState
+	observedCounts displayCounts
 }
 
 func acquireDisplayWakeHold(ops displayPowerOps, sessionID string) *displayWakeHold {
@@ -276,8 +327,12 @@ func (h *displayWakeHold) nudge() {
 	if h == nil || h.ops == nil {
 		return
 	}
+	state, c := readDisplayState(h.ops)
 	h.mu.Lock()
 	released := h.released
+	if !released {
+		h.observed, h.observedCounts = state, c
+	}
 	h.mu.Unlock()
 	if released {
 		return
@@ -286,6 +341,22 @@ func (h *displayWakeHold) nudge() {
 		slog.Warn("could not declare user activity to wake the display",
 			"session", h.sessionID, "error", err.Error())
 	}
+}
+
+// stopReason is the no-video watchdog's reason when the display state seen
+// at the latest capture restart explains the outage, else a fresh reading's,
+// else "". Nil-safe: a session without a hold reads the display directly.
+func (h *displayWakeHold) stopReason(ops displayPowerOps) string {
+	if h != nil {
+		h.mu.Lock()
+		state, c := h.observed, h.observedCounts
+		h.mu.Unlock()
+		if reason := displayStopReason(state, c); reason != "" {
+			return reason
+		}
+	}
+	state, c := readDisplayState(ops)
+	return displayStopReason(state, c)
 }
 
 // release drops the assertion. Idempotent and nil-safe.

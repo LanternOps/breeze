@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -99,7 +100,11 @@ func TestClassifyDisplays(t *testing.T) {
 		{"nothing online is absent", countsAbsent, displayStateAbsent},
 		{"online but none active is asleep", displayCounts{online: 1, active: 0, asleep: 0}, displayStateAsleep},
 		{"online and reported asleep", countsAsleep, displayStateAsleep},
-		{"one of two asleep still needs a wake", displayCounts{online: 2, active: 1, asleep: 1}, displayStateAsleep},
+		// A lid-closed MacBook: panel online and asleep, external display
+		// awake. Not asleep — no wake can light the panel, and every open
+		// would otherwise burn the wake budget.
+		{"one of two asleep beside an awake one", displayCounts{online: 2, active: 1, asleep: 1}, displayStateAwake},
+		{"every attached display asleep", displayCounts{online: 2, active: 2, asleep: 2}, displayStateAsleep},
 		{"online and active is awake", countsAwake, displayStateAwake},
 		{"two awake displays", displayCounts{online: 2, active: 2, asleep: 0}, displayStateAwake},
 	}
@@ -235,8 +240,12 @@ func TestOpenWithDisplayWake_AbsentKeepsHeadlessAdvice(t *testing.T) {
 	if !strings.Contains(msg, "no display is attached") || !strings.Contains(msg, "dummy plug") {
 		t.Errorf("absent error should say no display is attached and keep the dummy-plug advice, got %q", msg)
 	}
-	if strings.Contains(msg, "asleep") {
-		t.Errorf("absent error must not say asleep, got %q", msg)
+	// The prefix is the case found; the wrapped base text lists both causes.
+	if !strings.HasPrefix(msg, "no display is attached") {
+		t.Errorf("absent error should lead with the absent case, got %q", msg)
+	}
+	if strings.HasPrefix(msg, "a display is attached but asleep") {
+		t.Errorf("absent error must not lead with asleep, got %q", msg)
 	}
 }
 
@@ -249,6 +258,83 @@ func TestOpenWithDisplayWake_AwakeFailurePassesThrough(t *testing.T) {
 	_, err := w.open(func() (ScreenCapturer, error) { return nil, base })
 	if err != base {
 		t.Fatalf("err = %v, want the original error unchanged", err)
+	}
+}
+
+// The annotation is for zero-displays failures only. A permission denial on a
+// Mac whose display is asleep or absent must not be told "not a permissions
+// failure" or sent to a dummy plug.
+func TestOpenWithDisplayWake_OnlyZeroDisplayErrorsAreLabelled(t *testing.T) {
+	for _, counts := range []displayCounts{countsAsleep, countsAbsent} {
+		ops := &fakeDisplayPower{script: []displayCounts{counts}}
+		w, _ := testWaker(ops)
+		base := translateCaptureError(captureErrPermissionDenied)
+		_, err := w.open(func() (ScreenCapturer, error) { return nil, base })
+		if err != base {
+			t.Fatalf("counts %+v: err = %v, want the permission error unchanged", counts, err)
+		}
+	}
+	// A zero-displays error buried in the SCK-then-CG fallback chain is
+	// still recognised (capture_probe.go wraps both with %w).
+	chained := fmt.Errorf("ScreenCaptureKit failed (%w); CoreGraphics fallback also failed: %w",
+		translateCaptureError(captureErrNoDisplayAttached), translateCaptureError(captureErrNoDisplayAttached))
+	got := describeDisplayStateError(chained, displayStateAbsent, countsAbsent, nil)
+	if !strings.Contains(got.Error(), "no display is attached") {
+		t.Fatalf("chained zero-displays error should be labelled, got %q", got)
+	}
+}
+
+// Awake at the check, asleep after the failed open, and it never wakes: one
+// open, one bounded wait, the asleep error.
+func TestOpenWithDisplayWake_FellAsleepAndNeverWokeIsBounded(t *testing.T) {
+	ops := &fakeDisplayPower{script: []displayCounts{countsAwake, countsAsleep}}
+	w, slept := testWaker(ops)
+	opens := 0
+	_, err := w.open(func() (ScreenCapturer, error) {
+		opens++
+		return nil, translateCaptureError(captureErrNoDisplayAttached)
+	})
+	if opens != 1 || *slept != 3*time.Second {
+		t.Fatalf("opens=%d slept=%v, want 1 open and the 3s budget", opens, *slept)
+	}
+	if err == nil || !strings.Contains(err.Error(), "asleep") {
+		t.Fatalf("want the asleep error, got %v", err)
+	}
+}
+
+// The display woke for the retry, but the retry failed for another reason:
+// the retry's error is returned, judged against a fresh reading.
+func TestOpenWithDisplayWake_RetryFailureReportsTheRetryError(t *testing.T) {
+	ops := &fakeDisplayPower{script: []displayCounts{countsAwake, countsAsleep, countsAwake}}
+	w, _ := testWaker(ops)
+	retryErr := errors.New("SCK refused the stream")
+	opens := 0
+	_, err := w.open(func() (ScreenCapturer, error) {
+		opens++
+		if opens == 1 {
+			return nil, translateCaptureError(captureErrNoDisplayAttached)
+		}
+		return nil, retryErr
+	})
+	if opens != 2 || err != retryErr {
+		t.Fatalf("opens=%d err=%v, want 2 opens and the retry error unchanged", opens, err)
+	}
+}
+
+// When the wake declaration itself failed, the error must not claim the
+// display ignored it.
+func TestOpenWithDisplayWake_FailedDeclarationIsNamed(t *testing.T) {
+	ops := &fakeDisplayPower{script: []displayCounts{countsAsleep}, declareErr: errors.New("IOReturn 0xe00002c1")}
+	w, _ := testWaker(ops)
+	_, err := w.open(func() (ScreenCapturer, error) {
+		return nil, translateCaptureError(captureErrNoDisplayAttached)
+	})
+	msg := err.Error()
+	if !strings.Contains(msg, "could not be woken") || !strings.Contains(msg, "0xe00002c1") {
+		t.Fatalf("want the failed declaration named, got %q", msg)
+	}
+	if strings.Contains(msg, "did not wake when Breeze declared") {
+		t.Fatalf("must not claim a declaration that failed, got %q", msg)
 	}
 }
 
@@ -266,9 +352,43 @@ func TestOpenWithDisplayWake_UnknownPlatformIsUnchanged(t *testing.T) {
 }
 
 func TestZeroDisplayErrorNoLongerAssumesHeadless(t *testing.T) {
-	msg := translateCaptureError(captureErrNoDisplayAttached).Error()
+	err := translateCaptureError(captureErrNoDisplayAttached)
+	msg := err.Error()
 	if strings.Contains(msg, "dummy plug") {
 		t.Fatalf("the bare zero-displays error must not assume a headless Mac — a sleeping display reports zero too (#10874); got %q", msg)
+	}
+	if !strings.Contains(msg, "asleep") || !strings.Contains(msg, "nothing attached") {
+		t.Fatalf("the bare zero-displays error should name both causes, got %q", msg)
+	}
+	if !errors.Is(err, errZeroDisplays) || !errors.Is(err, ErrDisplayNotFound) {
+		t.Fatalf("code 11 must wrap errZeroDisplays and ErrDisplayNotFound, got %v", err)
+	}
+	if errors.Is(translateCaptureError(captureErrContentUnavailable), errZeroDisplays) {
+		t.Fatal("content-unavailable must not read as a zero-displays failure")
+	}
+}
+
+// The stream restart path in capture_darwin.go (darwin+cgo, never built in
+// CI) delegates to these two helpers; they are tested here, and the wiring is
+// pinned by TestDisplayWakeWiring.
+func TestStreamRestartHelpers(t *testing.T) {
+	ops := &fakeDisplayPower{script: []displayCounts{countsAsleep}}
+	declareForStreamRestart(ops)
+	if ops.declares != 1 {
+		t.Fatalf("declareForStreamRestart: declares=%d, want 1", ops.declares)
+	}
+	declareForStreamRestart(nil)
+
+	zero := translateCaptureError(captureErrNoDisplayAttached)
+	if got := describeCurrentDisplayState(ops, zero); !strings.Contains(got.Error(), "asleep") {
+		t.Fatalf("restart zero-displays error should be labelled asleep, got %q", got)
+	}
+	other := translateCaptureError(captureErrSCStreamFailed)
+	if got := describeCurrentDisplayState(ops, other); got != other {
+		t.Fatalf("a non-zero-displays restart error must pass through, got %v", got)
+	}
+	if describeCurrentDisplayState(ops, nil) != nil {
+		t.Fatal("nil in, nil out")
 	}
 }
 
@@ -313,9 +433,152 @@ func TestDisplayWakeHold_NilSafe(t *testing.T) {
 	var h *displayWakeHold
 	h.nudge()
 	h.release()
+	if got := h.stopReason(&fakeDisplayPower{script: []displayCounts{countsAwake}}); got != "" {
+		t.Fatalf("nil hold, awake display: stopReason = %q, want empty", got)
+	}
+	nilOps := acquireDisplayWakeHold(nil, "s")
+	nilOps.nudge()
+	nilOps.release()
 }
 
-func TestDisplayStateStopReason(t *testing.T) {
+// A failed declaration still takes the assertion; a failed release is not
+// retried.
+func TestDisplayWakeHold_PartialFailures(t *testing.T) {
+	ops := &fakeDisplayPower{script: []displayCounts{countsAwake}, declareErr: errors.New("declare failed")}
+	h := acquireDisplayWakeHold(ops, "s1")
+	if ops.prevents != 1 || ops.openRelease != 1 {
+		t.Fatalf("assertion must be taken even when the declaration fails, prevents=%d open=%d", ops.prevents, ops.openRelease)
+	}
+	ops.releaseErr = errors.New("release failed")
+	h.release()
+	h.release()
+	if ops.releases != 1 {
+		t.Fatalf("a failed release must not be retried, releases=%d", ops.releases)
+	}
+
+	unsupported := acquireDisplayWakeHold(noDisplayPowerForTest{}, "s2")
+	unsupported.nudge()
+	unsupported.release()
+}
+
+// noDisplayPowerForTest mirrors the non-darwin no-op (display_power_other.go
+// is not built on a Mac, so the test cannot name it there).
+type noDisplayPowerForTest struct{}
+
+func (noDisplayPowerForTest) counts() (displayCounts, bool) { return displayCounts{}, false }
+func (noDisplayPowerForTest) declareUserActivity() error    { return errDisplayPowerUnsupported }
+func (noDisplayPowerForTest) preventDisplaySleep() (func() error, error) {
+	return nil, errDisplayPowerUnsupported
+}
+
+// nudge runs on the capture goroutine while doCleanup releases on another.
+func TestDisplayWakeHold_ConcurrentNudgeAndRelease(t *testing.T) {
+	ops := &fakeDisplayPower{script: []displayCounts{countsAwake}}
+	h := acquireDisplayWakeHold(ops, "s1")
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); h.nudge() }()
+		go func() { defer wg.Done(); h.release() }()
+	}
+	wg.Wait()
+	if ops.releases != 1 {
+		t.Fatalf("releases=%d, want exactly 1", ops.releases)
+	}
+}
+
+// doCleanup releases the hold exactly once, after the capturer is closed.
+func TestDoCleanupReleasesTheDisplayWakeHoldAfterTheCapturer(t *testing.T) {
+	var order []string
+	ops := &fakeDisplayPower{script: []displayCounts{countsAwake}}
+	s := newTestSession("s1")
+	s.capturer = &closeRecordingCapturer{onClose: func() { order = append(order, "capturer") }}
+	s.displayWake = acquireDisplayWakeHold(ops, "s1")
+	origRelease := s.displayWake.releaseFn
+	s.displayWake.releaseFn = func() error { order = append(order, "assertion"); return origRelease() }
+	s.doCleanup()
+	s.doCleanup()
+	if ops.releases != 1 || ops.openRelease != 0 {
+		t.Fatalf("releases=%d open=%d, want the assertion released exactly once", ops.releases, ops.openRelease)
+	}
+	if strings.Join(order, ",") != "capturer,assertion" {
+		t.Fatalf("teardown order = %v, want capturer then assertion", order)
+	}
+}
+
+type closeRecordingCapturer struct {
+	stubCapturer
+	onClose func()
+}
+
+func (c *closeRecordingCapturer) Close() error { c.onClose(); return nil }
+
+// StartSession, the capture loops and the darwin stream shim need a real
+// display and cannot run in CI; this source contract pins their wiring.
+func TestDisplayWakeWiring(t *testing.T) {
+	read := func(name string) string {
+		b, err := desktopSources.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return string(b)
+	}
+	inOrder := func(file, src string, needles ...string) {
+		t.Helper()
+		from := 0
+		for _, n := range needles {
+			i := strings.Index(src[from:], n)
+			if i < 0 {
+				t.Fatalf("%s: %q missing or out of order (want order %q)", file, n, needles)
+			}
+			from += i + len(n)
+		}
+	}
+	webrtc := read("session_webrtc.go")
+	start := webrtc[strings.Index(webrtc, "func (m *SessionManager) StartSession("):]
+	// The hold is taken in the Session literal, before the session is
+	// published (a concurrent stop must see it), and before the first open.
+	inOrder("session_webrtc.go", start,
+		"displayWake: acquireDisplayWakeHold(displayPower, sessionID)",
+		"m.sessions[sessionID] = session",
+		"openSessionCapturer(capConfig)",
+	)
+	if strings.Contains(start, "NewScreenCapturer(") {
+		t.Error("StartSession must open through openSessionCapturer, not NewScreenCapturer")
+	}
+
+	sess := read("session.go")
+	inOrder("session.go", sess[strings.Index(sess, "func (s *Session) doCleanup()"):],
+		"s.capturer.Close()",
+		"s.displayWake.release()",
+	)
+
+	capture := read("session_capture.go")
+	for _, loop := range []string{"func (s *Session) captureLoopDXGI()", "func (s *Session) captureLoopTicker()"} {
+		body := capture[strings.Index(capture, loop):]
+		inOrder("session_capture.go "+loop, body,
+			"noVideoStopReason(capturer, s.displayWake)",
+			"s.displayWake.nudge()",
+			"ForceReattach()",
+		)
+	}
+
+	darwin := read("capture_darwin.go")
+	inOrder("capture_darwin.go", darwin[strings.Index(darwin, "func (s sckStreamShim) start("):],
+		"if refreshFilter {",
+		"declareForStreamRestart(displayPower)",
+		"C.sckStartStream(",
+		"describeCurrentDisplayState(displayPower, translateDarwinError(code))",
+	)
+
+	// CoreGraphics and CGDisplayStream report zero active displays as code
+	// 11, so the session open can label them.
+	for _, f := range []string{"capture_darwin_cg.go", "capture_darwin_displaystream.go"} {
+		inOrder(f, read(f), "if (displayCount == 0) {", "return 11;")
+	}
+}
+
+func TestDisplayStopReason(t *testing.T) {
 	cases := []struct {
 		name    string
 		ops     *fakeDisplayPower
@@ -327,20 +590,37 @@ func TestDisplayStateStopReason(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := displayStateStopReason(tc.ops)
+			var h *displayWakeHold
+			got := h.stopReason(tc.ops)
 			if !strings.Contains(got, tc.want) || strings.Contains(got, tc.notWant) {
-				t.Fatalf("displayStateStopReason = %q, want it to contain %q and not %q", got, tc.want, tc.notWant)
+				t.Fatalf("stopReason = %q, want it to contain %q and not %q", got, tc.want, tc.notWant)
+			}
+			if strings.Contains(got, "permissions") {
+				t.Fatalf("the watchdog does not know the capture error; it must not rule out permissions: %q", got)
 			}
 			if len(got) > maxStopReasonBytes {
 				t.Fatalf("reason is %d bytes, over the %d-byte stop-reason bound: %q", len(got), maxStopReasonBytes, got)
 			}
 		})
 	}
-	if got := displayStateStopReason(&fakeDisplayPower{script: []displayCounts{countsAwake}}); got != "" {
+	var h *displayWakeHold
+	if got := h.stopReason(&fakeDisplayPower{script: []displayCounts{countsAwake}}); got != "" {
 		t.Fatalf("awake display: want no display reason, got %q", got)
 	}
-	if got := displayStateStopReason(&fakeDisplayPower{unknown: true}); got != "" {
+	if got := h.stopReason(&fakeDisplayPower{unknown: true}); got != "" {
 		t.Fatalf("unknown platform: want no display reason, got %q", got)
+	}
+}
+
+// The watchdog gives up after its own nudges may have lit the display again;
+// the state seen at the last restart, before its wake, is what explains the
+// outage.
+func TestDisplayWakeHold_StopReasonUsesTheStateSeenAtTheLastRestart(t *testing.T) {
+	ops := &fakeDisplayPower{script: []displayCounts{countsAwake, countsAsleep, countsAwake}}
+	h := acquireDisplayWakeHold(ops, "s1") // read 1: awake
+	h.nudge()                              // read 2: asleep, recorded before declaring
+	if got := h.stopReason(ops); !strings.Contains(got, "asleep") {
+		t.Fatalf("stopReason = %q, want the asleep state seen at the restart", got)
 	}
 }
 
@@ -348,7 +628,7 @@ func TestDisplayStateStopReason(t *testing.T) {
 // swallowed nothing — the issue's session ended with the generic fallback.
 func TestNoVideoStopReason_NamesASleepingDisplay(t *testing.T) {
 	withDisplayPower(t, &fakeDisplayPower{script: []displayCounts{countsAsleep}})
-	got := noVideoStopReason(&stubCapturer{})
+	got := noVideoStopReason(&stubCapturer{}, nil)
 	if got == noVideoStopReasonFallback || !strings.Contains(got, "asleep") {
 		t.Fatalf("noVideoStopReason = %q, want the asleep-display reason", got)
 	}

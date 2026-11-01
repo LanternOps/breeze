@@ -122,6 +122,14 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 
 		onClipboardSummary: m.OnClipboardSummary,
 		trickle:            newICETrickle(),
+
+		// Keep the display on for the session's whole life and wake it
+		// before the first capture (#10874): a locked Mac's lock screen
+		// switches the display off ~30 s after the last input, and a sleeping
+		// display reads as zero displays. Taken here, before the session is
+		// published to m.sessions, so a concurrent stop's doCleanup always
+		// sees it; doCleanup releases it, and a failed start reaches that too.
+		displayWake: acquireDisplayWakeHold(displayPower, sessionID),
 	}
 	session.cursorStreamEnabled.Store(false)
 	session.wireInputEpochHooks()
@@ -225,11 +233,6 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		capConfig.DisplayIndex = displayIndex
 	}
 	capturerStart := time.Now()
-	// Keep the display on for the session's whole life and wake it before
-	// the first capture (#10874): a locked Mac's lock screen switches the
-	// display off ~30 s after the last input, and a sleeping display reads as
-	// zero displays. Released in doCleanup, which a failed start reaches too.
-	session.displayWake = acquireDisplayWakeHold(displayPower, sessionID)
 	capturer, err := openSessionCapturer(capConfig)
 	if err != nil {
 		return "", fmt.Errorf("failed to create screen capturer: %w", err)
