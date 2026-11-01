@@ -27,7 +27,7 @@
  * All tenants are synthetic.
  */
 import './setup';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHmac, randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
@@ -121,6 +121,10 @@ afterAll(() => {
 });
 beforeEach(() => {
   queueAdds.length = 0;
+});
+// A test that pins `Date` (the DST fall-back case) must hand the real clock back whether it passes or fails.
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 const system = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn));
@@ -447,6 +451,12 @@ describe('the cutover, end to end (real Postgres + Redis, #5221 B7)', () => {
   }, 60_000);
 
   runDb('a schedule across a switch, a revert and a DST fall-back fires each occurrence once, twice in the repeated hour', async () => {
+    // The scenario is anchored to the 2026-11-01 America/New_York fall-back, so the switch has to
+    // happen BEFORE that date whatever the real clock says: pin `Date` (switch_at is `new Date()` in
+    // the switch service; the flow tick and legacy admission take their instants as arguments).
+    // Only `Date` is faked — timers stay real so Postgres/Redis I/O is untouched (the #10848 pattern).
+    // Restored by the file-level afterEach.
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-30T12:00:00Z') });
     const t = await tenant();
     // 01:30 New York: on 2026-11-01 that wall time happens twice (EDT 05:30Z, then EST 06:30Z).
     const trigger = { type: 'schedule' as const, cronExpression: '30 1 * * *', timezone: 'America/New_York' };

@@ -204,22 +204,22 @@ describe('webhook routes', () => {
     };
     beforeEach(() => { vi.mocked(db.select).mockReset(); vi.mocked(db.insert).mockReset(); vi.mocked(db.update).mockReset(); });
 
-    it.each(['POST', 'PATCH'])('rejects never-published alert.escalated on %s', async (method) => {
-      if (method === 'POST') insert();
-      else {
-        vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([row()]) as any);
-        vi.mocked(db.update).mockReturnValueOnce({ set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => [row()]) })) })) } as any);
-      }
-      const res = await request({ ...createBody, events: ['alert.escalated'] }, method,
-        method === 'POST' ? '/webhooks' : `/webhooks/${WEBHOOK_ID_1}`);
-      expect(res.status).toBe(400);
-      const text = await res.text();
-      expect(text).toContain('alert.escalated');
-      expect(text).toContain('never sent by Breeze');
-      expect(db.insert).not.toHaveBeenCalled();
-      expect(db.update).not.toHaveBeenCalled();
+    // #10565: alert.escalated has a publisher now, so it is an ordinary event.
+    it('accepts alert.escalated on POST', async () => {
+      const values = insert();
+      const res = await request({ ...createBody, events: ['alert.escalated'] });
+      expect(res.status).toBe(201);
+      expect(values.mock.calls[0]![0]).toHaveProperty('events', ['alert.escalated']);
     });
-    it('allows pausing a stored never-delivered subscription without changing its events', async () => {
+    it('accepts alert.escalated on PATCH', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([row()]) as any);
+      const set = vi.fn((data: Record<string, unknown>) => ({ where: vi.fn(() => ({ returning: vi.fn(async () => [row(data)]) })) }));
+      vi.mocked(db.update).mockReturnValueOnce({ set } as any);
+      const res = await request({ events: ['alert.escalated'] }, 'PATCH', `/webhooks/${WEBHOOK_ID_1}`);
+      expect(res.status).toBe(200);
+      expect(set.mock.calls[0]![0]).toHaveProperty('events', ['alert.escalated']);
+    });
+    it('allows pausing a stored subscription without changing its events', async () => {
       const stored = row({ events: ['alert.escalated'] });
       vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([stored]) as any);
       const set = vi.fn((data: Record<string, unknown>) => ({ where: vi.fn(() => ({ returning: vi.fn(async () => [{ ...stored, ...data }]) })) }));
