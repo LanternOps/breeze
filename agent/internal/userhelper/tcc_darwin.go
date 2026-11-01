@@ -256,6 +256,9 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 
 	check := func() {
 		status := checkTCCPermissions(desktopContext, policy.promptAccessibility, policy.reportRemoteDesktop)
+		if policy.diagnoseDenial {
+			attachDenialVerdict(status)
+		}
 		allGranted = len(missingPermissions(status)) == 0
 		if err := sendTCCStatus(conn, status, &seq); err != nil {
 			consecutiveFailures++

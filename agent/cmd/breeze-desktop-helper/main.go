@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"os"
 	"os/signal"
@@ -154,44 +153,7 @@ func runDesktopHelper() {
 	// calls ScreenCaptureKit (#8058). It used to take a real frame on every
 	// helper start, which on macOS 15 raised the monthly acknowledgement alert.
 	startupProbe := collectProbeOutput(startupProbeOptions())
-	attrs := []any{
-		"context", startupProbe.Context,
-		"processUser", startupProbe.ProcessUser,
-		"pid", os.Getpid(),
-		"version", version,
-	}
-	if a := startupProbe.CaptureAccess; a != nil {
-		attrs = append(attrs, "captureAccess", a.State, "captureAccessReason", a.Reason, "canCapture", a.CanCapture)
-	}
-	if startupProbe.CaptureError != "" {
-		attrs = append(attrs, "captureError", startupProbe.CaptureError)
-	}
-	if v := startupProbe.ScreenCaptureKitVerdict; v != nil {
-		if v.Present {
-			attrs = append(attrs, "sckVerdict", v.Reason, "sckVerdictApplies", v.Applies)
-		}
-		if v.Error != "" {
-			// Unreadable or refused: sessions will try ScreenCaptureKit, so
-			// the macOS consent dialog can come back (#8058).
-			attrs = append(attrs, "sckVerdictError", v.Error)
-		}
-	}
-	if startupProbe.TCC != nil {
-		remoteDesktop := "unknown"
-		if startupProbe.TCC.RemoteDesktop != nil {
-			remoteDesktop = fmt.Sprintf("%t", *startupProbe.TCC.RemoteDesktop)
-		}
-		attrs = append(attrs,
-			"screenRecording", startupProbe.TCC.ScreenRecording,
-			"accessibility", startupProbe.TCC.Accessibility,
-			"fullDiskAccess", startupProbe.TCC.FullDiskAccess,
-			"remoteDesktop", remoteDesktop,
-		)
-	}
-	if len(startupProbe.Sessions) > 0 {
-		attrs = append(attrs, "sessions", startupProbe.Sessions)
-	}
-	log.Info("desktop helper startup probe", attrs...)
+	log.Info("desktop helper startup probe", startupProbeLogAttrs(startupProbe)...)
 
 	// Shutdown is signalled by closing `done`, NOT by calling Stop on a
 	// captured client. The supervisor builds a fresh client per reconnect

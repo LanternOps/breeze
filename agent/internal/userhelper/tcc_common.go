@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/remote/desktop"
+	"github.com/breeze-rmm/agent/internal/tccdiag"
 )
 
 func systemSettingsURLForPermission(permission string) (string, error) {
@@ -34,6 +36,10 @@ type tccLoopPolicy struct {
 	// guidance (the first-run dialog, then reminder toasts). False only when
 	// the agent said it shows the permission notice itself (#10190 W04).
 	remindPermissions bool
+	// diagnoseDenial lets the loop attach TCCStatus.DenialVerdict (#10300).
+	// Only the desktop helper's status is kept by the broker, so only it
+	// pays for the diagnosis.
+	diagnoseDenial bool
 }
 
 // tccLoopPolicyFor gates the loop's prompts on the binary kind.
@@ -51,6 +57,7 @@ func tccLoopPolicyFor(binaryKind string, agentHandlesNotice bool) tccLoopPolicy 
 	p := tccLoopPolicy{remindPermissions: !agentHandlesNotice}
 	if binaryKind == ipc.HelperBinaryDesktopHelper {
 		p.requestScreenRecording, p.promptAccessibility, p.reportRemoteDesktop = true, true, true
+		p.diagnoseDenial = true
 	}
 	return p
 }
@@ -63,4 +70,24 @@ func tccLoopPolicyFor(binaryKind string, agentHandlesNotice bool) tccLoopPolicy 
 // notice.info@1.
 func ShowsOwnTCCReminder(resp ipc.AuthResponse) bool {
 	return !resp.AgentHandlesTCCNotice
+}
+
+// tccDiagnoseFn explains a denial (#10300); a seam so tests need no TCC state.
+var tccDiagnoseFn = tccdiag.Run
+
+// attachDenialVerdict names the cause of a Screen Recording or Accessibility
+// denial in status. A grant, and macOS 26's unverified Screen Recording state
+// (preflight can misreport there, #8390), are not denials and cost nothing.
+func attachDenialVerdict(status *ipc.TCCStatus) {
+	if status == nil {
+		return
+	}
+	services := tccdiag.DeniedServices(
+		status.ScreenRecordingState == desktop.CaptureAccessDenied.String(),
+		!status.Accessibility,
+	)
+	if len(services) == 0 {
+		return
+	}
+	status.DenialVerdict = string(tccDiagnoseFn(services).Verdict)
 }

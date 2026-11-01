@@ -4,17 +4,21 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
+	"github.com/breeze-rmm/agent/internal/tccdiag"
 )
 
 type probeCalls struct {
 	capture     []desktop.CaptureProbeOptions
 	tccProbeArg []bool // reportRemoteDesktop passed to ProbeTCCPermissions
 	access      int    // non-capturing access checks
+	diagnosed   [][]tccdiag.Service
 }
 
 // stubProbes replaces the capture, TCC and verdict seams. report/err script
@@ -22,10 +26,14 @@ type probeCalls struct {
 func stubProbes(t *testing.T, report desktop.CaptureProbeReport, err error) *probeCalls {
 	t.Helper()
 	calls := &probeCalls{}
-	saveCapture, saveTCC, saveVerdict, saveAccess := probeCaptureFn, probeTCCFn, sckVerdictFn, captureAccessFn
+	saveCapture, saveTCC, saveVerdict, saveAccess, saveDiag := probeCaptureFn, probeTCCFn, sckVerdictFn, captureAccessFn, tccDiagnoseFn
 	t.Cleanup(func() {
-		probeCaptureFn, probeTCCFn, sckVerdictFn, captureAccessFn = saveCapture, saveTCC, saveVerdict, saveAccess
+		probeCaptureFn, probeTCCFn, sckVerdictFn, captureAccessFn, tccDiagnoseFn = saveCapture, saveTCC, saveVerdict, saveAccess, saveDiag
 	})
+	tccDiagnoseFn = func(services []tccdiag.Service) tccdiag.Diagnosis {
+		calls.diagnosed = append(calls.diagnosed, services)
+		return tccdiag.Diagnosis{Verdict: tccdiag.VerdictRequirementMismatch, MacOSBuild: "24H32"}
+	}
 	captureAccessFn = func(desktop.CaptureConfig) desktop.CaptureAccessReport {
 		calls.access++
 		return desktop.CaptureAccessReport{State: desktop.CaptureAccessGranted, Reason: "preflight"}
@@ -189,5 +197,85 @@ func TestStartupProbe_NeverCaptures(t *testing.T) {
 	}
 	if calls.access != 1 || out.CaptureAccess == nil || out.CaptureAccess.State != "granted" || !out.CaptureAccess.CanCapture {
 		t.Fatalf("access checks = %d, captureAccess = %+v; want one check reported", calls.access, out.CaptureAccess)
+	}
+}
+
+// #10300: a granted host emits no diagnosis and pays for none.
+func TestCollectProbeOutput_GrantedRunsNoDiagnosis(t *testing.T) {
+	calls := stubProbes(t, desktop.CaptureProbeReport{}, nil)
+	probeTCCFn = func(string, bool, bool) *ipc.TCCStatus {
+		return &ipc.TCCStatus{ScreenRecording: true, Accessibility: true}
+	}
+
+	out := collectProbeOutput(startupProbeOptions())
+
+	if out.TCCDiagnosis != nil || len(calls.diagnosed) != 0 {
+		t.Fatalf("diagnosis = %+v after %d calls, want none on a granted host", out.TCCDiagnosis, len(calls.diagnosed))
+	}
+	if attrs := fmt.Sprint(startupProbeLogAttrs(out)); strings.Contains(attrs, "tccVerdict") {
+		t.Fatalf("granted startup line carries a verdict: %s", attrs)
+	}
+}
+
+// #10300 / #5953 Host B: preflight says denied, so the startup probe explains
+// why, covering every service this process was refused.
+func TestCollectProbeOutput_PreflightDeniedIsDiagnosed(t *testing.T) {
+	cases := []struct {
+		name          string
+		access        desktop.CaptureAccessReport
+		accessibility bool
+		want          []tccdiag.Service
+	}{
+		{"screen recording denied", desktop.CaptureAccessReport{State: desktop.CaptureAccessDenied, Reason: "preflight"}, true,
+			[]tccdiag.Service{tccdiag.ServiceScreenCapture}},
+		{"both denied", desktop.CaptureAccessReport{State: desktop.CaptureAccessDenied, Reason: "preflight"}, false,
+			[]tccdiag.Service{tccdiag.ServiceScreenCapture, tccdiag.ServiceAccessibility}},
+		{"accessibility only", desktop.CaptureAccessReport{State: desktop.CaptureAccessGranted, Reason: "preflight"}, false,
+			[]tccdiag.Service{tccdiag.ServiceAccessibility}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := stubProbes(t, desktop.CaptureProbeReport{}, nil)
+			captureAccessFn = func(desktop.CaptureConfig) desktop.CaptureAccessReport { return tc.access }
+			probeTCCFn = func(string, bool, bool) *ipc.TCCStatus {
+				return &ipc.TCCStatus{Accessibility: tc.accessibility}
+			}
+
+			out := collectProbeOutput(startupProbeOptions())
+
+			if len(calls.diagnosed) != 1 || !reflect.DeepEqual(calls.diagnosed[0], tc.want) {
+				t.Fatalf("diagnosed %v, want %v once", calls.diagnosed, tc.want)
+			}
+			if out.TCCDiagnosis == nil || out.TCCDiagnosis.Verdict != tccdiag.VerdictRequirementMismatch {
+				t.Fatalf("diagnosis = %+v", out.TCCDiagnosis)
+			}
+			attrs := fmt.Sprint(startupProbeLogAttrs(out))
+			if !strings.Contains(attrs, "tccVerdict requirement_mismatch") || !strings.Contains(attrs, "24H32") {
+				t.Fatalf("startup line lacks the diagnosis: %s", attrs)
+			}
+		})
+	}
+}
+
+// macOS 26: an unverified Screen Recording state is not a denial.
+func TestCollectProbeOutput_UnverifiedIsNotDiagnosed(t *testing.T) {
+	calls := stubProbes(t, desktop.CaptureProbeReport{}, nil)
+	captureAccessFn = func(desktop.CaptureConfig) desktop.CaptureAccessReport {
+		return desktop.CaptureAccessReport{State: desktop.CaptureAccessUnknown, Reason: "unverified"}
+	}
+	probeTCCFn = func(string, bool, bool) *ipc.TCCStatus { return &ipc.TCCStatus{Accessibility: true} }
+
+	if out := collectProbeOutput(startupProbeOptions()); out.TCCDiagnosis != nil || len(calls.diagnosed) != 0 {
+		t.Fatalf("diagnosed an unverified state: %+v", out.TCCDiagnosis)
+	}
+}
+
+// Off macOS there is no TCC status and capture access is "platform granted".
+func TestCollectProbeOutput_NoTCCStatusIsNotDiagnosed(t *testing.T) {
+	calls := stubProbes(t, desktop.CaptureProbeReport{}, nil)
+	probeTCCFn = func(string, bool, bool) *ipc.TCCStatus { return nil }
+
+	if out := collectProbeOutput(startupProbeOptions()); out.TCCDiagnosis != nil || len(calls.diagnosed) != 0 {
+		t.Fatalf("diagnosed without a TCC status: %+v", out.TCCDiagnosis)
 	}
 }
