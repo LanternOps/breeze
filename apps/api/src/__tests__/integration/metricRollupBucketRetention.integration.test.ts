@@ -124,6 +124,16 @@ async function createLegacyMonth(month: { start: string; end: string; name: stri
   `));
 }
 
+/** Lock requests queued (not granted) on the tables the maintenance job must never wait for. */
+async function queuedLocks(): Promise<number> {
+  const rows = (await getTestDb().execute(sql`
+    SELECT count(*)::int AS n
+    FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+    WHERE NOT l.granted AND c.relname IN ('devices', 'organizations', 'metric_rollups')
+  `)) as unknown as Array<{ n: number }>;
+  return rows[0]!.n;
+}
+
 async function upsertHourly(bucketStart: string, avgValue: number): Promise<void> {
   await getTestDb()
     .insert(metricRollups)
@@ -392,13 +402,8 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
       rePrepared = prepare();
       // Let the prepare make several attempts while devices is held.
       await new Promise((resolve) => setTimeout(resolve, 500));
-      const waiting = (await getTestDb().execute(sql`
-        SELECT count(*)::int AS n
-        FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
-        WHERE NOT l.granted AND c.relname IN ('devices', 'organizations')
-      `)) as unknown as Array<{ n: number }>;
       // NOWAIT: nothing queues on the referenced tables.
-      expect(waiting[0]!.n).toBe(0);
+      expect(await queuedLocks()).toBe(0);
       // The request's second read completes; with the old code this is the
       // statement that hit 40P01 (or blocked until the prepare's did).
       const started = Date.now();
@@ -447,5 +452,92 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
     expect(code).toBe('55P03');
 
     await dropMonth(LEGACY_LOCK_MONTH.name);
+  }, 30_000);
+
+  it('compacts without ever queuing on devices/organizations while requests hold them, cutting over once they let go (#10829)', async () => {
+    await createLegacyMonth(LEGACY_LOCK_MONTH);
+    await seedMonth(LEGACY_LOCK_MONTH.start);
+    const month = LEGACY_LOCK_MONTH.start;
+    await withSystemDbAccessContext(() =>
+      db.execute(sql`SELECT public.breeze_prepare_metric_rollup_compaction(${month}::timestamp, true)`),
+    );
+
+    let compacted: Promise<unknown> | undefined;
+    await getTestDb().transaction(async (tx) => {
+      // A request mid-transaction on both referenced tables: the cutover's
+      // ACCESS EXCLUSIVE cannot be granted until it ends.
+      await tx.execute(sql`SELECT 1 FROM devices LIMIT 1`);
+      await tx.execute(sql`SELECT 1 FROM organizations LIMIT 1`);
+      compacted = withSystemDbAccessContext(() =>
+        db.execute(sql`SELECT public.breeze_compact_metric_rollup_partition(${month}::timestamp, true) AS "name"`),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      expect(await queuedLocks()).toBe(0);
+    });
+
+    const rows = (await compacted) as unknown as Array<{ name: string }>;
+    expect(rows[0]?.name).toBe(LEGACY_LOCK_MONTH.name);
+    expect(await relkind(LEGACY_LOCK_MONTH.name)).toBe('p');
+    expect(await childrenOf(LEGACY_LOCK_MONTH.name)).toEqual([`${LEGACY_LOCK_MONTH.name}_1d`, `${LEGACY_LOCK_MONTH.name}_1h`]);
+    expect(await bucketCounts(LEGACY_LOCK_MONTH.start, LEGACY_LOCK_MONTH.end)).toEqual({ 3600: 2, 86400: 1 });
+
+    await dropMonth(LEGACY_LOCK_MONTH.name);
+  }, 30_000);
+
+  it('compact gives up with lock_not_available before copying when DDL holds a referenced table, never queuing (#10829)', async () => {
+    await createLegacyMonth(LEGACY_LOCK_MONTH);
+    await seedMonth(LEGACY_LOCK_MONTH.start);
+    const month = LEGACY_LOCK_MONTH.start;
+    await withSystemDbAccessContext(() =>
+      db.execute(sql`SELECT public.breeze_prepare_metric_rollup_compaction(${month}::timestamp, true)`),
+    );
+
+    let code: string | undefined;
+    await getTestDb().transaction(async (tx) => {
+      // EXCLUSIVE conflicts with the ROW SHARE the copy's FK checks need.
+      await tx.execute(sql`LOCK TABLE organizations IN EXCLUSIVE MODE`);
+      const attempt = withSystemDbAccessContext(() =>
+        db.execute(sql`SELECT public.breeze_compact_metric_rollup_partition(${month}::timestamp, true)`),
+      ).catch((err) => {
+        const e = err as { code?: string; cause?: { code?: string } };
+        code = e.cause?.code ?? e.code;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      expect(await queuedLocks()).toBe(0);
+      await attempt;
+    });
+    expect(code).toBe('55P03');
+    // Nothing was cut over: the month is still the flat legacy table.
+    expect(await relkind(LEGACY_LOCK_MONTH.name)).toBe('r');
+
+    await dropMonth(LEGACY_LOCK_MONTH.name);
+  }, 30_000);
+
+  it('drops a month with a stranded stage without queuing on devices/organizations (#10829)', async () => {
+    await createLegacyMonth(LEGACY_LOCK_MONTH);
+    const month = LEGACY_LOCK_MONTH.start;
+    await withSystemDbAccessContext(() =>
+      db.execute(sql`SELECT public.breeze_prepare_metric_rollup_compaction(${month}::timestamp, true)`),
+    );
+
+    let dropped: Promise<unknown> | undefined;
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT 1 FROM devices LIMIT 1`);
+      dropped = withSystemDbAccessContext(() =>
+        db.execute(sql`SELECT public.breeze_drop_metric_rollup_partition(${month}::timestamp) AS "name"`),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(await queuedLocks()).toBe(0);
+      await tx.execute(sql`SELECT 1 FROM organizations LIMIT 1`);
+    });
+
+    const rows = (await dropped) as unknown as Array<{ name: string }>;
+    expect(rows[0]?.name).toBe(LEGACY_LOCK_MONTH.name);
+    expect(await relkind(LEGACY_LOCK_MONTH.name)).toBeNull();
+    const leftover = (await getTestDb().execute(sql`
+      SELECT count(*)::int AS n FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'metric_rollups_staging' AND c.relname LIKE ${`${LEGACY_LOCK_MONTH.name}%`}
+    `)) as unknown as Array<{ n: number }>;
+    expect(leftover[0]!.n).toBe(0);
   }, 30_000);
 });

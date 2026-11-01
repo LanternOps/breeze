@@ -19,7 +19,8 @@
 -- first, because deadlock_timeout (1 s) does. Every failed compaction also
 -- left its stage behind, so the next night's prepare paid the drop again.
 --
--- Both steps now take those locks up front, all at once, with NOWAIT, retried
+-- Both steps now take every lock they need on the FK-referenced tables up
+-- front, all at once, with NOWAIT, retried
 -- in a subtransaction (breeze_metric_rollup_lock_nowait). A NOWAIT request
 -- never waits, so it can never be part of a deadlock and never queues readers
 -- behind it; a failed attempt's subtransaction releases whatever it did get,
@@ -33,16 +34,22 @@
 -- stranded stage. Dropping an attached month or bucket leaf takes no lock on
 -- the referenced tables, so the plain retention drop is unchanged.
 --
+-- Scope: the guarantee is about the FK-referenced tables (devices,
+-- organizations), the ones request paths hold. Locks on metric_rollups and on
+-- the month being compacted keep the job's lock_timeout as before, except the
+-- compact cutover, which takes metric_rollups through the helper too.
+--
 -- Bodies are otherwise unchanged from 2026-11-10-130000.
 -- ---------------------------------------------------------------------------
 
--- Lock p_relations in p_mode without ever waiting. Retries a bounded number of
--- times; each attempt is a subtransaction, so a partial grab is released
--- before the next one. Called only from the SECURITY DEFINER maintenance
+-- Lock p_relations in each of p_modes without ever waiting. One attempt takes
+-- every mode or none: it is a subtransaction, so a partial grab is released
+-- before the next attempt and nothing is held while retrying. Retries a
+-- bounded number of times. Called only from the SECURITY DEFINER maintenance
 -- functions below, so it runs with their owner's privileges.
 CREATE OR REPLACE FUNCTION public.breeze_metric_rollup_lock_nowait(
   p_relations REGCLASS[],
-  p_mode TEXT
+  p_modes TEXT[]
 )
 RETURNS VOID
 LANGUAGE plpgsql
@@ -52,12 +59,18 @@ DECLARE
   v_attempts CONSTANT INTEGER := 100;
   v_sleep    CONSTANT DOUBLE PRECISION := 0.1;
   v_list     TEXT;
+  v_mode     TEXT;
   v_attempt  INTEGER;
 BEGIN
-  IF p_mode NOT IN ('SHARE ROW EXCLUSIVE', 'ACCESS EXCLUSIVE') THEN
-    RAISE EXCEPTION 'breeze_metric_rollup_lock_nowait: unsupported lock mode %', p_mode
-      USING ERRCODE = '22023';
+  IF p_modes IS NULL OR cardinality(p_modes) = 0 THEN
+    RAISE EXCEPTION 'breeze_metric_rollup_lock_nowait: no lock mode given' USING ERRCODE = '22023';
   END IF;
+  FOREACH v_mode IN ARRAY p_modes LOOP
+    IF v_mode NOT IN ('ACCESS SHARE', 'ROW SHARE', 'SHARE ROW EXCLUSIVE', 'ACCESS EXCLUSIVE') THEN
+      RAISE EXCEPTION 'breeze_metric_rollup_lock_nowait: unsupported lock mode %', v_mode
+        USING ERRCODE = '22023';
+    END IF;
+  END LOOP;
   IF p_relations IS NULL OR cardinality(p_relations) = 0 THEN
     RETURN;
   END IF;
@@ -66,12 +79,14 @@ BEGIN
 
   FOR v_attempt IN 1..v_attempts LOOP
     BEGIN
-      EXECUTE format('LOCK TABLE %s IN %s MODE NOWAIT', v_list, p_mode);
+      FOREACH v_mode IN ARRAY p_modes LOOP
+        EXECUTE format('LOCK TABLE %s IN %s MODE NOWAIT', v_list, v_mode);
+      END LOOP;
       RETURN;
     EXCEPTION WHEN lock_not_available THEN
       IF v_attempt = v_attempts THEN
         RAISE EXCEPTION 'breeze_metric_rollup_lock_nowait: could not lock % in % mode without waiting after % attempts; the next maintenance run retries',
-          v_list, p_mode, v_attempts
+          v_list, array_to_string(p_modes, ' + '), v_attempts
           USING ERRCODE = '55P03';
       END IF;
       PERFORM pg_sleep(v_sleep);
@@ -79,7 +94,7 @@ BEGIN
   END LOOP;
 END;
 $$;
-REVOKE ALL ON FUNCTION public.breeze_metric_rollup_lock_nowait(REGCLASS[], TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.breeze_metric_rollup_lock_nowait(REGCLASS[], TEXT[]) FROM PUBLIC;
 
 -- The tables metric_rollups references by FK (devices, organizations), in a
 -- fixed order. Derived from the catalog so a new FK is covered too.
@@ -130,9 +145,14 @@ BEGIN
       v_target.o_name || '_' || public.breeze_metric_rollup_bucket_suffix(v_bucket)
     );
   END LOOP;
+  -- metric_rollups first (CREATE TABLE ... LIKE reads it): ACCESS SHARE,
+  -- cheap to hold while the referenced tables are retried.
+  PERFORM public.breeze_metric_rollup_lock_nowait(
+    ARRAY['public.metric_rollups']::regclass[], ARRAY['ACCESS SHARE']
+  );
   PERFORM public.breeze_metric_rollup_lock_nowait(
     public.breeze_metric_rollup_fk_referenced(),
-    CASE WHEN v_need_drop THEN 'ACCESS EXCLUSIVE' ELSE 'SHARE ROW EXCLUSIVE' END
+    ARRAY[CASE WHEN v_need_drop THEN 'ACCESS EXCLUSIVE' ELSE 'SHARE ROW EXCLUSIVE' END, 'ACCESS SHARE']
   );
 
   -- A staged hourly leaf from an earlier run that no longer needs one.
@@ -233,6 +253,16 @@ BEGIN
     END IF;
   END LOOP;
 
+  -- #10829: the copy's FK checks take ROW SHARE, and VALIDATE takes ACCESS
+  -- SHARE + ROW SHARE, on the referenced tables. Take both now, without
+  -- waiting, and hold them through the copy: they conflict only with
+  -- EXCLUSIVE / ACCESS EXCLUSIVE (DDL), so no request is blocked by them, and
+  -- nothing below waits on these tables before the cutover.
+  PERFORM public.breeze_metric_rollup_lock_nowait(
+    public.breeze_metric_rollup_fk_referenced(),
+    ARRAY['ROW SHARE', 'ACCESS SHARE']
+  );
+
   -- a. Freeze writes to this month only.
   EXECUTE format('LOCK TABLE public.%I IN SHARE MODE', v_target.o_name);
 
@@ -260,7 +290,7 @@ BEGIN
   -- cascading delete takes them.
   PERFORM public.breeze_metric_rollup_lock_nowait(
     ARRAY['public.organizations', 'public.devices', 'public.metric_rollups']::regclass[],
-    'ACCESS EXCLUSIVE'
+    ARRAY['ACCESS EXCLUSIVE']
   );
   EXECUTE format('DROP TABLE public.%I', v_target.o_name);
   EXECUTE format(
@@ -319,7 +349,7 @@ BEGIN
   IF v_staged THEN
     PERFORM public.breeze_metric_rollup_lock_nowait(
       public.breeze_metric_rollup_fk_referenced(),
-      'ACCESS EXCLUSIVE'
+      ARRAY['ACCESS EXCLUSIVE']
     );
   END IF;
 
