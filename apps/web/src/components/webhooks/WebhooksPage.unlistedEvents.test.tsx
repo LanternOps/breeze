@@ -69,34 +69,15 @@ describe('WebhooksPage edit — events without a checkbox (#9693)', () => {
     expect((await save()).payloadVersion).toBe(2);
   });
 
-  it('marks never-delivered stored events and removes them on save', async () => {
+  // #10565: alert.escalated is published now, so a stored subscription is an
+  // ordinary checked event — not a "Never delivered" chip removed on save.
+  it('shows a stored alert.escalated subscription as a checked event and keeps it on save', async () => {
     await openEdit(['alert.escalated', 'alert.triggered']);
-    const chip = screen.getByTestId('webhook-never-delivered-chip');
-    expect(chip.textContent).toContain('Never delivered');
-    const explanation = screen.getByTestId('webhook-never-delivered-explanation');
-    expect(explanation).toBeVisible();
-    expect(explanation.textContent).toBe('Breeze never sends this event. It will be removed when you save this webhook.');
-    expect(explanation.id).not.toBe('');
-    expect(chip.getAttribute('aria-describedby')).toBe(explanation.id);
-    expect(chip.getAttribute('title')).toBe(explanation.textContent);
+    expect(screen.queryByTestId('webhook-never-delivered-chip')).toBeNull();
     expect(screen.queryByTestId('webhook-never-delivered-banner')).toBeNull();
-    expect((await save()).events).toEqual(['alert.triggered']);
-  });
-
-  it('removes the explanation when the last never-delivered chip is removed', async () => {
-    await openEdit(['alert.escalated', 'custom.thing']);
-    expect(screen.getByTestId('webhook-never-delivered-explanation')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Remove alert.escalated' }));
-    expect(screen.queryByTestId('webhook-never-delivered-explanation')).toBeNull();
-    expect(document.querySelector('form')!.textContent).toContain('custom.thing');
-  });
-
-  it('warns when only never-delivered events are stored and requires another event', async () => {
-    await openEdit(['alert.escalated']);
-    expect(screen.getByTestId('webhook-never-delivered-banner').getAttribute('role')).toBe('alert');
-    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
-    await waitFor(() => expect(document.body.textContent).toMatch(/at least one event/i));
-    expect(patched()).toBe(false);
+    const box = document.querySelector('input[type="checkbox"][value="alert.escalated"]') as HTMLInputElement | null;
+    expect(box?.checked).toBe(true);
+    expect((await save()).events.sort()).toEqual(['alert.escalated', 'alert.triggered']);
   });
 
   it('keeps "*" in the PATCH when only the URL changes, and shows it as a chip', async () => {
@@ -159,6 +140,7 @@ describe('WebhooksPage edit — events without a checkbox (#9693)', () => {
     expect((screen.getByTestId('webhook-payload-version-2') as HTMLInputElement).checked).toBe(true);
     expect(form.querySelector('input[value="alert.acknowledged"]')).toBeTruthy();
     expect(form.querySelector('input[value="alert.suppressed"]')).toBeTruthy();
+    expect(form.querySelector('input[value="alert.escalated"]')).toBeTruthy();
     fireEvent.change(document.getElementById('webhook-name')!, { target: { value: 'N' } });
     fireEvent.change(document.getElementById('webhook-url')!, { target: { value: 'https://hooks.example.com/n' } });
     fireEvent.change(document.getElementById('webhook-secret')!, { target: { value: 'sekret' } });
