@@ -22,9 +22,6 @@ Last release: **v0.125.0** (2026-10-27).
 
 ## Features / API
 
-### Org-subject alerts (#10725)
-
-- Deleting a topology alert’s origin device now preserves the site-owned alert, notification and correlation history, and PSA ticket mappings (#7269).
 ### Wisp working set (#10364)
 
 - Wisp now adds records to its thread working set after successful focal tool calls, keeps pins ahead of recent auto links, and names the authorized record or device being viewed in the turn seed.
