@@ -412,6 +412,15 @@ describe('manage_groups — member lists are narrowed to the allowlist', () => {
     expect(previewMock).toHaveBeenCalled();
     expect((previewMock.mock.calls[0] as any[])[1]).toMatchObject({ allowedDeviceIds: ['dev-1'] });
   });
+
+  it('preview leaves out decommissioned devices, as group membership does (#9933)', async () => {
+    previewMock.mockClear();
+    await handlerFor('manage_groups')(
+      { action: 'preview', filterConditions: { logic: 'and', conditions: [] } },
+      deviceBoundAuth(),
+    );
+    expect((previewMock.mock.calls[0] as any[])[1]).toMatchObject({ excludeDecommissioned: true });
+  });
 });
 
 // ── 5. manage_alert_rules ────────────────────────────────────────────────────

@@ -1925,7 +1925,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
               orgId,
               limit: Number(input.limit) || 25,
               allowedSiteIds: auth.allowedSiteIds,
-              allowedDeviceIds: auth.allowedDeviceIds,
+              allowedDeviceIds: auth.allowedDeviceIds, excludeDecommissioned: true, // #9933: same population as membership
             },
           );
           return JSON.stringify({ preview: result });
