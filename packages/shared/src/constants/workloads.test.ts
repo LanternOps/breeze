@@ -20,9 +20,10 @@ describe('upstream status classes (spec §9.1 / §10.1)', () => {
       unsupported_registry: 'unknown',
       not_found: 'not_applicable',
       error: 'unknown',
+      provenance_unknown: 'unknown',
     });
     expect([...WORKLOAD_UPSTREAM_UNKNOWN_STATUSES].sort()).toEqual(
-      ['error', 'pending', 'private', 'unsupported_registry'],
+      ['error', 'pending', 'private', 'provenance_unknown', 'unsupported_registry'],
     );
   });
 });

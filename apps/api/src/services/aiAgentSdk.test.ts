@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 
 // #5645: every inline release hands the handler the released intent's decision
 // record (`approvalScope` + `decidedVia`) on the execution context — the same
@@ -217,6 +217,22 @@ vi.mock('./actionIntents/durableRelease', () => ({
 // schema mock in this file.
 vi.mock('./actionIntents/laneCheckpoint', () => ({
   ensureLaneCheckpointBeforeRelease: vi.fn(async () => ({ ok: true, checkpointRef: null })),
+}));
+
+// #10384: the chat gate resolves a run_script proposal within the caller's
+// reach and keys the intent, card and terminal outbox on the proposal's org.
+// Spread the real module; only the reach lookup and the card summary are
+// controllable. Default: no proposal (every other test is unaffected).
+const mockProposalInReach = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({
+  context: undefined as unknown, proposalOrgId: null as string | null,
+})));
+vi.mock('./scriptProposals', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./scriptProposals')>()),
+  loadProposalGuardrailContextInReach: (...args: unknown[]) => mockProposalInReach(...args),
+}));
+const mockProposalApprovalSummary = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => null));
+vi.mock('./scriptProposals/approvalSummary', () => ({
+  loadProposalApprovalSummary: (...args: unknown[]) => mockProposalApprovalSummary(...args),
 }));
 
 vi.mock('./actionIntents/revalidateRelease', () => ({
@@ -566,6 +582,87 @@ describe('runPreFlightChecks', () => {
     mockCheckAiRateLimit.mockRejectedValue(new Error('Redis down'));
     const result = await runPreFlightChecks('session-1', 'hello', auth);
     expect(result).toEqual({ ok: false, error: 'Unable to verify rate limits. Please try again.' });
+  });
+
+  // --- #10415: the Redis rate limit runs between DB phases, never inside one ---
+
+  describe('with a DB phase runner (#10415)', () => {
+    /**
+     * Stands in for the route's `inRequestDb`: records each phase and whether a
+     * phase is open, so a step can be pinned to "inside" or "between" phases.
+     */
+    function makePhaseRunner() {
+      const state = { open: false, phases: 0 };
+      async function inDb<T>(fn: () => Promise<T>): Promise<T> {
+        expect(state.open).toBe(false); // phases never nest
+        state.open = true;
+        state.phases += 1;
+        try {
+          return await fn();
+        } finally {
+          state.open = false;
+        }
+      }
+      return { state, inDb };
+    }
+
+    it('calls the rate limiter with no DB phase open, after the session read and turn resolution and before the budget check', async () => {
+      const { state, inDb } = makePhaseRunner();
+      const seen: Record<string, { open: boolean; phase: number }> = {};
+      const at = (name: string) => { seen[name] = { open: state.open, phase: state.phases }; };
+      mockGetSession.mockImplementation(async () => { at('getSession'); return makeSession(); });
+      mockResolveSessionTurn.mockImplementation(async () => { at('resolveSessionTurn'); return makeResolvedModel('platform'); });
+      mockCheckAiRateLimit.mockImplementation(async () => { at('rateLimit'); return null; });
+      mockCheckBudgetDetailed.mockImplementation(async () => { at('budget'); return null; });
+
+      const result = await runPreFlightChecks('session-1', 'hello', auth, undefined, undefined, undefined, inDb);
+
+      expect(result.ok).toBe(true);
+      expect(seen.getSession).toEqual({ open: true, phase: 1 });
+      expect(seen.resolveSessionTurn).toEqual({ open: true, phase: 1 });
+      expect(seen.rateLimit).toEqual({ open: false, phase: 1 });
+      expect(seen.budget).toEqual({ open: true, phase: 2 });
+      expect(state.phases).toBe(2);
+    });
+
+    it('a rate-limited turn opens no second DB phase', async () => {
+      const { state, inDb } = makePhaseRunner();
+      mockCheckAiRateLimit.mockResolvedValue('Rate limit exceeded');
+
+      const result = await runPreFlightChecks('session-1', 'hello', auth, undefined, undefined, undefined, inDb);
+
+      expect(result).toEqual({ ok: false, error: 'Rate limit exceeded' });
+      expect(state.phases).toBe(1);
+      expect(mockCheckBudgetDetailed).not.toHaveBeenCalled();
+    });
+
+    it('a turn refused in phase 2 (budget, expired session) still consumed rate-limit capacity', async () => {
+      const { inDb } = makePhaseRunner();
+      mockCheckBudgetDetailed.mockResolvedValueOnce({ message: 'Monthly budget exhausted', reason: 'monthly_budget', permanent: false });
+      expect(await runPreFlightChecks('session-1', 'hello', auth, undefined, undefined, undefined, inDb))
+        .toMatchObject({ ok: false, status: 402 });
+
+      mockGetSession.mockResolvedValueOnce(makeSession({ status: 'expired' }));
+      expect(await runPreFlightChecks('session-1', 'hello', auth, undefined, undefined, undefined, inDb))
+        .toMatchObject({ ok: false, error: expect.stringContaining('expired') });
+
+      expect(mockCheckAiRateLimit).toHaveBeenCalledTimes(2);
+    });
+
+    it('a missing session or an unresolved turn consumes no rate-limit capacity', async () => {
+      const { inDb } = makePhaseRunner();
+      mockGetSession.mockResolvedValueOnce(null);
+      expect(await runPreFlightChecks('bad-id', 'hello', auth, undefined, undefined, undefined, inDb))
+        .toEqual({ ok: false, error: 'Session not found' });
+
+      mockResolveSessionTurn.mockResolvedValueOnce({
+        ok: false, reason: 'model_unavailable', recoverable: true, offeringId: 'off-1', message: 'gone',
+      });
+      const unresolved = await runPreFlightChecks('session-1', 'hello', auth, undefined, undefined, undefined, inDb);
+      expect(unresolved.ok).toBe(false);
+
+      expect(mockCheckAiRateLimit).not.toHaveBeenCalled();
+    });
   });
 
   // --- Budget uses session's org ---
@@ -2090,6 +2187,130 @@ describe('createSessionPreToolUse', () => {
         { id: 'intent-6', orgId: 'org-1', taskId: null, requestingFlowRunId: null },
         'intent_completed',
       );
+    });
+
+    // #10384: a partner-scope session bound to org-1 runs a reviewed proposal
+    // that propose_script filed under org-2 (its target device's org). The
+    // proposal is resolved within the call's reach, and the intent, the
+    // approval card and the terminal outbox all follow the PROPOSAL's org,
+    // which is the org consumeProposalForIntent / loadProposalForRelease and
+    // the release ceiling key on.
+    describe('run_script on a proposal outside the session org (#10384)', () => {
+      const reachOf = (...orgIds: string[]) => makeAuth({
+        scope: 'partner',
+        orgId: null,
+        accessibleOrgIds: orgIds,
+        canAccessOrg: (orgId: string) => orgIds.includes(orgId),
+      });
+      const reviewed = { proposal: { riskTier: 'medium', strictHits: [] } };
+
+      beforeEach(() => {
+        mockProposalInReach.mockResolvedValue({ context: undefined, proposalOrgId: null });
+        vi.mocked(checkGuardrails).mockReturnValue({
+          allowed: true, tier: 3, requiresApproval: true, description: 'Run reviewed proposal',
+        } as any);
+        mockResolveScriptRunContext.mockResolvedValue(null);
+        mockInsertReturning({ id: 'exec-x' });
+        mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-x', approvalRequestIds: ['appr-x'] }));
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+        } as any);
+      });
+
+      it('looks the proposal up within the session tool reach and files the intent + card in the proposal org', async () => {
+        mockProposalInReach.mockResolvedValueOnce({ context: reviewed, proposalOrgId: 'org-2' });
+        mockWaitForIntentDecision.mockResolvedValue('rejected');
+        const auth = reachOf('org-1', 'org-2');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+
+        await createSessionPreToolUse(session)('run_script', { proposalId: 'p-x', deviceIds: ['d-2'] });
+
+        expect(mockProposalInReach).toHaveBeenCalledWith({ proposalId: 'p-x', deviceIds: ['d-2'] }, expect.any(Function));
+        const canAccessOrg = mockProposalInReach.mock.calls[0]![1] as (orgId: string) => boolean;
+        expect(canAccessOrg('org-2')).toBe(true);
+        expect(canAccessOrg('org-9')).toBe(false);
+        expect(checkGuardrails).toHaveBeenCalledWith('run_script', expect.anything(), expect.objectContaining(reviewed));
+        expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName: 'run_script', orgId: 'org-2' });
+        expect(mockProposalApprovalSummary).toHaveBeenCalledWith(expect.objectContaining({ proposalId: 'p-x' }), 'org-2');
+      });
+
+      it('publishes the inline completion under the proposal org, and records the tier from the reviewed context', async () => {
+        mockProposalInReach.mockResolvedValue({ context: reviewed, proposalOrgId: 'org-2' });
+        mockWaitForIntentDecision.mockResolvedValue('approved');
+        mockTransitionIntent.mockResolvedValue(true);
+        const auth = reachOf('org-1', 'org-2');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+
+        const pre = await createSessionPreToolUse(session)('run_script', { proposalId: 'p-x', deviceIds: ['d-2'] });
+        expect(pre).toMatchObject({ allowed: true, intentId: 'intent-x' });
+        vi.mocked(checkGuardrails).mockClear();
+        await createSessionPostToolUse(session)('run_script', { proposalId: 'p-x', deviceIds: ['d-2'] }, JSON.stringify({ results: {} }), false, 10);
+
+        expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+          expect.anything(),
+          { id: 'intent-x', orgId: 'org-2', taskId: null, requestingFlowRunId: null },
+          'intent_completed',
+        );
+        // The post hook's audit tier comes from the SAME reach-resolved
+        // context: a session-org lookup would hand checkGuardrails
+        // proposal_not_found, which fails closed to tier 4.
+        expect(checkGuardrails).toHaveBeenCalledWith('run_script', expect.anything(), expect.objectContaining(reviewed));
+      });
+
+      afterAll(() => { mockProposalInReach.mockResolvedValue({ context: undefined, proposalOrgId: null }); });
+
+      it('fails a cross-org intent whose release revalidation fails under the proposal org', async () => {
+        mockProposalInReach.mockResolvedValueOnce({ context: reviewed, proposalOrgId: 'org-2' });
+        mockWaitForIntentDecision.mockResolvedValue('approved');
+        mockTransitionIntent.mockResolvedValue(true);
+        mockRevalidateApprovedIntentForRelease.mockResolvedValueOnce({ ok: false, errorCode: 'actor_inactive' } as IntentReleaseRevalidation);
+        const auth = reachOf('org-1', 'org-2');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+
+        const res = await createSessionPreToolUse(session)('run_script', { proposalId: 'p-x', deviceIds: ['d-2'] });
+
+        expect(res).toMatchObject({ allowed: false });
+        expect(mockTransitionIntent).toHaveBeenCalledWith('intent-x', 'executing', 'failed', expect.objectContaining({ errorCode: 'actor_inactive' }));
+        expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+          expect.anything(),
+          { id: 'intent-x', orgId: 'org-2', taskId: null, requestingFlowRunId: null },
+          'intent_failed',
+        );
+      });
+
+      it('keeps the session org for a library run_script (no proposal)', async () => {
+        mockWaitForIntentDecision.mockResolvedValue('approved');
+        mockTransitionIntent.mockResolvedValue(true);
+        const auth = reachOf('org-1', 'org-2');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+
+        await createSessionPreToolUse(session)('run_script', { scriptId: 'abcd1234-0000-0000-0000-000000000000', deviceIds: ['d-1'] });
+        await createSessionPostToolUse(session)('run_script', { scriptId: 'abcd1234-0000-0000-0000-000000000000', deviceIds: ['d-1'] }, JSON.stringify({ results: {} }), false, 10);
+
+        expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName: 'run_script', orgId: 'org-1' });
+        expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+          expect.anything(),
+          { id: 'intent-x', orgId: 'org-1', taskId: null, requestingFlowRunId: null },
+          'intent_completed',
+        );
+      });
+
+      // Wiring only: the reach logic itself is exercised against the real
+      // loader in aiAgentSdk.wispCeiling.test.ts and guardrailContext.test.ts.
+      it('hands an out-of-reach lookup (proposal_not_found) straight to the guardrail and raises no intent', async () => {
+        mockProposalInReach.mockResolvedValueOnce({ context: { proposalDenyReason: 'proposal_not_found' }, proposalOrgId: null });
+        vi.mocked(checkGuardrails).mockReturnValue({ allowed: false, tier: 3, reason: 'proposal_not_found' } as any);
+        const auth = reachOf('org-1');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+
+        const res = await createSessionPreToolUse(session)('run_script', { proposalId: 'p-far', deviceIds: ['d-9'] });
+
+        expect(res).toEqual({ allowed: false, error: 'proposal_not_found' });
+        expect(checkGuardrails).toHaveBeenCalledWith(
+          'run_script', expect.anything(), expect.objectContaining({ proposalDenyReason: 'proposal_not_found' }),
+        );
+        expect(mockCreateActionIntent).not.toHaveBeenCalled();
+      });
     });
 
     it('terminalizes a handler-thrown caller refusal as caller_verification_required with the typed result', async () => {

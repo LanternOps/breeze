@@ -566,7 +566,8 @@
       "pending": "Questo ticket è stato unito a un altro ticket il {{date}}.",
       "deleted": "Questo ticket è stato unito il {{date}} a un ticket che è stato eliminato o che non puoi vedere.",
       "open": "Apri {{number}}",
-      "readOnly": "I ticket uniti sono di sola lettura. Rispondi nel ticket a cui è stato unito."
+      "readOnly": "I ticket uniti sono di sola lettura. Rispondi nel ticket a cui è stato unito.",
+      "railReadOnly": "Tempo, fatturazione e parti sono di sola lettura in un ticket unito. Registra tempo e parti nel ticket a cui è stato unito."
     },
     "triage": {
       "title": "Triage suggerito",

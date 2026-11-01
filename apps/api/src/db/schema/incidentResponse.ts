@@ -7,6 +7,7 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
   varchar,
@@ -86,6 +87,9 @@ export const incidents = pgTable('incidents', {
   sourceRefIdx: uniqueIndex('incidents_source_ref_unique')
     .on(table.orgId, table.sourceType, table.sourceRef)
     .where(sql`source_ref IS NOT NULL`),
+  // Composite-FK target for device_network_isolations (incident_id, org_id)
+  // (2027-01-17-200000-device-network-isolations.sql, #10089).
+  idOrgUq: unique('incidents_id_org_uq').on(table.id, table.orgId),
 }));
 
 export const incidentEvidence = pgTable('incident_evidence', {
@@ -129,4 +133,7 @@ export const incidentActions = pgTable('incident_actions', {
   actionTypeIdx: index('incident_actions_action_type_idx').on(table.actionType),
   orgStatusIdx: index('incident_actions_org_status_idx').on(table.orgId, table.status),
   incidentExecutedAtIdx: index('incident_actions_incident_executed_at_idx').on(table.incidentId, table.executedAt),
+  // Composite-FK target for device_network_isolations (incident_action_id, org_id)
+  // (2027-01-17-200000-device-network-isolations.sql, #10089).
+  idOrgUq: unique('incident_actions_id_org_uq').on(table.id, table.orgId),
 }));

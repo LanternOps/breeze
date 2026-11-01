@@ -9,7 +9,7 @@ import { organizations } from '../db/schema/orgs';
 import { users } from '../db/schema/users';
 import { reports, reportRuns } from '../db/schema/reports';
 import { orgDocuments } from '../db/schema/orgDocuments';
-import { contractDocuments } from '../db/schema/contractDocuments';
+import { contractDocuments, contractTemplates, contractTemplateVersions } from '../db/schema/contractDocuments';
 import { ticketCategories } from '../db/schema/tickets';
 import { ticketChecklistItems, ticketChecklistTemplateItems } from '../db/schema/ticketChecklists';
 import { checklistCountsForTickets } from './ticketChecklistService';
@@ -36,7 +36,21 @@ import { isMspStaffReportType } from './reportRegistry';
  * access is a 404 (never 403) so nothing leaks about rows in other tenants.
  */
 
-export interface DeliverableActor { userId: string | null; partnerId: string | null; accessibleOrgIds: string[] | null }
+/**
+ * #9961: which evidence kinds may carry a display `label` for this caller.
+ * Each flag mirrors the read permission that guards the cited record on its
+ * own surface — `documents:read`, `reports:read`, `agreements:read` — so a
+ * `contracts:read` caller never learns a document title or an agreement name
+ * through a deliverable chip it could not open.
+ */
+export interface EvidenceLabelAccess { documents: boolean; reports: boolean; agreements: boolean }
+
+export interface DeliverableActor {
+  userId: string | null; partnerId: string | null; accessibleOrgIds: string[] | null;
+  /** Absent → no evidence labels (ids only). Fail closed: only the HTTP route
+   *  layer, which has the caller's resolved permissions, sets it. */
+  evidenceLabelAccess?: EvidenceLabelAccess;
+}
 
 export class DeliverableServiceError extends Error {
   constructor(message: string, readonly status: number, readonly code: string, readonly details?: unknown) {
@@ -60,6 +74,13 @@ export interface OccurrenceView extends ServiceDeliverableOccurrenceRow {
     documentId: string | null; reportId: string | null; reportRunId: string | null;
     /** #9312: the signed agreement (contract_documents) this evidence references. */
     contractDocumentId: string | null;
+    /**
+     * #9961: the cited record's display name — document title, report name,
+     * or "<agreement template> v<n>". `null` when the caller lacks that
+     * kind's read permission, or the record is deleted or not visible; the
+     * client then falls back to the short id.
+     */
+    label: string | null;
     createdAt: string;
   }>;
   /**
@@ -492,19 +513,73 @@ function isLate(o: Pick<ServiceDeliverableOccurrenceRow, 'status' | 'dueAt' | 'd
   return today > o.dueAt;
 }
 
-type EvidenceListRow = Pick<typeof serviceDeliverableEvidence.$inferSelect, 'id' | 'occurrenceId' | 'kind' | 'documentId' | 'reportId' | 'reportRunId' | 'contractDocumentId' | 'createdAt'>;
+type EvidenceListRow = Pick<typeof serviceDeliverableEvidence.$inferSelect, 'id' | 'occurrenceId' | 'kind' | 'documentId' | 'reportId' | 'reportRunId' | 'contractDocumentId' | 'createdAt'> & {
+  // #9961: display-name sources, LEFT JOINed so a missing / RLS-hidden record
+  // yields nulls instead of dropping the evidence row.
+  documentTitle: string | null; documentDeletedAt: Date | null;
+  reportName: string | null;
+  agreementTemplateName: string | null; agreementVersionNumber: number | null;
+};
 
 const evidenceColumns = {
   id: serviceDeliverableEvidence.id, occurrenceId: serviceDeliverableEvidence.occurrenceId, kind: serviceDeliverableEvidence.kind,
   documentId: serviceDeliverableEvidence.documentId, reportId: serviceDeliverableEvidence.reportId,
   reportRunId: serviceDeliverableEvidence.reportRunId, contractDocumentId: serviceDeliverableEvidence.contractDocumentId,
   createdAt: serviceDeliverableEvidence.createdAt,
+  documentTitle: orgDocuments.title, documentDeletedAt: orgDocuments.deletedAt,
+  reportName: reports.name,
+  agreementTemplateName: contractTemplates.name, agreementVersionNumber: contractTemplateVersions.versionNumber,
 };
 
-function toEvidenceView(e: EvidenceListRow): OccurrenceView['evidence'][number] {
+/**
+ * Evidence rows with their display-name joins. Every cited table is joined on
+ * the evidence row's own `org_id` as well as the id — the same composite key
+ * as the FKs — on top of RLS, so a label can never come from another tenant.
+ */
+function selectEvidence(executor: DbExecutor) {
+  return executor.select(evidenceColumns).from(serviceDeliverableEvidence)
+    .leftJoin(orgDocuments, and(
+      eq(orgDocuments.id, serviceDeliverableEvidence.documentId),
+      eq(orgDocuments.orgId, serviceDeliverableEvidence.orgId),
+    ))
+    .leftJoin(reports, and(
+      eq(reports.id, serviceDeliverableEvidence.reportId),
+      eq(reports.orgId, serviceDeliverableEvidence.orgId),
+    ))
+    .leftJoin(contractDocuments, and(
+      eq(contractDocuments.id, serviceDeliverableEvidence.contractDocumentId),
+      eq(contractDocuments.orgId, serviceDeliverableEvidence.orgId),
+    ))
+    // Template/version hang off the already org-pinned contract_documents row
+    // (its NOT NULL FKs). A partner-owned template carries no org_id, so the
+    // join is by id; RLS still hides one the caller cannot see → null label.
+    .leftJoin(contractTemplates, eq(contractTemplates.id, contractDocuments.templateId))
+    .leftJoin(contractTemplateVersions, eq(contractTemplateVersions.id, contractDocuments.templateVersionId));
+}
+
+/** #9961: the chip's display name, or null (no permission, deleted, hidden). */
+function evidenceLabel(e: EvidenceListRow, access: EvidenceLabelAccess | undefined): string | null {
+  if (!access) return null;
+  switch (e.kind) {
+    case 'document':
+      // A soft-deleted document is gone from the library; don't resurface
+      // its title here either.
+      return access.documents && e.documentDeletedAt === null ? e.documentTitle ?? null : null;
+    case 'report_run':
+      return access.reports ? e.reportName ?? null : null;
+    case 'contract_document': {
+      if (!access.agreements || !e.agreementTemplateName) return null;
+      return e.agreementVersionNumber != null ? `${e.agreementTemplateName} v${e.agreementVersionNumber}` : e.agreementTemplateName;
+    }
+    default:
+      return null;
+  }
+}
+
+function toEvidenceView(e: EvidenceListRow, access: EvidenceLabelAccess | undefined): OccurrenceView['evidence'][number] {
   return {
     id: e.id, kind: e.kind, documentId: e.documentId, reportId: e.reportId, reportRunId: e.reportRunId,
-    contractDocumentId: e.contractDocumentId ?? null, createdAt: e.createdAt.toISOString(),
+    contractDocumentId: e.contractDocumentId ?? null, label: evidenceLabel(e, access), createdAt: e.createdAt.toISOString(),
   };
 }
 
@@ -512,22 +587,25 @@ function toView(
   loaded: LoadedOccurrence,
   evidence: EvidenceListRow[],
   today: string,
-  checklist: { done: number; total: number } | null = null,
+  checklist: { done: number; total: number } | null,
+  access: EvidenceLabelAccess | undefined,
 ): OccurrenceView {
   const { artifactRequired: _a, completionMode: _c, graceDays: _g, leadDays: _l, ...row } = loaded;
-  return { ...row, late: isLate(row, today), evidence: evidence.map(toEvidenceView), checklist };
+  return { ...row, late: isLate(row, today), evidence: evidence.map((e) => toEvidenceView(e, access)), checklist };
 }
 
-async function loadView(orgId: string, occurrenceId: string, executor: DbExecutor): Promise<OccurrenceView> {
+async function loadView(
+  orgId: string, occurrenceId: string, executor: DbExecutor, access: EvidenceLabelAccess | undefined,
+): Promise<OccurrenceView> {
   const loaded = await loadOccurrence(orgId, occurrenceId, executor);
-  const evidence = await executor.select(evidenceColumns).from(serviceDeliverableEvidence)
+  const evidence = await selectEvidence(executor)
     .where(and(eq(serviceDeliverableEvidence.occurrenceId, occurrenceId), eq(serviceDeliverableEvidence.orgId, orgId)))
     .orderBy(asc(serviceDeliverableEvidence.createdAt));
   // The chip has to survive a mutation: the drawer swaps the row in place with
   // whatever comes back here, so omitting the summary would blank it on every
   // deliver/waive/reschedule.
   const counts = loaded.ticketId ? await checklistCountsForTickets([loaded.ticketId]) : null;
-  return toView(loaded, evidence, todayISO(), counts?.get(loaded.ticketId!) ?? null);
+  return toView(loaded, evidence, todayISO(), counts?.get(loaded.ticketId!) ?? null, access);
 }
 
 async function countEvidence(orgId: string, occurrenceId: string, executor: DbExecutor): Promise<number> {
@@ -641,7 +719,7 @@ export async function listOccurrences(
     .orderBy(desc(serviceDeliverableOccurrences.dueAt))
     .limit(q.limit);
   if (rows.length === 0) return [];
-  const evidence = await db.select(evidenceColumns).from(serviceDeliverableEvidence)
+  const evidence = await selectEvidence(db)
     .where(and(eq(serviceDeliverableEvidence.orgId, orgId), inArray(serviceDeliverableEvidence.occurrenceId, rows.map((r) => r.id))))
     .orderBy(asc(serviceDeliverableEvidence.createdAt));
   const byOccurrence = new Map<string, EvidenceListRow[]>();
@@ -661,6 +739,7 @@ export async function listOccurrences(
     byOccurrence.get(r.id) ?? [],
     today,
     r.ticketId ? counts?.get(r.ticketId) ?? null : null,
+    actor.evidenceLabelAccess,
   ));
 }
 
@@ -692,7 +771,7 @@ export async function deliverOccurrence(
       status: next, deliveredAt: now, deliveredByUserId: actor.userId, deliveredVia: 'explicit',
       deliveryNote: input.note ?? null, updatedAt: now,
     });
-    return loadView(orgId, occurrenceId, tx);
+    return loadView(orgId, occurrenceId, tx, actor.evidenceLabelAccess);
   });
 }
 
@@ -717,7 +796,7 @@ export async function waiveOccurrence(
     const now = new Date();
     await updateOccurrenceFrom(tx, orgId, occurrenceId, current.status,
       { status: next, waivedAt: now, waivedByUserId: actor.userId, waivedReason: reason, updatedAt: now });
-    return loadView(orgId, occurrenceId, tx);
+    return loadView(orgId, occurrenceId, tx, actor.evidenceLabelAccess);
   });
 }
 
@@ -732,7 +811,7 @@ export async function reopenOccurrence(orgId: string, occurrenceId: string, acto
       waivedAt: null, waivedByUserId: null, waivedReason: null,
       updatedAt: new Date(),
     });
-    return loadView(orgId, occurrenceId, tx);
+    return loadView(orgId, occurrenceId, tx, actor.evidenceLabelAccess);
   });
 }
 
@@ -744,6 +823,7 @@ export async function reopenOccurrence(orgId: string, occurrenceId: string, acto
  */
 async function rescheduleWithin(
   tx: DbExecutor, orgId: string, occurrenceId: string, to: { dueAt: string } | { shiftDays: number },
+  access: EvidenceLabelAccess | undefined,
 ): Promise<OccurrenceView> {
   const current = await loadOccurrence(orgId, occurrenceId, tx);
   if (!RESCHEDULABLE.has(current.status)) {
@@ -752,7 +832,14 @@ async function rescheduleWithin(
   const dueAt = 'dueAt' in to ? to.dueAt : addDaysISO(current.dueAt, to.shiftDays);
   // A missed occurrence pulled back inside its grace window is live again;
   // originalDueAt is never touched (spec §7: the history of the slip is kept).
-  const next: OccurrenceStatus = current.status === 'missed' && !isPastGrace(dueAt, current.graceDays, todayISO()) ? 'open' : current.status;
+  // #9959: only one that already has a ticket goes straight to `open` — its
+  // ticket is the work item. One that never got a ticket (materialized past
+  // grace, retired by the closing sweep, or opened under Service Management
+  // `off`) goes back to `scheduled`, so the nightly sweep opens it through the
+  // one path that creates the ticket, checklist and instructions, in its lead
+  // window. `open` with no ticket would sit "on track" with nothing queued.
+  const revived = current.status === 'missed' && !isPastGrace(dueAt, current.graceDays, todayISO());
+  const next: OccurrenceStatus = !revived ? current.status : current.ticketId ? 'open' : 'scheduled';
   await updateOccurrenceFrom(tx, orgId, occurrenceId, current.status, { dueAt, status: next, updatedAt: new Date() });
   if (current.ticketId) {
     await tx.update(tickets)
@@ -762,14 +849,14 @@ async function rescheduleWithin(
         notInArray(tickets.status, ['resolved', 'closed']),
       ));
   }
-  return loadView(orgId, occurrenceId, tx);
+  return loadView(orgId, occurrenceId, tx, access);
 }
 
 export async function rescheduleOccurrence(
   orgId: string, occurrenceId: string, input: RescheduleOccurrenceInput, actor: DeliverableActor,
 ): Promise<OccurrenceView> {
   requireOrgAccess(actor, orgId);
-  return db.transaction((tx) => rescheduleWithin(tx, orgId, occurrenceId, { dueAt: input.dueAt }));
+  return db.transaction((tx) => rescheduleWithin(tx, orgId, occurrenceId, { dueAt: input.dueAt }, actor.evidenceLabelAccess));
 }
 
 export type BulkRescheduleResult =
@@ -793,7 +880,7 @@ export async function rescheduleOccurrences(
     const out: BulkRescheduleResult[] = [];
     for (const occurrenceId of ids) {
       try {
-        const occurrence = await tx.transaction((sp) => rescheduleWithin(sp, orgId, occurrenceId, to));
+        const occurrence = await tx.transaction((sp) => rescheduleWithin(sp, orgId, occurrenceId, to, actor.evidenceLabelAccess));
         out.push({ occurrenceId, ok: true, occurrence });
       } catch (err) {
         if (!(err instanceof DeliverableServiceError)) throw err;
@@ -808,7 +895,7 @@ export async function rescheduleOccurrences(
  *  (W03: the evidence-upload route needs it before it writes a document). */
 export async function getOccurrenceOr404(orgId: string, occurrenceId: string, actor: DeliverableActor): Promise<OccurrenceView> {
   requireOrgAccess(actor, orgId);
-  return loadView(orgId, occurrenceId, db);
+  return loadView(orgId, occurrenceId, db, actor.evidenceLabelAccess);
 }
 
 export async function addEvidence(orgId: string, occurrenceId: string, ref: EvidenceRef, actor: DeliverableActor): Promise<OccurrenceView> {
@@ -833,7 +920,7 @@ export async function addEvidence(orgId: string, occurrenceId: string, ref: Evid
         status: t.next, deliveredAt: now, deliveredByUserId: actor.userId, deliveredVia: 'ticket', updatedAt: now,
       });
     }
-    return loadView(orgId, occurrenceId, tx);
+    return loadView(orgId, occurrenceId, tx, actor.evidenceLabelAccess);
   });
 }
 
@@ -852,7 +939,7 @@ export async function removeEvidence(orgId: string, occurrenceId: string, eviden
       eq(serviceDeliverableEvidence.occurrenceId, occurrenceId),
       eq(serviceDeliverableEvidence.orgId, orgId),
     ));
-    return loadView(orgId, occurrenceId, tx);
+    return loadView(orgId, occurrenceId, tx, actor.evidenceLabelAccess);
   });
 }
 

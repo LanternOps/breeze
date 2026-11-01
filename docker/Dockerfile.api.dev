@@ -1,5 +1,25 @@
 # Development Dockerfile for API with hot-reloading
+
+# YARA rule pre-check binary (#10306) — the same stage as docker/Dockerfile.api
+# and apps/api/Dockerfile, so dev and wt-stacks can publish rule sets. Without
+# it every rule save answers `precheckUnavailable` (services/yaraPrecheck.ts).
+# Tag must equal agent/go.mod's `go` directive (check-go-version-pins.sh).
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca AS yarac
+ARG TARGETOS
+ARG TARGETARCH
+ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=0
+WORKDIR /src/agent
+COPY agent/go.mod agent/go.sum ./
+RUN go mod download
+COPY agent/cmd/breeze-yarac ./cmd/breeze-yarac
+COPY agent/internal ./internal
+RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w" -o /out/breeze-yarac ./cmd/breeze-yarac
+
 FROM node:24-alpine
+
+# Built on Alpine above, so it is linked against musl's loader and runs here
+# as-is. A copy cross-built on macOS/glibc would not (ENOENT on exec).
+COPY --from=yarac /out/breeze-yarac /usr/local/bin/breeze-yarac
 
 # Install pnpm (pinned to match prod / packageManager field)
 RUN npm install -g pnpm@10.34.5

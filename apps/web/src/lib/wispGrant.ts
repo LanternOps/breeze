@@ -118,19 +118,24 @@ export class WispThreadReadError extends WispThreadError {
   }
 }
 
+/** The machine code `fetchWispThread` rejects with for "no active grant for this scope". */
+export const NO_ACTIVE_GRANT = 'no_active_grant';
+
 /**
- * The ordinary "you have no active grant for this scope" answer (404
- * `no_active_grant`), as opposed to a failure. A bare 404 (the hub's answer
- * while the server has Wisp switched off) is not it.
+ * The ordinary "you have no active grant for this scope" answer, as opposed
+ * to a failure: `GET /wisp/thread` answers 200 `{ data: null }` (#10200 — an
+ * expected miss, so no red console line), and a pre-#10200 API answered 404
+ * `no_active_grant`. A bare 404 (the hub's answer while the server has Wisp
+ * switched off) is not it.
  */
 export function isNoActiveGrant(err: unknown): boolean {
-  return err instanceof WispThreadReadError && err.status === 404 && err.code === 'no_active_grant';
+  return err instanceof WispThreadReadError && err.code === NO_ACTIVE_GRANT && (err.status === 200 || err.status === 404);
 }
 
 /** Read the caller's active grant + thread for a scope (null orgId = partner-wide). */
 export async function fetchWispThread(orgId: string | null): Promise<NonNullable<WispState>> {
   // Exact-scope lookup on the server: the ambient `?orgId=` must not turn a
-  // partner-wide read into an org-scoped miss (404 `no_active_grant`).
+  // partner-wide read into an org-scoped miss (no active grant).
   let res: Response;
   try {
     res = await fetchWithAuth(orgId ? `/wisp/thread?orgId=${encodeURIComponent(orgId)}` : '/wisp/thread', { skipOrgIdInjection: true });
@@ -138,7 +143,12 @@ export async function fetchWispThread(orgId: string | null): Promise<NonNullable
     // No response at all: status null, so a caller reads it as no answer, not "no grant" (#10142).
     throw new WispThreadReadError(err instanceof Error ? err.message : 'Could not open the Wisp thread.', null);
   }
-  const body = (await res.json().catch(() => null)) as { code?: unknown } | null;
+  const body = (await res.json().catch(() => null)) as { code?: unknown; data?: unknown } | null;
+  // No grant for this scope (#10200): still a rejection, so every caller keeps
+  // one "no grant" path (`isNoActiveGrant`) for this and the legacy 404.
+  if (res.ok && body?.data === null) {
+    throw new WispThreadReadError('No active Wisp delegation for this scope', res.status, NO_ACTIVE_GRANT);
+  }
   if (!res.ok) {
     throw new WispThreadReadError(
       extractApiError(body, 'Could not open the Wisp thread.'),

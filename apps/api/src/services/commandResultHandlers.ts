@@ -583,9 +583,12 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
       //     process reached a real outcome, so keep it (OD9-C) and record the
       //     losing cancel request in `cancel_state` alone. `status` is never
       //     `cancelled` here: we cannot prove the stop.
-      const cancelledMarker = (result as Record<string, unknown> | null)?.cancelled === true;
-      const rawMarkerCommandId = (result as Record<string, unknown> | null)?.cancelledByCommandId;
-      const markerCommandId = typeof rawMarkerCommandId === 'string' ? rawMarkerCommandId : null;
+      //
+      // Both fields are declared on `commandResultSchema` (#10377). Until they
+      // were, the transport parse stripped them and the PROVEN write below was
+      // unreachable from a real agent.
+      const cancelledMarker = result.cancelled === true;
+      const markerCommandId = result.cancelledByCommandId ?? null;
 
       phase = 'cancel-confirm-cas';
       let cancelClosed: TerminalExecution[] = [];
@@ -946,6 +949,27 @@ async function handleCisResult({ command, result, stdout }: Parameters<CommandRe
   } as any);
 }
 
+/**
+ * #10376: the websocket transport dispatches ONLY through this registry, so
+ * until the security types were listed here every WS-delivered security
+ * result was dropped — a `security_scans` row stayed `running` (and an IOC
+ * sweep never finished), no threat was ingested, and quarantine/remove/restore
+ * never moved the threat row. The REST route keeps its inline call (these
+ * types are deliberately absent from its REGISTRY_DISPATCHED_COMMAND_TYPES),
+ * so each transport runs the same leaf exactly once.
+ */
+async function handleSecurityResult({ command, result, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const { handleSecurityCommandResult } = await import('../routes/agents/helpers');
+  await handleSecurityCommandResult(command, {
+    status: result.status,
+    exitCode: result.exitCode,
+    stdout,
+    stderr: result.stderr,
+    durationMs: result.durationMs,
+    error: result.error,
+  });
+}
+
 const peripheralPolicyResultV2Schema = z.object({
   schemaVersion: z.literal(2),
   phase: z.enum(['clear_legacy', 'enforce']),
@@ -1252,6 +1276,12 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   quarantine_file: handleSensitiveDataResult,
   cis_benchmark: handleCisResult,
   apply_cis_remediation: handleCisResult,
+  // #10376: security results over the websocket (REST calls the same leaf inline).
+  security_collect_status: handleSecurityResult,
+  security_scan: handleSecurityResult,
+  security_threat_quarantine: handleSecurityResult,
+  security_threat_remove: handleSecurityResult,
+  security_threat_restore: handleSecurityResult,
   peripheral_policy_sync_v2: handlePeripheralPolicyV2Result,
   pam_apply_v2: handlePamActuationV2Result,
   pam_cleanup_v2: handlePamActuationV2Result,

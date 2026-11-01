@@ -19,6 +19,7 @@ import {
   recordSoftwarePolicyAudit,
 } from '../services/softwarePolicyService';
 import { computeInstallPreviewEligibleDeviceCount } from '../services/softwarePolicyInstallPreview';
+import { getSoftwarePolicyCoverage } from '../services/softwarePolicyCoverage';
 import {
   MAX_REMEDIATION_DEVICES,
   implicitRemediationConditions,
@@ -590,6 +591,36 @@ softwarePoliciesRoutes.get(
     });
 
     return c.json({ eligibleDeviceCount });
+  }
+);
+
+// #9635 — which devices this policy actually governs. A device follows ONE
+// software policy (closest assignment, then priority, then age), so a policy
+// can be assigned yet govern no device; the web shows "applies to 0 devices /
+// overridden by X" from this. Read-only, same gates as install-preview.
+softwarePoliciesRoutes.get(
+  '/:id/coverage',
+  requireSoftwarePolicyRead,
+  zValidator('param', policyIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const { id } = c.req.valid('param');
+
+    const policy = await getPolicyWithAccess(id, auth);
+    if (!policy) {
+      return c.json({ error: 'Policy not found' }, 404);
+    }
+
+    let opts: { restrictToDeviceIds?: string[] } = {};
+    if (perms?.allowedSiteIds && auth.orgId) {
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({ data: { assignedDeviceCount: 0, appliesToDeviceCount: 0, overriddenBy: [] } });
+      }
+      opts = { restrictToDeviceIds: (await resolveSiteAllowedDeviceIds(auth.orgId, perms)) ?? [] };
+    }
+
+    return c.json({ data: await getSoftwarePolicyCoverage(policy.id, opts) });
   }
 );
 

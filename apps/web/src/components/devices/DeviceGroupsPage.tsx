@@ -100,6 +100,10 @@ type ModalMode =
   | "bulk-script"
   | "bulk-policy";
 
+// `/devices/groups#create` opens the create dialog on load. Linked from the
+// Devices page Add-filter picker (DevicesPage `createGroupHref`, #9865).
+const CREATE_HASH = "create";
+
 type GroupFormState = {
   name: string;
   type: GroupType;
@@ -278,6 +282,8 @@ export default function DeviceGroupsPage() {
     // or to the chosen owner org when creating.
     {
       enabled: true,
+      // Same population membership evaluation materializes (#9933).
+      excludeDecommissioned: true,
       allOrgs: isPartnerForm,
       orgId: isPartnerForm ? undefined :
         (modalMode === "edit" ? selectedGroup?.orgId : undefined) ??
@@ -560,7 +566,24 @@ export default function DeviceGroupsPage() {
     setModalMode("delete");
   };
 
+  // `#create` deep link (#9865): the Devices page "Add filter → New group…"
+  // shortcut lands here so groups have one create path. Adopted post-mount so
+  // the first client render still matches the SSR markup (#2421).
+  useEffect(() => {
+    if (window.location.hash === `#${CREATE_HASH}`) handleOpenCreate();
+    // Mount-only: the hash is an entry point, not live state.
+  }, []);
+
   const handleCloseModal = () => {
+    // Drop the deep-link hash so a reload doesn't reopen the dialog. Replace,
+    // not assign, so Back doesn't step through a bare `#` entry.
+    if (window.location.hash === `#${CREATE_HASH}`) {
+      window.history.replaceState(
+        window.history.state,
+        "",
+        window.location.pathname + window.location.search,
+      );
+    }
     setModalMode("closed");
     setSelectedGroup(null);
     setFormError(undefined);

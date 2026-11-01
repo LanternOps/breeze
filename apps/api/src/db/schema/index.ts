@@ -118,6 +118,7 @@ export * from './sla';
 export * from './drPlans';
 export * from './localVault';
 export * from './incidentResponse';
+export * from './networkIsolation';
 export * from './thirdPartyCatalog';
 export * from './wingetIndex';
 export * from './tunnels';

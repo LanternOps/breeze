@@ -38,8 +38,8 @@
     "title": "Skriptvorschläge",
     "proposalsPerDay": "Vorschläge pro Tag",
     "reviewerDisagreements": "Abweichende Entscheidungen",
-    "humanRejectedAfterApprove": "Mensch abgelehnt, obwohl KI zustimmte",
-    "humanApprovedAfterReject": "Mensch genehmigt, obwohl KI ablehnte",
+    "humanRejectedAfterApprove": "Mensch abgelehnt, KI empfahl Genehmigung",
+    "humanApprovedAfterReject": "Mensch genehmigt, KI empfahl Ablehnung",
     "unattendedRuns": "Unbeaufsichtigte Ausführungen",
     "laneState": "Unbeaufsichtigter Kanal",
     "laneOpen": "Offen (nach wiederholt fehlgeschlagenen Prüfungen pausiert)",
@@ -55,6 +55,14 @@
     "noTier3ToolExecutionsFound": "Es wurden keine Werkzeugausführungen der Stufe 3 gefunden.",
     "pending": "Ausstehend",
     "rejected": "Abgelehnt",
+    "status": {
+      "pending": "Ausstehend",
+      "approved": "Genehmigt",
+      "executing": "Wird ausgeführt",
+      "completed": "Abgeschlossen",
+      "failed": "Fehlgeschlagen",
+      "rejected": "Abgelehnt"
+    },
     "session": "Sitzung: {{sessionId}}",
     "tempPasswordAlreadyRevealed": "Das temporäre Passwort wurde bereits angezeigt.",
     "tempPasswordCopied": "Kopiert",
@@ -89,12 +97,12 @@
   },
   "aiRiskRejectionDenialLog": {
     "all2": "Alle",
-    "denied": "Abgelehnt",
+    "denied": "Blockiert",
     "error": "Fehler",
     "failed": "Fehlgeschlagen",
-    "noRejectionsOrDenialsFound": "Es wurden keine Ablehnungen oder Ablehnungen gefunden.",
+    "noRejectionsOrDenialsFound": "Keine abgelehnten, blockierten oder fehlgeschlagenen Aktionen gefunden.",
     "rejected": "Abgelehnt",
-    "rejectionsAndDenials": "Ablehnungen und Ablehnungen",
+    "rejectionsAndDenials": "Abgelehnt und blockiert",
     "search": "Suchen...",
     "session": "Sitzung",
     "status": "Status",
@@ -775,7 +783,6 @@
     "threatStatus": "Bedrohungsstatus",
     "threatWasMovedToQuarantineByPolicy": "Die Bedrohung wurde durch eine Richtlinie oder eine Aktion des Bedieners in die Quarantäne verschoben.",
     "timeline": "Zeitleiste",
-    "actionFailed": "Aktion fehlgeschlagen",
     "quarantineSucceeded": "Bedrohung unter Quarantäne gestellt",
     "restoreSucceeded": "Bedrohung wiederhergestellt",
     "removeSucceeded": "Bedrohung entfernt",
@@ -1740,13 +1747,18 @@
       "totalQueries": "Gesamtzahl der Abfragen",
       "blocked": "Blockiert",
       "allowed": "Erlaubt",
-      "redirected": "Umgeleitet"
+      "redirected": "Umgeleitet",
+      "notStored": "Nicht gespeichert"
     },
     "topBlocked": {
       "title": "Top blockierte Domains",
       "empty": "Im aktuellen Fenster sind keine blockierten Domänen vorhanden."
     },
-    "loading": "Laden…"
+    "loading": "Laden…",
+    "allowedTraffic": {
+      "none": "Zugelassene Anfragen werden für diese Integrationen nicht gespeichert, daher werden nur blockierte und umgeleitete Anfragen gezählt. Um sie zu zählen, aktivieren Sie „Zugelassenen Datenverkehr speichern“ in den Einstellungen für gespeicherte Daten einer Integration.",
+      "some": "Zugelassene Anfragen werden nur für einige Integrationen gespeichert, daher ist die Anzahl der zugelassenen Anfragen unvollständig."
+    }
   },
   "dnsSecurityDnsSecurityIntegrationsTab": {
     "title": "Konfigurierte Integrationen",
@@ -1763,7 +1775,7 @@
       "addIntegration": "Integration hinzufügen",
       "syncNow": "Jetzt synchronisieren",
       "deleteIntegration": "Integration löschen",
-      "editRetention": "Aufbewahrungsdauer ändern"
+      "editRetention": "Gespeicherte Daten"
     },
     "messages": {
       "loadHttpError": "Integrationen konnten nicht geladen werden (HTTP {{status}})",
@@ -1772,7 +1784,8 @@
       "syncQueued": "Die Synchronisierung steht für {{name}} in der Warteschlange",
       "deleteConfirm": "{{name}} löschen? Richtlinien, Ereignisse und Statistiken werden im Hintergrund entfernt.",
       "deleteFailed": "Fehler beim Löschen von {{name}}",
-      "deleteSuccess": "{{name}} wird im Hintergrund gelöscht"
+      "deleteSuccess": "{{name}} wird im Hintergrund gelöscht",
+      "deleteComplete": "{{name}} wurde gelöscht"
     },
     "loading": "Integrationen werden geladen…",
     "empty": {
@@ -1788,12 +1801,13 @@
     },
     "lastSyncFailedSuffix": "– gescheitert",
     "lastSyncPartialSuffix": " – holt auf",
+    "lastSyncTruncatedSuffix": " – einige Ereignisse nicht abgerufen",
     "never": "Niemals",
     "deletingInBackground": "Wird gelöscht…"
   },
   "dnsSecurityEditDnsRetentionModal": {
-    "title": "Datenaufbewahrung",
-    "description": "Ältere Ereignisse und Tagesstatistiken werden von der nächtlichen Bereinigung gelöscht.",
+    "title": "Gespeicherte Daten",
+    "description": "Legen Sie fest, welche DNS-Anfragen Breeze für diese Integration speichert und wie lange sie aufbewahrt werden.",
     "fieldLabel": "DNS-Ereignisse und Statistiken aufbewahren für (Tage)",
     "fieldHelp": "1–365 Tage. Leer lassen, um den Standardwert der Installation zu verwenden (90 Tage, sofern Ihr Administrator ihn nicht geändert hat).",
     "invalid": "Geben Sie eine ganze Zahl von 1 bis 365 Tagen ein oder lassen Sie das Feld leer.",
@@ -1803,8 +1817,13 @@
       "saving": "Wird gespeichert…"
     },
     "messages": {
-      "saved": "Aufbewahrung für {{name}} aktualisiert",
-      "saveFailed": "Aufbewahrung für {{name}} konnte nicht aktualisiert werden"
+      "saved": "Einstellungen für gespeicherte Daten von {{name}} aktualisiert",
+      "saveFailed": "Einstellungen für gespeicherte Daten von {{name}} konnten nicht aktualisiert werden"
+    },
+    "storeAllowedTraffic": {
+      "label": "Zugelassenen Datenverkehr speichern",
+      "helpOff": "Nur blockierte und umgeleitete Anfragen werden gespeichert. Zugelassene Anfragen machen meist fast den gesamten Datenverkehr aus, und Ihr DNS-Anbieter führt sie in seinen eigenen Berichten.",
+      "helpOn": "Zugelassene Anfragen werden ebenfalls gespeichert, meist etwa 100-mal so viele Zeilen. Wenn Sie dies später ausschalten, werden bereits gespeicherte zugelassene Anfragen nicht gelöscht; die Aufbewahrungsfrist entfernt sie."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
@@ -2032,19 +2051,17 @@
       "statusFilterLabel": "Behebungsstatus"
     },
     "status": {
-      "pendingApproval": "Ausstehende Genehmigung",
-      "pending_approval": "bis zur Genehmigung",
-      "queued": "in der Warteschlange",
-      "inProgress": "In Bearbeitung",
-      "in_progress": "in Bearbeitung",
-      "completed": "abgeschlossen",
-      "failed": "gescheitert",
-      "cancelled": "abgesagt"
+      "pending_approval": "Ausstehende Genehmigung",
+      "queued": "In der Warteschlange",
+      "in_progress": "In Bearbeitung",
+      "completed": "Abgeschlossen",
+      "failed": "Fehlgeschlagen",
+      "cancelled": "Abgebrochen"
     },
     "approval": {
-      "pending": "ausstehend",
-      "approved": "genehmigt",
-      "rejected": "abgelehnt"
+      "pending": "Ausstehend",
+      "approved": "Genehmigt",
+      "rejected": "Abgelehnt"
     },
     "actions": {
       "apply": "anwenden",
@@ -2412,7 +2429,18 @@
     "sweepNowUnpublished": "Veröffentlichen Sie diesen Regelsatz, bevor Sie ihn für einen Sweep verwenden.",
     "sweepNowDisabled": "Aktivieren Sie diesen Regelsatz, bevor Sie ihn für einen Sweep verwenden.",
     "progress": {
-      "label": "{{done}} von {{total}} Geräten abgeschlossen"
+      "finished_one": "{{finished}} von {{count}} Gerät beendet",
+      "finished_other": "{{finished}} von {{count}} Geräten beendet",
+      "completed_one": "{{count}} abgeschlossen",
+      "completed_other": "{{count}} abgeschlossen",
+      "timedOut_one": "{{count}} mit Zeitüberschreitung",
+      "timedOut_other": "{{count}} mit Zeitüberschreitung",
+      "failed_one": "{{count}} fehlgeschlagen",
+      "failed_other": "{{count}} fehlgeschlagen",
+      "cancelled_one": "{{count}} abgebrochen",
+      "cancelled_other": "{{count}} abgebrochen",
+      "expired_one": "{{count}} abgelaufen",
+      "expired_other": "{{count}} abgelaufen"
     },
     "errors": {
       "orgOutOfScope": "Mindestens eine Organisation liegt außerhalb Ihres Zugriffs.",
@@ -2429,9 +2457,12 @@
       "rateLimited": "Es wurden zu viele Sweeps in kurzer Zeit gestartet. Versuchen Sie es später erneut."
     },
     "skipReasons": {
-      "agent_too_old": "Geräte mit zu altem Agent",
-      "busy_same_sweep": "Geräte, auf denen dieser Sweep bereits läuft",
-      "rule_set_not_eligible": "Geräte, für die die Regelsätze nicht gelten"
+      "agent_too_old_one": "{{count}} Gerät mit zu altem Agent",
+      "agent_too_old_other": "{{count}} Geräte mit zu altem Agent",
+      "busy_same_sweep_one": "{{count}} Gerät, auf dem dieser Sweep bereits läuft",
+      "busy_same_sweep_other": "{{count}} Geräte, auf denen dieser Sweep bereits läuft",
+      "rule_set_not_eligible_one": "{{count}} Gerät, für das die Regelsätze nicht gelten",
+      "rule_set_not_eligible_other": "{{count}} Geräte, für die die Regelsätze nicht gelten"
     },
     "skipExplain": {
       "agent_too_old": "Der Agent muss aktualisiert werden, bevor er YARA-Regelsätze ausführen kann.",
@@ -2441,13 +2472,21 @@
     "dialog": {
       "title": "Geräte auf IOC-Treffer prüfen",
       "ruleSets": "Regelsätze: {{names}}",
-      "rescopeNote": "Ein Sweep merkt sich seine Geräte nicht. Wählen Sie den Bereich erneut; Regelsätze und Scan-Typ bleiben erhalten.",
+      "rescopeNote": "Ein Sweep merkt sich seine Geräte nicht. Wählen Sie den Bereich erneut; Regelsätze, Scan-Typ und benutzerdefinierte Pfade bleiben erhalten.",
       "back": "Zurück",
       "next": "Weiter",
       "previewAction": "Vorschau",
-      "confirm": "{{targeted}} Geräte prüfen",
+      "confirm_one": "{{count}} Gerät prüfen",
+      "confirm_other": "{{count}} Geräte prüfen",
       "viewRunning": "Laufenden Sweep anzeigen",
-      "confirmSummary": "{{targeted}} Geräte in {{orgs}} Organisationen werden anhand der in der Vorschau gezeigten Regelsatz-Versionen gescannt. Treffer werden als Bedrohungen gemeldet; auf den Geräten wird nichts verändert.",
+      "confirmSummary_one": "{{devices}} in {{orgs}} wird anhand der in der Vorschau gezeigten Regelsatz-Versionen gescannt. Treffer werden als Bedrohungen gemeldet; auf dem Gerät wird nichts verändert.",
+      "confirmSummary_other": "{{devices}} in {{orgs}} werden anhand der in der Vorschau gezeigten Regelsatz-Versionen gescannt. Treffer werden als Bedrohungen gemeldet; auf den Geräten wird nichts verändert.",
+      "counts": {
+        "devices_one": "{{count}} Gerät",
+        "devices_other": "{{count}} Geräte",
+        "orgs_one": "{{count}} Organisation",
+        "orgs_other": "{{count}} Organisationen"
+      },
       "steps": {
         "scope": "Bereich",
         "type": "Scan-Typ",
@@ -2476,15 +2515,19 @@
         "full": "Vollständig",
         "custom": "Eigene Pfade",
         "paths": "Pfade, einer pro Zeile",
-        "pathsHelp": "Bis zu {{max}} Pfade mit je {{chars}} Zeichen."
+        "pathsHelp": "Bis zu {{max}} Pfade mit je {{chars}} Zeichen.",
+        "pathsCount": "{{paths}} von {{max}} Pfaden",
+        "pathsTooMany": "{{paths}} von {{max}} Pfaden: Entfernen Sie {{remove}}.",
+        "pathTooLong": "Zeile {{line}} ist länger als {{chars}} Zeichen."
       },
       "duration": {
         "label": "Laufzeit (Stunden)",
-        "help": "Offline-Geräte führen den Scan aus, wenn sie innerhalb dieser Zeit wieder online kommen. Zwischen 1 und {{max}} Stunden."
+        "help": "Offline-Geräte führen den Scan aus, wenn sie innerhalb dieser Zeit wieder online kommen. Zwischen 1 und {{max}} Stunden.",
+        "invalid": "Geben Sie eine ganze Zahl von Stunden zwischen 1 und {{max}} ein."
       },
       "preview": {
-        "targeted": "{{devices}} Geräte in {{orgs}} Organisationen",
-        "org": "{{org}}: {{devices}} Geräte",
+        "targeted": "{{devices}} in {{orgs}}",
+        "org": "{{org}}: {{devices}}",
         "ruleSets": "Regelsätze",
         "skipped": "Übersprungen",
         "scopeChanged": "Die Geräte oder Regelsätze haben sich seit der Vorschau geändert. Prüfen Sie die neuen Zahlen und bestätigen Sie erneut."
@@ -2500,6 +2543,7 @@
       "resweep": "Erneut mit den aktuellen Regeln prüfen",
       "rulesChanged": "Regeln seit dem Start dieses Sweeps geändert",
       "queued": "In der Warteschlange: {{queued}}",
+      "running": "Wird ausgeführt: {{running}}",
       "columns": {
         "ruleSets": "Regelsätze",
         "origin": "Gestartet über",
@@ -2556,6 +2600,7 @@
       "builtin": "Integriert",
       "allOrgs": "Alle Organisationen",
       "errors": "Fehlerhaft",
+      "checkerUnavailable": "Compiler nicht verfügbar",
       "unpublished": "Nicht veröffentlicht",
       "disabled": "Deaktiviert"
     },
@@ -2612,7 +2657,7 @@
       "autoQuarantineOnly": "Die automatische Quarantäne ist auf den Geräten jetzt aus. Ihre übrigen Änderungen sind noch nicht aktiv.",
       "published": "Gespeichert und als Version {{version}} veröffentlicht",
       "savedDisabled": "Gespeichert. Der Satz ist deaktiviert, daher verwenden Geräte ihn nicht.",
-      "checkerUnavailable": "Gespeichert, nicht veröffentlicht: Die Regelprüfung ist nicht verfügbar. {{devices}}",
+      "checkerUnavailable": "Gespeichert, nicht veröffentlicht: Der YARA-Compiler ist auf diesem Server nicht verfügbar, daher konnten die Regeln nicht geprüft werden. {{devices}}",
       "compileErrors_one": "Gespeichert, nicht veröffentlicht: {{count}} Regel ist fehlerhaft. {{devices}}",
       "compileErrors_other": "Gespeichert, nicht veröffentlicht: {{count}} Regeln sind fehlerhaft. {{devices}}",
       "setErrors": "Gespeichert, nicht veröffentlicht: {{message}}. {{devices}}",
@@ -2621,7 +2666,8 @@
       "devicesKeep": "Geräte behalten Version {{version}}.",
       "neverPublished": "Dieser Satz wurde noch nicht veröffentlicht, daher verwenden Geräte ihn nicht.",
       "setDisabled": "Der Satz ist deaktiviert, daher verwenden Geräte ihn nicht.",
-      "staleBanner": "Nicht veröffentlicht: Beheben Sie die Fehler unten. {{devices}}"
+      "staleBanner": "Nicht veröffentlicht: Beheben Sie die Fehler unten. {{devices}}",
+      "staleCheckerUnavailable": "Nicht veröffentlicht: Der YARA-Compiler ist auf diesem Server nicht verfügbar, daher können Regeländerungen weder geprüft noch veröffentlicht werden. {{devices}}"
     },
     "editor": {
       "tabs": {
@@ -2716,5 +2762,35 @@
   },
   "sensitiveDataAccess": {
     "noOrgAccess": "Sie haben keinen Zugriff auf diese Organisation"
+  },
+  "sensitiveDataLabels": {
+    "risk": {
+      "critical": "Kritisch",
+      "high": "Hoch",
+      "medium": "Mittel",
+      "low": "Niedrig"
+    },
+    "findingStatus": {
+      "open": "Offen",
+      "remediated": "Behoben",
+      "accepted": "Akzeptiert",
+      "falsePositive": "Falsch positiv"
+    },
+    "scanStatus": {
+      "queued": "In Warteschlange",
+      "running": "Läuft",
+      "completed": "Abgeschlossen",
+      "failed": "Fehlgeschlagen",
+      "cancelled": "Abgebrochen"
+    },
+    "dataType": {
+      "credential": "Anmeldedaten",
+      "financial": "Finanzdaten"
+    },
+    "a11y": {
+      "editPolicy": "Richtlinie {{name}} bearbeiten",
+      "deletePolicy": "Richtlinie {{name}} löschen",
+      "togglePolicyActive": "Aktiv: {{name}}"
+    }
   }
 }

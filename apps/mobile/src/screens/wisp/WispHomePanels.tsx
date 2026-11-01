@@ -65,7 +65,7 @@ export function WispLinksList({
             <Text style={[type.meta, { color: theme.textLo }]}>
               {linkKindLabel(link.ref.kind)}
               {link.status ? ` · ${link.status}` : ''}
-              {link.addedBy === 'wisp' ? ' · added by Wisp' : ''}
+              {link.source === 'wisp_pin' ? ' · added by Wisp' : ''}
             </Text>
             <Text
               style={[type.body, { color: target ? theme.brand : theme.textHi, marginTop: spacing[1] }]}
@@ -87,8 +87,8 @@ export function WispLinksList({
         // shown for context and stay read-only on the phone.
         return target ? (
           <Pressable
-            key={link.id}
-            testID={`wisp-link-${link.id}`}
+            key={link.id ?? `${link.ref.kind}:${link.ref.id}`}
+            testID={`wisp-link-${link.id ?? `${link.ref.kind}:${link.ref.id}`}`}
             accessibilityRole="link"
             onPress={() => onOpenTicket(target.ticketId)}
             style={style}
@@ -96,7 +96,7 @@ export function WispLinksList({
             {body}
           </Pressable>
         ) : (
-          <View key={link.id} testID={`wisp-link-${link.id}`} style={style}>
+          <View key={link.id ?? `${link.ref.kind}:${link.ref.id}`} testID={`wisp-link-${link.id ?? `${link.ref.kind}:${link.ref.id}`}`} style={style}>
             {body}
           </View>
         );

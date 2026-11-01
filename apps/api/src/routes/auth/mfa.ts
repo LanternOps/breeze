@@ -40,8 +40,8 @@ import { authMiddleware, type AuthContext } from '../../middleware/auth';
 import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema, maintenanceStepUpResource, moveOrgStepUpResource, forceRebootStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, rollbackStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource, migrationWindowOpenStepUpResource, callerVerificationAdministrativeStepUpResource, wispGrantStepUpResource } from './schemas';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { forceRebootResourceDigest, maintenanceResourceDigest, mintStepUpGrant, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, passkeyRemovalResourceDigest, rollbackResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, topologyArmResourceDigest, preAssignmentEnableResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest, migrationWindowOpenResourceDigest, callerVerificationAdministrativeDigest, wispGrantResourceDigest } from '../../services/mfaStepUpGrant';
-import { verifyStepUpPasskeyAssertion } from './passkeys';
+import { consumeStepUpGrant, forceRebootResourceDigest, maintenanceResourceDigest, mintStepUpGrant, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, passkeyRemovalResourceDigest, rollbackResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, topologyArmResourceDigest, preAssignmentEnableResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest, migrationWindowOpenResourceDigest, callerVerificationAdministrativeDigest, wispGrantResourceDigest } from '../../services/mfaStepUpGrant';
+import { checkPasskeyRemovalEligibility, verifyStepUpPasskeyAssertion } from './passkeys';
 import {
   getClientIP,
   installAuthorizedUserSessionCookies,
@@ -1333,7 +1333,10 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
     orgId: auth.orgId ?? null,
     partnerId: auth.partnerId ?? null,
   }, { failClosed: true, failClosedMethods: true });
-  if (!policy.allowedMethods[body.method]) {
+  // Recovery is exempt from the allowed-methods policy on purpose: the schema
+  // restricts it to `delete_passkey`, and a user whose passkey is gone needs it
+  // even when policy no longer allows their other methods.
+  if (body.method !== 'recovery' && !policy.allowedMethods[body.method]) {
     writeAuthAudit(c, {
       orgId: auth.orgId ?? undefined,
       action: 'auth.mfa.stepup.failed',
@@ -1346,7 +1349,13 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
     return rejectProof(c, 'Invalid credentials', MFA_PROOF_INVALID, MFA_PROOF_REJECTION_STATUS);
   }
 
+  if (body.operation === 'delete_passkey' && body.passkeyId) {
+    const eligibility = await checkPasskeyRemovalEligibility(c, auth, body.passkeyId);
+    if ('error' in eligibility) return eligibility.error;
+  }
+
   let ok = false;
+  let recoveryCodeToConsume: string | null = null;
   if (body.method === 'totp') {
     const [u] = await db
       .select({ mfaSecret: users.mfaSecret, mfaEnabled: users.mfaEnabled, mfaMethod: users.mfaMethod })
@@ -1384,6 +1393,9 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
     const r = await twilio.checkVerificationCode(u.phoneNumber, body.code);
     if (r.serviceError) return c.json({ error: 'SMS verification temporarily unavailable' }, 502);
     ok = r.valid;
+  } else if (body.method === 'recovery') {
+    recoveryCodeToConsume = body.code;
+    ok = true;
   } else {
     // passkey — client must have already called POST /auth/mfa/step-up/options.
     ok = await verifyStepUpPasskeyAssertion(auth.user.id, body.credential);
@@ -1406,7 +1418,7 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
   if (!epochs || !auth.token?.sid) {
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
-  const grantId = await mintStepUpGrant({
+  const grantBinding = {
     userId: auth.user.id,
     operation: body.operation,
     authEpoch: epochs.authEpoch,
@@ -1460,9 +1472,30 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
               : body.operation === 'delete_passkey'
                 ? passkeyRemovalResourceDigest(body.passkeyId!)
                 : '',
-  });
+  };
+  const grantId = await mintStepUpGrant(grantBinding);
   if (!grantId) {
     return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  if (recoveryCodeToConsume !== null) {
+    const recoveryCode = recoveryCodeToConsume;
+    try {
+      await db.transaction((tx) => consumeRecoveryCode(tx, auth.user.id, recoveryCode));
+    } catch (error) {
+      await consumeStepUpGrant(grantId, grantBinding);
+      if (!(error instanceof RecoveryCodeInvalidError)) throw error;
+      writeAuthAudit(c, {
+        orgId: auth.orgId ?? undefined,
+        action: 'auth.mfa.stepup.failed',
+        result: 'failure',
+        reason: 'invalid_factor',
+        userId: auth.user.id,
+        email: auth.user.email,
+        details: { method: body.method },
+      });
+      return rejectProof(c, 'Invalid credentials', MFA_PROOF_INVALID, MFA_PROOF_REJECTION_STATUS);
+    }
   }
 
   writeAuthAudit(c, {

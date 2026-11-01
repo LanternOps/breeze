@@ -56,10 +56,10 @@ func (p SessionPolicy) clipboardEnabled() bool {
 // takes precedence over idle.
 func shouldStopForLifetime(now, startWall, lastActivity time.Time, policy SessionPolicy) (bool, string) {
 	if now.Sub(startWall) >= ClampMaxDuration(policy.MaxDuration) {
-		return true, "max_session_duration_exceeded"
+		return true, StopReasonHardDeadline
 	}
 	if policy.IdleTimeout > 0 && now.Sub(lastActivity) >= policy.IdleTimeout {
-		return true, "idle_timeout_exceeded"
+		return true, StopReasonIdleTimeout
 	}
 	return false, ""
 }
