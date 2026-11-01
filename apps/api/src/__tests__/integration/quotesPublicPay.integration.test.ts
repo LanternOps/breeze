@@ -11,7 +11,7 @@
  */
 import './setup';
 import { getTestDb } from './setup';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, hasDbAccessContext } from '../../db';
@@ -119,7 +119,21 @@ async function seedSentQuote(opts: { recurringOnly?: boolean; noStripe?: boolean
 
 type AcceptBody = { data: { status: string; invoiceUrl: string | null; checkoutUrl: string | null; payDeferred?: boolean } };
 
+/**
+ * #10736 — freeze only the app's `Date` so a test that compares the accept's and
+ * the Pay's Checkout requests does not depend on when the run starts. Timers stay
+ * real (the slow-mint test needs a real setTimeout). Restored in afterEach.
+ */
+function freezeAppClock(at: number = Date.now()): void {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(at);
+}
+
 describe('public accept → durable invoice link → pay', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mintFailMock.fail = false;
@@ -149,6 +163,7 @@ describe('public accept → durable invoice link → pay', () => {
   // not a second competing link.
   runDb('accept mints a public-link-family checkout for the charge-now amount', async () => {
     const { token } = await seedSentQuote();
+    freezeAppClock();
     const res = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Pat Prospect' });
     expect(res.status).toBe(200);
     const body = await res.json() as AcceptBody;
@@ -171,6 +186,44 @@ describe('public accept → durable invoice link → pay', () => {
     expect(payOpts.idempotencyKey).toBe(opts.idempotencyKey);
     expect(payArgs).toEqual(args);
   });
+
+  // #10736 — a REAL customer, not just a test run: sign at 08:59:59, press Pay
+  // on the invoice page at 09:00:01. Before the fix the key's expiry bucket was
+  // the wall-clock hour, so the two requests carried different keys and Stripe
+  // minted a second Checkout session. The bucket is now anchored to the
+  // invoice's created_at, so the Pay replays the accept's request exactly.
+  runDb('accept just before the top of the hour and Pay just after it replay ONE Checkout request', async () => {
+    const { token } = await seedSentQuote();
+    // created_at comes from the DATABASE clock (≈ real now at accept time) and
+    // this invoice's bucket edges sit at created_at − 5 min + k·1h. The two
+    // frozen app instants below straddle a wall-clock hour by ±1 s, so an edge
+    // falls between them only if the accept lands within ~1 s of xx:05:00. The
+    // guard skips ±30 s around it as margin for DB clock skew (rare, ≤ 61 s wait).
+    const HOUR_MS = 3_600_000;
+    const phaseMs = Date.now() % HOUR_MS;
+    if (phaseMs > 270_000 && phaseMs < 330_000) {
+      await new Promise((r) => setTimeout(r, 331_000 - phaseMs));
+    }
+    const topOfHour = Math.ceil((Date.now() + 1) / HOUR_MS) * HOUR_MS;
+
+    freezeAppClock(topOfHour - 1_000);
+    const res = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Pat Prospect' });
+    expect(res.status).toBe(200);
+    const body = await res.json() as AcceptBody;
+    expect(body.data.checkoutUrl).toBe('https://checkout.stripe.com/c/pay/pub');
+    const invToken = body.data.invoiceUrl!.split('/invoice/')[1]!;
+
+    vi.setSystemTime(topOfHour + 1_000);
+    const pay = await postJson(`/invoices/public/${invToken}/pay`, {});
+    expect(pay.status).toBe(200);
+
+    expect(sessionsCreateMock).toHaveBeenCalledTimes(2);
+    const [acceptArgs, acceptOpts] = sessionsCreateMock.mock.calls[0]!;
+    const [payArgs, payOpts] = sessionsCreateMock.mock.calls[1]!;
+    expect(payOpts.idempotencyKey).toBe(acceptOpts.idempotencyKey);
+    // Same key ⇒ byte-identical params, or Stripe would reject the replay.
+    expect(payArgs).toEqual(acceptArgs);
+  }, 90_000);
 
   // Todd 10-09: an org on automatic payments ALSO goes straight to checkout —
   // its scheduled run may be days out. Safe against a double charge: the
@@ -199,6 +252,7 @@ describe('public accept → durable invoice link → pay', () => {
     const late = new Promise<void>((r) => { lateDone = r; });
     sessionsCreateMock.mockImplementationOnce(() => new Promise((resolve) => setTimeout(() => { resolve(SESSION); lateDone(); }, ACCEPT_CHECKOUT_TIMEOUT_MS + 500)));
     const { token } = await seedSentQuote();
+    freezeAppClock();
     const res = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Pat Prospect' });
     expect(res.status).toBe(200);
     const body = await res.json() as AcceptBody;
@@ -312,6 +366,64 @@ describe('public accept → durable invoice link → pay', () => {
     expect(q!.status).toBe('converted');
   });
 
+  // #3740 (b): accepting spends the quote link, so the view answers 401 — but
+  // the SAME link still reaches this quote's invoice payment, and only that.
+  runDb('the spent accept link still pays the converted invoice, in the same session family', async () => {
+    const { token } = await seedSentQuote();
+    const res = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Pat Prospect' });
+    expect(res.status).toBe(200);
+    expect((await app().request(`/quotes/public/${token}`)).status).toBe(401); // the proposal is gone to it
+
+    const summary = await app().request(`/quotes/public/${token}/payment`);
+    expect(summary.status).toBe(200);
+    const summaryBody = await summary.json() as { data: { payment: { amount: string; isDeposit: boolean } | null } };
+    expect(summaryBody.data.payment).toMatchObject({ amount: '250.00', isDeposit: false });
+
+    const pay = await postJson(`/quotes/public/${token}/pay`, {});
+    expect(pay.status).toBe(200);
+    expect(((await pay.json()) as { data: { url: string } }).data.url).toBe('https://checkout.stripe.com/c/pay/pub');
+    // Same request + idempotency key as the accept-time Sign & pay mint: one
+    // payable session, never a second competing one.
+    const [acceptArgs, acceptOpts] = sessionsCreateMock.mock.calls[0]!;
+    const [payArgs, payOpts] = sessionsCreateMock.mock.calls[1]!;
+    expect(payOpts.idempotencyKey).toBe(acceptOpts.idempotencyKey);
+    expect(payArgs).toEqual(acceptArgs);
+  });
+
+  runDb('the spent accept link offers nothing once the invoice is paid', async () => {
+    const { quoteId, token } = await seedSentQuote();
+    await postJson(`/quotes/public/${token}/accept`, { signerName: 'Pat Prospect' });
+    await withSystemDbAccessContext(async () => {
+      const [q] = await db.select({ invoiceId: quotes.convertedInvoiceId }).from(quotes).where(eq(quotes.id, quoteId));
+      await db.update(invoices).set({ status: 'paid', amountPaid: '250.00', balance: '0.00' }).where(eq(invoices.id, q!.invoiceId!));
+    });
+    sessionsCreateMock.mockClear();
+
+    const summary = await app().request(`/quotes/public/${token}/payment`);
+    expect(summary.status).toBe(200);
+    expect(((await summary.json()) as { data: { payment: unknown } }).data.payment).toBeNull();
+    const pay = await postJson(`/quotes/public/${token}/pay`, {});
+    expect(pay.status).toBe(409);
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
+  });
+
+  // Tenancy: a validly signed token whose org claim does not own the quote (a
+  // different tenant) never resolves the row, so it reaches no invoice at all.
+  runDb('a token claiming another tenant\'s org reaches no payment', async () => {
+    const victim = await seedSentQuote();
+    await postJson(`/quotes/public/${victim.token}/accept`, { signerName: 'Pat Prospect' });
+    const other = await seedSentQuote();
+    const { token: crossToken } = await withSystemDbAccessContext(async () => {
+      const [o] = await db.select({ partnerId: quotes.partnerId }).from(quotes).where(eq(quotes.id, other.quoteId));
+      return createQuoteAcceptToken({ quoteId: victim.quoteId, orgId: other.orgId, partnerId: o!.partnerId });
+    });
+    sessionsCreateMock.mockClear();
+
+    expect((await app().request(`/quotes/public/${crossToken}/payment`)).status).toBe(401);
+    expect((await postJson(`/quotes/public/${crossToken}/pay`, {})).status).toBe(401);
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
+  });
+
   // A link-mint failure after the accept committed must not roll back the accept,
   // and must be distinguishable (payDeferred) so a silently-lost payment path is
   // observable rather than looking identical to "nothing to pay".
@@ -327,6 +439,8 @@ describe('public accept → durable invoice link → pay', () => {
     // No durable page to return to → no checkout either.
     expect(body.data.checkoutUrl).toBeNull();
     expect(sessionsCreateMock).not.toHaveBeenCalled();
+    // #3740 (a): the confirmation page still gets the payment step to show.
+    expect((body.data as { payment?: { amount: string } | null }).payment).toMatchObject({ amount: '250.00' });
     const [q] = await withSystemDbAccessContext(() => db.select({ status: quotes.status }).from(quotes).where(eq(quotes.id, quoteId)));
     expect(q!.status).toBe('converted'); // accept committed despite the failure
   });

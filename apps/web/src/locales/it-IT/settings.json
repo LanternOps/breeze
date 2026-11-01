@@ -69,7 +69,7 @@
           "executing": "In esecuzione",
           "completed": "Completato",
           "failed": "Non riuscito",
-          "rejected": "Rifiutato"
+          "rejected": "Negato"
         }
       },
       "intents": {
@@ -746,6 +746,8 @@
   },
   "partnerDefaults": {
     "notSet": "Non impostato — le org si configurano singolarmente",
+    "notSetTtl": "Non impostato — predefinito della piattaforma; le organizzazioni possono impostare il proprio",
+    "notSetMaxTtl": "Non impostato — il massimo della piattaforma si applica a tutte le organizzazioni",
     "updatePolicy": "Criterio di aggiornamento agent",
     "automatic": "Automatico",
     "manual": "Manuale (blocca gli aggiornamenti automatici)",
@@ -795,9 +797,13 @@
       "watchdog": "Target watchdog"
     },
     "inheritDefault": "Eredita predefinito partner ({{version}})",
+    "inheritDefaultLatest": "Eredita predefinito partner (ultima promossa)",
+    "latestOverride": "Sempre l’ultima promossa, ignora il pin del partner",
+    "latestOverrideVersion": "Sempre l’ultima promossa ({{version}}), ignora il pin del partner",
+    "latestOrganization": "Impostato per questa organizzazione: sempre l’ultima promossa",
     "latestVersion": "Ultima promossa ({{version}})",
     "latest": "Ultima promossa",
-    "pinnedAll": "Bloccata per tutte le organizzazioni",
+    "pinnedAll": "Predefinito del partner — le organizzazioni possono sostituirlo",
     "overridesDefault": "Sovrascrive predefinito partner ({{version}})",
     "pinnedOrganization": "Bloccata per questa organizzazione",
     "inherited": "Ereditata dal partner: {{version}}",
@@ -906,12 +912,12 @@
     "logoPreview": "Anteprima logo",
     "noLogo": "Nessun logo",
     "uploadImage": "Carica immagine",
-    "imageHelp": "PNG, JPEG o WebP · max 400 KB dopo la codifica · ridimensionata per adattarsi a 256x256",
+    "imageHelp": "PNG, JPEG o WebP, fino a 400 KB dopo la codifica; le immagini grandi vengono ridotte a 800 px.",
     "invalidSavedLogo": "I dati del logo salvato non sono validi. Rimuovilo o caricane uno nuovo.",
     "pasteUrl": "Oppure incolla un URL immagine",
     "customCss": "CSS personalizzato",
     "customCssPlaceholder": "/* CSS personalizzato applicato a tutte le organizzazioni figlie */",
-    "customCssHelp": "Override CSS applicati al portale per tutte le organizzazioni figlie."
+    "customCssHelp": "Aggiunto al portale di ogni cliente, prima del CSS personalizzato dell’organizzazione, che può sovrascriverlo. @import e url() non HTTPS non sono consentiti."
   },
   "partnerSecurity": {
     "notSet": "Non impostato — le org si configurano singolarmente",
@@ -932,7 +938,11 @@
     "allowlistPlaceholder": "Inserisci un IP o intervallo CIDR per riga. Lascia vuoto per consentire a ogni org di decidere.",
     "allowlistHelp": "Lascia vuoto per consentire a ogni organizzazione di configurarla singolarmente. Usa la notazione CIDR per gli intervalli. Richiede un reverse proxy configurato affinché l'API possa vedere gli IP client reali.",
     "ipListed": "Il tuo IP ({{ip}}) è elencato",
-    "addCurrentIp": "Aggiungi il mio IP attuale ({{ip}})"
+    "addCurrentIp": "Aggiungi il mio IP attuale ({{ip}})",
+    "errors": {
+      "range": "Inserisci un numero intero da {{min}} a {{max}}.",
+      "atLeast": "Inserisci un numero intero pari o superiore a {{min}}."
+    }
   },
   "partnerNotifications": {
     "notSet": "Non impostato - le organizzazioni configurano singolarmente",
@@ -1112,6 +1122,7 @@
     },
     "saved": "Impostazioni partner salvate",
     "saveFailed": "Impossibile salvare le impostazioni",
+    "fieldRejected": "Impostazioni non salvate. Correggi il campo evidenziato e salva di nuovo.",
     "permissionDenied": "Non hai l'autorizzazione per visualizzare le impostazioni partner",
     "fetchFailed": "Impossibile recuperare le impostazioni partner",
     "genericError": "Si è verificato un errore",
@@ -1615,7 +1626,18 @@
       "ticket_approval_requested_approver": "Richiesta di approvazione dei lavori (approvatore)",
       "ticket_approval_requested_notify": "Richiesta di approvazione dei lavori (per informazione)",
       "ticket_approval_decided": "Decisione sull’approvazione dei lavori",
-      "ticket_merged": "Ticket unito"
+      "ticket_merged": "Ticket unito",
+      "ticket_comment_notification": "Avviso di risposta pubblica",
+      "ticket_autoresponse": "Conferma di ricezione del ticket",
+      "ticket_resolved": "Ticket risolto",
+      "quote_send": "Preventivo / proposta",
+      "agreement_request_send": "Richiesta di accordo",
+      "invoice_send": "Fattura",
+      "portal_invite": "Invito al portale",
+      "staff_invite": "Invito al personale",
+      "invoice_autopay": "Fattura con avviso di pagamento automatico",
+      "payment_reminder": "Promemoria di pagamento",
+      "payment_overdue": "Promemoria di pagamento scaduto"
     }
   },
   "inboundEmail": {
@@ -1844,7 +1866,11 @@
     },
     "colors": {
       "primary": "Colore primario",
-      "secondary": "Colore secondario"
+      "secondary": "Colore secondario",
+      "primaryInheritedSource": "Colore del brand del partner",
+      "primaryHelp": "Colore di accento su preventivi, fatture e altri documenti per i clienti di questa organizzazione. Lascia vuoto per usare il colore del brand del partner.",
+      "primaryInvalid": "Inserisci un colore esadecimale, ad esempio #2563eb.",
+      "primaryLoadError": "Impossibile caricare il colore primario salvato. La modifica è disabilitata finché non viene caricato."
     },
     "theme": {
       "title": "Tema",
@@ -1887,6 +1913,12 @@
     "description": "Regola i criteri predefiniti e il comportamento di registrazione per {{organization}}.",
     "save": "Salva predefiniti",
     "managedByPartner": "Gestito dal partner",
+    "inheritance": {
+      "inherited": "Valore predefinito ereditato",
+      "overridden": "Impostato per questa organizzazione",
+      "reset": "Ripristina il valore predefinito",
+      "resetLabel": "Ripristina il valore predefinito: {{setting}}"
+    },
     "policies": {
       "title": "Criteri predefiniti",
       "fields": {
@@ -2074,6 +2106,49 @@
         "backups_no_data": "Backup è attivo, ma non ci sono ancora dati di backup da mostrare.",
         "dashboard_security_no_data": "Dashboard è attiva, ma il punteggio di sicurezza non ha ancora dati: quel riquadro è vuoto per il cliente.",
         "branding_unset": "Il branding del portale non è mai stato impostato (logo, colori, messaggio di benvenuto o contatto di supporto)."
+      },
+      "tiles": {
+        "awaitingYou": "In attesa del cliente",
+        "devicesProtected": "Protezione degli endpoint",
+        "securityScore": "Punteggio di sicurezza",
+        "actionItems": "Azioni da svolgere",
+        "patchesApplied": "Patch applicate questo mese",
+        "backup": "Ultimo backup verificato",
+        "service": "Servizi erogati (90 giorni)",
+        "support": "Supporto"
+      },
+      "tileStatus": {
+        "noData": "Non ancora disponibile",
+        "notConfigured": "Non configurato",
+        "stale": "Potrebbe non essere aggiornato"
+      },
+      "bands": {
+        "strong": "Solido",
+        "good": "Buono",
+        "fair": "Discreto",
+        "at_risk": "A rischio"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} su {{total}} protetti",
+        "awaitingCounts": "Proposte: {{proposals}} · Fatture: {{invoices}}",
+        "serviceCounts": "In orario: {{onTime}} · In ritardo: {{late}} · Mancati: {{missed}}",
+        "nextDue": "Prossima scadenza: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} richiesta aperta",
+        "openRequests_other": "{{count}} richieste aperte",
+        "threatCounts": "Rilevati: {{detected}} · Risolti: {{resolved}}",
+        "unknownAll": "Non ancora noto per tutti i {{total}} dispositivi",
+        "unknownSome_one": "{{count}} non ancora noto",
+        "unknownSome_other": "{{count}} non ancora noti"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Vulnerabilità aperte",
+        "knownExploited": "Sfruttate note (KEV)",
+        "threatEvents": "Eventi di minaccia sugli endpoint"
+      },
+      "backupRows": {
+        "devices": "Dispositivi con backup",
+        "breaches": "Violazioni RPO / RTO aperte",
+        "providers": "Backup di terze parti"
       }
     },
     "loading": "Caricamento impostazioni portale…",
@@ -2218,6 +2293,7 @@
       "email": "email assistenza",
       "phone": "Telefono assistenza",
       "welcomeMessage": "Messaggio di benvenuto",
+      "welcomeMessageHelp": "Mostrato in cima alla pagina iniziale del cliente nel portale e nella pagina di accesso del portale quando l'organizzazione usa un dominio personalizzato verificato. Solo testo; gli a capo vengono mantenuti.",
       "footerText": "Testo footer",
       "footerTextHelp": "Mostrato in fondo al portale clienti e stampato su preventivi e fatture di questa organizzazione, al posto del piè di pagina dei documenti del partner. Lascia vuoto per stampare il piè di pagina del partner.",
       "footerTextInheritedSource": "Piè di pagina dei documenti del partner"
@@ -3090,6 +3166,7 @@
           "explicitly_declined": "Rifiutato esplicitamente",
           "no_ring_resolved": "Il dispositivo non ha un anello di aggiornamento",
           "ring_reference_invalid": "L'anello di aggiornamento del criterio non è valido",
+          "unsupported_user_scope": "Installazione per utente che Breeze non può ancora applicare",
           "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione"
         },
         "failureClasses": {
@@ -4944,7 +5021,9 @@
     "active": "Attiva",
     "revoked": "Revocata",
     "expired": "Scaduta",
-    "statusFilterLabel": "Stato della chiave"
+    "statusFilterLabel": "Stato della chiave",
+    "expires": "Scade",
+    "neverExpires": "Mai"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Caricamento chiavi API...",
@@ -4985,7 +5064,8 @@
     "rotating": "Rotazione...",
     "rotateKey": "Ruota chiave",
     "revoking": "Revoca...",
-    "revokeKey": "Revoca chiave"
+    "revokeKey": "Revoca chiave",
+    "revokedToast": "Chiave API \"{{name}}\" revocata"
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "Questo dispositivo ora può approvare richieste",
@@ -5291,6 +5371,9 @@
     "revoke": "Revoca"
   },
   "mFASettings": {
+    "saveRecoveryCodesDescription": "Conserva questi codici in un luogo sicuro. Ogni codice può essere usato una sola volta. Non possono essere mostrati di nuovo.",
+    "saveRecoveryCodes": "Salva i codici di recupero",
+    "done": "Fine",
     "verifyYourPhoneNumber": "Verifica il tuo numero di telefono",
     "enterYourPhoneNumberInE164FormatToReceiveAVerificationCo": "Inserisci il numero di telefono in formato E.164 per ricevere un codice di verifica.",
     "phoneNumber": "Numero di telefono",
@@ -5316,12 +5399,14 @@
     "sMSCodes": "Codici SMS",
     "phoneVerifiedLast4": "(telefono verificato: ...{{last4}})",
     "recoveryCodes": "Codici di recupero",
-    "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Usa questi codici per accedere al tuo account se perdi l'accesso all'app authenticator.",
+    "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Usa un codice di recupero per accedere al tuo account se non puoi usare la passkey o l’app di autenticazione.",
     "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "I codici di recupero vengono mostrati una sola volta e non possono essere visualizzati di nuovo.",
-    "regenerateRecoveryCodes": "Rigenera i codici di recupero",
-    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "I codici esistenti non possono essere visualizzati di nuovo. La rigenerazione emette una nuova serie e invalida immediatamente quella precedente.",
-    "regenerateRecoveryCodesQuestion": "Rigenerare i codici di recupero?",
-    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "La rigenerazione invalida immediatamente tutti i codici di recupero che hai salvato, comprese le copie stampate. I nuovi codici vengono mostrati una sola volta, subito dopo la generazione.",
+    "recoveryGenerationTitle": "Genera nuovi codici di recupero",
+    "generateNewCodesQuestion": "Generare nuovi codici?",
+    "saveGeneratedRecoveryCodes": "Conserva questi codici in un luogo sicuro. Ogni codice può essere usato una volta e non può essere mostrato di nuovo.",
+    "generateNewCodesWarning": "I codici di recupero attuali non funzioneranno più. I nuovi codici saranno mostrati una sola volta. Gli altri dispositivi verranno disconnessi, ma questo rimarrà connesso.",
+    "regenerateRecoveryCodes": "Genera nuovi codici",
+    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "I codici esistenti non possono essere mostrati di nuovo. Genera nuovi codici per sostituirli.",
     "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "Il codice non è stato accettato. Il tuo codice QR è ancora valido: attendi il codice successivo dell’app authenticator e riprova.",
     "confirmYourPassword": "Conferma la password",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Reinserisci la password dell'account per iniziare a configurare un'app authenticator.",
@@ -5338,11 +5423,9 @@
     "enterThe6DigitCodeGeneratedByYourAuthenticatorApp": "Inserisci il codice a 6 cifre generato dall'app authenticator.",
     "disableMFA": "Disabilita MFA",
     "reEnterYourAccountPasswordToConfirmThisChange": "Reinserisci la password dell'account per confermare questa modifica.",
-    "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Salva questi codici in un luogo sicuro. Puoi usarli per accedere al tuo account se perdi il dispositivo authenticator.",
     "copyCodes": "Copia codici",
     "copiedCodes": "Copiato",
     "copyCodesFailed": "Impossibile copiare negli appunti. Seleziona i codici qui sopra e copiali manualmente.",
-    "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Ogni codice può essere usato una sola volta. Generare nuovi codici invaliderà quelli creati in precedenza.",
     "back": "Indietro",
     "smsSentToPhone": "Codici SMS inviati al telefono che termina con {{last4}}.",
     "currentPasswordIsRequired": "La password attuale è obbligatoria",
@@ -5355,7 +5438,7 @@
     "verifyPhone": "Verifica telefono",
     "enabling": "Abilitazione...",
     "yourAccountIsProtectedWithAnAuthenticatorApp": "Il tuo account è protetto con un'app authenticator.",
-    "useAnAuthenticatorAppToGenerateVerificationCodesRecommen": "Usa un'app authenticator per generare codici di verifica. (Consigliato)",
+    "useAnAuthenticatorAppToGenerateVerificationCodesRecommen": "Usa un'app authenticator per generare codici di verifica.",
     "receiveVerificationCodesViaSMSAsABackup": "Ricevi codici di verifica via SMS come backup.",
     "continue": "Continua",
     "verifyAndEnable": "Verifica e abilita",
@@ -5364,7 +5447,6 @@
     "enterThe6DigitCodeFromYourAuthenticatorApp": "Inserisci il codice a 6 cifre dall'app authenticator.",
     "disabling": "Disabilitazione...",
     "generating": "Generazione...",
-    "regenerateCodes": "Rigenera codici",
     "verifyYourIdentity": "Verifica la tua identità",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Questo account accede tramite un provider di identità e non ha una password. Verificati nuovamente presso il tuo provider per iniziare a configurare un'app di autenticazione.",
     "verifyWithYourIdentityProvider": "Verifica con il tuo provider di identità",
@@ -5382,6 +5464,11 @@
     "couldNotImportThePax8Product": "Impossibile importare il prodotto Pax8."
   },
   "profilePage": {
+    "factorProofLabel": "Codice MFA attuale o codice di recupero",
+    "passkeyRecoveryCodeHint": "Inserisci un codice di recupero non utilizzato.",
+    "recoveryCode": "Codice di recupero",
+    "useRecoveryCode": "Non puoi usare la passkey? Usa un codice di recupero",
+    "usePasskeyVerification": "Usa invece la verifica con passkey",
     "nameMustBeAtLeast2Characters": "Il nome deve contenere almeno 2 caratteri",
     "loadingProfile": "Caricamento profilo...",
     "profileSettings": "Impostazioni profilo",
@@ -5479,7 +5566,7 @@
     "ssoReauthFailed": "Non è stato possibile verificare con il tuo provider di identità. Riprova.",
     "couldNotStartIdentityProviderVerification": "Non è stato possibile avviare la verifica tramite il provider di identità.",
     "deletePasskeyConfirmTitle": "Eliminare questa passkey?",
-    "deletePasskeyConfirmMessage": "Questa operazione rimuove definitivamente la passkey \"{{name}}\", che non potrà più essere usata per accedere. Trattandosi di un metodo a più fattori, l'eliminazione disconnette anche le altre sessioni su tutti i dispositivi. Non può essere annullata.",
+    "deletePasskeyConfirmMessage": "Questa operazione rimuove definitivamente la passkey \"<strong>{{name}}</strong>\", che non potrà più essere usata per accedere. Trattandosi di un metodo a più fattori, l'eliminazione disconnette anche le altre sessioni su tutti i dispositivi. Non può essere annullata.",
     "passkeyStepUpHeading": "Verifica il tuo fattore di accesso esistente",
     "passkeyStepUpIntro": "Questo account ha già l'autenticazione a più fattori abilitata. Confermala prima di aggiungere un'altra passkey.",
     "passkeyStepUpNoUsableFactor": "Il fattore attuale del tuo account non può essere confermato qui. Contatta un amministratore per aggiungere una passkey.",
@@ -5634,6 +5721,11 @@
     "eGOktaProduction": "es. Okta Production",
     "providerPreset": "Preset provider",
     "selectAPresetToAutoFillRecommendedSettings": "Seleziona un preset per compilare automaticamente le impostazioni consigliate",
+    "replacePresetFields": {
+      "title": "Sostituire con i valori predefiniti di {{preset}}?",
+      "message": "Applicando il preset {{preset}} vengono sostituiti gli ambiti e la mappatura attributi attuali, comprese le tue modifiche, e viene cancellato ogni claim che il preset non imposta, come l’attributo gruppi. Nulla viene salvato finché non salvi il provider.",
+      "confirm": "Sostituisci"
+    },
     "connectionSettings": "Impostazioni connessione",
     "issuerURL": "URL issuer",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",
@@ -6903,6 +6995,11 @@
       "fleetAddDescription": "Aggiungi un nuovo sito e scegli l'organizzazione a cui appartiene.",
       "empty": "Nessun sito ancora. Aggiungi un sito a un'organizzazione per iniziare.",
       "viewDevicesAt": "visualizza i dispositivi di {{name}}"
+    },
+    "toasts": {
+      "created": "Sito {{name}} creato",
+      "saved": "Sito {{name}} salvato",
+      "deleted": "Sito {{name}} eliminato"
     }
   },
   "siteList": {
@@ -7078,7 +7175,11 @@
       "label": "Etichetta",
       "notes": "Note"
     },
-    "empty": "Ancora nessun ospite noto."
+    "empty": "Ancora nessun ospite noto.",
+    "removeConfirm": {
+      "title": "Rimuovere l'ospite noto?",
+      "message": "Rimuovere {{label}} ({{mac}})? I dispositivi con questo indirizzo MAC non verranno più approvati automaticamente nelle tue organizzazioni gestite."
+    }
   },
   "userInviteForm": {
     "title": "Invita utente",
@@ -7099,7 +7200,8 @@
     },
     "placeholders": {
       "name": "Jane Smith",
-      "email": "name@company.com"
+      "email": "name@company.com",
+      "role": "Scegli un ruolo"
     },
     "orgAccess": {
       "title": "Accesso organizzazioni",
@@ -7155,6 +7257,7 @@
     "title": "Utenti",
     "description": "Gestisci accessi, ruoli e autorizzazioni degli utenti.",
     "sessionTimeoutPointer": "Il timeout di inattività della sessione si configura in Sicurezza",
+    "linkedUserMissing": "L’utente collegato non è in questo elenco. Potrebbe essere stato rimosso oppure non rientra tra gli utenti che puoi vedere.",
     "never": "Mai",
     "actions": {
       "tryAgain": "Riprova",
@@ -7199,7 +7302,8 @@
       "copyLink": "Copia link",
       "mfaReset": "MFA reimpostata per {{email}}",
       "roleUpdated": "Ruolo aggiornato",
-      "orgAccessUpdated": "Accesso alle organizzazioni aggiornato"
+      "orgAccessUpdated": "Accesso alle organizzazioni aggiornato",
+      "userRemoved": "Utente {{name}} rimosso"
     },
     "resetMfa": {
       "title": "Reimpostare MFA?",

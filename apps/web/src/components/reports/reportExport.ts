@@ -10,8 +10,9 @@ import type { PostureSummary, ExecutiveSummary, OrgNarrativeReportSummary, Fleet
   QuoteWinRateSummary,
   ClientProfitabilitySummary,
 } from '@breeze/shared';
+import { rowsToXlsx, XLSX_MIME_TYPE } from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
-import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula, rowsToCsv, rowsToTsv } from '@/lib/csvExport';
+import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula, rowsToCsv } from '@/lib/csvExport';
 import { downloadBlob } from '@/lib/downloadBlob';
 import { sanitizeImageSrc } from '@/lib/safeImageSrc';
 import { fetchWithAuth } from '../../stores/auth';
@@ -32,7 +33,7 @@ export function getBrowserTimezone(): string {
 }
 
 /**
- * Export report rows as CSV, Excel (TSV with .xls extension), or PDF.
+ * Export report rows as CSV, Excel (.xlsx workbook), or PDF.
  *
  * Throws if rows is empty for CSV/Excel formats. When `summary` is supplied for
  * the security_compliance_posture report, the PDF leads with a posture scorecard
@@ -84,8 +85,10 @@ export async function exportReport(
 
   if (format === 'excel') {
     if (rows.length === 0) throw new Error('No data to export');
-    const tsvContent = rowsToTsv(rows);
-    downloadBlob(new Blob([tsvContent], { type: 'application/vnd.ms-excel' }), `${baseFilename}.xls`);
+    // #9956: a real workbook (was TSV text saved as .xls). Throws
+    // XlsxLimitError past Excel's worksheet limits; callers surface the message.
+    const workbook = rowsToXlsx(rows);
+    downloadBlob(new Blob([workbook], { type: XLSX_MIME_TYPE }), `${baseFilename}.xlsx`);
     return;
   }
 

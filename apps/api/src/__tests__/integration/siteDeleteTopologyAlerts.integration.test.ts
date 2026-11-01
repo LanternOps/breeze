@@ -44,8 +44,8 @@ describe('DELETE /orgs/sites/:id with site-owned topology alerts (T3)', () => {
     }).returning();
     const base = { orgId: org.id, deviceId: device.id, severity: 'high' as const, status: 'active' as const };
     const [owned, keptOwned, plain] = await seed.insert(alerts).values([
-      { ...base, title: 'owned by doomed', topologySiteId: doomed.id, topologySourceKey: `topology:${'1'.repeat(64)}` },
-      { ...base, title: 'owned by kept', topologySiteId: keptSite.id, topologySourceKey: `topology:${'2'.repeat(64)}` },
+      { ...base, title: 'owned by doomed', ownerKind: 'topology_site', topologySiteId: doomed.id, topologySourceKey: `topology:${'1'.repeat(64)}` },
+      { ...base, title: 'owned by kept', ownerKind: 'topology_site', topologySiteId: keptSite.id, topologySourceKey: `topology:${'2'.repeat(64)}` },
       { ...base, title: 'device alert' },
     ]).returning();
     const [channel] = await seed.insert(notificationChannels).values({ orgId: org.id, name: 'mail', type: 'email', config: { recipients: ['ops@example.test'] } }).returning();
@@ -81,9 +81,10 @@ describe('DELETE /orgs/sites/:id with site-owned topology alerts (T3)', () => {
       WHERE confrelid = 'public.alerts'::regclass AND contype = 'f' AND confdeltype = 'a'
         AND conrelid <> 'public.alerts'::regclass`) as unknown as Array<{ tbl: string }>;
     // alert_correlations / alert_notifications left this list when
-    // 2026-12-13-110200 made their alert FKs ON DELETE CASCADE.
+    // 2026-12-13-110200 made their alert FKs ON DELETE CASCADE;
+    // psa_ticket_mappings left when 2027-01-17-210000 (#10499 W2-A) did.
     expect([...new Set(rows.map((r) => r.tbl))].sort()).toEqual([
-      'log_correlations', 'network_change_events', 'psa_ticket_mappings',
+      'log_correlations', 'network_change_events',
     ]);
   });
 });

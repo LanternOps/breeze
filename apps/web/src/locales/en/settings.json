@@ -69,7 +69,7 @@
           "executing": "Executing",
           "completed": "Completed",
           "failed": "Failed",
-          "rejected": "Rejected"
+          "rejected": "Denied"
         }
       },
       "intents": {
@@ -746,6 +746,8 @@
   },
   "partnerDefaults": {
     "notSet": "Not set — orgs configure individually",
+    "notSetTtl": "Not set — platform default; organizations can set their own",
+    "notSetMaxTtl": "Not set — platform maximum applies to all organizations",
     "updatePolicy": "Agent Update Policy",
     "automatic": "Automatic",
     "manual": "Manual (block automatic updates)",
@@ -795,9 +797,13 @@
       "watchdog": "Watchdog target"
     },
     "inheritDefault": "Inherit partner default ({{version}})",
+    "inheritDefaultLatest": "Inherit partner default (latest promoted)",
+    "latestOverride": "Always latest promoted, ignore partner pin",
+    "latestOverrideVersion": "Always latest promoted ({{version}}), ignore partner pin",
+    "latestOrganization": "Set for this organization: always latest promoted",
     "latestVersion": "Latest promoted ({{version}})",
     "latest": "Latest promoted",
-    "pinnedAll": "Pinned for all organizations",
+    "pinnedAll": "Partner default — organizations can override",
     "overridesDefault": "Overrides partner default ({{version}})",
     "pinnedOrganization": "Pinned for this organization",
     "inherited": "Inherited from partner: {{version}}",
@@ -906,12 +912,12 @@
     "logoPreview": "Logo preview",
     "noLogo": "No logo",
     "uploadImage": "Upload image",
-    "imageHelp": "PNG, JPEG, or WebP · max 400 KB after encoding · resized to fit 256×256",
+    "imageHelp": "PNG, JPEG, or WebP, up to 400 KB after encoding; large images are scaled down to 800 px.",
     "invalidSavedLogo": "Saved logo data is invalid. Remove it or upload a new one.",
     "pasteUrl": "Or paste an image URL",
     "customCss": "Custom CSS",
     "customCssPlaceholder": "/* Custom CSS applied to all child organizations */",
-    "customCssHelp": "CSS overrides applied to the portal for all child organizations."
+    "customCssHelp": "Added to every client's portal, before that organization's own Custom CSS, which can override it. @import and non-HTTPS url() are not allowed."
   },
   "partnerSecurity": {
     "notSet": "Not set — orgs configure individually",
@@ -932,7 +938,11 @@
     "allowlistPlaceholder": "Enter one IP or CIDR range per line. Leave blank to let each org decide.",
     "allowlistHelp": "Leave blank to let each organization configure individually. Use CIDR notation for ranges. Requires a configured reverse proxy so the API can see real client IPs.",
     "ipListed": "Your IP ({{ip}}) is listed",
-    "addCurrentIp": "Add my current IP ({{ip}})"
+    "addCurrentIp": "Add my current IP ({{ip}})",
+    "errors": {
+      "range": "Enter a whole number from {{min}} to {{max}}.",
+      "atLeast": "Enter a whole number of {{min}} or more."
+    }
   },
   "partnerNotifications": {
     "notSet": "Not set — orgs configure individually",
@@ -1112,6 +1122,7 @@
     },
     "saved": "Partner settings saved",
     "saveFailed": "Failed to save settings",
+    "fieldRejected": "Settings not saved. Fix the highlighted field and save again.",
     "permissionDenied": "You do not have permission to view partner settings",
     "fetchFailed": "Failed to fetch partner settings",
     "genericError": "An error occurred",
@@ -1615,7 +1626,18 @@
       "ticket_approval_requested_approver": "Work approval request (approver)",
       "ticket_approval_requested_notify": "Work approval request (for information)",
       "ticket_approval_decided": "Work approval decision",
-      "ticket_merged": "Ticket merged"
+      "ticket_merged": "Ticket merged",
+      "ticket_comment_notification": "Public reply notice",
+      "ticket_autoresponse": "Ticket received acknowledgement",
+      "ticket_resolved": "Ticket resolved",
+      "quote_send": "Quote / proposal",
+      "agreement_request_send": "Agreement request",
+      "invoice_send": "Invoice",
+      "portal_invite": "Portal invite",
+      "staff_invite": "Staff invite",
+      "invoice_autopay": "Invoice with automatic payment notice",
+      "payment_reminder": "Payment reminder",
+      "payment_overdue": "Overdue payment reminder"
     }
   },
   "inboundEmail": {
@@ -1844,7 +1866,11 @@
     },
     "colors": {
       "primary": "Primary color",
-      "secondary": "Secondary color"
+      "secondary": "Secondary color",
+      "primaryInheritedSource": "Partner brand color",
+      "primaryHelp": "Accent color on this organization's quotes, invoices and other customer documents. Leave blank to use the partner's brand color.",
+      "primaryInvalid": "Enter a hex color such as #2563eb.",
+      "primaryLoadError": "Could not load the saved primary color. Editing is disabled until this loads."
     },
     "theme": {
       "title": "Theme",
@@ -1887,6 +1913,12 @@
     "description": "Tune the default policies and enrollment behavior for {{organization}}.",
     "save": "Save defaults",
     "managedByPartner": "Managed by partner",
+    "inheritance": {
+      "inherited": "Inherited default",
+      "overridden": "Set for this organization",
+      "reset": "Reset to default",
+      "resetLabel": "Reset {{setting}} to default"
+    },
     "policies": {
       "title": "Default policies",
       "fields": {
@@ -2074,6 +2106,49 @@
         "backups_no_data": "Backups is on, but there is no backup data to show yet.",
         "dashboard_security_no_data": "Dashboard is on, but the security score has no data yet, so that tile is blank for your customer.",
         "branding_unset": "Portal branding has never been set (logo, colors, welcome message or support contact)."
+      },
+      "tiles": {
+        "awaitingYou": "Awaiting your customer",
+        "devicesProtected": "Endpoint protection",
+        "securityScore": "Security score",
+        "actionItems": "Action items",
+        "patchesApplied": "Patches applied this month",
+        "backup": "Last backup verified",
+        "service": "Service delivered (90 days)",
+        "support": "Support"
+      },
+      "tileStatus": {
+        "noData": "Not yet available",
+        "notConfigured": "Not set up",
+        "stale": "May be out of date"
+      },
+      "bands": {
+        "strong": "Strong",
+        "good": "Good",
+        "fair": "Fair",
+        "at_risk": "At risk"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} of {{total}} protected",
+        "awaitingCounts": "Proposals: {{proposals}} · Invoices: {{invoices}}",
+        "serviceCounts": "On time: {{onTime}} · Late: {{late}} · Missed: {{missed}}",
+        "nextDue": "Next due: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} open request",
+        "openRequests_other": "{{count}} open requests",
+        "threatCounts": "Detected: {{detected}} · Resolved: {{resolved}}",
+        "unknownAll": "Not yet known for all {{total}} devices",
+        "unknownSome_one": "{{count}} not yet known",
+        "unknownSome_other": "{{count}} not yet known"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Open vulnerabilities",
+        "knownExploited": "Known exploited (KEV)",
+        "threatEvents": "Endpoint threat events"
+      },
+      "backupRows": {
+        "devices": "Devices backed up",
+        "breaches": "Open RPO / RTO breaches",
+        "providers": "Third-party backup"
       }
     },
     "loading": "Loading portal settings…",
@@ -2218,6 +2293,7 @@
       "email": "Support email",
       "phone": "Support phone",
       "welcomeMessage": "Welcome message",
+      "welcomeMessageHelp": "Shown at the top of the customer's home page in the portal, and on the portal sign-in page when the organization uses a verified custom domain. Plain text; line breaks are kept.",
       "footerText": "Footer text",
       "footerTextHelp": "Shown at the bottom of the customer portal and printed on this organization's quotes and invoices, replacing the partner document footer. Leave blank to print the partner footer.",
       "footerTextInheritedSource": "Partner document footer"
@@ -2548,7 +2624,7 @@
     "failedToLoadData": "Failed to load data",
     "failedToSaveBudget": "Failed to save budget",
     "failedToSave": "Failed to save",
-    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Each tool requiring approval blocks until the user approves or rejects.",
+    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Each tool requiring approval blocks until the user approves or denies it.",
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "AI proposes a multi-step plan. User approves the whole plan at once, then steps auto-execute.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tier 2 tools auto-execute with audit logging. Tier 3 tools still require approval.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Like Action Plan, plus live screenshots between steps and a persistent Stop button.",
@@ -3090,6 +3166,7 @@
           "explicitly_declined": "Explicitly declined",
           "no_ring_resolved": "The device has no update ring",
           "ring_reference_invalid": "Policy's update ring is invalid",
+          "unsupported_user_scope": "Per-user install Breeze cannot apply yet",
           "device_not_in_org": "Device not in this organization"
         },
         "failureClasses": {
@@ -4944,7 +5021,9 @@
     "active": "Active",
     "revoked": "Revoked",
     "expired": "Expired",
-    "statusFilterLabel": "Status"
+    "statusFilterLabel": "Status",
+    "expires": "Expires",
+    "neverExpires": "Never"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Loading API keys...",
@@ -4985,7 +5064,8 @@
     "rotating": "Rotating...",
     "rotateKey": "Rotate Key",
     "revoking": "Revoking...",
-    "revokeKey": "Revoke Key"
+    "revokeKey": "Revoke Key",
+    "revokedToast": "API key \"{{name}}\" revoked"
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "This device can now approve requests",
@@ -5296,6 +5376,7 @@
     "revoke": "Revoke"
   },
   "mFASettings": {
+    "done": "Done",
     "verifyYourPhoneNumber": "Verify your phone number",
     "enterYourPhoneNumberInE164FormatToReceiveAVerificationCo": "Enter your phone number in E.164 format to receive a verification code.",
     "phoneNumber": "Phone number",
@@ -5321,12 +5402,16 @@
     "sMSCodes": "SMS codes",
     "phoneVerifiedLast4": "(phone verified: ...{{last4}})",
     "recoveryCodes": "Recovery codes",
-    "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Use these codes to access your account if you lose your authenticator.",
+    "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Use a recovery code to access your account if you can’t use your passkey or authenticator app.",
     "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Recovery codes are shown once and cannot be displayed again.",
-    "regenerateRecoveryCodes": "Regenerate recovery codes",
-    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Existing codes cannot be displayed again. Regenerating issues a new set and immediately invalidates the old one.",
-    "regenerateRecoveryCodesQuestion": "Regenerate recovery codes?",
-    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Regenerating immediately invalidates every recovery code you have saved, including printed copies. The replacements are shown once, right after they are generated. Your other signed-in devices are signed out; this one stays signed in.",
+    "saveRecoveryCodes": "Save your recovery codes",
+    "saveRecoveryCodesDescription": "Store these codes somewhere safe. Each code can be used once. These codes cannot be shown again.",
+    "recoveryGenerationTitle": "Generate new recovery codes",
+    "generateNewCodesQuestion": "Generate new codes?",
+    "saveGeneratedRecoveryCodes": "Save these codes somewhere safe. Each code can be used once, and these codes cannot be shown again.",
+    "generateNewCodesWarning": "Your current recovery codes will stop working. The new codes will be shown once. Your other signed-in devices will be signed out, but this device will stay signed in.",
+    "regenerateRecoveryCodes": "Generate new codes",
+    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Existing codes cannot be displayed again. Generate new codes to replace them.",
     "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "That code was not accepted. Your QR code is still valid, so wait for the next code from your authenticator and try again.",
     "confirmYourPassword": "Confirm your password",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Re-enter your account password to start setting up an authenticator app.",
@@ -5343,11 +5428,9 @@
     "enterThe6DigitCodeGeneratedByYourAuthenticatorApp": "Enter the 6-digit code generated by your authenticator app.",
     "disableMFA": "Disable MFA",
     "reEnterYourAccountPasswordToConfirmThisChange": "Re-enter your account password to confirm this change.",
-    "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Save these codes in a safe place. You can use them to access your account if you lose your authenticator device.",
     "copyCodes": "Copy codes",
     "copiedCodes": "Copied",
     "copyCodesFailed": "Couldn't copy to the clipboard. Select the codes above and copy them by hand.",
-    "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Each code can only be used once. Generating new codes will invalidate any previously generated codes.",
     "back": "Back",
     "smsSentToPhone": "SMS codes sent to phone ending in {{last4}}.",
     "currentPasswordIsRequired": "Current password is required",
@@ -5360,7 +5443,7 @@
     "verifyPhone": "Verify phone",
     "enabling": "Enabling...",
     "yourAccountIsProtectedWithAnAuthenticatorApp": "Your account is protected with an authenticator app.",
-    "useAnAuthenticatorAppToGenerateVerificationCodesRecommen": "Use an authenticator app to generate verification codes. (Recommended)",
+    "useAnAuthenticatorAppToGenerateVerificationCodesRecommen": "Use an authenticator app to generate verification codes.",
     "receiveVerificationCodesViaSMSAsABackup": "Receive verification codes via SMS as a backup.",
     "continue": "Continue",
     "verifyAndEnable": "Verify and enable",
@@ -5369,7 +5452,6 @@
     "enterThe6DigitCodeFromYourAuthenticatorApp": "Enter the 6-digit code from your authenticator app.",
     "disabling": "Disabling...",
     "generating": "Generating...",
-    "regenerateCodes": "Regenerate codes",
     "verifyYourIdentity": "Verify your identity",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "This account signs in through an identity provider and has no password. Re-verify with your provider to start setting up an authenticator app.",
     "verifyWithYourIdentityProvider": "Verify with your identity provider",
@@ -5387,6 +5469,9 @@
     "couldNotImportThePax8Product": "Could not import the Pax8 product."
   },
   "profilePage": {
+    "factorProofLabel": "Current MFA code or recovery code",
+    "passkeyRecoveryCodeHint": "Enter an unused recovery code.",
+    "recoveryCode": "Recovery code",
     "nameMustBeAtLeast2Characters": "Name must be at least 2 characters",
     "loadingProfile": "Loading profile...",
     "profileSettings": "Profile settings",
@@ -5484,7 +5569,9 @@
     "ssoReauthFailed": "Could not verify with your identity provider. Please try again.",
     "couldNotStartIdentityProviderVerification": "Could not start identity provider verification.",
     "deletePasskeyConfirmTitle": "Delete this passkey?",
-    "deletePasskeyConfirmMessage": "This permanently removes the passkey \"{{name}}\" and it can no longer be used to sign in. Because it is a multi-factor method, deleting it also signs your other sessions out on every device. This cannot be undone.",
+    "deletePasskeyConfirmMessage": "This permanently removes <strong>{{name}}</strong> so it can no longer be used to sign in. Deleting this multi-factor method also signs out your other sessions on every device. This cannot be undone.",
+    "usePasskeyVerification": "Use passkey verification instead",
+    "useRecoveryCode": "Can’t access your passkey? Use a recovery code",
     "passkeyStepUpHeading": "Verify your existing sign-in factor",
     "passkeyStepUpIntro": "This account already has multi-factor authentication enabled. Confirm it before adding another passkey.",
     "passkeyStepUpNoUsableFactor": "Your account's current factor can't be confirmed here. Contact an administrator for help adding a passkey.",
@@ -5639,6 +5726,11 @@
     "eGOktaProduction": "e.g., Okta Production",
     "providerPreset": "Provider preset",
     "selectAPresetToAutoFillRecommendedSettings": "Select a preset to auto-fill recommended settings",
+    "replacePresetFields": {
+      "title": "Replace with the {{preset}} defaults?",
+      "message": "Applying the {{preset}} preset replaces the current scopes and attribute mapping, including your changes, and clears any claim the preset does not set, such as the groups attribute. Nothing is saved until you save the provider.",
+      "confirm": "Replace"
+    },
     "connectionSettings": "Connection Settings",
     "issuerURL": "Issuer URL",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",
@@ -6903,6 +6995,11 @@
       "fleetAddDescription": "Add a new site and choose the organization it belongs to.",
       "empty": "No sites yet. Add a site to an organization to get started.",
       "viewDevicesAt": "view devices at {{name}}"
+    },
+    "toasts": {
+      "created": "Site {{name}} created",
+      "saved": "Site {{name}} saved",
+      "deleted": "Site {{name}} deleted"
     }
   },
   "siteList": {
@@ -7078,7 +7175,11 @@
       "label": "Label",
       "notes": "Notes"
     },
-    "empty": "No known guests yet."
+    "empty": "No known guests yet.",
+    "removeConfirm": {
+      "title": "Remove known guest?",
+      "message": "Remove {{label}} ({{mac}})? Devices with this MAC address will no longer be approved automatically across your managed organizations."
+    }
   },
   "userInviteForm": {
     "title": "Invite user",
@@ -7099,7 +7200,8 @@
     },
     "placeholders": {
       "name": "Jane Smith",
-      "email": "name@company.com"
+      "email": "name@company.com",
+      "role": "Choose a role"
     },
     "orgAccess": {
       "title": "Organization access",
@@ -7155,6 +7257,7 @@
     "title": "Users",
     "description": "Manage user access, roles, and permissions.",
     "sessionTimeoutPointer": "Session idle timeout is configured under Security",
+    "linkedUserMissing": "The linked user isn't in this list. They may have been removed, or they're outside the users you can see.",
     "never": "Never",
     "actions": {
       "tryAgain": "Try again",
@@ -7199,7 +7302,8 @@
       "copyLink": "Copy link",
       "mfaReset": "MFA reset for {{email}}",
       "roleUpdated": "Role updated",
-      "orgAccessUpdated": "Organization access updated"
+      "orgAccessUpdated": "Organization access updated",
+      "userRemoved": "{{name}} removed"
     },
     "resetMfa": {
       "title": "Reset MFA?",

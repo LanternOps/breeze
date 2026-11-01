@@ -73,6 +73,20 @@ describe('presentNode identity, freshness and evidence', () => {
   const future = new Date(Date.now() + 600_000).toISOString();
   const past = new Date(Date.now() - 600_000).toISOString();
 
+  it('formats a device OS for readers instead of the raw platform token (#9868)', () => {
+    const raw = { ...inventory, os: '10.0.19045', osType: 'windows' };
+    expect(presentNode({ ...row, inventory: raw }, false).inventory?.os).toBe('Windows 10.0.19045');
+    expect(presentNode({ ...row, inventory: { ...raw, os: 'Microsoft Windows 11 Professional', osType: 'windows' } }, false).inventory?.os).toBe('Windows 11 Pro');
+    expect(presentNode({ ...row, inventory: { ...raw, os: '15.1', osType: 'macos' } }, false).inventory?.os).toBe('macOS 15.1');
+    expect(presentNode({ ...row, inventory: { ...raw, os: '6.1', osType: 'linux' } }, false).inventory?.os).toBe('Linux 6.1');
+    expect(presentNode({ ...row, inventory: { ...raw, os: 'Ubuntu 22.04.3 LTS', osType: 'linux' } }, false).inventory?.os).toBe('Ubuntu 22.04.3 LTS');
+    expect(presentNode({ ...row, inventory: { ...raw, os: null, osType: 'linux' } }, false).inventory?.os).toBe('Linux');
+    expect(presentNode({ ...row, inventory: { ...raw, os: null, osType: null } }, false).inventory?.os).toBeNull();
+    const node = presentNode({ ...row, inventory: raw }, false);
+    expect('osType' in node.inventory!).toBe(false);
+    expect(graphNodeSchema.safeParse(node).success).toBe(true);
+  });
+
   it('emits live inventory facts only when the node has a bound inventory row', () => {
     const node = presentNode({ ...row, inventory }, false);
     expect(node.inventory).toEqual(inventory);

@@ -196,6 +196,15 @@ async function selectWaitingPastWake(now: Date): Promise<TaskRef[]> {
 /**
  * SET 3 — running (or stopping) past its lease.
  *
+ * PLUS every `stopping` task with NO lease (#9979/#9980). The org-merge fence
+ * clears the lease, and the device delete / move / reinstall hooks stop a
+ * `waiting` task whose lease was already null; such a task is otherwise
+ * invisible to every scan and sits `stopping` forever unless some unrelated
+ * event happens to wake it. Claiming it here lets `advanceTask` settle it.
+ * `claimTaskLease` already treats a null lease as expired for `stopping`.
+ * A `running` row with a null lease stays out on purpose: that shape is a
+ * writer bug the poll path must not paper over (see `writeLeasedStep`).
+ *
  * INDEX: the shipped `ai_operator_tasks_lease_idx`
  * (`(lease_expires_at) WHERE state IN ('running','stopping')`). The query
  * restates that `IN` list verbatim so the predicate proof matches: `IN` on a
@@ -207,9 +216,11 @@ async function selectRunningPastLease(now: Date): Promise<TaskRef[]> {
   return claimRefs(sql`
     SELECT id, org_id FROM ai_operator_tasks
     WHERE state IN ('running', 'stopping')
-      AND lease_expires_at IS NOT NULL
-      AND lease_expires_at <= ${now.toISOString()}::timestamptz
-    ORDER BY lease_expires_at
+      AND (
+        (lease_expires_at IS NOT NULL AND lease_expires_at <= ${now.toISOString()}::timestamptz)
+        OR (state = 'stopping' AND lease_expires_at IS NULL)
+      )
+    ORDER BY lease_expires_at NULLS FIRST
     LIMIT ${RECONCILER_SCAN_LIMIT}
     FOR UPDATE SKIP LOCKED
   `);

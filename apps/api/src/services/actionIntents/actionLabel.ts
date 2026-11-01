@@ -52,11 +52,34 @@ const MANAGE_TOOL_NOUNS: Record<string, string> = {
   manage_contracts: 'contract',
 };
 
+/** Shared consequence copy for chat, approval cards and deferred impact descriptions. */
+export function describePax8Action(toolName: string, action?: string | null): string | null {
+  if (toolName === 'manage_pax8_subscriptions') {
+    switch (action) {
+      case 'sync': return 'Sync Pax8 snapshots for every organization of the partner using its vendor credentials';
+      case 'link': return 'Link a Pax8 subscription: decides which contract line later Pax8 orders bill';
+      case 'unlink': return 'Unlink a Pax8 subscription: staged changes on this subscription will be refused; observation history is lost';
+    }
+  }
+  if (toolName === 'manage_pax8_orders') {
+    switch (action) {
+      case 'create_draft': return 'Create or reuse a Pax8 order draft';
+      case 'add_line': return 'Add a line to a Pax8 order draft';
+      case 'update_line': return 'Edit a Pax8 order draft line';
+      case 'remove_line': return 'Remove a Pax8 order draft line';
+      case 'preflight': return 'Run a dry run that sends the staged order content to Pax8 (isMock)';
+    }
+  }
+  return null;
+}
+
 /**
  * Human headline for an approval-gated call when no call-specific description
  * exists: never the bare tool identifier (#9657).
  */
 export function humanizeToolAction(toolName: string, action?: string | null): string {
+  const pax8 = describePax8Action(toolName, action);
+  if (pax8) return pax8;
   const verb = action ? action.replace(/[_\s]+/g, ' ').trim().toLowerCase() : '';
   const noun = MANAGE_TOOL_NOUNS[toolName];
   const nounPhrase = verb.endsWith(' payment') ? `${noun} payment` : noun;
@@ -128,6 +151,8 @@ const GOOGLE_DESTINATION_FIELDS: Record<string, { source: string; dest: string; 
  * words plus the one or two arguments a human would actually recognise.
  */
 function fallbackLabel(toolName: string, input: Record<string, unknown>): string {
+  const pax8 = describePax8Action(toolName, str(input.action));
+  if (pax8) return pax8;
   const googleDestination = GOOGLE_DESTINATION_FIELDS[toolName];
   if (googleDestination && (!googleDestination.requiresField || input[googleDestination.requiresField] === true)) {
     const source = str(input[googleDestination.source]);

@@ -1016,7 +1016,7 @@ describe('/alerts correlation routes', () => {
       expect(ids).not.toContain(ALERT_4);
     });
 
-    it('keeps a deviceless (org-wide) group member visible and ackable to a SITE_A-restricted user', async () => {
+    it('hides a deviceless (org-wide) group member and prevents acknowledgment to a SITE_A-restricted user', async () => {
       seedSiteScopedGroup();
       restrictToSiteA();
 
@@ -1025,12 +1025,12 @@ describe('/alerts correlation routes', () => {
       const detailBody = await detail.json();
       const ids = detailBody.group.alerts.map((a: { id: string }) => a.id);
       expect(ids).toContain(ALERT_1);
-      expect(ids).toContain(ALERT_5);
+      expect(ids).not.toContain(ALERT_5);
       expect(ids).not.toContain(ALERT_4);
 
       const ack = await makeApp().request(`/alerts/correlations/${GROUP_1}/acknowledge`, { method: 'POST' });
       expect(ack.status).toBe(200);
-      expect(state.alerts.find((a) => a.id === ALERT_5)?.status).toBe('acknowledged');
+      expect(state.alerts.find((a) => a.id === ALERT_5)?.status).toBe('active');
       expect(state.alerts.find((a) => a.id === ALERT_4)?.status).toBe('active');
     });
 
