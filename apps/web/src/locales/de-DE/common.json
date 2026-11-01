@@ -1435,6 +1435,10 @@
             "description": "Wird ausgelöst, wenn ein Ticket erstellt wird.",
             "label": "Ticket erstellt"
           },
+          "ticketMerged": {
+            "description": "Wird ausgelöst, wenn ein Ticket mit einem anderen Ticket zusammengeführt wird.",
+            "label": "Ticket zusammengeführt"
+          },
           "ticketCommented": {
             "description": "Wird ausgelöst, wenn ein Kommentar oder eine Notiz zu einem Ticket hinzugefügt wird.",
             "label": "Ticket kommentiert"

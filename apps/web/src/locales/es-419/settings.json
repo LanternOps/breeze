@@ -3776,6 +3776,7 @@
         "get_network_asset": "Detalles del activo de red",
         "get_network_asset_reachability": "Accesibilidad del activo de red",
         "get_network_changes": "Cambios de red",
+        "get_partner_settings_inheritance": "Herencia de la configuración del partner",
         "get_pax8_status": "Estado de Pax8",
         "get_peripheral_activity": "Actividad de USB y periféricos",
         "get_playbook_history": "Historial de ejecución del playbook",
@@ -4722,7 +4723,8 @@
         "system_cleanup": {
           "list": "Enumerar acciones de limpieza del sistema",
           "run": "Ejecutar limpieza del sistema",
-          "status": "Estado de la limpieza del sistema"
+          "status": "Estado de la limpieza del sistema",
+          "cancel": "Cancelar ejecución de limpieza del sistema"
         },
         "manage_pax8_orders": {
           "list": "Listar pedidos de Pax8",

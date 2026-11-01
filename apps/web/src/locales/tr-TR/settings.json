@@ -3776,6 +3776,7 @@
         "get_network_asset": "Ağ varlığı ayrıntıları",
         "get_network_asset_reachability": "Ağ varlığı erişilebilirliği",
         "get_network_changes": "Ağ değişiklikleri",
+        "get_partner_settings_inheritance": "İş ortağı ayarlarının devralınması",
         "get_pax8_status": "Pax8 durumu",
         "get_peripheral_activity": "USB ve çevre birimi etkinliği",
         "get_playbook_history": "Playbook çalıştırma geçmişi",
@@ -4722,7 +4723,8 @@
         "system_cleanup": {
           "list": "Sistem temizleme eylemlerini listele",
           "run": "Sistem temizliğini çalıştır",
-          "status": "Sistem temizliği durumu"
+          "status": "Sistem temizliği durumu",
+          "cancel": "Sistem temizliği çalıştırmasını iptal et"
         },
         "manage_pax8_orders": {
           "list": "Pax8 siparişlerini listele",

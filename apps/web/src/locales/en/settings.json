@@ -3776,6 +3776,7 @@
         "get_network_asset": "Network asset details",
         "get_network_asset_reachability": "Network asset reachability",
         "get_network_changes": "Network changes",
+        "get_partner_settings_inheritance": "Partner settings inheritance",
         "get_pax8_status": "Pax8 status",
         "get_peripheral_activity": "USB and peripheral activity",
         "get_playbook_history": "Playbook run history",
@@ -4722,7 +4723,8 @@
         "system_cleanup": {
           "list": "List system cleanup actions",
           "run": "Run system cleanup",
-          "status": "System cleanup run status"
+          "status": "System cleanup run status",
+          "cancel": "Cancel system cleanup run"
         },
         "manage_pax8_orders": {
           "list": "List Pax8 orders",

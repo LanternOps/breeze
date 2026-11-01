@@ -24,7 +24,7 @@ const json = (status: number, payload: unknown) =>
   }) as unknown as Response;
 
 const progress = (over: Record<string, number> = {}) => ({
-  queued: 0, running: 0, completed: 0, timedOut: 0, failed: 0, cancelled: 0, expired: 0, degraded: 0, threatsFound: 0,
+  queued: 0, running: 0, completed: 0, timedOut: 0, failed: 0, cancelled: 0, expired: 0, degraded: 0, ruleSetChanged: 0, threatsFound: 0,
   ...over,
 });
 
@@ -172,8 +172,8 @@ describe('SweepsPanel', () => {
     expect(showToast.mock.calls.some(([t]) => t.type === 'error')).toBe(true);
   });
 
-  it('offers a re-sweep when a pinned set was republished, and opens the dialog with the set', async () => {
-    publishedVersions = { 'set-1': 2 };
+  it('offers a re-sweep when children failed with rule_set_changed, and opens the dialog with the set (#10049)', async () => {
+    listRows = [sweep({ progress: progress({ queued: 3, completed: 4, failed: 3, ruleSetChanged: 3 }) })];
     await renderPanel();
     expect(screen.getByTestId('sweep-rules-changed-sw-1').textContent).toMatch(/rules changed/i);
     fireEvent.click(screen.getByTestId('sweep-resweep-sw-1'));
@@ -183,8 +183,11 @@ describe('SweepsPanel', () => {
   });
 
   it('a re-sweep of a custom-paths sweep carries the original paths into the dialog (#10079)', async () => {
-    publishedVersions = { 'set-1': 2 };
-    listRows = [sweep({ scanType: 'custom', paths: ['C:\\Users\\Public', '/tmp/drop'] })];
+    listRows = [sweep({
+      scanType: 'custom',
+      paths: ['C:\\Users\\Public', '/tmp/drop'],
+      progress: progress({ failed: 1, ruleSetChanged: 1 }),
+    })];
     await renderPanel();
     fireEvent.click(screen.getByTestId('sweep-resweep-sw-1'));
     expect(screen.getByTestId('sweep-dialog-rescope-note').textContent).toMatch(/paths/i);
@@ -194,25 +197,32 @@ describe('SweepsPanel', () => {
     expect((screen.getByTestId('sweep-dialog-paths') as HTMLTextAreaElement).value).toBe('C:\\Users\\Public\n/tmp/drop');
   });
 
-  it('reads the current versions once per list, not once per row', async () => {
+  it('never reads rule-set versions to infer a rules change (#10049)', async () => {
     listRows = [sweep(), sweep({ id: 'sw-2' }), sweep({ id: 'sw-3' })];
     await renderPanel();
-    const reads = fetchWithAuth.mock.calls.filter(([u]) => u === '/security/yara/rule-sets');
-    expect(reads).toHaveLength(1);
+    expect(fetchWithAuth.mock.calls.filter(([u]) => u === '/security/yara/rule-sets')).toHaveLength(0);
   });
 
-  it('a finished clean sweep with a republished set shows the hint but no re-sweep action', async () => {
+  it('a republished pinned set with no rule_set_changed child shows neither hint nor re-sweep (#10049)', async () => {
     publishedVersions = { 'set-1': 3 };
     listRows = [sweep({ state: 'completed', progress: progress({ completed: 10 }) })];
     await renderPanel();
-    expect(screen.getByTestId('sweep-rules-changed-sw-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('sweep-rules-changed-sw-1')).toBeNull();
     expect(screen.queryByTestId('sweep-resweep-sw-1')).toBeNull();
   });
 
-  it('a finished sweep with failed children still offers the re-sweep', async () => {
+  it('children failed for another reason do not read as a rules change (#10049)', async () => {
     publishedVersions = { 'set-1': 3 };
     listRows = [sweep({ state: 'completed', progress: progress({ completed: 6, failed: 4 }) })];
     await renderPanel();
+    expect(screen.queryByTestId('sweep-rules-changed-sw-1')).toBeNull();
+    expect(screen.queryByTestId('sweep-resweep-sw-1')).toBeNull();
+  });
+
+  it('a finished sweep with rule_set_changed children still offers the re-sweep', async () => {
+    listRows = [sweep({ state: 'completed', progress: progress({ completed: 6, failed: 4, ruleSetChanged: 4 }) })];
+    await renderPanel();
+    expect(screen.getByTestId('sweep-rules-changed-sw-1')).toBeInTheDocument();
     expect(screen.getByTestId('sweep-resweep-sw-1')).toBeInTheDocument();
   });
 

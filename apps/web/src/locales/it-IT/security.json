@@ -2410,6 +2410,7 @@
       "platformNotSelected": "Piattaforma non selezionata",
       "varMissing": "Variabile di distribuzione mancante",
       "varSecret": "La variabile di distribuzione è contrassegnata come segreta",
+      "installerMissing": "Programma di installazione non caricato",
       "vendorUnavailable": "Fornitore non disponibile",
       "installFailed": "Installazione non riuscita",
       "installNotArmed": "Installazione non abilitata",
@@ -2417,6 +2418,10 @@
       "awaitingVendorReport": "In attesa del report del fornitore",
       "awaitingEvaluation": "In attesa di valutazione",
       "vendorOrgMismatch": "Il fornitore segnala un'altra organizzazione"
+    },
+    "setupLink": {
+      "installerMissing": "Carica il programma di installazione",
+      "default": "Apri configurazione"
     }
   },
   "sweeps": {
