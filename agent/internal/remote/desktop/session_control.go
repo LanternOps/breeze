@@ -265,9 +265,13 @@ func buildInputCapabilities() map[string]any {
 // platform handler honours all of it; `code` is used by Windows only and
 // `numLock` by Windows and Linux, and the others ignore those fields, as the
 // spec prescribes (see the W2c wire contract in the plan doc).
+//
+// releaseHeldOnRequest says this agent honours the release_held_input control
+// message ("Release stuck keys"), on legacy and sequenced input alike.
 func (s *Session) inputCapabilities() map[string]any {
 	body := buildInputCapabilities()
 	if si := s.safeInput(); si != nil {
+		body["releaseHeldOnRequest"] = true
 		epoch, geo := si.Epochs()
 		body["reliableInput"] = true
 		body["inputEpoch"] = epoch
@@ -544,6 +548,8 @@ func (s *Session) handleControlMessage(data []byte) {
 		}
 	case "input_capabilities":
 		s.sendControlJSON(s.inputCapabilities())
+	case "release_held_input":
+		s.releaseHeldInputOnRequest()
 	case "type_text":
 		s.handleTypeText(data)
 	case "toggle_audio":

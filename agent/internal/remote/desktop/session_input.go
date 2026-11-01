@@ -20,6 +20,15 @@ func (s *Session) releaseHeldInput(reason string) {
 	}
 }
 
+// releaseHeldInputOnRequest handles the viewer's release_held_input: the
+// operator pressed "Release stuck keys". It works in legacy and sequenced
+// sessions alike, which input_reset (sequenced only) does not.
+func (s *Session) releaseHeldInputOnRequest() {
+	if si := s.safeInput(); si != nil {
+		si.ReleaseAllOnRequest()
+	}
+}
+
 func (s *Session) closeInput() {
 	if si := s.safeInput(); si != nil {
 		si.Close()
