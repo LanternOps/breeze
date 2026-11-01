@@ -37,6 +37,10 @@ interface Props {
   /** Offer "all organizations" when saving the steps as a template (#9180). The
    *  host decides (partner scope + canManagePartnerWide); the server re-checks. */
   canSavePartnerWide?: boolean;
+  /** Merged (tombstone) ticket: every write is refused with 409 TICKET_MERGED,
+   *  so render the steps read-only (#10025). Implies the `compact` hide-set and
+   *  additionally disables ticking and editing. */
+  readOnly?: boolean;
 }
 
 const FRIENDLY: Record<string, string> = {
@@ -44,7 +48,7 @@ const FRIENDLY: Record<string, string> = {
   CHECKLIST_OPERATOR_STEP_WAITING: 'errors.operatorStepWaiting',
 };
 
-export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsChange, canSavePartnerWide = false }: Props) {
+export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsChange, canSavePartnerWide = false, readOnly = false }: Props) {
   const { t } = useTranslation('checklists');
   const [items, setItems] = useState<ChecklistItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -121,7 +125,7 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
 
   const done = items.filter((i) => i.done).length;
   const total = items.length;
-  const compactMode = mode === 'compact';
+  const compactMode = mode === 'compact' || readOnly;
 
   /**
    * A failed template fetch is NOT equivalent to "this MSP has no templates".
@@ -347,7 +351,7 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
   const hasTemplates = Array.isArray(templates) && templates.length > 0;
   // `templatesFailed` keeps the card mounted: "we could not find out" must not
   // render identically to "there are none".
-  if (!loading && !loadFailed && total === 0 && mode === 'full' && !hasTemplates && !templatesFailed) {
+  if (!loading && !loadFailed && total === 0 && (readOnly || (mode === 'full' && !hasTemplates && !templatesFailed))) {
     return null;
   }
 
@@ -445,7 +449,7 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
                       type="checkbox"
                       checked={item.done}
                       onChange={() => void toggle(item)}
-                      disabled={busy}
+                      disabled={busy || readOnly}
                       className="mt-0.5 shrink-0"
                       aria-label={item.label}
                       data-testid={`ticket-checklist-toggle-${item.id}`}
@@ -501,14 +505,16 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
                           </button>
                         </>
                       )}
-                      <button
-                        type="button"
-                        onClick={() => openEdit(item)}
-                        className="rounded px-1 py-0.5 text-xs hover:bg-muted"
-                        data-testid={`ticket-checklist-edit-${item.id}`}
-                      >
-                        {t('actions.edit')}
-                      </button>
+                      {!readOnly && (
+                        <button
+                          type="button"
+                          onClick={() => openEdit(item)}
+                          className="rounded px-1 py-0.5 text-xs hover:bg-muted"
+                          data-testid={`ticket-checklist-edit-${item.id}`}
+                        >
+                          {t('actions.edit')}
+                        </button>
+                      )}
                       {!compact && (
                         <button
                           type="button"

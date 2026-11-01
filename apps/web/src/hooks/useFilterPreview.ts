@@ -21,6 +21,9 @@ interface UseFilterPreviewOptions {
   limit?: number;
   // Pin the preview to one org instead of the top-bar org switcher (#7479).
   orgId?: string;
+  // Leave out removed (decommissioned) devices. Dynamic-group previews set it so
+  // the preview matches what membership evaluation materializes (#9933).
+  excludeDecommissioned?: boolean;
   allOrgs?: boolean;
 }
 
@@ -35,7 +38,7 @@ export function useFilterPreview(
   filter: FilterConditionGroup | null,
   options: UseFilterPreviewOptions = {}
 ): UseFilterPreviewReturn {
-  const { debounceMs = 500, enabled = true, limit, orgId, allOrgs = false } = options;
+  const { debounceMs = 500, enabled = true, limit, orgId, excludeDecommissioned, allOrgs = false } = options;
   const [preview, setPreview] = useState<FilterPreviewResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,7 +55,7 @@ export function useFilterPreview(
     try {
       const response = await fetchWithAuth(!allOrgs && orgId ? `/filters/preview?orgId=${encodeURIComponent(orgId)}` : '/filters/preview', {
         method: 'POST',
-        body: JSON.stringify({ conditions, limit }),
+        body: JSON.stringify({ conditions, limit, excludeDecommissioned }),
         signal: controller.signal,
         ...(allOrgs ? { skipOrgIdInjection: true } : {})
       });
@@ -69,7 +72,7 @@ export function useFilterPreview(
     } finally {
       setLoading(false);
     }
-  }, [limit, orgId, allOrgs]);
+  }, [limit, orgId, excludeDecommissioned, allOrgs]);
 
   useEffect(() => {
     if (!enabled || !filter || !hasValidConditions(filter)) {
