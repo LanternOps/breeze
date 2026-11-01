@@ -1,4 +1,4 @@
-import { and, eq, or, not, gt, gte, lt, lte, like, ilike, inArray, isNull, isNotNull, sql, SQL } from 'drizzle-orm';
+import { and, eq, ne, or, not, gt, gte, lt, lte, like, ilike, inArray, isNull, isNotNull, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { sqlTextArray, sqlValue } from '../db/sqlValues';
 import { pgErrorCode } from '../utils/pgErrors';
@@ -912,7 +912,19 @@ export interface EvaluateFilterOptions {
    * axis at all. `undefined`/`null` means unrestricted; `[]` matches nothing.
    */
   allowedDeviceIds?: readonly string[] | null;
+  /**
+   * Leave out removed (`status = 'decommissioned'`) devices (#9933). Set by
+   * every dynamic-group path — preview, full evaluation and the per-device
+   * twin — so group membership, which feeds policy and patch targeting, uses
+   * the same population /devices shows. Opt-in rather than the default because
+   * the generic filter preview also serves the device list's "show removed"
+   * view, where removed devices are the point.
+   */
+  excludeDecommissioned?: boolean;
 }
+
+/** Options for {@link deviceMatchesFilter}; see EvaluateFilterOptions for each field. */
+export type DeviceMatchesFilterOptions = Pick<EvaluateFilterOptions, 'excludeDecommissioned'>;
 
 /**
  * Optional site-axis predicate for the devices query. See
@@ -932,6 +944,10 @@ function deviceIdScopeCondition(allowedDeviceIds: readonly string[] | null | und
   if (allowedDeviceIds == null) return undefined;
   if (allowedDeviceIds.length === 0) return sql`false`;
   return inArray(devices.id, [...allowedDeviceIds]);
+}
+
+function decommissionedScopeCondition(excludeDecommissioned: boolean | undefined): SQL | undefined {
+  return excludeDecommissioned ? ne(devices.status, 'decommissioned') : undefined;
 }
 
 // The `matches` operator emits a Postgres regex (`~`). `MAX_REGEX_PATTERN_LENGTH`
@@ -1034,6 +1050,7 @@ export async function evaluateFilter(
   const { orgId, limit, offset } = options;
   const siteScope = siteScopeCondition(options.allowedSiteIds);
   const deviceScope = deviceIdScopeCondition(options.allowedDeviceIds);
+  const statusScope = decommissionedScopeCondition(options.excludeDecommissioned);
 
   // Determine which tables we need to join
   const fieldsUsed = extractFieldsFromFilter(filter);
@@ -1055,7 +1072,7 @@ export async function evaluateFilter(
     tx
       .select({ id: devices.id })
       .from(devices)
-      .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), siteScope, deviceScope, filterSQL))
+      .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), siteScope, deviceScope, statusScope, filterSQL))
   );
 
   return {
@@ -1075,6 +1092,7 @@ export async function evaluateFilterWithPreview(
   const { orgId, previewLimit = 10 } = options;
   const siteScope = siteScopeCondition(options.allowedSiteIds);
   const deviceScope = deviceIdScopeCondition(options.allowedDeviceIds);
+  const statusScope = decommissionedScopeCondition(options.excludeDecommissioned);
 
   const filterSQL = buildGroupSQL(filter);
 
@@ -1083,7 +1101,7 @@ export async function evaluateFilterWithPreview(
     const [countResult] = await tx
       .select({ count: sql<number>`count(*)` })
       .from(devices)
-      .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), siteScope, deviceScope, filterSQL));
+      .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), siteScope, deviceScope, statusScope, filterSQL));
 
     // Get preview devices
     const previewDevices = await tx
@@ -1096,7 +1114,7 @@ export async function evaluateFilterWithPreview(
         lastSeenAt: devices.lastSeenAt
       })
       .from(devices)
-      .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), siteScope, deviceScope, filterSQL))
+      .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), siteScope, deviceScope, statusScope, filterSQL))
       .limit(previewLimit);
 
     return { countResult, previewDevices };
@@ -1121,15 +1139,17 @@ export async function evaluateFilterWithPreview(
  */
 export async function deviceMatchesFilter(
   deviceId: string,
-  filter: FilterConditionGroup
+  filter: FilterConditionGroup,
+  options: DeviceMatchesFilterOptions = {}
 ): Promise<boolean> {
   const filterSQL = buildGroupSQL(filter);
+  const statusScope = decommissionedScopeCondition(options.excludeDecommissioned);
 
   const [result] = await withFilterStatementTimeout(async (tx) =>
     tx
       .select({ id: devices.id })
       .from(devices)
-      .where(and(eq(devices.id, deviceId), filterSQL))
+      .where(and(eq(devices.id, deviceId), statusScope, filterSQL))
       .limit(1)
   );
 
