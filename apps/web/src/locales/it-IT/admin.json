@@ -939,6 +939,7 @@
       "ai_execution": "Esecuzione AI",
       "ai_kill_state": "Kill switch AI",
       "ai_memory_blocks": "Memoria AI",
+      "ai_operator_task": "Attività dell'operatore IA",
       "ai_platform_model": "Modello piattaforma AI",
       "ai_script_lane_state": "Corsia script AI",
       "ai_script_policies": "Criteri script AI",

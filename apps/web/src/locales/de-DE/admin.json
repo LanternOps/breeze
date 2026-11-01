@@ -939,6 +939,7 @@
       "ai_execution": "AI-Ausführung",
       "ai_kill_state": "AI-Notausschalter",
       "ai_memory_blocks": "AI-Gedächtnis",
+      "ai_operator_task": "KI-Operator-Aufgabe",
       "ai_platform_model": "AI-Plattformmodell",
       "ai_script_lane_state": "AI-Skriptspur",
       "ai_script_policies": "AI-Skriptrichtlinien",

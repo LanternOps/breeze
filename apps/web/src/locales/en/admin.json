@@ -939,6 +939,7 @@
       "ai_execution": "AI execution",
       "ai_kill_state": "AI kill switch",
       "ai_memory_blocks": "AI memory",
+      "ai_operator_task": "AI operator task",
       "ai_platform_model": "AI platform model",
       "ai_script_lane_state": "AI script lane",
       "ai_script_policies": "AI script policies",

@@ -939,6 +939,7 @@
       "ai_execution": "Ejecución de AI",
       "ai_kill_state": "Interruptor de emergencia de AI",
       "ai_memory_blocks": "Memoria de AI",
+      "ai_operator_task": "Tarea del operador de IA",
       "ai_platform_model": "Modelo de plataforma de AI",
       "ai_script_lane_state": "Carril de scripts de AI",
       "ai_script_policies": "Políticas de scripts de AI",

@@ -939,6 +939,7 @@
       "ai_execution": "AI yürütmesi",
       "ai_kill_state": "AI acil durdurma anahtarı",
       "ai_memory_blocks": "AI belleği",
+      "ai_operator_task": "Yapay zeka operatör görevi",
       "ai_platform_model": "AI platform modeli",
       "ai_script_lane_state": "AI betik şeridi",
       "ai_script_policies": "AI betik ilkeleri",
