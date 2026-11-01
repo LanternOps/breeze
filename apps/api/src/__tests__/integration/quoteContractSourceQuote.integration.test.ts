@@ -26,7 +26,7 @@ import type { QuoteActor } from '../../services/quoteTypes';
 import type { ContractActor } from '../../services/contractTypes';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
-const MIGRATION = '2027-01-18-161000-contracts-source-quote.sql';
+const MIGRATION = '2027-01-18-181000-contracts-source-quote.sql';
 
 function ctxFor(orgId: string, partnerId: string): DbAccessContext {
   return { scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [partnerId], userId: null };
