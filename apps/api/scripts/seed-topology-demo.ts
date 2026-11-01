@@ -295,9 +295,11 @@ function fullReport(d: DemoDevice, index: number, devices: DemoDevice[], assets:
   }
   if (d.extras.includes('tailscale')) {
     interfaces.push({ rowKey: 'if-ts', interfaceKey: 'if-ts', osIndex: 31, name: 'Tailscale', kind: 'tunnel', adminState: 'up', operState: 'up', mtu: 1280,
-      addresses: [{ address: '100.86.41.17', prefixLength: 32, family: 'ipv4', zone: null, state: 'preferred', assignment: 'static' },
-        { address: 'fd7a:115c:a1e0::4a01:2b11', prefixLength: 128, family: 'ipv6', zone: null, state: 'preferred', assignment: 'static' }] });
-    routes.push({ rowKey: 'r4-tailnet', family: 'ipv4', destinationPrefix: '100.64.0.0/10', interfaceKey: 'if-ts', tableKey: 'main', routeType: 'on_link', metric: 5,
+      // Synthetic overlay addresses use documentation ranges (RFC 5737 / RFC 3849), not a
+      // CGNAT/tailnet-looking range that reads as real infrastructure on camera (#9858).
+      addresses: [{ address: '198.51.100.17', prefixLength: 32, family: 'ipv4', zone: null, state: 'preferred', assignment: 'static' },
+        { address: '2001:db8::4a01:2b11', prefixLength: 128, family: 'ipv6', zone: null, state: 'preferred', assignment: 'static' }] });
+    routes.push({ rowKey: 'r4-tailnet', family: 'ipv4', destinationPrefix: '198.51.100.0/24', interfaceKey: 'if-ts', tableKey: 'main', routeType: 'on_link', metric: 5,
       nextHops: [{ address: null, zone: null, interfaceKey: 'if-ts', weight: null }], osFlags: 0 });
   }
   if (d.extras.includes('vpn_full_tunnel')) {
