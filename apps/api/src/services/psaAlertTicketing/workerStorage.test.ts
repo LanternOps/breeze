@@ -148,5 +148,7 @@ it('reconciler company-link recovery leaves the permanent create-anyway marker i
   const q = new PgDialect().sqlToQuery(h.execute.mock.calls[0]![0] as never);
   expect(q.sql).toContain("m.create_state='skipped_no_company'");
   expect(q.sql).toContain("create_state='never_attempted'");
-  expect(q.sql).not.toMatch(/create_snapshot\s*=/);
+  // Never NULLs the snapshot (that would drop createAnywayUsed); only the retry window resets.
+  expect(q.sql).not.toMatch(/create_snapshot\s*=\s*NULL/i);
+  expect(q.sql).toContain("create_snapshot=m.create_snapshot - 'operationAttempts' - 'unknownDeadline'");
 });

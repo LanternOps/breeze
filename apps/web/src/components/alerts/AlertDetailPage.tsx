@@ -208,6 +208,9 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       });
       setExternalTicketsRefresh(value => value + 1);
     } catch (err) {
+      // A 409 can follow a committed admission (binding changed mid-request):
+      // reload the chip so whatever mapping exists becomes visible.
+      if (err instanceof ActionError && err.status === 409) setExternalTicketsRefresh(value => value + 1);
       handleActionError(err, t('alertDetailPage.failedToCreatePsaTicket'));
     } finally {
       setPsaTicketPending(false);

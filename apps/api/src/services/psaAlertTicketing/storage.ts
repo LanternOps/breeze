@@ -192,9 +192,11 @@ export async function admissionCandidates(
 export async function dueMappings(now: Date): Promise<string[]> {
   return ticketingDb(async () => {
     // Re-arm only skipped rows with a company link and a still-open alert.
-    // Keep create_snapshot: worker refreshes its inputs and preserves createAnywayUsed.
+    // Keep create_snapshot (the worker refreshes its inputs and preserves
+    // createAnywayUsed) but start a fresh retry window.
     await db.execute(sql`UPDATE psa_ticket_mappings m SET create_state='never_attempted', next_attempt_at=now(),
-      deadline_at=now()+interval '24 hours', updated_at=now()
+      deadline_at=now()+interval '24 hours', updated_at=now(),
+      create_snapshot=m.create_snapshot - 'operationAttempts' - 'unknownDeadline'
       FROM alerts a, psa_connections c, organizations o
       WHERE m.create_state='skipped_no_company' AND m.alert_id=a.id AND m.connection_id=c.id
       AND a.org_id=o.id AND o.partner_id=c.partner_id AND a.status IN ('active','acknowledged')

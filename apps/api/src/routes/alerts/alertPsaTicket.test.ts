@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 const state = vi.hoisted(() => ({
   authenticated: true, write: true, orgAccess: true, allowedSiteIds: undefined as string[] | undefined,
-  getAlert: vi.fn(), admit: vi.fn(), audit: vi.fn(), selected: [] as unknown[][],
+  getAlert: vi.fn(), admit: vi.fn(), audit: vi.fn(), selected: [] as unknown[][], wheres: [] as unknown[],
 }));
 vi.mock('../../middleware/auth', () => ({
   requireScope: () => async (c: any, next: any) => {
@@ -21,19 +21,20 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   db: { select: () => {
     const rows = state.selected.shift() ?? [];
-    const chain = { from: () => chain, innerJoin: () => chain, where: () => chain, limit: async () => rows };
+    const chain = { from: () => chain, innerJoin: () => chain, where: (w: unknown) => { state.wheres.push(w); return chain; }, limit: async () => rows };
     return chain;
   } },
 }));
 vi.mock('./helpers', () => ({ getAlertWithOrgCheck: state.getAlert }));
 vi.mock('../../services/psaAlertTicketing/admission', () => ({ admitAlert: state.admit }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: state.audit }));
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { alertPsaTicketRoutes } from './alertPsaTicket';
 const ALERT = '11111111-1111-4111-8111-111111111111';
 const app = new Hono().route('/alerts', alertPsaTicketRoutes);
 const post = () => app.request(`/alerts/${ALERT}/psa-ticket`, { method: 'POST' });
 beforeEach(() => {
-  vi.clearAllMocks(); state.authenticated = true; state.write = true; state.orgAccess = true; state.allowedSiteIds = undefined;
+  vi.clearAllMocks(); state.wheres = []; state.authenticated = true; state.write = true; state.orgAccess = true; state.allowedSiteIds = undefined;
   state.getAlert.mockImplementation(async (_id, auth) => auth.canAccessOrg('org') ? { id: ALERT, orgId: 'org' } : null);
   state.admit.mockResolvedValue('admitted');
   state.selected = [[{ mode: 'external', connectionId: 'connection' }], [{ mode: 'external', connectionId: 'connection' }], [{ id: 'mapping', alertId: ALERT }]];
@@ -44,6 +45,13 @@ describe('manual PSA ticket admission', () => {
     expect(await response.json()).toEqual({ result: 'admitted', data: { id: 'mapping', alertId: ALERT } });
     expect(state.admit).toHaveBeenCalledWith(ALERT, 'manual', { bypassFilters: true, expectedOrgId: 'org' });
     expect(state.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'psa.alert_ticketing.manual_create', resourceId: ALERT }));
+  });
+  it('reads the binding for the alert org and the mapping for the bound connection', async () => {
+    state.getAlert.mockImplementation(async () => ({ id: ALERT, orgId: 'alert-org' }));
+    expect((await post()).status).toBe(202);
+    const [binding, rebinding, mapping] = state.wheres.map(w => new PgDialect().sqlToQuery(w as never));
+    for (const q of [binding!, rebinding!]) { expect(q.sql).toContain('"organizations"."id"'); expect(q.params).toEqual(['alert-org']); }
+    expect(mapping!.sql).toContain('"connection_id"'); expect(mapping!.params).toEqual([ALERT, 'connection']);
   });
   it('returns an existing mapping without implying a new create', async () => {
     state.admit.mockResolvedValue('exists');

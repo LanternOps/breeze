@@ -67,6 +67,14 @@ describe('AlertDetailPage manual PSA ticket', () => {
     expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 
+  it('refreshes the chip after a 409 so a mapping admitted elsewhere becomes visible', async () => {
+    post = async () => { refs = [psaTicket]; return response({ error: 'The PSA binding changed during admission.' }, 409); };
+    render(<AlertDetailPage alertId={alert.id} />);
+    fireEvent.click(await screen.findByTestId('alert-create-psa-ticket'));
+    expect(await screen.findByTestId('alert-external-ticket-link')).toHaveTextContent('CW-42');
+    expect(h.fetch.mock.calls.filter(([url]) => url === '/alerts/alert-1/external-tickets')).toHaveLength(2);
+  });
+
   it('disables the button while admission is pending', async () => {
     let finish!: (value: Response) => void;
     post = () => new Promise(resolve => { finish = resolve; });
@@ -80,13 +88,12 @@ describe('AlertDetailPage manual PSA ticket', () => {
     await waitFor(() => expect(button).not.toBeDisabled());
   });
 
-  it('toasts a conflict once without refreshing the chip', async () => {
+  it('toasts a conflict exactly once', async () => {
     post = async () => response({ error: 'Alert ticketing is inactive' }, 409);
     render(<AlertDetailPage alertId={alert.id} />);
     fireEvent.click(await screen.findByTestId('alert-create-psa-ticket'));
     await waitFor(() => expect(h.toast).toHaveBeenCalledWith({ message: 'Alert ticketing is inactive', type: 'error' }));
     expect(h.toast).toHaveBeenCalledTimes(1);
-    expect(h.fetch.mock.calls.filter(([url]) => url === '/alerts/alert-1/external-tickets')).toHaveLength(1);
     expect(screen.getByRole('heading', { name: alert.title })).toBeInTheDocument();
   });
 

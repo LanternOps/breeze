@@ -592,6 +592,36 @@ describe('human alert-ticket actions', () => {
     expect((await post('/psa/ticket-mappings/not-an-id/create-anyway')).status).toBe(404);
     expect(h.updateMock).not.toHaveBeenCalled();
   });
+  it('re-drive keeps the create-anyway marker while clearing the retry window', async () => {
+    mockLoad(row());
+    const update = h.chain([{ id: MAPPING_ID }]); h.updateMock.mockReturnValueOnce(update);
+    expect((await post(`${url}/redrive`, { states: ['failed'] })).status).toBe(200);
+    const snapshot = update.set.mock.calls[0][0].createSnapshot;
+    expect(snapshot).not.toBeNull();
+    const q = new PgDialect().sqlToQuery(snapshot).sql;
+    expect(q).toContain("- 'operationAttempts'");
+    expect(q).toContain("- 'unknownDeadline'");
+    expect(q).not.toContain('createAnywayUsed');
+  });
+  it('create anyway guards on an unused marker and sets it in the same update', async () => {
+    loadMapping();
+    const update = h.chain([{ id: MAPPING_ID, createState: 'never_attempted' }]); h.updateMock.mockReturnValueOnce(update);
+    expect((await post(`${actionUrl}/create-anyway`)).status).toBe(200);
+    expect(new PgDialect().sqlToQuery(update.where.mock.calls[0][0]).sql).toMatch(/'createAnywayUsed', 'false'\) <> 'true'/);
+    expect(new PgDialect().sqlToQuery(update.set.mock.calls[0][0].createSnapshot).sql).toContain(`|| '{"createAnywayUsed":true}'::jsonb`);
+  });
+  it('409s mark-handled when the row is not in the expected state, without updating', async () => {
+    loadMapping('created');
+    expect((await post(`${actionUrl}/mark-handled`, { expectedState: 'failed' })).status).toBe(409);
+    expect(h.updateMock).not.toHaveBeenCalled();
+  });
+  it('answers a re-drive even when a wake never settles (Redis offline queue)', async () => {
+    mockLoad(row()); h.updateMock.mockReturnValueOnce(h.chain([{ id: MAPPING_ID }]));
+    h.wakeMock.mockReturnValueOnce(new Promise(() => {}));
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect((await post(`${url}/redrive`, { states: ['failed'] })).status).toBe(200);
+    expect(warning).toHaveBeenCalled(); warning.mockRestore();
+  }, 10_000);
   it('keeps a durable re-drive successful when Redis is unavailable', async () => {
     mockLoad(row()); h.updateMock.mockReturnValueOnce(h.chain([{ id: MAPPING_ID }]));
     h.wakeMock.mockRejectedValueOnce(new Error('offline'));

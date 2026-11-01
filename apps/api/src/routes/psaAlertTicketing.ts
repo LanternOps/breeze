@@ -394,12 +394,29 @@ function rearmValues() {
   };
 }
 
-async function wakeHumanAction(id: string) {
-  // The ledger remains authoritative; the reconciler repairs Redis loss or a
-  // wake consumed before the request's transaction commits.
-  try { await wakeMapping(id, 'create'); }
-  catch (error) {
-    console.warn('[psa-ticketing] human action wake failed', { mappingId: id, message: error instanceof Error ? error.message : String(error) });
+const WAKE_TIMEOUT_MS = 2_000;
+const MAX_REQUEST_WAKES = 100;
+
+/**
+ * Best-effort, bounded worker wake after a committed human action. The ledger
+ * is authoritative: the 2-minute reconciler (`dueMappings`) picks up any
+ * unleased, due `never_attempted` row, so a lost, slow or skipped wake costs
+ * at most one sweep. The BullMQ connection keeps an offline queue, so `add()`
+ * can hang rather than reject while Redis is down; each wake is time-boxed and
+ * a large re-drive wakes only the first MAX_REQUEST_WAKES rows.
+ */
+async function wakeHumanActions(ids: string[]) {
+  const woken = ids.slice(0, MAX_REQUEST_WAKES);
+  const results = await Promise.allSettled(woken.map(id => Promise.race([
+    wakeMapping(id, 'create'),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`wake timed out after ${WAKE_TIMEOUT_MS} ms`)), WAKE_TIMEOUT_MS).unref?.()),
+  ])));
+  const failed = woken.filter((_, i) => results[i]!.status === 'rejected');
+  if (failed.length > 0) {
+    const first = results.find(r => r.status === 'rejected') as PromiseRejectedResult;
+    console.warn('[psa-ticketing] human action wake failed; the reconciler will pick these up', {
+      mappingIds: failed, message: first.reason instanceof Error ? first.reason.message : String(first.reason),
+    });
   }
 }
 
@@ -416,7 +433,7 @@ psaAlertTicketingRoutes.post('/:id/alert-ticketing/redrive', ...humanActionGates
     if (!rows.length) return c.json({ error: 'No alert tickets remain in the requested states. Reload and try again.' }, 409);
     writeRouteAudit(c, { orgId: null, action: 'psa.alert_ticketing.redrive', resourceType: 'psa_connection', resourceId: loaded.row.id,
       details: { states, count: rows.length, ...auditOwnerFields(loaded.row) } });
-    for (const row of rows) await wakeHumanAction(row.id);
+    await wakeHumanActions(rows.map(row => row.id));
     return c.json({ data: { count: rows.length } });
   });
 
@@ -454,7 +471,7 @@ for (const action of ['create-anyway', 'mark-handled'] as const) {
       if (!updated) return c.json({ error: 'This action is no longer available. Reload the alert tickets.' }, 409);
       writeRouteAudit(c, { orgId: null, action: `psa.alert_ticketing.${action.replace('-', '_')}`, resourceType: 'psa_ticket_mapping', resourceId: id,
         details: { previousState: expectedState, connectionId: loaded.row.id, ...auditOwnerFields(loaded.row) } });
-      if (action === 'create-anyway') await wakeHumanAction(id);
+      if (action === 'create-anyway') await wakeHumanActions([id]);
       return c.json({ data: updated });
     });
 }
