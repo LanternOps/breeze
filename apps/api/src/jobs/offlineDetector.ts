@@ -22,6 +22,7 @@ import { DEFAULT_OFFLINE_THRESHOLD_MINUTES } from '../services/deviceLiveness';
 import { captureMessage } from '../services/sentry';
 import { throttledReporter } from '../services/sentryThrottle';
 import { EDITION_MIGRATION_SETTLE_INTERVAL } from '../services/editionMigrationWindow';
+import { requestDeviceGroupReevaluation } from './deviceGroupJobs';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -749,6 +750,15 @@ export async function processReapUninstallIntent(): Promise<{
       if (!reaped) continue;
 
       totalDecommissioned++;
+
+      // #9933: dynamic groups leave out removed devices. The write above has
+      // committed (its context closed), so enqueue directly; never rejects.
+      void requestDeviceGroupReevaluation({
+        deviceId: candidate.id,
+        orgId: candidate.orgId,
+        eventType: 'device.created',
+        reason: 'device_decommissioned',
+      });
 
       createAuditLogAsync({
         orgId: candidate.orgId,
