@@ -58,7 +58,7 @@ test('classifier: any non-docs path reports code=true; docs=true only when a doc
     [['README.md', 'apps/web/src/App.tsx'], 'code=true\ndocs=true\nagent=false\napp=true\napi=true\nweb=true\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true\npath_readers=true\nreader_tests=apps/api/src/db/bootstrapDocs.test.ts'],
     [['docs/guide.md', '.github/workflows/ci.yml'], 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true\npath_readers=false\nreader_tests='],
     [['apps/mobile/docs.md.bak'], 'code=true\ndocs=false\nagent=false\napp=true\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true\npath_readers=false\nreader_tests='],
-    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=false\nagent_code=false\nintegration=true\npath_readers=false\nreader_tests='],
+    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=false\nagent_code=true\nintegration=true\npath_readers=false\nreader_tests='],
   ]) {
     const run = classify(paths);
     assert.equal(run.status, 0, run.stderr);
@@ -290,7 +290,7 @@ test('merge_group: an agent-only entry is classified as code and agent', () => {
     { seed: { 'agent/internal/foo.go': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=false\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=false\nagent_code=true\nintegration=true\npath_readers=false\nreader_tests=');
+  assert.equal(output, 'code=true\ndocs=false\nagent=true\napp=true\napi=true\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=true\nintegration=true\npath_readers=false\nreader_tests=');
 });
 
 test('merge_group: a tooling-only entry is classified as code but not app', () => {
@@ -299,7 +299,7 @@ test('merge_group: a tooling-only entry is classified as code but not app', () =
     { seed: { 'scripts/security/check-npm-audit.sh': 'a\n', '.github/workflows/release.yml': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=false\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=false\nagent_code=false\nintegration=true\npath_readers=false\nreader_tests=');
+  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=false\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=false\nagent_code=true\nintegration=true\npath_readers=false\nreader_tests=');
 });
 
 test('merge_group: an unresolvable base sha fails safe to the full suite', () => {
@@ -373,7 +373,7 @@ test('every code job is gated on the classifier', () => {
   // Per-area jobs carry an extra area clause AFTER the code/app gate; the exact
   // per-area `if:` lines are pinned by ci-area-gating.test.mjs. The prefix is
   // still required here, so a docs-only or tooling-only PR still skips them.
-  const areaGated = /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.app == 'true' && (needs\.changes\.outputs\.(api|web|portal|addins|m365|rust|integration) == 'true'|\(needs\.changes\.outputs\.api == 'true' \|\| needs\.changes\.outputs\.web == 'true' \|\| needs\.changes\.outputs\.portal == 'true'\))$/mu;
+  const areaGated = /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.app == 'true' && (needs\.changes\.outputs\.(api|web|portal|addins|m365|rust|integration|agent_code) == 'true'|\(needs\.changes\.outputs\.api == 'true' \|\| needs\.changes\.outputs\.web == 'true' \|\| needs\.changes\.outputs\.portal == 'true'\))$/mu;
   for (const name of jobs) {
     if (exempt.has(name)) continue;
     const body = job(name);
@@ -519,6 +519,7 @@ const summaryScript = summary.split('        run: |\n')[1]
 const resultVars = [...summary.matchAll(/^          (\w+_RESULT):/gmu)].map((m) => m[1]);
 const allOf = (value) => Object.fromEntries(resultVars.map((v) => [v, value]));
 const passing = {
+  AGENT_CODE_CHANGED: 'true',
   PATH_READERS_CHANGED: 'true',
   ...allOf('success'), MOBILE_NATIVE_REQUIRED: 'false', BUILD_MOBILE_IOS_RESULT: 'skipped', AGENT_CHANGED: 'true', APP_CHANGED: 'true',
   // Every per-area flag true: the per-area tri-state lives in ci-area-gating.test.mjs.
@@ -591,6 +592,7 @@ const heavyResultVars = [
   'AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT',
 ];
 const toolingOnlyPassing = {
+  AGENT_CODE_CHANGED: 'true',
   PATH_READERS_CHANGED: 'false',
   ...allOf('skipped'), // everything defaults to skipped for a tooling-only PR...
   ...Object.fromEntries(['LINT_RESULT', 'RELEASE_LEDGER_RESULT', 'CHECK_MIGRATIONS_RESULT', 'SECURITY_AUDIT_RESULT'].map((v) => [v, 'success'])),
@@ -801,10 +803,8 @@ test('docs-check runs the customer-PII guard: it scans docs, so a docs-only PR m
   assert.ok(docsCheck.indexOf('check-customer-pii.sh') < docsCheck.indexOf('pnpm --filter @breeze/docs check'));
 });
 
-// ---- #6943: temporary Test Agent (Windows) waiver ---------------------------
-// A Go runtime crash flakes the Windows agent job. Its FAILURE is waived only
-// when the classifier positively reports agent_code=false; remove with #6943.
-test('classifier: agent_code is true for agent/**, ci.yml and the classifier, false otherwise', () => {
+// ---- Agent area output and fail-open fallback ------------------------------
+test('classifier: agent_code includes agent paths, CI, and unknown paths', () => {
   for (const [paths, want] of [
     [['agent/internal/logging/logging.go'], 'true'],
     // agent/ path outside the QEMU gate: agent=false but agent_code=true
@@ -814,7 +814,7 @@ test('classifier: agent_code is true for agent/**, ci.yml and the classifier, fa
     [['apps/api/src/index.ts', 'agent/go.mod'], 'true'],
     [['apps/api/src/index.ts'], 'false'],
     [['docs/guide.md'], 'false'],
-    [['.github/workflows/release.yml'], 'false'],
+    [['.github/workflows/release.yml'], 'true'],
     // agent markdown is documentation (no Go changed), even alongside code
     [['apps/api/x.ts', 'agent/README.md'], 'false'],
     [[], 'true'], // fail-closed on an empty list
@@ -832,31 +832,7 @@ test('changes job exposes agent_code and the merge-group fallback turns it on', 
   assert.match(summary, /AGENT_CODE_CHANGED: \$\{\{ needs\.changes\.outputs\.agent_code \}\}/u);
 });
 
-for (const IS_PR of ['true', 'false']) {
-  for (const [label, env, passes] of [
-    ['Windows failure waived when agent_code=false', { TEST_AGENT_WINDOWS_RESULT: 'failure', AGENT_CODE_CHANGED: 'false' }, true],
-    ['Windows failure blocks when agent_code=true', { TEST_AGENT_WINDOWS_RESULT: 'failure', AGENT_CODE_CHANGED: 'true' }, false],
-    ['Windows failure blocks when agent_code is empty', { TEST_AGENT_WINDOWS_RESULT: 'failure', AGENT_CODE_CHANGED: '' }, false],
-    ['Windows failure blocks when agent_code is not a boolean', { TEST_AGENT_WINDOWS_RESULT: 'failure', AGENT_CODE_CHANGED: 'maybe' }, false],
-    ['waiver is Windows-only: windows-runtime-smoke failure still blocks', { WINDOWS_RUNTIME_SMOKE_RESULT: 'failure', AGENT_CODE_CHANGED: 'false' }, false],
-    ['waiver is Windows-only: Linux test-agent failure still blocks', { TEST_AGENT_RESULT: 'failure', AGENT_CODE_CHANGED: 'false' }, false],
-    ['Windows cancelled still blocks when agent_code=false', { TEST_AGENT_WINDOWS_RESULT: 'cancelled', AGENT_CODE_CHANGED: 'false' }, false],
-    ['Windows skipped still blocks when agent_code=false', { TEST_AGENT_WINDOWS_RESULT: 'skipped', AGENT_CODE_CHANGED: 'false' }, false],
-    ['Windows success passes', { TEST_AGENT_WINDOWS_RESULT: 'success', AGENT_CODE_CHANGED: 'false' }, true],
-  ]) {
-    test(`CI Success (#6943 waiver, IS_PR=${IS_PR}): ${label}`, () => {
-      const execution = spawnSync('bash', ['-e', '-c', summaryScript], {
-        encoding: 'utf8',
-        env: { ...process.env, ...appPassing, IS_PR, WORKSPACE_RUNTIME_RESULT: 'success', ...env },
-      });
-      assert.equal(execution.status, passes ? 0 : 1, execution.stdout + execution.stderr);
-      if (passes && env.TEST_AGENT_WINDOWS_RESULT === 'failure') {
-        assert.match(execution.stdout, /::warning::.*#6943/u);
-      }
-    });
-  }
-}
-
+// Agent-area tri-state and waiver retirement are covered by ci-pr-selection.test.mjs.
 
 // ---- #5936: integration-test path gate (pull_request only) -------------------
 // `integration=true` runs the 16-shard real-Postgres suite. It is path-gated ONLY

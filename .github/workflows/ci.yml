@@ -101,10 +101,9 @@ jobs:
       # the production web bundle and drives it in a real Chromium. Same
       # fail-safe shape as `code` — anything unresolvable turns it on.
       topology_browser: ${{ steps.classify.outputs.topology_browser }}
-      # "Agent code (or its CI) changed" — agent/**, ci.yml, the classifier.
-      # NOT the same as `agent` above (the QEMU gate). Gates the temporary
-      # Test Agent (Windows) waiver in ci-success (#6943). Fail-safe: anything
-      # unresolvable turns it on, so the waiver is never granted on no evidence.
+      # Agent area: agent/**, shared/global inputs and files read by Go tests.
+      # Separate from the QEMU gate above; gates seven agent jobs. Unknown
+      # paths and unresolved change lists fail open to include this area.
       agent_code: ${{ steps.classify.outputs.agent_code }}
       # Gate for the 16-shard `integration-test` job (#5936). Path-gated on
       # `pull_request` ONLY (the classifier gets `--pull-request` there and
@@ -1968,7 +1967,7 @@ jobs:
     name: Build Agent (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ${{ matrix.runner }}
     needs: [lint, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -2104,7 +2103,7 @@ jobs:
     name: Agent Windows manifest guard
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2154,7 +2153,7 @@ jobs:
     name: Test Agent
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     # Room for a package retry (W1, #10744): "Run Go tests" measured 5.8 min
     # median / 5.9 max, setup + loopback/edition steps ≤ 1.5 min, across six
     # CI runs 2026-10-29..30. Explicit so retry-shard's --budget-minutes (this
@@ -2258,7 +2257,7 @@ jobs:
     name: Test Agent (Windows)
     runs-on: windows-latest
     needs: [lint, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -3165,7 +3164,7 @@ jobs:
     name: Lint Agent (Go)
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     # CGO off (matches test-agent): the agent's only cgo files are the linux
     # X11/pcap capture backends, whose C headers are not on the runner. vet +
     # lint cover the CGO-off build; the cgo backends are compiled by build-agent.
@@ -3265,7 +3264,7 @@ jobs:
     name: Test Agent (race)
     runs-on: macos-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     # Room for a package retry (W1, #10744): "go test -race" measured 16.5 min
     # median / 19.2 max, setup ≤ 2.1 min, across six CI runs 2026-10-29..30
     # (macOS runners vary ~2×). 2 × 19.2 + 5 ≈ 43. retry-shard's
@@ -3358,7 +3357,7 @@ jobs:
     name: Windows Runtime Smoke
     runs-on: windows-latest
     needs: [lint, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -5232,12 +5231,24 @@ jobs:
              { [[ "${PORTAL_CHANGED}" == "true" ]] && [[ "${BUILD_PORTAL_RESULT}" != "success" ]]; } || \
              { [[ "${PORTAL_CHANGED}" != "true" ]] && [[ "${PORTAL_CHANGED}" != "false" ]]; } || \
              { [[ "${PORTAL_CHANGED}" == "false" ]] && [[ "${BUILD_PORTAL_RESULT}" != "skipped" ]]; } || \
-             [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \
-             [[ "${LINT_AGENT_RESULT}" != "success" ]] || \
-             [[ "${TEST_AGENT_RESULT}" != "success" ]] || \
-             [[ "${AGENT_WINDOWS_MANIFEST_GUARD_RESULT}" != "success" ]] || \
-             { [[ "${TEST_AGENT_WINDOWS_RESULT}" != "success" ]] && ! { [[ "${TEST_AGENT_WINDOWS_RESULT}" == "failure" ]] && [[ "${AGENT_CODE_CHANGED}" == "false" ]]; }; } || \
-             [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]] || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${BUILD_AGENT_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${BUILD_AGENT_RESULT}" != "skipped" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${LINT_AGENT_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${LINT_AGENT_RESULT}" != "skipped" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${TEST_AGENT_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${TEST_AGENT_RESULT}" != "skipped" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${AGENT_WINDOWS_MANIFEST_GUARD_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${AGENT_WINDOWS_MANIFEST_GUARD_RESULT}" != "skipped" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${TEST_AGENT_WINDOWS_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${TEST_AGENT_WINDOWS_RESULT}" != "skipped" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "skipped" ]]; } || \
              { [[ "${INTEGRATION_CHANGED}" == "true" ]] && [[ "${INTEGRATION_TEST_RESULT}" != "success" ]]; } || \
              { [[ "${INTEGRATION_CHANGED}" != "true" ]] && [[ "${INTEGRATION_CHANGED}" != "false" ]]; } || \
              { [[ "${INTEGRATION_CHANGED}" == "false" ]] && [[ "${INTEGRATION_TEST_RESULT}" != "skipped" ]]; } || \
@@ -5335,16 +5346,6 @@ jobs:
           if [[ "${IS_PR}" != "true" ]] && [[ "${STACK_CHANGED}" == "true" ]] && [[ "${GUIDED_SETUP_SMOKE_RESULT}" != "success" ]]; then
             echo "Guided setup smoke failed on main branch push"
             exit 1
-          fi
-          # TEMPORARY (#6943): a Go runtime crash flakes `Test Agent (Windows)`
-          # and dequeues unrelated PRs. The job still runs; its FAILURE is waived
-          # only when the classifier positively reported agent_code=false (no
-          # agent/** / ci.yml / classifier change) — empty or `true` never waives.
-          # `cancelled`/`skipped` are unchanged (still blocking above).
-          # Remove this block and the waiver clause in the condition once #6943
-          # is fixed. Applies to pull_request and merge_group alike.
-          if [[ "${TEST_AGENT_WINDOWS_RESULT}" == "failure" ]]; then
-            echo "::warning::Test Agent (Windows) failed but is waived: no agent code changed. Known Go runtime crash, see #6943 (temporary waiver)."
           fi
           echo "All required jobs passed!"
 

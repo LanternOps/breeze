@@ -283,3 +283,104 @@ for (const [flag, result, passes] of [
     assert.equal(out.status, passes ? 0 : 1, out.stdout + out.stderr);
   });
 }
+
+const APP_AREAS = ['api', 'web', 'portal', 'addins', 'm365', 'rust'];
+const AGENT_JOBS = ['build-agent', 'agent-windows-manifest-guard', 'test-agent', 'test-agent-windows', 'lint-agent', 'windows-runtime-smoke'];
+const agentResults = (value) => Object.fromEntries(AGENT_JOBS.map((name) => [name.toUpperCase().replaceAll('-', '_') + '_RESULT', value]));
+test('agent area: agent-only paths set agent_code and api, and no other app area', () => {
+  // api stays: ~30 test-api contract suites read agent/** by path (the
+  // cross-area scan in ci-area-gating.test.mjs enumerates them, including
+  // aiAgentDiagnosisPrompt.test.ts, which reads the whole agent/ tree).
+  for (const path of ['agent/internal/snmppoll/poller.go', 'agent/go.mod', 'agent/cmd/breeze-agent/main.go', 'agent/Makefile',
+    'agent/internal/heartbeat/heartbeat.go', 'agent/installer/breeze.wxs']) {
+    const out = classifyPr([path]);
+    for (const flag of ['agent_code', 'code', 'app', 'api']) assert.equal(out[flag], 'true', `${path}: ${flag}`);
+    for (const flag of ['web', 'portal', 'addins', 'm365', 'rust', 'integration']) assert.equal(out[flag], 'false', `${path}: ${flag}`);
+  }
+});
+test('agent area: app-only paths do not set it', () => {
+  for (const path of ['apps/api/src/index.ts', 'apps/web/src/App.tsx', 'apps/portal/src/x.astro', 'apps/excel-addin/src/x.ts',
+    'apps/m365-graph-read-executor/src/x.ts', 'apps/viewer/src/x.ts', 'apps/mobile/src/App.tsx', 'agent/README.md']) {
+    assert.equal(classifyPr([path]).agent_code, 'false', path);
+  }
+});
+test('agent area: Node-install root manifests do not set it, and no agent-gated job installs Node packages', () => {
+  for (const path of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', '.node-version', '.nvmrc', 'patches/x.patch', 'tsconfig.json']) {
+    const out = classifyPr([path]);
+    assert.equal(out.agent_code, 'false', path);
+    for (const area of APP_AREAS) assert.equal(out[area], 'true', `${path}: ${area}`);
+  }
+  for (const name of [...AGENT_JOBS, 'test-agent-race']) assert.doesNotMatch(job(name), /setup-node|pnpm/u, name);
+});
+test('agent area: shared and unknown inputs set it (fail open)', () => {
+  for (const path of ['packages/shared/src/testing/topology-unifi-v1.json', '.github/scripts/x.mjs', '.github/workflows/ci.yml',
+    'scripts/check-windows-vet.sh', 'docker/Dockerfile.api', 'ee/workspace/src/x.ts', 'some-new-dir/x', '.github/actions/restore-go-cache/action.yml']) {
+    const out = classifyPr([path]);
+    assert.equal(out.agent_code, 'true', path);
+    for (const area of APP_AREAS) assert.equal(out[area], 'true', `${path}: ${area}`);
+  }
+});
+test('agent area: files the Go tests read set it', () => {
+  for (const path of ['apps/api/src/routes/agents/schemas.ts', 'apps/api/src/routes/agentWs.ts', 'apps/web/public/scripts/uninstall.sh',
+    'apps/api/src/__tests__/integration/agentHotPathQueryBudget.integration.test.ts']) {
+    assert.equal(classifyPr([path]).agent_code, 'true', path);
+  }
+});
+test('agent area: the api rule for agent/** is backed by real readers (else it is dead weight)', () => {
+  // Representative readers; the exhaustive, derived list is the cross-area scan
+  // in ci-area-gating.test.mjs. If every one of these disappears, revisit the rule.
+  assert.match(readFileSync(join(REPO_ROOT, 'apps/api/src/services/agentOrgRateLimit.test.ts'), 'utf8'), /agent\/internal\/heartbeat\/heartbeat\.go/u);
+  assert.match(readFileSync(join(REPO_ROOT, 'apps/api/src/config/agentInstallerOsFloor.test.ts'), 'utf8'), /agent\/installer\/breeze\.wxs/u);
+  assert.match(readFileSync(join(REPO_ROOT, 'apps/api/src/services/aiAgentDiagnosisPrompt.test.ts'), 'utf8'), /\.\.\/agent\//u);
+  // And the Go side of the budget contract still reads the API integration test it pins.
+  assert.match(readFileSync(join(REPO_ROOT, 'agent/tools/agentsim/sim/budget_contract_test.go'), 'utf8'), /agentHotPathQueryBudget\.integration\.test\.ts/u);
+});
+test('the seven agent jobs are gated on agent_code; recovery-media-e2e is unchanged', () => {
+  for (const name of [...AGENT_JOBS, 'test-agent-race']) {
+    assert.match(job(name), /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.app == 'true' && needs\.changes\.outputs\.agent_code == 'true'$/mu, name);
+  }
+  assert.match(job('recovery-media-e2e'), /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.agent == 'true'$/mu);
+});
+test('ci-success asserts each agent job with the three-branch pattern and the waiver is gone', () => {
+  for (const rv of Object.keys(agentResults('success'))) assert.match(summaryScript, triState('AGENT_CODE_CHANGED', rv));
+  assert.doesNotMatch(summary, /6943|waived/u);
+  // Race remains a separately gated, non-blocking job, as before W3.
+  assert.doesNotMatch(summary, /needs: \[[^\]]*\btest-agent-race\b/u);
+});
+const appPassing = () => ({
+  ...allResults('success'), CODE_CHANGED: 'true', DOCS_CHANGED: 'true', APP_CHANGED: 'true', AGENT_CHANGED: 'true',
+  API_CHANGED: 'true', WEB_CHANGED: 'true', PORTAL_CHANGED: 'true', ADDINS_CHANGED: 'true', M365_CHANGED: 'true', RUST_CHANGED: 'true',
+  PATH_READERS_CHANGED: 'true', TOPOLOGY_BROWSER_CHANGED: 'true', INTEGRATION_CHANGED: 'true',
+  MOBILE_NATIVE_REQUIRED: 'false', BUILD_MOBILE_IOS_RESULT: 'skipped',
+});
+for (const IS_PR of ['true', 'false']) {
+  for (const [label, flag, results, passes] of [
+    ['agent green', 'true', agentResults('success'), true],
+    ['agent Windows failure', 'true', { ...agentResults('success'), TEST_AGENT_WINDOWS_RESULT: 'failure' }, false],
+    ['non-agent skipped', 'false', agentResults('skipped'), true],
+    ['non-agent build ran', 'false', { ...agentResults('skipped'), BUILD_AGENT_RESULT: 'success' }, false],
+    ['non-agent Windows failed', 'false', { ...agentResults('skipped'), TEST_AGENT_WINDOWS_RESULT: 'failure' }, false],
+    ['empty agent flag', '', agentResults('skipped'), false],
+    ['invalid agent flag', 'maybe', agentResults('success'), false],
+  ]) {
+    test(`agent summary: ${label}, IS_PR=${IS_PR}`, () => {
+      const out = runSummary({ ...appPassing(), IS_PR, AGENT_CODE_CHANGED: flag, ...results });
+      assert.equal(out.status, passes ? 0 : 1, out.stdout + out.stderr);
+    });
+  }
+}
+test('scanner: Go reads outside agent/ are covered', () => {
+  const tracked = trackedFiles();
+  const trackedSet = new Set(tracked);
+  const targets = new Set();
+  for (const file of tracked.filter((path) => /^agent\/.*_test\.go$/u.test(path))) {
+    const source = readFileSync(join(REPO_ROOT, file), 'utf8');
+    for (const match of source.matchAll(/"((?:\.\.\/)+(?:apps|packages)\/[^"\n]+)"/gu)) {
+      const target = normalize(join(dirname(file), match[1]));
+      assert.ok(trackedSet.has(target), `${file}: ${target} is not tracked`);
+      targets.add(target);
+      assert.equal(classify([target]).agent_code, 'true', `${file} reads ${target}`);
+    }
+  }
+  assert.ok(targets.size >= 4, 'Go reference scan must not be vacuous');
+});

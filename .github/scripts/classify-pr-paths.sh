@@ -7,12 +7,10 @@
 # One optional argument:
 # `--pull-request` (path-gates `integration`; see below).
 #
-# `agent_code=true` means "agent code (or the CI that tests it) changed": any
-# agent/** path, `.github/workflows/ci.yml`, or this classifier. It is NOT the
-# same as `agent` (the QEMU recovery-media gate, which only fires for a pinned
-# subset of agent/). ci-success uses it to decide whether a `Test Agent
-# (Windows)` failure may be waived while #6943 (Go runtime crash) is open: a PR
-# that cannot have affected the agent must not be dequeued by that flake.
+# `agent_code=true` is the agent area: agent/**, shared packages, CI/tooling,
+# global infrastructure inputs, unknown paths, and files Go tests read in apps/.
+# Node-install root manifests set the app areas only. `agent` remains the
+# separate QEMU recovery-media dependency gate.
 #
 # A documentation path is docs/**, apps/docs/**, or a *.md / *.mdx file
 # anywhere — the exact set `ci.yml` used to `paths-ignore` and `docs-ci.yml`
@@ -57,7 +55,7 @@
 #   - shared/global inputs (packages/**, the root manifests and lockfile,
 #     patches/**, root tsconfig*, ci.yml, .github/scripts/**, docker/**,
 #     root docker-compose* / Dockerfile*, scripts/**, ee/**) set EVERY area;
-#   - a code path that matches no area rule (agent/**, e2e-tests/**, a new
+#   - a code path that matches no area rule (e2e-tests/**, a new
 #     top-level dir or app, ...) sets EVERY area;
 #   - an area whose tests READ another area's files is also set when those
 #     files change (see the cross-area block below). test-api carries the
@@ -226,8 +224,9 @@ while IFS= read -r path; do
   # Area (first match wins). In a case pattern `*` also matches '/', so the
   # root-only globals below are anchored by their leading literal.
   case "${path}" in
-    packages/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|.node-version|.nvmrc|patches/*|tsconfig*.json) all_areas ;;
-    .github/workflows/ci.yml|.github/scripts/*|docker/*|docker-compose*|Dockerfile*|scripts/*|ee/*) all_areas ;;
+    packages/*) all_areas; agent_code=true ;;
+    package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|.node-version|.nvmrc|patches/*|tsconfig*.json) all_areas ;;
+    .github/workflows/ci.yml|.github/scripts/*|docker/*|docker-compose*|Dockerfile*|scripts/*|ee/*) all_areas; agent_code=true ;;
     apps/api/*) api=true ;;
     apps/web/*) web=true ;;
     apps/portal/*) portal=true ;;
@@ -235,7 +234,14 @@ while IFS= read -r path; do
     apps/m365-graph-read-executor/*|apps/m365-graph-actions-executor/*|apps/m365-communications-executor/*) m365=true ;;
     apps/viewer/*|apps/helper/*|Cargo.*|rust-toolchain*) rust=true ;;
     apps/mobile/*|apps/docs/*) : ;;
-    *) all_areas ;;
+    # agent/** is the agent area AND sets api: ~30 test-api contract suites read
+    # agent sources/fixtures by path (backupAgentContract, schemas.commandResult,
+    # agentWs.rejectionFrame, cisBenchmarkSafeguards, yaraRuleSets, releaseTrustChain,
+    # aiAgentDiagnosisPrompt reads the whole agent/ tree, ...). The cross-area scan
+    # in ci-area-gating.test.mjs (which walks agent/**/*.go too) proves the other
+    # five areas read nothing under agent/.
+    agent/*) api=true; agent_code=true ;;
+    *) all_areas; agent_code=true ;;
   esac
   # Cross-area reads: the READING area must also run when these change.
   case "${path}" in
@@ -256,9 +262,15 @@ while IFS= read -r path; do
     .github/workflows/ci.yml|.github/scripts/classify-pr-paths.sh|.github/scripts/qemu-gate-paths.txt) agent=true ;;
     agent/*) qemu_gate_hit "${path}" && agent=true ;;
   esac
-  # agent_code (#6943 waiver gate): agent/**, ci.yml and this classifier.
+  # Go readers: wire/limits_test.go, websocket/server_error_frame_test.go,
+  # macosuninstall/script_test.go and tools/agentsim/sim/budget_contract_test.go.
+  # Kept separate from the app-area cases: uninstall.sh must still set both web
+  # and api as well as the agent area.
   case "${path}" in
-    agent/*|.github/workflows/ci.yml|.github/scripts/classify-pr-paths.sh) agent_code=true ;;
+    apps/api/src/routes/agents/schemas.ts|\
+    apps/api/src/routes/agentWs.ts|\
+    apps/web/public/scripts/uninstall.sh|\
+    apps/api/src/__tests__/integration/agentHotPathQueryBudget.integration.test.ts) agent_code=true ;;
   esac
   case "${path}" in
     .github/workflows/ci.yml) app=true ;;
