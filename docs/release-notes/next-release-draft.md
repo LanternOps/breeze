@@ -234,10 +234,6 @@ Update agents to a release containing this change before relying on the provider
 - `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
 - `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
 - `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.
-
-### AI: partner settings inheritance read tool (#9763)
-
-- New Tier 1 AI/MCP tool `get_partner_settings_inheritance` answers "which organizations override this partner setting, and to what?". With a settings tab it returns per-setting counts; with a setting id it lists the organizations behind one count. It uses the same gate and projection as the partner settings inheritance view: partner scope with full partner organization access only, and secret settings show set or not set only. No migration, environment variable or setting.
 ### Partner settings copy matches the inheritance badges (#10372)
 
 The default-expiry and maximum-lifetime selects and the partner agent-pin caption no longer say organizations "configure individually" or are "pinned for all"; each now agrees with its Org can override / Partner-wide badge.
