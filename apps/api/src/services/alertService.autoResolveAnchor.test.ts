@@ -99,7 +99,7 @@ it('a recovery event with the same clamped timestamp as the trigger resolves it'
   triggers = [event(2, 'zzz-trigger')]; recoveries = [event(2, 'aaa-recovery')];
   mocks.open.mockResolvedValue({ root: triggers[0] });
   expect(await checkAutoResolve('alert-1')).toBe(true);
-  expect(mocks.recovery).toHaveBeenCalledWith(recoveryCondition, 'device-1', { side: 'resolve', cursors: { root: triggers[0] } });
+  expect(mocks.recovery).toHaveBeenCalledWith(recoveryCondition, 'device-1', { side: 'resolve', cursors: { root: triggers[0] }, legacyIngestedBefore: alert.triggeredAt });
 });
 it('recovery close freezes the cursor in the same update as the status change', async () => {
   await checkAutoResolve('alert-1');
@@ -159,4 +159,19 @@ it('observation failure does not undo recovery', async () => {
   const error = new Error('observation failed'); mocks.observation.mockRejectedValue(error);
   expect(await checkAutoResolve('alert-1')).toBe(true);
   expect(mocks.capture).toHaveBeenCalledWith(error, undefined, expect.objectContaining({ area: 'monitors', issue: 'recovery_observation_failed' }));
+});
+it.each([
+  ['an episode opened before cursors existed', triggerCondition],
+  ['a trigger with no event_log leaf', { type: 'metric', metric: 'cpu', operator: 'gt', value: 90 }],
+])('with no stored cursor (%s) a recovery ingested before triggered_at does not resolve', async (_label, conditions) => {
+  template.conditions = conditions;
+  mocks.open.mockResolvedValue({});
+  triggers = [];
+  expect(await checkAutoResolve('alert-1')).toBe(false);
+  expect(payloads).toHaveLength(0);
+});
+it('with no stored cursor a recovery ingested after triggered_at resolves', async () => {
+  mocks.open.mockResolvedValue({});
+  triggers = []; recoveries = [event(6)];
+  expect(await checkAutoResolve('alert-1')).toBe(true);
 });

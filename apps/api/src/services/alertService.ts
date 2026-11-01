@@ -679,8 +679,13 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
       return false;
     }
     const recoveryPaths = evidenceLeafPaths(autoResolveConditions);
+    // A recovery leaf with no stored cursor (episode opened before cursors existed, or a
+    // trigger with no evidence leaf) is anchored to this alert's trigger instant, so evidence
+    // already in the log when the alert fired cannot close it.
     const result = await evaluateAutoResolveConditions(autoResolveConditions, alert.deviceId,
-      recoveryPaths.length ? { side: 'resolve', cursors: resolveSideCursors(current, recoveryPaths) } : undefined);
+      recoveryPaths.length
+        ? { side: 'resolve', cursors: resolveSideCursors(current, recoveryPaths), legacyIngestedBefore: alert.triggeredAt }
+        : undefined);
 
     if (result.shouldResolve && result.dataState !== 'unknown') {
       const recoveryCursor = (triggerPaths.length || Object.keys(current).length || Object.keys(result.evidenceWatermarks).length)
