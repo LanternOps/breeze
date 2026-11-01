@@ -7,6 +7,7 @@
  */
 
 import { keysetEnvelope, keysetParamSchema, keysetWhereCondition, readKeysetArgs } from './aiToolPagination';
+import { orgNameOf, readReachSpansOrgs, splitOrgLegend } from './aiToolOrgLegend';
 import { db } from '../db';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { alerts, devices, notificationChannels } from '../db/schema';
@@ -146,7 +147,9 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           status: { type: 'string', enum: ['active', 'acknowledged', 'resolved', 'suppressed', 'dismissed'], description: 'Filter by status (for list)' },
           severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'], description: 'Filter by severity (for list)' },
           deviceId: { type: 'string', description: 'Filter by device UUID (for list)' },
-          ...keysetParamSchema(15, 100),
+          // Default 12 (was 15): leaves room in the chat budget for the org
+          // fields a multi-org caller gets (#10408).
+          ...keysetParamSchema(12, 100),
           resolutionNote: { type: 'string', description: 'Note when resolving or suppressing an alert' },
           suppressDuration: { type: 'number', description: 'Hours to suppress the alert (default: 24, max: 720). Use 0 to suppress forever (indefinitely).' }
         },
@@ -157,7 +160,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
 
       if (action === 'list') {
-        const page = readKeysetArgs('manage_alerts', input, { defaultLimit: 15, maxLimit: 100 });
+        const page = readKeysetArgs('manage_alerts', input, { defaultLimit: 12, maxLimit: 100 });
         if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
         const { limit, after, fingerprint } = page;
         const emptyKeysetPage = (extra: Record<string, unknown> = {}) =>
@@ -220,8 +223,12 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           conditions.push(keysetWhereCondition(alerts.triggeredAt, alerts.id, after)!);
         }
 
+        // #10408: a caller reaching several orgs gets each row's org, or a
+        // partner-wide triage cannot group alerts by customer.
+        const spansOrgs = readReachSpansOrgs(auth);
         const rows = await db
           .select({
+            ...(spansOrgs ? { orgId: alerts.orgId, orgName: orgNameOf(alerts.orgId) } : {}),
             id: alerts.id,
             status: alerts.status,
             severity: alerts.severity,
@@ -255,6 +262,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
             message: truncated ? row.message!.slice(0, 500) : row.message,
             messageTruncated: truncated,
             deviceId: row.deviceId,
+            ...(spansOrgs ? { orgId: row.orgId!, orgName: row.orgName ?? null } : {}),
             triggeredAt: row.triggeredAt instanceof Date ? row.triggeredAt.toISOString() : row.triggeredAt ?? null,
             triggeredAtText: row.triggeredAtText,
             acknowledgedAt: row.acknowledgedAt instanceof Date ? row.acknowledgedAt.toISOString() : row.acknowledgedAt ?? null,
@@ -270,7 +278,9 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const outAlerts = (envelope.alerts as Array<Record<string, unknown>>).map(
           ({ triggeredAtText: _triggeredAtText, ...rest }) => rest
         );
-        return JSON.stringify({ ...envelope, alerts: outAlerts });
+        if (!spansOrgs) return JSON.stringify({ ...envelope, alerts: outAlerts });
+        const legend = splitOrgLegend(outAlerts as Array<Record<string, unknown> & { orgId: string; orgName: string | null }>);
+        return JSON.stringify({ ...envelope, alerts: legend.rows, organizations: legend.organizations });
       }
 
       if (action === 'get') {

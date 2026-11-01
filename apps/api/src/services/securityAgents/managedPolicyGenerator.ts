@@ -52,10 +52,14 @@ export type { VendorCatalogRow };
  *    #6958 D1), each named after its pinned package so no inventory entry can
  *    match it and presence comes only from the `service_running` bridge.
  *  - A vendor whose built-in package needs a partner-uploaded installer
- *    (`BUILTIN_PACKAGES[provider].requiresBinaryUpload`, SentinelOne's MSI) gets
- *    a rule only while the partner's package has a deployable version. The
- *    write path refuses without one; the sweep drops the rule (enforcement
- *    stops, nothing is installed with no binary) and reports it.
+ *    (`BUILTIN_PACKAGES[provider].requiresBinaryUpload`, SentinelOne's MSI)
+ *    can be ENABLED only while the partner's package has a deployable version:
+ *    the write path refuses without one. If the installer later goes away, the
+ *    sweep KEEPS the rule (#9247): the readiness preflight
+ *    (`managedRuleApplicability`, compliance pass and again before dispatch)
+ *    marks every reached device `installer_missing`, so nothing installs with
+ *    no binary and the partner sees it on the coverage panels with a link to
+ *    the package's Versions tab.
  *
  * Authorization lives with the callers, not here: this file is allowlisted in
  * the partner-wide and site-ceiling write-coverage contract tests on the
@@ -129,9 +133,12 @@ export function desiredManagedPolicy(input: {
       missingCatalog.push(vendor.key);
       continue;
     }
+    // #9247: the rule is kept either way. The write path refuses on
+    // `missingBinary`; on the sweep path the readiness preflight marks every
+    // reached device `installer_missing`, so nothing installs and the partner
+    // sees why on the coverage panels.
     if (vendorRequiresUploadedBinary(vendor.key) && !input.uploadedBinaryVendors?.has(vendor.key)) {
       missingBinary.push(vendor.key);
-      continue;
     }
     vendors.push(vendor.key);
     for (const row of rows) {
@@ -222,12 +229,13 @@ export type ManagedPolicySyncResult = {
   policyId: string | null;
   action: ManagedPolicySyncPlan['action'];
   vendors: VendorKey[];
-  /**
-   * Enabled vendors left without a rule (skip mode only): the partner has no
-   * catalog package, or the package has no deployable uploaded installer.
-   */
+  /** Enabled vendors left without a rule (skip mode only): the partner has no catalog package. */
   skippedVendors: VendorKey[];
-  /** The subset of `skippedVendors` whose package exists but has no deployable uploaded installer. */
+  /**
+   * Enabled vendors whose package exists but has no deployable uploaded
+   * installer (skip mode only). They KEEP their rule (#9247); the readiness
+   * preflight reports every reached device `installer_missing`.
+   */
   missingBinaryVendors: VendorKey[];
 };
 
@@ -320,7 +328,7 @@ export async function syncManagedSoftwarePolicy(
   const plan = planManagedPolicySync(existing ? (existing as ExistingManagedRow) : null, desired.row);
   const base = {
     vendors: desired.vendors,
-    skippedVendors: [...desired.missingCatalog, ...desired.missingBinary],
+    skippedVendors: desired.missingCatalog,
     missingBinaryVendors: desired.missingBinary,
     action: plan.action,
   };
@@ -471,8 +479,7 @@ export async function repairManagedSoftwarePolicies(): Promise<{ links: number; 
       }
       // Enforcement for these vendors has stopped (their rule is gone): an
       // operator needs to see it, not only a log line.
-      const missingBinary = new Set(result.missingBinaryVendors);
-      const missingCatalog = result.skippedVendors.filter((vendor) => !missingBinary.has(vendor));
+      const missingCatalog = result.skippedVendors;
       if (missingCatalog.length > 0) {
         console.warn('[securityAgents] Enabled vendor has no catalog package; no rule generated', {
           linkId: id,
@@ -485,17 +492,14 @@ export async function repairManagedSoftwarePolicies(): Promise<{ links: number; 
           { fingerprint: ['security_agents_repair', 'catalog_missing'] },
         );
       }
+      // #9247: a missing uploaded installer is partner-visible (the rule is
+      // kept and every reached device reads `installer_missing` on the
+      // coverage panels), so it is a log line here, not a Sentry event.
       if (result.missingBinaryVendors.length > 0) {
-        console.warn('[securityAgents] Enabled vendor has no deployable uploaded installer; no rule generated', {
+        console.info('[securityAgents] Enabled vendor has no deployable uploaded installer; its devices read installer_missing', {
           linkId: id,
           vendors: result.missingBinaryVendors,
         });
-        captureException(
-          new Error('Security agents: enabled vendor has no deployable uploaded installer; its rule was not generated'),
-          undefined,
-          { area: 'security_agents_repair', vendors: result.missingBinaryVendors.join(','), linkId: id },
-          { fingerprint: ['security_agents_repair', 'binary_missing'] },
-        );
       }
     } catch (error) {
       failed += 1;

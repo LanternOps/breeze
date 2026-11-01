@@ -967,5 +967,10 @@
       "body": "Bestehende Vorlagen bleiben hier bearbeitbar und werden im nächsten Release umgewandelt.",
       "link": "Monitore öffnen"
     }
+  },
+  "subject": {
+    "label": "Betroffenes Objekt",
+    "backupWorkload": "Backup-Workload",
+    "topologySite": "Topologiestandort"
   }
 }

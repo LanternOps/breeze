@@ -193,6 +193,32 @@ func TestSanitizeFixture(t *testing.T) {
 	}
 }
 
+// #10325: the reserved brand lists are data shared with packages/shared.
+func TestReservedBrandListsMatchFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(sharedFixtureDir, "identity-name-sanitize.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx struct {
+		ReservedBrands struct {
+			Brands     []string `json:"brands"`
+			Qualifiers []string `json:"qualifiers"`
+		} `json:"reservedBrands"`
+	}
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(reservedBrands, ",") != strings.Join(fx.ReservedBrands.Brands, ",") {
+		t.Errorf("reservedBrands %v != fixture %v", reservedBrands, fx.ReservedBrands.Brands)
+	}
+	if strings.Join(reservedBrandQualifiers, ",") != strings.Join(fx.ReservedBrands.Qualifiers, ",") {
+		t.Errorf("reservedBrandQualifiers %v != fixture %v", reservedBrandQualifiers, fx.ReservedBrands.Qualifiers)
+	}
+	if len(fx.ReservedBrands.Brands) == 0 || len(fx.ReservedBrands.Qualifiers) == 0 {
+		t.Fatal("fixture reservedBrands is empty")
+	}
+}
+
 func TestSanitizeInvalidUTF8(t *testing.T) {
 	if got := SanitizeIdentityName("North\xffwind"); got != "Northwind" {
 		t.Fatalf("got %q", got)

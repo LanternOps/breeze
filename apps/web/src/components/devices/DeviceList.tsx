@@ -39,6 +39,8 @@ import type {
 } from "@breeze/shared";
 import { HARDWARE_HEALTH_RANK, isAgentUpdateStuck } from "@breeze/shared";
 import ComponentStatePill from "./hardware/ComponentStatePill";
+import { WARRANTY_STATUS_BADGE } from "./DeviceWarrantyCard";
+import { formatDateOnly, parseDateOnly } from "@/lib/dateOnly";
 import {
   matchesMergedListFilters,
   sortByDisplayName,
@@ -82,6 +84,7 @@ import {
 } from "./pageSizePreference";
 import {
   COLUMN_IDS,
+  COLUMN_LABELS,
   DEVICES_PAGE_COLUMN_PRESET,
   readColumnOrder,
   readColumnVisibility,
@@ -147,6 +150,8 @@ export type DeviceStatus =
    */
   | "unknown";
 export type OSType = "windows" | "macos" | "linux";
+/** Stored device_warranty.status values (#9863). */
+export type WarrantyStatus = "active" | "expiring" | "expired" | "unknown" | "subscription_active";
 
 /**
  * Presentation-level discriminator for the unified Devices list (#1322, #4622).
@@ -375,6 +380,13 @@ export type Device = {
   hardwareHealth?: HardwareHealth | null;
   hardwareHealthSummary?: Record<string, number> | null;
   /**
+   * Warranty column (#9863): device_warranty end date (bare YYYY-MM-DD) and
+   * its stored status — the same value the device's Warranty card shows.
+   * Both null when the device has no warranty record; the column dashes.
+   */
+  warrantyEndDate?: string | null;
+  warrantyStatus?: WarrantyStatus | null;
+  /**
    * Current-state power/battery snapshot (#2142). null/undefined = no data
    * reported yet (old agent or network device) → the Power column renders a
    * dash. { present: false } = a real no-battery desktop → also a dash.
@@ -484,6 +496,8 @@ const AGENT_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
   "desktopAccess",
   "reliability",
   "hardwareHealth",
+  // #9863 — the list joins device_warranty on the device subject only.
+  "warranty",
   "vpn",
   // #9038 — alerts/tickets hang off the device record, which non-agent rows lack.
   "attention",
@@ -516,6 +530,7 @@ type DeviceListProps = {
   // through `onListFiltersChange` so the page's counts can see it.
   listFilters?: ListFilters;
   onListFiltersChange?: (next: ListFilters) => void;
+  onWarrantyRequiredChange?: (required: boolean) => void;
   // Initial page size if the user has no stored preference for this browser.
   // Once the component mounts, the live page size comes from localStorage
   // (see pageSizePreference.ts); subsequent changes to this prop are ignored.
@@ -847,6 +862,11 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   // < "warning" would otherwise put the worst rows in the middle).
   hardwareHealth: (d) =>
     d.hardwareHealth ? HARDWARE_HEALTH_RANK[d.hardwareHealth] : null,
+  // Chronological by end date (#9863); no warranty record sorts blanks-last.
+  warranty: (d) =>
+    (d.deviceClass ?? "agent") === "agent" && d.warrantyEndDate
+      ? parseDateOnly(d.warrantyEndDate).getTime() || null
+      : null,
   // Sort by the first badge's provider label — active VPNs sort ahead of
   // running-but-disconnected ones because vpnList orders them first. Devices
   // with no VPN at all sort blanks-last (null) to match the dash the cell
@@ -885,6 +905,7 @@ export default function DeviceList({
   networkDevicesEnabled = false,
   listFilters,
   onListFiltersChange,
+  onWarrantyRequiredChange,
   forceSingleOrg = false,
   columnPreset = DEVICES_PAGE_COLUMN_PRESET,
   effectiveAgentVersionByOrgId,
@@ -936,6 +957,10 @@ export default function DeviceList({
   const [visibleColumns, setVisibleColumns] = useState<Set<ColumnId>>(
     () => new Set(readColumnVisibility(columnPreset)),
   );
+  const warrantyVisible = visibleColumns.has('warranty');
+  useEffect(() => {
+    onWarrantyRequiredChange?.(warrantyVisible);
+  }, [warrantyVisible, onWarrantyRequiredChange]);
   const [columnOrder, setColumnOrder] = useState<ColumnId[]>(() =>
     readColumnOrder(columnPreset),
   );
@@ -2644,6 +2669,40 @@ export default function DeviceList({
           )}
         </td>
       ),
+    },
+    warranty: {
+      header: () => sortHeader("warranty", COLUMN_LABELS.warranty, "Sort by warranty end date"),
+      cell: (device) => {
+        const badge = device.warrantyStatus ? WARRANTY_STATUS_BADGE[device.warrantyStatus] : null;
+        return (
+          <td
+            key="warranty"
+            className="px-3 py-3 text-sm whitespace-nowrap"
+            data-testid={`device-${device.id}-warranty`}
+          >
+            {agentCell(
+              device,
+              device.warrantyEndDate || badge ? (
+                <span className="inline-flex items-center gap-2">
+                  {device.warrantyEndDate && (
+                    <span className="tabular-nums">{formatDateOnly(device.warrantyEndDate)}</span>
+                  )}
+                  {badge && (
+                    <span
+                      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${badge.color}`}
+                      data-testid={`device-${device.id}-warranty-status`}
+                    >
+                      {t(/* i18n-dynamic */ `deviceWarrantyCard.status.${badge.label}`)}
+                    </span>
+                  )}
+                </span>
+              ) : (
+                dash
+              ),
+            )}
+          </td>
+        );
+      },
     },
     vpn: {
       header: () => sortHeader("vpn", "VPN", "Sort by VPN provider"),
