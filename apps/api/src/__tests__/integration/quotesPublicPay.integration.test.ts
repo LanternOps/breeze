@@ -11,7 +11,7 @@
  */
 import './setup';
 import { getTestDb } from './setup';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, hasDbAccessContext } from '../../db';
@@ -119,7 +119,21 @@ async function seedSentQuote(opts: { recurringOnly?: boolean; noStripe?: boolean
 
 type AcceptBody = { data: { status: string; invoiceUrl: string | null; checkoutUrl: string | null; payDeferred?: boolean } };
 
+/**
+ * #10736 — freeze only the app's `Date` so a test that compares the accept's and
+ * the Pay's Checkout requests does not depend on when the run starts. Timers stay
+ * real (the slow-mint test needs a real setTimeout). Restored in afterEach.
+ */
+function freezeAppClock(at: number = Date.now()): void {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(at);
+}
+
 describe('public accept → durable invoice link → pay', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mintFailMock.fail = false;
@@ -149,6 +163,7 @@ describe('public accept → durable invoice link → pay', () => {
   // not a second competing link.
   runDb('accept mints a public-link-family checkout for the charge-now amount', async () => {
     const { token } = await seedSentQuote();
+    freezeAppClock();
     const res = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Pat Prospect' });
     expect(res.status).toBe(200);
     const body = await res.json() as AcceptBody;
@@ -171,6 +186,44 @@ describe('public accept → durable invoice link → pay', () => {
     expect(payOpts.idempotencyKey).toBe(opts.idempotencyKey);
     expect(payArgs).toEqual(args);
   });
+
+  // #10736 — a REAL customer, not just a test run: sign at 08:59:59, press Pay
+  // on the invoice page at 09:00:01. Before the fix the key's expiry bucket was
+  // the wall-clock hour, so the two requests carried different keys and Stripe
+  // minted a second Checkout session. The bucket is now anchored to the
+  // invoice's created_at, so the Pay replays the accept's request exactly.
+  runDb('accept just before the top of the hour and Pay just after it replay ONE Checkout request', async () => {
+    const { token } = await seedSentQuote();
+    // created_at comes from the DATABASE clock (≈ real now at accept time) and
+    // this invoice's bucket edges sit at created_at − 5 min + k·1h. The two
+    // frozen app instants below straddle a wall-clock hour by ±1 s, so an edge
+    // falls between them only if the accept lands within ~1 s of xx:05:00. The
+    // guard skips ±30 s around it as margin for DB clock skew (rare, ≤ 61 s wait).
+    const HOUR_MS = 3_600_000;
+    const phaseMs = Date.now() % HOUR_MS;
+    if (phaseMs > 270_000 && phaseMs < 330_000) {
+      await new Promise((r) => setTimeout(r, 331_000 - phaseMs));
+    }
+    const topOfHour = Math.ceil((Date.now() + 1) / HOUR_MS) * HOUR_MS;
+
+    freezeAppClock(topOfHour - 1_000);
+    const res = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Pat Prospect' });
+    expect(res.status).toBe(200);
+    const body = await res.json() as AcceptBody;
+    expect(body.data.checkoutUrl).toBe('https://checkout.stripe.com/c/pay/pub');
+    const invToken = body.data.invoiceUrl!.split('/invoice/')[1]!;
+
+    vi.setSystemTime(topOfHour + 1_000);
+    const pay = await postJson(`/invoices/public/${invToken}/pay`, {});
+    expect(pay.status).toBe(200);
+
+    expect(sessionsCreateMock).toHaveBeenCalledTimes(2);
+    const [acceptArgs, acceptOpts] = sessionsCreateMock.mock.calls[0]!;
+    const [payArgs, payOpts] = sessionsCreateMock.mock.calls[1]!;
+    expect(payOpts.idempotencyKey).toBe(acceptOpts.idempotencyKey);
+    // Same key ⇒ byte-identical params, or Stripe would reject the replay.
+    expect(payArgs).toEqual(acceptArgs);
+  }, 90_000);
 
   // Todd 10-09: an org on automatic payments ALSO goes straight to checkout —
   // its scheduled run may be days out. Safe against a double charge: the
@@ -199,6 +252,7 @@ describe('public accept → durable invoice link → pay', () => {
     const late = new Promise<void>((r) => { lateDone = r; });
     sessionsCreateMock.mockImplementationOnce(() => new Promise((resolve) => setTimeout(() => { resolve(SESSION); lateDone(); }, ACCEPT_CHECKOUT_TIMEOUT_MS + 500)));
     const { token } = await seedSentQuote();
+    freezeAppClock();
     const res = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Pat Prospect' });
     expect(res.status).toBe(200);
     const body = await res.json() as AcceptBody;
