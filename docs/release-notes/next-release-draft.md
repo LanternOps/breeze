@@ -400,3 +400,7 @@ Adding a version to an existing package now has the pre/post-install script fiel
 ### IOC sweep limits in Compose (#10050) — PR #10795
 
 The `SECURITY_SWEEP_*` limits and `IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD` are now passed to the API by both Compose files and listed, with their defaults, in `.env.example`. Set them in `.env` to tune sweeps; leaving them unset keeps the defaults. Earlier releases needed a manual edit of the `api` service to change them.
+
+### SaaS backup workloads raise alerts (#10725 W3) — PR #10856
+
+Microsoft 365 and Google Workspace backup failures, including Cove Microsoft 365 workloads, now create organization-level alerts that flow through notifications and automations. Endpoint alerts are unchanged. Device-only automations skip these workload alerts.
