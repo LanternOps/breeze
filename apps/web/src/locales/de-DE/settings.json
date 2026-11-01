@@ -69,7 +69,8 @@
           "executing": "Wird ausgeführt",
           "completed": "Abgeschlossen",
           "failed": "Fehlgeschlagen",
-          "rejected": "Abgelehnt"
+          "rejected": "Abgelehnt",
+          "stopped": "Gestoppt"
         }
       },
       "intents": {

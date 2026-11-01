@@ -351,6 +351,7 @@
       "pending": "ausstehend",
       "approved": "genehmigt",
       "rejected": "abgelehnt",
+      "stopped": "gestoppt",
       "completed": "abgeschlossen",
       "failed": "fehlgeschlagen"
     },
@@ -393,6 +394,7 @@
     "requestedAt": "angefordert {{time}}",
     "approvedAt": "genehmigt {{time}}",
     "rejectedAt": "abgelehnt {{time}}",
+    "stoppedAt": "gestoppt {{time}}",
     "appliedAt": "angewendet {{time}}",
     "flagDialog": {
       "title": "Sitzung markieren",

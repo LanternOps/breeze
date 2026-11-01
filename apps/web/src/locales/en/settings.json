@@ -69,7 +69,8 @@
           "executing": "Executing",
           "completed": "Completed",
           "failed": "Failed",
-          "rejected": "Denied"
+          "rejected": "Denied",
+          "stopped": "Stopped"
         }
       },
       "intents": {
