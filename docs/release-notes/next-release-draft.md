@@ -408,3 +408,7 @@ Microsoft 365 and Google Workspace backup failures, including Cove Microsoft 365
 ### Alert tickets: manual create, counts, re-drive (#10528 W09) — PR #10861
 
 Alert tickets (ConnectWise Manage only, off per connection) now support manual creation from an alert, per-state counts, a failure list with re-drive, and audited Create anyway / Mark handled actions. Not yet verified against a live ConnectWise tenant (lab waived 2026-10-31); auto-resolve from recovery events depends on #10538.
+
+### CI: merge-queue thin-run shadow mode (#10744 W04) — PR #10867
+
+CI now records what each green pull-request run tested, and the merge queue works out the smaller set of checks a "thin" queue run would need: the PR's own tests, suites in areas changed on main since that run, and integration where they overlap. It logs that set next to what actually ran. Shadow mode only: the merge queue still runs the full suite; a week of these logs decides whether the thin run gets enforced (W05).
