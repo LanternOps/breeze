@@ -9823,6 +9823,45 @@ describe('org routes', () => {
     });
   });
 
+  // #9762 — the route must carry `partnerDefaults` through: OrgSettingsPage
+  // reads it as the "partner has a pin" signal, and the web tests mock this
+  // response, so only a route-level test catches it being dropped.
+  describe('GET /orgs/organizations/:id/effective-settings — locked vs partnerDefaults (#9762)', () => {
+    beforeEach(() => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const partnerSettings = {
+        defaults: { agentVersionPins: { agent: '0.120.0' }, agentUpdatePolicy: 'manual' },
+        notifications: { pushoverDefaultSound: 'pushover' },
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue(Promise.resolve([{ settings: {}, partnerId: 'partner-123' }])),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue(Promise.resolve([{ settings: partnerSettings }])),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue(Promise.resolve([])),
+          }),
+        } as any);
+    });
+
+    it('reports overridable partner values in partnerDefaults and only in-force locks in locked', async () => {
+      const res = await app.request('/orgs/organizations/org-1/effective-settings');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.locked).toEqual(['defaults.agentUpdatePolicy']);
+      expect(body.partnerDefaults).toEqual(['notifications.pushoverDefaultSound', 'defaults.agentVersionPins']);
+      expect(body.effective.defaults.agentVersionPins).toEqual({ agent: '0.120.0' });
+    });
+  });
+
   // Organization and partner `settings` hold log-forwarding credentials sealed
   // at rest. Responses report that a secret is set (the masked marker) instead
   // of returning the sealed value, and a save that echoes the marker keeps the
