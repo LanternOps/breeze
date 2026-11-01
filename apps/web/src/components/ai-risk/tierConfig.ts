@@ -208,6 +208,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'list_org_contacts', description: 'List organization contacts', category: 'Integrations' },
       { name: 'list_sites', description: 'List organization sites', category: 'Integrations' },
       { name: 'get_site', description: 'Get site details', category: 'Integrations' },
+      { name: 'get_partner_settings_inheritance', description: 'Which organizations override a partner setting', category: 'Integrations' },
       { name: 'query_webhooks', description: 'List webhooks and delivery status', category: 'Integrations' },
       { name: 'query_psa_status', description: 'PSA connection status', category: 'Integrations' },
       { name: 'query_agent_versions', description: 'Agent versions and upgrade status', category: 'Integrations' },
@@ -1051,6 +1052,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   ioc_hunt: { list_rule_sets: 'devices.read', preview_sweep: 'devices.read', list_sweeps: 'devices.read', sweep_status: 'devices.read', sweep: 'devices.execute', cancel_sweep: 'devices.execute', import_iocs: 'devices.write' },
   get_security_posture: 'devices.read',
   get_trust_page_status: 'organizations.read',
+  get_partner_settings_inheritance: 'organizations.read',
   // Tool Catalog W03 (#5218)
   draft_flow: 'automations.write',
   validate_flow: 'automations.read',

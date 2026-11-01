@@ -1874,6 +1874,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   read_artifact: { resource: 'ai_agents', action: 'read' },
   // Same permission as the editor's GET /orgs/:orgId/trust-page.
   get_trust_page_status: { resource: 'organizations', action: 'read' },
+  // #9763: same permission as GET /orgs/partners/me/settings-inheritance(/orgs) (ORGS_READ).
+  get_partner_settings_inheritance: { resource: 'organizations', action: 'read' },
   // Tool Catalog W03 (#5218): flows reuse the automations permissions.
   draft_flow: { resource: 'automations', action: 'write' },
   validate_flow: { resource: 'automations', action: 'read' },

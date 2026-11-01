@@ -9,6 +9,12 @@ import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 
 import { fleetTimeFiltersSchema } from './timeSync/fleetFilters';
 import { z } from 'zod';
+import { partnerSettingsInheritanceInputSchema } from './aiToolSchemasPartnerSettingsInheritance';
+export {
+  PARTNER_SETTINGS_INHERITANCE_BUCKETS,
+  PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT,
+  partnerSettingsInheritanceInputSchema,
+} from './aiToolSchemasPartnerSettingsInheritance';
 import { isIP } from 'node:net';
 import { MEMORY_BLOCK_TYPES, MEMORY_CONFIDENCES, MEMORY_OWNER_KINDS } from '@breeze/shared';
 import {
@@ -2018,6 +2024,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   get_trust_page_status: z.object({
     orgId: uuid,
   }),
+
+  // #9763: partner settings inheritance read (the two inheritance routes' query schemas).
+  get_partner_settings_inheritance: partnerSettingsInheritanceInputSchema,
 
   // Tool Catalog W03 (#5218). `document` is an OPEN record on purpose: a
   // structurally broken or oversized document must reach the flow validator
