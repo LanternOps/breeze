@@ -36,6 +36,7 @@ function sweep(over: Partial<SweepSummary> = {}): SweepSummary {
     orgName: 'Acme',
     ruleSets: [{ id: 'set-1', name: 'EICAR set', version: 1 }],
     scanType: 'quick',
+    paths: null,
     state: 'active',
     targeted: 10,
     skipped: { agent_too_old: 2 },
@@ -114,6 +115,25 @@ describe('SweepsPanel', () => {
     expect(screen.queryByTestId('sweep-rules-changed-sw-1')).toBeNull();
   });
 
+  it('an active sweep shows running devices beside queued ones (#10078)', async () => {
+    listRows = [sweep({ targeted: 2, progress: progress({ queued: 1, running: 1 }) })];
+    await renderPanel();
+    const cell = screen.getByTestId('sweep-progress-sw-1');
+    expect(cell.textContent).toContain('0 of 2 devices finished');
+    expect(cell.textContent).toContain('Queued: 1');
+    expect(cell.textContent).toContain('Running: 1');
+  });
+
+  it('a cancelled sweep reads as cancelled, not "100% … devices done" (#10078)', async () => {
+    listRows = [sweep({ state: 'cancelled', targeted: 2, progress: progress({ completed: 1, cancelled: 1 }) })];
+    await renderPanel();
+    const cell = screen.getByTestId('sweep-progress-sw-1');
+    expect(cell.getAttribute('aria-valuenow')).toBe('100');
+    expect(cell.textContent).toContain('2 of 2 devices finished · 1 completed · 1 cancelled');
+    expect(cell.textContent).not.toMatch(/100%|done/);
+    expect(cell.textContent).not.toContain('Running');
+  });
+
   it('shows an empty state', async () => {
     listRows = [];
     await renderPanel();
@@ -160,6 +180,18 @@ describe('SweepsPanel', () => {
     expect(screen.getByTestId('sweep-dialog')).toBeInTheDocument();
     expect(screen.getByTestId('sweep-dialog-rescope-note')).toBeInTheDocument();
     expect(screen.getByTestId('sweep-dialog').textContent).toContain('EICAR set');
+  });
+
+  it('a re-sweep of a custom-paths sweep carries the original paths into the dialog (#10079)', async () => {
+    publishedVersions = { 'set-1': 2 };
+    listRows = [sweep({ scanType: 'custom', paths: ['C:\\Users\\Public', '/tmp/drop'] })];
+    await renderPanel();
+    fireEvent.click(screen.getByTestId('sweep-resweep-sw-1'));
+    expect(screen.getByTestId('sweep-dialog-rescope-note').textContent).toMatch(/paths/i);
+    fireEvent.click(screen.getByTestId('sweep-dialog-scope-all'));
+    fireEvent.click(screen.getByTestId('sweep-dialog-next'));
+    expect((screen.getByTestId('sweep-dialog-scan-type') as HTMLSelectElement).value).toBe('custom');
+    expect((screen.getByTestId('sweep-dialog-paths') as HTMLTextAreaElement).value).toBe('C:\\Users\\Public\n/tmp/drop');
   });
 
   it('reads the current versions once per list, not once per row', async () => {

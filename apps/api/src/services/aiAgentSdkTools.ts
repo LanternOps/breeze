@@ -44,6 +44,7 @@ import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listConcernsShape, listLinksShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
+import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
@@ -106,7 +107,7 @@ export type PreToolUseResult =
    * and the handler then reads `getAuth()` as before. A Wisp session's call
    * that arrives WITHOUT it is denied (`wispMissingToolAuthDenial`).
    */
-  | { allowed: true; intentId?: string; context?: ToolExecutionContext; toolAuth?: AuthContext }
+  | { allowed: true; intentId?: string; context?: ToolExecutionContext; toolAuth?: AuthContext; onSuccess?: (input: Record<string, unknown>) => Promise<void> }
   /**
    * Not run by THIS session. Two different things wear this shape:
    *
@@ -123,8 +124,11 @@ export type PreToolUseResult =
    * `detail`: an optional model-actionable elaboration of a denial, published
    * beside `error` as `{ error, detail }` — the same shape the tool's own
    * handler returns (#10144, the launch_specialist pre-approval refusal).
+   *
+   * `message`: an optional person-facing sentence for the refusal, published
+   * as `{ error, detail, message }` — again the handler's own shape (#10193).
    */
-  | { allowed: false; error: string; detail?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
+  | { allowed: false; error: string; detail?: string; message?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
 
 /**
  * A Wisp call reached a registry handler with no per-call `toolAuth`: denied,
@@ -265,6 +269,7 @@ export const TOOL_TIERS = {
   get_dns_security: 1,
   get_huntress_status: 1,
   get_huntress_incidents: 1,
+  get_huntress_agents: 1,
   manage_dns_policy: 2,
   get_s1_status: 1,
   get_s1_threats: 1,
@@ -723,6 +728,13 @@ export const TOOL_TIERS = {
   manage_contract_templates: 1,
   manage_contract_documents: 1,
   get_device_billing: 1,
+  // W14 PR B (#6784): accounting sync. Reads tier 1; link / unlink / sync supervised, push four-eyes (aiGuardrails).
+  manage_accounting_sync: 1,
+  // W15 PR A (#6785): per-action Pax8 classes are resolved in aiGuardrails.
+  get_pax8_status: 1,
+  search_pax8_products: 1,
+  manage_pax8_subscriptions: 1,
+  manage_pax8_orders: 1,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -822,13 +834,14 @@ export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
  */
 function preToolUseDenialResult(
   toolName: string,
-  check: { error: string; detail?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload },
+  check: { error: string; detail?: string; message?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload },
 ): { text: string; isError: boolean } {
   const payload = check.handoff
     ? buildToolHandoffResult(check.handoff, check.error)
     : {
         error: check.error,
         ...(check.detail ? { detail: check.detail } : {}),
+        ...(check.message ? { message: check.message } : {}),
         ...(check.requiresCallerVerification
           ? { requiresCallerVerification: check.requiresCallerVerification }
           : {}),
@@ -982,6 +995,43 @@ export function visionMetadataTextBlocks(
   return blocks;
 }
 
+/** Best-effort side effect: never changes output, error flags, or compaction budgets. */
+function notifyToolSuccess(
+  onSuccess: ((input: Record<string, unknown>) => Promise<void>) | undefined,
+  toolName: string,
+  input: Record<string, unknown>,
+  rawResult: string,
+  isToolError: boolean,
+): void {
+  if (!onSuccess || isToolError) return;
+  // Inspect the un-compacted payload: compaction must not erase a refusal.
+  // Some tools wrap their JSON in the standard untrusted-data fence.
+  // Focal tools must emit a JSON {error}/{refused} envelope on failure:
+  // plain-text refusals count as success and would trigger auto-linking.
+  let payload = rawResult;
+  if (payload.startsWith('<untrusted_data ')) {
+    const first = payload.indexOf('{');
+    const last = payload.lastIndexOf('}');
+    if (first >= 0 && last >= first) payload = payload.slice(first, last + 1);
+  }
+  try {
+    const parsed: unknown = JSON.parse(payload);
+    if (parsed && typeof parsed === 'object') {
+      if ('refused' in parsed) return;
+      if ('error' in parsed && !('success' in parsed) && !('data' in parsed) && !('configured' in parsed)) return;
+    }
+  } catch { /* Plain text successes have no JSON envelope. */ }
+  const logAndCapture = (err: unknown) => {
+    console.error(`[AI-SDK] onSuccess failed for ${toolName}:`, err);
+    captureException(err, undefined, { op: 'wisp.auto_link', toolName });
+  };
+  try {
+    void onSuccess(input).catch(logAndCapture);
+  } catch (err) {
+    logAndCapture(err);
+  }
+}
+
 function makeToolHandler(
   toolName: string,
   getAuth: () => AuthContext,
@@ -1014,6 +1064,7 @@ function makeToolHandler(
     let verifiedContext: ToolExecutionContext | undefined;
     // Wisp W04: the per-call auth the gate cut to the delegation ceiling.
     let callToolAuth: AuthContext | undefined;
+    let onSuccess: ((input: Record<string, unknown>) => Promise<void>) | undefined;
 
     // Pre-execution check (guardrails, RBAC, rate limits, approval)
     if (onPreToolUse) {
@@ -1041,6 +1092,7 @@ function makeToolHandler(
           ? { ...check.context, actionIntentId: check.intentId }
           : check.context;
         callToolAuth = check.toolAuth;
+        onSuccess = check.onSuccess;
       }
       if (!check.allowed) {
         const denial = preToolUseDenialResult(toolName, check);
@@ -1160,6 +1212,7 @@ function makeToolHandler(
               },
             ];
             contentBlocks.push(...visionMetadataTextBlocks(toolName, parsed));
+            notifyToolSuccess(onSuccess, toolName, args, result, false);
             return { content: contentBlocks };
           }
         } catch (err) {
@@ -1182,6 +1235,7 @@ function makeToolHandler(
 
       const durationMs = Date.now() - startTime;
       await safePostToolUse(postToolUse, toolName, args, compactResult, isToolError, durationMs);
+      notifyToolSuccess(onSuccess, toolName, args, result, isToolError);
       return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
     } catch (err) {
       const durationMs = Date.now() - startTime;
@@ -1261,6 +1315,7 @@ function makeSessionAwareHandler(
     let intentId: string | undefined;
     // Wisp W04: the per-call auth the gate cut to the delegation ceiling.
     let callToolAuth: AuthContext | undefined;
+    let onSuccess: ((input: Record<string, unknown>) => Promise<void>) | undefined;
     if (onPreToolUse) {
       let check: PreToolUseResult;
       try {
@@ -1282,6 +1337,7 @@ function makeSessionAwareHandler(
       }
       intentId = check.intentId;
       callToolAuth = check.toolAuth;
+      onSuccess = check.onSuccess;
     }
     const missingWispAuth = wispMissingToolAuthDenial(toolName, session, callToolAuth);
     if (missingWispAuth) {
@@ -1379,6 +1435,7 @@ function makeSessionAwareHandler(
 
       const durationMs = Date.now() - startTime;
       await safePostToolUse(postToolUse, toolName, args, compactResult, isToolError, durationMs, sealed);
+      notifyToolSuccess(onSuccess, toolName, args, result, isToolError || (typeof handlerResult !== 'string' && handlerResult.kind === 'error'));
       return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
     } catch (err) {
       const durationMs = Date.now() - startTime;
@@ -2351,6 +2408,7 @@ export function buildBreezeSdkTools(
       'get_huntress_incidents',
       registryDescription('get_huntress_incidents'),
       {
+        incidentId: uuid.optional(),
         orgId: uuid.optional(),
         integrationId: uuid.optional(),
         status: z.string().max(30).optional(),
@@ -2362,6 +2420,22 @@ export function buildBreezeSdkTools(
         offset: z.number().int().min(0).optional(),
       },
       makeHandler('get_huntress_incidents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_huntress_agents',
+      registryDescription('get_huntress_agents'),
+      {
+        orgId: uuid.optional(),
+        integrationId: uuid.optional(),
+        mapping: z.enum(['mapped', 'unmapped', 'all']).optional(),
+        offlineOnly: z.boolean().optional(),
+        deviceId: uuid.optional(),
+        search: z.string().max(200).optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+      makeHandler('get_huntress_agents', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -4035,6 +4109,14 @@ export function buildBreezeSdkTools(
       makeHandler('get_device_billing', getAuth, onPreToolUse, onPostToolUse)
     ),
 
+    // Spec 2026-09-23 W14 PR B (#6784): QuickBooks / Xero sync. Pushes are four-eyes and agent-human-only.
+    tool(
+      'manage_accounting_sync',
+      registryDescription('manage_accounting_sync'),
+      inputShape('manage_accounting_sync'),
+      makeHandler('manage_accounting_sync', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
     // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.
     // Classes live in aiGuardrails (W04 class review); every device write is
     // supervised, remote sessions and elevation requests four-eyes.
@@ -5126,9 +5208,19 @@ export function buildBreezeSdkTools(
       makeHandler('manage_org_documents', getAuth, onPreToolUse, onPostToolUse)
     ),
 
+    tool('get_pax8_status', registryDescription('get_pax8_status'), pax8ToolSchemas.get_pax8_status.shape,
+      makeHandler('get_pax8_status', getAuth, onPreToolUse, onPostToolUse)),
+    tool('search_pax8_products', registryDescription('search_pax8_products'), pax8ToolSchemas.search_pax8_products.shape,
+      makeHandler('search_pax8_products', getAuth, onPreToolUse, onPostToolUse)),
+    tool('manage_pax8_subscriptions', registryDescription('manage_pax8_subscriptions'), pax8ToolSchemas.manage_pax8_subscriptions.shape,
+      makeHandler('manage_pax8_subscriptions', getAuth, onPreToolUse, onPostToolUse)),
+    tool('manage_pax8_orders', registryDescription('manage_pax8_orders'), pax8ToolSchemas.manage_pax8_orders.shape,
+      makeHandler('manage_pax8_orders', getAuth, onPreToolUse, onPostToolUse)),
     tool(
       'manage_contracts',
       registryDescription('manage_contracts'),
+      // Inline (aiToolsContracts.registryParity reads this enum from source); W14 PR B (#6784) adds
+      // preview_invoice / generate_invoice and generate_invoice's assertions, as toolInputSchemas.
       {
         action: z.enum([
           'create_draft',
@@ -5141,12 +5233,18 @@ export function buildBreezeSdkTools(
           'pause',
           'resume',
           'cancel',
+          'preview_invoice',
+          'generate_invoice',
         ]),
         contractId: uuid.optional(),
         lineId: uuid.optional(),
         input: z.record(z.string(), z.unknown()).optional(),
         line: z.record(z.string(), z.unknown()).optional(),
         patch: z.record(z.string(), z.unknown()).optional(),
+        periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        expectedTotal: z.string().regex(/^\d{1,12}(\.\d{1,2})?$/).optional(),
+        autoIssue: z.boolean().optional(),
+        expectedRecipients: z.array(z.string().max(320)).max(20).optional(),
       },
       makeHandler('manage_contracts', getAuth, onPreToolUse, onPostToolUse)
     ),

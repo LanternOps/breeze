@@ -29,12 +29,12 @@ The integration is **read-only**. Breeze reads backup status from Cove; it never
 <Steps>
 1. Go to **Integrations** and open the **Backup** tab. (The old address `/settings/integrations/backup` redirects here.)
 2. Click **Add connection** and choose **Cove Data Protection**.
-3. Enter a **Connection name** (for example, *Main Cove account*). For **Cove partner name**, enter the name of the customer the API user was created under, exactly as Cove shows it. Enter the API user's login name as the **Username** and its token as the **Password**.
+3. Enter a **Connection name** (for example, *Main Cove account*). For **Cove partner name**, enter the name of the customer the API user was created under, exactly as Cove shows it. Enter the API user's login name in **API user login name** and its token in **API user token**.
 4. Optionally turn on **Show the provider name in the client portal**. It is off by default, so customer-facing views use the generic label *Managed cloud backup* instead of the vendor name.
 5. Save. Breeze signs in to Cove before saving anything — if the login fails, nothing is created and the error is shown. On success, the first sync starts right away.
 </Steps>
 
-The password is stored encrypted and is never shown again. To change it, use **Re-enter credentials** on the connection card; the new password is tested before it replaces the old one, so a failed change never leaves the connection without a working login.
+The token is stored encrypted and is never shown again. To change it, use **Re-enter credentials** on the connection card; the new token is tested before it replaces the old one, so a failed change never leaves the connection without a working login.
 
 ### Connection card actions
 

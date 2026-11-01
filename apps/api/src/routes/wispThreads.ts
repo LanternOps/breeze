@@ -3,7 +3,7 @@
  * Mounted by W02's hub as `wispRoutes.route('/thread', wispThreadRoutes)`,
  * i.e. /api/v1/wisp/thread.
  *
- *   GET   /?orgId=                → { data: { thread, focusOrgName, grant, wideningAvailable } } | 404 no_active_grant
+ *   GET   /?orgId=                → { data: { thread, focusOrgName, grant, wideningAvailable } } | { data: null } (no active grant for the scope)
  *                                    (grant carries the W05 spend meter: spentTodayCents, budgetResetsAt — w00 A32)
  *   GET   /:id                    → the same { data: { thread, focusOrgName, grant, wideningAvailable } } for the
  *                                    caller's own thread (W06 deep links; existence-neutral 404)
@@ -252,7 +252,7 @@ type CeilingOutcome =
  * paused / revoked / expired / Wisp switched off; `corrupt` (→ 500
  * grant_corrupt, already logged and captured) when the pin itself is broken.
  *
- * `allowPaused` (READ-ONLY routes only; today GET /:id/timeline): a paused
+ * `allowPaused` (READ-ONLY routes only: GET /:id/timeline and /:id/activity): a paused
  * grant resolves from its stored revision with `status: 'paused'`, which
  * assertWithinCeiling refuses, so the ceiling can read history but never act.
  */
@@ -346,7 +346,9 @@ wispThreadRoutes.get('/', zValidator('query', threadQuery), async (c) => {
   const partnerId = partnerIdOf(auth);
   const { orgId } = c.req.valid('query');
   const grant = await getActiveGrantForUser(auth.user.id, { partnerId, orgId: orgId ?? null });
-  if (!grant) return fail(c, 404, 'no_active_grant', 'No active Wisp delegation for this scope');
+  // No grant for this scope is an expected answer (the panel probes org then
+  // partner-wide), not an error status: 200 with null data (#10200).
+  if (!grant) return c.json({ data: null });
 
   const thread = await getOrCreateThread(grant.id);
   return c.json({ data: await threadPayload(partnerId, thread, grant) });
@@ -375,11 +377,15 @@ function withinCeiling(ceiling: GrantCeiling, current: CurrentActivity): Current
 
 // W06 (w00 A31): the derived, ceiling-filtered activity timeline and the live
 // "Wisp is checking …" line. The grant's LIVE ceiling filters every item.
+// A paused grant still reads its history (#10104): its ceiling is the stored
+// revision ∩ the grantor's live term, and `withinCeiling` drops the live line
+// (assertWithinCeiling refuses a paused ceiling), so a pause never claims
+// "checking …". Revoked / expired / unpinned stay 409.
 wispThreadRoutes.get('/:id/activity', zValidator('query', wispActivityQuerySchema), async (c) => {
   const { cursor, limit } = c.req.valid('query');
   const own = await loadOwnThread(c);
   if (!own) return c.json(NOT_FOUND, 404);
-  const outcome = await ceilingOf(own);
+  const outcome = await ceilingOf(own, { allowPaused: true });
   if (!outcome.ok) return ceilingRefusal(c, outcome.reason);
   try {
     const [page, current] = await Promise.all([

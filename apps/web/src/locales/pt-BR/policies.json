@@ -674,7 +674,18 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "minimumLevel",
         "collectionIntervalMinutes2": "collectionIntervalMinutes",
-        "rateLimitPerHour2": "rateLimitPerHour"
+        "rateLimitPerHour2": "rateLimitPerHour",
+        "applicationProvidersHeading": "Provedores de aplicativos (Aviso e Informação)",
+        "applicationProvidersHelp": "Os eventos de aplicativo dos níveis Erro e Crítico são coletados de todos os provedores; os de Aviso e Informação, somente dos provedores integrados ({{providers}}) e dos listados aqui. Use o nome exato do provedor exibido na coluna “Origem” do Visualizador de Eventos ou em Get-WinEvent -ListProvider.",
+        "applicationProvidersScope": "Somente a política de Logs de Eventos com precedência para o dispositivo se aplica. As listas de provedores não são combinadas entre políticas.",
+        "providerNameLabel": "Nome do provedor de eventos de aplicativo",
+        "addProvider": "Adicionar provedor",
+        "removeProvider": "Remover",
+        "removeProviderNamed": "Remover {{provider}}",
+        "providerNameInvalid": "Use de 1 a {{max}} caracteres, começando com uma letra ou um dígito. São permitidos letras, dígitos, espaços, pontos, sublinhados, cifrões, parênteses e hífens.",
+        "providerLimitReached": "Você pode adicionar até {{max}} provedores adicionais. Remova um para adicionar outro.",
+        "providerAlreadyListed": "Este provedor já está na lista.",
+        "providerLimit": "{{total}} de {{max}} provedores adicionais"
       },
       "featureTabShell": {
         "override": "Substituir",
@@ -1197,9 +1208,9 @@
         "enableWarrantyExpiryAlerts": "Ativar alertas de vencimento da garantia",
         "generateAlertsWhenFixedTermDeviceWarranties": "Gerar alertas quando garantias de dispositivos com prazo determinado estiverem próximas do vencimento.",
         "warningThresholdDays": "Limite de aviso (dias)",
-        "generateAWarningAlertWhenWarrantyExpires": "Gerar um alerta de aviso quando a garantia vencer dentro deste número de dias.",
-        "criticalThresholdDays": "Limite crítico (dias)",
-        "generateACriticalAlertWhenWarrantyExpires": "Gerar um alerta crítico quando a garantia vencer dentro deste número de dias.",
+        "warnThresholdHelp": "Gerar um alerta de severidade Informativo quando a garantia vencer dentro deste número de dias.",
+        "urgentThresholdDays": "Limite de urgência (dias)",
+        "urgentThresholdHelp": "Gerar um alerta de severidade Baixa quando a garantia vencer dentro deste número de dias. Uma garantia vencida gera um alerta de severidade Média.",
         "enabled": "enabled",
         "warnDays": "warnDays",
         "criticalDays": "criticalDays",
@@ -1219,6 +1230,20 @@
         "title": "Os dispositivos desta política alertarão duas vezes",
         "body": "Estas condições existem como monitor anexado e também como regra ou vigilância legada: {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Grupos de dispositivos (todas as org.)",
+      "description": "Selecione como destino um grupo de dispositivos de todo o parceiro. Uma atribuição de grupo se aplica no nível do grupo de dispositivos e, portanto, tem precedência sobre atribuições de outras políticas nos níveis de organização e site.",
+      "selectGroup": "Selecione um grupo de dispositivos",
+      "assign": "Atribuir",
+      "remove": "Remover",
+      "assigned": "Grupo de dispositivos atribuído",
+      "removed": "Atribuição do grupo de dispositivos removida",
+      "failedToLoad": "Não foi possível carregar os grupos de dispositivos",
+      "failedToAssign": "Não foi possível atribuir o grupo de dispositivos",
+      "failedToRemove": "Não foi possível remover a atribuição do grupo de dispositivos",
+      "empty": "Ainda não há grupos de dispositivos de todo o parceiro. Crie um em Grupos de dispositivos → Todas as org.",
+      "loading": "Carregando grupos de dispositivos…"
     }
   },
   "software": {
@@ -1526,7 +1551,8 @@
       "devicesFinished": "{{finished}} de {{total}} dispositivos concluídos",
       "setupNeeded": "Configuração necessária",
       "managerUnavailableSummary_one": "Falta o gerenciador de pacotes em {{count}} dispositivo. É uma configuração única do dispositivo: instale o winget (Windows) ou o Homebrew (macOS) nele; até lá, toda implantação por gerenciador de pacotes vai falhar.",
-      "managerUnavailableSummary_other": "Falta o gerenciador de pacotes em {{count}} dispositivos. É uma configuração única dos dispositivos: instale o winget (Windows) ou o Homebrew (macOS) neles; até lá, toda implantação por gerenciador de pacotes vai falhar."
+      "managerUnavailableSummary_other": "Falta o gerenciador de pacotes em {{count}} dispositivos. É uma configuração única dos dispositivos: instale o winget (Windows) ou o Homebrew (macOS) neles; até lá, toda implantação por gerenciador de pacotes vai falhar.",
+      "deviceOutputTail": "Saída do dispositivo (últimas linhas)"
     },
     "deploymentWizard": {
       "selectSoftware": "Selecionar Software",
@@ -1814,7 +1840,11 @@
       "deviceCount": "deviceCount",
       "allowed2": "allowed",
       "blocked2": "blocked",
-      "summary": "Exibindo {{range}} de {{total}}"
+      "summary": "Exibindo {{range}} de {{total}}",
+      "policyWouldNotApply": "\"{{policy}}\" não se aplicaria a nenhum dispositivo desta organização, então nada foi alterado. Cada dispositivo segue uma única política de software, e {{winners}} prevalece em todos os dispositivos. Altere ou remova a atribuição de {{configPolicy}} em Políticas de configuração e tente novamente.",
+      "policyWouldNotApplySameMode": "\"{{policy}}\" não se aplicaria a nenhum dispositivo desta organização, então nada foi alterado. Cada dispositivo segue uma única política de software, e {{winners}} prevalece em todos os dispositivos. Em vez disso, adicione o título a {{winner}} em Políticas de software.",
+      "theWinningConfigPolicy": "a política de configuração que prevalece",
+      "nowOverridesPolicies": "\"{{policy}}\" agora prevalece sobre {{names}} nos dispositivos desta organização."
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "Falha ao buscar o inventário de software",
@@ -1985,6 +2015,18 @@
       "uninstallCommandCopied": "Comando de desinstalação copiado",
       "breezeDoesNotUninstall": "O Breeze não desinstala esses clientes. Execute o comando no dispositivo para remover um.",
       "copyFailed": "Falha ao copiar. Selecione o comando e copie-o manualmente."
+    },
+    "policyCoverage": {
+      "appliesTo_one": "Aplica-se a {{count}} dispositivo",
+      "appliesTo_other": "Aplica-se a {{count}} dispositivos",
+      "appliesToNone": "Aplica-se a 0 dispositivos",
+      "notAssigned": "Não atribuída por nenhuma política de configuração",
+      "overriddenBy": "Substituída por {{names}}",
+      "overriddenHint": "Cada dispositivo segue uma única política de software. Nos dispositivos aos quais esta política está atribuída, prevalece {{names}}.",
+      "partlyOverriddenHint": "Cada dispositivo segue uma única política de software. Nos demais dispositivos atribuídos prevalece {{names}}.",
+      "anotherPolicy": "outra política de software",
+      "partnerWide": "{{name}} (de todo o parceiro)",
+      "unavailable": "Cobertura indisponível"
     }
   }
 }

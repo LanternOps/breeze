@@ -72,6 +72,8 @@ export type QuoteServiceErrorCode =
   | 'DEVICE_SET_UNCOUNTABLE'
   | 'INVALID_LINE_PATCH'
   | 'QUOTE_LINE_REFERENCE_DELETED'
+  // #9963: send/accept of a quote with no customer-visible line item (422).
+  | 'QUOTE_EMPTY'
   // Durable single-use replay backstop (#2875, quoteAcceptService): the public
   // response token's jti was already consumed on the quote row (2026-08-06-c
   // columns) — a replayed link, rejected 401 even when the Redis revocation

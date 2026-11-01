@@ -5,6 +5,9 @@ const vulnerabilityMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({ db: { select: vi.fn() } }));
+vi.mock('./backupConnectionFreshness', () => ({ loadBackupConnectionFreshness: vi.fn(async () => new Map([
+  ['connection-1', { isActive: true, lastSyncAt: new Date(), syncIntervalMinutes: 30 }],
+])) }));
 vi.mock('./securityComplianceReportVulnerabilities', () => vulnerabilityMocks);
 // Third-party backup evidence (#6012) has its own module + suite
 // (securityComplianceReportBackupProviders.test.ts); here it is a seam, so the
@@ -33,6 +36,7 @@ import {
   generateSecurityCompliancePostureReport as generateSecurityCompliancePostureReportWithAuthority,
 } from './securityComplianceReport';
 import type { OrgReportExecutionAuthority } from './siteScope';
+import { POSTURE_DEVICE_ROW_CSV_LABELS } from '@breeze/shared';
 
 /** Thenable that resolves to `rows` and supports any drizzle chain method. */
 function selectChain(rows: any) {
@@ -136,6 +140,23 @@ describe('generateSecurityCompliancePostureReport', () => {
     );
   });
 
+  it('preserves backupConfigured for an org with only native C2C backup', async () => {
+    mockGeneratorQueries({ 8: [], 9: [{ status: 'active', provider: 'm365' }] });
+    const result = await generateSecurityCompliancePostureReport(ORG, {});
+    expect((result.summary as any).controls.backupConfigured).toBe(true);
+  });
+
+  it('keeps endpoint backup unconfigured with provider SaaS evidence alone', async () => {
+    mockGeneratorQueries({ 8: [] });
+    vi.mocked(db.select).mockImplementation(((selection: Record<string, unknown>) => selectChain(selection?.accountType ? [{
+      orgId: ORG, provider: 'dropsuite', portalShowProviderName: true, connectionId: 'connection-1', accountType: 'm365', dataSources: ['m365_mail'],
+      status: 'completed', lastSuccessAt: new Date(), errorsCount: 0,
+    }] : [])) as never);
+    const result = await generateSecurityCompliancePostureReport(ORG, {});
+    expect((result.summary as any).controls.backupConfigured).toBe(false);
+    expect(JSON.stringify(result.summary)).toContain('NinjaOne SaaS Backup (Dropsuite)');
+  });
+
   it('places tenant-safe open vulnerability counts into per-device rows', async () => {
     mockGeneratorQueries();
     const result = await generateSecurityCompliancePostureReport(ORG, {});
@@ -148,6 +169,18 @@ describe('generateSecurityCompliancePostureReport', () => {
     ]);
     expect(rows['pc-1']).toMatchObject({ openVulnHigh: 2, openVulnCritical: 1 });
     expect(rows['pc-2']).toMatchObject({ openVulnHigh: 1, openVulnCritical: 0 });
+  });
+
+  // #9964: the portal CSV header row is labelled from this map, so every
+  // per-device row column needs an entry (and no label may name a dead column).
+  it('emits exactly the per-device columns the CSV label map covers', async () => {
+    mockGeneratorQueries();
+    const result = await generateSecurityCompliancePostureReport(ORG, {});
+    const rows = result.rows as Array<Record<string, unknown>>;
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(Object.keys(row).sort()).toEqual(Object.keys(POSTURE_DEVICE_ROW_CSV_LABELS).sort());
+    }
   });
 
   it('does not query or expose organization-wide posture evidence to a site-restricted caller', async () => {

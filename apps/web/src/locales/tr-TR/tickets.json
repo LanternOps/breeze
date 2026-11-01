@@ -566,7 +566,8 @@
       "pending": "Bu bilet {{date}} tarihinde başka bir biletle birleştirildi.",
       "deleted": "Bu bilet {{date}} tarihinde, silinmiş veya göremediğiniz bir biletle birleştirildi.",
       "open": "{{number}} aç",
-      "readOnly": "Birleştirilen biletler salt okunurdur. Birleştirildiği bilette yanıt verin."
+      "readOnly": "Birleştirilen biletler salt okunurdur. Birleştirildiği bilette yanıt verin.",
+      "railReadOnly": "Birleştirilen bir bilette zaman, faturalandırma ve parçalar salt okunurdur. Zamanı ve parçaları birleştirildiği bilete kaydedin."
     },
     "triage": {
       "title": "Önerilen önceliklendirme",

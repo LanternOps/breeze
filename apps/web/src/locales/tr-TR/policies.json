@@ -674,7 +674,18 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "minimumSeviye",
         "collectionIntervalMinutes2": "koleksiyonAralığıDakika",
-        "rateLimitPerHour2": "RateLimitPerHour"
+        "rateLimitPerHour2": "RateLimitPerHour",
+        "applicationProvidersHeading": "Uygulama sağlayıcıları (Uyarı ve Bilgi)",
+        "applicationProvidersHelp": "Hata ve Kritik düzeyindeki Uygulama olayları tüm sağlayıcılardan toplanır; Uyarı ve Bilgi olayları yalnızca yerleşik sağlayıcılardan ({{providers}}) ve burada listelenen sağlayıcılardan toplanır. Olay Görüntüleyicisi’nin \"Kaynak\" sütununda veya Get-WinEvent -ListProvider çıktısında gösterilen tam sağlayıcı adını kullanın.",
+        "applicationProvidersScope": "Bir cihaz için yalnızca öncelikli Olay Günlükleri ilkesi uygulanır. Farklı ilkelerin sağlayıcı listeleri birleştirilmez.",
+        "providerNameLabel": "Uygulama olayı sağlayıcısının adı",
+        "addProvider": "Sağlayıcı ekle",
+        "removeProvider": "Kaldır",
+        "removeProviderNamed": "{{provider}} sağlayıcısını kaldır",
+        "providerNameInvalid": "Bir harf veya rakamla başlayan 1–{{max}} karakter kullanın. İzin verilenler: harfler, rakamlar, boşluklar, noktalar, alt çizgiler, dolar işaretleri, parantezler ve kısa çizgiler.",
+        "providerLimitReached": "En fazla {{max}} ek sağlayıcı ekleyebilirsiniz. Başka bir sağlayıcı eklemek için birini kaldırın.",
+        "providerAlreadyListed": "Bu sağlayıcı zaten listede.",
+        "providerLimit": "{{max}} ek sağlayıcıdan {{total}} tanesi"
       },
       "featureTabShell": {
         "override": "Geçersiz kıl",
@@ -1197,9 +1208,9 @@
         "enableWarrantyExpiryAlerts": "Garanti sona erme uyarılarını etkinleştir",
         "generateAlertsWhenFixedTermDeviceWarranties": "Sabit süreli cihaz garantilerinin sona ermesi yaklaştığında uyarı oluşturun.",
         "warningThresholdDays": "Uyarı eşiği (gün)",
-        "generateAWarningAlertWhenWarrantyExpires": "Garantinin süresi bu kadar gün içinde dolduğunda bir uyarı uyarısı oluşturun.",
-        "criticalThresholdDays": "Kritik eşik (gün)",
-        "generateACriticalAlertWhenWarrantyExpires": "Garantinin süresi bu kadar gün içinde dolduğunda kritik bir uyarı oluşturun.",
+        "warnThresholdHelp": "Garantinin süresi bu kadar gün içinde dolduğunda Bilgi önem düzeyinde bir uyarı oluşturun.",
+        "urgentThresholdDays": "Acil durum eşiği (gün)",
+        "urgentThresholdHelp": "Garantinin süresi bu kadar gün içinde dolduğunda Düşük önem düzeyinde bir uyarı oluşturun. Süresi dolmuş bir garanti Orta önem düzeyinde uyarı oluşturur.",
         "enabled": "etkin",
         "warnDays": "warnDays",
         "criticalDays": "kritikDayler",
@@ -1219,6 +1230,20 @@
         "title": "Bu ilkedeki cihazlar iki kez uyarı verecek",
         "body": "Bu koşullar hem bağlı bir monitör hem de eski bir kural veya izleme olarak mevcut: {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Cihaz grupları (tüm kuruluşlar)",
+      "description": "İş ortağı genelindeki bir cihaz grubunu hedefleyin. Grup ataması cihaz grubu düzeyinde uygulanır; bu nedenle diğer ilkelerin kuruluş ve site düzeyindeki atamalarından önceliklidir.",
+      "selectGroup": "Bir cihaz grubu seçin",
+      "assign": "Ata",
+      "remove": "Kaldır",
+      "assigned": "Cihaz grubu atandı",
+      "removed": "Cihaz grubu ataması kaldırıldı",
+      "failedToLoad": "Cihaz grupları yüklenemedi",
+      "failedToAssign": "Cihaz grubu atanamadı",
+      "failedToRemove": "Cihaz grubu ataması kaldırılamadı",
+      "empty": "Henüz iş ortağı genelinde cihaz grubu yok. Cihaz Grupları → Tüm kuruluşlar altında bir tane oluşturun.",
+      "loading": "Cihaz grupları yükleniyor…"
     }
   },
   "software": {
@@ -1526,7 +1551,8 @@
       "devicesFinished": "{{finished}} / {{total}} cihaz tamamlandı",
       "setupNeeded": "Kurulum gerekli",
       "managerUnavailableSummary_one": "{{count}} cihazda paket yöneticisi eksik. Bu, tek seferlik bir cihaz kurulum işidir — o cihaza winget (Windows) veya Homebrew (macOS) yükleyin; o zamana kadar cihaza yapılan her paket yöneticisi dağıtımı başarısız olacaktır.",
-      "managerUnavailableSummary_other": "{{count}} cihazda paket yöneticisi eksik. Bu, tek seferlik bir cihaz kurulum işidir — o cihazlara winget (Windows) veya Homebrew (macOS) yükleyin; o zamana kadar bu cihazlara yapılan her paket yöneticisi dağıtımı başarısız olacaktır."
+      "managerUnavailableSummary_other": "{{count}} cihazda paket yöneticisi eksik. Bu, tek seferlik bir cihaz kurulum işidir — o cihazlara winget (Windows) veya Homebrew (macOS) yükleyin; o zamana kadar bu cihazlara yapılan her paket yöneticisi dağıtımı başarısız olacaktır.",
+      "deviceOutputTail": "Cihaz çıktısı (son satırlar)"
     },
     "deploymentWizard": {
       "selectSoftware": "Yazılımı Seçin",
@@ -1814,7 +1840,11 @@
       "deviceCount": "cihazSayısı",
       "allowed2": "izin verildi",
       "blocked2": "engellendi",
-      "summary": "{{total}} / {{range}} gösteriliyor"
+      "summary": "{{total}} / {{range}} gösteriliyor",
+      "policyWouldNotApply": "\"{{policy}}\" bu kuruluştaki hiçbir cihaza uygulanmayacağı için hiçbir şey değiştirilmedi. Her cihaz tek bir yazılım ilkesini izler ve tüm cihazlarda {{winners}} geçerlidir. Yapılandırma İlkeleri bölümünde {{configPolicy}} atamasını değiştirin veya kaldırın, ardından tekrar deneyin.",
+      "policyWouldNotApplySameMode": "\"{{policy}}\" bu kuruluştaki hiçbir cihaza uygulanmayacağı için hiçbir şey değiştirilmedi. Her cihaz tek bir yazılım ilkesini izler ve tüm cihazlarda {{winners}} geçerlidir. Bunun yerine başlığı Yazılım İlkeleri bölümünde {{winner}} ilkesine ekleyin.",
+      "theWinningConfigPolicy": "geçerli yapılandırma ilkesi",
+      "nowOverridesPolicies": "\"{{policy}}\" artık bu kuruluşun cihazlarında {{names}} yerine geçerlidir."
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "Yazılım envanteri getirilemedi",
@@ -1985,6 +2015,18 @@
       "uninstallCommandCopied": "Kaldırma komutu kopyalandı",
       "breezeDoesNotUninstall": "Breeze bu istemcileri kaldırmaz. Birini kaldırmak için komutu cihazda çalıştırın.",
       "copyFailed": "Kopyalama başarısız oldu. Komutu seçip elle kopyalayın."
+    },
+    "policyCoverage": {
+      "appliesTo_one": "{{count}} cihaza uygulanır",
+      "appliesTo_other": "{{count}} cihaza uygulanır",
+      "appliesToNone": "0 cihaza uygulanır",
+      "notAssigned": "Hiçbir yapılandırma ilkesiyle atanmamış",
+      "overriddenBy": "{{names}} tarafından geçersiz kılındı",
+      "overriddenHint": "Her cihaz tek bir yazılım ilkesini izler. Bu ilkenin atandığı cihazlarda {{names}} geçerlidir.",
+      "partlyOverriddenHint": "Her cihaz tek bir yazılım ilkesini izler. Atanan diğer cihazlarda {{names}} geçerlidir.",
+      "anotherPolicy": "başka bir yazılım ilkesi",
+      "partnerWide": "{{name}} (iş ortağı genelinde)",
+      "unavailable": "Kapsam kullanılamıyor"
     }
   }
 }

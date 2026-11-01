@@ -47,7 +47,7 @@ vi.mock('../../services/catalogImageStorage', () => ({ readCatalogItemImage: vi.
 vi.mock('../../services/quoteBranding', () => ({ resolveQuoteBranding: vi.fn() }));
 vi.mock('../../services/contractTemplateRender', () => ({
   renderContractBlocksForClient: vi.fn(), loadContractPdfInputs: vi.fn(),
-  loadContractBlockAuthoring: vi.fn(), attachContractAuthoring: vi.fn(),
+  loadContractBlockAuthoring: vi.fn(), attachContractAuthoring: vi.fn(), resolveQuoteEditorAutoVariables: vi.fn(() => ({})),
 }));
 const audit = vi.hoisted(() => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: audit.writeRouteAudit }));

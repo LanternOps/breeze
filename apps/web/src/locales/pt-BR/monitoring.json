@@ -77,7 +77,8 @@
       "recurrenceThreshold": "Escalonar após",
       "recurrenceWindowDays": "episódios em (dias)",
       "pauseResponses": "Pausar as respostas automáticas até que uma pessoa as redefina",
-      "aiAgent": "Agente de IA (habilita respostas de triagem por IA)"
+      "aiAgent": "Agente de IA (habilita respostas de triagem por IA)",
+      "psaBoard": "Quadro do PSA para chamados de alertas"
     },
     "deliveryModes": {
       "inherit": "Usar regras de roteamento",
@@ -170,7 +171,11 @@
       "failed": "Não foi possível carregar os ativos",
       "orgRequired": "Selecione uma organização proprietária para vincular um ativo.",
       "pingName": "Ping para {{label}}"
-    }
+    },
+    "psaBoardDefault": "Usar o quadro padrão da conexão",
+    "psaBoardHelp": "Os chamados de alertas deste monitor são criados neste quadro, em vez do padrão da conexão.",
+    "psaBoardReadOnly": "Os chamados de alertas vão para o quadro #{{id}} do PSA",
+    "psaBoardUnavailable": "Não foi possível carregar os quadros do PSA, então a substituição do quadro está indisponível no momento."
   },
   "kinds": {
     "composite": "Composto (todas ou alguma de várias)",
@@ -247,8 +252,8 @@
     "nameserver": "Servidor de nomes",
     "degradedIsFailure": "Tratar degradado como falha",
     "maxResponseMs": "Falhar se mais lento que (ms)",
-    "eventLogCollectionNoSource": "Eventos de Aplicativo de nível Informação e Aviso são coletados apenas de {{providers}}. Eventos de outras origens só acionam esta regra no nível Erro ou Crítico.",
-    "eventLogCollectionSourceNotCollected": "O agente não coleta eventos de Aplicativo de nível Informação ou Aviso de \"{{source}}\", então esta regra só corresponderá aos eventos de Erro ou Crítico dessa origem. Provedores coletados: {{providers}}."
+    "eventLogCollectionNoSource": "Os eventos de aplicativo dos níveis Informação e Aviso são coletados somente de {{providers}}. Os eventos de outras origens correspondem a esta regra apenas nos níveis Erro ou Crítico, a menos que uma política de configuração de Logs de Eventos inclua a origem (Política de configuração → Logs de Eventos → Provedores de aplicativos).",
+    "eventLogCollectionSourceNotCollected": "O agente não coleta eventos de aplicativo dos níveis Informação ou Aviso de “{{source}}”, a menos que uma política de configuração de Logs de Eventos o inclua (Política de configuração → Logs de Eventos → Provedores de aplicativos). Caso contrário, esta regra corresponde apenas aos seus eventos de Erro ou Crítico. Provedores integrados: {{providers}}."
   },
   "operators": {
     "gt": "maior que",
@@ -333,10 +338,13 @@
     "cancel": "Cancelar",
     "detachConfirm": "Desanexar de {{policy}}?",
     "errors": {
+      "loadGroups": "Não foi possível carregar os grupos de dispositivos.",
       "attach": "Falha ao anexar o monitor",
       "detach": "Falha ao desanexar o monitor",
       "linkedFeature": "Os monitores desta política vêm de uma política de recurso compartilhada. Edite essa política ou escolha outra."
-    }
+    },
+    "partnerWideGroups": "Todas as org. (de todo o parceiro)",
+    "organizationGroups": "Grupos da organização"
   },
   "policyTab": {
     "title": "Monitores",

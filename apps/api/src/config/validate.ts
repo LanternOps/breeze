@@ -14,6 +14,7 @@ import {
 import { EVENT_SUBSCRIBER_IDS, isSubscriberId } from '../services/eventSubscriberIds';
 import { parsePlayIntegrityServiceAccount } from '../services/attestation/playIntegrity';
 import { parseTunnelOriginConfig } from './tunnelOrigin';
+import { isPrivateServiceRange, normalizeInternalApiHost } from '../services/requestTransport';
 import {
   canonicalCfAccessTeamDomain,
   decodePartnerApiCursorSigningKey,
@@ -361,6 +362,42 @@ function validateLiveAuthorizationRolloutConfig(
   }
 }
 
+/**
+ * #9700: INTERNAL_SERVICE_CIDRS grants the FORCE_HTTPS exemption to socket
+ * peers in range, so it must name a private network. A public or all-addresses
+ * range would hand the exemption to internet clients. Enforced in every
+ * environment: a bad value is a security bug wherever it runs.
+ */
+function validateInternalServiceExemption(
+  cidrsRaw: string | undefined,
+  hostsRaw: string | undefined,
+  ctx: z.RefinementCtx,
+): void {
+  const cidrs = (cidrsRaw ?? '').split(',').map((entry) => entry.trim()).filter(Boolean);
+  for (const entry of cidrs) {
+    if (!isPrivateServiceRange(entry)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['INTERNAL_SERVICE_CIDRS'],
+        message:
+          `INTERNAL_SERVICE_CIDRS entry ${entry} must be a valid IP or CIDR lying wholly inside a private network `
+          + '(e.g. the compose bridge subnet, BREEZE_DOCKER_SUBNET). Public, over-wide and all-address ranges are refused.',
+      });
+    }
+  }
+
+  const hosts = (hostsRaw ?? '').split(',').map((entry) => entry.trim()).filter(Boolean);
+  for (const entry of hosts) {
+    if (!normalizeInternalApiHost(entry)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['INTERNAL_API_HOSTS'],
+        message: `INTERNAL_API_HOSTS entry ${entry} must be a bare host[:port], e.g. api:3001.`,
+      });
+    }
+  }
+}
+
 function validateTrustedProxyCidrsForProduction(value: string | undefined, ctx: z.RefinementCtx): void {
   const entries = (value ?? '')
     .split(',')
@@ -589,6 +626,11 @@ const envObjectSchema = z
     // trust is on and this is off (SR2-16).
     TRUST_CF_CONNECTING_IP: z.string().optional(),
     TRUSTED_PROXY_CIDRS: z.string().optional(),
+    // #9700: socket-peer range of in-cluster callers (portal/web SSR) whose
+    // plain-HTTP hop to INTERNAL_API_HOSTS is exempt from FORCE_HTTPS. Empty
+    // disables the exemption. Validated in the superRefine below.
+    INTERNAL_SERVICE_CIDRS: z.string().optional(),
+    INTERNAL_API_HOSTS: z.string().optional(),
     AGENT_ENROLLMENT_SECRET: z.string().optional(),
     ENROLLMENT_KEY_PEPPER: z.string().optional(),
     // Read at issuance through positiveIntEnv (services/installerBootstrapToken.ts),
@@ -599,6 +641,15 @@ const envObjectSchema = z
       .string()
       .optional()
       .describe('Lifetime (minutes) of a newly issued installer bootstrap token when none is chosen. Default 10080 (7 days); values above 43200 (30 days) are clamped.'),
+    // Ticket import byte bucket (#8313 W1): read per charge through
+    // positiveIntEnv (services/migrationWindowLimits.ts), which falls back to
+    // the default on anything but a plain positive integer. Declared so
+    // collectWarnings() reports such a value once at boot; not boot-refused,
+    // like the other knobs of its family.
+    TICKET_IMPORT_MAX_BYTES_PER_HOUR: z
+      .string()
+      .optional()
+      .describe('Attachment bytes one migration window may download and store per hour. A plain positive integer; default 2147483648 (2 GiB), never below 10485760 (one file).'),
     MFA_RECOVERY_CODE_PEPPER: z.string().optional(),
     BREEZE_BOOTSTRAP_ADMIN_EMAIL: z.string().optional(),
     BREEZE_BOOTSTRAP_ADMIN_PASSWORD: z.string().optional(),
@@ -1177,6 +1228,8 @@ const envSchema = envObjectSchema
   // --- Cross-field refinements (insecure defaults for required secrets) -------
   .superRefine((data, ctx) => {
     const isProduction = data.NODE_ENV === 'production';
+
+    validateInternalServiceExemption(data.INTERNAL_SERVICE_CIDRS, data.INTERNAL_API_HOSTS, ctx);
 
     if (
       isProduction
@@ -2363,7 +2416,7 @@ const envSchema = envObjectSchema
         code: z.ZodIssueCode.custom,
         path: ['FLOWS_ENABLED'],
         message:
-          'FLOWS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the Flows feature is dark).',
+          'FLOWS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to true (set false to keep Flows off).',
       });
     }
 
@@ -2975,6 +3028,20 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
           `installer bootstrap tokens are issued with a ${MAX_BOOTSTRAP_TOKEN_TTL_MINUTES}-minute lifetime.`,
       });
     }
+  }
+
+  // TICKET_IMPORT_MAX_BYTES_PER_HOUR (services/migrationWindowLimits.ts) is a
+  // plain positive integer number of bytes. positiveIntEnv falls back to the
+  // 2 GiB default on anything else (`2e9`, `2GiB`, `2_147_483_648`, `12abc`,
+  // `0`); say so once at boot, so the operator learns their value is ignored.
+  const importBytesRaw = (env.TICKET_IMPORT_MAX_BYTES_PER_HOUR ?? '').trim();
+  if (importBytesRaw !== '' && !(/^\d+$/.test(importBytesRaw) && Number.parseInt(importBytesRaw, 10) > 0)) {
+    warnings.push({
+      key: 'TICKET_IMPORT_MAX_BYTES_PER_HOUR',
+      message:
+        `"${importBytesRaw}" is not a plain positive integer number of bytes; ` +
+        'the default of 2147483648 (2 GiB) per window per hour applies.',
+    });
   }
 
   // Warn about optional secrets that look insecure

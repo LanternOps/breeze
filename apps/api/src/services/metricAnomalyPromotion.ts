@@ -254,6 +254,7 @@ export async function promoteMetricAnomalyToAlert(
   const [alert] = await db
     .insert(alerts)
     .values({
+      ownerKind: 'device',
       ruleId: null,
       deviceId: canonical.deviceId,
       orgId: canonical.orgId,

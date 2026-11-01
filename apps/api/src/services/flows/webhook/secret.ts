@@ -189,3 +189,37 @@ export async function createOrRotateWebhookSecret(auth: AuthContext, flowId: str
   }
   return { ok: true, secret, fingerprint, rotatedAt: rotatedAt.toISOString() };
 }
+
+/**
+ * W06 (#5221) Task B3 — carry a legacy Job's webhook secret onto its converted
+ * flow, inside the switch transaction (`tx`, the caller's; RLS decides which
+ * row the UPDATE can target). The sender keeps signing with the secret it has.
+ *
+ * `webhook_secret_rotated_at` and `updated_at` get the SAME instant, so
+ * versions.ts `webhookSecretSurvivesEnable` ("nothing written since the mint")
+ * holds for the publication the switch makes right after; any later write to
+ * the flow invalidates it as for a minted secret. The switch is the only
+ * caller: its authority (interactive user, MFA, partner-wide gate, the
+ * delegation ceiling) is checked before this runs. Never logs or returns the
+ * plaintext; the switch's audit carries the fingerprint.
+ */
+export async function setFlowWebhookSecretFromLegacy(
+  tx: typeof db,
+  flowId: string,
+  plaintext: string,
+): Promise<{ ok: true; fingerprint: string } | { ok: false }> {
+  if (!plaintext) return { ok: false };
+  const fingerprint = hmacFingerprint(plaintext);
+  const at = new Date();
+  const [updated] = await tx
+    .update(flows)
+    .set({
+      webhookSecretEncrypted: encryptFlowWebhookSecret(flowId, plaintext),
+      webhookSecretFingerprint: fingerprint,
+      webhookSecretRotatedAt: at,
+      updatedAt: at,
+    })
+    .where(eq(flows.id, flowId))
+    .returning({ id: flows.id });
+  return updated ? { ok: true, fingerprint } : { ok: false };
+}

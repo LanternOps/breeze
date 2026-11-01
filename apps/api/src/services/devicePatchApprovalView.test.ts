@@ -18,7 +18,7 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   devicePatches: {
     id: 'id', patchId: 'patchId', deviceId: 'deviceId', orgId: 'orgId', status: 'status',
-    createdAt: 'createdAt', availableVersion: 'availableVersion',
+    createdAt: 'createdAt', availableVersion: 'availableVersion', scope: 'scope',
   },
   patches: {
     id: 'id', externalId: 'externalId', title: 'title', category: 'category',
@@ -26,7 +26,7 @@ vi.mock('../db/schema', () => ({
     source: 'source', packageId: 'packageId', version: 'version', supersededBy: 'supersededBy',
   },
   patchApprovals: { patchId: 'patchId', status: 'status', ringId: 'ringId', partnerId: 'partnerId' },
-  patchPolicies: { id: 'id', kind: 'kind', deferralDays: 'deferralDays', partnerId: 'partnerId' },
+  patchPolicies: { id: 'id', kind: 'kind', deferralDays: 'deferralDays', partnerId: 'partnerId', enabled: 'enabled' },
   organizations: { id: 'id', partnerId: 'partnerId' },
   devices: { id: 'id', orgId: 'orgId' },
   OUTSTANDING_DEVICE_PATCH_STATUSES: ['pending'],
@@ -81,8 +81,8 @@ function mockRingPolicy(ringAutoApprove: Record<string, unknown>, ringDeferralDa
       categoryRules: [], categories: [], excludeCategories: [], autoApprove: ringAutoApprove,
     },
   } as never);
-  // ring row (deferral + partner), then the evaluator's three reads.
-  vi.mocked(db.select).mockReturnValueOnce(chain('limit', [{ deferralDays: ringDeferralDays, partnerId: ringPartnerId }]) as never);
+  // ring row (deferral + partner + enabled; a disabled ring fails closed, #8909), then the evaluator's three reads.
+  vi.mocked(db.select).mockReturnValueOnce(chain('limit', [{ deferralDays: ringDeferralDays, partnerId: ringPartnerId, enabled: true }]) as never);
 }
 
 function mockEvaluatorReads(pending: unknown[], approvals: unknown[] = []) {
@@ -151,6 +151,15 @@ describe('loadDevicePatchApprovalView (#7625)', () => {
     const view = await loadDevicePatchApprovalView(DEV, ORG);
 
     expect(view.byPatchId.get(P1)).toEqual({ state: 'excluded', reason: 'blocked_by_feature_update_policy', holdUntil: null });
+  });
+
+  it('shows a per-user install the ring would auto-approve as excluded (unsupported_user_scope, #10249)', async () => {
+    mockRingPolicy({ enabled: true, severities: ['critical'], deferralDays: 0 });
+    mockEvaluatorReads([row({ patchId: P1, source: 'third_party', packageId: 'Zoom.Zoom', scope: 'user' })], []);
+
+    const view = await loadDevicePatchApprovalView(DEV, ORG);
+
+    expect(view.byPatchId.get(P1)).toEqual({ state: 'excluded', reason: 'unsupported_user_scope', holdUntil: null });
   });
 
   it('with no patch policy, nothing auto-approves and the ring is null', async () => {

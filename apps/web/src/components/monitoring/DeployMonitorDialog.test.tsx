@@ -103,4 +103,50 @@ describe('DeployMonitorDialog (#5289)', () => {
     const body = JSON.parse((call![1] as RequestInit).body as string);
     expect(body.createPolicyFor.targetId).toBe('org-store-1');
   });
+  it('loads both ownership scopes for a partner-wide monitor and preserves both optgroups', async () => {
+    fetchMock.mockImplementation(async (url) => json({ data: url.startsWith('/groups') ? [
+      { id: 'partner-g', name: 'All servers', ownerScope: 'partner' },
+      { id: 'org-g', name: 'Office servers', ownerScope: 'organization' },
+    ] : [] }));
+    render(<DeployMonitorDialog monitorId="m1" orgId={null} open onClose={vi.fn()} onDeployed={vi.fn()} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/groups?ownerScope=all'));
+    fireEvent.click(screen.getByTestId('deploy-monitor-mode-new'));
+    fireEvent.change(screen.getByTestId('deploy-monitor-level-select'), { target: { value: 'device_group' } });
+    expect(await screen.findByRole('group', { name: 'All orgs (partner-wide)' })).toHaveTextContent('All servers');
+    expect(screen.getByRole('group', { name: 'Organization groups' })).toHaveTextContent('Office servers');
+  });
+
+  it.each(['response', 'network'] as const)('shows an inline groups error for a %s failure', async (failure) => {
+    fetchMock.mockImplementation(async (url) => {
+      if (url.startsWith('/groups')) {
+        if (failure === 'network') throw new Error('Network unavailable');
+        return json({}, false, 502);
+      }
+      return json({ data: [] });
+    });
+    render(<DeployMonitorDialog monitorId="m1" open onClose={vi.fn()} onDeployed={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('deploy-monitor-mode-new'));
+    fireEvent.change(screen.getByTestId('deploy-monitor-level-select'), { target: { value: 'device_group' } });
+    expect(await screen.findByTestId('deploy-monitor-groups-error')).toHaveTextContent("Couldn't load device groups.");
+    expect(screen.getByTestId('deploy-monitor-groups-error')).toHaveClass('text-destructive');
+    fireEvent.change(screen.getByTestId('deploy-monitor-level-select'), { target: { value: 'site' } });
+    expect(screen.queryByTestId('deploy-monitor-groups-error')).not.toBeInTheDocument();
+  });
+
+  it('keeps an empty successful groups response free of errors', async () => {
+    fetchMock.mockResolvedValue(json({ data: [] }));
+    render(<DeployMonitorDialog monitorId="m1" open onClose={vi.fn()} onDeployed={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('deploy-monitor-mode-new'));
+    fireEvent.change(screen.getByTestId('deploy-monitor-level-select'), { target: { value: 'device_group' } });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/groups?ownerScope=all'));
+    expect(screen.queryByTestId('deploy-monitor-groups-error')).not.toBeInTheDocument();
+    expect(screen.getByTestId('deploy-monitor-target-select').children).toHaveLength(1);
+  });
+
+  it('keeps the plain groups endpoint for an org-owned monitor', async () => {
+    render(<DeployMonitorDialog monitorId="m1" orgId="org1" open onClose={vi.fn()} onDeployed={vi.fn()} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/groups'));
+    expect(fetchMock).not.toHaveBeenCalledWith('/groups?ownerScope=all');
+  });
+
 });

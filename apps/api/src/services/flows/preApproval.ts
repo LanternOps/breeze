@@ -22,7 +22,7 @@
  */
 import { createHash } from 'crypto';
 import { FLEET_MAX_TARGETS, type FlowDocumentV1, type PreApprovalEligibility } from '@breeze/shared';
-import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext, type Database } from '../../db';
 import { canonicalizeArguments } from '../actionIntents/canonicalize';
 import {
   buildRunScriptSnapshot,
@@ -32,7 +32,7 @@ import {
 import { containsTemplate, type FlowStepPin } from '../flowValidator';
 import { loadTenantVariableScope } from '../tenantVariableResolution';
 import type { ToolOwnerRef } from '../toolSources/resolver';
-import { findOwnedScriptIds } from './ownedReferences';
+import { findOwnedScriptIds, type ScriptReadExecutor } from './ownedReferences';
 import { FLEET_TOOL, type FleetBindingV1 } from './fleetBindingSchema';
 import { loadDynamicGroupDefinitions } from './fleetGroups';
 import {
@@ -168,20 +168,27 @@ function inSystemContext<T>(fn: () => Promise<T>, label: string): Promise<T> {
 export async function scriptPreApprovalMaterial(
   scriptId: string,
   stepInput: Record<string, unknown>,
+  opts: { executor?: ScriptReadExecutor } = {},
 ): Promise<ScriptPreApprovalMaterial | null> {
-  const snapshot = await deviceLessSnapshot(scriptId);
+  const snapshot = await deviceLessSnapshot(scriptId, opts.executor);
   return snapshot ? preApprovalMaterialFromSnapshot(snapshot, stepInput) : null;
 }
 
-/** The script's snapshot against one placeholder device (see above); null when the script is gone. */
-async function deviceLessSnapshot(scriptId: string): Promise<RunScriptSnapshot | null> {
-  const built = await inSystemContext(
-    () => buildRunScriptSnapshot({ scriptId, deviceIds: [PLACEHOLDER_DEVICE_ID] }, db, {
-      loadScope: (orgIds, database) => loadTenantVariableScope(orgIds, { database }),
-      loadDeviceOrgs: async (deviceIds) => deviceIds.map((id) => ({ id, orgId: PLACEHOLDER_DEVICE_ORG_ID })),
-    }),
-    'flows.scriptPreApprovalMaterial',
-  );
+/**
+ * The script's snapshot against one placeholder device (see above); null when
+ * the script is gone. W06 B3: with an executor (the conversion switch's own
+ * transaction) the snapshot is read there instead of in system context — the
+ * same reads, so the same material; the run path recomputes it in system
+ * context and compares (fleetStep.ts).
+ */
+async function deviceLessSnapshot(scriptId: string, executor?: ScriptReadExecutor): Promise<RunScriptSnapshot | null> {
+  const build = (database: Database) => buildRunScriptSnapshot({ scriptId, deviceIds: [PLACEHOLDER_DEVICE_ID] }, database, {
+    loadScope: (orgIds, scopeDatabase) => loadTenantVariableScope(orgIds, { database: scopeDatabase }),
+    loadDeviceOrgs: async (deviceIds) => deviceIds.map((id) => ({ id, orgId: PLACEHOLDER_DEVICE_ORG_ID })),
+  });
+  const built = executor
+    ? await build(executor as Database)
+    : await inSystemContext(() => build(db), 'flows.scriptPreApprovalMaterial');
   return built.kind === 'snapshot' ? built.snapshot : null;
 }
 
@@ -190,6 +197,12 @@ export interface PreApprovalAssessOptions {
   publicationId?: string;
   /** W6: the user-confirmed `maxTargets` of each requested fleet step. */
   fleetMaxTargets?: Record<string, number>;
+  /**
+   * W6 B3, the conversion switch only: read script ownership and the script
+   * snapshot through this executor (the switch's transaction, which holds the
+   * scripts it generated). Absent, both reads are exactly as before.
+   */
+  scriptReadExecutor?: ScriptReadExecutor;
 }
 
 export interface PreApprovalAssessment {
@@ -245,13 +258,19 @@ export async function assessPreApprovals(
   }
   if (candidates.length === 0) return { eligibility, bindings };
 
-  const owned = await findOwnedScriptIds(owner, candidates.map((c) => c.scriptId));
+  const executor = opts.scriptReadExecutor;
+  const candidateIds = candidates.map((c) => c.scriptId);
+  const owned = executor
+    ? await findOwnedScriptIds(owner, candidateIds, { executor })
+    : await findOwnedScriptIds(owner, candidateIds);
   for (const { step, scriptId } of candidates) {
     if (!owned.has(scriptId)) {
       eligibility[step.id] = ineligible('script_not_found');
       continue;
     }
-    const material = await scriptPreApprovalMaterial(scriptId, step.input);
+    const material = executor
+      ? await scriptPreApprovalMaterial(scriptId, step.input, { executor })
+      : await scriptPreApprovalMaterial(scriptId, step.input);
     if (!material) {
       eligibility[step.id] = ineligible('script_not_found');
       continue;
@@ -284,9 +303,10 @@ async function assessFleetStep(
   const staticCheck = fleetPreApprovalEligibility(step, pin, eligibleEarlier);
   if (!staticCheck.eligible) return { eligibility: staticCheck };
   const scriptId = step.input.scriptId as string;
-  const owned = await findOwnedScriptIds(owner, [scriptId]);
+  const executor = opts.scriptReadExecutor;
+  const owned = executor ? await findOwnedScriptIds(owner, [scriptId], { executor }) : await findOwnedScriptIds(owner, [scriptId]);
   if (!owned.has(scriptId)) return { eligibility: ineligible('script_not_found') };
-  const snapshot = await deviceLessSnapshot(scriptId);
+  const snapshot = await deviceLessSnapshot(scriptId, executor);
   if (!snapshot) return { eligibility: ineligible('script_not_found') };
   const material = fleetScriptMaterialFromSnapshot(snapshot, step.input);
   if (material.effectiveRunAs === 'elevated') return { eligibility: ineligible('run_as_elevated') };

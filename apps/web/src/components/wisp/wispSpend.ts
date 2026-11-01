@@ -31,3 +31,36 @@ export function canPause(status: WispGrantStatus): boolean {
 export function canResume(status: WispGrantStatus, pausedReason: string | null | undefined): boolean {
   return status === 'paused' && pausedReason === 'user_paused';
 }
+
+/**
+ * The system pause reasons the header can name (API `SYSTEM_PAUSE_REASONS`,
+ * less `partner_disabled`, which has its own line). Anything else the server
+ * sends reads as `unknown` — "Paused by Breeze" — rather than nothing (#10106).
+ */
+const SYSTEM_PAUSE_KINDS = {
+  budget_exhausted: 'budget_exhausted',
+  grantor_access_lost: 'grantor_access_lost',
+  grantor_suspended: 'grantor_suspended',
+  factor_expired: 'factor_expired',
+  entitlement_lost: 'entitlement_lost',
+} as const;
+
+export type SystemPauseKind = (typeof SYSTEM_PAUSE_KINDS)[keyof typeof SYSTEM_PAUSE_KINDS] | 'unknown';
+
+/**
+ * Which reason line a system-paused grant shows. Null when there is no system
+ * reason to name: not paused, a user pause, a partner switch (own line), or a
+ * reason still being looked up (`undefined`).
+ */
+export function systemPauseKind(status: WispGrantStatus, pausedReason: string | null | undefined): SystemPauseKind | null {
+  if (status !== 'paused' || pausedReason === undefined) return null;
+  if (pausedReason === 'user_paused' || pausedReason === 'partner_disabled') return null;
+  return pausedReason !== null && Object.hasOwn(SYSTEM_PAUSE_KINDS, pausedReason)
+    ? SYSTEM_PAUSE_KINDS[pausedReason as keyof typeof SYSTEM_PAUSE_KINDS]
+    : 'unknown';
+}
+
+/** The day's budget already sits at the plan's ceiling, so raising it cannot help. Unknown ceiling → false. */
+export function atBudgetCeiling(budgetCents: number, budgetMax: number | null | undefined): boolean {
+  return typeof budgetMax === 'number' && budgetCents >= budgetMax;
+}

@@ -354,7 +354,7 @@
     "currentSite": "Current site",
     "newSite": "New site",
     "loadingSites": "Loading sites...",
-    "thisOrganizationOnlyHasOneSite": "This organization only has one site. Add more sites from Settings → Organizations to enable moves.",
+    "thisOrganizationOnlyHasOneSite": "This organization only has one site. Add more on the organization's Sites tab (Organizations → open the organization → Sites) to enable moves.",
     "current": "(current)",
     "cancel": "Cancel",
     "moving": "Moving...",
@@ -376,21 +376,6 @@
     "moveDevices_other": "Move {{count}} devices",
     "bulkPolicyNote": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to these devices. Breeze will not move them back automatically.",
     "failedToMoveDevices": "Couldn't move the devices. Try again."
-  },
-  "createGroupModal": {
-    "failedToCreateGroup": "Failed to create group",
-    "newDeviceGroup": "New Device Group",
-    "name": "Name",
-    "eGProductionServers": "e.g. Production Servers",
-    "type": "Type",
-    "static": "Static",
-    "dynamic": "Dynamic",
-    "manuallyAddAndRemoveDevicesAfter": "Manually add and remove devices after creation.",
-    "devicesAreAutoAssignedBasedOn": "Devices are auto-assigned based on filter rules.",
-    "filterRules": "Filter Rules",
-    "cancel": "Cancel",
-    "creating": "Creating...",
-    "createGroup": "Create Group"
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} removed hidden",
@@ -1361,7 +1346,14 @@
     "assignAPolicyTo": "Assign a policy to",
     "policy2": "Policy",
     "selectAPolicy": "Select a policy",
-    "applying": "Applying..."
+    "applying": "Applying...",
+    "ownerFilterAll": "All groups",
+    "ownerFilterOrganization": "Organization groups",
+    "ownerFilterPartner": "All orgs",
+    "noGroupsMatchFilter": "No groups match this filter.",
+    "managedByPartner": "Managed by your service provider. Membership rules are not shown; you see the devices from your organization.",
+    "partnerDynamicType": "Dynamic · All orgs",
+    "partnerDeleteWarning": "This removes the group from every organization and deletes its policy assignments."
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Failed to fetch hardware inventory",
@@ -2067,11 +2059,14 @@
     "loading": "Loading patch status...",
     "notDownloadedTitle": "Not yet downloaded -- install will take longer",
     "notices": {
+      "installCommandEnded": "The install command ended ({{status}}) before the device reported a result. Check the device's command history for details.",
+      "installFinishedWithIssues": "Install finished: {{installed}} installed, {{failed}} failed, {{awaitingRestart}} awaiting a restart, {{unresolved}} not yet confirmed. Check the patch rows for details.",
       "installLongerThanExpected": "Install is taking longer than expected. macOS updates can take 30+ minutes. Refresh the page later to check status.",
       "installPatchFailed": "Failed to install {{name}}",
       "installPatchQueued": "Install queued for \"{{name}}\"",
       "installPatchQueuedDetail": "Install queued for \"{{name}}\"{{dispatchSuffix}}.",
       "installQueuedForPatches": "{{label}} queued for {{count}} patches{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "Could not check the install status: the patch list failed to load. Refresh the page to see the latest status.",
       "installedSuccessfully": "{{installed}} patch(es) installed successfully. {{pending}} still pending.",
       "installingPolling": "Installing patches... Polling for updates.",
       "noPendingForLabel": "No pending patches available for {{label}}.",
@@ -2117,6 +2112,7 @@
       "excludedCategoryTitle": "Update ring {{ring}} excludes this patch's category, so scheduled patch runs skip it.",
       "excludedAppRuleTitle": "An app block or pin rule on the linked Update Ring holds this patch, so scheduled patch runs skip it.",
       "excludedRingReferenceTitle": "Held back: this device's patch policy links an update ring that no longer exists or is not available to this partner. Fix the policy's update ring to resume patching.",
+      "excludedUserScopeTitle": "Not installable: this is a per-user install that Breeze cannot apply yet, so no patch run will install it.",
       "excludedFeatureUpdateTitle": "Update ring {{ring}} blocks this Windows feature release (or pins devices to a different one), so scheduled patch runs skip it.",
       "excludedDeclinedTitle": "Declined: this patch was explicitly declined, so ring auto-approval will not install it. Approve it again to allow it.",
       "pending": "Pending Approval",
@@ -2395,7 +2391,9 @@
       "completed": "Completed",
       "failed": "Failed",
       "queued": "Queued",
-      "running": "Running"
+      "running": "Running",
+      "cancelled": "Cancelled",
+      "expired": "Expired"
     },
     "scanType": "{{type}} scan",
     "scanTypes": {
@@ -2417,7 +2415,13 @@
       "quarantined": "Quarantined",
       "removed": "Removed"
     },
-    "threatsFound": "Threats found: {{count}}"
+    "threatsFound": "Threats found: {{count}}",
+    "waitingForSlot": "Waiting for a free scan slot. Expires {{date}}.",
+    "cancelScan": "Cancel scan",
+    "scanCancelled": "Scan cancelled",
+    "cancelScanFailed": "Could not cancel the scan",
+    "scanAlreadyRunning": "The scan is already running on the device and cannot be cancelled.",
+    "scanAlreadyQueued": "A scan is already queued for this device."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Add a tag...",
@@ -2608,9 +2612,18 @@
       "refreshFailed": "Warranty refresh failed: {{error}}",
       "refreshing": "Refreshing warranty…",
       "stillInProgress": "Warranty refresh is still in progress; the card will update when it completes.",
-      "updated": "Warranty information updated."
+      "updated": "Warranty information updated.",
+      "agentCollected": "This device's warranty is collected by the Breeze agent, so a vendor refresh can't add anything newer.",
+      "noVendorLookupKept": "No vendor warranty lookup is available for this manufacturer. The existing warranty data was kept."
     },
-    "lookUp": "Look up"
+    "lookUp": "Look up",
+    "sources": {
+      "agentCmsl": "Agent (HP CMSL)",
+      "agentPlist": "Agent (macOS plist)",
+      "import": "Imported",
+      "importVendorEarlier": "Imported (vendor reports earlier end date)",
+      "provider": "Vendor API"
+    }
   },
   "devicesPage": {
     "accessDenied": "You don't have permission to view devices.",
@@ -2750,6 +2763,10 @@
       "bulkMoveSiteSuccess_other": "{{count}} devices are now at {{site}}",
       "bulkMoveSiteSomeFailed": "Moved {{moved}} of {{total}} devices to {{site}}. Not moved: {{devices}}",
       "bulkMoveSiteAllFailed": "No devices were moved to {{site}}. Not moved: {{devices}}",
+      "bulkMoveSiteNotMovedConflict": "{{devices}} (its site changed after the list loaded; the list has been refreshed, so try again)",
+      "bulkMoveSiteNotMovedForbidden": "{{devices}} (you do not have access to its site or to the target site)",
+      "bulkMoveSiteNotMovedNotFound": "{{devices}} (no longer found; it may have been deleted)",
+      "bulkMoveSiteNotMovedError": "{{devices}} (an unexpected error occurred; try again)",
       "deviceMovedToSite": "{{hostname}} moved to a new site"
     },
     "tryAgain": "Try again",
@@ -2862,7 +2879,9 @@
       },
       "software": {
         "installed": "Has Software Installed",
-        "notInstalled": "Missing Software"
+        "notInstalled": "Missing Software",
+        "version": "Software Version",
+        "vendor": "Software Vendor"
       },
       "logShippingFailing": "Log Shipping Failing"
     }
@@ -2932,7 +2951,9 @@
       },
       "software": {
         "installed": "Has Software Installed",
-        "notInstalled": "Missing Software"
+        "notInstalled": "Missing Software",
+        "version": "Software Version",
+        "vendor": "Software Vendor"
       },
       "logShippingFailing": "Log Shipping Failing"
     }
@@ -2950,8 +2971,10 @@
     "title": "Filter shortcuts"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Pick a value to see matching devices",
     "counting": "…counting",
-    "matches": "~{{count}} devices match",
+    "matches_one": "~{{count}} device matches",
+    "matches_other": "~{{count}} devices match",
     "unavailable": "preview unavailable"
   },
   "filterSentenceBuilder": {
@@ -3019,7 +3042,9 @@
       },
       "software": {
         "installed": "Has Software Installed",
-        "notInstalled": "Missing Software"
+        "notInstalled": "Missing Software",
+        "version": "Software Version",
+        "vendor": "Software Vendor"
       },
       "logShippingFailing": "Log Shipping Failing"
     }
@@ -4304,6 +4329,7 @@
       "pending": "Not checked yet",
       "private": "Private registry — credentials required",
       "unsupported_registry": "Registry not supported",
+      "provenance_unknown": "Provenance unknown — the image name is not sent to any registry",
       "error": "Registry check failed — will retry",
       "behind": "A newer image is published for this tag",
       "current": "Matches the registry",
@@ -4666,5 +4692,28 @@
       "authorityDevice": "This asset is now linked to a managed device. Edit the placement on the device.",
       "mfaRequired": "Multi-factor authentication is required to change the physical placement."
     }
+  },
+  "partnerGroups": {
+    "ownerScope": "Group owner",
+    "organization": "This organization",
+    "partner": "All organizations",
+    "dynamicOnly": "partner-wide, dynamic only",
+    "scopeHint": "Membership is evaluated in every organization you manage; static membership, sites and group/organization filter conditions are not available.",
+    "allOrgs": "All orgs",
+    "pending": "Updating membership…",
+    "current": "Last evaluated {{time}}",
+    "notEvaluated": "Not evaluated yet",
+    "partial_one": "{{count}} org not evaluated · last good evaluation {{time}}",
+    "partial_other": "{{count}} orgs not evaluated · last good evaluation {{time}}",
+    "retryHint": "Breeze retries these organizations automatically. Saving the group's filter starts a new evaluation.",
+    "showMembers": "Show members",
+    "hideMembers": "Hide members",
+    "device": "Device",
+    "organizationColumn": "Organization",
+    "status": "Status",
+    "loading": "Loading members…",
+    "membersError": "Failed to load group members.",
+    "retry": "Retry",
+    "emptyMembers": "No devices in this group."
   }
 }

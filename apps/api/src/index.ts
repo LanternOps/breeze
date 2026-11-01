@@ -308,11 +308,9 @@ import {
 // role, so this file's own import closure no longer has to pull in the
 // entire worker-module graph. The handful of imports below are the
 // "phase 2 specials" that stay directly in index.ts (not registry entries):
-// the webhook-delivery singleton (`shutdownRuntime`'s preamble calls
-// `getWebhookWorker().stop()` before any other shutdown phase runs), and the
-// event-dispatch/relay consumers, which have their own role gating distinct
-// from the registry's placement filter.
-import { getWebhookWorker } from './workers/webhookDelivery';
+// the event-dispatch/relay consumers, which have their own role gating
+// distinct from the registry's placement filter. The registry closes the
+// webhook-delivery BullMQ worker during its shutdown phase.
 import {
   startRegisteredWorkers,
   startRedisIndependentWorkers,
@@ -321,6 +319,7 @@ import {
 import { registerAiAgentEnqueuer } from './jobs/aiAgentEnqueuer';
 import { backfillC2cConnectionSecrets } from './services/c2cSecrets';
 import { backfillDefaultPatchSchedules } from './jobs/patchScheduleBackfill';
+import { reconcileDecommissionedDynamicMemberships } from './jobs/decommissionedGroupMembershipReconcile';
 import { registerAllEventSubscribers } from './services/eventSubscribers';
 import { registerTopologyPhysicalAuthorities } from './services/topology/physicalAuthorities';
 import { initializeDeviceEventHandlers } from './events/deviceEvents';
@@ -538,7 +537,7 @@ const SECURE_HEADERS_OPTIONS = {
 // `Cross-Origin-Resource-Policy: cross-origin` (middleware/trustCrossOrigin.ts), so other origins can load them.
 // It must be chosen here, not in the handlers: secureHeaders writes its headers after next() and would
 // overwrite a handler's CORP.
-// #10192: the two token-gated public PDF routes the portal iframes (middleware/sameOriginFrame.ts) get
+// #10192/#10290: the PDF routes the portal iframes (middleware/sameOriginFrame.ts) get
 // X-Frame-Options: SAMEORIGIN here and CSP `frame-ancestors 'self'` from securityMiddleware below — chosen by
 // path for the same reason. Every other route keeps DENY / 'none'.
 app.use(
@@ -1474,7 +1473,6 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   shutdownInProgress = true;
   console.log(`[shutdown] Received ${signal}, shutting down gracefully...`);
 
-  getWebhookWorker().stop();
   // The sampler is already unref'd, so this is tidiness rather than a
   // requirement — it just stops starvation warnings from being emitted about a
   // process that is deliberately winding down and no longer serving traffic.
@@ -1944,6 +1942,21 @@ async function bootstrap(): Promise<void> {
   } catch (err) {
     console.error('[startup] Failed to backfill default patch schedules:', err);
   }
+
+  // #9933: devices removed before dynamic groups started excluding
+  // decommissioned devices kept their non-pinned dynamic rows. Enqueue the
+  // normal device.created re-evaluation for each; once the jobs run the query
+  // finds nothing, so this is a no-op on later boots. Not awaited: it only
+  // enqueues, and boot should not wait on Redis round-trips per device.
+  void reconcileDecommissionedDynamicMemberships()
+    .then((result) => {
+      if (result.scanned > 0) {
+        console.log(`[startup] Queued dynamic-group re-evaluation for ${result.enqueued} removed device(s) (${result.failed} failed)`);
+      }
+    })
+    .catch((err) => {
+      console.error('[startup] Failed to reconcile removed devices out of dynamic groups:', err);
+    });
 
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)
   //

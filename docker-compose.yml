@@ -125,6 +125,14 @@ x-api-env: &api-env
   # it — a CIDR that matches nothing simply means no headers are trusted.
   TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
   TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-${BREEZE_CADDY_IP:-172.31.0.10}/32}
+  # In-cluster callers (portal/web SSR -> http://api:3001) make a plain-HTTP
+  # hop that FORCE_HTTPS would otherwise reject (#9700). Only a request whose
+  # TCP peer is inside this range, is NOT the trusted proxy above, and names an
+  # INTERNAL_API_HOSTS host is exempt. Tracks BREEZE_DOCKER_SUBNET; the API
+  # publishes no host port, so nothing outside the network can source it.
+  # Set it to an empty value (not just unset) to turn the exemption off.
+  INTERNAL_SERVICE_CIDRS: ${INTERNAL_SERVICE_CIDRS-${BREEZE_DOCKER_SUBNET:-172.31.0.0/24}}
+  INTERNAL_API_HOSTS: ${INTERNAL_API_HOSTS:-api:3001}
   # Only trust CF-Connecting-IP when this deployment is genuinely fronted by
   # Cloudflare — a non-CF reverse proxy does not strip the header, so a
   # client could otherwise spoof it. Off by default; set true in .env only
@@ -413,7 +421,7 @@ x-api-env: &api-env
   # deployment (same trap as AI_OPERATOR_* above).
   TOOL_SOURCES_ENABLED: ${TOOL_SOURCES_ENABLED:-false}
   # Flows (#5218) kill switch; default off. Must be mapped here or the API never sees it.
-  FLOWS_ENABLED: ${FLOWS_ENABLED:-false}
+  FLOWS_ENABLED: ${FLOWS_ENABLED:-true}
   # Hours a parked Tier-3 flow step waits for approval (1-168).
   FLOW_APPROVAL_TTL_HOURS: ${FLOW_APPROVAL_TTL_HOURS:-24}
   # Flow runs per owner executing at once (1-500) and run-body retention days (7-3650).
@@ -521,6 +529,7 @@ x-api-env: &api-env
   MIGRATION_WINDOW_MAX_DAYS: ${MIGRATION_WINDOW_MAX_DAYS:-}
   MIGRATION_WINDOW_DEFAULT_WRITES_PER_HOUR: ${MIGRATION_WINDOW_DEFAULT_WRITES_PER_HOUR:-}
   MIGRATION_WINDOW_MAX_WRITES_PER_HOUR: ${MIGRATION_WINDOW_MAX_WRITES_PER_HOUR:-}
+  TICKET_IMPORT_MAX_BYTES_PER_HOUR: ${TICKET_IMPORT_MAX_BYTES_PER_HOUR:-}
   PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT: ${PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT:-}
   AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET: ${AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET:-}
   # Offline work queue (#5128). TTL vars are per delivery class, in hours;

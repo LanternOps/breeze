@@ -38,8 +38,8 @@
     "title": "Proposte di script",
     "proposalsPerDay": "Proposte al giorno",
     "reviewerDisagreements": "Disaccordi del revisore",
-    "humanRejectedAfterApprove": "Rifiuto umano dopo approvazione dell'IA",
-    "humanApprovedAfterReject": "Approvazione umana dopo rifiuto dell'IA",
+    "humanRejectedAfterApprove": "Negato da una persona, l'IA consigliava di approvare",
+    "humanApprovedAfterReject": "Approvato da una persona, l'IA consigliava di rifiutare",
     "unattendedRuns": "Esecuzioni non presidiate",
     "laneState": "Corsia non presidiata",
     "laneOpen": "Aperta (sospesa dopo verifiche fallite ripetute)",
@@ -54,7 +54,15 @@
     "exec": "Exec: {{duration}}ms",
     "noTier3ToolExecutionsFound": "Nessuna esecuzione di strumenti Tier 3 trovata.",
     "pending": "In sospeso",
-    "rejected": "Rifiutato",
+    "rejected": "Negato",
+    "status": {
+      "pending": "In sospeso",
+      "approved": "Approvato",
+      "executing": "In esecuzione",
+      "completed": "Completato",
+      "failed": "Non riuscito",
+      "rejected": "Negato"
+    },
     "session": "Sessione: {{sessionId}}",
     "tier3ApprovalHistory": "Cronologia approvazioni Tier 3",
     "toolInput": "Input strumento",
@@ -89,12 +97,12 @@
   },
   "aiRiskRejectionDenialLog": {
     "all2": "Tutto",
-    "denied": "Negato",
+    "denied": "Bloccato",
     "error": "Errore",
     "failed": "Fallito",
-    "noRejectionsOrDenialsFound": "Nessun rifiuto o diniego trovato.",
-    "rejected": "Rifiutato",
-    "rejectionsAndDenials": "Rifiuti e dinieghi",
+    "noRejectionsOrDenialsFound": "Nessuna azione negata, bloccata o non riuscita trovata.",
+    "rejected": "Negato",
+    "rejectionsAndDenials": "Negati e bloccati",
     "search": "Cerca...",
     "session": "Sessione",
     "status": "Stato",
@@ -775,7 +783,6 @@
     "threatStatus": "Stato minaccia",
     "threatWasMovedToQuarantineByPolicy": "La minaccia è stata spostata in quarantena da un criterio o da un operatore.",
     "timeline": "Timeline",
-    "actionFailed": "Azione non riuscita",
     "quarantineSucceeded": "Minaccia messa in quarantena",
     "restoreSucceeded": "Minaccia ripristinata",
     "removeSucceeded": "Minaccia rimossa",
@@ -959,6 +966,19 @@
     "severityFilterLabel": "Gravità",
     "statusFilterLabel": "Stato della minaccia",
     "categoryFilterLabel": "Categoria"
+  },
+  "pamEnforcement": {
+    "declineRecordUntrusted": "Rifiutata: registro della decisione del dispositivo non disponibile",
+    "userDeclined": "Rifiutata sul dispositivo",
+    "userDecisionPending": "Nessuna risposta sul dispositivo"
+  },
+  "pamRespond": {
+    "withdrawnConflict": "L'utente ha ritirato questa richiesta sul dispositivo."
+  },
+  "pamWithdrawReason": {
+    "dialog_error": "Finestra di dialogo non riuscita sul dispositivo",
+    "user_denied": "Rifiutata dall'utente",
+    "user_timeout": "Nessuna risposta sul dispositivo"
   },
   "pamPamAuditTab": {
     "errors": {
@@ -1727,13 +1747,18 @@
       "totalQueries": "Query totali",
       "blocked": "Bloccate",
       "allowed": "Consentite",
-      "redirected": "Reindirizzate"
+      "redirected": "Reindirizzate",
+      "notStored": "Non archiviato"
     },
     "topBlocked": {
       "title": "Domini bloccati principali",
       "empty": "Nessun dominio bloccato nella finestra attuale."
     },
-    "loading": "Caricamento…"
+    "loading": "Caricamento…",
+    "allowedTraffic": {
+      "none": "Le query consentite non vengono archiviate per queste integrazioni, quindi vengono conteggiate solo le query bloccate e reindirizzate. Per conteggiarle, attiva \"Archivia il traffico consentito\" nelle impostazioni dei dati archiviati di un'integrazione.",
+      "some": "Le query consentite vengono archiviate solo per alcune integrazioni, quindi il conteggio delle consentite è parziale."
+    }
   },
   "dnsSecurityDnsSecurityIntegrationsTab": {
     "title": "Integrazioni configurate",
@@ -1750,7 +1775,7 @@
       "addIntegration": "Aggiungi integrazione",
       "syncNow": "Sincronizza ora",
       "deleteIntegration": "Elimina integrazione",
-      "editRetention": "Modifica periodo di conservazione"
+      "editRetention": "Dati archiviati"
     },
     "messages": {
       "loadHttpError": "Impossibile caricare le integrazioni (HTTP {{status}})",
@@ -1759,7 +1784,8 @@
       "syncQueued": "Sincronizzazione accodata per {{name}}",
       "deleteConfirm": "Eliminare {{name}}? Criteri, eventi e statistiche vengono rimossi in background.",
       "deleteFailed": "Impossibile eliminare {{name}}",
-      "deleteSuccess": "Eliminazione di {{name}} in background"
+      "deleteSuccess": "Eliminazione di {{name}} in background",
+      "deleteComplete": "Eliminazione di {{name}} completata"
     },
     "loading": "Caricamento integrazioni…",
     "empty": {
@@ -1775,12 +1801,13 @@
     },
     "lastSyncFailedSuffix": " — fallita",
     "lastSyncPartialSuffix": " — in recupero",
+    "lastSyncTruncatedSuffix": " — alcuni eventi non recuperati",
     "never": "Mai",
     "deletingInBackground": "Eliminazione in corso…"
   },
   "dnsSecurityEditDnsRetentionModal": {
-    "title": "Conservazione dei dati",
-    "description": "Gli eventi e le statistiche giornaliere più vecchi vengono eliminati dalla pulizia notturna.",
+    "title": "Dati archiviati",
+    "description": "Scegli quali query DNS Breeze archivia per questa integrazione e per quanto tempo le conserva.",
     "fieldLabel": "Conserva eventi e statistiche DNS per (giorni)",
     "fieldHelp": "Da 1 a 365 giorni. Lascia vuoto per usare il valore predefinito dell’installazione (90 giorni, salvo modifiche dell’amministratore).",
     "invalid": "Inserisci un numero intero di giorni da 1 a 365 oppure lascia il campo vuoto.",
@@ -1790,8 +1817,13 @@
       "saving": "Salvataggio…"
     },
     "messages": {
-      "saved": "Conservazione aggiornata per {{name}}",
-      "saveFailed": "Impossibile aggiornare la conservazione per {{name}}"
+      "saved": "Impostazioni dei dati archiviati aggiornate per {{name}}",
+      "saveFailed": "Impossibile aggiornare le impostazioni dei dati archiviati per {{name}}"
+    },
+    "storeAllowedTraffic": {
+      "label": "Archivia il traffico consentito",
+      "helpOff": "Vengono archiviate solo le query bloccate e reindirizzate. Le query consentite sono di solito quasi tutto il traffico e il tuo provider DNS le conserva nei propri report.",
+      "helpOn": "Vengono archiviate anche le query consentite, di solito circa 100 volte più righe. Disattivare l'opzione in seguito non elimina le query consentite già archiviate; le rimuove la conservazione."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
@@ -2019,19 +2051,17 @@
       "statusFilterLabel": "Stato"
     },
     "status": {
-      "pendingApproval": "Approvazione in sospeso",
-      "pending_approval": "approvazione in sospeso",
-      "queued": "in coda",
-      "inProgress": "In corso",
-      "in_progress": "in corso",
-      "completed": "completata",
-      "failed": "fallita",
-      "cancelled": "annullata"
+      "pending_approval": "Approvazione in sospeso",
+      "queued": "In coda",
+      "in_progress": "In corso",
+      "completed": "Completata",
+      "failed": "Non riuscita",
+      "cancelled": "Annullata"
     },
     "approval": {
-      "pending": "in sospeso",
-      "approved": "approvata",
-      "rejected": "rifiutata"
+      "pending": "In sospeso",
+      "approved": "Approvata",
+      "rejected": "Rifiutata"
     },
     "actions": {
       "apply": "applica",
@@ -2399,7 +2429,18 @@
     "sweepNowUnpublished": "Pubblica questo set di regole prima di usarlo in una scansione di massa.",
     "sweepNowDisabled": "Abilita questo set di regole prima di usarlo in una scansione di massa.",
     "progress": {
-      "label": "{{done}} dispositivi su {{total}} completati"
+      "finished_one": "{{finished}} di {{count}} dispositivo terminato",
+      "finished_other": "{{finished}} di {{count}} dispositivi terminati",
+      "completed_one": "{{count}} completato",
+      "completed_other": "{{count}} completati",
+      "timedOut_one": "{{count}} in timeout",
+      "timedOut_other": "{{count}} in timeout",
+      "failed_one": "{{count}} non riuscito",
+      "failed_other": "{{count}} non riusciti",
+      "cancelled_one": "{{count}} annullato",
+      "cancelled_other": "{{count}} annullati",
+      "expired_one": "{{count}} scaduto",
+      "expired_other": "{{count}} scaduti"
     },
     "errors": {
       "orgOutOfScope": "Una o più organizzazioni sono fuori dal tuo accesso.",
@@ -2416,9 +2457,12 @@
       "rateLimited": "Sono state avviate troppe scansioni di massa di recente. Riprova più tardi."
     },
     "skipReasons": {
-      "agent_too_old": "dispositivi con un agent troppo vecchio",
-      "busy_same_sweep": "dispositivi che eseguono già questa scansione",
-      "rule_set_not_eligible": "dispositivi a cui i set di regole non si applicano"
+      "agent_too_old_one": "{{count}} dispositivo con un agent troppo vecchio",
+      "agent_too_old_other": "{{count}} dispositivi con un agent troppo vecchio",
+      "busy_same_sweep_one": "{{count}} dispositivo che esegue già questa scansione",
+      "busy_same_sweep_other": "{{count}} dispositivi che eseguono già questa scansione",
+      "rule_set_not_eligible_one": "{{count}} dispositivo a cui i set di regole non si applicano",
+      "rule_set_not_eligible_other": "{{count}} dispositivi a cui i set di regole non si applicano"
     },
     "skipExplain": {
       "agent_too_old": "L'agent deve essere aggiornato prima di poter eseguire i set di regole YARA.",
@@ -2428,13 +2472,21 @@
     "dialog": {
       "title": "Cerca corrispondenze IOC sui dispositivi",
       "ruleSets": "Set di regole: {{names}}",
-      "rescopeNote": "Una scansione di massa non ricorda i suoi dispositivi. Scegli di nuovo l'ambito; set di regole e tipo di scansione vengono mantenuti.",
+      "rescopeNote": "Una scansione di massa non ricorda i suoi dispositivi. Scegli di nuovo l'ambito; set di regole, tipo di scansione e percorsi personalizzati vengono mantenuti.",
       "back": "Indietro",
       "next": "Avanti",
       "previewAction": "Anteprima",
-      "confirm": "Scansiona {{targeted}} dispositivi",
+      "confirm_one": "Scansiona {{count}} dispositivo",
+      "confirm_other": "Scansiona {{count}} dispositivi",
       "viewRunning": "Vedi la scansione in corso",
-      "confirmSummary": "{{targeted}} dispositivi in {{orgs}} organizzazioni verranno analizzati con le versioni dei set di regole mostrate nell'anteprima. Le corrispondenze vengono segnalate come minacce; sui dispositivi non viene modificato nulla.",
+      "confirmSummary_one": "{{devices}} in {{orgs}} verrà analizzato con le versioni dei set di regole mostrate nell'anteprima. Le corrispondenze vengono segnalate come minacce; sul dispositivo non viene modificato nulla.",
+      "confirmSummary_other": "{{devices}} in {{orgs}} verranno analizzati con le versioni dei set di regole mostrate nell'anteprima. Le corrispondenze vengono segnalate come minacce; sui dispositivi non viene modificato nulla.",
+      "counts": {
+        "devices_one": "{{count}} dispositivo",
+        "devices_other": "{{count}} dispositivi",
+        "orgs_one": "{{count}} organizzazione",
+        "orgs_other": "{{count}} organizzazioni"
+      },
       "steps": {
         "scope": "Ambito",
         "type": "Tipo di scansione",
@@ -2463,15 +2515,19 @@
         "full": "Completa",
         "custom": "Percorsi personalizzati",
         "paths": "Percorsi, uno per riga",
-        "pathsHelp": "Fino a {{max}} percorsi, di {{chars}} caratteri ciascuno."
+        "pathsHelp": "Fino a {{max}} percorsi, di {{chars}} caratteri ciascuno.",
+        "pathsCount": "{{paths}} di {{max}} percorsi",
+        "pathsTooMany": "{{paths}} di {{max}} percorsi: rimuovine {{remove}}.",
+        "pathTooLong": "La riga {{line}} supera i {{chars}} caratteri."
       },
       "duration": {
         "label": "Durata (ore)",
-        "help": "I dispositivi offline eseguono la scansione quando tornano entro questo tempo. Da 1 a {{max}} ore."
+        "help": "I dispositivi offline eseguono la scansione quando tornano entro questo tempo. Da 1 a {{max}} ore.",
+        "invalid": "Inserisci un numero intero di ore da 1 a {{max}}."
       },
       "preview": {
-        "targeted": "{{devices}} dispositivi in {{orgs}} organizzazioni",
-        "org": "{{org}}: {{devices}} dispositivi",
+        "targeted": "{{devices}} in {{orgs}}",
+        "org": "{{org}}: {{devices}}",
         "ruleSets": "Set di regole",
         "skipped": "Saltati",
         "scopeChanged": "I dispositivi o i set di regole sono cambiati dopo l'anteprima. Controlla i nuovi numeri, poi conferma di nuovo."
@@ -2487,6 +2543,7 @@
       "resweep": "Ripeti con le regole attuali",
       "rulesChanged": "Regole modificate dall'avvio di questa scansione",
       "queued": "In coda: {{queued}}",
+      "running": "In esecuzione: {{running}}",
       "columns": {
         "ruleSets": "Set di regole",
         "origin": "Avviata da",
@@ -2543,6 +2600,7 @@
       "builtin": "Integrato",
       "allOrgs": "Tutte le organizzazioni",
       "errors": "Con errori",
+      "checkerUnavailable": "Compilatore non disponibile",
       "unpublished": "Non pubblicato",
       "disabled": "Disattivato"
     },
@@ -2599,7 +2657,7 @@
       "autoQuarantineOnly": "La quarantena automatica ora è disattivata sui dispositivi. Le altre modifiche non sono ancora attive.",
       "published": "Salvato e pubblicato come versione {{version}}",
       "savedDisabled": "Salvato. Il set è disattivato, quindi i dispositivi non lo usano.",
-      "checkerUnavailable": "Salvato, non pubblicato: il controllo delle regole non è disponibile. {{devices}}",
+      "checkerUnavailable": "Salvato, non pubblicato: il compilatore YARA non è disponibile su questo server, quindi non è stato possibile controllare le regole. {{devices}}",
       "compileErrors_one": "Salvato, non pubblicato: {{count}} regola contiene errori. {{devices}}",
       "compileErrors_other": "Salvato, non pubblicato: {{count}} regole contengono errori. {{devices}}",
       "setErrors": "Salvato, non pubblicato: {{message}}. {{devices}}",
@@ -2608,7 +2666,8 @@
       "devicesKeep": "I dispositivi mantengono la versione {{version}}.",
       "neverPublished": "Questo set non è ancora stato pubblicato, quindi i dispositivi non lo usano.",
       "setDisabled": "Il set è disattivato, quindi i dispositivi non lo usano.",
-      "staleBanner": "Non pubblicato: correggi gli errori qui sotto. {{devices}}"
+      "staleBanner": "Non pubblicato: correggi gli errori qui sotto. {{devices}}",
+      "staleCheckerUnavailable": "Non pubblicato: il compilatore YARA non è disponibile su questo server, quindi le modifiche alle regole non possono essere controllate né pubblicate. {{devices}}"
     },
     "editor": {
       "tabs": {
@@ -2703,5 +2762,35 @@
   },
   "sensitiveDataAccess": {
     "noOrgAccess": "Non hai accesso a questa organizzazione"
+  },
+  "sensitiveDataLabels": {
+    "risk": {
+      "critical": "Critico",
+      "high": "Alto",
+      "medium": "Medio",
+      "low": "Basso"
+    },
+    "findingStatus": {
+      "open": "Aperto",
+      "remediated": "Corretto",
+      "accepted": "Accettato",
+      "falsePositive": "Falso positivo"
+    },
+    "scanStatus": {
+      "queued": "In coda",
+      "running": "In esecuzione",
+      "completed": "Completato",
+      "failed": "Non riuscito",
+      "cancelled": "Annullato"
+    },
+    "dataType": {
+      "credential": "Credenziali",
+      "financial": "Finanziari"
+    },
+    "a11y": {
+      "editPolicy": "Modifica criterio {{name}}",
+      "deletePolicy": "Elimina criterio {{name}}",
+      "togglePolicyActive": "Attivo: {{name}}"
+    }
   }
 }
