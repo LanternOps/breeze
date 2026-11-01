@@ -39,7 +39,7 @@ import {
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { CONTACT_ROLES } from './contacts/types';
 import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema } from '@breeze/shared';
-import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS, scriptVerificationClaimSchema } from '@breeze/shared/validators';
+import { scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listConcernsShape, listLinksShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas } from './aiToolSchemas';
@@ -2880,21 +2880,9 @@ export function buildBreezeSdkTools(
     tool(
       'system_cleanup',
       registryDescription('system_cleanup'),
-      {
-        deviceId: uuid,
-        action: z.enum(['list', 'run', 'status']),
-        actionIds: z
-          .array(z.enum(SYSTEM_CLEANUP_ACTION_IDS))
-          .min(1)
-          .optional(),
-        params: z
-          .object({
-            journalVacuumBytes: z.number().int().min(JOURNAL_VACUUM_MIN_BYTES).max(JOURNAL_VACUUM_MAX_BYTES).optional(),
-          })
-          .optional(),
-        cleanupRunId: uuid.optional(),
-        commandId: uuid.optional(),
-      },
+      // #10161: the validator's own shape, not a hand-written mirror — the
+      // mirror's action enum lagged the registry (no `cancel`).
+      inputShape('system_cleanup'),
       makeHandler('system_cleanup', getAuth, onPreToolUse, onPostToolUse)
     ),
 

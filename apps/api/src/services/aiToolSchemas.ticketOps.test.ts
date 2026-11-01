@@ -65,6 +65,24 @@ describe('W06 ticket-ops tool input schemas', () => {
     expect(validateToolInput('manage_time_suggestions', { action: 'list', date: '25/10/2026' }).success).toBe(false);
   });
 
+  // #10161: the SDK strips any key absent from the Zod shape and rejects any action absent from its enum,
+  // so a registry-only action or key is unreachable from chat even though MCP advertises it.
+  it('manage_tickets: Zod action enum and keys equal the registry definition (chat/MCP parity)', () => {
+    const schema = aiTools.get('manage_tickets')!.definition.input_schema as { properties: Record<string, { enum?: string[] }> };
+    const shape = (toolInputSchemas.manage_tickets as unknown as { shape: Record<string, unknown> }).shape;
+    expect(Object.keys(shape).sort()).toEqual(Object.keys(schema.properties).sort());
+    const zodActions = (shape.action as { options: string[] }).options;
+    expect([...zodActions].sort()).toEqual([...(schema.properties.action!.enum ?? [])].sort());
+  });
+
+  it('manage_tickets takes merge_preview / merge with intoTicketId and notifyRequester (#10161)', () => {
+    const OTHER = '22222222-2222-4222-8222-222222222222';
+    expect(validateToolInput('manage_tickets', { action: 'merge_preview', ticketId: UUID, intoTicketId: OTHER }).success).toBe(true);
+    expect(validateToolInput('manage_tickets', { action: 'merge', ticketId: UUID, intoTicketId: OTHER, notifyRequester: false }).success).toBe(true);
+    expect(validateToolInput('manage_tickets', { action: 'merge', ticketId: UUID, intoTicketId: 'not-a-uuid' }).success).toBe(false);
+    expect(validateToolInput('manage_tickets', { action: 'merge', ticketId: UUID, intoTicketId: OTHER, notifyRequester: 'yes' }).success).toBe(false);
+  });
+
   it('manage_tickets takes bulk_update with ticketIds (1-50) and a nullable assigneeId', () => {
     expect(validateToolInput('manage_tickets', { action: 'bulk_update', ticketIds: [UUID], assigneeId: null }).success).toBe(true);
     expect(validateToolInput('manage_tickets', { action: 'bulk_update', ticketIds: [] }).success).toBe(false);
