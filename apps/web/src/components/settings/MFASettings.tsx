@@ -1,13 +1,15 @@
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
-import type { ClipboardEvent, KeyboardEvent } from 'react';
+import type { ClipboardEvent, KeyboardEvent, ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { MfaMethod } from '../../stores/auth';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { Dialog } from '../shared/Dialog';
 
 const DIGIT_COUNT = 6;
 
 type MFASettingsProps = {
+  children?: ReactNode;
   enabled?: boolean;
   mfaMethod?: MfaMethod | null;
   /**
@@ -96,10 +98,12 @@ type MFAView =
   | 'disable'
   | 'recovery'
   | 'phone-verify'
-  | 'sms-setup';
+  | 'sms-setup'
+  | { kind: 'recovery-issued'; codes?: readonly string[] };
 
 export default function MFASettings({
   enabled = false,
+  children,
   mfaMethod,
   hasPassword,
   onSsoReauth,
@@ -129,12 +133,6 @@ export default function MFASettings({
   const [view, setView] = useState<MFAView>('status');
   const [digits, setDigits] = useState<string[]>(Array(DIGIT_COUNT).fill(''));
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [showCodes, setShowCodes] = useState(false);
-  // #4471: the codes are shown exactly once, so a copy has to say whether it worked.
-  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
-  // #5319: the manual-entry key has its own copy verdict — it is on screen at
-  // the same time as nothing else copyable, but the recovery-codes state lives
-  // in a different view and must not be reused across them.
   const [secretCopyState, setSecretCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
   // Authenticator apps accept the key unspaced; humans read it in groups of
   // four. Show the grouped form, copy the raw one.
@@ -152,7 +150,6 @@ export default function MFASettings({
   const [enrollCodeRejected, setEnrollCodeRejected] = useState(false);
   const [localError, setLocalError] = useState<string>();
   const [localSuccess, setLocalSuccess] = useState<string>();
-  const [smsRecoveryCodes, setSmsRecoveryCodes] = useState<string[]>();
   const [phoneInput, setPhoneInput] = useState('');
   const [phoneDigits, setPhoneDigits] = useState<string[]>(Array(DIGIT_COUNT).fill(''));
   const [phoneCodeSent, setPhoneCodeSent] = useState(false);
@@ -197,36 +194,11 @@ export default function MFASettings({
     if (ssoResumeView) setView(ssoResumeView);
   }, [ssoResumeView]);
 
-  // G4-14: registering the FIRST passkey (first-factor enrollment) is driven
-  // entirely from outside this component — ProfilePage's own passkey card —
-  // and the API hands back one-time recovery codes on that write exactly like
-  // /mfa/enable does. But this component only ever reveals codes through a
-  // `view` transition ITS OWN handlers drive (handleEnableSubmit,
-  // handleEnableSms, handleRegenerateCodes); nothing here ever heard about the
-  // passkey write, so the codes arrived in the `recoveryCodes` prop and were
-  // never shown — a lockout risk if the authenticator is later lost.
-  //
-  // Mirror the TOTP/SMS enable contract: the moment a NEW, non-empty
-  // `recoveryCodes` array shows up for a passkey-first-factor account while
-  // this panel is otherwise idle, show it once, the same way the codes are
-  // shown here everywhere else. Keyed on array identity (`recoveryCodesRef`)
-  // so navigating back to `status` afterwards — or a second passkey add that
-  // returns no codes — never re-triggers it.
-  const recoveryCodesRef = useRef(recoveryCodes);
+  const acknowledgedCodesRef = useRef(recoveryCodes);
   useEffect(() => {
-    if (
-      recoveryCodes?.length
-      && recoveryCodes !== recoveryCodesRef.current
-      && view === 'status'
-      && currentMethod === 'passkey'
-    ) {
-      setShowCodes(true);
-      setView('recovery');
-      // Advance the ref only when the codes were actually shown. Advancing it
-      // on every run would record codes that arrived while the guard failed
-      // (panel on another view, method not yet 'passkey') as "seen" and never
-      // render them — the same lockout this effect exists to prevent.
-      recoveryCodesRef.current = recoveryCodes;
+    if (recoveryCodes?.length && recoveryCodes !== acknowledgedCodesRef.current
+      && view === 'status' && currentMethod === 'passkey') {
+      setView({ kind: 'recovery-issued' });
     }
   }, [recoveryCodes, view, currentMethod]);
 
@@ -368,8 +340,7 @@ export default function MFASettings({
         // #4414: /auth/mfa/enable is the only moment the recovery codes exist
         // in plaintext. Show them once, here — the regenerate action is the
         // only other way to see any, and it destroys these.
-        setShowCodes(true);
-        setView('recovery');
+        setView({ kind: 'recovery-issued' });
       } else {
         // #4413: stay on the QR. Leaving this view discards a secret the server
         // will not re-issue, so a mistyped digit would cost a whole re-
@@ -423,15 +394,8 @@ export default function MFASettings({
     try {
       setIsSubmitting(true);
       setLocalError(undefined);
-      // #4414: only reveal on a confirmed success. The old unconditional
-      // `setShowCodes(true)` re-displayed the PREVIOUS set after a failed
-      // regeneration, which reads as "here are your new codes".
       if ((await onGenerateRecoveryCodes?.(recoveryPassword, recoveryFactorCode)) !== false) {
-        // `displayCodes` prefers `smsRecoveryCodes`, and a regeneration only
-        // refreshes the `recoveryCodes` PROP. Leaving the SMS set in place
-        // would keep rendering the codes this call just invalidated.
-        setSmsRecoveryCodes(undefined);
-        setShowCodes(true);
+        setView({ kind: 'recovery-issued' });
       }
     } catch {
       // Parent handler surfaces errors via the errorMessage prop.
@@ -442,23 +406,6 @@ export default function MFASettings({
       setRecoveryPassword('');
       setRecoveryFactorCode('');
       setConfirmRegenerateOpen(false);
-    }
-  };
-
-  const handleCopyRecoveryCodes = async () => {
-    const codes = smsRecoveryCodes || recoveryCodes;
-    if (!codes?.length) return;
-    // #4471: writeText rejects in insecure contexts, under a permissions
-    // policy, or outside a user gesture on some browsers — and this is the
-    // only screen that will ever show these codes, so a silent miss here
-    // costs the user their recovery path.
-    try {
-      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
-      await navigator.clipboard.writeText(codes.join('\n'));
-      setCopyState('copied');
-      window.setTimeout(() => setCopyState((s) => (s === 'copied' ? 'idle' : s)), 2000);
-    } catch {
-      setCopyState('failed');
     }
   };
 
@@ -519,10 +466,8 @@ export default function MFASettings({
     if (!result.success) {
       setLocalError(result.error);
     } else {
-      setSmsRecoveryCodes(result.recoveryCodes);
       setLocalSuccess(t('mFASettings.sMSMFAEnabled'));
-      setView('recovery');
-      setShowCodes(true);
+      setView({ kind: 'recovery-issued', codes: result.recoveryCodes ?? [] });
       setCurrentPassword('');
     }
     setIsSubmitting(false);
@@ -595,6 +540,7 @@ export default function MFASettings({
   if (view === 'phone-verify') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
+        {children}
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">{t('mFASettings.verifyYourPhoneNumber')}</h2>
           <p className="text-sm text-muted-foreground">
@@ -684,6 +630,7 @@ export default function MFASettings({
   if (view === 'sms-setup') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
+        {children}
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">{t('mFASettings.enableSMSMFA')}</h2>
           <p className="text-sm text-muted-foreground">
@@ -741,7 +688,7 @@ export default function MFASettings({
   }
 
   // Status view - shows current MFA state
-  if (view === 'status') {
+  if (view === 'status' || typeof view === 'object') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
@@ -750,8 +697,10 @@ export default function MFASettings({
             {t('mFASettings.addAnExtraLayerOfSecurityToYourAccount')}</p>
         </div>
 
+        {children}
+
         {/* Authenticator app row */}
-        <div className="flex items-center justify-between rounded-md border bg-muted/30 p-4">
+        <div data-testid="mfa-authenticator-row" className="flex items-center justify-between rounded-md border bg-muted/30 p-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium">{t('mFASettings.authenticatorApp')}</span>
@@ -860,7 +809,7 @@ export default function MFASettings({
         )}
 
         {enabled && (
-          <div className="flex items-center justify-between rounded-md border bg-muted/30 p-4">
+          <div className="flex flex-col items-start gap-4 rounded-md border bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="space-y-1">
               <span className="text-sm font-medium">{t('mFASettings.recoveryCodes')}</span>
               <p className="text-xs text-muted-foreground">
@@ -876,16 +825,27 @@ export default function MFASettings({
               data-testid="mfa-recovery-regenerate-start"
               onClick={() => {
                 setView('recovery');
-                setShowCodes(false);
                 setLocalError(undefined);
                 setLocalSuccess(undefined);
               }}
-              className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+              className="h-9 shrink-0 whitespace-nowrap rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10"
             >
               {t('mFASettings.regenerateRecoveryCodes')}</button>
           </div>
         )}
 
+        {typeof view === 'object' && (
+          <Dialog open onClose={() => {}} title={t('mFASettings.saveRecoveryCodes', { defaultValue: 'Save your recovery codes' })} className="p-6">
+            <IssuedRecoveryCodes
+              modal
+              codes={view.codes ?? recoveryCodes}
+              onDone={() => {
+                if (view.codes === undefined) acknowledgedCodesRef.current = recoveryCodes;
+                setView('status');
+              }}
+            />
+          </Dialog>
+        )}
         {renderSuccess()}
         {renderError()}
       </div>
@@ -923,6 +883,7 @@ export default function MFASettings({
   if (view === 'confirm-password-setup') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
+        {children}
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">
             {isPasswordless
@@ -1003,6 +964,7 @@ export default function MFASettings({
   if (view === 'setup') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
+        {children}
         <div className="space-y-3">
           <h2 className="text-lg font-semibold">{t('mFASettings.setUpAuthenticator')}</h2>
           <p className="text-sm text-muted-foreground">
@@ -1143,6 +1105,7 @@ export default function MFASettings({
   if (view === 'disable') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
+        {children}
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">{t('mFASettings.disableMFA')}</h2>
           <p className="text-sm text-muted-foreground">
@@ -1208,62 +1171,11 @@ export default function MFASettings({
     );
   }
 
-  // Recovery codes view
   if (view === 'recovery') {
-    const displayCodes = smsRecoveryCodes || recoveryCodes;
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
-        <div className="space-y-1">
-          <h2 className="text-lg font-semibold">{t('mFASettings.recoveryCodes')}</h2>
-          <p className="text-sm text-muted-foreground">
-            {t('mFASettings.saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou')}</p>
-        </div>
-
-        {showCodes && displayCodes?.length ? (
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-2 rounded-md border bg-muted/30 p-4 font-mono text-sm">
-              {displayCodes.map((recoveryCode, index) => (
-                <div key={`recovery-code-${index}`} className="text-center">
-                  {recoveryCode}
-                </div>
-              ))}
-            </div>
-            <button
-              type="button"
-              data-testid="mfa-copy-recovery-codes"
-              onClick={handleCopyRecoveryCodes}
-              className="flex h-9 w-full items-center justify-center gap-2 rounded-md border text-sm font-medium text-muted-foreground transition hover:text-foreground"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-                className="h-4 w-4"
-              >
-                <path d="M7 3.5A1.5 1.5 0 018.5 2h3.879a1.5 1.5 0 011.06.44l3.122 3.12A1.5 1.5 0 0117 6.622V12.5a1.5 1.5 0 01-1.5 1.5h-1v-3.379a3 3 0 00-.879-2.121L10.5 5.379A3 3 0 008.379 4.5H7v-1z" />
-                <path d="M4.5 6A1.5 1.5 0 003 7.5v9A1.5 1.5 0 004.5 18h7a1.5 1.5 0 001.5-1.5v-5.879a1.5 1.5 0 00-.44-1.06L9.44 6.439A1.5 1.5 0 008.378 6H4.5z" />
-              </svg>
-              {copyState === 'copied' ? t('mFASettings.copiedCodes') : t('mFASettings.copyCodes')}</button>
-            {copyState === 'failed' && (
-              <p
-                data-testid="mfa-copy-recovery-codes-error"
-                role="alert"
-                className="text-sm text-destructive"
-              >
-                {t('mFASettings.copyCodesFailed')}
-              </p>
-            )}
-          </div>
-        ) : (
-          <div
-            data-testid="mfa-recovery-no-codes"
-            className="rounded-md border bg-muted/30 p-4 text-center text-sm text-muted-foreground"
-          >
-            {t('mFASettings.existingCodesCannotBeDisplayedAgainRegeneratingIssuesA')}</div>
-        )}
-
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-600">
-          {t('mFASettings.eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat')}</div>
+        {children}
+        <h2 className="text-lg font-semibold">{t('mFASettings.recoveryGenerationTitle')}</h2>
 
         <div className="space-y-2">
           <label className="text-sm font-medium" htmlFor="mfa-recovery-factor-code">
@@ -1344,7 +1256,7 @@ export default function MFASettings({
               )}
               className="inline-flex h-10 items-center justify-center rounded-md border border-destructive/40 bg-destructive/10 px-4 text-sm font-medium text-destructive transition hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isLoading ? t('mFASettings.generating') : t('mFASettings.regenerateCodes')}
+              {isLoading ? t('mFASettings.generating') : t('mFASettings.regenerateRecoveryCodes')}
             </button>
           )}
         </div>
@@ -1353,9 +1265,9 @@ export default function MFASettings({
           open={confirmRegenerateOpen}
           onClose={() => setConfirmRegenerateOpen(false)}
           onConfirm={() => { void handleRegenerateCodes(); }}
-          title={t('mFASettings.regenerateRecoveryCodesQuestion')}
-          message={t('mFASettings.regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou')}
-          confirmLabel={t('mFASettings.regenerateCodes')}
+          title={t('mFASettings.generateNewCodesQuestion')}
+          message={<span className="mt-3 block rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-foreground">{t('mFASettings.generateNewCodesWarning')}</span>}
+          confirmLabel={t('mFASettings.regenerateRecoveryCodes')}
           variant="destructive"
           isLoading={isLoading}
           confirmTestId="confirm-regenerate-recovery-codes"
@@ -1365,4 +1277,100 @@ export default function MFASettings({
   }
 
   return null;
+}
+
+export function IssuedRecoveryCodes({ codes, success, onDone, passkey = false, modal = false }: {
+  codes?: readonly string[];
+  success?: string;
+  onDone: () => void;
+  passkey?: boolean;
+  modal?: boolean;
+}) {
+  const { t } = useTranslation('settings');
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const handleCopyRecoveryCodes = async () => {
+    if (!codes?.length) return;
+    // #4471: writeText rejects in insecure contexts, under a permissions
+    // policy, or outside a user gesture on some browsers — and this is the
+    // only screen that will ever show these codes, so a silent miss here
+    // costs the user their recovery path.
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(codes.join('\n'));
+      setCopyState('copied');
+      window.setTimeout(() => setCopyState((s) => (s === 'copied' ? 'idle' : s)), 2000);
+    } catch {
+      setCopyState('failed');
+    }
+  };
+
+  return (
+    <div className={passkey || modal ? 'space-y-6' : 'space-y-6 rounded-lg border bg-card p-6 shadow-xs'}>
+      <div className="space-y-1">
+        {passkey && <p className="text-sm text-emerald-600">{t('profilePage.passkeyAdded')}</p>}
+        <h2 id={passkey ? 'passkey-recovery-title' : undefined} className="text-lg font-semibold">{passkey || modal ? t('mFASettings.saveRecoveryCodes', { defaultValue: 'Save your recovery codes' }) : t('mFASettings.recoveryCodes')}</h2>
+        <p className="text-sm text-muted-foreground">
+          {passkey ? t('mFASettings.saveRecoveryCodesDescription', { defaultValue: 'Store these somewhere safe. Each code can be used once if you lose access to your sign-in factor. These codes cannot be shown again.' }) : t('mFASettings.saveGeneratedRecoveryCodes')}
+        </p>
+      </div>
+      {codes?.length ? (
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-2 rounded-md border bg-muted/30 p-4 font-mono text-sm">
+            {codes.map((recoveryCode, index) => (
+              <div key={`recovery-code-${index}`} className="text-center">
+                {recoveryCode}
+              </div>
+            ))}
+          </div>
+          <button
+            type="button"
+            data-testid="mfa-copy-recovery-codes"
+            onClick={handleCopyRecoveryCodes}
+            className="flex h-9 w-full items-center justify-center gap-2 rounded-md border text-sm font-medium text-muted-foreground transition hover:text-foreground"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              className="h-4 w-4"
+            >
+              <path d="M7 3.5A1.5 1.5 0 018.5 2h3.879a1.5 1.5 0 011.06.44l3.122 3.12A1.5 1.5 0 0117 6.622V12.5a1.5 1.5 0 01-1.5 1.5h-1v-3.379a3 3 0 00-.879-2.121L10.5 5.379A3 3 0 008.379 4.5H7v-1z" />
+              <path d="M4.5 6A1.5 1.5 0 003 7.5v9A1.5 1.5 0 004.5 18h7a1.5 1.5 0 001.5-1.5v-5.879a1.5 1.5 0 00-.44-1.06L9.44 6.439A1.5 1.5 0 008.378 6H4.5z" />
+            </svg>
+            {copyState === 'copied' ? t('mFASettings.copiedCodes') : t('mFASettings.copyCodes')}</button>
+          {copyState === 'failed' && (
+            <p
+              data-testid="mfa-copy-recovery-codes-error"
+              role="alert"
+              className="text-sm text-destructive"
+            >
+              {t('mFASettings.copyCodesFailed')}
+            </p>
+          )}
+        </div>
+      ) : (
+        <div
+          data-testid="mfa-recovery-no-codes"
+          className="rounded-md border bg-muted/30 p-4 text-center text-sm text-muted-foreground"
+        >
+          {t('mFASettings.existingCodesCannotBeDisplayedAgainRegeneratingIssuesA')}</div>
+      )}
+
+      {success && (
+        <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600">
+          {success}
+        </div>
+      )}
+      <div className="flex justify-end">
+        <button
+          type="button"
+          data-testid="mfa-recovery-done"
+          onClick={onDone}
+          className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+        >
+          {t('mFASettings.done', { defaultValue: 'Done' })}
+        </button>
+      </div>
+    </div>
+  );
 }

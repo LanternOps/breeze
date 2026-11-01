@@ -6,12 +6,23 @@ import {
   getCommandTimeoutMs,
   RESTORE_POINT_CHECKPOINT_BUDGET_MS,
   SCRIPT_GRACE_BUFFER_MS,
+  SECURITY_SCAN_COMMAND_GRACE_MS,
   SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS,
 } from './commandTimeouts';
 import { CommandTypes } from './commandQueue';
 import { WORKSTATION_TIMEOUT_MAX_MS } from './callerVerification/workstationProtocol';
 
 describe('command timeouts', () => {
+  it('gives pam_request_notify an explicit 2-minute timeout without the unknown-type warning (#8928)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(getCommandTimeoutMs(CommandTypes.PAM_REQUEST_NOTIFY)).toBe(2 * 60 * 1000);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('times caller_verify out just past the longest prompt the helper can show (#6354 W02)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -125,6 +136,58 @@ describe('command timeouts', () => {
       expect(
         getCommandTimeoutMs(CommandTypes.INSTALL_PATCHES, { restorePoint: block(true) }),
       ).toBe(getCommandTimeoutMs(CommandTypes.INSTALL_PATCHES));
+    });
+  });
+
+  // #10057: the server timeout used to be a flat 30 minutes, while a policy
+  // can give the agent up to 720 (SECURITY_SCAN_TIMEOUT_MINUTES_RANGE) and a
+  // scan with no policy has no agent deadline at all. The reaper then failed
+  // the command while the agent was still scanning.
+  describe('security_scan (#10057)', () => {
+    const MIN = 60_000;
+
+    it('derives the deadline from the scan budget the payload carries', () => {
+      expect(getCommandTimeoutMs(CommandTypes.SECURITY_SCAN, { timeoutMinutes: 120 })).toBe(
+        120 * MIN + SECURITY_SCAN_COMMAND_GRACE_MS,
+      );
+      expect(getCommandTimeoutMs(CommandTypes.SECURITY_SCAN, { timeoutMinutes: 720 })).toBe(
+        720 * MIN + SECURITY_SCAN_COMMAND_GRACE_MS,
+      );
+      // Never shorter than the agent's own deadline, at any budget.
+      for (const minutes of [5, 30, 31, 240, 719, 720]) {
+        expect(getCommandTimeoutMs(CommandTypes.SECURITY_SCAN, { timeoutMinutes: minutes })).toBeGreaterThan(
+          minutes * MIN,
+        );
+      }
+    });
+
+    it('covers the rule-set load the agent does before its scan clock starts', () => {
+      // agent/internal/heartbeat/handlers_security.go ruleSetLoadTimeout = 5 min.
+      expect(SECURITY_SCAN_COMMAND_GRACE_MS).toBeGreaterThan(5 * MIN);
+    });
+
+    it('uses the 720-minute ceiling when no budget was sent (the agent then has no deadline)', () => {
+      const ceiling = 720 * MIN + SECURITY_SCAN_COMMAND_GRACE_MS;
+      expect(getCommandTimeoutMs(CommandTypes.SECURITY_SCAN)).toBe(ceiling);
+      expect(getCommandTimeoutMs(CommandTypes.SECURITY_SCAN, null)).toBe(ceiling);
+      expect(getCommandTimeoutMs(CommandTypes.SECURITY_SCAN, { scanRecordId: 'x' })).toBe(ceiling);
+      for (const timeoutMinutes of [0, -5, '120', null, Number.NaN, Number.POSITIVE_INFINITY]) {
+        expect(getCommandTimeoutMs(CommandTypes.SECURITY_SCAN, { timeoutMinutes })).toBe(ceiling);
+      }
+    });
+
+    it('clamps an out-of-range budget into the policy range', () => {
+      expect(getCommandTimeoutMs(CommandTypes.SECURITY_SCAN, { timeoutMinutes: 5000 })).toBe(
+        720 * MIN + SECURITY_SCAN_COMMAND_GRACE_MS,
+      );
+      expect(getCommandTimeoutMs(CommandTypes.SECURITY_SCAN, { timeoutMinutes: 1 })).toBe(
+        5 * MIN + SECURITY_SCAN_COMMAND_GRACE_MS,
+      );
+    });
+
+    it('leaves the other security command types on their fixed tiers', () => {
+      expect(getCommandTimeoutMs(CommandTypes.SECURITY_THREAT_QUARANTINE, { timeoutMinutes: 720 })).toBe(30 * MIN);
+      expect(getCommandTimeoutMs(CommandTypes.SECURITY_COLLECT_STATUS, { timeoutMinutes: 720 })).toBe(5 * MIN);
     });
   });
 });

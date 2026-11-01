@@ -25,6 +25,8 @@ export const aiInvocations = pgTable('ai_invocations', {
   userId: uuid('user_id'),
   sessionId: uuid('session_id'),
   agentRunId: uuid('agent_run_id'),
+  /** W05 (#5220): the flow run an `ai` step's model call belongs to. Plain uuid (provenance). */
+  flowRunId: uuid('flow_run_id'),
   sourceRef: text('source_ref'),
   offeringId: uuid('offering_id'),
   connectionId: uuid('connection_id'),
@@ -73,6 +75,7 @@ export const aiInvocations = pgTable('ai_invocations', {
   index('ai_invocations_created_idx').on(t.createdAt),
   index('ai_invocations_session_idx').on(t.sessionId).where(sql`${t.sessionId} IS NOT NULL`),
   index('ai_invocations_agent_run_idx').on(t.agentRunId).where(sql`${t.agentRunId} IS NOT NULL`),
+  index('ai_invocations_flow_run_idx').on(t.flowRunId).where(sql`${t.flowRunId} IS NOT NULL`),
   index('ai_invocations_offering_idx').on(t.offeringId, t.createdAt).where(sql`${t.offeringId} IS NOT NULL`),
   index('ai_invocations_chargeable_idx').on(t.orgId, t.createdAt)
     .where(sql`${t.chargeable} AND ${t.ledgerMode} = 'authoritative'`),

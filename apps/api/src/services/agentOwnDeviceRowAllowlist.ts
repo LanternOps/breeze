@@ -62,6 +62,77 @@ export const AGENT_OWN_DEVICE_ROW_ALLOWLIST: readonly OwnDeviceRowAllowlistEntry
 
   // ── Non-agent paths in files an agent entry point reaches ───────────────
   {
+    file: 'src/services/quickSupportEnd.ts',
+    marker: 'support-session-end-decommission',
+    kind: 'non_agent_path',
+    reason:
+      'Ending a Quick Support session (a technician, the expiry sweep, or the supervised AI tool, W13 #6783) clears the ' +
+      'temporary client\'s token hashes and decommissions it, under system context after the caller\'s own session ' +
+      'lookup. Never an agent writing its own row; reached by agent entry points only through the AI tool registry.',
+  },
+  {
+    file: 'src/services/deviceLinkGroups.ts',
+    marker: 'link-group-unlink',
+    kind: 'non_agent_path',
+    reason:
+      'Clears link_group_id / link_group_role on devices a user session or an AI tool call is unlinking or dissolving ' +
+      '(reached by agent entry points only through the AI tool registry import chain, W13 #6783); never an agent ' +
+      'writing its own row.',
+  },
+  {
+    file: 'src/services/deviceFunction.ts',
+    marker: 'device-function-projection',
+    kind: 'non_agent_path',
+    reason:
+      'The device_function projection rewrite after a manual (user session / supervised AI tool) or fleet-design ' +
+      'assessment, inside the same transaction as the assessment row; pinned to the device\'s org. Never an agent ' +
+      'writing its own row (reached through the AI tool registry import chain, W13 #6783).',
+  },
+  {
+    file: 'src/services/deviceLinkGroupOps.ts',
+    marker: 'link-group-membership',
+    kind: 'non_agent_path',
+    reason:
+      'Link-group membership writes (#2138, moved verbatim from routes/devices/links.ts for the W13 AI tool, #6783). ' +
+      'A user session or an AI tool call (never an agent writing its own row) sets link_group_id / link_group_role on ' +
+      'devices it named, after the org + site checks and the lockAndAuthorizeLinkGroupMutation FOR UPDATE lock.',
+  },
+  {
+    file: 'src/services/deviceReattach/confirm.ts',
+    marker: 'reattach-confirm-target-identity',
+    kind: 'non_agent_path',
+    reason:
+      'The reattach confirm (#8318 §6.4) hands the TARGET row to the new install. It is not the caller writing ' +
+      'its own row: the caller authenticated with the confirm-only token, the row is locked FOR UPDATE and ' +
+      'version-checked, and the UPDATE carries `agent_id = intent.target_agent_id` itself.',
+  },
+  {
+    file: 'src/services/deviceReattach/confirm.ts',
+    marker: 'reattach-confirm-source-credentials',
+    kind: 'non_agent_path',
+    reason:
+      'The reattach confirm retires the SOURCE row (decommissioned in the same transaction) and clears every ' +
+      'token hash of it, under its FOR UPDATE lock; the UPDATE carries `agent_id = intent.source_agent_id`.',
+  },
+  {
+    file: 'src/services/deviceInstallBoundary/handlers/deviceRow.ts',
+    marker: 'install-boundary-advance-incarnation',
+    kind: 'non_agent_path',
+    reason:
+      'The install-incarnation boundary (#8318 §5) advances the TARGET row\'s incarnation and resets the old ' +
+      'install\'s capability columns. Reached from agent routes only through the reattach confirm, which runs ' +
+      'it in system scope on a row it locked FOR UPDATE and version-checked; no agent writes its own row here.',
+  },
+  {
+    file: 'src/services/deviceDecommission.ts',
+    marker: 'decommission-device',
+    kind: 'non_agent_path',
+    reason:
+      'Decommission is a user (device Remove), job (parked expiry) or reattach-confirm action on a row the ' +
+      'caller locked or authorized, never an agent writing its own row; the confirm reaches it from an agent ' +
+      'route to retire the SOURCE under its FOR UPDATE lock.',
+  },
+  {
     file: 'src/jobs/offlineDetector.ts',
     marker: 'offline-sweep-mark-offline',
     kind: 'non_agent_path',

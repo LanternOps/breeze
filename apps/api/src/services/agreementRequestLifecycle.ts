@@ -16,7 +16,6 @@
 
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
-  AGREEMENT_REQUEST_DEFAULT_EXPIRY_DAYS,
   type AgreementRequestStatusBucket,
   type CreateAgreementRequestInput,
   type ListAgreementRequestsQuery,
@@ -65,8 +64,13 @@ import {
   regenerateAgreementAcceptToken,
   type AgreementAcceptTokenIdentity,
 } from './agreementAcceptToken';
-
-const DAY_MS = 24 * 60 * 60 * 1000;
+import {
+  defaultAgreementRequestExpiresAt,
+  isAutoReminderDue,
+  loadAgreementRequestDefaults,
+  type AgreementRequestDefaults,
+} from './agreementRequestDefaults';
+import { buildPublicLinkLiveOrgPredicate } from './publicLinkOrgGate';
 
 const STATUS_BUCKETS: Record<AgreementRequestStatusBucket, AgreementRequestStatus[]> = {
   pending: ['draft', 'sent', 'viewed'],
@@ -201,7 +205,10 @@ function normalizeRecipients(emails: string[]): string[] {
  *  caller's context — partner-wide templates through the partner-wide SELECT
  *  branch), load its render data, and run the usability guard against the
  *  ORG's own partner. */
-async function pinLatestPublishedVersion(templateId: string, orgId: string): Promise<TemplateVersionRenderData> {
+async function pinLatestPublishedVersion(
+  templateId: string,
+  orgId: string,
+): Promise<{ renderData: TemplateVersionRenderData; partnerId: string }> {
   const partnerId = await loadOrgOwnerPartnerId(orgId);
   const [latest] = await db
     .select({ id: contractTemplateVersions.id })
@@ -214,7 +221,7 @@ async function pinLatestPublishedVersion(templateId: string, orgId: string): Pro
   }
   const renderData = await loadTemplateVersionRenderData(latest.id);
   await assertTemplateVersionUsable({ templateId, templateVersionId: latest.id }, { orgId, partnerId });
-  return renderData;
+  return { renderData, partnerId };
 }
 
 /** Missing and other-org contracts are the same 404 (W1c precedent). */
@@ -444,6 +451,16 @@ export async function previewAgreementRequest(auth: AuthContext, id: string, now
   };
 }
 
+/** The resolved partner defaults a new request for `orgId` would get (#9075
+ *  W4a) — what the Send dialog pre-fills its expiry from and shows about
+ *  automatic reminders. Same 404 as every other org-keyed read. */
+export async function getAgreementRequestDefaults(auth: AuthContext, orgId: string): Promise<AgreementRequestDefaults> {
+  if (!auth.canAccessOrg(orgId)) {
+    throw new AgreementRequestServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+  }
+  return loadAgreementRequestDefaults(await loadOrgOwnerPartnerId(orgId));
+}
+
 // ---------------------------------------------------------------------------
 // Draft writes (agreements:write)
 // ---------------------------------------------------------------------------
@@ -457,10 +474,14 @@ export async function createAgreementRequest(
   if (!auth.canAccessOrg(input.orgId)) {
     throw new AgreementRequestServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
   }
-  const expiresAt = input.expiresAt ?? new Date(now.getTime() + AGREEMENT_REQUEST_DEFAULT_EXPIRY_DAYS * DAY_MS);
-  assertExpiresInFuture(expiresAt, now);
+  // An explicit expiry is the per-request override: refuse a past one before
+  // any read. Otherwise the partner's default (#9075 W4a, resolved once here
+  // and frozen as expires_at — the single snapshot moment).
+  if (input.expiresAt) assertExpiresInFuture(input.expiresAt, now);
 
-  const renderData = await pinLatestPublishedVersion(input.templateId, input.orgId);
+  const { renderData, partnerId } = await pinLatestPublishedVersion(input.templateId, input.orgId);
+  const expiresAt = input.expiresAt
+    ?? defaultAgreementRequestExpiresAt(await loadAgreementRequestDefaults(partnerId), now);
   const contractId = input.contractId ?? null;
   if (contractId) await assertContractInOrg(contractId, input.orgId);
 
@@ -506,7 +527,7 @@ export async function updateAgreementRequest(
   // Re-pin on a template change; otherwise the pinned version's declared
   // variables still filter any new manual values.
   let renderData: TemplateVersionRenderData | null = null;
-  if (input.templateId) renderData = await pinLatestPublishedVersion(input.templateId, row.orgId);
+  if (input.templateId) renderData = (await pinLatestPublishedVersion(input.templateId, row.orgId)).renderData;
   else if (input.variableValues) renderData = await loadTemplateVersionRenderData(row.templateVersionId);
 
   if (input.contractId) await assertContractInOrg(input.contractId, row.orgId);
@@ -744,6 +765,42 @@ export interface RemindAgreementRequestResult {
  *  delivery exactly as send does — the route mails it after the commit. */
 export async function remindAgreementRequest(auth: AuthContext, id: string, now: Date): Promise<RemindAgreementRequestResult> {
   const row = await loadRequestOr404(auth, id, { lock: true });
+  return remindLockedRequest(row, now);
+}
+
+export type AutoRemindOutcome =
+  | { reminded: true; result: RemindAgreementRequestResult }
+  | { reminded: false; reason: 'locked_or_gone' | 'not_due' };
+
+/** Automatic reminder (#9075 W4a, OD8 B) for ONE request, in the caller's
+ *  SYSTEM transaction (the reminder job). Locks the row SKIP LOCKED (a row a
+ *  concurrent send / void / answer / manual remind holds is simply skipped this
+ *  run), only while its org and partner are link-live (a suspended tenant's
+ *  link would 410), re-checks due-ness on the LOCKED row through the one
+ *  helper the job's prefilter mirrors, then runs the same remind core as the
+ *  manual Remind — same link, `reminder_count` + `last_reminded_at`, deferred
+ *  email — with the counter bump conditional on the count it read, so one
+ *  cadence step can never be sent twice. */
+export async function autoRemindAgreementRequest(id: string, now: Date): Promise<AutoRemindOutcome> {
+  const [row] = await db
+    .select()
+    .from(agreementRequests)
+    .where(and(eq(agreementRequests.id, id), buildPublicLinkLiveOrgPredicate(agreementRequests.orgId)))
+    .limit(1)
+    .for('update', { skipLocked: true });
+  if (!row) return { reminded: false, reason: 'locked_or_gone' };
+  const defaults = await loadAgreementRequestDefaults(await loadOrgOwnerPartnerId(row.orgId));
+  if (!isAutoReminderDue(row, defaults, now)) return { reminded: false, reason: 'not_due' };
+  return { reminded: true, result: await remindLockedRequest(row, now, { expectedReminderCount: row.reminderCount }) };
+}
+
+/** The remind core shared by the manual route and the automatic job, on a row
+ *  the caller has already LOCKED. */
+async function remindLockedRequest(
+  row: AgreementRequestRow,
+  now: Date,
+  opts: { expectedReminderCount?: number } = {},
+): Promise<RemindAgreementRequestResult> {
   if (!OPEN_STATUSES.has(row.status)) {
     if (row.status === 'signed') {
       throw new AgreementRequestServiceError('This agreement is already signed', 409, 'AGREEMENT_ALREADY_SIGNED');
@@ -774,7 +831,11 @@ export async function remindAgreementRequest(auth: AuthContext, id: string, now:
       lastRemindedAt: now,
       updatedAt: now,
     })
-    .where(and(eq(agreementRequests.id, row.id), inArray(agreementRequests.status, ['sent', 'viewed'])))
+    .where(and(
+      eq(agreementRequests.id, row.id),
+      inArray(agreementRequests.status, ['sent', 'viewed']),
+      opts.expectedReminderCount === undefined ? undefined : eq(agreementRequests.reminderCount, opts.expectedReminderCount),
+    ))
     .returning();
   if (!reminded) {
     throw new AgreementRequestServiceError('This agreement request changed while reminding — reload and retry', 409, 'INVALID_STATE');

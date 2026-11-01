@@ -81,6 +81,54 @@ function makeActivePlan(): ActivePlan {
  * warning from the approver with every other test still green — the same
  * value-silently-discarded shape this whole change exists to remove.
  */
+describe('approval_resolved (#9431)', () => {
+  function harness() {
+    const h = { state: { ...makeState() } as StreamableState };
+    return {
+      get state() { return h.state; },
+      set: (fn: (s: StreamableState) => Partial<StreamableState>) => { h.state = { ...h.state, ...fn(h.state) }; },
+      get: () => h.state,
+    };
+  }
+  const card: AiStreamEvent = {
+    type: 'approval_required', executionId: 'e1', toolName: 'file_operations',
+    input: { action: 'delete' }, description: 'Delete a file',
+  };
+
+  it.each(['approved', 'not_approved', 'ended'] as const)(
+    'marks the matching card %s, decided wherever it was decided',
+    (outcome) => {
+      const h = harness();
+      processStreamEvent(card, h.set, h.get, null);
+      processStreamEvent({ type: 'approval_resolved', executionId: 'e1', outcome }, h.set, h.get, null);
+      expect(h.state.pendingApproval).toMatchObject({ executionId: 'e1', resolution: outcome });
+    },
+  );
+
+  it('leaves a different card alone', () => {
+    const h = harness();
+    processStreamEvent(card, h.set, h.get, null);
+    processStreamEvent({ type: 'approval_resolved', executionId: 'other', outcome: 'approved' }, h.set, h.get, null);
+    expect(h.state.pendingApproval?.resolution).toBeUndefined();
+  });
+
+  it('done removes a resolved card but leaves an undecided one', () => {
+    const h = harness();
+    processStreamEvent(card, h.set, h.get, null);
+    processStreamEvent({ type: 'done' }, h.set, h.get, null);
+    expect(h.state.pendingApproval?.executionId).toBe('e1');
+    processStreamEvent({ type: 'approval_resolved', executionId: 'e1', outcome: 'not_approved' }, h.set, h.get, null);
+    processStreamEvent({ type: 'done' }, h.set, h.get, null);
+    expect(h.state.pendingApproval).toBeNull();
+  });
+
+  it('does not resurrect a card that is already gone', () => {
+    const h = harness();
+    processStreamEvent({ type: 'approval_resolved', executionId: 'e1', outcome: 'approved' }, h.set, h.get, null);
+    expect(h.state.pendingApproval).toBeNull();
+  });
+});
+
 describe('approval_required — scriptRunContext passthrough (#4888)', () => {
   const runContext = {
     effectiveRunAs: 'system' as const,

@@ -47,6 +47,7 @@ const DEVICE_DISPATCH = new RegExp(
  * where it is the subject (query_devices, get_device_details).
  */
 const NO_DEVICE_TEXT: Readonly<Record<string, string>> = {
+  bootstrap_homebrew: 'queues a command and returns its id and the device id only (W12, #6782)',
   query_agent_versions: 'agent version strings and Breeze release notes only',
   get_backup_status: 'Breeze job/snapshot status and counts only',
   query_backups: 'admin-authored config/policy names and device hostnames only',
@@ -80,6 +81,13 @@ const NO_DEVICE_TEXT: Readonly<Record<string, string>> = {
   collect_evidence: 'queued-command status; device output lands in incident evidence (get_incident_timeline)',
   list_incidents: 'safe projection of technician/AI-authored incident fields',
   manage_browser_policy: 'technician-authored policy fields and Breeze status only',
+  // aiToolsFleet.ts became a device-command file when manage_patches scan started
+  // queueing patch_scan (#10383); manage_patches itself is fenced (errorMessage).
+  manage_deployments: 'admin-authored deployment rows (name, payload, target/rollout config), per-device status counts and device hostnames only',
+  manage_groups: 'admin-authored group config/filters, enum membership-log reasons, device hostnames/display names and OS type only',
+  manage_maintenance_windows: 'admin-authored window config and occurrences (overrides, notes set by staff via PATCH on the occurrence route) only',
+  manage_automations: 'admin-authored automation config, run counts and automation_runs.logs: Breeze-authored logEntry() templates (automationRuntime.ts, policyEvaluationService.ts, automationRunCancellation.ts) carrying hostnames, admin-authored names, Breeze dispatch/server errors and notification-provider errors; command/script output lives in automation action results, which this tool does not return',
+  manage_service_monitors: 'admin-authored monitor definitions resolved per device (name, kind, condition merged with policy overrides) only',
 };
 
 function toolsRegisteredIn(source: string, registered: ReadonlySet<string>): string[] {

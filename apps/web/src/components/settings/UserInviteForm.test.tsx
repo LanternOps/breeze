@@ -7,6 +7,11 @@ import UserInviteForm from './UserInviteForm';
 // pin the invite form's contract so the extraction cannot regress it.
 
 const ROLES = [{ id: 'role-tech-uuid', name: 'Partner Technician', scope: 'partner' }];
+// Server order is alphabetical, so a billing role is often first (#10074).
+const ROLES_BILLING_FIRST = [
+  { id: 'role-billing-uuid', name: 'Partner Billing', scope: 'partner' },
+  { id: 'role-tech-uuid', name: 'Partner Technician', scope: 'partner' },
+];
 const ORGS = [
   { id: 'org-a-uuid', name: 'Acme Dental' },
   { id: 'org-b-uuid', name: 'Brightside Law' },
@@ -17,11 +22,47 @@ function fillIdentity() {
   fireEvent.change(screen.getByLabelText(/email/i), { target: { value: 'tessa@example.com' } });
 }
 
+function chooseRole(roleId = 'role-tech-uuid') {
+  fireEvent.change(screen.getByTestId('invite-role-select'), { target: { value: roleId } });
+}
+
+describe('UserInviteForm — role selection (#10074)', () => {
+  it('opens with no role selected, not the first role in the list', () => {
+    render(<UserInviteForm roles={ROLES_BILLING_FIRST} />);
+    const select = screen.getByTestId('invite-role-select') as HTMLSelectElement;
+    expect(select.value).toBe('');
+    expect(select.selectedOptions[0]).toHaveTextContent('Choose a role');
+    expect(select.selectedOptions[0]).toBeDisabled();
+  });
+
+  it('blocks submit until a role is chosen', async () => {
+    const onSubmit = vi.fn();
+    render(<UserInviteForm roles={ROLES_BILLING_FIRST} onSubmit={onSubmit} />);
+    fillIdentity();
+    fireEvent.click(screen.getByRole('button', { name: /send invite/i }));
+
+    expect(await screen.findByText('Select a role')).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('submits the role the user deliberately chose', async () => {
+    const onSubmit = vi.fn();
+    render(<UserInviteForm roles={ROLES_BILLING_FIRST} onSubmit={onSubmit} />);
+    fillIdentity();
+    chooseRole('role-tech-uuid');
+    fireEvent.click(screen.getByRole('button', { name: /send invite/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({ roleId: 'role-tech-uuid' });
+  });
+});
+
 describe('UserInviteForm — organization access', () => {
   it('submits the chosen specific organizations', async () => {
     const onSubmit = vi.fn();
     render(<UserInviteForm roles={ROLES} organizations={ORGS} showOrgAccess onSubmit={onSubmit} />);
     fillIdentity();
+    chooseRole();
 
     fireEvent.change(screen.getByLabelText(/^Access level$/), { target: { value: 'selected' } });
     fireEvent.click(screen.getByPlaceholderText(/search organizations/i));
@@ -42,6 +83,7 @@ describe('UserInviteForm — organization access', () => {
     const onSubmit = vi.fn();
     render(<UserInviteForm roles={ROLES} organizations={ORGS} showOrgAccess onSubmit={onSubmit} />);
     fillIdentity();
+    chooseRole();
 
     fireEvent.change(screen.getByLabelText(/^Access level$/), { target: { value: 'selected' } });
     fireEvent.click(screen.getByRole('button', { name: /send invite/i }));
@@ -54,6 +96,7 @@ describe('UserInviteForm — organization access', () => {
     const onSubmit = vi.fn();
     render(<UserInviteForm roles={ROLES} organizations={ORGS} showOrgAccess onSubmit={onSubmit} />);
     fillIdentity();
+    chooseRole();
     fireEvent.click(screen.getByRole('button', { name: /send invite/i }));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));

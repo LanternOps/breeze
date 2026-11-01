@@ -141,6 +141,17 @@ Check that your proxy:
 
 The API also logs a rate-limited `[force-https]` warning on this path with the values it saw.
 
+### Customer portal pages fail with `FORCE_HTTPS_NON_CANONICAL_HOST`
+
+The portal (and the web app) render pages on the server by calling the API over the private Docker network at `INTERNAL_API_URL` (`http://api:3001` by default). That hop is plain HTTP by design. The API lets it through `FORCE_HTTPS` only when all of these hold:
+
+- the connection's source address is inside `INTERNAL_SERVICE_CIDRS`. The bundled compose files set this to the Docker network (`BREEZE_DOCKER_SUBNET`). The API checks the socket address, not a header;
+- the source is not one of your `TRUSTED_PROXY_CIDRS`, so a request relayed through Caddy never qualifies;
+- the request carries no `X-Forwarded-For`, `X-Real-IP` or `CF-Connecting-IP` header. Proxies add these, so relayed traffic never qualifies even if `TRUSTED_PROXY_CIDRS` is stale;
+- the `Host` is listed in `INTERNAL_API_HOSTS` (default `api:3001`).
+
+If portal pages return this error, check that `INTERNAL_SERVICE_CIDRS` covers the network the portal runs on and that `INTERNAL_API_HOSTS` matches the host and port in `INTERNAL_API_URL`. Do not add the portal to `TRUSTED_PROXY_CIDRS` instead: a trusted proxy can set the client IP, scheme and host the API sees, and an application container must not have that power. `INTERNAL_SERVICE_CIDRS` takes only ranges that sit entirely inside a private network. Setting it to an empty value turns the exemption off.
+
 ## Nginx (Alternative)
 
 If you prefer nginx, here's an equivalent configuration.
@@ -246,3 +257,9 @@ Both configurations include these security headers:
 | `Strict-Transport-Security` | `max-age=31536000; includeSubDomains; preload` | Force HTTPS for 1 year |
 | `X-Content-Type-Options` | `nosniff` | Prevent MIME sniffing |
 | `Referrer-Policy` | `strict-origin-when-cross-origin` | Control referrer information. From v0.124.0 the bundled `Caddyfile.prod` sets it as a default only (`?Referrer-Policy`), so the stricter `no-referrer` the application sends on capability URLs (verification pages, public invoices, unsubscribe links) is kept rather than overwritten. If you front Breeze with your own proxy, do not add a `Referrer-Policy` header on those paths. |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=()` | Turn off browser features Breeze never uses. Since v0.125.0 the bundled `Caddyfile.prod` sets it as a default (`?Permissions-Policy`), so static assets that the web application does not handle get it too. |
+| `Cross-Origin-Resource-Policy` | `same-site` | Stop other sites from loading Breeze pages and assets (v0.125.0+, Caddy only). Set as a default on every path **except** `/api/*`, `/s/*`, `/i/*`, `/activate/*`, `/health*`, `/ready`, `/metrics/*`, `/oauth/*` and `/.well-known/*`, so the public Trust Center badge and branding images stay embeddable on customers' own sites. |
+
+Since v0.125.0 the bundled `Caddyfile.prod` sets `Strict-Transport-Security` and `X-Content-Type-Options` with Caddy's `>` (replace) form, so a response that already carries one from the application is not sent with the header twice. If you maintain your own copy of `Caddyfile.prod`, carry over the `>` form, the `?Permissions-Policy` default and the `Cross-Origin-Resource-Policy` block with its path exclusions.
+
+The web application adds its own headers on top of the proxy's. From v0.125.0 HTML pages are sent with `Cache-Control: no-store`, and the `Content-Security-Policy` `connect-src` list is built per request from your configured API and WebSocket hosts, with no plaintext `ws:` in production. If a page needs to reach another origin, add it with `CSP_CONNECT_HOSTS` on the `web` service. See [HTTP Security Headers](/security/overview/#http-security-headers).

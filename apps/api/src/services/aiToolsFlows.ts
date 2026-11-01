@@ -189,7 +189,7 @@ export function registerFlowTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: [],
     definition: {
       name: 'run_flow',
-      description: "Start an enabled manual flow now. Starting a flow needs the user's approval, and its sensitive steps still wait for a human to approve each one. Returns the run id and the page to follow it.",
+      description: "Start an enabled manual flow now. The approval depends on the flow: a read-only flow starts at once, any other needs the user's approval, and its sensitive steps still wait for a human. Returns the run id and the page to follow it.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -211,6 +211,10 @@ export function registerFlowTools(aiTools: Map<string, AiTool>): void {
       if (auth.principal?.kind !== 'user_session' || !chatSessionId) return { error: 'run_flow_requires_chat' };
       const flowId = str(input.flowId);
       if (!flowId) return { error: 'flow_not_found' };
+      // W5 PR C: a gate that lowered run_flow's tier pinned the flow and the
+      // publication it checked; start on exactly that one, or refuse.
+      const pin = context?.runFlowGate;
+      if (pin && pin.flowId !== flowId.toLowerCase()) return { ok: false, error: 'flow_tool_changed' };
       const { startManualRun } = await import('./flows/runService');
       const result = await startManualRun(
         auth,
@@ -218,6 +222,7 @@ export function registerFlowTools(aiTools: Map<string, AiTool>): void {
         { orgId: str(input.orgId), inputs: recordOf(input.inputs), idempotencyKey: str(input.idempotencyKey) },
         'ai_tool',
         chatSessionId,
+        ...(pin ? [{ expectedPublicationSeq: pin.publicationSeq }] as const : []),
       );
       return result.ok ? { ...result, runPath: `/flows/runs/${result.runId}` } : result;
     }),

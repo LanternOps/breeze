@@ -6,18 +6,23 @@
  *   1. `when` — false ⇒ skipped (nothing rendered, nothing read).
  *   2. render `input` against the run scope (`render_failed` on a template
  *      error or an oversized render).
- *   3. built-ins: `set` returns its values; `wait` returns `park_wait` — the
- *      runner writes the wait step COMPLETED with `{ waitUntil }` in the same
- *      checkpoint that parks the run, so a resume never re-enters it.
- *   4. `revalidateRenderedStep` — the rendered input UNMASKED against the live
+ *   3. `revalidateRenderedStep` — the rendered input UNMASKED against the live
  *      catalog, the publication's pin, and ownership of every referenced asset
  *      in the RUN org (a partner-wide flow included). Any failure is a policy
- *      failure: the run fails regardless of `onFailure`.
+ *      failure: the run fails regardless of `onFailure`. Built-ins too (W5).
+ *   4. built-ins (W5 #5220, builtins/index.ts): Tier 3 (an http_request
+ *      write) parks on a `source: 'flow'` intent EVERY run and executes only
+ *      through the release worker; Tier ≤ 2 runs in-process. `set` returns its
+ *      values; `wait` returns `park_wait` — the runner writes the wait step
+ *      COMPLETED with `{ waitUntil }` in the same checkpoint that parks the
+ *      run, so a resume never re-enters it.
  *   5. tier 3: a pre-approved `run_script` (honoured on this run + a binding
  *      for this step) executes directly against ONE snapshot read that is both
  *      the binding comparison and the `verifiedRunScript` pin — content edited
  *      between check and pin can never run. Anything else parks on a
  *      `source: 'flow'` action intent; the existing inbox/release path owns it.
+ *      An external (tool-source) step's intent carries its pinned tool row +
+ *      revision as the `externalTool` binding (#10288).
  *   6. tier 1/2: `executeTool` (core) or `executeTenantToolDetailed` (tenant,
  *      attributed to the RUN on the 'flow' surface).
  *
@@ -39,6 +44,7 @@ import {
   isTruthy,
   parseExpr,
   renderTemplates,
+  type FlowBuiltinName,
   type FlowDocumentV1,
   type FlowScope,
   type FlowStepErrorCode,
@@ -48,15 +54,24 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import type { FlowRunRow, FlowVersionRow } from '../../db/schema/flowRuns';
 import { withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { aiTools, executeTool, toolManagesDbContext } from '../aiTools';
+import { stripPageResumeJson } from '../aiToolPageResume';
 import { createActionIntent } from '../actionIntents/intentService';
 import { buildRunScriptSnapshot } from '../actionIntents/runScriptSnapshot';
 import { flowPreApprovalBindingSchema, revalidateRenderedStep, type FlowStepPin } from '../flowValidator';
 import type { VerifiedRunScript } from '../toolExecutionContext';
 import { executeTenantToolDetailed } from '../toolSources/execute';
-import { loadTenantToolForExecution, type ToolOwnerRef } from '../toolSources/resolver';
+import { loadTenantToolForExecution, type TenantToolDescriptor, type ToolOwnerRef } from '../toolSources/resolver';
+import { captureException } from '../sentry';
+import { literalOriginOf } from './builtins/httpPolicy';
+import { preflightHttpRequest, type HttpRequestInput } from './builtins/httpRequest';
+import { executeFlowBuiltin } from './builtins/index';
+import { countRunBuiltinCalls } from './builtins/runCounters';
+import type { BuiltinContext } from './builtins/types';
 import { withFlowExecutionContext } from './flowExecutionContext';
 import { FLOW_OUTPUT_PREVIEW_BYTES, toStoredFlowOutput } from './storedOutput';
-import { FLOW_IGNORED_RUN_SCRIPT_KEYS, preApprovalMaterialFromSnapshot, type FlowPreApprovalBinding } from './preApproval';
+import { FLOW_IGNORED_RUN_SCRIPT_KEYS, preApprovalMaterialFromSnapshot, type ActAssetPreApprovalBinding, type FlowPreApprovalBinding } from './preApproval';
+import { executeFleetStep } from './fleetStep';
+import type { RunScriptOnTargetsInput } from './builtins/runScriptOnTargets';
 import { classifyToolResult } from './runLedger';
 
 // The result classifier lives with the ledger (pure, no I/O) so the approval
@@ -69,13 +84,19 @@ interface StepOutcomeMeta {
   renderedInput?: Record<string, FlowValue>;
   /** Set when the step ran through its enable-time pre-approval (approval_mode 'pre_approved'). */
   approvalMode?: 'pre_approved';
+  /** W5 (#5220): an `ai` step's model usage, written to `flow_run_steps.ai_*` (also on failures). */
+  aiUsage?: { inputTokens: number; outputTokens: number; costCents: number };
 }
 
 export type StepOutcome =
   | ({ kind: 'completed'; output: FlowValue; truncated: boolean } & StepOutcomeMeta)
   | { kind: 'skipped' }
-  /** policy=true ⇒ fail the run regardless of onFailure. */
-  | ({ kind: 'failed'; code: FlowStepErrorCode; message: string; policy: boolean } & StepOutcomeMeta)
+  /**
+   * policy=true ⇒ fail the run regardless of onFailure. `output` (W6): a fleet
+   * step that failed on some devices still records its device sets, so a
+   * later step under onFailure 'continue' chains on them.
+   */
+  | ({ kind: 'failed'; code: FlowStepErrorCode; message: string; policy: boolean; output?: FlowValue } & StepOutcomeMeta)
   /** The step may have executed; the run fails unknown_outcome regardless of onFailure. */
   | ({ kind: 'unknown_outcome'; message: string } & StepOutcomeMeta)
   | ({ kind: 'park_approval'; intentId: string } & StepOutcomeMeta)
@@ -96,6 +117,8 @@ export interface StepExecutionInput {
   deadline: number;
   /** The `flow_run_steps` row the runner inserted (status 'running') for this attempt. */
   stepRowId: string;
+  /** W5: the slice's lease token, for lease-fenced writes a built-in makes (the `ai` step's run token reservation). */
+  leaseToken?: string;
 }
 
 /** Test seam: the backoff sleep (defaults to a real timer, so fake timers drive it too). */
@@ -183,10 +206,14 @@ function messageOf(value: unknown): string {
 /** The step's output as stored (storedOutput.ts; the runner's approval wake shares it). */
 const storedOutput = toStoredFlowOutput;
 
-/** A tool's string result as a FlowValue: JSON when it parses, else `{ text }`. */
+/**
+ * A tool's string result as a FlowValue: JSON when it parses, else `{ text }`.
+ * A paged tool's `_pageResume` descriptor (#10385) is chat-compaction input,
+ * not output — flows use the page as-is, so it never reaches step outputs.
+ */
 function parseToolText(text: string): FlowValue {
   try {
-    return JSON.parse(text) as FlowValue;
+    return JSON.parse(stripPageResumeJson(text)) as FlowValue;
   } catch {
     return { text };
   }
@@ -336,7 +363,7 @@ const failedPolicy = (code: FlowStepErrorCode, message: string, meta: StepOutcom
 async function executePreApproved(
   i: StepExecutionInput,
   rendered: Record<string, FlowValue>,
-  binding: FlowPreApprovalBinding,
+  binding: ActAssetPreApprovalBinding,
   approvalScope: 'supervised' | 'four_eyes' | null,
   sleep: (ms: number) => Promise<void>,
 ): Promise<StepOutcome> {
@@ -393,7 +420,14 @@ async function executePreApproved(
   }, sleep);
 }
 
-async function parkForApproval(i: StepExecutionInput, rendered: Record<string, FlowValue>): Promise<StepOutcome> {
+/** The binding an external (tool-source) step's intent carries; see `CreateActionIntentInput.externalTool`. */
+type ExternalToolBinding = NonNullable<Parameters<typeof createActionIntent>[1]['externalTool']>;
+
+async function parkForApproval(
+  i: StepExecutionInput,
+  rendered: Record<string, FlowValue>,
+  opts: { builtin?: true; externalTool?: ExternalToolBinding } = {},
+): Promise<StepOutcome> {
   const meta: StepOutcomeMeta = { renderedInput: rendered };
   let intent: Awaited<ReturnType<typeof createActionIntent>>;
   try {
@@ -402,6 +436,12 @@ async function parkForApproval(i: StepExecutionInput, rendered: Record<string, F
       orgId: i.run.orgId,
       toolName: i.pin.tool,
       input: rendered,
+      // #10288: an external step's intent is BOUND to its pinned tool row and
+      // revision. Without it createActionIntent classifies the qualified
+      // `<slug>__<name>` with the core classifier (tier 4, `tool_blocked`);
+      // with it, the dispatch claim and release revalidation re-check exactly
+      // the row the approver was shown and fail closed on drift.
+      ...(opts.externalTool ? { externalTool: opts.externalTool } : {}),
       flowRun: {
         runId: i.run.id,
         stepRowId: i.stepRowId,
@@ -409,6 +449,7 @@ async function parkForApproval(i: StepExecutionInput, rendered: Record<string, F
         triggeredByUserId: i.run.triggeredByUserId ?? null,
         flowName: flowNameOf(i.version),
         stepId: i.step.id,
+        ...(opts.builtin ? { builtin: true } : {}),
       },
     });
   } catch (err) {
@@ -429,6 +470,79 @@ async function parkForApproval(i: StepExecutionInput, rendered: Record<string, F
     );
   }
   return { kind: 'park_approval', intentId: intent.id, ...meta };
+}
+
+// ── built-ins (W5 #5220) ─────────────────────────────────────────────────────
+
+/**
+ * A Tier ≤ 2 built-in, in-process, inside the run's flow execution frame and
+ * raced against the step deadline like a tool call. Never retried: a built-in
+ * answers for itself (`ai` settles its own model calls, `http_request` never
+ * retries a request that may have arrived). A throw or a timeout from Tier 2
+ * may have taken effect (`unknown_outcome`); from Tier 1 it is a plain failure.
+ */
+async function runBuiltin(
+  i: StepExecutionInput,
+  name: FlowBuiltinName,
+  input: Record<string, FlowValue>,
+  tier: 1 | 2 | 3,
+  owner: ToolOwnerRef,
+): Promise<StepOutcome> {
+  const meta: StepOutcomeMeta = { renderedInput: input };
+  const counters = name === 'notify' || name === 'http_request'
+    ? await countRunBuiltinCalls(i.run.id)
+    : { notify: 0, http: 0 };
+  const ctx = builtinContextOf(i, owner, counters);
+  return runInFrame(i, () => executeFlowBuiltin(name, input, ctx), tier, meta, name);
+}
+
+function builtinContextOf(i: StepExecutionInput, owner: ToolOwnerRef, counters: BuiltinContext['counters']): BuiltinContext {
+  return {
+    run: i.run, version: i.version, step: i.step, owner, auth: i.auth, stepRowId: i.stepRowId, itemIndex: i.itemIndex,
+    deadline: i.deadline, counters, leaseToken: i.leaseToken ?? null,
+  };
+}
+
+/**
+ * A built-in's execution inside the run's flow execution frame, raced against
+ * the step deadline. A throw or a timeout from Tier >= 2 may have taken
+ * effect (`unknown_outcome`); from Tier 1 it is a plain failure.
+ */
+async function runInFrame(
+  i: StepExecutionInput,
+  fn: () => Promise<StepOutcome>,
+  tier: 1 | 2 | 3,
+  meta: StepOutcomeMeta,
+  name: string = i.pin.tool,
+): Promise<StepOutcome> {
+  const frame = { runId: i.run.id, chainDepth: i.run.chainDepth };
+  const settled = await raceDeadline(() => withFlowExecutionContext(frame, fn), i.deadline);
+  if (settled.kind === 'timeout') {
+    return tier === 1
+      ? { kind: 'failed', code: 'step_timeout', message: 'The step did not finish before its timeout.', policy: false, ...meta }
+      : { kind: 'unknown_outcome', message: 'The step did not finish before its timeout; it may have taken effect.', ...meta };
+  }
+  if (settled.kind === 'threw') {
+    // Built-ins answer for their own failures; a throw is unexpected — report it.
+    captureException(settled.error instanceof Error ? settled.error : new Error(String(settled.error)), undefined,
+      { org_id: i.run.orgId, flow_id: i.run.flowId, flow_run_id: i.run.id, flow_site: `flows.builtin.${name}` },
+      { fingerprint: ['flow', `flows.builtin.${name}`] });
+    return tier === 1
+      ? { kind: 'failed', code: 'step_failed', message: messageOf(settled.error), policy: false, ...meta }
+      : { kind: 'unknown_outcome', message: `The step failed unexpectedly and may have taken effect: ${messageOf(settled.error)}`, ...meta };
+  }
+  const outcome = settled.value;
+  return outcome.kind === 'skipped' || outcome.renderedInput ? outcome : { ...outcome, ...meta };
+}
+
+/** The http_request preflight (cap, origin pin, scheme, own host, body cap) at park time; null ⇒ may park. */
+async function httpRequestRefusedBeforeSend(i: StepExecutionInput, input: Record<string, FlowValue>): Promise<StepOutcome | null> {
+  const meta: StepOutcomeMeta = { renderedInput: input };
+  const literal = typeof i.step.input.url === 'string' ? literalOriginOf(i.step.input.url) : null;
+  if (!literal?.ok) return failedPolicy('egress_blocked', 'This step has no fixed origin to call.', meta);
+  const counters = await countRunBuiltinCalls(i.run.id);
+  const pre = preflightHttpRequest(input as unknown as HttpRequestInput, { literalOrigin: literal.origin, httpCalls: counters.http });
+  return pre.ok ? null : { ...pre.outcome, ...meta };
 }
 
 // ── entry point ──────────────────────────────────────────────────────────────
@@ -458,27 +572,40 @@ export async function executeFlowStep(i: StepExecutionInput, deps: StepExecutorD
     return failedPolicy('drift', 'This step no longer matches what was published.', { renderedInput: rendered });
   }
 
-  // 3. built-ins (in-process; never a tool call)
-  if (i.pin.source === 'builtin') {
-    if (!isFlowBuiltin(i.step.tool)) {
-      return failedPolicy('tool_unavailable', `Built-in '${i.step.tool}' is not available.`, { renderedInput: rendered });
-    }
-    if (i.step.tool === 'set') {
-      const parsed = FLOW_BUILTIN_STEPS.set.inputSchema.safeParse(rendered);
-      if (!parsed.success) return failedPolicy('input_invalid', parsed.error.issues[0]?.message ?? 'Invalid set input.', { renderedInput: rendered });
-      return { kind: 'completed', ...storedOutput(parsed.data.values as Record<string, FlowValue>), renderedInput: rendered };
-    }
-    const parsed = FLOW_BUILTIN_STEPS.wait.inputSchema.safeParse(rendered);
-    if (!parsed.success) return failedPolicy('input_invalid', parsed.error.issues[0]?.message ?? 'Invalid wait input.', { renderedInput: rendered });
-    const resumeAt = new Date(Date.now() + parsed.data.minutes * 60_000);
-    return { kind: 'park_wait', resumeAt, output: { waitUntil: resumeAt.toISOString() }, renderedInput: rendered };
-  }
-
-  // 4. run-time revalidation, unmasked, against the RUN org
+  // 3. run-time revalidation, unmasked, against the RUN org — built-ins
+  //    included (W5 #5220, Decision 12: schema on the rendered input and the
+  //    live tier, so a rise is drift, never a silent run).
   const owner = ownerOf(i.version, i.run, i.auth);
   if (!owner) return failedPolicy('drift', 'This run no longer belongs to the flow\'s owner.', { renderedInput: rendered });
   const check = await revalidateRenderedStep(i.pin, rendered, { owner, runOrgId: i.run.orgId });
   if (!check.ok) return failedPolicy(check.code, check.message, { renderedInput: rendered });
+
+  // 4. built-ins (in-process; never a tool call). A Tier-3 built-in (an
+  //    http_request write) parks for one supervised approval EVERY run — never
+  //    pre-approved — and executes only through the release worker.
+  if (i.pin.source === 'builtin' && isFlowBuiltin(i.pin.tool)) {
+    const name = i.pin.tool;
+    const input = FLOW_BUILTIN_STEPS[name].inputSchema.parse(rendered) as Record<string, FlowValue>;
+    if (check.tier === 3) {
+      // W6 (#5221): the fleet built-in resolves its devices once, then runs
+      // under a revalidated fleet pre-approval or parks with the list frozen.
+      if (name === 'run_script_on_targets') {
+        const lookup = bindingFor(i.version, i.step.id);
+        return executeFleetStep(i, input as unknown as RunScriptOnTargetsInput, builtinContextOf(i, owner, { notify: 0, http: 0 }), {
+          binding: lookup.kind === 'invalid' ? 'invalid' : lookup.kind === 'bound' ? lookup.binding : null,
+          park: (frozen) => parkForApproval(i, frozen, { builtin: true }),
+          run: (fn, meta) => runInFrame(i, fn, 3, meta),
+        });
+      }
+      // Never ask an approver to approve a request certain to be refused at release.
+      if (name === 'http_request') {
+        const refused = await httpRequestRefusedBeforeSend(i, input);
+        if (refused) return refused;
+      }
+      return parkForApproval(i, input, { builtin: true });
+    }
+    return runBuiltin(i, name, input, check.tier, owner);
+  }
 
   // A flow never dispatches a step's own run context for run_script (the
   // saved script's governs — see FLOW_IGNORED_RUN_SCRIPT_KEYS); drop it so the
@@ -495,7 +622,25 @@ export async function executeFlowStep(i: StepExecutionInput, deps: StepExecutorD
       return failedPolicy('drift', 'This step\'s stored pre-approval is unreadable.', { renderedInput: rendered });
     }
     if (i.run.preApprovalsHonored && lookup.kind === 'bound') {
+      // W6: a core run_script step can only carry an act-asset binding.
+      if (lookup.binding.lane !== 'act_asset') {
+        return failedPolicy('binding_drift', 'This step no longer matches its pre-approval.', { renderedInput: rendered });
+      }
       return executePreApproved(i, rendered, lookup.binding, check.approvalScope, sleep);
+    }
+    if (i.pin.source === 'tenant') {
+      // #10288: an external step parks bound to its pinned row + revision —
+      // loaded under the flow principal exactly as a Tier 1/2 call would be,
+      // so a tool the owner can no longer reach never asks for an approval.
+      const pinned = await loadPinnedTenantTool(i, { renderedInput: rendered });
+      if (pinned.kind === 'refused') return pinned.outcome;
+      return parkForApproval(i, rendered, {
+        externalTool: {
+          toolSourceToolId: i.pin.tenantToolId,
+          revision: i.pin.tenantRevision,
+          sourceName: pinned.descriptor.sourceName,
+        },
+      });
     }
     return parkForApproval(i, rendered);
   }
@@ -503,12 +648,9 @@ export async function executeFlowStep(i: StepExecutionInput, deps: StepExecutorD
   // 6. tier 1 / 2
   const meta: StepOutcomeMeta = { renderedInput: rendered };
   if (i.pin.source === 'tenant') {
-    const loaded = await loadTenantToolForExecution(i.pin.tenantToolId, i.auth, i.run.orgId);
-    if (!loaded) return failedPolicy('tool_unavailable', 'This step\'s tool is no longer available to the flow\'s owner.', meta);
-    if (loaded.descriptor.id !== i.pin.tenantToolId || loaded.descriptor.revision !== i.pin.tenantRevision) {
-      return failedPolicy('drift', 'This step\'s external tool changed since the flow was enabled.', meta);
-    }
-    const descriptor = loaded.descriptor;
+    const pinned = await loadPinnedTenantTool(i, meta);
+    if (pinned.kind === 'refused') return pinned.outcome;
+    const descriptor = pinned.descriptor;
     return runToolCall(i, {
       tier: check.tier,
       meta,
@@ -533,6 +675,29 @@ export async function executeFlowStep(i: StepExecutionInput, deps: StepExecutorD
       return callResultOf(tool, parseToolText(await inToolDbContext(tool, rendered, i.auth, () => executeTool(tool, rendered, i.auth))));
     },
   }, sleep);
+}
+
+/**
+ * A tenant step's tool, reloaded under the flow principal (owner predicate +
+ * `TOOL_SOURCES_ENABLED` kill switch) and held to the publication's pin: the
+ * same row at the same revision, or the step refuses (policy) before it either
+ * executes or parks.
+ */
+async function loadPinnedTenantTool(
+  i: StepExecutionInput,
+  meta: StepOutcomeMeta,
+): Promise<{ kind: 'loaded'; descriptor: TenantToolDescriptor } | { kind: 'refused'; outcome: StepOutcome }> {
+  if (i.pin.source !== 'tenant') {
+    return { kind: 'refused', outcome: failedPolicy('drift', 'This step no longer matches what was published.', meta) };
+  }
+  const loaded = await loadTenantToolForExecution(i.pin.tenantToolId, i.auth, i.run.orgId);
+  if (!loaded) {
+    return { kind: 'refused', outcome: failedPolicy('tool_unavailable', 'This step\'s tool is no longer available to the flow\'s owner.', meta) };
+  }
+  if (loaded.descriptor.id !== i.pin.tenantToolId || loaded.descriptor.revision !== i.pin.tenantRevision) {
+    return { kind: 'refused', outcome: failedPolicy('drift', 'This step\'s external tool changed since the flow was enabled.', meta) };
+  }
+  return { kind: 'loaded', descriptor: loaded.descriptor };
 }
 
 /**

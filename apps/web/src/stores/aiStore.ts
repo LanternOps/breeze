@@ -2,13 +2,16 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AiAttachState, AiPageContext, AiStreamEvent, AiApprovalMode, AiTopologyProgressPhase, TopologyAiSelection, AiContinuationRequired, AiModelChoice, AiTurnModel } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
+import { registerLogoutHook } from './logoutHooks';
 import { noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
+import { pageContextAnchorsOrg } from './aiPageContext';
 import { classifySendRefusal } from './aiSendRefusal';
 import { isChatSessionType } from './aiSessionOpen';
 import { attachAiSession, attachBackoffMs, shouldReattach, trackAttach, type AttachOutcome } from './aiSessionAttach';
 import { extractApiError } from '@/lib/apiError';
 import { i18n } from '@/lib/i18n';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
+import { WISP_GRANT_UNUSABLE, wispSessionOrgId } from '@/lib/wispSession';
 import { showToast } from '@/components/shared/Toast';
 import {
   attachAnchorMissing,
@@ -19,6 +22,7 @@ import {
   type PendingPlan,
   type ActivePlan,
   type ChatRunState,
+  alreadyDecidedOutcome,
 } from './processStreamEvent';
 
 interface M365Connection {
@@ -167,6 +171,12 @@ interface AiState {
    * approveExecution: it talks to no endpoint.
    */
   clearPendingApproval: () => void;
+  /**
+   * #9431: the window came back (focus / visible) with an undecided approval
+   * card up and no live stream to deliver `approval_resolved` — re-attach so
+   * the server's pending cards replace it. A no-op otherwise.
+   */
+  recheckPendingApproval: () => void;
   approvePlan: (approved: boolean) => Promise<void>;
   abortPlan: () => Promise<void>;
   pauseAi: (paused: boolean) => Promise<void>;
@@ -206,10 +216,10 @@ interface AiState {
 }
 
 /**
- * True when an open session belongs to a different org than the device page the
+ * True when an open session belongs to a different org than the record or device page the
  * chat is now sitting on (#5684).
  *
- * Both sides must be known: a device page context with no `orgId` (an older
+ * Both sides must be known: a page context with no `orgId` (an older
  * caller) and a session with no recorded org both mean "cannot tell", and the
  * session is left alone rather than dropped on a guess.
  */
@@ -218,7 +228,7 @@ function pageContextOrgMismatch(
   sessionOrgId: string | null,
 ): boolean {
   return (
-    !!ctx && ctx.type === 'device' && !!ctx.orgId && !!sessionOrgId && ctx.orgId !== sessionOrgId
+    !!ctx && 'orgId' in ctx && typeof ctx.orgId === 'string' && !!ctx.orgId && !!sessionOrgId && ctx.orgId !== sessionOrgId
   );
 }
 
@@ -316,8 +326,6 @@ async function rehydrateWispForSession(sessionId: string, session: Record<string
   }
 }
 
-/** Session-create refusals that mean the grant cannot carry a session at all. */
-const WISP_GRANT_UNUSABLE = new Set(['grant_inactive', 'grant_not_found', 'grant_not_yours', 'wisp_disabled', 'entitlement_required']);
 
 /** A cleared session has no stamped model: drop the picker, then reload the default menu. */
 function resetModelPicker(): void {
@@ -398,7 +406,7 @@ function abortCurrentAttach(): void {
  */
 const TOPOLOGY_TURN_EVENTS: ReadonlySet<AiStreamEvent['type']> = new Set<AiStreamEvent['type']>([
   'message_start', 'topology_progress', 'topology_explanation', 'topology_diagnostic_run',
-  'approval_required', 'message_end', 'error', 'done', 'title_updated', 'approval_mode_changed',
+  'approval_required', 'approval_resolved', 'message_end', 'error', 'done', 'title_updated', 'approval_mode_changed',
 ]);
 
 /** IDs-only selection of a topology page context, or null for any other context. */
@@ -775,17 +783,17 @@ export const useAiStore = create<AiState>()(
     // focus_mismatch) rather than re-anchoring silently.
     const wisp = get().wisp;
     const wispGrantId = opts?.wispGrantId ?? wisp?.grantId;
-    const wispOrgId = opts?.wispGrantId ? null : wisp ? (wisp.focusOrgId ?? wisp.scopeOrgId) : null;
+    const wispOrgId = opts?.wispGrantId ? null : wisp ? wispSessionOrgId(wisp) : null;
     try {
       const orgId = opts?.orgId
         ?? wispOrgId
-        ?? (pageContext?.type === 'device' || opts?.deviceId ? null : await readSelectedOrgId());
+        ?? (pageContextAnchorsOrg(pageContext) || opts?.deviceId ? null : await readSelectedOrgId());
       const res = await fetchWithAuth('/ai/sessions', {
         method: 'POST',
         body: JSON.stringify({
-          // #9529: with no device on the page, the session belongs to the org
-          // selected in the header. A device page / device task lets the
-          // server anchor to the device's org instead (#5593), and no
+          // #9529: without a page org anchor, the session belongs to the org
+          // selected in the header. A device/record page or device task lets
+          // the server resolve and anchor to the entity's org instead, and no
           // selection (All organizations) sends nothing.
           orgId: orgId ?? undefined,
           ...(wispGrantId ? { wispGrantId } : {}),
@@ -1059,9 +1067,19 @@ export const useAiStore = create<AiState>()(
         }
 
         // refusal === 'error': the generic failure path (#9428 slots its
-        // classifyHttpFailure in here).
-        set({ errorCode: code });
-        throw new Error(extractApiError(data, 'Failed to send message'));
+        // classifyHttpFailure in here). The server refused the turn before it
+        // ran (e.g. 503 ai_not_configured), so it never stored the message:
+        // drop the optimistic bubble and give the text back to the composer
+        // (#10108), keeping the error banner.
+        if (!ownsStream()) return;
+        set((s) => ({
+          messages: s.messages.filter((m) => m.id !== userMsgId),
+          composerDraft: trimmedContent,
+          error: extractApiError(data, 'Failed to send message'),
+          errorCode: code,
+          isStreaming: false,
+        }));
+        return;
       }
 
       const reader = res.body?.getReader();
@@ -1138,6 +1156,14 @@ export const useAiStore = create<AiState>()(
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
+        // #9431: decided elsewhere first — show that decision on the card.
+        const decided = alreadyDecidedOutcome(res.status, data);
+        if (decided) {
+          set((s) => (s.pendingApproval?.executionId === executionId
+            ? { pendingApproval: { ...s.pendingApproval, resolution: decided } }
+            : {}));
+          return;
+        }
         set({ error: extractApiError(data, 'Failed to process approval. It may have timed out.') });
         return;
       }
@@ -1149,6 +1175,14 @@ export const useAiStore = create<AiState>()(
   },
 
   clearPendingApproval: () => set({ pendingApproval: null }),
+
+  recheckPendingApproval: () => {
+    const { sessionId, pendingApproval } = get();
+    if (!sessionId || !pendingApproval || pendingApproval.resolution) return;
+    // A live stream delivers approval_resolved itself.
+    if (currentAttach || currentSendReader) return;
+    void get().attachCurrent();
+  },
 
   approvePlan: async (approved: boolean) => {
     const { sessionId } = get();
@@ -1459,7 +1493,7 @@ export const useAiStore = create<AiState>()(
     // A Wisp conversation starts fresh on the grant's thread; the plain chat
     // that was open stays in history (not closed — it is not the thread's).
     set({ wisp: w, ...CLEARED_SESSION });
-    await get().createSession({ wispGrantId: w.grantId, orgId: w.focusOrgId ?? w.scopeOrgId ?? undefined });
+    await get().createSession({ wispGrantId: w.grantId, orgId: wispSessionOrgId(w) ?? undefined });
   },
 
   setWispFocus: async (orgId, orgName) => {
@@ -1521,4 +1555,21 @@ export const useAiStore = create<AiState>()(
 // its reader is cancelled instead of waiting for its next frame.
 useAiStore.subscribe((state) => {
   if (currentAttach && currentAttach.sessionId !== state.sessionId) abortCurrentAttach();
+});
+
+// #9840 lab row F1: sign-out navigates to /login without a page load, so this
+// store keeps its memory. Removing `breeze-ai-chat` from storage is not enough:
+// the next persist write would put the old session back, and the next person
+// to sign in on this browser would see the previous user's conversation,
+// rendered from memory. Reset to the initial state here, before auth.ts clears
+// storage, and stop anything still streaming into the old session.
+registerLogoutHook(() => {
+  claimSessionOwnership();
+  ++activeStreamToken;
+  const reader = currentSendReader;
+  currentSendReader = null;
+  if (reader) void reader.cancel().catch(() => undefined);
+  abortCurrentAttach();
+  useAiModelPickerStore.getState().reset();
+  useAiStore.setState(useAiStore.getInitialState(), true);
 });

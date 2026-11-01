@@ -112,13 +112,13 @@ describe('DeviceActivityFeed', () => {
     await waitFor(() => expect(onHasContentChange).toHaveBeenLastCalledWith(true));
   });
 
-  it('reports content when there are no events but active alerts exist', async () => {
-    // The pinned active-alerts banner is content too — the rail must not collapse
-    // while an alert is showing.
+  it('reports no content when there are active alerts but no events', async () => {
+    // Open alerts live in the Overview state card beside the rail; on their own
+    // they must not hold a near-empty Activity column open.
     mockFeed([], [{ id: 'a1', status: 'active' }]);
     const onHasContentChange = vi.fn();
     render(<DeviceActivityFeed deviceId="dev-1" onHasContentChange={onHasContentChange} />);
-    await waitFor(() => expect(onHasContentChange).toHaveBeenLastCalledWith(true));
+    await waitFor(() => expect(onHasContentChange).toHaveBeenLastCalledWith(false));
   });
 
   const evt = (id: string) => ({

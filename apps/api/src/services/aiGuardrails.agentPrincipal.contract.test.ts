@@ -206,9 +206,14 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_compliance_status',
   'get_configuration_policy',
   'get_contract',
+  'get_device_ai_activity', // W10 (#6780) Tier-1 read, own device for a device-bound run
+  'get_device_billing', // Full-control W14 (#6784): tier-1 contract lines billing one device (partner scope only in the handler)
   'get_device_context',
   'get_device_details',
+  'get_device_events', // Full-control W13 (#6783): tier-1 device audit timeline, device-scoped
   'get_device_hardware_health',
+  'get_device_health', // Full-control W13 (#6783): tier-1 agent health snapshot, device-scoped
+  'get_device_software', // Full-control W12 (#6782): tier-1 installed-software read, device-scoped
   'get_device_time_status',
   'get_device_vulnerabilities',
   'get_diagnostic_run', // M4 Task 1 (#6000) one topology diagnostic run, Tier 1 read
@@ -223,11 +228,13 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_elevation_history',
   // W01 (#6755) follow-up
   'get_executive_summary',
+  'get_fleet_design', // W10 (#6780) Tier-1 read
   'get_fleet_device_stats',
   'get_fleet_findings',
   'get_fleet_health',
   'get_flow', // Tool Catalog W03 (#5218) Tier-1 read
   'get_flow_run', // Tool Catalog W04 (#5219) Tier-1 read
+  'get_huntress_agents', // #10393 Tier-1 read
   'get_huntress_incidents',
   'get_huntress_status',
   // W01 (#6755)
@@ -242,6 +249,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_link_evidence', // M4 Task 1 (#6000) link observations, Tier 1 read
   'get_link_health', // M3 Task 6 topology read
   'get_log_trends',
+  'get_management_posture', // Full-control W13 (#6783): tier-1 posture report, site + device axes in SQL
   // W01 (#6755)
   'get_monitor',
   'get_mssql_backup_status',
@@ -251,8 +259,10 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_network_asset_reachability',
   // W01 (#6755)
   'get_network_changes',
+  'get_pax8_status', // W15 (#6785): tier-1 metadata; handler additionally requires partner scope and full access
   'get_peripheral_activity',
   'get_playbook_history',
+  'get_process_samples', // Full-control W13 (#6783): tier-1 recorded process snapshot, device-scoped
   'get_quote',
   'get_recent_network_changes', // M3 Task 10 topology read
   'get_running_timer', // A-W06 Tier-1 read
@@ -265,12 +275,14 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   // Tier-3 run_script consumes it, and the handler itself returns
   // feature_disabled while BREEZE_AI_SCRIPT_AUTHORING_ENABLED is off.
   'get_script_proposal',
+  'get_security_compliance', // Full-control W11 (#6781): tier-1 status/compliance read, device-scoped
   'get_security_posture',
   'get_service_monitoring_status',
   'get_site', // A-W06 Tier-1 read
   // W01 (#6755)
   'get_sla_breaches',
   'get_sla_compliance_report',
+  'get_snmp_metrics',
   'get_software_compliance',
   'get_ticket_approval_status', // #8196 W05 Tier-1 read-only (no decide/write-off tool exists)
   'get_timesheet', // A-W06 Tier-1 read
@@ -289,6 +301,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'google_lookup_user',
   'google_security_drift',
   'list_ai_agent_runs', // A-W06 Tier-1 read
+  'list_ai_agent_schedules', // W10 (#6780) Tier-1 read
   'list_ai_agents', // A-W06 Tier-1 read
   'list_business_calendars', // #8973 W4 Tier-1 read
   'list_concerns', // Wisp W05a: Tier 1 concern read; refuses without auth.wispGrant, ceiling-filtered by the service
@@ -297,6 +310,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_deliverable_templates',
   'list_device_restore_point_attempts', // #8584: Tier 1 device-scoped ledger read, same as get_device_time_status
   'list_edr_detections', // EDR provider framework (#8166) Tier-1 read
+  'list_fleet_designs', // W10 (#6780) Tier-1 read
   'list_flow_runs', // Tool Catalog W04 (#5219) Tier-1 read
   'list_flows', // Tool Catalog W03 (#5218) Tier-1 read
   'list_incidents', // A-W06 Tier-1 read
@@ -379,6 +393,8 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'search_catalog',
   'search_documentation', // A-W02 Task 5 declared it on the chat server (Tier 1 read)
   'search_logs',
+  'search_packages', // Full-control W12 (#6782): tier-1 winget/Homebrew package search, no tenant data
+  'search_pax8_products', // W15 (#6785): product metadata reads, partner scope enforced in handler
   // W01 (#6755)
   'search_script_library',
   'test_ticket_routing_rule', // #8883 W5 Tier-1 read (dry run)
@@ -911,10 +927,12 @@ describe('Task 2 — act disposition matrix', () => {
  * as a literal so a membership change is a deliberate, reviewed edit.
  */
 const EXPECTED_AGENT_DENIED_READ_TOOLS = [
+  'get_operator_task', // W10 (#6780, QW5)
   'get_user_risk_detail',
   'get_sensitive_data_overview',
   'get_user_risk_scores',
   'm365_query_signins', // WQ1
+  'list_operator_tasks', // W10 (#6780, QW5)
   'm365_query_users', // WQ1
   'query_c2c_jobs', // WQ2
   'search_c2c_items',
@@ -992,11 +1010,28 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
     vi.unstubAllEnvs();
   });
 
-  it('is exactly manage_tags add/remove and manage_groups add_devices/remove_devices (both feed run scope), each with a real reason', () => {
+  it('is exactly manage_tags add/remove, manage_groups add_devices/remove_devices (both feed run scope), the two W11 audit-baseline writes, the W12 uninstall, the W13 device-function set and the W14 legal-document writes, each with a real reason', () => {
     expect([...AGENT_HUMAN_ONLY_ACTIONS.keys()].sort()).toEqual([
+      // W14 PR B (#6784): accounting writes leave the tenant (and overwrite the provider's records).
+      'manage_accounting_sync:link_mapping', 'manage_accounting_sync:push', 'manage_accounting_sync:push_bulk',
+      'manage_accounting_sync:sync_mapping', 'manage_accounting_sync:unlink_mapping',
+      // W11-D8 (#6781, quorum QW5/QW9): users-FK writes a user-owned release would run without the run's ceiling.
+      'manage_audit_baselines:create', 'manage_audit_baselines:request_apply',
+      // W14 (#6784): agreement templates and signed agreements are the legal documents customers sign.
+      'manage_contract_documents:link',
+      'manage_contract_templates:archive', 'manage_contract_templates:create', 'manage_contract_templates:create_version',
+      'manage_contract_templates:publish', 'manage_contract_templates:update',
+      // W14 PR B (#6784): generating an invoice bills (and may email) the customer.
+      'manage_contracts:generate_invoice',
+      // W13 (#6783): function is an allowed execution-targeting filter -> dynamic groups -> run scope.
+      'manage_device_function:set',
+      // W12 (#6782, quorum QW6): irreversible removal on a customer machine (conservative D4 exception).
+      'manage_device_software:uninstall',
       // W04-D8 (#6758): group membership is the same self-scope path (triggers.deviceGroupIds).
       'manage_groups:add_devices', 'manage_groups:remove_devices',
       'manage_tags:add', 'manage_tags:remove',
+      // W13 PR B (#6783): tenant-variable values are script inputs.
+      'manage_tenant_variables:create', 'manage_tenant_variables:delete', 'manage_tenant_variables:update',
     ]);
     for (const reason of AGENT_HUMAN_ONLY_ACTIONS.values()) expect(reason.length).toBeGreaterThanOrEqual(20);
   });
@@ -1053,5 +1088,180 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
     const check = checkAgentGuardrails('manage_groups', { action: 'list' }, groupPolicy);
     expect(check.disposition).toBe('allow');
   });
+
+  // W11-D8 (#6781): the audit-baseline writes are human-only actions; the reads stay reachable.
+  const baselinePolicy = policyWith({
+    mode: 'act', toolAllowlist: ['manage_audit_baselines', 'manage_audit_baselines:create', 'manage_audit_baselines:request_apply'],
+  });
+
+  it.each([
+    ['create', { name: 'CIS L1', osType: 'windows', profile: 'cis_l1' }],
+    ['request_apply', { baselineId: 'b-1', deviceIds: ['dev-1'] }],
+  ] as const)('denies an allowlisted manage_audit_baselines:%s', (action, extra) => {
+    const check = checkAgentGuardrails('manage_audit_baselines', { action, ...extra }, baselinePolicy);
+    expect(check.disposition).toBe('deny');
+    expect(check.reason).toMatch(/never available to agents/);
+  });
+
+  it('control: manage_audit_baselines:list still reaches an agent', () => {
+    const check = checkAgentGuardrails('manage_audit_baselines', { action: 'list' }, baselinePolicy);
+    expect(check.disposition).toBe('allow');
+  });
+
+  it.each(['manage_access_reviews', 'manage_pam_rules'])('%s is never offered to an agent, reads included (W11 D4 exception)', (tool) => {
+    const read = tool === 'manage_pam_rules' ? 'list_rules' : 'list';
+    const check = checkAgentGuardrails(tool, { action: read }, policyWith({ mode: 'act', toolAllowlist: [tool, `${tool}:${read}`] }));
+    expect(check.disposition).toBe('deny');
+  });
+
+  // W12 (#6782): uninstall is a human-only action; update becomes a proposal; homebrew and custom fields never reach an agent.
+  it('denies an allowlisted manage_device_software:uninstall; update is not auto-allowed', () => {
+    const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_device_software', 'manage_device_software:update', 'manage_device_software:uninstall'] });
+    const uninstall = checkAgentGuardrails('manage_device_software', { action: 'uninstall', deviceId: 'dev-1', name: 'App' }, policy);
+    expect(uninstall.disposition).toBe('deny');
+    expect(uninstall.reason).toMatch(/never available to agents/);
+    expect(checkAgentGuardrails('manage_device_software', { action: 'update', deviceId: 'dev-1', name: 'App' }, policy).disposition).not.toBe('allow');
+  });
+
+  it.each([
+    ['bootstrap_homebrew', { deviceId: 'dev-1' }],
+    ['manage_custom_fields', { action: 'create_definition', name: 'x', fieldKey: 'x', type: 'text' }],
+  ] as const)('%s is never offered to an agent (W12 D4 exception)', (tool, input) => {
+    const check = checkAgentGuardrails(tool, input, policyWith({ mode: 'act', toolAllowlist: [tool] }));
+    expect(check.disposition).toBe('deny');
+  });
+
+  describe('W14 PR B (#6784)', () => {
+    it.each(['generate_invoice'])('denies an allowlisted manage_contracts:%s (money)', (action) => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_contracts', `manage_contracts:${action}`] });
+      const check = checkAgentGuardrails('manage_contracts', { action, contractId: 'c-1' }, policy);
+      expect(check.disposition).toBe('deny');
+      expect(check.reason).toMatch(/never available to agents/);
+    });
+
+    it.each(['link_mapping', 'unlink_mapping', 'sync_mapping', 'push', 'push_bulk'])(
+      'denies an allowlisted manage_accounting_sync:%s (leaves the tenant)', (action) => {
+        const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_accounting_sync', `manage_accounting_sync:${action}`] });
+        expect(checkAgentGuardrails('manage_accounting_sync', { action, provider: 'xero' }, policy).disposition).toBe('deny');
+      },
+    );
+
+    it('control: preview_invoice and the accounting reads reach an agent with no allowlist entry', () => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: [] });
+      expect(checkAgentGuardrails('manage_contracts', { action: 'preview_invoice', contractId: 'c-1' }, policy).disposition).toBe('allow');
+      expect(checkAgentGuardrails('manage_accounting_sync', { action: 'status', provider: 'xero' }, policy).disposition).toBe('allow');
+    });
+  });
+
+  describe('W14 (#6784)', () => {
+    it.each(['create', 'update', 'create_version', 'publish', 'archive'])('denies an allowlisted manage_contract_templates:%s (legal documents)', (action) => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_contract_templates', `manage_contract_templates:${action}`] });
+      const check = checkAgentGuardrails('manage_contract_templates', { action, templateId: 't-1', name: 'n' }, policy);
+      expect(check.disposition).toBe('deny');
+      expect(check.reason).toMatch(/never available to agents/);
+    });
+
+    it('denies an allowlisted manage_contract_documents:link', () => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_contract_documents', 'manage_contract_documents:link'] });
+      expect(checkAgentGuardrails('manage_contract_documents', { action: 'link', documentId: 'd', contractId: 'c' }, policy).disposition).toBe('deny');
+    });
+
+    it('control: template / document / rate-card / settings reads reach an agent with no allowlist entry', () => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: [] });
+      expect(checkAgentGuardrails('manage_contract_templates', { action: 'list' }, policy).disposition).toBe('allow');
+      expect(checkAgentGuardrails('manage_contract_documents', { action: 'list' }, policy).disposition).toBe('allow');
+      expect(checkAgentGuardrails('manage_billing_profiles', { action: 'list' }, policy).disposition).toBe('allow');
+      expect(checkAgentGuardrails('manage_billing_settings', { action: 'get_partner' }, policy).disposition).toBe('allow');
+    });
+
+    it('rate-card and settings writes are proposals, never direct', () => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_billing_profiles:update', 'manage_billing_settings:update_org'] });
+      expect(checkAgentGuardrails('manage_billing_profiles', { action: 'update', profileId: 'p' }, policy).disposition).not.toBe('allow');
+      expect(checkAgentGuardrails('manage_billing_settings', { action: 'update_org', orgId: 'o' }, policy).disposition).not.toBe('allow');
+    });
+  });
+
+  describe('W13 PR B (#6783)', () => {
+    it.each(['create', 'update', 'delete'])('denies an allowlisted manage_tenant_variables:%s (script inputs)', (action) => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_tenant_variables', `manage_tenant_variables:${action}`] });
+      const check = checkAgentGuardrails('manage_tenant_variables', { action, key: 'k', value: 'v' }, policy);
+      expect(check.disposition).toBe('deny');
+      expect(check.reason).toMatch(/never available to agents/);
+    });
+
+    it('control: tenant-variable list and support-session list reach an agent with no allowlist entry', () => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: [] });
+      expect(checkAgentGuardrails('manage_tenant_variables', { action: 'list' }, policy).disposition).toBe('allow');
+      expect(checkAgentGuardrails('manage_support_sessions', { action: 'list' }, policy).disposition).toBe('allow');
+    });
+
+    it('event-log list_logs is read-only to an agent; query and support-session end become proposals', () => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: ['browse_device_event_log:query', 'manage_support_sessions:end'] });
+      expect(checkAgentGuardrails('browse_device_event_log', { action: 'list_logs', deviceId: 'dev-1' }, policyWith({ mode: 'act', toolAllowlist: [] })).disposition).toBe('allow');
+      expect(checkAgentGuardrails('browse_device_event_log', { action: 'query', deviceId: 'dev-1', logName: 'Security' }, policy).disposition).not.toBe('allow');
+      expect(checkAgentGuardrails('manage_support_sessions', { action: 'end', sessionId: 's-1' }, policy).disposition).not.toBe('allow');
+    });
+  });
+
+  describe('W13 device inventory and ops (#6783)', () => {
+    it('denies an allowlisted manage_device_function:set (dynamic-group targeting feeds run scope)', () => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_device_function', 'manage_device_function:set'] });
+      const check = checkAgentGuardrails('manage_device_function', { action: 'set', deviceId: 'dev-1', functionKey: 'file_server' }, policy);
+      expect(check.disposition).toBe('deny');
+      expect(check.reason).toMatch(/never available to agents/);
+    });
+
+    it('control: manage_device_function:get reaches an agent with no allowlist entry', () => {
+      const check = checkAgentGuardrails('manage_device_function', { action: 'get', deviceId: 'dev-1' }, policyWith({ mode: 'act', toolAllowlist: [] }));
+      expect(check.disposition).toBe('allow');
+    });
+
+    it.each([
+      ['get_device_events', { deviceId: 'dev-1' }],
+      ['get_device_health', { deviceId: 'dev-1' }],
+      ['get_process_samples', { deviceId: 'dev-1' }],
+      ['get_management_posture', {}],
+      ['manage_device_links', { action: 'list' }],
+      ['manage_manual_assets', { action: 'list' }],
+      ['manage_device_warranty', { action: 'expiring' }],
+    ] as const)('%s read reaches an agent without an allowlist entry', (tool, input) => {
+      expect(checkAgentGuardrails(tool, input, policyWith({ mode: 'act', toolAllowlist: [] })).disposition).toBe('allow');
+    });
+
+    it('a manual-asset delete and a warranty refresh become proposals, never inline', () => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_manual_assets:delete', 'manage_device_warranty:refresh'] });
+      expect(checkAgentGuardrails('manage_manual_assets', { action: 'delete', assetId: 'a-1' }, policy).disposition).not.toBe('allow');
+      expect(checkAgentGuardrails('manage_device_warranty', { action: 'refresh', deviceId: 'dev-1' }, policy).disposition).not.toBe('allow');
+    });
+  });
+
+  it('control: get_device_software reaches an agent without an allowlist entry', () => {
+    expect(checkAgentGuardrails('get_device_software', { deviceId: 'dev-1' }, policyWith({ mode: 'act', toolAllowlist: [] })).disposition).toBe('allow');
+  });
+
+  it('control: the W11 recovery-key list reaches an agent; rotate becomes a proposal', () => {
+    const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_recovery_keys', 'manage_recovery_keys:rotate'] });
+    expect(checkAgentGuardrails('manage_recovery_keys', { action: 'list', deviceId: 'dev-1' }, policy).disposition).toBe('allow');
+    expect(checkAgentGuardrails('manage_recovery_keys', { action: 'rotate', deviceId: 'dev-1' }, policy).disposition).not.toBe('allow');
+  });
 });
 
+
+// W5 PR C (#5220): flow tools are never Tier-1 listed statically — no
+// TOOL_TIERS entry, so checkAgentGuardrails denies a flow__ name unless the
+// agent path passes its live resolved tier (services/flows/agentFlowTools.ts).
+describe('flow tools are never statically tiered (W5 PR C)', () => {
+  it('no flow__ name in TOOL_TIERS; an unresolved flow__ call is denied', () => {
+    expect(Object.keys(TOOL_TIERS).some((n) => n.startsWith('flow__'))).toBe(false);
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+    try {
+      const policy = {
+        enabled: true, mode: 'shadow', toolAllowlist: ['flow__weekly_report'],
+        protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] }, deviceId: null, deviceSiteId: null,
+      } as AgentGuardrailPolicy;
+      expect(checkAgentGuardrails('flow__weekly_report', {}, policy).disposition).toBe('deny');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});

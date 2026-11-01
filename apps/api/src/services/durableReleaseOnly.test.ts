@@ -21,6 +21,14 @@ describe('DURABLE_RELEASE_ONLY_TOOLS registry', () => {
     expect(requiresDurableRelease('execute_command')).toBe(false);
   });
 
+  it('diverts every flow tool (W5 PR C): the approver, never the live session, starts the run', () => {
+    expect(requiresDurableRelease('flow__disk_cleanup')).toBe(true);
+    // Not a flow tool name: the generic `__` tenant shape and the static tool stay inline-eligible.
+    expect(requiresDurableRelease('hudu__get_asset')).toBe(false);
+    expect(requiresDurableRelease('run_flow')).toBe(false);
+    expect(requiresDurableRelease('flow__')).toBe(false);
+  });
+
   it('diverts every member', () => {
     for (const tool of DURABLE_RELEASE_ONLY_TOOLS) {
       expect(requiresDurableRelease(tool)).toBe(true);

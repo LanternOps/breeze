@@ -22,7 +22,7 @@ const PENDING_DECLARATION = new Set<string>([]); // search_documentation was dec
 const BASELINE_UNDECLARED_TOOLS = new Set<string>([]);
 
 describe('GOLDEN_CASES', () => {
-  it('has 90 unique ids', () => {
+  it('has 115 unique ids', () => {
     // g68 (#8167 W03): EDR-framework containment. g69 (#8167 W03 PR-B): EDR "sync now".
     // g70-g75 (full-control W02, #6756; the plan's g73-g78): PSA/billing writes.
     // g76-g78 (full-control W03, #6757): backup restore, DR rehearsal, Hyper-V power.
@@ -30,8 +30,41 @@ describe('GOLDEN_CASES', () => {
     // g82-g84 (full-control W06, #6776): ticket config, checklist templates, time suggestions.
     // g85-g87 (full-control W07, #6777): correlation explain, device anomalies, reliability offenders.
     // g88-g90 (full-control W08, #6778): topology node relationships, diagnostic start, template preview.
-    expect(GOLDEN_CASES).toHaveLength(90);
-    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(90);
+    // g91-g93 (full-control W09, #6779): asset probe, SNMP metric history, UniFi sync + status.
+    // g94-g96 (full-control W10, #6780): device AI activity, operator task list, fleet design list.
+    // g97-g99 (full-control W11, #6781): security score trend, dismiss a recommendation, rotate a recovery key (supervised).
+    // g100-g102 (full-control W12, #6782): installed software, deploy a catalog package (supervised), inventory approve (supervised).
+    // g103-g105 (full-control W13, #6783 PR A): device events + health, expiring warranties, set a device function (supervised).
+    // g106-g108 (full-control W13, #6783 PR B): live event-log query (supervised), tenant variables, end a support session (supervised).
+    // g109-g111 (full-control W14, #6784 PR A): an org's rate card, publish a template version (supervised), device billing.
+    // g112-g113 (full-control W14, #6784 PR B): generate a contract invoice (preview, then four-eyes), push to Xero (four-eyes).
+    expect(GOLDEN_CASES).toHaveLength(115);
+    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(115);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g114')?.expect[0]).toEqual({ tool: 'manage_pax8_subscriptions', action: 'drift' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g115')?.expect).toEqual([{ tool: 'search_pax8_products', action: 'search' }, { tool: 'manage_pax8_orders', action: 'create_draft' }, { tool: 'manage_pax8_orders', action: 'add_line' }]);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g112')?.expect.map((e) => e.action)).toContain('generate_invoice');
+    expect(GOLDEN_CASES.find((c) => c.id === 'g113')?.expect[0]).toEqual({ tool: 'manage_accounting_sync', action: 'push' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g109')?.expect[0]).toEqual({ tool: 'manage_billing_profiles', action: 'get_org_profile' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g110')?.expect[0]).toEqual({ tool: 'manage_contract_templates', action: 'publish' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g111')?.expect[0]).toEqual({ tool: 'get_device_billing' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g106')?.expect[0]).toEqual({ tool: 'browse_device_event_log', action: 'query' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g107')?.expect[0]).toEqual({ tool: 'manage_tenant_variables', action: 'list' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g108')?.expect[0]).toEqual({ tool: 'manage_support_sessions', action: 'end' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g103')?.expect[0]).toEqual({ tool: 'get_device_events' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g104')?.expect[0]).toEqual({ tool: 'manage_device_warranty', action: 'expiring' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g105')?.expect[0]).toEqual({ tool: 'manage_device_function', action: 'set' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g100')?.expect[0]).toEqual({ tool: 'get_device_software' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g101')?.expect[0]).toEqual({ tool: 'manage_software_deployments', action: 'create' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g102')?.expect[0]).toEqual({ tool: 'manage_software_inventory', action: 'approve' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g97')?.expect[0]).toEqual({ tool: 'get_security_compliance' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g98')?.expect[0]).toEqual({ tool: 'manage_security_recommendations', action: 'dismiss' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g99')?.expect[0]).toEqual({ tool: 'manage_recovery_keys', action: 'rotate' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g94')?.expect[0]).toEqual({ tool: 'get_device_ai_activity' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g95')?.expect[0]).toEqual({ tool: 'list_operator_tasks' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g96')?.expect[0]).toEqual({ tool: 'list_fleet_designs' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g91')?.expect[0]).toEqual({ tool: 'probe_network_asset' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g92')?.expect[0]).toEqual({ tool: 'get_snmp_metrics', action: 'history' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g93')?.expect[0]).toEqual({ tool: 'trigger_unifi_sync' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g88')?.expect[0]).toEqual({ tool: 'get_topology_graph', action: 'node' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g89')?.expect[0]).toEqual({ tool: 'run_topology_diagnostic', action: 'start' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g90')?.expect[0]).toEqual({ tool: 'apply_topology_template', action: 'preview' });

@@ -85,6 +85,8 @@ import {
   TOOL_ACTION_INPUT_KEYS,
   type AgentGuardrailPolicy,
 } from '../aiGuardrails';
+// W5 PR C (#5220): the leaf name rule; the agent flow gate is loaded on first use.
+import { isFlowToolName } from '../flows/toolNames';
 import {
   assertToolCallWithinCeiling,
   CeilingViolationError,
@@ -398,7 +400,7 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
     if (!agent) return null;
 
     const [org] = await db
-      .select({ id: organizations.id, partnerId: organizations.partnerId })
+      .select({ id: organizations.id, partnerId: organizations.partnerId, name: organizations.name })
       .from(organizations)
       .where(eq(organizations.id, run.orgId))
       .limit(1);
@@ -684,6 +686,7 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       run: run as RunRow,
       agent: agent as AgentRow,
       orgPartnerId: org.partnerId,
+      orgName: org.name ?? null,
       device,
       alert,
       ticket,
@@ -1147,6 +1150,23 @@ export function createAgentRunPreToolUse(args: {
         return { allowed: false, error: `${reason}. Stop and do not retry.` };
       }
       taskFence = fence;
+    }
+
+    // W5 PR C (#5220, Decision 9): a FLOW tool (`flow__<slug>`) has no
+    // `TOOL_TIERS` entry, so it is gated here, before the delegation ceiling
+    // and the generic guardrail: only an allowlisted Tier-1 flow, only from a
+    // run with no device, site or delegation ceiling, never a proposal
+    // (services/flows/agentFlowTools.ts). The handler starts the run on the
+    // descriptor resolved here (the call's gate context).
+    if (isFlowToolName(toolName)) {
+      const { gateAgentFlowToolCall } = await import('../flows/agentFlowTools');
+      const gate = await gateAgentFlowToolCall({ run, agentAuth, toolName, input, guardrailPolicy });
+      if (!gate.ok) {
+        outcome.deniedActions.push({ tool: toolName, reason: gate.reason });
+        return { allowed: false, error: gate.reason };
+      }
+      const allowed = await recordAllowedExecution(toolName, input, null, toolUseId);
+      return { ...allowed, context: { ...allowed.context, flowToolGate: { descriptor: gate.descriptor, call: gate.call } } };
     }
 
     // Wisp W02 (Wisp design §4.3) — a run admitted under a delegation grant.
@@ -1936,8 +1956,10 @@ export function agentRunWispGrant(
  */
 function assessmentPromptContext(
   a: NonNullable<RunContext['assessment']>,
+  org: AgentRunAssessmentPromptContext['org'],
 ): AgentRunAssessmentPromptContext {
   return {
+    org,
     reason: a.reason,
     threadSummary: a.threadSummary,
     openConcerns: a.openConcerns,
@@ -1946,6 +1968,7 @@ function assessmentPromptContext(
     watchLines: a.watch ? watchPromptLines(a.watch) : null,
     readiness: a.readiness,
     nudgeFeedback: a.nudgeFeedback,
+    firstLook: a.firstLook,
   };
 }
 
@@ -1979,7 +2002,9 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
       : null,
     research: ctx.research ?? null,
     provenFixes: ctx.provenFixes ?? null,
-    assessment: ctx.assessment ? assessmentPromptContext(ctx.assessment) : null,
+    assessment: ctx.assessment
+      ? assessmentPromptContext(ctx.assessment, { id: ctx.run.orgId, name: ctx.orgName ?? null })
+      : null,
   };
 }
 
@@ -2545,7 +2570,28 @@ async function driveSdkLoop(
   // Exposure (`allowedTools`) and registration (`onlyTools`) — see
   // `resolveRunToolExposure` for the full-profile floor, the F2 `onlyTools`
   // fix and the outcome-tool exclusion.
-  const { exposedNames, onlyTools } = resolveRunToolExposure(run, effective.toolAllowlist);
+  const { exposedNames: registryExposedNames, onlyTools } = resolveRunToolExposure(run, effective.toolAllowlist);
+
+  // W5 PR C (#5220, Decision 9): the run's allowlisted Tier-1 flow tools, for
+  // a run with no device, site or delegation ceiling only. Exposure only —
+  // every call is gated again in the pre-tool hook. A resolution failure
+  // degrades to no flow tools; it never fails the run.
+  let flowDescriptors: Awaited<ReturnType<typeof import('../flows/agentFlowTools').resolveAgentFlowTools>> = [];
+  let flowSdkTools: ReturnType<typeof import('../flows/sdkFlowTools').buildFlowSdkTools> = [];
+  if (guardrailPolicy.toolAllowlist.some(isFlowToolName)) {
+    try {
+      const { agentFlowToolRunStarter, resolveAgentFlowTools } = await import('../flows/agentFlowTools');
+      const { buildFlowSdkTools } = await import('../flows/sdkFlowTools');
+      flowDescriptors = await resolveAgentFlowTools(run, agentAuth, guardrailPolicy);
+      flowSdkTools = buildFlowSdkTools(flowDescriptors, agentFlowToolRunStarter(run));
+    } catch (error) {
+      console.error('[aiAgentRunLoop] flow tools could not be resolved; the run gets none', { runId: run.id, error });
+      captureException(error, undefined, { flow_site: 'agent.flow_tool_exposure', org_id: run.orgId }, { fingerprint: ['flow', 'agent.flow_tool_exposure'] });
+      flowDescriptors = [];
+      flowSdkTools = [];
+    }
+  }
+  const exposedNames = [...registryExposedNames, ...flowDescriptors.map((d) => `mcp__breeze__${d.name}`)];
 
   // No getActiveSession: a headless run has no ActiveSession, and the
   // session-aware tools (M365/Google) correctly refuse without one. The
@@ -2555,10 +2601,15 @@ async function driveSdkLoop(
   // registers one on the MCP server, let alone exposes it via
   // `allowedTools`.
   const mcpServer = createBreezeMcpServer(() => agentAuth, preToolUse, postToolUse, undefined,
-    buildOutcomeSdkTools(
-      outcomeToolsForRun(run),
-      designRefs || patchRefs || researchRefs ? { design: designRefs, patch: patchRefs, research: researchRefs } : undefined,
-    ),
+    [
+      ...buildOutcomeSdkTools(
+        outcomeToolsForRun(run),
+        // `assessment` is consumed only by record_concern (#10387), which only
+        // an assessment run is given.
+        { design: designRefs, patch: patchRefs, research: researchRefs, assessment: { orgId: run.orgId } },
+      ),
+      ...flowSdkTools,
+    ],
     onlyTools ? { onlyTools } : undefined);
 
   const prompt = promptContext(ctx, effective);

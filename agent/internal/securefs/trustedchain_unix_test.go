@@ -3,8 +3,10 @@
 package securefs
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -95,22 +97,100 @@ func TestEnsureTrustedDirChainRefusesNonEmptyForeignOwnedDir(t *testing.T) {
 	// test process itself) reproduces "not root-owned" without needing root.
 	wrongUID := os.Getuid() + 1
 
-	if err := EnsureTrustedDirChain(root, dir, wrongUID, os.Getgid(), 0o755); err == nil {
-		t.Fatal("expected refusal for a non-empty, foreign-owned directory")
+	// errors.Is, not just err != nil: without the refusal a non-root run
+	// still errors (EPERM from the repair chown), so a bare nil check passes
+	// vacuously (#10723). Here the refusal fires at the "Breeze" parent.
+	err := EnsureTrustedDirChain(root, dir, wrongUID, os.Getgid(), 0o755)
+	if !errors.Is(err, ErrUnsafeNonEmptyDir) {
+		t.Fatalf("error = %v, want ErrUnsafeNonEmptyDir", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "planted")); err != nil {
 		t.Fatalf("planted file must survive a refused repair: %v", err)
 	}
 }
 
+// TestEnsureTrustedDirChainRefusesNonEmptyUnsafeLeaf pins the refusal at the
+// leaf itself: a safe parent (own uid, 0755) and a non-empty, world-writable
+// "bin" owned by the requested uid. Without the refusal the repair would
+// succeed (same uid, so no EPERM) and the call would return nil.
+func TestEnsureTrustedDirChainRefusesNonEmptyUnsafeLeaf(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "Breeze")
+	dir := filepath.Join(parent, "bin")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "planted"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := EnsureTrustedDirChain(root, dir, os.Getuid(), os.Getgid(), 0o755)
+	if !errors.Is(err, ErrUnsafeNonEmptyDir) {
+		t.Fatalf("error = %v, want ErrUnsafeNonEmptyDir", err)
+	}
+	if !strings.Contains(err.Error(), dir) {
+		t.Fatalf("refusal %q should name the leaf %s, not the parent", err, dir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "planted")); err != nil {
+		t.Fatalf("planted file must survive a refused repair: %v", err)
+	}
+	if info, err := os.Lstat(dir); err != nil || info.Mode().Perm() != 0o777 {
+		t.Fatalf("leaf must be left unrepaired (mode 0777), got %v err=%v", info, err)
+	}
+}
+
 // TestEnsureTrustedDirChainRepairsEmptyForeignOwnedDir proves the one safe
-// repair case: an EMPTY directory with the wrong ownership/mode is removed
-// and recreated correctly rather than refused.
+// repair case: an EMPTY directory with the wrong ownership/mode is repaired in
+// place — reopened, then chowned and chmodded through its descriptor — rather
+// than refused.
 func TestEnsureTrustedDirChainRepairsEmptyForeignOwnedDir(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "Breeze", "bin")
-	if err := os.MkdirAll(dir, 0o777); err != nil {
+	parent := filepath.Join(root, "Breeze")
+	dir := filepath.Join(parent, "bin")
+	// Both modes are set explicitly, because Mkdir's mode is clipped by the
+	// process umask and the repair path needs an exact pre-state: a SAFE
+	// parent holding an UNSAFE, EMPTY leaf. MkdirAll(dir, 0o777) gave neither
+	// reliably (#10068) — under 0022 both components came out 0755, which
+	// EnsureTrustedDirChain treats as already safe, so the repair branch this
+	// test is named for never ran and the 0755 assertion passed trivially;
+	// under 0002 the parent came out 0775 — unsafe and non-empty — and the
+	// call was refused before the leaf was ever reached.
+	if err := os.Mkdir(parent, 0o755); err != nil {
 		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	// Assert those two modes rather than assuming them, so a later setup
+	// change that reintroduces umask sensitivity fails here instead of
+	// passing vacuously. (Type and emptiness come from the Mkdir calls above
+	// having succeeded; this loop covers mode drift only.)
+	for _, want := range []struct {
+		path string
+		mode os.FileMode
+	}{{parent, 0o755}, {dir, 0o777}} {
+		info, err := os.Lstat(want.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != want.mode {
+			t.Fatalf("setup: %s mode = %o, want %o", want.path, info.Mode().Perm(), want.mode)
+		}
 	}
 	uid, gid := os.Getuid(), os.Getgid()
 

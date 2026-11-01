@@ -569,7 +569,9 @@
       "after": "is after",
       "between": "is between",
       "withinLast": "within last",
-      "notWithinLast": "not within last"
+      "notWithinLast": "not within last",
+      "below": "below",
+      "atLeast": "at least"
     },
     "value": {
       "noValue": "No value needed",
@@ -591,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Removed"
-      }
+      },
+      "softwareName": "Software name",
+      "softwareVersion": "Software version"
     }
   },
   "account": {
@@ -1080,6 +1084,68 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Alert tickets",
+        "scopeNote": "Partner-wide; no per-organization override.",
+        "pausedBanner": "Paused: the PSA rejected the credentials. Run Test connection to resume.",
+        "yes": "On",
+        "no": "Off",
+        "selectPlaceholder": "Select…",
+        "priorityDefault": "PSA default",
+        "closedSuffix": "{{name}} (closed)",
+        "saved": "Alert ticket settings saved",
+        "saving": "Saving…",
+        "save": "Save",
+        "conflict": "These settings were changed elsewhere. The latest values have been loaded; review them and save again.",
+        "errors": {
+          "save": "Could not save alert ticket settings"
+        },
+        "status": {
+          "active": "Alert tickets are enabled for this connection.",
+          "notExternal": "Bind this connection as the service-management PSA (external mode) to use alert tickets.",
+          "disabled": "Alert tickets are turned off.",
+          "paused": "Alert tickets are paused until the PSA connection is working again.",
+          "companyLinksUnverified": "Confirm company links for this PSA instance.",
+          "invalidConfig": "The saved alert ticket settings are not valid. Review and save them again.",
+          "unsupportedProvider": "Alert tickets are not available for this PSA provider.",
+          "credentialsUnusable": "This connection's credentials are incomplete or unreadable. Edit the connection and re-enter them."
+        },
+        "fields": {
+          "enabled": "Enable alert tickets",
+          "board": "Board",
+          "openStatus": "New ticket status",
+          "closedStatus": "Closed status",
+          "priorityHeading": "PSA priority by alert severity",
+          "minSeverity": "Minimum severity",
+          "minSeverityHelp": "Low includes warning-level monitors",
+          "closeOnResolve": "Close the ticket when the alert resolves",
+          "noteOnAcknowledge": "Add a note when the alert is acknowledged",
+          "confirmCompanyLinks": "Organization company links match this PSA instance"
+        },
+        "severity": {
+          "critical": "Critical",
+          "high": "High",
+          "medium": "Medium",
+          "low": "Low",
+          "info": "Info"
+        },
+        "options": {
+          "error": "Could not load options from the PSA",
+          "retry": "Retry",
+          "truncated": "Only the first results from the PSA are shown."
+        },
+        "readOnly": {
+          "enabled": "Alert tickets"
+        },
+        "loadError": {
+          "message": "Could not load alert ticket settings",
+          "retry": "Retry"
+        },
+        "configInvalid": {
+          "warning": "The saved alert ticket settings could not be read. Saving replaces them.",
+          "confirm": "Replace the unreadable settings"
+        }
+      },
       "PsaCompanyImport": {
         "title": "Import companies",
         "subtitle": "Create organizations from the companies in {{name}}.",
@@ -1292,11 +1358,19 @@
           "waiting": "Waiting"
         },
         "ticketCount": "{{filtered}} of {{total}} tickets",
-        "title": "Synced Tickets",
+        "title": "PSA Tickets",
         "unlinked": "Unlinked"
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Ownership",
+        "allOrganizations": "All organizations",
+        "thisOrganizationOnly": "This organization only",
+        "all": "All",
+        "organization": "Organization",
+        "test": "Test"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} delivery attempts",
         "empty": "No delivery attempts yet.",
@@ -1349,6 +1423,10 @@
             "description": "Triggered when a device connects.",
             "label": "Device Online"
           },
+          "deviceReinstalled": {
+            "description": "Triggered when a reinstalled machine is reattached to its existing device record.",
+            "label": "Device Reinstalled"
+          },
           "scriptCompleted": {
             "description": "Triggered when a script finishes.",
             "label": "Script Completed"
@@ -1384,6 +1462,18 @@
           "integrationHealthResolved": {
             "description": "Triggered when a connection health incident is resolved.",
             "label": "Connection health incident resolved"
+          },
+          "alertAcknowledged": {
+            "label": "Alert Acknowledged",
+            "description": "Triggered when an alert is acknowledged."
+          },
+          "alertSuppressed": {
+            "label": "Alert Suppressed",
+            "description": "Triggered when an alert is suppressed."
+          },
+          "alertEscalated": {
+            "label": "Alert Escalated",
+            "description": "Triggered when an escalation policy step fires for an alert that is still active."
           }
         },
         "fields": {
@@ -1435,6 +1525,22 @@
           "secretRequired": "Secret is required for HMAC authentication",
           "tokenRequired": "Token is required for bearer authentication",
           "urlRequired": "URL is required"
+        },
+        "neverDelivered": {
+          "marker": "Never delivered",
+          "explanation": "Breeze never sends this event. It will be removed when you save this webhook.",
+          "banner": "Breeze never sends this event, so this webhook has never delivered. Choose another event before saving."
+        },
+        "payloadVersion": {
+          "title": "Payload version",
+          "v2": {
+            "label": "v2 (recommended)",
+            "description": "Alert events include hostname, site, organization, status, and a link to the alert."
+          },
+          "v1": {
+            "label": "v1 (original)",
+            "description": "The original alert payload, kept for existing integrations."
+          }
         }
       },
       "WebhookList": {
@@ -1516,7 +1622,8 @@
           "enabled": "Webhook enabled",
           "retryQueued": "Delivery retry queued",
           "testQueued": "Test delivery queued",
-          "updated": "Webhook updated"
+          "updated": "Webhook updated",
+          "deleted": "Webhook \"{{name}}\" deleted"
         },
         "title": "Webhooks"
       }

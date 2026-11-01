@@ -38,6 +38,7 @@ export const INSTALL_BOUNDARY_RESET_COLUMNS = {
   rollbackProtocolVersion: 0,
   pamLifetimeProtocolVersion: 0,
   pamReconciliationResetProtocolVersion: 0,
+  pamUserNotifyProtocolVersion: 0,
   revocationLeaseProtocolVersion: 0,
   desktopFenceProtocolVersion: 0,
   consentPromptProtocolVersion: 0,
@@ -57,6 +58,7 @@ export const deviceRowHandler: BoundaryHandler = {
   tables: ['devices'],
   async run(ctx) {
     const updated = await db
+      // own-device-row-allowlisted: install-boundary-advance-incarnation
       .update(devices)
       .set({
         installIncarnation: ctx.newIncarnation,

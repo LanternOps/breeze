@@ -149,6 +149,8 @@ describe('FlowEnableDialog', () => {
     [403, 'partner_wide_forbidden', /all organizations/i],
     [403, 'interactive_session_required', /signed-in browser session/i],
     [409, 'slug_unavailable', /already uses this identifier/i],
+    [422, 'webhook_secret_missing', /webhook secret/i],
+    [422, 'ai_budget_unavailable', /AI budget/i],
   ])('renders %s %s as localized text, never the raw code', async (status, code, pattern) => {
     const user = userEvent.setup();
     api.enableFlow.mockRejectedValueOnce(new ActionError('x', status, undefined, { error: code }));

@@ -2,21 +2,30 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The holding-org refusal reads the org; the db mocks below do not model it.
 vi.mock('../services/unassignedPool/protectedOrg', () => ({ isHoldingOrg: vi.fn(async () => false) }));
+// #9635 placement guard: its resolver-backed reads are covered on real
+// Postgres by softwarePolicyTie.integration.test.ts.
+vi.mock('../services/softwarePolicyCoverage', () => ({ checkDefaultListPlacement: vi.fn(async () => ({ ok: true, overrides: [] })) }));
 import { Hono } from 'hono';
 
 const { authRef } = vi.hoisted(() => ({ authRef: { current: {} as any } }));
 
-vi.mock('../db', () => ({
-  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  db: {
+vi.mock('../db', () => {
+  const db: Record<string, any> = {
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
     execute: vi.fn(),
-  },
-}));
+  };
+  // approve/deny/clear lock the default policy row inside db.transaction
+  // (SELECT ... FOR UPDATE); the tx is the same mocked client.
+  db.transaction = vi.fn(async (cb: (tx: unknown) => unknown) => cb(db));
+  return {
+    runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+    withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    db,
+  };
+});
 
 vi.mock('../db/schema', () => ({
   devices: { id: 'devices.id', orgId: 'devices.orgId' },
@@ -106,7 +115,7 @@ describe('software inventory approve/deny/clear site-ceiling gate', () => {
   it('unrestricted caller (allowedSiteIds undefined) is unaffected: POST /approve proceeds', async () => {
     authRef.current = orgAuth(undefined);
     (db.select as any).mockReturnValue({
-      from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }),
+      from: () => ({ where: () => ({ limit: () => Object.assign(Promise.resolve([]), { for: () => Promise.resolve([]) }) }) }),
     });
     (db.insert as any).mockReturnValue({
       values: () => ({ returning: () => Promise.resolve([{ id: 'policy-1', name: 'Default Allowlist' }]) }),

@@ -104,6 +104,7 @@ export const ORG_MOVE_PARITY: Readonly<Record<string, OrgMoveParityEntry>> = {
   'table:ticket_links': { moveOnly: TICKET_CHAIN },
 
   // The alert axis.
+  'table:alert_external_refs': { moveOnly: ALERT_CHAIN },
   'table:alert_correlation_groups': { moveOnly: ALERT_CHAIN },
   'table:alert_correlation_members': { moveOnly: ALERT_CHAIN },
   'table:ai_alert_verdicts': { moveOnly: ALERT_CHAIN },

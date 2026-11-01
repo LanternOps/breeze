@@ -354,7 +354,7 @@
     "currentSite": "Sitio actual",
     "newSite": "Nuevo sitio",
     "loadingSites": "Cargando sitios...",
-    "thisOrganizationOnlyHasOneSite": "Esta organización solo tiene un sitio. Agregue más sitios desde Configuración → Organizaciones para habilitar movimientos.",
+    "thisOrganizationOnlyHasOneSite": "Esta organización solo tiene un sitio. Agregue más sitios en la pestaña Sitios de la organización (Organizaciones → abra la organización → Sitios) para habilitar movimientos.",
     "current": "(actual)",
     "cancel": "Cancelar",
     "moving": "Moviendo...",
@@ -376,21 +376,6 @@
     "moveDevices_other": "Mover {{count}} dispositivos",
     "bulkPolicyNote": "Al moverlos cambian las políticas de configuración, las ventanas de mantenimiento, el enrutamiento de alertas y los informes del sitio que se aplican a estos dispositivos. Breeze no los devolverá automáticamente.",
     "failedToMoveDevices": "No se pudieron mover los dispositivos"
-  },
-  "createGroupModal": {
-    "failedToCreateGroup": "No se pudo crear el grupo",
-    "newDeviceGroup": "Nuevo grupo de dispositivos",
-    "name": "Nombre",
-    "eGProductionServers": "p.ej. Servidores de producción",
-    "type": "Tipo",
-    "static": "Estático",
-    "dynamic": "Dinámica",
-    "manuallyAddAndRemoveDevicesAfter": "Agregue y elimine dispositivos manualmente después de la creación.",
-    "devicesAreAutoAssignedBasedOn": "Los dispositivos se asignan automáticamente según las reglas de filtrado.",
-    "filterRules": "Reglas de filtrado",
-    "cancel": "Cancelar",
-    "creating": "Creando...",
-    "createGroup": "Crear grupo"
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} quitados ocultos",
@@ -1361,7 +1346,14 @@
     "assignAPolicyTo": "Asignar una política a",
     "policy2": "Política",
     "selectAPolicy": "Seleccione una política",
-    "applying": "Aplicando..."
+    "applying": "Aplicando...",
+    "ownerFilterAll": "Todos los grupos",
+    "ownerFilterOrganization": "Grupos de la organización",
+    "ownerFilterPartner": "Todas las org.",
+    "noGroupsMatchFilter": "Ningún grupo coincide con este filtro.",
+    "managedByPartner": "Administrado por tu proveedor de servicios. Las reglas de membresía no se muestran; ves los dispositivos de tu organización.",
+    "partnerDynamicType": "Dinámico · Todas las org.",
+    "partnerDeleteWarning": "Esto elimina el grupo de todas las organizaciones y borra sus asignaciones de políticas."
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "No se pudo recuperar el inventario de hardware",
@@ -1412,7 +1404,24 @@
     "helperInstallIssue": {
       "awaitingServerOffer": "Breeze Assist está habilitado pero no instalado (desde {{since}}): el servidor no ha ofrecido una versión de Breeze Assist para instalar en este dispositivo, así que sigue sin instalarse. Verifica que haya una compilación de Breeze Assist publicada para la plataforma de este dispositivo.",
       "installAbandoned": "Breeze Assist está habilitado pero no instalado (desde {{since}}): la instalación de la versión ofrecida falló repetidamente, así que el agente pausó los reintentos. Volverá a intentarlo en unas horas o cuando se ofrezca una versión más reciente; el registro del agente contiene el error de instalación.",
+      "webview2Outdated": "Breeze Assist está instalado, pero el agente no lo inicia (desde {{since}}): el WebView2 Runtime de este dispositivo es más antiguo de lo que Breeze Assist necesita. Los avisos usan los cuadros de diálogo estándar de Windows hasta que se actualice el WebView2 Runtime. El registro del agente indica la versión encontrada.",
+      "crashLoop": "Breeze Assist se cerraba justo después de iniciarse (desde {{since}}), así que el agente dejó de reiniciarlo. Volverá a intentarlo en 6 horas o en cuanto se instale una nueva versión de Breeze Assist. El registro del agente contiene los códigos de salida.",
+      "unmanagedInstall": "Breeze Assist no fue instalado por Breeze en este dispositivo (desde {{since}}). La implementación está desactivada en la política de este dispositivo, así que el agente no toca esta copia: no la inicia, no la actualiza ni la elimina. Activa la implementación para que el agente la administre.",
       "unknown": "Breeze Assist está habilitado pero no instalado (desde {{since}})."
+    },
+    "assistStatus": {
+      "label": "Breeze Assist",
+      "installed": "Instalado",
+      "unavailable": "No disponible: {{reason}}",
+      "notDeployed": "No implementado",
+      "reason": {
+        "webview2Outdated": "WebView2 Runtime demasiado antiguo",
+        "crashLoop": "se cierra repetidamente",
+        "unmanagedInstall": "no instalado por Breeze",
+        "awaitingServerOffer": "aún no instalado",
+        "installAbandoned": "la instalación falló",
+        "unknown": "consulta el registro del agente"
+      }
     },
     "watchdogInstall": {
       "gaveUp": "No se pudo instalar el watchdog automáticamente (desde {{since}}): {{reason}}. Ejecute <code>breeze-agent service install --watchdog</code> en el equipo para reintentar.",
@@ -1805,9 +1814,13 @@
     "updateStuckTooltip": "Este dispositivo lleva más de una hora reintentando la actualización del agente a {{target}} sin completarla.",
     "updateWithheldTooltip": "El servidor no ofrece actualizaciones a este dispositivo porque no se puede confirmar que la compilación de su agente acepte la edición servida. Permanece en su versión actual hasta que se recupere.",
     "helperNotInstalled": "No instalado",
+    "helperUnavailable": "Assist no disponible",
     "helperInstallIssueTooltip": {
       "awaitingServerOffer": "Breeze Assist está habilitado pero no instalado: el servidor no ha ofrecido ninguna versión de Breeze Assist para instalar en este dispositivo.",
       "installAbandoned": "Breeze Assist está habilitado pero no instalado: la instalación de la versión ofrecida falló repetidamente y los reintentos están en pausa.",
+      "webview2Outdated": "Breeze Assist está instalado, pero no se inicia: el WebView2 Runtime del dispositivo es demasiado antiguo.",
+      "crashLoop": "Breeze Assist se cerraba justo después de iniciarse; el agente volverá a intentarlo en 6 horas.",
+      "unmanagedInstall": "Breeze Assist no fue instalado por Breeze y la implementación está desactivada, así que el agente no lo toca.",
       "unknown": "Breeze Assist está habilitado pero no instalado."
     },
     "agentVersionRelation": {
@@ -2046,11 +2059,14 @@
     "loading": "Cargando estado del parche...",
     "notDownloadedTitle": "Aún no descargado: la instalación tardará más",
     "notices": {
+      "installCommandEnded": "El comando de instalación terminó ({{status}}) antes de que el dispositivo informara un resultado. Consulte el historial de comandos del dispositivo para ver los detalles.",
+      "installFinishedWithIssues": "Instalación finalizada: {{installed}} instalados, {{failed}} con error, {{awaitingRestart}} en espera de reinicio, {{unresolved}} aún sin confirmar. Consulte las filas de parches para ver los detalles.",
       "installLongerThanExpected": "La instalación está tardando más de lo esperado. Las actualizaciones de macOS pueden tardar más de 30 minutos. Actualice la página más tarde para comprobar el estado.",
       "installPatchFailed": "No se pudo instalar {{name}}",
       "installPatchQueued": "Instalación en cola para \"{{name}}\"",
       "installPatchQueuedDetail": "Instalación en cola para \"{{name}}\"{{dispatchSuffix}}.",
       "installQueuedForPatches": "{{label}} en cola para parches {{count}}{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "No se pudo comprobar el estado de la instalación: la lista de parches no se cargó. Actualice la página para ver el estado más reciente.",
       "installedSuccessfully": "Los parches {{installed}} se aplicaron correctamente. {{pending}} aún pendiente.",
       "installingPolling": "Instalando parches... Sondeo de actualizaciones.",
       "noPendingForLabel": "No hay parches pendientes disponibles para {{label}}.",
@@ -2096,6 +2112,7 @@
       "excludedCategoryTitle": "El anillo de actualización {{ring}} excluye la categoría de este parche, así que las ejecuciones programadas lo omiten.",
       "excludedAppRuleTitle": "Una regla de bloqueo o fijación de aplicación del anillo de actualización vinculado retiene este parche, así que las ejecuciones programadas lo omiten.",
       "excludedRingReferenceTitle": "Retenido: la directiva de parches de este dispositivo vincula un anillo de actualización que ya no existe o no está disponible para este socio. Corrija el anillo de actualización de la directiva para reanudar la aplicación de parches.",
+      "excludedUserScopeTitle": "No instalable: es una instalación por usuario que Breeze aún no puede aplicar, por lo que ninguna ejecución de parches la instalará.",
       "excludedFeatureUpdateTitle": "El anillo de actualización {{ring}} bloquea esta versión de funciones de Windows (o fija los dispositivos a otra), por lo que las ejecuciones de parches programadas la omiten.",
       "excludedDeclinedTitle": "Rechazado: este parche fue rechazado explícitamente, por lo que la aprobación automática del anillo no lo instalará. Apruébelo de nuevo para permitirlo.",
       "pending": "Aprobación pendiente",
@@ -2374,7 +2391,9 @@
       "completed": "Terminado",
       "failed": "Fallido",
       "queued": "En cola",
-      "running": "En ejecución"
+      "running": "En ejecución",
+      "cancelled": "Cancelado",
+      "expired": "Vencido"
     },
     "scanType": "escaneo {{type}}",
     "scanTypes": {
@@ -2396,7 +2415,13 @@
       "quarantined": "En cuarentena",
       "removed": "Eliminado"
     },
-    "threatsFound": "Amenazas encontradas: {{count}}"
+    "threatsFound": "Amenazas encontradas: {{count}}",
+    "waitingForSlot": "Esperando un espacio de análisis libre. Vence el {{date}}.",
+    "cancelScan": "Cancelar análisis",
+    "scanCancelled": "Análisis cancelado",
+    "cancelScanFailed": "No se pudo cancelar el análisis",
+    "scanAlreadyRunning": "El análisis ya se está ejecutando en el dispositivo y no se puede cancelar.",
+    "scanAlreadyQueued": "Ya hay un análisis en cola para este dispositivo."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Agregue una etiqueta...",
@@ -2587,9 +2612,18 @@
       "refreshFailed": "Error en la actualización de la garantía: {{error}}",
       "refreshing": "Garantía actualizada...",
       "stillInProgress": "La actualización de la garantía aún está en curso; la tarjeta se actualizará cuando se complete.",
-      "updated": "Información de garantía actualizada."
+      "updated": "Información de garantía actualizada.",
+      "agentCollected": "El agente de Breeze recopila la garantía de este dispositivo, por lo que una consulta al fabricante no puede aportar datos más recientes.",
+      "noVendorLookupKept": "No hay consulta de garantía disponible para este fabricante. Se conservaron los datos de garantía existentes."
     },
-    "lookUp": "Consultar"
+    "lookUp": "Consultar",
+    "sources": {
+      "agentCmsl": "Agente (HP CMSL)",
+      "agentPlist": "Agente (plist de macOS)",
+      "import": "Importado",
+      "importVendorEarlier": "Importado (el fabricante informa una fecha de fin anterior)",
+      "provider": "API del fabricante"
+    }
   },
   "devicesPage": {
     "accessDenied": "No tiene permiso para ver dispositivos.",
@@ -2723,6 +2757,10 @@
       "bulkMoveSiteSuccess_other": "{{count}} dispositivos ahora están en {{site}}",
       "bulkMoveSiteSomeFailed": "Se movieron {{moved}} de {{total}} dispositivos a {{site}}. No se movieron: {{devices}}",
       "bulkMoveSiteAllFailed": "No se movió ningún dispositivo a {{site}}. No se movieron: {{devices}}",
+      "bulkMoveSiteNotMovedConflict": "{{devices}} (su sitio cambió después de cargar la lista; la lista se actualizó, así que vuelve a intentarlo)",
+      "bulkMoveSiteNotMovedForbidden": "{{devices}} (no tienes acceso a su sitio ni al sitio de destino)",
+      "bulkMoveSiteNotMovedNotFound": "{{devices}} (ya no se encuentra; es posible que se haya eliminado)",
+      "bulkMoveSiteNotMovedError": "{{devices}} (se produjo un error inesperado; vuelve a intentarlo)",
       "deviceMovedToSite": "{{hostname}} se movió a un nuevo sitio"
     },
     "tryAgain": "Intentar otra vez",
@@ -2841,7 +2879,9 @@
       },
       "software": {
         "installed": "Tiene software instalado",
-        "notInstalled": "Software faltante"
+        "notInstalled": "Software faltante",
+        "version": "Versión del software",
+        "vendor": "Proveedor del software"
       },
       "logShippingFailing": "Envío de registros con fallas"
     }
@@ -2911,7 +2951,9 @@
       },
       "software": {
         "installed": "Tiene software instalado",
-        "notInstalled": "Software faltante"
+        "notInstalled": "Software faltante",
+        "version": "Versión del software",
+        "vendor": "Proveedor del software"
       },
       "logShippingFailing": "Envío de registros con fallas"
     }
@@ -2929,8 +2971,10 @@
     "title": "Filtrar atajos"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Elige un valor para ver los dispositivos que coinciden",
     "counting": "…cálculo",
-    "matches": "~{{count}} los dispositivos coinciden",
+    "matches_one": "~{{count}} dispositivo coincide",
+    "matches_other": "~{{count}} dispositivos coinciden",
     "unavailable": "vista previa no disponible"
   },
   "filterSentenceBuilder": {
@@ -2998,7 +3042,9 @@
       },
       "software": {
         "installed": "Tiene software instalado",
-        "notInstalled": "Software faltante"
+        "notInstalled": "Software faltante",
+        "version": "Versión del software",
+        "vendor": "Proveedor del software"
       },
       "logShippingFailing": "Envío de registros con fallas"
     }
@@ -4283,6 +4329,7 @@
       "pending": "Aún sin verificar",
       "private": "Registro privado: se requieren credenciales",
       "unsupported_registry": "Registro no compatible",
+      "provenance_unknown": "Origen desconocido: el nombre de la imagen no se envía a ningún registro",
       "error": "Falló la verificación del registro; se reintentará",
       "behind": "Hay una imagen más reciente publicada para esta etiqueta",
       "current": "Coincide con el registro",
@@ -4612,5 +4659,61 @@
     "untitledAlert": "Alerta reportada",
     "alertsUnavailable": "No se pudieron cargar las alertas abiertas",
     "viewAlerts": "Ver alertas"
+  },
+  "physicalPlacementCard": {
+    "title": "Ubicación física",
+    "room": "Sala",
+    "rack": "Rack",
+    "rackUnit": "Unidad de rack",
+    "heightU": "Altura (U)",
+    "add": "Agregar ubicación",
+    "edit": "Editar",
+    "save": "Guardar",
+    "saving": "Guardando...",
+    "cancel": "Cancelar",
+    "remove": "Quitar ubicación",
+    "loadFailed": "No se pudo cargar la ubicación física.",
+    "linkedNotice": "Este activo está vinculado a un dispositivo administrado. Edita la ubicación en <deviceLink>{{name}}</deviceLink>.",
+    "openDevice": "el dispositivo",
+    "removeConfirm": {
+      "title": "¿Quitar la ubicación física?",
+      "message": "Se borrarán la sala, el rack, la unidad de rack y la altura de este activo."
+    },
+    "validation": {
+      "roomTooLong": "La sala puede tener como máximo 255 caracteres.",
+      "rackTooLong": "El rack puede tener como máximo 128 caracteres.",
+      "unitRange": "Ingresa un número entero del 1 al 100."
+    },
+    "toasts": {
+      "saved": "Ubicación física guardada",
+      "removed": "Ubicación física quitada",
+      "saveFailed": "No se pudo guardar la ubicación física",
+      "concurrent": "La ubicación se cambió en otro lugar. Se recargaron los valores más recientes; inténtalo de nuevo.",
+      "authorityDevice": "Este activo ahora está vinculado a un dispositivo administrado. Edita la ubicación en el dispositivo.",
+      "mfaRequired": "Se requiere autenticación multifactor para cambiar la ubicación física."
+    }
+  },
+  "partnerGroups": {
+    "ownerScope": "Propietario del grupo",
+    "organization": "Esta organización",
+    "partner": "Todas las organizaciones",
+    "dynamicOnly": "de todo el socio, solo dinámicos",
+    "scopeHint": "La membresía se evalúa en cada organización que administras; no están disponibles la membresía estática, los sitios ni las condiciones de filtro por grupo u organización.",
+    "allOrgs": "Todas las org.",
+    "pending": "Actualizando membresía…",
+    "current": "Última evaluación: {{time}}",
+    "notEvaluated": "Aún no se ha evaluado",
+    "partial_one": "{{count}} organización sin evaluar · última evaluación correcta {{time}}",
+    "partial_other": "{{count}} organizaciones sin evaluar · última evaluación correcta {{time}}",
+    "retryHint": "Breeze reintenta estas organizaciones automáticamente. Guardar el filtro del grupo inicia una nueva evaluación.",
+    "showMembers": "Mostrar miembros",
+    "hideMembers": "Ocultar miembros",
+    "device": "Dispositivo",
+    "organizationColumn": "Organización",
+    "status": "Estado",
+    "loading": "Cargando miembros…",
+    "membersError": "No se pudieron cargar los miembros del grupo.",
+    "retry": "Reintentar",
+    "emptyMembers": "No hay dispositivos en este grupo."
   }
 }

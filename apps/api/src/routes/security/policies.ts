@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, type SQL } from 'drizzle-orm';
 
 import { db } from '../../db';
 import { securityPolicies } from '../../db/schema';
-import { requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
+import { requirePermission, requireScope } from '../../middleware/auth';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 import { requireSecurityReadAccess } from './readAuthorization';
 import {
@@ -13,26 +13,11 @@ import {
   updatePolicySchema,
   policyIdParamSchema
 } from './schemas';
-import { getPolicyOrgId } from './helpers';
+import { getPolicyOrgId, securityPolicyAccessCondition } from './helpers';
+
+export { securityPolicyAccessCondition };
 
 export const policiesRoutes = new Hono();
-
-// Dual-axis access condition (#2127): org-owned rows the caller can reach OR
-// partner-wide rows (org_id NULL) owned by the caller's own partner. This
-// app-layer condition keeps partner-owned templates visible to reads that
-// filter by auth.orgCondition (which would otherwise exclude org_id IS NULL
-// rows). RLS is STRICTER, not identical: breeze_has_partner_access only passes
-// for partner-scope callers, so the branch is gated on partner scope to keep
-// app and DB in agreement. Mirrors softwarePolicyAccessCondition (#2126).
-function securityPolicyAccessCondition(auth: AuthContext): SQL | undefined {
-  const orgCond = auth.orgCondition(securityPolicies.orgId);
-  // System scope: no filter on either axis.
-  if (!orgCond) return undefined;
-  if (auth.scope === 'partner' && auth.partnerId) {
-    return sql`(${orgCond} OR (${securityPolicies.orgId} IS NULL AND ${securityPolicies.partnerId} = ${auth.partnerId}))`;
-  }
-  return orgCond;
-}
 
 policiesRoutes.get(
   '/policies',

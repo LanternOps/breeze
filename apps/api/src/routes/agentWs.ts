@@ -90,6 +90,7 @@ import {
   parseDesktopStartCommandId,
 } from './remote/helpers';
 import { recordDesktopClipboardSummary, type DesktopClipboardSummary } from '../services/desktopClipboardAudit';
+import { recordDesktopSessionEndedByUser } from '../services/desktopUserEnd';
 import { consentDeniedMessage } from './remote/consentTiming';
 import { CONSENT_OCCUPANCIES, CONSENT_OUTCOMES } from './remote/consentGate';
 import {
@@ -211,7 +212,7 @@ async function updateTunnelSessionForAuthenticatedDevice(
   return row ?? null;
 }
 
-function extractDesktopSessionId(commandId: string, prefix: 'desk-disconnect-' | 'desk-clipsum-'): string | null {
+function extractDesktopSessionId(commandId: string, prefix: 'desk-disconnect-' | 'desk-clipsum-' | 'desk-userend-'): string | null {
   if (!commandId.startsWith(prefix)) return null;
   const sessionId = commandId.slice(prefix.length);
   if (!sessionId || sessionId.length > MAX_DESKTOP_SESSION_ID_BYTES) {
@@ -358,9 +359,26 @@ export const AGENT_CREDENTIAL_RECHECK_UNKNOWN_RETRY_MS = 5_000;
 export type AgentDeviceAuthorization = 'authorized' | 'denied' | 'identity_changed' | 'unknown';
 export const AGENT_CREDENTIAL_SUBSCRIBE_TIMEOUT_MS = 1_000;
 
-type AgentCredentialRevocation = {
+/**
+ * The close codes a revocation may ask for: 4001 (a credential denial, the
+ * default; the agent backs off) or 4040 (reconnect at once: #8318 §6.4, the
+ * install was reattached and its next connection is as the target device).
+ */
+export type AgentCredentialRevocationCloseCode = typeof AGENT_CREDENTIAL_DENIED_CLOSE_CODE | typeof AGENT_IDENTITY_CHANGED_CLOSE_CODE;
+const AGENT_CREDENTIAL_REVOCATION_CLOSE_CODES: ReadonlySet<number> = new Set([
+  AGENT_CREDENTIAL_DENIED_CLOSE_CODE,
+  AGENT_IDENTITY_CHANGED_CLOSE_CODE,
+]);
+const AGENT_CREDENTIAL_REVOKED_CLOSE_REASON = 'Agent credentials revoked';
+const AGENT_CREDENTIAL_REVOCATION_REASON_MAX = 120;
+
+export type AgentCredentialRevocation = {
   agentId: string;
   revokedTokenHashes: string[];
+  /** Default 4001. Anything but 4001/4040 is ignored by every receiver. */
+  closeCode?: AgentCredentialRevocationCloseCode;
+  /** Default 'Agent credentials revoked'; at most 120 characters. */
+  closeReason?: string;
 };
 
 function parseAgentCredentialRevocation(msg: unknown): AgentCredentialRevocation | null {
@@ -373,13 +391,20 @@ function parseAgentCredentialRevocation(msg: unknown): AgentCredentialRevocation
     }
   }
   if (!parsed || typeof parsed !== 'object') return null;
-  const { agentId, revokedTokenHashes } = parsed as Record<string, unknown>;
+  const { agentId, revokedTokenHashes, closeCode, closeReason } = parsed as Record<string, unknown>;
   if (typeof agentId !== 'string' || !Array.isArray(revokedTokenHashes)) return null;
   const hashes = revokedTokenHashes.filter(
     (value): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value),
   );
   if (hashes.length === 0) return null;
-  return { agentId, revokedTokenHashes: [...new Set(hashes)] };
+  const event: AgentCredentialRevocation = { agentId, revokedTokenHashes: [...new Set(hashes)] };
+  if (typeof closeCode === 'number' && AGENT_CREDENTIAL_REVOCATION_CLOSE_CODES.has(closeCode)) {
+    event.closeCode = closeCode as AgentCredentialRevocationCloseCode;
+    if (typeof closeReason === 'string' && closeReason.length > 0 && closeReason.length <= AGENT_CREDENTIAL_REVOCATION_REASON_MAX) {
+      event.closeReason = closeReason;
+    }
+  }
+  return event;
 }
 
 /** Apply a cluster revocation only to the socket admitted by a revoked hash. */
@@ -389,7 +414,8 @@ export function handleAgentCredentialRevocation(msg: unknown): boolean {
   return disconnectAgentCredentialGeneration(
     event.agentId,
     event.revokedTokenHashes,
-    'Agent credentials revoked',
+    event.closeReason ?? AGENT_CREDENTIAL_REVOKED_CLOSE_REASON,
+    event.closeCode ?? AGENT_CREDENTIAL_DENIED_CLOSE_CODE,
   ) !== 'not-connected';
 }
 
@@ -397,6 +423,7 @@ export function disconnectAgentCredentialGeneration(
   agentId: string,
   revokedTokenHashes: string[],
   reason: string,
+  closeCode: AgentCredentialRevocationCloseCode = AGENT_CREDENTIAL_DENIED_CLOSE_CODE,
 ): AgentWsDisconnectResult {
   const connection = activeConnections.get(agentId);
   if (!connection?.credentialTokenHash) return 'not-connected';
@@ -404,7 +431,7 @@ export function disconnectAgentCredentialGeneration(
   connection.credentialRevoked = true;
   recordAgentWsCredentialClose('revoked');
   try {
-    connection.ws.close(4001, reason);
+    connection.ws.close(closeCode, reason);
   } catch (error) {
     console.error(`credential revocation close failed for ${agentId.slice(0, 12)}:`, error);
     captureException(error instanceof Error ? error : new Error(String(error)));
@@ -3907,6 +3934,35 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
             }
           }
 
+          // #10190 W06: the person at the keyboard ended this session from the
+          // on-screen indicator (policy allow_user_end_session). The agent
+          // sends this just before its own stop; that stop's desk-disconnect
+          // result stays the one terminal writer. This records why
+          // (remote_sessions.end_reason + audit remote.session.ended_by_user).
+          if (fastCommandId.startsWith('desk-userend-') &&
+              fastStatus === 'completed' &&
+              fastResult?.event === 'ended_by_user') {
+            const expectedSessionId = extractDesktopSessionId(fastCommandId, 'desk-userend-');
+            if (expectedSessionId && fastResult.sessionId === expectedSessionId) {
+              const userEndDeviceId = authenticatedAgent.deviceId;
+              await recordDesktopSessionEndedByUser({
+                sessionId: expectedSessionId,
+                deviceId: userEndDeviceId,
+              }).then((outcome) => {
+                if (outcome === 'not_recorded') {
+                  // Unknown, foreign, failed, long-ended, or already recorded.
+                  console.warn(`[AgentWs] Ended-by-user report for session ${expectedSessionId} from device ${userEndDeviceId} matches no live or just-ended desktop session of that device without an end reason; not recorded`);
+                }
+              }).catch((err) => {
+                // The reason and its audit row are lost (they commit together).
+                console.error(`[AgentWs] Failed to record session ${expectedSessionId} (device ${userEndDeviceId}) as ended by the user:`, err);
+                captureException(err instanceof Error ? err : new Error(String(err)));
+              });
+            } else {
+              console.warn(`[AgentWs] Ignoring desk-userend report from agent ${agentId}: the command id and result.sessionId do not name the same session`);
+            }
+          }
+
           // The agent acknowledged a generation-bound stop. Move
           // the row's teardown phase pending → confirmed — but only when the
           // result's identity names the exact terminal generation the row is
@@ -4908,7 +4964,8 @@ export const desktopCommandResultSchema = z.object({
   status: z.enum(['completed', 'failed', 'cancelled']),
   error: z.string().max(8192).optional(),
   result: z.object({
-    event: z.enum(['answer', 'ice_candidate', 'peer_disconnected', 'session_started', 'consent_denied', 'clipboard_summary']).optional(),
+    // `ended_by_user` (#10190 W06) rides only on `desk-userend-<id>`.
+    event: z.enum(['answer', 'ice_candidate', 'peer_disconnected', 'session_started', 'consent_denied', 'clipboard_summary', 'ended_by_user']).optional(),
     sessionId: z.string().min(SESSION_ID_MIN).max(SESSION_ID_MAX).optional(),
     answer: z.string().max(65536).optional(),
     error: z.string().max(8192).optional(),
@@ -4934,6 +4991,13 @@ export const desktopCommandResultSchema = z.object({
     consentOccupancy: z.enum(CONSENT_OCCUPANCIES).optional(),
     consentDetail: z.string().max(64).regex(/^[a-z0-9_]+$/).optional(),
     consentProtocol: z.number().int().min(1).max(2).optional(),
+    // #10190 W06: which renderer asked (Breeze Assist, the native helper, or
+    // the Linux daemon-drawn fallback), carried into the consent audit row.
+    // Accepted ahead of any agent that sends it: `result` is `.strict()`, so
+    // an agent may send it only once every API it talks to declares it. A
+    // bounded token, NOT an enum: an unknown (future) renderer must never drop
+    // the whole consent result; consentMarkerAuditDetails maps it to 'unknown'.
+    consentRenderer: z.string().max(32).regex(/^[a-z0-9_]+$/).optional(),
     // Desk-stop confirmations from fielded agents send {"stopped": true}
     // (agent/internal/heartbeat/handlers_desktop.go). Not consumed
     // server-side, but must be accepted so the result isn't dropped as
@@ -5120,14 +5184,33 @@ function recordCrossTenantDrop(agentId: string, deviceId: string | undefined, ki
     // hands after this socket authenticated (a reattach confirm or an in-place
     // re-enroll), nothing was suspended and the row belongs to another
     // install, so no `agent.token.suspended` row is attributed to it; the
-    // superseded socket closes at its next lease re-check (4040).
+    // superseded socket closes at its next lease re-check (4040). The probe
+    // itself still happened, so it gets its own durable row (wave 1b-2, from
+    // the #9896 review): `agent.cross_tenant_probe.stale_caller`, denied.
     const drops = counter.drops;
     void suspendAgentToken({ deviceId, agentId }, AGENT_TOKEN_SUSPEND_REASON.crossTenantProbe).then((outcome) => {
       if (outcome === 'stale_caller') {
         console.warn(
           `[AgentWs] cross-tenant probe from a superseded install: agent=${agentId} device=${deviceId} ` +
-          `kind=${kind}; the device row changed hands, nothing suspended, not audited`
+          `kind=${kind}; the device row changed hands, nothing suspended, audited as a stale-caller probe`
         );
+        void createAuditLogAsync({
+          orgId: null,
+          actorType: 'system',
+          actorId: ANONYMOUS_ACTOR_ID,
+          action: 'agent.cross_tenant_probe.stale_caller',
+          resourceType: 'device',
+          resourceId: deviceId,
+          details: {
+            reason: 'cross-tenant-probe',
+            kind,
+            dropsInWindow: drops,
+            agentId,
+            suspended: false,
+          },
+          result: 'denied',
+          initiatedBy: 'automation',
+        });
         return;
       }
       void createAuditLogAsync({

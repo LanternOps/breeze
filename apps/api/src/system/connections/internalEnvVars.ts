@@ -246,6 +246,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   FLOW_APPROVAL_TTL_HOURS: 'timing knob (parked flow step approval window)',
   FLOW_MAX_RUNNING_PER_OWNER: 'flow run concurrency cap knob',
   FLOW_RUN_RETENTION_DAYS: 'data retention window',
+  FLOW_WEBHOOK_RATE_PER_MINUTE: 'flow webhook intake rate-limit knob',
+  FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS: 'data retention window',
+  FLOW_FOREACH_MAX_PARALLEL: 'flow for-each concurrency cap knob',
   // FRANKFURTER_*
   FRANKFURTER_BASE_URL: 'FX API base override',
   // HEARTBEAT_*
@@ -435,6 +438,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   PRE_ASSIGNMENT_ENROLLMENT_ENABLED: 'pre-assignment enrollment rollout flag',
   // PROCESS_*
   PROCESS_SAMPLE_RETENTION_DAYS: 'data retention window',
+  // PROMPT_*
+  PROMPT_HOST_ENABLED_KINDS: 'on-device prompt kinds rollout flag / kill switch (#10190)',
   // PROVISION_*
   PROVISION_HANDLE_TTL_MINUTES: 'timing knob',
   // PUBLIC_*
@@ -499,6 +504,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // SECURITY_*
   SECURITY_POSTURE_WORKER_CONCURRENCY: 'worker throughput knob',
   SECURITY_SCAN_DEVICE_CONCURRENCY_CAP: 'worker throughput knob',
+  SECURITY_SCAN_MANUAL_QUEUE_TTL_MINUTES: 'timing knob',
   SECURITY_SCAN_ORG_CONCURRENCY_CAP: 'worker throughput knob',
   SECURITY_SCAN_ORG_QUEUE_BACKPRESSURE_LIMIT: 'worker throughput knob',
   SECURITY_SCAN_THROTTLE_REQUEUE_SECONDS: 'timing knob',
@@ -558,6 +564,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   TERMINAL_INPUT_MAX_BYTES_PER_MIN: 'rate limit knob',
   TERMINAL_INPUT_MAX_MESSAGES_PER_MIN: 'rate limit knob',
   // TICKET_*
+  TICKET_IMPORT_MAX_BYTES_PER_HOUR: 'rate limit knob',
   TICKET_OUTBOX_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   TICKET_OUTBOX_RETENTION_DAYS: 'data retention window',
   TICKET_OUTBOX_RETENTION_MAX_BATCHES: 'retention sweep batch knob',

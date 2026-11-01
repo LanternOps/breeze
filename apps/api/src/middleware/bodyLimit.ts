@@ -43,6 +43,7 @@ export type BodyLimitRule =
   | 'quote-acceptance-evidence'
   | 'agreement-signed-copy'
   | 'edr-webhook'
+  | 'flow-webhook'
   | 'yara-test-sample'
   | 'wisp-thread-attachment'
   // Route-level limits TIGHTER than the global default, so `bodyLimitForPath`
@@ -69,6 +70,13 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
   // batches events; 256 KB is ample and bounds pre-auth work.
   if (/^\/api\/v1\/webhooks\/edr\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(path)) {
     return { rule: 'edr-webhook', maxSize: 256 * 1024, error: 'Request body too large' };
+  }
+  // Flow webhook ingress (Tool Catalog W05): public, HMAC/token authenticated in
+  // the handler, so the cap must hold before the body is read. 262,144 B is
+  // FLOW_RUN_LIMITS.webhookMaxBodyBytes (packages/shared); kept literal because
+  // this module is deliberately free of imports.
+  if (/^\/api\/v1\/webhooks\/flows\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(path)) {
+    return { rule: 'flow-webhook', maxSize: 262_144, error: 'Request body too large' };
   }
   // Dev-push uploads agent binaries (~20MB); skip the default 1MB limit.
   if (path.startsWith('/api/v1/dev/push')) {

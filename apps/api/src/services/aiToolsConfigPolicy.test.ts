@@ -303,9 +303,11 @@ describe('configuration policy AI/MCP mutation MFA boundary', () => {
   // #8340: MFA_GATED_TOOL_ACTIONS is the list the MCP catalog advertises from.
   // These two pin that it is also exactly what the handlers enforce, so the
   // catalog cannot drift from the gate again.
-  it('every MFA_GATED_TOOL_ACTIONS entry names a real tool and real actions', () => {
+  it('every config-policy MFA_GATED_TOOL_ACTIONS entry names a real tool and real actions', () => {
+    // Repo-wide (every gated tool against the full registry): aiToolSchemas.securityPolicy.test.ts.
     const registered = tools();
-    for (const [toolName, gated] of Object.entries(MFA_GATED_TOOL_ACTIONS)) {
+    const configPolicyTools = ['manage_configuration_policy', 'apply_configuration_policy', 'remove_configuration_policy_assignment', 'manage_policy_feature_link'];
+    for (const [toolName, gated] of Object.entries(MFA_GATED_TOOL_ACTIONS).filter(([name]) => configPolicyTools.includes(name))) {
       const tool = registered.get(toolName);
       expect(tool, toolName).toBeDefined();
       if (gated === '*') continue;
@@ -330,7 +332,9 @@ describe('configuration policy AI/MCP mutation MFA boundary', () => {
   });
 
   it.each(
-    Object.keys(MFA_GATED_TOOL_ACTIONS).flatMap((toolName) => {
+    // The config-policy tools this suite registers; other modules' gated tools (e.g. the W11 security policy tools,
+    // #6781) carry their own MFA refusal tests next to their handlers.
+    Object.keys(MFA_GATED_TOOL_ACTIONS).filter((toolName) => tools().has(toolName)).flatMap((toolName) => {
       const definition = tools().get(toolName)!.definition;
       const actionEnum: string[] | undefined = definition.input_schema.properties.action?.enum;
       return (actionEnum ?? [undefined]).map((action) => [toolName, action] as const);

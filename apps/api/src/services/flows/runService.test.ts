@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthContext } from '../../middleware/auth';
 
 /**
@@ -13,7 +13,9 @@ import type { AuthContext } from '../../middleware/auth';
 type Op = { op: string; args: unknown[] };
 type Call = { kind: string; table?: unknown; ops: Op[] };
 
-const { queues, calls, deferred } = vi.hoisted(() => ({
+const { queues, calls, deferred, txRollbacks } = vi.hoisted(() => ({
+  // Errors that escaped a system transaction callback (= the transaction rolled back).
+  txRollbacks: [] as unknown[],
   queues: { select: [] as unknown[], insert: [] as unknown[], update: [] as unknown[], execute: [] as unknown[] },
   calls: [] as Call[],
   // Work handed to runAfterDbContextCommit, keyed by label; run on demand so a
@@ -52,7 +54,14 @@ vi.mock('../../db', () => {
       },
     },
     runOutsideDbContext: (fn: () => unknown) => fn(),
-    withSystemDbAccessContext: (fn: () => unknown) => fn(),
+    withSystemDbAccessContext: async (fn: () => unknown) => {
+      try {
+        return await fn();
+      } catch (err) {
+        txRollbacks.push(err);
+        throw err;
+      }
+    },
     getCurrentDbAccessContext: () => undefined,
     runAfterDbContextCommit: (label: string, work: () => unknown) => {
       deferred.labels.push(label);
@@ -67,15 +76,26 @@ vi.mock('../permissions', async (importOriginal) => ({
   getUserPermissions: vi.fn(),
 }));
 vi.mock('./runAdmission', () => ({ assertFlowRunAdmission: vi.fn() }));
+vi.mock('./budgets', () => ({ lockFlowRunAdmission: vi.fn(), chargeFlowRun: vi.fn(), recordAdmissionRefusal: vi.fn() }));
 vi.mock('../../jobs/flowRunQueue', () => ({ enqueueFlowRunSlice: vi.fn() }));
 vi.mock('../auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnapshot: () => ({}) }));
 vi.mock('../aiOperator/taskOutbox', () => ({ publishIntentTerminalOutbox: vi.fn() }));
 vi.mock('../userNotifications', () => ({ createNotification: vi.fn() }));
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+// #5221 B2 — the ledger read and the claim are mocked; no conversion by default.
+vi.mock('./conversion/claims', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./conversion/claims')>()),
+  conversionForFlow: vi.fn(async () => null),
+  claimOccurrence: vi.fn(async () => ({ ok: true })),
+  reportOccurrenceAnomaly: vi.fn(),
+  heldParentScheduleClaim: vi.fn(async () => false),
+}));
+import { claimOccurrence, conversionForFlow, heldParentScheduleClaim, reportOccurrenceAnomaly } from './conversion/claims';
 
 import { actionIntents, flowRuns } from '../../db/schema';
 import { getUserPermissions, type UserPermissions } from '../permissions';
 import { assertFlowRunAdmission } from './runAdmission';
+import { chargeFlowRun, lockFlowRunAdmission, recordAdmissionRefusal } from './budgets';
 import { enqueueFlowRunSlice } from '../../jobs/flowRunQueue';
 import { writeAuditEvent } from '../auditEvents';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
@@ -179,7 +199,11 @@ beforeEach(() => {
   for (const q of Object.values(queues)) q.length = 0;
   calls.length = 0;
   vi.mocked(getUserPermissions).mockReset().mockResolvedValue(perms());
-  vi.mocked(assertFlowRunAdmission).mockReset().mockResolvedValue({ ok: true });
+  vi.mocked(assertFlowRunAdmission).mockReset().mockResolvedValue({ ok: true, caps: { flowCap: 10, ownerCap: 100 } });
+  vi.mocked(lockFlowRunAdmission).mockReset().mockResolvedValue(undefined);
+  vi.mocked(chargeFlowRun).mockReset().mockResolvedValue({ ok: true });
+  vi.mocked(recordAdmissionRefusal).mockReset().mockResolvedValue(undefined);
+  txRollbacks.length = 0;
   vi.mocked(enqueueFlowRunSlice).mockReset().mockResolvedValue('job');
   deferred.hold = false;
   deferred.labels.length = 0;
@@ -208,7 +232,7 @@ describe('startManualRun', () => {
     const r = await startManualRun(auth(), FLOW_ID, { inputs: {} }, 'ui');
     expect(r).toEqual({ ok: true, runId: RUN_ID, duplicate: false, preApprovalsHonored: true });
     expect(getUserPermissions).toHaveBeenCalledWith(USER, { partnerId: PARTNER, orgId: ORG });
-    expect(assertFlowRunAdmission).toHaveBeenCalledWith({ orgId: ORG, partnerId: PARTNER }, FLOW_ID);
+    expect(assertFlowRunAdmission).toHaveBeenCalledWith({ orgId: ORG, partnerId: PARTNER }, FLOW_ID, expect.objectContaining({ at: expect.any(Date) }));
     expect(enqueueFlowRunSlice).toHaveBeenCalledWith(RUN_ID);
     const values = insertValues();
     expect(values).toEqual(expect.arrayContaining([ORG, FLOW_ID, PUB_ID, 5, 'manual', 'ui', true, USER]));
@@ -216,6 +240,19 @@ describe('startManualRun', () => {
     expect(vi.mocked(writeAuditEvent).mock.calls[0]![1]).toMatchObject({
       action: 'flow.run.create', orgId: ORG, actorId: USER, resourceType: 'flow_run', resourceId: RUN_ID,
     });
+  });
+
+  it('a run_flow start pinned to the publication its lowered tier was gated on refuses any other (W5 PR C)', async () => {
+    queueStart(flowRow({ enabledPublicationSeq: 3 }));
+    expect(await startManualRun(auth(), FLOW_ID, { inputs: {} }, 'ai_tool', 'sess-1', { expectedPublicationSeq: 2 }))
+      .toEqual({ ok: false, error: 'flow_tool_changed' });
+    expect(callsOf('execute')).toHaveLength(0);
+    // The pinned publication itself runs, and the insert pins it too.
+    queues.select.length = 0; // the refusal returned before the publication and org reads
+    queueStart(flowRow({ enabledPublicationSeq: 2 }));
+    queueCreate();
+    expect(await startManualRun(auth(), FLOW_ID, { inputs: {} }, 'ai_tool', 'sess-1', { expectedPublicationSeq: 2 }))
+      .toMatchObject({ ok: true, runId: RUN_ID });
   });
 
   it('partner flow without orgId is org_required', async () => {
@@ -248,7 +285,7 @@ describe('startManualRun', () => {
     vi.mocked(getUserPermissions).mockResolvedValue(perms({ scope: 'partner', orgId: null, orgAccess: 'all' }));
     const r = await startManualRun(partnerAuth(), FLOW_ID, { orgId: ORG, inputs: {} }, 'ui');
     expect(r).toEqual({ ok: true, runId: RUN_ID, duplicate: false, preApprovalsHonored: true });
-    expect(assertFlowRunAdmission).toHaveBeenCalledWith({ orgId: null, partnerId: PARTNER }, FLOW_ID);
+    expect(assertFlowRunAdmission).toHaveBeenCalledWith({ orgId: null, partnerId: PARTNER }, FLOW_ID, expect.objectContaining({ at: expect.any(Date) }));
   });
 
   it('inputs coerced and invalid inputs listed', async () => {
@@ -576,6 +613,385 @@ describe('createFlowRun', () => {
   it('a DB failure throws (callers retry)', async () => {
     queues.select.push(new Error('connection reset'));
     await expect(createFlowRun({ ...base, triggerKind: 'schedule' })).rejects.toThrow('connection reset');
+  });
+});
+
+describe('createFlowRun — occurrence claims (#5221 B2)', () => {
+  const AUTO = 'abababab-abab-4bab-8bab-abababababab';
+  const CONV = 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd';
+  const LEGACY_RUN = 'efefefef-efef-4fef-8fef-efefefefefef';
+  const KEY = 'event:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const at = new Date('2027-03-01T10:00:00.000Z');
+  const switchAt = new Date('2027-03-01T09:00:00.000Z');
+  const event = {
+    flowId: FLOW_ID, orgId: ORG, scope: { firedAt: at.toISOString() }, inputs: {}, dedupeKey: KEY,
+    triggerKind: 'event' as const, chainDepth: 0, causedByRunId: null,
+  };
+  const generation = (state: 'shadow' | 'switched' | 'reverted') => ({
+    id: CONV, state, switchAt: state === 'shadow' ? null : switchAt, automationId: AUTO, orgId: ORG, partnerId: null,
+  });
+
+  beforeEach(() => {
+    vi.mocked(conversionForFlow).mockReset().mockResolvedValue(null);
+    vi.mocked(claimOccurrence).mockReset().mockResolvedValue({ ok: true });
+    vi.mocked(reportOccurrenceAnomaly).mockReset();
+  });
+  // Every later suite runs plain flows (the ledger read happens for every run since B4).
+  afterEach(() => {
+    vi.mocked(conversionForFlow).mockReset().mockResolvedValue(null);
+  });
+
+  it('a switched flow claims the occurrence in the run transaction, after the insert and the charge', async () => {
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('switched'));
+    queueCreate();
+    const r = await createFlowRun({ ...event, occurrence: { keys: [KEY], at } });
+    expect(r).toMatchObject({ created: true, runId: RUN_ID });
+    expect(conversionForFlow).toHaveBeenCalledWith(expect.anything(), FLOW_ID);
+    expect(vi.mocked(claimOccurrence).mock.calls[0]![1]).toEqual({
+      automationId: AUTO, owner: { orgId: ORG, partnerId: null }, keys: [KEY], engine: 'flow',
+      conversionId: CONV, flowRunId: RUN_ID, occurrenceAt: at,
+    });
+    const charge = vi.mocked(chargeFlowRun).mock.invocationCallOrder[0]!;
+    const claim = vi.mocked(claimOccurrence).mock.invocationCallOrder[0]!;
+    expect(charge).toBeLessThan(claim);
+    expect(txRollbacks).toHaveLength(0);
+  });
+
+  it('a claim conflict rolls the run back and returns the existing linkage', async () => {
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('switched'));
+    const existing = { engine: 'legacy' as const, legacyRunId: LEGACY_RUN, flowRunId: null };
+    vi.mocked(claimOccurrence).mockResolvedValue({ ok: false, existing });
+    queueCreate();
+    expect(await createFlowRun({ ...event, occurrence: { keys: [KEY], at } })).toEqual({
+      created: false, reason: 'occurrence_claimed', claimedBy: existing,
+    });
+    // The insert and the charge ran, then the transaction threw: all of it rolls back.
+    expect(callsOf('execute')).toHaveLength(1);
+    expect(txRollbacks).toHaveLength(1);
+    expect(enqueueFlowRunSlice).not.toHaveBeenCalled();
+    expect(recordAdmissionRefusal).not.toHaveBeenCalled();
+  });
+
+  it('a reverted (or shadow) generation attempts nothing new', async () => {
+    for (const state of ['reverted', 'shadow'] as const) {
+      calls.length = 0;
+      vi.mocked(conversionForFlow).mockResolvedValue(generation(state));
+      queueCreate();
+      expect(await createFlowRun({ ...event, occurrence: { keys: [KEY], at } })).toEqual({ created: false, reason: 'not_enabled' });
+      expect(callsOf('execute')).toHaveLength(0);
+    }
+    expect(chargeFlowRun).not.toHaveBeenCalled();
+    expect(claimOccurrence).not.toHaveBeenCalled();
+  });
+
+  it('a switched flow does not attempt an occurrence it cannot key, and reports it', async () => {
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('switched'));
+    queueCreate();
+    expect(await createFlowRun({ ...event, occurrence: { keys: [], at } })).toEqual({ created: false, reason: 'not_enabled' });
+    expect(callsOf('execute')).toHaveLength(0);
+    expect(reportOccurrenceAnomaly).toHaveBeenCalledWith('flow_conversion_event_key_unbuildable', 'flow', KEY);
+  });
+
+  it('a missing instant is still attempted by a switched flow (claims dedupe) and reported', async () => {
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('switched'));
+    queueCreate();
+    expect(await createFlowRun({ ...event, occurrence: { keys: [KEY], at: null } })).toMatchObject({ created: true });
+    expect(vi.mocked(claimOccurrence).mock.calls[0]![1]).toMatchObject({ occurrenceAt: null });
+    expect(reportOccurrenceAnomaly).toHaveBeenCalledWith('flow_conversion_event_instant_missing', 'flow', KEY);
+  });
+
+  it('a flow with no conversion never claims, with or without an occurrence', async () => {
+    queueCreate();
+    expect(await createFlowRun({ ...event, occurrence: { keys: [], at: null } })).toMatchObject({ created: true });
+    expect(claimOccurrence).not.toHaveBeenCalled();
+    queueCreate();
+    expect(await createFlowRun({ ...event, dedupeKey: 'event:other' })).toMatchObject({ created: true });
+    expect(claimOccurrence).not.toHaveBeenCalled();
+  });
+
+  // #5221 B4 (Decision 7): a reverted generation's flow attempts nothing new,
+  // whatever starts it; what it already admitted keeps running.
+  const manual = {
+    flowId: FLOW_ID, orgId: ORG, scope: { firedAt: at.toISOString() }, inputs: {}, dedupeKey: 'manual:k1',
+    triggerKind: 'manual' as const, triggeredVia: 'ui' as const, triggeredByUserId: USER, aiSessionId: null,
+    triggererCleared: true, expectedPublicationSeq: 2,
+  };
+  const tool = {
+    flowId: FLOW_ID, orgId: ORG, scope: { firedAt: at.toISOString() }, inputs: {}, dedupeKey: 'tool:ai_tool:u:k1',
+    triggerKind: 'tool' as const, triggeredVia: 'ai_tool' as const, triggeredByUserId: USER, triggeredByApiKeyId: null,
+    parentAgentRunId: null, aiSessionId: null, expectedPublicationSeq: 2,
+  };
+
+  it('a reverted flow refuses new manual and tool runs with flow_conversion_reverted', async () => {
+    for (const input of [manual, tool]) {
+      calls.length = 0;
+      vi.mocked(conversionForFlow).mockResolvedValue(generation('reverted'));
+      queueCreate();
+      expect(await createFlowRun(input as CreateFlowRunInput)).toEqual({ created: false, reason: 'flow_conversion_reverted' });
+      expect(callsOf('execute')).toHaveLength(0);
+    }
+    expect(chargeFlowRun).not.toHaveBeenCalled();
+    expect(claimOccurrence).not.toHaveBeenCalled();
+    // Not an admission refusal: the flow carries no banner for it.
+    expect(recordAdmissionRefusal).not.toHaveBeenCalled();
+  });
+
+  it('a reverted flow admits no schedule run either; a switched flow runs manual runs as before', async () => {
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('reverted'));
+    queueCreate();
+    expect(await createFlowRun({ ...event, triggerKind: 'schedule', dedupeKey: 'schedule:k' } as CreateFlowRunInput))
+      .toEqual({ created: false, reason: 'flow_conversion_reverted' });
+    expect(callsOf('execute')).toHaveLength(0);
+
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('switched'));
+    queueCreate();
+    expect(await createFlowRun(manual as CreateFlowRunInput)).toMatchObject({ created: true, runId: RUN_ID });
+    expect(claimOccurrence).not.toHaveBeenCalled();
+  });
+
+  // #5221 B5 (Decision 7): the tick's parent claim IS the admission of a
+  // schedule occurrence; its per-org children are execution and still run
+  // after a revert — checked in this transaction, never on the tick's word.
+  const scheduleChild = {
+    flowId: FLOW_ID, orgId: ORG, scope: { firedAt: '2027-03-01T10:00:00.000Z' }, inputs: {},
+    dedupeKey: 'schedule:2027-03-01T10:00Z', triggerKind: 'schedule' as const,
+  };
+
+  it('a reverted flow with no parent claim still refuses a schedule child', async () => {
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('reverted'));
+    vi.mocked(heldParentScheduleClaim).mockResolvedValue(false);
+    queueCreate();
+    expect(await createFlowRun(scheduleChild as CreateFlowRunInput)).toEqual({ created: false, reason: 'flow_conversion_reverted' });
+    expect(heldParentScheduleClaim).toHaveBeenCalledWith(expect.anything(), { id: CONV, automationId: AUTO }, 'schedule:2027-03-01T10:00Z');
+    expect(callsOf('execute')).toHaveLength(0);
+    expect(chargeFlowRun).not.toHaveBeenCalled();
+  });
+
+  it('a reverted flow runs a schedule child of the parent claim it holds, and nothing else', async () => {
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('reverted'));
+    vi.mocked(heldParentScheduleClaim).mockResolvedValue(true);
+    queueCreate();
+    expect(await createFlowRun(scheduleChild as CreateFlowRunInput)).toMatchObject({ created: true, runId: RUN_ID });
+    // The child never claims: the parent claim is the occurrence's admission.
+    expect(claimOccurrence).not.toHaveBeenCalled();
+
+    // A held claim never opens any other run kind.
+    vi.mocked(heldParentScheduleClaim).mockClear();
+    for (const input of [manual, tool]) {
+      queueCreate();
+      expect(await createFlowRun(input as CreateFlowRunInput)).toEqual({ created: false, reason: 'flow_conversion_reverted' });
+    }
+    queueCreate();
+    expect(await createFlowRun({ ...event, occurrence: { keys: [KEY], at } })).toEqual({ created: false, reason: 'not_enabled' });
+    expect(heldParentScheduleClaim).not.toHaveBeenCalled();
+    vi.mocked(heldParentScheduleClaim).mockReset().mockResolvedValue(false);
+  });
+
+  it('startManualRun surfaces flow_conversion_reverted', async () => {
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('reverted'));
+    queueStart();
+    queueCreate();
+    expect(await startManualRun(auth(), FLOW_ID, { inputs: {} }, 'ui')).toEqual({ ok: false, error: 'flow_conversion_reverted' });
+  });
+});
+
+describe('createFlowRun — W5 monthly caps (#5220 A4)', () => {
+  const base = { flowId: FLOW_ID, orgId: ORG, scope: { firedAt: '2027-03-01T10:00:00.000Z' }, inputs: {}, dedupeKey: 'event:e1' };
+  const event = { ...base, triggerKind: 'event' as const, chainDepth: 0, causedByRunId: null };
+
+  it('passes the publication document and the caps it returns to the charge', async () => {
+    queueCreate();
+    await createFlowRun(event);
+    const [, , ctx] = vi.mocked(assertFlowRunAdmission).mock.calls[0]!;
+    expect(ctx.doc).toMatchObject({ name: 'Disk Cleanup' });
+    expect(chargeFlowRun).toHaveBeenCalledWith({ flowId: FLOW_ID, owner: { orgId: ORG, partnerId: PARTNER }, flowCap: 10, ownerCap: 100, at: ctx.at });
+  });
+
+  it('admission takes the owner lock before counting active runs', async () => {
+    queueCreate();
+    await createFlowRun(event);
+    expect(lockFlowRunAdmission).toHaveBeenCalledWith({ orgId: ORG, partnerId: PARTNER });
+    const lock = vi.mocked(lockFlowRunAdmission).mock.invocationCallOrder[0]!;
+    const admit = vi.mocked(assertFlowRunAdmission).mock.invocationCallOrder[0]!;
+    const charge = vi.mocked(chargeFlowRun).mock.invocationCallOrder[0]!;
+    expect(lock).toBeLessThan(admit);
+    expect(admit).toBeLessThan(charge);
+  });
+
+  it('a partner-wide flow locks and charges its partner owner', async () => {
+    queueCreate({ flow: flowRow({ orgId: null, partnerId: PARTNER }) });
+    await createFlowRun(event);
+    expect(lockFlowRunAdmission).toHaveBeenCalledWith({ orgId: null, partnerId: PARTNER });
+    expect(vi.mocked(chargeFlowRun).mock.calls[0]![0].owner).toEqual({ orgId: null, partnerId: PARTNER });
+  });
+
+  it('duplicate never charges', async () => {
+    queueCreate({ existing: [{ id: FIRST_RUN, preApprovalsHonored: true }] });
+    queues.execute.length = 0;
+    expect(await createFlowRun(event)).toEqual({ created: false, reason: 'duplicate', runId: FIRST_RUN, preApprovalsHonored: true });
+    expect(chargeFlowRun).not.toHaveBeenCalled();
+    expect(callsOf('execute')).toHaveLength(0);
+  });
+
+  it('a dedupe race lost at insert never charges', async () => {
+    queueCreate({ inserted: [] });
+    queues.select.push([{ id: FIRST_RUN, preApprovalsHonored: true }]);
+    expect(await createFlowRun(event)).toMatchObject({ created: false, reason: 'duplicate', runId: FIRST_RUN });
+    expect(chargeFlowRun).not.toHaveBeenCalled();
+  });
+
+  it('charge breach rolls back the run row', async () => {
+    queueCreate();
+    vi.mocked(chargeFlowRun).mockResolvedValue({ ok: false, error: 'flow_monthly_cap_reached' });
+    expect(await createFlowRun(event)).toEqual({ created: false, reason: 'flow_monthly_cap_reached' });
+    // The insert ran, then the transaction threw: run row and counters roll back together.
+    expect(callsOf('execute')).toHaveLength(1);
+    expect(txRollbacks).toHaveLength(1);
+    expect(enqueueFlowRunSlice).not.toHaveBeenCalled();
+    expect(recordAdmissionRefusal).toHaveBeenCalledWith(FLOW_ID, 'flow_monthly_cap_reached');
+  });
+
+  it('refusal returns the code and records the marker', async () => {
+    queues.select.push([{ partnerId: PARTNER }], [flowRow()], [publication()], []);
+    vi.mocked(assertFlowRunAdmission).mockResolvedValue({ ok: false, error: 'owner_monthly_cap_reached' });
+    expect(await createFlowRun(event)).toEqual({ created: false, reason: 'owner_monthly_cap_reached' });
+    expect(callsOf('execute')).toHaveLength(0);
+    expect(chargeFlowRun).not.toHaveBeenCalled();
+    expect(recordAdmissionRefusal).toHaveBeenCalledWith(FLOW_ID, 'owner_monthly_cap_reached');
+  });
+
+  it('the active queue refusal is recorded for the banner too', async () => {
+    queues.select.push([{ partnerId: PARTNER }], [flowRow()], [publication()], []);
+    vi.mocked(assertFlowRunAdmission).mockResolvedValue({ ok: false, error: 'flow_queue_full' });
+    expect(await createFlowRun(event)).toEqual({ created: false, reason: 'flow_queue_full' });
+    expect(recordAdmissionRefusal).toHaveBeenCalledWith(FLOW_ID, 'flow_queue_full');
+  });
+
+  it('a publication that no longer parses is not_enabled (fail closed)', async () => {
+    queues.select.push([{ partnerId: PARTNER }], [flowRow()], [publication({ definition: { version: 9 } })]);
+    expect(await createFlowRun(event)).toEqual({ created: false, reason: 'not_enabled' });
+    expect(assertFlowRunAdmission).not.toHaveBeenCalled();
+  });
+});
+
+describe('createFlowRun — webhook runs (#5220 A4/A6)', () => {
+  const ROTATED = new Date('2027-03-01T09:00:00.000Z');
+  const webhookFlow = (over: Record<string, unknown> = {}) => flowRow({ webhookSecretRotatedAt: ROTATED, ...over });
+  const webhook = (over: Record<string, unknown> = {}) => ({
+    flowId: FLOW_ID, orgId: ORG, scope: { firedAt: '2027-03-01T10:00:00.000Z' }, inputs: {}, dedupeKey: 'webhook:evt_1',
+    triggerKind: 'webhook' as const, expectedPublicationSeq: 2, expectedSecretRotatedAt: ROTATED,
+    onCreated: vi.fn().mockResolvedValue(undefined),
+    ...over,
+  });
+
+  it('webhook run never honours pre-approvals and is via webhook', async () => {
+    queueCreate({ flow: webhookFlow() });
+    const input = webhook();
+    expect(await createFlowRun(input)).toMatchObject({ created: true, runId: RUN_ID, preApprovalsHonored: false });
+    const values = insertValues();
+    expect(values).toEqual(expect.arrayContaining(['webhook', false, 'webhook:evt_1']));
+    expect(values).not.toContain(true);
+    expect(input.onCreated).toHaveBeenCalledWith(RUN_ID);
+  });
+
+  it('onCreated runs after the charge, inside the transaction', async () => {
+    queueCreate({ flow: webhookFlow() });
+    const input = webhook();
+    await createFlowRun(input);
+    expect(vi.mocked(chargeFlowRun).mock.invocationCallOrder[0]!).toBeLessThan(input.onCreated.mock.invocationCallOrder[0]!);
+  });
+
+  it('onCreated failure rolls back the run and the charge', async () => {
+    queueCreate({ flow: webhookFlow() });
+    const boom = Object.assign(new Error('duplicate key'), { code: '23505' });
+    const input = webhook({ onCreated: vi.fn().mockRejectedValue(boom) });
+    await expect(createFlowRun(input)).rejects.toBe(boom);
+    expect(txRollbacks).toEqual([boom]);
+    expect(enqueueFlowRunSlice).not.toHaveBeenCalled();
+  });
+
+  it('a charge breach never calls onCreated', async () => {
+    queueCreate({ flow: webhookFlow() });
+    vi.mocked(chargeFlowRun).mockResolvedValue({ ok: false, error: 'owner_monthly_cap_reached' });
+    const input = webhook();
+    expect(await createFlowRun(input)).toEqual({ created: false, reason: 'owner_monthly_cap_reached' });
+    expect(input.onCreated).not.toHaveBeenCalled();
+  });
+
+  it('secret rotated between verify and insert refuses the delivery', async () => {
+    queues.select.push([{ partnerId: PARTNER }], [webhookFlow({ webhookSecretRotatedAt: new Date('2027-03-01T09:30:00.000Z') })]);
+    expect(await createFlowRun(webhook())).toEqual({ created: false, reason: 'not_enabled' });
+    queues.select.push([{ partnerId: PARTNER }], [webhookFlow({ webhookSecretRotatedAt: null })]);
+    expect(await createFlowRun(webhook())).toEqual({ created: false, reason: 'not_enabled' });
+    expect(callsOf('execute')).toHaveLength(0);
+  });
+
+  it('re-published flow between verify and insert refuses the delivery', async () => {
+    queues.select.push([{ partnerId: PARTNER }], [webhookFlow({ enabledPublicationSeq: 3 })]);
+    expect(await createFlowRun(webhook())).toEqual({ created: false, reason: 'not_enabled' });
+    expect(callsOf('execute')).toHaveLength(0);
+  });
+
+  it('a webhook run without its verified expectations is a caller bug', async () => {
+    await expect(createFlowRun(webhook({ expectedSecretRotatedAt: undefined }) as unknown as CreateFlowRunInput)).rejects.toThrow(/secret/i);
+    await expect(createFlowRun(webhook({ onCreated: undefined }) as unknown as CreateFlowRunInput)).rejects.toThrow(/onCreated/);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe('createFlowRun — tool runs (#5220 C2)', () => {
+  const AGENT_RUN = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const KEY_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const tool = (over: Record<string, unknown> = {}) => ({
+    flowId: FLOW_ID, orgId: ORG, scope: { firedAt: '2027-03-01T10:00:00.000Z' }, inputs: {}, dedupeKey: 'tool:ai_tool:u:k1',
+    triggerKind: 'tool' as const, triggeredVia: 'ai_tool' as const, triggeredByUserId: USER, triggeredByApiKeyId: null,
+    parentAgentRunId: null, aiSessionId: 'sess-1', expectedPublicationSeq: 2,
+    ...over,
+  });
+
+  it('tool run never honours pre-approvals and records its lane', async () => {
+    queueCreate();
+    expect(await createFlowRun(tool() as CreateFlowRunInput)).toMatchObject({ created: true, runId: RUN_ID, preApprovalsHonored: false });
+    const values = insertValues();
+    expect(values).toEqual(expect.arrayContaining(['tool', 'ai_tool', false, 'tool:ai_tool:u:k1', USER, 'sess-1']));
+    expect(values).not.toContain(true);
+  });
+
+  it('an agent tool run records its parent agent run and no user', async () => {
+    queueCreate();
+    await createFlowRun(tool({ triggeredVia: 'ai_agent', triggeredByUserId: null, aiSessionId: null, parentAgentRunId: AGENT_RUN }) as CreateFlowRunInput);
+    expect(insertValues()).toEqual(expect.arrayContaining(['tool', 'ai_agent', AGENT_RUN]));
+    expect(insertValues()).not.toContain(USER);
+  });
+
+  it('an MCP tool run records the API key', async () => {
+    queueCreate();
+    await createFlowRun(tool({ triggeredVia: 'mcp', triggeredByApiKeyId: KEY_ID, aiSessionId: null }) as CreateFlowRunInput);
+    expect(insertValues()).toEqual(expect.arrayContaining(['tool', 'mcp', KEY_ID]));
+  });
+
+  it('a tool run pins the publication it was resolved against', async () => {
+    queues.select.push([{ partnerId: PARTNER }], [flowRow({ enabledPublicationSeq: 3 })]);
+    expect(await createFlowRun(tool() as CreateFlowRunInput)).toEqual({ created: false, reason: 'not_enabled' });
+    expect(callsOf('execute')).toHaveLength(0);
+  });
+
+  it('kind/via/parent mismatches are caller bugs, refused before any read', async () => {
+    await expect(createFlowRun(tool({ triggeredVia: 'ui' }) as unknown as CreateFlowRunInput)).rejects.toThrow(/triggeredVia/);
+    await expect(createFlowRun(tool({ triggeredVia: 'ai_agent', parentAgentRunId: null }) as unknown as CreateFlowRunInput)).rejects.toThrow(/parentAgentRunId/);
+    await expect(createFlowRun(tool({ parentAgentRunId: AGENT_RUN }) as unknown as CreateFlowRunInput)).rejects.toThrow(/parentAgentRunId/);
+    await expect(createFlowRun(tool({ triggeredByApiKeyId: KEY_ID }) as unknown as CreateFlowRunInput)).rejects.toThrow(/api key/i);
+    await expect(createFlowRun(tool({ expectedPublicationSeq: undefined }) as unknown as CreateFlowRunInput)).rejects.toThrow(/publication seq/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('a tool run is audited with the AI initiator', async () => {
+    queueCreate();
+    await createFlowRun(tool() as CreateFlowRunInput);
+    expect(writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'flow.run.create', actorId: USER, initiatedBy: 'ai',
+      details: expect.objectContaining({ triggerKind: 'tool', triggeredVia: 'ai_tool' }),
+    }));
   });
 });
 

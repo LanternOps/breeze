@@ -40,6 +40,7 @@ const store = {
 vi.mock('@/stores/workspaceStore', () => ({ useWorkspaceStore: () => store }));
 
 import WorkspaceChatPanel from './WorkspaceChatPanel';
+import { useOrgStore } from '@/stores/orgStore';
 
 const baseTab = (over = {}) => ({
   id: 't',
@@ -210,5 +211,70 @@ describe('WorkspaceChatPanel - move to the side panel, draft, chips (#9840 W3)',
     expect(JSON.parse(screen.getByTestId('chips').getAttribute('data-props')!)).toEqual({
       orgId: 'o1', deviceLabel: 'h1', m365ConnectionId: 'c1',
     });
+  });
+});
+
+describe('WorkspaceChatPanel - chat mode label (#10142)', () => {
+  it('says Wisp for a tab under a Wisp grant', () => {
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: 'o' } }) as any} />);
+    expect(screen.getByTestId('workspace-chat-mode')).toHaveTextContent('Wisp');
+    expect(screen.getByTestId('workspace-chat-mode')).toHaveAttribute('data-mode', 'wisp');
+  });
+
+  it('says Breeze AI for a plain chat, not Wisp', () => {
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'plain' } }) as any} />);
+    expect(screen.getByTestId('workspace-chat-mode')).toHaveTextContent('Breeze AI');
+    expect(screen.getByTestId('workspace-chat-mode')).not.toHaveTextContent('Wisp');
+  });
+
+  it('shows no label while the tab is still finding out', () => {
+    render(<WorkspaceChatPanel tab={baseTab() as any} />);
+    expect(screen.queryByTestId('workspace-chat-mode')).toBeNull();
+  });
+});
+
+describe('WorkspaceChatPanel - one voice under a Wisp grant (#10195)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('a Wisp tab labels replies Wisp, greets as Wisp and asks "Message Wisp"', () => {
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: null } }) as any} />);
+    expect(messagesHarness.props?.assistantLabel).toBe('Wisp');
+    expect(inputHarness.props?.placeholder).toBe('Message Wisp');
+    // The empty state is Wisp's own (its suggestions), not the generic Breeze AI prompts.
+    render(<>{messagesHarness.props?.emptyState}</>);
+    expect(screen.getByTestId('wisp-welcome')).toHaveTextContent("I'm looking around All organizations.");
+    expect(screen.getAllByTestId('wisp-suggestion').length).toBeGreaterThan(0);
+    // "Your first brief arrives…" belongs to the home's first visit, not a new conversation.
+    expect(screen.getByTestId('wisp-welcome')).not.toHaveTextContent('first brief');
+  });
+
+  it('a Wisp suggestion sends into this tab', () => {
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: null } }) as any} />);
+    render(<>{messagesHarness.props?.emptyState}</>);
+    fireEvent.click(screen.getAllByTestId('wisp-suggestion')[0]);
+    expect(store.sendMessage).toHaveBeenCalledWith('t', 'What needs my attention today? Keep it short.');
+  });
+
+  it('an org-scoped Wisp tab greets with the organization name, or "this organization" before the list loads', () => {
+    useOrgStore.setState({ organizations: [{ id: 'org-a', name: 'Acme' }] } as never);
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: 'org-a' } }) as any} />);
+    const named = render(<>{messagesHarness.props?.emptyState}</>);
+    expect(named.container.querySelector('[data-testid="wisp-welcome"]')).toHaveTextContent("I'm looking around Acme.");
+    useOrgStore.setState({ organizations: [] } as never);
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: 'org-x' } }) as any} />);
+    const unknown = render(<>{messagesHarness.props?.emptyState}</>);
+    expect(unknown.container.querySelector('[data-testid="wisp-welcome"]')).toHaveTextContent("I'm looking around this organization.");
+  });
+
+  it.each([
+    ['a plain chat', { kind: 'plain' }],
+    ['a tab still finding out', undefined],
+  ])('%s keeps the Breeze AI defaults', (_name, wisp) => {
+    render(<WorkspaceChatPanel tab={baseTab({ wisp }) as any} />);
+    expect(messagesHarness.props?.assistantLabel).toBeUndefined();
+    expect(messagesHarness.props?.emptyState).toBeUndefined();
+    expect(inputHarness.props?.placeholder).toBeUndefined();
   });
 });

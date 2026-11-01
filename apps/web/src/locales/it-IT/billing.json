@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "es. Gestione workstation",
         "unitPrice": "Prezzo unitario",
         "quantity": "Quantità",
+        "quantityInvalid": "Inserisci una quantità (fino a 2 decimali).",
+        "quantityTooLarge": "La quantità è troppo grande (al massimo 10 cifre prima del separatore decimale).",
         "siteOptional": "Sito (facoltativo: limita il conteggio dei dispositivi)",
         "allSites": "Tutti i siti",
         "linkCatalogItemOptional": "Collega elemento di catalogo (facoltativo)",
@@ -769,6 +771,7 @@
       "fileWrongType": "Allega un file PDF, PNG o JPEG.",
       "variables": "Dati dell'accordo",
       "unresolved": "Indica un valore per: {{names}}",
+      "needsSignedCopy": "Breeze non può compilare {{names}} senza un preventivo. Allega la copia firmata per registrare questo accordo.",
       "consequence": "Questo archivia un accordo firmato per {{org}}. In seguito non potrà essere eliminato.",
       "submit": "Registra accordo firmato",
       "success": "Accordo firmato registrato.",
@@ -854,6 +857,11 @@
       "cover": "Messaggio di accompagnamento (facoltativo)",
       "expiry": "Il link scade il",
       "expiryPast": "Scegli una data di scadenza futura.",
+      "expiryDefaultHint_one": "Predefinito: {{count}} giorno, da Impostazioni di fatturazione → Accordi.",
+      "expiryDefaultHint_other": "Predefinito: {{count}} giorni, da Impostazioni di fatturazione → Accordi.",
+      "autoReminderHint_one": "I promemoria automatici vengono inviati ogni giorno, fino a un massimo di {{max}}.",
+      "autoReminderHint_other": "I promemoria automatici vengono inviati ogni {{count}} giorni, fino a un massimo di {{max}}.",
+      "expiryDefaultUnavailable": "Impossibile caricare la scadenza predefinita dalle Impostazioni di fatturazione; viene mostrato il valore predefinito integrato.",
       "label": "Etichetta (facoltativo)",
       "createDraft": "Crea bozza e anteprima",
       "creating": "Creazione…",
@@ -1099,7 +1107,9 @@
         "uploadImage": "Impossibile caricare l'immagine.",
         "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o inserisci una riga manuale.",
         "sectionAddedListStale": "Sezione aggiunta, ma non è stato possibile aggiornare l'elenco. Ricarica la pagina per vederla.",
-        "lineAddedListStale": "Riga aggiunta, ma non è stato possibile aggiornare l'elenco. Ricarica la pagina per vederla."
+        "lineAddedListStale": "Riga aggiunta, ma non è stato possibile aggiornare l'elenco. Ricarica la pagina per vederla.",
+        "saveExpiry": "Impossibile salvare la data di scadenza.",
+        "saveIntroNotes": "Impossibile salvare le note introduttive."
       },
       "image": {
         "alt": "Immagine del preventivo",
@@ -1250,6 +1260,7 @@
         "noPublishedVersion": "Questo modello non ha ancora una versione pubblicata. Pubblicalo prima di aggiungerlo a un preventivo.",
         "pinnedVersion": "Fissato a v{{version}}",
         "autoVariablesTitle": "Compilate automaticamente dal preventivo",
+        "autoValueBlank": "Vuoto",
         "autoHint": "Questi valori vengono risolti dal preventivo quando la proposta viene inviata.",
         "manualVariablesTitle": "Compila per questa proposta",
         "labelFieldLabel": "Etichetta sezione",
@@ -1343,6 +1354,14 @@
       },
       "warnings": {
         "markupRemoved": "Salvato, ma è stata rimossa una formattazione non supportata: {{tags}}. Il testo formattato supporta titoli, grassetto, corsivo, sottolineato, elenchi e collegamenti."
+      },
+      "intro": {
+        "expiryLabel": "Valida fino al",
+        "expiryHelper": "Stampata sulla proposta. Il cliente può accettarla fino alla fine di questo giorno. Lascia vuoto per nessuna scadenza.",
+        "expiryPast": "Questa data è già passata — il cliente non può accettare una proposta scaduta.",
+        "notesLabel": "Note introduttive",
+        "notesHelper": "Stampate sopra la prima sezione della proposta.",
+        "notesPlaceholder": "Una breve nota per il cliente, ad es. cosa copre questa proposta."
       }
     },
     "actions": {
@@ -1453,6 +1472,9 @@
       "currencyUnknown": "La valuta di regolamento del tuo account Stripe non è ancora in cache, quindi non è stato possibile confrontarla con questo preventivo in {{documentCurrency}}. Aggiorna i dettagli dell'account Stripe in Impostazioni → Integrazioni per abilitare il controllo.",
       "acceptOnBehalf": {
         "button": "Accetta per conto del cliente",
+        "emptyDraftTitle": "Aggiungi almeno un elemento prima dell'accettazione.",
+        "emptySentTitle": "Questo preventivo non contiene elementi. Usa Rivedi preventivo per emettere una versione con elementi.",
+        "errorQuoteEmpty": "Questo preventivo non contiene elementi. Chiudi questa finestra e aggiungi un elemento, oppure usa Rivedi preventivo se è già stato inviato.",
         "title": "Registra l'accettazione del cliente",
         "methodLabel": "Come ha dato il suo assenso?",
         "method": {
@@ -2088,6 +2110,7 @@
       "title": "Inviare questa fattura?",
       "message": "La fattura da {{amount}} verrà inviata via e-mail a {{customer}}."
     },
+    "sourceHeldForHourBlock": "Parte del tempo in questa bozza è trattenuta per il monte ore di questa organizzazione e verrà fatturata alla chiusura del periodo del monte ore. Rimuovi quelle righe, poi emetti la fattura.",
     "unsavedHint": "\"{{field}}\" contiene una modifica non salvata — l'emissione si sblocca una volta salvata.",
     "unsavedTitle": "\"{{field}}\" contiene una modifica non salvata — l'emissione si sblocca una volta salvata."
   },
@@ -2475,6 +2498,21 @@
     }
   },
   "partnerBillingSettings": {
+    "agreements": {
+      "title": "Accordi",
+      "description": "Valori predefiniti per gli accordi che invii per la firma. I mittenti possono comunque scegliere una scadenza diversa per ogni richiesta.",
+      "expiryDays": "Scadenza predefinita del link (giorni)",
+      "expiryDaysHelp": "Il link di firma di una nuova richiesta di accordo scade dopo questo numero di giorni dalla creazione, a meno che il mittente non scelga un’altra data.",
+      "expiryDaysInvalid": "Inserisci un numero intero di giorni da {{min}} a {{max}}.",
+      "remindersEnabled": "Invia promemoria automatici",
+      "remindersHelp": "Invia di nuovo via e-mail lo stesso link di firma ai destinatari finché l’accordo non viene firmato, rifiutato, annullato o scade.",
+      "intervalDays": "Ricorda ogni (giorni)",
+      "intervalDaysInvalid": "Inserisci un numero intero di giorni da {{min}} a {{max}}.",
+      "maxReminders": "Interrompi dopo (promemoria)",
+      "maxRemindersHelp": "Conta tutti i promemoria della richiesta, manuali o automatici.",
+      "maxRemindersInvalid": "Inserisci un numero intero da {{min}} a {{max}}.",
+      "readOnlyNoSend": "Modificare i valori predefiniti degli accordi richiede l’autorizzazione a inviare accordi. Hai accesso di sola lettura."
+    },
     "company": {
       "addressInherited": "Uguale ai dettagli dell'azienda",
       "addressLine1": "Indirizzo riga 1",
@@ -2561,6 +2599,7 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Predefiniti",
     "documents": "Documenti",
+    "agreements": "Accordi",
     "connections": "Connessioni",
     "rates": "Tariffe",
     "payments": "Pagamenti"
@@ -2793,7 +2832,6 @@
       "delivery_failed": "Invio dell’avviso non riuscito",
       "consent_required": "L’autorizzazione al pagamento è mancante. Richiedi una nuova autorizzazione."
     },
-    "noticeTemplate": "Fattura con avviso di pagamento automatico",
     "chargeFailed": "Impossibile avviare il pagamento. Riprova.",
     "chargeResultUnknown": "Non è stato possibile confermare l’esito di questo pagamento. Aggiornamento della fattura per mostrarne lo stato attuale.",
     "chargeStarted": "Tentativo di pagamento avviato",
@@ -2933,10 +2971,6 @@
     "saveFailed": "Impossibile salvare le impostazioni dei promemoria",
     "loadFailed": "Impossibile caricare le impostazioni dei promemoria",
     "retry": "Riprova",
-    "loading": "Caricamento delle impostazioni di pagamento…",
-    "templates": {
-      "paymentReminder": "Promemoria di pagamento",
-      "paymentOverdue": "Promemoria di pagamento scaduto"
-    }
+    "loading": "Caricamento delle impostazioni di pagamento…"
   }
 }

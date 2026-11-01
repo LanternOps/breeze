@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { secureHeaders } from 'hono/secure-headers';
 
 // Public agreement signing link (#9075 W2b; spec §3.2, §3.3, §5). The DB is a
 // FIFO chain (only the GET's branding reads touch it directly); the resolver's
@@ -55,6 +56,9 @@ import { markAgreementRequestViewed } from '../services/agreementRequestAcceptSe
 import { emitAgreementEvent } from '../services/agreementEvents';
 import { captureException } from '../services/sentry';
 import { agreementsPublicRoutes } from './agreementsPublic';
+import { bySameOriginFramePath, isSameOriginFramePath } from '../middleware/sameOriginFrame';
+import { routeReferrerPolicyWins } from '../middleware/routeReferrerPolicy';
+import { securityMiddleware } from '../middleware/security';
 
 export const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
 export const ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -322,6 +326,136 @@ describe('GET /:token — view', () => {
   });
 });
 
+// #10199: answering arms the Redis jti marker post-commit (the hot-path refusal
+// of a second answer). Reloading the SAME link must still show the read-only
+// "signed on <date>" / "declined" state instead of "invalid or expired" — the
+// view routes treat the marker as "this link can no longer ANSWER", and render
+// only when the durable row confirms the request was answered.
+describe('reopening an answered link (#10199)', () => {
+  const SIGNED_AT = new Date('2027-01-11T09:00:00.000Z');
+  const answered = (status: 'signed' | 'declined', over: Record<string, unknown> = {}) => resolution({}, {
+    status,
+    signedAt: status === 'signed' ? SIGNED_AT : null,
+    declinedAt: status === 'declined' ? SIGNED_AT : null,
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.mocked(isAgreementAcceptJtiRevoked).mockResolvedValue(true);
+  });
+
+  it.each(['signed', 'declined'] as const)('GET: a %s request whose jti marker is armed renders read-only with its date; never re-stamped', async (status) => {
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(answered(status) as never);
+    const res = await get();
+    expect(res.status).toBe(200);
+    expectPublicHeaders(res);
+    const { data } = await res.json();
+    expect(data.request.status).toBe(status);
+    expect(data.request[status === 'signed' ? 'signedAt' : 'declinedAt']).toBe(SIGNED_AT.toISOString());
+    expect(markAgreementRequestViewed).not.toHaveBeenCalled();
+    expect(emitAgreementEvent).not.toHaveBeenCalled();
+  });
+
+  it('GET: the read-only view carries no signer evidence (name, email, IP) — only what the link already showed', async () => {
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(answered('signed', {
+      signerName: 'Dana Buyer', signerEmail: 'dana@example.com', signerIp: '203.0.113.9',
+      publicResponseJti: JTI, publicResponseConsumedAt: SIGNED_AT,
+    }) as never);
+    const text = JSON.stringify((await (await get()).json()).data);
+    for (const leak of ['Dana Buyer', 'dana@example.com', '203.0.113.9', JTI]) expect(text).not.toContain(leak);
+  });
+
+  it('GET /file: an answered uploaded agreement still serves its pinned file', async () => {
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(answered('signed') as never);
+    vi.mocked(loadTemplateVersionRenderData).mockResolvedValue(renderData({ sourceType: 'uploaded', bodyHtml: null, fileData: Buffer.from('%PDF-1.7 bytes') }));
+    const res = await get('/file');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/pdf');
+  });
+
+  it.each(['sent', 'viewed'])('GET: an armed marker on a still-%s request stays the identical 401 (the marker alone never opens a link)', async (status) => {
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(resolution({}, { status }) as never);
+    for (const path of ['', '/file']) {
+      const res = await get(path);
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual(INVALID);
+    }
+    expect(loadTemplateVersionRenderData).not.toHaveBeenCalled();
+    expect(markAgreementRequestViewed).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['reissued jti', () => answered('signed', { acceptTokenJti: 'jti-reissued' })],
+    ['re-parented org', () => ({ ...answered('signed'), partnerId: OTHER_PARTNER_ID })],
+  ])('GET: an answered link is still refused by the durable checks — %s → identical 401', async (_n, res) => {
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(res() as never);
+    for (const path of ['', '/file']) {
+      const r = await get(path);
+      expect(r.status).toBe(401);
+      expect(await r.json()).toEqual(INVALID);
+    }
+    expect(loadTemplateVersionRenderData).not.toHaveBeenCalled();
+  });
+
+  // The marker is armed post-commit by void too: a withdrawn link must say so
+  // (410 LINK_REVOKED), never fall back to "invalid or expired".
+  it.each([
+    ['voided', { status: 'voided', publicLinkRevokedAt: new Date() }],
+    ['link revoked on an open row', { status: 'sent', publicLinkRevokedAt: new Date() }],
+    ['link revoked on a signed row', { status: 'signed', signedAt: SIGNED_AT, publicLinkRevokedAt: new Date() }],
+  ])('GET: armed marker + %s → 410 LINK_REVOKED with branding, nothing rendered', async (_n, rowOver) => {
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(resolution({}, rowOver) as never);
+    for (const path of ['', '/file']) {
+      const r = await get(path);
+      expect(r.status).toBe(410);
+      const body = await r.json();
+      expect(body.code).toBe('LINK_REVOKED');
+      expect(body.data).toEqual({ branding: { partnerName: 'Acme MSP' } });
+    }
+    expect(loadTemplateVersionRenderData).not.toHaveBeenCalled();
+  });
+
+  it('GET: armed marker + blocked tenant — an open row stays 401 (learns nothing), an answered row is 410 ORG_UNAVAILABLE', async () => {
+    const blocked = { gate: { orgId: ORG_ID, status: 'archived', partnerStatus: 'active', blocked: true } };
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(resolution(blocked, { status: 'viewed' }) as never);
+    const open = await get();
+    expect(open.status).toBe(401);
+    expect(await open.json()).toEqual(INVALID);
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue({ ...answered('signed'), ...blocked } as never);
+    const answeredRes = await get();
+    expect(answeredRes.status).toBe(410);
+    expect((await answeredRes.json()).code).toBe('ORG_UNAVAILABLE');
+    expect(loadTemplateVersionRenderData).not.toHaveBeenCalled();
+  });
+
+  it('GET: armed marker + reaper-expired row → identical 401 (never answered, so nothing to show)', async () => {
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(resolution({}, { status: 'expired' }) as never);
+    const r = await get();
+    expect(r.status).toBe(401);
+    expect(await r.json()).toEqual(INVALID);
+  });
+
+  it('GET: a signed row past its signing deadline still renders (expiry only gates open requests)', async () => {
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(answered('signed', { expiresAt: new Date(NOW - 1_000_000) }) as never);
+    const r = await get();
+    expect(r.status).toBe(200);
+    expect((await r.json()).data.request.status).toBe('signed');
+  });
+
+  it.each([
+    ['accept', { signerName: 'Dana Buyer', signerEmail: 'dana@example.com' }],
+    ['decline', { reason: 'Changed my mind' }],
+  ])('POST %s on an answered link stays the identical 401 — the marker still refuses a second answer', async (action, body) => {
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(answered('signed') as never);
+    const res = await app().request(`/agreements/public/${TOKEN}/${action}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual(INVALID);
+    expect(loadTemplateVersionRenderData).not.toHaveBeenCalled();
+  });
+});
+
 describe('GET /:token/file', () => {
   it('streams the pinned uploaded version inline as a PDF with a sanitized filename', async () => {
     vi.mocked(loadTemplateVersionRenderData).mockResolvedValue(renderData({ sourceType: 'uploaded', bodyHtml: null, fileData: Buffer.from('%PDF-1.7 bytes'), templateName: 'BAA "v3"\r\n' }));
@@ -348,5 +482,41 @@ describe('GET /:token/file', () => {
     const res = await get('/file');
     expect(res.status).toBe(410);
     expect(loadTemplateVersionRenderData).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /:token/file — framing under the app-wide header stack (#10192)', () => {
+  // index.ts wraps every router in secureHeaders (X-Frame-Options) + securityMiddleware (CSP), both path-selected.
+  // Mount this router at its real /api/v1 path so a drift between the route and the frame list fails here.
+  function appWithHeaders() {
+    const OPTIONS = { strictTransportSecurity: 'max-age=31536000; includeSubDomains; preload', xFrameOptions: 'DENY', referrerPolicy: 'strict-origin-when-cross-origin' } as const;
+    const a = new Hono();
+    a.use('*', routeReferrerPolicyWins(bySameOriginFramePath(
+      secureHeaders({ ...OPTIONS }),
+      secureHeaders({ ...OPTIONS, xFrameOptions: 'SAMEORIGIN' }),
+    )));
+    a.use('*', securityMiddleware({ nodeEnv: 'production', sameOriginFrameWhen: isSameOriginFramePath }));
+    a.route('/api/v1/agreements/public', agreementsPublicRoutes);
+    return a;
+  }
+
+  it('the PDF can be framed by the signing page (same origin) and keeps every capability-URL header', async () => {
+    vi.mocked(loadTemplateVersionRenderData).mockResolvedValue(renderData({ sourceType: 'uploaded', bodyHtml: null, fileData: Buffer.from('%PDF-1.7 bytes') }));
+    const res = await appWithHeaders().request(`/api/v1/agreements/public/${TOKEN}/file`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-frame-options')).toBe('SAMEORIGIN');
+    const csp = res.headers.get('content-security-policy') ?? '';
+    expect(csp).toContain("frame-ancestors 'self'");
+    expect(csp).not.toContain("frame-ancestors 'none'");
+    expectPublicHeaders(res);
+    expect(res.headers.get('content-disposition')?.startsWith('inline;')).toBe(true);
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+  });
+
+  it('the JSON view on the same token stays unframeable', async () => {
+    const res = await appWithHeaders().request(`/api/v1/agreements/public/${TOKEN}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-frame-options')).toBe('DENY');
+    expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
   });
 });

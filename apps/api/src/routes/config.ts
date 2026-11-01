@@ -7,6 +7,7 @@ import { isS3Configured } from '../services/s3Storage';
 import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 import { resolveAllMlFeatureFlagsForOrg } from '../services/mlFeatureFlags';
 import { isCallerVerificationEnabled } from '../services/callerVerification/gate';
+import { isPartnerLaneConfigured } from '../services/emailDomains/config';
 import { ERROR_CODES } from '@breeze/shared';
 
 export const configRoutes = new Hono();
@@ -41,6 +42,11 @@ configRoutes.get('/', (c) => {
       // pre-assignment API routes stay reachable to full partner admins
       // either way, so incident actions work with the flag off.
       preAssignmentEnrollment: preAssignmentEnrollmentEnabled(),
+      // Partner sending domains: true only while EMAIL_DOMAINS_PROVIDER names a
+      // provider. Off (the default everywhere), every /partner/sending-domains
+      // route answers 404, so the partner settings page reads this before it
+      // probes the list rather than eating a 404 on every load (#9949).
+      sendingDomains: isPartnerLaneConfigured(),
     },
     cfAccessLogin: {
       enabled: cfAccessTrustEnabled(),

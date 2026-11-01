@@ -1,8 +1,10 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import type { FilterConditionGroup } from './filterEngine';
-import { db, getCurrentDbAccessContext, hasDbAccessContext } from '../db';
-import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog } from '../db/schema';
+import { db, getCurrentDbAccessContext, hasDbAccessContext, runAfterDbContextCommit } from '../db';
+import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog, organizations } from '../db/schema';
 import { deviceMatchesFilter, evaluateFilter, extractFieldsFromFilter } from './filterEngine';
+import { acquirePartnerGroupRowLocks, acquireGroupOrgMembershipLocks, acquireMembershipExportOrgLock } from './deviceGroupOwnership';
+import { isHiddenOrgType } from './unassignedPool/visibility';
 import { schedulePeripheralPolicyDevice } from '../jobs/peripheralJobs';
 
 type MembershipAction = 'added' | 'removed';
@@ -27,17 +29,22 @@ export interface MembershipUpdateSummary {
   materialized?: number;
 }
 
-async function schedulePeripheralMembershipChanges(
+export async function schedulePeripheralMembershipChanges(
   deviceIds: readonly string[],
   reason: 'dynamic_membership_changed' | 'manual_membership_changed' | 'membership_pin_changed',
 ): Promise<void> {
-  await Promise.all([...new Set(deviceIds)].map(async (deviceId) => {
-    try {
-      await schedulePeripheralPolicyDevice(deviceId, reason);
-    } catch (error) {
-      console.error(`[groupMembership] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+  const ids = [...new Set(deviceIds)];
+  runAfterDbContextCommit(`groupMembership.${reason}`, async () => {
+    for (let offset = 0; offset < ids.length; offset += 100) {
+      await Promise.all(ids.slice(offset, offset + 100).map(async (deviceId) => {
+        try {
+          await schedulePeripheralPolicyDevice(deviceId, reason);
+        } catch (error) {
+          console.error(`[groupMembership] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+        }
+      }));
     }
-  }));
+  });
 }
 
 /**
@@ -60,14 +67,14 @@ function isFilterConditionGroup(value: unknown): value is FilterConditionGroup {
   return Array.isArray(maybeGroup.conditions) && typeof maybeGroup.operator === 'string';
 }
 
-export type GroupForResolution = Pick<typeof deviceGroups.$inferSelect, 'id' | 'orgId' | 'type' | 'siteId' | 'filterConditions'>;
+export type GroupForResolution = Pick<typeof deviceGroups.$inferSelect, 'id' | 'orgId' | 'partnerId' | 'type' | 'siteId' | 'filterConditions'>;
 
 /** Thrown by resolveEffectiveGroupMembers when a dynamic group cannot be evaluated.
  *  Billing maps it to GROUP_EVALUATION_FAILED; never to a zero count. */
 export class GroupEvaluationError extends Error {
   constructor(
     public readonly groupId: string,
-    public readonly reason: 'invalid_filter' | 'engine_error',
+    public readonly reason: 'invalid_filter' | 'engine_error' | 'unsupported_owner',
     cause?: unknown,
   ) {
     super(`device group ${groupId}: ${reason}`, cause === undefined ? undefined : { cause });
@@ -76,6 +83,8 @@ export class GroupEvaluationError extends Error {
 }
 
 export interface EffectiveGroupMembers {
+  /** Time spent in the filter engine, excluding membership reads. */
+  filterMs: number;
   /** What the group's definition selects: live filter matches (dynamic) or every row (static). */
   matched: ReadonlySet<string>;
   /** Pinned rows of a dynamic group (empty for static). The evaluator keeps them even when the filter no longer matches. */
@@ -85,11 +94,22 @@ export interface EffectiveGroupMembers {
 const SLOW_GROUP_EVALUATION_MS = 250;
 
 /**
+ * Removed (decommissioned) devices are never members of a dynamic group
+ * (#9933): membership feeds policy and patch targeting, and /devices hides
+ * them. Passed to EVERY filter evaluation in this module — the whole-group
+ * resolver, its single-device billing twin, and the per-device evaluator — so
+ * the three cannot drift (groupMembership.parity.integration.test.ts).
+ * Decommission and restore enqueue a re-evaluation (services/deviceDecommission.ts,
+ * services/deviceLifecycle.ts), which is what drops and re-adds the rows.
+ * Pinned and static rows are explicit admin choices and are kept as they are.
+ */
+const GROUP_FILTER_SCOPE = { excludeDecommissioned: true } as const;
+
+/**
  * The one read-only definition of "who is in this group" (#3205 W02). Used by
  * evaluateGroupMembership (which then diffs and writes) and by contract billing
  * (which never writes). Every membership read predicates on group_id AND the
- * group's own org_id: the membership table's RLS is org-only, so a forged row
- * carrying another org_id and this group's id is visible to the system context.
+ * evaluation org_id, so one partner org's pins never affect another org.
  *
  * - static: matched = all rows, pinned = ∅
  * - dynamic, filter_conditions NULL: matched = ∅, pinned = pinned rows
@@ -97,7 +117,11 @@ const SLOW_GROUP_EVALUATION_MS = 250;
  * - dynamic, valid filter: matched = live evaluateFilter within the group's site,
  *   pinned = pinned rows; an engine error/timeout throws GroupEvaluationError('engine_error')
  */
-export async function resolveEffectiveGroupMembers(group: GroupForResolution): Promise<EffectiveGroupMembers> {
+export async function resolveEffectiveGroupMembers(group: GroupForResolution, evaluationOrgId: string): Promise<EffectiveGroupMembers> {
+  if ((group.orgId !== null && group.orgId !== evaluationOrgId)
+    || (group.orgId === null && group.partnerId === null)) {
+    throw new GroupEvaluationError(group.id, 'unsupported_owner');
+  }
   const filterConditions = group.filterConditions;
   let dynamicFilter: FilterConditionGroup | null = null;
   if (group.type === 'dynamic' && filterConditions !== null && filterConditions !== undefined) {
@@ -110,21 +134,22 @@ export async function resolveEffectiveGroupMembers(group: GroupForResolution): P
   const rows = await db
     .select({ deviceId: deviceGroupMemberships.deviceId, isPinned: deviceGroupMemberships.isPinned })
     .from(deviceGroupMemberships)
-    .where(and(eq(deviceGroupMemberships.groupId, group.id), eq(deviceGroupMemberships.orgId, group.orgId)));
+    .where(and(eq(deviceGroupMemberships.groupId, group.id), eq(deviceGroupMemberships.orgId, evaluationOrgId)));
 
   if (group.type !== 'dynamic') {
-    return { matched: new Set(rows.map((r) => r.deviceId)), pinned: new Set() };
+    return { matched: new Set(rows.map((r) => r.deviceId)), pinned: new Set(), filterMs: 0 };
   }
   const pinned = new Set(rows.filter((r) => r.isPinned).map((r) => r.deviceId));
   if (dynamicFilter === null) {
-    return { matched: new Set(), pinned };
+    return { matched: new Set(), pinned, filterMs: 0 };
   }
   const started = Date.now();
   let matched: Set<string>;
   try {
     const result = await evaluateFilter(dynamicFilter, {
-      orgId: group.orgId,
-      allowedSiteIds: group.siteId ? [group.siteId] : null,
+      orgId: evaluationOrgId,
+      allowedSiteIds: group.orgId !== null && group.siteId ? [group.siteId] : null,
+      ...GROUP_FILTER_SCOPE,
     });
     matched = new Set(result.deviceIds);
   } catch (err) {
@@ -132,9 +157,9 @@ export async function resolveEffectiveGroupMembers(group: GroupForResolution): P
   }
   const ms = Date.now() - started;
   if (ms > SLOW_GROUP_EVALUATION_MS) {
-    console.warn(`[groupMembership] slow filter evaluation for group ${group.id} (org ${group.orgId}): ${ms}ms`);
+    console.warn(`[groupMembership] slow filter evaluation for group ${group.id} (org ${evaluationOrgId}): ${ms}ms`);
   }
-  return { matched, pinned };
+  return { matched, pinned, filterMs: ms };
 }
 
 export type DeviceForMembership = {
@@ -169,7 +194,7 @@ export type DeviceForMembership = {
  * org_id and this group's id is visible to a system context.
  */
 export async function groupIncludesDevice(group: GroupForResolution, device: DeviceForMembership): Promise<boolean> {
-  if (device.orgId !== group.orgId || device.isEphemeral) return false;
+  if (group.orgId === null || device.orgId !== group.orgId || device.isEphemeral) return false;
 
   const filter = group.filterConditions;
   const hasFilter = filter !== null && filter !== undefined;
@@ -192,7 +217,7 @@ export async function groupIncludesDevice(group: GroupForResolution, device: Dev
   if (!hasFilter) return false;
   if (group.siteId !== null && group.siteId !== device.siteId) return false;
   try {
-    return await deviceMatchesFilter(device.id, filter as FilterConditionGroup);
+    return await deviceMatchesFilter(device.id, filter as FilterConditionGroup, GROUP_FILTER_SCOPE);
   } catch (err) {
     throw new GroupEvaluationError(group.id, 'engine_error', err);
   }
@@ -256,7 +281,7 @@ export async function logMembershipChange(
  * it inside the request unattractive in the first place. One multi-row INSERT
  * keeps the whole evaluation to a handful of statements regardless of size.
  */
-async function logMembershipChanges(
+export async function logMembershipChanges(
   groupId: string,
   deviceIds: string[],
   action: MembershipAction,
@@ -278,107 +303,103 @@ async function countGroupMemberships(groupId: string): Promise<number> {
   return Number(row?.count ?? 0);
 }
 
-export async function evaluateDeviceMembershipForGroup(
-  groupId: string,
-  deviceId: string
-): Promise<MembershipUpdateSummary> {
-  const [group] = await db
-    .select()
-    .from(deviceGroups)
-    .where(eq(deviceGroups.id, groupId))
-    .limit(1);
+type EvaluationDevice = { id: string; orgId: string; siteId: string | null; partnerId: string; orgType: string };
 
+async function readEvaluationDevice(deviceId: string): Promise<EvaluationDevice | undefined> {
+  const [device] = await db.select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId,
+    partnerId: organizations.partnerId, orgType: organizations.type })
+    .from(devices).innerJoin(organizations, eq(organizations.id, devices.orgId))
+    .where(eq(devices.id, deviceId)).limit(1);
+  return device;
+}
+
+/** Quick Support and holding-org devices never join a partner-wide group. */
+function canJoinPartnerGroups(device: EvaluationDevice): boolean {
+  return !isHiddenOrgType(device.orgType);
+}
+
+function ownsDevice(group: GroupForResolution, device: EvaluationDevice): boolean {
+  return group.orgId !== null ? group.orgId === device.orgId
+    : group.partnerId === device.partnerId && canJoinPartnerGroups(device);
+}
+
+/** Single-group compatibility entry point; never backfills device_groups. */
+export async function evaluateDeviceMembershipForGroup(groupId: string, deviceId: string): Promise<MembershipUpdateSummary> {
+  const [group] = await db.select().from(deviceGroups).where(eq(deviceGroups.id, groupId)).limit(1);
   if (!group || group.type !== 'dynamic' || !isFilterConditionGroup(group.filterConditions)) {
     return { evaluatedGroups: 0, added: 0, removed: 0 };
   }
-
-  const filter = group.filterConditions;
-  await ensureFilterFieldsUsed(group.id, filter, group.filterFieldsUsed);
-
-  const [device] = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
-    .from(devices)
-    .where(and(eq(devices.id, deviceId), eq(devices.orgId, group.orgId)))
-    .limit(1);
-  if (!device) {
-    return { evaluatedGroups: 0, added: 0, removed: 0 };
-  }
-
-  if (group.siteId !== null && device.siteId !== group.siteId) {
-    const [membership] = await db
-      .select({
-        deviceId: deviceGroupMemberships.deviceId,
-        isPinned: deviceGroupMemberships.isPinned,
-      })
-      .from(deviceGroupMemberships)
-      .where(and(
-        eq(deviceGroupMemberships.groupId, groupId),
-        eq(deviceGroupMemberships.deviceId, deviceId),
-      ))
-      .limit(1);
-    if (membership) {
-      await db.delete(deviceGroupMemberships).where(and(
-        eq(deviceGroupMemberships.groupId, groupId),
-        eq(deviceGroupMemberships.deviceId, deviceId),
-      ));
-      await logMembershipChange(groupId, deviceId, 'removed', 'filter_unmatch', group.orgId);
-      await schedulePeripheralMembershipChanges([deviceId], 'dynamic_membership_changed');
-      return { evaluatedGroups: 1, added: 0, removed: 1 };
+  const device = await readEvaluationDevice(deviceId);
+  if (!device || !ownsDevice(group, device)) return { evaluatedGroups: 0, added: 0, removed: 0 };
+  if (group.orgId === null) {
+    await acquirePartnerGroupRowLocks([group.id]);
+    await acquireGroupOrgMembershipLocks([{ groupId, orgId: device.orgId }], 'shared');
+    // A whole-group writer may have evaluated a newer filter while we waited.
+    const [current] = await db.select().from(deviceGroups).where(eq(deviceGroups.id, groupId)).limit(1);
+    if (!current || current.orgId !== null || !ownsDevice(current, device)
+      || current.type !== 'dynamic' || !isFilterConditionGroup(current.filterConditions)) {
+      return { evaluatedGroups: 0, added: 0, removed: 0 };
     }
-    return { evaluatedGroups: 1, added: 0, removed: 0 };
+    return writeDeviceMembership(current, device, current.filterConditions);
   }
-
-  const matchesFilter = await deviceMatchesFilter(deviceId, filter);
-  const [membership] = await db
-    .select({
-      deviceId: deviceGroupMemberships.deviceId,
-      isPinned: deviceGroupMemberships.isPinned
-    })
-    .from(deviceGroupMemberships)
-    .where(
-      and(
-        eq(deviceGroupMemberships.groupId, groupId),
-        eq(deviceGroupMemberships.deviceId, deviceId)
-      )
-    )
-    .limit(1);
-
-  if (matchesFilter) {
-    if (!membership) {
-      await db
-        .insert(deviceGroupMemberships)
-        .values({
-          groupId,
-          deviceId,
-          orgId: group.orgId,
-          addedBy: 'dynamic_rule'
-        })
-        .onConflictDoNothing();
-      await logMembershipChange(groupId, deviceId, 'added', 'filter_match', group.orgId);
-      await schedulePeripheralMembershipChanges([deviceId], 'dynamic_membership_changed');
-      return { evaluatedGroups: 1, added: 1, removed: 0 };
-    }
-    return { evaluatedGroups: 1, added: 0, removed: 0 };
-  }
-
-  if (membership && !membership.isPinned) {
-    await db
-      .delete(deviceGroupMemberships)
-      .where(
-        and(
-          eq(deviceGroupMemberships.groupId, groupId),
-          eq(deviceGroupMemberships.deviceId, deviceId)
-        )
-      );
-    await logMembershipChange(groupId, deviceId, 'removed', 'filter_unmatch', group.orgId);
-    await schedulePeripheralMembershipChanges([deviceId], 'dynamic_membership_changed');
-    return { evaluatedGroups: 1, added: 0, removed: 1 };
-  }
-
-  return { evaluatedGroups: 1, added: 0, removed: 0 };
+  return writeDeviceMembership(group, device, group.filterConditions);
 }
 
-export async function evaluateGroupMembership(groupId: string): Promise<MembershipUpdateSummary> {
+/** Lazy, once per device evaluation; never acquires another org's export lock. */
+function membershipWriteGuard(device: EvaluationDevice) {
+  let locked = false;
+  let eligible = true;
+  return async (): Promise<{ eligible: boolean; acquired: boolean }> => {
+    if (locked) return { eligible, acquired: false };
+    await acquireMembershipExportOrgLock(device.orgId);
+    locked = true;
+    // A move can finish during the export wait. Re-read before inserting any
+    // membership with the old org, and refresh site scope for the diff retry.
+    const current = await readEvaluationDevice(device.id);
+    eligible = current !== undefined && current.orgId === device.orgId;
+    if (eligible && current) Object.assign(device, current);
+    return { eligible, acquired: true };
+  };
+}
+
+async function writeDeviceMembership(
+  group: GroupForResolution, device: EvaluationDevice, filter: FilterConditionGroup,
+  beforeWrite = membershipWriteGuard(device),
+): Promise<MembershipUpdateSummary> {
+  const unchanged = { evaluatedGroups: 1, added: 0, removed: 0 };
+  const groupId = group.id;
+  const deviceId = device.id;
+  const outsideSite = group.siteId !== null && device.siteId !== group.siteId;
+  const matches = !outsideSite && await deviceMatchesFilter(deviceId, filter, GROUP_FILTER_SCOPE);
+  const predicate = and(eq(deviceGroupMemberships.groupId, groupId),
+    eq(deviceGroupMemberships.orgId, device.orgId), eq(deviceGroupMemberships.deviceId, deviceId));
+  const [membership] = await db.select({ deviceId: deviceGroupMemberships.deviceId, isPinned: deviceGroupMemberships.isPinned })
+    .from(deviceGroupMemberships).where(predicate).limit(1);
+  const add = matches && !membership;
+  const remove = membership && !matches && (outsideSite || !membership.isPinned);
+  if (!add && !remove) return unchanged;
+
+  const guard = await beforeWrite();
+  if (!guard.eligible) return unchanged;
+  // Recompute after the first export wait: another device evaluator or a move
+  // may have committed while we waited. Subsequent groups already hold it.
+  if (guard.acquired) return writeDeviceMembership(group, device, filter, beforeWrite);
+  if (add) {
+    await db.insert(deviceGroupMemberships).values({ groupId, deviceId, orgId: device.orgId, addedBy: 'dynamic_rule' })
+      .onConflictDoNothing();
+    await logMembershipChange(groupId, deviceId, 'added', 'filter_match', device.orgId);
+  } else {
+    await db.delete(deviceGroupMemberships).where(predicate);
+    await logMembershipChange(groupId, deviceId, 'removed', 'filter_unmatch', device.orgId);
+  }
+  await schedulePeripheralMembershipChanges([deviceId], 'dynamic_membership_changed');
+  return { evaluatedGroups: 1, added: add ? 1 : 0, removed: add ? 0 : 1 };
+}
+
+export async function evaluateGroupMembership(
+  groupId: string,
+  options: { exportLockBeforeWrites?: boolean } = {},
+): Promise<MembershipUpdateSummary> {
   const [group] = await db
     .select()
     .from(deviceGroups)
@@ -398,14 +419,19 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
     return { evaluatedGroups: 0, added: 0, removed: 0, matched: 0, materialized: 0 };
   }
 
+  if (group.orgId === null) {
+    throw new GroupEvaluationError(group.id, 'unsupported_owner');
+  }
+
   if (group.type !== 'dynamic' || !isFilterConditionGroup(group.filterConditions)) {
     return { evaluatedGroups: 0, added: 0, removed: 0 };
   }
 
+  const orgId = group.orgId;
   const filter = group.filterConditions;
   await ensureFilterFieldsUsed(group.id, filter, group.filterFieldsUsed);
 
-  const { matched: matchingIds, pinned: pinnedIds } = await resolveEffectiveGroupMembers(group);
+  const { matched: matchingIds, pinned: pinnedIds } = await resolveEffectiveGroupMembers(group, orgId);
 
   const currentMemberships = await db
     .select({ deviceId: deviceGroupMemberships.deviceId, isPinned: deviceGroupMemberships.isPinned })
@@ -413,7 +439,7 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
     .where(and(eq(deviceGroupMemberships.groupId, groupId), eq(deviceGroupMemberships.orgId, group.orgId)));
 
   const currentIds = new Set(currentMemberships.map(row => row.deviceId));
-  const toAdd: string[] = [];
+  let toAdd: string[] = [];
   const toRemove: string[] = [];
 
   for (const deviceId of matchingIds) {
@@ -428,6 +454,19 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
     }
   }
 
+  if (options.exportLockBeforeWrites && (toAdd.length > 0 || toRemove.length > 0)) {
+    // The sweep shares export admission with per-device writers. Finish the
+    // filter-fields backfill (group row lock) FIRST: route PATCH holds that row
+    // before writing memberships, so export -> group row would form a cycle.
+    // As in orgMerge/moveDeviceOrgInTransaction, export precedes membership rows.
+    await acquireMembershipExportOrgLock(orgId);
+    if (toAdd.length > 0) {
+      const stillInOrg = await db.select({ id: devices.id }).from(devices)
+        .where(and(inArray(devices.id, toAdd), eq(devices.orgId, orgId)));
+      toAdd = stillInOrg.map(device => device.id);
+    }
+  }
+
   if (toAdd.length > 0) {
     await db
       .insert(deviceGroupMemberships)
@@ -435,7 +474,7 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
         toAdd.map(deviceId => ({
           deviceId,
           groupId,
-          orgId: group.orgId,
+          orgId,
           addedBy: 'dynamic_rule' as const
         }))
       )
@@ -449,6 +488,7 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
       .where(
         and(
           eq(deviceGroupMemberships.groupId, groupId),
+          eq(deviceGroupMemberships.orgId, orgId),
           inArray(deviceGroupMemberships.deviceId, toRemove)
         )
       );
@@ -492,6 +532,23 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
   };
 }
 
+type GroupOwner = Pick<typeof deviceGroups.$inferSelect, 'id' | 'orgId'>;
+
+/** Defense in depth for internal callers; routes reject partner writes earlier. */
+async function requireOrgOwnedGroup(
+  groupId: string,
+  database: GroupMembershipDatabase,
+  loadedGroup?: GroupOwner,
+): Promise<void> {
+  const group = loadedGroup ?? (await database
+    .select({ id: deviceGroups.id, orgId: deviceGroups.orgId })
+    .from(deviceGroups)
+    .where(eq(deviceGroups.id, groupId))
+    .limit(1))[0];
+  if (!group || group.id !== groupId) throw new Error('device group not found');
+  if (group.orgId === null) throw new Error('partner-owned device groups are read-only');
+}
+
 /**
  * Remove every membership whose device no longer belongs to a site's group.
  * This intentionally removes pinned as well as dynamic memberships: pinning
@@ -503,8 +560,9 @@ export async function pruneGroupMembershipsOutsideSite(
   siteId: string,
   orgId: string,
   database: GroupMembershipDatabase = db,
-  options: { deferPeripheralReconciliation?: boolean } = {},
+  options: { deferPeripheralReconciliation?: boolean; group?: GroupOwner } = {},
 ): Promise<{ removed: number; deviceIds?: string[] }> {
+  await requireOrgOwnedGroup(groupId, database, options.group);
   const memberships = await database
     .select({
       deviceId: deviceGroupMemberships.deviceId,
@@ -542,82 +600,86 @@ export async function pruneGroupMembershipsOutsideSite(
     : { removed: deviceIds.length };
 }
 
-export async function updateDeviceMembership(
-  deviceId: string,
-  changedFields: string[],
-  orgId?: string
+/**
+ * Both created and changed events use this path. All partner row locks and ALL
+ * shared advisory locks precede the first write, including writes to org groups.
+ * Then, lazily on the first nonempty diff, take this device org's export lock
+ * BEFORE any membership row write (orgMerge.ts:1308 precedent). The move path
+ * moveDeviceOrgInTransaction takes export locks before its cascading membership
+ * delete; waiting without membership/device row locks breaks that former cycle.
+ * No group/advisory lock is acquired after a membership write. Only this device's
+ * org is touched, preserving ascending-org export-lock order.
+ */
+export async function evaluateDeviceGroupMemberships(
+  deviceId: string, options: { changedFields?: string[]; all?: boolean } = {},
 ): Promise<MembershipUpdateSummary> {
-  if (changedFields.length === 0) {
-    return { evaluatedGroups: 0, added: 0, removed: 0 };
+  const changedFields = options.changedFields ?? [];
+  const summary: MembershipUpdateSummary = { evaluatedGroups: 0, added: 0, removed: 0 };
+  if (!options.all && changedFields.length === 0) return summary;
+  const device = await readEvaluationDevice(deviceId);
+  if (!device) return summary;
+  const groups = await db.select().from(deviceGroups).where(and(
+    or(eq(deviceGroups.orgId, device.orgId), canJoinPartnerGroups(device)
+      ? and(isNull(deviceGroups.orgId), eq(deviceGroups.partnerId, device.partnerId)) : undefined),
+    eq(deviceGroups.type, 'dynamic'), isNotNull(deviceGroups.filterConditions),
+  )).orderBy(deviceGroups.id);
+  let candidates = groups.filter(group => {
+    if (!isFilterConditionGroup(group.filterConditions)) return false;
+    const fields = extractFieldsFromFilter(group.filterConditions);
+    return options.all || changedFields.includes('siteId') || hasFieldOverlap(fields, changedFields);
+  });
+  const partnerGroups = candidates.filter(group => group.orgId === null);
+  if (partnerGroups.length > 0) {
+    await acquirePartnerGroupRowLocks(partnerGroups.map(group => group.id));
+    await acquireGroupOrgMembershipLocks(partnerGroups.map(group => ({ groupId: group.id, orgId: device.orgId })), 'shared');
+    // Refresh only the locked set, before ANY write (including an org group's).
+    // Reusing the discovery snapshot could undo a newer whole-group evaluation
+    // that completed while this shared-lock acquisition was blocked.
+    const refreshed = await db.select().from(deviceGroups)
+      .where(inArray(deviceGroups.id, partnerGroups.map(group => group.id)));
+    const current = new Map(refreshed.filter(group => group.orgId === null && ownsDevice(group, device)
+      && group.type === 'dynamic').map(group => [group.id, group]));
+    candidates = candidates.flatMap(group => {
+      if (group.orgId !== null) return [group];
+      const latest = current.get(group.id);
+      return latest ? [latest] : [];
+    });
   }
-
-  let resolvedOrgId = orgId;
-  if (!resolvedOrgId) {
-    const [device] = await db
-      .select({ orgId: devices.orgId })
-      .from(devices)
-      .where(eq(devices.id, deviceId))
-      .limit(1);
-    if (!device) {
-      return { evaluatedGroups: 0, added: 0, removed: 0 };
+  const beforeWrite = membershipWriteGuard(device);
+  const failures: unknown[] = [];
+  for (const group of candidates) {
+    if (!isFilterConditionGroup(group.filterConditions)) continue;
+    try {
+      const result = await writeDeviceMembership(group, device, group.filterConditions, beforeWrite);
+      summary.evaluatedGroups += result.evaluatedGroups;
+      summary.added += result.added;
+      summary.removed += result.removed;
+    } catch (error) {
+      if (!options.all) throw error;
+      console.error(`Failed to evaluate membership for group ${group.id}:`, error);
+      failures.push(error);
     }
-    resolvedOrgId = device.orgId;
   }
-
-  // ORDER BY id is a LOCK-ORDER contract, not cosmetics. Both
-  // `ensureFilterFieldsUsed` (below) and `evaluateDeviceMembershipForGroup`
-  // UPDATE `device_groups`, so two concurrent re-evaluations for two devices in
-  // the same org that walk the org's groups in different orders can take the
-  // group row locks in opposite orders and deadlock (40P01 — the #3911 shape).
-  // An unordered SELECT gives no ordering guarantee whatsoever; sorting by the
-  // primary key makes every evaluator lock the same groups in the same
-  // sequence, which is the standard deadlock-free discipline.
-  const groups = await db
-    .select({
-      id: deviceGroups.id,
-      filterConditions: deviceGroups.filterConditions,
-      filterFieldsUsed: deviceGroups.filterFieldsUsed
-    })
-    .from(deviceGroups)
-    .where(
-      sql`${deviceGroups.orgId} = ${resolvedOrgId}
-        AND ${deviceGroups.type} = 'dynamic'
-        AND ${deviceGroups.filterConditions} IS NOT NULL`
-    )
-    .orderBy(deviceGroups.id);
-
-  let summary: MembershipUpdateSummary = { evaluatedGroups: 0, added: 0, removed: 0 };
-
-  for (const group of groups) {
-    if (!isFilterConditionGroup(group.filterConditions)) {
-      continue;
-    }
-
-    const filterFields = group.filterFieldsUsed?.length
-      ? group.filterFieldsUsed
-      : await ensureFilterFieldsUsed(group.id, group.filterConditions, group.filterFieldsUsed);
-
-    if (!changedFields.includes('siteId') && !hasFieldOverlap(filterFields, changedFields)) {
-      continue;
-    }
-
-    const result = await evaluateDeviceMembershipForGroup(group.id, deviceId);
-    summary = {
-      evaluatedGroups: summary.evaluatedGroups + result.evaluatedGroups,
-      added: summary.added + result.added,
-      removed: summary.removed + result.removed
-    };
-  }
-
+  if (failures.length > 0) throw new AggregateError(failures,
+    `device.created: ${failures.length} of ${candidates.length} dynamic group evaluations failed for device ${deviceId}`);
   return summary;
+}
+
+export async function updateDeviceMembership(
+  deviceId: string, changedFields: string[], _orgId?: string,
+): Promise<MembershipUpdateSummary> {
+  // The persisted device owner is authoritative even for a stale job payload.
+  return evaluateDeviceGroupMemberships(deviceId, { changedFields });
 }
 
 export async function pinDeviceToGroup(
   groupId: string,
   deviceId: string,
   pinned: boolean,
-  orgId: string
+  orgId: string,
+  loadedGroup?: GroupOwner,
 ): Promise<void> {
+  await requireOrgOwnedGroup(groupId, db, loadedGroup);
   const [membership] = await db
     .select({
       deviceId: deviceGroupMemberships.deviceId,
@@ -686,7 +748,7 @@ export async function pinDeviceToGroup(
     .limit(1);
 
   if (group?.type === 'dynamic' && isFilterConditionGroup(group.filterConditions)) {
-    const matchesFilter = await deviceMatchesFilter(deviceId, group.filterConditions);
+    const matchesFilter = await deviceMatchesFilter(deviceId, group.filterConditions, GROUP_FILTER_SCOPE);
     if (!matchesFilter) {
       await db
         .delete(deviceGroupMemberships)
@@ -711,9 +773,23 @@ export async function updateDeviceMemberships(
 }
 
 export async function removeDeviceFromAllGroups(deviceId: string): Promise<void> {
-  await db
-    .delete(deviceGroupMemberships)
+  const memberships = await db.select({ groupId: deviceGroupMemberships.groupId,
+    orgId: deviceGroupMemberships.orgId, groupOrgId: deviceGroups.orgId })
+    .from(deviceGroupMemberships).innerJoin(deviceGroups, eq(deviceGroups.id, deviceGroupMemberships.groupId))
     .where(eq(deviceGroupMemberships.deviceId, deviceId));
+  const orgId = memberships[0]?.orgId;
+  if (!orgId) return;
+  if (memberships.some(row => row.orgId !== orgId)) {
+    throw new Error(`device ${deviceId} memberships span orgs ${[...new Set(memberships.map(row => row.orgId))].join(', ')}; refusing cleanup (tenancy integrity)`);
+  }
+  const partnerGroups = memberships.filter(row => row.groupOrgId === null);
+  await acquirePartnerGroupRowLocks(partnerGroups.map(row => row.groupId));
+  await acquireGroupOrgMembershipLocks(partnerGroups.map(row => ({ groupId: row.groupId, orgId })), 'shared');
+  await acquireMembershipExportOrgLock(orgId);
+  await db.delete(deviceGroupMemberships).where(and(
+    eq(deviceGroupMemberships.deviceId, deviceId), eq(deviceGroupMemberships.orgId, orgId),
+    inArray(deviceGroupMemberships.groupId, memberships.map(row => row.groupId)),
+  ));
 }
 
 /**
@@ -801,12 +877,14 @@ export interface ManualMembershipWrite {
  */
 export async function addManualGroupMemberships(params: {
   groupId: string;
+  group?: GroupOwner;
   orgId: string;
   deviceIds: readonly string[];
 }, database: GroupMembershipDatabase = db): Promise<ManualMembershipWrite> {
   const { groupId, orgId } = params;
   const requested = [...new Set(params.deviceIds)];
   if (requested.length === 0) return { added: [], skipped: 0 };
+  await requireOrgOwnedGroup(groupId, database, params.group);
 
   const existing = await database
     .select({ deviceId: deviceGroupMemberships.deviceId })

@@ -1260,6 +1260,10 @@ export async function updatePartnerBillingSettings(
     billingAddressLine1?: string | null; billingAddressLine2?: string | null; billingAddressCity?: string | null;
     billingAddressRegion?: string | null; billingAddressPostalCode?: string | null; billingAddressCountry?: string | null;
     billingTermsAndConditions?: string | null;
+    // #9075 W4a: agreement-request defaults (read only via agreementRequestDefaults.ts).
+    agreementDefaultExpiryDays?: number;
+    agreementReminderIntervalDays?: number | null;
+    agreementMaxReminders?: number;
   },
   actor: InvoiceActor
 ) {
@@ -1292,6 +1296,8 @@ export async function updatePartnerBillingSettings(
     'billingCompanyName', 'billingPhone', 'billingWebsite', 'billingAddressLine1', 'billingAddressLine2',
     'billingAddressCity', 'billingAddressRegion', 'billingAddressPostalCode', 'billingAddressCountry',
     'billingTermsAndConditions',
+    // null interval = automatic reminders off.
+    'agreementDefaultExpiryDays', 'agreementReminderIntervalDays', 'agreementMaxReminders',
   ] as const) {
     if (patch[key] !== undefined) set[key] = patch[key];
   }
@@ -1306,6 +1312,9 @@ export async function updatePartnerBillingSettings(
     notifyCustomerOnBehalfAcceptance: partners.notifyCustomerOnBehalfAcceptance,
     catalogAiStyle: partners.catalogAiStyle, invoiceFooter: partners.invoiceFooter,
     documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize,
+    agreementDefaultExpiryDays: partners.agreementDefaultExpiryDays,
+    agreementReminderIntervalDays: partners.agreementReminderIntervalDays,
+    agreementMaxReminders: partners.agreementMaxReminders,
   });
   if (!row) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
   return row;
@@ -1726,9 +1735,31 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
     // ticket child rows (lockInvoiceSourceTickets has the order).
     await lockInvoiceSourceTickets(timeIds, partIds);
     if (timeIds.length) {
-      validateBillable('Time entries', timeIds, await db
-        .select({ id: timeEntries.id, orgId: timeEntries.orgId, billingStatus: timeEntries.billingStatus, currencyCode: timeEntries.currencyCode })
-        .from(timeEntries).where(inArray(timeEntries.id, timeIds)).orderBy(timeEntries.id).for('update'));
+      const lockedTime = await db
+        .select({
+          id: timeEntries.id, orgId: timeEntries.orgId, billingStatus: timeEntries.billingStatus, currencyCode: timeEntries.currencyCode,
+          isBillable: timeEntries.isBillable, endedAt: timeEntries.endedAt,
+        })
+        .from(timeEntries).where(inArray(timeEntries.id, timeIds)).orderBy(timeEntries.id).for('update');
+      validateBillable('Time entries', timeIds, lockedTime);
+      // #8970: assembly and refresh hold block-covered time, but a draft built
+      // before the hold applied (block line added later, contract paused at
+      // assembly, void-and-reissue) can still carry it. Billing it here would
+      // bill hourly the time the period close is about to draw from the block.
+      // Same predicate as the close (billable, not_billed, ended inside a
+      // window); every row is not_billed in inv.orgId after validateBillable.
+      // Plain reads of the Shape-1 contract tables — no new lock class. A
+      // window that opens after this read serializes as "issued first": the
+      // close then skips the billed rows (it claims only not_billed).
+      const windows = await hourBlockHoldWindows(inv.orgId);
+      const held = lockedTime
+        .filter((r) => r.isBillable && r.endedAt !== null && isHeldForHourBlock(windows, r.endedAt))
+        .map((r) => r.id);
+      if (held.length) {
+        throw new InvoiceServiceError(
+          `Time entries are held for a block of hours and bill when its period closes; remove them from this draft to issue it: ${held.join(', ')}`,
+          409, 'SOURCE_HELD_FOR_HOUR_BLOCK', { heldEntryIds: held });
+      }
     }
     if (partIds.length) {
       validateBillable('Parts', partIds, await db

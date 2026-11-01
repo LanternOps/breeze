@@ -1000,6 +1000,7 @@ describe('remote_access feature link — legacy capability JSONB (#2320)', () =>
             notifyOnSessionEnd: true,
             showActiveIndicator: true,
             technicianIdentityLevel: 'name',
+            allowUserEndSession: false,
           },
         ]) as any
       );
@@ -1015,6 +1016,8 @@ describe('remote_access feature link — legacy capability JSONB (#2320)', () =>
     expect(settings.sessionPromptMode).toBe('consent');
     expect(settings.consentUnavailableBehavior).toBe('block');
     expect(settings.technicianIdentityLevel).toBe('name');
+    // #10190 W06: round-trips from the normalized row.
+    expect(settings.allowUserEndSession).toBe(false);
   });
 
   it('addFeatureLink stores the full blob in JSONB and only consent fields in the normalized row', async () => {
@@ -1113,6 +1116,7 @@ describe('remote_access updateFeatureLink — merge semantics (partial updates c
     notifyOnSessionEnd: true,
     showActiveIndicator: true,
     technicianIdentityLevel: 'generic',
+    allowUserEndSession: false,
   };
 
   function buildUpdateTx(existingInlineSettings: unknown) {
@@ -1177,6 +1181,8 @@ describe('remote_access updateFeatureLink — merge semantics (partial updates c
     expect(captured.normalizedRowValues.sessionPromptMode).toBe('consent');
     expect(captured.normalizedRowValues.consentUnavailableBehavior).toBe('block');
     expect(captured.normalizedRowValues.technicianIdentityLevel).toBe('generic');
+    // #10190 W06: an explicit OFF survives an unrelated update (merge semantics).
+    expect(captured.normalizedRowValues.allowUserEndSession).toBe(false);
   });
 
   it('a consent-only update preserves the stored capability settings (no fail-open re-enable)', async () => {

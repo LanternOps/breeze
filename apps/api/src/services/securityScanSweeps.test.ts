@@ -214,6 +214,18 @@ describe('previewSweep', () => {
 });
 
 describe('createSweep', () => {
+  it('passes through the partner-group target refusal before any writes or dispatch', async () => {
+    const failure = { ok: false, status: 400, code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', detail: { groupIds: [GROUP_ID] } };
+    h.resolveSweepTargets.mockResolvedValueOnce(failure);
+    expect(await createSweep(auth(), { ...create, scope: { kind: 'groups', groupIds: [GROUP_ID] } }, webCtx))
+      .toEqual(failure);
+    expect(h.resolveSweepTargets).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      scope: { kind: 'groups', groupIds: [GROUP_ID] },
+    }));
+    expect(writeOps()).toEqual([]);
+    expect(h.enqueueSweepPump).not.toHaveBeenCalled();
+  });
+
   it('create: one sweep per org sharing groupId; one queued scan per device with sweep_id and initiated_by; 2500 devices → 3 chunked inserts', async () => {
     h.resolveSweepTargets.mockResolvedValue(resolved({ [ORG_A]: ids(2500), [ORG_B]: ids(3, 5000) }));
     respondForCreate();
@@ -464,6 +476,8 @@ describe('createSweep', () => {
     if (!result.ok) throw new Error(result.code);
     const [row] = insertValues(inserts('security_scan_sweeps')[0]!);
     expect(row).toMatchObject({ origin: 'ai_chat', aiOrigin, intentId: '1e000000-0000-4000-8000-000000000001', paths: ['/a', '/b'] });
+    // The returned summary carries the stored paths too, so a re-sweep can reuse them (#10079).
+    expect(result.sweeps[0]).toMatchObject({ scanType: 'custom', paths: ['/a', '/b'] });
     expect(h.createAuditLogAsync.mock.calls[0]![0]).toMatchObject({ actorType: 'user', actorId: USER, initiatedBy: 'ai' });
   });
 
@@ -493,6 +507,7 @@ function sweepRow(over: Record<string, unknown> = {}) {
     createdBy: USER,
     ruleSetPins: [PIN],
     scanType: 'quick',
+    paths: null,
     targetedCount: 3,
     skipped: zeroSkips(),
     origin: 'web',
@@ -663,6 +678,21 @@ describe('reads', () => {
     // Children are counted only where the sweep and the scan agree on the org.
     const joins = progressQuery.chain.filter(([m]) => m === 'innerJoin').map(([, a]) => render(a[1] as never).sql);
     expect(joins.some((on) => on.includes('"security_scan_sweeps"."org_id" = "security_scans"."org_id"'))).toBe(true);
+  });
+
+  it('summaries carry the custom paths a re-sweep needs; quick/full carry null (#10079)', async () => {
+    respondForReads({ sweeps: [sweepRow({ scanType: 'custom', paths: ['/tmp/drop', 'C:\\Users\\Public'] })] });
+    const custom = await getSweep(auth(), SWEEP_ID);
+    expect(custom).toMatchObject({ scanType: 'custom', paths: ['/tmp/drop', 'C:\\Users\\Public'] });
+    const selected = h.recording!.ops.find((o) => o.kind === 'select' && tableOf(o) === 'security_scan_sweeps')!;
+    expect(Object.keys(selected.args[0] as object)).toContain('paths');
+
+    respondForReads({ sweeps: [sweepRow()] });
+    expect((await getSweep(auth(), SWEEP_ID))?.paths).toBeNull();
+
+    // Only a custom sweep carries paths, even if a non-custom row somehow has them.
+    respondForReads({ sweeps: [sweepRow({ scanType: 'quick', paths: ['/x'] })] });
+    expect((await getSweep(auth(), SWEEP_ID))?.paths).toBeNull();
   });
 
   it("restricted caller's aggregates cover only reachable devices", async () => {

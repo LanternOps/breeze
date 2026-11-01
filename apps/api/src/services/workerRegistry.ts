@@ -330,15 +330,8 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     name: 'webhookDelivery',
     placement: 'global',
     load: async () => {
-      // Wraps `getWebhookWorker()` + the delivery-claim/outcome callback
-      // wiring that used to be a local `initializeWebhookDeliveryWorker`
-      // function in index.ts (moved to services/webhookDeliveryInit.ts so
-      // the registry can load it standalone — see that module's header
-      // comment for why it isn't just added to workers/webhookDelivery.ts).
-      // `index.ts` ALSO calls `getWebhookWorker().stop()` directly in its
-      // shutdown preamble (must run before the HTTP server stops accepting
-      // requests) — this entry's `shutdown` calling `stop()` again is a
-      // harmless no-op (see the module's own doc comment).
+      // Separate wiring avoids the worker/record-service import cycle; this
+      // registry entry owns both the BullMQ worker and queue shutdown.
       const m = await import('../services/webhookDeliveryInit');
       return { init: m.initializeWebhookDeliveryWorker, shutdown: m.shutdownWebhookDeliveryWorker };
     },
@@ -933,6 +926,19 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #8318 reinstall reattach: every minute, expires reattach intents past
+    // their deadline (discarding the staged set, revoking the pending
+    // certificate) and prunes terminal ones older than 30 days. `global`: its
+    // closure is db + the certificate lifecycle + the audit service, never
+    // routes/agentWs.ts.
+    name: 'deviceReattachIntentSweep',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/deviceReattachIntentSweep');
+      return { init: m.initializeDeviceReattachIntentSweep, shutdown: m.shutdownDeviceReattachIntentSweep };
+    },
+  },
+  {
     name: 'desktopSessionFinalization',
     placement: 'socket-owner',
     load: async () => {
@@ -1273,6 +1279,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Socket-owner: groupMembership reaches peripheralJobs and socket-local dispatch.
+    name: 'partnerGroupEvaluationJobs',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/partnerGroupEvaluationJobs');
+      return { init: m.initializePartnerGroupEvaluationJobs, shutdown: m.shutdownPartnerGroupEvaluationJobs };
+    },
+  },
+  {
     name: 'browserSecurityWorker',
     placement: 'global',
     load: async () => {
@@ -1530,6 +1545,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/agreementRequestExpiryReaper');
       return { init: m.initializeAgreementRequestExpiryReaper, shutdown: m.shutdownAgreementRequestExpiryReaper };
+    },
+  },
+  {
+    // #9075 W4a (OD8 B): automatic agreement-request reminders (hourly sweep).
+    name: 'agreementRequestAutoReminder',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/agreementRequestAutoReminder');
+      return { init: m.initializeAgreementRequestAutoReminder, shutdown: m.shutdownAgreementRequestAutoReminder };
     },
   },
   {

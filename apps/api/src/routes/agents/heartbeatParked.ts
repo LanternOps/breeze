@@ -12,12 +12,27 @@ import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { ERROR_CODES } from '@breeze/shared';
 import { computeCredentialMaintenance, type CredentialMaintenance } from './heartbeatCredentialMaintenance';
+import { normalizeRebindProtocolVersion } from '../../services/deviceReattach/protocol';
+import { rebindDirectiveForBeat } from '../../services/deviceReattach/rebindDirective';
+import {
+  getActiveManifestKeyDelegationsCached,
+  getActiveTrustKeysetCached,
+  type ManifestKeyDelegation,
+  type ManifestTrustKey,
+} from '../../services/manifestSigning';
+import { captureException } from '../../services/sentry';
 
 /** The heartbeat body fields the parked beat reads — nothing else is looked at. */
 export interface ParkedHeartbeatBody {
   agentVersion: string;
   role?: 'agent' | 'watchdog';
   watchdogState?: string;
+  /**
+   * #8318 §6.2 — of the capabilities, ONLY `rebindProtocolVersion` is read:
+   * a parked device is the typical source of a reattach, so its beat records
+   * the capability and carries the signed `rebind` directive.
+   */
+  securityCapabilities?: { rebindProtocolVersion?: number };
 }
 
 /** Request-level credential facts agentAuthMiddleware put on the context. */
@@ -43,10 +58,15 @@ const TERMINAL_DEVICE_STATUSES: Array<'decommissioned' | 'quarantined'> = ['deco
  *     `renewCert` / `rotateToken` / `confirmTokenRotation`, computed by the
  *     same helper as the full beat. The watchdog never received rotation
  *     signals from the full beat either, so it gets commands only;
+ *   - #8318 §6.2 (main agent only): records `rebindProtocolVersion`, non-sticky
+ *     like the full beat, and returns the signed `rebind` directive while the
+ *     device is the source of an open reattach intent, plus
+ *     `manifestTrustKeys` / `manifestKeyDelegations` exactly as the full beat
+ *     does, so the agent can verify the directive against its pinned keys;
  *   - ingests nothing (no metrics, inventory, IP history, OneDrive, health or
- *     rollback observations, audit events) and resolves nothing (no update
- *     policy, upgrade target, trust keys or delegations, remote access,
- *     topology, helper or feature policy, merged configuration).
+ *     rollback observations, audit events) and resolves nothing else (no
+ *     update policy, upgrade target, remote access, topology, helper or
+ *     feature policy, merged configuration).
  *
  * The Go agent decodes a missing `helperEnabled` / `manageRemoteManagement` as
  * false (see the drain beat in ./heartbeat.ts), which is the intended parked
@@ -120,6 +140,8 @@ export async function respondParkedHeartbeat(
             lastSeenAt: now,
             status: 'online',
             agentVersion: data.agentVersion,
+            // #8318 §6.2: the one capability the parked beat records.
+            rebindProtocolVersion: normalizeRebindProtocolVersion(data.securityCapabilities?.rebindProtocolVersion),
           };
       // #8318 §6.4: bound to the authenticated id + agent_id (a stale beat
       // after a reattach confirm matches 0 rows), plus the terminal guard.
@@ -170,5 +192,34 @@ export async function respondParkedHeartbeat(
     }),
   );
 
-  return c.json({ commands, ...scoped.maintenance });
+  if (isWatchdog) {
+    return c.json({ commands, ...scoped.maintenance });
+  }
+
+  // #8318 §6.2 — outside every DB context (#1105), as on the full beat.
+  const rebind = await rebindDirectiveForBeat({
+    deviceId: agent.deviceId,
+    agentId: agent.agentId,
+    rebindProtocolVersion: normalizeRebindProtocolVersion(data.securityCapabilities?.rebindProtocolVersion),
+  });
+  const [manifestTrustKeys, manifestKeyDelegations] = await Promise.all([
+    getActiveTrustKeysetCached().catch((err): ManifestTrustKey[] => {
+      console.error(`[heartbeat] parked beat: failed to load manifest trust keyset for agentId=${agent.agentId}:`, err);
+      captureException(err);
+      return [];
+    }),
+    getActiveManifestKeyDelegationsCached().catch((err): ManifestKeyDelegation[] => {
+      console.error(`[heartbeat] parked beat: failed to load manifest key delegations for agentId=${agent.agentId}:`, err);
+      captureException(err);
+      return [];
+    }),
+  ]);
+
+  return c.json({
+    commands,
+    ...scoped.maintenance,
+    manifestTrustKeys,
+    manifestKeyDelegations,
+    ...(rebind ? { rebind } : {}),
+  });
 }

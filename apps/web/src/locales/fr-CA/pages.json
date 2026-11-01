@@ -85,6 +85,7 @@
     "logs": "Journaux",
     "monitoring": "Réseau",
     "oauthConsent": "Autoriser l'accès",
+    "oauthError": "Échec de la connexion de l’application",
     "onedrive": "OneDrive",
     "organizations": "Organisations",
     "organizationsDetail": "Organisation",
@@ -190,7 +191,8 @@
     "wispChat": "Breeze AI",
     "aiTasks": "Tâches IA",
     "aiTask": "Tâche IA",
-    "settingsAi": "Paramètres de l’IA"
+    "settingsAi": "Paramètres de l’IA",
+    "settingsFlowLimits": "Limites des flux"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",
@@ -209,6 +211,33 @@
     "referenceIdLabel": "ID de référence :",
     "dashboardLink": "Aller au tableau de bord",
     "signInLink": "Se connecter"
+  },
+  "oauthErrorPage": {
+    "invalidClient": {
+      "heading": "Cette application ne peut pas se connecter",
+      "body": "Breeze ne reconnaît pas l’application qui vous a envoyé ici, ou cette application n’est pas autorisée à se connecter à ce serveur Breeze. Vérifiez que l’application est configurée avec l’adresse de ce serveur, puis réessayez."
+    },
+    "invalidRedirectUri": {
+      "heading": "L’adresse de retour de cette application n’est pas enregistrée",
+      "body": "L’application a demandé à Breeze de vous renvoyer vers une adresse qu’elle n’a jamais enregistrée. Breeze s’est donc arrêté ici pour protéger votre compte. Le développeur de l’application ou votre administrateur doit corriger l’URL de redirection de l’application."
+    },
+    "sessionExpired": {
+      "heading": "Cette connexion a expiré",
+      "body": "La connexion a pris trop de temps ou a été lancée dans un autre navigateur. Retournez à l’application et connectez-vous de nouveau."
+    },
+    "invalidRequest": {
+      "heading": "L’application a envoyé une demande que Breeze ne peut pas accepter",
+      "body": "La demande de connexion de l’application était incomplète ou demandait quelque chose que ce serveur ne prend pas en charge. Retournez à l’application et réessayez. Si le problème persiste, communiquez avec le développeur de l’application."
+    },
+    "serverError": {
+      "heading": "Breeze n’a pas pu terminer la connexion",
+      "body": "Une erreur s’est produite de notre côté. Attendez quelques minutes, puis retournez à l’application et réessayez."
+    },
+    "generic": {
+      "heading": "Cette connexion n’a pas pu être établie",
+      "body": "Retournez à l’application et relancez la connexion. Si le problème persiste, communiquez avec votre administrateur Breeze."
+    },
+    "nextStep": "Aucun accès n’a été accordé. Vous pouvez fermer cette page."
   },
   "settingsIndex": {
     "heading": "Paramètres",
@@ -281,6 +310,10 @@
       "wispMemory": {
         "title": "Mémoire de Wisp",
         "description": "Examiner, confirmer et retirer ce que Wisp retient."
+      },
+      "flowLimits": {
+        "title": "Limites des flux",
+        "description": "Limites mensuelles d’exécutions et limite de jetons d’IA pour les flux."
       }
     },
     "groups": {

@@ -4,6 +4,7 @@
 
 import type { EmailTemplateId } from '../utils/emailTemplates';
 import type { AiApprovalSettings } from '../validators/aiApprovalSettings';
+import type { FlowLimitsSettings } from '../validators/flowBudgets';
 
 export * from './auth';
 export * from './deviceOptions';
@@ -348,7 +349,8 @@ export interface DeviceMetrics {
 
 export interface DeviceGroup {
   id: string;
-  orgId: string;
+  orgId: string | null;
+  partnerId: string | null;
   siteId: string | null;
   name: string;
   type: DeviceGroupType;
@@ -821,6 +823,11 @@ export interface PartnerSettings {
   // override lives at the same key on organizations.settings; the org wins.
   // Resolved only by resolveAiApprovalTimeout (validators/aiApprovalSettings).
   aiApprovals?: AiApprovalSettings;
+  // Tool Catalog W05 (#5220) — partner DEFAULT flow caps. Org override lives
+  // at the same key on organizations.settings and may only LOWER these.
+  // Resolved only by resolveFlowLimits (apps/api services/flows/flowLimits.ts);
+  // written only by PUT /api/v1/flows/limits.
+  flows?: FlowLimitsSettings;
   // Partner-level preferred order of organization IDs. The org list endpoint
   // returns matching orgs in this order; orgs not present in the array
   // (newly created or stale entries) are appended in createdAt order.

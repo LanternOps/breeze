@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import {
+  agreementRequestDefaultsQuerySchema,
   createAgreementRequestSchema,
   listAgreementRequestsQuerySchema,
   recordSignedAgreementFromForm,
@@ -28,6 +29,7 @@ import { QuoteServiceError } from '../../services/quoteTypes';
 import {
   createAgreementRequest,
   deleteAgreementRequest,
+  getAgreementRequestDefaults,
   getAgreementRequestDetail,
   getAgreementRequestLink,
   listAgreementRequests,
@@ -210,6 +212,18 @@ agreementRequestRoutes.post(
 agreementRequestRoutes.get('/', scopes, readPerm, zValidator('query', listAgreementRequestsQuerySchema), async (c) => {
   try {
     return c.json({ data: await listAgreementRequests(authFrom(c), c.req.valid('query')) });
+  } catch (err) {
+    return handleError(c, err);
+  }
+});
+
+// GET /defaults?orgId= — the partner's resolved agreement defaults for that org
+// (#9075 W4a): the Send dialog pre-fills its expiry from them and says whether
+// automatic reminders will go out. Registered BEFORE /:id so "defaults" is
+// never parsed as an id.
+agreementRequestRoutes.get('/defaults', scopes, readPerm, zValidator('query', agreementRequestDefaultsQuerySchema), async (c) => {
+  try {
+    return c.json({ data: await getAgreementRequestDefaults(authFrom(c), c.req.valid('query').orgId) });
   } catch (err) {
     return handleError(c, err);
   }

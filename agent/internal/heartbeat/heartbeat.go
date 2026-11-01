@@ -35,11 +35,13 @@ import (
 	"github.com/breeze-rmm/agent/internal/desktopfence"
 	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/elevaccount"
+	"github.com/breeze-rmm/agent/internal/etwlua"
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/helper"
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/httputil"
+	"github.com/breeze-rmm/agent/internal/inbox"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/mgmtdetect"
@@ -48,10 +50,13 @@ import (
 	"github.com/breeze-rmm/agent/internal/networkdiagnostic"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/onedrivehelper"
+	"github.com/breeze-rmm/agent/internal/pamdecline"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/peripheral"
 	"github.com/breeze-rmm/agent/internal/privilege"
+	"github.com/breeze-rmm/agent/internal/prompthost"
+	"github.com/breeze-rmm/agent/internal/promptidentity"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/desktop/x11"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -327,6 +332,16 @@ type SecurityCapabilities struct {
 	// (emission lands in a later wave): send retainState only to a beat
 	// declaring exactly 1; any other value gets the legacy response shape.
 	RetainStateProtocolVersion int `json:"retainStateProtocolVersion,omitempty"`
+	// PromptIdentityProtocolVersion (#10190 W03) declares that this build
+	// caches HeartbeatResponse.PromptIdentity and fetches its logo from
+	// /agents/:id/prompt-identity/logo. The API sends the block only to a
+	// beat declaring exactly 1.
+	PromptIdentityProtocolVersion int `json:"promptIdentityProtocolVersion,omitempty"`
+	// PamUserNotifyProtocolVersion (#8928) declares that this build claims
+	// pam_request_notify and shows the end-user PAM outcome notices. Windows
+	// builds only (PAM interception is Windows-only); the API normalizes any
+	// value other than 1 to 0 and never dispatches the command to 0.
+	PamUserNotifyProtocolVersion int `json:"pamUserNotifyProtocolVersion,omitempty"`
 }
 
 type PamReconciliationStatus struct {
@@ -377,6 +392,12 @@ type HeartbeatResponse struct {
 	// RetainState (#8258) lists features the server made no decision about this
 	// beat (keep current state); see retain_state.go. Absent = today's semantics.
 	RetainState RetainState `json:"retainState"`
+	// PromptHost is the prompt-host kill switch (#10190); absent = nothing enabled.
+	PromptHost *PromptHostSettings `json:"promptHost,omitempty"`
+	// PromptIdentity is the MSP identity block (#10190 W03), kept raw so a
+	// malformed block never fails the rest of the response; absent = keep
+	// the last-known identity. See prompt_identity.go.
+	PromptIdentity json.RawMessage `json:"promptIdentity,omitempty"`
 }
 
 type HelperSettings struct {
@@ -444,7 +465,10 @@ type Heartbeat struct {
 	chatReplySink    func(chatReplyEvent) (int, error)
 	// unifiCollectorWake is signalled when configUpdate says this device has
 	// UniFi collectors (#7970); see unifi_collector_hint.go.
-	unifiCollectorWake        atomic.Pointer[func()]
+	unifiCollectorWake atomic.Pointer[func()]
+	// featureUpdateLog dedups the per-heartbeat feature-update policy log
+	// line (#10382); see feature_update.go.
+	featureUpdateLog          featureUpdateLogState
 	topologyDiagnosticMu      sync.Mutex
 	topologyDiagnosticJournal *networkdiagnostic.Journal
 	topologyDiagnosticActive  map[string]activeTopologyDiagnostic
@@ -473,30 +497,33 @@ type Heartbeat struct {
 	hardwareCollectFn    func() (*collectors.HardwareInfo, error)
 	memoryCollectFn      func() (*collectors.MemoryInfo, error)
 	memoryCollectTimeout time.Duration
+	// eventLogSendInFlight protects the collect/send/ack cycle from overlapping ticks.
+	eventLogSendInFlight atomic.Bool
 	// changeTrackerMu serializes the change tracker's collect → send → commit
 	// cycle. sendInventory is dispatched both on the 15-minute tick and by the
 	// "Refresh Inventory" command (handlers.go), so two cycles can genuinely
 	// overlap; without this they would diff the same baseline, upload the same
 	// records twice, and race to commit (#3529).
-	changeTrackerMu    sync.Mutex
-	sessionCol         *collectors.SessionCollector
-	policyStateCol     *collectors.PolicyStateCollector
-	patchCol           *collectors.PatchCollector
-	patchMgr           *patching.PatchManager
-	connectionsCol     *collectors.ConnectionsCollector
-	eventLogCol        *collectors.EventLogCollector
-	bootCol            *collectors.BootPerformanceCollector
-	reliabilityCol     *collectors.ReliabilityCollector
-	loopDefer          loopDeferral // per-route Retry-After deferral (W09, loop_deferral.go)
-	agentVersion       string
-	desktopMgr         *desktop.SessionManager
-	wsDesktopMgr       *desktop.WsSessionManager
-	terminalMgr        *terminal.Manager
-	tunnelMgr          *tunnel.Manager
-	executor           *executor.Executor
-	backupBinaryPath   string
-	rollbackController rollbackController
-	rebootMgr          *patching.RebootManager
+	changeTrackerMu           sync.Mutex
+	sessionCol                *collectors.SessionCollector
+	policyStateCol            *collectors.PolicyStateCollector
+	patchCol                  *collectors.PatchCollector
+	patchMgr                  *patching.PatchManager
+	connectionsCol            *collectors.ConnectionsCollector
+	eventLogCol               *collectors.EventLogCollector
+	eventLogRejectedProviders []string // protected by mu; suppress repeated invalid-config warnings
+	bootCol                   *collectors.BootPerformanceCollector
+	reliabilityCol            *collectors.ReliabilityCollector
+	loopDefer                 loopDeferral // per-route Retry-After deferral (W09, loop_deferral.go)
+	agentVersion              string
+	desktopMgr                *desktop.SessionManager
+	wsDesktopMgr              *desktop.WsSessionManager
+	terminalMgr               *terminal.Manager
+	tunnelMgr                 *tunnel.Manager
+	executor                  *executor.Executor
+	backupBinaryPath          string
+	rollbackController        rollbackController
+	rebootMgr                 *patching.RebootManager
 	// recoveryMarkerVal (W04a) is guarded by mu like the other single-value
 	// fields above (see lifecycleMode()); read every beat by
 	// recoveryMarker() and cleared once the server acks it.
@@ -551,9 +578,18 @@ type Heartbeat struct {
 	patchSendFailures int
 
 	// User session helper (IPC)
-	helperToken     string // retained copy of the helper-scoped token for connect-time pushes
-	helperTokenMu   sync.RWMutex
-	sessionBroker   *sessionbroker.Broker
+	helperToken   string // retained copy of the helper-scoped token for connect-time pushes
+	helperTokenMu sync.RWMutex
+	sessionBroker *sessionbroker.Broker
+	promptHost    *prompthost.Host // on-device prompts (#10190); W04 registers notice.info (live only where the server enables it)
+	// MSP identity cache and the prompt list it purges on a scope change
+	// (#10190 W03); see prompt_identity.go.
+	promptIdentity  *promptidentity.Store
+	promptListStore *inbox.Store
+	promptLogoState promptLogoFetchState
+	// tccNotices tracks the macOS permission notice per user (#10190 W04);
+	// see notices.go.
+	tccNotices      tccNoticeState
 	helperLifecycle helperLifecycleController
 	lifecycleCancel context.CancelFunc
 	shutdownTimeout time.Duration
@@ -608,7 +644,25 @@ type Heartbeat struct {
 	// pamReportUnable sends the "cannot act on this elevation" report (#9517);
 	// nil means reportPamUnable's real POST (sendPamElevationUnable), sent off
 	// the etwlua loop goroutine.
-	pamReportUnable   func(requestID string, unable pamUnable)
+	pamReportUnable func(requestID string, unable pamUnable)
+	// pamDeclines is the durable record of the end user's answer to a PAM
+	// dialog (#8971): both apply paths refuse a declined request, and the
+	// declined entries are the outbox for the server withdraw. Memory-only
+	// until SetStatePath swaps in the file-backed store; read it through
+	// pamDeclineStore().
+	pamDeclinesMu sync.Mutex
+	pamDeclines   *pamdecline.Store
+	// pamDeclineCheckerInstalled is true once the lifetime manager took the
+	// decline re-check. pam_apply_v2 refuses every apply until it is.
+	pamDeclineCheckerInstalled atomic.Bool
+	// pamWithdrawKick wakes the withdraw drain right after a decline.
+	pamWithdrawKick chan struct{}
+	// pamDeclineWait bounds how long an apply waits for an open dialog's
+	// answer. Zero means pamDialogTimeout + pamDismissTimeout; tests shrink it.
+	pamDeclineWait time.Duration
+	// pamWithdrawNow is the withdraw drain's clock (backoff); nil means
+	// time.Now.
+	pamWithdrawNow    func() time.Time
 	pamDismissConsent func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error)
 	// pamDismissConsentInstance dismisses one specific consent.exe (#8995);
 	// nil means sessionBroker.DismissPamConsentInstance.
@@ -617,6 +671,41 @@ type Heartbeat struct {
 	// technician approval was raised from, so a verified pam_apply_v2 launch
 	// can dismiss that prompt and no other (pam_approved_consent.go).
 	pamPendingConsents pendingPamConsents
+	// pamRequests tracks the requests the user handed to IT so the outcome
+	// notices (#8928) can be shown; created lazily by pamTracker().
+	pamRequestsOnce sync.Once
+	pamRequests     *pamRequestTracker
+	// pamNotifySink, when set, receives every PAM outcome notice instead of
+	// the session broker (test seam); a non-nil error means "not shown". nil
+	// means sendSessionNotifyTitled.
+	pamNotifySink func(title, body, winSession string) error
+	// Elevation prompts (#10190 W07, pam_prompt.go): the open flows by
+	// request id; test seams for the PromptOnSecureDesktop read, the
+	// requester's prompt owner and the consent.exe exit probe (nil = the
+	// real ones); the consent watch interval; and the renderer that
+	// carried each decline, for the withdraw body (memory only).
+	pamElevations           elevationFlows
+	pamSecureDesktop        func() (bool, error)
+	pamElevationOwner       func(winSession string) (prompthost.Owner, bool)
+	pamConsentExited        func(etwlua.ConsentInstance) (bool, error)
+	elevationConsentPoll    time.Duration
+	pamWithdrawRenderersMap sync.Map
+	// elevationCancelDismissWG tracks UAC dismissals retried after Cancel
+	// request (tests wait on it).
+	elevationCancelDismissWG sync.WaitGroup
+	// elevationAfterSettle (tests) runs after every elevationFlow.settle
+	// (including one whose answer lost to an earlier one), on the settling
+	// goroutine.
+	elevationAfterSettle func()
+	// pamSupportNameCached is the MSP support name last returned by a
+	// successful elevation submit (pam_support_name.go), loaded from its
+	// sidecar in SetStatePath. Guarded by pamSupportNameMu.
+	pamSupportNameMu     sync.Mutex
+	pamSupportNameCached string
+	// pamOfflineLimiter rate-limits the offline notice per program and user
+	// (pam_offline_notify.go); created lazily by pamOfflineRateLimiter().
+	pamOfflineLimiterOnce sync.Once
+	pamOfflineLimiter     *pamOfflineNoticeLimiter
 	// pamApprovedConsentQuiesceWait bounds how long an uncertain approved-
 	// prompt dismissal keeps pamActuateMu while waiting for the helper to
 	// prove it finished. Zero means pamDismissTimeout; tests shrink it.
@@ -644,7 +733,14 @@ type Heartbeat struct {
 	// wsStreamStopNotify reports a lease-driven stream stop to the control
 	// plane; nil means sendDesktopDisconnectNotification (tests override it).
 	wsStreamStopNotify func(sessionID, reason string)
-	desktopOwners      sync.Map // desktop session ID -> helper session ID
+	// banners tracks the session banners this agent asked a helper to show,
+	// and the banner_hide re-sends still owed to ended ones (#10316,
+	// banner_reliability.go). bannerUISessionFn and bannerHideRetryDelays are
+	// test seams: nil means consentUISessionForTarget and the default schedule.
+	banners               bannerTracker
+	bannerUISessionFn     func(targetWinSession string) *sessionbroker.Session
+	bannerHideRetryDelays []time.Duration
+	desktopOwners         sync.Map // desktop session ID -> helper session ID
 	// endedDesktopOwners: desktopOwnerKey(desktop session ID, helper session
 	// ID) -> desktopOwnerTombstone, so a helper's teardown report that lands
 	// just after it stopped owning the session is still attributed (see
@@ -870,6 +966,11 @@ type Heartbeat struct {
 	badSignatureMu  sync.Mutex
 	badSignatureVer string
 	badSignatureAt  time.Time
+
+	// Exponential per-target backoff after a deterministic artifact failure
+	// (checksum or manifest) on the agent, backup, user-helper and watchdog
+	// download paths. See artifact_backoff.go. Issue #7516.
+	artifactBackoff updater.TargetBackoff
 
 	// Path to the agent state file, set by main after startup.
 	statePath                   string
@@ -1158,11 +1259,14 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		client:        httpClient,
 		stopChan:      make(chan struct{}),
 		pamUnableStop: make(chan struct{}),
-		metricsCol:    collectors.NewMetricsCollector(),
-		hardwareCol:   collectors.NewHardwareCollector(),
-		softwareCol:   collectors.NewSoftwareCollectorWithVersion(version),
-		inventoryCol:  collectors.NewInventoryCollector(),
-		vpnCol:        collectors.NewVPNCollector(),
+		// Memory-only until SetStatePath gives it a file.
+		pamDeclines:     pamdecline.NewStore("", nil),
+		pamWithdrawKick: make(chan struct{}, 1),
+		metricsCol:      collectors.NewMetricsCollector(),
+		hardwareCol:     collectors.NewHardwareCollector(),
+		softwareCol:     collectors.NewSoftwareCollectorWithVersion(version),
+		inventoryCol:    collectors.NewInventoryCollector(),
+		vpnCol:          collectors.NewVPNCollector(),
 		changeTrackerCol: collectors.NewChangeTrackerCollector(
 			filepath.Join(config.GetDataDir(), "change_tracker_snapshot.json"),
 		),
@@ -1171,7 +1275,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		patchCol:                       collectors.NewPatchCollector(),
 		patchMgr:                       patching.NewDefaultManager(cfg),
 		connectionsCol:                 collectors.NewConnectionsCollector(),
-		eventLogCol:                    collectors.NewEventLogCollector(),
+		eventLogCol:                    collectors.NewPersistentEventLogCollector(filepath.Join(config.GetDataDir(), "eventlog_bookmarks.json")),
 		bootCol:                        collectors.NewBootPerformanceCollector(),
 		reliabilityCol:                 collectors.NewReliabilityCollector(),
 		agentVersion:                   version,
@@ -1336,6 +1440,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// explicitly configured. macOS daemons handle desktop capture directly
 	// but still need the broker for user-context operations (run_as_user
 	// scripts and Breeze Helper launch).
+	// The MSP identity cache (#10190 W03) exists with or without the broker:
+	// it is what the device was last told, kept offline.
+	h.initPromptIdentity(config.GetDataDir())
+
 	needsBroker := cfg.UserHelperEnabled || cfg.IsService || cfg.IsHeadless
 	if needsBroker {
 		socketPath := cfg.IPCSocketPath
@@ -1345,6 +1453,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
 		h.sessionBroker.SetSessionClosedHandler(h.handleHelperSessionClosed)
 		h.sessionBroker.SetSessionAuthenticatedHandler(h.handleHelperSessionAuthenticated)
+		h.startPromptHost(config.GetDataDir())
 		// Retain the helper-scoped token so connect-time pushes have it even after
 		// the config copy is cleared post-persist during rotation.
 		h.setHelperToken(h.config.HelperAuthToken)
@@ -1395,6 +1504,11 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		),
 		cfg.PatchRebootMaxPerDay,
 	)
+	// The restart card (#10190 W05): each rung is offered to the prompt host
+	// first; a rung no session can draw goes out as above, unchanged.
+	if card := h.newRestartCard(); card != nil {
+		h.rebootMgr.SetRestartSurface(card)
+	}
 
 	// Set backup binary path for IPC forwarding to breeze-backup helper
 	h.backupBinaryPath = cfg.BackupBinaryPath
@@ -1686,6 +1800,11 @@ func (h *Heartbeat) SetStatePath(path string) {
 	if path != "" && h.pamLifetimeManager == nil {
 		h.pamLifetimeManager = pamlifetime.NewManager(pamlifetime.NewStore(filepath.Join(filepath.Dir(path), "pam-lifetime-ledger.json")))
 	}
+	if path != "" {
+		h.loadPamDeclineStore(filepath.Join(filepath.Dir(path), pamDeclineFileName))
+		h.installPamDeclineChecker()
+	}
+	h.loadPamSupportName()
 }
 
 func (h *Heartbeat) ReconcilePAMLifetime(ctx context.Context) []pamlifetime.Result {
@@ -2160,6 +2279,8 @@ func (h *Heartbeat) Start() {
 	h.startTimeSync()
 	h.startWorkloads()
 	h.startPamReconciliationRetryLoop()
+	// #8971: deliver the user's PAM declines to the server (outbox drain).
+	go h.runPamWithdrawDrain()
 
 	// Issue #2621 — before the first heartbeat, finish any credential rotation
 	// that was interrupted between the durable disk write and the server
@@ -2192,6 +2313,10 @@ func (h *Heartbeat) Start() {
 	if h.scmSessionCh != nil && h.sessionBroker != nil {
 		ctx, cancel := context.WithCancel(context.Background())
 		lifecycle = sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh, h.config.HelperLifecycleMode)
+		// Windows session lock / unlock reach the prompt host, which holds a
+		// prompt for a locked session (list entry only) and draws it at
+		// unlock with the time it has left (#10190 W05, spec §3.3).
+		lifecycle.SetSessionLockObserver(h.promptSessionLockChanged)
 		h.installHelperLifecycle(lifecycle, cancel)
 		go bootstrapThenListenWithRetry(ctx, lifecycle.Bootstrap, func() {
 			go h.sessionBroker.Listen(h.stopChan)
@@ -2202,6 +2327,12 @@ func (h *Heartbeat) Start() {
 	}
 	if h.sessionBroker != nil {
 		h.startDarwinDesktopWatcher()
+		h.startSessionBannerSweep()
+	}
+	if h.promptHost != nil {
+		promptCtx, promptCancel := context.WithCancel(context.Background())
+		go func() { <-h.stopChan; promptCancel() }()
+		go h.promptHost.Run(promptCtx)
 	}
 	if h.sessionCol != nil {
 		h.sessionCol.Start(h.stopChan)
@@ -2709,6 +2840,9 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 		return nil
 	} else {
 		log.Warn("inventory send failed", "label", label, "status", resp.StatusCode)
+	}
+	if endpoint == "eventlogs" {
+		return &eventLogsSubmissionError{status: resp.StatusCode}
 	}
 	if endpoint == "hardware-health" {
 		return &hardwareSubmissionError{status: resp.StatusCode}
@@ -3786,6 +3920,47 @@ func (h *Heartbeat) applyEventLogConfig(raw any) {
 		interval = asInt("collectionIntervalMinutes")
 	}
 
+	// Presence is distinct from an empty list: old servers omit this key, while
+	// an empty array deliberately removes all policy additions.
+	providersRaw, providersPresent := m["application_providers"]
+	if !providersPresent {
+		providersRaw, providersPresent = m["applicationProviders"]
+	}
+	var providers []string
+	var rejectedNonStrings []string
+	providersArray := false
+	switch values := providersRaw.(type) {
+	case []any:
+		providersArray = true
+		for _, value := range values {
+			if name, ok := value.(string); ok {
+				providers = append(providers, name)
+			} else {
+				rejectedNonStrings = append(rejectedNonStrings, fmt.Sprint(value))
+			}
+		}
+	case []string:
+		providersArray = true
+		providers = values
+	}
+	if providersPresent && !providersArray {
+		log.Warn("event log application_providers is not an array; keeping current list", "type", fmt.Sprintf("%T", providersRaw))
+	}
+	if providersPresent && providersArray {
+		changed, rejected := h.eventLogCol.UpdateApplicationProviders(providers)
+		rejected = append(rejected, rejectedNonStrings...)
+		h.mu.Lock()
+		warnRejected := len(rejected) > 0 && (changed || !slices.Equal(h.eventLogRejectedProviders, rejected))
+		h.eventLogRejectedProviders = append([]string(nil), rejected...)
+		h.mu.Unlock()
+		if warnRejected {
+			log.Warn("rejected event log application providers (invalid name or over the 20-provider limit)", "providers", rejected)
+		}
+		if changed {
+			log.Info("applied event log application providers", "applicationProviders", h.eventLogCol.ApplicationProviders())
+		}
+	}
+
 	if maxEvents > 0 || len(categories) > 0 || minLevel != "" || interval > 0 {
 		changed := h.eventLogCol.UpdateConfig(maxEvents, categories, minLevel, interval)
 		if changed {
@@ -3804,7 +3979,7 @@ func (h *Heartbeat) applyEventLogConfig(raw any) {
 			}
 			log.Info("applied event log config update", logFields...)
 		}
-	} else if len(m) > 0 {
+	} else if len(m) > 0 && !providersPresent {
 		keys := make([]string, 0, len(m))
 		for k := range m {
 			keys = append(keys, k)
@@ -4401,9 +4576,34 @@ func (h *Heartbeat) sendConnectionsInventory() {
 	h.sendInventoryData("connections", map[string]any{"connections": items}, fmt.Sprintf("connections (%d active)", len(connections)))
 }
 
+// eventLogsSubmissionError preserves a rejected upload's HTTP status so only
+// permanent client rejections count toward the poison-batch guard.
+type eventLogsSubmissionError struct{ status int }
+
+func (e *eventLogsSubmissionError) Error() string {
+	return fmt.Sprintf("inventory send failed for event logs: status %d", e.status)
+}
+
+func eventLogPassOutcome(err error) collectors.EventLogPassOutcome {
+	if err == nil {
+		return collectors.EventLogPassSent
+	}
+	var submission *eventLogsSubmissionError
+	if errors.As(err, &submission) && submission.status >= http.StatusBadRequest && submission.status < http.StatusInternalServerError &&
+		submission.status != http.StatusRequestTimeout && submission.status != http.StatusTooManyRequests {
+		return collectors.EventLogPassRejected
+	}
+	return collectors.EventLogPassFailed
+}
+
 func (h *Heartbeat) sendEventLogs() {
+	if !h.eventLogSendInFlight.CompareAndSwap(false, true) {
+		log.Debug("event log upload already in flight; skipping this tick")
+		return
+	}
+	defer h.eventLogSendInFlight.Store(false)
 	if !h.loopReady("PUT", h.agentRouteURL("eventlogs")) {
-		return // before Collect: the watermark advances at collect
+		return // Avoid collecting while this upload route is deferred.
 	}
 	events, err := collectors.Guard("eventLogs", h.eventLogCol.Collect)
 	if err != nil {
@@ -4412,10 +4612,15 @@ func (h *Heartbeat) sendEventLogs() {
 	}
 
 	if len(events) == 0 {
+		h.eventLogCol.CompletePass(collectors.EventLogPassSent)
 		return
 	}
 
-	h.sendInventoryData("eventlogs", map[string]any{"events": events}, fmt.Sprintf("event logs (%d events)", len(events)))
+	err = h.sendInventoryData("eventlogs", map[string]any{"events": events}, fmt.Sprintf("event logs (%d events)", len(events)))
+	if errors.Is(err, ErrDeferred) {
+		return
+	}
+	h.eventLogCol.CompletePass(eventLogPassOutcome(err))
 }
 
 // sendSecurityStatus uploads security posture. The 5-minute tick passes
@@ -5672,6 +5877,11 @@ func (h *Heartbeat) acknowledgeRollbackObservation(id string) {
 }
 
 func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
+	// First: a scope change purges the old MSP's prompt list entries and
+	// replaces the identity before anything else in this response can create
+	// or replay a prompt (spec §3.6).
+	h.applyPromptIdentity(response)
+	h.applyPromptHostSettings(response)
 	h.ackNetworkContext(response.NetworkContextReceipt)
 	// Bare-metal recovery W04a: only clear the marker once the server has
 	// actually acked it — a failed/lost beat must resend it next time.
@@ -7789,29 +7999,13 @@ func (h *Heartbeat) executePatchInstall(payload map[string]any, rollback bool, b
 
 	// Post-install rescan: trigger an immediate patch inventory so the
 	// dashboard reflects the new state without waiting up to 15 minutes.
-	// A skipped item also means the inventory is stale (the update was
-	// superseded, or the package is already current), so it rescans too.
-	if successCount > 0 || skippedCount > 0 {
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Error("post-install patch rescan panicked", "recover", r)
-				}
-			}()
-			// Wait for macOS to finish installing before rescanning
-			select {
-			case <-time.After(60 * time.Second):
-				log.Info("post-install patch rescan triggered", "successCount", successCount)
-				h.sendPatchInventory()
-				// Reset the daily gate so the scheduler doesn't re-scan immediately.
-				h.mu.Lock()
-				h.lastPatchUpdate = time.Now()
-				h.mu.Unlock()
-			case <-h.stopChan:
-				log.Info("post-install patch rescan cancelled — agent shutting down")
-			}
-		}()
-	}
+	// Every outcome rescans (#10250): an install or skip means the inventory
+	// is stale, and a failure can be too (the update was superseded or the
+	// package already moved on), so a failed run must not leave the device on
+	// the last scheduled scan. refs is non-empty here, so something was tried.
+	log.Info("post-install patch rescan scheduled",
+		"installedCount", successCount, "skippedCount", skippedCount, "failedCount", failedCount)
+	schedulePostInstallRescan(h, postInstallRescanDelay(runtime.GOOS))
 
 	durationMs := time.Since(start).Milliseconds()
 	if failedCount > 0 {
@@ -7826,6 +8020,46 @@ func (h *Heartbeat) executePatchInstall(payload map[string]any, rollback bool, b
 	}
 
 	return tools.NewSuccessResult(summary, durationMs)
+}
+
+// postInstallRescanDelay is how long to wait after a patch command before the
+// follow-up inventory scan. macOS softwareupdate keeps working after the
+// install call returns, so it gets a full minute; Windows (WUA, winget) and
+// Linux installs are synchronous and only need a short settle (#10250).
+func postInstallRescanDelay(goos string) time.Duration {
+	if goos == "darwin" {
+		return 60 * time.Second
+	}
+	return 5 * time.Second
+}
+
+// schedulePostInstallRescan starts the post-install rescan in the background.
+// A variable so tests can observe scheduling without running a real scan.
+var schedulePostInstallRescan = func(h *Heartbeat, delay time.Duration) {
+	go h.runPostInstallRescan(delay)
+}
+
+// runPostInstallRescan waits delay (or until shutdown), then sends a fresh
+// patch inventory and resets the scheduler's gate.
+func (h *Heartbeat) runPostInstallRescan(delay time.Duration) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("post-install patch rescan panicked", "recover", r)
+		}
+	}()
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		log.Info("post-install patch rescan triggered", "delay", delay.String())
+		h.sendPatchInventory()
+		// Reset the daily gate so the scheduler doesn't re-scan immediately.
+		h.mu.Lock()
+		h.lastPatchUpdate = time.Now()
+		h.mu.Unlock()
+	case <-h.stopChan:
+		log.Info("post-install patch rescan cancelled — agent shutting down")
+	}
 }
 
 func patchCommandResultFields(ref patchCommandRef, installID string) map[string]any {
@@ -8172,6 +8406,14 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 			"targetVersion", targetVersion)
 		return
 	}
+	// #7516: a deterministic artifact failure grows the wait past the flat
+	// cooldown above, exponentially per target.
+	if _, active := h.artifactBackoff.Remaining(artifactComponentWatchdog, targetVersion); active {
+		h.watchdogUpgradeMu.Unlock()
+		log.Debug("watchdog upgrade skipped: this version's artifact recently failed verification; backing off",
+			"targetVersion", targetVersion)
+		return
+	}
 	h.watchdogLastAttemptVer = targetVersion
 	h.watchdogLastAttemptAt = time.Now()
 	h.watchdogUpgradeMu.Unlock()
@@ -8201,9 +8443,16 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 		// SafeDownloadErrorFields for why err.Error() must not be logged
 		// directly.
 		key, value := updater.SafeDownloadErrorFields(err)
+		if updater.IsDeterministicArtifactFailure(err) {
+			n, delay := h.artifactBackoff.NoteFailure(artifactComponentWatchdog, targetVersion)
+			log.Error("failed to update watchdog: the artifact the server serves for this version does not verify; backing off",
+				"targetVersion", targetVersion, "consecutiveFailures", n, "retryAfter", delay.String(), key, value)
+			return
+		}
 		log.Error("failed to update watchdog", "targetVersion", targetVersion, key, value)
 		return
 	}
+	h.artifactBackoff.Clear(artifactComponentWatchdog)
 	h.watchdogUpgradeMu.Lock()
 	h.watchdogInstalledVersion = targetVersion
 	h.watchdogUpgradeMu.Unlock()
@@ -8301,6 +8550,15 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 		return nil
 	}
 
+	// #7516: a target whose user-helper artifact recently failed verification
+	// would fail the same way again; skip it (agent-only, as on any failure)
+	// until its backoff lifts. A new target is fetched immediately.
+	if _, active := h.artifactBackoff.Remaining(artifactComponentUserHelper, targetVersion); active {
+		log.Debug("user-helper prefetch skipped: this version's artifact recently failed verification; proceeding with agent-only upgrade",
+			"targetVersion", targetVersion)
+		return nil
+	}
+
 	download := h.userHelperDownloader
 	if download == nil {
 		helperCfg := &updater.Config{
@@ -8318,6 +8576,9 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 
 	tempPath, dlErr := download(targetVersion)
 	if dlErr != nil {
+		if updater.IsDeterministicArtifactFailure(dlErr) {
+			h.artifactBackoff.NoteFailure(artifactComponentUserHelper, targetVersion)
+		}
 		key, value := updater.SafeDownloadErrorFields(dlErr)
 		log.Warn(
 			"user-helper download failed; proceeding with agent-only upgrade",
@@ -8327,6 +8588,7 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 		)
 		return nil
 	}
+	h.artifactBackoff.Clear(artifactComponentUserHelper)
 
 	pair := &updater.BinaryPair{
 		Temp:   tempPath,
@@ -8577,6 +8839,13 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 			"targetVersion", targetVersion)
 		return
 	}
+	// #7516: same reason again, for an agent (or blocking backup) artifact
+	// that failed checksum/manifest verification. Exponential per target, so
+	// an unsatisfiable offer costs a handful of downloads, not one a minute,
+	// while a NEW offer is attempted on the very next heartbeat.
+	if h.upgradeDeferredByArtifactBackoff(targetVersion) {
+		return
+	}
 
 	log.Info("upgrade requested", "targetVersion", targetVersion)
 
@@ -8708,6 +8977,12 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 				"retryAfter", codeSignatureRetryCooldown.String())
 			return
 		}
+		// The downloaded agent artifact failed checksum or manifest
+		// verification. Retrying immediately fetches the same bytes and fails
+		// the same way (#7516), so back off this target exponentially.
+		if h.noteAgentUpgradeArtifactFailure(targetVersion, err) {
+			return
+		}
 		// A download failure here may carry a *netpolicy.PolicyError, or be a
 		// *url.Error — net/http wraps EVERY transport-level failure that way
 		// (TLS handshake, connection refused/reset, timeout, EOF — not just
@@ -8752,5 +9027,25 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		IdentitySyncProtocolVersion:           identitySyncProtocolVersion,
 		WorkloadInventoryProtocolVersion:      workloads.ProtocolVersion,
 		RetainStateProtocolVersion:            retainStateProtocolVersion,
+		PromptIdentityProtocolVersion:         promptidentity.ProtocolVersion,
+		PamUserNotifyProtocolVersion:          pamUserNotifyProtocolVersion(),
 	}
 }
+
+// pamUserNotifyProtocolVersion is 2 on Windows builds, the only platform with
+// UAC interception and so the only one that can have a tracked hand-off to
+// notify about (#8928). Elsewhere it is 0 and omitted from the beat.
+//
+//   - 1 (#8928): claims pam_request_notify and shows the outcome notices.
+//   - 2 (#10190 W07): also accepts `decidedBy` on pam_apply_v2, whose
+//     payload is decoded strictly (an API sends it only to 2 or above) and
+//     shows outcomes on the elevation prompt.
+func pamUserNotifyProtocolVersion() int {
+	if runtime.GOOS == "windows" {
+		return pamUserNotifyProtocolCurrent
+	}
+	return 0
+}
+
+// pamUserNotifyProtocolCurrent is the Windows value (see above).
+const pamUserNotifyProtocolCurrent = 2

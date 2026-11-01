@@ -207,9 +207,6 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
   ['src/routes/aiAgents.ts', new Map([
     ['GET /runs/:runId', pinned(4, `AI-agent run artifact reads join reports and pin eq(reports.orgId, run.orgId) AND auth.orgCondition(reports.orgId); ${ORG_PIN}`, AUD_AI_AGENT_ARTIFACT)],
   ])],
-  ['src/routes/fleetDesign.ts', new Map([
-    ['GET /', pinned(2, 'lists type ai_fleet_design (system-authored, org-owned) under auth.orgCondition(reports.orgId)', AUD_TYPE_PINNED)],
-  ])],
   ['src/services/aiAgents/fleetDesignReport.ts', new Map([
     ['persistFleetDesignReport', pinned(3, `Fleet Design is system-authored and org-owned: definition read/update keyed on eq(reports.orgId, run.orgId); the run update targets the artifact row it just inserted; ${ORG_PIN}`, AUD_TYPE_PINNED)],
     ['loadFleetDesignReport', pinned(2, 'by-id run read joined to reports with type ai_fleet_design AND orgCondition(reports.orgId); a partner-owned row is never that type', AUD_TYPE_PINNED)],
@@ -232,6 +229,9 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
   ])],
   ['src/services/fleetDesign/drift.ts', new Map([
     ['loadApprovedDesign', pinned(1, 'reads the run id taken from fleet_design_applied_items pinned to eq(orgId, orgId); applied items only reference org-owned ai_fleet_design runs', AUD_TYPE_PINNED)],
+  ])],
+  ['src/services/fleetDesign/listing.ts', new Map([
+    ['listFleetDesigns', pinned(2, 'lists type ai_fleet_design (system-authored, org-owned) under auth.orgCondition(reports.orgId); moved verbatim from routes/fleetDesign.ts GET / (#6780) and shared by the route and list_fleet_designs', AUD_TYPE_PINNED)],
   ])],
   ['src/services/fleetDesign/ledger.ts', new Map([
     ['lockReportRun', pinned(2, 'Fleet Design ledger reads type ai_fleet_design under orgCondition(reports.org_id); a partner-owned row is never that type', AUD_TYPE_PINNED)],
@@ -288,6 +288,7 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
   ['src/services/serviceDeliverableService.ts', new Map([
     ['validateReferences', pinned(1, `evidence linkage validates eq(reports.orgId, <deliverable org>) — ${ORG_PIN}`, AUD_EVIDENCE_REFUSES)],
     ['insertEvidenceRef', pinned(2, `run evidence joins reports and pins eq(reports.orgId, orgId); ${ORG_PIN}`, AUD_EVIDENCE_REFUSES)],
+    ['selectEvidence', pinned(1, `#9961 evidence display-name LEFT JOIN pins eq(reports.orgId, service_deliverable_evidence.orgId) on top of the id; only reports.name is read, and only for a reports:read caller; ${ORG_PIN}`, AUD_EVIDENCE_LINKED)],
   ])],
   ['src/jobs/reportScheduleWorker.ts', new Map([
     ['findDueReports', pinned(2, 'system DB context due scan; nothing selected is shown to anyone — every due row is re-authorized per run (#3198 W01 Task 6)', AUD_WORKER)],

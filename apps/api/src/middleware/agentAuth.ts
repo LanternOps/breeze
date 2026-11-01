@@ -419,6 +419,11 @@ const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set([
   'unifi-telemetry',
   'unifi-collectors',
   'monitoring-results',
+  // #8318 wave 1b: phase 1 of the reattach rebind runs a per-agent rate
+  // limit (Redis), the provider call for the target's next certificate, and
+  // its own system transactions (routes/agents/rebind.ts); none of that may
+  // run inside a request-long org transaction (#1105).
+  'rebind',
 ]);
 
 /**
@@ -444,6 +449,11 @@ const SELF_MANAGED_DB_CONTEXT_TWO_SEGMENT_ACTIONS: ReadonlyArray<readonly [strin
   // transaction; a request-long wrap would hold a pooled connection across
   // both and re-open the #6671 two-connection shape.
   ['topology', 'adjacency'],
+  // #10190 W03: the prompt logo. On a cache miss the handler may fetch the
+  // MSP's https logo (routes/agents/promptIdentityLogo.ts), which must never
+  // run inside the request-long org transaction (#1105); its DB read is one
+  // short system context keyed by the authenticated device's org.
+  ['prompt-identity', 'logo'],
 ];
 
 /**

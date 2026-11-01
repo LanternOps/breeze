@@ -1,0 +1,7 @@
+{
+  "promptId": "notice:safe_mode:7f3c2a10",
+  "rev": 1,
+  "lease": { "rendererSession": "assist-user-4242", "epoch": 1 },
+  "reason": "render_failed",
+  "detail": "unadvertised_kind"
+}

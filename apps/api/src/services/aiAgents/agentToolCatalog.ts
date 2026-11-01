@@ -22,6 +22,7 @@ import {
   checkGuardrails, isReadOnlyResolution, isNeverAgentTool,
 } from '../aiGuardrails';
 import { toolActionEnum } from '../aiToolActions';
+import { isFlowToolName } from '../flows/toolNames';
 import { isPolicyDecidableKey } from '../actionIntents/policyDecidable';
 import { ACT_MANIFEST, SCRIPT_GATED_ACT_TOOLS } from './actManifest';
 
@@ -193,6 +194,22 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   manage_topology_monitoring: 'network',
   manage_topology_templates: 'network',
   apply_topology_template: 'network',
+  // Full-control W09 (#6779): SNMP + network monitoring. Known guests and both UniFi tools are AGENT_HUMAN_ONLY
+  // (partner-wide); they keep a capability row but are never offered to an agent.
+  manage_snmp_templates: 'network',
+  get_snmp_metrics: 'network',
+  probe_network_asset: 'network',
+  manage_known_guests: 'network',
+  get_unifi_status: 'network',
+  trigger_unifi_sync: 'network',
+  // Full-control W10 (#6780): AI-agent reads sit with the other AI-run reads (list_ai_agent_runs). The operator-task reads are
+  // AGENT_DENIED_READ_TOOLS: they keep a capability row but are never offered to an agent.
+  get_device_ai_activity: 'tenancy',
+  list_operator_tasks: 'tenancy',
+  get_operator_task: 'tenancy',
+  list_ai_agent_schedules: 'tenancy',
+  list_fleet_designs: 'tenancy',
+  get_fleet_design: 'tenancy',
   list_time_entries: 'tickets',
   get_running_timer: 'tickets',
   get_timesheet: 'tickets',
@@ -250,6 +267,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   get_sensitive_data_overview: 'security_response',
   get_huntress_status: 'security_response',
   get_huntress_incidents: 'security_response',
+  get_huntress_agents: 'security_response',
   sync_huntress_data: 'security_response',
   create_incident: 'security_response',
   collect_evidence: 'security_response',
@@ -258,6 +276,57 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   request_elevation: 'security_response', // PAM
   revoke_elevation: 'security_response',
   get_elevation_history: 'security_response',
+  // Full-control W11 (#6781): security posture reads and actions sit with security_response; policy authoring
+  // (security policies, compliance-policy deactivate, audit baselines) with config_policies. manage_access_reviews
+  // and manage_pam_rules are AGENT_HUMAN_ONLY_TOOLS: they keep a capability row but are never offered to an agent.
+  get_security_compliance: 'security_response',
+  manage_security_recommendations: 'security_response',
+  manage_recovery_keys: 'security_response',
+  manage_pam_rules: 'security_response',
+  manage_access_reviews: 'security_response',
+  manage_security_policies: 'config_policies',
+  manage_compliance_policies: 'config_policies',
+  manage_audit_baselines: 'config_policies',
+  // Full-control W12 (#6782): software reads and installs sit with patching_software beside the patch and
+  // software-policy tools; fleet findings beside get_fleet_findings, custom fields beside query_custom_fields.
+  // bootstrap_homebrew is AGENT_HUMAN_ONLY_TOOLS (kept here so the capability map stays total).
+  manage_software_catalog: 'patching_software',
+  search_packages: 'patching_software',
+  manage_software_deployments: 'patching_software',
+  get_device_software: 'patching_software',
+  manage_device_software: 'patching_software',
+  manage_software_inventory: 'patching_software',
+  bootstrap_homebrew: 'patching_software',
+  manage_fleet_findings: 'alerts_monitoring',
+  manage_custom_fields: 'automations_reports',
+  // Full-control W13 (#6783): device inventory reads and records sit beside get_device_details
+  // (automations_reports).
+  get_device_events: 'automations_reports',
+  get_device_health: 'automations_reports',
+  get_process_samples: 'automations_reports',
+  get_management_posture: 'automations_reports',
+  manage_device_function: 'automations_reports',
+  manage_device_links: 'automations_reports',
+  manage_manual_assets: 'automations_reports',
+  manage_device_warranty: 'automations_reports',
+  // W13 PR B (#6783): the live event-log read beside manage_processes; tenant variables beside the script tools;
+  // support sessions beside the remote-access tools.
+  browse_device_event_log: 'scripts_commands',
+  manage_tenant_variables: 'scripts_commands',
+  manage_support_sessions: 'remote_access',
+  // W14 (#6784): billing lifecycle tools beside the contract / invoice tools.
+  manage_billing_profiles: 'business',
+  manage_billing_settings: 'business',
+  manage_contract_templates: 'business',
+  manage_contract_documents: 'business',
+  get_device_billing: 'business',
+  // W14 PR B (#6784): accounting sync beside the invoice tools (partner-only handler; every write agent-human-only).
+  manage_accounting_sync: 'business',
+  // W15 PR A (#6785): reads reachable, writes require explicit grants; handler scope gates still apply.
+  get_pax8_status: 'business',
+  search_pax8_products: 'business',
+  manage_pax8_subscriptions: 'business',
+  manage_pax8_orders: 'business',
   get_user_risk_scores: 'security_response',
   get_user_risk_detail: 'security_response',
   assign_security_training: 'security_response',
@@ -581,6 +650,18 @@ function resolveOperation(toolName: string, action: string | null): AgentToolOpe
     // gate hasActEligibleSurface / remediationActResolver apply at runtime.
     actRequiresAuthorizedScripts: SCRIPT_GATED_ACT_TOOLS.has(toolName),
   };
+}
+
+/**
+ * A tool's agent capability. W5 PR C (#5220): a flow tool (`flow__<slug>`) is
+ * a per-org dynamic name — no per-name `TOOL_CAPABILITY` entry — and maps to
+ * `automations_reports` by prefix. The static catalog never lists flows; this
+ * is the server-side rule the web agent picker mirrors when it adds the
+ * org's enabled manual flows (W5 PR D, plan Task D4).
+ */
+export function agentToolCapability(name: string): AgentCapabilityId | undefined {
+  if (isFlowToolName(name)) return 'automations_reports';
+  return TOOL_CAPABILITY[name];
 }
 
 let memo: AgentToolCatalogDto | null = null;

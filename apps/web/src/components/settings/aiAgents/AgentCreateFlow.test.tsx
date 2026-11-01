@@ -30,6 +30,7 @@ const CATALOG: AgentToolCatalogDto = {
   capabilities: [
     { id: 'services_startup', tone: 'standard' },
     { id: 'scripts_commands', tone: 'standard' },
+    { id: 'automations_reports', tone: 'standard' },
   ],
   tools: [
     {
@@ -84,6 +85,8 @@ function makeAgents(): AiAgentDto[] {
   ];
 }
 
+let flowsFixture: Array<Record<string, unknown>> = [];
+
 function mockEndpoints(overrides: {
   registry?: Array<{ key: string; toolName: string; action: string | null; note: string }>;
   roles?: Array<{ id: string; name: string; scope?: 'partner' | 'organization'; activeUserCount?: number }>;
@@ -96,6 +99,7 @@ function mockEndpoints(overrides: {
   const { registry = [], roles = [{ id: 'r-1', name: 'Org Admin' }], rolesStatus = 200, preview, createStatus = 201, createBody, ceilingStatus = 200 } = overrides;
   fetchMock.mockImplementation((url: string, init?: RequestInit) => {
     if (url === '/ai/agents/tool-catalog') return Promise.resolve(json({ data: CATALOG }));
+    if (url.startsWith('/flows')) return Promise.resolve(json({ flows: flowsFixture, total: flowsFixture.length }));
     if (url.startsWith('/ai/agents/ceiling')) {
       return Promise.resolve(ceilingStatus === 200 ? json({ data: null }) : json({ error: 'boom' }, false, ceilingStatus));
     }
@@ -135,6 +139,7 @@ function buildFakePreview() {
 
 beforeEach(() => {
   fetchMock.mockReset();
+  flowsFixture = [];
   orgState.current = {
     currentOrgId: null,
     allOrgs: true,
@@ -177,6 +182,63 @@ describe('AgentCreateFlow — header, footer and cancel', () => {
 
     fireEvent.click(screen.getByTestId('agent-create-flow-cancel'));
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AgentCreateFlow — flows as agent tools (#5220)', () => {
+  it('agent picker lists a manual flow and not a schedule flow', async () => {
+    flowsFixture = [
+      { id: 'f1', slug: 'restart-spooler', name: 'Restart spooler', status: 'enabled', effectiveTier: 3, triggerType: 'manual' },
+      { id: 'f2', slug: 'nightly', name: 'Nightly', status: 'enabled', effectiveTier: 3, triggerType: 'schedule' },
+    ];
+    mockEndpoints();
+    renderFlow();
+    fireEvent.change(screen.getByTestId('ai-agent-name'), { target: { value: 'Flow bot' } });
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('ai-agent-permissions');
+    fireEvent.click(await screen.findByTestId('capability-toggle-automations_reports'));
+    expect(await screen.findByTestId('operation-row-flow__restart-spooler')).toBeInTheDocument();
+    expect(screen.queryByTestId('operation-row-flow__nightly')).toBeNull();
+  });
+});
+
+describe('AgentCreateFlow — flow tools degrade safely (#5220 review)', () => {
+  /** mockEndpoints(), but /flows answers with `flowsReply` instead of the fixture. */
+  function withFlowsReply(flowsReply: Response): void {
+    mockEndpoints();
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) =>
+      url.startsWith('/flows') ? Promise.resolve(flowsReply) : base(url, init));
+  }
+
+  async function openPermissionsStep(): Promise<void> {
+    renderFlow();
+    fireEvent.change(screen.getByTestId('ai-agent-name'), { target: { value: 'Flow bot' } });
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('ai-agent-permissions');
+  }
+
+  it('asks /flows for enabled flows only', async () => {
+    mockEndpoints();
+    await openPermissionsStep();
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).startsWith('/flows'))).toBe(true));
+    const url = String(fetchMock.mock.calls.find(([u]) => String(u).startsWith('/flows'))![0]);
+    expect(url).toContain('status=enabled');
+  });
+
+  it.each([
+    ['a 403', () => json({ error: 'forbidden' }, false, 403)],
+    ['a 200 body without flows', () => json({ total: 0 })],
+  ])('%s from /flows leaves the base catalog intact', async (_name, reply) => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    withFlowsReply(reply());
+    await openPermissionsStep();
+    fireEvent.click(await screen.findByTestId('capability-toggle-scripts_commands'));
+    expect(await screen.findByTestId('operation-row-run_script')).toBeInTheDocument();
+    await waitFor(() => expect(errSpy).toHaveBeenCalledWith('[useAgentToolCatalog] could not load flow tools', expect.anything()));
+    expect(document.querySelector('[data-testid^="operation-row-flow__"]')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-catalog-unavailable')).toBeNull();
+    errSpy.mockRestore();
   });
 });
 

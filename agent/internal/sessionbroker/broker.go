@@ -301,7 +301,12 @@ type Broker struct {
 	onMessage       MessageHandler
 	onSessionClosed SessionClosedHandler
 	onSessionAuthed SessionAuthenticatedHandler
+	promptSink      PromptSink          // prompt host (#10190); guarded by mu
 	selfHashes      map[string]struct{} // SHA-256 of allowed helper binaries; guarded by mu
+
+	// TCC skew rule (#10190 W04, tcc_notice.go); both guarded by mu.
+	tccNoticeGate    func() bool
+	tccStatusHandler func(s *Session, status ipc.TCCStatus)
 
 	// helperPathsFn overrides allowedHelperPaths (test seam). Nil in
 	// production, where the allowlist is derived from os.Executable().
@@ -1459,7 +1464,11 @@ func (b *Broker) BroadcastNotification(title, body, urgency string) {
 // of its own. A reply arriving after the wait has given up is dropped as
 // unsolicited at WARN again — the noise #9266 removed — so this is generous:
 // it costs one parked goroutine per helper per broadcast, and broadcasts are
-// rare (the reboot-warning ladder). A var only so tests can shorten it.
+// rare (the reboot-warning ladder). Session.SendNotification uses the same
+// bound for single-session notices (#10224): a notice that asks for the
+// fallback dialog is answered only when that dialog closes (60 s each, and the
+// helper queues them), so the generous wait covers it too. A var only so tests
+// can shorten it.
 var broadcastNotifyResultTimeout = 5 * time.Minute
 
 // awaitBroadcastNotifyResult consumes the reply a broadcast notification is
@@ -2166,6 +2175,7 @@ func (b *Broker) admitOrEvict(identityKey string) bool {
 		if onClosed != nil {
 			onClosed(victim)
 		}
+		b.notifyPromptRendererDisconnected(victim)
 		for _, callback := range callbacks {
 			callback(victim)
 		}
@@ -2527,10 +2537,12 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 
 	// Send auth response
+	handlesTCCNotice := b.agentHandlesTCCNoticeFor(helperRole, authReq, scopes)
 	authResp := ipc.AuthResponse{
-		Accepted:      true,
-		SessionKey:    hex.EncodeToString(sessionKey),
-		AllowedScopes: scopes,
+		Accepted:              true,
+		SessionKey:            hex.EncodeToString(sessionKey),
+		AllowedScopes:         scopes,
+		AgentHandlesTCCNotice: handlesTCCNotice,
 	}
 	if err := conn.SendTyped(env.ID, ipc.TypeAuthResponse, authResp); err != nil {
 		log.Warn("failed to send auth response", "error", err.Error())
@@ -2558,6 +2570,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 	session.DesktopContext = authReq.DesktopContext
 	applyAuthAdvertisements(session, helperRole, authReq)
+	session.agentHandlesTCCNotice.Store(handlesTCCNotice)
 	session.peerProcess = peerProcessRef
 
 	// Use the kernel-verified Windows session ID (computed above from the peer
@@ -2619,6 +2632,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// handler remains asynchronous because it may perform slow IPC work.
 	b.fireLifecycleSessionAuthenticated(session)
 	go b.firePrimarySessionAuthenticated(session)
+	b.notifyPromptRendererConnected(session)
 
 	// Keepalive: send periodic pings and close the session if pongs stop
 	// arriving. Without this, a wedged helper (e.g. a capture process killed
@@ -2702,6 +2716,7 @@ func (b *Broker) closeSession(session *Session) error {
 		if onSessionClosed != nil {
 			onSessionClosed(session)
 		}
+		b.notifyPromptRendererDisconnected(session)
 		for _, callback := range callbacks {
 			callback(session)
 		}
@@ -2755,6 +2770,7 @@ func (b *Broker) TerminateHelperKey(key HelperKey) {
 		if onSessionClosed != nil {
 			onSessionClosed(session)
 		}
+		b.notifyPromptRendererDisconnected(session)
 		for _, callback := range callbacks {
 			callback(session)
 		}
@@ -2941,6 +2957,9 @@ func (b *Broker) grantScopes(role ipc.HelperRole, authReq ipc.AuthRequest, goos,
 	if role == ipc.HelperRoleAssist && authReq.SupportsChat {
 		scopes = append(scopes, ipc.ScopeChat)
 	}
+	// Prompt host (#10190): prompt / prompt_operator only for kinds this
+	// renderer advertised, filtered by role and copy class.
+	scopes = append(scopes, promptGrantFromAuth(role, authReq).scopes...)
 	return scopes
 }
 
@@ -2973,6 +2992,8 @@ func consentProtocolFromAuth(role ipc.HelperRole, authReq ipc.AuthRequest) int {
 func applyAuthAdvertisements(session *Session, role ipc.HelperRole, authReq ipc.AuthRequest) {
 	session.ConsentProtocolVersion = consentProtocolFromAuth(role, authReq)
 	session.SupportsTargetedPamDismiss = targetedPamDismissFromAuth(role, authReq)
+	applyPromptGrant(session, promptGrantFromAuth(role, authReq))
+	session.uiLocale = uiLocaleFromAuth(authReq)
 }
 
 // targetedPamDismissFromAuth reports whether the agent may send this helper a
@@ -3360,6 +3381,7 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 				"fullDiskAccess", sanitized.FullDiskAccess,
 				"remoteDesktop", boolPtrString(sanitized.RemoteDesktop),
 			)
+			b.forwardTCCStatus(s, *sanitized)
 		}
 	case ipc.TypeDisconnect:
 		log.Info("user helper disconnecting", "uid", s.UID, "sessionId", s.SessionID)
@@ -3449,6 +3471,9 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 		// Any authenticated helper may relay its own warn+ lines; the record
 		// is sanitized and rate-capped per session (#9266).
 		b.relayHelperLog(s, env)
+	case ipc.TypePromptPresented, ipc.TypePromptAction, ipc.TypePromptClosed:
+		// Prompt host (#10190): only from a session holding a prompt scope.
+		b.dispatchPromptMessage(s, env)
 	default:
 		log.Warn("unknown message type from helper, ignoring",
 			"type", env.Type, "identity", s.IdentityKey, "sessionId", s.SessionID)
@@ -3645,6 +3670,8 @@ func shouldForwardUnsolicitedHelperMessage(session *Session, env *ipc.Envelope) 
 		return session.HasScope(ipc.ScopeMessaging)
 	case ipc.TypeChatReply, ipc.TypeChatPresented:
 		return session.HasScope(ipc.ScopeChat)
+	case ipc.TypePromptPresented, ipc.TypePromptAction, ipc.TypePromptClosed:
+		return session.HasPromptScope()
 	case ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult:
 		return false
 	default:

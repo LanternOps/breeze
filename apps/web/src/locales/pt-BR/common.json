@@ -569,7 +569,9 @@
       "after": "é posterior a",
       "between": "está entre",
       "withinLast": "nos últimos",
-      "notWithinLast": "não nos últimos"
+      "notWithinLast": "não nos últimos",
+      "below": "inferior a",
+      "atLeast": "pelo menos"
     },
     "value": {
       "noValue": "Nenhum valor necessário",
@@ -591,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Removido"
-      }
+      },
+      "softwareName": "Nome do software",
+      "softwareVersion": "Versão do software"
     }
   },
   "account": {
@@ -1080,6 +1084,68 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Chamados de alertas",
+        "scopeNote": "Vale para todo o parceiro; sem substituição por organização.",
+        "pausedBanner": "Pausado: o PSA rejeitou as credenciais. Execute “Testar conexão” para retomar.",
+        "yes": "Ativados",
+        "no": "Desativados",
+        "selectPlaceholder": "Selecionar…",
+        "priorityDefault": "Padrão do PSA",
+        "closedSuffix": "{{name}} (fechado)",
+        "saved": "Configurações dos chamados de alertas salvas",
+        "saving": "Salvando…",
+        "save": "Salvar",
+        "conflict": "Estas configurações foram alteradas em outro lugar. Os valores mais recentes foram carregados; revise-os e salve novamente.",
+        "errors": {
+          "save": "Não foi possível salvar as configurações dos chamados de alertas"
+        },
+        "status": {
+          "active": "Os chamados de alertas estão ativados para esta conexão.",
+          "notExternal": "Vincule esta conexão como o PSA de gerenciamento de serviços (modo externo) para usar chamados de alertas.",
+          "disabled": "Os chamados de alertas estão desativados.",
+          "paused": "Os chamados de alertas estão pausados até que a conexão com o PSA volte a funcionar.",
+          "companyLinksUnverified": "Confirme os vínculos de empresas desta instância do PSA.",
+          "invalidConfig": "As configurações salvas dos chamados de alertas não são válidas. Revise-as e salve novamente.",
+          "unsupportedProvider": "Os chamados de alertas não estão disponíveis para este provedor de PSA.",
+          "credentialsUnusable": "As credenciais desta conexão estão incompletas ou ilegíveis. Edite a conexão e insira-as novamente."
+        },
+        "fields": {
+          "enabled": "Ativar chamados de alertas",
+          "board": "Quadro",
+          "openStatus": "Status de chamado novo",
+          "closedStatus": "Status fechado",
+          "priorityHeading": "Prioridade do PSA por gravidade do alerta",
+          "minSeverity": "Gravidade mínima",
+          "minSeverityHelp": "Baixa inclui monitores de nível de aviso",
+          "closeOnResolve": "Fechar o chamado quando o alerta for resolvido",
+          "noteOnAcknowledge": "Adicionar uma nota quando o alerta for reconhecido",
+          "confirmCompanyLinks": "Os vínculos de empresas das organizações correspondem a esta instância do PSA"
+        },
+        "severity": {
+          "critical": "Crítica",
+          "high": "Alta",
+          "medium": "Média",
+          "low": "Baixa",
+          "info": "Informativo"
+        },
+        "options": {
+          "error": "Não foi possível carregar as opções do PSA",
+          "retry": "Tentar novamente",
+          "truncated": "Somente os primeiros resultados do PSA são exibidos."
+        },
+        "readOnly": {
+          "enabled": "Chamados de alertas"
+        },
+        "loadError": {
+          "message": "Não foi possível carregar as configurações de chamados de alertas",
+          "retry": "Tentar novamente"
+        },
+        "configInvalid": {
+          "warning": "Não foi possível ler as configurações salvas de chamados de alertas. Salvar as substituirá.",
+          "confirm": "Substituir as configurações ilegíveis"
+        }
+      },
       "PsaCompanyImport": {
         "title": "Importar empresas",
         "subtitle": "Crie organizações a partir das empresas em {{name}}.",
@@ -1292,11 +1358,19 @@
           "waiting": "Aguardando"
         },
         "ticketCount": "{{filtered}} de {{total}} tickets",
-        "title": "Tickets sincronizados",
+        "title": "Tickets do PSA",
         "unlinked": "Não vinculado"
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Propriedade",
+        "allOrganizations": "Todas as organizações",
+        "thisOrganizationOnly": "Somente esta organização",
+        "all": "Todas",
+        "organization": "Organização",
+        "test": "Teste"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} tentativas de entrega",
         "empty": "Ainda não há tentativas de entrega.",
@@ -1349,6 +1423,10 @@
             "description": "Acionado quando um dispositivo conecta.",
             "label": "Dispositivo online"
           },
+          "deviceReinstalled": {
+            "description": "Acionado quando uma máquina reinstalada é vinculada novamente ao registro de dispositivo existente.",
+            "label": "Dispositivo reinstalado"
+          },
           "scriptCompleted": {
             "description": "Acionado quando um script termina.",
             "label": "Script concluído"
@@ -1384,6 +1462,18 @@
           "integrationHealthResolved": {
             "description": "Acionado quando um incidente de integridade de uma conexão é resolvido.",
             "label": "Incidente de integridade da conexão resolvido"
+          },
+          "alertAcknowledged": {
+            "label": "Alerta reconhecido",
+            "description": "Disparado quando um alerta é reconhecido."
+          },
+          "alertSuppressed": {
+            "label": "Alerta suprimido",
+            "description": "Disparado quando um alerta é suprimido."
+          },
+          "alertEscalated": {
+            "label": "Alerta escalado",
+            "description": "Disparado quando uma etapa de uma política de escalonamento é executada para um alerta ainda ativo."
           }
         },
         "fields": {
@@ -1435,6 +1525,22 @@
           "secretRequired": "Segredo é obrigatório para autenticação HMAC",
           "tokenRequired": "Token é obrigatório para autenticação bearer",
           "urlRequired": "URL é obrigatória"
+        },
+        "neverDelivered": {
+          "marker": "Nunca entregue",
+          "explanation": "O Breeze nunca envia este evento. Ele será removido quando você salvar este webhook.",
+          "banner": "O Breeze nunca envia este evento, portanto este webhook nunca realizou uma entrega. Escolha outro evento antes de salvar."
+        },
+        "payloadVersion": {
+          "title": "Versão dos dados",
+          "v2": {
+            "label": "v2 (recomendada)",
+            "description": "Os eventos de alerta incluem nome do host, local, organização, status e um link para o alerta."
+          },
+          "v1": {
+            "label": "v1 (versão original)",
+            "description": "Os dados de alerta originais, mantidos para as integrações existentes."
+          }
         }
       },
       "WebhookList": {
@@ -1516,7 +1622,8 @@
           "enabled": "Webhook ativado",
           "retryQueued": "Nova tentativa de entrega enfileirada",
           "testQueued": "Entrega de teste enfileirada",
-          "updated": "Webhook atualizado"
+          "updated": "Webhook atualizado",
+          "deleted": "Webhook \"{{name}}\" excluído"
         },
         "title": "Webhooks"
       }

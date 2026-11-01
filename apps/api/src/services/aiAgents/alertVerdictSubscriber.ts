@@ -1,3 +1,4 @@
+import { isDeviceOwned } from '../alertOwner';
 /**
  * CONTRACT (C2 fix, P2-1 wave B task 16d): never re-read a row the
  * publishing transaction wrote — it may not be committed yet (the
@@ -9,7 +10,9 @@
  * (`resolvedBy`/`resolvedAt`/`triggeredAt`) on the PUBLISHED payload when it
  * carries them — the row read is safe ONLY for fields the publisher's
  * UPDATE never touches (deviceId, ruleId, severity, org membership), which
- * were committed long before resolve.
+ * were committed long before resolve. Principal attribution is a deliberate
+ * fail-closed exception: the payload wins, but a principal on the row also
+ * skips admission; a stale row can only add a skip, never admit a paid run.
  *
  * Durable alert-verdict admission subscriber (Phase 2 wave P2-1 — alert
  * verdicts, task 12).
@@ -45,7 +48,8 @@
  *     groups.root_alert_id` is `ON DELETE SET NULL`) — that is skipped with
  *     a warning, not admitted with a null target.
  *  2. `alert.resolved` — admits a verdict run ONLY for a SYSTEM/auto resolve
- *     (`resolvedBy === null`; a human resolve never triggers a verdict run)
+ *     (`resolvedBy === null` and no resolvedByPrincipalId; human and Partner
+ *     API service principal resolves are human-equivalent and never trigger a run)
  *     that landed within `AUTO_RESOLVE_VERDICT_WINDOW_MINUTES` of the
  *     alert's `triggeredAt`, and only when the alert does not already carry
  *     a live verdict (`latestVerdictsForAlerts`) — an alert that was already
@@ -98,11 +102,12 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 interface AlertVerdictContextRow {
   id: string;
-  deviceId: string;
+  deviceId: string | null;
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
   ruleId: string | null;
   resolvedAt: Date | null;
   resolvedBy: string | null;
+  resolvedByPrincipalId: string | null;
   triggeredAt: Date;
   /** #6749 — `context->>'source'`, fed to `alertContext.source` below. */
   source: string | null;
@@ -123,6 +128,7 @@ async function loadAlertForVerdict(alertId: string, orgId: string): Promise<Aler
       ruleId: alerts.ruleId,
       resolvedAt: alerts.resolvedAt,
       resolvedBy: alerts.resolvedBy,
+      resolvedByPrincipalId: alerts.resolvedByPrincipalId,
       triggeredAt: alerts.triggeredAt,
       source: sql<string | null>`${alerts.context} ->> 'source'`,
     })
@@ -190,6 +196,11 @@ export async function enqueueVerdictRunForAlert(
     console.info('[alertVerdictSubscriber] skipping verdict run — alert not found (or not in org)', {
       alertId, orgId, reason,
     });
+    return;
+  }
+
+  if (!isDeviceOwned(alert)) {
+    recordAgentRunSkip({ orgId, alertId, reason: 'alert_has_no_device', kind: 'triage', triggerKind: 'alert' });
     return;
   }
 
@@ -338,6 +349,7 @@ export async function handleAlertVerdictEvent(event: BreezeEvent): Promise<void>
       const payload = event.payload as {
         alertId?: unknown;
         resolvedBy?: unknown;
+        resolvedByPrincipalId?: unknown;
         resolvedAt?: unknown;
         triggeredAt?: unknown;
       } | null | undefined;
@@ -357,6 +369,7 @@ export async function handleAlertVerdictEvent(event: BreezeEvent): Promise<void>
       // even if it still shows the pre-commit (stale) values. A publisher
       // that omits any of the three fields falls back to reading them off
       // the row, matching the pre-existing behavior.
+      const payloadPrincipal = typeof payload?.resolvedByPrincipalId === 'string' ? payload.resolvedByPrincipalId : null;
       const payloadResolvedBy =
         typeof payload?.resolvedBy === 'string' ? payload.resolvedBy
         : payload?.resolvedBy === null ? null
@@ -417,8 +430,16 @@ export async function handleAlertVerdictEvent(event: BreezeEvent): Promise<void>
         return;
       }
 
-      // Human resolves never trigger a verdict run — only a system/auto
-      // resolve (resolvedBy null) does.
+      // Unlike timestamps, a stale row can only add a skip here. Fail closed
+      // toward treating a principal resolve as human-equivalent.
+      const principalId = payloadPrincipal ?? alert.resolvedByPrincipalId;
+      if (principalId) {
+        console.info('[alertVerdictSubscriber] skipping resolve verdict — human-equivalent resolve (partner service principal)', {
+          alertId, orgId, principalId,
+        });
+        return;
+      }
+      // Only a system/auto resolve without user or principal attribution qualifies.
       if (resolvedBy !== null) {
         console.info('[alertVerdictSubscriber] skipping resolve verdict — human resolve', { alertId, orgId });
         return;

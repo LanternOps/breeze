@@ -10,6 +10,7 @@
  */
 /** Target selection for background work: must reference a parked-device predicate. */
 export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> = {
+  'services/partnerGroupEvaluation.ts': { guards: 2, reason: 'system-context evaluator: partner organization discovery and per-org eligibility exclude holding organizations' },
   // --- shared resolvers -----------------------------------------------------
   'services/postureEvidence.ts': { guards: 1, reason: 'posture evidence device population (report + trust page)' },
   'services/partnerFanoutOrgs.ts': { guards: 1, reason: 'the live partner-org predicate shared by the scheduled AI agent sweep fan-out (jobs/aiAgentSweepScheduler.ts loadPartnerOrgIds, also partner-wide flow schedules) and the partner-wide flow event trigger (#5219): holding org and Quick Support out' },
@@ -61,6 +62,7 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'services/aiToolsOrgs.ts': { guards: 2, reason: 'organization and site listings' },
   'services/aiToolsAgentMgmt.ts': { guards: 2, reason: 'device verifier and agent-version rollup' },
   'services/aiToolsPeripherals.ts': { guards: 1, reason: 'partner-wide peripheral policy fan-out' },
+  'services/aiToolsAuditBaselines.ts': { guards: 2, reason: 'audit-baseline compliance (visible devices) and apply-request targets (W11, #6781)' },
   'services/timeSync/fleet.ts': { guards: 1, reason: 'fleet time report and list_time_sync_issues AI device lookup' },
   // --- org administration -----------------------------------------------------
   'services/orgImport/index.ts': { guards: 1, reason: 'org import never name-matches the holding org' },

@@ -859,6 +859,7 @@
       "session_offer_submitted": "Oturum teklifi gönderildi",
       "session_consent_granted": "Uzak oturum onayı verildi",
       "session_consent_denied": "Uzak oturum kullanıcı tarafından reddedildi",
+      "remote.session.ended_by_user": "Uzak oturum kullanıcı tarafından sonlandırıldı",
       "session_consent_blocked_unanswered": "Uzak oturum engellendi: onay istemi yanıtlanmadı",
       "session_consent_blocked_unavailable": "Uzak oturum engellendi: onay istemi kullanılamıyor",
       "session_consent_bypassed": "Uzak oturum, onay istemine yanıt verilmeden başlatıldı",
@@ -992,6 +993,7 @@
       "changesSnapshot": "Anlık Görüntüyü Değiştirir",
       "before": "Önce",
       "after": "Sonra",
+      "noFieldChanges": "Bu işlem için kaydedilmiş alan değişikliği yok.",
       "userInfo": "Kullanıcı Bilgileri",
       "requestMetadata": "Meta Veri İste",
       "fields": {

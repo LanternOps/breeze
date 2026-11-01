@@ -9,7 +9,8 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useCustomFieldDefinitionsStore } from '../../stores/customFieldDefinitions';
 
-vi.mock('../../stores/auth', () => ({
+vi.mock('../../stores/auth', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../stores/auth')>(),
   fetchWithAuth: vi.fn(),
   // orgStore registers an orgId provider at module load; the component now
   // pulls in orgStore via useFleetOrgOwner, so this export must exist.

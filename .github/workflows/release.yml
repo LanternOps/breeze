@@ -1486,6 +1486,10 @@ jobs:
           sed -i.bak 's/^version = "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/version = "'"$MSI_VERSION"'"/' src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
           # Update package.json
           sed -i.bak 's/"version": "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"version": "'"$MSI_VERSION"'"/' package.json && rm package.json.bak
+          # Requirements sidecar (#10183): the agent trusts its WebView2 minimum
+          # only when assistVersion matches the installed executable.
+          sed -i.bak 's/"assistVersion": "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"assistVersion": "'"$MSI_VERSION"'"/' src-tauri/assist-requirements.json && rm src-tauri/assist-requirements.json.bak
+          grep -q '"assistVersion": "'"$MSI_VERSION"'"' src-tauri/assist-requirements.json || { echo "::error::assistVersion not stamped into src-tauri/assist-requirements.json"; exit 1; }
           echo "Injected version $MSI_VERSION into helper config files (from $BUILD_VERSION)"
 
       - name: Build Tauri app
@@ -1722,6 +1726,9 @@ jobs:
           sed -i.bak 's/"version": "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"version": "'"$MSI_VERSION"'"/' src-tauri/tauri.conf.json && rm src-tauri/tauri.conf.json.bak
           sed -i.bak 's/^version = "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/version = "'"$MSI_VERSION"'"/' src-tauri/Cargo.toml && rm src-tauri/Cargo.toml.bak
           sed -i.bak 's/"version": "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"version": "'"$MSI_VERSION"'"/' package.json && rm package.json.bak
+          # Requirements sidecar (#10183); see the Windows/Linux helper job.
+          sed -i.bak 's/"assistVersion": "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"assistVersion": "'"$MSI_VERSION"'"/' src-tauri/assist-requirements.json && rm src-tauri/assist-requirements.json.bak
+          grep -q '"assistVersion": "'"$MSI_VERSION"'"' src-tauri/assist-requirements.json || { echo "::error::assistVersion not stamped into src-tauri/assist-requirements.json"; exit 1; }
           echo "Injected version $MSI_VERSION into helper config files (from $BUILD_VERSION)"
 
       - name: Build Tauri app
@@ -2412,7 +2419,7 @@ jobs:
           NODE
 
       - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -3499,7 +3506,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -3576,7 +3583,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -3653,7 +3660,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -3739,7 +3746,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -3825,7 +3832,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -3908,7 +3915,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -3978,7 +3985,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -4083,7 +4090,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}

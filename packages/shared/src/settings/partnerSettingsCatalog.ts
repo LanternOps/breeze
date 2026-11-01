@@ -18,6 +18,7 @@
  */
 import { AI_BUDGET_DEFAULTS, type AiBudgetDefaults } from '../constants/aiBudgetDefaults';
 import { AI_APPROVAL_TIMEOUT_DEFAULT_MINUTES } from '../validators/aiApprovalSettings';
+import { FLOW_LIMIT_DEFAULTS, type FlowLimitKey } from '../validators/flowBudgets';
 import {
   MAX_ENROLLMENT_TTL_MINUTES,
   PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT,
@@ -34,6 +35,7 @@ export const CATALOG_TAB_KEYS = [
   'aiBudgets',
   'aiApprovals',
   'branding',
+  'flows',
 ] as const;
 
 export type CatalogTabKey = (typeof CATALOG_TAB_KEYS)[number];
@@ -199,6 +201,27 @@ function aiBudget(field: keyof AiBudgetDefaults, projection: ValueProjection): C
   };
 }
 
+/**
+ * flows.<field> (Tool Catalog W05 #5220): an org may override, but only DOWN —
+ * the ceiling is the partner's value of the same field (resolveFlowLimits), so
+ * the entry is its own cap field. The org override is edited on the Flow limits
+ * page, not OrgSettingsPage, hence no drill-down hash.
+ */
+function flowLimit(field: FlowLimitKey): CatalogEntry {
+  return {
+    id: `flows.${field}`,
+    tab: 'flows',
+    paths: [`flows.${field}`],
+    kind: 'overridable',
+    qualifier: 'cap',
+    capFieldId: `flows.${field}`,
+    platformDefault: FLOW_LIMIT_DEFAULTS[field],
+    secret: false,
+    projection: NUMBER,
+    orgSettingsHash: null,
+  };
+}
+
 const ENTRIES: CatalogEntry[] = [
   // Regional — on PartnerSettings itself.
   unclassified('regional', 'regional.timezone', ['timezone']),
@@ -314,6 +337,11 @@ const ENTRIES: CatalogEntry[] = [
     projection: MINUTES,
     orgSettingsHash: 'ai',
   },
+
+  // Flow limits: org may only lower the partner value.
+  flowLimit('monthlyRunsPerOwner'),
+  flowLimit('monthlyRunsPerFlow'),
+  flowLimit('aiTokensPerRun'),
 
   // Remote access
   // Each provider may carry a sealed launcher password.

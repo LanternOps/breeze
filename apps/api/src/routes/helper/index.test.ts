@@ -177,8 +177,14 @@ vi.mock('../../services/llm/llmConfigResolver', () => ({
   },
 }));
 
-const callerHelperBrandingMock = vi.hoisted(() => vi.fn());
-vi.mock('../../services/callerVerification/helperBranding', () => ({ callerHelperBranding: callerHelperBrandingMock }));
+const { callerHelperBrandingMock, callerHelperLogoMock } = vi.hoisted(() => ({
+  callerHelperBrandingMock: vi.fn(),
+  callerHelperLogoMock: vi.fn(),
+}));
+vi.mock('../../services/callerVerification/helperBranding', () => ({
+  callerHelperBranding: callerHelperBrandingMock,
+  callerHelperLogo: callerHelperLogoMock,
+}));
 
 vi.mock('../../services/sentry', () => ({
   captureException: (...args: unknown[]) => captureExceptionMock(...args),
@@ -392,6 +398,7 @@ describe('helper routes permission derivation', () => {
   });
 
   describe('caller verification branding (#6354 W02)', () => {
+    beforeEach(() => callerHelperLogoMock.mockResolvedValue(null));
     afterEach(() => vi.unstubAllEnvs());
 
     it('adds partner branding for the authenticated device org while the feature is live', async () => {
@@ -400,8 +407,110 @@ describe('helper routes permission derivation', () => {
       callerHelperBrandingMock.mockResolvedValueOnce({ partnerName: 'Northwind', logoUrl: null });
       const res = await app.request('/helper/config', { headers: { Authorization: 'Bearer brz_agent_token' } });
       expect(res.status).toBe(200);
-      expect((await res.json()).branding).toEqual({ partnerName: 'Northwind', logoUrl: null });
+      expect((await res.json()).branding).toEqual({ partnerName: 'Northwind', logoUrl: null, logo: null });
       expect(callerHelperBrandingMock).toHaveBeenCalledWith('org-1');
+    });
+
+    describe('caller-verify logo bytes path (#10190 W04, decision 1)', () => {
+      const LOGO = { sha256: 'a'.repeat(64), mime: 'image/png' as const };
+
+      it('adds branding.logo {sha256, mime} next to the unchanged partnerName and logoUrl', async () => {
+        vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
+        mockHelperAuthDevice();
+        callerHelperBrandingMock.mockResolvedValueOnce({ partnerName: 'Northwind', logoUrl: 'https://cdn.example.com/brand.png' });
+        callerHelperLogoMock.mockResolvedValueOnce(LOGO);
+        const res = await app.request('/helper/config', { headers: { Authorization: 'Bearer brz_agent_token' } });
+        expect(res.status).toBe(200);
+        expect((await res.json()).branding).toEqual({
+          partnerName: 'Northwind',
+          logoUrl: 'https://cdn.example.com/brand.png',
+          logo: { sha256: 'a'.repeat(64), mime: 'image/png' },
+        });
+      });
+
+      it('every id comes from the helper-authenticated device (device → org → partner), never the client', async () => {
+        vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
+        mockHelperAuthDevice();
+        callerHelperBrandingMock.mockResolvedValueOnce({ partnerName: 'Northwind', logoUrl: null });
+        callerHelperLogoMock.mockResolvedValueOnce(LOGO);
+        await app.request('/helper/config?deviceId=device-9&orgId=org-9&partnerId=partner-9', {
+          headers: { Authorization: 'Bearer brz_agent_token', 'X-Partner-Id': 'partner-9' },
+        });
+        expect(callerHelperLogoMock).toHaveBeenCalledTimes(1);
+        expect(callerHelperLogoMock).toHaveBeenCalledWith({ deviceId: 'device-1', orgId: 'org-1', partnerId: 'partner-1' });
+      });
+
+      it('logo is null when the resolver has none (cold https cache, invalid logo, no logo)', async () => {
+        vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
+        mockHelperAuthDevice();
+        callerHelperBrandingMock.mockResolvedValueOnce({ partnerName: 'Northwind', logoUrl: null });
+        callerHelperLogoMock.mockResolvedValueOnce(null);
+        const res = await app.request('/helper/config', { headers: { Authorization: 'Bearer brz_agent_token' } });
+        expect((await res.json()).branding).toEqual({ partnerName: 'Northwind', logoUrl: null, logo: null });
+      });
+
+      it('a logo failure never fails the config response or drops the name', async () => {
+        vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
+        mockHelperAuthDevice();
+        callerHelperBrandingMock.mockResolvedValueOnce({ partnerName: 'Northwind', logoUrl: null });
+        callerHelperLogoMock.mockRejectedValueOnce(new Error('redis down'));
+        const res = await app.request('/helper/config', { headers: { Authorization: 'Bearer brz_agent_token' } });
+        expect(res.status).toBe(200);
+        expect((await res.json()).branding).toEqual({ partnerName: 'Northwind', logoUrl: null, logo: null });
+      });
+
+      it('no logo lookup without branding (no partner / unusable name) or while the feature is dark', async () => {
+        vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
+        mockHelperAuthDevice();
+        callerHelperBrandingMock.mockResolvedValueOnce(null);
+        const res = await app.request('/helper/config', { headers: { Authorization: 'Bearer brz_agent_token' } });
+        expect((await res.json()).branding).toBeNull();
+        vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'false');
+        mockHelperAuthDevice();
+        await app.request('/helper/config', { headers: { Authorization: 'Bearer brz_agent_token' } });
+        expect(callerHelperLogoMock).not.toHaveBeenCalled();
+      });
+
+      it('under its real /api/v1 mount: reads run in one short helper context; the logo lookup runs with none held (#1105)', async () => {
+        vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
+        let depth = 0;
+        const contexts: unknown[] = [];
+        vi.mocked(withDbAccessContext).mockImplementation(async (ctx: unknown, fn: () => Promise<unknown>) => {
+          depth += 1;
+          contexts.push(ctx);
+          try {
+            return await fn();
+          } finally {
+            depth -= 1;
+          }
+        });
+        const depths: Record<string, number> = {};
+        mockHelperAuthDevice();
+        vi.mocked(resolveHelperPermissionLevelForDevice).mockImplementationOnce(async () => {
+          depths.permission = depth;
+          return 'standard';
+        });
+        callerHelperBrandingMock.mockImplementationOnce(async () => {
+          depths.branding = depth;
+          return { partnerName: 'Northwind', logoUrl: null };
+        });
+        callerHelperLogoMock.mockImplementationOnce(async () => {
+          depths.logo = depth;
+          return LOGO;
+        });
+
+        const apiApp = new Hono();
+        apiApp.route('/api/v1/helper', helperRoutes);
+        const res = await apiApp.request('/api/v1/helper/config', { headers: { Authorization: 'Bearer brz_agent_token' } });
+
+        expect(res.status).toBe(200);
+        expect((await res.json()).branding.logo).toEqual(LOGO);
+        expect(depths).toEqual({ permission: 1, branding: 1, logo: 0 });
+        // The one context is the device's own org-scoped helper context.
+        expect(contexts).toHaveLength(1);
+        expect(contexts[0]).toMatchObject({ scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'] });
+        expect(depth).toBe(0);
+      });
     });
 
     it('sends null branding and does no lookup while the feature is dark', async () => {
@@ -421,6 +530,40 @@ describe('helper routes permission derivation', () => {
       const res = await app.request('/helper/config', { headers: { Authorization: 'Bearer brz_agent_token' } });
       expect(res.status).toBe(200);
       expect((await res.json()).branding).toBeNull();
+    });
+
+    it('a branding failure is logged with the org and the error message and sent to Sentry, not swallowed (#10340 review)', async () => {
+      vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockHelperAuthDevice();
+      const err = new Error('connection terminated');
+      callerHelperBrandingMock.mockRejectedValueOnce(err);
+      const res = await app.request('/helper/config', { headers: { Authorization: 'Bearer brz_agent_token' } });
+      expect(res.status).toBe(200);
+      expect(warn).toHaveBeenCalledWith('[helper] caller verification branding unavailable', {
+        deviceId: 'device-1',
+        orgId: 'org-1',
+        error: 'connection terminated',
+      });
+      expect(captureExceptionMock).toHaveBeenCalledWith(err, expect.anything(), { service: 'helperRoutes', orgId: 'org-1' });
+      warn.mockRestore();
+    });
+
+    it('a logo failure is logged the same way and sent to Sentry (#10340 review)', async () => {
+      vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockHelperAuthDevice();
+      callerHelperBrandingMock.mockResolvedValueOnce({ partnerName: 'Northwind', logoUrl: null });
+      const err = new Error('redis down');
+      callerHelperLogoMock.mockRejectedValueOnce(err);
+      await app.request('/helper/config', { headers: { Authorization: 'Bearer brz_agent_token' } });
+      expect(warn).toHaveBeenCalledWith('[helper] caller verification logo unavailable', {
+        deviceId: 'device-1',
+        orgId: 'org-1',
+        error: 'redis down',
+      });
+      expect(captureExceptionMock).toHaveBeenCalledWith(err, expect.anything(), { service: 'helperRoutes', orgId: 'org-1' });
+      warn.mockRestore();
     });
   });
 

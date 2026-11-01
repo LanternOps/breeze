@@ -127,6 +127,7 @@ PUT /api/v1/agents/:id/workloads ───────────────�
 | `image_repository` | varchar(400) | normalized `registry/repository` (`docker.io/library/nginx`) |
 | `image_tag` | varchar(128) | null when digest-pinned or untagged |
 | `image_digest` | varchar(80) | local repo digest for `image_repository` (`sha256:…`); null for local builds. On Docker's containerd image store every named image lists `name@<image id>`, so there the digest is kept only when the engine's image identity (Engine API ≥ 1.54, Docker 29.3+) records a pull from or push to `image_repository` (#8993) |
+| `image_provenance` | varchar(20) | #9067: the agent's evidence for where the image came from: `confirmed` (a registry digest the engine vouches for), `local` (never pulled from this repository) or `unknown` (the engine cannot say: Docker's containerd store before Engine API 1.54, where a repo digest equals the image id). NULL = an agent that predates it (behaviour unchanged). Docker only. The worker never looks up `unknown` (status `provenance_unknown`). The agent sends the key only when the server's `workload_inventory_settings.accepts_image_provenance` is true, because the ingest schema is strict |
 | `image_id` | varchar(80) | local image id (config digest) |
 | `guest_os` | varchar(128) | VMs/LXC when the runtime reports it; never guessed |
 | `compose_project` | varchar(128) | from `com.docker.compose.project` |
@@ -457,9 +458,10 @@ Every other case is explicit:
 | `unsupported_registry` | registry host not on the allowlist |
 | `not_found` | tag no longer exists upstream |
 | `error` | transient failure; retried with backoff |
+| `provenance_unknown` | #9067: `image_provenance = 'unknown'`; never looked up, so the name never leaves Breeze. `image_provenance = 'local'` is `local` even with a digest |
 
-Unknown-class statuses (`pending`, `private`, `unsupported_registry`, `error`) never count as
-current (§10).
+Unknown-class statuses (`pending`, `private`, `unsupported_registry`, `error`,
+`provenance_unknown`) never count as current (§10).
 
 ### 9.2 Registry check
 

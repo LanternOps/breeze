@@ -4,6 +4,7 @@
  * resume the thread's last session, else start the first — and nothing for a
  * paused or ended grant.
  */
+import type { WispThreadLink } from '@breeze/shared';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -55,7 +56,7 @@ vi.mock('../ai/AiChatInput', () => ({
     return <div data-testid="ai-chat-input-mock">{p.leftSlot as React.ReactNode}</div>;
   },
 }));
-const LINK = { id: 'l-1', ref: { kind: 'ticket', id: 't-1', orgId: 'o-1' }, label: 'Printer down', status: 'open', href: '/tickets/t-1', addedBy: 'user', createdAt: '2026-10-25T09:00:00Z' };
+const LINK = { id: 'l-1', ref: { kind: 'ticket', id: 't-1', orgId: 'o-1' }, label: 'Printer down', status: 'open', href: '/tickets/t-1', source: 'user_pin', lastTouchedAt: '2026-10-24T08:00:00Z', createdAt: '2026-10-25T09:00:00Z' };
 vi.mock('./WispEntityPicker', () => ({
   default: (p: { open: boolean; threadId: string; onLinked: (l: unknown) => void; onClose: () => void }) =>
     p.open ? (
@@ -200,6 +201,25 @@ describe('WispHomeThread (W08 Task 9)', () => {
     expect(screen.queryByTestId('wisp-home-thread-binding')).toBeNull();
     expect(h.state.switchSession).toHaveBeenCalledTimes(1);
   });
+
+  // #10142: the home card can start over, like the side panel's "New conversation".
+  it('"New conversation" closes the live session and starts a fresh one on this grant', async () => {
+    const closeSession = vi.fn(async () => { Object.assign(h.state, { sessionId: null }); });
+    reset({ wisp, sessionId: 's-live', closeSession });
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('wisp-home-new-conversation'));
+    await waitFor(() => expect(h.state.enterWispMode).toHaveBeenCalledWith(wisp));
+    expect(closeSession).toHaveBeenCalledTimes(1);
+    expect(closeSession.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(h.state.enterWispMode as () => void).mock.invocationCallOrder[0]);
+    expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
+    expect(h.state.sessionId).toBe('s-new');
+  });
+
+  it('offers no "New conversation" for a paused grant', () => {
+    render(<WispHomeThread {...extra} wisp={{ ...wisp, status: 'paused' }} lastSessionId={null} />);
+    expect(screen.queryByTestId('wisp-home-new-conversation')).toBeNull();
+  });
 });
 
 describe('WispHomeThread as the companion column (W01 #10211)', () => {
@@ -263,6 +283,24 @@ describe('WispHomeThread as the companion column (W01 #10211)', () => {
     fireEvent.click(await screen.findByTestId('wisp-composer-link'));
     fireEvent.click(screen.getByText('pick'));
     expect(onLinksChange).toHaveBeenCalledWith([LINK]);
+  });
+
+  it.each(['concern', 'auto', 'pins'] as const)('50 %s rows apply the pin-only composer cap', async (source) => {
+    const links: WispThreadLink[] = Array.from({ length: 50 }, (_, i) => ({
+      ...LINK,
+      id: source === 'concern' ? null : `l-${i}`,
+      ref: { ...LINK.ref, kind: 'ticket', id: `t-${i}` },
+      source: source === 'pins' ? (i % 2 ? 'wisp_pin' : 'user_pin') : source,
+    }));
+    render(<WispHomeThread {...extra} links={links} wisp={wisp} lastSessionId={null} />);
+    const button = await screen.findByTestId('wisp-composer-link');
+    if (source === 'pins') {
+      expect(button).toBeDisabled();
+    } else {
+      expect(button).toBeEnabled();
+      fireEvent.click(button);
+      expect(screen.getByTestId('picker-stub')).toBeInTheDocument();
+    }
   });
 
   it('links null hides the composer link button', async () => {

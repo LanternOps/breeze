@@ -1314,6 +1314,30 @@ describe('validateConfig', () => {
     },
   );
 
+  // #8313 W1 review finding 6.
+  it.each(['2e9', '2GiB', '2_147_483_648', '12abc', '0'])(
+    'warns at boot, naming the variable, when TICKET_IMPORT_MAX_BYTES_PER_HOUR=%j is not a plain positive integer',
+    (value) => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      withEnv({ ...validEnv, TICKET_IMPORT_MAX_BYTES_PER_HOUR: value }, () => {
+        validateConfig();
+        const lines = warnSpy.mock.calls.map((args) => String(args[0])).filter((line) => line.includes('TICKET_IMPORT_MAX_BYTES_PER_HOUR'));
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toContain('2147483648');
+      });
+      warnSpy.mockRestore();
+    },
+  );
+
+  it.each(['2147483648', '52428800', ''])('does not warn about TICKET_IMPORT_MAX_BYTES_PER_HOUR=%j', (value) => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({ ...validEnv, TICKET_IMPORT_MAX_BYTES_PER_HOUR: value }, () => {
+      validateConfig();
+      expect(warnSpy.mock.calls.some((args) => String(args[0]).includes('TICKET_IMPORT_MAX_BYTES_PER_HOUR'))).toBe(false);
+    });
+    warnSpy.mockRestore();
+  });
+
   it('rejects short AGENT_ENROLLMENT_SECRET in production when configured', () => {
     withEnv({
       ...validEnv,
@@ -4011,6 +4035,9 @@ describe('FLOW_APPROVAL_TTL_HOURS range guard (#5219)', () => {
 describe.each([
   ['FLOW_MAX_RUNNING_PER_OWNER', 1, 500, ['1', '20', '500', ' 64 ', ''], ['0', '501', '-1', '2.5', 'lots']],
   ['FLOW_RUN_RETENTION_DAYS', 7, 3650, ['7', '90', '3650', ' 30 ', ''], ['6', '0', '3651', '-1', '1.5', 'forever']],
+  ['FLOW_WEBHOOK_RATE_PER_MINUTE', 1, 6000, ['1', '120', '6000', ' 60 ', ''], ['0', '6001', '-1', '2.5', 'fast']],
+  ['FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS', 1, 365, ['1', '30', '365', ' 7 ', ''], ['0', '366', '-1', '1.5', 'forever']],
+  ['FLOW_FOREACH_MAX_PARALLEL', 1, 10, ['1', '5', '10', ' 3 ', ''], ['0', '11', '-1', '2.5', 'many']],
 ] as const)('%s range guard (#5219 A8)', (key, min, max, accepted, refused) => {
   it('is declared in the schema, so the superRefine rule actually runs', () => {
     expect(ENV_SCHEMA_KEYS).toContain(key);
@@ -4223,6 +4250,38 @@ describe('empty-string compose passthrough (#7640)', () => {
   it('still requires MCP_LLM_BASE_URL when provider is openai-compatible and the base URL is empty', () => {
     withEnv({ ...validEnv, IS_HOSTED: 'false', MCP_LLM_PROVIDER: 'openai-compatible', MCP_LLM_BASE_URL: '', MCP_LLM_MODEL: 'm' }, () => {
       expect(() => validateConfig()).toThrow(/MCP_LLM_BASE_URL is required/);
+    });
+  });
+});
+
+// #9700: INTERNAL_SERVICE_CIDRS exempts the in-cluster plain-HTTP hop from
+// FORCE_HTTPS. It must name a private network — a public or all-addresses range
+// would let internet clients claim the internal exemption.
+describe('INTERNAL_SERVICE_CIDRS validation (#9700)', () => {
+  it('accepts the compose bridge subnet', () => {
+    withEnv({ ...validEnv, INTERNAL_SERVICE_CIDRS: '172.31.0.0/24' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it('accepts unset (exemption disabled)', () => {
+    withEnv({ ...validEnv, INTERNAL_SERVICE_CIDRS: '' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(['0.0.0.0/0', '::/0', '203.0.113.0/24', 'not-a-cidr', '172.31.0.0/99', '10.0.0.0/1', '172.16.0.0/8', 'fc00::/1'])(
+    'refuses %j',
+    (entry) => {
+      withEnv({ ...validEnv, INTERNAL_SERVICE_CIDRS: `172.31.0.0/24,${entry}` }, () => {
+        expect(() => validateConfig()).toThrow(/INTERNAL_SERVICE_CIDRS/);
+      });
+    },
+  );
+
+  it('refuses an INTERNAL_API_HOSTS entry that is not a bare host[:port]', () => {
+    withEnv({ ...validEnv, INTERNAL_SERVICE_CIDRS: '172.31.0.0/24', INTERNAL_API_HOSTS: 'http://api:3001/x' }, () => {
+      expect(() => validateConfig()).toThrow(/INTERNAL_API_HOSTS/);
     });
   });
 });

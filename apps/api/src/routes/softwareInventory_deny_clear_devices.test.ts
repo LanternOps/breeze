@@ -2,20 +2,29 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The holding-org refusal reads the org; the db mocks below do not model it.
 vi.mock('../services/unassignedPool/protectedOrg', () => ({ isHoldingOrg: vi.fn(async () => false) }));
+// #9635 placement guard: its resolver-backed reads are covered on real
+// Postgres by softwarePolicyTie.integration.test.ts.
+vi.mock('../services/softwarePolicyCoverage', () => ({ checkDefaultListPlacement: vi.fn(async () => ({ ok: true, overrides: [] })) }));
 import { Hono } from 'hono';
 import { inArray } from 'drizzle-orm';
 
-vi.mock('../db', () => ({
-  runOutsideDbContext: vi.fn((fn) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  db: {
+vi.mock('../db', () => {
+  const db: Record<string, any> = {
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
     execute: vi.fn(),
-  },
-}));
+  };
+  // approve/deny/clear lock the default policy row inside db.transaction
+  // (SELECT ... FOR UPDATE); the tx is the same mocked client.
+  db.transaction = vi.fn(async (cb: (tx: unknown) => unknown) => cb(db));
+  return {
+    runOutsideDbContext: vi.fn((fn) => fn()),
+    withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    db,
+  };
+});
 
 vi.mock('../db/schema', () => ({
   devices: {
@@ -93,6 +102,11 @@ import { recordSoftwarePolicyAudit } from '../services/softwarePolicyService';
 const ORG_ID = 'org-111';
 const POLICY_ID = '11111111-1111-1111-1111-111111111111';
 
+/** An awaitable query result that also accepts a trailing .for('update'). */
+function lockable(rows: any[]) {
+  return Object.assign(Promise.resolve(rows), { for: vi.fn().mockResolvedValue(rows) });
+}
+
 /**
  * Mock helper: db.select().from().where() — resolves directly (no .limit())
  * Used by: getPolicyStatusMap, clear endpoint
@@ -100,7 +114,7 @@ const POLICY_ID = '11111111-1111-1111-1111-111111111111';
 function mockSelectFromWhere(rows: any[]) {
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(rows),
+      where: vi.fn().mockReturnValue(lockable(rows)),
     }),
   } as any);
 }
@@ -113,7 +127,7 @@ function mockSelectFromWhereLimit(rows: any[]) {
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue(rows),
+        limit: vi.fn().mockReturnValue(lockable(rows)),
       }),
     }),
   } as any);

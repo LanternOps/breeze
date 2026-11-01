@@ -421,6 +421,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_usage_charges',
   'alert_correlation_groups',
   'alert_correlation_members',
+  // Principal-namespaced external ticket refs cascade with their alert/org.
+  'alert_external_refs',
   'alert_rules',
   'alert_templates',
   'alerts',
@@ -437,6 +439,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'audit_policy_states',
   'audit_retention_policies',
   'automation_action_results',
+  // Tool Catalog W06 (#5221, 2027-01-09-100000): automation-wide occurrence
+  // claims; org XOR partner (partner-wide rows, org_id NULL, are untouched by
+  // an org erasure). automation_id -> automations is ON DELETE CASCADE.
+  'automation_occurrence_claims',
   'automation_policies',
   'automation_resource_bindings',
   'automation_run_device_results',
@@ -615,6 +621,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // verifies it against pg_constraint at runtime regardless.
   'device_mtls_certificates',
   'device_network',
+  // Network-isolation episodes (#10089, feature #10088). Composite FKs to
+  // devices (ON DELETE CASCADE), incidents and incident_actions (ON DELETE
+  // SET NULL (col)), all DEFERRABLE INITIALLY IMMEDIATE; this alphabetical
+  // slot already precedes all three parents. Erasure while an episode is
+  // unresolved is refused upstream (W1c, spec §3.6 item 6).
+  'device_network_isolations',
   // PAM ownership-epoch lineage (#8203). Closures FK -> epochs
   // (device_id, org_id, epoch) ON DELETE CASCADE, so closures sort (and
   // delete) first. Epochs carry no FK to devices (spec §4.4).
@@ -703,9 +715,19 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // deletes action_intents before flow_runs whatever the position here.
   // flow_versions is org XOR partner like flows: partner-wide publications
   // (org_id NULL) are untouched by an org erasure.
+  // Tool Catalog W5 (#5220, 2027-01-06-160000): flow_usage_counters and
+  // flow_webhook_deliveries both cascade from flows and carry org_id (nullable:
+  // partner-wide flows). flow_webhook_deliveries(run_id, org_id) -> flow_runs is
+  // a composite FK; the runtime order is computed topologically.
+  // Tool Catalog W06 (#5221, 2027-01-09-100000): the conversion ledger, org XOR
+  // partner; automation_id -> automations and flow_id -> flows are ON DELETE
+  // CASCADE, so the runtime order is computed topologically.
+  'flow_automation_conversions',
   'flow_run_steps',
   'flow_runs',
+  'flow_usage_counters',
   'flow_versions',
+  'flow_webhook_deliveries',
   // Tool Catalog W03 (#5218): org XOR partner flow documents. Its FKs to
   // ai_sessions / ai_agents / users are ON DELETE SET NULL, so it imposes no
   // child-before-parent constraint of its own.
@@ -1154,6 +1176,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'user_risk_scores',
   'users',
   'vault_snapshot_inventory',
+  'webhook_deliveries',
   'webhooks',
   // Wisp W02 (#9908): org-scoped grants only (partner-wide grants have org_id
   // NULL and leave with the partner). ai_agent_runs / ai_operator_tasks pin a
@@ -1473,6 +1496,11 @@ const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>([
   // ai_invocations_append_only() (2026-11-14-100300, #7600 W02), so erasure has
   // to run as breeze_audit_admin with breeze.allow_audit_retention=1.
   'ai_invocations',
+  // Signed agreements (#9075 W4b): REVOKE UPDATE/DELETE from breeze_app (only
+  // column UPDATE on contract_id/org_id stays) plus
+  // contract_documents_append_only() (2027-01-06-150000), so erasure has to
+  // run as breeze_audit_admin with breeze.allow_audit_retention=1.
+  'contract_documents',
 ]);
 
 interface FkEdge {
@@ -2853,6 +2881,35 @@ export async function cascadeDeletePartner(
                 JOIN software_catalog c ON c.id = m.catalog_id
                 WHERE c.partner_id = ${partnerId}
               )
+      `,
+    },
+    // #10521 W1, plan D9: group_membership_log and device_group_memberships
+    // reference device_groups without ON DELETE. Clear by group ownership so
+    // rows outside the per-org cascade list (reparented orgs or held shells
+    // skipped above) cannot block the partner's group deletion. A still-targeted
+    // group also makes its delete statement trigger raise: assignments go first.
+    {
+      table: 'config_policy_assignments',
+      clearSql: sql`
+        DELETE FROM config_policy_assignments
+        WHERE level = 'device_group'
+          AND target_id IN (SELECT id FROM device_groups WHERE partner_id = ${partnerId})
+      `,
+    },
+    {
+      table: 'group_membership_log',
+      clearSql: sql`
+        DELETE FROM group_membership_log
+        WHERE group_id IN (SELECT id FROM device_groups WHERE partner_id = ${partnerId})
+      `,
+    },
+    {
+      table: 'device_group_memberships',
+      // The statement-level membership-delete touch trigger (2026-07-18)
+      // pre-locks the complete sorted DISTINCT org set before updating devices.
+      clearSql: sql`
+        DELETE FROM device_group_memberships
+        WHERE group_id IN (SELECT id FROM device_groups WHERE partner_id = ${partnerId})
       `,
     },
   ];

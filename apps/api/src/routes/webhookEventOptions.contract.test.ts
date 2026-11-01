@@ -30,6 +30,23 @@ describe('webhook form event options', () => {
     expect(formEventValues().length).toBeGreaterThanOrEqual(10);
   });
 
+  it('offers acknowledged and suppressed alerts', () => {
+    expect(formEventValues()).toEqual(expect.arrayContaining(['alert.acknowledged', 'alert.suppressed', 'alert.escalated']));
+  });
+
+  it('keeps the API and form never-delivered lists identical and never offers them', () => {
+    const form = readFileSync(join(REPO, FORM), 'utf8');
+    const api = readFileSync(join(REPO, 'apps/api/src/routes/webhooks.ts'), 'utf8');
+    const formBlock = form.match(/export const NEVER_DELIVERED_EVENTS[^=]*=\s*\[([^\]]*)\]/)?.[1];
+    const apiBlock = api.match(/export const NEVER_PUBLISHED_EVENT_TYPES[^=]*=\s*new Set\(\[([^\]]*)\]/)?.[1];
+    expect(formBlock).toBeDefined();
+    expect(apiBlock).toBeDefined();
+    const values = (block: string | undefined) => [...(block ?? '').matchAll(/'([^']+)'/g)].map(m => m[1]).sort();
+    expect(values(formBlock)).toEqual([]);
+    expect(values(formBlock)).toEqual(values(apiBlock));
+    expect(formEventValues().filter(value => values(apiBlock).includes(value))).toEqual([]);
+  });
+
   it('offers only event types the event bus publishes', () => {
     const published = new Set<string>(Object.values(EVENT_TYPES));
     const unpublished = formEventValues().filter((value) => !published.has(value));

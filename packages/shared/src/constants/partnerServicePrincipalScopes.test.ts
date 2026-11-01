@@ -42,6 +42,14 @@ describe('partner service principal scope presets', () => {
     }
   });
 
+  it('keeps alerts:write explicit and out of every preset', () => {
+    expect(PARTNER_SERVICE_PRINCIPAL_WRITE_SCOPES).toContain('alerts:write');
+    expect(PARTNER_SERVICE_PRINCIPAL_SCOPES).toContain('alerts:write');
+    for (const preset of PARTNER_SERVICE_PRINCIPAL_SCOPE_PRESETS) {
+      expect(preset.scopes).not.toContain('alerts:write');
+    }
+  });
+
   it('partitions the registry with no duplicates across groups', () => {
     const groups = [
       ...PARTNER_SERVICE_PRINCIPAL_READ_SCOPES,

@@ -42,7 +42,8 @@ const namespaceDuplicateBaselines = {
     // "SQL Server", "Hyper-V", "VMware", "Bare metal", "SharePoint",
     // "Exchange", "OneDrive", "Teams" — are vendor proper nouns, identical in
     // every locale.
-    'backup.json': 63,
+    // +3 W02 #10600: SaaS, Google Drive, and Microsoft 365 / Google Workspace are locale-invariant names.
+    'backup.json': 66,
     // +4: contract-template format strings + Portuguese cognate ("v{{number}} ·
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Status")
     // legitimately identical to English.
@@ -92,7 +93,9 @@ const namespaceDuplicateBaselines = {
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
     // +4 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
     // +2 (#9610): vulnerabilities table.cve/cvss/kev are identical locale-invariant acronyms (CVE, CVSS, KEV).
-    'devices.json': 189,
+    // +1 (#10190 W01): deviceInfoTab.assistStatus.label is the product name "Breeze Assist".
+    // +1 (#8134 W1-D1): physicalPlacementCard.rack — "Rack" is the standard loanword in this locale.
+    'devices.json': 191,
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): pt-BR fully translated, no cognates.
     // Wave E2b (DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND, PATH_CONFLICT,
@@ -106,7 +109,7 @@ const namespaceDuplicateBaselines = {
     'fleetDesign.json': 2,
     // Flows (#5218): 'Status', 'Webhook' (loanword) and 'Manual' are spelled identically in pt-BR.
     // +1 W04 (#5219): runs.trigger.manual — the same 'Manual' as trigger.manual.
-    'flows.json': 4,
+    'flows.json': 10, // W05 #5220: + Webhook (tab, title), 'Status' column, and three pure-interpolation strings
     // +3 (W03 #6011): integrationsPage.backup ("Backup" is spelled identically
     // in pt-BR), backupProviders.cove and backupProviders.namePlaceholder are
     // protected proper nouns pinned byte-identical by localeParity.
@@ -114,7 +117,8 @@ const namespaceDuplicateBaselines = {
     // (Huntress, SentinelOne, Slack, Discord) are now pinned literal, so they
     // match English exactly, as vendor names should.
     // +2 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'integrations.json': 31,
+    // +1 W02 #10600: backupProviders.dropsuite is a product name.
+    'integrations.json': 32,
     // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
     // "Name", "Monitor" (list/policy-tab column + label), "Hardware",
     // "System" (event-log categories), "CPU" (resource select) are identical
@@ -146,7 +150,7 @@ const namespaceDuplicateBaselines = {
     // "Webhooks" in both languages.
     'scripts.json': 64, // +3 W01 #10132: script-editor panel title, empty-state title, button "Breeze AI" brand name
     // +3 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'security.json': 144, // +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name
+    'security.json': 145, // +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name; +1 #10080: sweeps.dialog.preview.org "{{org}}: {{devices}}" is placeholders only
     // +1: the it-IT locale's self-name is intentionally identical in every catalog.
     // +1: bulkOrgImport.preview.status — "Status" is the same cognate in pt-BR
     // (already accepted for billing.json).
@@ -226,7 +230,8 @@ const namespaceDuplicateBaselines = {
     // "SQL Server", "Hyper-V", "VMware", "Bare metal", "SharePoint",
     // "Exchange", "OneDrive", "Teams" — are vendor proper nouns, identical in
     // every locale.
-    'backup.json': 39,
+    // +3 W02 #10600: SaaS, Google Drive, and Microsoft 365 / Google Workspace are locale-invariant names.
+    'backup.json': 42,
     // +3: contract-template format strings ("v{{number}} · {{status}}",
     // "v{{number}}", "{{name}} — v{{number}}") that are legitimately identical
     // to English in es-419.
@@ -274,7 +279,9 @@ const namespaceDuplicateBaselines = {
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in es-419.
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
-    'devices.json': 133,
+    // +1 (#10190 W01): deviceInfoTab.assistStatus.label is the product name "Breeze Assist".
+    // +1 (#8134 W1-D1): physicalPlacementCard.rack — "Rack" is the standard loanword in this locale.
+    'devices.json': 135,
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -298,13 +305,14 @@ const namespaceDuplicateBaselines = {
     'fleetDesign.json': 2,
     // Flows (#5218): 'Webhook' (loanword), 'Manual' and 'Error' are spelled identically in es-419.
     // +1 W04 (#5219): runs.trigger.manual — the same 'Manual' as trigger.manual.
-    'flows.json': 4,
+    'flows.json': 9, // W05 #5220: + Webhook (tab, title) and three pure-interpolation strings
     // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder
     // are protected proper nouns pinned byte-identical by localeParity.
     // +2 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
     // +1 (integrations critique 10-20): integrationsPage.tdSYNNEXPricing / tdSYNNEXPriceFile
     // are now the connector product names ("TD SYNNEX EC Express", "TD SYNNEX SFTP").
-    'integrations.json': 36,
+    // +1 W02 #10600: backupProviders.dropsuite is a product name.
+    'integrations.json': 37,
     // #5289 (monitors W02 web): +5 on top of the pre-existing +1 —
     // "Monitor" (label), "Hardware" (event-log category), "Error" (event-log
     // level), "CPU" (resource select), "Total" (direction select) are
@@ -334,7 +342,7 @@ const namespaceDuplicateBaselines = {
     // in es-419.
     'scripts.json': 64, // +3 W01 #10132: script-editor panel title, empty-state title, button "Breeze AI" brand name
     // +2 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'security.json': 117, // +1 (#9606): page title "CIS Benchmarks" is the product term, identical to nav
+    'security.json': 118, // +1 #10080: sweeps.dialog.preview.org "{{org}}: {{devices}}" is placeholders only; +1 (#9606): page title "CIS Benchmarks" is the product term, identical to nav
     // +1: tenantVariablesPage.title — "Variables" is identical in Spanish.
     // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
     // standard loanword in es-419 technical UI.
@@ -404,7 +412,8 @@ const namespaceDuplicateBaselines = {
     // "SQL Server", "Hyper-V", "VMware", "Bare metal", "SharePoint",
     // "Exchange", "OneDrive", "Teams" — are vendor proper nouns, identical in
     // every locale.
-    'backup.json': 70,
+    // +3 W02 #10600: SaaS, Google Drive, and Microsoft 365 / Google Workspace are locale-invariant names.
+    'backup.json': 73,
     // +7: contract-template format strings + French cognates ("v{{number}} ·
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Description",
     // "Versions", "Documents" ×2) that are legitimately identical to English
@@ -485,13 +494,14 @@ const namespaceDuplicateBaselines = {
     // "Notes" — both spell identically in fr-FR.
     'fleetDesign.json': 3,
     // Flows (#5218): 'Webhook' (loanword), 'Validation' and 'Version {{version}}' are spelled identically in French.
-    'flows.json': 3,
+    'flows.json': 9, // W05 #5220: + Webhook (tab, title), 'Secret', three pure-interpolation strings
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
     // byte-identical by localeParity.
     // +1 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
     // +1 (integrations critique 10-20): integrationsPage.tdSYNNEXPricing / tdSYNNEXPriceFile
     // are now the connector product names ("TD SYNNEX EC Express", "TD SYNNEX SFTP").
-    'integrations.json': 41,
+    // +1 W02 #10600: backupProviders.dropsuite is a product name.
+    'integrations.json': 42,
     // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
     // (event-log count field), "Direction" (bandwidth/disk-I/O field),
     // "Application" (event-log category), "CPU" (resource select), "Total"
@@ -619,7 +629,8 @@ const namespaceDuplicateBaselines = {
     // "SQL Server", "Hyper-V", "VMware", "Bare metal", "SharePoint",
     // "Exchange", "OneDrive", "Teams" — are vendor proper nouns, identical in
     // every locale.
-    'backup.json': 71,
+    // +3 W02 #10600: SaaS, Google Drive, and Microsoft 365 / Google Workspace are locale-invariant names.
+    'backup.json': 74,
     // Contract-template format strings, French cognates, and locale-invariant
     // quote composer fields are intentionally identical to English.
     // +2: liveTotals "Total" is the identical French cognate (already accepted
@@ -694,10 +705,11 @@ const namespaceDuplicateBaselines = {
     // "Notes" — both spell identically in fr-CA.
     'fleetDesign.json': 3,
     // Flows (#5218): 'Webhook' (loanword), 'Validation' and 'Version {{version}}' are spelled identically in French.
-    'flows.json': 3,
+    'flows.json': 9, // W05 #5220: + Webhook (tab, title), 'Secret', three pure-interpolation strings
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
     // byte-identical by localeParity.
-    'integrations.json': 41,
+    // +1 W02 #10600: backupProviders.dropsuite is a product name.
+    'integrations.json': 42,
     // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
     // (event-log count field), "Direction" (bandwidth/disk-I/O field),
     // "Application" (event-log category), "CPU" (resource select), "Total"
@@ -831,7 +843,8 @@ const namespaceDuplicateBaselines = {
     // ("Bare Metal" is capitalized per German noun rules, so it is NOT an
     // exact duplicate here).
     // +1 (sweep F3): backupHealth.osType.server — "Server" is the identical German term.
-    'backup.json': 75,
+    // +3 W02 #10600: SaaS, Google Drive, and Microsoft 365 / Google Workspace are locale-invariant names.
+    'backup.json': 78,
     // +6: contract-template format strings + German cognates ("v{{number}} ·
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Name", "Status")
     // that are legitimately identical to English in de-DE.
@@ -890,7 +903,9 @@ const namespaceDuplicateBaselines = {
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
     // +4 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'devices.json': 178,
+    // +1 (#10190 W01): deviceInfoTab.assistStatus.label is the product name "Breeze Assist".
+    // +1 (#8134 W1-D1): physicalPlacementCard.rack — "Rack" is the standard loanword in this locale.
+    'devices.json': 180,
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
     // +1 (#5433): tabs.baselines — "Baselines" is the identical loanword in
     // German, matching networkBaselinesPanel.title's existing "Netzwerk-Baselines".
@@ -916,11 +931,12 @@ const namespaceDuplicateBaselines = {
     'fleetDesign.json': 1,
     // Flows (#5218): 'Name', 'Status', 'Webhook' and 'Version {{version}}' are spelled identically in German.
     // +1 W04 (#5219): runs.columns.status — the same 'Status' as list.status.
-    'flows.json': 5,
+    'flows.json': 11, // W05 #5220: + Webhook (tab, title), 'Status' column, three pure-interpolation strings
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
     // byte-identical by localeParity.
     // +1 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'integrations.json': 45,
+    // +1 W02 #10600: backupProviders.dropsuite is a product name.
+    'integrations.json': 46,
     // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
     // "Name" (list/legacy column + field label), "Monitor" (policy-tab
     // column), "Hardware"/"System" (event-log categories), "CPU" (resource
@@ -952,7 +968,7 @@ const namespaceDuplicateBaselines = {
     // +1 #6263 W01: securityScansPage.scansTab — "Scans" is the standard
     // German loanword in this locale, same root cause as "Status" above.
     // +4 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'security.json': 173, // +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name
+    'security.json': 175, // +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name; +2 #10080: sweeps.dialog.preview.org "{{org}}: {{devices}}" and .targeted "{{devices}} in {{orgs}}" are placeholders only
     // +1: bulkOrgImport.preview.status — "Status" is the German word too.
     // +1: aiAgentsPage.fields.name — "Name" is the German word too.
     // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
@@ -1028,7 +1044,8 @@ const namespaceDuplicateBaselines = {
     // "Exchange", "OneDrive", "Teams" — are vendor proper nouns, identical in
     // every locale.
     // +2 (sweep F3): backupHealth.osType.workstation/server — "Workstation"/"Server" are the standard Italian IT terms.
-    'backup.json': 56,
+    // +3 W02 #10600: SaaS, Google Drive, and Microsoft 365 / Google Workspace are locale-invariant names.
+    'backup.json': 59,
     // +1: unassigned.qtyPrice "{{qty}} × {{price}}" is two interpolations plus a
     // multiplication sign with no wording to translate.
     // +1: order breakdown — "SKU" is a locale-invariant acronym.
@@ -1063,7 +1080,9 @@ const namespaceDuplicateBaselines = {
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
     // +3 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
     // +2 (#9610): vulnerabilities table.cve/cvss/kev are identical locale-invariant acronyms (CVE, CVSS, KEV).
-    'devices.json': 155,
+    // +1 (#10190 W01): deviceInfoTab.assistStatus.label is the product name "Breeze Assist".
+    // +1 (#8134 W1-D1): physicalPlacementCard.rack — "Rack" is the standard loanword in this locale.
+    'devices.json': 157,
     'discovery.json': 22,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -1087,12 +1106,13 @@ const namespaceDuplicateBaselines = {
     'fleetDesign.json': 2,
     // Flows (#5218): 'Trigger' (twice), 'Webhook', 'Timeout' and 'Input' are the standard Italian IT loanwords.
     // +1 W04 (#5219): runs.columns.trigger — the same 'Trigger' loanword.
-    'flows.json': 6,
+    'flows.json': 11, // W05 #5220: + Webhook (tab, title) and three pure-interpolation strings
     // +4 (W03 #6011): integrationsPage.backup ("Backup" is spelled identically
     // in it-IT), backupProviders.cove and backupProviders.namePlaceholder are
     // protected proper nouns, and one more backupProviders label spells
     // identically to English in it-IT.
-    'integrations.json': 85,
+    // +1 W02 #10600: backupProviders.dropsuite is a product name.
+    'integrations.json': 86,
     // #5289 (monitors W02 web): +4 on top of the pre-existing +1 —
     // "Monitor" (policy-tab column), "Info" (severity), "Hardware"
     // (event-log category), "CPU" (resource select) are identical
@@ -1117,7 +1137,7 @@ const namespaceDuplicateBaselines = {
     // wording, and "Script" is the standard loanword in this locale (#3162).
     'scripts.json': 62, // +3 W01 #10132: script-editor panel title, empty-state title, button "Breeze AI" brand name
     // +3 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'security.json': 167,
+    'security.json': 169, // +2 #10080: sweeps.dialog.preview.org "{{org}}: {{devices}}" and .targeted "{{devices}} in {{orgs}}" are placeholders only
     // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
     // standard loanword in it-IT technical UI.
     // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
@@ -1184,7 +1204,8 @@ const namespaceDuplicateBaselines = {
     // "SQL Server", "Hyper-V", "VMware", "Bare metal", "SharePoint",
     // "Exchange", "OneDrive", "Teams" — are vendor proper nouns, identical in
     // every locale.
-    'backup.json': 34,
+    // +3 W02 #10600: SaaS, Google Drive, and Microsoft 365 / Google Workspace are locale-invariant names.
+    'backup.json': 37,
     // +1: the quote/invoice bulk-result strings ("{{succeeded}} {{verb}}") are
     // pure interpolation with no prose to translate, so they are necessarily
     // identical to English. They arrived from #3501 after tr-TR (#3497) forked,
@@ -1234,10 +1255,11 @@ const namespaceDuplicateBaselines = {
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     // Flows (#5218): 'Webhook' is the untranslated industry loanword.
-    'flows.json': 1,
+    'flows.json': 6, // W05 #5220: + Webhook (tab, title) and three pure-interpolation strings
     // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder
     // are protected proper nouns pinned byte-identical by localeParity.
-    'integrations.json': 24,
+    // +1 W02 #10600: backupProviders.dropsuite is a product name.
+    'integrations.json': 25,
     // #5289 (monitors W02 web): "CPU" (resource select) is the identical
     // acronym in tr-TR.
     'monitoring.json': 1,
@@ -1259,7 +1281,7 @@ const namespaceDuplicateBaselines = {
     'reports.json': 32, // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
     'restorePoints.json': 0,
     'scripts.json': 41, // +3 W01 #10132: script-editor panel title, empty-state title, button "Breeze AI" brand name
-    'security.json': 88, // +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name
+    'security.json': 89, // +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name; +1 #10080: sweeps.dialog.preview.org "{{org}}: {{devices}}" is placeholders only
     // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
     // (see the pt-BR block's note above — same root cause, carried forward
     // rather than root-caused here). aiAgentsPage.runs (#3828 Task 4) itself
@@ -1433,4 +1455,18 @@ it('W02 fallbacks name existing exact keys and never allow an unrelated English 
   for (const key of AUTOPAY_W02_ENGLISH_FALLBACKS) expect(english.has(key), key).toBe(true);
   const arbitrary = new Map([['billing.json:unrelated.newCopy', 'English']]);
   expect(namespaceDuplicateRegressions(arbitrary, arbitrary, { 'billing.json': 0 })).toHaveLength(1);
+});
+
+
+describe('SaaS backup locale labels', () => {
+  it.each(['en', ...translatedLocales])('%s includes Dropsuite setup and workload labels', (locale) => {
+    const strings = readLocale(locale);
+    expect(strings.get('integrations.json:backupProviders.dropsuite')).toBe('NinjaOne SaaS Backup (Dropsuite)');
+    for (const key of ['resellerTokenLabel', 'authTokenLabel', 'baseUrlLabel', 'baseUrlHelp', 'dropsuiteCredentialsHelp', 'dropsuiteReentryHelp', 'workloads', 'unmappedWorkloads', 'unmappedWorkloadsSummary', 'workloadMappingHelp', 'deleteWorkloadsConfirm']) {
+      expect(strings.get(`integrations.json:backupProviders.${key}`), key).toBeTruthy();
+    }
+    for (const key of ['saasAccounts', 'saasAccountsSubtitle', 'saas', 'workloadBackup', 'sourceProvider', 'dataSource.m365_mail', 'dataSource.gws_mail', 'dataSource.gws_drive', 'dataSource.gws_shared_drive']) {
+      expect(strings.get(`backup.json:backupHealth.${key}`), key).toBeTruthy();
+    }
+  });
 });

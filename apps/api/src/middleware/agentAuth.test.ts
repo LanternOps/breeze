@@ -660,6 +660,28 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
   });
 
+  // #10190 W03 — the prompt logo route may fetch the MSP's https logo on a
+  // cache miss; that must never run inside the request-long org transaction.
+  it('skips the request-long org wrap for the self-managed prompt-identity/logo route', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/prompt-identity/logo' });
+    const next = vi.fn().mockResolvedValue(undefined);
+    await agentAuthMiddleware(c, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
+  it('keeps the request DB context for another prompt-identity/* path', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/prompt-identity/other' });
+    const next = vi.fn().mockResolvedValue(undefined);
+    await agentAuthMiddleware(c, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps the request DB context for a deeper topology/adjacency/* path', async () => {
     buildSelectMock([makeDevice()]);
     vi.mocked(getAgentTenantState).mockResolvedValue('active');

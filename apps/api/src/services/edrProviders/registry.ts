@@ -1,4 +1,5 @@
 import { bitdefenderAdapter } from './bitdefender/adapter';
+import { emsisoftAdapter } from './emsisoft/adapter';
 import type { EdrProviderAdapter } from './types';
 import { EDR_PROVIDER_KEYS, isEdrProviderKey, type EdrProviderKey } from './providerKeys';
 
@@ -7,6 +8,7 @@ export { EDR_PROVIDER_KEYS, isEdrProviderKey, type EdrProviderKey };
 
 const ADAPTERS: Record<EdrProviderKey, EdrProviderAdapter> = {
   bitdefender: bitdefenderAdapter,
+  emsisoft: emsisoftAdapter,
 };
 
 /** Adapter for `key`, or a loud throw. Membership first so `__proto__`/`constructor` never resolve. */

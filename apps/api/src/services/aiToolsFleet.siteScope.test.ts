@@ -36,8 +36,16 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: deleteSpy, transaction: vi.fn() },
 }));
+// Tool Catalog W06 (#5221): list/get/history carry each automation's conversion summary;
+// covered in aiToolsFleet.test.ts. No conversions here.
+vi.mock('./flows/conversion/ledger', () => ({ conversionSummariesFor: vi.fn(async () => new Map()) }));
 vi.mock('../jobs/peripheralJobs', () => ({
   schedulePeripheralPolicyDevice: vi.fn(async () => undefined),
+}));
+// #10409 — manage_maintenance_windows list/active_now also read policy
+// windows; that reader's site axis is pinned in policyMaintenanceWindows.test.ts.
+vi.mock('./policyMaintenanceWindows', () => ({
+  listPolicyMaintenanceWindows: vi.fn(async () => ({ windows: [], truncated: false })),
 }));
 
 // Override only the reused site-scope helpers (spread the rest so other
