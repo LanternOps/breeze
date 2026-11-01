@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const ALERT_V2_EVENT_TYPES = ['alert.triggered', 'alert.acknowledged', 'alert.resolved', 'alert.suppressed'] as const;
+export const ALERT_V2_EVENT_TYPES = ['alert.triggered', 'alert.acknowledged', 'alert.resolved', 'alert.suppressed', 'alert.escalated'] as const;
 export type AlertV2EventType = typeof ALERT_V2_EVENT_TYPES[number];
 
 export function isAlertV2EventType(type: string): type is AlertV2EventType {
