@@ -10,6 +10,15 @@ import { test } from 'node:test';
 // green; anything that weakens the classifier must fail closed (red), never
 // open (green with nothing run).
 
+// Deliberately omit the QEMU list: these harnesses retain its fail-closed behavior.
+function copyPolicyFiles(dir) {
+  mkdirSync(join(dir, '.github/scripts'), { recursive: true });
+  for (const file of ['classify-pr-paths.sh', 'integration-floor-paths.txt', 'path-reader-map.txt']) {
+    const source = new URL(`./${file}`, import.meta.url);
+    if (existsSync(source)) copyFileSync(source, join(dir, '.github/scripts', file));
+  }
+}
+
 const workflow = readFileSync(new URL('../workflows/ci.yml', import.meta.url), 'utf8');
 const job = (name) => {
   const match = workflow.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))`, 'm'));
@@ -191,7 +200,7 @@ const runClassifier = (env, { seed } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'classify-mg-'));
   try {
     mkdirSync(join(dir, '.github/scripts'), { recursive: true });
-    copyFileSync(new URL('./classify-pr-paths.sh', import.meta.url), join(dir, '.github/scripts/classify-pr-paths.sh'));
+    copyPolicyFiles(dir);
     const git = (...args) => {
       const r = spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
       assert.equal(r.status, 0, r.stderr);
@@ -953,7 +962,7 @@ const runPrClassifier = (files) => {
   try {
     mkdirSync(join(dir, '.github/scripts'), { recursive: true });
     mkdirSync(join(dir, 'bin'));
-    copyFileSync(new URL('./classify-pr-paths.sh', import.meta.url), join(dir, '.github/scripts/classify-pr-paths.sh'));
+    copyPolicyFiles(dir);
     writeFileSync(join(dir, 'bin/gh'), `#!/usr/bin/env bash\nprintf '%s\\n' ${files.map((f) => `'${f}'`).join(' ')}\n`, { mode: 0o755 });
     const outputFile = join(dir, 'gh-output');
     writeFileSync(outputFile, '');

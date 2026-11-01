@@ -248,3 +248,11 @@ Sweep results (2026-11-01, re-derived by the test in Step 1):
 - [ ] **Step 2:** On the PR's own CI run (`ci.yml` + `.github/scripts/**` changed → every area + agent + integration + `path_readers=false`): confirm from the `changes` job log the 15 output lines; confirm `Path-read contracts` is `skipped` and `CI Success` green.
 - [ ] **Step 3: Red-path control for Task 3** — push a temporary commit that edits only `apps/docs/src/content/docs/deploy/turn-server.mdx` (append a harmless line) on top of a **docs-only** scratch branch off this PR's head (so `code=false`), open a draft PR, confirm `Path-read contracts` runs `turnPeerRestrictions.test.ts` + `redisEvictionPolicyDocs.test.ts` and every code job is skipped; then make the doc break the test (remove the `cat > /etc/turnserver.conf <<'EOF'` heredoc marker), confirm `CI Success` red; close the draft, delete the branch, record both run URLs in the PR body.
 - [ ] **Step 4: Control for Task 4** — scratch branch touching only `agent/internal/heartbeat/heartbeat.go` (comment line): confirm `Test API`, `Test Web`, add-in/M365/Rust jobs skipped, the seven agent jobs ran, `CI Success` green; and one touching only `apps/web/src/App.tsx` (comment): confirm the seven agent jobs skipped. Record run URLs, close and delete the scratch branches.
+
+## Execution record (W3)
+
+- Pre-flight: Tasks 1/3 share policy loading and harness copies; the reader map is optional until Task 3 creates it. QEMU policy stays excluded from the existing harnesses.
+- Pre-flight: Tasks 2/4 share area classification; workspace manifests widen integration first, then agent-area isolation preserves their app areas.
+- Pre-flight: Tasks 3/4 share summary environments; reader flags are seeded before adding agent tri-state assertions. Existing output order stays append-only.
+- Execution uses this owned plan as its ledger and `/tmp/w3-*` for test logs; no additional repository workspace files are created.
+- Task 1: complete. RED `node --test .github/scripts/ci-pr-selection.test.mjs`: 1 pass, 6 fail; missing floor (`ENOENT`), independent override, fail-closed, and Lint registration failed. GREEN `node --test .github/scripts/ci-pr-selection.test.mjs .github/scripts/classify-pr-paths.test.mjs .github/scripts/ci-area-gating.test.mjs`: 396 pass, 0 fail. Targeted suite: 7 pass. No expectation changes.

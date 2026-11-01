@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize } from 'node:path';
@@ -22,6 +22,15 @@ import { fileURLToPath } from 'node:url';
 //     files change (the cross-area scan below keeps that list honest).
 
 const REPO_ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '..', '..'));
+// Deliberately omit the QEMU list: these harnesses retain its fail-closed behavior.
+function copyPolicyFiles(dir) {
+  mkdirSync(join(dir, '.github/scripts'), { recursive: true });
+  for (const file of ['classify-pr-paths.sh', 'integration-floor-paths.txt', 'path-reader-map.txt']) {
+    const source = new URL(`./${file}`, import.meta.url);
+    if (existsSync(source)) copyFileSync(source, join(dir, '.github/scripts', file));
+  }
+}
+
 const workflow = readFileSync(new URL('../workflows/ci.yml', import.meta.url), 'utf8');
 const job = (name) => {
   const match = workflow.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))`, 'm'));
@@ -539,7 +548,7 @@ test('merge_group: a rename out of an area sets that area too', () => {
     git('mv', 'apps/excel-addin/src/shared.ts', 'apps/web/src/shared.ts');
     git('commit', '-q', '-m', 'move');
     const head = git('rev-parse', 'HEAD');
-    writeFileSync(join(dir, '.github/scripts/classify-pr-paths.sh'), readFileSync(new URL('./classify-pr-paths.sh', import.meta.url)));
+    copyPolicyFiles(dir);
     const outputFile = join(dir, 'gh-output');
     writeFileSync(outputFile, '');
     const r = spawnSync('bash', ['-c', classifyScript], {

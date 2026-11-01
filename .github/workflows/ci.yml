@@ -327,6 +327,9 @@ jobs:
       - name: Test per-area job gating contract
         run: node --test .github/scripts/ci-area-gating.test.mjs
 
+      - name: Test PR selection contract (W3)
+        run: node --test .github/scripts/ci-pr-selection.test.mjs
+
       - name: CI cache policy contract
         run: node --test .github/scripts/ci-cache-policy.test.mjs
 

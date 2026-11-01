@@ -142,6 +142,34 @@ qemu_gate_hit() {
   return 1
 }
 
+# Protected integration floor, independent of the PR exclusion rules.
+INTEGRATION_FLOOR_FILE="$(dirname "${BASH_SOURCE[0]}")/integration-floor-paths.txt"
+floor_entries=()
+if [[ -r "${INTEGRATION_FLOOR_FILE}" ]]; then
+  while IFS= read -r line; do
+    line="${line%%#*}"; line="${line//[[:space:]]/}"
+    [[ -n "${line}" ]] && floor_entries+=("${line}")
+  done < "${INTEGRATION_FLOOR_FILE}"
+fi
+if [[ ${#floor_entries[@]} -eq 0 ]]; then
+  echo "classify-pr-paths: integration-floor-paths.txt missing or empty beside the classifier; integration runs for every code change (fail-closed)" >&2
+fi
+# floor_hit PATH — true when PATH is one of the pinned files or lies under
+# one of the pinned directories. A pinned directory ends with '/', so
+# 'apps/api/src/db/' cannot match 'apps/api/src/db-extra/x.ts'.
+floor_hit() {
+  local p="$1" e
+  [[ ${#floor_entries[@]} -eq 0 ]] && return 0
+  for e in "${floor_entries[@]}"; do
+    if [[ "${e}" == */ ]]; then
+      [[ "${p}" == "${e}"* ]] && return 0
+    else
+      [[ "${p}" == "${e}" ]] && return 0
+    fi
+  done
+  return 1
+}
+
 code=false
 docs=false
 agent=false
@@ -250,6 +278,7 @@ while IFS= read -r path; do
       Cargo.*|rust-toolchain*) : ;;
       *) integration=true ;;
     esac
+    floor_hit "${path}" && integration=true
   fi
 done
 
