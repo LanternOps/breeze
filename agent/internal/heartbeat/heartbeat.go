@@ -93,6 +93,7 @@ const pendingActivationClockSkew = 10 * time.Minute
 const selfInitiatedRenewalLeadTime = 24 * time.Hour
 
 type HeartbeatPayload struct {
+	Containment         *ContainmentReport         `json:"containment,omitempty"`
 	NetworkContextV1    *networkcontext.Report     `json:"networkContextV1,omitempty"`
 	NetworkContextReset *NetworkContextReset       `json:"networkContextReset,omitempty"`
 	Metrics             *collectors.SystemMetrics  `json:"metrics,omitempty"`
@@ -269,7 +270,11 @@ func migrationSignal(server, backup string) (edition string, migrationRequired b
 // this being accurate: internal/netpolicy (Tasks 1-3) is what actually
 // enforces the policy this version number claims to be honoring.
 type SecurityCapabilities struct {
-	OutboundNetworkPolicyVersion int `json:"outboundNetworkPolicyVersion"`
+	NetworkIsolationVersion           int    `json:"networkIsolationVersion"`
+	NetworkIsolationMechanism         string `json:"networkIsolationMechanism,omitempty"`
+	NetworkIsolationUnsupportedReason string `json:"networkIsolationUnsupportedReason,omitempty"`
+	NetworkIsolationReady             bool   `json:"networkIsolationReady"`
+	OutboundNetworkPolicyVersion      int    `json:"outboundNetworkPolicyVersion"`
 	// #3409 PR4b — this build decodes `secretEnv`, injects BREEZE_VAR_*, blocks
 	// user-context runs that would drop the credential, and redacts the values
 	// out of stdout/stderr/error. Declared unconditionally: the behavior is
@@ -362,6 +367,7 @@ type DesktopAccessState struct {
 }
 
 type HeartbeatResponse struct {
+	Containment           *ContainmentDesired     `json:"containment"`
 	NetworkContextReceipt *networkcontext.Receipt `json:"networkContextReceipt,omitempty"`
 	Commands              []Command               `json:"commands"`
 	ConfigUpdate          map[string]any          `json:"configUpdate,omitempty"`
@@ -452,6 +458,7 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
+	containment *containmentRuntime
 	// Endpoint messaging (#8293): cards the Assist helper drew and the user has
 	// not yet closed, for replay after a helper restart; and the upstream event
 	// sink (nil = post to the API; tests override it).
@@ -1557,6 +1564,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// Clean up any orphaned Screen Sharing left running from a previous crash.
 	h.tunnelMgr.CleanupOrphanedVNC()
 	h.initializeRollbackController()
+	h.initializeContainment(config.GetDataDir())
 
 	return h
 }
@@ -2276,6 +2284,7 @@ func bootstrapThenListenWithRetry(ctx context.Context, bootstrap func() error, l
 
 func (h *Heartbeat) Start() {
 	h.startHardwareHealth()
+	h.startContainment()
 	h.startTimeSync()
 	h.startWorkloads()
 	h.startPamReconciliationRetryLoop()
@@ -5470,6 +5479,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		// runtime check): the enforcement is compiled in, not a runtime
 		// toggle.
 		SecurityCapabilities: compiledSecurityCapabilities(),
+		Containment:          h.containmentReport(),
 		ReportedIdentity:     h.reportIdentityForBeat(),
 		// #8382 — why the last identity assertion was refused, once.
 		IdentityAssertionRejection: h.identityRejectionForBeat(),
@@ -5877,6 +5887,7 @@ func (h *Heartbeat) acknowledgeRollbackObservation(id string) {
 }
 
 func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
+	h.reconcileContainment(response.Containment)
 	// First: a scope change purges the old MSP's prompt list entries and
 	// replaces the identity before anything else in this response can create
 	// or replay a prompt (spec §3.6).
@@ -8821,6 +8832,10 @@ func (h *Heartbeat) noteCodeSignatureFailure(targetVersion string) {
 
 // doUpgrade contains the actual upgrade logic, called by handleUpgrade.
 func (h *Heartbeat) doUpgrade(targetVersion string) {
+	if h.containmentBlocksUpgrade() {
+		log.Info("upgrade skipped: network isolation is active", "targetVersion", targetVersion)
+		return
+	}
 	// Checked before sendUpdateStatus and before any download work: the server
 	// re-sends the same upgradeTo on every heartbeat, so without this the
 	// device would keep announcing "Updating" and re-running the whole
@@ -9014,7 +9029,7 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 // revocationLeaseProtocolVersion 0, which makes a silently dropped declaration
 // a fleet-wide outage rather than a degraded feature.
 func compiledSecurityCapabilities() SecurityCapabilities {
-	return SecurityCapabilities{
+	caps := SecurityCapabilities{
 		OutboundNetworkPolicyVersion:          1,
 		ScriptSecretEnvVersion:                1,
 		PeripheralPolicyProtocolVersion:       2,
@@ -9030,6 +9045,8 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		PromptIdentityProtocolVersion:         promptidentity.ProtocolVersion,
 		PamUserNotifyProtocolVersion:          pamUserNotifyProtocolVersion(),
 	}
+	containmentCapabilities(&caps)
+	return caps
 }
 
 // pamUserNotifyProtocolVersion is 2 on Windows builds, the only platform with

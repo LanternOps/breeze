@@ -342,6 +342,7 @@ func init() {
 	rootCmd.AddCommand(bootstrapCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(newContainmentCommand(config.GetDataDir))
 	rootCmd.AddCommand(supportCmd)
 	rootCmd.AddCommand(uninstallNotifyCmd)
 	rootCmd.AddCommand(userHelperCmd)

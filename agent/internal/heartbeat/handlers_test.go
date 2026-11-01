@@ -139,7 +139,7 @@ var allCommandTypes = []string{
 	tools.CmdSupportEnd,
 
 	// handlers_incident_response.go init()
-	tools.CmdCollectEvidence, tools.CmdExecuteContainment,
+	tools.CmdCollectEvidence, tools.CmdExecuteContainment, tools.CmdReleaseContainment,
 
 	// handlers_tunnel.go init()
 	tools.CmdTunnelOpen, tools.CmdTunnelData, tools.CmdTunnelClose,
