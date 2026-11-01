@@ -1,5 +1,5 @@
 {
-  "description": "sanitizePromptPartnerName (TS: API + Assist) and promptcatalog.SanitizeIdentityName (Go) must produce exactly `expected` for every `input`; null means \"use the generic name\". A spoofing control: plan Task 3.1, Review Focus 3.",
+  "description": "sanitizePromptPartnerName (TS: API + Assist) and promptcatalog.SanitizeIdentityName (Go) must produce exactly `expected` for every `input`; null means \"use the generic name\". A spoofing control: plan Task 3.1, Review Focus 3. Reserved brand names (#10325): a name made only of `reservedBrands.brands` and `reservedBrands.qualifiers` words, with at least one brand, sanitizes to null; both implementations also assert their in-code lists equal `reservedBrands`.",
   "cases": [
     {
       "name": "plain name",
@@ -142,9 +142,9 @@
       "expected": "Northwind IT"
     },
     {
-      "name": "zero-width space, ZWNJ and ZWJ stripped",
+      "name": "zero-width space, ZWNJ and ZWJ stripped, then refused as a reserved brand",
       "input": "Mi\u200bcro\u200csoft\u200d Support",
-      "expected": "Microsoft Support"
+      "expected": null
     },
     {
       "name": "word joiner and BOM stripped",
@@ -182,19 +182,19 @@
       "expected": "Northwind"
     },
     {
-      "name": "fullwidth Microsoft folded to ASCII (NFKC)",
+      "name": "fullwidth Microsoft folded to ASCII (NFKC), then refused as a reserved brand",
       "input": "\uff2d\uff49\uff43\uff52\uff4f\uff53\uff4f\uff46\uff54 \uff33\uff55\uff50\uff50\uff4f\uff52\uff54",
-      "expected": "Microsoft Support"
+      "expected": null
     },
     {
-      "name": "mathematical bold Windows folded to ASCII (NFKC)",
+      "name": "mathematical bold Windows folded to ASCII (NFKC), then refused as a reserved brand",
       "input": "\ud835\udc16\ud835\udc22\ud835\udc27\ud835\udc1d\ud835\udc28\ud835\udc30\ud835\udc2c Update",
-      "expected": "Windows Update"
+      "expected": null
     },
     {
-      "name": "roman numeral M folded (NFKC)",
+      "name": "roman numeral M folded (NFKC), then refused as a reserved brand",
       "input": "\u216ficrosoft",
-      "expected": "Microsoft"
+      "expected": null
     },
     {
       "name": "ligature fi folded (NFKC)",
@@ -273,8 +273,8 @@
     },
     {
       "name": "stacked combining marks capped at two per letter",
-      "input": "M\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300icrosoft",
-      "expected": "M\u0300\u0300icrosoft"
+      "input": "Q\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300uest IT",
+      "expected": "Q\u0300\u0300uest IT"
     },
     {
       "name": "enclosing marks count toward the cap",
@@ -325,6 +325,311 @@
       "name": "whitespace only",
       "input": " \t\n\r ",
       "expected": null
+    },
+    {
+      "name": "zero-width characters inside a non-brand name stripped",
+      "input": "North\u200bwi\u200cnd\u200d IT",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "fullwidth Northwind folded to ASCII (NFKC)",
+      "input": "\uff2e\uff4f\uff52\uff54\uff48\uff57\uff49\uff4e\uff44 \uff29\uff34",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "mathematical bold Northwind folded to ASCII (NFKC)",
+      "input": "\ud835\udc0d\ud835\udc28\ud835\udc2b\ud835\udc2d\ud835\udc21\ud835\udc30\ud835\udc22\ud835\udc27\ud835\udc1d IT",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "roman numeral M in a non-brand name folded (NFKC)",
+      "input": "\u216fidwest IT",
+      "expected": "Midwest IT"
+    },
+    {
+      "name": "reserved brand: Microsoft",
+      "input": "Microsoft",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: lower case",
+      "input": "microsoft",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Windows Security",
+      "input": "Windows Security",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: upper-case Microsoft Support",
+      "input": "MICROSOFT SUPPORT",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Apple Help Desk",
+      "input": "Apple Help Desk",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Google",
+      "input": "Google",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: macOS",
+      "input": "macOS",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Mac OS split in two words",
+      "input": "Mac OS",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: iCloud Support",
+      "input": "iCloud Support",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Azure Support Team",
+      "input": "Azure Support Team",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Microsoft 365 Support",
+      "input": "Microsoft 365 Support",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Microsoft Corporation",
+      "input": "Microsoft Corporation",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Apple Inc. with punctuation",
+      "input": "Apple Inc.",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: The Microsoft Team",
+      "input": "The Microsoft Team",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Windows Defender Security Center",
+      "input": "Windows Defender Security Center",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Windows Update",
+      "input": "Windows Update",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: trademark sign ignored",
+      "input": "Microsoft\u00ae",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: hyphen-joined qualifier",
+      "input": "Microsoft-Support",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: run together with a qualifier",
+      "input": "MicrosoftSupport",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: split inside the word",
+      "input": "Micro soft",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: letter-spaced",
+      "input": "M i c r o s o f t",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: dot-separated",
+      "input": "Micro.soft Support",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: diacritic on a letter",
+      "input": "M\u00edcrosoft Support",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: decomposed diacritic",
+      "input": "Mi\u0301crosoft",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Turkish dotted capital I",
+      "input": "M\u0130CROSOFT",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: wrapped in punctuation",
+      "input": "[Microsoft]",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: with emoji",
+      "input": "Microsoft Support \ud83d\udee1\ufe0f",
+      "expected": null
+    },
+    {
+      "name": "brand word next to a partner's own name kept",
+      "input": "Northwind Microsoft Partner",
+      "expected": "Northwind Microsoft Partner"
+    },
+    {
+      "name": "brand word with a non-qualifier word kept",
+      "input": "Contoso Microsoft Solutions",
+      "expected": "Contoso Microsoft Solutions"
+    },
+    {
+      "name": "brand inside a longer word kept",
+      "input": "Pineapple IT",
+      "expected": "Pineapple IT"
+    },
+    {
+      "name": "brand followed by a place name kept",
+      "input": "Apple Valley IT",
+      "expected": "Apple Valley IT"
+    },
+    {
+      "name": "brand word in an unrelated trade kept",
+      "input": "Windows & Doors Ltd",
+      "expected": "Windows & Doors Ltd"
+    },
+    {
+      "name": "qualifiers alone kept",
+      "input": "IT Support Team",
+      "expected": "IT Support Team"
+    },
+    {
+      "name": "brand with a non-Latin word kept",
+      "input": "Microsoft \u0421\u0435\u0440\u0432\u0438\u0441",
+      "expected": "Microsoft \u0421\u0435\u0440\u0432\u0438\u0441"
+    },
+    {
+      "name": "brand with a digit that is not a qualifier kept",
+      "input": "Windows 11",
+      "expected": "Windows 11"
+    },
+    {
+      "name": "reserved brand: stacked combining marks on Microsoft",
+      "input": "M\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300icrosoft",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: trade mark sign (NFKC makes it TM)",
+      "input": "Microsoft\u2122",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: service mark sign (NFKC makes it SM)",
+      "input": "Microsoft Support\u2120",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: copyright sign ignored",
+      "input": "Microsoft\u00a9",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: brand alone (Azure)",
+      "input": "Azure",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: qualifier before the brand",
+      "input": "Support Microsoft",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: split must backtrack past a shorter word (tech|technician)",
+      "input": "Windows Technician",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: plural qualifier (service|services)",
+      "input": "Microsoft Services",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: run-together brand and qualifier (AppleCare)",
+      "input": "AppleCare",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: British spelling",
+      "input": "Google Centre",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: longer than the cap, cut mid-word",
+      "input": "Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: the cap cuts off the only non-list word",
+      "input": "Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft IT Northwind",
+      "expected": null
+    },
+    {
+      "name": "brand plus a word that only starts like a qualifier kept",
+      "input": "Windows Technicolor",
+      "expected": "Windows Technicolor"
     }
-  ]
+  ],
+  "reservedBrands": {
+    "brands": [
+      "microsoft",
+      "windows",
+      "apple",
+      "macos",
+      "icloud",
+      "google",
+      "azure"
+    ],
+    "qualifiers": [
+      "support",
+      "security",
+      "help",
+      "desk",
+      "service",
+      "services",
+      "team",
+      "tech",
+      "technical",
+      "technician",
+      "it",
+      "customer",
+      "care",
+      "center",
+      "centre",
+      "update",
+      "updates",
+      "defender",
+      "account",
+      "accounts",
+      "admin",
+      "official",
+      "store",
+      "365",
+      "inc",
+      "corp",
+      "corporation",
+      "llc",
+      "ltd",
+      "the",
+      "tm",
+      "sm"
+    ]
+  }
 }

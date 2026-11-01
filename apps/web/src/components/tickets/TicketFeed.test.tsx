@@ -192,6 +192,56 @@ describe('TicketFeed', () => {
     expect(screen.queryByTestId('ticket-comment-edit-ctrl-3')).toBeNull();
     expect(screen.queryByTestId('ticket-comment-delete-ctrl-3')).toBeNull();
   });
+
+  // #9960: the deliverable notes Breeze posts are commentType 'internal', so they
+  // render as a comment card — but nobody wrote them, so no Edit/Delete, even
+  // for a caller whose canManageComment says yes (tickets:manage).
+  it('never offers edit or delete on a system-authored note', () => {
+    render(
+      <TicketFeed
+        comments={[
+          makeComment({
+            id: 'sys-note', userId: null, authorName: 'Breeze', authorType: 'system',
+            originPrincipalKind: 'system', commentType: 'internal', isPublic: false,
+            content: 'Internal instructions for this deliverable:',
+          }),
+          makeComment({ id: 'sys-origin', userId: null, authorType: 'internal', originPrincipalKind: 'system', commentType: 'internal' }),
+          makeComment({
+            id: 'sys-author', userId: null, authorType: 'system', originPrincipalKind: null, commentType: 'internal',
+            attachments: [{
+              id: 'sys-att', commentId: 'sys-author', contentType: 'application/pdf',
+              byteSize: 10, originalFilename: 'evidence.pdf', createdAt: '2026-08-30T10:00:00.000Z',
+            }],
+          }),
+          makeComment({
+            id: 'human', content: 'mine',
+            attachments: [{
+              id: 'human-att', commentId: 'human', contentType: 'application/pdf',
+              byteSize: 10, originalFilename: 'mine.pdf', createdAt: '2026-08-30T10:00:00.000Z',
+            }],
+          }),
+        ]}
+        ticketId="t-1"
+        onEditComment={vi.fn()}
+        onDeleteComment={vi.fn()}
+        onDeleteAttachment={vi.fn()}
+        canManageComment={() => true}
+      />
+    );
+    expect(screen.getByTestId('ticket-comment-sys-note')).toHaveTextContent('Internal instructions');
+    expect(screen.queryByTestId('ticket-comment-edit-sys-note')).toBeNull();
+    expect(screen.queryByTestId('ticket-comment-delete-sys-note')).toBeNull();
+    expect(screen.queryByTestId('ticket-comment-edit-sys-origin')).toBeNull();
+    expect(screen.queryByTestId('ticket-comment-delete-sys-origin')).toBeNull();
+    expect(screen.queryByTestId('ticket-comment-edit-sys-author')).toBeNull();
+    expect(screen.queryByTestId('ticket-comment-delete-sys-author')).toBeNull();
+    // Its attachment renders, but without a delete control.
+    expect(screen.getByTestId('ticket-attachment-file-sys-att')).toBeInTheDocument();
+    expect(screen.queryByTestId('ticket-attachment-delete-sys-att')).toBeNull();
+    expect(screen.getByTestId('ticket-comment-edit-human')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-comment-delete-human')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-attachment-delete-human-att')).toBeInTheDocument();
+  });
 });
 
 // ─── Inline comment editor ────────────────────────────────────────────────────

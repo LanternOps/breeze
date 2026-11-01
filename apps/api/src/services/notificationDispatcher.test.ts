@@ -22,6 +22,7 @@ const {
   updateWhereMock,
   updateReturningMock,
   sendWebhookNotificationMock,
+  sendEmailNotificationMock, sendSmsNotificationMock, sendPushoverNotificationMock, sendPagerDutyNotificationMock,
   isRedisAvailableMock,
   getRedisMock,
   rateLimiterMock,
@@ -37,6 +38,7 @@ const {
   updateWhereMock: vi.fn(),
   updateReturningMock: vi.fn(),
   sendWebhookNotificationMock: vi.fn(),
+  sendEmailNotificationMock: vi.fn(), sendSmsNotificationMock: vi.fn(), sendPushoverNotificationMock: vi.fn(), sendPagerDutyNotificationMock: vi.fn(),
   isRedisAvailableMock: vi.fn(() => false),
   getRedisMock: vi.fn(() => ({})),
   rateLimiterMock: vi.fn(),
@@ -55,18 +57,17 @@ vi.mock('../db', () => ({
         // getNotificationChannelWithConfig (services/notificationChannelConfig.ts,
         // #6379) chains .leftJoin().where().orderBy().$dynamic().limit(1)
         // instead of the bare .where().limit() the alert/org selects use above.
-        leftJoin: () => ({
-          where: (w: unknown) => {
-            selectWheres.push(w);
-            return {
-              orderBy: () => ({
-                $dynamic: () => ({
-                  limit: () => Promise.resolve(selectResults.shift() ?? [])
-                })
-              })
-            };
-          }
-        })
+        leftJoin: () => {
+          const chain = {
+            leftJoin: () => chain,
+            where: (w: unknown) => { selectWheres.push(w); return chain; },
+            orderBy: () => chain,
+            $dynamic: () => chain,
+            limit: () => Promise.resolve(selectResults.shift() ?? []),
+            then: (resolve: (v: unknown) => unknown) => Promise.resolve(selectResults.shift() ?? []).then(resolve),
+          };
+          return chain;
+        }
       })
     })),
     insert: vi.fn(() => ({
@@ -127,17 +128,17 @@ vi.mock('./notificationChannelSecrets', () => ({
 }));
 
 vi.mock('./notificationSenders', () => ({
-  sendEmailNotification: vi.fn(),
-  getEmailRecipients: vi.fn(),
+  sendEmailNotification: sendEmailNotificationMock,
+  getEmailRecipients: vi.fn(() => ['ops@example.com']),
   sendWebhookNotification: sendWebhookNotificationMock,
   webhookTotalAttempts: vi.fn(() => 3),
   sendInAppNotification: vi.fn(),
-  sendPagerDutyNotification: vi.fn(),
-  sendPushoverNotification: vi.fn()
+  sendPagerDutyNotification: sendPagerDutyNotificationMock,
+  sendPushoverNotification: sendPushoverNotificationMock
 }));
 
 vi.mock('./notificationSenders/smsSender', () => ({
-  sendSmsNotification: vi.fn()
+  sendSmsNotification: sendSmsNotificationMock
 }));
 
 import { alertNotifications } from '../db/schema';
@@ -239,6 +240,7 @@ beforeEach(() => {
   updateWhereMock.mockReset();
   updateReturningMock.mockReset();
   sendWebhookNotificationMock.mockReset();
+  for (const sender of [sendEmailNotificationMock, sendSmsNotificationMock, sendPushoverNotificationMock, sendPagerDutyNotificationMock]) sender.mockReset().mockResolvedValue({ success: true });
   isRedisAvailableMock.mockReset().mockReturnValue(false);
   getRedisMock.mockReset().mockReturnValue({});
   rateLimiterMock.mockReset();
@@ -247,6 +249,43 @@ beforeEach(() => {
 });
 
 describe('processSendNotification send-identity state machine', () => {
+  it('renders a workload subject in legacy device templates and webhook payloads', async () => {
+    queuePrepareSelects(makeAlert({ deviceId: null, ownerKind: 'backup_workload', ownerRef: 'workload-1' }), { partnerId: null }, makeChannel({ templates: { alert_triggered: '{{device}} / {{deviceName}} / {{ownerKind}} / {{ownerLabel}} / {{subjectName}}' } }));
+    insertReturningMock.mockResolvedValueOnce([makeNotificationRow()]);
+    selectResults.push([{ id: 'org-1', name: 'Example organization' }]);
+    selectResults.push([{ id: 'workload-1', orgId: 'org-1', dataSources: ['m365_mail'], customerName: 'Example customer', provider: 'cove', portalShowProviderName: false }]);
+    sendWebhookNotificationMock.mockResolvedValue({ success: true });
+    const result = await processSendNotification(baseData);
+    expect(result.success).toBe(true);
+    const payload = sendWebhookNotificationMock.mock.calls[0]?.[1];
+    expect(payload).toMatchObject({ deviceId: null, ownerKind: 'backup_workload', subjectName: 'Microsoft 365 mail backup · Example customer', owner: { kind: 'backup_workload', ref: 'workload-1' } });
+    expect(payload.summary).toBe('Microsoft 365 mail backup · Example customer / Microsoft 365 mail backup · Example customer / backup_workload / Microsoft 365 mail backup / Microsoft 365 mail backup · Example customer');
+    expect(payload.summary).not.toContain('null');
+    expect(payload.summary).not.toContain('{{');
+  });
+
+  for (const type of ['email', 'sms', 'pushover', 'slack', 'teams', 'pagerduty'] as const) {
+    for (const workload of [true, false]) {
+      it(`passes the ${workload ? 'workload' : 'device'} subject to ${type} without a channel template`, async () => {
+        const alert = makeAlert(workload ? { deviceId: null, ownerKind: 'backup_workload', ownerRef: 'workload-1' } : {});
+        queuePrepareSelects(alert, { partnerId: null }, makeChannel({ type, config: { webhookUrl: 'https://example.com/hook', token: 'token', user: 'user', sound: 'none', priority: 0 }, templates: null }));
+        insertReturningMock.mockResolvedValueOnce([makeNotificationRow()]);
+        if (!workload) selectResults.push([{ id: 'device-1', orgId: 'org-1', displayName: 'Server-1' }]);
+        selectResults.push([{ id: 'org-1', name: 'Example organization' }]);
+        if (workload) selectResults.push([{ id: 'workload-1', orgId: 'org-1', dataSources: ['m365_mail'], customerName: 'Example customer', provider: 'cove', portalShowProviderName: false }]);
+        sendWebhookNotificationMock.mockResolvedValue({ success: true });
+        expect((await processSendNotification(baseData)).success).toBe(true);
+        const sender = { email: sendEmailNotificationMock, sms: sendSmsNotificationMock, pushover: sendPushoverNotificationMock, slack: sendWebhookNotificationMock, teams: sendWebhookNotificationMock, pagerduty: sendPagerDutyNotificationMock }[type]!;
+        const payload = sender.mock.calls[0]?.[type === 'email' ? 0 : 1];
+        expect(payload).toMatchObject({ subjectName: workload ? 'Microsoft 365 mail backup · Example customer' : 'Server-1', ownerKind: workload ? 'backup_workload' : 'device', deviceName: workload ? undefined : 'Server-1' });
+        if (type === 'slack' || type === 'teams') {
+          expect(sender.mock.calls[0]?.[0].payloadTemplate).toContain('{{subjectPart}}');
+          expect(payload.context.subjectPart).toBe(workload ? ' · Microsoft 365 mail backup · Example customer' : '');
+        }
+      });
+    }
+  }
+
   it('(a) first invocation inserts pending with escalationStep collapsed via ?? 0, even for an explicit null', async () => {
     queuePrepareSelects();
     insertReturningMock.mockResolvedValueOnce([makeNotificationRow()]);

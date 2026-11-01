@@ -101,10 +101,9 @@ jobs:
       # the production web bundle and drives it in a real Chromium. Same
       # fail-safe shape as `code` — anything unresolvable turns it on.
       topology_browser: ${{ steps.classify.outputs.topology_browser }}
-      # "Agent code (or its CI) changed" — agent/**, ci.yml, the classifier.
-      # NOT the same as `agent` above (the QEMU gate). Gates the temporary
-      # Test Agent (Windows) waiver in ci-success (#6943). Fail-safe: anything
-      # unresolvable turns it on, so the waiver is never granted on no evidence.
+      # Agent area: agent/**, shared/global inputs and files read by Go tests.
+      # Separate from the QEMU gate above; gates seven agent jobs. Unknown
+      # paths and unresolved change lists fail open to include this area.
       agent_code: ${{ steps.classify.outputs.agent_code }}
       # Gate for the 16-shard `integration-test` job (#5936). Path-gated on
       # `pull_request` ONLY (the classifier gets `--pull-request` there and
@@ -112,6 +111,10 @@ jobs:
       # any code change, so the queue always runs the full integration suite.
       # Fail-safe like the rest: anything unresolvable turns it on.
       integration: ${{ steps.classify.outputs.integration }}
+      # Docs-only PRs can break tests reading docs by path; the map declares them.
+      # path_readers=true with an empty reader_tests list runs every mapped test.
+      path_readers: ${{ steps.classify.outputs.path_readers }}
+      reader_tests: ${{ steps.classify.outputs.reader_tests }}
     steps:
       - name: Checkout (classifier script only)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -144,7 +147,7 @@ jobs:
           # a code change through as docs-only.
           full_suite() {
             echo "$1" >&2
-            printf 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true\n' | tee -a "${GITHUB_OUTPUT}"
+            printf 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true\npath_readers=true\nreader_tests=\n' | tee -a "${GITHUB_OUTPUT}"
           }
           if [[ "${EVENT_NAME}" == "pull_request" ]]; then
             # The PR files API needs no checkout and sees renames/deletes too; a
@@ -326,6 +329,12 @@ jobs:
 
       - name: Test per-area job gating contract
         run: node --test .github/scripts/ci-area-gating.test.mjs
+
+      - name: Test reader-test runner
+        run: node --test .github/scripts/run-reader-tests.test.mjs
+
+      - name: Test PR selection contract (W3)
+        run: node --test .github/scripts/ci-pr-selection.test.mjs
 
       - name: CI cache policy contract
         run: node --test .github/scripts/ci-cache-policy.test.mjs
@@ -1958,7 +1967,7 @@ jobs:
     name: Build Agent (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ${{ matrix.runner }}
     needs: [lint, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -2094,7 +2103,7 @@ jobs:
     name: Agent Windows manifest guard
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2144,7 +2153,7 @@ jobs:
     name: Test Agent
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     # Room for a package retry (W1, #10744): "Run Go tests" measured 5.8 min
     # median / 5.9 max, setup + loopback/edition steps ≤ 1.5 min, across six
     # CI runs 2026-10-29..30. Explicit so retry-shard's --budget-minutes (this
@@ -2248,7 +2257,7 @@ jobs:
     name: Test Agent (Windows)
     runs-on: windows-latest
     needs: [lint, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -3155,7 +3164,7 @@ jobs:
     name: Lint Agent (Go)
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     # CGO off (matches test-agent): the agent's only cgo files are the linux
     # X11/pcap capture backends, whose C headers are not on the runner. vet +
     # lint cover the CGO-off build; the cgo backends are compiled by build-agent.
@@ -3255,7 +3264,7 @@ jobs:
     name: Test Agent (race)
     runs-on: macos-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     # Room for a package retry (W1, #10744): "go test -race" measured 16.5 min
     # median / 19.2 max, setup ≤ 2.1 min, across six CI runs 2026-10-29..30
     # (macOS runners vary ~2×). 2 × 19.2 + 5 ≈ 43. retry-shard's
@@ -3348,7 +3357,7 @@ jobs:
     name: Windows Runtime Smoke
     runs-on: windows-latest
     needs: [lint, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -4712,6 +4721,39 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  path-read-contracts:
+    name: Path-read contracts
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.path_readers == 'true'
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run reader tests
+        env:
+          READER_TESTS: ${{ needs.changes.outputs.reader_tests }}
+        run: node .github/scripts/run-reader-tests.mjs
+
   # ─── Portal dev-mode hydration guard (#3906) ─────────────────────────────
   # Regression cover for #3906: every portal React island SSR'd correctly
   # behind Caddy in a dev-mode stack and then silently failed to hydrate, so
@@ -5031,7 +5073,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [changes, workspace-runtime, docs-check, lint, release-ledger, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-shared, test-document-ui, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, lint-agent, test-agent, agent-windows-manifest-guard, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract, topology-browser-gate]
+    needs: [path-read-contracts, changes, workspace-runtime, docs-check, lint, release-ledger, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-shared, test-document-ui, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, lint-agent, test-agent, agent-windows-manifest-guard, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract, topology-browser-gate]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -5096,6 +5138,8 @@ jobs:
           TOPOLOGY_BROWSER_CHANGED: ${{ needs.changes.outputs.topology_browser }}
           AGENT_CODE_CHANGED: ${{ needs.changes.outputs.agent_code }}
           INTEGRATION_CHANGED: ${{ needs.changes.outputs.integration }}
+          PATH_READERS_CHANGED: ${{ needs.changes.outputs.path_readers }}
+          PATH_READ_CONTRACTS_RESULT: ${{ needs.path-read-contracts.result }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
           # Fail closed: only a successful path check may skip native compilation. The
@@ -5119,6 +5163,9 @@ jobs:
           esac
           if [[ "${CHANGES_RESULT}" != "success" ]] || \
              { [[ "${DOCS_CHANGED}" != "false" ]] && [[ "${DOCS_CHECK_RESULT}" != "success" ]]; } || \
+             { [[ "${PATH_READERS_CHANGED}" == "true" ]] && [[ "${PATH_READ_CONTRACTS_RESULT}" != "success" ]]; } || \
+             { [[ "${PATH_READERS_CHANGED}" != "true" ]] && [[ "${PATH_READERS_CHANGED}" != "false" ]]; } || \
+             { [[ "${PATH_READERS_CHANGED}" == "false" ]] && [[ "${PATH_READ_CONTRACTS_RESULT}" != "skipped" ]]; } || \
              { [[ "${CODE_CHANGED}" != "false" ]] && { \
              [[ "${LINT_RESULT}" != "success" ]] || \
              [[ "${RELEASE_LEDGER_RESULT}" != "success" ]] || \
@@ -5184,12 +5231,24 @@ jobs:
              { [[ "${PORTAL_CHANGED}" == "true" ]] && [[ "${BUILD_PORTAL_RESULT}" != "success" ]]; } || \
              { [[ "${PORTAL_CHANGED}" != "true" ]] && [[ "${PORTAL_CHANGED}" != "false" ]]; } || \
              { [[ "${PORTAL_CHANGED}" == "false" ]] && [[ "${BUILD_PORTAL_RESULT}" != "skipped" ]]; } || \
-             [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \
-             [[ "${LINT_AGENT_RESULT}" != "success" ]] || \
-             [[ "${TEST_AGENT_RESULT}" != "success" ]] || \
-             [[ "${AGENT_WINDOWS_MANIFEST_GUARD_RESULT}" != "success" ]] || \
-             { [[ "${TEST_AGENT_WINDOWS_RESULT}" != "success" ]] && ! { [[ "${TEST_AGENT_WINDOWS_RESULT}" == "failure" ]] && [[ "${AGENT_CODE_CHANGED}" == "false" ]]; }; } || \
-             [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]] || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${BUILD_AGENT_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${BUILD_AGENT_RESULT}" != "skipped" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${LINT_AGENT_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${LINT_AGENT_RESULT}" != "skipped" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${TEST_AGENT_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${TEST_AGENT_RESULT}" != "skipped" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${AGENT_WINDOWS_MANIFEST_GUARD_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${AGENT_WINDOWS_MANIFEST_GUARD_RESULT}" != "skipped" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${TEST_AGENT_WINDOWS_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${TEST_AGENT_WINDOWS_RESULT}" != "skipped" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "skipped" ]]; } || \
              { [[ "${INTEGRATION_CHANGED}" == "true" ]] && [[ "${INTEGRATION_TEST_RESULT}" != "success" ]]; } || \
              { [[ "${INTEGRATION_CHANGED}" != "true" ]] && [[ "${INTEGRATION_CHANGED}" != "false" ]]; } || \
              { [[ "${INTEGRATION_CHANGED}" == "false" ]] && [[ "${INTEGRATION_TEST_RESULT}" != "skipped" ]]; } || \
@@ -5287,16 +5346,6 @@ jobs:
           if [[ "${IS_PR}" != "true" ]] && [[ "${STACK_CHANGED}" == "true" ]] && [[ "${GUIDED_SETUP_SMOKE_RESULT}" != "success" ]]; then
             echo "Guided setup smoke failed on main branch push"
             exit 1
-          fi
-          # TEMPORARY (#6943): a Go runtime crash flakes `Test Agent (Windows)`
-          # and dequeues unrelated PRs. The job still runs; its FAILURE is waived
-          # only when the classifier positively reported agent_code=false (no
-          # agent/** / ci.yml / classifier change) — empty or `true` never waives.
-          # `cancelled`/`skipped` are unchanged (still blocking above).
-          # Remove this block and the waiver clause in the condition once #6943
-          # is fixed. Applies to pull_request and merge_group alike.
-          if [[ "${TEST_AGENT_WINDOWS_RESULT}" == "failure" ]]; then
-            echo "::warning::Test Agent (Windows) failed but is waived: no agent code changed. Known Go runtime crash, see #6943 (temporary waiver)."
           fi
           echo "All required jobs passed!"
 

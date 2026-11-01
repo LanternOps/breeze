@@ -40,7 +40,9 @@ type DeviceWarrantyCardProps = {
   pollTimeoutMs?: number;
 };
 
-const statusConfig: Record<string, { label: string; color: string }> = {
+// Shared with the device list's Warranty column (#9863) so a status reads the
+// same in both places.
+export const WARRANTY_STATUS_BADGE: Record<string, { label: string; color: string }> = {
   active: { label: 'active', color: 'bg-success/15 text-success border-success/30' },
   expiring: { label: 'expiring', color: 'bg-warning/15 text-warning border-warning/30' },
   expired: { label: 'expired', color: 'bg-destructive/15 text-destructive border-destructive/30' },
@@ -312,7 +314,7 @@ export default function DeviceWarrantyCard({
     return null;
   }
 
-  const cfg = statusConfig[warranty.status] ?? statusConfig.unknown;
+  const cfg = WARRANTY_STATUS_BADGE[warranty.status] ?? WARRANTY_STATUS_BADGE.unknown;
   const vendorEarlier = vendorReportsEarlierEnd(warranty);
   // The vendor's service level describes the vendor's (shorter) coverage, not
   // the imported end date shown beside it, so it is not paired with it.

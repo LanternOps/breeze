@@ -32,6 +32,13 @@ describe('web filter catalog mirrors the API built-in catalog', () => {
     for (const [key, type] of api) expect(web.get(key), key).toBe(type);
   });
 
+  it('includes the warranty status filter (#9863)', () => {
+    const api = apiCatalog();
+    expect(api.get('warranty.status')).toBe('enum');
+    const web = FILTER_FIELDS.find((f) => f.key === 'warranty.status');
+    expect(web?.enumValues).toEqual(['active', 'expiring', 'expired', 'unknown', 'subscription_active']);
+  });
+
   it('includes the log-shipping health filter (#8611)', () => {
     expect(apiCatalog().get('logShippingFailing')).toBe('boolean');
     expect(FILTER_FIELDS.find((f) => f.key === 'logShippingFailing')?.type).toBe('boolean');
