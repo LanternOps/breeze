@@ -72,6 +72,12 @@ export interface ContractSummary {
   /** Resolved period value (live per_device/per_seat counts), added by GET /contracts. */
   estimatedPeriodValue?: string | null;
   estimateError?: 'GROUP_EVALUATION_FAILED';
+  /** #10361: the quote whose accept created this contract; null for a
+   *  hand-built or adopted one. Optional: older payloads omit it. */
+  sourceQuoteId?: string | null;
+  /** #10361: that quote as GET /contracts names it; null when the contract has
+   *  no source quote (or it is gone). */
+  sourceQuote?: { id: string; quoteNumber: string | null } | null;
 }
 
 /** One line's resolved estimate from GET /contracts/:id/estimate. */
@@ -169,6 +175,9 @@ export interface ContractDetail {
   /** #9303: the org's other draft/active/paused contracts. Absent on payloads
    *  from callers that do not ask for it; treat absent as "none known". */
   relatedContracts?: RelatedContract[];
+  /** #10361: the quote whose accept created this contract (contract page read
+   *  only). Absent on older payloads; null when there is none. */
+  sourceQuote?: { id: string; quoteNumber: string | null } | null;
 }
 
 export interface ListContractsQuery {
