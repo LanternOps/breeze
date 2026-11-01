@@ -237,7 +237,3 @@ Update agents to a release containing this change before relying on the provider
 ### Partner settings copy matches the inheritance badges (#10372)
 
 The default-expiry and maximum-lifetime selects and the partner agent-pin caption no longer say organizations "configure individually" or are "pinned for all"; each now agrees with its Org can override / Partner-wide badge.
-
-### SaaS backup workloads raise alerts (#10725 W3)
-
-Microsoft 365 and Google Workspace backup failures, including Cove Microsoft 365 workloads, now create organization-level alerts that flow through notifications and automations. Endpoint alerts are unchanged. Device-only automations skip these workload alerts.
