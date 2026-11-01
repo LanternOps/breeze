@@ -60,6 +60,9 @@ const ALLOWED_TAG_NAMES = new Set([
   'user_id',
   'scope',
   'org_id',
+  // Sourced alert ownership: a bounded kind and the local workload row UUID.
+  'ownerKind',
+  'ownerRef',
   'partner_id',
   'psa_connection_id',
   'psa_provider',

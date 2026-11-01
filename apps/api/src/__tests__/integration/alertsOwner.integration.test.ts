@@ -91,6 +91,15 @@ describe('alert owner database contract', () => {
       VALUES (${f.orgAId}::uuid, 'device', NULL, 'high', 'Invalid owner')`), '23514');
   });
 
+  it('rejects a topology row labeled as a device owner (23514)', async () => {
+    const f = await fixture();
+    // Valid topology provenance and org/site ownership: only owner_kind is wrong.
+    await expectSqlState(getTestDb().execute(sql`
+      INSERT INTO alerts (org_id, owner_kind, device_id, topology_site_id, topology_source_key, severity, title)
+      VALUES (${f.orgAId}::uuid, 'device', ${f.deviceId}::uuid, ${f.siteId}::uuid,
+        ${'topology:' + 'c'.repeat(64)}, 'high', 'Invalid topology owner')`), '23514');
+  });
+
   it('rejects a backup_workload owner without a reference (23514)', async () => {
     const f = await fixture();
     await expectSqlState(getTestDb().execute(sql`

@@ -31,6 +31,7 @@ import {
   buildDismissAlertCas,
   buildResolveAlertCas,
   buildSuppressAlertCas,
+  publishAlertSuppressed,
   buildUnsuppressAlertCas,
 } from '../../services/alertService';
 import { acknowledgeAlert } from '../../services/alertActions';
@@ -807,9 +808,14 @@ alertsRoutes.post(
         results.updated++;
         updatedIds.push(alert.id);
 
-        // The single suppress/dismiss endpoints don't publish an event-bus event,
-        // only ML feedback — mirror that here and keep publishEvent for ack/resolve.
-        if (action === 'acknowledge' || action === 'resolve') {
+        // Dismiss publishes no event-bus event, only ML feedback (no
+        // `alert.dismissed` event type exists). Suppress goes through the shared
+        // producer so its payload matches the single route and the AI tool.
+        if (action === 'suppress') {
+          await publishAlertSuppressed({
+            alert, suppressedBy: auth.user.id, suppressedUntil, source: 'alerts-route', now,
+          });
+        } else if (action === 'acknowledge' || action === 'resolve') {
           try {
             await publishEvent(
               action === 'acknowledge' ? 'alert.acknowledged' : 'alert.resolved',
@@ -1021,27 +1027,35 @@ alertsRoutes.post(
       return c.json({ error: ALERT_CAS_LOST_MESSAGE }, 409);
     }
 
-    // Set cooldown to prevent immediate re-trigger by the evaluation worker
-    if (alert.ruleId) {
-      if (!isDeviceOwned(alert)) throw new Error('alert_has_no_device');
-      const [rule] = await db
-        .select()
-        .from(alertRules)
-        .where(eq(alertRules.id, alert.ruleId))
-        .limit(1);
-
-      if (rule) {
-        const [template] = await db
+    // Cooldowns are keyed by device; a skip must preserve the resolve fan-out.
+    if (alert.ruleId && !isDeviceOwned(alert)) {
+      console.warn('[AlertsRoute] Skipping device cooldown on resolve', {
+        alertId: alert.id, orgId: alert.orgId, ownerKind: alert.ownerKind, reason: 'alert_has_no_device',
+      });
+    }
+    try {
+      if (alert.ruleId && isDeviceOwned(alert)) {
+        const [rule] = await db
           .select()
-          .from(alertTemplates)
-          .where(eq(alertTemplates.id, rule.templateId))
+          .from(alertRules)
+          .where(eq(alertRules.id, alert.ruleId))
           .limit(1);
 
-        const overrides = rule.overrideSettings as Record<string, unknown> | null;
-        const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-          template?.cooldownMinutes ?? 15;
-        await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes, alert.subjectKey ?? undefined);
+        if (rule) {
+          const [template] = await db
+            .select()
+            .from(alertTemplates)
+            .where(eq(alertTemplates.id, rule.templateId))
+            .limit(1);
+
+          const overrides = rule.overrideSettings as Record<string, unknown> | null;
+          const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
+            template?.cooldownMinutes ?? 15;
+          await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes, alert.subjectKey ?? undefined);
+        }
       }
+    } catch (error) {
+      console.error('[AlertsRoute] Failed to set alert cooldown on resolve:', error);
     }
 
     try {
@@ -1138,6 +1152,10 @@ alertsRoutes.post(
     if (!updated) {
       return c.json({ error: ALERT_SUPPRESS_CAS_LOST_MESSAGE }, 409);
     }
+
+    await publishAlertSuppressed({
+      alert, suppressedBy: auth.user.id, suppressedUntil, source: 'alerts-route',
+    });
 
     await emitAlertStateFeedback({
       orgId: alert.orgId,

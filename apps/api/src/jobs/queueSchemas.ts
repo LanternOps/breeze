@@ -314,6 +314,8 @@ export const automationQueueJobDataSchema = z.discriminatedUnion('type', [
     automationId: z.string().min(1),
     eventType: z.string().min(1),
     eventId: z.string().min(1).optional(),
+    // Preserve the event tenant for partner-wide automation skip diagnostics.
+    eventOrgId: z.string().min(1).optional(),
     eventPayload: z.record(z.string(), z.unknown()).optional(),
     eventTimestamp: z.string().min(1),
     // #5221 B2 — as trigger-schedule's: false only from the switched-row fan-out.
