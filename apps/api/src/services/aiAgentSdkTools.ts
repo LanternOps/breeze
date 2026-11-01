@@ -2224,7 +2224,7 @@ export function buildBreezeSdkTools(
         siteId: z.string().guid().optional(),
         search: z.string().max(200).optional(),
         tags: z.array(z.string().max(100)).max(20).optional(),
-        ...pageZodShape(25, 100),
+        ...pageZodShape(20, 100),
       },
       makeHandler('query_devices', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2371,7 +2371,7 @@ export function buildBreezeSdkTools(
         status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
         severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
         deviceId: uuid.optional(),
-        ...keysetZodShape(15, 100),
+        ...keysetZodShape(12, 100),
         resolutionNote: z.string().max(1000).optional(),
       },
       makeHandler('manage_alerts', getAuth, onPreToolUse, onPostToolUse)

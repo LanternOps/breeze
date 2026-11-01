@@ -489,7 +489,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     siteId: uuid.optional(),
     search: z.string().max(200).optional(),
     tags: z.array(z.string().max(100)).max(20).optional(),
-    ...pageZodShape(25, 100),
+    ...pageZodShape(20, 100),
   }),
 
   get_device_details: z.object({
@@ -1147,7 +1147,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
     severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
     deviceId: uuid.optional(),
-    ...keysetZodShape(15, 100),
+    ...keysetZodShape(12, 100),
     resolutionNote: z.string().max(1000).optional(),
     suppressDuration: z.number().int().min(0).max(720).optional(),
   }).refine(
