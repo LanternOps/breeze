@@ -63,6 +63,7 @@ import { aiOperatorTaskSteps, aiOperatorTaskTargets } from '../../db/schema/aiOp
 import { canonicalizeUserEmail, resolveContextByOrg } from '../aiToolsGoogle';
 import { getDirectoryClient, normalizeGoogleError } from '../googleClient';
 import { readHumanWorkStep } from './humanWorkService';
+import { describeReservationConflict, lockAndCheckAccountReservations } from './accountReservations';
 import {
   DiscoveryTransientError,
   errorMessage,
@@ -480,7 +481,9 @@ export type StageTransitionGuard =
   /** The caller passed a resolution with no account (a `no_account_resolved` must hand off, not bump). */
   | 'nothing_resolved'
   /** `bumpPlanRevisionInTx` did not move the task from r to r+1. */
-  | 'bump_lost';
+  | 'bump_lost'
+  /** #9981: another task holds one of the accounts this task created (it is live, or ended `unknown_effect`). */
+  | 'account_reserved';
 
 /**
  * Thrown from inside the caller's `alsoInTransaction` to ROLL BACK. Catch it
@@ -493,7 +496,8 @@ export class OnboardingStageTransitionAbort extends Error {
   }
 }
 
-export type StageTransitionDbHandle = TargetDbHandle;
+/** `execute` for the per-account advisory locks (#9981). */
+export type StageTransitionDbHandle = TargetDbHandle & Pick<typeof db, 'execute'>;
 
 export interface CommitStageTransitionInput {
   orgId: string;
@@ -552,7 +556,8 @@ function buildSnapshot2(input: CommitStageTransitionInput): { facts: IdentityOnb
 /**
  * B2 steps 1–4 on the CALLER's handle, inside its leased write at r:
  *   1. guards — the task is at r, at `resolve_accounts`, no operation at r is
- *      `pending`/`unknown`, the ref still points at `discover`;
+ *      `pending`/`unknown`, the ref still points at `discover`, and no other
+ *      task holds one of the accounts (#9981, which also takes their locks);
  *   2. `bumpPlanRevisionInTx` r → r+1 (anything but `bumped: true` throws);
  *   3. freeze each resolved account (with its `target_account_frozen` event)
  *      and upsert the contact's external links;
@@ -650,6 +655,13 @@ export async function commitOnboardingStageTransition(
   if (stepRowHoldsEnvelope(resolveRow.checkpoint)) {
     abort('snapshot_already_written', `the '${RESOLVE_STEP_KEY}' row already carries a planning snapshot`);
   }
+  // #9981: the accounts about to be frozen are reserved by the freeze. Take
+  // their locks (sorted) and refuse if another task already holds one — still
+  // a guard, so a conflict writes nothing. The locks are held to commit.
+  const held = await lockAndCheckAccountReservations(dbh, orgId,
+    providers.map((provider) => ({ provider, externalId: input.resolved.accounts[provider]!.externalId })),
+    { excludeTaskId: taskId });
+  if (held) abort('account_reserved', describeReservationConflict(held));
 
   // ── 2. The bump, r → r+1, on this handle ────────────────────────────────
   const bump = await bumpPlanRevisionInTx(dbh, {

@@ -2410,6 +2410,7 @@
       "platformNotSelected": "Plataforma no seleccionada",
       "varMissing": "Falta la variable de implementación",
       "varSecret": "La variable de implementación está marcada como secreta",
+      "installerMissing": "Instalador no cargado",
       "vendorUnavailable": "Proveedor no disponible",
       "installFailed": "Falló la instalación",
       "installNotArmed": "Instalación no habilitada",
@@ -2417,6 +2418,10 @@
       "awaitingVendorReport": "En espera del informe del proveedor",
       "awaitingEvaluation": "En espera de evaluación",
       "vendorOrgMismatch": "El proveedor informa otra organización"
+    },
+    "setupLink": {
+      "installerMissing": "Cargar el instalador",
+      "default": "Abrir configuración"
     }
   },
   "sweeps": {

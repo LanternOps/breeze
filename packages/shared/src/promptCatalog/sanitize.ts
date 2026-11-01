@@ -27,11 +27,15 @@
  *    rejects the whole name.
  * 7. Cap at 120 code points, trim again.
  * 8. Empty → null: the renderer shows the localized generic name.
+ * 9. A reserved brand name → null (#10325; see PROMPT_RESERVED_BRANDS), checked
+ *    on the name both before and after the cap. The same check refuses such a
+ *    name when a partner or org is saved (isReservedPromptBrandName).
  *
  * Known limits (by design): a name written entirely in one script's look-alike
  * letters (all-Cyrillic "сіѕсо") is not caught, because single-script Cyrillic
- * and Greek names are legitimate; and a plain brand word ("Microsoft") is not
- * blocked. The result is plain text: markup and `{placeholders}` are kept
+ * and Greek names are legitimate; a brand next to a word outside the qualifier
+ * list ("Contoso Microsoft Partner") is kept; and digit look-alikes
+ * ("M1crosoft") are not folded. The result is plain text: markup and `{placeholders}` are kept
  * verbatim and must never be interpreted. A renderer that embeds the name in
  * running text must bidi-isolate it (FSI…PDI or `<bdi>`), since a right-to-left
  * name keeps its strong RTL letters.
@@ -84,7 +88,66 @@ function capCombiningMarks(s: string): string {
   return out;
 }
 
-export function sanitizePromptPartnerName(raw: string): string | null {
+/**
+ * Reserved brand names (#10325). A name is reserved when its letters and
+ * digits, read without case, diacritics, spaces or punctuation, are exactly a
+ * run of these words with at least one brand: "Microsoft", "Windows Security",
+ * "Apple Help Desk", "MicrosoftSupport", "Micro soft", "Mícrosoft®",
+ * "Microsoft™" (NFKC has already made ™ the letters "TM"). The lists
+ * are data: change them here, in agent/internal/promptcatalog/sanitize.go and
+ * in the shared fixture's `reservedBrands` (all three are asserted equal).
+ */
+export const PROMPT_RESERVED_BRANDS: ReadonlyArray<string> = [
+  'microsoft', 'windows', 'apple', 'macos', 'icloud', 'google', 'azure',
+];
+
+/** Words that may surround a brand and still leave the name reserved. */
+export const PROMPT_RESERVED_BRAND_QUALIFIERS: ReadonlyArray<string> = [
+  'support', 'security', 'help', 'desk', 'service', 'services', 'team', 'tech',
+  'technical', 'technician', 'it', 'customer', 'care', 'center', 'centre', 'update',
+  'updates', 'defender', 'account', 'accounts', 'admin', 'official', 'store', '365',
+  'inc', 'corp', 'corporation', 'llc', 'ltd', 'the', 'tm', 'sm',
+];
+
+const KEY_KEPT = /[\p{L}\p{N}]/u;
+
+/**
+ * The matching key: NFD, lower case, then only letters and digits (combining
+ * marks, spaces, punctuation and symbols dropped). A non-ASCII letter is kept,
+ * so it never matches the ASCII word lists.
+ */
+function brandKey(s: string): string {
+  let key = '';
+  for (const ch of s.normalize('NFD').toLowerCase()) {
+    if (KEY_KEPT.test(ch)) key += ch;
+  }
+  return key;
+}
+
+/** True when `key` splits wholly into list words, at least one a brand. */
+function isReservedKey(key: string): boolean {
+  if (key === '') return false;
+  // reach[i]: 0 = key[0..i) does not split; 1 = splits, no brand; 2 = splits with a brand.
+  const reach = new Array<number>(key.length + 1).fill(0);
+  reach[0] = 1;
+  for (let i = 0; i < key.length; i++) {
+    const here = reach[i]!;
+    if (here === 0) continue;
+    for (const w of PROMPT_RESERVED_BRANDS) {
+      if (key.startsWith(w, i)) reach[i + w.length] = 2;
+    }
+    for (const w of PROMPT_RESERVED_BRAND_QUALIFIERS) {
+      if (key.startsWith(w, i) && here > reach[i + w.length]!) reach[i + w.length] = here;
+    }
+  }
+  return reach[key.length] === 2;
+}
+
+/**
+ * Steps 1–8. `shown` is the capped name a prompt displays; `full` is the same
+ * name before the cap. Null when nothing usable is left.
+ */
+function cleanName(raw: string): { full: string; shown: string } | null {
   if (typeof raw !== 'string') return null;
   let s = raw.replace(WHITESPACE_CONTROLS, ' ').replace(STRIPPED, '');
   s = s.normalize('NFKC').replace(STRIPPED, '');
@@ -92,9 +155,37 @@ export function sanitizePromptPartnerName(raw: string): string | null {
   s = s.replace(WHITESPACE_RUN, ' ').trim();
   if (s === '') return null;
   if (s.split(' ').some(mixesConfusableScripts)) return null;
+  const full = s;
   const codePoints = Array.from(s);
   if (codePoints.length > PROMPT_PARTNER_NAME_MAX_CODE_POINTS) {
     s = codePoints.slice(0, PROMPT_PARTNER_NAME_MAX_CODE_POINTS).join('').trim();
   }
-  return s === '' ? null : s;
+  return s === '' ? null : { full, shown: s };
+}
+
+/**
+ * Step 9 checks both forms: the cap can cut a long brand-only name mid-word
+ * ("… Microsoft Supp"), and it can cut the only non-list word off the end of a
+ * name, leaving nothing but brand words on screen.
+ */
+function isReservedName(name: { full: string; shown: string }): boolean {
+  return isReservedKey(brandKey(name.full)) || isReservedKey(brandKey(name.shown));
+}
+
+/**
+ * True when `raw` is a reserved brand name ("Microsoft Support"), which
+ * sanitizePromptPartnerName turns into null. Partner and org saves use it to
+ * refuse the name with a message, rather than let every device prompt fall
+ * back to the generic name. False for a name the sanitizer drops for another
+ * reason (empty, mixed scripts).
+ */
+export function isReservedPromptBrandName(raw: string): boolean {
+  const name = cleanName(raw);
+  return name !== null && isReservedName(name);
+}
+
+export function sanitizePromptPartnerName(raw: string): string | null {
+  const name = cleanName(raw);
+  if (name === null || isReservedName(name)) return null;
+  return name.shown;
 }

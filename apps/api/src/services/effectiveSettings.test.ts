@@ -27,8 +27,10 @@ vi.mock('drizzle-orm', () => ({
 }));
 
 import { db } from '../db';
+import { PARTNER_SETTINGS_CATALOG } from '@breeze/shared';
 import {
   assertNotLocked,
+  CONDITIONAL_LOCK_IN_FORCE,
   getEffectiveAiBudget,
   getEffectiveOrgSettings,
   resolveEffectiveAiBudgetFromRows,
@@ -537,4 +539,124 @@ describe('resolveEffectiveCategorySettings (pure core, #9170)', () => {
       expect(locked.filter((path) => !path.startsWith('aiBudgets.'))).toEqual(core.locked);
     });
   }
+});
+
+// #9762 — `locked` is derived from the partner settings catalog's kind, not
+// from "the partner stored a key". A partner value the org may override
+// (`overridable`) is reported in `partnerDefaults` instead, and a conditional
+// lock (Event Logs) is reported only while it is in force. `effective` is the
+// same partner-wins merge as before for every mode.
+describe('resolveEffectiveCategorySettings — locked[] by catalog kind (#9762)', () => {
+  const classify = (partner: Record<string, unknown>, org: Record<string, unknown> = {}) =>
+    resolveEffectiveCategorySettings(partner, org);
+
+  it('locks: a partner-set `locks` field is locked, not a partner default', () => {
+    const r = classify({ security: { requireMfa: true, sessionTimeout: 30 } });
+    expect(r.locked).toEqual(['security.requireMfa', 'security.sessionTimeout']);
+    expect(r.partnerDefaults).toEqual([]);
+  });
+
+  it('locks: agentUpdatePolicy and maintenanceWindow stay locked', () => {
+    const r = classify({ defaults: { agentUpdatePolicy: 'manual', maintenanceWindow: 'Mon 01:00-02:00' } });
+    expect(r.locked).toEqual(['defaults.agentUpdatePolicy', 'defaults.maintenanceWindow']);
+    expect(r.partnerDefaults).toEqual([]);
+  });
+
+  it('overridable: partner agent version pins are a default, not a lock', () => {
+    const r = classify(
+      { defaults: { agentVersionPins: { agent: '0.120.0' } } },
+      { defaults: { agentVersionPins: { agent: '0.121.0' } } },
+    );
+    expect(r.locked).toEqual([]);
+    expect(r.partnerDefaults).toEqual(['defaults.agentVersionPins']);
+    // `effective` is unchanged: still the partner-wins merge.
+    expect(r.effective.defaults?.agentVersionPins).toEqual({ agent: '0.120.0' });
+  });
+
+  it('overridable (cap qualifier): enrollment defaults are partner defaults; the partner-only cap stays locked', () => {
+    const r = classify({
+      defaults: { defaultEnrollmentTtlMinutes: 60, defaultEnrollmentDeviceCount: 5, maxEnrollmentLinkTtlMinutes: 120 },
+    });
+    expect(r.partnerDefaults).toEqual(['defaults.defaultEnrollmentTtlMinutes', 'defaults.defaultEnrollmentDeviceCount']);
+    expect(r.locked).toEqual(['defaults.maxEnrollmentLinkTtlMinutes']);
+  });
+
+  it('overridable: Pushover fill-blank defaults are partner defaults', () => {
+    const r = classify({
+      notifications: {
+        pushoverAppToken: 'sealed',
+        pushoverDefaultUser: 'sealed',
+        pushoverDefaultSound: 'pushover',
+        pushoverDefaultPriority: 1,
+      },
+    });
+    expect(r.locked).toEqual([]);
+    expect(r.partnerDefaults).toEqual([
+      'notifications.pushoverAppToken',
+      'notifications.pushoverDefaultUser',
+      'notifications.pushoverDefaultSound',
+      'notifications.pushoverDefaultPriority',
+    ]);
+  });
+
+  it('partnerOnly: a partner-only field the partner set is locked', () => {
+    const r = classify({ defaults: { maxEnrollmentLinkTtlMinutes: 30 } });
+    expect(r.locked).toEqual(['defaults.maxEnrollmentLinkTtlMinutes']);
+    expect(r.partnerDefaults).toEqual([]);
+  });
+
+  it('unclassified: keeps the presence lock until a maintainer classifies it', () => {
+    const r = classify({
+      security: { minLength: 12, allowedMethods: { totp: true } },
+      defaults: { autoEnrollment: { enabled: false } },
+      branding: { primaryColor: '#000000' },
+    });
+    expect(r.locked).toEqual([
+      'security.minLength',
+      'security.allowedMethods',
+      'defaults.autoEnrollment',
+      'branding.primaryColor',
+    ]);
+    expect(r.partnerDefaults).toEqual([]);
+  });
+
+  it('uncatalogued: a partner key the catalog does not know keeps the presence lock', () => {
+    const r = classify({ notifications: { someLegacyKey: 'x' } });
+    expect(r.locked).toEqual(['notifications.someLegacyKey']);
+    expect(r.partnerDefaults).toEqual([]);
+  });
+
+  describe('conditional: Event Logs lock only while the partner destination is in force', () => {
+    it('enabled with a URL → every set Event Logs field is locked', () => {
+      const r = classify({ eventLogs: { enabled: true, elasticsearchUrl: 'https://es.example.com', indexPrefix: 'p' } });
+      expect(r.locked).toEqual(['eventLogs.enabled', 'eventLogs.elasticsearchUrl', 'eventLogs.indexPrefix']);
+      expect(r.partnerDefaults).toEqual([]);
+    });
+
+    it('configured but disabled → nothing locked', () => {
+      const r = classify({ eventLogs: { enabled: false, elasticsearchUrl: 'https://es.example.com', indexPrefix: 'p' } });
+      expect(r.locked).toEqual([]);
+      expect(r.partnerDefaults).toEqual([]);
+    });
+
+    it('enabled without a URL → nothing locked', () => {
+      const r = classify({ eventLogs: { enabled: true, indexPrefix: 'p' } });
+      expect(r.locked).toEqual([]);
+      expect(r.partnerDefaults).toEqual([]);
+    });
+  });
+
+  it('every conditional catalog lock has an in-force predicate', () => {
+    const conditional = PARTNER_SETTINGS_CATALOG.filter((e) => e.qualifier === 'conditional').map((e) => e.id);
+    expect(conditional.length).toBeGreaterThan(0);
+    expect(conditional.filter((id) => !(id in CONDITIONAL_LOCK_IN_FORCE))).toEqual([]);
+  });
+
+  it('getEffectiveOrgSettings returns the same locked/partnerDefaults split as the core', async () => {
+    const partner = { defaults: { agentVersionPins: { agent: '0.120.0' }, agentUpdatePolicy: 'manual' } };
+    primeSelectSeq([{ partnerId: 'p1', settings: {} }], mockPartnerSettings(partner), []);
+    const { locked, partnerDefaults } = await getEffectiveOrgSettings('org1');
+    expect(partnerDefaults).toEqual(['defaults.agentVersionPins']);
+    expect(locked).toEqual(['defaults.agentUpdatePolicy']);
+  });
 });

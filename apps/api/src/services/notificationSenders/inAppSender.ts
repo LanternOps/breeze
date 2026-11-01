@@ -5,6 +5,8 @@
  * These appear in the user's notification center within the application.
  */
 
+import type { AlertOwnerKind } from '@breeze/shared';
+
 import { db } from '../../db';
 import { userNotifications, organizationUsers, users, partnerUsers, organizations } from '../../db/schema';
 import { eq, and, or, sql } from 'drizzle-orm';
@@ -20,6 +22,8 @@ export interface InAppNotificationPayload {
   orgId: string;
   deviceId?: string | null;
   deviceName?: string;
+  subjectName?: string;
+  ownerKind?: AlertOwnerKind;
   link?: string;
 }
 
@@ -123,7 +127,9 @@ export async function sendInAppNotification(payload: InAppNotificationPayload): 
       alertId: payload.alertId,
       severity: payload.severity,
       deviceId: payload.deviceId,
-      deviceName: payload.deviceName
+      deviceName: payload.deviceName,
+      subjectName: payload.subjectName,
+      ownerKind: payload.ownerKind
     };
 
     // Create notifications for all users
@@ -133,7 +139,8 @@ export async function sendInAppNotification(payload: InAppNotificationPayload): 
       type: 'alert' as const,
       priority: severityToPriority(payload.severity),
       title: payload.alertName,
-      message: payload.message,
+      message: payload.ownerKind && payload.ownerKind !== 'device' && payload.subjectName
+        ? `${payload.subjectName}: ${payload.message}` : payload.message,
       link,
       metadata,
       // Durable backstop for a redelivered alert.triggered. The stable job id
@@ -192,7 +199,9 @@ export async function sendInAppNotificationToUsers(
       alertId: payload.alertId,
       severity: payload.severity,
       deviceId: payload.deviceId,
-      deviceName: payload.deviceName
+      deviceName: payload.deviceName,
+      subjectName: payload.subjectName,
+      ownerKind: payload.ownerKind
     };
 
     const notifications = userIds.map(userId => ({
@@ -201,7 +210,8 @@ export async function sendInAppNotificationToUsers(
       type: 'alert' as const,
       priority: severityToPriority(payload.severity),
       title: payload.alertName,
-      message: payload.message,
+      message: payload.ownerKind && payload.ownerKind !== 'device' && payload.subjectName
+        ? `${payload.subjectName}: ${payload.message}` : payload.message,
       link,
       metadata,
       read: false

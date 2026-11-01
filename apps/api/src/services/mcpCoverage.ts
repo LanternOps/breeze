@@ -467,10 +467,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/eventlogs.ts': { tools: ['search_logs', 'get_log_trends', 'detect_log_correlations'] },
   'devices/events.ts': { tools: ['get_device_events'] }, // W13 (#6783)
   'devices/filesystem.ts': { tools: ['analyze_disk_usage', 'disk_cleanup'] },
-  // list/run/status are the same OS-native cleanup workflow as the `system_cleanup`
-  // AI tool (W05 gap triage). The route's cancel endpoint (#6485 F-5) has no
-  // matching `system_cleanup` action yet -- a small future addition, not a
-  // fresh MCP_COVERAGE gap.
+  // list/run/status/cancel are the same OS-native cleanup workflow as the
+  // `system_cleanup` AI tool (W05 gap triage; cancel = #6485 F-5 route, AI action #10161).
   'devices/filesystemSystemCleanup.ts': { tools: ['system_cleanup'] },
   'devices/function.ts': { tools: ['manage_device_function'] }, // W13 (#6783)
   'devices/groups.ts': { tools: ['manage_groups'] },
@@ -603,7 +601,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'partner.ts': { exempt: 'internal_plumbing', note: "/me + dashboard reads; get_executive_summary already overlaps most of the value. From #6801." },
   'partnerAiDataPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Partner default/ceiling of the AI data policy (device file read level, tool-output retention) -- the AI must not set its own data-handling policy.' },
   'partnerAiScriptPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Partner-wide ceiling on the unattended AI lane -- the AI must not widen its own authority.' },
-  'partnerSettingsInheritance.ts': { exempt: 'tool_in_later_wave', note: 'Partner-settings inheritance read model (#9170 W3); read tool tracked in #9763.' },
+  'partnerSettingsInheritance.ts': { tools: ['get_partner_settings_inheritance'] }, // #9763: tab counts + org drill-down, same full-partner gate
   'partnerApi/alerts.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/tickets.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API tickets feed for service principals; in-product ticket reads already have tools (manage_tickets).' },
   'partnerApi/alertWrites.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API alert acknowledge and resolve for service principals; in-product alert writes already have tools (manage_alerts).' },

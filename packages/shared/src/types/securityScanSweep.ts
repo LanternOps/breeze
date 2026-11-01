@@ -64,6 +64,12 @@ export interface SweepProgress {
   expired: number;
   /** Completed or timed-out children that ran the legacy engine or reported rule-set errors. */
   degraded: number;
+  /**
+   * Failed children whose `ruleSetErrors` carry `rule_set_changed`: a pinned
+   * rule set was republished before the scan was claimed (#10049). A subset
+   * of `failed`; the signal for "rules changed — sweep again".
+   */
+  ruleSetChanged: number;
   threatsFound: number;
 }
 

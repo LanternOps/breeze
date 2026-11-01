@@ -137,15 +137,33 @@ export async function readOwnerCatalog(
 
   const needsBinary = Array.from(result.entries())
     .filter(([vendor]) => vendorRequiresUploadedBinary(vendor))
-    .map(([vendor, rows]) => [vendor, rows[0]!.catalogId] as const);
-  if (needsBinary.length > 0) {
-    const deployable = await readDeployableVersionCatalogIds(executor, needsBinary.map(([, catalogId]) => catalogId));
-    for (const [vendor, catalogId] of needsBinary) {
-      const version = deployable.get(catalogId);
-      if (version && versionIsDeployableFor(version, vendor)) uploadedBinaryVendors.add(vendor);
-    }
+    .map(([vendor, rows]) => ({ vendor, catalogId: rows[0]!.catalogId }));
+  const deployable = await readDeployableUploadedBinaryCatalogIds(executor, needsBinary);
+  for (const { vendor, catalogId } of needsBinary) {
+    if (deployable.has(catalogId)) uploadedBinaryVendors.add(vendor);
   }
   return { catalogByVendor: result, uploadedBinaryVendors };
+}
+
+/**
+ * Of the given (catalog row, vendor) pairs, the catalog ids whose latest
+ * version is a deployable partner-uploaded installer for that vendor (see
+ * {@link versionIsDeployableFor}). One query, none for an empty list. Shared
+ * by the generator (which vendors are fully set up) and the per-pass readiness
+ * preflight (#9247: a rule whose package has none is `installer_missing`).
+ */
+export async function readDeployableUploadedBinaryCatalogIds(
+  executor: DbExecutor,
+  entries: ReadonlyArray<{ catalogId: string; vendor: VendorKey }>,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (entries.length === 0) return out;
+  const versions = await readDeployableVersionCatalogIds(executor, Array.from(new Set(entries.map((e) => e.catalogId))));
+  for (const { catalogId, vendor } of entries) {
+    const version = versions.get(catalogId);
+    if (version && versionIsDeployableFor(version, vendor)) out.add(catalogId);
+  }
+  return out;
 }
 
 /** The fields of a latest version that decide whether it can be dispatched. */

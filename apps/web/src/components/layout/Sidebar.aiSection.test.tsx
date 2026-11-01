@@ -51,7 +51,7 @@ interface Gates {
 
 function mockServer({ aiOperatorTasks = false, toolSources = false, aiForOfficeEnabled = false, wispEnabled = false }: Gates) {
   useFeaturesStore.setState({
-    features: { billing: false, support: false, aiOperatorTasks, aiAgentsSweepAct: false, toolSources, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false },
+    features: { billing: false, support: false, aiOperatorTasks, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false },
     loaded: true,
   });
   fetchWithAuthMock.mockImplementation((url: string) => {

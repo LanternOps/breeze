@@ -1,5 +1,6 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, index, uniqueIndex, smallint, check } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import type { CreateSnapshot } from '../../services/psaAlertTicketing/snapshot';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { alerts } from './alerts';
@@ -245,7 +246,7 @@ export const psaTicketMappings = pgTable('psa_ticket_mappings', {
   // Same vocabulary as PsaAdapterErrorClass (services/psa/types.ts); pinned by
   // psaTicketMappingStates.test.ts against the migration CHECK.
   lastErrorClass: text('last_error_class').$type<'auth' | 'rate_limited' | 'transient' | 'rejected' | 'unknown_outcome'>(),
-  createSnapshot: jsonb('create_snapshot'),
+  createSnapshot: jsonb('create_snapshot').$type<CreateSnapshot | null>(),
   externalCompanyId: varchar('external_company_id', { length: 100 }),
   externalTicketNumber: varchar('external_ticket_number', { length: 100 }),
   closedAt: timestamp('closed_at', { withTimezone: true })

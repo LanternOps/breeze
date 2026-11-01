@@ -1,0 +1,29 @@
+# Integration ALWAYS runs on a PR when a path here changes.
+# The classifier gate stays fail-open; later selection (W4 thin queue, W7
+# import graph) must never trim this protected floor. Trailing / means prefix.
+apps/api/migrations/
+apps/api/src/db/
+apps/api/src/services/tenantCascade.ts
+apps/api/src/services/orgMergeRegistry.ts
+apps/api/src/services/tenantExportPolicy.ts
+apps/api/src/services/tenantExportPolicyRegistry.ts
+apps/api/src/__tests__/
+apps/api/vitest.integration.config.ts
+apps/api/vitest.config.rls.ts
+apps/api/vitest.config.rls-coverage.ts
+apps/api/vitest.config.request-db-role.ts
+apps/api/vitest.config.integration-suite-coverage.ts
+apps/api/vitest.config.site-scope-coverage.ts
+ee/
+packages/
+package.json
+pnpm-lock.yaml
+pnpm-workspace.yaml
+.npmrc
+.node-version
+.nvmrc
+patches/
+docker-compose.test.yml
+docker/
+.github/workflows/ci.yml
+.github/scripts/

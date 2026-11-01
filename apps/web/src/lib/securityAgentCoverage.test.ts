@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { coverageReasonLabel } from './securityAgentCoverage';
+import { coverageReasonLabel, coverageSetupLinkLabel, coverageSetupPath } from './securityAgentCoverage';
 
 const LOCALES = ['en', 'de-DE', 'es-419', 'fr-CA', 'fr-FR', 'it-IT', 'pt-BR', 'tr-TR'] as const;
 
@@ -34,5 +34,27 @@ describe('coverageReasonLabel — tenant-variable readiness reasons (#6960 W05)'
 
   it('an unknown code still falls back to the raw code', () => {
     expect(coverageReasonLabel(tFor('en'), 'acme_reason')).toBe('acme_reason');
+  });
+});
+
+describe('installer_missing (#9247)', () => {
+  it.each(LOCALES)('%s: the reason and its setup-link label are translated, never raw keys', (locale) => {
+    const t = tFor(locale);
+    const reason = coverageReasonLabel(t, 'installer_missing');
+    expect(reason).not.toBe('installer_missing');
+    expect(reason).not.toContain('securityAgentCoverage');
+    const link = coverageSetupLinkLabel(t, 'installer_missing');
+    expect(link).not.toContain('securityAgentCoverage');
+    expect(link.length).toBeGreaterThan(0);
+    expect(coverageSetupLinkLabel(t, 'org_not_mapped')).not.toContain('securityAgentCoverage');
+  });
+
+  it('a setup path is a link target only when it is a same-site absolute path', () => {
+    expect(coverageSetupPath({ setupPath: '/software#versions=cat-1' })).toBe('/software#versions=cat-1');
+    // Browsers strip tab/CR/LF from URLs, so "/\t/evil" would become "//evil".
+    for (const unsafe of ['//evil.example/x', '/\\evil.example', '/\t/evil.example', '/\n/evil.example', '/ /x', 'https://evil.example', 'javascript:alert(1)', '', null, undefined, 42]) {
+      expect(coverageSetupPath({ setupPath: unsafe as never })).toBeNull();
+    }
+    expect(coverageSetupPath({})).toBeNull();
   });
 });
