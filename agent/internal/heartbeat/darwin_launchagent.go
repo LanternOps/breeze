@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 	"time"
@@ -30,21 +31,29 @@ const (
 	// returns both while launchd is still tearing a booted-out service down
 	// and when the service is already loaded.
 	launchctlEIO = 5
-
-	launchctlTimeout = 15 * time.Second
 )
 
+// launchctlTimeout bounds every launchctl call; a var so tests can shorten it.
+var launchctlTimeout = 15 * time.Second
+
 // launchctlFunc runs launchctl with args and returns its exit code (-1 when it
-// could not be run at all) and its trimmed combined output.
+// could not be run at all or timed out) and its trimmed combined output.
 type launchctlFunc func(args ...string) (int, string)
 
 func runLaunchctl(args ...string) (int, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), launchctlTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "launchctl", args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, "launchctl", args...)
+	// Bound the wait for output too: a killed launchctl's children could
+	// otherwise hold the pipe open past the timeout.
+	cmd.WaitDelay = time.Second
+	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err == nil {
 		return 0, text
+	}
+	if ctx.Err() != nil {
+		return -1, fmt.Sprintf("launchctl %s timed out after %s", strings.Join(args, " "), launchctlTimeout)
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && exitErr.ExitCode() >= 0 {
@@ -115,8 +124,15 @@ type launchAgentReviver struct {
 
 var defaultLaunchAgentReviver = launchAgentReviver{launchctl: runLaunchctl, sleep: time.Sleep}
 
+// loaded reports whether launchd has the service. An inconclusive print
+// (launchctl could not run or timed out) counts as not loaded: the worst
+// that does is a bootstrap that fails because the service is loaded.
 func (r launchAgentReviver) loaded(t launchAgentTarget) bool {
-	code, _ := r.launchctl("print", t.service())
+	code, out := r.launchctl("print", t.service())
+	if code < 0 {
+		log.Warn("post-update: could not tell whether the desktop helper is loaded",
+			"uid", t.uid, "service", t.service(), "output", out)
+	}
 	return code == 0
 }
 

@@ -28,9 +28,14 @@ import (
 //	raced   something else (the agent's post-update revival) loads the
 //	        service while we wait for our bootout to finish
 //	stale   bootout never takes the old instance out of launchd
-//	broken  launchd refuses the plist outright
+//	broken  launchd refuses the plist outright (EIO 5, never loads)
+//	broken125  bootstrap fails with a non-EIO error (no such domain)
+//	kickfail   kickstart always fails, even on a loaded service
 //
 // kickstart of a service that is not loaded exits 37, as the lab agent saw.
+// print of a loginwindow/ service always fails: as non-root it answers
+// "Could not print domain: 1", and it is not known to work as root, so the
+// shell must not depend on it there.
 const fakeAgentLaunchctl = `#!/bin/bash
 echo "launchctl $*" >> "$FAKE_STATE/calls"
 key() { printf '%s' "$1" | tr '/' '_'; }
@@ -47,6 +52,7 @@ case "$1" in
     rm -f "$FAKE_STATE/loaded.$(key "$svc")"; exit 0 ;;
   print)
     svc="$2"
+    case "$svc" in loginwindow/*) echo "Could not print domain: 1: Operation not permitted" >&2; exit 1 ;; esac
     n=$(lag_left "$svc")
     if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$FAKE_STATE/lag.$(key "$svc")"; echo "state = running"; exit 0; fi
     if [ -f "$FAKE_STATE/race.$(key "$svc")" ]; then
@@ -59,12 +65,14 @@ case "$1" in
     [ "$(lag_left "$svc")" -gt 0 ] && eio
     loaded "$svc" && eio
     [ "$SCENARIO" = broken ] && eio
+    [ "$SCENARIO" = broken125 ] && { echo "Bootstrap failed: 125: Domain does not support specified action" >&2; exit 125; }
     if [ "$SCENARIO" = flaky ] && [ ! -f "$FAKE_STATE/flaked.$(key "$svc")" ]; then
       touch "$FAKE_STATE/flaked.$(key "$svc")"; eio
     fi
     touch "$FAKE_STATE/loaded.$(key "$svc")"; exit 0 ;;
   kickstart)
     svc="${!#}"
+    [ "$SCENARIO" = kickfail ] && { echo "Kickstart failed: 1" >&2; exit 1; }
     loaded "$svc" && exit 0
     echo "Could not find service \"${svc##*/}\"" >&2; exit 37 ;;
 esac
@@ -181,6 +189,12 @@ func TestReloadLaunchAgentRetriesBootstrapOnceOnEIO(t *testing.T) {
 	if n := strings.Count(r.calls, "launchctl bootstrap gui/501 "); n != 2 {
 		t.Errorf("want exactly one retry, got %d bootstraps\ncalls:\n%s", n, r.calls)
 	}
+	first := strings.Index(r.calls, "launchctl bootstrap gui/501 ")
+	wait := strings.Index(r.calls, "sleep 1\n")
+	second := strings.LastIndex(r.calls, "launchctl bootstrap gui/501 ")
+	if wait < first || wait > second {
+		t.Errorf("want a 1 s wait between the two bootstraps\ncalls:\n%s", r.calls)
+	}
 	if !strings.Contains(r.out, "Bootstrap failed: 5: Input/output error") {
 		t.Errorf("the failed attempt's launchctl stderr must reach the installer log\noutput:\n%s", r.out)
 	}
@@ -194,8 +208,11 @@ func TestReloadLaunchAgentAcceptsAHelperLoadedByTheAgent(t *testing.T) {
 	if r.code != 0 || !r.loaded(userSvc501) {
 		t.Fatalf("exit %d, loaded=%v\noutput:\n%s\ncalls:\n%s", r.code, r.loaded(userSvc501), r.out, r.calls)
 	}
-	if !strings.Contains(r.calls, "launchctl kickstart -k "+userSvc501) {
-		t.Errorf("want the already-loaded helper restarted onto the new binary\ncalls:\n%s", r.calls)
+	if !strings.Contains(r.calls, "launchctl kickstart -k "+userSvc501) || !strings.Contains(r.out, "was already loaded") {
+		t.Errorf("want the already-loaded helper restarted onto the new binary\noutput:\n%s\ncalls:\n%s", r.out, r.calls)
+	}
+	if n := strings.Count(r.calls, "launchctl bootstrap gui/501 "); n != 1 {
+		t.Errorf("a loaded helper needs no bootstrap retry, got %d bootstraps\ncalls:\n%s", n, r.calls)
 	}
 }
 
@@ -227,6 +244,38 @@ func TestReloadLaunchAgentReportsAFailure(t *testing.T) {
 		t.Errorf("want exactly one retry, got %d bootstraps\ncalls:\n%s", n, r.calls)
 	}
 	for _, want := range []string{"Bootstrap failed: 5: Input/output error", userLabel, "gui/501", "sudo launchctl bootstrap gui/501 " + userPlist} {
+		if !strings.Contains(r.out, want) {
+			t.Errorf("output missing %q:\n%s", want, r.out)
+		}
+	}
+}
+
+// Only EIO 5 is retried: a different bootstrap failure will not improve in a
+// second.
+func TestReloadLaunchAgentDoesNotRetryOtherBootstrapErrors(t *testing.T) {
+	r := runAgentShell(t, "broken125", reloadUser)
+	if r.code == 0 {
+		t.Fatalf("want a failure\noutput:\n%s\ncalls:\n%s", r.out, r.calls)
+	}
+	if n := strings.Count(r.calls, "launchctl bootstrap gui/501 "); n != 1 || strings.Contains(r.calls, "sleep") {
+		t.Errorf("want a single bootstrap and no wait, got %d\ncalls:\n%s", n, r.calls)
+	}
+	if !strings.Contains(r.out, "Bootstrap failed: 125") {
+		t.Errorf("launchctl stderr must reach the installer log\noutput:\n%s", r.out)
+	}
+}
+
+// A loaded helper that kickstart cannot restart is a failure, reported with
+// kickstart's own output, and the bounded retry still ends.
+func TestLoadLaunchAgentReportsALoadedHelperThatWillNotRestart(t *testing.T) {
+	r := runAgentShell(t, "kickfail", loadLoginLW, lwSvc)
+	if r.code == 0 {
+		t.Fatalf("want a failure\noutput:\n%s\ncalls:\n%s", r.out, r.calls)
+	}
+	if n := strings.Count(r.calls, "launchctl bootstrap loginwindow "); n != 2 {
+		t.Errorf("want exactly one retry, got %d bootstraps\ncalls:\n%s", n, r.calls)
+	}
+	for _, want := range []string{"launchctl kickstart -k " + lwSvc + " exited 1", "Warning: could not load " + lwLabel} {
 		if !strings.Contains(r.out, want) {
 			t.Errorf("output missing %q:\n%s", want, r.out)
 		}
@@ -307,5 +356,11 @@ func TestPostinstallHelperFailureWarnsWithoutFailingTheInstall(t *testing.T) {
 	}
 	if !strings.Contains(r.out, "Bootstrap failed: 5: Input/output error") {
 		t.Errorf("launchctl stderr must reach the installer log\noutput:\n%s", r.out)
+	}
+	// One user's failure does not stop the next user or the login window.
+	for _, want := range []string{"launchctl bootstrap gui/502 ", "launchctl bootstrap loginwindow "} {
+		if !strings.Contains(r.calls, want) {
+			t.Errorf("want %q attempted after gui/501 failed\ncalls:\n%s", want, r.calls)
+		}
 	}
 }

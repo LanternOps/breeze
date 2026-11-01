@@ -1,6 +1,9 @@
 package heartbeat
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -148,12 +151,14 @@ func TestReviveLaunchAgentGivesUpAfterOneRetry(t *testing.T) {
 	if got := f.reviver().revive(testUserHelper); got != launchAgentFailed {
 		t.Fatalf("outcome = %v, want failed", got)
 	}
-	if n := strings.Count(strings.Join(f.calls, "\n"), "bootstrap "); n != 2 {
-		t.Errorf("want exactly 2 bootstrap attempts, got %d: %v", n, f.calls)
-	}
-	if f.calls[len(f.calls)-1] == "kickstart "+svc501 {
-		t.Errorf("nothing was loaded, so nothing should be kickstarted: %v", f.calls)
-	}
+	assertCalls(t, f,
+		"kickstart -k "+svc501,
+		"print "+svc501,
+		"bootstrap gui/501 "+plist501,
+		"print "+svc501,
+		"bootstrap gui/501 "+plist501,
+		"print "+svc501,
+	)
 }
 
 // Only EIO 5 is retried; any other bootstrap failure (no such domain, bad
@@ -175,6 +180,12 @@ func TestReviveLaunchAgentBootstrapStandsWhenTheFollowUpKickstartFails(t *testin
 	if got := f.reviver().revive(testUserHelper); got != launchAgentBootstrapped {
 		t.Fatalf("outcome = %v, want bootstrapped", got)
 	}
+	assertCalls(t, f,
+		"kickstart -k "+svc501,
+		"print "+svc501,
+		"bootstrap gui/501 "+plist501,
+		"kickstart "+svc501,
+	)
 }
 
 // Every GUI user gets its own domain; one user's failure does not stop the
@@ -189,4 +200,37 @@ func TestReviveDarwinUserHelpersCoversEveryUID(t *testing.T) {
 		"print "+svc501,
 		"kickstart -k gui/502/com.breeze.desktop-helper-user",
 	)
+}
+
+// runLaunchctl against a stand-in launchctl on PATH: exit codes and output
+// come through, a missing binary and a hung one are -1 with a reason.
+func TestRunLaunchctl(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell stand-in")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\ncase \"$1\" in\n  hang) sleep 5 ;;\n  fail) echo 'Could not find service' >&2; exit 37 ;;\nesac\necho \"ran $*\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "launchctl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":/bin:/usr/bin")
+
+	if code, out := runLaunchctl("print", "gui/501/x"); code != 0 || out != "ran print gui/501/x" {
+		t.Errorf("success = (%d, %q)", code, out)
+	}
+	if code, out := runLaunchctl("fail"); code != 37 || out != "Could not find service" {
+		t.Errorf("failure = (%d, %q), want (37, stderr)", code, out)
+	}
+
+	prev := launchctlTimeout
+	launchctlTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { launchctlTimeout = prev })
+	if code, out := runLaunchctl("hang"); code != -1 || !strings.Contains(out, "timed out") {
+		t.Errorf("hang = (%d, %q), want (-1, timed out)", code, out)
+	}
+
+	t.Setenv("PATH", t.TempDir())
+	if code, out := runLaunchctl("print"); code != -1 || out == "" {
+		t.Errorf("missing binary = (%d, %q), want (-1, reason)", code, out)
+	}
 }
