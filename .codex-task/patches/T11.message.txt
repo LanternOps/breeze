@@ -1,0 +1,7 @@
+fix(topology): device deletion keeps site-owned alert history (#7269)
+
+Detach topology alert provenance and PSA device pointers before cascading
+only device-owned alert history. Audit detached counts and preserve the
+existing org-erasure delete path. Add regression coverage and release notes.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>

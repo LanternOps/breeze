@@ -1,0 +1,728 @@
+diff --git a/apps/api/src/__tests__/integration/topologySiteAlertOriginDeviceDeletion.integration.test.ts b/apps/api/src/__tests__/integration/topologySiteAlertOriginDeviceDeletion.integration.test.ts
+index a6641141a0..e998561c60 100644
+--- a/apps/api/src/__tests__/integration/topologySiteAlertOriginDeviceDeletion.integration.test.ts
++++ b/apps/api/src/__tests__/integration/topologySiteAlertOriginDeviceDeletion.integration.test.ts
+@@ -6,8 +6,8 @@
+  * is NO ACTION. So after a move-org the device's NEW org holds a device that a
+  * row in ANOTHER org still references:
+  *
+- *   - permanent delete of the device (as the new org's user) must remove that
+- *     alert (and its NO ACTION children) and say so in the audit row;
++ *   - permanent delete of the device (as the new org's user) must detach its
++ *     provenance and preserve alert history, recording the count in the audit;
+  *   - GDPR erasure of the new org deletes alerts by org_id only, so without a
+  *     pre-clear the `devices` delete aborts on the FK and the erasure fails.
+  *
+@@ -28,6 +28,8 @@ import {
+   devices,
+   notificationChannels,
+   organizations,
++  psaConnections,
++  psaTicketMappings,
+   sites,
+ } from '../../db/schema';
+ import {
+@@ -46,7 +48,7 @@ import { coreRoutes } from '../../routes/devices/core';
+ import { cascadeDeleteOrg } from '../../services/tenantCascade';
+ import { withMoveOrgStepUpGrant } from './moveOrgStepUpFixture';
+ 
+-async function seedMovedOrigin() {
++async function seedOrigin(moveOrigin = true) {
+   const seed = getTestDb() as any;
+   const { partner, organization: orgA, site: siteA, user, role } = await setupTestEnvironment({ scope: 'partner' });
+   const orgB = await createOrganization({ partnerId: partner.id });
+@@ -58,8 +60,8 @@ async function seedMovedOrigin() {
+   }).returning();
+   const base = { orgId: orgA.id, deviceId: device.id, severity: 'high' as const, status: 'active' as const };
+   const [owned, plain] = await seed.insert(alerts).values([
+-    { ...base, title: 'gateway unreachable', topologySiteId: siteA.id, topologySourceKey: `topology:${'a'.repeat(64)}` },
+-    { ...base, title: 'device-bound alert' },
++    { ...base, ownerKind: 'topology_site', title: 'gateway unreachable', topologySiteId: siteA.id, topologySourceKey: `topology:${'a'.repeat(64)}` },
++    { ...base, ownerKind: 'device', title: 'device-bound alert' },
+   ]).returning();
+   const [channel] = await seed.insert(notificationChannels).values({
+     orgId: orgA.id, name: 'mail', type: 'email', config: { recipients: ['ops@example.test'] },
+@@ -70,36 +72,47 @@ async function seedMovedOrigin() {
+     orgId: orgA.id, deviceId: (await seed.insert(devices).values({
+       orgId: orgA.id, siteId: siteA.id, agentId: `topo-peer-${randomUUID()}`, hostname: 'peer',
+       osType: 'linux', osVersion: '22.04', architecture: 'amd64', agentVersion: '1', status: 'offline',
+-    }).returning())[0].id, severity: 'low', status: 'active', title: 'peer alert',
++    }).returning())[0].id, ownerKind: 'device', severity: 'low', status: 'active', title: 'peer alert',
+   }).returning();
+   await seed.insert(alertCorrelations).values({ parentAlertId: other.id, childAlertId: owned.id, correlationType: 'topology' });
+ 
+-  // Real move-org path (partner-scope user, step-up grant).
+-  const partnerToken = await createAccessToken({
+-    sub: user.id, email: user.email, roleId: role.id, orgId: null, partnerId: partner.id,
+-    scope: 'partner', mfa: true, aep: 1, mep: 1, sid: 'it-session',
+-  });
+-  const moveApp = new Hono().route('/devices', moveOrgRoutes);
+-  const moveRes = await moveApp.request(`/devices/${device.id}/move-org`, {
+-    method: 'POST',
+-    headers: { Authorization: `Bearer ${partnerToken}`, 'Content-Type': 'application/json' },
+-    body: JSON.stringify(await withMoveOrgStepUpGrant(partnerToken, device.id, { orgId: orgB.id, siteId: siteB.id })),
+-  });
+-  expect(moveRes.status, await moveRes.clone().text()).toBe(200);
+-
+-  const [movedDevice] = await seed.select({ orgId: devices.orgId }).from(devices).where(eq(devices.id, device.id));
+-  expect(movedDevice.orgId).toBe(orgB.id);
+-  const [ownedAfterMove] = await seed.select({ orgId: alerts.orgId, deviceId: alerts.deviceId }).from(alerts).where(eq(alerts.id, owned.id));
+-  // The precondition the finding describes: the owned alert stays in org A
+-  // while still pointing at the device now in org B.
+-  expect(ownedAfterMove).toEqual({ orgId: orgA.id, deviceId: device.id });
+-  const [plainAfterMove] = await seed.select({ orgId: alerts.orgId }).from(alerts).where(eq(alerts.id, plain.id));
+-  expect(plainAfterMove.orgId).toBe(orgB.id);
+-
+-  return { seed, partner, orgA, siteA, orgB, siteB, deviceId: device.id, ownedId: owned.id, plainId: plain.id, otherAlertId: other.id };
++  const [connection] = await seed.insert(psaConnections).values({
++    partnerId: partner.id, provider: 'connectwise', name: 'test-psa', credentials: {},
++  }).returning();
++  const [ownedMapping, plainMapping, deviceMapping] = await seed.insert(psaTicketMappings).values([
++    { connectionId: connection.id, alertId: owned.id, deviceId: device.id, externalTicketId: 'site-ticket' },
++    { connectionId: connection.id, alertId: plain.id, deviceId: device.id, externalTicketId: 'device-ticket' },
++    { connectionId: connection.id, deviceId: device.id, externalTicketId: 'standalone-ticket' },
++  ]).returning();
++
++  if (moveOrigin) {
++    // Real move-org path (partner-scope user, step-up grant).
++    const partnerToken = await createAccessToken({
++      sub: user.id, email: user.email, roleId: role.id, orgId: null, partnerId: partner.id,
++      scope: 'partner', mfa: true, aep: 1, mep: 1, sid: 'it-session',
++    });
++    const moveApp = new Hono().route('/devices', moveOrgRoutes);
++    const moveRes = await moveApp.request(`/devices/${device.id}/move-org`, {
++      method: 'POST',
++      headers: { Authorization: `Bearer ${partnerToken}`, 'Content-Type': 'application/json' },
++      body: JSON.stringify(await withMoveOrgStepUpGrant(partnerToken, device.id, { orgId: orgB.id, siteId: siteB.id })),
++    });
++    expect(moveRes.status, await moveRes.clone().text()).toBe(200);
++
++    const [movedDevice] = await seed.select({ orgId: devices.orgId }).from(devices).where(eq(devices.id, device.id));
++    expect(movedDevice.orgId).toBe(orgB.id);
++    const [ownedAfterMove] = await seed.select({ orgId: alerts.orgId, deviceId: alerts.deviceId }).from(alerts).where(eq(alerts.id, owned.id));
++    // The precondition the finding describes: the owned alert stays in org A
++    // while still pointing at the device now in org B.
++    expect(ownedAfterMove).toEqual({ orgId: orgA.id, deviceId: device.id });
++    const [plainAfterMove] = await seed.select({ orgId: alerts.orgId }).from(alerts).where(eq(alerts.id, plain.id));
++    expect(plainAfterMove.orgId).toBe(orgB.id);
++  }
++
++  return { seed, partner, orgA, siteA, orgB, siteB, deviceId: device.id, ownedId: owned.id, plainId: plain.id, otherAlertId: other.id, ownedMappingId: ownedMapping.id, plainMappingId: plainMapping.id, deviceMappingId: deviceMapping.id };
+ }
+ 
+-async function orgBUserToken(partnerId: string, orgId: string) {
++async function orgUserToken(partnerId: string, orgId: string) {
+   const user = await createUser({ partnerId, orgId });
+   const role = await createRole({ scope: 'organization', orgId });
+   await grantRolePermissions(role.id, [{ resource: '*', action: '*' }]);
+@@ -120,11 +133,12 @@ async function waitForAudit(deviceId: string) {
+   return [];
+ }
+ 
+-describe('site-owned topology alerts of a moved origin device', () => {
+-  it('permanent delete by the new org removes the site-owned alert and audits the count', async () => {
+-    const f = await seedMovedOrigin();
++describe('site-owned topology alerts of a deleted origin device', () => {
++  it.each([false, true])('preserves topology_site alerts when the origin device is deleted (moved: %s)', async (moveOrigin) => {
++    const f = await seedOrigin(moveOrigin);
++    const deviceOrgId = moveOrigin ? f.orgB.id : f.orgA.id;
+     await f.seed.update(devices).set({ status: 'decommissioned', decommissionedAt: new Date() }).where(eq(devices.id, f.deviceId));
+-    const token = await orgBUserToken(f.partner.id, f.orgB.id);
++    const token = await orgUserToken(f.partner.id, deviceOrgId);
+ 
+     const app = new Hono().route('/devices', coreRoutes);
+     const res = await app.request(`/devices/${f.deviceId}/permanent`, {
+@@ -133,20 +147,27 @@ describe('site-owned topology alerts of a moved origin device', () => {
+     expect(res.status, await res.clone().text()).toBe(200);
+ 
+     expect(await f.seed.select().from(devices).where(eq(devices.id, f.deviceId))).toHaveLength(0);
+-    expect(await f.seed.select().from(alerts).where(eq(alerts.id, f.ownedId))).toHaveLength(0);
+-    expect(await f.seed.select().from(alertNotifications).where(eq(alertNotifications.alertId, f.ownedId))).toHaveLength(0);
+-    expect(await f.seed.select().from(alertCorrelations).where(eq(alertCorrelations.childAlertId, f.ownedId))).toHaveLength(0);
++    const [preserved] = await f.seed.select().from(alerts).where(eq(alerts.id, f.ownedId));
++    expect(preserved).toMatchObject({ ownerKind: 'topology_site', orgId: f.orgA.id, topologySiteId: f.siteA.id, deviceId: null });
++    expect(await f.seed.select().from(alertNotifications).where(eq(alertNotifications.alertId, f.ownedId))).toHaveLength(1);
++    expect(await f.seed.select().from(alertCorrelations).where(eq(alertCorrelations.childAlertId, f.ownedId))).toHaveLength(1);
++    const [mapping] = await f.seed.select().from(psaTicketMappings).where(eq(psaTicketMappings.id, f.ownedMappingId));
++    expect(mapping).toMatchObject({ alertId: f.ownedId, deviceId: null, externalTicketId: 'site-ticket' });
++    // Device-owned alerts and mappings still go with the device.
++    expect(await f.seed.select().from(alerts).where(eq(alerts.id, f.plainId))).toHaveLength(0);
++    expect(await f.seed.select().from(psaTicketMappings).where(eq(psaTicketMappings.id, f.plainMappingId))).toHaveLength(0);
++    expect(await f.seed.select().from(psaTicketMappings).where(eq(psaTicketMappings.id, f.deviceMappingId))).toHaveLength(0);
+     // Org A's own site and unrelated alert are untouched.
+     expect(await f.seed.select().from(sites).where(eq(sites.id, f.siteA.id))).toHaveLength(1);
+     expect(await f.seed.select().from(alerts).where(eq(alerts.id, f.otherAlertId))).toHaveLength(1);
+ 
+     const audits = await waitForAudit(f.deviceId);
+     expect(audits).toHaveLength(1);
+-    expect(audits[0]).toMatchObject({ orgId: f.orgB.id, details: expect.objectContaining({ removedTopologyAlerts: 1 }) });
++    expect(audits[0]).toMatchObject({ orgId: deviceOrgId, details: expect.objectContaining({ detachedTopologyAlerts: 1 }) });
+   });
+ 
+   it('GDPR erasure of the new org completes and removes the moved device and its site-owned alert', async () => {
+-    const f = await seedMovedOrigin();
++    const f = await seedOrigin();
+ 
+     const stats = await cascadeDeleteOrg(f.orgB.id, '00000000-0000-0000-0000-0000000000aa');
+ 
+diff --git a/apps/api/src/jobs/deviceBulkPurge.test.ts b/apps/api/src/jobs/deviceBulkPurge.test.ts
+index ee2c87ee9c..be059ed1d8 100644
+--- a/apps/api/src/jobs/deviceBulkPurge.test.ts
++++ b/apps/api/src/jobs/deviceBulkPurge.test.ts
+@@ -30,7 +30,7 @@ vi.mock('../services/agentOrgRateLimit', () => ({
+   invalidateOrgDeviceCount: vi.fn(async () => undefined),
+ }));
+ vi.mock('../services/deviceLifecycle', () => ({
+-  purgeRemovedDevice: vi.fn(async () => ({ linkGroupId: null, linkGroupDissolved: false, removedTopologyAlerts: 0 })),
++  purgeRemovedDevice: vi.fn(async () => ({ linkGroupId: null, linkGroupDissolved: false, detachedTopologyAlerts: 0 })),
+   DeviceLifecycleError: class DeviceLifecycleError extends Error {
+     constructor(public code: string, message: string) {
+       super(message);
+@@ -124,7 +124,7 @@ beforeEach(() => {
+   lockedOrgByDevice.clear();
+   lockedOrgByDevice.set(DEV_1, ORG_A);
+   lockedOrgByDevice.set(DEV_2, ORG_A);
+-  vi.mocked(purgeRemovedDevice).mockResolvedValue({ linkGroupId: null, linkGroupDissolved: false, removedTopologyAlerts: 0 });
++  vi.mocked(purgeRemovedDevice).mockResolvedValue({ linkGroupId: null, linkGroupDissolved: false, detachedTopologyAlerts: 0 });
+ });
+ 
+ describe('processDeviceBulkPurgeJob', () => {
+@@ -159,7 +159,7 @@ describe('processDeviceBulkPurgeJob', () => {
+     vi.mocked(purgeRemovedDevice).mockImplementation(async (_tx, id) => {
+       if (id === DEV_1) throw new DeviceLifecycleError('UNINSTALL_PENDING', 'queued');
+       if (id === DEV_2) throw new DeviceLifecycleError('NOT_REMOVED', 'restored');
+-      return { linkGroupId: null, linkGroupDissolved: false, removedTopologyAlerts: 0 };
++      return { linkGroupId: null, linkGroupDissolved: false, detachedTopologyAlerts: 0 };
+     });
+ 
+     const { job } = fakeJob(payload());
+@@ -184,7 +184,7 @@ describe('processDeviceBulkPurgeJob', () => {
+           'Device access or linked state changed before deletion',
+         );
+       }
+-      return { linkGroupId: null, linkGroupDissolved: false, removedTopologyAlerts: 0 };
++      return { linkGroupId: null, linkGroupDissolved: false, detachedTopologyAlerts: 0 };
+     });
+ 
+     const { job } = fakeJob(payload({
+@@ -228,7 +228,7 @@ describe('processDeviceBulkPurgeJob', () => {
+     try {
+       vi.mocked(purgeRemovedDevice).mockImplementation(async (_tx, id) => {
+         if (id === DEV_1) throw new Error('connection terminated');
+-        return { linkGroupId: null, linkGroupDissolved: false, removedTopologyAlerts: 0 };
++        return { linkGroupId: null, linkGroupDissolved: false, detachedTopologyAlerts: 0 };
+       });
+ 
+       const { job } = fakeJob(payload());
+@@ -281,11 +281,11 @@ describe('processDeviceBulkPurgeJob', () => {
+    * were never in the selection, and the operator who ran a 200-device purge
+    * has no other way to find out it happened.
+    */
+-  it('records a dissolved link group in the per-device audit entry', async () => {
++  it('records detached topology alerts and a dissolved link group in the per-device audit entry', async () => {
+     vi.mocked(purgeRemovedDevice).mockImplementation(async (_tx, id) =>
+       id === DEV_1
+-        ? { linkGroupId: 'grp-vm-1', linkGroupDissolved: true, removedTopologyAlerts: 2 }
+-        : { linkGroupId: null, linkGroupDissolved: false, removedTopologyAlerts: 0 },
++        ? { linkGroupId: 'grp-vm-1', linkGroupDissolved: true, detachedTopologyAlerts: 2 }
++        : { linkGroupId: null, linkGroupDissolved: false, detachedTopologyAlerts: 0 },
+     );
+ 
+     const { job } = fakeJob(payload());
+@@ -294,7 +294,7 @@ describe('processDeviceBulkPurgeJob', () => {
+     expect(createAuditLog).toHaveBeenCalledWith(
+       expect.objectContaining({
+         resourceId: DEV_1,
+-        details: expect.objectContaining({ linkGroupId: 'grp-vm-1', linkGroupDissolved: true, removedTopologyAlerts: 2 }),
++        details: expect.objectContaining({ linkGroupId: 'grp-vm-1', linkGroupDissolved: true, detachedTopologyAlerts: 2 }),
+       }),
+     );
+   });
+@@ -310,7 +310,7 @@ describe('processDeviceBulkPurgeJob', () => {
+     for (const d of details) {
+       expect(d).not.toHaveProperty('linkGroupId');
+       expect(d).not.toHaveProperty('linkGroupDissolved');
+-      expect(d).not.toHaveProperty('removedTopologyAlerts');
++      expect(d).not.toHaveProperty('detachedTopologyAlerts');
+     }
+   });
+ 
+@@ -433,7 +433,7 @@ describe('processDeviceBulkPurgeJob — helper screenshot files (#8117)', () =>
+     vi.mocked(purgeRemovedDevice).mockImplementation(async (_tx, id) => {
+       // Refused AFTER the keys were read: the transaction rolls back.
+       if (id === DEV_2) throw new DeviceLifecycleError('UNINSTALL_PENDING', 'queued');
+-      return { linkGroupId: null, linkGroupDissolved: false, removedTopologyAlerts: 0 };
++      return { linkGroupId: null, linkGroupDissolved: false, detachedTopologyAlerts: 0 };
+     });
+ 
+     const { job } = fakeJob(payload());
+diff --git a/apps/api/src/jobs/deviceBulkPurge.ts b/apps/api/src/jobs/deviceBulkPurge.ts
+index 947cb67825..113d4fe02e 100644
+--- a/apps/api/src/jobs/deviceBulkPurge.ts
++++ b/apps/api/src/jobs/deviceBulkPurge.ts
+@@ -150,7 +150,7 @@ interface PurgeOneOutcome {
+   linkGroupId: string | null;
+   linkGroupDissolved: boolean;
+   /** From `PurgeResult`; 0 when nothing was purged. */
+-  removedTopologyAlerts?: number;
++  detachedTopologyAlerts?: number;
+ }
+ 
+ /**
+@@ -196,7 +196,7 @@ async function purgeOne(
+             code: null,
+             linkGroupId: purged.linkGroupId,
+             linkGroupDissolved: purged.linkGroupDissolved,
+-            removedTopologyAlerts: purged.removedTopologyAlerts,
++            detachedTopologyAlerts: purged.detachedTopologyAlerts,
+             screenshotStorageKeys: keys,
+           };
+         });
+@@ -293,7 +293,7 @@ export async function processDeviceBulkPurgeJob(
+                   linkGroupDissolved: outcome.linkGroupDissolved,
+                 }
+               : {}),
+-            ...(outcome.removedTopologyAlerts ? { removedTopologyAlerts: outcome.removedTopologyAlerts } : {}),
++            ...(outcome.detachedTopologyAlerts ? { detachedTopologyAlerts: outcome.detachedTopologyAlerts } : {}),
+           },
+           result: 'success',
+         });
+diff --git a/apps/api/src/routes/devices/cascadeDelete.test.ts b/apps/api/src/routes/devices/cascadeDelete.test.ts
+index e92b479a4a..4d5f53aaeb 100644
+--- a/apps/api/src/routes/devices/cascadeDelete.test.ts
++++ b/apps/api/src/routes/devices/cascadeDelete.test.ts
+@@ -117,6 +117,7 @@ import {
+ } from './core';
+ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+ import { isAgentConnected, sendCommandToAgent } from '../agentWs';
++import { writeRouteAudit } from '../../services/auditEvents';
+ 
+ const deviceCascadeDeleteTables = getDeviceCascadeDeleteTables();
+ 
+@@ -683,6 +684,7 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
+     pendingUninstall?: boolean;
+     /** Lock returns zero rows (device vanished between lookup and lock). */
+     deviceMissing?: boolean;
++    detachedTopologyAlerts?: number;
+   }
+ 
+   function rigDeleteTransaction(opts: DeleteTxOptions = {}): string[] {
+@@ -720,6 +722,9 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
+               },
+             ]);
+           }
++          if (text.startsWith('UPDATE alerts SET device_id = NULL')) {
++            return pgResult([], opts.detachedTopologyAlerts ?? 0);
++          }
+           // The purge refusal probe (deviceLifecycle.ts). Distinct from the
+           // cascade's own `DELETE FROM device_commands` — only the probe names
+           // the self_uninstall type.
+@@ -739,6 +744,19 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
+     return statements;
+   }
+ 
++  it('audits site-owned alert history as detached on permanent delete', async () => {
++    rigDeviceLookup(DEVICE);
++    rigDeleteTransaction({ detachedTopologyAlerts: 2 });
++    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
++      method: 'DELETE', headers: { Authorization: 'Bearer t' },
++    });
++    expect(res.status).toBe(200);
++    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
++      action: 'device.permanent_delete',
++      details: { detachedTopologyAlerts: 2 },
++    }));
++  });
++
+   it('hard delete detaches tickets (device_id -> NULL) instead of deleting them', async () => {
+     rigDeviceLookup(DEVICE);
+     const statements = rigDeleteTransaction();
+diff --git a/apps/api/src/routes/devices/core.ts b/apps/api/src/routes/devices/core.ts
+index 650d4b9f43..a680fef058 100644
+--- a/apps/api/src/routes/devices/core.ts
++++ b/apps/api/src/routes/devices/core.ts
+@@ -747,7 +747,8 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
+   'software_compliance_status', 'software_policy_audit', 'software_remediation_requests',
+   // Remote access
+   'remote_sessions', 'tunnel_sessions',
+-  // Monitoring & logs
++  // Monitoring & logs. Site-owned topology alerts detach before this sweep;
++  // only device-owned alerts still reference the device and are deleted.
+   'service_process_check_results', 'alerts', 'agent_logs', 'script_executions',
+   // #5291 W04 - probe results now name the device they ran FROM.
+   'network_monitor_results',
+@@ -2585,7 +2586,7 @@ coreRoutes.delete(
+     // #2787 review — omits the whole spread while the dissolve ran anyway.
+     let linkGroupId: string | null = null;
+     let linkGroupDissolved = false;
+-    let removedTopologyAlerts = 0;
++    let detachedTopologyAlerts = 0;
+     let screenshotStorageKeys: string[] = [];
+ 
+     // Delegated to `purgeRemovedDevice` (services/deviceLifecycle.ts) since
+@@ -2653,7 +2654,7 @@ coreRoutes.delete(
+       screenshotStorageKeys = purge.screenshotStorageKeys;
+       linkGroupId = purge.linkGroupId;
+       linkGroupDissolved = purge.linkGroupDissolved;
+-      removedTopologyAlerts = purge.removedTopologyAlerts;
++      detachedTopologyAlerts = purge.detachedTopologyAlerts;
+     } catch (err: unknown) {
+       if (err instanceof DeviceLifecycleError) {
+         return c.json({ error: err.message, code: err.code }, err.status);
+@@ -2731,8 +2732,8 @@ coreRoutes.delete(
+         // silently lost their grouping.
+         ...(linkGroupId ? { linkGroupId, linkGroupDissolved } : {}),
+         // Site-owned topology alerts this device originated (M3-D6) — after a
+-        // move-org they belong to ANOTHER org, so record that they went.
+-        ...(removedTopologyAlerts > 0 ? { removedTopologyAlerts } : {}),
++        // move-org they belong to ANOTHER org; record the detached provenance.
++        ...(detachedTopologyAlerts > 0 ? { detachedTopologyAlerts } : {}),
+       }
+     });
+ 
+diff --git a/apps/api/src/services/deviceDeletion.test.ts b/apps/api/src/services/deviceDeletion.test.ts
+index 3d93fca602..6aeed28066 100644
+--- a/apps/api/src/services/deviceDeletion.test.ts
++++ b/apps/api/src/services/deviceDeletion.test.ts
+@@ -1,4 +1,6 @@
+ import { describe, expect, it, vi } from 'vitest';
++import type { SQL } from 'drizzle-orm';
++import { PgDialect } from 'drizzle-orm/pg-core';
+ 
+ import { deleteDeviceCascade, type DeviceDeletionTx } from './deviceDeletion';
+ 
+@@ -72,7 +74,7 @@ function captureTx(lockedRowCount = 1) {
+         Object.defineProperty(row, 'count', { value: 1, enumerable: false });
+         return Promise.resolve(row);
+       }
+-      return Promise.resolve(undefined);
++      return Promise.resolve(pgResult(0));
+     }),
+     delete: vi.fn().mockImplementation(() => {
+       statements.push('__DELETE_DEVICES_ROW__');
+@@ -200,6 +202,9 @@ describe('deleteDeviceCascade lock ordering', () => {
+         if (text.includes('pg_settings')) {
+           return Promise.resolve({ unexpected: 'shape' });
+         }
++        if (text.includes('UPDATE alerts SET device_id = NULL')) {
++          return Promise.resolve({ rows: [], rowCount: 0 });
++        }
+         // Other statements stay in a readable node-postgres shape: the point
+         // here is one undecodable prior value, not a broken driver.
+         return Promise.resolve({ rows: [{ id: 'device-1' }], rowCount: 1 });
+@@ -211,7 +216,7 @@ describe('deleteDeviceCascade lock ordering', () => {
+     };
+ 
+     sentry.captureMessage.mockClear();
+-    await expect(deleteDeviceCascade(tx, 'device-1')).resolves.toEqual({ removedTopologyAlerts: 0 });
++    await expect(deleteDeviceCascade(tx, 'device-1')).resolves.toEqual({ detachedTopologyAlerts: 0 });
+ 
+     expect(sentry.captureMessage).toHaveBeenCalledTimes(1);
+     expect(String(sentry.captureMessage.mock.calls[0]?.[0])).toContain('lock_timeout');
+@@ -544,7 +549,7 @@ describe('deleteDeviceCascade when the parent lock is not acquired', () => {
+     sentry.captureMessage.mockClear();
+     const { tx, statements } = captureTx(0);
+ 
+-    await expect(deleteDeviceCascade(tx, 'device-gone')).resolves.toEqual({ removedTopologyAlerts: 0 });
++    await expect(deleteDeviceCascade(tx, 'device-gone')).resolves.toEqual({ detachedTopologyAlerts: 0 });
+ 
+     expect(sentry.captureMessage).toHaveBeenCalledTimes(1);
+     expect(String(sentry.captureMessage.mock.calls[0]?.[0])).toContain('without holding');
+@@ -561,3 +566,56 @@ describe('deleteDeviceCascade when the parent lock is not acquired', () => {
+     expect(sentry.captureMessage).not.toHaveBeenCalled();
+   });
+ });
++
++
++describe('deleteDeviceCascade topology alert history (#7269)', () => {
++  it('detaches topology alerts before deleting device-owned alert children and returns the count', async () => {
++    const { tx } = captureTx();
++    const execute = tx.execute;
++    const queries: { sql: string; params: unknown[] }[] = [];
++    tx.execute = vi.fn(async (query: unknown) => {
++      if (typeof query !== 'string') {
++        const compiled = new PgDialect().sqlToQuery(query as SQL);
++        queries.push(compiled);
++        if (compiled.sql.startsWith('UPDATE alerts SET device_id = NULL')) return pgResult(2);
++      }
++      return execute(query);
++    });
++
++    await expect(deleteDeviceCascade(tx, 'device-1')).resolves.toEqual({ detachedTopologyAlerts: 2 });
++
++    const detach = queries.findIndex(q => q.sql.startsWith('UPDATE alerts SET device_id = NULL'));
++    expect(detach).toBeGreaterThan(queries.findIndex(q => q.sql.includes('FOR UPDATE')));
++    expect(queries[detach]).toMatchObject({
++      sql: "UPDATE alerts SET device_id = NULL WHERE owner_kind = 'topology_site' AND device_id = $1::uuid RETURNING id",
++      params: ['device-1'],
++    });
++    for (const table of ['alert_notifications', 'alert_correlations', 'psa_ticket_mappings']) {
++      const childDelete = queries.findIndex(q => q.sql.startsWith(`DELETE FROM ${table}`));
++      expect(childDelete, table).toBeGreaterThan(detach);
++      expect(queries[childDelete]?.sql, table).toContain("owner_kind = 'device'");
++    }
++    expect(queries.some(q => q.sql.startsWith('DELETE FROM alerts'))).toBe(false);
++    expect(queries.some(q => q.sql.startsWith('DELETE FROM "alerts" WHERE device_id ='))).toBe(true);
++  });
++
++  it('detaches the device pointer on preserved PSA mappings before either device delete sweep', async () => {
++    const { tx } = captureTx();
++    const execute = tx.execute;
++    const queries: { sql: string; params: unknown[] }[] = [];
++    tx.execute = vi.fn(async (query: unknown) => {
++      if (typeof query !== 'string') queries.push(new PgDialect().sqlToQuery(query as SQL));
++      return execute(query);
++    });
++    await deleteDeviceCascade(tx, 'device-1');
++
++    const detach = queries.findIndex(q => q.sql.startsWith('UPDATE psa_ticket_mappings SET device_id = NULL'));
++    expect(detach).toBeGreaterThan(queries.findIndex(q => q.sql.includes('FOR UPDATE')));
++    expect(queries[detach]?.sql).toContain("owner_kind = 'topology_site'");
++    expect(queries[detach]?.sql).toContain('WHERE device_id =');
++    expect(queries[detach]?.params).toContain('device-1');
++    const deletes = queries.map((q, i) => /DELETE FROM "?psa_ticket_mappings/.test(q.sql) ? i : -1).filter(i => i >= 0);
++    expect(deletes).toHaveLength(2);
++    for (const index of deletes) expect(index).toBeGreaterThan(detach);
++  });
++});
+diff --git a/apps/api/src/services/deviceDeletion.ts b/apps/api/src/services/deviceDeletion.ts
+index ec6cabbd30..3484303bc4 100644
+--- a/apps/api/src/services/deviceDeletion.ts
++++ b/apps/api/src/services/deviceDeletion.ts
+@@ -10,7 +10,7 @@ import { devices } from '../db/schema';
+ // `jobs/`, which would drag BullMQ + ioredis into a plain DELETE's module graph.
+ import { extractRowCount } from '../db/rowCount';
+ import { resolveAlertsForRemovedComponents } from './hardwareHealth/retire';
+-import { deleteOriginDeviceTopologyAlerts } from './siteOwnedAlerts';
++import { detachOriginDeviceTopologyAlerts } from './siteOwnedAlerts';
+ import { deleteDeviceFixOutcomes } from './fixMemory/store';
+ import {
+   DEVICE_DETACH_DEVICE_ID_TABLES,
+@@ -106,14 +106,14 @@ export interface DeviceDeletionTx {
+  * Caller supplies the transaction: the route pairs this with link-group
+  * dissolution, and the reaper runs it standalone.
+  *
+- * Returns `removedTopologyAlerts`: site-owned topology alerts (M3-D6) this
++ * Returns `detachedTopologyAlerts`: site-owned topology alerts (M3-D6) this
+  * device originated, which may belong to ANOTHER org after a move-org — the
+  * caller's audit row records the count.
+  */
+ export async function deleteDeviceCascade(
+   tx: DeviceDeletionTx,
+   deviceId: string,
+-): Promise<{ removedTopologyAlerts: number }> {
++): Promise<{ detachedTopologyAlerts: number }> {
+   // Take the PARENT lock first, before any child table is touched.
+   //
+   // FK constraints force children-before-parent for the DELETEs themselves, so
+@@ -272,15 +272,18 @@ export async function deleteDeviceCascade(
+   const componentKeys = (hardwareRows as { component_key: string }[]).map(row => row.component_key);
+   if (componentKeys.length) await resolveAlertsForRemovedComponents(deviceId, componentKeys);
+ 
+-  // Site-owned topology alerts this device ORIGINATED (M3-D6). After a
+-  // move-org they stay in the site's org (ownership guard) while device_id
+-  // still points here, so they are removed explicitly — with their NO ACTION
+-  // children — and counted for the caller's audit, rather than left to the
+-  // generic device_id sweep below (which only reaches them because every
+-  // caller runs this in a SYSTEM context; see the FOR UPDATE note above).
+-  const removedTopologyAlerts = await deleteOriginDeviceTopologyAlerts(tx, sql`${deviceId}::uuid`);
++  // Site-owned topology alerts keep their history when their provenance
++  // device is deleted (#7269). Detach PSA mappings first as they can name
++  // BOTH the surviving alert and this device; either device_id delete sweep
++  // below would otherwise remove the mapping despite preserving the alert.
++  await tx.execute(sql`UPDATE psa_ticket_mappings SET device_id = NULL
++    WHERE device_id = ${deviceId}
++      AND alert_id IN (SELECT id FROM alerts WHERE owner_kind = 'topology_site')`);
++  const detachedTopologyAlerts = await detachOriginDeviceTopologyAlerts(tx, deviceId);
+ 
+-  const deviceAlertIds = sql`(SELECT id FROM alerts WHERE device_id = ${deviceId})`;
++  // Only device-owned alerts go with the device. Topology alert children and
++  // references stay attached to the site's surviving alert, even across orgs.
++  const deviceAlertIds = sql`(SELECT id FROM alerts WHERE device_id = ${deviceId} AND owner_kind = 'device')`;
+   const deviceAiSessionIds = sql`(SELECT id FROM ai_sessions WHERE device_id = ${deviceId})`;
+ 
+   await tx.execute(sql`DELETE FROM ai_tool_executions WHERE session_id IN ${deviceAiSessionIds}`);
+@@ -459,5 +462,5 @@ export async function deleteDeviceCascade(
+   // path only, like the lock_timeout restore: on error the rollback to the
+   // enclosing savepoint undoes the SET LOCAL anyway.
+   await tx.execute(sql`SELECT set_config('breeze.backup_erasure_org', ${priorFenceOrg}, true)`);
+-  return { removedTopologyAlerts };
++  return { detachedTopologyAlerts };
+ }
+diff --git a/apps/api/src/services/deviceInstallBoundary/classification.ts b/apps/api/src/services/deviceInstallBoundary/classification.ts
+index 7ef60b82db..12fb35c057 100644
+--- a/apps/api/src/services/deviceInstallBoundary/classification.ts
++++ b/apps/api/src/services/deviceInstallBoundary/classification.ts
+@@ -113,7 +113,7 @@ export const INSTALL_BOUNDARY_CLASSIFICATION: Readonly<Record<string, InstallBou
+   ai_screenshots: history('expiring screenshots'),
+   ai_sessions: history('technician chat with no install-bound authority'),
+   ai_unattended_exposure: history('unattended-action ledger'),
+-  alerts: history('alerts (§5.1)'),
++  alerts: history('alerts (§5.1); device deletion detaches site-owned topology provenance and preserves its history (#7269)'),
+   asset_checkouts: configuration('physical asset loan of the same hardware'),
+   asset_physical_placements: configuration('physical placement of the same hardware'),
+   audit_baseline_results: history('audit baseline results'),
+diff --git a/apps/api/src/services/deviceLifecycle.test.ts b/apps/api/src/services/deviceLifecycle.test.ts
+index cd01676f7f..bfe17563f5 100644
+--- a/apps/api/src/services/deviceLifecycle.test.ts
++++ b/apps/api/src/services/deviceLifecycle.test.ts
+@@ -159,7 +159,7 @@ beforeEach(() => {
+     alreadyDispatched: 0,
+   });
+   vi.mocked(dissolveLinkGroupIfBelowMinimum).mockResolvedValue(true);
+-  vi.mocked(deleteDeviceCascade).mockResolvedValue({ removedTopologyAlerts: 0 });
++  vi.mocked(deleteDeviceCascade).mockResolvedValue({ detachedTopologyAlerts: 0 });
+   vi.mocked(findPolicyBackupLegalHoldInContext).mockResolvedValue(null);
+   vi.mocked(deviceTakesLicensedSlot).mockResolvedValue(true);
+   vi.mocked(admitPartnerDeviceCapacity).mockResolvedValue({
+@@ -479,6 +479,7 @@ describe('purgeRemovedDevice', () => {
+   });
+ 
+   it('cascades and dissolves the link group when eligible', async () => {
++    vi.mocked(deleteDeviceCascade).mockResolvedValueOnce({ detachedTopologyAlerts: 2 });
+     const { tx, calls } = makeTx({
+       lockRow: { id: DEV, status: 'decommissioned', link_group_id: 'lg-1' },
+     });
+@@ -486,6 +487,8 @@ describe('purgeRemovedDevice', () => {
+     expect(deleteDeviceCascade).toHaveBeenCalledWith(tx, DEV);
+     expect(dissolveLinkGroupIfBelowMinimum).toHaveBeenCalledWith(tx, 'lg-1', undefined);
+     expect(r.linkGroupDissolved).toBe(true);
++    expect(r.detachedTopologyAlerts).toBe(2);
++    expect(r).not.toHaveProperty('removedTopologyAlerts');
+     expect(calls.filter((c) => c !== 'tighten-lock-timeout')[0]).toBe('lock');
+   });
+ 
+diff --git a/apps/api/src/services/deviceLifecycle.ts b/apps/api/src/services/deviceLifecycle.ts
+index 926b48957e..3dac85ce87 100644
+--- a/apps/api/src/services/deviceLifecycle.ts
++++ b/apps/api/src/services/deviceLifecycle.ts
+@@ -107,9 +107,9 @@ export interface PurgeResult {
+   linkGroupDissolved: boolean;
+   /**
+    * Site-owned topology alerts this device originated that the cascade
+-   * removed (possibly owned by another org after a move-org). Audited.
++   * detached (possibly owned by another org after a move-org). Audited.
+    */
+-  removedTopologyAlerts: number;
++  detachedTopologyAlerts: number;
+ }
+ 
+ /**
+@@ -409,7 +409,7 @@ export async function purgeRemovedDevice(
+     throw new DeviceLifecycleError('BACKUP_PROTECTED', BACKUP_PROTECTED_MESSAGE);
+   }
+ 
+-  const { removedTopologyAlerts } = await deleteDeviceCascade(tx, deviceId);
++  const { detachedTopologyAlerts } = await deleteDeviceCascade(tx, deviceId);
+ 
+   // #2138/#2308 — the deleted device's link_group_id went with its row. If the
+   // group now has a lone survivor, or a vm_host group was left headless,
+@@ -443,5 +443,5 @@ export async function purgeRemovedDevice(
+     }
+   }
+ 
+-  return { linkGroupId: row.link_group_id, linkGroupDissolved, removedTopologyAlerts };
++  return { linkGroupId: row.link_group_id, linkGroupDissolved, detachedTopologyAlerts };
+ }
+diff --git a/apps/api/src/services/siteOwnedAlerts.ts b/apps/api/src/services/siteOwnedAlerts.ts
+index c4fa3905c4..57bea10801 100644
+--- a/apps/api/src/services/siteOwnedAlerts.ts
++++ b/apps/api/src/services/siteOwnedAlerts.ts
+@@ -1,4 +1,5 @@
+ import { sql, type SQL } from 'drizzle-orm';
++import { extractRowCount } from '../db/rowCount';
+ 
+ type SqlExecutor = { execute: (query: ReturnType<typeof sql>) => Promise<unknown> };
+ 
+@@ -50,6 +51,7 @@ export async function deleteSiteOwnedTopologyAlerts(tx: SqlExecutor, orgId: stri
+  * how device-bound alerts go with their device. Must run in a SYSTEM db
+  * context: the alert may belong to an org the caller cannot see.
+  */
++// Device deletion uses detachOriginDeviceTopologyAlerts; org erasure still deletes.
+ export async function deleteOriginDeviceTopologyAlerts(
+   tx: SqlExecutor,
+   deviceIds: SQL,
+@@ -59,6 +61,17 @@ export async function deleteOriginDeviceTopologyAlerts(
+   return deleteTopologyAlertsWhere(tx, sql`topology_site_id IS NOT NULL AND device_id IN (${deviceIds})${ownerFilter}`);
+ }
+ 
++/**
++ * Preserve site-owned alert history when its provenance device is deleted.
++ * The caller must hold the device row FOR UPDATE and run in a SYSTEM context:
++ * after a device org move, the alert still belongs to its site's original org.
++ * Org erasure deliberately keeps using the delete helper above.
++ */
++export async function detachOriginDeviceTopologyAlerts(tx: SqlExecutor, deviceId: string): Promise<number> {
++  const detached = await tx.execute(sql`UPDATE alerts SET device_id = NULL WHERE owner_kind = 'topology_site' AND device_id = ${deviceId}::uuid RETURNING id`);
++  return extractRowCount(detached);
++}
++
+ async function deleteTopologyAlertsWhere(tx: SqlExecutor, predicate: SQL): Promise<number> {
+   const owned = sql`(SELECT id FROM alerts WHERE ${predicate})`;
+   await tx.execute(sql`DELETE FROM alert_correlations WHERE parent_alert_id IN ${owned} OR child_alert_id IN ${owned}`);
+diff --git a/docs/release-notes/next-release-draft.md b/docs/release-notes/next-release-draft.md
+index 2dee96be8e..2f28ee0583 100644
+--- a/docs/release-notes/next-release-draft.md
++++ b/docs/release-notes/next-release-draft.md
+@@ -22,6 +22,10 @@ Last release: **v0.125.0** (2026-10-27).
+ 
+ ## Features / API
+ 
++### Org-subject alerts (#10725)
++
++- Deleting a topology alert’s origin device now preserves the site-owned alert, notification and correlation history, and PSA ticket mappings (#7269).
++
+ ## Migrations
+ 
+ ### Flows W05 (#5215 / #5220, PR D — web, limits and egress audit)
+diff --git a/apps/api/src/services/siteOwnedAlerts.test.ts b/apps/api/src/services/siteOwnedAlerts.test.ts
+new file mode 100644
+index 0000000000..8a3ab63225
+--- /dev/null
++++ b/apps/api/src/services/siteOwnedAlerts.test.ts
+@@ -0,0 +1,45 @@
++import { describe, expect, it, vi } from 'vitest';
++import { PgDialect } from 'drizzle-orm/pg-core';
++import { detachOriginDeviceTopologyAlerts, deleteOriginDeviceTopologyAlerts } from './siteOwnedAlerts';
++import { sql } from 'drizzle-orm';
++
++const deviceId = '00000000-0000-4000-8000-000000000001';
++
++describe('detachOriginDeviceTopologyAlerts', () => {
++  it.each([
++    { result: Object.assign([{ id: 'a' }, { id: 'b' }], { count: 2 }), count: 2 },
++    { result: { rows: [{ id: 'a' }], rowCount: 1 }, count: 1 },
++    { result: [], count: 0 },
++  ])('returns the detached count $count without touching alert children', async ({ result, count }) => {
++    const tx = { execute: vi.fn().mockResolvedValue(result) };
++    expect(await detachOriginDeviceTopologyAlerts(tx, deviceId)).toBe(count);
++    expect(tx.execute).toHaveBeenCalledTimes(1);
++    const query = new PgDialect().sqlToQuery(tx.execute.mock.calls[0]![0]);
++    expect(query).toMatchObject({
++      sql: "UPDATE alerts SET device_id = NULL WHERE owner_kind = 'topology_site' AND device_id = $1::uuid RETURNING id",
++      params: [deviceId],
++    });
++  });
++
++  it('propagates a failed detach so the caller can roll back the purge', async () => {
++    const error = new Error('detach failed');
++    const tx = { execute: vi.fn().mockRejectedValue(error) };
++    await expect(detachOriginDeviceTopologyAlerts(tx, deviceId)).rejects.toBe(error);
++  });
++});
++
++it('keeps cross-org erasure deleting origin topology alerts and their children', async () => {
++  const tx = { execute: vi.fn().mockResolvedValue([{ id: 'a' }]) };
++  const orgId = '00000000-0000-4000-8000-000000000002';
++  expect(await deleteOriginDeviceTopologyAlerts(tx, sql`${deviceId}::uuid`, { ownerOrgNot: orgId })).toBe(1);
++  const queries = tx.execute.mock.calls.map(([query]) => new PgDialect().sqlToQuery(query));
++  expect(queries).toHaveLength(6);
++  expect(queries[0]?.sql).toContain('DELETE FROM alert_correlations');
++  expect(queries[1]?.sql).toContain('DELETE FROM alert_notifications');
++  expect(queries[2]?.sql).toContain('DELETE FROM psa_ticket_mappings');
++  expect(queries[5]?.sql).toContain('DELETE FROM alerts');
++  for (const query of queries) {
++    expect(query.sql).toContain('org_id <>');
++    expect(query.params).toContain(orgId);
++  }
++});
