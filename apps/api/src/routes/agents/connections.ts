@@ -8,6 +8,8 @@ import { captureException } from '../../services/sentry';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 import { submitConnectionsSchema } from './schemas';
 import { pgErrorNode } from '../../utils/pgErrors';
+import { envInt } from '../../utils/envInt';
+import { BULK_INSERT_CHUNK_ROWS, chunkRows } from '../../utils/chunkRows';
 
 // Hard caps that match the device_connections column widths. Agent
 // collectors emit kernel-bound values (TCP states, /proc comm names) that
@@ -24,16 +26,76 @@ const ADDR_MAX = 128; // local_addr / remote_addr are text; cap for sanity (e.g.
 // single statement at 65534 bound parameters. The submit schema allows up to
 // 10,000 connections, which at 11 cols would need 110,000 params and fail the
 // insert with MAX_PARAMETERS_EXCEEDED — silently dropping the device's entire
-// connection inventory (#1696). Chunk the insert well under the limit:
-// 5000 rows × 11 cols = 55,000 params, a comfortable margin under 65534.
-const CONNECTION_INSERT_CHUNK_SIZE = 5000;
+// connection inventory (#1696). The first fix chunked at 5,000 rows (55,000
+// params), which fit the limit but blocked the event loop for over a second
+// while drizzle built each statement (#10859). Chunks are now 500 rows.
+export const CONNECTION_INSERT_CHUNK_SIZE = BULK_INSERT_CHUNK_ROWS;
 
-function chunk<T>(items: T[], size: number): T[][] {
-  const batches: T[][] = [];
-  for (let i = 0; i < items.length; i += size) {
-    batches.push(items.slice(i, i + size));
-  }
-  return batches;
+// #10859 — domain controllers and file servers report 5–10k sockets, most of
+// them TIME_WAIT churn. Storing all of them costs a large write every report
+// and adds little for the operator. The cap keeps the useful rows (see
+// selectConnectionsToStore). The schema still accepts up to 10,000, so setting
+// the env var to 10000 stores everything.
+const DEFAULT_MAX_CONNECTIONS_PER_DEVICE = 2000;
+
+export function maxStoredConnectionsPerDevice(): number {
+  const configured = envInt('AGENT_CONNECTIONS_MAX_PER_DEVICE', DEFAULT_MAX_CONNECTIONS_PER_DEVICE);
+  return configured > 0 ? configured : DEFAULT_MAX_CONNECTIONS_PER_DEVICE;
+}
+
+type SubmittedConnection = {
+  protocol: string;
+  localAddr: string;
+  localPort: number;
+  remoteAddr?: string;
+  remotePort?: number;
+  state?: string;
+  pid?: number;
+  processName?: string;
+};
+
+/**
+ * Priority when a report is over the cap, lowest first: listening sockets
+ * (what the device serves), then established connections (who it talks to),
+ * then UDP sockets (stateless, mostly bound services such as DNS), then all
+ * other TCP states (TIME_WAIT, CLOSE_WAIT, SYN_SENT, … — transient churn).
+ * Windows reports `LISTENING`, the other collectors `LISTEN`.
+ */
+function connectionPriority(conn: SubmittedConnection): number {
+  const state = conn.state?.trim().toUpperCase() ?? '';
+  if (state === 'LISTEN' || state === 'LISTENING') return 0;
+  if (state === 'ESTABLISHED') return 1;
+  if (conn.protocol.startsWith('udp')) return 2;
+  return 3;
+}
+
+function compareText(a: string | undefined, b: string | undefined): number {
+  const left = a ?? '';
+  const right = b ?? '';
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/**
+ * Pick at most `max` connections to store. Under the cap the report is
+ * returned as-is, in agent order. Over it, rows are ranked by
+ * {@link connectionPriority} and then by a total order on the socket tuple, so
+ * the same set of sockets always yields the same stored rows, whatever order
+ * the agent sent them in.
+ */
+export function selectConnectionsToStore<T extends SubmittedConnection>(connections: readonly T[], max: number): T[] {
+  if (connections.length <= max) return [...connections];
+  return [...connections]
+    .sort((a, b) =>
+      connectionPriority(a) - connectionPriority(b)
+      || compareText(a.protocol, b.protocol)
+      || a.localPort - b.localPort
+      || compareText(a.localAddr, b.localAddr)
+      || compareText(a.remoteAddr, b.remoteAddr)
+      || (a.remotePort ?? -1) - (b.remotePort ?? -1)
+      || compareText(a.state, b.state)
+      || (a.pid ?? -1) - (b.pid ?? -1)
+      || compareText(a.processName, b.processName))
+    .slice(0, max);
 }
 
 function clampNullable(value: string | null | undefined, max: number): string | null {
@@ -67,15 +129,29 @@ connectionsRoutes.put(
     return c.json({ error: 'Device not found' }, 404);
   }
 
+  const max = maxStoredConnectionsPerDevice();
+  const toStore = selectConnectionsToStore(data.connections, max);
+  const truncated = toStore.length < data.connections.length;
+  if (truncated) {
+    console.warn('[connections] capped connection inventory', {
+      agentId,
+      deviceId: device.id,
+      orgId: device.orgId,
+      received: data.connections.length,
+      stored: toStore.length,
+      max,
+    });
+  }
+
   try {
     await db.transaction(async (tx) => {
       await tx
         .delete(deviceConnections)
         .where(eq(deviceConnections.deviceId, device.id));
 
-      if (data.connections.length > 0) {
+      if (toStore.length > 0) {
         const now = new Date();
-        const rows = data.connections.map((conn) => ({
+        const rows = toStore.map((conn) => ({
           deviceId: device.id,
           orgId: device.orgId,
           protocol: conn.protocol,
@@ -88,9 +164,9 @@ connectionsRoutes.put(
           processName: clampNullable(conn.processName, PROCESS_NAME_MAX),
           updatedAt: now
         }));
-        // Chunk to stay under Postgres' 65534 bound-parameter limit (#1696).
-        // All batches share the transaction, so delete+replace stays atomic.
-        for (const batch of chunk(rows, CONNECTION_INSERT_CHUNK_SIZE)) {
+        // Bounded chunks (#1696, #10859). All batches share the transaction,
+        // so delete+replace stays atomic.
+        for (const batch of chunkRows(rows, CONNECTION_INSERT_CHUNK_SIZE)) {
           await tx.insert(deviceConnections).values(batch);
         }
       }
@@ -112,7 +188,8 @@ connectionsRoutes.put(
       agentId,
       deviceId: device.id,
       orgId: device.orgId,
-      count: data.connections.length,
+      count: toStore.length,
+      received: data.connections.length,
       pgCode: pg.code,
       pgDetail: pg.detail,
       pgTable: pg.table_name,
@@ -124,5 +201,10 @@ connectionsRoutes.put(
     throw err;
   }
 
-  return c.json({ success: true, count: data.connections.length });
+  return c.json({
+    success: true,
+    count: toStore.length,
+    received: data.connections.length,
+    truncated,
+  });
 });

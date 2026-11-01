@@ -196,6 +196,26 @@ it('publishes only after commit and subscribers can read the owner', async () =>
   expect(m.cooldown).toHaveBeenCalledTimes(2);
 });
 
+it('evaluates with NO ambient context, the way the alert worker calls it, and drains after commit (#10859)', async () => {
+  const f = await fixture();
+  // No wrapper: the evaluator opens its own short system contexts (prelude,
+  // one per rule, detach). Every read must still see the seeded rows, so a
+  // forgotten bare-pool read would show up here as zero alerts.
+  expect(hasDbAccessContext()).toBe(false);
+  const ids = await evaluateDeviceAlerts(f.device.id);
+  expect(ids).toHaveLength(2);
+  expect(hasDbAccessContext()).toBe(false);
+  // Committed already: visible from a fresh context, and nothing published yet.
+  expect((await alertRows(f.device.id)).map(a => a.subjectKey).sort()).toEqual(['a', 'b']);
+  expect(m.publish).not.toHaveBeenCalled();
+  // The worker's drain runs right after, with no ambient context.
+  await drainSubjectAlertOutbox(f.device.id);
+  expect(m.publish.mock.calls.filter(c => c[0] === 'alert.triggered')).toHaveLength(2);
+  // Re-evaluating the same evidence adopts the open alerts: no duplicates.
+  expect(await evaluateDeviceAlerts(f.device.id)).toHaveLength(0);
+  expect(await alertRows(f.device.id)).toHaveLength(2);
+});
+
 it('outer rollback discards alerts, ownership and pending publication together', async () => {
   const f = await fixture();
   await expect(withSystemDbAccessContext(async () => {

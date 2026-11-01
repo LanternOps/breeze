@@ -18,6 +18,7 @@ import { bullmqJobId, isReusableState } from '../services/bullmqUtils';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { attachWorkerObservability } from './workerObservability';
 import { envInt } from '../utils/envInt';
+import { getDbPoolMax } from '../db/poolSize';
 import { captureException } from '../services/sentry';
 import {
   evaluateNetworkCheckAlertsForOrg,
@@ -35,6 +36,57 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 // Queue name
 const ALERT_QUEUE = 'alert-evaluation';
 const ON_DEMAND_ALERT_DEDUPE_WINDOW_MS = 30 * 1000;
+
+/**
+ * #10859 — worker concurrency, sized against the request pool.
+ *
+ * An evaluate-device job opens its contexts one after another (the evaluator's
+ * prelude, rules and detach scan, then the outbox drain), never nested, so it
+ * holds one pooled connection at a time and this number bounds the alert
+ * worker's peak pool occupancy. The default is a quarter
+ * of DB_POOL_MAX (min 1) so alert evaluation can never starve heartbeats and
+ * requests. The old hardcoded 10 was half of a 20-connection pool.
+ * `ALERT_WORKER_CONCURRENCY` overrides it; zero, negative or unparseable
+ * values fall back to the default.
+ */
+export function resolveAlertWorkerConcurrency(): number {
+  const fallback = Math.max(1, Math.floor(getDbPoolMax() / 4));
+  const configured = envInt('ALERT_WORKER_CONCURRENCY', fallback);
+  return configured > 0 ? configured : fallback;
+}
+
+const EVALUATE_ALL_INTERVAL_MS = 60 * 1000;
+const DEFAULT_STAGGER_WINDOW_MS = 50 * 1000;
+// Keep every staggered job due before the next evaluate-all tick.
+const MAX_STAGGER_WINDOW_MS = EVALUATE_ALL_INTERVAL_MS - 1000;
+
+/**
+ * #10859 — how far across the 60 s tick evaluate-all spreads the fleet's
+ * evaluate-device jobs. `ALERT_WORKER_STAGGER_WINDOW_MS` overrides the 50 s
+ * default; it is clamped to [0, 59 s], and 0 restores the old enqueue-all-now
+ * behaviour.
+ */
+export function resolveAlertStaggerWindowMs(): number {
+  const configured = envInt('ALERT_WORKER_STAGGER_WINDOW_MS', DEFAULT_STAGGER_WINDOW_MS);
+  return Math.min(Math.max(0, configured), MAX_STAGGER_WINDOW_MS);
+}
+
+/**
+ * The device's fixed offset within the window: a 32-bit FNV-1a hash of its id,
+ * modulo the window. A hash rather than the device's position in the sweep
+ * means a device keeps the same slot on every tick, so it is evaluated about
+ * every 60 s, and a device joining or leaving the fleet does not move anyone
+ * else's slot.
+ */
+export function evaluateDeviceStaggerDelayMs(deviceId: string, windowMs: number): number {
+  if (windowMs <= 0) return 0;
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < deviceId.length; i++) {
+    hash ^= deviceId.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0) % windowMs;
+}
 
 // Singleton queue instance
 let alertQueue: Queue | null = null;
@@ -108,11 +160,17 @@ export function createAlertWorker(): Worker<AlertJobData> {
           return await processEvaluateAll(data);
 
         case 'evaluate-device': {
-          const result = await runWithSystemDbAccess(() => processEvaluateDevice(data));
+          // #10859 — deliberately NOT wrapped. `evaluateDeviceAlerts` opens one
+          // short system context per unit of work (the rule lookup, each rule,
+          // the detach scan). A wrapper here would make each of those JOIN one
+          // transaction held across all of the device's rules: 2–6 s per
+          // device on a partner-wide monitor set, ~850 times an hour, which
+          // pinned the request pool and queued agent heartbeats behind it.
+          const result = await processEvaluateDevice(data);
           // W03 Task 10 — drain the committed subject-alert outbox only after
-          // this device's own evaluation transaction has committed. Retries
-          // even when a device is offline/unreachable on later ticks, so a
-          // crash between commit and dispatch does not strand an alert.
+          // every one of this device's evaluation transactions has committed.
+          // Retries even when a device is offline/unreachable on later ticks,
+          // so a crash between commit and dispatch does not strand an alert.
           await drainSubjectAlertOutbox(data.deviceId);
           return result;
         }
@@ -131,7 +189,7 @@ export function createAlertWorker(): Worker<AlertJobData> {
     },
     {
       connection: getBullMQConnection(),
-      concurrency: 10,
+      concurrency: resolveAlertWorkerConcurrency(),
       lockDuration: 300_000,
       stalledInterval: 60_000,
       maxStalledCount: 2,
@@ -181,6 +239,7 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
   // env override; default 5000. Setting the env to 0 means "unlimited per run".
   const cap = data.batchSize ?? envInt('ALERT_WORKER_MAX_DEVICES_PER_RUN', 5000);
   const chunkSize = Math.max(1, envInt('ALERT_WORKER_CHUNK_SIZE', 500));
+  const staggerWindowMs = resolveAlertStaggerWindowMs();
 
   // Get all active organizations.
   //
@@ -249,12 +308,24 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
 
     if (chunk.length === 0) break;
 
+    // #10859 — spread across the tick instead of landing the whole fleet on
+    // the pool at once, and keyed by device: while a device's previous sweep
+    // job is still waiting, delayed or running, BullMQ ignores the duplicate
+    // id, so a fleet the worker cannot keep up with does not pile up an
+    // unbounded backlog. The id must free up as soon as the job ends, failed
+    // or not, or every later enqueue for that device would be dropped.
     const jobs = chunk.map(device => ({
       name: 'evaluate-device',
       data: {
         type: 'evaluate-device' as const,
         deviceId: device.id,
         orgId: device.orgId
+      },
+      opts: {
+        jobId: bullmqJobId('alert-sweep-device', device.id),
+        delay: evaluateDeviceStaggerDelayMs(device.id, staggerWindowMs),
+        removeOnComplete: true,
+        removeOnFail: true,
       }
     }));
 

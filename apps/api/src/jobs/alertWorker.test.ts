@@ -48,7 +48,10 @@ const {
     organizationsSchema: { id: 'organizations.id', status: 'organizations.status', type: 'organizations.type' } as const,
     fleetState: { fleet: [] as { id: string; orgId: string }[], chunkCalls: 0 },
     ctx,
-    workerState: { processor: null as null | ((job: { data: unknown }) => Promise<unknown>) }
+    workerState: {
+      processor: null as null | ((job: { data: unknown }) => Promise<unknown>),
+      opts: null as null | { concurrency?: number },
+    }
   };
 });
 
@@ -137,8 +140,9 @@ vi.mock('bullmq', () => ({
     getJob = getJobMock;
   },
   Worker: class {
-    constructor(_name: string, processor: (job: { data: unknown }) => Promise<unknown>) {
+    constructor(_name: string, processor: (job: { data: unknown }) => Promise<unknown>, opts: { concurrency?: number }) {
       workerState.processor = processor;
+      workerState.opts = opts;
     }
     on = vi.fn();
     close = vi.fn();
@@ -155,7 +159,8 @@ vi.mock('../services/alertService', () => ({
 }));
 
 vi.mock('../services/bullmqUtils', () => ({
-  isReusableState: vi.fn(() => false)
+  isReusableState: vi.fn(() => false),
+  bullmqJobId: (...parts: Array<string | number>) => parts.map((part) => String(part).replace(/:/g, '-')).join('-'),
 }));
 
 const { networkCheckOrgIdsMock, evaluateNetworkCheckAlertsForOrgMock } = vi.hoisted(() => ({
@@ -179,7 +184,14 @@ vi.mock('../services/subjectAlertOutbox', () => ({
   drainSubjectAlertOutbox: vi.fn(async () => { subjectOutbox.depths.push(ctx.depth); }),
 }));
 
-import { createAlertWorker, processEvaluateAll, triggerFullEvaluation } from './alertWorker';
+import {
+  createAlertWorker,
+  evaluateDeviceStaggerDelayMs,
+  processEvaluateAll,
+  resolveAlertStaggerWindowMs,
+  resolveAlertWorkerConcurrency,
+  triggerFullEvaluation,
+} from './alertWorker';
 
 const resetCtx = () => {
   ctx.depth = 0;
@@ -372,7 +384,7 @@ describe('alertWorker evaluate-all #1105 DB-context scoping', () => {
       .not.toMatch(/evaluateDeviceAlertsFromPolicy|checkAutoResolveFromConfigPolicy/);
   });
 
-  it('still wraps per-device evaluation in a system DB context', async () => {
+  it('runs per-device evaluation with NO wrapping context — the evaluator scopes its own (#10859)', async () => {
     createAlertWorker();
     expect(workerState.processor).toBeTypeOf('function');
 
@@ -385,8 +397,12 @@ describe('alertWorker evaluate-all #1105 DB-context scoping', () => {
 
     await workerState.processor!({ data: { type: 'evaluate-device', deviceId: 'device-1', orgId: 'org-1' } });
 
-    // evaluate-device does its own reads AND writes; it keeps the wrapper.
-    expect(seenDepths).toEqual([1]);
+    // A wrapper here would make every per-rule context inside the evaluator
+    // JOIN one transaction held across all of the device's rules — the 2–6 s
+    // pooled-connection hold this issue is about. The evaluator opens one
+    // short system context per unit of work instead (alertService
+    // contextScoping test).
+    expect(seenDepths).toEqual([0]);
   });
 
   it('drains subject events after device commit and outside the fleet context', async () => {
@@ -480,6 +496,158 @@ describe('alertWorker evaluate-all network_check fan-out (#6353)', () => {
     expect(evaluateNetworkCheckAlertsForOrgMock).toHaveBeenCalledWith('org-1');
     expect(seenDepths).toEqual([1]);
     expect(result).toMatchObject({ orgId: 'org-1', alertsCreated: 1 });
+  });
+});
+
+// #10859 — alert work must never be able to occupy more than ~a quarter of
+// the request pool: one evaluate-device job holds at most one pooled
+// connection at a time, so the worker concurrency IS the peak occupancy.
+describe('alertWorker concurrency (#10859)', () => {
+  beforeEach(() => {
+    delete process.env.ALERT_WORKER_CONCURRENCY;
+    delete process.env.DB_POOL_MAX;
+    workerState.opts = null;
+  });
+
+  afterEach(() => {
+    delete process.env.ALERT_WORKER_CONCURRENCY;
+    delete process.env.DB_POOL_MAX;
+  });
+
+  it('defaults to a quarter of the DB pool (default pool 30 → 7)', () => {
+    expect(resolveAlertWorkerConcurrency()).toBe(7);
+  });
+
+  it('tracks DB_POOL_MAX (20 → 5, 2 → at least 1)', () => {
+    process.env.DB_POOL_MAX = '20';
+    expect(resolveAlertWorkerConcurrency()).toBe(5);
+    process.env.DB_POOL_MAX = '2';
+    expect(resolveAlertWorkerConcurrency()).toBe(1);
+  });
+
+  it('honours ALERT_WORKER_CONCURRENCY and ignores non-positive or garbage values', () => {
+    process.env.DB_POOL_MAX = '20';
+    process.env.ALERT_WORKER_CONCURRENCY = '3';
+    expect(resolveAlertWorkerConcurrency()).toBe(3);
+    for (const bad of ['0', '-2', 'ten', '']) {
+      process.env.ALERT_WORKER_CONCURRENCY = bad;
+      expect(resolveAlertWorkerConcurrency()).toBe(5);
+    }
+  });
+
+  it('passes the resolved concurrency to the BullMQ worker instead of a hardcoded 10', () => {
+    process.env.DB_POOL_MAX = '20';
+    createAlertWorker();
+    expect(workerState.opts?.concurrency).toBe(5);
+
+    process.env.ALERT_WORKER_CONCURRENCY = '2';
+    createAlertWorker();
+    expect(workerState.opts?.concurrency).toBe(2);
+  });
+});
+
+// #10859 — evaluate-all used to enqueue every device at the same instant, so
+// the whole fleet's evaluations landed on the pool in one burst each minute.
+describe('alertWorker evaluate-all stagger (#10859)', () => {
+  type BulkJob = { data: { deviceId: string }; opts?: { delay?: number; jobId?: string; removeOnComplete?: unknown; removeOnFail?: unknown } };
+  const queuedJobs = (): BulkJob[] =>
+    (addBulkMock.mock.calls as unknown as [BulkJob[]][]).flatMap(([jobs]) => jobs)
+      .filter((job) => (job as unknown as { name: string }).name === 'evaluate-device');
+
+  beforeEach(() => {
+    fleetState.fleet = [];
+    fleetState.chunkCalls = 0;
+    resetCtx();
+    addBulkMock.mockClear();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    delete process.env.ALERT_WORKER_STAGGER_WINDOW_MS;
+    delete process.env.ALERT_WORKER_MAX_DEVICES_PER_RUN;
+    delete process.env.ALERT_WORKER_CHUNK_SIZE;
+  });
+
+  afterEach(() => {
+    delete process.env.ALERT_WORKER_STAGGER_WINDOW_MS;
+    vi.restoreAllMocks();
+  });
+
+  it('defaults the window to 50 s, clamps it inside the 60 s tick, and allows 0 to disable', () => {
+    expect(resolveAlertStaggerWindowMs()).toBe(50_000);
+    process.env.ALERT_WORKER_STAGGER_WINDOW_MS = '20000';
+    expect(resolveAlertStaggerWindowMs()).toBe(20_000);
+    process.env.ALERT_WORKER_STAGGER_WINDOW_MS = '600000';
+    expect(resolveAlertStaggerWindowMs()).toBe(59_000);
+    process.env.ALERT_WORKER_STAGGER_WINDOW_MS = '0';
+    expect(resolveAlertStaggerWindowMs()).toBe(0);
+    process.env.ALERT_WORKER_STAGGER_WINDOW_MS = '-1';
+    expect(resolveAlertStaggerWindowMs()).toBe(0);
+  });
+
+  it('spreads evaluate-device jobs across the window instead of enqueueing them all at once', async () => {
+    fleetState.fleet = buildFleet(400);
+
+    await processEvaluateAll({ type: 'evaluate-all' });
+
+    const delays = queuedJobs().map((job) => job.opts?.delay);
+    expect(delays).toHaveLength(400);
+    for (const delay of delays) {
+      expect(Number.isInteger(delay)).toBe(true);
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThan(50_000);
+    }
+    // Every 5 s bucket of the window gets some of the fleet, and none gets
+    // more than a fifth of it — a burst would put them all in bucket 0.
+    const buckets = new Array(10).fill(0);
+    for (const delay of delays) buckets[Math.floor(delay! / 5_000)]++;
+    expect(buckets.every((count) => count > 0)).toBe(true);
+    expect(Math.max(...buckets)).toBeLessThan(80);
+  });
+
+  it('gives each device the same slot every tick, so its cadence stays ~60 s', async () => {
+    fleetState.fleet = buildFleet(50);
+    await processEvaluateAll({ type: 'evaluate-all' });
+    const first = queuedJobs().map((job) => [job.data.deviceId, job.opts?.delay]);
+
+    addBulkMock.mockClear();
+    fleetState.chunkCalls = 0;
+    // A device joining the fleet must not shift everyone else's slot.
+    fleetState.fleet = [{ id: 'device-aaaaaa', orgId: 'org-1' }, ...buildFleet(50)];
+    await processEvaluateAll({ type: 'evaluate-all' });
+    const second = new Map(queuedJobs().map((job) => [job.data.deviceId, job.opts?.delay]));
+
+    for (const [deviceId, delay] of first) {
+      expect(second.get(deviceId as string)).toBe(delay);
+    }
+    expect(evaluateDeviceStaggerDelayMs('device-000007', 50_000))
+      .toBe(evaluateDeviceStaggerDelayMs('device-000007', 50_000));
+  });
+
+  it('enqueues with no delay when the window is 0', async () => {
+    process.env.ALERT_WORKER_STAGGER_WINDOW_MS = '0';
+    fleetState.fleet = buildFleet(20);
+
+    await processEvaluateAll({ type: 'evaluate-all' });
+
+    expect(queuedJobs().map((job) => job.opts?.delay ?? 0)).toEqual(new Array(20).fill(0));
+  });
+
+  it('keys each sweep job by device so a still-pending evaluation is not enqueued twice', async () => {
+    fleetState.fleet = buildFleet(3);
+
+    await processEvaluateAll({ type: 'evaluate-all' });
+
+    const jobs = queuedJobs();
+    expect(jobs.map((job) => job.opts?.jobId)).toEqual([
+      'alert-sweep-device-device-000000',
+      'alert-sweep-device-device-000001',
+      'alert-sweep-device-device-000002',
+    ]);
+    // The id frees up the moment the job finishes, either way — a retained
+    // completed/failed job would make BullMQ silently drop every later
+    // enqueue for that device.
+    for (const job of jobs) {
+      expect(job.opts?.removeOnComplete).toBe(true);
+      expect(job.opts?.removeOnFail).toBe(true);
+    }
   });
 });
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 
 const AGENT_ID = 'agent-001';
@@ -41,7 +41,40 @@ vi.mock('../../db/schema', () => ({
 }));
 
 import { db } from '../../db';
-import { connectionsRoutes } from './connections';
+import {
+  connectionsRoutes,
+  CONNECTION_INSERT_CHUNK_SIZE,
+  maxStoredConnectionsPerDevice,
+  selectConnectionsToStore,
+} from './connections';
+
+/** Mocks the device lookup + transaction; returns every insert batch. */
+function mockKnownDeviceTransaction() {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([{ id: DEVICE_ID, agentId: AGENT_ID, orgId: 'org-1' }]),
+      }),
+    }),
+  } as any);
+
+  const insertedBatches: any[][] = [];
+  vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+    const tx = {
+      delete: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      }),
+      insert: vi.fn().mockReturnValue({
+        values: vi.fn().mockImplementation((rows: any[]) => {
+          insertedBatches.push(rows);
+          return Promise.resolve(undefined);
+        }),
+      }),
+    };
+    return fn(tx);
+  });
+  return { insertedBatches };
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -51,8 +84,16 @@ describe('connections routes', () => {
   let app: Hono;
   let agentRole: 'agent' | 'watchdog';
 
+  const putConnections = (connections: unknown[]) =>
+    app.request(`/agents/${AGENT_ID}/connections`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ connections }),
+    });
+
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.AGENT_CONNECTIONS_MAX_PER_DEVICE;
     agentRole = 'agent';
     app = new Hono();
     app.use('*', async (c, next) => {
@@ -355,30 +396,11 @@ describe('connections routes', () => {
       expect(body.count).toBe(4);
     });
 
-    it('chunks large inserts to stay under the Postgres 65534-param limit (#1696)', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: DEVICE_ID, agentId: AGENT_ID, orgId: 'org-1' }]),
-          }),
-        }),
-      } as any);
-
-      const insertedBatches: any[][] = [];
-      vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
-        const tx = {
-          delete: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue(undefined),
-          }),
-          insert: vi.fn().mockReturnValue({
-            values: vi.fn().mockImplementation((rows: any[]) => {
-              insertedBatches.push(rows);
-              return Promise.resolve(undefined);
-            }),
-          }),
-        };
-        return fn(tx);
-      });
+    it('chunks large inserts into bounded statements (#1696, #10859)', async () => {
+      // Raise the per-device cap to the schema max so this test exercises the
+      // chunking alone; the cap has its own tests below.
+      process.env.AGENT_CONNECTIONS_MAX_PER_DEVICE = '10000';
+      const { insertedBatches } = mockKnownDeviceTransaction();
 
       // 11 columns/row × 10,000 rows = 110,000 bind params — far over the
       // 65534 limit if sent as one statement. The schema cap is 10,000.
@@ -389,27 +411,135 @@ describe('connections routes', () => {
         localPort: (i % 65535),
       }));
 
-      const res = await app.request(`/agents/${AGENT_ID}/connections`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ connections }),
-      });
+      const res = await putConnections(connections);
 
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.count).toBe(COUNT);
 
-      // Must have split into multiple batches (old code inserted in one shot).
-      expect(insertedBatches.length).toBeGreaterThan(1);
-      // No batch may exceed the chunk size (5000 rows × 11 cols = 55k params).
+      // #10859 — no statement may exceed 500 rows (× 11 cols = 5,500 params).
+      // The old 5,000-row chunk built 55k-param statements whose query
+      // building blocked the event loop for over a second.
+      expect(CONNECTION_INSERT_CHUNK_SIZE).toBe(500);
       for (const batch of insertedBatches) {
-        expect(batch.length).toBeLessThanOrEqual(5000);
+        expect(batch.length).toBeLessThanOrEqual(500);
       }
+      expect(insertedBatches).toHaveLength(COUNT / 500);
       // Concatenated batches must equal the original rows IN ORDER — guards
       // against a chunk() off-by-one that drops/duplicates a specific row while
       // keeping the total count correct (localPort is the unique per-row marker).
       const flatPorts = insertedBatches.flat().map((r: { localPort: number }) => r.localPort);
       expect(flatPorts).toEqual(connections.map((c) => c.localPort));
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // #10859 — per-device cap with deterministic priority
+  // ----------------------------------------------------------------
+
+  describe('PUT /agents/:id/connections per-device cap (#10859)', () => {
+    let warnSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+    });
+
+    it('defaults the cap to 2000 connections per device and honours the env override', () => {
+      delete process.env.AGENT_CONNECTIONS_MAX_PER_DEVICE;
+      expect(maxStoredConnectionsPerDevice()).toBe(2000);
+      process.env.AGENT_CONNECTIONS_MAX_PER_DEVICE = '750';
+      expect(maxStoredConnectionsPerDevice()).toBe(750);
+      // Zero, negative and garbage fall back to the default rather than
+      // disabling the cap or storing nothing.
+      for (const bad of ['0', '-5', 'lots', '']) {
+        process.env.AGENT_CONNECTIONS_MAX_PER_DEVICE = bad;
+        expect(maxStoredConnectionsPerDevice()).toBe(2000);
+      }
+    });
+
+    it('stores every row, in agent order, and does not warn when under the cap', async () => {
+      process.env.AGENT_CONNECTIONS_MAX_PER_DEVICE = '5';
+      const { insertedBatches } = mockKnownDeviceTransaction();
+      const connections = [
+        { protocol: 'tcp', localAddr: '0.0.0.0', localPort: 9, state: 'TIME_WAIT' },
+        { protocol: 'tcp', localAddr: '0.0.0.0', localPort: 1, state: 'LISTEN' },
+      ];
+
+      const res = await putConnections(connections);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({ success: true, count: 2, received: 2, truncated: false });
+      expect(insertedBatches.flat().map((r: { localPort: number }) => r.localPort)).toEqual([9, 1]);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('keeps listeners, then established, then UDP, then the rest — and logs the cap', async () => {
+      process.env.AGENT_CONNECTIONS_MAX_PER_DEVICE = '4';
+      const { insertedBatches } = mockKnownDeviceTransaction();
+      // Agent order deliberately puts the noise first.
+      const connections = [
+        { protocol: 'tcp', localAddr: '10.0.0.5', localPort: 50001, remoteAddr: '10.0.0.9', remotePort: 443, state: 'TIME_WAIT' },
+        { protocol: 'tcp', localAddr: '10.0.0.5', localPort: 50002, remoteAddr: '10.0.0.9', remotePort: 443, state: 'CLOSE_WAIT' },
+        { protocol: 'udp', localAddr: '0.0.0.0', localPort: 53 },
+        { protocol: 'tcp', localAddr: '10.0.0.5', localPort: 50003, remoteAddr: '10.0.0.9', remotePort: 443, state: 'ESTABLISHED' },
+        { protocol: 'tcp6', localAddr: '::', localPort: 445, state: 'LISTEN' },
+        { protocol: 'tcp', localAddr: '0.0.0.0', localPort: 389, state: 'LISTENING' },
+      ];
+
+      const res = await putConnections(connections);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({ success: true, count: 4, received: 6, truncated: true });
+      expect(insertedBatches.flat().map((r: { localPort: number }) => r.localPort)).toEqual([389, 445, 50003, 53]);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(String(warnSpy.mock.calls[0]![0])).toContain('capped');
+      expect(warnSpy.mock.calls[0]![1]).toMatchObject({ deviceId: DEVICE_ID, received: 6, stored: 4, max: 4 });
+    });
+
+    it('selects the same rows whatever order the agent reports them in', () => {
+      const connections = Array.from({ length: 40 }, (_, i) => ({
+        protocol: (i % 3 === 0 ? 'udp' : 'tcp') as 'tcp' | 'udp',
+        localAddr: '10.0.0.5',
+        localPort: 1000 + i,
+        remoteAddr: i % 3 === 0 ? undefined : '10.0.0.9',
+        remotePort: i % 3 === 0 ? undefined : 443,
+        state: ['LISTEN', 'ESTABLISHED', 'TIME_WAIT', 'SYN_SENT'][i % 4],
+      }));
+      const reversed = [...connections].reverse();
+      const pick = (rows: typeof connections) => selectConnectionsToStore(rows, 15).map((c) => c.localPort);
+
+      expect(pick(connections)).toHaveLength(15);
+      expect(pick(reversed)).toEqual(pick(connections));
+    });
+
+    it('caps a 10,000-row report at the default and still writes it in bounded chunks', async () => {
+      delete process.env.AGENT_CONNECTIONS_MAX_PER_DEVICE;
+      const { insertedBatches } = mockKnownDeviceTransaction();
+      const connections = Array.from({ length: 10000 }, (_, i) => ({
+        protocol: 'tcp',
+        localAddr: '10.0.0.5',
+        localPort: i % 65535,
+        remoteAddr: '10.0.0.9',
+        remotePort: 443,
+        state: i % 10 === 0 ? 'ESTABLISHED' : 'TIME_WAIT',
+      }));
+
+      const res = await putConnections(connections);
+
+      expect(res.status).toBe(200);
+      const stored = insertedBatches.flat();
+      expect(stored).toHaveLength(2000);
+      for (const batch of insertedBatches) {
+        expect(batch.length).toBeLessThanOrEqual(500);
+      }
+      // All 1,000 established connections survive the cap.
+      expect(stored.filter((r: { state: string }) => r.state === 'ESTABLISHED')).toHaveLength(1000);
     });
   });
 
