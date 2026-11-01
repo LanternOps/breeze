@@ -18,6 +18,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AGENT_CHANGES_MAX_BYTES_PER_ORG_PER_DAY: 'agent ingest quota knob',
   AGENT_CHANGES_MAX_ROWS_PER_DEVICE_PER_DAY: 'agent ingest quota knob',
   AGENT_CHANGES_MAX_ROWS_PER_ORG_PER_DAY: 'agent ingest quota knob',
+  AGENT_CONNECTIONS_MAX_PER_DEVICE: 'agent ingest cap (stored connections per device)',
   AGENT_EDITION_AUTO_MIGRATE_ENABLED: 'agent edition migration toggle',
   AGENT_ENROLL_RATE_LIMIT: 'rate limit knob',
   AGENT_ENROLL_RATE_WINDOW_SECONDS: 'rate limit knob',
@@ -60,7 +61,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AI_TOOL_INDEX: 'AI chat system-prompt tool index (lazy/full)',
   // ALERT_*
   ALERT_WORKER_CHUNK_SIZE: 'worker throughput knob',
+  ALERT_WORKER_CONCURRENCY: 'worker concurrency knob (default DB_POOL_MAX/4; DB_POOL_MAX/2 when BREEZE_ROLE=worker)',
   ALERT_WORKER_MAX_DEVICES_PER_RUN: 'worker throughput knob',
+  ALERT_WORKER_STAGGER_WINDOW_MS: 'evaluate-device stagger window',
   // API_*
   API_KEY_PRELOOKUP_RATE_LIMIT: 'rate limit knob',
   API_KEY_PRELOOKUP_RATE_WINDOW_SECONDS: 'rate limit knob',
