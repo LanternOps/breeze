@@ -24,7 +24,7 @@ vi.mock('../services/psa', () => ({
 const { permissionGate, orgsWriteGate, mfaGate, selectMock, insertMock, updateMock, deleteMock } = vi.hoisted(() => {
   function chainMock(resolvedValue: unknown = []) {
     const chain: Record<string, any> = {};
-    for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin', 'leftJoin', 'orderBy', 'offset', 'for']) {
+    for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin', 'leftJoin', 'orderBy', 'offset', 'for', 'groupBy']) {
       chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
     }
     return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -86,6 +86,13 @@ vi.mock('../db/schema', () => ({
     createState: 'psa_ticket_mappings.create_state',
     closeState: 'psa_ticket_mappings.close_state',
     noteState: 'psa_ticket_mappings.note_state',
+    externalTicketNumber: 'psa_ticket_mappings.external_ticket_number',
+    lastError: 'psa_ticket_mappings.last_error',
+    lastErrorClass: 'psa_ticket_mappings.last_error_class',
+    source: 'psa_ticket_mappings.source',
+    attempts: 'psa_ticket_mappings.attempts',
+    nextAttemptAt: 'psa_ticket_mappings.next_attempt_at',
+    createSnapshot: 'psa_ticket_mappings.create_snapshot',
   },
   devices: {
     id: 'devices.id',
@@ -318,7 +325,7 @@ describe('psa routes', () => {
 
   const makeChain = (rows: unknown[]) => {
     const chain: Record<string, any> = {};
-    for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin', 'leftJoin', 'orderBy', 'offset', 'for']) {
+    for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin', 'leftJoin', 'orderBy', 'offset', 'for', 'groupBy']) {
       chain[method] = vi.fn(() => Object.assign(Promise.resolve(rows), chain));
     }
     return Object.assign(Promise.resolve(rows), chain);
@@ -876,6 +883,41 @@ describe('psa routes', () => {
     expect(res.status).toBe(200);
     expect(rowsChain.leftJoin).toHaveBeenCalled();
     expect(countChain.leftJoin).toHaveBeenCalled();
+  });
+
+  it('lists ledger fields and counts all states within the same tenant and connection', async () => {
+    const connection = '11111111-1111-4111-8111-111111111111';
+    const ledger = { createState: 'needs_attention', closeState: 'none', noteState: 'none', lastError: 'create_outcome_unresolved',
+      lastErrorClass: 'unknown_outcome', externalTicketNumber: null, source: 'manual', attempts: 2, nextAttemptAt: null,
+      alertId: 'alert-1', createAnywayUsed: true };
+    const rows = makeChain([{ id: 'mapping-1', connectionId: connection, externalTicketId: null, ...ledger }]);
+    const count = makeChain([{ count: 1 }]);
+    const counts = makeChain([{ state: 'needs_attention', count: 1 }, { state: 'created', count: 10 }]);
+    selectMock.mockReturnValueOnce(rows as never).mockReturnValueOnce(count as never).mockReturnValueOnce(counts as never);
+    const response = await app.request(`/psa/tickets?connectionId=${connection}&createState=failed,needs_attention&includeCounts=true`, {
+      headers: { 'x-restrict-site': 'site-allowed' },
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data[0]).toMatchObject(ledger);
+    expect(body.counts).toEqual({ needs_attention: 1, created: 10 });
+    expect(body.pagination).toMatchObject({ total: 1, totalPages: 1 });
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const dialect = new PgDialect();
+    for (const chain of [rows, count, counts]) {
+      expect(chain.leftJoin).toHaveBeenCalled();
+      const query = dialect.sqlToQuery(chain.where.mock.calls[0][0]);
+      expect(query.params).toContain(connection);
+      expect(query.params).toContain('site-allowed');
+      expect(query.params).toContain('org-123');
+    }
+    expect(dialect.sqlToQuery(rows.where.mock.calls[0][0]).params).toContain('needs_attention');
+    expect(dialect.sqlToQuery(counts.where.mock.calls[0][0]).params).not.toContain('needs_attention');
+    expect(selectMock.mock.calls[0][0]).toMatchObject({ createState: expect.anything(), createAnywayUsed: expect.anything() });
+  });
+  it.each(['connectionId=invalid', 'createState=unknown', 'createState=', 'includeCounts=maybe'])('rejects invalid ticket filters %s', async query => {
+    expect((await app.request(`/psa/tickets?${query}`)).status).toBe(400);
+    expect(selectMock).not.toHaveBeenCalled();
   });
 
   // ---- Dual ownership: org XOR partner (epic #2135) ----

@@ -84,7 +84,10 @@
       "resolved": "Résolu",
       "suppressed": "Masqué",
       "dismissed": "Ignoré"
-    }
+    },
+    "createPsaTicket": "Créer un billet PSA",
+    "psaTicketRequested": "Billet PSA demandé",
+    "failedToCreatePsaTicket": "Impossible de demander le billet PSA"
   },
   "alertDetails": {
     "closePanel": "Panneau fermé",

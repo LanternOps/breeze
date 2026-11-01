@@ -1337,7 +1337,7 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Keine Tickets entsprechen Ihrer Suche oder den Filtern.",
-          "noTickets": "Die Ticket-Synchronisierung ist noch nicht verfügbar, daher werden keine PSA-Tickets importiert.",
+          "noTickets": "Noch keine Alarmtickets. Aktivieren Sie Alarmtickets für die zugeordnete ConnectWise-Manage-Verbindung.",
           "title": "Keine PSA-Tickets"
         },
         "filters": {
@@ -1358,8 +1358,41 @@
           "waiting": "Wartend"
         },
         "ticketCount": "{{filtered}} von {{total}} Tickets",
-        "title": "PSA-Tickets",
+        "title": "Alarmtickets",
         "unlinked": "Nicht verknüpft"
+      },
+      "PsaAlertTicketingActivity": {
+        "title": "Ticketaktivität",
+        "refresh": "Aktualisieren",
+        "redrive": "Erneut anstoßen",
+        "loading": "Ticketaktivität wird geladen…",
+        "loadFailed": "Ticketaktivität konnte nicht geladen werden. Bitte aktualisieren.",
+        "actionFailed": "Ticketaktivität konnte nicht aktualisiert werden.",
+        "actionSucceeded": "Ticketaktivität aktualisiert.",
+        "help": "Erneutes Anstoßen wiederholt fehlgeschlagene Erstellungen und Alarme ohne Firmenverknüpfung. Als erledigt markieren beendet die Verarbeitung, ohne das PSA-Ticket zu ändern.",
+        "empty": "Keine Tickets erfordern Aufmerksamkeit.",
+        "viewAlert": "Alarm anzeigen",
+        "createAnyway": "Trotzdem erstellen",
+        "markHandled": "Als erledigt markieren",
+        "duplicateWarning": "Möglicherweise existiert bereits ein Ticket im PSA. Prüfen Sie dies zuerst: Dieser einmalige Wiederholungsversuch kann ein Duplikat erstellen.",
+        "confirmCreate": "Ein weiteres Ticket erstellen",
+        "cancel": "Abbrechen",
+        "previous": "Zurück",
+        "next": "Weiter",
+        "page": "Seite {{page}} von {{total}}",
+        "states": {
+          "never_attempted": "In Warteschlange",
+          "create_in_flight": "Wird erstellt",
+          "created": "Erstellt",
+          "create_outcome_unknown": "Erstellungsergebnis unbekannt",
+          "rejected": "Abgelehnt",
+          "failed": "Fehlgeschlagen",
+          "needs_attention": "Aufmerksamkeit erforderlich",
+          "handled": "Erledigt",
+          "skipped_no_company": "Keine Firmenverknüpfung",
+          "skipped_ambiguous_company": "Mehrdeutige Firmenverknüpfung",
+          "skipped_resolved_before_create": "Vor Erstellung behoben"
+        }
       }
     },
     "webhooks": {

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
+import PsaAlertTicketingActivity from './PsaAlertTicketingActivity';
 import '../../lib/i18n';
 import {
   ALERT_TICKETING_SEVERITIES as SEVERITIES_ASCENDING,
@@ -576,6 +577,7 @@ export default function PsaAlertTicketingCard({ connectionId, connectionName }: 
           </div>
         </form>
       )}
+      <PsaAlertTicketingActivity key={connectionId} connectionId={connectionId} canManage={canManage} />
     </section>
   );
 }

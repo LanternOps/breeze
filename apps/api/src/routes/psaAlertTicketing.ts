@@ -1,6 +1,5 @@
 /**
- * Alert → PSA ticket configuration API (#10499 W2-A). Dark: this only edits
- * and shows config; nothing creates tickets until W2-B.
+ * Alert → PSA ticket configuration and human-action API (#10499).
  *
  * Mounted from routes/psa.ts at `/psa/connections`:
  *
@@ -23,14 +22,14 @@
 
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
   alertTicketingSchemaFor,
   psaAlertTicketingPutSchema,
   psaProviderIdSchema,
   type ConnectwiseAlertTicketingStored,
 } from '@breeze/shared';
-import { zValidator } from '../lib/validation';
+import { zValidator, optionalJsonValidator } from '../lib/validation';
 import {
   authMiddleware,
   requireMfa,
@@ -42,7 +41,7 @@ import {
 import { requireOrgWideIntegrationAccess } from '../middleware/integrationConnectionScope';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { db } from '../db';
-import { partners, psaConnections } from '../db/schema';
+import { partners, psaConnections, psaTicketMappings } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE, canManagePartnerWidePolicies } from '../services/partnerWideAccess';
@@ -56,7 +55,12 @@ import {
   type AlertTicketingPartnerBinding,
 } from '../services/psaAlertTicketing/config';
 
+import { wakeMapping } from '../services/psaAlertTicketing/queue';
+
 export const psaAlertTicketingRoutes = new Hono();
+/** Mounted at /psa, since these actions are keyed by mapping, not connection. */
+export const psaTicketMappingActionRoutes = new Hono();
+psaTicketMappingActionRoutes.use('*', authMiddleware);
 
 // Re-entrant: a no-op when psaRoutes' own authMiddleware already ran.
 psaAlertTicketingRoutes.use('*', authMiddleware);
@@ -368,3 +372,89 @@ psaAlertTicketingRoutes.get(
     }
   }
 );
+
+const redriveSchema = z.object({ states: z.array(z.enum(['failed', 'skipped_no_company'])).min(1).max(2) });
+const handledSchema = z.object({ expectedState: z.enum(['failed', 'skipped_no_company', 'needs_attention']) });
+const humanActionGates = () => [
+  requireScope('partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  requireOrgWideIntegrationAccess,
+] as const;
+const unleased = () => or(isNull(psaTicketMappings.leaseUntil), sql`${psaTicketMappings.leaseUntil} <= now()`);
+
+function rearmValues() {
+  return {
+    createState: 'never_attempted' as const,
+    nextAttemptAt: new Date(), deadlineAt: new Date(Date.now() + 24 * 3600000),
+    leaseToken: null, leaseUntil: null, lastError: null, lastErrorClass: null,
+    // Keep the permanent human-retry marker while starting a fresh retry window.
+    createSnapshot: sql`coalesce(${psaTicketMappings.createSnapshot}, '{}'::jsonb) - 'operationAttempts' - 'unknownDeadline'`,
+    updatedAt: new Date(),
+  };
+}
+
+async function wakeHumanAction(id: string) {
+  // The ledger remains authoritative; the reconciler repairs Redis loss or a
+  // wake consumed before the request's transaction commits.
+  try { await wakeMapping(id, 'create'); }
+  catch (error) {
+    console.warn('[psa-ticketing] human action wake failed', { mappingId: id, message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+psaAlertTicketingRoutes.post('/:id/alert-ticketing/redrive', ...humanActionGates(),
+  zValidator('json', redriveSchema), async c => {
+    const auth = c.get('auth') as AuthContext;
+    const loaded = await loadTarget(c.req.param('id')!, auth);
+    if (isFailure(loaded)) return c.json({ error: loaded.error }, loaded.status);
+    if (!canManagePartnerWidePolicies(auth)) return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    const { states } = c.req.valid('json');
+    const rows = await db.update(psaTicketMappings).set(rearmValues())
+      .where(and(eq(psaTicketMappings.connectionId, loaded.row.id), inArray(psaTicketMappings.createState, states), unleased()))
+      .returning({ id: psaTicketMappings.id });
+    if (!rows.length) return c.json({ error: 'No alert tickets remain in the requested states. Reload and try again.' }, 409);
+    writeRouteAudit(c, { orgId: null, action: 'psa.alert_ticketing.redrive', resourceType: 'psa_connection', resourceId: loaded.row.id,
+      details: { states, count: rows.length, ...auditOwnerFields(loaded.row) } });
+    for (const row of rows) await wakeHumanAction(row.id);
+    return c.json({ data: { count: rows.length } });
+  });
+
+for (const action of ['create-anyway', 'mark-handled'] as const) {
+  psaTicketMappingActionRoutes.post(`/ticket-mappings/:id/${action}`, ...humanActionGates(),
+    optionalJsonValidator(action === 'mark-handled' ? handledSchema : z.object({})), async c => {
+      const auth = c.get('auth') as AuthContext;
+      const id = c.req.param('id')!;
+      if (!connectionIdSchema.safeParse(id).success) return c.json({ error: 'PSA ticket mapping not found' }, 404);
+      const [mapping] = await db.select({ id: psaTicketMappings.id, connectionId: psaTicketMappings.connectionId,
+        createState: psaTicketMappings.createState, createSnapshot: psaTicketMappings.createSnapshot })
+        .from(psaTicketMappings).where(eq(psaTicketMappings.id, id)).limit(1);
+      if (!mapping) return c.json({ error: 'PSA ticket mapping not found' }, 404);
+      const loaded = await loadTarget(mapping.connectionId, auth);
+      if (isFailure(loaded)) return c.json({ error: loaded.error }, loaded.status);
+      if (!canManagePartnerWidePolicies(auth)) return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      const body = c.req.valid('json');
+      const expectedState = action === 'create-anyway' ? 'needs_attention' : (body as z.infer<typeof handledSchema>).expectedState;
+      if (mapping.createState !== expectedState || (action === 'create-anyway' && mapping.createSnapshot?.createAnywayUsed)) {
+        return c.json({ error: 'This action is no longer available. Reload the alert tickets.' }, 409);
+      }
+      // No migration: create_snapshot carries a permanent retry-consumed marker.
+      // The same state-and-marker CAS both consumes it and rearms the row, so
+      // concurrent clicks and a later second needs_attention cannot authorize
+      // another uncertain create. Worker refresh/reconciliation preserve it.
+      const values = action === 'create-anyway' ? {
+        ...rearmValues(),
+        createSnapshot: sql`(coalesce(${psaTicketMappings.createSnapshot}, '{}'::jsonb) - 'operationAttempts' - 'unknownDeadline') || '{"createAnywayUsed":true}'::jsonb`,
+      } : { createState: 'handled' as const, nextAttemptAt: null, leaseToken: null, leaseUntil: null, updatedAt: new Date() };
+      const [updated] = await db.update(psaTicketMappings).set(values)
+        .where(and(eq(psaTicketMappings.id, id), eq(psaTicketMappings.connectionId, loaded.row.id),
+          eq(psaTicketMappings.createState, expectedState), unleased(),
+          action === 'create-anyway' ? sql`coalesce(${psaTicketMappings.createSnapshot}->>'createAnywayUsed', 'false') <> 'true'` : undefined))
+        .returning({ id: psaTicketMappings.id, connectionId: psaTicketMappings.connectionId, createState: psaTicketMappings.createState });
+      if (!updated) return c.json({ error: 'This action is no longer available. Reload the alert tickets.' }, 409);
+      writeRouteAudit(c, { orgId: null, action: `psa.alert_ticketing.${action.replace('-', '_')}`, resourceType: 'psa_ticket_mapping', resourceId: id,
+        details: { previousState: expectedState, connectionId: loaded.row.id, ...auditOwnerFields(loaded.row) } });
+      if (action === 'create-anyway') await wakeHumanAction(id);
+      return c.json({ data: updated });
+    });
+}

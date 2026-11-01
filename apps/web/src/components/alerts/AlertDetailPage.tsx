@@ -80,6 +80,7 @@ type ExternalTicket = {
   externalId: string;
   externalUrl: string | null;
   externalNumber: string | null;
+  state?: string | null;
 };
 
 function secureExternalTicketUrl(value: string | null): string | undefined {
@@ -124,6 +125,8 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
   const [linkedError, setLinkedError] = useState(false);
   const [externalTickets, setExternalTickets] = useState<ExternalTicket[]>([]);
   const [externalTicketsError, setExternalTicketsError] = useState(false);
+  const [externalTicketsRefresh, setExternalTicketsRefresh] = useState(0);
+  const [psaTicketPending, setPsaTicketPending] = useState(false);
   const [ticketDialogOpen, setTicketDialogOpen] = useState(false);
   const serviceManagementMode = useOrgStore((state) => state.serviceManagementMode);
 
@@ -191,7 +194,25 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       }
     })();
     return () => { current = false; };
-  }, [alertId]);
+  }, [alertId, externalTicketsRefresh]);
+
+  const handleCreatePsaTicket = async () => {
+    if (psaTicketPending || serviceManagementMode !== 'external' || !can('tickets', 'write')) return;
+    setPsaTicketPending(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/alerts/${alertId}/psa-ticket`, { method: 'POST' }),
+        errorFallback: t('alertDetailPage.failedToCreatePsaTicket'),
+        successMessage: t('alertDetailPage.psaTicketRequested'),
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+      });
+      setExternalTicketsRefresh(value => value + 1);
+    } catch (err) {
+      handleActionError(err, t('alertDetailPage.failedToCreatePsaTicket'));
+    } finally {
+      setPsaTicketPending(false);
+    }
+  };
 
   // Inject AI context when alert data is available
   const setPageContext = useAiStore((s) => s.setPageContext);
@@ -377,16 +398,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
 
           {/* Actions */}
           <div className="flex gap-2">
-            {/* #5075 W04 — Service Management gate.
-                'off': the API refuses with a 409 (the backstop lives in
-                ticketService.createTicket), so this avoids offering a button
-                that cannot succeed.
-                'external': the API WOULD accept the create (it still writes the
-                Breeze-side shadow row), but the alert flow has no PSA-linking
-                step yet, so a ticket raised here would strand outside the
-                partner's system of record. Hidden until that ships — unlike the
-                org record's Tickets tab, which stays visible under external
-                because it lists those shadow rows. */}
+            {/* Service Management selects the partner's ticket system. */}
             {serviceManagementMode === 'native' && can('tickets', 'write') && (
               <button
                 type="button"
@@ -396,6 +408,18 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
               >
                 <Ticket className="mr-2 inline-block h-4 w-4" />
                 {t('alertDetailPage.createTicket')}
+              </button>
+            )}
+            {serviceManagementMode === 'external' && can('tickets', 'write') && (
+              <button
+                type="button"
+                data-testid="alert-create-psa-ticket"
+                onClick={() => void handleCreatePsaTicket()}
+                disabled={psaTicketPending}
+                className="h-10 rounded-md border px-4 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                <Ticket className="mr-2 inline-block h-4 w-4" />
+                {t('alertDetailPage.createPsaTicket')}
               </button>
             )}
             {can('alerts', 'acknowledge') && alert.status === 'active' && (
@@ -506,6 +530,11 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                       </a>
                     ) : (
                       <span data-testid="alert-external-ticket-label" className="inline-block max-w-full break-all rounded-md border px-3 py-1.5 text-sm">{label}</span>
+                    )}
+                    {ticket.source === 'psa' && ticket.state && (
+                      <span data-testid="alert-external-ticket-state" className="ml-2 text-xs text-muted-foreground">
+                        {t(`common:longTail.psa.PsaAlertTicketingActivity.states.${ticket.state}`, { defaultValue: ticket.state })}
+                      </span>
                     )}
                   </li>
                 );

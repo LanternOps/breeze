@@ -23,6 +23,7 @@ const h = vi.hoisted(() => {
     createPSAProviderMock: vi.fn(),
     decryptCredentialsMock: vi.fn(),
     writeRouteAuditMock: vi.fn(),
+    wakeMock: vi.fn(async () => {}),
   };
 });
 
@@ -84,8 +85,10 @@ vi.mock('../services/secretCrypto', () => ({
   hmacFingerprint: vi.fn((value: string) => `fp1:test:${Buffer.from(value).toString('hex')}`),
 }));
 
+vi.mock('../services/psaAlertTicketing/queue', () => ({ wakeMapping: h.wakeMock }));
+
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { psaAlertTicketingRoutes } from './psaAlertTicketing';
+import { psaAlertTicketingRoutes, psaTicketMappingActionRoutes } from './psaAlertTicketing';
 import { PsaAdapterError } from '../services/psa/types';
 import { psaInstanceKey } from '../services/psaAlertTicketing/config';
 
@@ -153,6 +156,9 @@ beforeEach(() => {
   h.authState.current = partnerAuth();
   app = new Hono();
   app.route('/psa/connections', psaAlertTicketingRoutes);
+  if (psaTicketMappingActionRoutes) app.route('/psa', psaTicketMappingActionRoutes);
+  h.wakeMock.mockReset();
+  h.wakeMock.mockResolvedValue(undefined);
 });
 
 const url = `/psa/connections/${CONNECTION_ID}/alert-ticketing`;
@@ -460,5 +466,137 @@ describe('GET /psa/connections/:id/alert-ticketing/options', () => {
     const res = await app.request(optionsUrl);
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: 'ConnectWise API error (401)', errorClass: 'auth', detail: 'Invalid credentials' });
+  });
+});
+
+const MAPPING_ID = '55555555-5555-4555-8555-555555555555';
+function post(path: string, body: unknown = {}) {
+  return app.request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+}
+function loadMapping(createState = 'needs_attention', snapshot: unknown = {}) {
+  h.selectMock.mockReturnValueOnce(h.chain([{ id: MAPPING_ID, connectionId: CONNECTION_ID, createState, createSnapshot: snapshot }]) as never);
+  mockLoad(row());
+}
+const actionUrl = `/psa/ticket-mappings/${MAPPING_ID}`;
+describe('human alert-ticket actions', () => {
+  it('redrives only the named terminal states, audits and wakes each claimed row', async () => {
+    mockLoad(row());
+    const update = h.chain([{ id: MAPPING_ID }]); h.updateMock.mockReturnValueOnce(update);
+    const res = await post(`${url}/redrive`, { states: ['failed'] });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { count: 1 } });
+    const q = new PgDialect().sqlToQuery(update.where.mock.calls[0][0]);
+    expect(q.params).toContain('failed'); expect(q.params).not.toContain('skipped_no_company');
+    expect(q.params).toContain(CONNECTION_ID);
+    expect(q.sql).toContain('lease_until');
+    expect(update.set).toHaveBeenCalledWith(expect.objectContaining({ createState: 'never_attempted', deadlineAt: expect.any(Date) }));
+    expect(h.wakeMock).toHaveBeenCalledWith(MAPPING_ID, 'create');
+    expect(h.writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'psa.alert_ticketing.redrive' }));
+  });
+  it.each([{ states: [] }, { states: ['created'] }, { states: ['needs_attention'] }])('rejects invalid redrive states %j', async ({ states }) => {
+    expect((await post(`${url}/redrive`, { states })).status).toBe(400);
+    expect(h.updateMock).not.toHaveBeenCalled();
+  });
+  it('create anyway atomically consumes a durable marker and rejects a concurrent click', async () => {
+    loadMapping();
+    const update = h.chain([{ id: MAPPING_ID, createState: 'never_attempted' }]);
+    h.updateMock.mockReturnValueOnce(update);
+    expect((await post(`${actionUrl}/create-anyway`)).status).toBe(200);
+    const q = new PgDialect().sqlToQuery(update.where.mock.calls[0][0]);
+    expect(q.params).toContain('needs_attention');
+    expect(q.sql).toContain('createAnywayUsed');
+    const values = update.set.mock.calls[0][0];
+    expect(values.createState).toBe('never_attempted');
+    expect(new PgDialect().sqlToQuery(values.createSnapshot).sql).toContain('createAnywayUsed');
+    loadMapping(); h.updateMock.mockReturnValueOnce(h.chain([]));
+    expect((await post(`${actionUrl}/create-anyway`)).status).toBe(409);
+    expect(h.wakeMock).toHaveBeenCalledTimes(1);
+  });
+  it('allows only one additional remote create across repeated unknown outcomes', async () => {
+    const { harness, adapterError } = await import('../services/psaAlertTicketing/testHarness');
+    const f = harness();
+    f.ctx.mapping.id = MAPPING_ID; f.ctx.mapping.connectionId = CONNECTION_ID;
+    f.adapter.createAlertTicket.mockRejectedValue(adapterError('unknown_outcome'));
+    f.adapter.findTicketsByMarker.mockResolvedValue([]);
+    await f.run(); f.advance(7200001); await f.run();
+    expect(f.ctx.mapping.createState).toBe('needs_attention');
+    expect(f.adapter.createAlertTicket).toHaveBeenCalledTimes(1);
+    h.selectMock.mockReturnValueOnce(h.chain([f.ctx.mapping]) as never); mockLoad(row());
+    h.updateMock.mockImplementationOnce(() => ({ set: (values: Record<string, any>) => ({
+      where: (predicate: never) => ({ returning: async () => {
+        const query = new PgDialect().sqlToQuery(predicate);
+        if (!query.params.includes(f.ctx.mapping.createState) || f.ctx.mapping.createSnapshot?.createAnywayUsed) return [];
+        expect(query.sql).toContain('createAnywayUsed');
+        expect(new PgDialect().sqlToQuery(values.createSnapshot).sql).toContain('createAnywayUsed');
+        Object.assign(f.ctx.mapping, values, { nextAttemptAt: f.now(),
+          createSnapshot: { ...f.ctx.snapshot, createAnywayUsed: true } });
+        return [f.ctx.mapping];
+      } }),
+    }) }) as never);
+    expect((await post(`${actionUrl}/create-anyway`)).status).toBe(200);
+    // The storage regression test verifies this marker survives the fresh snapshot.
+    f.ctx.snapshot.createAnywayUsed = f.ctx.mapping.createSnapshot?.createAnywayUsed;
+    await f.run(); f.advance(7200001); await f.run();
+    expect(f.ctx.mapping.createState).toBe('needs_attention');
+    h.selectMock.mockReturnValueOnce(h.chain([f.ctx.mapping]) as never); mockLoad(row());
+    expect((await post(`${actionUrl}/create-anyway`)).status).toBe(409);
+    await f.run();
+    expect(f.adapter.createAlertTicket).toHaveBeenCalledTimes(2);
+  });
+  it('accepts create-anyway with an empty JSON body', async () => {
+    loadMapping(); h.updateMock.mockReturnValueOnce(h.chain([{ id: MAPPING_ID }]));
+    expect((await app.request(`${actionUrl}/create-anyway`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })).status).toBe(200);
+  });
+  it('409s a re-drive when no rows remain in the requested states', async () => {
+    mockLoad(row());
+    expect((await post(`${url}/redrive`, { states: ['failed'] })).status).toBe(409);
+    expect(h.writeRouteAuditMock).not.toHaveBeenCalled(); expect(h.wakeMock).not.toHaveBeenCalled();
+  });
+  it('refuses another create anyway after a second unknown outcome', async () => {
+    loadMapping('needs_attention', { createAnywayUsed: true });
+    expect((await post(`${actionUrl}/create-anyway`)).status).toBe(409);
+    expect(h.updateMock).not.toHaveBeenCalled();
+  });
+  it.each(['failed', 'skipped_no_company', 'needs_attention'])('marks %s handled with the exact expected state', async createState => {
+    loadMapping(createState);
+    const update = h.chain([{ id: MAPPING_ID, createState: 'handled' }]); h.updateMock.mockReturnValueOnce(update);
+    expect((await post(`${actionUrl}/mark-handled`, { expectedState: createState })).status).toBe(200);
+    expect(update.set).toHaveBeenCalledWith(expect.objectContaining({ createState: 'handled' }));
+    expect(new PgDialect().sqlToQuery(update.where.mock.calls[0][0]).params).toContain(createState);
+    expect(h.wakeMock).not.toHaveBeenCalled();
+    expect(h.writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'psa.alert_ticketing.mark_handled' }));
+  });
+  it('409s stale mark-handled clicks without auditing success', async () => {
+    loadMapping('failed');
+    expect((await post(`${actionUrl}/mark-handled`, { expectedState: 'failed' })).status).toBe(409);
+    expect(h.writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+  it.each(['permission', 'mfa', 'org', 'site', 'restricted'])('enforces the %s write gate on all actions', async gate => {
+    if (gate === 'permission') h.gates.permissionDeny = true;
+    if (gate === 'mfa') h.gates.mfaDeny = true;
+    if (gate === 'org') h.authState.current = orgAuth();
+    if (gate === 'site') h.authState.current = { ...partnerAuth(), allowedSiteIds: [] };
+    if (gate === 'restricted') h.authState.current = { ...partnerAuth(), partnerOrgAccess: 'selected' };
+    for (const [path, body] of [[`${url}/redrive`, { states: ['failed'] }], [`${actionUrl}/create-anyway`, {}], [`${actionUrl}/mark-handled`, { expectedState: 'failed' }]] as const) {
+      if (gate === 'restricted') {
+        if (path.includes('/ticket-mappings/')) loadMapping('failed'); else mockLoad(row());
+      }
+      expect((await post(path, body)).status).toBe(403);
+    }
+    expect(h.updateMock).not.toHaveBeenCalled();
+  });
+  it('hides another partner mapping and rejects malformed ids', async () => {
+    h.selectMock.mockReturnValueOnce(h.chain([{ id: MAPPING_ID, connectionId: CONNECTION_ID, createState: 'needs_attention' }]) as never);
+    mockLoad(row({ partnerId: OTHER_PARTNER_ID }));
+    expect((await post(`${actionUrl}/create-anyway`)).status).toBe(404);
+    expect((await post('/psa/ticket-mappings/not-an-id/create-anyway')).status).toBe(404);
+    expect(h.updateMock).not.toHaveBeenCalled();
+  });
+  it('keeps a durable re-drive successful when Redis is unavailable', async () => {
+    mockLoad(row()); h.updateMock.mockReturnValueOnce(h.chain([{ id: MAPPING_ID }]));
+    h.wakeMock.mockRejectedValueOnce(new Error('offline'));
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect((await post(`${url}/redrive`, { states: ['failed', 'skipped_no_company'] })).status).toBe(200);
+    expect(warning).toHaveBeenCalled(); warning.mockRestore();
   });
 });

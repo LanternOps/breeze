@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull, isNull, or } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { alertExternalRefs, alerts, psaConnections, psaTicketMappings } from '../db/schema';
 
@@ -43,7 +43,10 @@ export async function listAlertExternalTickets(
     id: psaTicketMappings.id,
     externalId: psaTicketMappings.externalTicketId,
     externalUrl: psaTicketMappings.externalTicketUrl,
-    state: psaTicketMappings.status,
+    externalNumber: psaTicketMappings.externalTicketNumber,
+    // W2-A backfilled pre-ledger mappings as handled; retain their remote
+    // status while new alert tickets expose the authoritative ledger state.
+    state: sql<string>`case when ${psaTicketMappings.createState} = 'handled' and ${psaTicketMappings.status} is not null then ${psaTicketMappings.status} else ${psaTicketMappings.createState} end`,
     createdAt: psaTicketMappings.createdAt,
     updatedAt: psaTicketMappings.updatedAt,
   }).from(psaTicketMappings)
@@ -67,7 +70,7 @@ export async function listAlertExternalTickets(
     })),
     ...mappings.map(mapping => ({
       ...mapping, source: 'psa' as const, partnerServicePrincipalId: null,
-      externalId: mapping.externalId!, externalNumber: null,
+      externalId: mapping.externalId!,
       createdAt: mapping.createdAt.toISOString(), updatedAt: mapping.updatedAt?.toISOString() ?? null,
     })),
   ];

@@ -1337,7 +1337,7 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Nessun ticket corrisponde alla tua ricerca o ai tuoi filtri.",
-          "noTickets": "La sincronizzazione dei ticket non è ancora disponibile, quindi i ticket PSA non vengono importati.",
+          "noTickets": "Nessun ticket di avviso. Abilita i ticket degli avvisi nella connessione ConnectWise Manage associata.",
           "title": "Nessun ticket PSA"
         },
         "filters": {
@@ -1358,8 +1358,41 @@
           "waiting": "In attesa"
         },
         "ticketCount": "{{filtered}} di {{total}} ticket",
-        "title": "Ticket PSA",
+        "title": "Ticket degli avvisi",
         "unlinked": "Scollegato"
+      },
+      "PsaAlertTicketingActivity": {
+        "title": "Attività dei ticket",
+        "refresh": "Aggiorna",
+        "redrive": "Riprova",
+        "loading": "Caricamento dell’attività dei ticket…",
+        "loadFailed": "Impossibile caricare l’attività dei ticket. Aggiorna per riprovare.",
+        "actionFailed": "Impossibile aggiornare l’attività dei ticket.",
+        "actionSucceeded": "Attività dei ticket aggiornata.",
+        "help": "Riprova ripete le creazioni non riuscite e gli avvisi senza azienda collegata. Segna come gestito interrompe l’elaborazione senza modificare il ticket PSA.",
+        "empty": "Nessun ticket richiede attenzione.",
+        "viewAlert": "Visualizza avviso",
+        "createAnyway": "Crea comunque",
+        "markHandled": "Segna come gestito",
+        "duplicateWarning": "Potrebbe già esistere un ticket nel PSA. Controlla prima: questo unico nuovo tentativo può creare un duplicato.",
+        "confirmCreate": "Crea un altro ticket",
+        "cancel": "Annulla",
+        "previous": "Precedente",
+        "next": "Successiva",
+        "page": "Pagina {{page}} di {{total}}",
+        "states": {
+          "never_attempted": "In coda",
+          "create_in_flight": "Creazione in corso",
+          "created": "Creato",
+          "create_outcome_unknown": "Esito della creazione sconosciuto",
+          "rejected": "Rifiutato",
+          "failed": "Non riuscito",
+          "needs_attention": "Richiede attenzione",
+          "handled": "Gestito",
+          "skipped_no_company": "Nessuna azienda collegata",
+          "skipped_ambiguous_company": "Collegamento azienda ambiguo",
+          "skipped_resolved_before_create": "Risolto prima della creazione"
+        }
       }
     },
     "webhooks": {

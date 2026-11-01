@@ -84,7 +84,10 @@
       "resolved": "Gelöst",
       "suppressed": "Unterdrückt",
       "dismissed": "Verworfen"
-    }
+    },
+    "createPsaTicket": "PSA-Ticket erstellen",
+    "psaTicketRequested": "PSA-Ticket angefordert",
+    "failedToCreatePsaTicket": "PSA-Ticket konnte nicht angefordert werden"
   },
   "alertDetails": {
     "closePanel": "Panel schließen",

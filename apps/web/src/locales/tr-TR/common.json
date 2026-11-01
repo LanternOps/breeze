@@ -1337,7 +1337,7 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Aramanızla veya filtrelerinizle eşleşen bilet yok.",
-          "noTickets": "Bilet senkronizasyonu henüz kullanılamıyor, bu nedenle PSA biletleri içe aktarılmaz.",
+          "noTickets": "Henüz uyarı bileti yok. Başlamak için bağlı ConnectWise Manage bağlantısında uyarı biletlerini etkinleştirin.",
           "title": "PSA bileti yok"
         },
         "filters": {
@@ -1358,8 +1358,41 @@
           "waiting": "Bekleniyor"
         },
         "ticketCount": "{{filtered}} / {{total}} bilet",
-        "title": "PSA Biletleri",
+        "title": "Uyarı biletleri",
         "unlinked": "Bağlantı kaldırıldı"
+      },
+      "PsaAlertTicketingActivity": {
+        "title": "Bilet etkinliği",
+        "refresh": "Yenile",
+        "redrive": "Yeniden dene",
+        "loading": "Bilet etkinliği yükleniyor…",
+        "loadFailed": "Bilet etkinliği yüklenemedi. Yeniden denemek için yenileyin.",
+        "actionFailed": "Bilet etkinliği güncellenemedi.",
+        "actionSucceeded": "Bilet etkinliği güncellendi.",
+        "help": "Yeniden dene, başarısız oluşturma işlemlerini ve şirket bağlantısı olmayan uyarıları tekrar işler. İşlendi olarak işaretle, PSA biletini değiştirmeden işlemeyi durdurur.",
+        "empty": "İlgilenilmesi gereken bilet yok.",
+        "viewAlert": "Uyarıyı görüntüle",
+        "createAnyway": "Yine de oluştur",
+        "markHandled": "İşlendi olarak işaretle",
+        "duplicateWarning": "PSA sisteminde zaten bir bilet olabilir. Önce kontrol edin: bu tek seferlik yeniden deneme yinelenen bir bilet oluşturabilir.",
+        "confirmCreate": "Bir bilet daha oluştur",
+        "cancel": "İptal",
+        "previous": "Önceki",
+        "next": "Sonraki",
+        "page": "Sayfa {{page}} / {{total}}",
+        "states": {
+          "never_attempted": "Kuyrukta",
+          "create_in_flight": "Oluşturuluyor",
+          "created": "Oluşturuldu",
+          "create_outcome_unknown": "Oluşturma sonucu bilinmiyor",
+          "rejected": "Reddedildi",
+          "failed": "Başarısız",
+          "needs_attention": "İlgilenilmesi gerekiyor",
+          "handled": "İşlendi",
+          "skipped_no_company": "Şirket bağlantısı yok",
+          "skipped_ambiguous_company": "Belirsiz şirket bağlantısı",
+          "skipped_resolved_before_create": "Oluşturmadan önce çözüldü"
+        }
       }
     },
     "webhooks": {

@@ -5,6 +5,7 @@ import type { SQL } from 'drizzle-orm';
 const mocks = vi.hoisted(() => ({ select: vi.fn(), rows: [] as unknown[][], predicates: [] as SQL[], joins: [] as SQL[] }));
 vi.mock('../db', () => ({ db: { select: mocks.select } }));
 import { listAlertExternalTickets } from './alertExternalTickets';
+import { psaTicketMappings } from '../db/schema';
 const ALERT = '11111111-1111-4111-8111-111111111111';
 const PARTNER = '22222222-2222-4222-8222-222222222222';
 const ORG = '33333333-3333-4333-8333-333333333333';
@@ -25,11 +26,31 @@ beforeEach(() => {
   });
 });
 describe('listAlertExternalTickets', () => {
+  it('projects the PSA number and ledger state while preserving legacy handled status', async () => {
+    await listAlertExternalTickets(ALERT, PARTNER);
+    const projection = mocks.select.mock.calls[1]![0];
+    expect(projection.externalNumber).toBe(psaTicketMappings.externalTicketNumber);
+    const state = new PgDialect().sqlToQuery(projection.state);
+    expect(state.sql).toBe(`case when "psa_ticket_mappings"."create_state" = 'handled' and "psa_ticket_mappings"."status" is not null then "psa_ticket_mappings"."status" else "psa_ticket_mappings"."create_state" end`);
+  });
+
+  it('returns the PSA ticket number, link and ledger state without adding pending rows', async () => {
+    mocks.rows.push([], [{ id: 'mapping', externalId: '42', externalNumber: 'CW-42',
+      externalUrl: 'https://psa.example/42', state: 'created', createdAt: CREATED, updatedAt: null }]);
+    const records = await listAlertExternalTickets(ALERT, PARTNER);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toEqual({ source: 'psa', partnerServicePrincipalId: null,
+      externalId: '42', externalNumber: 'CW-42', externalUrl: 'https://psa.example/42',
+      state: 'created', createdAt: CREATED.toISOString(), updatedAt: null });
+    expect(new PgDialect().sqlToQuery(mocks.predicates[1]!).sql)
+      .toContain('"psa_ticket_mappings"."external_ticket_id" is not null');
+  });
+
   it('returns principal refs and PSA mappings in deterministic source, time, id order', async () => {
     mocks.rows.push([
       { id: 'b', partnerServicePrincipalId: 'principal-b', externalId: 'B', externalUrl: null, externalNumber: '42', createdAt: CREATED, updatedAt: CREATED },
       { id: 'a', partnerServicePrincipalId: 'principal-a', externalId: 'A', externalUrl: 'https://psa.example/a', externalNumber: null, createdAt: CREATED, updatedAt: CREATED },
-    ], [{ id: 'c', externalId: 'C', externalUrl: null, state: 'open', createdAt: CREATED, updatedAt: CREATED }]);
+    ], [{ id: 'c', externalId: 'C', externalUrl: null, externalNumber: null, state: 'open', createdAt: CREATED, updatedAt: CREATED }]);
     expect(await listAlertExternalTickets(ALERT, PARTNER)).toEqual([
       { source: 'partner_api', partnerServicePrincipalId: 'principal-a', externalId: 'A', externalUrl: 'https://psa.example/a', externalNumber: null, state: null, createdAt: CREATED.toISOString(), updatedAt: CREATED.toISOString() },
       { source: 'partner_api', partnerServicePrincipalId: 'principal-b', externalId: 'B', externalUrl: null, externalNumber: '42', state: null, createdAt: CREATED.toISOString(), updatedAt: CREATED.toISOString() },
@@ -59,7 +80,7 @@ describe('listAlertExternalTickets', () => {
   it('org viewers read only org-owned PSA mappings, skipping partner-principal refs entirely', async () => {
     // Only the PSA query should consume this result; a refs read would instead
     // expose it as a partner_api record, and would issue a second query.
-    mocks.rows.push([{ id: 'org-mapping', externalId: 'ORG-1', externalUrl: null,
+    mocks.rows.push([{ id: 'org-mapping', externalId: 'ORG-1', externalUrl: null, externalNumber: null,
       state: 'open', createdAt: CREATED, updatedAt: CREATED }]);
     const records = await listAlertExternalTickets(ALERT, null, { orgId: ORG });
     expect(records.map(record => [record.source, record.externalId])).toEqual([['psa', 'ORG-1']]);
