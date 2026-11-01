@@ -53,7 +53,11 @@ var openH264Variants = map[string]struct {
 }
 
 // findOpenH264Library searches for the OpenH264 shared library on non-Windows.
-// Search order: next to executable, agent data dir, standard paths, auto-download.
+// Search order: next to executable, process data dir, standard paths,
+// auto-download. The process data dir is the agent data dir for root and the
+// per-user ~/Library/Application Support/Breeze for the macOS user-session
+// helper, which cannot write the root-only agent data dir and used to
+// re-download the codec into a temp dir on every start (#10870).
 func findOpenH264Library() (string, error) {
 	platform := runtime.GOOS + "/" + runtime.GOARCH
 	variant, ok := openH264Variants[platform]
@@ -69,8 +73,8 @@ func findOpenH264Library() (string, error) {
 		}
 	}
 
-	// 2. Agent data directory
-	dataDir := config.GetDataDir()
+	// 2. Process data directory
+	dataDir := config.ProcessDataDir()
 	candidate := filepath.Join(dataDir, variant.libName)
 	if _, err := os.Stat(candidate); err == nil {
 		return candidate, nil
@@ -84,12 +88,11 @@ func findOpenH264Library() (string, error) {
 		}
 	}
 
-	// 4. Auto-download from Cisco — try agent data dir first, fall back to
-	// user-writable temp dir (helper processes run as the logged-in user and
-	// cannot write to the root-owned agent data directory).
+	// 4. Auto-download from Cisco — try the process data dir first, fall
+	// back to a user-writable temp dir if even that cannot be written.
 	downloadDir := dataDir
 	if !isDirWritable(downloadDir) {
-		slog.Warn("OpenH264: agent data dir not writable, using temp dir",
+		slog.Warn("OpenH264: process data dir not writable, using temp dir",
 			"dataDir", dataDir)
 		downloadDir = filepath.Join(os.TempDir(), "breeze-openh264")
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/userhelper"
 	"github.com/spf13/cobra"
@@ -87,6 +88,13 @@ func runDesktopHelper() {
 	}
 	logging.Init("text", "info", output)
 
+	// On macOS the console-user helper keeps its caches, the OpenH264 codec
+	// and the wallpaper recovery record in ~/Library/Application
+	// Support/Breeze: the agent data dir is 0700 root and unreadable here
+	// (#10870). Create it before the ECH dialer and the shipper first persist
+	// a cache; a failure is reported once the shipper is up.
+	stateDir, stateErr := ensureHelperStateDir(runtime.GOOS, config.ProcessDataDir)
+
 	// Use LoadHelperConfig, NOT Load: on macOS the desktop-helper runs as the
 	// logged-in user (Aqua LaunchAgent), and Load() unconditionally reads
 	// root-only secrets.yaml and errors there, leaving the helper with no
@@ -149,6 +157,13 @@ func runDesktopHelper() {
 	// is up so the warn reaches Agent Logs even when nothing local can be
 	// written.
 	logging.EmitLogFileOutcome(log, logPath, openErr, mkdirErr, homeErr)
+
+	if stateErr != nil {
+		log.Warn("helper state dir unavailable; ECH/DNS caches, the OpenH264 codec and the wallpaper recovery record will not persist", "dir", stateDir, "error", stateErr.Error())
+	}
+	// Put back a wallpaper a crash mid-session left black. Runs after the
+	// shipper is up so the recovery is visible in Agent Logs.
+	recoverWallpaperAtStart(runtime.GOOS, contextFlag, func() { _ = desktop.GetWallpaperManager() })
 
 	// A permission check like any other: it never captures (#8390) and never
 	// calls ScreenCaptureKit (#8058). It used to take a real frame on every

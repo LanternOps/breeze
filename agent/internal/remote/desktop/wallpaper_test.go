@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -174,5 +175,79 @@ func TestWallpaper_SetBlackFails(t *testing.T) {
 	mgr.mu.Unlock()
 	if rc != 0 {
 		t.Fatalf("refCount should be 0 after failed suppress, got %d", rc)
+	}
+}
+
+// useWallpaperStateDir points newWallpaperManager at dir for one test.
+func useWallpaperStateDir(t *testing.T, dir string) {
+	t.Helper()
+	prev := wallpaperStateDir
+	wallpaperStateDir = func() string { return dir }
+	t.Cleanup(func() { wallpaperStateDir = prev })
+}
+
+// TestWallpaper_RecoveryRoundTripThroughStateDir is the #10870 crash path: a
+// helper suppresses, dies without restoring, and the next process to build the
+// manager finds the record in the same resolved directory and puts the
+// wallpaper back. The per-user directory does not exist yet on a fresh login,
+// so the writer must create it.
+func TestWallpaper_RecoveryRoundTripThroughStateDir(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "Library", "Application Support", "Breeze")
+	useWallpaperStateDir(t, stateDir)
+	wantPath := filepath.Join(stateDir, wallpaperRecoveryFile)
+
+	first := &stubWallpaperBackend{current: &WallpaperState{WallpaperPath: "/Users/canary/Pictures/beach.heic"}}
+	crashed := newWallpaperManager(first)
+	if crashed.recoveryPath != wantPath {
+		t.Fatalf("writer recoveryPath = %q, want %q", crashed.recoveryPath, wantPath)
+	}
+	if err := crashed.Suppress(); err != nil {
+		t.Fatalf("Suppress: %v", err)
+	}
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("recovery file not written at %s: %v", wantPath, err)
+	}
+	// No Restore: the process "crashed" mid-session.
+
+	second := &stubWallpaperBackend{}
+	restarted := newWallpaperManager(second)
+	if restarted.recoveryPath != wantPath {
+		t.Fatalf("reader recoveryPath = %q, want the writer's %q", restarted.recoveryPath, wantPath)
+	}
+	if second.restoreCount != 1 {
+		t.Fatalf("restarted manager Restore calls = %d, want 1", second.restoreCount)
+	}
+	if second.lastRestored == nil || second.lastRestored.WallpaperPath != "/Users/canary/Pictures/beach.heic" {
+		t.Fatalf("restored state = %+v, want the suppressed wallpaper", second.lastRestored)
+	}
+	if _, err := os.Stat(wantPath); !os.IsNotExist(err) {
+		t.Fatalf("recovery file should be removed after recovery, stat err = %v", err)
+	}
+}
+
+// On a macOS user-session process the manager must resolve to the per-user
+// state dir, not the root-only agent data dir it cannot write (#10870). Runs
+// only where that resolution applies; the matrix itself is covered in config.
+func TestWallpaper_RecoveryPathIsPerUserOnDarwin(t *testing.T) {
+	if runtime.GOOS != "darwin" || os.Geteuid() == 0 {
+		t.Skip("per-user state dir applies to non-root macOS processes only")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	backend := &stubWallpaperBackend{}
+	mgr := newWallpaperManager(backend)
+	want := filepath.Join(home, "Library", "Application Support", "Breeze", wallpaperRecoveryFile)
+	if mgr.recoveryPath != want {
+		t.Fatalf("recoveryPath = %q, want %q", mgr.recoveryPath, want)
+	}
+	if err := mgr.Suppress(); err != nil {
+		t.Fatalf("Suppress: %v", err)
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("recovery file not written at %s: %v", want, err)
+	}
+	if err := mgr.Restore(); err != nil {
+		t.Fatalf("Restore: %v", err)
 	}
 }

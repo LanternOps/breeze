@@ -38,20 +38,38 @@ var (
 	wallpaperMgrInstance *WallpaperManager
 )
 
+// wallpaperRecoveryFile is the crash-recovery record's name inside the
+// process's state dir.
+const wallpaperRecoveryFile = "wallpaper_state.json"
+
+// wallpaperStateDir resolves where the recovery record lives. It is the
+// process's own state dir, not the agent data dir: on macOS the wallpaper is
+// suppressed and restored by the user-session desktop helper, which runs as
+// the console user and cannot write the root-only data dir (#10870), so its
+// record lives under ~/Library/Application Support/Breeze. Every process
+// that writes the record also reads it back on its next start through this
+// same resolver. Swapped in tests.
+var wallpaperStateDir = config.ProcessDataDir
+
 // GetWallpaperManager returns the package-level singleton WallpaperManager.
 // On first call, it checks for a leftover recovery file and restores the
-// wallpaper if the agent crashed mid-session.
+// wallpaper if this process (or an earlier run of it) crashed mid-session.
 func GetWallpaperManager() *WallpaperManager {
 	wallpaperMgrOnce.Do(func() {
-		recoveryPath := filepath.Join(config.GetDataDir(), "wallpaper_state.json")
-		mgr := &WallpaperManager{
-			backend:      newWallpaperBackend(),
-			recoveryPath: recoveryPath,
-		}
-		mgr.recoverIfNeeded()
-		wallpaperMgrInstance = mgr
+		wallpaperMgrInstance = newWallpaperManager(newWallpaperBackend())
 	})
 	return wallpaperMgrInstance
+}
+
+// newWallpaperManager builds a manager whose recovery record lives in the
+// resolved state dir and runs crash recovery from it.
+func newWallpaperManager(backend wallpaperBackend) *WallpaperManager {
+	mgr := &WallpaperManager{
+		backend:      backend,
+		recoveryPath: filepath.Join(wallpaperStateDir(), wallpaperRecoveryFile),
+	}
+	mgr.recoverIfNeeded()
+	return mgr
 }
 
 // Suppress suppresses the desktop wallpaper to solid black. Reference-counted:
