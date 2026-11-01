@@ -60,9 +60,9 @@ describe('frozen alert v2 contract', () => {
     }
   });
   it('pins the explicit event allowlist', () => {
-    expect(ALERT_V2_EVENT_TYPES).toEqual(['alert.triggered', 'alert.acknowledged', 'alert.resolved', 'alert.suppressed']);
+    expect(ALERT_V2_EVENT_TYPES).toEqual(['alert.triggered', 'alert.acknowledged', 'alert.resolved', 'alert.suppressed', 'alert.escalated']);
     for (const type of ALERT_V2_EVENT_TYPES) expect(isAlertV2EventType(type)).toBe(true);
-    for (const type of ['alert.correlation_group.created', 'alert.escalated', 'device.offline']) expect(isAlertV2EventType(type)).toBe(false);
+    for (const type of ['alert.correlation_group.created', 'device.offline']) expect(isAlertV2EventType(type)).toBe(false);
   });
   it('limits the partner contract to v2 plus external IDs', () => {
     expect(Object.keys(alertWebhookDataV2PartnerSchema.shape).sort()).toEqual([...Object.keys(FROZEN_V2_KEYS), 'orgExternalIds'].sort());

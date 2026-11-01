@@ -107,9 +107,8 @@ Webhooks subscribe to events emitted by the Breeze event bus. Pass one or more e
 | `alert.triggered` | A monitoring rule has fired a new alert |
 | `alert.acknowledged` | An alert has been acknowledged by a user or service principal |
 | `alert.resolved` | An alert condition has cleared |
-| `alert.suppressed` | Breeze AI has suppressed an alert. Suppressing an alert from the dashboard or `POST /alerts/:id/suppress` does not publish this event yet |
-
-`alert.escalated` is not sent by Breeze; the API rejects a new subscription to it with `400`; a stored one shows as "Never delivered" in the dashboard, and the dashboard edit form removes it on save.
+| `alert.suppressed` | An alert has been suppressed: from the dashboard, `POST /alerts/:id/suppress`, the bulk action (`POST /alerts/bulk`), or Breeze AI |
+| `alert.escalated` | An escalation policy step fired for an alert that is still active. One event per alert per step occurrence (each renotify repeat is its own occurrence), however many channels and users the step pages |
 
 ### Script Events
 
@@ -261,7 +260,7 @@ The v2 envelope is `{ id, type, timestamp, orgId, schemaVersion: 2, replayOf, da
 
 ### Alert event data
 
-Only `alert.triggered`, `alert.acknowledged`, `alert.resolved`, and `alert.suppressed` use the v2 alert data below. Other event types keep their original data.
+Only `alert.triggered`, `alert.acknowledged`, `alert.resolved`, `alert.suppressed`, and `alert.escalated` use the v2 alert data below. Other event types keep their original data.
 
 #### v1: alert.triggered
 
@@ -310,7 +309,7 @@ Several paths publish this event: the alert service, REST resolve, bulk actions,
 
 #### v1: alert.suppressed
 
-The AI suppression tool publishes this event. The REST suppress route does not publish it.
+Every suppress path publishes this event with the same data: `POST /alerts/:id/suppress`, the bulk action, and Breeze AI. It is published only when the suppression was written; a request that lost a race to a resolve or dismiss publishes nothing. Re-suppressing an already suppressed alert (to change its end time) publishes again.
 
 | Field | Type | Meaning |
 |-------|------|---------|
@@ -319,9 +318,23 @@ The AI suppression tool publishes this event. The REST suppress route does not p
 | `deviceId` | string | Device id |
 | `suppressedBy` | string | Suppressing user id |
 | `suppressedUntil` | ISO 8601 string or null | Suppression end time; null for indefinite suppression |
-| `durationHours` | number or null | Suppression duration in hours; null for indefinite suppression |
+| `durationHours` | number or null | Suppression duration in hours: the duration Breeze AI was given, or the time from the request to `suppressedUntil` (2 decimals) for an end-time suppression. Null for indefinite suppression |
 
-#### v2: all four alert events
+#### v1: alert.escalated
+
+Published when an escalation policy step fires. The step fires only while the alert is `active`: if the alert was acknowledged, suppressed, resolved, or dismissed before the step came due, no event is sent. A step none of whose channels or users is still valid sends nothing and publishes nothing. A retried publish reuses the event `id`, so deduplicate on it.
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `alertId` | string | Alert id |
+| `ruleId` | string or null | Rule id |
+| `deviceId` | string | Device id |
+| `escalationPolicyId` | string | Escalation policy id |
+| `escalationStep` | number | Occurrence id: `policyStep + 10 * repeat` |
+| `policyStep` | number | Position of the step in the policy, 1 to 10 |
+| `repeat` | number | Renotify repeat, 0 for the step's first firing |
+
+#### v2: all five alert events
 
 Every key below is always present. A value that does not apply or is unavailable is `null`. The status comes from the event type, even if the alert has since changed. Valid payload values take precedence over the current alert row.
 
@@ -360,7 +373,7 @@ and an event's `owner` and `ownerKey` extras remain available in `details`.
 | `ownerLabel` | string or null | Display label for the owner, such as `Microsoft 365 mail backup` |
 | `subjectName` | string or null | Display subject, including the customer name for a backup workload |
 | `episodeId` | string or null | Alert episode id |
-| `status` | `active`, `acknowledged`, `resolved`, or `suppressed` | State represented by this event; `alert.triggered` means `active` |
+| `status` | `active`, `acknowledged`, `resolved`, or `suppressed` | State represented by this event; `alert.triggered` and `alert.escalated` mean `active` |
 | `severity` | `critical`, `high`, `medium`, `low`, `info`, or null | Alert severity |
 | `title` | string or null | Alert title |
 | `message` | string or null | Alert message |

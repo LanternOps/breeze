@@ -147,6 +147,15 @@ describe('alert webhook enrichment', () => {
     expect((await buildAlertWebhookProjections(event(type))).org.status).toBe(status);
   });
 
+  // #10565: an escalation fires only while the alert is active; its step
+  // fields are not v2 top-level keys, so they travel in `details`.
+  it('projects alert.escalated as active with its step fields in details', async () => {
+    const step = { escalationPolicyId: 'policy-1', escalationStep: 12, policyStep: 2, repeat: 1 };
+    const { org } = await buildAlertWebhookProjections(event('alert.escalated', step));
+    expect(org.status).toBe('active');
+    expect(org.details).toMatchObject(step);
+  });
+
   it('keeps partner integration data out of the org projection and freezes both four-key shapes', async () => {
     const orgMapping = { source: 'psa', partnerServicePrincipalId: null, externalId: 'org-99', externalUrl: null, externalNumber: null, state: 'open', createdAt: NOW, updatedAt: NOW };
     const partnerRef = { source: 'partner_api', partnerServicePrincipalId: SITE, externalId: '42', externalUrl: 'https://psa.example/42', externalNumber: 'INC-42', state: null, createdAt: NOW, updatedAt: NOW };

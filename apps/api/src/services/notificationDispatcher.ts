@@ -44,7 +44,10 @@ import { decryptNotificationChannelConfig } from './notificationChannelSecrets';
 import { applyPartnerPushoverDefaults, readPartnerPushoverDefaults } from './partnerPushoverDefaults';
 import { attachWorkerObservability } from '../jobs/workerObservability';
 import { escalationStepSchema, type EscalationStep } from './delivery/escalationSteps';
-import { escalationOccurrences, listEscalationUsers, processUserEscalation, type UserEscalationJob } from './delivery/escalationExecution';
+import {
+  escalationOccurrences, listEscalationUsers, processEscalationEvent, processUserEscalation,
+  type EscalationEventJob, type UserEscalationJob,
+} from './delivery/escalationExecution';
 import { resolveDelivery } from './delivery/resolveDelivery';
 import { alertOwnerKey } from './alertOwner';
 import { enrichAlertSubjects } from './alertSubject';
@@ -97,7 +100,7 @@ interface ProcessAlertJobData {
   alertId: string;
 }
 
-type NotificationJobData = SendNotificationJobData | ProcessAlertJobData | UserEscalationJob;
+type NotificationJobData = SendNotificationJobData | ProcessAlertJobData | UserEscalationJob | EscalationEventJob;
 
 /**
  * Create the notification worker
@@ -120,6 +123,14 @@ export function createNotificationWorker(): Worker<NotificationJobData> {
           // Background entry point establishes the same context as process-alert.
           const userJob = job.data;
           return runWithSystemDbAccess(() => processUserEscalation(userJob));
+        }
+
+        case 'escalation-event': {
+          // A read plus publishEvent, which leaves the DB context itself before
+          // any Redis work. A publish failure throws and BullMQ retries.
+          const eventJob = job.data;
+          await runWithSystemDbAccess(() => processEscalationEvent(eventJob));
+          return;
         }
 
         case 'process-alert': {
@@ -1251,7 +1262,9 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
   const eligibleUsers = new Set(requestedUsers
     ? (await listEscalationUsers({ orgId, partnerId: null })).map(user => user.id) : []);
   for (const step of escalationOccurrences(steps, originalIndexes, alertId)) {
-    for (const channelId of [...new Set(step.channelIds)].filter(id => validChannelIdSet.has(id))) {
+    const channelIds = [...new Set(step.channelIds)].filter(id => validChannelIdSet.has(id));
+    const userIds = [...new Set(step.userIds)].filter(id => eligibleUsers.has(id));
+    for (const channelId of channelIds) {
       const channel = validChannelById.get(channelId)!;
       const job = await queue.add('send', { type: 'send', alertId, channelId, escalationStep: step.escalationStep }, {
         delay: step.delayMs, jobId: `escalation-${alertId}-step${step.escalationStep}-${channelId}`,
@@ -1260,12 +1273,33 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
       });
       await retryIfFailedJob(job, `alert ${alertId} escalation step ${step.escalationStep}`);
     }
-    for (const userId of [...new Set(step.userIds)].filter(id => eligibleUsers.has(id))) {
+    for (const userId of userIds) {
       const job = await queue.add('escalation-user', { type: 'escalation-user', alertId, userId, escalationStep: step.escalationStep }, {
         delay: step.delayMs, jobId: `escalation-${alertId}-step${step.escalationStep}-user-${userId}`,
         attempts: 3, backoff: { type: 'exponential', delay: 30000 }, removeOnComplete: true, removeOnFail: { age: 3600 },
       });
       await retryIfFailedJob(job, `alert ${alertId} user escalation ${step.escalationStep}`);
+    }
+    // #10565: the occurrence's single alert.escalated publisher. Only for an
+    // occurrence that pages someone; one with no surviving target is not an
+    // escalation anyone sees. The event is secondary to paging: a failed
+    // enqueue is logged and must not stop later occurrences from scheduling.
+    if (channelIds.length > 0 || userIds.length > 0) {
+      try {
+        const job = await queue.add('escalation-event', {
+          type: 'escalation-event', alertId, escalationStep: step.escalationStep, escalationPolicyId: policyId,
+        }, {
+          delay: step.delayMs, jobId: `escalation-${alertId}-step${step.escalationStep}-event`,
+          attempts: 3, backoff: { type: 'exponential', delay: 30000 }, removeOnComplete: true, removeOnFail: { age: 3600 },
+        });
+        await retryIfFailedJob(job, `alert ${alertId} escalation event ${step.escalationStep}`);
+      } catch (err) {
+        console.error(
+          `[NotificationDispatcher] Failed to schedule alert.escalated for alert ${alertId} `
+          + `step ${step.escalationStep} (policy ${policyId}) — its sends are scheduled; the event will not be published:`,
+          err
+        );
+      }
     }
   }
 
@@ -1281,7 +1315,7 @@ export async function cancelAlertEscalations(alertId: string): Promise<number> {
 
   let cancelled = 0;
   for (const job of delayed) {
-    if ((job.data.type === 'send' || job.data.type === 'escalation-user') &&
+    if ((job.data.type === 'send' || job.data.type === 'escalation-user' || job.data.type === 'escalation-event') &&
         job.data.alertId === alertId &&
         job.data.escalationStep) {
       await job.remove();
