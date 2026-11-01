@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'crypto';
 import { getRedis } from './redis';
-import { newPartnerPurchaseSelectionSchema, type LaunchPurchaseSelection } from '@breeze/shared';
+import { normalizeSignupIntent, type LaunchPurchaseSelection, type SignupIntent } from '@breeze/shared';
 
 /**
  * SR2-21 — email-first partner registration.
@@ -31,6 +31,8 @@ export interface PendingRegistration {
   acceptTerms: boolean;
   termsVersion: string;
   hostedExpectation: boolean;
+  signupIntent?: SignupIntent;
+  /** Legacy: read-only, present on records parked by an older deploy. Never written. */
   purchaseSelection?: LaunchPurchaseSelection;
   createdAt: number;
   // Step-1 abuse attribution (#2343): captured from the LIVE step-1 request and
@@ -126,7 +128,7 @@ async function getDelAtomic(redis: RedisWithGetDel, key: string): Promise<string
  * signup or, worse, hold a plaintext-adjacent secret outside its TTL envelope.
  */
 export async function createPendingRegistration(
-  record: Omit<PendingRegistration, 'createdAt'>,
+  record: Omit<PendingRegistration, 'createdAt' | 'purchaseSelection'>,
 ): Promise<{ rawToken: string; tokenHash: string }> {
   const redis = getRedis();
   if (!redis) {
@@ -138,10 +140,13 @@ export async function createPendingRegistration(
   const tokenHash = sha256Hex(rawToken);
   const normalizedEmail = record.email.toLowerCase().trim();
 
+  // Parse before building the record, and drop any legacy purchaseSelection key a
+  // caller smuggles in: an older deploy reading this record must not see a launch tuple.
+  const { purchaseSelection: _legacy, ...rest } = record as typeof record & { purchaseSelection?: unknown };
   const stored: StoredPendingRegistration = {
-    ...record,
+    ...rest,
     email: normalizedEmail,
-    purchaseSelection: newPartnerPurchaseSelectionSchema.parse(record.purchaseSelection),
+    signupIntent: normalizeSignupIntent(record.signupIntent),
     createdAt: Date.now(),
     rawToken,
   };
