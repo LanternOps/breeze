@@ -268,7 +268,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // #6268: stopping an IOC sweep is the safe direction (queued scans are
   // cancelled, running ones finish), so it auto-executes with an audit row.
   ioc_hunt: ['cancel_sweep'],
-  manage_groups: ['add_devices', 'remove_devices'],
+  // manage_groups add_devices/remove_devices moved to TIER3_ACTIONS (#10149, QW9).
   // manage_maintenance_windows mutations disabled — managed via configuration policies
   manage_automations: ['enable', 'disable'],
   // manage_alert_rules is read-only; author conditions via manage_monitor_definitions
@@ -538,7 +538,10 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // resolveApprovalScope) and an IOC rule import (publishes a rule set every
   // policy using it then scans with).
   ioc_hunt: [IOC_HUNT_RUN_ACTION, 'import_iocs'],
-  manage_groups: ['create', 'update', 'delete'],
+  // #10149 (QW9): membership writes are supervised. Membership feeds agent run
+  // scope (triggers.deviceGroupIds), group-targeted config/peripheral policies,
+  // and schedules peripheral reconciliation for every touched device.
+  manage_groups: ['create', 'update', 'delete', 'add_devices', 'remove_devices'],
   // create/update/delete added W01-D3 (#6755): handler-disabled today
   // (aiToolsFleet.ts:2041, managed via configuration policies), same pattern
   // as manage_patches.setup_auto_approval above — escalated so re-enabling
@@ -935,7 +938,10 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_deliverables: ['apply_template'],
   manage_deployments: ['create', 'start', 'cancel'],
   manage_patches: ['install', 'setup_auto_approval'],
-  manage_groups: ['create', 'update', 'delete'],
+  // #10149 (QW9): membership writes are supervised. Membership feeds agent run
+  // scope (triggers.deviceGroupIds), group-targeted config/peripheral policies,
+  // and schedules peripheral reconciliation for every touched device.
+  manage_groups: ['create', 'update', 'delete', 'add_devices', 'remove_devices'],
   // create/update/delete added W01-D3 (#6755): handler-disabled today, same
   // supervised (not four_eyes) class as the sibling fleet tools above —
   // nothing here is externally binding or financial.
@@ -4559,6 +4565,10 @@ export function buildApprovalDescription(
     case 'manage_groups':
       if (action === 'create') parts.push(`Create ${input.type ?? 'static'} device group "${input.name}"`);
       else if (action === 'delete') parts.push(`Delete device group ${(input.groupId as string)?.slice(0, 8)}...`);
+      else if (action === 'add_devices' || action === 'remove_devices') {
+        const count = Array.isArray(input.deviceIds) ? input.deviceIds.length : 0;
+        parts.push(`${action === 'add_devices' ? 'Add' : 'Remove'} ${count} device(s) ${action === 'add_devices' ? 'to' : 'from'} device group ${(input.groupId as string)?.slice(0, 8)}...`);
+      }
       else parts.push(`Group ${action}: ${(input.groupId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
       break;
 
