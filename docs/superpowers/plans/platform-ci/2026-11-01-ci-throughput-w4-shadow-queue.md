@@ -28,7 +28,7 @@ Every green `pull_request` run leaves a **provenance record**. Every `merge_grou
   - `files` (`P`) — `git diff --name-only --no-renames M^1 M`, i.e. computed from `M` itself, never from the live PR files API; `files_source: "merge-commit"`;
   - `policy_digest` — see below, computed at `B`; `null` (and `policy_in_files: true`) when `P` touches a policy path;
   - `selection` — the `changes` job outputs that actually gated the run (the 15 classifier keys);
-  - `suites_passed: true` — the record is only written after `CI Success` concluded `success` in that attempt, and `CI Success` already asserts "flag true → job succeeded" for every selected suite.
+  - `suites_passed: true` — the record is only written after `CI Success` concluded `success` in that attempt. **"Selected suites" for provenance means the PR-gated jobs**: the jobs `CI Success` blocks on for a `pull_request` event (in its `needs:` and not exempted via `IS_PR`). For those, `CI Success` already asserts "flag true → job succeeded". Jobs `CI Success` does not gate on a PR — the `UNGATED_JOBS` it never needs (`test-agent-race`, `rust-check-windows`, `portal-dev-e2e`, today) and the `IS_PR`-exempt queue-only jobs (`build-smoke-images`, `smoke-test`, `guided-setup-smoke`, `workspace-runtime`) — are proven by nothing on a PR run, so the record does not claim them (`non_gating_jobs: [...]` lists them, derived from `ci.yml`) and the thin selection **never thins them** (see Selection → never-thinned).
   A re-run never refreshes `B` or the age: `B` is fixed by `M`, and staleness is measured from `B`'s committer time, not from the record's `created_at`.
 - **Policy files** (`POLICY_FILES`, exported from `queue-selection.mjs`): `.github/scripts/classify-pr-paths.sh`, `.github/scripts/integration-floor-paths.txt`, `.github/scripts/path-reader-map.txt`, `.github/scripts/qemu-gate-paths.txt`, `.github/scripts/queue-selection.mjs`, `.github/flaky-tests.json`, `.github/workflows/ci.yml`. **Policy paths** (fallback trigger) = any of those, or any path under `.github/workflows/`, `.github/scripts/`, `.github/actions/`. (W02 owns the long-term list; W4 implements this conservative superset so every fallback has a test.)
 - **Policy digest** — `sha256` of the output of `git ls-tree <rev> -- <POLICY_FILES sorted>` (mode, type, blob oid, path per line; a missing file is simply absent). It reads the **tree** at the base revision, so no blob fetch is needed under a partial/sparse clone. PR side: `<rev> = B`. Queue side: `<rev> = merge_group.base_sha`.
@@ -42,13 +42,13 @@ Every green `pull_request` run leaves a **provenance record**. Every `merge_grou
 - **Selection (thin):**
   - Always: `lint`, `typecheck` (subject to their own `code`/`app` conditions evaluated on `P ∪ Δ`).
   - Builds of every area in `areas(P ∪ Δ)`.
-  - `P ∩ tests` (own test files: `*.test.{ts,tsx,mts,mjs,js}`, `*.spec.{ts,tsx}`, `*_test.go`) routed to the job that runs them: `apps/api/**` → `integration-test` if any `include` glob of `apps/api/vitest.integration.config.ts` (read from the working tree after the base-oid check) matches, else `test-api`; other apps/packages → their area or path-area unit job; `agent/**/*_test.go` → the agent unit jobs. An own test that routes to no job → fallback `unrouted_own_test`.
+  - `P ∩ tests` (own test files: `*.test.{ts,tsx,mts,mjs,js}`, `*.spec.{ts,tsx}`, `*_test.go`) routed to the job that runs them: `apps/api/**` → `integration-test` if any `include` glob of `apps/api/vitest.integration.config.ts` (read from the working tree after the base-oid check) matches, else `test-api`; other apps/packages → their area or path-area unit job; `agent/**/*_test.go` → the agent unit jobs. Playwright specs under `e2e-tests/`: a spec named in a job's `run:` command (today only `portal-dev-e2e` names specs) routes to that job; every other `e2e-tests/**` spec is **not run by any CI job today** (neither PR nor queue), so it is recorded in `unrun_own_tests` in the log and is not a fallback — thin can never run less than full for it. Any other own test that routes to no job → fallback `unrouted_own_test`.
   - Full unit jobs for every area in `(areas(Δ) ∩ areas(P)) ∪ areas(O)`.
   - Full `integration-test` if `api` is in that overlap **and** the classifier with `--pull-request` reports `integration=true` for both `P` and `Δ`; or the floor (`integration-floor-paths.txt`, same exact/prefix semantics as the classifier) is hit by any path in `P ∪ Δ`; or an own test routed to `integration-test`.
   - Reader map applied to `Δ`: `path_readers`/`reader_tests` = the classifier's output for `Δ` → `path-read-contracts` with that list.
-  - Merge-queue-only jobs (`build-smoke-images`, `smoke-test`, `guided-setup-smoke`, `workspace-runtime` — non-blocking on PRs, so a PR run proves nothing about them) are **never thinned**: they keep the full selection's value.
+  - **Never-thinned jobs** keep the full selection's value: every job `CI Success` does not gate on for a `pull_request` event, because a green PR run proves nothing about them. Derived from `ci.yml`, not hand-listed: (a) jobs absent from `ci-success`'s `needs:` (today `test-agent-race`, `rust-check-windows`, `portal-dev-e2e`), and (b) jobs whose `ci-success` assertion is guarded by `"${IS_PR}" != "true"` (today `build-smoke-images`, `smoke-test`, `guided-setup-smoke`, `workspace-runtime`). The test asserts the derived set equals those seven today (guards a parse miss) — a future job that joins either group is never-thinned automatically.
   - Any job the table below does not classify → kept (conservative), and the contract test fails so it gets classified.
-- **Job classes** (`JOB_CLASSES` in `queue-selection.mjs`): every job whose `if:` reads `needs.changes.outputs.*` is in exactly one class — `always`, `build`, `unit`, `integration`, `readers`, `queue_only`, `self_gated` (jobs with their own change detection: `docs-check`, `mobile-native-changes`, `recovery-media-e2e`, `topology-browser-gate`, … evaluated on `classify(P ∪ Δ)`). A job's thin value = its own `if:` expression (parsed from `ci.yml`: only `needs.changes.outputs.X == 'true'`, `&&`, `||`, parentheses) evaluated against the flag set its class implies. The full value = the same expression evaluated against the real `changes` outputs. `would_skip` = full − thin, `would_add` = thin − full.
+- **Job classes** (`JOB_CLASSES` in `queue-selection.mjs`): every job whose `if:` reads `needs.changes.outputs.*` is in exactly one class — `always`, `build`, `unit`, `integration`, `readers`, `never_thinned`, `self_gated` (jobs with their own change detection: `docs-check`, `mobile-native-changes`, `recovery-media-e2e`, `topology-browser-gate`, … evaluated on `classify(P ∪ Δ)`). A job's thin value = its own `if:` expression (parsed from `ci.yml`: only `needs.changes.outputs.X == 'true'`, `&&`, `||`, parentheses) evaluated against the flag set its class implies. The full value = the same expression evaluated against the real `changes` outputs. `would_skip` = full − thin, `would_add` = thin − full.
 - **Fallbacks → full** (`selection_mode=full`, `selection_reason=<reason>`): `not_merge_group`; `no_pr_number` (head_ref does not parse); `no_head_sha`; `no_valid_record`; `stale_base` (`B` older than 12 h at queue time); `too_many_merges` (> 40 first-parent commits in `B..base_sha`); `delta_uncomputable` (`B` not an ancestor of `base_sha`, or the diff fails); `policy_digest_mismatch` (`R.policy_digest` null or ≠ current); `policy_not_at_base`; `policy_path_in_p`; `policy_path_in_delta`; `entry_not_single_commit` (`git rev-list --count --first-parent base_sha..head_sha` ≠ 1 — the run covers more than this PR); `unrouted_own_test`; `error` (any exception, any non-zero git/gh call). Thresholds are exported constants (`MAX_BASE_AGE_HOURS = 12`, `MAX_DELTA_MERGES = 40`).
 - **`selection_mode`** — new `changes` output, never read by any `if:` or by `ci-success`: `pr` on `pull_request`, `full` on any other event or on fallback, `shadow` on a merge-group run whose thin selection was computed (full still runs). `selection_reason` carries the fallback reason (empty for `shadow`/`pr`).
 
@@ -91,7 +91,8 @@ Read-only (never edit): `.github/scripts/classify-pr-paths.sh`, `.github/scripts
   - `test('fixture docs-path-read: reader map applied to delta')` — `reader_tests` includes every `expect_reader_tests` entry; thin includes `path-read-contracts`.
   - `test('own tests are routed to the job that runs them')` — `apps/api/src/__tests__/integration/x.integration.test.ts` (or whatever path the integration config's include globs match — derive one from the config) → `integration-test`; `apps/api/src/services/x.test.ts` → `test-api`; `apps/web/src/x.test.tsx` → `test-web`; `agent/internal/x/x_test.go` → agent unit jobs; an unroutable test path → fallback `unrouted_own_test`.
   - `test('floor applied to P ∪ delta')` — `delta = ['apps/api/migrations/zzz.sql']`, `P = ['apps/web/src/x.ts']` → `integration-test` in thin.
-  - `test('queue-only jobs are never thinned')` — for a fixture where full has `smoke-test` true, thin has it true.
+  - `test('never-thinned jobs keep the full value')` — the derived never-thinned set equals the seven jobs named in Definitions; for a selection where full has `smoke-test`/`portal-dev-e2e` true, thin has them true.
+  - `test('e2e specs: named → that job; unnamed → unrun, not a fallback')` — `e2e-tests/tests/multi-currency.spec.ts` → `portal-dev-e2e`; `e2e-tests/tests/document-renderer.spec.ts` → `unrun_own_tests`, mode not `full`.
 - [ ] **Step 2:** run, expect FAIL (module missing).
 - [ ] **Step 3:** implement the pure core.
 - [ ] **Step 4:** run, expect PASS.
@@ -170,4 +171,33 @@ pnpm install --frozen-lockfile && pnpm --filter @breeze/api exec vitest run src/
 
 ## Execution record (W4)
 
-_(filled during execution)_
+Stopped during premise verification on 2026-11-01, before implementation.
+
+- Tasks 1–5: each 0 red / 0 green (not started); Task 6 remains operator-only.
+  No test suites or final verification commands ran: the explicit STOP rule
+  applies before creating the module or its tests.
+- STOP: `pr-9518-api-unit.json` includes
+  `e2e-tests/tests/document-renderer.spec.ts` in `P`. It matches the own-test
+  pattern but has no route to a job that runs it. `portal-dev-e2e` names other
+  specs explicitly; the auth-browser and topology Playwright configurations
+  do not select this spec. The prescribed result is `unrouted_own_test`, so
+  this fixture cannot produce a successful thin selection under these rules.
+  Its API overlap would select `test-api`, but cannot override that fallback.
+- STOP: the assertion that CI Success proves every selected suite passed does
+  not hold. `test-agent-race`, `rust-check-windows`, and `portal-dev-e2e` are
+  explicitly in `UNGATED_JOBS`, beyond the four queue-only exceptions named
+  above. CI Success can succeed without those suites passing.
+- Ruling: neither fixtures nor selection/provenance rules were relaxed. Only
+  this execution record changed; no workflow, classifier, test, or app edits,
+  no commits, and no services started.
+- Operator: resolve the fixture-routing conflict and define how the three
+  additional ungated jobs affect provenance before resuming Tasks 1–5. All
+  required verification commands and Task 6 remain outstanding.
+- **Operator rulings (resume):** (1) `e2e-tests/**` specs that no CI job names
+  are not run by PR or queue today, so they are logged as `unrun_own_tests`,
+  never a fallback; named specs route to the job that names them. (2)
+  "Selected suites" for provenance = the jobs `CI Success` gates on for a
+  `pull_request` event; jobs it does not gate on (absent from `needs:`, or
+  `IS_PR`-exempt) are derived from `ci.yml`, listed in the record as
+  `non_gating_jobs`, and never thinned. Definitions, Selection and Task 1
+  tests updated accordingly.
