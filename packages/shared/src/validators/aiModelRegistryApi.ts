@@ -13,9 +13,22 @@ import { AI_AGENT_ESCALATION_ROLES, AI_SURFACE_ROLES, AI_SURFACES, MAX_FALLBACK_
 import { BYO_MODEL_ID_PATTERN } from '../constants/aiConnectionKinds';
 import { INFERENCE_GEO_PATTERN, modelRatesSchema, offeringOptionsSchema } from './aiModelOptions';
 
+/**
+ * Surfaces the resolver serves from the partnerless platform default: no
+ * partner or org assignment is ever read for them, so none may be written,
+ * counted as a model's default, or block removing one (#9455, #9496).
+ */
+export const PLATFORM_ONLY_AI_SURFACES = ['patch_test'] as const satisfies readonly AiSurface[];
+
 export const CONFIGURABLE_AI_SURFACES = AI_SURFACES.filter(
-  (s): s is Exclude<AiSurface, 'patch_test'> => s !== 'patch_test',
+  (s): s is Exclude<AiSurface, (typeof PLATFORM_ONLY_AI_SURFACES)[number]> =>
+    !(PLATFORM_ONLY_AI_SURFACES as readonly string[]).includes(s),
 ) as readonly AiSurface[];
+
+/** A partner/org assignment for this surface is read by the resolver. Takes the raw text column; unknown values are false. */
+export function isConfigurableAiSurface(surface: string): surface is AiSurface {
+  return (CONFIGURABLE_AI_SURFACES as readonly string[]).includes(surface);
+}
 
 /** Offered as a checkbox in the offering drawer. Spec §5.3, §15 #7. */
 export const AI_MODEL_REQUIRED_PERMISSION_CHOICES = ['ai_models:premium'] as const;

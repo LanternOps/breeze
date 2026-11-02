@@ -103,6 +103,7 @@
     "noRejectionsOrDenialsFound": "No denied, blocked or failed actions found.",
     "rejected": "Denied",
     "rejectionsAndDenials": "Denied & blocked",
+    "stopped": "Stopped",
     "search": "Search...",
     "session": "Session",
     "status": "Status",

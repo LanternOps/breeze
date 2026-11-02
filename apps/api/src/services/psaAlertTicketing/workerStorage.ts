@@ -121,6 +121,7 @@ export async function loadTicketingContext(id: string): Promise<TicketingContext
     ? null
     : mapping.createSnapshot) ?? {
     operationAttempts: mapping.createSnapshot?.operationAttempts,
+    createAnywayUsed: mapping.createSnapshot?.createAnywayUsed,
     connectionRev: connection.alertTicketingRev,
     connectionUpdatedAt: connectionVersion,
     orgId: alert.orgId,

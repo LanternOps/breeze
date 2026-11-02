@@ -37,9 +37,44 @@ var (
 
 // PreloadOpenH264 eagerly loads the OpenH264 library (downloading if needed).
 // Call during agent startup so the DLL is ready before any desktop sessions.
-// Load is attempted once — on failure, the placeholder encoder is used.
+// Load is attempted once — on failure, the placeholder encoder is used —
+// except in the macOS root agent, which retries on a backoff: there the load
+// also stages the codec that the console-user helper loads (#10870), and a
+// download failure at boot (network not up yet) would otherwise leave every
+// helper on its private temp-dir fallback until the agent restarts.
 func PreloadOpenH264() {
-	loadOpenH264()
+	if err := loadOpenH264(); err == nil || !openH264StagesForHelpers() {
+		return
+	}
+	retryOpenH264Preload(func() error {
+		resetOpenH264LoadErr()
+		return loadOpenH264()
+	}, openH264PreloadRetryDelays, time.Sleep)
+}
+
+// openH264PreloadRetryDelays is the root macOS agent's staging backoff.
+var openH264PreloadRetryDelays = []time.Duration{
+	time.Minute, 5 * time.Minute, 15 * time.Minute, 30 * time.Minute, time.Hour,
+}
+
+// retryOpenH264Preload sleeps each delay in turn and calls load after it,
+// stopping at the first success. It reports whether a load succeeded.
+func retryOpenH264Preload(load func() error, delays []time.Duration, sleep func(time.Duration)) bool {
+	for _, d := range delays {
+		sleep(d)
+		if err := load(); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// resetOpenH264LoadErr clears a cached load failure so the next
+// loadOpenH264 tries again.
+func resetOpenH264LoadErr() {
+	openH264Mu.Lock()
+	openH264LoadErr = nil
+	openH264Mu.Unlock()
 }
 
 func loadOpenH264() error {

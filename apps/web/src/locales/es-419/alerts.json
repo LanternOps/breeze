@@ -84,7 +84,10 @@
       "resolved": "Resuelto",
       "suppressed": "suprimido",
       "dismissed": "Descartado"
-    }
+    },
+    "createPsaTicket": "Crear ticket PSA",
+    "psaTicketRequested": "Ticket PSA solicitado",
+    "failedToCreatePsaTicket": "No se pudo solicitar el ticket PSA"
   },
   "alertDetails": {
     "closePanel": "Cerrar panel",

@@ -84,7 +84,10 @@
       "resolved": "Çözüldü",
       "suppressed": "Bastırıldı",
       "dismissed": "Görevden alındı"
-    }
+    },
+    "createPsaTicket": "PSA bileti oluştur",
+    "psaTicketRequested": "PSA bileti istendi",
+    "failedToCreatePsaTicket": "PSA bileti istenemedi"
   },
   "alertDetails": {
     "closePanel": "Paneli kapat",

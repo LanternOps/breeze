@@ -46,6 +46,7 @@ const conditionalChecks = ciSuccess.slice(blockingEnd);
 const PR_EXEMPT_JOBS = new Set(['build-smoke-images', 'smoke-test', 'guided-setup-smoke', 'workspace-runtime']);
 
 const UNGATED_JOBS = new Set([
+  'provenance-record', // W4 (#10748): writes the provenance artifact after CI Success; never a gate
   'ci-success', // the aggregate itself
   'main-red-alert', // runs after ci-success, alerts on a red main
   'rust-check-windows', // deliberately excluded, documented at its job definition: path-filtered and usually skipped
@@ -184,6 +185,10 @@ describe('ci-success gating contract', () => {
       // the classifier's `path_readers` output and asserted fail-closed in ci-success
       // (ci-pr-selection.test.mjs pins its lines).
       'path-read-contracts',
+      // W4 (#10748): runs after a green CI Success on any PR (docs-only included) to write the
+      // provenance artifact; continue-on-error and outside ci-success needs, so never a gate.
+      // Its lines are pinned by queue-selection.test.mjs.
+      'provenance-record',
     ]);
     // lint/security-audit/release-ledger validate CI plumbing itself and must keep running on a
     // tooling-only PR, so they stay gated on `code` alone — never additionally on `app`.

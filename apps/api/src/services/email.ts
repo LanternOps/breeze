@@ -1326,6 +1326,8 @@ export interface QuoteOutcomeEmailParams {
   invoiceNumber?: string | null;
   /** Deep link to the quote in the web app; omitted when no app base is configured. */
   quoteUrl?: string | null;
+  /** #10361: draft contracts the accept created and nobody has activated yet. */
+  draftContractCount?: number | null;
 }
 
 /**
@@ -1349,10 +1351,21 @@ export function buildQuoteOutcomeTemplate(params: QuoteOutcomeEmailParams): Emai
   const invoiceLine = params.outcome === 'accepted' && params.invoiceNumber
     ? `<p style="${BODY_PARA}">Invoice <strong>${escapeHtml(params.invoiceNumber)}</strong> has been issued and emailed to the customer.</p>`
     : '';
+  // #10361: the recurring half of an accept lands as draft contracts that bill
+  // nothing until someone activates them — say so, or approved revenue waits
+  // unnoticed in the contracts list.
+  const drafts = params.outcome === 'accepted' ? Math.max(0, Math.trunc(params.draftContractCount ?? 0)) : 0;
+  const draftContractText = drafts === 0
+    ? null
+    : drafts === 1
+      ? '1 recurring contract was created as a draft. Review and activate it to start billing.'
+      : `${drafts} recurring contracts were created as drafts. Review and activate them to start billing.`;
+  const draftContractLine = draftContractText ? `<p style="${BODY_PARA}">${escapeHtml(draftContractText)}</p>` : '';
   const body = `
       <p style="${BODY_PARA}">${escapeHtml(who)} has <strong>${verb}</strong> quote <strong>${escapeHtml(params.quoteNumber)}</strong>.</p>
       ${reasonBlock}
       ${invoiceLine}
+      ${draftContractLine}
       ${params.quoteUrl ? renderButton('View quote', params.quoteUrl) : ''}
   `;
   const html = renderLayout({
@@ -1365,6 +1378,7 @@ export function buildQuoteOutcomeTemplate(params: QuoteOutcomeEmailParams): Emai
     `${who} has ${verb} quote ${params.quoteNumber}.`,
     reason ? `Their note: ${reason}` : null,
     params.outcome === 'accepted' && params.invoiceNumber ? `Invoice ${params.invoiceNumber} has been issued and emailed to the customer.` : null,
+    draftContractText,
     params.quoteUrl ? `View quote: ${params.quoteUrl}` : null,
   ]
     .filter(Boolean)

@@ -61,6 +61,16 @@ describe('PSA admission from committed alert', () => {
     expect(f.deps.insert).not.toHaveBeenCalled();
     expect(await f.admit('alert', 'manual', { bypassFilters: true })).toBe('admitted');
   });
+  it('refuses manual admission when the alert moved after caller authorization', async () => {
+    const f = fixture(); f.row.orgId = 'moved-org';
+    expect(await f.admit('alert', 'manual', { bypassFilters: true, expectedOrgId: 'org' })).toBe('inactive');
+    expect(f.deps.insert).not.toHaveBeenCalled(); expect(f.deps.wake).not.toHaveBeenCalled();
+  });
+  it('keeps the authorized organization anchor through insertion', async () => {
+    const f = fixture();
+    expect(await f.admit('alert', 'manual', { bypassFilters: true, expectedOrgId: 'org' })).toBe('admitted');
+    expect(f.deps.insert).toHaveBeenCalledWith(f.row, f.target, 'manual', { bypassFilters: true, expectedOrgId: 'org' });
+  });
   it('admits nothing when storage reports no active admission context', async () => {
     const f = fixture();
     f.deps.load.mockResolvedValue(null as never);

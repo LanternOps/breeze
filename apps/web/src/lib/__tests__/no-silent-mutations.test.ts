@@ -104,7 +104,7 @@ const TARGET_GLOBS = [
   'src/components/wisp/WispLinksPanel.tsx',
   'src/components/wisp/WispNeedsYou.tsx',
   'src/components/wisp/WispEntityPicker.tsx',
-  'src/components/wisp/WispLinkButton.tsx',
+  'src/components/wisp/WispTalkButton.tsx',
   'src/components/settings/WispPartnerSettingsCard.tsx',
   'src/components/wisp/WispHomeContent.tsx',
   'src/components/wisp/WispHomeThread.tsx',

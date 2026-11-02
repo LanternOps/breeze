@@ -57,7 +57,12 @@ export interface ActionPlan {
 
 export type AiSessionStatus = 'active' | 'closed' | 'expired';
 export type AiMessageRole = 'user' | 'assistant' | 'system' | 'tool_use' | 'tool_result';
-export type AiToolStatus = 'pending' | 'approved' | 'executing' | 'completed' | 'failed' | 'rejected';
+/**
+ * `rejected`: the approval lifecycle ended without an approval (denied, expired,
+ * wait ended). `refused`: the platform refused the call before it ran —
+ * guardrail, RBAC, rate limit, input validation, ceiling (#10411).
+ */
+export type AiToolStatus = 'pending' | 'approved' | 'executing' | 'completed' | 'failed' | 'rejected' | 'refused';
 
 export interface AiSession {
   id: string;

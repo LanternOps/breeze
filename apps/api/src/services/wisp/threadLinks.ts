@@ -46,6 +46,10 @@ import {
   type ResolvedEntity,
 } from './entityRefs';
 import { inSystemContext } from './grantAuthority';
+import { createReportThrottle } from '../../utils/reportThrottle';
+
+// Polling must leave refusal diagnostics visible without logging every read.
+const omittedLinkReports = createReportThrottle(60_000);
 
 export class ThreadLinkError extends Error {
   constructor(public readonly code: WispLinkRefusal) {
@@ -273,7 +277,14 @@ async function readStoredLinks(
     for (const row of rows) {
       const r = await resolve({ kind: row.entityKind, id: row.entityId });
       if (isResolveFailure(r)) {
-        if (r.reason === 'not_found') gone.push(row.id);
+        if (r.reason === 'not_found') {
+          gone.push(row.id);
+        } else if (omittedLinkReports.shouldReport(`${partnerId}:${threadId}:${row.id}:${r.reason}`)) {
+          console.warn('[wisp.threadLinks] stored link omitted', {
+            partnerId, threadId, linkId: row.id, kind: row.entityKind,
+            entityId: row.entityId, reason: r.reason,
+          });
+        }
         continue;
       }
       if (r.label !== row.label || r.orgId !== row.orgId) stale.push({ id: row.id, label: r.label, orgId: r.orgId });

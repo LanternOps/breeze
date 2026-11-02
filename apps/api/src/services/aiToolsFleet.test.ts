@@ -1032,8 +1032,10 @@ describe('manage_patches handler', () => {
   });
 
   it('list requires org context (never returns the unscoped global catalog)', async () => {
+    // System scope reaches every org, so a read that names none is refused
+    // rather than run platform-wide (#10396).
     const result = JSON.parse(await tool.handler({ action: 'list' }, noOrgAuth));
-    expect(result.error).toContain('Organization context required');
+    expect(result.error).toMatch(/orgId is required/);
     expect(result.patches).toBeUndefined();
   });
 

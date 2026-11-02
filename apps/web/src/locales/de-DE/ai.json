@@ -351,6 +351,7 @@
       "pending": "ausstehend",
       "approved": "genehmigt",
       "rejected": "abgelehnt",
+      "stopped": "gestoppt",
       "completed": "abgeschlossen",
       "failed": "fehlgeschlagen"
     },
@@ -393,6 +394,7 @@
     "requestedAt": "angefordert {{time}}",
     "approvedAt": "genehmigt {{time}}",
     "rejectedAt": "abgelehnt {{time}}",
+    "stoppedAt": "gestoppt {{time}}",
     "appliedAt": "angewendet {{time}}",
     "flagDialog": {
       "title": "Sitzung markieren",
@@ -789,7 +791,14 @@
       "addedByWisp": "Von Wisp hinzugefügt",
       "added": "Mit Wisp verknüpft",
       "addFailed": "Dieser Eintrag konnte nicht verknüpft werden.",
-      "count": "{{count}} von {{max}} verknüpft"
+      "count": "{{count}} von {{max}} verknüpft",
+      "groupPinned": "Angeheftet",
+      "groupConcerns": "Offene Anliegen",
+      "groupRecent": "Zuletzt verwendet",
+      "pin": "Anheften",
+      "dismiss": "Verwerfen",
+      "more": "Mehr",
+      "neighbours": "Verwandte Einträge"
     },
     "picker": {
       "title": "Eintrag mit Wisp verknüpfen",
@@ -813,11 +822,6 @@
       "loadFailed": "Diese Liste konnte nicht geladen werden.",
       "alreadyLinked": "Bereits verknüpft",
       "close": "Schließen"
-    },
-    "linkButton": {
-      "link": "Mit Wisp verknüpfen",
-      "linked": "In Wisp verknüpft",
-      "linking": "Wird verknüpft…"
     },
     "sidebar": {
       "openHome": "In Wisp öffnen",
@@ -872,6 +876,13 @@
     "composer": {
       "placeholder": "Nachricht an Wisp",
       "link": "Element verknüpfen"
+    },
+    "talk": {
+      "openFailed": "Chat konnte nicht geöffnet werden: {{message}}",
+      "button": "Mit Wisp sprechen",
+      "buttonPlain": "KI dazu fragen",
+      "draft": "Zu {{label}}: ",
+      "switchFocus": "Wisp konzentriert sich auf {{from}}. Zu {{to}} wechseln?"
     }
   },
   "wispConcerns": {
@@ -912,7 +923,8 @@
       "quote": "Angebot",
       "invoice": "Rechnung",
       "contract": "Vertrag",
-      "site": "Standort"
+      "site": "Standort",
+      "readiness": "Bereitschaft"
     },
     "reviewApproval": "Genehmigung prüfen",
     "openLink": "Öffnen",

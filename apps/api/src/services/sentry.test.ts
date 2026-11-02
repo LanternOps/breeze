@@ -849,6 +849,10 @@ describe('accounting captureException tags stay allowlisted (#4828)', () => {
     // 10 -> 12: Xero W04 refinement 22 void-recovery persist added its own
     // zero-row and catch captureException calls (same tag shape as the
     // existing SyncToken persist).
+    ['../routes/pax8Orders.ts', 1],
+    ['pax8OrderObservability.ts', 1],
+    ['pax8OrderSubmitRepository.ts', 1],
+    ['aiToolsPax8Orders.ts', 1],
     ['accounting/accountingInvoicePush.ts', 12],
     ['accounting/accountingMappingService.ts', 5],
     // Phase D2. Paths are resolved against THIS file's directory (services/),

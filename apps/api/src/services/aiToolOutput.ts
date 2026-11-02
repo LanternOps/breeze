@@ -526,6 +526,18 @@ const COMMAND_STYLE_HANDLED_KEYS = new Set([
   'status', 'exitCode', 'durationMs', 'error', 'stdout', 'stdoutChars', 'stderr', 'stderrChars', 'data',
 ]);
 
+/**
+ * A `stdoutChars`/`stderrChars` already on the payload: set by an earlier
+ * pass of `compactCommandStylePayload` over the same result (#10411), so it
+ * counts the text before that pass truncated it — re-counting the truncated
+ * string would understate what the tool returned.
+ */
+function priorCharCount(value: unknown, textChars = 0): number | undefined {
+  // Never smaller than the text in hand: a count below it cannot describe that
+  // text's original, so a payload-supplied value cannot understate the output.
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= textChars ? value : undefined;
+}
+
 function compactCommandStylePayload(
   payload: Record<string, unknown>,
   stats: CompactStats,
@@ -583,8 +595,23 @@ function compactCommandStylePayload(
       output.stdoutChars = payload.stdout.length;
     } else {
       output.stdout = truncateText(redactAiToolOutputText(payload.stdout), config.maxStdoutChars, stats);
-      output.stdoutChars = payload.stdout.length;
+      output.stdoutChars = priorCharCount(payload.stdoutChars, payload.stdout.length) ?? payload.stdout.length;
     }
+  } else if (payload.stdout !== undefined && payload.stdout !== null) {
+    // #10411: a structured stdout that an EARLIER pass of this function
+    // already parsed into an object. The chat handler compacts a result for
+    // the model and postToolUse compacts that same string again before
+    // persisting the tool_result row; skipping a non-string stdout here (it
+    // is a handled key, so the passthrough loop below skips it too) left the
+    // transcript with {status, exitCode, commandId} while the model had read
+    // the output. Keep it, bounded and redacted exactly as on the first pass.
+    const redactedStdout = redactToolOutputFields(payload.stdout, redactAiToolOutputText);
+    output.stdout = compactValue(redactedStdout, stats, {
+      ...config,
+      maxArrayItems: Math.min(config.maxArrayItems, 50),
+    });
+    const priorChars = priorCharCount(payload.stdoutChars);
+    if (priorChars !== undefined) output.stdoutChars = priorChars;
   }
 
   if (typeof payload.stderr === 'string') {
@@ -597,7 +624,7 @@ function compactCommandStylePayload(
         stats,
       );
     }
-    output.stderrChars = payload.stderr.length;
+    output.stderrChars = priorCharCount(payload.stderrChars, payload.stderr.length) ?? payload.stderr.length;
   }
 
   if (payload.data !== undefined) {

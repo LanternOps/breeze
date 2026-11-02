@@ -17,7 +17,7 @@ import { useOrgStore } from '../../../stores/orgStore';
 import { STATUS_ROLES, type QuoteDetail as QuoteDetailData, resolveQuoteOrgName } from './quoteTypes';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../../layout/usePageItemName';
-import WispLinkButton from '@/components/wisp/WispLinkButton';
+import WispTalkButton from '@/components/wisp/WispTalkButton';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -255,7 +255,7 @@ export default function QuoteWorkspace({ id }: Props) {
           {isDraft && activeTab === 'editor' && (
             <MarginToggle show={showInternal} onToggle={toggleShowInternal} testId="quote-editor-toggle-internal" size="md" />
           )}
-          <WispLinkButton kind="quote" id={detail.quote.id} orgId={detail.quote.orgId} />
+          <WispTalkButton kind="quote" id={detail.quote.id} orgId={detail.quote.orgId} label={detail.quote.quoteNumber ?? (detail.quote.title?.trim() || t('quotes.workspace.draftTitle'))} />
           <QuoteActions detail={detail} onChanged={reload} variant="header" savePending={editorSavePending || titleSavePending || customerSavePending} unsavedFieldLabel={editorUnsavedField ?? titleUnsavedField} saveFailureNonce={saveFailureNonce} onSendWhilePending={flushEditorPendingDeletes} />
         </>
       }

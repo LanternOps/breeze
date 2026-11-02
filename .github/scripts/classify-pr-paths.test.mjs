@@ -356,6 +356,9 @@ test('every code job is gated on the classifier', () => {
     'changes', // the classifier itself
     'ci-success', // must report on docs-only PRs — that is the whole point
     'main-red-alert', // workflow_dispatch on main only
+    // W4 (#10748): advisory provenance written after a green CI Success on any PR
+    // (docs-only included); continue-on-error, never a gate. Pinned in queue-selection.test.mjs.
+    'provenance-record',
     'docs-check', // gated on the `docs` output instead — it is the one job a docs-only PR must run
     'build-mobile-ios', // inherits the gate through mobile-native-changes (pinned by mobile-native-ci.test.mjs)
     'recovery-media-e2e', // compound gate (code AND agent) — asserted separately below

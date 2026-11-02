@@ -26,9 +26,20 @@ export class Pax8OrderError extends Error {
   constructor(
     message: string,
     public readonly status: 400 | 403 | 404 | 409 | 422,
+    public readonly context: { phase?: 'claim' | 'execute' | 'persist'; code?: string; cause?: unknown } = {},
   ) {
-    super(message);
+    super(message, { cause: context.cause });
     this.name = 'Pax8OrderError';
+  }
+  get phase(): 'claim' | 'execute' | 'persist' { return this.context.phase ?? 'claim'; }
+  get code(): string | undefined { return this.context.code; }
+}
+
+export class Pax8ClaimDriftError extends Pax8OrderError {
+  override get code(): 'PREVIEW_MISMATCH' { return 'PREVIEW_MISMATCH'; }
+  constructor(message: string) {
+    super(message, 409, { phase: 'claim', code: 'PREVIEW_MISMATCH' });
+    this.name = 'Pax8ClaimDriftError';
   }
 }
 

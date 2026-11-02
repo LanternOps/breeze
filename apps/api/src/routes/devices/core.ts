@@ -748,7 +748,8 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'software_compliance_status', 'software_policy_audit', 'software_remediation_requests',
   // Remote access
   'remote_sessions', 'tunnel_sessions',
-  // Monitoring & logs
+  // Monitoring & logs. Site-owned topology alerts detach before this sweep;
+  // only device-owned alerts still reference the device and are deleted.
   'service_process_check_results', 'alerts', 'agent_logs', 'script_executions',
   // #5291 W04 - probe results now name the device they ran FROM.
   'network_monitor_results',
@@ -2601,7 +2602,7 @@ coreRoutes.delete(
     // #2787 review — omits the whole spread while the dissolve ran anyway.
     let linkGroupId: string | null = null;
     let linkGroupDissolved = false;
-    let removedTopologyAlerts = 0;
+    let detachedTopologyAlerts = 0;
     let screenshotStorageKeys: string[] = [];
 
     // Delegated to `purgeRemovedDevice` (services/deviceLifecycle.ts) since
@@ -2669,7 +2670,7 @@ coreRoutes.delete(
       screenshotStorageKeys = purge.screenshotStorageKeys;
       linkGroupId = purge.linkGroupId;
       linkGroupDissolved = purge.linkGroupDissolved;
-      removedTopologyAlerts = purge.removedTopologyAlerts;
+      detachedTopologyAlerts = purge.detachedTopologyAlerts;
     } catch (err: unknown) {
       if (err instanceof DeviceLifecycleError) {
         return c.json({ error: err.message, code: err.code }, err.status);
@@ -2747,8 +2748,8 @@ coreRoutes.delete(
         // silently lost their grouping.
         ...(linkGroupId ? { linkGroupId, linkGroupDissolved } : {}),
         // Site-owned topology alerts this device originated (M3-D6) — after a
-        // move-org they belong to ANOTHER org, so record that they went.
-        ...(removedTopologyAlerts > 0 ? { removedTopologyAlerts } : {}),
+        // move-org they belong to ANOTHER org; record the detached provenance.
+        ...(detachedTopologyAlerts > 0 ? { detachedTopologyAlerts } : {}),
       }
     });
 

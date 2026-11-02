@@ -1337,7 +1337,7 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Nenhum ticket corresponde à sua pesquisa ou filtros.",
-          "noTickets": "A sincronização de tickets ainda não está disponível, então os tickets do PSA não são importados.",
+          "noTickets": "Ainda não há tickets de alertas. Ative os tickets de alertas na conexão vinculada do ConnectWise Manage.",
           "title": "Nenhum ticket do PSA"
         },
         "filters": {
@@ -1358,8 +1358,41 @@
           "waiting": "Aguardando"
         },
         "ticketCount": "{{filtered}} de {{total}} tickets",
-        "title": "Tickets do PSA",
+        "title": "Tickets de alertas",
         "unlinked": "Não vinculado"
+      },
+      "PsaAlertTicketingActivity": {
+        "title": "Atividade dos tickets",
+        "refresh": "Atualizar",
+        "redrive": "Reprocessar",
+        "loading": "Carregando atividade dos tickets…",
+        "loadFailed": "Não foi possível carregar a atividade dos tickets. Atualize para tentar novamente.",
+        "actionFailed": "Não foi possível atualizar a atividade dos tickets.",
+        "actionSucceeded": "Atividade dos tickets atualizada.",
+        "help": "Reprocessar tenta novamente as criações com falha e os alertas sem empresa vinculada. Marcar como tratado interrompe o processamento sem alterar o ticket do PSA.",
+        "empty": "Nenhum ticket precisa de atenção.",
+        "viewAlert": "Ver alerta",
+        "createAnyway": "Criar mesmo assim",
+        "markHandled": "Marcar como tratado",
+        "duplicateWarning": "Talvez já exista um ticket no PSA. Verifique primeiro: esta única nova tentativa pode criar uma duplicata.",
+        "confirmCreate": "Criar mais um ticket",
+        "cancel": "Cancelar",
+        "previous": "Anterior",
+        "next": "Próxima",
+        "page": "Página {{page}} de {{total}}",
+        "states": {
+          "never_attempted": "Na fila",
+          "create_in_flight": "Criando",
+          "created": "Criado",
+          "create_outcome_unknown": "Resultado da criação desconhecido",
+          "rejected": "Rejeitado",
+          "failed": "Falha",
+          "needs_attention": "Precisa de atenção",
+          "handled": "Tratado",
+          "skipped_no_company": "Sem empresa vinculada",
+          "skipped_ambiguous_company": "Vínculo de empresa ambíguo",
+          "skipped_resolved_before_create": "Resolvido antes da criação"
+        }
       }
     },
     "webhooks": {
