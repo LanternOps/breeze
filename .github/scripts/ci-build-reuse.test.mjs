@@ -147,6 +147,8 @@ for (const result of ['failure', 'cancelled', 'skipped', '']) {
           // Every per-area flag true: the producer runs because the stack changed.
           API_CHANGED: 'true', WEB_CHANGED: 'true', PORTAL_CHANGED: 'true', ADDINS_CHANGED: 'true', M365_CHANGED: 'true', RUST_CHANGED: 'true',
           INTEGRATION_CHANGED: 'true',
+          // W3 (#10744): the path-read and agent-area flags are tri-state too.
+          PATH_READERS_CHANGED: 'true', AGENT_CODE_CHANGED: 'true',
           MOBILE_NATIVE_REQUIRED: 'true', BUILD_SMOKE_IMAGES_RESULT: result,
           SMOKE_TEST_RESULT: 'skipped', GUIDED_SETUP_SMOKE_RESULT: 'skipped',
         },

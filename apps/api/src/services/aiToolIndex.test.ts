@@ -505,7 +505,7 @@ describe('W19 lazy chat tool index (#10065)', () => {
     expect(block.startsWith('- **Patching & software**: ')).toBe(true);
     expect(block).not.toContain('\n');
     expect(renderDomainBlock('patching', ['query_devices'])).toBe('');
-    expect(renderDomainBlock('devices', ['system_cleanup'])).toBe('- **Devices**: system_cleanup (list/run/status)');
+    expect(renderDomainBlock('devices', ['system_cleanup'])).toBe('- **Devices**: system_cleanup (list/run/status/cancel)');
   });
 
   it('the page-context domains are closed, at most two per page, and pin the chosen rows', () => {

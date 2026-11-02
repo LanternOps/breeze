@@ -156,6 +156,26 @@ describe('DeviceEdrPanel security agent coverage', () => {
     expect(url).toContain('deviceId=dev-1');
   });
 
+  it('installer_missing (#9247): shows the reason and links to the package Versions tab', async () => {
+    const s1Row = {
+      ...coverageRow, vendor: 'sentinelone', state: 'not_applicable', reasonCode: 'installer_missing', detail: null,
+      setupPath: '/software#versions=cat-s1',
+    };
+    routeWithCoverage(() => Promise.resolve(ok({ summary: [], data: [s1Row], pagination: { limit: 50, offset: 0, total: 1 } })));
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    const block = await screen.findByTestId('device-security-agent-coverage');
+    expect(block).toHaveTextContent('SentinelOne');
+    expect(block).toHaveTextContent('Installer not uploaded');
+    expect(screen.getByTestId('security-agent-coverage-setup-link')).toHaveAttribute('href', '/software#versions=cat-s1');
+  });
+
+  it('renders no setup link for a row without a setup path', async () => {
+    routeWithCoverage(() => Promise.resolve(ok({ summary: [], data: [coverageRow], pagination: { limit: 50, offset: 0, total: 1 } })));
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    await screen.findByTestId('device-security-agent-coverage');
+    expect(screen.queryByTestId('security-agent-coverage-setup-link')).toBeNull();
+  });
+
   it('falls back to the raw reason code when it is unknown', async () => {
     routeWithCoverage(() => Promise.resolve(ok({ summary: [], data: [{ ...coverageRow, reasonCode: 'brand_new_reason' }], pagination: { limit: 50, offset: 0, total: 1 } })));
     render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);

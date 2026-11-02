@@ -12,6 +12,7 @@ describe('classifySendRefusal', () => {
     [409, 'model_unavailable', 'choose_model'],
     [409, 'tools_unsupported', 'choose_model'],
     [409, 'topology_model_changed', 'choose_model'],
+    [409, 'turn_limit_reached', 'turn_limit'],
     [409, 'something_else', 'error'],
     [402, 'insufficient_credits', 'credits'],
     [402, null, 'error'],

@@ -10,7 +10,7 @@ vi.mock('../../stores/auth', () => ({
 }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
-vi.mock('../filters/DeviceFilterBar', () => ({ DeviceFilterBar: () => null }));
+vi.mock('../filters/DeviceFilterBar', () => ({ DeviceFilterBar: () => <div data-testid="device-filter-stub" /> }));
 vi.mock('../remediation/RemediationSuggestionsPanel', () => ({ default: () => null }));
 vi.mock('../../lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: () => true }),
@@ -32,10 +32,10 @@ const json = (payload: unknown, ok = true, status = 200) =>
 
 const row = { id: ID, title: 'High CPU on SRV-01', message: 'm', severity: 'critical', status: 'active', deviceId: 'd1', deviceName: 'SRV-01', triggeredAt: new Date().toISOString() };
 
-function route(detail: unknown, tickets: Response | unknown = { data: [] }) {
+function route(detail: unknown, tickets: Response | unknown = { data: [] }, listRow: Record<string, unknown> = row) {
   fetchMock.mockImplementation((input) => {
     const url = String(input);
-    if (url.startsWith('/alerts?')) return Promise.resolve(json({ data: [row] }));
+    if (url.startsWith('/alerts?')) return Promise.resolve(json({ data: [listRow] }));
     if (url === `/alerts/${ID}`) return Promise.resolve(json(detail));
     if (url === `/alerts/${ID}/tickets`) return Promise.resolve(tickets instanceof Object && 'ok' in (tickets as object) ? (tickets as Response) : json(tickets));
     if (url.startsWith('/devices/options?')) return Promise.resolve(json({ data: [] }));
@@ -92,4 +92,16 @@ describe('AlertsPage drawer data (#9623, #9624)', () => {
     fireEvent.click(await within(dialog).findByTestId('alert-create-ticket-button'));
     expect(await screen.findByTestId('alert-ticket-duplicate-check-failed')).toBeInTheDocument();
   });
+});
+
+
+it('renders workload list and drawer subjects without device links or filters', async () => {
+  const workload = { ...row, deviceId: null, deviceName: null, title: '{{device}} failed', ownerKind: 'backup_workload', subjectName: 'Microsoft 365 mail backup · Example organization', context: { source: 'metric_anomaly', metricName: 'cpu' } };
+  route({ ...workload, notifications: [] }, { data: [] }, workload);
+  const { container } = render(<AlertsPage />);
+  fireEvent.click(await screen.findByText(`${workload.subjectName} failed`));
+  const dialog = await screen.findByRole('dialog');
+  expect(within(dialog).getByTestId('alert-subject-chip')).toHaveAttribute('href', '/backup');
+  expect(screen.queryByTestId('device-filter-stub')).toBeNull();
+  expect(container.querySelector('a[href*="/devices/"]')).toBeNull();
 });

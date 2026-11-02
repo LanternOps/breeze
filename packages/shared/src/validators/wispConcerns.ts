@@ -22,6 +22,7 @@ import {
   CONCERN_STATUSES,
   CONCERN_SUBJECT_KINDS,
   CONCERN_SUMMARY_MAX,
+  SYSTEM_ONLY_CONCERN_SUBJECT_KINDS,
   WATCH_CADENCE_MAX_MINUTES,
   WATCH_CADENCE_MIN_MINUTES,
   WATCH_KINDS,
@@ -50,8 +51,9 @@ export const concernSeveritySchema = z.enum(CONCERN_SEVERITIES);
 export const concernStatusSchema = z.enum(CONCERN_STATUSES);
 export const watchKindSchema = z.enum(WATCH_KINDS);
 
+/** A subject a run may raise a concern on: every kind but the system-only ones. */
 export const concernSubjectSchema = z.object({
-  kind: z.enum(CONCERN_SUBJECT_KINDS),
+  kind: z.enum(CONCERN_SUBJECT_KINDS).exclude([...SYSTEM_ONLY_CONCERN_SUBJECT_KINDS]),
   id: z.uuid(),
 });
 

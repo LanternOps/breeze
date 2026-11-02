@@ -129,8 +129,8 @@ function newestFirst(a: string, b: string): number {
 }
 
 export function linksForDisplay(links: readonly WispThreadLink[]): WispThreadLink[] {
-  const rank = (l: WispThreadLink) => (l.source === 'wisp_pin' ? 1 : 0);
-  const sorted = [...links].sort((a, b) => rank(a) - rank(b) || newestFirst(a.createdAt, b.createdAt));
+  const rank = (l: WispThreadLink) => l.source === 'auto' ? 2 : l.source === 'concern' ? 1 : 0;
+  const sorted = [...links].sort((a, b) => rank(a) - rank(b) || newestFirst(a.lastTouchedAt || a.createdAt, b.lastTouchedAt || b.createdAt));
   const seen = new Set<string>();
   const out: WispThreadLink[] = [];
   for (const l of sorted) {

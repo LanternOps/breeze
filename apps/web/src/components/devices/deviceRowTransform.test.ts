@@ -43,4 +43,17 @@ describe('toDeviceListRow', () => {
   it('falls back to the Unknown label when hostname is missing', () => {
     expect(toDeviceListRow({ ...RAW, hostname: undefined }).hostname).toBe('Unknown');
   });
+
+  // #9863 — Warranty column.
+  it('carries the warranty end date and a known status through', () => {
+    const row = toDeviceListRow({ ...RAW, warrantyEndDate: '2026-12-31', warrantyStatus: 'subscription_active' });
+    expect(row.warrantyEndDate).toBe('2026-12-31');
+    expect(row.warrantyStatus).toBe('subscription_active');
+  });
+
+  it('nulls missing or unrecognised warranty values', () => {
+    expect(toDeviceListRow(RAW)).toMatchObject({ warrantyEndDate: null, warrantyStatus: null });
+    expect(toDeviceListRow({ ...RAW, warrantyEndDate: 42, warrantyStatus: 'bogus' }))
+      .toMatchObject({ warrantyEndDate: null, warrantyStatus: null });
+  });
 });

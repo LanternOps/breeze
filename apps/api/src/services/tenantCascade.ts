@@ -363,6 +363,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   //     sort's job, not this array's — the alphabetical position is cosmetic
   //     here exactly as it is for the two entries above. Stated only so a
   //     reader knows the RESTRICT edge exists and is load-bearing somewhere.
+  // #9981: per-provider-account reservations. Shape 1, NOT NULL org_id; a
+  // composite (task_id, org_id) FK to ai_operator_tasks ON DELETE CASCADE.
+  'ai_operator_account_reservations',
   'ai_operator_operations',
   'ai_operator_plan_approval_effects',
   'ai_operator_plan_approvals',

@@ -15,15 +15,17 @@ const actions = [
   ...['list', 'get', 'preview'].map((action) => ['manage_pax8_orders', action, 1]),
   ...['create_draft', 'add_line', 'update_line', 'remove_line'].map((action) => ['manage_pax8_orders', action, 2]),
   ['manage_pax8_orders', 'preflight', 3],
+  ['manage_pax8_orders', 'submit', 3],
+  ['manage_pax8_orders', 'reconcile', 3],
 ] as Array<[string, string | undefined, number]>;
 const tools = ['get_pax8_status', 'search_pax8_products', 'manage_pax8_subscriptions', 'manage_pax8_orders'] as const;
 
-describe('W15 PR A Pax8 guardrail classes', () => {
+describe('W15 Pax8 guardrail classes', () => {
   it.each(actions)('%s:%s resolves to W15 tier %s', (tool, action, tier) => {
     const result = checkGuardrails(tool, action ? { action } : {});
     expect(result).toMatchObject({ tier, allowed: true, requiresApproval: tier === 3 });
     expect(isReadOnlyResolution(tool, result)).toBe(tier === 1);
-    if (tier === 3) expect(result).toHaveProperty('approvalScope', 'supervised');
+    if (tier === 3) expect(result).toHaveProperty('approvalScope', action === 'submit' ? 'four_eyes' : 'supervised');
     else expect(result.approvalScope).toBeUndefined();
   });
 
@@ -40,8 +42,8 @@ describe('W15 PR A Pax8 guardrail classes', () => {
     expect(TOOL_CAPABILITY[tool]).toBe('business');
   });
 
-  it.each(actions.filter(([, , tier]) => tier !== 1))('%s:%s uses explicit-grant exposure rather than agent-human-only', (tool, action) => {
-    expect(AGENT_HUMAN_ONLY_ACTIONS.has(`${tool}:${action}`)).toBe(false);
+  it.each(actions.filter(([, , tier]) => tier !== 1))('%s:%s uses its reviewed agent exposure', (tool, action) => {
+    expect(AGENT_HUMAN_ONLY_ACTIONS.has(`${tool}:${action}`)).toBe(tool === 'manage_pax8_orders' && action === 'submit');
   });
 
   it.each(tools)('%s fences vendor-authored term and SKU text', (tool) => {

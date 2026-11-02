@@ -75,7 +75,7 @@ Each connection syncs **every 30 minutes**. A connection whose login Cove reject
 
 Breeze keeps a **daily history** for each provider device (the worst status seen that day), shown as the *Last 28 days* strip. History older than 60 days is pruned.
 
-Alerts are raised only for provider devices **linked to a Breeze device**:
+Linked endpoints raise **device alerts**. Microsoft 365 and Google Workspace backup workloads, including Cove Microsoft 365 accounts, raise **organization-level alerts** with no device, titled with the workload and customer name (or organization name). Both use the same conditions and severities:
 
 | Condition | Severity |
 |-----------|----------|
@@ -86,7 +86,7 @@ Alerts are raised only for provider devices **linked to a Breeze device**:
 | Backup completed with errors (or interrupted) | Medium |
 | Nothing selected for backup | Medium |
 
-To avoid noise from one bad poll, an alert is raised only when the **same condition is seen on two consecutive syncs**. It resolves automatically on the **first sync where the condition no longer holds**, with the note *Condition cleared by provider sync*.
+To avoid noise from one bad poll, an alert is raised only when the **same condition is seen on two consecutive syncs**. It resolves automatically on the **first sync where the condition no longer holds**, with the note *Condition cleared by provider sync*. Alerts also resolve when the workload, connection or customer mapping goes away. Indefinitely suppressed alerts keep their mute when the condition clears or changes.
 
 ## Where Provider Data Appears
 
@@ -99,7 +99,7 @@ To avoid noise from one bad poll, an alert is raised only when the **same condit
 - Status only: no restores, backup runs, or configuration changes through Breeze.
 - Cove Data Protection is the only supported provider.
 - Cove users with two-factor authentication cannot be used for the connection.
-- Microsoft 365 backup accounts are shown in backup health but never raise device alerts.
+- Unlinked endpoints and unmapped customers raise no alerts. Microsoft 365 and Google Workspace workloads raise organization-level alerts rather than device alerts.
 
 ## Related
 

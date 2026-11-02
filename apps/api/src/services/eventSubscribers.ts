@@ -115,6 +115,16 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
   });
 
   registerEventSubscriber({
+    id: 'psa-alert-ticketing',
+    eventTypes: ['alert.triggered', 'alert.acknowledged', 'alert.resolved'],
+    handler: async (event: BreezeEvent) => {
+      const { handlePsaAlertEvent } = await import('./psaAlertTicketing/subscriber');
+      return handlePsaAlertEvent(event);
+    },
+    retry: { attempts: 5, backoffMs: 10_000 },
+  });
+
+  registerEventSubscriber({
     id: 'webhook-delivery',
     eventTypes: '*',
     handler: handleWebhookFanoutEvent,
