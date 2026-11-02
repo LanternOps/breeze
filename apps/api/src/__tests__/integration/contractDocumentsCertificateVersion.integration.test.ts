@@ -1,6 +1,6 @@
 /**
  * contract_documents.certificate_version (#10513,
- * migrations/2027-01-18-182000-contract-documents-certificate-version.sql).
+ * migrations/2027-01-18-191000-contract-documents-certificate-version.sql).
  *
  * The signature certificate is derived on demand, so its wording is versioned:
  * a document signed before the column existed (NULL = v1) keeps printing
