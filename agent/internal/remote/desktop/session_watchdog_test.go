@@ -145,3 +145,84 @@ func TestDecideNoVideoAction(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionNoVideoDecision(t *testing.T) {
+	now := time.Now()
+	stale := now.Add(-5 * time.Second).UnixNano()
+	fresh := now.Add(-200 * time.Millisecond).UnixNano()
+
+	cases := []struct {
+		name       string
+		capturer   ScreenCapturer
+		hardware   bool
+		capture    int64
+		out        int64
+		wantKind   videoStallKind
+		wantAction noVideoAction
+	}{
+		{"dead VideoToolbox on macOS demotes", &boundsCapturer{1920, 1080}, true, fresh, stale, videoStallEncoder, noVideoActionDemoteEncoder},
+		{"silent software encoder logs", &boundsCapturer{1920, 1080}, false, fresh, stale, videoStallEncoder, noVideoActionLogOnly},
+		{"dead capturer re-attaches", &boundsCapturer{1920, 1080}, true, stale, stale, videoStallCapture, noVideoActionReattach},
+		{"sink stall logs", &boundsCapturer{1920, 1080}, true, fresh, fresh, videoStallSink, noVideoActionLogOnly},
+		{"D3D11 capturer keeps re-attach on encoder stall", &textureTestCapturer{boundsCapturer{1920, 1080}}, true, fresh, stale, videoStallEncoder, noVideoActionReattach},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Session{id: "wd"}
+			s.capturer = tc.capturer
+			stub := &stubEncoder{hardware: tc.hardware}
+			s.encoder.Store(&VideoEncoder{backend: stub})
+			s.lastVideoWriteUnixNano.Store(stale)
+			s.lastCaptureUnixNano.Store(tc.capture)
+			s.lastEncodeOutputUnixNano.Store(tc.out)
+
+			kind, action := s.noVideoDecision(now, 3*time.Second)
+			if kind != tc.wantKind || action != tc.wantAction {
+				t.Fatalf("got (%v, %v), want (%v, %v)", kind, action, tc.wantKind, tc.wantAction)
+			}
+		})
+	}
+}
+
+// Encoder and sink stalls no longer re-attach, but a session whose video never
+// recovers must still end, with a reason naming the stalled stage.
+func TestHandleNonCaptureStall_BudgetEndsSessionWithAccurateReason(t *testing.T) {
+	for _, kind := range []videoStallKind{videoStallEncoder, videoStallSink} {
+		t.Run(kind.String(), func(t *testing.T) {
+			s := &Session{id: "wd"}
+			s.encoder.Store(&VideoEncoder{backend: &stubEncoder{}})
+			var budget nonCaptureStallBudget
+			const lastWrite = int64(1_000)
+			now := time.Unix(100, 0)
+
+			for i := int32(1); i <= watchdogTerminateAfter; i++ {
+				if r := s.handleNonCaptureStall(kind, noVideoActionLogOnly, &budget, lastWrite, now); r != "" {
+					t.Fatalf("strike %d ended the session early: %q", i, r)
+				}
+			}
+			reason := s.handleNonCaptureStall(kind, noVideoActionLogOnly, &budget, lastWrite, now)
+			if reason != nonCaptureStallStopReason(kind) {
+				t.Fatalf("stop reason = %q, want %q", reason, nonCaptureStallStopReason(kind))
+			}
+			if reason == noVideoStopReasonFallback {
+				t.Fatalf("an encoder/sink stall must not blame screen capture")
+			}
+		})
+	}
+}
+
+func TestNonCaptureStallBudget_ProgressResets(t *testing.T) {
+	var b nonCaptureStallBudget
+	for i := int32(0); i < watchdogTerminateAfter; i++ {
+		if b.strike(100) {
+			t.Fatalf("strike %d exhausted the budget early", i+1)
+		}
+	}
+	// Video advanced since the last strike: the budget starts over.
+	if b.strike(200) {
+		t.Fatalf("progress must reset the budget")
+	}
+	if b.strikes != 1 {
+		t.Fatalf("strikes after reset = %d, want 1", b.strikes)
+	}
+}

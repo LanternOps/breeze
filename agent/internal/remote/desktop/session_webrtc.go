@@ -249,6 +249,9 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	if err != nil {
 		return "", fmt.Errorf("failed to get screen bounds: %w", err)
 	}
+	// The restore path records hardware-encoder verdicts against
+	// GetScreenBounds, which can differ from the probe-adjusted size below.
+	boundsW, boundsH := w, h
 	probeStart := time.Now()
 	// repaintProbe runs before every attempt: DXGI only produces a frame when
 	// desktop content changes, so an idle-but-healthy desktop would otherwise
@@ -312,7 +315,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	// re-learning that with a 3s frozen startup. The verdict comes from the
 	// CPU-input restore path, so it only applies to CPU-capture sessions — not
 	// to D3D11 capturers, whose zero-copy hardware path was never tested by it.
-	if _, gpuCapture := capturer.(TextureProvider); preferHardware && !gpuCapture && hardwareEncoderKnownDead(w, h) {
+	if preferHardware && (knownDeadHardwareForCPUCapture(capturer, w, h) || knownDeadHardwareForCPUCapture(capturer, boundsW, boundsH)) {
 		slog.Info("StartSession: hardware encoder produced no frames at this resolution earlier in this process, starting on software",
 			"session", sessionID, "dimensions", fmt.Sprintf("%dx%d", w, h))
 		preferHardware = false

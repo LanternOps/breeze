@@ -562,10 +562,6 @@ func (v *videotoolboxEncoder) SetDimensions(width, height int) error {
 		logVTSessionCreate(width, height, int32(st), -1, v.cfg.GPUVendor)
 		return fmt.Errorf("videotoolbox create session failed: OSStatus=%d", int32(st))
 	}
-	// One line per session creation (#10880): the result, whether VideoToolbox
-	// actually picked a hardware encoder, and the GPU vendor hint, so a dead
-	// encoder on an Intel Mac is diagnosable without a process sample.
-	logVTSessionCreate(width, height, 0, int(C.vtUsingHardware(session)), v.cfg.GPUVendor)
 
 	// Apply baseline realtime config.
 	if st := C.vtSetPropertyBool(session, C.kVTCompressionPropertyKey_RealTime, 1); st != 0 {
@@ -590,9 +586,15 @@ func (v *videotoolboxEncoder) SetDimensions(width, height int) error {
 	}
 
 	if st := C.vtPrepare(session); st != 0 {
+		logVTSessionCreate(width, height, int32(st), int(C.vtUsingHardware(session)), v.cfg.GPUVendor)
 		C.vtDestroySession(session)
 		return fmt.Errorf("videotoolbox prepare failed: OSStatus=%d", int32(st))
 	}
+	// One line per session creation (#10880): the result, whether VideoToolbox
+	// actually picked a hardware encoder (queried after prepare, when the
+	// choice is settled), and the GPU vendor hint, so a dead encoder on an
+	// Intel Mac is diagnosable without a process sample.
+	logVTSessionCreate(width, height, 0, int(C.vtUsingHardware(session)), v.cfg.GPUVendor)
 
 	pool := C.vtGetPixelBufferPool(session)
 	if pool != 0 {
@@ -677,7 +679,7 @@ func logVTSessionCreate(width, height int, status int32, usingHardware int, gpuV
 		"gpuVendorHint", gpuVendorHint,
 	}
 	if status != 0 {
-		slog.Warn("VideoToolbox: compression session creation failed", attrs...)
+		slog.Warn("VideoToolbox: compression session creation or prepare failed", attrs...)
 		return
 	}
 	slog.Info("VideoToolbox: compression session created", attrs...)

@@ -3,6 +3,7 @@ package desktop
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -48,6 +49,12 @@ var newHardwareRestoreCandidate = NewVideoEncoder
 
 var errHardwareWarmupCanceled = errors.New("session ended during hardware encoder warm-up")
 
+// errHardwareWarmupNoOutput marks a warm-up whose encoder accepted frames but
+// never returned one within the budget — the only failure that proves the
+// hardware encoder dead at this resolution. A session-creation failure is
+// reported without it.
+var errHardwareWarmupNoOutput = errors.New("no encoded frame within the warm-up budget")
+
 // hardwareWarmupResult is what the warm-up goroutine hands the capture loop. On
 // success enc is the proven candidate and ownership passes to the receiver; on
 // failure enc is nil (already closed) and err says why.
@@ -61,13 +68,18 @@ type hardwareWarmupResult struct {
 
 // runHardwareWarmup warms enc up and hands the result to the capture loop over
 // out (unbuffered, so ownership changes hands only when the loop receives). If
-// the session ends first, it closes a proven candidate itself rather than
-// leaking it. It touches no Session state.
-func runHardwareWarmup(enc *VideoEncoder, w, h int, pf PixelFormat, budget, retryGap time.Duration, done <-chan struct{}, out chan<- hardwareWarmupResult) {
-	res := warmUpHardwareEncoder(enc, w, h, pf, budget, retryGap, done)
+// the session ends (done) or the loop abandons the warm-up (cancel) first, it
+// closes a proven candidate itself rather than leaking it. It touches no
+// Session state.
+func runHardwareWarmup(enc *VideoEncoder, w, h int, pf PixelFormat, budget, retryGap time.Duration, done, cancel <-chan struct{}, out chan<- hardwareWarmupResult) {
+	res := warmUpHardwareEncoder(enc, w, h, pf, budget, retryGap, done, cancel)
 	select {
 	case out <- res:
 	case <-done:
+		if res.enc != nil {
+			res.enc.Close()
+		}
+	case <-cancel:
 		if res.enc != nil {
 			res.enc.Close()
 		}
@@ -76,8 +88,9 @@ func runHardwareWarmup(enc *VideoEncoder, w, h int, pf PixelFormat, budget, retr
 
 // warmUpHardwareEncoder sizes enc for w x h and encodes a synthetic frame until
 // it returns encoded data or the budget runs out. On success it queues a
-// keyframe and returns enc; on any failure it closes enc and returns the error.
-func warmUpHardwareEncoder(enc *VideoEncoder, w, h int, pf PixelFormat, budget, retryGap time.Duration, done <-chan struct{}) hardwareWarmupResult {
+// keyframe and returns enc; on any failure (including done or cancel closing)
+// it closes enc and returns the error. A nil cancel never fires.
+func warmUpHardwareEncoder(enc *VideoEncoder, w, h int, pf PixelFormat, budget, retryGap time.Duration, done, cancel <-chan struct{}) hardwareWarmupResult {
 	start := time.Now()
 	res := hardwareWarmupResult{width: w, height: h}
 	fail := func(err error) hardwareWarmupResult {
@@ -101,13 +114,19 @@ func warmUpHardwareEncoder(enc *VideoEncoder, w, h int, pf PixelFormat, budget, 
 		select {
 		case <-done:
 			return fail(errHardwareWarmupCanceled)
+		case <-cancel:
+			return fail(errHardwareWarmupCanceled)
 		default:
 		}
 
 		data, err := enc.Encode(frame)
 		res.frames++
 		if err == nil && len(data) > 0 {
-			_ = enc.ForceKeyframe()
+			if kfErr := enc.ForceKeyframe(); kfErr != nil {
+				// applyHardwareWarmup forces one again after the swap; log so
+				// a P-frame against the synthetic frame is traceable.
+				slog.Warn("Hardware encoder warm-up: ForceKeyframe failed", "error", kfErr.Error())
+			}
 			res.enc = enc
 			res.elapsed = time.Since(start)
 			return res
@@ -120,10 +139,12 @@ func warmUpHardwareEncoder(enc *VideoEncoder, w, h int, pf PixelFormat, budget, 
 			if lastErr == nil {
 				lastErr = errors.New("encoder returned no output")
 			}
-			return fail(fmt.Errorf("no encoded frame within %v after %d attempts: %w", budget, res.frames, lastErr))
+			return fail(fmt.Errorf("%w (%v, %d encodes): %w", errHardwareWarmupNoOutput, budget, res.frames, lastErr))
 		}
 		select {
 		case <-done:
+			return fail(errHardwareWarmupCanceled)
+		case <-cancel:
 			return fail(errHardwareWarmupCanceled)
 		case <-time.After(retryGap):
 		}
@@ -183,6 +204,18 @@ func rememberHardwareEncoderDead(w, h int) {
 	}
 	v.dead[k] = struct{}{}
 	v.order = append(v.order, k)
+}
+
+// knownDeadHardwareForCPUCapture reports whether a new session on this
+// capturer should skip the hardware encoder because an earlier session found it
+// produces no frames at w x h. The verdict comes from the CPU-input restore
+// path, so it never applies to D3D11 capturers (TextureProvider), whose
+// zero-copy hardware path it never exercised.
+func knownDeadHardwareForCPUCapture(capturer ScreenCapturer, w, h int) bool {
+	if _, gpuCapture := capturer.(TextureProvider); gpuCapture {
+		return false
+	}
+	return hardwareEncoderKnownDead(w, h)
 }
 
 // hardwareEncoderKnownDead reports whether a session in this process already

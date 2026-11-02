@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -236,11 +237,13 @@ func (s *Session) maybeRestoreHardwareEncoder(now time.Time) {
 	// session — also runs there, keeping all hardware calls off the capture loop.
 	s.hwRestore.onWarmupStarted(now)
 	ch := make(chan hardwareWarmupResult)
+	cancel := make(chan struct{})
 	s.hwWarmupCh = ch
+	s.hwWarmupCancel = cancel
 	slog.Info("Warming up hardware encoder off the live path before restoring it",
 		"session", s.id, "backend", backendName, "attempt", s.hwRestore.attempts,
 		"dimensions", fmt.Sprintf("%dx%d", w, h), "budget", hardwareWarmupBudget)
-	go runHardwareWarmup(newEnc, w, h, s.encoderPF, hardwareWarmupBudget, hardwareWarmupRetryGap, s.done, ch)
+	go runHardwareWarmup(newEnc, w, h, s.encoderPF, hardwareWarmupBudget, hardwareWarmupRetryGap, s.done, cancel, ch)
 }
 
 // pollHardwareWarmup collects the in-flight warm-up result, if one is ready,
@@ -249,29 +252,60 @@ func (s *Session) pollHardwareWarmup() {
 	select {
 	case res := <-s.hwWarmupCh:
 		s.hwWarmupCh = nil
+		s.hwWarmupCancel = nil
 		s.applyHardwareWarmup(res)
 	default:
 	}
+}
+
+// abandonHardwareWarmup cancels an in-flight warm-up whose result this loop will
+// not collect (the capture loop is leaving ticker mode). The goroutine closes
+// the candidate itself; the attempt stays counted, with no verdict.
+// Capture-loop goroutine only.
+func (s *Session) abandonHardwareWarmup() {
+	if s.hwWarmupCh == nil {
+		return
+	}
+	close(s.hwWarmupCancel)
+	s.hwWarmupCh = nil
+	s.hwWarmupCancel = nil
+	s.hwRestore.onWarmupInconclusive()
+	slog.Info("Abandoned hardware encoder warm-up: capture loop left ticker mode", "session", s.id)
 }
 
 // applyHardwareWarmup acts on a collected warm-up result: swap a proven
 // candidate in, or record the failure. Capture-loop goroutine only.
 func (s *Session) applyHardwareWarmup(res hardwareWarmupResult) {
 	dims := fmt.Sprintf("%dx%d", res.width, res.height)
+	if errors.Is(res.err, errHardwareWarmupCanceled) {
+		// The session is ending; the outcome says nothing about the hardware.
+		s.hwRestore.onWarmupInconclusive()
+		return
+	}
 	if res.err != nil {
 		// The goroutine already closed the candidate; the live encoder was
 		// never touched.
-		if s.hwRestore.onWarmupFailed() {
-			rememberHardwareEncoderDead(res.width, res.height)
-			slog.Warn("Hardware encoder produced no frames at startup or during warm-up; staying on software for this session and for later sessions at this resolution",
-				"session", s.id, "dimensions", dims, "warmupFrames", res.frames,
-				"warmupElapsed", res.elapsed.Round(time.Millisecond), "error", res.err.Error())
+		logArgs := []any{"session", s.id, "dimensions", dims, "attempt", s.hwRestore.attempts,
+			"warmupFrames", res.frames, "warmupElapsed", res.elapsed.Round(time.Millisecond),
+			"error", res.err.Error()}
+		if !s.hwRestore.onWarmupFailed() {
+			if s.hwRestore.attempts >= maxHardwareRestoreAttempts {
+				slog.Warn("Hardware encoder warm-up failed; restore attempts exhausted, staying on software for this session", logArgs...)
+				return
+			}
+			slog.Info("Hardware encoder warm-up failed, staying on software", logArgs...)
 			return
 		}
-		slog.Info("Hardware encoder warm-up failed, staying on software",
-			"session", s.id, "dimensions", dims, "attempt", s.hwRestore.attempts,
-			"warmupFrames", res.frames, "warmupElapsed", res.elapsed.Round(time.Millisecond),
-			"error", res.err.Error())
+		// Hardware never produced a frame this session and failed again off the
+		// live path. Only remember it beyond this session when the warm-up
+		// actually fed the encoder and got nothing back; a session-creation
+		// failure may be transient and is not proof the encoder is dead.
+		if errors.Is(res.err, errHardwareWarmupNoOutput) {
+			rememberHardwareEncoderDead(res.width, res.height)
+			slog.Warn("Hardware encoder produced no frames at startup or during warm-up; staying on software for this session and for later sessions at this resolution", logArgs...)
+			return
+		}
+		slog.Warn("Hardware encoder produced no frames at startup and its warm-up could not start; staying on software for this session", logArgs...)
 		return
 	}
 
@@ -306,7 +340,7 @@ func (s *Session) applyHardwareWarmup(res hardwareWarmupResult) {
 	// during the warm-up.
 	newEnc.SetPixelFormat(s.encoderPF)
 	if err := newEnc.SetFPS(s.getFPS()); err != nil {
-		slog.Debug("maybeRestoreHardwareEncoder: SetFPS on restored encoder failed",
+		slog.Warn("maybeRestoreHardwareEncoder: SetFPS on restored encoder failed",
 			"session", s.id, "error", err.Error())
 	}
 
@@ -321,7 +355,10 @@ func (s *Session) applyHardwareWarmup(res hardwareWarmupResult) {
 	}
 
 	s.hwRestore.onWarmupSucceeded()
-	_ = newEnc.ForceKeyframe()
+	if err := newEnc.ForceKeyframe(); err != nil {
+		slog.Warn("maybeRestoreHardwareEncoder: ForceKeyframe on restored encoder failed",
+			"session", s.id, "error", err.Error())
+	}
 	slog.Info("Restored hardware encoder after software fallback",
 		"session", s.id,
 		"backend", newEnc.BackendName(),

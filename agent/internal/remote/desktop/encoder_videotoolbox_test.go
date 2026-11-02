@@ -41,7 +41,7 @@ func TestVideoToolboxWarmUpLive(t *testing.T) {
 		enc.Close()
 		t.Skipf("hardware factory picked %q, not videotoolbox", enc.BackendName())
 	}
-	res := warmUpHardwareEncoder(enc, 320, 240, PixelFormatBGRA, hardwareWarmupBudget, hardwareWarmupRetryGap, make(chan struct{}))
+	res := warmUpHardwareEncoder(enc, 320, 240, PixelFormatBGRA, hardwareWarmupBudget, hardwareWarmupRetryGap, make(chan struct{}), nil)
 	if res.err != nil {
 		if strings.Contains(res.err.Error(), "create session failed") {
 			t.Skipf("no VideoToolbox session on this host: %v", res.err)

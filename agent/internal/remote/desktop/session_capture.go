@@ -652,9 +652,10 @@ func (s *Session) captureLoopTicker() captureMode {
 	var wd reattachWatchdog
 	const noVideoReattachTimeout = 3 * time.Second
 	const reattachCooldown = 5 * time.Second
-	// lastNonCaptureStall rate-limits the encoder/sink stall responses, which
-	// do not go through the reattach budget in wd.
+	// Encoder/sink stalls are handled at the encoder, not by re-attaching;
+	// they have their own cooldown and termination budget.
 	var lastNonCaptureStall time.Time
+	var stallBudget nonCaptureStallBudget
 
 	for {
 		select {
@@ -668,31 +669,14 @@ func (s *Session) captureLoopTicker() captureMode {
 			if lastWriteNanos := s.lastVideoWriteUnixNano.Load(); lastWriteNanos != 0 {
 				lastWrite := time.Unix(0, lastWriteNanos)
 				now := time.Now()
-				kind := classifyVideoStall(now, lastWriteNanos,
-					s.lastCaptureUnixNano.Load(), s.lastEncodeOutputUnixNano.Load(),
-					noVideoReattachTimeout)
-				action := noVideoActionNone
-				if kind != videoStallNone {
-					s.mu.RLock()
-					wdCap := s.capturer
-					s.mu.RUnlock()
-					_, ownsDevice := wdCap.(TextureProvider)
-					enc := s.encoder.Load()
-					action = decideNoVideoAction(kind, ownsDevice, enc != nil && enc.BackendIsHardware())
-				}
+				kind, action := s.noVideoDecision(now, noVideoReattachTimeout)
 				if (action == noVideoActionDemoteEncoder || action == noVideoActionLogOnly) &&
 					now.Sub(lastNonCaptureStall) > reattachCooldown {
 					lastNonCaptureStall = now
-					backend := ""
-					if enc := s.encoder.Load(); enc != nil {
-						backend = enc.BackendName()
-					}
-					slog.Warn("Capture watchdog (ticker): no video output but the capturer is delivering frames; leaving capture alone",
-						"session", s.id, "stalledStage", kind.String(), "action", action.String(),
-						"backend", backend,
-						"sinceLastWrite", now.Sub(lastWrite).Round(time.Millisecond))
-					if action == noVideoActionDemoteEncoder {
-						s.swapToSoftwareEncoder()
+					if reason := s.handleNonCaptureStall(kind, action, &stallBudget, lastWriteNanos, now); reason != "" {
+						// Same goroutine rationale as the re-attach budget below.
+						go s.StopWithReason(reason)
+						return captureModeStopped
 					}
 				}
 				if action == noVideoActionReattach &&
@@ -755,6 +739,8 @@ func (s *Session) captureLoopTicker() captureMode {
 			}
 			if h, ok := currentCap.(TightLoopHint); ok && h.TightLoop() {
 				slog.Info("Capturer supports tight loop again, switching to DXGI loop", "session", s.id)
+				// The DXGI loop never collects warm-up results.
+				s.abandonHardwareWarmup()
 				return captureModeDXGI
 			}
 

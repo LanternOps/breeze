@@ -155,7 +155,7 @@ func TestWarmUpHardwareEncoder(t *testing.T) {
 				close(done)
 			}
 
-			res := warmUpHardwareEncoder(enc, 64, 48, PixelFormatBGRA, 200*time.Millisecond, time.Millisecond, done)
+			res := warmUpHardwareEncoder(enc, 64, 48, PixelFormatBGRA, 200*time.Millisecond, time.Millisecond, done, nil)
 
 			if ok := res.err == nil; ok != tc.wantOK {
 				t.Fatalf("ok = %v (err=%v), want %v", ok, res.err, tc.wantOK)
@@ -346,7 +346,7 @@ func TestRunHardwareWarmup_SessionEndDiscardsUnclaimedCandidate(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		runHardwareWarmup(&VideoEncoder{backend: stub}, 64, 48, PixelFormatRGBA, time.Second, time.Millisecond, done, out)
+		runHardwareWarmup(&VideoEncoder{backend: stub}, 64, 48, PixelFormatRGBA, time.Second, time.Millisecond, done, nil, out)
 	}()
 	// Let it prove the encoder and park on the handoff, then end the session.
 	deadline := time.Now().Add(2 * time.Second)
@@ -382,5 +382,113 @@ func TestHardwareEncoderVerdicts(t *testing.T) {
 	}
 	if n := hardwareEncoderVerdictCount(); n > maxHardwareEncoderVerdicts {
 		t.Fatalf("verdict store must stay bounded, has %d entries", n)
+	}
+}
+
+// A warm-up that could not even create the encoder session gives up for the
+// session (hardware never produced a frame) but is not proof the encoder is
+// dead, so no process-lifetime verdict is recorded.
+func TestMaybeRestoreHardwareEncoder_CreateFailureGivesUpWithoutVerdict(t *testing.T) {
+	withWarmupTestHooks(t, 20*time.Millisecond, func() encoderBackend {
+		stub := newWarmupStub(encodeOK)
+		stub.dimErr = errors.New("videotoolbox create session failed: OSStatus=-12902")
+		return stub
+	})
+	s, sw, now := newDemotedSession(1920, 1080)
+
+	s.maybeRestoreHardwareEncoder(now)
+	pumpRestore(t, s, now)
+
+	if s.encoder.Load().backend != sw || sw.closed.Load() {
+		t.Fatalf("a failed warm-up must never touch the live software encoder")
+	}
+	if s.hwRestore.shouldAttempt(now.Add(24 * time.Hour)) {
+		t.Fatalf("hardware that never produced a frame and cannot start must stop retrying this session")
+	}
+	if hardwareEncoderKnownDead(1920, 1080) {
+		t.Fatalf("a session-creation failure must not record a process-lifetime verdict")
+	}
+}
+
+// A result that only says the session ended is inconclusive: no give-up, no
+// verdict.
+func TestApplyHardwareWarmup_CanceledIsInconclusive(t *testing.T) {
+	withWarmupTestHooks(t, time.Second, nil)
+	s, _, now := newDemotedSession(1920, 1080)
+	s.hwRestore.onWarmupStarted(now)
+
+	s.applyHardwareWarmup(hardwareWarmupResult{width: 1920, height: 1080, err: errHardwareWarmupCanceled})
+
+	if s.hwRestore.warming {
+		t.Fatalf("warm-up must be cleared")
+	}
+	if !s.hwRestore.shouldAttempt(now.Add(time.Hour)) {
+		t.Fatalf("a canceled warm-up must not give up")
+	}
+	if hardwareEncoderKnownDead(1920, 1080) {
+		t.Fatalf("a canceled warm-up must not record a verdict")
+	}
+}
+
+// Leaving ticker mode (Windows switching to the DXGI loop) abandons the
+// warm-up: the goroutine closes its candidate, and the policy can retry later.
+func TestAbandonHardwareWarmup_ClosesCandidate(t *testing.T) {
+	release := make(chan struct{})
+	hw := newWarmupStub(func(int) ([]byte, error) {
+		<-release
+		return []byte{0, 0, 0, 1, 0x65}, nil
+	})
+	withWarmupTestHooks(t, 2*time.Second, func() encoderBackend { return hw })
+	s, sw, now := newDemotedSession(1920, 1080)
+
+	s.maybeRestoreHardwareEncoder(now)
+	if s.hwWarmupCh == nil {
+		t.Fatalf("precondition: warm-up must be in flight")
+	}
+	s.abandonHardwareWarmup()
+	close(release)
+
+	if s.hwWarmupCh != nil || s.hwRestore.warming {
+		t.Fatalf("abandon must clear the in-flight warm-up")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for !hw.closed.Load() {
+		if time.Now().After(deadline) {
+			t.Fatalf("the abandoned candidate must be closed by its goroutine")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if s.encoder.Load().backend != sw || sw.closed.Load() {
+		t.Fatalf("abandoning must not touch the live encoder")
+	}
+	if !s.hwRestore.shouldAttempt(now.Add(time.Hour)) {
+		t.Fatalf("an abandoned warm-up must leave a later attempt possible")
+	}
+	if hardwareEncoderKnownDead(1920, 1080) {
+		t.Fatalf("an abandoned warm-up must not record a verdict")
+	}
+}
+
+// textureTestCapturer is a D3D11-style capturer (TextureProvider).
+type textureTestCapturer struct{ boundsCapturer }
+
+func (c *textureTestCapturer) CaptureTexture() (uintptr, error) { return 0, nil }
+func (c *textureTestCapturer) ReleaseTexture()                  {}
+func (c *textureTestCapturer) GetD3D11Device() uintptr          { return 0 }
+func (c *textureTestCapturer) GetD3D11Context() uintptr         { return 0 }
+
+func TestKnownDeadHardwareForCPUCapture(t *testing.T) {
+	resetHardwareEncoderVerdicts()
+	t.Cleanup(resetHardwareEncoderVerdicts)
+	rememberHardwareEncoderDead(1920, 1080)
+
+	if !knownDeadHardwareForCPUCapture(&boundsCapturer{1920, 1080}, 1920, 1080) {
+		t.Fatalf("a CPU capturer at a known-dead resolution must start on software")
+	}
+	if knownDeadHardwareForCPUCapture(&boundsCapturer{2560, 1440}, 2560, 1440) {
+		t.Fatalf("other resolutions keep hardware")
+	}
+	if knownDeadHardwareForCPUCapture(&textureTestCapturer{boundsCapturer{1920, 1080}}, 1920, 1080) {
+		t.Fatalf("D3D11 capturers ignore the CPU-path verdict")
 	}
 }

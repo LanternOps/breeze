@@ -134,6 +134,9 @@ type Session struct {
 	// off the live path (#10880). The warm-up goroutine hands its result back
 	// on it; only the capture loop receives, via maybeRestoreHardwareEncoder.
 	hwWarmupCh chan hardwareWarmupResult
+	// hwWarmupCancel is closed by abandonHardwareWarmup to tell the warm-up
+	// goroutine its result will not be collected. Set with hwWarmupCh.
+	hwWarmupCancel chan struct{}
 
 	// cursorOffsetX/Y store the active monitor's virtual desktop origin so
 	// cursorStreamLoop can convert absolute GetCursorInfo coords to

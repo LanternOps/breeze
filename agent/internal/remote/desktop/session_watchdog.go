@@ -161,3 +161,82 @@ func decideNoVideoAction(kind videoStallKind, capturerOwnsEncoderDevice, encoder
 		return noVideoActionLogOnly
 	}
 }
+
+// nonCaptureStallBudget bounds how long an encoder or sink stall may keep the
+// viewer frozen. Re-attaching cannot fix those stalls, so they no longer go
+// through reattachWatchdog, but a session whose video never recovers must still
+// end with a reason (#5300) rather than stay open frozen. Owned by the capture
+// goroutine, like reattachWatchdog.
+type nonCaptureStallBudget struct {
+	lastVideoNanos int64
+	strikes        int32
+}
+
+// strike records one encoder/sink stall response and reports whether the
+// budget is exhausted. Video advancing since the previous strike resets it.
+// Strikes are spaced by the watchdog cooldown, so the default budget ends a
+// session after roughly half a minute without video, like the re-attach path.
+func (b *nonCaptureStallBudget) strike(currentVideoNanos int64) (exhausted bool) {
+	if currentVideoNanos > b.lastVideoNanos {
+		b.strikes = 0
+	}
+	b.lastVideoNanos = currentVideoNanos
+	b.strikes++
+	return b.strikes > watchdogTerminateAfter
+}
+
+// nonCaptureStallStopReason is the stop reason recorded when the stall budget
+// runs out; it names the stage that stopped instead of blaming screen capture.
+func nonCaptureStallStopReason(kind videoStallKind) string {
+	if kind == videoStallSink {
+		return "video frames could not be sent to the viewer and did not recover"
+	}
+	return "the video encoder stopped producing frames and did not recover"
+}
+
+// noVideoDecision classifies the current no-video state for the ticker
+// watchdog and picks the response. Capture-loop goroutine only.
+func (s *Session) noVideoDecision(now time.Time, timeout time.Duration) (videoStallKind, noVideoAction) {
+	kind := classifyVideoStall(now, s.lastVideoWriteUnixNano.Load(),
+		s.lastCaptureUnixNano.Load(), s.lastEncodeOutputUnixNano.Load(), timeout)
+	if kind == videoStallNone {
+		return kind, noVideoActionNone
+	}
+	s.mu.RLock()
+	capturer := s.capturer
+	s.mu.RUnlock()
+	_, ownsDevice := capturer.(TextureProvider)
+	enc := s.encoder.Load()
+	return kind, decideNoVideoAction(kind, ownsDevice, enc != nil && enc.BackendIsHardware())
+}
+
+// handleNonCaptureStall responds to an encoder or sink stall without touching
+// the capturer: a stalled hardware encoder is swapped to software, anything
+// else is reported. It returns a non-empty stop reason once the stall budget
+// is exhausted and the session should end. Capture-loop goroutine only.
+func (s *Session) handleNonCaptureStall(kind videoStallKind, action noVideoAction, budget *nonCaptureStallBudget, lastWriteNanos int64, now time.Time) (stopReason string) {
+	backend := ""
+	if enc := s.encoder.Load(); enc != nil {
+		backend = enc.BackendName()
+	}
+	sinceLastWrite := now.Sub(time.Unix(0, lastWriteNanos)).Round(time.Millisecond)
+	if budget.strike(lastWriteNanos) {
+		slog.Error("Capture watchdog (ticker): video stalled after capture and did not recover, ending session",
+			"session", s.id, "stalledStage", kind.String(), "backend", backend,
+			"strikes", budget.strikes, "sinceLastWrite", sinceLastWrite)
+		return nonCaptureStallStopReason(kind)
+	}
+	switch {
+	case action == noVideoActionDemoteEncoder:
+		slog.Warn("Capture watchdog (ticker): hardware encoder stalled while the capturer delivers frames; swapping encoder to software instead of re-attaching capture",
+			"session", s.id, "backend", backend, "sinceLastWrite", sinceLastWrite)
+		s.swapToSoftwareEncoder()
+	case kind == videoStallSink:
+		slog.Warn("Capture watchdog (ticker): frames are captured and encoded but not written; not re-attaching capture",
+			"session", s.id, "backend", backend, "strikes", budget.strikes, "sinceLastWrite", sinceLastWrite)
+	default:
+		slog.Warn("Capture watchdog (ticker): encoder stalled while the capturer delivers frames; not re-attaching capture",
+			"session", s.id, "backend", backend, "strikes", budget.strikes, "sinceLastWrite", sinceLastWrite)
+	}
+	return ""
+}
