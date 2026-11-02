@@ -504,14 +504,11 @@ Xcode 27.1 ships Swift 6.4; Expo SDK 57 was published against Swift 6.3.1
 2. **`ExpoModulesJSI` swiftinterface fails to compile** — `cannot find type
    '__ObjC::expo' in scope`. Swift 6.4 prints C++ extension blocks as
    `extension __ObjC::expo…` and the package's `build-xcframework.sh` only
-   stripped the `__ObjC.` spelling. Carried as a pnpm patch
-   (`patches/expo-modules-jsi@57.1.1.patch`, upstream
-   https://github.com/expo/expo/pull/50569, not in any 57.x release). The
-   patch is keyed to the exact transitive version; because the root
-   `allowUnusedPatches: true` turns drift into a buried warning,
-   `appJson.test.ts` asserts every `expo-modules-jsi` version in the lockfile
-   has a patch entry. When the version moves, either re-key the patch or, if
-   the new version contains #50569, delete the patch and the test block.
+   stripped the `__ObjC.` spelling. Fixed upstream by
+   https://github.com/expo/expo/pull/50569, shipped in `expo-modules-jsi`
+   57.1.3; until then the repo carried it as a pnpm patch
+   (`patches/expo-modules-jsi@57.1.1.patch`, removed with the expo-sdk bump to
+   57.1.3).
 
 If either error reappears after an Xcode update, check the toolchain's Swift
 version against these notes before touching app code. A stale cached slice can
