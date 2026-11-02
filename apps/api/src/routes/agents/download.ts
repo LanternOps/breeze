@@ -716,7 +716,7 @@ downloadRoutes.get('/install.ps1', async (c) => {
     });
   }
 
-  const serverUrl = onboardingServerUrl();
+  const serverUrl = onboardingServerUrl() ?? resolveInstallScriptServerUrl(c.req.url);
   if (!serverUrl) {
     return new Response('Installer script unavailable: server URL is not configured', {
       status: 503,
