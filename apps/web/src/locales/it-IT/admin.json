@@ -1099,6 +1099,7 @@
       "portal_auth": "Accesso al portale",
       "portal_user": "Utente del portale",
       "psa_connection": "Connessione PSA",
+      "psa_ticket_mapping": "Mappatura ticket PSA",
       "quote": "Preventivo",
       "recovery_media_artifact": "Supporto di ripristino",
       "recovery_token": "Token di ripristino",

@@ -1099,6 +1099,7 @@
       "portal_auth": "Portal-Anmeldung",
       "portal_user": "Portalbenutzer",
       "psa_connection": "PSA-Verbindung",
+      "psa_ticket_mapping": "PSA-Ticket-Zuordnung",
       "quote": "Angebot",
       "recovery_media_artifact": "Wiederherstellungsmedium",
       "recovery_token": "Wiederherstellungstoken",

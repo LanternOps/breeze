@@ -1099,6 +1099,7 @@
       "portal_auth": "Connexion au portail",
       "portal_user": "Utilisateur du portail",
       "psa_connection": "Connexion PSA",
+      "psa_ticket_mapping": "Association de ticket PSA",
       "quote": "Devis",
       "recovery_media_artifact": "Support de restauration",
       "recovery_token": "Jeton de récupération",

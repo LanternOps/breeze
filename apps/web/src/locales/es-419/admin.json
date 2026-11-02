@@ -1099,6 +1099,7 @@
       "portal_auth": "Inicio de sesión del portal",
       "portal_user": "Usuario del portal",
       "psa_connection": "Conexión de PSA",
+      "psa_ticket_mapping": "Asignación de tickets PSA",
       "quote": "Cotización",
       "recovery_media_artifact": "Medio de recuperación",
       "recovery_token": "Token de recuperación",

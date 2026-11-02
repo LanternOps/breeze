@@ -1099,6 +1099,7 @@
       "portal_auth": "Portal oturum açma",
       "portal_user": "Portal kullanıcısı",
       "psa_connection": "PSA bağlantısı",
+      "psa_ticket_mapping": "PSA bilet eşlemesi",
       "quote": "Teklif",
       "recovery_media_artifact": "Kurtarma ortamı",
       "recovery_token": "Kurtarma belirteci",
