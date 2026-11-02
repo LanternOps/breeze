@@ -20,6 +20,7 @@
  * while a sweep was running is therefore never expired or purged under its
  * new org, and an assignment that loses the race sees a removed device.
  */
+import { NetworkIsolationUnresolvedError } from '../networkIsolation/lifecycle';
 import { sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { devicePoolAssignmentEvents } from '../../db/schema';
@@ -67,7 +68,8 @@ export type ParkedExpirySkip =
    * scheduled expiry skips it, and the intent's own 60/15-minute expiry
    * bounds the delay. A deploy-key incident does not skip (see below).
    */
-  | 'IN_REATTACH';
+  | 'IN_REATTACH'
+  | 'isolation_unresolved';
 
 export type ParkedExpiryOutcome =
   | { expired: true; deviceId: string; ledgerEventId: string; uninstallQueued: boolean }
@@ -159,6 +161,13 @@ export async function expireParkedDevice(
       uninstallQueued: decommission.uninstallQueued,
       cancelledIntents,
     };
+  }).catch((err: unknown): Locked => {
+    // Catch after the transaction rolls back, including any reattach cleanup.
+    if (err instanceof NetworkIsolationUnresolvedError) {
+      console.warn(`${LOG_PREFIX} skipping expiry for ${deviceId}: ${err.message}`);
+      return { skip: 'isolation_unresolved' };
+    }
+    throw err;
   });
 
   if ('skip' in result) return { expired: false, deviceId, reason: result.skip };
@@ -229,7 +238,8 @@ export type ParkedPurgeSkip =
   /** Another purge refusal (for example a backup snapshot under hold). */
   | 'REFUSED'
   /** The source (or target) of an open reattach intent (#8318 §6.5). */
-  | 'IN_REATTACH';
+  | 'IN_REATTACH'
+  | 'isolation_unresolved';
 
 export type ParkedPurgeOutcome =
   | { purged: true; deviceId: string; hostname: string; holdingOrgId: string }
@@ -280,6 +290,10 @@ export async function purgeExpiredParkedDevice(input: {
     });
   } catch (err) {
     // Caught outside the transaction, so the refusal still rolled it back.
+    if (err instanceof NetworkIsolationUnresolvedError) {
+      console.warn(`${LOG_PREFIX} skipping purge for ${deviceId}: ${err.message}`);
+      return { purged: false, deviceId, reason: 'isolation_unresolved' };
+    }
     if (err instanceof DeviceLifecycleError) {
       return { purged: false, deviceId, reason: err.code === 'UNINSTALL_PENDING' ? 'UNINSTALL_PENDING' : 'REFUSED' };
     }

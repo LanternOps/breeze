@@ -39,6 +39,7 @@ import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
 import { organizations, orgMergeEvents } from '../db/schema';
 import { createAuditLog } from './auditService';
+import { findUnresolvedIsolations } from './networkIsolation/lifecycle';
 import { revalidateTicketAssignee } from './ticketService';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup, type Tx } from './authLifecycle';
 import {
@@ -177,7 +178,7 @@ export interface MergeBlocker {
  *  - `payment_in_flight`: an autopay collection is still in flight.
  *  - `lineage_depth`: the held evidence lineage would get too deep.
  */
-export type MergeBlockerCode = 'pam_open_actuation' | 'pam_evidence' | 'payment_in_flight' | 'lineage_depth';
+export type MergeBlockerCode = 'pam_open_actuation' | 'pam_evidence' | 'payment_in_flight' | 'lineage_depth' | 'isolation_unresolved';
 
 /** PAM-chain tables whose loser rows a merge leaves at their epoch (registry kind `epoch-frozen`). */
 function isPamEpochFrozenTable(table: string): boolean {
@@ -191,7 +192,8 @@ export function mergeBlockerCodes(
 ): MergeBlockerCode[] {
   const codes = new Set<MergeBlockerCode>();
   for (const b of blockers) {
-    if (b.table === 'invoice_collection_attempts') codes.add('payment_in_flight');
+    if (b.table === 'device_network_isolations') codes.add('isolation_unresolved');
+    else if (b.table === 'invoice_collection_attempts') codes.add('payment_in_flight');
     else if (isPamEpochFrozenTable(b.table)) codes.add(pamTransfer ? 'pam_open_actuation' : 'pam_evidence');
   }
   if (lineageBlocked) codes.add('lineage_depth');
@@ -200,6 +202,12 @@ export function mergeBlockerCodes(
 
 /** Operator-facing refusal text; also embedded in previews and audits. Precondition: `blockers` is non-empty — every caller only invokes this once a blocks-merge table has loser rows. */
 export function buildMergeBlockedMessage(blockers: MergeBlocker[], pamTransfer = false): string {
+  if (blockers.some(b => b.table === 'device_network_isolations')) {
+    const others = blockers.filter(b => b.table !== 'device_network_isolations');
+    return others.length > 0
+      ? `Release network isolation first. ${buildMergeBlockedMessage(others, pamTransfer)}`
+      : 'Release network isolation first';
+  }
   const paymentBlockers = blockers.filter((b) => b.table === 'invoice_collection_attempts');
   if (paymentBlockers.length > 0) {
     const count = paymentBlockers.reduce((n, b) => n + b.loserRows, 0);
@@ -353,6 +361,8 @@ export async function collectMergeBlockers(
 ): Promise<MergeBlocker[]> {
   const transfer = pamTransfer ?? await self.resolveMergePamTransfer();
   const blockers: MergeBlocker[] = [];
+  const isolations = await findUnresolvedIsolations(dbModule.db, { orgId: loserOrgId });
+  if (isolations.length > 0) blockers.push({ table: 'device_network_isolations', loserRows: isolations.length });
   for (const [table, policy] of getOrgMergePolicies()) {
     if (!isRefusingPolicy(policy)) continue;
     const loserRows = await scalarCount(mergeBlockerCount(table, loserOrgId, transfer));
@@ -1341,7 +1351,9 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         //    upgrade-hardening.sql). Taken before any row write so the export
         //    triggers' lock hierarchy cannot deadlock against us mid-merge.
         // 3. Both org rows FOR NO KEY UPDATE in assertPairStillMergeable.
-        // 4. Registry walk and ticket child row locks (getOrgMergeWalkOrder /
+        // 4. Source org FOR UPDATE and its devices FOR NO KEY UPDATE, in id order,
+        //    before the isolation blocker read. The org lock stabilizes new FK inserts.
+        // 5. Registry walk and ticket child row locks (getOrgMergeWalkOrder /
         //    applyTicketChildLockOrder), then deferred triggers at COMMIT,
         //    including the membership owner check's KEY SHARE held since 1.
         //
@@ -1394,6 +1406,11 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         // refusing any PAM history, which the recheck below already enforces.
         const pamTransfer = await self.resolveMergePamTransfer();
         await armOwnershipChange(dbModule.db, 'org_merge', pamTransfer);
+        // Isolation start holds the device row before inserting its episode.
+        // Wait for an in-flight start, then read its committed result. Strengthen
+        // the source org lock first to also fence new device/episode FK inserts.
+        await dbModule.db.execute(sql`SELECT id FROM organizations WHERE id = ${uuid(loser.id)} FOR UPDATE`);
+        await dbModule.db.execute(sql`SELECT id FROM devices WHERE org_id = ${uuid(loser.id)} ORDER BY id FOR NO KEY UPDATE`);
         const txBlockers = await self.collectMergeBlockers(loser.id, pamTransfer);
         if (txBlockers.length > 0) throw new OrgMergeBlockedError(txBlockers, 'blocks_merge', pamTransfer);
         await self.assertMergeLineageDepth(loser.id, survivor.id);
@@ -1707,6 +1724,8 @@ export async function previewOrgMerge(
       let totalMovableRows = 0;
       let destroyedRows = 0;
       const mergeBlockers: MergeBlocker[] = [];
+      const isolations = await findUnresolvedIsolations(dbModule.db, { orgId: loserOrgId });
+      if (isolations.length > 0) mergeBlockers.push({ table: 'device_network_isolations', loserRows: isolations.length });
       const pamTransfer = await self.resolveMergePamTransfer();
       let heldPamRows = 0;
 

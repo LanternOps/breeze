@@ -1,5 +1,15 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 
+vi.mock('../services/networkIsolation/lifecycle', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/networkIsolation/lifecycle')>()),
+  assertNoUnresolvedIsolation: vi.fn(async () => undefined),
+  findUnresolvedIsolations: vi.fn(async () => []),
+}));
+vi.mock('../services/sentry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/sentry')>()),
+  captureMessage: vi.fn(),
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
@@ -128,6 +138,9 @@ import { getAgentTenantState } from '../services/tenantStatus';
 import { isDeviceUninstallDraining } from '../services/deviceUninstallDrain';
 import { resolveOrgRateLimit } from '../services/agentOrgRateLimit';
 import { checkAgentStorageSessionRateLimit } from '../services/agentStorageSessionRateLimit';
+import { assertNoUnresolvedIsolation, findUnresolvedIsolations, NetworkIsolationUnresolvedError } from '../services/networkIsolation/lifecycle';
+import { captureMessage } from '../services/sentry';
+import type { AgentTokenSuspendReason } from '../services/agentTokenSuspension';
 import {
   agentAuthMiddleware,
   DRAIN_CLAIM_TYPE_ALLOWLIST,
@@ -2358,9 +2371,49 @@ describe('Task 18 — agentAuthMiddleware rejects suspended tokens', () => {
 describe('Task 18 — suspendAgentToken helper', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(assertNoUnresolvedIsolation).mockResolvedValue(undefined);
+    vi.mocked(findUnresolvedIsolations).mockResolvedValue([]);
   });
 
   const identity = { deviceId: 'device-1', agentId: 'agent-1' };
+
+  it('refuses a future operator suspension while isolation is unresolved', async () => {
+    vi.mocked(assertNoUnresolvedIsolation).mockRejectedValueOnce(new NetworkIsolationUnresolvedError(
+      'suspend_agent_token', [{ deviceId: identity.deviceId, isolationId: 'isolation-1' }],
+    ));
+    await expect(suspendAgentToken(identity, 'operator_requested' as AgentTokenSuspendReason))
+      .resolves.toBe('isolation_unresolved');
+    expect(assertNoUnresolvedIsolation).toHaveBeenCalledWith(db, { deviceId: identity.deviceId }, 'suspend_agent_token');
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('forces security suspension and warns that isolation recovery is bounded by expiry and offline code', async () => {
+    updateReturning([{ id: identity.deviceId }]);
+    vi.mocked(findUnresolvedIsolations).mockResolvedValueOnce([{ deviceId: identity.deviceId, isolationId: 'isolation-1' }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(suspendAgentToken(identity, 'cross-tenant-probe')).resolves.toBe('suspended');
+      expect(assertNoUnresolvedIsolation).not.toHaveBeenCalled();
+      expect(findUnresolvedIsolations).toHaveBeenCalledWith(db, { deviceId: identity.deviceId });
+      expect(warn).toHaveBeenCalledWith(
+        '[agentAuth] Forced credential suspension: network isolation recovery is now bounded by expiry and the offline code',
+        { deviceId: identity.deviceId, isolationIds: ['isolation-1'] },
+      );
+      expect(captureMessage).toHaveBeenCalledWith(
+        'Forced credential suspension: network isolation recovery is now bounded by expiry and the offline code',
+        { eventCode: 'network_isolation_forced_token_suspension', level: 'warning', tags: { deviceId: identity.deviceId, isolationId: 'isolation-1' } },
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('allows a future operator suspension once isolation is resolved', async () => {
+    updateReturning([{ id: identity.deviceId }]);
+    await expect(suspendAgentToken(identity, 'operator_requested' as AgentTokenSuspendReason)).resolves.toBe('suspended');
+    expect(assertNoUnresolvedIsolation).toHaveBeenCalledWith(db, { deviceId: identity.deviceId }, 'suspend_agent_token');
+    expect(captureMessage).not.toHaveBeenCalled();
+  });
 
   it('writes agentTokenSuspendedAt + reason via UPDATE, bound to the socket\'s id + agent_id (#8318 §6.4)', async () => {
     const whereMock = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'device-1' }]) });

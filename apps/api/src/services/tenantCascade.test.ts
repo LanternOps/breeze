@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 // Mock the DB so we can drive cascade behavior deterministically. The
@@ -20,6 +20,7 @@ const mockState = vi.hoisted(() => ({
   artifactKeyError: null as unknown,
   /** rows the legal-hold precheck SELECT returns (default: none, i.e. no hold). */
   legalHoldRows: [] as Array<{ id: string }>,
+  isolationRows: [] as Array<{ isolationId: string; deviceId: string }>,
 }));
 
 function sqlToText(q: unknown): string {
@@ -53,7 +54,11 @@ vi.mock('../db', () => ({
   db: {
     execute: vi.fn((q: unknown) => {
       const text = sqlToText(q);
+      if (/^\s*select/i.test(text) && text.includes('device_network_isolations')) {
+        return Promise.resolve(mockState.isolationRows);
+      }
       mockState.executedSql.push(text);
+      if (/SELECT id FROM (?:organizations|devices).*FOR (?:NO KEY )?UPDATE/is.test(text)) return Promise.resolve([]);
       // Topological query: if it asks for FK edges, return those.
       if (text.includes('pg_constraint') || text.includes('contype')) {
         return Promise.resolve(mockState.fkEdges);
@@ -364,8 +369,31 @@ describe('cascadeDeleteOrg', () => {
     mockState.executedSql = [];
     mockState.fkEdges = [];
     mockState.legalHoldRows = [];
+    mockState.isolationRows = [];
     vi.mocked(db.execute).mockClear();
     createAuditLogMock.mockClear();
+  });
+
+  it.each(['requested', 'dispatched', 'applying', 'applied', 'verified', 'release_requested', 'released_locally', 'self_released'])(
+    'refuses erasure while an episode is %s, before any deletion', async () => {
+      mockState.isolationRows = [{ isolationId: '22222222-2222-4222-8222-222222222222', deviceId: '33333333-3333-4333-8333-333333333333' }];
+      await expect(cascadeDeleteOrg(
+        '00000000-0000-0000-0000-000000000001',
+        '00000000-0000-0000-0000-000000000002',
+      )).rejects.toMatchObject({ code: 'isolation_unresolved', message: 'Release network isolation first' });
+      expect(mockState.executedSql.some(text => /^\s*delete/i.test(text))).toBe(false);
+      expect(createAuditLogMock).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'tenant.erasure.started' }));
+    },
+  );
+
+  it.each(['released', 'expired', 'failed', 'uninstalled', 'acknowledged'])('allows erasure after isolation is %s', async () => {
+    mockState.isolationRows = [];
+    const stats = await cascadeDeleteOrg(
+      '00000000-0000-0000-0000-000000000001',
+      '00000000-0000-0000-0000-000000000002',
+    );
+    expect(stats.orgId).toBe('00000000-0000-0000-0000-000000000001');
+    expect(mockState.executedSql.some(text => /^\s*delete/i.test(text))).toBe(true);
   });
 
   it('refuses erasure while a backup snapshot is under legal hold, before deleting anything', async () => {
@@ -393,6 +421,7 @@ describe('cascadeDeleteOrg', () => {
 
   it('proceeds normally when no backup snapshot is under legal hold', async () => {
     mockState.legalHoldRows = [];
+    mockState.isolationRows = [];
     mockState.executeResponses = [];
 
     const stats = await cascadeDeleteOrg(
@@ -470,6 +499,9 @@ describe('cascadeDeleteOrg', () => {
     // throw 42P01; everything else returns 0.
     vi.mocked(db.execute).mockImplementation(((q: unknown) => {
       const text = sqlToText(q);
+      if (/^\s*select/i.test(text) && text.includes('device_network_isolations')) {
+        return Promise.resolve(mockState.isolationRows);
+      }
       if (text.includes('pg_constraint') || text.includes('contype')) {
         return Promise.resolve(mockState.fkEdges);
       }
@@ -506,6 +538,9 @@ describe('cascadeDeleteOrg', () => {
   it('tolerates a missing associated table when the SQLSTATE is WRAPPED (DrizzleQueryError)', async () => {
     vi.mocked(db.execute).mockImplementation(((q: unknown) => {
       const text = sqlToText(q);
+      if (/^\s*select/i.test(text) && text.includes('device_network_isolations')) {
+        return Promise.resolve(mockState.isolationRows);
+      }
       if (text.includes('pg_constraint') || text.includes('contype')) {
         return Promise.resolve(mockState.fkEdges);
       }
@@ -539,6 +574,9 @@ describe('cascadeDeleteOrg', () => {
     let callIdx = 0;
     vi.mocked(db.execute).mockImplementation(((q: unknown) => {
       const text = sqlToText(q);
+      if (/^\s*select/i.test(text) && text.includes('device_network_isolations')) {
+        return Promise.resolve(mockState.isolationRows);
+      }
       if (text.includes('pg_constraint') || text.includes('contype')) {
         return Promise.resolve([]);
       }
@@ -614,6 +652,9 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
   function rigKeys(rows: Array<{ storage_key: string }>) {
     vi.mocked(db.execute).mockImplementation(((q: unknown) => {
       const text = sqlToText(q);
+      if (/^\s*select/i.test(text) && text.includes('device_network_isolations')) {
+        return Promise.resolve(mockState.isolationRows);
+      }
       if (text.includes('pg_constraint') || text.includes('contype')) {
         return Promise.resolve(mockState.fkEdges);
       }
@@ -628,6 +669,9 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
     deleteObjectKeysMock.mockImplementation(async () => { order.push('objects'); });
     vi.mocked(db.execute).mockImplementation(((q: unknown) => {
       const text = sqlToText(q);
+      if (/^\s*select/i.test(text) && text.includes('device_network_isolations')) {
+        return Promise.resolve(mockState.isolationRows);
+      }
       if (text.includes('pg_constraint') || text.includes('contype')) {
         return Promise.resolve(mockState.fkEdges);
       }
@@ -673,6 +717,9 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
     const keyQueries: string[] = [];
     vi.mocked(db.execute).mockImplementation(((q: unknown) => {
       const text = sqlToText(q);
+      if (/^\s*select/i.test(text) && text.includes('device_network_isolations')) {
+        return Promise.resolve(mockState.isolationRows);
+      }
       if (text.includes('pg_constraint') || text.includes('contype')) {
         return Promise.resolve(mockState.fkEdges);
       }
@@ -704,6 +751,9 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
     const undefinedTable = Object.assign(new Error('relation "org_documents" does not exist'), { code: '42P01' });
     vi.mocked(db.execute).mockImplementation(((q: unknown) => {
       const text = sqlToText(q);
+      if (/^\s*select/i.test(text) && text.includes('device_network_isolations')) {
+        return Promise.resolve(mockState.isolationRows);
+      }
       if (text.includes('pg_constraint') || text.includes('contype')) {
         return Promise.resolve(mockState.fkEdges);
       }
@@ -730,6 +780,9 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
     const deletes: string[] = [];
     vi.mocked(db.execute).mockImplementation(((q: unknown) => {
       const text = sqlToText(q);
+      if (/^\s*select/i.test(text) && text.includes('device_network_isolations')) {
+        return Promise.resolve(mockState.isolationRows);
+      }
       if (text.includes('pg_constraint') || text.includes('contype')) {
         return Promise.resolve(mockState.fkEdges);
       }
@@ -781,6 +834,9 @@ describe('software package object lifecycle pre-clear', () => {
     deleteSoftwareObjectsMock.mockImplementation(async () => { order.push('objects'); });
     vi.mocked(db.execute).mockImplementation(((q: unknown) => {
       const text = sqlToText(q);
+      if (/^\s*select/i.test(text) && text.includes('device_network_isolations')) {
+        return Promise.resolve(mockState.isolationRows);
+      }
       mockState.executedSql.push(text);
       if (text.includes('pg_constraint') || text.includes('contype')) return Promise.resolve([]);
       if (text.includes('AS storage_key')) return Promise.resolve([]);
@@ -912,6 +968,9 @@ describe('cascadeDeleteOrg — artifact blob pre-clear (execution-plane W01, spe
 
     vi.mocked(db.execute).mockImplementation(((q: unknown) => {
       const text = sqlToText(q);
+      if (/^\s*select/i.test(text) && text.includes('device_network_isolations')) {
+        return Promise.resolve(mockState.isolationRows);
+      }
       if (text.includes('pg_constraint') || text.includes('contype')) {
         return Promise.resolve(mockState.fkEdges);
       }
@@ -982,6 +1041,7 @@ describe('cascadeDeleteOrg — helper screenshot files (#8117)', () => {
     mockState.executedSql = [];
     mockState.fkEdges = [];
     mockState.legalHoldRows = [];
+    mockState.isolationRows = [];
     mockState.artifactKeyError = null;
     removeScreenshotFilesMock.mockReset();
     removeScreenshotFilesMock.mockResolvedValue({ removed: 0, missing: 0, failed: 0 });
@@ -992,6 +1052,9 @@ describe('cascadeDeleteOrg — helper screenshot files (#8117)', () => {
   function stubScreenshotDelete(events: string[], keys: string[]) {
     vi.mocked(db.execute).mockImplementation(((q: unknown) => {
       const text = sqlToText(q);
+      if (/^\s*select/i.test(text) && text.includes('device_network_isolations')) {
+        return Promise.resolve(mockState.isolationRows);
+      }
       if (/DELETE FROM "?ai_screenshots"?/.test(text)) {
         mockState.executedSql.push(text);
         events.push('delete');
@@ -1059,6 +1122,7 @@ describe('cascadeDeleteOrg — patch compliance report files', () => {
     mockState.executedSql = [];
     mockState.fkEdges = [];
     mockState.legalHoldRows = [];
+    mockState.isolationRows = [];
     mockState.artifactKeyError = null;
     removePatchReportFilesMock.mockReset();
     removePatchReportFilesMock.mockResolvedValue({ removed: 0, missing: 0, failed: 0, unresolvable: 0 });
@@ -1069,6 +1133,9 @@ describe('cascadeDeleteOrg — patch compliance report files', () => {
   function stubReportDelete(events: string[], rows: Array<{ id: string; output_path: string | null }>) {
     vi.mocked(db.execute).mockImplementation(((q: unknown) => {
       const text = sqlToText(q);
+      if (/^\s*select/i.test(text) && text.includes('device_network_isolations')) {
+        return Promise.resolve(mockState.isolationRows);
+      }
       if (/DELETE FROM "?patch_compliance_reports"?/.test(text)) {
         mockState.executedSql.push(text);
         events.push('delete');
@@ -1125,5 +1192,74 @@ describe('cascadeDeleteOrg — patch compliance report files', () => {
     await cascadeDeleteOrg(ORG, BY);
 
     expect(removePatchReportFilesMock).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('cascade network isolation deletion races', () => {
+  const orgId = '00000000-0000-0000-0000-000000000001';
+  const actorId = '00000000-0000-0000-0000-000000000002';
+  const protectedTables = ['device_network_isolations', 'devices', 'organizations'];
+  beforeEach(() => {
+    mockState.executeResponses = [];
+    mockState.executedSql = [];
+    mockState.fkEdges = [];
+    mockState.isolationRows = [];
+    mockState.legalHoldRows = [];
+    mockState.artifactKeyRows = [];
+    mockState.artifactKeyError = null;
+    mockState.attachmentKeyRows = [];
+    mockState.softwareKeyRows = [];
+    vi.mocked(db.execute).mockImplementation(defaultExecuteImpl);
+    vi.mocked(withSystemDbAccessContext).mockImplementation(defaultSystemContextImpl);
+  });
+  afterEach(() => {
+    mockState.isolationRows = [];
+    vi.mocked(db.execute).mockImplementation(defaultExecuteImpl);
+    vi.mocked(withSystemDbAccessContext).mockImplementation(defaultSystemContextImpl);
+  });
+
+  it.each(protectedTables)('refuses %s deletion if isolation appears while its device lock waits', async table => {
+    let protectedStep = -1;
+    const deletes: string[] = [];
+    vi.mocked(db.execute).mockImplementation(((query: unknown) => {
+      const sql = new PgDialect().sqlToQuery(query as never).sql;
+      if (/SELECT id FROM organizations.*FOR UPDATE/is.test(sql)) protectedStep++;
+      if (/SELECT id FROM devices.*FOR NO KEY UPDATE/is.test(sql)
+        && protectedTables[protectedStep] === table) {
+        mockState.isolationRows = [{ isolationId: '22222222-2222-4222-8222-222222222222', deviceId: '33333333-3333-4333-8333-333333333333' }];
+      }
+      if (/^\s*DELETE/i.test(sql)) deletes.push(sql);
+      return defaultExecuteImpl(query as never);
+    }) as typeof defaultExecuteImpl);
+    const error = await cascadeDeleteOrg(orgId, actorId).then(() => null, err => err);
+    expect(error).toMatchObject({ code: 'isolation_unresolved', message: 'Release network isolation first' });
+    expect(deletes.some(sql => new RegExp(`DELETE FROM ["]?${table}["]? WHERE`, 'i').test(sql))).toBe(false);
+  });
+
+  it('locks the org, then devices, then checks episodes in the same transaction as each protected delete', async () => {
+    const statements: Array<{ sql: string; context: number }> = [];
+    let context = 0;
+    let sequence = 0;
+    vi.mocked(withSystemDbAccessContext).mockImplementation((async (work: () => Promise<unknown>) => {
+      const previous = context;
+      context = ++sequence;
+      try { return await work(); } finally { context = previous; }
+    }) as typeof defaultSystemContextImpl);
+    vi.mocked(db.execute).mockImplementation(((query: unknown) => {
+      statements.push({ sql: new PgDialect().sqlToQuery(query as never).sql, context });
+      return defaultExecuteImpl(query as never);
+    }) as typeof defaultExecuteImpl);
+    await cascadeDeleteOrg(orgId, actorId);
+    for (const table of protectedTables) {
+      const deletion = statements.findIndex(({ sql }) => new RegExp(`DELETE FROM ["]?${table}["]? WHERE`, 'i').test(sql));
+      expect(deletion).toBeGreaterThan(2);
+      const previous = statements.slice(deletion - 3, deletion + 1);
+      expect(previous[0]!.sql).toMatch(/SELECT id FROM organizations.*FOR UPDATE/is);
+      expect(previous[1]!.sql).toMatch(/SELECT id FROM devices.*ORDER BY id FOR NO KEY UPDATE/is);
+      expect(previous[2]!.sql).toMatch(/SELECT.*FROM device_network_isolations/is);
+      expect(new Set(previous.map(row => row.context)).size).toBe(1);
+      expect(previous[0]!.context).toBeGreaterThan(0);
+    }
   });
 });

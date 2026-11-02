@@ -820,3 +820,9 @@ test('network isolation bypass service schedules API and integration', () => {
   assert.deepEqual(areasOf(out), expectAreas(['api']));
   assert.equal(out.integration, 'true');
 });
+
+test('network isolation lifecycle service schedules API and integration', () => {
+  const out = classify(['apps/api/src/services/networkIsolation/lifecycle.ts']);
+  assert.deepEqual(areasOf(out), expectAreas(['api']));
+  assert.equal(out.integration, 'true');
+});
