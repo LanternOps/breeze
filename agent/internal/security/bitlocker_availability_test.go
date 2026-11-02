@@ -3,6 +3,8 @@ package security
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -271,5 +273,90 @@ func TestEncryptionStringUnsupportedOnlyForSentinel(t *testing.T) {
 	}
 	if got := encryptionString(false, errors.New("boom")); got != "unknown" {
 		t.Fatalf("other error = %q, want unknown", got)
+	}
+}
+
+// Output that is neither "available" nor "unavailable" (a profile banner, a
+// localized warning) must never close the gate: escrow would stop silently.
+func TestBitLockerAvailabilityUnexpectedOutputIsIndeterminate(t *testing.T) {
+	for _, out := range []string{"", "WARNING: something\r\nunavailable", "Available"} {
+		host := &fakeBitLockerHost{moduleInstalled: false, getCommandOut: out, keysOut: "[]"}
+		installFakeBitLockerHost(t, host)
+		if _, err := collectRecoveryKeysFor("windows"); err != nil {
+			t.Fatalf("output %q: err = %v, want probe to run", out, err)
+		}
+		if n := host.count(bitlockerKeyProtectorPS); n != 1 {
+			t.Fatalf("output %q: key protector spawns = %d, want 1", out, n)
+		}
+	}
+}
+
+// Explicit technician commands (collect keys, rotate) re-detect rather than
+// trusting a cached "unavailable" for up to a day.
+func TestRedetectBitLockerAvailability(t *testing.T) {
+	host := &fakeBitLockerHost{moduleInstalled: false, getCommandOut: "unavailable", keysOut: "[]"}
+	installFakeBitLockerHost(t, host)
+
+	if _, err := collectRecoveryKeysFor("windows"); !errors.Is(err, ErrBitLockerUnavailable) {
+		t.Fatalf("err = %v, want ErrBitLockerUnavailable", err)
+	}
+	host.moduleInstalled = true
+	RedetectBitLockerAvailability()
+	if _, err := collectRecoveryKeysFor("windows"); err != nil {
+		t.Fatalf("err after redetect = %v, want available", err)
+	}
+}
+
+func TestBitLockerModuleInstalled(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SystemRoot", root)
+	modules := filepath.Join(root, "System32", "WindowsPowerShell", "v1.0", "Modules")
+	if err := os.MkdirAll(modules, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if bitLockerModuleInstalled() {
+		t.Fatal("module dir absent: want false")
+	}
+	if err := os.WriteFile(filepath.Join(modules, "BitLocker"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if bitLockerModuleInstalled() {
+		t.Fatal("BitLocker is a file, not a module dir: want false")
+	}
+	if err := os.Remove(filepath.Join(modules, "BitLocker")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(modules, "BitLocker"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !bitLockerModuleInstalled() {
+		t.Fatal("module dir present: want true")
+	}
+}
+
+// CollectStatus must not report a host without BitLocker as a collection
+// failure, while any other encryption error still is.
+func TestApplyEncryptionPosture(t *testing.T) {
+	var status SecurityStatus
+	if err := applyEncryptionPosture(&status, false, nil, ErrBitLockerUnavailable); err != nil {
+		t.Fatalf("unavailable returned err %v, want nil", err)
+	}
+	if status.EncryptionStatus != "unsupported" {
+		t.Fatalf("EncryptionStatus = %q, want unsupported", status.EncryptionStatus)
+	}
+
+	boom := errors.New("boom")
+	status = SecurityStatus{}
+	if err := applyEncryptionPosture(&status, false, nil, boom); !errors.Is(err, boom) {
+		t.Fatalf("real failure returned %v, want boom", err)
+	}
+	if status.EncryptionStatus != "unknown" {
+		t.Fatalf("EncryptionStatus = %q, want unknown", status.EncryptionStatus)
+	}
+
+	status = SecurityStatus{}
+	details := map[string]any{"source": "bitlocker"}
+	if err := applyEncryptionPosture(&status, true, details, nil); err != nil || status.EncryptionStatus != "encrypted" || status.EncryptionDetails == nil {
+		t.Fatalf("encrypted: err %v, status %+v", err, status)
 	}
 }

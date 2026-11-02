@@ -114,8 +114,17 @@ func (p *bitLockerAvailabilityProbe) detect() bitLockerState {
 	case "unavailable":
 		return bitLockerUnavailable
 	default:
+		log.Debug("BitLocker availability check returned unexpected output; running BitLocker probes ungated",
+			"output", truncateForLog(strings.TrimSpace(output), 200))
 		return bitLockerIndeterminate
 	}
+}
+
+func truncateForLog(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 func (p *bitLockerAvailabilityProbe) invalidate() {
@@ -123,6 +132,11 @@ func (p *bitLockerAvailabilityProbe) invalidate() {
 	p.valid = false
 	p.mu.Unlock()
 }
+
+// RedetectBitLockerAvailability discards the cached answer so the next
+// BitLocker probe re-detects. Technician-initiated commands call it so a
+// feature installed since the last check is seen immediately.
+func RedetectBitLockerAvailability() { bitLockerAvailability.invalidate() }
 
 // bitLockerNotInstalled is the gate every BitLocker probe checks first.
 func bitLockerNotInstalled() bool { return bitLockerAvailability.unavailable() }

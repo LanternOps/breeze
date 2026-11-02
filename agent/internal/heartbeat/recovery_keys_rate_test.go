@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -191,6 +192,30 @@ func TestSendRecoveryKeysBitLockerUnavailableIsQuiet(t *testing.T) {
 	}
 	if got := rec.puts(); len(got) != 0 {
 		t.Fatalf("unexpected escrow puts: %v", got)
+	}
+}
+
+// Technician commands re-detect BitLocker availability so a feature installed
+// after the agent cached "unavailable" is seen at once (#10902).
+func TestEncryptionCommandsRedetectBitLocker(t *testing.T) {
+	h, _, _ := newRecoveryKeyTestHeartbeat(t)
+	redetects := 0
+	prevRedetect, prevRotate := redetectBitLocker, rotateBitLockerKey
+	redetectBitLocker = func() { redetects++ }
+	rotateBitLockerKey = func(string) (security.RecoveryKey, error) {
+		return security.RecoveryKey{}, errors.New("stub: rotation failed")
+	}
+	t.Cleanup(func() { redetectBitLocker, rotateBitLockerKey = prevRedetect, prevRotate })
+
+	_ = handleEncryptionCollectKeys(h, Command{ID: "c1", Type: tools.CmdEncryptionCollectKeys})
+	if redetects != 1 {
+		t.Fatalf("redetects after collect command = %d, want 1", redetects)
+	}
+	if runtime.GOOS == "windows" {
+		_ = handleEncryptionRotateKey(h, Command{ID: "r1", Type: tools.CmdEncryptionRotateKey})
+		if redetects != 2 {
+			t.Fatalf("redetects after rotate command = %d, want 2", redetects)
+		}
 	}
 }
 

@@ -243,6 +243,20 @@ func encryptionString(enabled bool, detectErr error) string {
 	return "unencrypted"
 }
 
+// applyEncryptionPosture records the encryption read on status and returns
+// the error CollectStatus should report, if any. No BitLocker on this host is
+// a state ("unsupported"), not a collection failure (#10902).
+func applyEncryptionPosture(status *SecurityStatus, enabled bool, details map[string]any, detectErr error) error {
+	status.EncryptionStatus = encryptionString(enabled, detectErr)
+	if details != nil {
+		status.EncryptionDetails = details
+	}
+	if detectErr == nil || errors.Is(detectErr, ErrBitLockerUnavailable) {
+		return nil
+	}
+	return detectErr
+}
+
 func boolPtr(value bool) *bool {
 	return &value
 }
@@ -1219,13 +1233,8 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 	status.FirewallEnabled = firewallState(firewallEnabled, fwErr)
 
 	encryptionEnabled, encDetails, encErr := collectEncryptionPosture()
-	// No BitLocker on this host is a state ("unsupported"), not a failure.
-	if encErr != nil && !errors.Is(encErr, ErrBitLockerUnavailable) {
-		errs = append(errs, encErr)
-	}
-	status.EncryptionStatus = encryptionString(encryptionEnabled, encErr)
-	if encDetails != nil {
-		status.EncryptionDetails = encDetails
+	if err := applyEncryptionPosture(&status, encryptionEnabled, encDetails, encErr); err != nil {
+		errs = append(errs, err)
 	}
 
 	if localAdmins, err := collectLocalAdminSummary(); err == nil {
