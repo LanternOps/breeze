@@ -37,6 +37,7 @@ import { settingsSecretWouldFollowNewOrigin } from '../../services/credentialOri
 import { isPrivateIp } from '../../services/urlSafety';
 import { canonicalIpLiteral, classifyNonRoutableHostname, isIpLiteralHost } from '../../services/ipRanges';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
+import { requestDeviceGroupReevaluationAfterCommit } from '../../jobs/deviceGroupJobs';
 import {
   getAgentMtlsBindingMode,
   normalizeCertificateSerial,
@@ -1647,6 +1648,15 @@ mtlsRoutes.post('/:id/deny', authMiddleware, requirePermission('devices', 'write
   if (denied.length !== 1) {
     return c.json({ error: 'Device quarantine state changed' }, 409);
   }
+
+  // #9933 — removed devices are left out of dynamic groups; drop any rows this
+  // device holds once the deny commits (same as decommissionDeviceInTransaction).
+  requestDeviceGroupReevaluationAfterCommit({
+    deviceId: device.id,
+    orgId: device.orgId,
+    eventType: 'device.created',
+    reason: 'device_decommissioned',
+  });
 
   // Tear down any live remote-control session to a device we're decommissioning.
   // Never throws; a TEARDOWN_FAILED is recorded in the audit trail below.

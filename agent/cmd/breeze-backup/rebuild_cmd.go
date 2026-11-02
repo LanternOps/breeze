@@ -43,7 +43,7 @@ var rebuildWinSystemForTest rebuild.WinSystem
 func newRebuildCommand() *cobra.Command {
 	var (
 		snapshot, target, imageSize, providerConfig, identityFlag, markerFile, resultJSON, stateDir string
-		token, server, expectSystemState                                                            string
+		token, server, expectSystemState, keyPrefix                                                 string
 		dryRun, force, allowPartial, noInitramfs, skipBoot                                          bool
 		driverDirs                                                                                  []string
 		forceDisk, allowDomainController                                                            bool
@@ -70,6 +70,11 @@ func newRebuildCommand() *cobra.Command {
 			}
 			if token == "" && providerConfig == "" {
 				return fmt.Errorf("--provider-config is required (or use --token/--server for a server-issued recovery code)")
+			}
+			if token != "" && keyPrefix != "" {
+				// Token mode reads through the server, which maps keys
+				// through the snapshot's recorded key root itself.
+				return fmt.Errorf("--key-prefix applies only to --provider-config; --token mode uses the snapshot's recorded key prefix automatically")
 			}
 			if token != "" && server == "" {
 				return fmt.Errorf("--server is required with --token")
@@ -124,7 +129,7 @@ func newRebuildCommand() *cobra.Command {
 				opts = tokenModeRebuildOptions(tokenOpts, opts, expectState, expectStateAuto, cmd.ErrOrStderr())
 				report = tokenReport
 			} else {
-				provider, err := providerFromConfigFile(providerConfig)
+				provider, err := providerFromConfigFile(providerConfig, keyPrefix, cmd.ErrOrStderr())
 				if err != nil {
 					return err
 				}
@@ -162,6 +167,7 @@ func newRebuildCommand() *cobra.Command {
 	cmd.Flags().StringVar(&target, "target", "", "disk:/dev/sdX (Windows: disk:\\\\.\\PhysicalDriveN), image:/path/to/file.img (Linux only) or vhdx:/path/to/file.vhdx (Linux: needs qemu-img; Windows: written natively)")
 	cmd.Flags().StringVar(&imageSize, "image-size", "", "size for a new image or vhdx file, e.g. 40G")
 	cmd.Flags().StringVar(&providerConfig, "provider-config", "", "JSON file {provider, providerConfig}")
+	cmd.Flags().StringVar(&keyPrefix, "key-prefix", "", "s3 --provider-config only: the snapshot's recorded key prefix (its objects are under <prefix>/snapshots/); providerConfig.prefix is not applied")
 	cmd.Flags().StringVar(&token, "token", "", "server-issued bare-metal recovery token (exchange a code for one via POST /bmr/recover/exchange)")
 	cmd.Flags().StringVar(&server, "server", "", "Breeze server URL (required with --token)")
 	cmd.Flags().StringVar(&identityFlag, "identity", "original", "original|new (with --token, defaults to the recovery's own identity)")
@@ -440,7 +446,15 @@ func runTokenModeRebuild(ctx context.Context, opts rebuild.Options, report func(
 // — the same shape a backup_run/restore command payload carries — and
 // resolves it to a provider via restoreProviderFromPayload (exec_backup.go),
 // so the rebuild CLI never duplicates that provider-construction logic.
-func providerFromConfigFile(path string) (providers.BackupProvider, error) {
+//
+// keyPrefix (--key-prefix, #9441) is the snapshot's recorded key_prefix: an
+// S3 provider then reads <prefix>/snapshots/... instead of the bucket root.
+// The file's own providerConfig.prefix is deliberately NOT applied — it is
+// the destination's CURRENT prefix, which differs from where a snapshot
+// actually lives once the prefix was changed, and snapshots taken before
+// prefixes were applied sit at the bucket root whatever it says. When the
+// file names one and --key-prefix is absent, a note goes to warn instead.
+func providerFromConfigFile(path, keyPrefix string, warn io.Writer) (providers.BackupProvider, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read --provider-config: %w", err)
@@ -451,6 +465,26 @@ func providerFromConfigFile(path string) (providers.BackupProvider, error) {
 	}
 	if provider == nil {
 		return nil, fmt.Errorf("--provider-config %s did not resolve to a provider (missing provider/providerConfig)", path)
+	}
+	s3Provider, isS3 := provider.(*providers.S3Provider)
+	if strings.TrimSpace(keyPrefix) != "" {
+		if !isS3 {
+			return nil, fmt.Errorf("--key-prefix only applies to an s3 --provider-config")
+		}
+		if err := s3Provider.SetKeyPrefix(keyPrefix); err != nil {
+			return nil, fmt.Errorf("--key-prefix: %w", err)
+		}
+		return provider, nil
+	}
+	if isS3 && warn != nil {
+		var cfg struct {
+			ProviderConfig struct {
+				Prefix string `json:"prefix"`
+			} `json:"providerConfig"`
+		}
+		if json.Unmarshal(data, &cfg) == nil && strings.Trim(strings.TrimSpace(cfg.ProviderConfig.Prefix), "/") != "" {
+			_, _ = fmt.Fprintf(warn, "note: providerConfig.prefix %q is not applied; reading the snapshot at the bucket root. If the snapshot was stored under a prefix, pass --key-prefix with the snapshot's recorded key prefix.\n", cfg.ProviderConfig.Prefix)
+		}
 	}
 	return provider, nil
 }

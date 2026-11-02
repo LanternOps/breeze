@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { aiSessions, wispGrantRevisions, wispGrants } from '../../db/schema';
+import { aiSessions, aiToolExecutions, wispGrantRevisions, wispGrants } from '../../db/schema';
 import type { WispCeilingSnapshot } from '../../db/schema/wisp';
 import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
 import {
@@ -191,6 +191,12 @@ describe('enforceWispCeiling — a chat tool call stays inside the grant (real P
     // Through the real chat gate: B refused with the user-visible reason, A allowed under the narrowed auth.
     const pre = createSessionPreToolUse(chatSession(t, grant));
     await expect(pre('get_device_details', deviceRead(t.orgB.id))).resolves.toEqual({ allowed: false, error: WISP_REFUSAL_MESSAGES.org });
+    // #10411: the refusal leaves one `refused` ledger row in real Postgres —
+    // never `rejected`, which stays the approval lifecycle's outcome.
+    const ledger = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.select({ status: aiToolExecutions.status, errorMessage: aiToolExecutions.errorMessage })
+        .from(aiToolExecutions).where(eq(aiToolExecutions.sessionId, t.sessionId)));
+    expect(ledger).toEqual([{ status: 'refused', errorMessage: WISP_REFUSAL_MESSAGES.org }]);
     const allowed = await pre('get_device_details', deviceRead());
     expect(allowed).toMatchObject({ allowed: true });
     expect(allowed.allowed && allowed.toolAuth?.accessibleOrgIds).toEqual([t.orgA.id]);

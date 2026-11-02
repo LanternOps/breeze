@@ -16,14 +16,14 @@ function normalizeWhitespace(text: string): string {
 describe('buildToolUsageReport', () => {
   it('maps rows, derives shares, and lists registered tools with zero executions as cold', async () => {
     executeMock.mockResolvedValueOnce([
-      { surface: 'chat', tool_name: 'query_devices', executions: '12', completed: '11', failed: '1', rejected: '0', distinct_sessions: '7', avg_duration_ms: '431.2', last_used_at: '2026-09-16T10:00:00Z',
+      { surface: 'chat', tool_name: 'query_devices', executions: '12', completed: '9', failed: '1', rejected: '0', refused: '2', distinct_sessions: '7', avg_duration_ms: '431.2', last_used_at: '2026-09-16T10:00:00Z',
         with_output: '11', delivered_bytes_p50: '5120.5', delivered_bytes_p95: '7990', compacted: '4', digests: '1', captured: '2', original_chars_p95: '41000' },
       { surface: 'helper', tool_name: 'manage_alerts', executions: '3', completed: '3', failed: '0', rejected: '0', distinct_sessions: '3', avg_duration_ms: null, last_used_at: null,
         with_output: '0', delivered_bytes_p50: null, delivered_bytes_p95: null, compacted: '0', digests: '0', captured: '0', original_chars_p95: null },
     ]);
     const r = await buildToolUsageReport(90);
     expect(r.rows[0]).toEqual({
-      surface: 'chat', toolName: 'query_devices', executions: 12, completed: 11, failed: 1, rejected: 0, distinctSessions: 7, avgDurationMs: 431, lastUsedAt: '2026-09-16T10:00:00.000Z',
+      surface: 'chat', toolName: 'query_devices', executions: 12, completed: 9, failed: 1, rejected: 0, refused: 2, distinctSessions: 7, avgDurationMs: 431, lastUsedAt: '2026-09-16T10:00:00.000Z',
       withOutput: 11, deliveredBytesP50: 5121, deliveredBytesP95: 7990, compacted: 4, digests: 1, captured: 2, originalCharsP95: 41000,
     });
     expect(r.rows[1]).toMatchObject({ withOutput: 0, deliveredBytesP50: null, deliveredBytesP95: null, compacted: 0, digests: 0, captured: 0, originalCharsP95: null });
@@ -44,6 +44,12 @@ describe('buildToolUsageReport', () => {
       });
     },
   );
+
+  it('counts platform refusals apart from approval rejections (#10411)', () => {
+    const text = normalizeWhitespace(toolUsageReportSqlText(90));
+    expect(text).toContain("COUNT(*) FILTER (WHERE e.status = 'rejected') AS rejected");
+    expect(text).toContain("COUNT(*) FILTER (WHERE e.status = 'refused') AS refused");
+  });
 
   it('reads the size signals from the persisted _chat envelope, including the captured-result nesting', () => {
     const text = toolUsageReportSqlText(90);

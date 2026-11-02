@@ -520,6 +520,12 @@ Query parameters (all optional): `orgId`, `status` and `severity` (comma
 lists), `triggeredSince` (offset ISO timestamp), `limit` (1-500, default
 100), and exactly one of `since` or `cursor`.
 
+Each alert DTO includes a required `owner` object: `{ kind, ref }`.
+`kind` is `device`, `topology_site`, or `backup_workload`. `ref` is the
+corresponding device ID, topology site ID, or backup workload reference; it is
+nullable when that reference is unavailable. Use `owner` to identify the affected
+object, including alerts with no device. The owner participates in `revision`.
+
 Sync contract:
 
 1. First sync: call without `since`. Follow `nextCursor` (as `cursor`) while

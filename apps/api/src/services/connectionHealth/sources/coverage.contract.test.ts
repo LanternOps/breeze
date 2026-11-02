@@ -37,6 +37,11 @@ describe('connection health source coverage (spec §1.1)', () => {
     }
   });
 
+  it('PSA connections have an active ticketing health source', () => {
+    expect(HEALTH_SOURCES.find(s => s.kind === 'psa_ticketing')?.tables).toContain('psa_connections');
+    expect(SOURCE_COVERAGE_EXEMPTIONS).not.toHaveProperty('psa_connections');
+  });
+
   it('registers exactly one source per declared kind', () => {
     expect(HEALTH_SOURCES.map((s) => s.kind).sort()).toEqual([...CONNECTION_SOURCE_KINDS].sort());
   });

@@ -296,8 +296,10 @@ func TestDecisionDuringFirstQuestionSupersedes(t *testing.T) {
 	if refuse, code := r.store.Check(elevReq); !refuse || code != pamdecline.CodeUserDeclined {
 		t.Fatalf("a superseded request stays refused locally: %v %s", refuse, code)
 	}
-	if len(r.denies) != 1 {
-		t.Fatalf("the UAC prompt of a denied request is dismissed: %v", r.denies)
+	// #10370: the deny targets the request's own UAC prompt (its consent.exe
+	// is known), never the untargeted Escape.
+	if len(r.denies) != 0 || len(r.dismissedInst) != 1 || r.dismissedInst[0] != elevReq+pamDenyDismissIDSuffix {
+		t.Fatalf("the UAC prompt of a denied request is dismissed by target: untargeted=%v targeted=%v", r.denies, r.dismissedInst)
 	}
 	if len(r.toasts) != 0 {
 		t.Fatalf("Assist showed the outcome; no toast too: %v", r.toasts)

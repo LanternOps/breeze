@@ -20,6 +20,7 @@ import { formatNumber } from '@/lib/i18n/format';
 import { cn } from '@/lib/utils';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
+import AlertSubjectChip, { type AlertSubjectFields } from './AlertSubjectChip';
 import type { AlertSeverity, AlertStatus } from './AlertList';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
@@ -28,12 +29,12 @@ import CreateTicketFromAlertDialog from './CreateTicketFromAlertDialog';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 
-type AlertItem = {
+type AlertItem = AlertSubjectFields & {
   id: string;
   title: string;
   severity: AlertSeverity;
   status: AlertStatus;
-  device: string;
+  device: string | null;
   triggeredAt?: string;
 };
 
@@ -300,7 +301,7 @@ function buildRcaTicketNote(group: AlertGroup, rca: RcaResult) {
   const lines = [
     `RCA draft for correlated alert group ${group.id}`,
     `Root alert: ${group.rootCause.title}`,
-    `Device: ${group.rootCause.device}`,
+    `Subject: ${group.rootCause.subjectName || group.rootCause.device || group.rootCause.ownerLabel || '—'}`,
     `Window: ${formatDateTime(rca.scope.windowStart)} - ${formatDateTime(rca.scope.windowEnd)}`,
     '',
     'Likely causes:',
@@ -628,6 +629,7 @@ export default function CorrelatedAlertGroups() {
             </div>
           ) : (
             groups.map(group => {
+              const nonDeviceOwner = group.rootCause.ownerKind === 'topology_site' || group.rootCause.ownerKind === 'backup_workload';
               const isExpanded = expandedGroups.has(group.id);
               const groupRca = rcaByGroup[group.id];
               const isBusy = busyGroupId === group.id;
@@ -666,13 +668,15 @@ export default function CorrelatedAlertGroups() {
                               {t(/* i18n-dynamic */ `correlatedAlertGroups.status.${group.status}`)}
                             </span>
                           )}
-                          <span>{group.rootCause.device}</span>
+                          {!nonDeviceOwner && <span>{group.rootCause.device}</span>}
                           <span>{group.relatedCount} {t('correlatedAlertGroups.related')}</span>
                           <span>{t('correlatedAlertGroups.score')} {formatScore(group.correlationScore)}</span>
                           <span>{formatPercent(group.noiseReductionPercent)} {t('correlatedAlertGroups.noiseCut')}</span>
                         </div>
                       </div>
                     </button>
+
+                    {nonDeviceOwner && <AlertSubjectChip {...group.rootCause} />}
 
                     <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                       <button
@@ -754,7 +758,10 @@ export default function CorrelatedAlertGroups() {
                                     <span className="truncate">{alert.title}</span>
                                     <ExternalLink className="h-3 w-3 shrink-0" />
                                   </a>
-                                  <p className="text-xs text-muted-foreground">{alert.device}</p>
+                                  <div className="text-xs text-muted-foreground">
+                                    {alert.ownerKind === 'topology_site' || alert.ownerKind === 'backup_workload'
+                                      ? <AlertSubjectChip {...alert} /> : alert.device}
+                                  </div>
                                 </div>
                                 <div className="flex items-center gap-2">
                                   <span
@@ -911,7 +918,7 @@ export default function CorrelatedAlertGroups() {
                                 sourceType="rca"
                                 sourceId={groupRca.groupId}
                                 orgId={groupRca.scope.orgId}
-                                deviceId={groupRca.scope.deviceIds[0]}
+                                deviceId={!nonDeviceOwner ? groupRca.scope.deviceIds[0] : undefined}
                               />
 
                               <button

@@ -49,6 +49,7 @@ import { formatTimeAgo } from "@/lib/formatTime";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import RebootScheduledBadge from "./RebootScheduledBadge";
 import UninstallStateBadge from "./UninstallStateBadge";
+import { DeviceIsolationBadge } from "./networkIsolation/IsolationBadge";
 import DeviceActions from "./DeviceActions";
 import DeviceInfoTab from "./DeviceInfoTab";
 import DeviceHardwareInventory from "./DeviceHardwareInventory";
@@ -79,8 +80,9 @@ import DeviceWorkloadsTab from "./DeviceWorkloadsTab";
 import DeviceRestorePointAttempts from "./DeviceRestorePointAttempts";
 import DeviceWarrantyCard from "./DeviceWarrantyCard";
 import PhysicalPlacementCard from "./PhysicalPlacementCard";
+import AssetCircuitCard from "./AssetCircuitCard";
 import { EntityLink } from "@/components/shared/EntityLink";
-import WispLinkButton from "@/components/wisp/WispLinkButton";
+import WispTalkButton from "@/components/wisp/WispTalkButton";
 import DeviceBillingCard from "./DeviceBillingCard";
 import DeviceUserIdleStat from "./DeviceUserIdleStat";
 import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
@@ -943,6 +945,7 @@ export default function DeviceDetails({
                   uninstall={device.uninstall}
                   status={device.status}
                 />
+                <DeviceIsolationBadge deviceId={device.id} />
                 {device.pendingReboot && (
                   <span
                     data-testid="device-pending-reboot-badge"
@@ -1044,7 +1047,7 @@ export default function DeviceDetails({
             <DeviceActions
               device={device}
               onAction={onAction}
-              extraActions={<WispLinkButton kind="device" id={device.id} orgId={device.orgId} />}
+              extraActions={<WispTalkButton kind="device" id={device.id} orgId={device.orgId} label={deviceName} />}
             />
           </div>
         </div>
@@ -1145,6 +1148,7 @@ export default function DeviceDetails({
             <DeviceWarrantyCard deviceId={device.id} compact />
 
             <PhysicalPlacementCard subject="device" id={device.id} />
+            <AssetCircuitCard subject="device" id={device.id} />
 
             <DeviceBillingCard deviceId={device.id} />
 

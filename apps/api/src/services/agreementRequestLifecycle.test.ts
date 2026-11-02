@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
 
 // Staff lifecycle of a standalone agreement request (#9075 W2a, spec §3.5 /
 // §5). Controllable Drizzle chain (agreementRequestService.test.ts idiom):
@@ -130,6 +130,10 @@ function queueDetailTail(recipients: string[] = ['jane@example.com']) {
 }
 
 beforeEach(() => {
+  // The accept-token service mints and verifies against the REAL clock (`Date.now()` in
+  // createAgreementAcceptToken, jose `exp` on verify), so LATER must stay in the future: pin
+  // `Date` to NOW (timers stay real). Restored in afterEach.
+  vi.useFakeTimers({ toFake: ['Date'], now: NOW });
   queued.length = 0;
   inserted.length = 0;
   updated.length = 0;
@@ -139,6 +143,10 @@ beforeEach(() => {
   vi.mocked(db.delete).mockClear();
   loadRenderDataMock.mockReset().mockResolvedValue(renderData());
   assertUsableMock.mockReset().mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('org scoping: a request in an org the caller cannot access is a 404, never a 403', () => {
@@ -420,7 +428,9 @@ describe('sendAgreementRequest', () => {
       expect(env.purpose).toBe('agreement.sent');
       expect(env.partnerId).toBe(PARTNER);
       expect(env.replyTo).toBe('billing@example.com');
-      expect(env.subject).toContain('BAA 2027');
+      // #10294: the label is staff-internal; the customer sees the template name.
+      expect(env.subject).toContain('BAA');
+      for (const part of [env.subject, env.html, env.text]) expect(part).not.toContain('BAA 2027');
       expect(env.html).toContain(res.link.replace(/&/g, '&amp;'));
       expect(env.html).toContain('Please sign by Friday');
       expect(env.text).toContain('The Best MSP team');
@@ -586,6 +596,8 @@ describe('remindAgreementRequest (#9075 W3b)', () => {
     expect(env.purpose).toBe('agreement.sent');
     expect(env.to).toEqual(['jane@example.com', 'ops@example.com']);
     expect(env.html).toContain(sent.link.replace(/&/g, '&amp;'));
+    // #10294: a reminder names the template, never the staff-internal label.
+    for (const part of [env.subject, env.html, env.text]) expect(part).not.toContain('BAA 2027');
   });
 
   it('a draft → 409 (send it first)', async () => {

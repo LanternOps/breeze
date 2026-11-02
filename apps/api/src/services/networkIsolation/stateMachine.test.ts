@@ -50,7 +50,7 @@ function ev<E extends EpisodeEvent['type']>(
 ): Extract<EpisodeEvent, { type: E }> {
   const seq = SEQ_REQUIRED.has(type) && extra.journalSeq === undefined ? { journalSeq: ++autoSeq } : {};
   const user = type === 'acknowledge' && extra.userId === undefined ? { userId: USER_ID } : {};
-  return { type, generation: 1, at: AT, ...seq, ...user, ...extra } as unknown as Extract<EpisodeEvent, { type: E }>;
+  return { type, isolationId: '11111111-1111-4111-8111-111111111111', generation: 1, at: AT, ...seq, ...user, ...extra } as unknown as Extract<EpisodeEvent, { type: E }>;
 }
 
 function next(row: EpisodeSnapshot, event: EpisodeEvent): EpisodeSnapshot {

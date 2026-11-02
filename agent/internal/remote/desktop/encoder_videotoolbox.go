@@ -141,6 +141,20 @@ static OSStatus vtSetDataRateLimits(VTCompressionSessionRef session, int32_t byt
     return st;
 }
 
+// vtUsingHardware reports whether VideoToolbox picked a hardware encoder for
+// the session: 1 = hardware, 0 = software, -1 = unknown (property query failed).
+static int vtUsingHardware(VTCompressionSessionRef session) {
+    if (session == NULL) return -1;
+    CFBooleanRef value = NULL;
+    OSStatus st = VTSessionCopyProperty(session,
+                                        kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder,
+                                        kCFAllocatorDefault, &value);
+    if (st != noErr || value == NULL) return -1;
+    int result = CFBooleanGetValue(value) ? 1 : 0;
+    CFRelease(value);
+    return result;
+}
+
 static OSStatus vtPrepare(VTCompressionSessionRef session) {
     if (session == NULL) return -1;
     return VTCompressionSessionPrepareToEncodeFrames(session);
@@ -545,6 +559,7 @@ func (v *videotoolboxEncoder) SetDimensions(width, height int) error {
 
 	var session C.VTCompressionSessionRef
 	if st := C.vtCreateH264Session(C.int(width), C.int(height), &session); st != 0 || session == 0 {
+		logVTSessionCreate(width, height, int32(st), -1, v.cfg.GPUVendor)
 		return fmt.Errorf("videotoolbox create session failed: OSStatus=%d", int32(st))
 	}
 
@@ -571,9 +586,15 @@ func (v *videotoolboxEncoder) SetDimensions(width, height int) error {
 	}
 
 	if st := C.vtPrepare(session); st != 0 {
+		logVTSessionCreate(width, height, int32(st), int(C.vtUsingHardware(session)), v.cfg.GPUVendor)
 		C.vtDestroySession(session)
 		return fmt.Errorf("videotoolbox prepare failed: OSStatus=%d", int32(st))
 	}
+	// One line per session creation (#10880): the result, whether VideoToolbox
+	// actually picked a hardware encoder (queried after prepare, when the
+	// choice is settled), and the GPU vendor hint, so a dead encoder on an
+	// Intel Mac is diagnosable without a process sample.
+	logVTSessionCreate(width, height, 0, int(C.vtUsingHardware(session)), v.cfg.GPUVendor)
 
 	pool := C.vtGetPixelBufferPool(session)
 	if pool != 0 {
@@ -633,6 +654,35 @@ func (v *videotoolboxEncoder) closeLocked() {
 		C.vtDestroySession(v.session)
 		v.session = 0
 	}
+}
+
+// logVTSessionCreate logs the outcome of a VTCompressionSessionCreate.
+// usingHardware is the vtUsingHardware result (1/0/-1). The GPU vendor hint
+// comes from the server's device inventory and selects vendor-specific Windows
+// encoders; VideoToolbox ignores it and picks the encoder itself, so an empty
+// hint on macOS is expected and harmless.
+func logVTSessionCreate(width, height int, status int32, usingHardware int, gpuVendorHint string) {
+	hw := "unknown"
+	switch usingHardware {
+	case 1:
+		hw = "hardware"
+	case 0:
+		hw = "software"
+	}
+	if gpuVendorHint == "" {
+		gpuVendorHint = "none (VideoToolbox selects the encoder)"
+	}
+	attrs := []any{
+		"dimensions", fmt.Sprintf("%dx%d", width, height),
+		"OSStatus", status,
+		"encoder", hw,
+		"gpuVendorHint", gpuVendorHint,
+	}
+	if status != 0 {
+		slog.Warn("VideoToolbox: compression session creation or prepare failed", attrs...)
+		return
+	}
+	slog.Info("VideoToolbox: compression session created", attrs...)
 }
 
 type vtEncodeRequest struct {

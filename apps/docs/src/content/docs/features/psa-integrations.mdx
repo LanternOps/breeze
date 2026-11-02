@@ -1,14 +1,14 @@
 ---
 title: PSA Integrations
-description: Connect Breeze to your PSA platform with encrypted credentials, test the connection, and import its companies as organizations. Ticket sync is not available yet.
+description: Connect your PSA, import companies, and create alert tickets with ConnectWise Manage or a webhook and Partner API integration.
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-PSA (Professional Services Automation) integrations connect Breeze to the ticketing platform your service desk already runs on. Connections are database-backed with encrypted credential storage. Today a connection lets you test your credentials and import the PSA's companies as organizations.
+PSA (Professional Services Automation) integrations connect Breeze to the ticketing platform your service desk already runs on. Connections store encrypted credentials, support connection testing and company import, and offer alert ticket creation for ConnectWise Manage.
 
 <Aside type="caution">
-  Ticket syncing itself is not implemented yet -- there is no automatic or manual sync, and no ticket mappings are created. You can create and test a connection and import companies today, but no ticket data moves between Breeze and your PSA until sync ships.
+  Built-in alert tickets support **ConnectWise Manage only** and are **off per connection**. They require the partner's bound connection in external ticketing mode. General bidirectional ticket sync is not available. Other PSAs can use [webhooks and the Partner API](#other-psas-and-middleware).
 </Aside>
 
 You manage PSA connections from **Integrations → PSA**. The tab is deep-linkable at `/integrations#psa`.
@@ -53,7 +53,7 @@ A partner-wide connection is visible to any partner-scope user — but the ticke
 
 4. Under **Credentials**, fill in the fields your provider requires — any combination of **Username**, **Password**, **API Token**, **Client ID**, and **Client Secret**. Secret fields are masked; use the eye toggle to reveal what you typed. Only the fields relevant to your provider need values.
 
-5. The form shows a **Ticket Sync** note instead of sync controls: ticket sync is not available yet (see [Ticket Sync](#ticket-sync) below).
+5. General **Ticket Sync** controls are unavailable. Configure ConnectWise Manage alert tickets separately in the connection's [Alert tickets](#alert-tickets) card.
 
 6. Click **Create connection**. Breeze encrypts the credentials and saves the connection.
 
@@ -121,7 +121,7 @@ Connection status is one of:
 
 ## Importing Companies
 
-Ticket sync is not implemented yet, but you can still bring a PSA's company list into Breeze as organizations, one connection at a time.
+Bring a PSA's company list into Breeze as organizations, one connection at a time. For alert tickets, these company links determine which customer receives each ticket.
 
 On the PSA tab, each connection for a provider with a company/account object shows an **Import companies** button. ConnectWise, Autotask, Freshservice, ServiceNow, and Zendesk support this; Jira does not, because it has no company object to map onto an organization, so the button is not shown for a Jira connection.
 
@@ -149,7 +149,62 @@ The preview calls out anything that affects the result:
 
 ## Ticket Sync
 
-Ticket sync is not available yet. The connection form no longer offers sync settings (enable, interval, direction, auto-close, notes) because nothing would act on them: there is no automatic or manual sync, and no ticket data moves between Breeze and your PSA. Connections created earlier may still carry stored sync settings; they have no effect.
+General bidirectional ticket sync and manual full-sync runs are not available. Legacy sync settings have no effect. ConnectWise Manage alert tickets use the separate configuration below.
+
+## Alert tickets
+
+The **Alert tickets** card lives at **Integrations → PSA**, on the bound ConnectWise Manage connection. Settings are **partner-wide; there is no per-organization override**. Managing them requires full-partner access, organization write permission, and MFA.
+
+### Activate alert tickets
+
+1. Use a partner-owned ConnectWise Manage connection as the partner's bound PSA connection and set ticketing mode to **external**.
+2. Test the connection, import companies, and check each organization's company link. Breeze never uses a fallback company. If you change PSA instances, verify the links again.
+3. In **Alert tickets**, choose the board, open status, and severity-to-priority mapping. Choose a closed status if you enable closing on resolve.
+4. Review the minimum severity. Existing rule and monitor filters also apply to automatic creation. Close-on-resolve and acknowledgement notes are off by default. The default limit is 100 creates per hour, with a 24-hour lookback.
+5. Check **Company links match this instance**, enable alert tickets, and save. If another administrator changed the configuration, the card reloads the latest revision; review it before saving again.
+
+<Aside type="caution">
+  This integration is **not yet verified against a live ConnectWise Manage tenant**. The developer-instance lab gate (#10534) was waived on October 31, 2026 because no instance was available. Live create/close verification with the merged build remains owed under #10528; unit tests do not replace it.
+</Aside>
+
+### Manual creation
+
+In external ticketing mode, staff with **tickets:write** permission can choose **Create PSA ticket** on an accessible alert. This bypasses severity, rule, and monitor filters, but still requires active alert ticketing on the bound connection and a valid company link. Repeated requests return the existing mapping. In native mode, use native ticket creation instead.
+
+Once a ticket exists, the alert's external-ticket chip shows its PSA state, ticket number and link to viewers permitted to see that connection. Pending or uncertain creates appear in the Alert tickets activity panel. Partner viewers also see references supplied through the Partner API; organization sessions retain their organization-owned connection visibility.
+
+### States and recovery
+
+The card shows counts across all create states and a paginated list of failed creates, missing company links, and outcomes needing attention. **Refresh** reloads the activity.
+
+| State | Meaning and next step |
+|-------|-----------------------|
+| Queued / Creating | Breeze is preparing or sending the create request. |
+| Created | A PSA ticket is linked. Close and acknowledgement-note progress are tracked separately. |
+| Create outcome unknown | A request may have reached the PSA. Breeze searches for the ticket rather than sending another create automatically. |
+| Needs attention | Lookup could not confirm the outcome. Check the PSA before choosing a human action. |
+| Failed | Automatic attempts reached their deadline. Correct the cause, then use **Re-drive**. |
+| No company link | Link the organization to its PSA company, then use **Re-drive**, or wait for reconciliation. |
+| Ambiguous company link | Correct the conflicting company links. Breeze will not guess a customer. |
+| Rejected | The PSA rejected the request. Review the configuration and provider requirements. |
+| Resolved before create | The alert resolved before a create was sent. No ticket was needed. |
+| Handled | A person ended processing for this mapping. |
+
+**Re-drive** retries only failed creates and missing-company mappings, preserving the connection binding. It does not retry unknown outcomes or rejected requests. Authentication failures pause ticketing; correct the credentials and successfully test the connection to resume.
+
+**Create anyway** is available for **Needs attention**. A ticket may already exist, so check the PSA first. After confirmation, this allows one additional create attempt per mapping. A second uncertain outcome cannot receive another such grant. Concurrent clicks cannot grant multiple attempts.
+
+**Mark handled** stops processing a failed, missing-company, or needs-attention mapping. It does not create, close, or delete a ticket in the PSA. Human actions are audited; if another action changed the row first, refresh and review its new state.
+
+When **Close on resolve** is enabled, Breeze closes the linked ticket when the alert resolves. Otherwise, resolution adds an internal note. **Note on acknowledge** controls acknowledgement notes separately. These choices are captured when the ticket is created.
+
+<Aside>
+  Resolving an alert automatically from a paired recovery event, such as “Power Restored,” depends on monitoring work tracked in **#10538**, which has not landed yet. Close-on-resolve acts when the Breeze alert actually resolves; it does not add recovery-event detection.
+</Aside>
+
+### Other PSAs and middleware
+
+Use [partner-wide webhooks with the v2 alert payload](/features/webhooks/) to send alert events to middleware such as Rewst, then create the ticket in your PSA. Save its number and HTTPS link through the [Partner API external-ticket reference endpoints](/reference/api/#partner-api-service-principals). A dedicated principal needs the opt-in **alerts:write** scope to write references or acknowledge and resolve alerts; it is never included in a default scope set. **alerts:read** permits lookup for deduplication. The [webhook guide's middleware example](/features/webhooks/#example-alert-to-connectwise-manage-through-middleware) describes the event-to-ticket flow and loop prevention.
 
 ---
 
@@ -165,7 +220,7 @@ The `APP_ENCRYPTION_KEY` environment variable is not set or is invalid. This var
 Credentials are replaced as a whole, not merged. On the edit form, leave a secret field blank to keep its existing value — only type into it when you intend to rotate that credential.
 
 **No tickets are showing up.**
-This is expected today -- ticket syncing is not implemented yet, so no ticket mappings are ever created (see the caution at the top of this page).
+For ConnectWise Manage, check external mode, the bound connection, the enabled Alert tickets card, company-link confirmation, and severity filters. Review the activity states for missing company links, failed creates, or an uncertain outcome. Other PSA providers need the webhook and Partner API middleware path.
 
 **A connection shows the Error status.**
 The most recent connection test failed. Open the connection, run **Test connection** to see the provider's error message, and correct the credentials or instance URL as needed.

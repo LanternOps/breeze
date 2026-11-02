@@ -52,6 +52,7 @@ import { captureException } from '../sentry';
 import { assessableOrgIds } from '../wisp/assessableOrgs';
 import { rollupPartnerPicture } from '../wisp/assessment';
 import {
+  ConcernSubjectHeldError,
   getConcernForCeiling,
   resolveConcern,
   updateConcern,
@@ -311,26 +312,41 @@ async function applyProposals(ap: Applier, proposals: ProposeActionInput[]): Pro
   }
 }
 
-/** Task 15 — the onboarding run's "what I can / cannot watch here" concern, one per org (signature-keyed). */
-async function applyReadiness(ctx: RunContext, a: AssessmentRunContext, grantId: string): Promise<void> {
+/**
+ * Task 15 — the onboarding run's "what I can / cannot watch here" concern, one
+ * per org (signature-keyed). Its subject is `readiness`, never `org` (#10386):
+ * the org slot belongs to real org-level concerns.
+ */
+async function applyReadiness(ctx: RunContext, a: AssessmentRunContext, grantId: string, skipped: string[]): Promise<void> {
   const readiness = a.readiness;
   if (a.reason.kind !== 'onboarding' || !readiness || !readiness.checks.some((c) => !c.serviceable)) return;
   const { run } = ctx;
   const summary = renderReadinessSummary(readiness).slice(0, CONCERN_SUMMARY_MAX);
   const evidence = { readiness: { checks: readiness.checks, missingIntegrations: readiness.missingIntegrations } };
-  const { id, created } = await upsertConcern({
-    partnerId: ctx.orgPartnerId,
-    orgId: run.orgId,
-    subject: { kind: 'org', id: run.orgId },
-    severity: 'info',
-    signature: `readiness:${run.orgId}`,
-    summary,
-    evidence,
-    raisedByGrantId: grantId,
-    lastAssessedRunId: run.id,
-  });
+  let upserted: { id: string; created: boolean };
+  try {
+    upserted = await upsertConcern({
+      partnerId: ctx.orgPartnerId,
+      orgId: run.orgId,
+      subject: { kind: 'readiness', id: run.orgId },
+      severity: 'info',
+      signature: `readiness:${run.orgId}`,
+      summary,
+      evidence,
+      raisedByGrantId: grantId,
+      lastAssessedRunId: run.id,
+    });
+  } catch (error) {
+    // The other readiness note (no effective agent) still holds the slot:
+    // leave it; it is not this note to refresh.
+    if (error instanceof ConcernSubjectHeldError) {
+      skipped.push('readiness_slot_held');
+      return;
+    }
+    throw error;
+  }
   // A re-run (or a later onboarding) refreshes the live one instead of duplicating it.
-  if (!created) await updateConcern(id, { summary, evidence, lastAssessedRunId: run.id });
+  if (!upserted.created) await updateConcern(upserted.id, { summary, evidence, lastAssessedRunId: run.id });
 }
 
 /**
@@ -416,7 +432,7 @@ export async function finalizeAssessment(ctx: RunContext, result: LoopResult): P
       // (5) request_specialist: left in `outcome.assessment.specialistRequests` for W07.
     }
 
-    await item('readiness', () => applyReadiness(ctx, a, grantId));
+    await item('readiness', () => applyReadiness(ctx, a, grantId, skipped));
 
     for (const c of a.openConcerns) {
       if (c.orgId !== run.orgId || touched.has(c.id)) continue;

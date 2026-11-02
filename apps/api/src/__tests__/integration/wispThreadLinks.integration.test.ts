@@ -33,6 +33,8 @@ import {
 } from '../../db/schema';
 import type { WispCeilingSnapshot } from '../../db/schema/wisp';
 import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
+import { autoLinkFocalAct } from '../../services/wisp/autoLink';
+import type { ActiveSession } from '../../services/streamingSessionManager';
 import { resolveEntityRef } from '../../services/wisp/entityRefs';
 import { resolveGrantCeiling } from '../../services/wisp/grantAuthority';
 import { buildHomeSections } from '../../services/wisp/home';
@@ -561,5 +563,32 @@ describe('Task 13 — revocation drops a link everywhere (real Postgres)', () =>
     }));
     expect(home.links.map((l) => l.ref.kind)).toEqual(['user']);
     expect(await rowsOf(env.thread.id)).toHaveLength(3);
+  });
+});
+
+// W02: exercise the real resolver, addLink lock and touch writer. No DB mocks.
+describe('focal auto links (real Postgres)', () => {
+  it('eight concurrent focal calls reserve five adds; remaining subjects touch existing pins only', async () => {
+    const env = await seed();
+    const ceiling = await env.ceiling();
+    const subjects = await Promise.all(Array.from({ length: 8 }, (_, i) => insertTicket(env.orgA.id, env.partner.id, `Focal ticket ${i}`)));
+    for (const ticket of subjects.slice(5)) {
+      await addLink({ auth: env.auth, ceiling }, env.thread.id, { kind: 'ticket', id: ticket.id }, { source: 'user_pin' });
+    }
+    const session = {
+      wispGrant: { grantId: env.grantId, revisionId: env.revisionId, threadId: env.thread.id },
+      pendingTurnAutoLinkCount: 0, auth: env.auth, auditSnapshot: null,
+    } as unknown as ActiveSession;
+    const results = await Promise.all(subjects.map((ticket) => autoLinkFocalAct({
+      session, toolName: 'manage_tickets', input: { action: 'get', ticketId: ticket.id }, auth: env.auth, ceiling,
+    })));
+    expect(session.pendingTurnAutoLinkCount).toBe(5);
+    expect(results.reduce((sum, r) => sum + r.added, 0)).toBe(5);
+    expect(results.reduce((sum, r) => sum + r.touched, 0)).toBe(3);
+    const rows = await rowsOf(env.thread.id);
+    expect(rows.filter((row) => row.source === 'auto')).toHaveLength(5);
+    expect(rows.filter((row) => row.source === 'user_pin')).toHaveLength(3);
+    expect(rows.filter((row) => row.source === 'user_pin').every((row) => row.touchCount === 2)).toBe(true);
+    expect(rows.filter((row) => row.source === 'auto').every((row) => row.addedByGrantId === env.grantId)).toBe(true);
   });
 });

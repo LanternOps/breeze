@@ -1,3 +1,5 @@
+const isolationOwner = vi.hoisted(() => vi.fn(async () => null as unknown));
+vi.mock('../../services/networkIsolation/episodeStore', () => ({ findEpisodeByCommand: isolationOwner }));
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { Hono } from 'hono';
@@ -2047,6 +2049,15 @@ describe('device commands routes', () => {
           result: expect.objectContaining({ reason: 'user_cancelled' }),
         }),
       );
+    });
+
+    it('cancel: refuses episode-owned isolation and directs the operator to Release', async () => {
+      rigCancelTransaction({ existing: { id: COMMAND_ID, type: 'execute_containment', payload: { actionType: 'network_isolation' }, status: 'pending' }, updated: { id: COMMAND_ID } });
+      isolationOwner.mockResolvedValueOnce({ id: 'episode' });
+      const res = await app.request(`/devices/${DEVICE_ID}/commands/${COMMAND_ID}/cancel`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Use Release to release this network isolation' });
+      expect(cancelDeviceCommands).not.toHaveBeenCalled();
     });
 
     it('cancel: 409s when the command is not pending', async () => {

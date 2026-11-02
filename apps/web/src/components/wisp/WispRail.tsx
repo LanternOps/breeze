@@ -1,3 +1,4 @@
+import type { Dispatch, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Brain, MessagesSquare } from 'lucide-react';
 import type { Concern, CurrentActivity, WispThreadLink } from '@breeze/shared';
@@ -19,7 +20,7 @@ export type WispRailProps = {
   needsYou: Concern[] | null;
   /** Null hides the section. */
   links: WispThreadLink[] | null;
-  onLinksChange: (links: WispThreadLink[]) => void;
+  onLinksChange: Dispatch<SetStateAction<WispThreadLink[]>>;
   onWispChange: (patch: Partial<Wisp>) => void;
   onRevoked: () => void | Promise<void>;
   /** Bumped when a check starts or finishes: workers and activity reload. */

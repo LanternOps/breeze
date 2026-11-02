@@ -282,6 +282,8 @@ export default function DeviceGroupsPage() {
     // or to the chosen owner org when creating.
     {
       enabled: true,
+      // Same population membership evaluation materializes (#9933).
+      excludeDecommissioned: true,
       allOrgs: isPartnerForm,
       orgId: isPartnerForm ? undefined :
         (modalMode === "edit" ? selectedGroup?.orgId : undefined) ??

@@ -21,7 +21,7 @@ import {
   deviceHardwareComponents
 } from '../db/schema';
 import type { DiscoveryProfileAlertSettings } from '../db/schema';
-import { eq, and, or, sql, inArray, asc, type SQL } from 'drizzle-orm';
+import { eq, ne, and, or, sql, inArray, asc, type SQL } from 'drizzle-orm';
 import { normalizeMac, buildApprovalDecision } from '../services/assetApproval';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
@@ -1298,6 +1298,7 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       const [currentAsset] = await db
         .select({
           linkedDeviceId: discoveredAssets.linkedDeviceId,
+          linkSource: discoveredAssets.linkSource,
           linkedDeviceSiteId: devices.siteId,
         })
         .from(discoveredAssets)
@@ -1314,6 +1315,60 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
           .update(discoveredAssets)
           .set({ linkedDeviceId: null, linkSource: null })
           .where(eq(discoveredAssets.id, existing.id));
+      }
+
+      // An auto-link stands only while the asset's MAC is one of the linked
+      // device's NICs. The worker used to match on MAC OR IP, and an IP is not
+      // an identity: DHCP hands a workstation's old address to a printer, which
+      // was then linked to the workstation — dropped from the Devices list and
+      // its type stamped onto the workstation's role. A scan that sees a MAC the
+      // device does not own drops the link (the auto-link below may then find
+      // the device that does). A scan without a MAC is no new evidence, so the
+      // link stays. Manual, agent_report and pre-provenance (NULL) links are
+      // never touched.
+      if (alreadyLinked && currentAsset?.linkSource === 'auto' && assetData.macAddress) {
+        const linkedDeviceId = currentAsset.linkedDeviceId!;
+        const [ownedNic] = await db
+          .select({ deviceId: deviceNetwork.deviceId })
+          .from(deviceNetwork)
+          .innerJoin(devices, eq(devices.id, deviceNetwork.deviceId))
+          .where(and(
+            eq(deviceNetwork.deviceId, linkedDeviceId),
+            ne(devices.status, 'decommissioned'),
+            nicMacMatches(assetData.macAddress),
+          ))
+          .limit(1);
+        if (!ownedNic) {
+          await db.transaction(async (tx) => {
+            await tx
+              .update(discoveredAssets)
+              .set({ linkedDeviceId: null, linkSource: null })
+              .where(and(
+                eq(discoveredAssets.id, existing.id),
+                eq(discoveredAssets.linkSource, 'auto'),
+                eq(discoveredAssets.linkedDeviceId, linkedDeviceId),
+              ));
+            // Undo the role this link propagated (see the propagation below):
+            // only a discovery-owned role that still equals this asset's type
+            // and that no other asset linked to the device also carries. Back
+            // to 'auto' so the heartbeat re-applies the agent's role — except
+            // 'server', which the heartbeat never promotes to on its own
+            // (PRIVILEGED_AGENT_ROLE_TARGETS); that device stays 'unknown'
+            // until an admin sets it.
+            // own-device-row-allowlisted: discovery-role-unlink-reset
+            await tx
+              .update(devices)
+              .set({ deviceRole: 'unknown', deviceRoleSource: 'auto', updatedAt: new Date() })
+              .where(and(
+                eq(devices.id, linkedDeviceId),
+                eq(devices.deviceRoleSource, 'discovery'),
+                sql`${devices.deviceRole}::text = (select ${discoveredAssets.assetType}::text from ${discoveredAssets} where ${discoveredAssets.id} = ${existing.id})`,
+                sql`not exists (select 1 from ${discoveredAssets} where ${discoveredAssets.linkedDeviceId} = ${linkedDeviceId}
+                  and ${discoveredAssets.id} <> ${existing.id} and ${discoveredAssets.assetType}::text = ${devices.deviceRole}::text)`,
+              ));
+          });
+          alreadyLinked = false;
+        }
       }
     } else {
       // Net-new row, so there is nothing to outrank — write the classification
@@ -1340,12 +1395,12 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       newCount++;
     }
 
-    // Auto-link: match discovered asset to enrolled device by MAC or IP.
+    // Auto-link: match discovered asset to enrolled device by MAC.
     // Skip entirely (no match attempt, no write) when a user has manually
     // unlinked this asset — auto_link_suppressed_at is cleared only by a
     // manual (re-)link, never by this worker. See design doc A.3.
     const autoLinkSuppressed = !!existing?.autoLinkSuppressedAt;
-    if (upsertedAssetId && !alreadyLinked && !autoLinkSuppressed && (assetData.macAddress || assetData.ipAddress)) {
+    if (upsertedAssetId && !alreadyLinked && !autoLinkSuppressed && assetData.macAddress) {
       try {
         // Reconcile against agent-reported BMC MACs BEFORE ordinary NIC
         // identity. This is an additional identity source, not an OR with the
@@ -1392,12 +1447,11 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
           }
         }
 
-        const conditions = [];
-        if (assetData.macAddress) conditions.push(eq(deviceNetwork.macAddress, assetData.macAddress));
-        if (assetData.ipAddress) conditions.push(eq(deviceNetwork.ipAddress, assetData.ipAddress));
-
-        if (!bmcIdentityMatched && conditions.length > 0) {
-          const [match] = await db
+        // NIC identity is the MAC alone, never the IP (see the re-scan repair
+        // above). A MAC that two devices both report (a cloned VM, a USB NIC
+        // moved between laptops) is ambiguous and links nothing.
+        if (!bmcIdentityMatched) {
+          const nicMatches = await db
             .select({ deviceId: deviceNetwork.deviceId })
             .from(deviceNetwork)
             .innerJoin(devices, eq(devices.id, deviceNetwork.deviceId))
@@ -1405,9 +1459,13 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
               eq(devices.orgId, data.orgId),
               // Same-site relative to where the asset lives (see assetSiteId).
               eq(devices.siteId, assetSiteId),
-              or(...conditions),
-            ))
-            .limit(1);
+              // Re-enrolling a decommissioned machine mints a new device row
+              // and leaves the old one's NICs in place; it is not a second owner.
+              ne(devices.status, 'decommissioned'),
+              nicMacMatches(assetData.macAddress),
+            ));
+          const candidateDeviceIds = [...new Set(nicMatches.map((row) => row.deviceId))];
+          const match = candidateDeviceIds.length === 1 ? { deviceId: candidateDeviceIds[0]! } : undefined;
 
           if (match) {
             // Conditional-returning write: never reassign a link an
@@ -1774,6 +1832,14 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
 
   console.log(`[DiscoveryWorker] Job ${data.jobId} completed: ${newCount} new, ${updatedCount} updated`);
   return { newAssets: newCount, updatedAssets: updatedCount, durationMs: Date.now() - startTime };
+}
+
+// device_network stores a MAC as the agent reported it; compare in one
+// canonical form (lower-case, colon-separated) so case or dashes never decide
+// whether a scan finds its device.
+function nicMacMatches(mac: string): SQL {
+  const canonical = mac.trim().toLowerCase().replace(/-/g, ':');
+  return sql`lower(replace(trim(${deviceNetwork.macAddress}), '-', ':')) = ${canonical}`;
 }
 
 /**

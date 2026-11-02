@@ -898,6 +898,10 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   const notApplicableByReason: Record<string, number> = {};
   const notApplicableSample: Array<{ deviceId: string; reasons: string[] }> = [];
   let notApplicableDevices = 0;
+  // #9247: rule catalog ids each device was found MISSING this pass (before the
+  // applicability filter). Coverage reads `installer_missing` only for those: a
+  // missing uploaded installer blocks an install, not a device already covered.
+  const missingCatalogIdsByDevice = new Map<string, Set<string>>();
   // Contract D11: ONE arming truth, shared with softwareRemediationWorker.ts and
   // the AI compliance tool. Evaluated once per pass — the policy row cannot
   // change mid-loop, and the generation gate above already refused a job whose
@@ -1032,6 +1036,12 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
       // not-applicable rule any more; this ordering keeps that true if the
       // narrowing ever regresses.
       if (managedApplicability) {
+        const missingHere = new Set<string>();
+        for (const violation of evaluatedViolations) {
+          const catalogId = violation.type === 'missing' ? violation.rule?.catalogId : undefined;
+          if (catalogId) missingHere.add(catalogId);
+        }
+        missingCatalogIdsByDevice.set(deviceId, missingHere);
         const filtered = managedApplicability.filterViolations(deviceId, evaluatedViolations);
         evaluatedViolations = filtered.violations;
         if (filtered.notApplicable.length > 0) {
@@ -1362,7 +1372,8 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
     await reportCoverageFailure(policy.id, () => {
       const entries: ManagedApplicabilityEntry[] = [];
       for (const deviceId of deviceIds) {
-        for (const readiness of applicability.evaluateDevice(deviceId)) {
+        const missingCatalogIds = missingCatalogIdsByDevice.get(deviceId);
+        for (const readiness of applicability.evaluateDevice(deviceId, missingCatalogIds ? { missingCatalogIds } : undefined)) {
           entries.push({
             deviceId,
             orgId: orgByDevice.get(deviceId)!,

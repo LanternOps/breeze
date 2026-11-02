@@ -18,7 +18,6 @@ const DETAIL: PortalAgreementDetail = {
   request: {
     id: ID,
     status: 'sent',
-    label: null,
     coverMessage: 'Please sign.\nThanks!',
     expiresAt: '2026-12-01T00:00:00.000Z',
     effectiveDate: '2026-11-01',

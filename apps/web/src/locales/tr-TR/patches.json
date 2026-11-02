@@ -649,7 +649,11 @@
     "noMatches": "Eşleşme yok.",
     "orEnterAPackageIDManually": "Veya manuel olarak bir paket kimliği girin",
     "removeRuleFor": "{{application}} kuralını kaldır",
-    "scopeNote": "Bu kurallar, yapılandırma ilkesi bu halkaya bağlı olan her cihaz için geçerlidir."
+    "scopeNote": "Bu kurallar, yapılandırma ilkesi bu halkaya bağlı olan her cihaz için geçerlidir.",
+    "linuxPackage": "Linux paketi",
+    "appPackage": "Uygulama paketi",
+    "manualRuleType": "Kural türü",
+    "linuxPinHint": "Yama listesindeki tam sürümü, varsa epoch dahil girin (ör. 5:24.0.7-1)."
   },
   "patchDetails": {
     "unknown": "Bilinmiyor",

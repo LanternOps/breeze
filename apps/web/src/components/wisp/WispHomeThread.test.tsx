@@ -4,6 +4,7 @@
  * resume the thread's last session, else start the first — and nothing for a
  * paused or ended grant.
  */
+import { useState } from 'react';
 import type { WispThreadLink } from '@breeze/shared';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -36,7 +37,7 @@ const paramsOf = (url: string) => new URLSearchParams(url.split('?')[1]);
 // The kit stubs record their props (W01 #10211: page layout, label, dividers,
 // leading, empty state, placeholder, the composer's link button) and render
 // the nodes they are handed so those can be driven from here.
-const kit = vi.hoisted(() => ({ messages: [] as Array<Record<string, unknown>>, input: [] as Array<Record<string, unknown>> }));
+const kit = vi.hoisted(() => ({ messages: [] as Array<Record<string, unknown>>, input: [] as Array<Record<string, unknown>>, pickerOnLinked: null as null | ((link: WispThreadLink) => void) }));
 vi.mock('../ai/AiChatMessages', () => ({
   default: (p: Record<string, unknown>) => {
     kit.messages.push(p);
@@ -58,14 +59,19 @@ vi.mock('../ai/AiChatInput', () => ({
 }));
 const LINK = { id: 'l-1', ref: { kind: 'ticket', id: 't-1', orgId: 'o-1' }, label: 'Printer down', status: 'open', href: '/tickets/t-1', source: 'user_pin', lastTouchedAt: '2026-10-24T08:00:00Z', createdAt: '2026-10-25T09:00:00Z' };
 vi.mock('./WispEntityPicker', () => ({
-  default: (p: { open: boolean; threadId: string; onLinked: (l: unknown) => void; onClose: () => void }) =>
-    p.open ? (
-      <div data-testid="picker-stub" data-thread={p.threadId}>
+  default: (p: { open: boolean; threadId: string; linkedKeys: Set<string>; onLinked: (l: unknown) => void; onClose: () => void }) => {
+    kit.pickerOnLinked = p.onLinked;
+    return p.open ? (
+      <div data-testid="picker-stub" data-thread={p.threadId} data-linked-keys={[...p.linkedKeys].join(",")}>
         <button type="button" onClick={() => p.onLinked(LINK)}>pick</button>
       </div>
-    ) : null,
+    ) : null;
+  },
 }));
 vi.mock('../ai/AiThinkingIndicator', () => ({ default: () => null }));
+vi.mock('../ai/AiModelPicker', () => ({
+  default: (p: { disabled?: boolean }) => <div data-testid="ai-model-picker-mock" data-disabled={String(!!p.disabled)} />,
+}));
 vi.mock('../ai/AiContinuationPrompt', () => ({ default: () => null }));
 vi.mock('../ai/BuyCreditsLink', () => ({ default: () => null }));
 
@@ -202,23 +208,29 @@ describe('WispHomeThread (W08 Task 9)', () => {
     expect(h.state.switchSession).toHaveBeenCalledTimes(1);
   });
 
-  // #10142: the home card can start over, like the side panel's "New conversation".
-  it('"New conversation" closes the live session and starts a fresh one on this grant', async () => {
-    const closeSession = vi.fn(async () => { Object.assign(h.state, { sessionId: null }); });
-    reset({ wisp, sessionId: 's-live', closeSession });
+  // The column is the whole thread (one thread per grant, companion spec):
+  // there is no "New conversation"; closing a session would change nothing on screen.
+  it('offers no "New conversation" control', async () => {
+    reset({ wisp, sessionId: 's-live' });
     render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
     expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('wisp-home-new-conversation'));
-    await waitFor(() => expect(h.state.enterWispMode).toHaveBeenCalledWith(wisp));
-    expect(closeSession).toHaveBeenCalledTimes(1);
-    expect(closeSession.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(h.state.enterWispMode as () => void).mock.invocationCallOrder[0]);
-    expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
-    expect(h.state.sessionId).toBe('s-new');
+    expect(screen.queryByTestId('wisp-home-new-conversation')).toBeNull();
+    expect(screen.queryByText('aiChatSidebar.newConversation')).toBeNull();
   });
 
-  it('offers no "New conversation" for a paused grant', () => {
+  // The model menu the docked panel shows (registry W05), above the composer; locked while a turn streams.
+  it('shows the model picker above the composer, disabled while streaming', async () => {
+    reset({ wisp, sessionId: 's-live', isStreaming: true });
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
+    const picker = screen.getByTestId('ai-model-picker-mock');
+    expect(picker.dataset.disabled).toBe('true');
+    expect(picker.compareDocumentPosition(screen.getByTestId('ai-chat-input-mock')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows no model picker for a paused grant', () => {
     render(<WispHomeThread {...extra} wisp={{ ...wisp, status: 'paused' }} lastSessionId={null} />);
-    expect(screen.queryByTestId('wisp-home-new-conversation')).toBeNull();
+    expect(screen.queryByTestId('ai-model-picker-mock')).toBeNull();
   });
 });
 
@@ -266,7 +278,7 @@ describe('WispHomeThread as the companion column (W01 #10211)', () => {
   });
 
   it('the composer link button opens the entity picker and a pick is added to the links', async () => {
-    const existing = { ...LINK, id: 'l-0', label: 'Old' };
+    const existing = { ...LINK, id: 'l-0', ref: { ...LINK.ref, id: 't-other' }, label: 'Old' };
     render(<WispHomeThread {...extra} links={[existing] as never[]} wisp={wisp} lastSessionId={null} />);
     const button = await screen.findByTestId('wisp-composer-link');
     expect(button).toHaveAccessibleName('Link an item');
@@ -274,7 +286,8 @@ describe('WispHomeThread as the companion column (W01 #10211)', () => {
     fireEvent.click(button);
     expect(screen.getByTestId('picker-stub')).toHaveAttribute('data-thread', 'th-1');
     fireEvent.click(screen.getByText('pick'));
-    expect(onLinksChange).toHaveBeenCalledWith([existing, LINK]);
+    expect(onLinksChange).toHaveBeenCalledWith(expect.any(Function));
+    expect(onLinksChange.mock.calls[0][0]([existing])).toEqual([existing, LINK]);
     expect(screen.queryByTestId('picker-stub')).toBeNull();
   });
 
@@ -282,7 +295,8 @@ describe('WispHomeThread as the companion column (W01 #10211)', () => {
     render(<WispHomeThread {...extra} links={[{ ...LINK, label: 'stale' }] as never[]} wisp={wisp} lastSessionId={null} />);
     fireEvent.click(await screen.findByTestId('wisp-composer-link'));
     fireEvent.click(screen.getByText('pick'));
-    expect(onLinksChange).toHaveBeenCalledWith([LINK]);
+    expect(onLinksChange).toHaveBeenCalledWith(expect.any(Function));
+    expect(onLinksChange.mock.calls[0][0]([{ ...LINK, label: 'stale' }])).toEqual([LINK]);
   });
 
   it.each(['concern', 'auto', 'pins'] as const)('50 %s rows apply the pin-only composer cap', async (source) => {
@@ -618,4 +632,35 @@ describe('WispHomeThread reads the thread timeline (W02b #10213)', () => {
     await Promise.resolve();
     expect(timelineCalls()).toHaveLength(0);
   });
+});
+
+it('composer picker excludes derived concern keys and pinning replaces that entity only', async () => {
+  const concern = { ...LINK, id: null, source: 'concern' as const };
+  const other = { ...concern, ref: { ...concern.ref, id: 't-other' } };
+  render(<WispHomeThread {...extra} links={[concern, other] as WispThreadLink[]} wisp={wisp} lastSessionId={null} />);
+  fireEvent.click(await screen.findByTestId('wisp-composer-link'));
+  expect(screen.getByTestId('picker-stub')).toHaveAttribute('data-linked-keys', '');
+  fireEvent.click(screen.getByText('pick'));
+  expect(onLinksChange).toHaveBeenCalledWith(expect.any(Function));
+  expect(onLinksChange.mock.calls[0][0]([concern, other])).toEqual([LINK, other]);
+});
+
+
+it('composer picker preserves a poll that lands before the pending pick returns', async () => {
+  reset({ wisp, sessionId: 's-live' });
+  fetchMock.mockImplementation(route());
+  let poll!: (links: WispThreadLink[]) => void;
+  const polled = { ...LINK, id: 'l-polled', ref: { ...LINK.ref, id: 't-polled' } } as WispThreadLink;
+  function HomeThread() {
+    const [links, setLinks] = useState<WispThreadLink[]>([]);
+    poll = setLinks;
+    return <><WispHomeThread {...extra} wisp={wisp} lastSessionId={null} links={links} onLinksChange={setLinks} />
+      <output data-testid="latest-link-ids">{links.map((link) => link.id).join(',')}</output></>;
+  }
+  render(<HomeThread />);
+  fireEvent.click(await screen.findByTestId('wisp-composer-link'));
+  const pendingPick = kit.pickerOnLinked!;
+  act(() => poll([polled]));
+  act(() => pendingPick(LINK as WispThreadLink));
+  expect(screen.getByTestId('latest-link-ids')).toHaveTextContent('l-polled,l-1');
 });

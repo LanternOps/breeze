@@ -94,6 +94,18 @@ export interface EffectiveGroupMembers {
 const SLOW_GROUP_EVALUATION_MS = 250;
 
 /**
+ * Removed (decommissioned) devices are never members of a dynamic group
+ * (#9933): membership feeds policy and patch targeting, and /devices hides
+ * them. Passed to EVERY filter evaluation in this module — the whole-group
+ * resolver, its single-device billing twin, and the per-device evaluator — so
+ * the three cannot drift (groupMembership.parity.integration.test.ts).
+ * Decommission and restore enqueue a re-evaluation (services/deviceDecommission.ts,
+ * services/deviceLifecycle.ts), which is what drops and re-adds the rows.
+ * Pinned and static rows are explicit admin choices and are kept as they are.
+ */
+const GROUP_FILTER_SCOPE = { excludeDecommissioned: true } as const;
+
+/**
  * The one read-only definition of "who is in this group" (#3205 W02). Used by
  * evaluateGroupMembership (which then diffs and writes) and by contract billing
  * (which never writes). Every membership read predicates on group_id AND the
@@ -137,6 +149,7 @@ export async function resolveEffectiveGroupMembers(group: GroupForResolution, ev
     const result = await evaluateFilter(dynamicFilter, {
       orgId: evaluationOrgId,
       allowedSiteIds: group.orgId !== null && group.siteId ? [group.siteId] : null,
+      ...GROUP_FILTER_SCOPE,
     });
     matched = new Set(result.deviceIds);
   } catch (err) {
@@ -204,7 +217,7 @@ export async function groupIncludesDevice(group: GroupForResolution, device: Dev
   if (!hasFilter) return false;
   if (group.siteId !== null && group.siteId !== device.siteId) return false;
   try {
-    return await deviceMatchesFilter(device.id, filter as FilterConditionGroup);
+    return await deviceMatchesFilter(device.id, filter as FilterConditionGroup, GROUP_FILTER_SCOPE);
   } catch (err) {
     throw new GroupEvaluationError(group.id, 'engine_error', err);
   }
@@ -357,7 +370,7 @@ async function writeDeviceMembership(
   const groupId = group.id;
   const deviceId = device.id;
   const outsideSite = group.siteId !== null && device.siteId !== group.siteId;
-  const matches = !outsideSite && await deviceMatchesFilter(deviceId, filter);
+  const matches = !outsideSite && await deviceMatchesFilter(deviceId, filter, GROUP_FILTER_SCOPE);
   const predicate = and(eq(deviceGroupMemberships.groupId, groupId),
     eq(deviceGroupMemberships.orgId, device.orgId), eq(deviceGroupMemberships.deviceId, deviceId));
   const [membership] = await db.select({ deviceId: deviceGroupMemberships.deviceId, isPinned: deviceGroupMemberships.isPinned })
@@ -735,7 +748,7 @@ export async function pinDeviceToGroup(
     .limit(1);
 
   if (group?.type === 'dynamic' && isFilterConditionGroup(group.filterConditions)) {
-    const matchesFilter = await deviceMatchesFilter(deviceId, group.filterConditions);
+    const matchesFilter = await deviceMatchesFilter(deviceId, group.filterConditions, GROUP_FILTER_SCOPE);
     if (!matchesFilter) {
       await db
         .delete(deviceGroupMemberships)
@@ -899,4 +912,48 @@ export async function addManualGroupMemberships(params: {
   }
 
   return { added, skipped: existingSet.size };
+}
+
+export interface ManualMembershipRemoval {
+  /** Device ids whose membership row this call deleted. */
+  removed: string[];
+  /** Requested devices that had no membership row in the group. */
+  notMember: string[];
+}
+
+/**
+ * Deletes the membership rows of `deviceIds` in a STATIC group in ONE
+ * statement (#9866), the bulk sibling of `DELETE /:id/devices/:deviceId`.
+ *
+ * `RETURNING` decides what was removed, so a device that stopped being a
+ * member between the caller's read and this write reads as `notMember` rather
+ * than being reported as removed. Callers MUST have applied the site gate
+ * first: this function only knows the group, not the caller.
+ */
+export async function removeManualGroupMemberships(params: {
+  groupId: string;
+  group?: GroupOwner;
+  deviceIds: readonly string[];
+}, database: GroupMembershipDatabase = db): Promise<ManualMembershipRemoval> {
+  const { groupId } = params;
+  const requested = [...new Set(params.deviceIds)];
+  if (requested.length === 0) return { removed: [], notMember: [] };
+  await requireOrgOwnedGroup(groupId, database, params.group);
+
+  const deleted = await database
+    .delete(deviceGroupMemberships)
+    .where(
+      and(
+        eq(deviceGroupMemberships.groupId, groupId),
+        inArray(deviceGroupMemberships.deviceId, requested)
+      )
+    )
+    .returning({ deviceId: deviceGroupMemberships.deviceId });
+
+  const removedSet = new Set(deleted.map((row) => row.deviceId));
+  const removed = requested.filter((deviceId) => removedSet.has(deviceId));
+  if (removed.length > 0) {
+    await schedulePeripheralMembershipChanges(removed, 'manual_membership_changed');
+  }
+  return { removed, notMember: requested.filter((deviceId) => !removedSet.has(deviceId)) };
 }
