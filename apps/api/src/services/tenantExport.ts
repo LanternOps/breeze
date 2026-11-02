@@ -147,12 +147,43 @@ function withFreshSystemDbAccessContext<T>(fn: () => Promise<T>): Promise<T> {
   );
 }
 
+/**
+ * Columns that may reference a row of ANOTHER org (same partner) and are
+ * nulled in an org's export when they do: an org's export must not carry the
+ * id of a device it does not own. `devices.possible_replacement_of_device_id`
+ * (#8318 §7.3) can name a device in another org of the partner, because
+ * hardware evidence is searched partner-wide; the reason and detection time
+ * go with it (the pair is NULL exactly when the link is).
+ */
+export const CROSS_ORG_REFERENCE_REDACTIONS: Readonly<Record<string, {
+  referenceColumn: string;
+  referencedTable: string;
+  nullColumns: readonly string[];
+}>> = {
+  devices: {
+    referenceColumn: 'possible_replacement_of_device_id',
+    referencedTable: 'devices',
+    nullColumns: ['possible_replacement_of_device_id', 'possible_replacement_reason', 'possible_replacement_detected_at'],
+  },
+};
+
+function projectColumn(table: string, column: string): string {
+  const redaction = CROSS_ORG_REFERENCE_REDACTIONS[table];
+  if (!redaction || !redaction.nullColumns.includes(column)) return quoteIdent(column);
+  const outer = (name: string) => `${quoteIdent(table)}.${quoteIdent(name)}`;
+  const ref = outer(redaction.referenceColumn);
+  return `CASE WHEN ${ref} IS NULL OR EXISTS (`
+    + `SELECT 1 FROM ${quoteIdent(redaction.referencedTable)} referenced `
+    + `WHERE referenced.id = ${ref} AND referenced.org_id = ${outer('org_id')}`
+    + `) THEN ${outer(column)} ELSE NULL END AS ${quoteIdent(column)}`;
+}
+
 async function readOrgRows(
   plan: ExportTablePlan,
   orgId: string,
 ): Promise<unknown[]> {
   const projection = plan.includedColumns
-    .map((column) => quoteIdent(column))
+    .map((column) => projectColumn(plan.table, column))
     .join(', ');
   const rows = (await dbModule.db.execute(
     sql`
