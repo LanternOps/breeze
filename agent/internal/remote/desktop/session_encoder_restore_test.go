@@ -201,3 +201,127 @@ func TestMaybeRestoreHardwareEncoder_NilEncoderDisarms(t *testing.T) {
 		t.Fatalf("a nil encoder must disarm the policy rather than spin")
 	}
 }
+
+// --- #10880: warm-up before swap, give-up on a never-producing encoder ---
+
+// TestHardwareRestorePolicy_WarmupStateMachine drives the policy through the
+// warm-up outcomes. A restore attempt now builds the hardware candidate off the
+// live path and only swaps once it has emitted a frame, so the policy has to
+// track an in-flight warm-up (no second attempt while one runs) and decide on
+// failure whether to back off or give up for the session.
+func TestHardwareRestorePolicy_WarmupStateMachine(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	due := t0.Add(5 * time.Second) // first backoff
+
+	type want struct {
+		gaveUp       bool
+		demoted      bool
+		warming      bool
+		attempts     int
+		dueAgainAt   time.Duration // offset from `due`; 0 = never due again
+		notDueBefore time.Duration // offset from `due` at which it must not yet be due
+	}
+	cases := []struct {
+		name           string
+		producedOutput bool
+		outcome        string // "success" | "failure" | "inconclusive"
+		want           want
+	}{
+		{
+			name:    "success disarms and keeps the attempt count",
+			outcome: "success",
+			want:    want{demoted: false, attempts: 1},
+		},
+		{
+			name:           "failure after hardware produced frames backs off (15s) without giving up",
+			producedOutput: true,
+			outcome:        "failure",
+			want:           want{demoted: true, attempts: 1, notDueBefore: 14 * time.Second, dueAgainAt: 15 * time.Second},
+		},
+		{
+			name:    "first failure when hardware never produced a frame gives up for the session",
+			outcome: "failure",
+			want:    want{gaveUp: true, demoted: true, attempts: maxHardwareRestoreAttempts},
+		},
+		{
+			name:    "inconclusive (e.g. display changed mid warm-up) backs off without a verdict",
+			outcome: "inconclusive",
+			want:    want{demoted: true, attempts: 1, notDueBefore: 14 * time.Second, dueAgainAt: 15 * time.Second},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var p hardwareRestorePolicy
+			if tc.producedOutput {
+				p.noteHardwareOutput()
+			}
+			p.onDemotedFromHardware(t0)
+			if !p.shouldAttempt(due) {
+				t.Fatalf("attempt should be due at +5s")
+			}
+			p.onWarmupStarted(due)
+			if !p.warming {
+				t.Fatalf("onWarmupStarted must mark a warm-up in flight")
+			}
+			if p.shouldAttempt(due.Add(time.Hour)) {
+				t.Fatalf("no new attempt may start while a warm-up is in flight")
+			}
+
+			gaveUp := false
+			switch tc.outcome {
+			case "success":
+				p.onWarmupSucceeded()
+			case "failure":
+				gaveUp = p.onWarmupFailed()
+			case "inconclusive":
+				p.onWarmupInconclusive()
+			}
+
+			if gaveUp != tc.want.gaveUp {
+				t.Fatalf("gaveUp = %v, want %v", gaveUp, tc.want.gaveUp)
+			}
+			if p.warming {
+				t.Fatalf("warm-up must be cleared after outcome %q", tc.outcome)
+			}
+			if p.demoted != tc.want.demoted {
+				t.Fatalf("demoted = %v, want %v", p.demoted, tc.want.demoted)
+			}
+			if p.attempts != tc.want.attempts {
+				t.Fatalf("attempts = %d, want %d", p.attempts, tc.want.attempts)
+			}
+			if tc.want.notDueBefore > 0 && p.shouldAttempt(due.Add(tc.want.notDueBefore)) {
+				t.Fatalf("attempt must not be due at +%v after the first", tc.want.notDueBefore)
+			}
+			if tc.want.dueAgainAt > 0 {
+				if !p.shouldAttempt(due.Add(tc.want.dueAgainAt)) {
+					t.Fatalf("attempt should be due again at +%v after the first", tc.want.dueAgainAt)
+				}
+			} else if p.shouldAttempt(due.Add(24 * time.Hour)) {
+				t.Fatalf("no further attempt should ever be due")
+			}
+		})
+	}
+}
+
+// Hardware that produced frames at session start keeps the full retry budget:
+// failed warm-ups never freeze the viewer (they run off the live path), so the
+// normal 3-attempt cap is still the right bound.
+func TestHardwareRestorePolicy_ProducedOutputKeepsFullBudget(t *testing.T) {
+	var p hardwareRestorePolicy
+	p.noteHardwareOutput()
+	now := time.Unix(0, 0)
+	p.onDemotedFromHardware(now)
+	for i := 0; i < maxHardwareRestoreAttempts; i++ {
+		now = now.Add(time.Hour)
+		if !p.shouldAttempt(now) {
+			t.Fatalf("attempt %d should be due", i+1)
+		}
+		p.onWarmupStarted(now)
+		if p.onWarmupFailed() {
+			t.Fatalf("attempt %d: must not give up early when hardware produced output", i+1)
+		}
+	}
+	if p.shouldAttempt(now.Add(time.Hour)) {
+		t.Fatalf("cap of %d attempts must still hold", maxHardwareRestoreAttempts)
+	}
+}

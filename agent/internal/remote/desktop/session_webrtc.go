@@ -306,6 +306,18 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		preferHardware = false
 	}
 
+	// #10880: an earlier session in this helper process found that the
+	// hardware encoder never produces a frame at this resolution (it stalled
+	// at startup and failed a warm-up). Start on software rather than
+	// re-learning that with a 3s frozen startup. The verdict comes from the
+	// CPU-input restore path, so it only applies to CPU-capture sessions — not
+	// to D3D11 capturers, whose zero-copy hardware path was never tested by it.
+	if _, gpuCapture := capturer.(TextureProvider); preferHardware && !gpuCapture && hardwareEncoderKnownDead(w, h) {
+		slog.Info("StartSession: hardware encoder produced no frames at this resolution earlier in this process, starting on software",
+			"session", sessionID, "dimensions", fmt.Sprintf("%dx%d", w, h))
+		preferHardware = false
+	}
+
 	// Create H264 encoder via factory (will use MFT on Windows).
 	// Always configure the encoder for maxFrameRate so hardware MFT rate control
 	// is correct from first frame. The capture loop throttles if needed.

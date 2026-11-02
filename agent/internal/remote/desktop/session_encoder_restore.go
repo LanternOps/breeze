@@ -37,12 +37,28 @@ func hardwareRestoreBackoff(attempt int) time.Duration {
 // scheduling/cap logic lives here (and is unit tested) while the encoder rebuild
 // itself lives in Session.maybeRestoreHardwareEncoder.
 //
+// A restore attempt no longer swaps the live encoder straight away (#10880): the
+// candidate is warmed up off the live path and swapped in only once it has
+// returned an encoded frame (see session_encoder_warmup.go). The policy tracks
+// that in-flight warm-up and, on failure, decides between backing off and
+// giving up for the session.
+//
 // Owned by the capture-loop goroutine; like reattachWatchdog it uses no atomics
-// or locks and must not be driven concurrently.
+// or locks and must not be driven concurrently. The warm-up goroutine never
+// touches it: its result comes back over Session.hwWarmupCh and the capture
+// loop applies it here.
 type hardwareRestorePolicy struct {
 	demoted  bool
 	attempts int
 	nextAt   time.Time
+	// warming is true while a restore candidate is warming up; no further
+	// attempt starts until its result has been applied.
+	warming bool
+	// hardwareProducedOutput records whether any hardware encoder returned an
+	// encoded frame in this session. A failed warm-up on a session where
+	// hardware never produced anything means this machine's hardware encoder
+	// does not work at this resolution, so the policy gives up immediately.
+	hardwareProducedOutput bool
 }
 
 // onDemotedFromHardware arms the policy after a hardware->software swap. The
@@ -56,7 +72,7 @@ func (p *hardwareRestorePolicy) onDemotedFromHardware(now time.Time) {
 
 // shouldAttempt reports whether a restore attempt is due now.
 func (p *hardwareRestorePolicy) shouldAttempt(now time.Time) bool {
-	return p.demoted && p.attempts < maxHardwareRestoreAttempts && !now.Before(p.nextAt)
+	return p.demoted && !p.warming && p.attempts < maxHardwareRestoreAttempts && !now.Before(p.nextAt)
 }
 
 // recordAttempt counts a restore attempt and schedules the next backoff window.
@@ -78,6 +94,49 @@ func (p *hardwareRestorePolicy) giveUp() {
 	p.attempts = maxHardwareRestoreAttempts
 }
 
+// noteHardwareOutput records that a hardware encoder returned an encoded frame
+// in this session. Called by the capture path on every hardware output; it only
+// flips a bool, so it is cheap enough for the per-frame path.
+func (p *hardwareRestorePolicy) noteHardwareOutput() {
+	p.hardwareProducedOutput = true
+}
+
+// onWarmupStarted counts a restore attempt whose candidate is now warming up
+// off the live path, and blocks further attempts until its result is applied.
+func (p *hardwareRestorePolicy) onWarmupStarted(now time.Time) {
+	p.recordAttempt(now)
+	p.warming = true
+}
+
+// onWarmupSucceeded applies a warm-up that proved the candidate (it is being
+// swapped in), disarming the policy like onRestored.
+func (p *hardwareRestorePolicy) onWarmupSucceeded() {
+	p.warming = false
+	p.onRestored()
+}
+
+// onWarmupFailed applies a warm-up whose candidate never produced a frame. If
+// no hardware encoder has produced output in this session either — it stalled
+// at startup and failed again off the live path — retrying is pointless, so the
+// policy gives up and reports true so the caller can remember the verdict
+// beyond this session. Otherwise the next attempt waits for the backoff that
+// onWarmupStarted already scheduled.
+func (p *hardwareRestorePolicy) onWarmupFailed() (gaveUp bool) {
+	p.warming = false
+	if !p.hardwareProducedOutput {
+		p.giveUp()
+		return true
+	}
+	return false
+}
+
+// onWarmupInconclusive applies a warm-up whose outcome says nothing about the
+// hardware (e.g. the display resolution changed while it ran). The attempt
+// stays counted and the next one waits for the scheduled backoff.
+func (p *hardwareRestorePolicy) onWarmupInconclusive() {
+	p.warming = false
+}
+
 // maybeRestoreHardwareEncoder periodically tries to swap a software-fallback
 // encoder back to a hardware one (VideoToolbox on macOS). It is the CPU-capture
 // counterpart to restoreHardwareEncoder, which is DXGI/TextureProvider-specific
@@ -86,8 +145,17 @@ func (p *hardwareRestorePolicy) giveUp() {
 // D3D11 device to bind, so we only accept a hardware backend that consumes CPU
 // pixels (a non-GPU-only encoder, i.e. VideoToolbox).
 //
+// The candidate is never swapped in unproven (#10880): it is handed to a
+// warm-up goroutine, and the live software encoder keeps streaming until a later
+// tick collects a result showing the candidate returned an encoded frame. A
+// candidate that never does is discarded without touching the live encoder.
+//
 // Must be called from the capture loop goroutine (same as swapToSoftwareEncoder).
 func (s *Session) maybeRestoreHardwareEncoder(now time.Time) {
+	if s.hwWarmupCh != nil {
+		s.pollHardwareWarmup()
+		return
+	}
 	if !s.hwRestore.shouldAttempt(now) {
 		return
 	}
@@ -98,8 +166,6 @@ func (s *Session) maybeRestoreHardwareEncoder(now time.Time) {
 		return
 	}
 
-	s.hwRestore.recordAttempt(now)
-
 	var w, h int
 	if c := s.capturer; c != nil {
 		if bw, bh, err := c.GetScreenBounds(); err == nil {
@@ -108,10 +174,20 @@ func (s *Session) maybeRestoreHardwareEncoder(now time.Time) {
 	}
 	if w == 0 || h == 0 {
 		// Capturer has no bounds yet (nil or a transient GetScreenBounds error).
-		// recordAttempt already advanced the backoff, so this won't tight-loop;
-		// log so a session that never recovers hardware is diagnosable.
+		// recordAttempt advances the backoff, so this won't tight-loop; log so a
+		// session that never recovers hardware is diagnosable.
+		s.hwRestore.recordAttempt(now)
 		slog.Info("maybeRestoreHardwareEncoder: no screen bounds yet, staying on software",
 			"session", s.id, "attempt", s.hwRestore.attempts)
+		return
+	}
+
+	if hardwareEncoderKnownDead(w, h) {
+		// An earlier session in this helper process already proved the hardware
+		// encoder produces nothing at this resolution.
+		s.hwRestore.giveUp()
+		slog.Info("maybeRestoreHardwareEncoder: hardware encoder known to produce no frames at this resolution, staying on software",
+			"session", s.id, "dimensions", fmt.Sprintf("%dx%d", w, h))
 		return
 	}
 
@@ -119,7 +195,7 @@ func (s *Session) maybeRestoreHardwareEncoder(now time.Time) {
 	if fps <= 0 {
 		fps = 30
 	}
-	newEnc, err := NewVideoEncoder(EncoderConfig{
+	newEnc, err := newHardwareRestoreCandidate(EncoderConfig{
 		Codec:          CodecH264,
 		Quality:        QualityAuto,
 		Bitrate:        2_500_000,
@@ -128,6 +204,7 @@ func (s *Session) maybeRestoreHardwareEncoder(now time.Time) {
 		GPUVendor:      s.gpuVendor,
 	})
 	if err != nil {
+		s.hwRestore.recordAttempt(now)
 		slog.Info("maybeRestoreHardwareEncoder: factory failed, staying on software",
 			"session", s.id, "attempt", s.hwRestore.attempts, "error", err.Error())
 		return
@@ -153,13 +230,85 @@ func (s *Session) maybeRestoreHardwareEncoder(now time.Time) {
 		return
 	}
 
-	if err := newEnc.SetDimensions(w, h); err != nil {
-		slog.Warn("maybeRestoreHardwareEncoder: SetDimensions failed, staying on software",
-			"session", s.id, "attempt", s.hwRestore.attempts, "error", err.Error())
-		newEnc.Close()
+	// Hand the candidate to the warm-up goroutine. It owns the candidate until
+	// it hands a proven one back on the channel (or discards it), so nothing
+	// here touches newEnc again. SetDimensions — which creates the VideoToolbox
+	// session — also runs there, keeping all hardware calls off the capture loop.
+	s.hwRestore.onWarmupStarted(now)
+	ch := make(chan hardwareWarmupResult)
+	s.hwWarmupCh = ch
+	slog.Info("Warming up hardware encoder off the live path before restoring it",
+		"session", s.id, "backend", backendName, "attempt", s.hwRestore.attempts,
+		"dimensions", fmt.Sprintf("%dx%d", w, h), "budget", hardwareWarmupBudget)
+	go runHardwareWarmup(newEnc, w, h, s.encoderPF, hardwareWarmupBudget, hardwareWarmupRetryGap, s.done, ch)
+}
+
+// pollHardwareWarmup collects the in-flight warm-up result, if one is ready,
+// without blocking the capture loop.
+func (s *Session) pollHardwareWarmup() {
+	select {
+	case res := <-s.hwWarmupCh:
+		s.hwWarmupCh = nil
+		s.applyHardwareWarmup(res)
+	default:
+	}
+}
+
+// applyHardwareWarmup acts on a collected warm-up result: swap a proven
+// candidate in, or record the failure. Capture-loop goroutine only.
+func (s *Session) applyHardwareWarmup(res hardwareWarmupResult) {
+	dims := fmt.Sprintf("%dx%d", res.width, res.height)
+	if res.err != nil {
+		// The goroutine already closed the candidate; the live encoder was
+		// never touched.
+		if s.hwRestore.onWarmupFailed() {
+			rememberHardwareEncoderDead(res.width, res.height)
+			slog.Warn("Hardware encoder produced no frames at startup or during warm-up; staying on software for this session and for later sessions at this resolution",
+				"session", s.id, "dimensions", dims, "warmupFrames", res.frames,
+				"warmupElapsed", res.elapsed.Round(time.Millisecond), "error", res.err.Error())
+			return
+		}
+		slog.Info("Hardware encoder warm-up failed, staying on software",
+			"session", s.id, "dimensions", dims, "attempt", s.hwRestore.attempts,
+			"warmupFrames", res.frames, "warmupElapsed", res.elapsed.Round(time.Millisecond),
+			"error", res.err.Error())
 		return
 	}
+
+	newEnc := res.enc
+	cur := s.encoder.Load()
+	if cur == nil || cur.BackendIsHardware() {
+		// Something else restored hardware (or the session has no encoder)
+		// while the candidate warmed up; it is no longer needed.
+		newEnc.Close()
+		s.hwRestore.onWarmupSucceeded()
+		return
+	}
+
+	var w, h int
+	if c := s.capturer; c != nil {
+		if bw, bh, err := c.GetScreenBounds(); err == nil {
+			w, h = bw, bh
+		}
+	}
+	if w != res.width || h != res.height {
+		// The display changed while the candidate warmed up, so it was proven
+		// at the wrong size. Discard it; the next attempt uses the new size.
+		newEnc.Close()
+		s.hwRestore.onWarmupInconclusive()
+		slog.Info("Hardware encoder warm-up finished after a resolution change, discarding candidate",
+			"session", s.id, "warmedDimensions", dims,
+			"currentDimensions", fmt.Sprintf("%dx%d", w, h), "attempt", s.hwRestore.attempts)
+		return
+	}
+
+	// Re-apply the live pixel format and frame rate: either may have changed
+	// during the warm-up.
 	newEnc.SetPixelFormat(s.encoderPF)
+	if err := newEnc.SetFPS(s.getFPS()); err != nil {
+		slog.Debug("maybeRestoreHardwareEncoder: SetFPS on restored encoder failed",
+			"session", s.id, "error", err.Error())
+	}
 
 	s.atomicEncoderSwap(newEnc)
 	s.gpuEncodeErrors = 0
@@ -171,11 +320,13 @@ func (s *Session) maybeRestoreHardwareEncoder(now time.Time) {
 		s.adaptive.SetMaxBitrate(resolutionBitrateCeiling(w, h))
 	}
 
-	s.hwRestore.onRestored()
+	s.hwRestore.onWarmupSucceeded()
 	_ = newEnc.ForceKeyframe()
 	slog.Info("Restored hardware encoder after software fallback",
 		"session", s.id,
 		"backend", newEnc.BackendName(),
 		"attempt", s.hwRestore.attempts,
-		"dimensions", fmt.Sprintf("%dx%d", w, h))
+		"warmupFrames", res.frames,
+		"warmupElapsed", res.elapsed.Round(time.Millisecond),
+		"dimensions", dims)
 }

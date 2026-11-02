@@ -130,6 +130,10 @@ type Session struct {
 	// transient stall doesn't pin a CPU core software-encoding 5K for the whole
 	// session. Driven from the ticker capture loop. See session_encoder_restore.go.
 	hwRestore hardwareRestorePolicy
+	// hwWarmupCh is non-nil while a hardware restore candidate is warming up
+	// off the live path (#10880). The warm-up goroutine hands its result back
+	// on it; only the capture loop receives, via maybeRestoreHardwareEncoder.
+	hwWarmupCh chan hardwareWarmupResult
 
 	// cursorOffsetX/Y store the active monitor's virtual desktop origin so
 	// cursorStreamLoop can convert absolute GetCursorInfo coords to
@@ -172,6 +176,13 @@ type Session struct {
 	// WriteSample (never bumped by the idle heartbeat). Drives sampleDuration so
 	// the RTP media clock reflects true inter-frame wall time across idle gaps.
 	lastSampleNanos atomic.Int64
+	// lastCaptureUnixNano is when the capturer last delivered a frame to the
+	// CPU encode path, and lastEncodeOutputUnixNano when the encoder last
+	// returned encoded data. Together with lastVideoWriteUnixNano they let the
+	// ticker no-video watchdog tell a dead capturer from a stalled encoder or
+	// sink, so an encoder stall no longer rebuilds the capture stream (#10880).
+	lastCaptureUnixNano      atomic.Int64
+	lastEncodeOutputUnixNano atomic.Int64
 
 	// lastInputUnixNano is the wall-clock nanos of the most recent INPUT event
 	// (mouse/keyboard) from the viewer. It drives the idle-session watchdog
