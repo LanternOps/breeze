@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -48,6 +49,9 @@ func TestRecoveryVersion(t *testing.T) {
 }
 
 func TestRecoverySelfTestUnsupported(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows wiring is tested with injected dependencies; no live WFP calls")
+	}
 	cap := isolation.NewPlatformIsolator().Capability()
 	var out, errOut bytes.Buffer
 	got := run([]string{"self-test"}, &out, &errOut)
@@ -63,6 +67,9 @@ func TestRecoverySelfTestUnsupported(t *testing.T) {
 }
 
 func TestRecoveryOperationsDoNotSilentlySucceed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows cleanup is tested with injected dependencies; no live WFP calls")
+	}
 	dir := t.TempDir()
 	for _, args := range [][]string{
 		{"expire-check", "--data-dir", dir}, {"boot-apply", "--data-dir", dir},
@@ -74,7 +81,7 @@ func TestRecoveryOperationsDoNotSilentlySucceed(t *testing.T) {
 			if got := run(args, &out, &errOut); got != 1 {
 				t.Fatalf("exit = %d, want 1", got)
 			}
-			if !strings.Contains(errOut.String(), "not implemented on this platform yet (W1g)") {
+			if !strings.Contains(errOut.String(), "unsupported platform") {
 				t.Fatal("unsupported operation lacks a clear error")
 			}
 		})

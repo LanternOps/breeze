@@ -165,3 +165,13 @@ func TestWindowsDropWindowClosesOnContextCancellation(t *testing.T) {
 		t.Fatal("probe window leaked")
 	}
 }
+
+func TestWindowsHandoffAppIDsIncludeBothBinarySets(t *testing.T) {
+	i := newWindowsIsolator(func() []string { return []string{`C:\old\breeze-agent.exe`} }).(*windowsIsolator)
+	i.stat = func(string) error { return nil }
+	i.appID = func(p string) ([]byte, error) { return []byte(p), nil }
+	bins, ids, err := i.applicationIDs(`C:\old\breeze-agent.exe`, `C:\new\breeze-agent.exe`)
+	if err != nil || len(bins) != 2 || len(ids) != 2 {
+		t.Fatalf("handoff IDs: %v %v %v", bins, ids, err)
+	}
+}

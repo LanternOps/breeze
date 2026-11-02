@@ -2,7 +2,7 @@ import { isDeviceOwned } from '../services/alertOwner';
 import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { scriptParametersSchema } from '@breeze/shared';
+import { DEFAULT_ALERT_COOLDOWN_MINUTES, scriptParametersSchema } from '@breeze/shared';
 import { and, asc, desc, eq, gte, ilike, inArray, like, ne, or, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db } from '../db';
@@ -1274,7 +1274,7 @@ mobileRoutes.post(
 
           const overrides = (rule.overrideSettings as Record<string, unknown> | null) ?? null;
           const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-            template?.cooldownMinutes ?? 15;
+            template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
           await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes, alert.subjectKey ?? undefined);
         }
       }
