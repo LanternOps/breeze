@@ -304,7 +304,7 @@ describe('partner-owned groups W3', () => {
     expect(schedulePeripheralPolicyDevice).toHaveBeenCalledWith(DEVICE_ID,'group_deleted');
     expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({orgId:null,action:'device_group.delete'}));
   });
-  it.each([['POST','/devices',{deviceIds:[DEVICE_ID]}],['DELETE','/devices/'+DEVICE_ID,undefined],['POST','/devices/'+DEVICE_ID+'/pin',undefined],['DELETE','/devices/'+DEVICE_ID+'/pin',undefined]])('manual %s %s stays read-only',async(method,suffix,body)=>{
+  it.each([['POST','/devices',{deviceIds:[DEVICE_ID]}],['DELETE','/devices/'+DEVICE_ID,undefined],['POST','/devices/'+DEVICE_ID+'/pin',undefined],['DELETE','/devices/'+DEVICE_ID+'/pin',undefined],['POST','/devices/remove',{deviceIds:[DEVICE_ID]}]])('manual %s %s stays read-only',async(method,suffix,body)=>{
     vi.mocked(db.select).mockReturnValueOnce(query([makeGroup()]) as never);
     const res=await request(String(method),'/'+GROUP_ID+suffix,body);expect(res.status).toBe(400);expect(await res.json()).toMatchObject({code:'PARTNER_GROUP_READ_ONLY'});
   });
@@ -415,7 +415,7 @@ describe('partner-owned groups W3', () => {
     expect(res.status).toBe(400);expect(await res.json()).toMatchObject({code:'PARTNER_GROUP_FILTER_UNSUPPORTED'});
   });
 
-  it.each([['PATCH',''],['DELETE',''],['POST','/devices'],['DELETE','/devices/'+DEVICE_ID],['POST','/devices/'+DEVICE_ID+'/pin'],['DELETE','/devices/'+DEVICE_ID+'/pin']])('org read-only user %s %s receives unknown-id before write permission gate',async(method,suffix)=>{
+  it.each([['PATCH',''],['DELETE',''],['POST','/devices'],['DELETE','/devices/'+DEVICE_ID],['POST','/devices/'+DEVICE_ID+'/pin'],['DELETE','/devices/'+DEVICE_ID+'/pin'],['POST','/devices/remove']])('org read-only user %s %s receives unknown-id before write permission gate',async(method,suffix)=>{
     setScope('organization','all',null,false,true);
     vi.mocked(db.select).mockReturnValueOnce(query([makeGroup()]) as never);
     const res=await request(method,'/'+GROUP_ID+suffix,{});

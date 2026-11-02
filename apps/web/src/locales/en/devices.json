@@ -1746,6 +1746,11 @@
     "on": "on",
     "multiBootMachinesTuckExpectedOffline": "Multi-boot machines: tuck expected-offline boot profiles beneath their online sibling as thin strips. Off = flat list.",
     "collapseLinkedInactiveProfiles": "Collapse linked inactive profiles",
+    "exportCsv": "Export CSV",
+    "exportCsvSelected": "Export CSV ({{count}} selected)",
+    "exportingCsv": "Exporting…",
+    "exportCsvFailed": "Couldn't export the device list. Try again.",
+    "exportCsvAttentionPartial": "Exported, but open alerts and tickets could not be loaded for some devices — those cells say \"unavailable\".",
     "columns": "Columns",
     "visibleInOrder": "Visible (in order)",
     "moveUp": "Move up",
@@ -1878,7 +1883,10 @@
     "moveToSite": "Move to site",
     "moveSelectedToSite": "Move to site",
     "moveSiteMixedOrgs": "Selected devices belong to more than one organization",
-    "moveSiteOverCap": "Select at most {{count}} devices to move at once"
+    "moveSiteOverCap": "Select at most {{count}} devices to move at once",
+    "addToGroup": "Add to group…",
+    "removeFromGroup": "Remove from group…",
+    "groupMembershipOverCap": "Select at most {{count}} devices to change group membership at once"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Failed to fetch device logs",
@@ -4715,5 +4723,25 @@
     "membersError": "Failed to load group members.",
     "retry": "Retry",
     "emptyMembers": "No devices in this group."
+  },
+  "bulkGroupMembership": {
+    "titleAdd": "Add to group",
+    "titleRemove": "Remove from group",
+    "selectionSummary": "Selected devices: {{n}} · Organization: {{org}}",
+    "groupLabel": "Static group",
+    "selectGroup": "Select a group",
+    "loadingGroups": "Loading groups…",
+    "noGroups": "No static group in this organization can take this selection.",
+    "scopeHint": "Only static groups of this organization are listed. A site group is listed only when every selected device is at that site. Dynamic groups are not listed: their rules decide who is a member.",
+    "cancel": "Cancel",
+    "saving": "Saving…",
+    "submitAdd": "Add devices",
+    "submitRemove": "Remove devices",
+    "failedToLoadGroups": "Could not load the groups of this organization. Close the dialog and try again.",
+    "failedToUpdate": "Failed to update group membership",
+    "addResult": "{{group}}: {{added}} added, {{skipped}} already in the group",
+    "removeResult": "{{group}}: {{removed}} removed, {{notMember}} were not in the group",
+    "removeResultForbidden": "{{group}}: {{removed}} removed, {{notMember}} were not in the group. Not removed (no access to the device's site): {{devices}}",
+    "andMore": "{{names}} and {{n}} more"
   }
 }

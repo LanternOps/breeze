@@ -84,7 +84,10 @@
       "resolved": "Résolu",
       "suppressed": "Masqué",
       "dismissed": "Ignoré"
-    }
+    },
+    "createPsaTicket": "Créer un billet PSA",
+    "psaTicketRequested": "Billet PSA demandé",
+    "failedToCreatePsaTicket": "Impossible de demander le billet PSA"
   },
   "alertDetails": {
     "closePanel": "Panneau fermé",
@@ -967,5 +970,10 @@
       "body": "Les modèles existants restent modifiables ici et seront convertis dans la prochaine version.",
       "link": "Ouvrir les moniteurs"
     }
+  },
+  "subject": {
+    "label": "Sujet",
+    "backupWorkload": "Charge de sauvegarde",
+    "topologySite": "Site de topologie"
   }
 }

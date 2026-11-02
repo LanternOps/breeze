@@ -9,6 +9,7 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { Context, Next } from 'hono';
 import { zValidator } from '../lib/validation';
+import { refuseReservedBrandName } from '../lib/reservedBrandName';
 import { z } from 'zod';
 import { and, eq, ilike, inArray, isNull, ne, not, notInArray, or, sql } from 'drizzle-orm';
 import { scheduleServingRefreshForPartner } from '../services/trustPage/servingSet';
@@ -86,7 +87,7 @@ import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlField, keptSecretOrHttpUrlValue, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml, securityLimitSchemas, portalCustomCssSchema } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
-import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE, DEFAULT_LAUNCH_PURCHASE_SELECTION } from '@breeze/shared';
+import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE, DEFAULT_SIGNUP_INTENT } from '@breeze/shared';
 import { siteLocationRoutes } from './siteLocation';
 import { partnerSettingsInheritanceRoutes } from './partnerSettingsInheritance';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
@@ -259,7 +260,7 @@ async function validateAgentVersionPins(defaults: unknown): Promise<string | nul
 }
 
 const createPartnerSchema = z.object({
-  name: z.string().min(1),
+  name: refuseReservedBrandName(z.string().min(1)),
   slug: z.string().min(1).max(100),
   type: z.enum(['msp', 'enterprise', 'internal']).optional(),
   // plan and maxDevices are managed by the billing service (via direct DB writes).
@@ -339,7 +340,7 @@ function preserveIpAllowlistOnOmit(
 
 export const createOrganizationSchema = z.object({
   partnerId: z.string().guid().optional(),
-  name: z.string().min(1),
+  name: refuseReservedBrandName(z.string().min(1)),
   slug: z.string().min(1).max(100),
   type: z.enum(['customer', 'internal']).optional(),
   status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
@@ -704,7 +705,7 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
         maxOrganizations: data.maxOrganizations,
         // This route bypasses createPartner. Persist the fresh-business offer
         // here too; existing partners' absent intent remains a legacy commitment.
-        purchaseSelection: { ...DEFAULT_LAUNCH_PURCHASE_SELECTION },
+        purchaseSelection: { ...DEFAULT_SIGNUP_INTENT },
         settings: encryptColumnValueForWrite('partners', 'settings', createSecrets.settings),
         billingEmail: data.billingEmail
       })
@@ -1059,7 +1060,7 @@ const PARTNER_SECURITY_CLEARABLE_KEYS = [
 
 const updatePartnerSettingsSchema = z.object({
   settings: partnerSettingsSchema.optional(),
-  name: z.string().min(1).optional(),
+  name: refuseReservedBrandName(z.string().min(1)).optional(),
   billingEmail: z.string().email().optional(),
   // Plain-text signature appended to outbound customer emails (quote sends).
   emailSignature: z.string().max(2000).nullable().optional(),

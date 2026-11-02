@@ -47,6 +47,12 @@ describe('webhook form event options', () => {
     expect(formEventValues().filter(value => values(apiBlock).includes(value))).toEqual([]);
   });
 
+  // #10024: ticket.merged is published (and documented) but was not selectable.
+  it('offers ticket.merged, which the event bus publishes', () => {
+    expect(Object.values(EVENT_TYPES)).toContain('ticket.merged');
+    expect(formEventValues()).toContain('ticket.merged');
+  });
+
   it('offers only event types the event bus publishes', () => {
     const published = new Set<string>(Object.values(EVENT_TYPES));
     const unpublished = formEventValues().filter((value) => !published.has(value));

@@ -54,7 +54,7 @@ type GrantLookup =
 /**
  * The caller's active Wisp grant the panel can speak under: the partner-wide
  * grant first, then one scoped to the organization selected in the header
- * (the order WispLinkButton uses). `isNoActiveGrant` (200 `{ data: null }`,
+ * (the order WispTalkButton uses). `isNoActiveGrant` (200 `{ data: null }`,
  * #10200) is the ordinary "no grant here"; any other failure is reported as `failed` and the panel
  * stays Breeze AI without offering "Meet Wisp" — nothing about it fails
  * loudly (Review Focus 2).
@@ -120,6 +120,7 @@ export default function AiChatSidebar() {
     loadM365Connections,
     setSelectedM365Connection,
     composerDraft,
+    composerFocusRequest,
     setComposerDraft,
     wisp,
     enterWispMode,
@@ -543,6 +544,7 @@ export default function AiChatSidebar() {
             <AiChatInput
               onSend={sendMessage}
               value={composerDraft}
+              focusRequest={composerFocusRequest}
               onValueChange={setComposerDraft}
               onInterrupt={interruptResponse}
               disabled={isLoading}

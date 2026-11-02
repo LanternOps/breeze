@@ -25,6 +25,7 @@ import { describe, expect, it } from 'vitest';
 import { TOOL_TIERS } from './aiAgentSdkTools';
 import {
   checkGuardrails,
+  isReadOnlyResolution,
   TIER1_ACTIONS,
   TIER2_ACTIONS,
   TIER2_READONLY_ACTIONS,
@@ -32,7 +33,7 @@ import {
   TIER3_ACTIONS,
   TOOL_ACTION_INPUT_KEYS,
 } from './aiGuardrails';
-import { getToolTier } from './aiTools';
+import { getToolDefinitions, getToolTier } from './aiTools';
 
 describe('TIER2_READONLY_ACTIONS ⊆ TIER2_ACTIONS (#3130)', () => {
   it('every read-only action pair is present in TIER2_ACTIONS', () => {
@@ -197,5 +198,65 @@ describe('readOnly never leaks outside the allowlists (#3130)', () => {
     expect(checkGuardrails('execute_command', {}).readOnly).toBeUndefined();
     expect(checkGuardrails('execute_command', { commandType: 'made_up' }).readOnly).toBeUndefined();
     expect(checkGuardrails('execute_command', { commandType: 42 as unknown as string }).readOnly).toBeUndefined();
+  });
+});
+
+/**
+ * #10412 — manage_policy_feature_link `list` is a pure read (getConfigPolicy +
+ * listFeatureLinks, no write) but was missing from the read-only allowlist, so
+ * a per_step chat interrupted the user with an approval card for it. The
+ * downgrade must stay exactly that narrow: every OTHER action the tool
+ * advertises is a write and must still reach an approval prompt.
+ */
+describe('manage_policy_feature_link reads auto-execute, writes still prompt (#10412)', () => {
+  const TOOL = 'manage_policy_feature_link';
+  const READ_ACTIONS = ['describe', 'list'];
+  const advertisedActions = (): string[] => {
+    const def = getToolDefinitions().find((d) => d.name === TOOL);
+    const schema = def?.input_schema as { properties?: { action?: { enum?: string[] } } } | undefined;
+    return schema?.properties?.action?.enum ?? [];
+  };
+
+  it('the read-only allowlist for the tool is exactly its read actions', () => {
+    expect([...(TIER2_READONLY_ACTIONS[TOOL] ?? [])].sort()).toEqual(READ_ACTIONS);
+  });
+
+  it('list resolves to tier 2, readOnly, with no approval', () => {
+    const check = checkGuardrails(TOOL, { action: 'list', configPolicyId: 'p1' });
+    expect(check.tier).toBe(2);
+    expect(check.readOnly).toBe(true);
+    expect(check.requiresApproval).toBe(false);
+    expect(isReadOnlyResolution(TOOL, check)).toBe(true);
+  });
+
+  it('no advertised write action is read-only, so per_step still prompts for each', () => {
+    const writes = advertisedActions().filter((a) => !READ_ACTIONS.includes(a)).sort();
+    // Pins the enum so a renamed or moved schema cannot make this loop vacuous;
+    // a new action must be classified here deliberately.
+    expect(writes).toEqual(['add', 'remove', 'update']);
+    for (const action of writes) {
+      const check = checkGuardrails(TOOL, { action, configPolicyId: 'p1', featureLinkId: 'l1', featureType: 'patch' });
+      expect(check.tier, action).toBeGreaterThanOrEqual(2);
+      expect(check.readOnly, action).toBeUndefined();
+      expect(isReadOnlyResolution(TOOL, check), action).toBe(false);
+    }
+  });
+
+  it('remove stays tier 3 with approval; add/update still escalate to tier 3 on maintenance', () => {
+    const remove = checkGuardrails(TOOL, { action: 'remove', configPolicyId: 'p1', featureLinkId: 'l1' });
+    expect(remove.tier).toBe(3);
+    expect(remove.requiresApproval).toBe(true);
+    for (const action of ['add', 'update']) {
+      const check = checkGuardrails(TOOL, { action, configPolicyId: 'p1', featureLinkId: 'l1', featureType: 'maintenance' });
+      expect(check.tier, action).toBe(3);
+      expect(check.requiresApproval, action).toBe(true);
+      expect(check.readOnly, action).toBeUndefined();
+    }
+  });
+
+  it('a stray featureType on list does not move it off the read path', () => {
+    const check = checkGuardrails(TOOL, { action: 'list', configPolicyId: 'p1', featureType: 'maintenance' });
+    expect(check.tier).toBe(2);
+    expect(check.readOnly).toBe(true);
   });
 });

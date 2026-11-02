@@ -156,6 +156,31 @@ vi.mock('../../lib/permissions', () => ({
   hasPermission: () => true,
 }));
 
+
+describe('AlertList org subjects', () => {
+  it('renders a workload chip and omits its device filter', () => {
+    const { container } = render(<AlertList alerts={[{ ...baseAlert, deviceId: null, deviceName: '', ownerKind: 'backup_workload', subjectName: 'Microsoft 365 mail backup · Example organization' }]} />);
+    expect(screen.getByTestId('alert-subject-chip')).toHaveAttribute('href', '/backup');
+    expect(container.querySelector('a[href*="/devices/"]')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /filters/i }));
+    expect(screen.queryByRole('combobox', { name: 'Device' })).toBeNull();
+  });
+
+  it('does not expose a topology origin device as a device filter', () => {
+    const { container } = render(<AlertList alerts={[{ ...baseAlert, ownerKind: 'topology_site', topologySiteId: 'site-1', subjectName: 'Branch' }]} />);
+    expect(screen.getByTestId('alert-subject-chip')).toHaveAttribute('href', '/discovery#topology/site/site-1');
+    expect(container.querySelector('a[href*="/devices/"]')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /filters/i }));
+    expect(screen.queryByRole('combobox', { name: 'Device' })).toBeNull();
+  });
+
+  it('searches subjectName for a workload alert', () => {
+    render(<AlertList alerts={[{ ...baseAlert, deviceId: null, deviceName: '', ownerKind: 'backup_workload', subjectName: 'Microsoft 365 mail backup · Example organization' }]} />);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Microsoft 365' } });
+    expect(screen.getByText(baseAlert.title)).toBeInTheDocument();
+  });
+});
+
 describe('AlertList e2e hooks (#10040)', () => {
   it('exposes the count and per-alert rows', () => {
     render(<AlertList alerts={[baseAlert, { ...baseAlert, id: 'a-2' }]} />);

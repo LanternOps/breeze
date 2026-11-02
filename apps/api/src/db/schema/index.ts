@@ -86,6 +86,7 @@ export * from './aiAgentSchedules';
 export * from './aiOperatorTasks';
 export * from './aiOperatorTaskGraph';
 export * from './aiOperatorPlanApprovals';
+export * from './aiOperatorAccountReservations';
 export * from './aiWorkspace';
 export * from './aiKillState';
 export * from './monitors';

@@ -10,6 +10,9 @@ import {
   PROMPT_CATALOG,
   PROMPT_LOCALES,
   PromptCatalogError,
+  PROMPT_RESERVED_BRANDS,
+  PROMPT_RESERVED_BRAND_QUALIFIERS,
+  isReservedPromptBrandName,
   negotiatePromptLocale,
   promptMessagePlaceholders,
   renderPromptMessage,
@@ -124,6 +127,47 @@ describe('sanitizePromptPartnerName (shared fixture with the Go agent and Assist
   it('strips a lone surrogate', () => {
     expect(sanitizePromptPartnerName('North\ud800wind')).toBe('Northwind');
   });
+
+  // #10325: the reserved list is data; the Go mirror asserts the same lists.
+  it('reserved brand lists match the shared fixture', () => {
+    expect([...PROMPT_RESERVED_BRANDS]).toEqual(sanitizeFixture.reservedBrands.brands);
+    expect([...PROMPT_RESERVED_BRAND_QUALIFIERS]).toEqual(sanitizeFixture.reservedBrands.qualifiers);
+  });
+});
+
+describe('isReservedPromptBrandName (save-time check, #10325)', () => {
+  it.each([
+    'Microsoft',
+    'Microsoft Support',
+    '  windows   security ',
+    'Apple Help Desk',
+    'Ｍｉｃｒｏｓｏｆｔ',
+    'Micro soft',
+  ])('refuses %j', (name) => {
+    expect(isReservedPromptBrandName(name)).toBe(true);
+  });
+
+  it.each([
+    'Northwind IT',
+    'Northwind Microsoft Partner',
+    'Pineapple IT',
+    '',
+    '   ',
+    // Rejected by the sanitizer for another reason (mixed scripts), not a reserved brand.
+    'Місrosoft Support',
+  ])('allows %j', (name) => {
+    expect(isReservedPromptBrandName(name)).toBe(false);
+  });
+
+  it('agrees with the sanitizer on every fixture case', () => {
+    for (const { input, expected, name } of sanitizeFixture.cases) {
+      if (isReservedPromptBrandName(input)) expect(expected, name).toBeNull();
+    }
+  });
+
+  it('is total over non-strings', () => {
+    expect(isReservedPromptBrandName(undefined as unknown as string)).toBe(false);
+  });
 });
 
 describe('promptIdentityBlockSchema (heartbeat contract with the Go agent)', () => {
@@ -169,8 +213,13 @@ describe('promptIdentityBlockSchema (heartbeat contract with the Go agent)', () 
     ['a zero-byte logo', { ...valid, logo: { sha256: 'a'.repeat(64), mime: 'image/png', bytes: 0 } }],
     ['logo bytes inline (the heartbeat carries metadata only)', { ...valid, logo: { sha256: 'a'.repeat(64), mime: 'image/png', bytes: 1, data: 'AA==' } }],
     ['a name that is not NFKC-folded', { ...valid, partnerName: '\uff2dicrosoft' }],
+    ['a reserved brand partner name (#10325)', { ...valid, partnerName: 'Microsoft Support' }],
   ])('refuses %s', (_label, block) => {
     expect(promptIdentityBlockSchema.safeParse(block).success).toBe(false);
+  });
+
+  it('accepts a name that mentions a brand next to the partner name (#10325)', () => {
+    expect(promptIdentityBlockSchema.safeParse({ ...valid, partnerName: 'Northwind Microsoft Partner' }).success).toBe(true);
   });
 
   it('accepts a 120-code-point astral name', () => {

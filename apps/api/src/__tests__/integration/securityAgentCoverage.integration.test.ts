@@ -42,9 +42,11 @@ import {
   securityAgentDeviceStatus,
   softwareComplianceStatus,
   softwareDeployments,
+  softwareInventory,
   softwarePolicies,
   softwareVersions,
 } from '../../db/schema';
+import { repairManagedSoftwarePolicies } from '../../services/securityAgents/managedPolicyGenerator';
 import { encryptSecret } from '../../services/secretCrypto';
 import { ensureBuiltinPackage } from '../../services/builtinDeploymentPackages';
 import { addFeatureLink } from '../../services/configurationPolicy';
@@ -815,6 +817,34 @@ describe('security agent coverage — SentinelOne on live Postgres (#6960 W04)',
     await withSystemDbAccessContext(() => db.delete(s1Agents).where(eq(s1Agents.integrationId, f.integrationId)));
     await reconcileOrgCoverage(f.orgs.a.id);
     expect((await s1RowFor(f.dev.a))?.state).toBe('covered');
+  });
+
+  // #9247: the MSI goes away after enable. The sweep keeps the rule; the
+  // compliance pass marks the device WITHOUT the agent installer_missing and
+  // queues nothing, while a device already running S1 keeps reconciling.
+  it('no deployable MSI: a bare device reads installer_missing with nothing deployed; an installed one stays covered', async () => {
+    const f = await seedS1();
+    const site = await createSite({ orgId: f.orgs.a.id });
+    const second = (await createDevice({ orgId: f.orgs.a.id, siteId: site.id, hostname: `s1cov-a2-${f.orgs.a.id.slice(0, 8)}` })).id;
+    await withSystemDbAccessContext(async () => {
+      await db.insert(softwareInventory).values({ deviceId: second, orgId: f.orgs.a.id, name: 'Sentinel Agent', version: '24.1', vendor: 'SentinelOne' });
+      await db.update(softwareVersions).set({ isLatest: false }).where(eq(softwareVersions.catalogId, f.catalogId));
+    });
+    const repair = await withSystemDbAccessContext(() => repairManagedSoftwarePolicies());
+    expect(repair.failed).toBe(0);
+
+    await s1CompliancePass(f);
+    expect(await s1RowFor(f.dev.a)).toMatchObject({ orgId: f.orgs.a.id, state: 'not_applicable', reasonCode: 'installer_missing', policyId: f.policy.id });
+    expect(await deploymentsIn(f.orgs.a.id)).toEqual([]);
+    // The org's own blocker still reads first.
+    expect(await s1RowFor(f.dev.c)).toMatchObject({ state: 'not_applicable', reasonCode: 'org_not_mapped' });
+    // Already running S1: pending for the reconciler, then covered from its agent.
+    expect(await s1RowFor(second)).toMatchObject({ state: 'pending' });
+    await addS1Agent(f, { orgId: f.orgs.a.id, deviceId: second, computerName: `s1cov-a2-${f.orgs.a.id.slice(0, 8)}` });
+    await reconcileOrgCoverage(f.orgs.a.id);
+    expect(await s1RowFor(second)).toMatchObject({ state: 'covered' });
+    // The row survives the reconciler (the policy still has the S1 rule).
+    expect(await s1RowFor(f.dev.a)).toMatchObject({ state: 'not_applicable', reasonCode: 'installer_missing' });
   });
 
   it('an installed device whose agent sits under an UNMAPPED site has no s1_agents row and stays pending', async () => {

@@ -396,6 +396,14 @@ function mockInsertReturning(row: Record<string, unknown>) {
   return { values, returning };
 }
 
+/** #10411: the one `refused` ledger row a refused call leaves, and no other insert. */
+function expectOnlyTheRefusalRow(errorMessage: string) {
+  expect(vi.mocked(db.insert)).toHaveBeenCalledTimes(1);
+  const values = (vi.mocked(db.insert).mock.results[0]?.value as { values: ReturnType<typeof vi.fn> }).values;
+  expect(values).toHaveBeenCalledTimes(1);
+  expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'refused', errorMessage }));
+}
+
 function makeActiveSession(overrides: Record<string, unknown> = {}) {
   return {
     breezeSessionId: 'session-1',
@@ -864,7 +872,8 @@ describe('createSessionPreToolUse — launch_specialist pre-approval gates (#101
     expect(result).toEqual({ allowed: false, error: 'wisp_grant_required' });
     expect(mockPrecheckSpecialistRequest).not.toHaveBeenCalled();
     expect(approvalCards(session)).toHaveLength(0);
-    expect(db.insert).not.toHaveBeenCalled();
+    // #10411: no approval record — only the refusal's own ledger row.
+    expectOnlyTheRefusalRow('wisp_grant_required');
   });
 
   it.each([
@@ -886,7 +895,9 @@ describe('createSessionPreToolUse — launch_specialist pre-approval gates (#101
       orgId: ORG_ID, partnerId: 'partner-1', kind: 'sweep', params: { goal: 'x' },
     });
     expect(approvalCards(session)).toHaveLength(0);
-    expect(db.insert).not.toHaveBeenCalled();
+    // #10411: no approval record — only the refusal's own ledger row, which
+    // keeps the coordinator's code and detail.
+    expectOnlyTheRefusalRow('detail' in expected ? `${expected.error} — ${expected.detail}` : expected.error);
     expect(mockCreateActionIntent).not.toHaveBeenCalled();
     expect(waitForApproval).not.toHaveBeenCalled();
   });

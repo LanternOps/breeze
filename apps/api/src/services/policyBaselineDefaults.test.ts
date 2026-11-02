@@ -36,7 +36,8 @@ describe('policyBaselineDefaults', () => {
     const s = getRemoteAccessBaseline();
     expect(s.webrtcDesktop).toBe(true);
     expect(s.maxConcurrentTunnels).toBe(5);
-    expect(s.idleTimeoutMinutes).toBe(5);
+    // #10422: 5 min tore down MSP sessions that were watching an install.
+    expect(s.idleTimeoutMinutes).toBe(30);
     expect(s.maxSessionDurationHours).toBe(8);
   });
 

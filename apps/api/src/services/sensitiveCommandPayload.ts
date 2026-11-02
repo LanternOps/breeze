@@ -34,6 +34,7 @@ const AAD = 'device_commands.payload';
 
 const SENSITIVE_PAYLOAD_FIELDS: Record<string, readonly string[]> = {
   encryption_rotate_key: ['password', 'currentRecoveryKey'],
+  execute_containment: ['breakGlassSecret'],
   // W05a: the payload carries a server-minted recovery token (a bearer
   // credential for the public /bmr/recover/* routes) — never the 9-char code.
   bare_metal_rebuild: ['token'],
@@ -150,7 +151,8 @@ function openStorageDestination(type: string, envelope: string, ctx: SecretPaylo
  */
 export const TERMINAL_PAYLOAD_STRIP_KEYS: readonly string[] = [
   ...new Set([
-    ...Object.values(SENSITIVE_PAYLOAD_FIELDS).flat(),
+    // Isolation's secret is type-scoped; preserve unrelated process-kill forensics.
+    ...Object.entries(SENSITIVE_PAYLOAD_FIELDS).filter(([type]) => type !== 'execute_containment').flatMap(([, fields]) => fields),
     SCRIPT_SECRET_ENVELOPE_FIELD,
     // Stripped for EVERY type, not just the storage-destination ones: a
     // destination is credential material wherever it appears, and rows queued
@@ -171,6 +173,7 @@ export const TERMINAL_PAYLOAD_STRIP_KEYS: readonly string[] = [
  * route uses `messageId` as its proof that a message was sent to the device.
  */
 export const TYPE_SCOPED_TERMINAL_STRIP_KEYS: Readonly<Record<string, readonly string[]>> = {
+  execute_containment: ['breakGlassSecret'],
   [CommandTypes.NOTIFY_USER]: ['title', 'body'],
   // PAM outcome notice (#8928): `reason` is the technician's deny reason as
   // shown to the end user. `requestId` / `outcome` survive for forensics.

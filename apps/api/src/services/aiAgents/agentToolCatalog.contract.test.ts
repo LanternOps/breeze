@@ -209,13 +209,14 @@ describe('W04 security/device-ops writes in the agent catalog (#6758)', () => {
     expect(decidable.sort()).toEqual(['manage_scheduled_tasks:disable', 'manage_scheduled_tasks:enable', 'manage_scheduled_tasks:run']);
   });
 
-  it('W04-D8: the picker never offers manage_groups add_devices/remove_devices (agent human-only actions)', () => {
+  it('#10149: the picker offers manage_groups add_devices/remove_devices as supervised, non-act operations', () => {
     const groups = buildAgentToolCatalog().tools.find((t) => t.name === 'manage_groups');
     expect(groups, 'manage_groups is agent-reachable').toBeDefined();
-    const keys = groups!.operations.map((op) => op.key);
-    expect(keys).not.toContain('manage_groups:add_devices');
-    expect(keys).not.toContain('manage_groups:remove_devices');
-    expect(keys).toContain('manage_groups:list');
+    const byKey = Object.fromEntries(groups!.operations.map((op) => [op.key, op]));
+    for (const key of ['manage_groups:add_devices', 'manage_groups:remove_devices']) {
+      expect(byKey[key], key).toMatchObject({ tier: 3, readOnly: false, actEligible: false, policyDecidable: false });
+    }
+    expect(byKey['manage_groups:list']).toBeDefined();
   });
 });
 

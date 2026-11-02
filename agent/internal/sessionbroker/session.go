@@ -47,8 +47,12 @@ type Session struct {
 	// can dismiss one specific consent.exe (ipc.PamDismissConsentRequest.Instance).
 	// Set once at auth by targetedPamDismissFromAuth, never changed afterwards.
 	SupportsTargetedPamDismiss bool
-	ConnectedAt                time.Time
-	LastSeen                   time.Time
+	// SupportsPamDialogClose is true when this SYSTEM helper advertised it
+	// honours pam_close_dialog (#10370). Set once at auth by
+	// pamDialogCloseFromAuth, never changed afterwards.
+	SupportsPamDialogClose bool
+	ConnectedAt            time.Time
+	LastSeen               time.Time
 
 	conn    *ipc.Conn
 	mu      sync.Mutex
@@ -621,6 +625,8 @@ func expectedResponseType(cmdType string) string {
 		return ipc.TypePamDialogResult
 	case ipc.TypePamDismissConsent:
 		return ipc.TypePamDismissConsentResult
+	case ipc.TypePamCloseDialog:
+		return ipc.TypePamCloseDialogResult
 	case ipc.TypeClipboardGet:
 		return ipc.TypeClipboardData
 	case ipc.TypeClipboardSet:
