@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { deviceRoutes } from './devices';
+import { getWindowsInstaller } from '../services/windowsInstaller';
 
 const { evaluateCapability, partnerTrustMode, requireCapability } = vi.hoisted(() => {
   const evaluateCapability = vi.fn(async (_cap?: string, _ctx?: unknown): Promise<any> => ({ allow: true }));
@@ -663,12 +664,14 @@ describe('device routes', () => {
           headers: { Authorization: 'Bearer token', Host: 'control.example.test' }
         });
         expect(res.status).toBe(200);
+        expect(res.headers.get('cache-control')).toBe('no-store');
         return res.json();
       };
 
       it('returns PUBLIC_API_URL without a trailing slash', async () => {
         const body = await mintWith({ PUBLIC_API_URL: 'https://agents.example.test/', API_URL: 'https://other.example.test' });
         expect(body.serverUrl).toBe('https://agents.example.test');
+        expect(body.windowsInstaller).toEqual(getWindowsInstaller('https://agents.example.test')?.integrity);
       });
 
       it('falls back to API_URL like the server-built installers', async () => {
@@ -679,6 +682,7 @@ describe('device routes', () => {
       it('omits serverUrl when neither is set, never using the request Host', async () => {
         const body = await mintWith({ PUBLIC_API_URL: '', API_URL: '' });
         expect(body).not.toHaveProperty('serverUrl');
+        expect(body.windowsInstaller).toBeNull();
         expect(body.token).toContain('enroll_');
       });
 
@@ -693,6 +697,8 @@ describe('device routes', () => {
       ])('returns serverUrl for %s', async (_label, value, expected) => {
         const body = await mintWith({ PUBLIC_API_URL: value, API_URL: '' });
         expect(body.serverUrl).toBe(expected);
+        if (expected.startsWith('http:')) expect(body.windowsInstaller).toBeNull();
+        else expect(body.windowsInstaller?.url).toBe(`${expected}/api/v1/agents/install.ps1`);
       });
 
       // The value is pasted inside double quotes into bash and PowerShell

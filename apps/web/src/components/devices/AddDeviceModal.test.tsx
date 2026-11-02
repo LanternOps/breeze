@@ -49,6 +49,8 @@ const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 import { useOrgStore } from '../../stores/orgStore';
 const useOrgStoreMock = vi.mocked(useOrgStore);
 
+const installerIntegrity = { url: 'https://agents.example.test/api/v1/agents/install.ps1', sha256: 'a'.repeat(64) };
+
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
     ok,
@@ -603,7 +605,7 @@ describe('AddDeviceModal', () => {
 
   it('shows and copies the real command once a token is generated (#7628)', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
-      makeJsonResponse({ token: 'real-token-123', enrollmentSecret: 'secret-abc' })
+      makeJsonResponse({ windowsInstaller: installerIntegrity, token: 'real-token-123', enrollmentSecret: 'secret-abc' })
     );
 
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);
@@ -637,7 +639,7 @@ describe('AddDeviceModal', () => {
 
   it('mints the CLI token for the site chosen in the modal (#7035)', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
-      makeJsonResponse({ token: 'site-token', maxUsage: 50, siteId: SITE_B.id })
+      makeJsonResponse({ windowsInstaller: installerIntegrity, token: 'site-token', maxUsage: 50, siteId: SITE_B.id })
     );
 
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);
@@ -660,7 +662,7 @@ describe('AddDeviceModal', () => {
 
   it('fetches onboarding token when Generate is clicked on the CLI tab', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
-      makeJsonResponse({ token: 'test-token-xyz', enrollmentSecret: 'secret-abc' })
+      makeJsonResponse({ windowsInstaller: installerIntegrity, token: 'test-token-xyz', enrollmentSecret: 'secret-abc' })
     );
 
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);
@@ -691,7 +693,7 @@ describe('AddDeviceModal', () => {
 
   it('groups the shared install.sh command under one Linux/macOS option', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
-      makeJsonResponse({ token: 'test-token-xyz', enrollmentSecret: 'secret-abc' })
+      makeJsonResponse({ windowsInstaller: installerIntegrity, token: 'test-token-xyz', enrollmentSecret: 'secret-abc' })
     );
 
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);
@@ -720,7 +722,7 @@ describe('AddDeviceModal', () => {
   // dashboard/API deployments. The server's runtime URL wins when it sends one.
   it('builds the install command from the serverUrl the token route returns (#8120)', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
-      makeJsonResponse({ token: 'test-token-xyz', serverUrl: 'https://agents.example.test' })
+      makeJsonResponse({ windowsInstaller: installerIntegrity, token: 'test-token-xyz', serverUrl: 'https://agents.example.test' })
     );
 
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);
@@ -739,8 +741,20 @@ describe('AddDeviceModal', () => {
     expect(screen.queryByText(new RegExp(`${window.location.origin}/api/v1/agents/install`))).toBeNull();
   });
 
+  it.each([undefined, null, { ...installerIntegrity, sha256: 'invalid' }])('withholds Windows copying for missing or invalid integrity %j', async (metadata) => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ token: 'test-token-xyz', windowsInstaller: metadata }));
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(screen.getByText('CLI Commands'));
+    fireEvent.click(screen.getByTestId('cli-regenerate-token'));
+    await waitFor(() => expect(screen.getByText('test-token-xyz')).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: 'Windows' }));
+    expect(screen.queryByTestId('cli-copy-command')).toBeNull();
+    expect(screen.queryByTestId('cli-command')).toBeNull();
+    expect(screen.getByTestId('cli-command-verification-unavailable')).toBeDefined();
+  });
+
   it('falls back to the page origin when the token route sends no serverUrl (#8120)', async () => {
-    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ token: 'test-token-xyz' }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ windowsInstaller: installerIntegrity, token: 'test-token-xyz' }));
 
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);
 
@@ -758,7 +772,7 @@ describe('AddDeviceModal', () => {
   it('requests a multi-use token after the operator raises the device count (#1108)', async () => {
     // Initial single-device mint on the first Generate click.
     fetchWithAuthMock.mockResolvedValueOnce(
-      makeJsonResponse({ token: 'token-single', maxUsage: 1, expiresAt: new Date(Date.now() + 3600_000).toISOString() })
+      makeJsonResponse({ windowsInstaller: installerIntegrity, token: 'token-single', maxUsage: 1, expiresAt: new Date(Date.now() + 3600_000).toISOString() })
     );
 
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);
@@ -771,7 +785,7 @@ describe('AddDeviceModal', () => {
 
     // Operator bumps the count and regenerates → server returns a 5-use token.
     fetchWithAuthMock.mockResolvedValueOnce(
-      makeJsonResponse({ token: 'token-multi', maxUsage: 5, expiresAt: new Date(Date.now() + 3600_000).toISOString() })
+      makeJsonResponse({ windowsInstaller: installerIntegrity, token: 'token-multi', maxUsage: 5, expiresAt: new Date(Date.now() + 3600_000).toISOString() })
     );
 
     const countInput = screen.getByLabelText('Number of devices') as HTMLInputElement;
@@ -798,7 +812,7 @@ describe('AddDeviceModal', () => {
   it('shows the real token expiry instead of a hard-coded "24 hours" (#1108)', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({
-        token: 'token-exp',
+        windowsInstaller: installerIntegrity, token: 'token-exp',
         maxUsage: 1,
         // ~1 hour out → formatTokenExpiry renders "in about 1 hour".
         expiresAt: new Date(Date.now() + 3600_000).toISOString(),
@@ -962,7 +976,7 @@ describe('AddDeviceModal — resolved enrollment defaults (#2776)', () => {
       enrollmentDefaults: { ttlMinutes: 10080, deviceCount: 25, maxTtlMinutes: 43200 },
     });
     fetchWithAuthMock.mockResolvedValue(
-      makeJsonResponse({ token: 'cli-token', maxUsage: 25 }),
+      makeJsonResponse({ windowsInstaller: installerIntegrity, token: 'cli-token', maxUsage: 25 }),
     );
 
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);

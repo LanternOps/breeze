@@ -321,6 +321,7 @@
     "generateToken": "Generar token",
     "cliTokenNotGenerated": "Aún no hay token. Elige el sitio, la cantidad de dispositivos y el vencimiento, y luego genera un token. Cada token es una clave de inscripción activa.",
     "cliCommandNeedsToken": "Primero genera un token. El comando de instalación aparecerá aquí cuando exista un token; hasta entonces no hay nada que ejecutar.",
+    "windowsInstallerUnavailable": "La verificación del instalador de Windows no está disponible. Verifica la configuración HTTPS y la versión del servidor.",
     "copyCommand": "Copiar comando",
     "cliTokenSite": "Los dispositivos inscritos con este token se unen a {{site}}.",
     "singleUseValidForOneDevice": "De un solo uso: válido para un dispositivo. Genere un nuevo token para cada equipo adicional.",

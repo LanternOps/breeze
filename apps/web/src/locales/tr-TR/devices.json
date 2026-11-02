@@ -321,6 +321,7 @@
     "generateToken": "Belirteç oluştur",
     "cliTokenNotGenerated": "Henüz belirteç yok. Siteyi, cihaz sayısını ve süreyi seçip bir belirteç oluşturun. Her belirteç etkin bir kayıt anahtarıdır.",
     "cliCommandNeedsToken": "Önce bir belirteç oluşturun. Belirteç oluşturulduğunda kurulum komutu burada görünür; o zamana kadar çalıştırılacak bir şey yok.",
+    "windowsInstallerUnavailable": "Windows yükleyicisi doğrulanamıyor. Sunucunun HTTPS yapılandırmasını ve sürümünü kontrol edin.",
     "copyCommand": "Komutu kopyala",
     "cliTokenSite": "Bu belirteçle kaydedilen cihazlar {{site}} sitesine katılır.",
     "singleUseValidForOneDevice": "Tek kullanımlık — tek cihaz için geçerlidir. Her ek makine için yeni bir jeton oluşturun.",

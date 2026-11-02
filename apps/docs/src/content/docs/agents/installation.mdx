@@ -125,34 +125,12 @@ for the script-based fleet install.
     ```
   </TabItem>
   <TabItem label="Windows">
-    ```powershell
-    # Check the minimum supported OS before downloading anything
-    $osv = [System.Environment]::OSVersion.Version
-    if ($osv.Major -lt 10) {
-      throw "Breeze: Windows 10 or Windows Server 2016 or later is required (detected $($osv.Major).$($osv.Minor))"
-    }
+    1. Open **Add Device**, select **CLI Commands**, and generate an enrollment token.
+    2. Copy the Windows command and run it in PowerShell 5.1 or later as Administrator.
 
-    # Older PowerShell/.NET defaults (e.g. Windows Server 2016) can omit
-    # TLS 1.2, which makes Invoke-WebRequest fail outright.
-    [Net.ServicePointManager]::SecurityProtocol = `
-      [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    Windows quick installation requires a configured HTTPS API URL and a certificate trusted by the target machine. The copied command includes the installer's SHA-256 from authenticated onboarding. It verifies the downloaded bytes before running the installer. The installer then checks the agent checksum, signature, and operating system.
 
-    # Download the agent into a temp directory. Do not download into
-    # C:\Windows\system32 (an elevated PowerShell's default directory):
-    # Defender's ASR rule "Block use of copied or impersonated system tools"
-    # then blocks the service binary that `service install` copies out of it.
-    Set-Location (New-Item -ItemType Directory -Force -Path "$env:TEMP\breeze-install")
-    Invoke-WebRequest -Uri "https://breeze.yourdomain.com/api/v1/agents/download/windows/amd64" `
-      -OutFile "breeze-agent.exe"
-
-    # Enroll (run as Administrator)
-    .\breeze-agent.exe enroll YOUR_ENROLLMENT_KEY `
-      --server https://breeze.yourdomain.com `
-      --enrollment-secret YOUR_ENROLLMENT_SECRET
-
-    # Install as a Windows Service
-    .\breeze-agent.exe service install
-    ```
+    If an installer update causes a checksum mismatch, generate a new command in Add Device. Do not use an unverified `irm | iex` shortcut.
 
     Alternatively, use the MSI installer for silent deployment:
     ```powershell

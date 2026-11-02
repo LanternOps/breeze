@@ -22,6 +22,8 @@ import { fetchWithAuth } from '../../stores/auth';
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
+const installerIntegrity = { url: 'https://agents.example.test/api/v1/agents/install.ps1', sha256: 'a'.repeat(64) };
+
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
     ok,
@@ -183,7 +185,7 @@ describe('EnrollDeviceStep — CLI command needs a real token (#7628)', () => {
 
   it('shows and copies the real command once the token exists', async () => {
     fetchWithAuthMock.mockResolvedValue(
-      makeJsonResponse({ token: 'wizard-token-1', enrollmentSecret: 'sec' })
+      makeJsonResponse({ windowsInstaller: installerIntegrity, token: 'wizard-token-1', enrollmentSecret: 'sec' })
     );
 
     render(<EnrollDeviceStep orgId="org-1" siteId="site-1" onFinish={vi.fn()} />);
@@ -212,7 +214,7 @@ describe('EnrollDeviceStep — CLI command server URL (#8120)', () => {
 
   it('builds the command from the serverUrl the token route returns', async () => {
     fetchWithAuthMock.mockResolvedValue(
-      makeJsonResponse({ token: 'wizard-token-2', serverUrl: 'https://agents.example.test' })
+      makeJsonResponse({ windowsInstaller: installerIntegrity, token: 'wizard-token-2', serverUrl: 'https://agents.example.test' })
     );
 
     render(<EnrollDeviceStep orgId="org-1" siteId="site-1" onFinish={vi.fn()} />);
@@ -223,11 +225,21 @@ describe('EnrollDeviceStep — CLI command server URL (#8120)', () => {
     expect(command.textContent).not.toContain(window.location.origin);
   });
 
+  it.each([undefined, null, { ...installerIntegrity, sha256: 'invalid' }])('withholds Windows copying for missing or invalid integrity %j', async (metadata) => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ token: 'wizard-token', windowsInstaller: metadata }));
+    render(<EnrollDeviceStep orgId="org-1" siteId="site-1" onFinish={vi.fn()} />);
+    fireEvent.click(screen.getByText('CLI Commands'));
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('setup-cli-command-verification-unavailable')).toBeDefined());
+    expect(screen.queryByTestId('setup-cli-copy-command')).toBeNull();
+  });
+
   it('falls back to the page origin when the server sends no serverUrl', async () => {
-    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ token: 'wizard-token-3' }));
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ windowsInstaller: installerIntegrity, token: 'wizard-token-3' }));
 
     render(<EnrollDeviceStep orgId="org-1" siteId="site-1" onFinish={vi.fn()} />);
     fireEvent.click(screen.getByText('CLI Commands'));
+    fireEvent.click(screen.getByRole('button', { name: 'Linux' }));
 
     const command = await screen.findByTestId('setup-cli-command');
     expect(command.textContent).toContain(window.location.origin);

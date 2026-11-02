@@ -21,6 +21,8 @@ import {
   MAX_ENROLLMENT_TTL_MINUTES,
   PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT,
   PRODUCT_DEFAULT_ENROLLMENT_TTL_MINUTES,
+  windowsInstallerIntegritySchema,
+  type WindowsInstallerIntegrity,
 } from "@breeze/shared";
 
 function detectUserOS(): "windows" | "macos" | "linux" {
@@ -224,6 +226,7 @@ export default function AddDeviceModal({
   // Server URL agents enroll against, as the API reports it at runtime
   // (#8120). Empty when the server sent none.
   const [tokenServerUrl, setTokenServerUrl] = useState("");
+  const [windowsInstaller, setWindowsInstaller] = useState<WindowsInstallerIntegrity | null>(null);
   const [tokenLoading, setTokenLoading] = useState(false);
   const [tokenError, setTokenError] = useState<string>();
   const [tokenCopied, setTokenCopied] = useState(false);
@@ -297,6 +300,7 @@ export default function AddDeviceModal({
       // the seeding effect below instead — they come from the resolved
       // partner/org defaults, which may still be in flight when this runs.
       setOnboardingToken("");
+      setWindowsInstaller(null);
       setTokenSiteId(null);
       setTokenError(undefined);
       setTokenMaxUsage(null);
@@ -370,6 +374,7 @@ export default function AddDeviceModal({
     setTokenSiteId(null);
     setEnrollmentSecret("");
     setTokenServerUrl("");
+    setWindowsInstaller(null);
     setTokenError(undefined);
     setTokenMaxUsage(null);
     setTokenExpiresAt(null);
@@ -421,6 +426,8 @@ export default function AddDeviceModal({
         return;
       }
       setOnboardingToken(data.token);
+      const installer = windowsInstallerIntegritySchema.safeParse(data.windowsInstaller);
+      setWindowsInstaller(installer.success ? installer.data : null);
       setTokenSiteId(typeof data.siteId === "string" ? data.siteId : siteId);
       if (typeof data.maxUsage === "number") {
         setTokenMaxUsage(data.maxUsage);
@@ -1285,6 +1292,7 @@ export default function AddDeviceModal({
             {(() => {
               const commandPlatform =
                 selectedOS === "windows" ? "windows" : "linux";
+              const installerUnavailable = Boolean(onboardingToken) && commandPlatform === "windows" && !windowsInstaller;
               // #7628: never render a command until a real key exists. A
               // "<TOKEN>" placeholder looked runnable, got copied, and failed
               // enrollment with enrollment_key_not_found (exit 11).
@@ -1301,6 +1309,7 @@ export default function AddDeviceModal({
                         window.location.origin,
                       token: onboardingToken,
                       enrollmentSecret: enrollmentSecret || undefined,
+                      windowsInstaller,
                     })[commandPlatform]
                   : null;
               const commandOptions = [
@@ -1351,9 +1360,11 @@ export default function AddDeviceModal({
                     ) : (
                       <p
                         className="text-sm text-muted-foreground"
-                        data-testid="cli-command-needs-token"
+                        data-testid={installerUnavailable ? "cli-command-verification-unavailable" : "cli-command-needs-token"}
                       >
-                        {t("addDeviceModal.cliCommandNeedsToken")}
+                        {installerUnavailable
+                          ? t("addDeviceModal.windowsInstallerUnavailable")
+                          : t("addDeviceModal.cliCommandNeedsToken")}
                       </p>
                     )}
                   </div>

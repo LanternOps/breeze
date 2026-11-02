@@ -1463,5 +1463,6 @@ export * from './wisp';
 export * from './flowRuns';
 export * from './flowBudgets';
 export * from './flowWebhooks';
+export * from './windowsInstaller';
 export * from './flowConversions';
 export * from './networkIsolation';
