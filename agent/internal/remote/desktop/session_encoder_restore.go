@@ -223,7 +223,7 @@ func (s *Session) maybeRestoreHardwareEncoder(now time.Time) {
 	isHardware := newEnc.BackendIsHardware()
 	gpuOnly := newEnc.IsGPUOnly()
 	if placeholder || !isHardware || gpuOnly {
-		newEnc.Close()
+		_ = newEnc.Close()
 		slog.Info("maybeRestoreHardwareEncoder: no CPU-input hardware encoder available, staying on software permanently",
 			"session", s.id, "backend", backendName,
 			"placeholder", placeholder, "hardware", isHardware, "gpuOnly", gpuOnly)
@@ -315,7 +315,7 @@ func (s *Session) applyHardwareWarmup(res hardwareWarmupResult) {
 	if cur == nil || cur.BackendIsHardware() {
 		// Something else restored hardware (or the session has no encoder)
 		// while the candidate warmed up; it is no longer needed.
-		newEnc.Close()
+		_ = newEnc.Close()
 		s.hwRestore.onWarmupSucceeded()
 		return
 	}
@@ -329,7 +329,7 @@ func (s *Session) applyHardwareWarmup(res hardwareWarmupResult) {
 	if w != res.width || h != res.height {
 		// The display changed while the candidate warmed up, so it was proven
 		// at the wrong size. Discard it; the next attempt uses the new size.
-		newEnc.Close()
+		_ = newEnc.Close()
 		s.hwRestore.onWarmupInconclusive()
 		slog.Info("Hardware encoder warm-up finished after a resolution change, discarding candidate",
 			"session", s.id, "warmedDimensions", dims,
