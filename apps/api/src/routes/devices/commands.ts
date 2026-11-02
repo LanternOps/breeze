@@ -1043,6 +1043,11 @@ commandsRoutes.post(
         .limit(1);
 
       if (!existing) return { kind: 'not_found' } as const;
+      if (existing.type === 'execute_containment') {
+        const { findEpisodeByCommand } = await import('../../services/networkIsolation/episodeStore');
+        if (await findEpisodeByCommand(tx, commandId)) return { kind: 'isolation_owned' } as const;
+      }
+
       if (existing.status !== 'pending') {
         return { kind: 'not_pending' as const, status: existing.status };
       }
@@ -1067,6 +1072,9 @@ commandsRoutes.post(
 
     if (outcome.kind === 'not_found') {
       return c.json({ error: 'Command not found' }, 404);
+    }
+    if (outcome.kind === 'isolation_owned') {
+      return c.json({ error: 'Use Release to release this network isolation' }, 409);
     }
     if (outcome.kind === 'not_pending') {
       return c.json({ error: 'Command is not pending', status: outcome.status }, 409);

@@ -554,6 +554,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Full-control W14 (#6784): what every organization (or one) is billed, and the legal documents customers sign.
       { name: 'manage_pax8_subscriptions (sync/link/unlink)', description: 'Supervised: sync every organization or change which contract line later orders bill (full partner access)', category: 'Billing' },
       { name: 'manage_pax8_orders (preflight)', description: 'Supervised: send staged order content to Pax8 for an isMock dry run', category: 'Billing' },
+      { name: 'manage_pax8_orders (submit)', description: 'Submit a billable Pax8 order at an estimated current rate; two people approve, changed inputs refuse, and cancellations are terminal (not offered to AI agents)', category: 'Billing' },
+      { name: 'manage_pax8_orders (reconcile)', description: 'Supervised: record Pax8 outcomes from vendor evidence and update billing quantities; conflicting billing edits are flagged for review', category: 'Billing' },
       { name: 'manage_billing_profiles (create/update/archive/set_rows/clone/create_work_type/update_work_type/set_org_profile/clear_org_profile)', description: 'Change rate cards and work types (every organization of the partner) or which card bills an organization', category: 'Billing' },
       { name: 'manage_billing_settings (update_partner/update_org)', description: 'Change invoice defaults, customer-facing invoice text, or an organization\'s tax, terms and billing contact', category: 'Billing' },
       { name: 'manage_contract_templates (create_version/publish/archive)', description: 'Add a draft version, publish it for signature, or archive an organization\'s agreement template (not offered to AI agents)', category: 'Billing' },

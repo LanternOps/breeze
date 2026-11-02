@@ -17,7 +17,6 @@ const DETAIL: PublicAgreementDetail = {
   request: {
     id: '11111111-1111-4111-8111-111111111111',
     status: 'sent',
-    label: null,
     coverMessage: 'Please sign <b>today</b>.\nThanks!',
     expiresAt: '2026-12-01T00:00:00.000Z',
     effectiveDate: '2026-11-01',

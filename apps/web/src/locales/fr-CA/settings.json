@@ -4735,7 +4735,8 @@
           "update_line": "Mettre à jour une ligne de commande Pax8",
           "remove_line": "Retirer une ligne de commande Pax8",
           "preview": "Prévisualiser la commande Pax8",
-          "preflight": "Lancer la vérification préalable de la commande Pax8"
+          "preflight": "Lancer la vérification préalable de la commande Pax8",
+          "reconcile": "Réconcilier la commande Pax8"
         },
         "manage_pax8_subscriptions": {
           "list": "Lister les abonnements Pax8",

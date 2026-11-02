@@ -3423,6 +3423,7 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 				"accessibility", sanitized.Accessibility,
 				"fullDiskAccess", sanitized.FullDiskAccess,
 				"remoteDesktop", boolPtrString(sanitized.RemoteDesktop),
+				"denialVerdict", sanitized.DenialVerdict,
 			)
 			b.forwardTCCStatus(s, *sanitized)
 		}

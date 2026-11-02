@@ -4701,6 +4701,48 @@
       "mfaRequired": "Se requiere autenticación multifactor para cambiar la ubicación física."
     }
   },
+  "assetCircuitCard": {
+    "title": "WAN y circuito",
+    "loadFailed": "No se pudo cargar la información de WAN y circuito.",
+    "empty": "No hay circuito registrado o visible para usted en este activo.",
+    "provider": "Proveedor",
+    "cid": "ID del circuito",
+    "bandwidth": "Ancho de banda",
+    "serviceType": "Tipo de servicio",
+    "administrativeStatus": "Estado administrativo",
+    "sitesServed": "Sitios atendidos por este circuito",
+    "terminationSite": "Sitio de terminación: {{site}} (desde {{asset}} / {{iface}})",
+    "terminationSiteBare": "Sitio de terminación: {{site}}",
+    "terminationUnassigned": "Terminación sin asignar",
+    "terminationNeedsReassociation": "La terminación necesita reasociarse",
+    "interfaces": "Interfaces",
+    "noInterfaces": "No hay interfaces registradas.",
+    "wanBadge": "WAN",
+    "retiredBadge": "Retirada",
+    "markWan": "Marcar como WAN",
+    "unmarkWan": "Quitar WAN",
+    "truncated": "Solo se muestran algunas interfaces.",
+    "unmarkConfirm": {
+      "title": "¿Quitar el rol WAN?",
+      "message": "{{name}} dejará de tratarse como interfaz WAN."
+    },
+    "status": {
+      "active": "Activo",
+      "planned": "Planificado",
+      "suspended": "Suspendido",
+      "disconnected": "Desconectado"
+    },
+    "toasts": {
+      "marked": "Interfaz marcada como WAN",
+      "unmarked": "Rol WAN eliminado",
+      "failed": "No se pudo actualizar el rol WAN",
+      "mfaRequired": "Se requiere autenticación multifactor para cambiar el rol WAN.",
+      "hasTermination": "Esta interfaz tiene una terminación de circuito activa. Mueva o elimine la terminación primero.",
+      "retired": "Esta interfaz está retirada y ya no se puede modificar.",
+      "notFound": "Interfaz no encontrada. Se recargó la lista.",
+      "permissionDenied": "No tiene permiso para cambiar la topología."
+    }
+  },
   "partnerGroups": {
     "ownerScope": "Propietario del grupo",
     "organization": "Esta organización",

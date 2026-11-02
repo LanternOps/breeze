@@ -29,6 +29,7 @@
  *     ceiling `isBoundedTagValue` enforces.
  */
 export const SENTRY_EVENT_CODES = [
+  'pax8_order_execution_result',
   // --- middleware -------------------------------------------------------
   /** A request was refused by a body-size limit (global gate or route rule). */
   'body_limit_rejected',

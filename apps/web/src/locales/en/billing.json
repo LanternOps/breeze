@@ -863,8 +863,10 @@
       "expiryDefaultHint_other": "Default: {{count}} days, from Billing settings → Agreements.",
       "autoReminderHint_one": "Automatic reminders go out every day, up to {{max}} in total.",
       "autoReminderHint_other": "Automatic reminders go out every {{count}} days, up to {{max}} in total.",
-      "expiryDefaultUnavailable": "Couldn't load your default expiry from Billing settings, so the built-in default is shown.",
+      "expiryDefaultUnavailable": "Couldn't load your default expiry from Billing settings. Leave the date blank and your default applies when the agreement is created.",
+      "expiryBlankHint": "Leave blank to use your default from Billing settings → Agreements.",
       "label": "Label (optional)",
+      "labelHint": "Internal only. Customers see the template name.",
       "createDraft": "Create draft & preview",
       "creating": "Creating…",
       "preview": {
