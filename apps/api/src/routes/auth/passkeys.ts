@@ -900,6 +900,7 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
         id: user.id,
         email: user.email,
         name: user.name,
+        avatarUrl: user.avatarUrl,
         mfaEnabled: true
       },
       tokens: { accessToken: outcome.accessToken, expiresInSeconds: outcome.expiresInSeconds },
@@ -979,6 +980,7 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
       id: user.id,
       email: user.email,
       name: user.name,
+      avatarUrl: user.avatarUrl,
       mfaEnabled: true
     },
     tokens,

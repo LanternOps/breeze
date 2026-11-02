@@ -479,6 +479,7 @@ const user = {
   id: 'user-123',
   email: 'test@example.com',
   name: 'Test User',
+  avatarUrl: '/api/v1/users/user-123/avatar',
   passwordHash: '$argon2id$hash',
   status: 'active',
   mfaEnabled: true,
@@ -1364,7 +1365,7 @@ describe('passkey MFA auth routes', () => {
     expect(await res.json()).toMatchObject({
       mfaRequired: false,
       tokens: { accessToken: 'access-token', expiresInSeconds: 900 },
-      user: { id: 'user-123', mfaEnabled: true },
+      user: { id: 'user-123', mfaEnabled: true, avatarUrl: user.avatarUrl },
     });
     expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
     expect(vi.mocked(withSystemDbAccessContext).mock.calls.length).toBeGreaterThanOrEqual(2);
@@ -1845,6 +1846,7 @@ describe('passkey MFA auth routes', () => {
     expect(await res.json()).toMatchObject({
       mfaRequired: false,
       tokens: { accessToken: 'sso-access', expiresInSeconds: 900 },
+      user: { id: 'user-123', avatarUrl: user.avatarUrl },
       redirectPath: '/dashboard',
     });
     expect(finalizeSsoPendingLink).toHaveBeenCalledWith(
