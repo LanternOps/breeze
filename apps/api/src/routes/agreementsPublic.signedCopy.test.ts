@@ -9,8 +9,10 @@ import type { SQL } from 'drizzle-orm';
 // pinned here: wrong/foreign tokens (resolver, shared with the view), a dead
 // link, a blocked tenant, a row this link did not sign, a missing document.
 //
-// The DB is a FIFO chain: the view reads portal branding, partner settings and
-// then (signed-by-this-link only) the signed document id; the download reads
+// The DB is a FIFO chain: the view reads portal branding, partner settings,
+// then (any signed request) the signed document's frozen template name
+// (#10294), then (signed-by-this-link only) the signed document id; the
+// download reads
 // the signed document row. The certificate service is mocked; the download
 // builder (services/signedAgreementDownload.ts) is real, so its headers are the
 // ones under test.
@@ -321,40 +323,45 @@ describe('GET /:token/signed-copy (#10695)', () => {
 
 describe('GET /:token — signedCopyUrl (#10695)', () => {
   it('a request this link signed, with its signed document, carries the token-scoped download path', async () => {
-    dbResults.push([], [], [{ id: DOC_ID }]);
+    dbResults.push([], [], [{ templateNameSnapshot: 'BAA (as signed)' }], [{ id: DOC_ID }]);
     const res = await view();
     expect(res.status).toBe(200);
     const { data } = await res.json();
     expect(data.signedCopyUrl).toBe(`/agreements/public/${TOKEN}/signed-copy`);
+    // #10294: the name frozen with the signed agreement, not the live template's.
+    expect(data.template.name).toBe('BAA (as signed)');
     // Never the document id or any signer evidence — the path is the token's.
     expect(JSON.stringify(data)).not.toContain(DOC_ID);
     // The same scoped lookup as the download (the view has no row backstop).
-    expect(renderWhere(dbWhere[2])).toEqual(EXPECTED_DOC_WHERE);
+    expect(renderWhere(dbWhere[3])).toEqual(EXPECTED_DOC_WHERE);
   });
 
   it.each([
-    ['still open', { status: 'viewed', signedAt: null, publicResponseJti: null, publicResponseConsumedAt: null, publicResponseOutcome: null }, false],
-    ['declined', { status: 'declined', signedAt: null, declinedAt: SIGNED_AT, publicResponseOutcome: 'declined' }, true],
-    ['signed in the portal', { publicResponseJti: null, publicResponseConsumedAt: null, publicResponseOutcome: null }, true],
-  ])('%s → null, and no document read', async (_n, rowOver, marker) => {
+    ['still open', { status: 'viewed', signedAt: null, publicResponseJti: null, publicResponseConsumedAt: null, publicResponseOutcome: null }, false, 2],
+    ['declined', { status: 'declined', signedAt: null, declinedAt: SIGNED_AT, publicResponseOutcome: 'declined' }, true, 2],
+    // Signed (in the portal): the frozen template-name read (#10294) runs, the
+    // signed-copy lookup does not.
+    ['signed in the portal', { publicResponseJti: null, publicResponseConsumedAt: null, publicResponseOutcome: null }, true, 3],
+  ])('%s → null, and no signed-copy document read', async (_n, rowOver, marker, reads) => {
     vi.mocked(isAgreementAcceptJtiRevoked).mockResolvedValue(marker as boolean);
     vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(resolution(rowOver as Record<string, unknown>) as never);
     const res = await view();
     expect(res.status).toBe(200);
     expect((await res.json()).data.signedCopyUrl).toBeNull();
-    // Two branding reads only.
-    expect(dbWhere).toHaveLength(2);
+    // Two branding reads (+ the template-name read once signed) only.
+    expect(dbWhere).toHaveLength(reads);
+    for (const w of dbWhere) expect(renderWhere(w)).not.toEqual(EXPECTED_DOC_WHERE);
   });
 
   it('signed by this link but the document row is missing → null (no dead button), reported', async () => {
-    dbResults.push([], [], []);
+    dbResults.push([], [], [], []);
     const { data } = await (await view()).json();
     expect(data.signedCopyUrl).toBeNull();
     expect(captureException).toHaveBeenCalledTimes(1);
   });
 
   it('the signed-copy lookup failing only hides the button — the page still renders', async () => {
-    dbResults.push([], [], new Error('statement timeout'));
+    dbResults.push([], [], [], new Error('statement timeout'));
     const res = await view();
     expect(res.status).toBe(200);
     const { data } = await res.json();
