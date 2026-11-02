@@ -29,8 +29,9 @@ var (
 const recoveryKeyCollectInterval = 30 * time.Minute
 
 // recoveryKeyErrorRetry is the wait after a failed read (matches the security
-// package's slowProbeErrorTTL): a persistent failure, such as no BitLocker
-// module on Home editions, is not re-spawned every tick.
+// package's slowProbeErrorTTL): a persistent failure is not re-spawned every
+// tick. A host without BitLocker is not a failure (ErrBitLockerUnavailable)
+// and waits the full interval (#10902).
 const recoveryKeyErrorRetry = 10 * time.Minute
 
 func init() {

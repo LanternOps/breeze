@@ -231,6 +231,9 @@ func latestScanTime(defenderStatus DefenderStatus) string {
 }
 
 func encryptionString(enabled bool, detectErr error) string {
+	if errors.Is(detectErr, ErrBitLockerUnavailable) {
+		return "unsupported"
+	}
 	if detectErr != nil {
 		return "unknown"
 	}
@@ -667,14 +670,10 @@ func bitLockerEnumName(value any, names map[int]string) string {
 const bitLockerVolumesPS = `Get-BitLockerVolume | Select-Object MountPoint,@{n='ProtectionStatus';e={[string]$_.ProtectionStatus}},@{n='EncryptionMethod';e={[string]$_.EncryptionMethod}},@{n='VolumeStatus';e={[string]$_.VolumeStatus}},EncryptionPercentage | ConvertTo-Json -Compress`
 
 func collectEncryptionDetailsWindows() (map[string]any, error) {
-	output, err := runCommand(
-		10*time.Second,
-		"powershell",
-		"-NoProfile",
-		"-NonInteractive",
-		"-Command",
-		bitLockerVolumesPS,
-	)
+	if bitLockerNotInstalled() {
+		return nil, ErrBitLockerUnavailable
+	}
+	output, err := runBitLockerPowerShell(10*time.Second, bitLockerVolumesPS)
 	if err != nil {
 		return nil, err
 	}
@@ -1220,7 +1219,8 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 	status.FirewallEnabled = firewallState(firewallEnabled, fwErr)
 
 	encryptionEnabled, encDetails, encErr := collectEncryptionPosture()
-	if encErr != nil {
+	// No BitLocker on this host is a state ("unsupported"), not a failure.
+	if encErr != nil && !errors.Is(encErr, ErrBitLockerUnavailable) {
 		errs = append(errs, encErr)
 	}
 	status.EncryptionStatus = encryptionString(encryptionEnabled, encErr)
@@ -1474,8 +1474,13 @@ func getEncryptionStatusFor(goos string) (bool, error) {
 	}
 }
 
+const bitLockerSystemDriveStatusPS = "Get-BitLockerVolume -MountPoint $env:SystemDrive | Select-Object -ExpandProperty ProtectionStatus"
+
 func getEncryptionStatusWindows() (bool, error) {
-	output, err := runCommand(8*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-Command", "Get-BitLockerVolume -MountPoint $env:SystemDrive | Select-Object -ExpandProperty ProtectionStatus")
+	if bitLockerNotInstalled() {
+		return false, ErrBitLockerUnavailable
+	}
+	output, err := runBitLockerPowerShell(8*time.Second, bitLockerSystemDriveStatusPS)
 	if err != nil {
 		return false, err
 	}

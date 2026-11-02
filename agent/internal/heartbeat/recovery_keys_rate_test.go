@@ -1,8 +1,11 @@
 package heartbeat
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -145,6 +148,46 @@ func TestSendRecoveryKeysCollectFailureIsRateLimited(t *testing.T) {
 	h.sendRecoveryKeys()
 	if attempts != 2 {
 		t.Fatalf("failed read not retried after %s (attempts %d)", recoveryKeyErrorRetry, attempts)
+	}
+	if got := rec.puts(); len(got) != 0 {
+		t.Fatalf("unexpected escrow puts: %v", got)
+	}
+}
+
+// #10902: a host without BitLocker (Server without the feature, Windows
+// Home) is a permanent condition, not a failed read. It must not WARN, and it
+// waits out the full interval instead of the shortened error retry.
+func TestSendRecoveryKeysBitLockerUnavailableIsQuiet(t *testing.T) {
+	h, rec, _ := newRecoveryKeyTestHeartbeat(t)
+	var logs bytes.Buffer
+	prevLog := log
+	log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	t.Cleanup(func() { log = prevLog })
+
+	attempts := 0
+	collectRecoveryKeys = func() ([]security.RecoveryKey, error) {
+		attempts++
+		return nil, fmt.Errorf("collect: %w", security.ErrBitLockerUnavailable)
+	}
+	h.sendRecoveryKeys()
+	if strings.Contains(logs.String(), "level=WARN") || strings.Contains(logs.String(), "level=ERROR") {
+		t.Fatalf("unavailable BitLocker logged above debug: %q", logs.String())
+	}
+
+	h.mu.Lock()
+	h.lastRecoveryKeysCollect = h.lastRecoveryKeysCollect.Add(-recoveryKeyErrorRetry)
+	h.mu.Unlock()
+	h.sendRecoveryKeys()
+	if attempts != 1 {
+		t.Fatalf("collections after %s = %d, want 1 (unavailable is not a retryable error)", recoveryKeyErrorRetry, attempts)
+	}
+
+	h.mu.Lock()
+	h.lastRecoveryKeysCollect = time.Now().Add(-recoveryKeyCollectInterval)
+	h.mu.Unlock()
+	h.sendRecoveryKeys()
+	if attempts != 2 {
+		t.Fatalf("collections after full interval = %d, want 2", attempts)
 	}
 	if got := rec.puts(); len(got) != 0 {
 		t.Fatalf("unexpected escrow puts: %v", got)
