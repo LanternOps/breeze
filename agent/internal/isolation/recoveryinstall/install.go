@@ -175,7 +175,10 @@ func (i *Installer) stage(ctx context.Context, version, path string) error {
 		return err
 	}
 	name := tmp.Name()
-	defer os.Remove(name)
+	// After a successful publication the temporary name no longer exists
+	// (MoveFileEx) or is a second link to the published file (os.Link), so a
+	// failed removal is only a stray temp file, never a correctness problem.
+	defer func() { _ = os.Remove(name) }()
 	if err := serviceinstall.HardenProtectedBinaryACL(name); err != nil {
 		_ = tmp.Close()
 		return err

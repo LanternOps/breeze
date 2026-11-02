@@ -92,7 +92,7 @@ func TestReadinessCacheDoesNotFlapOnMinuteTicks(t *testing.T) {
 	probes := 0
 	c := &readinessCache{
 		now:   func() time.Time { return now },
-		probe: func(context.Context) (error, error, bool, string) { probes++; return nil, nil, true, "" },
+		probe: func(context.Context) readinessInputs { probes++; return readinessInputs{schedulerReady: true} },
 	}
 	c.refresh(context.Background(), true)
 	for minute := 1; minute <= 30; minute++ {

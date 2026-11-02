@@ -36,7 +36,7 @@ func TestWFPCapabilityInputs(t *testing.T) {
 func TestWFPReadinessCacheIsCheapBoundedAndRaceFree(t *testing.T) {
 	var calls atomic.Int32
 	now := time.Unix(1000, 0)
-	cache := readinessCache{now: func() time.Time { return now }, probe: func(context.Context) (error, error, bool, string) { calls.Add(1); return nil, nil, true, "" }}
+	cache := readinessCache{now: func() time.Time { return now }, probe: func(context.Context) readinessInputs { calls.Add(1); return readinessInputs{schedulerReady: true} }}
 	cache.refresh(context.Background(), false)
 	var wg sync.WaitGroup
 	for n := 0; n < 40; n++ {
@@ -71,10 +71,10 @@ func TestWFPReadinessCacheIsCheapBoundedAndRaceFree(t *testing.T) {
 
 func TestWFPCapabilityDoesNotWaitForSlowRefresh(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
-	cache := readinessCache{probe: func(context.Context) (error, error, bool, string) {
+	cache := readinessCache{probe: func(context.Context) readinessInputs {
 		close(entered)
 		<-release
-		return nil, nil, true, ""
+		return readinessInputs{schedulerReady: true}
 	}}
 	done := make(chan struct{})
 	go func() { cache.refresh(context.Background(), true); close(done) }()

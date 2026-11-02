@@ -14,7 +14,7 @@ func TestWindowsShippedActivationSwitchRemainsOff(t *testing.T) {
 	}
 	i := newWindowsIsolator(nil).(*windowsIsolator)
 	probed := false
-	i.readiness.probe = func(context.Context) (error, error, bool, string) { probed = true; return nil, nil, true, "" }
+	i.readiness.probe = func(context.Context) readinessInputs { probed = true; return readinessInputs{schedulerReady: true} }
 	i.RefreshReadiness(context.Background())
 	if probed {
 		t.Fatal("a not-activated agent must not probe readiness (WFP session / Task Scheduler on a timer)")

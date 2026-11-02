@@ -165,7 +165,7 @@ func (o *op) runRecovery(ev Event, knownAbsent bool) error {
 					return fmt.Errorf("confirm absence; recovery stays armed: %w", err)
 				}
 				if owned {
-					return errors.New("Breeze-owned rules remain; recovery stays armed")
+					return errors.New("breeze-owned rules remain; recovery stays armed")
 				}
 				ev = Event{Kind: EvAbsentConfirmed}
 			case EffDisarmProvisional:
@@ -213,7 +213,7 @@ func (m *Manager) releaseAllWithoutState(ctx context.Context) error {
 		return nil // no journal at all: the same rule as an unreadable engine above
 	}
 	if owned {
-		return errors.New("Breeze-owned rules exist but the isolation state directory is missing; recovery cannot record their release")
+		return errors.New("breeze-owned rules exist but the isolation state directory is missing; recovery cannot record their release")
 	}
 	return nil
 }

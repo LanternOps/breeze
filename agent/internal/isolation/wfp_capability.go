@@ -34,11 +34,18 @@ func wfpCapability(engineErr, recoveryErr error, schedulerReady bool, _ string, 
 	return c
 }
 
+// readinessInputs is one probe of the three readiness prerequisites.
+type readinessInputs struct {
+	engineErr, recoveryErr error
+	schedulerReady         bool
+	schedulerReason        string
+}
+
 type readinessCache struct {
 	refreshMu              sync.Mutex
 	mu                     sync.Mutex
 	now                    func() time.Time
-	probe                  func(context.Context) (error, error, bool, string)
+	probe                  func(context.Context) readinessInputs
 	checkedAt              time.Time
 	engineErr, recoveryErr error
 	schedulerReady         bool
@@ -62,10 +69,10 @@ func (c *readinessCache) refresh(ctx context.Context, force bool) {
 	if probe == nil || (!force && fresh) {
 		return
 	}
-	engineErr, recoveryErr, schedulerReady, schedulerReason := probe(ctx)
+	in := probe(ctx)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.engineErr, c.recoveryErr, c.schedulerReady, c.schedulerReason = engineErr, recoveryErr, schedulerReady, schedulerReason
+	c.engineErr, c.recoveryErr, c.schedulerReady, c.schedulerReason = in.engineErr, in.recoveryErr, in.schedulerReady, in.schedulerReason
 	c.checkedAt = c.clock()
 }
 

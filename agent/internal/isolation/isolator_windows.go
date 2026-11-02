@@ -107,9 +107,9 @@ func (i *windowsIsolator) configureRecoveryReadiness(scheduler RecoveryScheduler
 func (i *windowsIsolator) configureReadiness(ensure func(context.Context) (string, error), scheduler func() (bool, string)) {
 	i.readiness.mu.Lock()
 	defer i.readiness.mu.Unlock()
-	i.readiness.probe = func(ctx context.Context) (error, error, bool, string) {
+	i.readiness.probe = func(ctx context.Context) readinessInputs {
 		if err := ctx.Err(); err != nil {
-			return err, err, false, "cancelled"
+			return readinessInputs{engineErr: err, recoveryErr: err, schedulerReason: "cancelled"}
 		}
 		session, engineErr := i.open()
 		if engineErr == nil {
@@ -117,7 +117,7 @@ func (i *windowsIsolator) configureReadiness(ensure func(context.Context) (strin
 		}
 		_, recoveryErr := ensure(ctx)
 		ready, reason := scheduler()
-		return engineErr, recoveryErr, ready, reason
+		return readinessInputs{engineErr: engineErr, recoveryErr: recoveryErr, schedulerReady: ready, schedulerReason: reason}
 	}
 	i.readiness.checkedAt = time.Time{}
 }
