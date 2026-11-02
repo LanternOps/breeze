@@ -1524,6 +1524,34 @@ describe('manage_policy_feature_link maintenance inlineSettings validation (#631
     expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
   });
 
+  it.each(['add', 'update'])('containment %s validates inline settings before mutation', async action => {
+    const tools = toolsWithPolicy();
+    if (action === 'update') mockSelectRows([{ featureType: 'containment' }]);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'containment' } as any);
+    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'containment' } as any);
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action, configPolicyId: POLICY_ID, featureLinkId: 'link-1', featureType: 'containment',
+      inlineSettings: { version: 1, defaultTtlHours: 0 },
+    }, makeAuth());
+    expect(JSON.parse(output).error).toMatch(/defaultTtlHours/);
+    expect(addFeatureLink).not.toHaveBeenCalled();
+    expect(updateFeatureLink).not.toHaveBeenCalled();
+  });
+
+  it.each(['add', 'update'])('containment %s refuses a standalone reference', async action => {
+    const tools = toolsWithPolicy();
+    if (action === 'update') mockSelectRows([{ featureType: 'containment' }]);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'containment' } as any);
+    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'containment' } as any);
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action, configPolicyId: POLICY_ID, featureLinkId: 'link-1', featureType: 'containment',
+      featurePolicyId: POLICY_ID, inlineSettings: { version: 1 },
+    }, makeAuth());
+    expect(JSON.parse(output).error).toMatch(/featurePolicyId/);
+    expect(addFeatureLink).not.toHaveBeenCalled();
+    expect(updateFeatureLink).not.toHaveBeenCalled();
+  });
+
   it('system_protection (#4754): returns a field-level error for an unknown key, not the generic tool error', async () => {
     vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'system_protection' } as any);
 

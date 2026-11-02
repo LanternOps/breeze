@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { db } from '../db';
 import { hierarchyFor, type DeviceHierarchy as PassedDeviceHierarchy, type DeviceHierarchyOpts } from './deviceHierarchy';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
@@ -35,6 +36,9 @@ import {
   type SecurityScanSettings,
   systemProtectionInlineSettingsSchema,
   SYSTEM_PROTECTION_DEFAULTS,
+  containmentInlineSettingsSchema,
+  CONTAINMENT_POLICY_DEFAULTS,
+  type ContainmentInlineSettings,
   type SystemProtectionInlineSettings,
 } from '@breeze/shared';
 import {
@@ -3319,5 +3323,112 @@ function systemProtectionPlatformDefault(): ResolvedSystemProtection {
     policyRevision: null,
     isPlatformDefault: true,
     invalidStoredSettings: false,
+  };
+}
+
+// ============================================
+// Containment configuration (#10100, config-only)
+// ============================================
+
+export type ContainmentPolicy = ContainmentInlineSettings & {
+  isPlatformDefault: boolean;
+  invalidStoredSettings: boolean;
+  sourcePolicyId: string | null;
+  featureLinkId: string | null;
+};
+
+/**
+ * Closest assignment wins, in the caller's own RLS context. The effective-link
+ * view preserves inherited settings and their source. Extra permits grant a
+ * capability, so self-selected execution-unsafe groups cannot supply this policy.
+ * Malformed stored settings fail closed to the fixed W1 defaults.
+ */
+export async function resolveContainmentPolicy(
+  deviceId: string,
+): Promise<ContainmentPolicy & { revision: string }> {
+  const loaded = await loadDeviceHierarchy(deviceId);
+  if (!loaded) return containmentPlatformDefault();
+  const { allowedGroupIds } = await resolveExecutionSafeGroupIds(loaded.groupIds);
+  const hierarchy: DeviceHierarchy = { ...loaded, groupIds: allowedGroupIds };
+  const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
+
+  const rows = await db
+    .select({
+      featureLinkId: configPolicyEffectiveFeatureLinks.id,
+      sourcePolicyId: configPolicyEffectiveFeatureLinks.sourcePolicyId,
+      inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
+      assignmentLevel: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      assignmentCreatedAt: configPolicyAssignments.createdAt,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active'),
+        policyOwnershipCondition(hierarchy),
+      ),
+    )
+    .innerJoin(
+      configPolicyEffectiveFeatureLinks,
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'containment'),
+      ),
+    )
+    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+    .orderBy(
+      configPolicyAssignments.level,
+      configPolicyAssignments.priority,
+      configPolicyAssignments.createdAt,
+    );
+
+  if (rows.length === 0) return containmentPlatformDefault();
+
+  const winner = sortByHierarchy(rows)[0]!;
+  const parsed = containmentInlineSettingsSchema.safeParse(winner.inlineSettings);
+  if (!parsed.success) {
+    console.warn('[featureConfigResolver] Malformed containment settings; using platform defaults', {
+      featureLinkId: winner.featureLinkId,
+      sourcePolicyId: winner.sourcePolicyId,
+      // Paths only: messages can contain rejected values or unknown key names.
+      issues: parsed.error.issues.map((issue) => issue.path.join('.') || '(root)'),
+    });
+    return {
+      ...containmentPlatformDefault(),
+      isPlatformDefault: false,
+      invalidStoredSettings: true,
+      sourcePolicyId: winner.sourcePolicyId,
+      featureLinkId: winner.featureLinkId,
+    };
+  }
+  return {
+    ...parsed.data,
+    revision: containmentRevision(parsed.data),
+    isPlatformDefault: false,
+    invalidStoredSettings: false,
+    sourcePolicyId: winner.sourcePolicyId,
+    featureLinkId: winner.featureLinkId,
+  };
+}
+
+function containmentRevision(settings: ContainmentInlineSettings): string {
+  // Strict Zod objects emit keys in schema order, including every extraAllow
+  // item. Hash only that parsed, default-filled JSON, never source metadata.
+  const stableJson = JSON.stringify(containmentInlineSettingsSchema.parse(settings));
+  return 'c1:' + createHash('sha256').update(stableJson).digest('hex').slice(0, 32);
+}
+
+function containmentPlatformDefault(): ContainmentPolicy & { revision: string } {
+  const settings = containmentInlineSettingsSchema.parse(CONTAINMENT_POLICY_DEFAULTS);
+  return {
+    ...settings,
+    revision: containmentRevision(settings),
+    isPlatformDefault: true,
+    invalidStoredSettings: false,
+    sourcePolicyId: null,
+    featureLinkId: null,
   };
 }
