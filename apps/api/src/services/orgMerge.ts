@@ -1257,6 +1257,17 @@ async function getOrgMergeWalkOrder(): Promise<string[]> {
 // Execute
 // ---------------------------------------------------------------------------
 
+/** Must run in Phase B after the export locks and assertPairStillMergeable. */
+export async function assertMergeIsolationSafe(orgId: string, pamTransfer: boolean): Promise<void> {
+  // Existing org NO KEY UPDATE is compatible with start's FK KEY SHARE. Never
+  // upgrade it: wait on devices (id order), then read committed episodes. The
+  // already-held export org lock blocks the devices INSERT trigger from committing,
+  // so no new device can become visible to a start after this scan.
+  await dbModule.db.execute(sql`SELECT id FROM devices WHERE org_id = ${uuid(orgId)} ORDER BY id FOR NO KEY UPDATE`);
+  const blockers = await self.collectMergeBlockers(orgId, pamTransfer);
+  if (blockers.length > 0) throw new OrgMergeBlockedError(blockers, 'blocks_merge', pamTransfer);
+}
+
 /**
  * W05 (#8144): drop both orgs' agent hot-path cache entries on every API
  * instance. A merge re-points automation_policies (policy probe), devices and
@@ -1351,8 +1362,8 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         //    upgrade-hardening.sql). Taken before any row write so the export
         //    triggers' lock hierarchy cannot deadlock against us mid-merge.
         // 3. Both org rows FOR NO KEY UPDATE in assertPairStillMergeable.
-        // 4. Source org FOR UPDATE and its devices FOR NO KEY UPDATE, in id order,
-        //    before the isolation blocker read. The org lock stabilizes new FK inserts.
+        // 4. Source devices FOR NO KEY UPDATE, in id order, then isolation
+        //    blockers. Keep step 3 compatible with starts' org FK KEY SHARE.
         // 5. Registry walk and ticket child row locks (getOrgMergeWalkOrder /
         //    applyTicketChildLockOrder), then deferred triggers at COMMIT,
         //    including the membership owner check's KEY SHARE held since 1.
@@ -1406,13 +1417,7 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         // refusing any PAM history, which the recheck below already enforces.
         const pamTransfer = await self.resolveMergePamTransfer();
         await armOwnershipChange(dbModule.db, 'org_merge', pamTransfer);
-        // Isolation start holds the device row before inserting its episode.
-        // Wait for an in-flight start, then read its committed result. Strengthen
-        // the source org lock first to also fence new device/episode FK inserts.
-        await dbModule.db.execute(sql`SELECT id FROM organizations WHERE id = ${uuid(loser.id)} FOR UPDATE`);
-        await dbModule.db.execute(sql`SELECT id FROM devices WHERE org_id = ${uuid(loser.id)} ORDER BY id FOR NO KEY UPDATE`);
-        const txBlockers = await self.collectMergeBlockers(loser.id, pamTransfer);
-        if (txBlockers.length > 0) throw new OrgMergeBlockedError(txBlockers, 'blocks_merge', pamTransfer);
+        await self.assertMergeIsolationSafe(loser.id, pamTransfer);
         await self.assertMergeLineageDepth(loser.id, survivor.id);
 
         const topologyMerge = await prepareTopologyOrgMerge(loser.id, survivor.id);

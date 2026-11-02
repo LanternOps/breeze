@@ -49,6 +49,7 @@ function sqlToText(q: unknown): string {
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn(<T,>(fn: () => Promise<T>) => fn()),
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
@@ -209,11 +210,12 @@ vi.mock('./patchReportFiles', () => ({
 import {
   getOrgCascadeDeleteOrder,
   cascadeDeleteOrg,
+  assertIsolationErasureSafe,
   topologicalCascadeOrder,
   TenantCascadeRefusalError,
   __testOnly,
 } from './tenantCascade';
-import { db, withSystemDbAccessContext } from '../db';
+import { db, withDbTransaction, withSystemDbAccessContext } from '../db';
 
 const cascadeOrder = getOrgCascadeDeleteOrder();
 // Captured before any test swaps it out, so a later suite can delegate to it.
@@ -1201,6 +1203,7 @@ describe('cascade network isolation deletion races', () => {
   const actorId = '00000000-0000-0000-0000-000000000002';
   const protectedTables = ['device_network_isolations', 'devices', 'organizations'];
   beforeEach(() => {
+    vi.mocked(withDbTransaction).mockClear();
     mockState.executeResponses = [];
     mockState.executedSql = [];
     mockState.fkEdges = [];
@@ -1224,7 +1227,7 @@ describe('cascade network isolation deletion races', () => {
     const deletes: string[] = [];
     vi.mocked(db.execute).mockImplementation(((query: unknown) => {
       const sql = new PgDialect().sqlToQuery(query as never).sql;
-      if (/SELECT id FROM organizations.*FOR UPDATE/is.test(sql)) protectedStep++;
+      if (/SELECT id FROM devices.*FOR NO KEY UPDATE$/is.test(sql)) protectedStep++;
       if (/SELECT id FROM devices.*FOR NO KEY UPDATE/is.test(sql)
         && protectedTables[protectedStep] === table) {
         mockState.isolationRows = [{ isolationId: '22222222-2222-4222-8222-222222222222', deviceId: '33333333-3333-4333-8333-333333333333' }];
@@ -1237,7 +1240,7 @@ describe('cascade network isolation deletion races', () => {
     expect(deletes.some(sql => new RegExp(`DELETE FROM ["]?${table}["]? WHERE`, 'i').test(sql))).toBe(false);
   });
 
-  it('locks the org, then devices, then checks episodes in the same transaction as each protected delete', async () => {
+  it('locks devices, then the org without waiting, re-scans devices without waiting, then reads episodes', async () => {
     const statements: Array<{ sql: string; context: number }> = [];
     let context = 0;
     let sequence = 0;
@@ -1254,12 +1257,44 @@ describe('cascade network isolation deletion races', () => {
     for (const table of protectedTables) {
       const deletion = statements.findIndex(({ sql }) => new RegExp(`DELETE FROM ["]?${table}["]? WHERE`, 'i').test(sql));
       expect(deletion).toBeGreaterThan(2);
-      const previous = statements.slice(deletion - 3, deletion + 1);
-      expect(previous[0]!.sql).toMatch(/SELECT id FROM organizations.*FOR UPDATE/is);
-      expect(previous[1]!.sql).toMatch(/SELECT id FROM devices.*ORDER BY id FOR NO KEY UPDATE/is);
-      expect(previous[2]!.sql).toMatch(/SELECT.*FROM device_network_isolations/is);
+      const previous = statements.slice(deletion - 4, deletion + 1);
+      expect(previous[0]!.sql).toMatch(/SELECT id FROM devices.*ORDER BY id FOR NO KEY UPDATE$/is);
+      expect(previous[1]!.sql).toMatch(/SELECT id FROM organizations.*FOR UPDATE NOWAIT/is);
+      expect(previous[2]!.sql).toMatch(/SELECT id FROM devices.*ORDER BY id FOR NO KEY UPDATE NOWAIT/is);
+      expect(previous[3]!.sql).toMatch(/SELECT.*FROM device_network_isolations/is);
       expect(new Set(previous.map(row => row.context)).size).toBe(1);
       expect(previous[0]!.context).toBeGreaterThan(0);
     }
   });
+
+  it.each(['FROM organizations', 'FOR NO KEY UPDATE NOWAIT'])('retries %s contention from a rolled-back savepoint', async conflict => {
+    let failed = false;
+    const statements: string[] = [];
+    vi.mocked(db.execute).mockImplementation((async (query: unknown) => {
+      const text = new PgDialect().sqlToQuery(query as never).sql;
+      statements.push(text);
+      if (!failed && text.includes(conflict)) {
+        failed = true;
+        throw new Error('query failed', { cause: Object.assign(new Error('lock busy'), { code: '55P03' }) });
+      }
+      return defaultExecuteImpl(query as never);
+    }) as typeof defaultExecuteImpl);
+    await assertIsolationErasureSafe(orgId);
+    expect(failed).toBe(true);
+    expect(withDbTransaction).toHaveBeenCalledTimes(2);
+    expect(statements.filter(sql => /FOR NO KEY UPDATE$/.test(sql))).toHaveLength(2);
+    expect(statements.at(-1)).toContain('FROM device_network_isolations');
+  });
+
+  it('bounds lock retries and never reads episodes after repeated contention', async () => {
+    const busy = Object.assign(new Error('lock busy'), { code: '55P03' });
+    vi.mocked(db.execute).mockImplementation((async (query: unknown) => {
+      const text = new PgDialect().sqlToQuery(query as never).sql;
+      if (text.includes('FROM organizations')) throw busy;
+      return defaultExecuteImpl(query as never);
+    }) as typeof defaultExecuteImpl);
+    await expect(assertIsolationErasureSafe(orgId)).rejects.toBe(busy);
+    expect(withDbTransaction).toHaveBeenCalledTimes(3);
+  });
+
 });

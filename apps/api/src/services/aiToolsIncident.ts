@@ -304,7 +304,10 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
         const parsed = startNetworkIsolationSchema.safeParse({
           incidentId: input.incidentId, ttlHours: input.ttlHours, reason: input.reason,
         });
-        if (!parsed.success) return JSON.stringify({ error: `Invalid isolation input: ${parsed.error.message}` });
+        if (!parsed.success) {
+          const invalidPaths = [...new Set(parsed.error.issues.map(issue => issue.path.join('.') || 'input'))];
+          return JSON.stringify({ error: `Invalid isolation input: ${invalidPaths.join(', ')}` });
+        }
         try {
           // The service alone builds the allowlist and owns the action/command lifecycle.
           const { startNetworkIsolation } = await import('./networkIsolation/service');

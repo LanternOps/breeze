@@ -1843,21 +1843,31 @@ export async function hasUnresolvedNetworkIsolations(orgId: string): Promise<boo
   );
 }
 
-/**
- * Recheck at every boundary that can erase the episode, directly or by FK cascade.
- * An admin erasure can run on an active org, and each walk step commits separately.
- * The org lock blocks new device/episode FK inserts; the device locks serialize
- * with an already-running start. A concurrent refusal leaves recovery state intact.
- */
-async function assertIsolationErasureSafe(orgId: string): Promise<void> {
-  await dbModule.db.execute(sql`SELECT id FROM organizations WHERE id = ${orgId} FOR UPDATE`);
-  try {
-    await assertNoUnresolvedIsolation(dbModule.db, { orgId }, 'organization_erasure');
-  } catch (error) {
-    if (error instanceof NetworkIsolationUnresolvedError) {
-      throw new TenantCascadeRefusalError(error.code, error.message);
+/** Recheck inside each transaction that can erase recovery state. */
+export async function assertIsolationErasureSafe(orgId: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await dbModule.withDbTransaction(async () => {
+        // Device-first: let existing starts finish before taking the org FK fence.
+        // NOWAIT avoids a cycle with a new device/start holding org KEY SHARE;
+        // the second scan catches devices committed after the first scan. It must
+        // not wait on a new start that now needs our org lock. A failed savepoint
+        // releases ALL these locks before retry; success retains them until delete commits.
+        await dbModule.db.execute(sql`SELECT id FROM devices WHERE org_id = ${orgId} ORDER BY id FOR NO KEY UPDATE`);
+        await dbModule.db.execute(sql`SELECT id FROM organizations WHERE id = ${orgId} FOR UPDATE NOWAIT`);
+        await dbModule.db.execute(sql`SELECT id FROM devices WHERE org_id = ${orgId} ORDER BY id FOR NO KEY UPDATE NOWAIT`);
+        await assertNoUnresolvedIsolation(dbModule.db, { orgId }, 'organization_erasure', { lockDevices: false });
+      });
+      return;
+    } catch (error) {
+      if (error instanceof NetworkIsolationUnresolvedError) {
+        throw new TenantCascadeRefusalError(error.code, error.message);
+      }
+      // Bound contention retries: preserve the refusal/error and never delete
+      // when the fence could not be established. Drizzle wraps SQLSTATE in cause.
+      if (pgErrorCode(error) === '55P03' && attempt < 2) continue;
+      throw error;
     }
-    throw error;
   }
 }
 

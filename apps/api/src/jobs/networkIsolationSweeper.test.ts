@@ -4,7 +4,7 @@ import { alerts, deviceNetworkIsolations, devices, incidents, type DeviceNetwork
 
 const mocks = vi.hoisted(() => ({
   select: vi.fn(), update: vi.fn(), insert: vi.fn(), transaction: vi.fn(), system: vi.fn(), outside: vi.fn(), afterCommit: vi.fn(),
-  alert: vi.fn(), publish: vi.fn(), outcome: vi.fn(),
+  alert: vi.fn(), publish: vi.fn(), outcome: vi.fn(), capture: vi.fn(),
   queueAdd: vi.fn(), queueClose: vi.fn(), repeats: vi.fn(), removeRepeat: vi.fn(),
   workerClose: vi.fn(), workerCreated: vi.fn(), observed: vi.fn(),
 }));
@@ -19,7 +19,7 @@ vi.mock('../services/alertService', () => ({ createSourcedAlert: mocks.alert }))
 vi.mock('../services/deviceSiteResolver', () => ({ resolveDeviceSiteId: vi.fn(async () => 'site') }));
 vi.mock('../services/eventBus', () => ({ publishEvent: mocks.publish }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
-vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../services/sentry', () => ({ captureException: mocks.capture }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: mocks.observed }));
 vi.mock('bullmq', () => ({
   Queue: class {
@@ -44,6 +44,8 @@ let predicates: string[];
 let predicateParams: unknown[][];
 let limits: number[];
 let writes: Array<Record<string, unknown>>;
+let markerCommitted: boolean;
+let candidates: Array<{ id: string }> | undefined;
 
 function episode(patch: Partial<DeviceNetworkIsolation> = {}): DeviceNetworkIsolation {
   return {
@@ -63,19 +65,20 @@ function episode(patch: Partial<DeviceNetworkIsolation> = {}): DeviceNetworkIsol
 
 beforeEach(() => {
   vi.clearAllMocks();
-  callbacks = [];
+  mocks.alert.mockReset(); mocks.publish.mockReset(); mocks.transaction.mockReset();
+  callbacks = []; markerCommitted = false; candidates = undefined;
   mocks.afterCommit.mockImplementation((_label: string, fn: () => Promise<void>) => { callbacks.push(fn); });
   row = episode(); inSystem = false; beforeLock = undefined; predicates = []; predicateParams = []; limits = []; writes = [];
   mocks.outside.mockImplementation((fn: () => unknown) => fn());
   mocks.system.mockImplementation(async (fn: () => Promise<unknown>) => {
     inSystem = true;
-    try { return await fn(); } finally { inSystem = false; }
+    try { return await fn(); } finally { inSystem = false; markerCommitted = row.expiryWarnedAt !== null; }
   });
   mocks.transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn({ select: mocks.select, update: mocks.update, insert: mocks.insert }));
   mocks.select.mockImplementation(() => {
     expect(inSystem).toBe(true);
     let table: unknown;
-    const result = () => table === deviceNetworkIsolations ? [{ ...row }]
+    const result = () => table === deviceNetworkIsolations ? candidates ?? [{ ...row }]
       : table === incidents ? [{ assignedTo: '00000000-0000-4000-8000-000000000006' }]
         : table === devices ? [{ siteId: '00000000-0000-4000-8000-000000000007' }] : [];
     const chain = {
@@ -174,29 +177,61 @@ describe('network isolation sweeper', () => {
     expect(mocks.alert).not.toHaveBeenCalled();
   });
 
-  it('never infers released or expired from elapsed time', async () => {
+  it.each(['verified', 'dispatched', 'release_requested'] as const)('never infers released or expired from elapsed time for %s', async state => {
+    row.state = state;
+    row.lastJournalSeq = 3;
     row.expiresAt = new Date(now.getTime() - 72 * hour);
     await sweepNetworkIsolations(now);
-    expect(row.state).toBe('verified');
+    expect(row.state).toBe(state);
     expect(row.releaseConfirmedAt).toBeNull();
     expect(writes.every(patch => patch.state !== 'released' && patch.state !== 'expired')).toBe(true);
   });
 
-  it('does not burn the warning marker when alert creation fails', async () => {
-    mocks.alert.mockResolvedValue(null);
-    await expect(sweepNetworkIsolations(now)).rejects.toThrow();
-    expect(row.expiryWarnedAt).toBeNull();
-    expect(mocks.publish).not.toHaveBeenCalled();
+  it('commits the warning marker before creating or publishing notifications', async () => {
+    mocks.alert.mockImplementationOnce(async () => {
+      expect(markerCommitted).toBe(true);
+      return '00000000-0000-4000-8000-000000000008';
+    });
+    mocks.publish.mockImplementationOnce(async () => {
+      expect(markerCommitted).toBe(true);
+      return 'event-id';
+    });
+    expect(await sweepNetworkIsolations(now)).toEqual({ warned: 1, notDelivered: 0 });
+    expect(mocks.alert).toHaveBeenCalledTimes(1);
+    expect(mocks.capture).not.toHaveBeenCalled();
   });
 
-  it('does not burn the warning marker when event publication fails', async () => {
+  it('keeps the committed warning marker when alert creation fails and does not retry', async () => {
+    mocks.alert.mockResolvedValueOnce(null);
+    expect(await sweepNetworkIsolations(now)).toEqual({ warned: 0, notDelivered: 0 });
+    expect(row.expiryWarnedAt).toEqual(now);
+    expect(markerCommitted).toBe(true);
+    expect(mocks.publish).not.toHaveBeenCalled();
+    expect(mocks.capture).toHaveBeenCalledWith(expect.any(Error), undefined, { isolationId: row.id });
+    expect(await sweepNetworkIsolations(now)).toEqual({ warned: 0, notDelivered: 0 });
+    expect(mocks.alert).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the committed warning marker when publication fails and does not repeat the alert', async () => {
     mocks.publish.mockRejectedValueOnce(new Error('event publication failed'));
-    await expect(sweepNetworkIsolations(now)).rejects.toThrow('event publication failed');
-    expect(row.expiryWarnedAt).toBeNull();
+    expect(await sweepNetworkIsolations(now)).toEqual({ warned: 0, notDelivered: 0 });
+    expect(row.expiryWarnedAt).toEqual(now);
+    expect(await sweepNetworkIsolations(now)).toEqual({ warned: 0, notDelivered: 0 });
+    expect(mocks.alert).toHaveBeenCalledTimes(1);
+    expect(mocks.publish).toHaveBeenCalledTimes(1);
+    expect(mocks.capture).toHaveBeenCalledWith(expect.any(Error), undefined, { isolationId: row.id });
+    expect(mocks.publish.mock.calls[0]![4].eventId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+
+  it('continues processing later candidates when the first candidate throws', async () => {
+    const badId = '00000000-0000-4000-8000-000000000009';
+    candidates = [{ id: badId }, { id: row.id }];
+    mocks.transaction.mockRejectedValueOnce(new Error('candidate failed'));
     expect(await sweepNetworkIsolations(now)).toEqual({ warned: 1, notDelivered: 0 });
-    const first = mocks.publish.mock.calls[0]![4].eventId;
-    expect(mocks.publish.mock.calls[1]![4].eventId).toBe(first);
-    expect(first).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(mocks.transaction).toHaveBeenCalledTimes(2);
+    expect(mocks.capture).toHaveBeenCalledWith(expect.any(Error), undefined, { isolationId: badId });
+    expect(mocks.alert).toHaveBeenCalledTimes(1);
+    expect(row.expiryWarnedAt).toEqual(now);
   });
 
   it('bounds the due scan and uses expiry/state predicates for the active-expiry index', async () => {

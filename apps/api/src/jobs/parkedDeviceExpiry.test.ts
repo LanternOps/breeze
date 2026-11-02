@@ -155,7 +155,7 @@ describe('parked lifecycle isolation refusals', () => {
       expect(await expireParkedDevice(input)).toEqual({ expired: false, deviceId, reason: 'isolation_unresolved' });
       expect(h.transactionEvents).toEqual(['rollback']);
       expect(h.ledger).not.toHaveBeenCalled();
-      expect(warn).toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.any(String), { deviceId, isolationIds: ['isolation-1'] });
       expect(await expireParkedDevice(input)).toMatchObject({ expired: true, deviceId });
       expect(h.transactionEvents).toEqual(['rollback', 'commit']);
     } finally { warn.mockRestore(); }
@@ -174,7 +174,7 @@ describe('parked lifecycle isolation refusals', () => {
       expect(await purgeExpiredParkedDevice(input)).toEqual({ purged: false, deviceId, reason: 'isolation_unresolved' });
       expect(h.transactionEvents).toEqual(['rollback']);
       expect(h.ledger).not.toHaveBeenCalled();
-      expect(warn).toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.any(String), { deviceId, isolationIds: ['isolation-1'] });
       expect(await purgeExpiredParkedDevice(input)).toMatchObject({ purged: true, deviceId });
       expect(h.transactionEvents).toEqual(['rollback', 'commit']);
     } finally { warn.mockRestore(); }

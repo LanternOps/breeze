@@ -3242,6 +3242,7 @@ async function handleFlowToolCall(
  */
 export const __handleToolsListForTests = handleToolsList;
 export const __handleToolsCallForTests = handleToolsCall;
+export const __isMcpApprovalRequiredForTests = isMcpApprovalRequired;
 /**
  * Test-only direct access to the bootstrap authTool dispatcher. `tools/call`
  * now returns MCP_APPROVAL_REQUIRED before reaching it (bootstrap tools are

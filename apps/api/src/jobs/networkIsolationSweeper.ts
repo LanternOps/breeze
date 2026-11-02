@@ -66,52 +66,64 @@ export async function sweepNetworkIsolations(now: Date): Promise<{ warned: numbe
 
     const counts = { warned: 0, notDelivered: 0 };
     for (const candidate of candidates) {
-      const result = await withSystemDbAccessContext(() => db.transaction(tx =>
-        withEpisodeLock(tx, candidate.id, async row => {
-          // Discovery is only a hint: a report, release or extend may have won.
-          if (isNotDelivered(row, now)) {
-            const prev = toEpisodeSnapshot(row);
-            const transition = applyEpisodeEvent(prev, { type: 'not_delivered', generation: row.generation, at: now });
-            if (!('next' in transition) || !await writeEpisodeSnapshot(tx, row.id, prev, transition.next, now)) {
-              throw new Error('Network isolation sweeper transition conflict');
+      try {
+        const result = await withSystemDbAccessContext(() => db.transaction(tx =>
+          withEpisodeLock(tx, candidate.id, async row => {
+            // Discovery is only a hint: a report, release or extend may have won.
+            if (isNotDelivered(row, now)) {
+              const prev = toEpisodeSnapshot(row);
+              const transition = applyEpisodeEvent(prev, { type: 'not_delivered', generation: row.generation, at: now });
+              if (!('next' in transition) || !await writeEpisodeSnapshot(tx, row.id, prev, transition.next, now)) {
+                throw new Error('Network isolation sweeper transition conflict');
+              }
+              await synchronizeEpisodeOutcome(tx, row, prev, transition.next, now);
+              return 'notDelivered' as const;
             }
-            await synchronizeEpisodeOutcome(tx, row, prev, transition.next, now);
-            return 'notDelivered' as const;
-          }
-          if (!isExpiring(row, now)) return null;
+            if (!isExpiring(row, now)) return null;
 
-          const [device] = await tx.select({ siteId: devices.siteId }).from(devices)
-            .where(and(eq(devices.id, row.deviceId), eq(devices.orgId, row.orgId))).limit(1);
-          const [incident] = row.incidentId
-            ? await tx.select({ assignedTo: incidents.assignedTo }).from(incidents)
-              .where(and(eq(incidents.id, row.incidentId), eq(incidents.orgId, row.orgId))).limit(1)
-            : [];
-          const payload = {
-            isolationId: row.id, generation: row.generation, deviceId: row.deviceId,
-            incidentId: row.incidentId, expiresAt: row.expiresAt.toISOString(),
-            requestedByUserId: row.requestedByUserId, incidentOwnerUserId: incident?.assignedTo ?? null,
-          };
-          const alertId = await createSourcedAlert({
-            orgId: row.orgId, deviceId: row.deviceId, siteId: device?.siteId ?? null,
-            severity: 'medium', title: 'Network isolation expiring',
-            message: 'Network isolation expires within 12 hours. Review the incident and extend or release isolation.',
-            context: { source: 'network_isolation', ...payload }, eventPayload: payload,
-            publisher: PUBLISHER, triggeredAt: now,
-          });
-          if (!alertId) throw new Error('Network isolation expiry alert was not published');
-          // Like createSourcedAlert, publish before consuming the marker: a failed
-          // publish rolls back this row's work so the next sweep retries. Physical
-          // delivery can repeat after a crash; retain one logical event identity.
-          const digest = createHash('sha256').update(`${row.id}:expiring:${row.generation}`).digest('hex');
-          const eventId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
-          await publishEvent('device.isolation_expiring', row.orgId, payload, PUBLISHER, { siteId: device?.siteId ?? null, eventId });
-          await tx.update(deviceNetworkIsolations).set({ expiryWarnedAt: now })
-            .where(eq(deviceNetworkIsolations.id, row.id));
-          return 'warned' as const;
-        }),
-      ));
-      if (!result.found || !result.value) continue;
-      counts[result.value]++;
+            const [device] = await tx.select({ siteId: devices.siteId }).from(devices)
+              .where(and(eq(devices.id, row.deviceId), eq(devices.orgId, row.orgId))).limit(1);
+            const [incident] = row.incidentId
+              ? await tx.select({ assignedTo: incidents.assignedTo }).from(incidents)
+                .where(and(eq(incidents.id, row.incidentId), eq(incidents.orgId, row.orgId))).limit(1)
+              : [];
+            const payload = {
+              isolationId: row.id, generation: row.generation, deviceId: row.deviceId,
+              incidentId: row.incidentId, expiresAt: row.expiresAt.toISOString(),
+              requestedByUserId: row.requestedByUserId, incidentOwnerUserId: incident?.assignedTo ?? null,
+            };
+            // Consume the warning under the episode lock, then commit before any
+            // notification. Failure after commit is at-most-once for this window.
+            await tx.update(deviceNetworkIsolations).set({ expiryWarnedAt: now })
+              .where(eq(deviceNetworkIsolations.id, row.id));
+            return { orgId: row.orgId, siteId: device?.siteId ?? null, payload };
+          }),
+        ));
+        if (!result.found || !result.value) continue;
+        if (result.value === 'notDelivered') {
+          counts.notDelivered++;
+          continue;
+        }
+
+        // The outer system context has committed too; alert publication can no
+        // longer escape a rollback of expiryWarnedAt and repeat next sweep.
+        const { orgId, siteId, payload } = result.value;
+        const alertId = await withSystemDbAccessContext(() => createSourcedAlert({
+          orgId, deviceId: payload.deviceId, siteId,
+          severity: 'medium', title: 'Network isolation expiring',
+          message: 'Network isolation expires within 12 hours. Review the incident and extend or release isolation.',
+          context: { source: 'network_isolation', ...payload }, eventPayload: payload,
+          publisher: PUBLISHER, triggeredAt: now,
+        }));
+        if (!alertId) throw new Error('Network isolation expiry alert was not published');
+        const digest = createHash('sha256').update(`${payload.isolationId}:expiring:${payload.generation}`).digest('hex');
+        const eventId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+        await publishEvent('device.isolation_expiring', orgId, payload, PUBLISHER, { siteId, eventId });
+        counts.warned++;
+      } catch (error) {
+        console.error('[NetworkIsolationSweeper] Candidate failed', { isolationId: candidate.id });
+        captureException(error, undefined, { isolationId: candidate.id });
+      }
     }
     return counts;
   });

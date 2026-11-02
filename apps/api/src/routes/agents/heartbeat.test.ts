@@ -9504,6 +9504,8 @@ describe('heartbeat agent update isolation version floor', () => {
     const response = await post(role);
     expect(response.status).toBe(200);
     expect((await response.json()).upgradeTo).toBe('999.0.0');
+    const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
+    expect(findUnresolvedEpisode).not.toHaveBeenCalled();
   });
   it('allows an ordinary target once the episode has resolved', async () => {
     const { reconcileContainmentReport } = await import('../../services/networkIsolation/reconcile');
@@ -9517,12 +9519,19 @@ describe('heartbeat agent update isolation version floor', () => {
     const response = await post('agent');
     expect((await response.json()).upgradeTo).toBeFalsy();
   });
-  it('withholds an unsafe normal upgrade when reconciliation did not establish episode state', async () => {
-    const { reconcileContainmentReport, buildContainmentHeartbeatBlock } = await import('../../services/networkIsolation/reconcile');
+  it('fails the heartbeat when reconciliation lookup fails outside a savepoint', async () => {
+    const { reconcileContainmentReport } = await import('../../services/networkIsolation/reconcile');
     vi.mocked(reconcileContainmentReport).mockRejectedValueOnce(new Error('isolation lookup unavailable'));
-    vi.mocked(buildContainmentHeartbeatBlock).mockResolvedValueOnce({ networkIsolation: null });
     const response = await post('agent');
     expect(response.status).toBeGreaterThanOrEqual(500);
+  });
+  it('withholds an unsafe normal upgrade when reconciliation did not establish episode state', async () => {
+    const { reconcileContainmentReport, buildContainmentHeartbeatBlock } = await import('../../services/networkIsolation/reconcile');
+    vi.mocked(reconcileContainmentReport).mockResolvedValueOnce(undefined);
+    vi.mocked(buildContainmentHeartbeatBlock).mockResolvedValueOnce({ networkIsolation: null });
+    const response = await post('agent');
+    expect(response.status).toBe(200);
+    expect((await response.json()).upgradeTo).toBeFalsy();
   });
   it('does not launch an MSI edition migration while isolation is unresolved', async () => {
     const { agentAcceptsServedEdition } = await import('./helpers');
@@ -9541,9 +9550,14 @@ describe('heartbeat agent update isolation version floor', () => {
   });
   it('withholds watchdog recovery on an episode lookup failure', async () => {
     const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
-    vi.mocked(findUnresolvedEpisode).mockRejectedValueOnce(new Error('episode lookup unavailable'));
+    const failure = new Error('episode lookup unavailable');
+    vi.mocked(findUnresolvedEpisode).mockRejectedValueOnce(failure);
     const response = await post('watchdog');
     expect(response.status).toBe(200);
     expect((await response.json()).upgradeTo).toBeFalsy();
+    const { captureException } = await import('../../services/sentry');
+    expect(captureException).toHaveBeenCalledWith(failure, undefined, {
+      phase: 'isolation_watchdog_upgrade_lookup', deviceId: 'device-1', orgId: 'org-1',
+    });
   });
 });

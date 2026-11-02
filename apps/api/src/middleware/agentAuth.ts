@@ -2,7 +2,7 @@ import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { createHash, timingSafeEqual } from 'crypto';
 import { and, eq, isNull } from 'drizzle-orm';
-import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
+import { db, withDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../db';
 import { devices, organizations } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
 import { isolationBlocksTokenSuspension, type AgentTokenSuspendReason } from '../services/agentTokenSuspension';
@@ -350,13 +350,26 @@ export async function suspendAgentToken(
       if (suspended.length > 0) {
         // The identity-bound UPDATE holds the device lock until this context
         // commits, serializing this lookup with isolation start.
-        if (!isolationBlocks) forcedIsolations = await findUnresolvedIsolations(db, { deviceId: agent.deviceId });
+        if (!isolationBlocks) {
+          try {
+            // A failed warning query must roll back only its savepoint, never the
+            // security suspension already written in the outer transaction.
+            forcedIsolations = await withDbTransaction(() => findUnresolvedIsolations(db, { deviceId: agent.deviceId }));
+          } catch {
+            console.warn('[agentAuth] Forced suspension isolation warning lookup failed', { deviceId: agent.deviceId });
+          }
+        }
         return 'suspended';
       }
       return (await ownDeviceRowChangedHands(db, agent)) ? 'stale_caller' : 'unchanged';
     });
   } catch (err) {
-    if (err instanceof NetworkIsolationUnresolvedError) return 'isolation_unresolved';
+    if (err instanceof NetworkIsolationUnresolvedError) {
+      console.warn('[agentAuth] Credential suspension refused: network isolation unresolved', {
+        deviceId: agent.deviceId, isolationIds: err.isolations.map(row => row.isolationId),
+      });
+      return 'isolation_unresolved';
+    }
     // Best-effort: the auth gate is the source of truth. A failed suspension
     // write just means the next probe will try again.
     console.error('[agentAuth] suspendAgentToken failed', {

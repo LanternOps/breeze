@@ -17,6 +17,7 @@ vi.mock('../db', () => ({
   },
   withDbAccessContext: vi.fn(async (_context: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -130,7 +131,7 @@ vi.mock('../services/agentOrgRateLimit', async (importOriginal) => {
 import type { Context } from 'hono';
 import { createHash } from 'crypto';
 
-import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
+import { db, withDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../db';
 import { getRedis, rateLimiter } from '../services';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIp, trustsForwardedHeadersFrom } from '../services/clientIp';
@@ -2378,6 +2379,7 @@ describe('Task 18 — suspendAgentToken helper', () => {
   const identity = { deviceId: 'device-1', agentId: 'agent-1' };
 
   it('refuses a future operator suspension while isolation is unresolved', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.mocked(assertNoUnresolvedIsolation).mockRejectedValueOnce(new NetworkIsolationUnresolvedError(
       'suspend_agent_token', [{ deviceId: identity.deviceId, isolationId: 'isolation-1' }],
     ));
@@ -2385,6 +2387,29 @@ describe('Task 18 — suspendAgentToken helper', () => {
       .resolves.toBe('isolation_unresolved');
     expect(assertNoUnresolvedIsolation).toHaveBeenCalledWith(db, { deviceId: identity.deviceId }, 'suspend_agent_token');
     expect(db.update).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith('[agentAuth] Credential suspension refused: network isolation unresolved', {
+      deviceId: identity.deviceId, isolationIds: ['isolation-1'],
+    });
+    warn.mockRestore();
+  });
+
+  it('keeps forced suspension when the warning lookup fails in its savepoint', async () => {
+    updateReturning([{ id: identity.deviceId }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.mocked(findUnresolvedIsolations).mockImplementationOnce(async () => {
+      expect(withDbTransaction).toHaveBeenCalledTimes(1);
+      throw new Error('warning lookup failed');
+    });
+    try {
+      await expect(suspendAgentToken(identity, 'cross-tenant-probe')).resolves.toBe('suspended');
+      expect(withDbTransaction).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith('[agentAuth] Forced suspension isolation warning lookup failed', {
+        deviceId: identity.deviceId,
+      });
+      expect(captureMessage).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('forces security suspension and warns that isolation recovery is bounded by expiry and offline code', async () => {

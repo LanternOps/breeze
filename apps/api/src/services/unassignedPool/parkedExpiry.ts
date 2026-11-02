@@ -164,7 +164,9 @@ export async function expireParkedDevice(
   }).catch((err: unknown): Locked => {
     // Catch after the transaction rolls back, including any reattach cleanup.
     if (err instanceof NetworkIsolationUnresolvedError) {
-      console.warn(`${LOG_PREFIX} skipping expiry for ${deviceId}: ${err.message}`);
+      console.warn(`${LOG_PREFIX} skipping expiry: ${err.message}`, {
+        deviceId, isolationIds: err.isolations.map(isolation => isolation.isolationId),
+      });
       return { skip: 'isolation_unresolved' };
     }
     throw err;
@@ -291,7 +293,9 @@ export async function purgeExpiredParkedDevice(input: {
   } catch (err) {
     // Caught outside the transaction, so the refusal still rolled it back.
     if (err instanceof NetworkIsolationUnresolvedError) {
-      console.warn(`${LOG_PREFIX} skipping purge for ${deviceId}: ${err.message}`);
+      console.warn(`${LOG_PREFIX} skipping purge: ${err.message}`, {
+        deviceId, isolationIds: err.isolations.map(isolation => isolation.isolationId),
+      });
       return { purged: false, deviceId, reason: 'isolation_unresolved' };
     }
     if (err instanceof DeviceLifecycleError) {

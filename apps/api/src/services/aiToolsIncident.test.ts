@@ -374,9 +374,16 @@ describe('network isolation AI service ownership', () => {
     });
   it.each([0, 721, 1.5, '24'])('rejects invalid isolation TTL %s before starting', async ttlHours => {
     const out = JSON.parse(await buildToolMap().get('execute_containment')!.handler({ ...input, ttlHours }, makeAuth()));
-    expect(out.error).toMatch(/Invalid isolation input/);
+    expect(out.error).toBe('Invalid isolation input: ttlHours');
     expect(startNetworkIsolation).not.toHaveBeenCalled();
     expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+  it('lists all invalid field paths without exposing raw Zod diagnostics', async () => {
+    const out = JSON.parse(await buildToolMap().get('execute_containment')!.handler({
+      ...input, incidentId: 'invalid', ttlHours: 0,
+    }, makeAuth()));
+    expect(out.error).toBe('Invalid isolation input: incidentId, ttlHours');
+    expect(startNetworkIsolation).not.toHaveBeenCalled();
   });
   it('preserves the typed unsupported-agent refusal detail', async () => {
     vi.mocked(startNetworkIsolation).mockResolvedValue({ error: 'agent_not_ready', networkIsolationUnsupportedReason: 'mechanism_unavailable' });

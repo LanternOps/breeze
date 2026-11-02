@@ -204,7 +204,7 @@ orgMergeRoutes.post(
 
     if (preview.verdict === 'blocked') {
       if (preview.blockerCodes?.includes('isolation_unresolved')) {
-        return c.json({ error: 'isolation_unresolved', message: 'Release network isolation first' }, 409);
+        return c.json({ error: 'isolation_unresolved', message: preview.blockers.join(' ') }, 409);
       }
       return c.json(
         {

@@ -1117,13 +1117,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         });
 
         if (targetAgent && compareAgentVersions(targetAgent, device.agentVersion) > 0) {
-          // The watchdog can replace the main agent binary too. Read only when a
-          // recovery offer exists, on this beat's connection, and isolate lookup faults.
-          const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
-          const unresolved = await withDbTransaction(() => findUnresolvedEpisode(
-            db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device.id,
-          ));
-          if (isolationAgentUpgradeGate(targetAgent, unresolved !== null).allow) agentUpgradeTo = targetAgent;
+          // Supported recovery targets need no episode read. Below-floor targets
+          // require absence of an unresolved episode; isolate lookup faults in a savepoint.
+          if (isolationAgentUpgradeGate(targetAgent, true).allow) {
+            agentUpgradeTo = targetAgent;
+          } else {
+            try {
+              const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
+              const unresolved = await withDbTransaction(() => findUnresolvedEpisode(
+                db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device.id,
+              ));
+              if (isolationAgentUpgradeGate(targetAgent, unresolved !== null).allow) agentUpgradeTo = targetAgent;
+            } catch (err) {
+              console.error('[heartbeat] watchdog recovery isolation lookup failed', { deviceId: device.id, orgId: device.orgId });
+              captureException(err, undefined, { phase: 'isolation_watchdog_upgrade_lookup', deviceId: device.id, orgId: device.orgId });
+            }
+          }
         }
       } catch (err) {
         console.error(`[agents] failed to evaluate watchdog-branch agent recovery target for ${agentId}:`, err);

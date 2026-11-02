@@ -210,7 +210,7 @@ vi.mock('../services/permissions', async (importOriginal) => {
   };
 });
 
-import { mcpServerRoutes } from './mcpServer';
+import { mcpServerRoutes, __isMcpApprovalRequiredForTests } from './mcpServer';
 import { checkGuardrails, isReadOnlyResolution, TIER2_ACTIONS, TIER3_ACTIONS } from '../services/aiGuardrails';
 
 // Real JSON schemas for the multiplexed tools these tests target, trimmed to
@@ -1466,6 +1466,15 @@ describe('network isolation bypass refusal', () => {
     intentMocks.createMcpActionIntent.mockReset().mockImplementation(async (input: { toolName: string }) => pendingOutcome(input.toolName));
   });
   afterEach(() => vi.unstubAllEnvs());
+
+  it.each(['execute_containment', 'release_containment'])('direct approval guard refuses %s even for an unattended principal', name => {
+    expect(__isMcpApprovalRequiredForTests(name, 3, {
+      unattendedPrincipal: true, toolInput: isolationArgs,
+    })).toBe(true);
+    expect(__isMcpApprovalRequiredForTests('execute_command', 3, {
+      unattendedPrincipal: true, toolInput: { command: 'hostname' },
+    })).toBe(false);
+  });
 
   it.each([
     ['execute_containment', false, false],

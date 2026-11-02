@@ -980,7 +980,7 @@ describe('blocks-merge refusal', () => {
     };
   }
 
-  it('rechecks isolation after locking the source org and devices, before any merge policy runs', async () => {
+  it('rechecks isolation after locking devices without upgrading the existing compatible org lock', async () => {
     mockState.executeResponses = [];
     mockState.executedSql = [];
     mockState.isolationRows = [];
@@ -1006,8 +1006,8 @@ describe('blocks-merge refusal', () => {
       const orgLock = statements.findIndex(sql => /SELECT id FROM organizations.*FOR UPDATE/is.test(sql));
       const deviceLock = statements.findIndex(sql => /SELECT id FROM devices.*FOR NO KEY UPDATE/is.test(sql));
       const finalRead = statements.reduce((last, sql, index) => /FROM device_network_isolations/.test(sql) ? index : last, -1);
-      expect(orgLock).toBeGreaterThan(-1);
-      expect(deviceLock).toBeGreaterThan(orgLock);
+      expect(orgLock).toBe(-1);
+      expect(deviceLock).toBeGreaterThan(-1);
       expect(finalRead).toBeGreaterThan(deviceLock);
     } finally {
       mockState.isolationRows = [];
