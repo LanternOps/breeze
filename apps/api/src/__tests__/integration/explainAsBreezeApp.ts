@@ -69,7 +69,7 @@
  * promotable under RLS at all — the regression signal, not a tuning knob.
  */
 import { sql, type SQL } from 'drizzle-orm';
-import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
+import { PgDialect, getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
 import { db, withDbAccessContext, type DbAccessContext, type DbAccessScope } from '../../db';
 import { getTestDb } from './setup';
 
@@ -94,6 +94,13 @@ export interface ExplainAsBreezeAppOptions {
    * plan and not a hand-simplified stand-in.
    */
   sql: { getSQL(): SQL } | SQL;
+  /**
+   * Plan as a cached (generic) plan, the way a named prepared statement is
+   * planned after its first executions: bound parameters stay `$n`, so a
+   * partial-index predicate only matches a literal in the query. Off by
+   * default (custom plan, parameter values visible to the planner).
+   */
+  forceGenericPlan?: boolean;
 }
 
 export interface ExplainAsBreezeAppResult {
@@ -129,7 +136,9 @@ export async function explainAsBreezeApp(
   return withDbAccessContext(ctx, async () => {
     await db.execute(sql`SET LOCAL enable_seqscan = off`);
     const inner = 'getSQL' in opts.sql ? opts.sql.getSQL() : opts.sql;
-    const rows = await db.execute(sql`EXPLAIN ${inner}`);
+    const rows = opts.forceGenericPlan
+      ? await explainGenericPlan(inner)
+      : await db.execute(sql`EXPLAIN ${inner}`);
     const plan = Array.from(rows as Iterable<unknown>)
       .map((r) => Object.values(r as Record<string, unknown>).join(' '))
       .join('\n');
@@ -140,6 +149,32 @@ export async function explainAsBreezeApp(
       hasSeqScan: plan.includes('Seq Scan'),
     };
   });
+}
+
+/**
+ * `EXPLAIN <query>` with bound parameters plans with their values (a custom
+ * plan), and plan_cache_mode does not reach the statement inside an EXPLAIN.
+ * A generic plan needs a real prepared statement: PREPARE the query text with
+ * its `$n` placeholders, then EXPLAIN EXECUTE it under force_generic_plan. The
+ * EXECUTE arguments are written as untyped quoted literals so each coerces to
+ * the parameter type Postgres inferred at PREPARE. Test-only: the values come
+ * from the test's own query.
+ */
+async function explainGenericPlan(inner: SQL): Promise<unknown> {
+  const { sql: text, params } = new PgDialect().sqlToQuery(inner);
+  const literal = (value: unknown): string => {
+    if (value === null || value === undefined) return 'NULL';
+    const raw = value instanceof Date ? value.toISOString() : String(value);
+    return `'${raw.replace(/'/g, "''")}'`;
+  };
+  await db.execute(sql`SET LOCAL plan_cache_mode = force_generic_plan`);
+  await db.execute(sql.raw(`PREPARE breeze_explain_generic AS ${text}`));
+  try {
+    const args = params.length > 0 ? `(${params.map(literal).join(', ')})` : '';
+    return await db.execute(sql.raw(`EXPLAIN EXECUTE breeze_explain_generic${args}`));
+  } finally {
+    await db.execute(sql.raw('DEALLOCATE breeze_explain_generic'));
+  }
 }
 
 /**

@@ -553,6 +553,25 @@ export function retiredConditionTypeError(conditions: unknown): string | null {
 }
 
 /**
+ * #10740 — script and backup-continuity templates use `{{description}}`;
+ * composite uses `{{conditionsMet}}`. Handlers return that text on
+ * `ConditionResult.description`, and `evaluateConditions` only collects it
+ * onto `conditionsMet` / `conditionsNotMet`. Copy it into the template
+ * context before interpolation. `description` is that met-handler text;
+ * `conditionsMet` is the same lines joined for the composite token. The
+ * stored alert still keeps the array — this object is for rendering only.
+ */
+export function withMetConditionDescriptions(
+  context: Record<string, unknown>,
+  conditionsMet: readonly string[],
+): Record<string, unknown> {
+  const lines = conditionsMet.map((line) => line.trim()).filter((line) => line !== '');
+  if (lines.length === 0) return context;
+  const text = lines.join(', ');
+  return { ...context, description: text, conditionsMet: text };
+}
+
+/**
  * Interpolate template strings with context values
  * Supports {{variable}} syntax. `{{device}}` fills from deviceName/hostname.
  */

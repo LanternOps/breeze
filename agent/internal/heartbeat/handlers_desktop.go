@@ -516,6 +516,9 @@ func parseDesktopSessionPolicy(payload map[string]any) desktop.SessionPolicy {
 	// decoder (ipc.DesktopStartRequest.ResolveSessionPolicy) can't drift on
 	// what "default" means (permissive clipboard, no lifetime limits).
 	policy := desktop.DefaultSessionPolicy()
+	if v, ok := payload["relayOnly"].(bool); ok {
+		policy.RelayOnly = v
+	}
 	if cb, ok := payload["clipboard"].(map[string]any); ok {
 		if v, ok := cb["hostToViewer"].(bool); ok {
 			policy.ClipboardHostToViewer = v

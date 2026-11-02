@@ -1,0 +1,34 @@
+import { fireEvent, render, screen } from '@testing-library/react';
+import { beforeEach, expect, it, vi } from 'vitest';
+import DeviceActions from './DeviceActions';
+import type { Device } from './DeviceList';
+const mocks = vi.hoisted(() => ({ can: vi.fn(() => true), data: { episodes: [] as object[], startEligibility: { allowed: false, reason: 'feature_disabled' } } }));
+vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can: mocks.can }) }));
+vi.mock('@/lib/moveOrgCapability', () => ({ useCanMoveDeviceOrg: () => false }));
+vi.mock('./networkIsolation/useDeviceIsolation', () => ({ useDeviceIsolation: () => ({ data: mocks.data, error: false, refresh: vi.fn() }) }));
+vi.mock('../remote/ConnectDesktopButton', () => ({ default: () => null }));
+vi.mock('../aiOperator/DelegateToOperatorButton', () => ({ DelegateToOperatorButton: () => null }));
+const device = { id: 'device-1', hostname: 'control.example.test', os: 'windows', osVersion: 'Windows Server', status: 'offline', agentVersion: '0.1.0', tags: [] } as unknown as Device;
+beforeEach(() => { mocks.can.mockReturnValue(true); mocks.data.episodes = []; });
+it.each(['feature_disabled', 'partner_not_enabled', 'unsupported_platform', 'device_lifecycle', 'agent_below_gate', 'agent_not_ready', 'trust_restricted', 'isolation_already_active', 'isolation_unacknowledged', 'incident_mismatch', 'site_forbidden', 'device_not_found', 'isolation_not_found', 'relay_unavailable', 'invalid_allowlist', 'isolation_conflict', 'isolation_secret_unavailable', 'approval_mismatch', 'device_offline', 'device_decommissioned', 'device_pending_assignment', 'backup_helper_update_required'])('keeps release enabled under %s', async reason => {
+  mocks.data.startEligibility = { allowed: false, reason };
+  mocks.data.episodes = [{ id: 'episode-1', state: 'verified', deviceId: device.id, incidentId: null, expiresAt: '' }];
+  render(<DeviceActions device={device} compact />);
+  fireEvent.click(screen.getByTestId('device-actions-menu'));
+  const release = await screen.findByTestId('device-isolation-release');
+  expect(release).not.toBeDisabled();
+  expect(release).not.toHaveAttribute('aria-disabled', 'true');
+  expect(release).toHaveTextContent('Release (queued until the device reconnects)');
+  fireEvent.click(release);
+  expect(screen.getByTestId('isolation-dialog')).toBeInTheDocument();
+});
+it('shows a reason for a blocked start and honors execute permission', () => {
+  mocks.data.startEligibility = { allowed: false, reason: 'feature_disabled' };
+  const view = render(<DeviceActions device={device} compact />);
+  fireEvent.click(screen.getByTestId('device-actions-menu'));
+  expect(screen.getByTestId('device-isolation-start')).toHaveAttribute('aria-disabled', 'true');
+  expect(screen.getByTestId('device-isolation-start').getAttribute('title')).toBeTruthy();
+  mocks.can.mockReturnValue(false);
+  view.rerender(<DeviceActions device={device} compact />);
+  expect(screen.queryByTestId('device-isolation-start')).not.toBeInTheDocument();
+});

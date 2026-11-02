@@ -19,7 +19,7 @@ vi.mock('./utils', async (importOriginal) => {
 });
 
 import './index';
-import { conditionPayloadsFrom, evaluateConditions, findRetiredConditionTypes, interpolateTemplate, retiredConditionTypeError } from './index';
+import { conditionPayloadsFrom, evaluateConditions, findRetiredConditionTypes, interpolateTemplate, retiredConditionTypeError, withMetConditionDescriptions } from './index';
 import { conditionRegistry } from './registry';
 import { offlineHandler } from './handlers/offline';
 import { interpolateAlertTemplate } from '@breeze/shared';
@@ -28,6 +28,9 @@ import { bandwidthKind } from '../monitors/kinds/bandwidth';
 import { networkErrorsKind } from '../monitors/kinds/networkErrors';
 import { serviceKind } from '../monitors/kinds/service';
 import { processKind } from '../monitors/kinds/process';
+import { scriptKind } from '../monitors/kinds/script';
+import { backupContinuityKind } from '../monitors/kinds/backupContinuity';
+import { compositeKind } from '../monitors/kinds/composite';
 
 describe('condition registry wiring (issue #1857)', () => {
   it('resolves the legacy "status" condition type to the offline handler', () => {
@@ -456,6 +459,119 @@ describe('evaluateConditions context for service/process watches (issue #7966)',
         'device-1'
       );
       expect(result.context.serviceName).toBe('Nested');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+const COMPILE_CTX = { monitorId: '00000000-0000-4000-8000-000000000001' };
+
+function renderKindMessage(
+  messageTemplate: string,
+  result: Awaited<ReturnType<typeof evaluateConditions>>,
+  extra: Record<string, unknown>,
+): string {
+  return interpolateTemplate(
+    messageTemplate,
+    withMetConditionDescriptions({ ...result.context, ...extra }, result.conditionsMet),
+  );
+}
+
+describe('monitor templates fill met-condition text before interpolation (issue #10740)', () => {
+  beforeEach(() => {
+    mockDbSelect.mockReset();
+    getRecentMetricsMock.mockReset();
+    getLatestMetricMock.mockReset();
+    getLatestMetricMock.mockResolvedValue(null as never);
+  });
+
+  it('script message renders the handler description from the compiled template', async () => {
+    const spy = vi.spyOn(conditionRegistry, 'evaluate').mockResolvedValue({
+      passed: true,
+      description: 'Defender Exploit Guard blocked a payload',
+    });
+    try {
+      const compiled = scriptKind.toAlertCondition(
+        scriptKind.conditionSchema.parse({
+          scriptId: '00000000-0000-4000-8000-000000000002',
+          intervalMinutes: 15,
+          timeoutSeconds: 60,
+          breachOnNonZeroExit: true,
+        }),
+        COMPILE_CTX,
+      );
+      const result = await evaluateConditions(compiled, 'device-1');
+      expect(result.triggered).toBe(true);
+      expect(result.context).not.toHaveProperty('description');
+      const message = renderKindMessage(scriptKind.messageTemplate, result, {
+        ruleName: 'Monitor Defender for Blocks',
+        deviceName: 'PC-1',
+      });
+      expect(message).toBe('Monitor Defender for Blocks: Defender Exploit Guard blocked a payload');
+      expect(message).not.toContain('{{');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('backup-continuity message renders the handler description from the compiled template', async () => {
+    const spy = vi.spyOn(conditionRegistry, 'evaluate').mockResolvedValue({
+      passed: true,
+      description: 'No successful backup in the last 48h',
+    });
+    try {
+      const compiled = backupContinuityKind.toAlertCondition(
+        backupContinuityKind.conditionSchema.parse({
+          check: 'no_successful_backup',
+          maxAgeHours: 48,
+        }),
+        COMPILE_CTX,
+      );
+      const result = await evaluateConditions(compiled, 'device-1');
+      const message = renderKindMessage(backupContinuityKind.messageTemplate, result, {
+        ruleName: 'Backup stale',
+        deviceName: 'FS-1',
+      });
+      expect(message).toBe('Backup stale: FS-1 — No successful backup in the last 48h');
+      expect(message).not.toContain('{{');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('composite message renders the joined met-condition list from the compiled template', async () => {
+    const spy = vi.spyOn(conditionRegistry, 'evaluate').mockImplementation(async (cond) => {
+      const type = (cond as { type?: string }).type;
+      if (type === 'backup_continuity') {
+        return { passed: true, description: 'No successful backup in the last 48h' };
+      }
+      if (type === 'offline') {
+        return { passed: true, description: 'Device offline for 15min' };
+      }
+      return { passed: false, description: `unexpected ${type ?? 'condition'}` };
+    });
+    try {
+      const compiled = compositeKind.toAlertCondition(
+        compositeKind.conditionSchema.parse({
+          match: 'all',
+          children: [
+            { kind: 'backup_continuity', condition: { check: 'no_successful_backup', maxAgeHours: 48 } },
+            { kind: 'offline', condition: { durationMinutes: 15 } },
+          ],
+        }),
+        COMPILE_CTX,
+      );
+      const result = await evaluateConditions(compiled, 'device-1');
+      expect(result.conditionsMet).toHaveLength(2);
+      const message = renderKindMessage(compositeKind.messageTemplate, result, {
+        ruleName: 'Backup and offline',
+        deviceName: 'FS-1',
+      });
+      expect(message).toBe(`Backup and offline: ${result.conditionsMet.join(', ')}`);
+      expect(message).toContain('No successful backup in the last 48h');
+      expect(message).toContain('Device offline for 15min');
+      expect(message).not.toContain('{{');
     } finally {
       spy.mockRestore();
     }

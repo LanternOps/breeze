@@ -32,6 +32,11 @@ describe('web filter catalog mirrors the API built-in catalog', () => {
     for (const [key, type] of api) expect(web.get(key), key).toBe(type);
   });
 
+  it('includes the isolation boolean in both catalogs', () => {
+    expect(apiCatalog().get('networkIsolation.active')).toBe('boolean');
+    expect(FILTER_FIELDS.find(f => f.key === 'networkIsolation.active')).toMatchObject({ type: 'boolean', operators: ['equals', 'notEquals'] });
+  });
+
   it('includes the warranty status filter (#9863)', () => {
     const api = apiCatalog();
     expect(api.get('warranty.status')).toBe('enum');

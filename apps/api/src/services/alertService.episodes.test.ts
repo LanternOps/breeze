@@ -97,7 +97,13 @@ vi.mock('drizzle-orm', () => ({
   desc: (col: unknown) => ({ op: 'desc', col }),
 }));
 
-vi.mock('../db', () => ({ db: dbMock, withDbTransaction: async (fn: () => Promise<unknown>) => fn() }));
+vi.mock('../db', () => ({
+  db: dbMock,
+  withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
+  // #10859 — the evaluator scopes its own contexts; their boundaries are
+  // asserted in alertService.contextScoping.test.ts.
+  withSystemDbAccessContext: async (fn: () => Promise<unknown>) => fn(),
+}));
 vi.mock('./alertSubjects', () => ({ evaluateSubjectAlerts: vi.fn(async () => 'ok') }));
 
 vi.mock('../db/schema', () => ({
@@ -148,6 +154,7 @@ vi.mock('./alertConditions', () => ({
   evaluateConditions: evaluateConditionsMock,
   evaluateAutoResolveConditions: vi.fn(),
   interpolateTemplate: vi.fn((template: string) => template),
+  withMetConditionDescriptions: vi.fn((context: Record<string, unknown>) => context),
 }));
 
 vi.mock('./alertCooldown', () => ({
