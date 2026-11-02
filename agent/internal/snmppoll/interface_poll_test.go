@@ -462,7 +462,11 @@ func TestInterfacePollEnvelopeEchoesTheCommand(t *testing.T) {
 	cmd.Interfaces = cmd.Interfaces[:1]
 	start := time.Date(2026, 11, 2, 10, 0, 0, 123456789, time.UTC)
 	tick := start
-	req := cmd.Request(start.Add(10 * time.Second))
+	// The deadline becomes a real context.WithDeadline, so it must come from
+	// the wall clock: a fixed date turns into an already-expired context once
+	// that date passes, and every interface is omitted. The fake clock below
+	// only stamps the samples.
+	req := cmd.Request(time.Now().Add(time.Minute))
 	req.Clock = func() time.Time { tick = tick.Add(time.Millisecond); return tick }
 	snap, err := CollectInterfaceMetrics(context.Background(), newFakeSwitch(), req)
 	if err != nil {
