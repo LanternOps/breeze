@@ -1965,6 +1965,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   // Agent log tools
   search_agent_logs: z.object({
+    orgId: uuid.optional(),
     deviceIds: z.array(uuid).max(50).optional(),
     level: z.enum(['debug', 'info', 'warn', 'error']).optional(),
     component: z.string().max(100).optional(),

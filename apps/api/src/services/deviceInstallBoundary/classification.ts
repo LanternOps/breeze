@@ -113,7 +113,7 @@ export const INSTALL_BOUNDARY_CLASSIFICATION: Readonly<Record<string, InstallBou
   ai_screenshots: history('expiring screenshots'),
   ai_sessions: history('technician chat with no install-bound authority'),
   ai_unattended_exposure: history('unattended-action ledger'),
-  alerts: history('alerts (§5.1)'),
+  alerts: history('alerts (§5.1); device deletion detaches site-owned topology provenance and preserves its history (#7269)'),
   asset_checkouts: configuration('physical asset loan of the same hardware'),
   asset_physical_placements: configuration('physical placement of the same hardware'),
   audit_baseline_results: history('audit baseline results'),

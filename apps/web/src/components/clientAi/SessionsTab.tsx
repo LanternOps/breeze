@@ -111,6 +111,11 @@ function workbookChips(m: TranscriptMessage): string[] {
   return chips;
 }
 
+// Status tokens whose label key differs from the token. `refused` is the
+// platform stopping a call before it ran (#10411); its copy is "stopped"
+// because AI decisions never say refuse/reject (aiVocabulary.decisions).
+const TOOL_STATUS_LABEL_KEY: Record<string, string> = { refused: "stopped" };
+
 function ToolStatusBadge({ status }: { status: string }) {
   const { t } = useTranslation("ai");
   const styles: Record<string, string> = {
@@ -124,12 +129,14 @@ function ToolStatusBadge({ status }: { status: string }) {
       "border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400",
     failed:
       "border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400",
+    refused:
+      "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-500/30 dark:bg-slate-500/10 dark:text-slate-400",
   };
   return (
     <span
       className={`rounded-full border px-2 py-0.5 text-xs ${styles[status] ?? "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-500/30 dark:bg-slate-500/10 dark:text-slate-400"}`}
     >
-      {t(/* i18n-dynamic */ `sessionsTab.toolStatus.${status}`, { defaultValue: status })}{" "}
+      {t(/* i18n-dynamic */ `sessionsTab.toolStatus.${TOOL_STATUS_LABEL_KEY[status] ?? status}`, { defaultValue: status })}{" "}
       {/* i18n-dynamic */}
     </span>
   );
@@ -676,7 +683,7 @@ export default function SessionsTab() {
                             {execution.approvedAt &&
                               ` · ${t("sessionsTab.approvedAt", { time: formatTime(execution.approvedAt) })}`}
                             {execution.completedAt &&
-                              ` · ${execution.status === "rejected" ? t("sessionsTab.rejectedAt", { time: formatTime(execution.completedAt) }) : t("sessionsTab.appliedAt", { time: formatTime(execution.completedAt) })}`}
+                              ` · ${execution.status === "rejected" ? t("sessionsTab.rejectedAt", { time: formatTime(execution.completedAt) }) : execution.status === "refused" ? t("sessionsTab.stoppedAt", { time: formatTime(execution.completedAt) }) : t("sessionsTab.appliedAt", { time: formatTime(execution.completedAt) })}`}
                             {execution.durationMs != null && ` · ${execution.durationMs}ms`}
                           </p>
                           {execution.errorMessage && (

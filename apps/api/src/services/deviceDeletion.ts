@@ -10,7 +10,7 @@ import { devices } from '../db/schema';
 // `jobs/`, which would drag BullMQ + ioredis into a plain DELETE's module graph.
 import { extractRowCount } from '../db/rowCount';
 import { resolveAlertsForRemovedComponents } from './hardwareHealth/retire';
-import { deleteOriginDeviceTopologyAlerts } from './siteOwnedAlerts';
+import { detachOriginDeviceTopologyAlerts } from './siteOwnedAlerts';
 import { deleteDeviceFixOutcomes } from './fixMemory/store';
 import {
   DEVICE_DETACH_DEVICE_ID_TABLES,
@@ -106,14 +106,14 @@ export interface DeviceDeletionTx {
  * Caller supplies the transaction: the route pairs this with link-group
  * dissolution, and the reaper runs it standalone.
  *
- * Returns `removedTopologyAlerts`: site-owned topology alerts (M3-D6) this
+ * Returns `detachedTopologyAlerts`: site-owned topology alerts (M3-D6) this
  * device originated, which may belong to ANOTHER org after a move-org — the
  * caller's audit row records the count.
  */
 export async function deleteDeviceCascade(
   tx: DeviceDeletionTx,
   deviceId: string,
-): Promise<{ removedTopologyAlerts: number }> {
+): Promise<{ detachedTopologyAlerts: number }> {
   // Take the PARENT lock first, before any child table is touched.
   //
   // FK constraints force children-before-parent for the DELETEs themselves, so
@@ -272,15 +272,18 @@ export async function deleteDeviceCascade(
   const componentKeys = (hardwareRows as { component_key: string }[]).map(row => row.component_key);
   if (componentKeys.length) await resolveAlertsForRemovedComponents(deviceId, componentKeys);
 
-  // Site-owned topology alerts this device ORIGINATED (M3-D6). After a
-  // move-org they stay in the site's org (ownership guard) while device_id
-  // still points here, so they are removed explicitly — with their NO ACTION
-  // children — and counted for the caller's audit, rather than left to the
-  // generic device_id sweep below (which only reaches them because every
-  // caller runs this in a SYSTEM context; see the FOR UPDATE note above).
-  const removedTopologyAlerts = await deleteOriginDeviceTopologyAlerts(tx, sql`${deviceId}::uuid`);
+  // Site-owned topology alerts keep their history when their provenance
+  // device is deleted (#7269). Detach PSA mappings first as they can name
+  // BOTH the surviving alert and this device; either device_id delete sweep
+  // below would otherwise remove the mapping despite preserving the alert.
+  await tx.execute(sql`UPDATE psa_ticket_mappings SET device_id = NULL
+    WHERE device_id = ${deviceId}
+      AND alert_id IN (SELECT id FROM alerts WHERE owner_kind = 'topology_site')`);
+  const detachedTopologyAlerts = await detachOriginDeviceTopologyAlerts(tx, deviceId);
 
-  const deviceAlertIds = sql`(SELECT id FROM alerts WHERE device_id = ${deviceId})`;
+  // Only device-owned alerts go with the device. Topology alert children and
+  // references stay attached to the site's surviving alert, even across orgs.
+  const deviceAlertIds = sql`(SELECT id FROM alerts WHERE device_id = ${deviceId} AND owner_kind = 'device')`;
   const deviceAiSessionIds = sql`(SELECT id FROM ai_sessions WHERE device_id = ${deviceId})`;
 
   await tx.execute(sql`DELETE FROM ai_tool_executions WHERE session_id IN ${deviceAiSessionIds}`);
@@ -459,5 +462,5 @@ export async function deleteDeviceCascade(
   // path only, like the lock_timeout restore: on error the rollback to the
   // enclosing savepoint undoes the SET LOCAL anyway.
   await tx.execute(sql`SELECT set_config('breeze.backup_erasure_org', ${priorFenceOrg}, true)`);
-  return { removedTopologyAlerts };
+  return { detachedTopologyAlerts };
 }

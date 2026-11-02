@@ -179,7 +179,8 @@
     "input": "Giriş:",
     "error": "Hata:",
     "output": "Çıktı:",
-    "outputExpired": "Çıktının saklama politikası kapsamındaki süresi doldu"
+    "outputExpired": "Çıktının saklama politikası kapsamındaki süresi doldu",
+    "unknownTool": "Bilinmeyen araç · çalıştırılmadı"
   },
   "aiForOfficePage": {
     "title": "Breeze AI for Office",
@@ -350,6 +351,7 @@
       "pending": "beklemede",
       "approved": "onaylandı",
       "rejected": "reddedildi",
+      "stopped": "durduruldu",
       "completed": "tamamlandı",
       "failed": "başarısız oldu"
     },
@@ -392,6 +394,7 @@
     "requestedAt": "talep edildi {{time}}",
     "approvedAt": "onaylandı {{time}}",
     "rejectedAt": "reddedildi {{time}}",
+    "stoppedAt": "durduruldu {{time}}",
     "appliedAt": "uygulandı {{time}}",
     "flagDialog": {
       "title": "Oturumu işaretle",
@@ -605,6 +608,7 @@
   },
   "wisp": {
     "title": "Wisp",
+    "turnLimitRolled": "Bu görüşme tur sınırına ulaştı, bu nedenle Wisp bu konu başlığında yeni bir oturum açtı. Mesajınızı yeniden gönderin.",
     "locked": {
       "why": "Wisp, Pro ve üzeri planlarda kullanılabilir.",
       "server": "Wisp, Breeze Cloud üzerinde çalışır. Bu sunucuda kullanılamaz."
@@ -787,7 +791,14 @@
       "addedByWisp": "Wisp tarafından eklendi",
       "added": "Wisp’e bağlandı",
       "addFailed": "Bu öğe bağlanamadı.",
-      "count": "{{count}} / {{max}} bağlı"
+      "count": "{{count}} / {{max}} bağlı",
+      "groupPinned": "Sabitlenenler",
+      "groupConcerns": "Açık konular",
+      "groupRecent": "Son kullanılanlar",
+      "pin": "Sabitle",
+      "dismiss": "Kapat",
+      "more": "Daha fazla",
+      "neighbours": "İlgili öğeler"
     },
     "picker": {
       "title": "Wisp’e öğe bağla",
@@ -811,11 +822,6 @@
       "loadFailed": "Bu liste yüklenemedi.",
       "alreadyLinked": "Zaten bağlı",
       "close": "Kapat"
-    },
-    "linkButton": {
-      "link": "Wisp’e bağla",
-      "linked": "Wisp’te bağlı",
-      "linking": "Bağlanıyor…"
     },
     "sidebar": {
       "openHome": "Wisp’te aç",
@@ -870,6 +876,13 @@
     "composer": {
       "placeholder": "Wisp'e mesaj",
       "link": "Bir öğe bağla"
+    },
+    "talk": {
+      "openFailed": "Sohbet açılamadı: {{message}}",
+      "button": "Wisp ile konuş",
+      "buttonPlain": "Bunu yapay zekâya sor",
+      "draft": "{{label}} hakkında: ",
+      "switchFocus": "Wisp, {{from}} üzerine odaklanmış. {{to}} odağına geçilsin mi?"
     }
   },
   "wispConcerns": {

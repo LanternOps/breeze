@@ -179,7 +179,8 @@
     "input": "Entrée :",
     "error": "Erreur :",
     "output": "Sortie :",
-    "outputExpired": "Sortie expirée selon la politique de conservation"
+    "outputExpired": "Sortie expirée selon la politique de conservation",
+    "unknownTool": "Outil inconnu · non exécuté"
   },
   "aiForOfficePage": {
     "title": "Breeze AI for Office",
@@ -350,6 +351,7 @@
       "pending": "En attente",
       "approved": "Approuvé",
       "rejected": "Refusé",
+      "stopped": "arrêté",
       "completed": "Achevé",
       "failed": "Échec"
     },
@@ -392,6 +394,7 @@
     "requestedAt": "demandé {{time}}",
     "approvedAt": "approuvé {{time}}",
     "rejectedAt": "refusé {{time}}",
+    "stoppedAt": "arrêté {{time}}",
     "appliedAt": "appliqué {{time}}",
     "flagDialog": {
       "title": "Signaler la session",
@@ -605,6 +608,7 @@
   },
   "wisp": {
     "title": "Wisp",
+    "turnLimitRolled": "Cette conversation a atteint sa limite de tours, Wisp a donc ouvert une nouvelle session dans ce fil. Renvoyez votre message.",
     "locked": {
       "why": "Wisp est disponible avec les offres Pro et supérieures.",
       "server": "Wisp fonctionne sur Breeze Cloud. Il n’est pas disponible sur ce serveur."
@@ -787,7 +791,14 @@
       "addedByWisp": "Ajouté par Wisp",
       "added": "Lié à Wisp",
       "addFailed": "Impossible de lier cet élément.",
-      "count": "{{count}} sur {{max}} liés"
+      "count": "{{count}} sur {{max}} liés",
+      "groupPinned": "Épinglés",
+      "groupConcerns": "Préoccupations ouvertes",
+      "groupRecent": "Récents",
+      "pin": "Épingler",
+      "dismiss": "Ignorer",
+      "more": "Plus",
+      "neighbours": "Éléments associés"
     },
     "picker": {
       "title": "Lier un élément à Wisp",
@@ -811,11 +822,6 @@
       "loadFailed": "Impossible de charger cette liste.",
       "alreadyLinked": "Déjà lié",
       "close": "Fermer"
-    },
-    "linkButton": {
-      "link": "Lier à Wisp",
-      "linked": "Lié dans Wisp",
-      "linking": "Liaison en cours…"
     },
     "sidebar": {
       "openHome": "Ouvrir dans Wisp",
@@ -870,6 +876,13 @@
     "composer": {
       "placeholder": "Message à Wisp",
       "link": "Lier un élément"
+    },
+    "talk": {
+      "openFailed": "Impossible d’ouvrir la discussion : {{message}}",
+      "button": "Parler à Wisp",
+      "buttonPlain": "Interroger l’IA à ce sujet",
+      "draft": "À propos de {{label}}: ",
+      "switchFocus": "Wisp se concentre sur {{from}}. Passer à {{to}} ?"
     }
   },
   "wispConcerns": {

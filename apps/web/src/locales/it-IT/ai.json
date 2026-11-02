@@ -179,7 +179,8 @@
     "input": "Input:",
     "error": "Errore:",
     "output": "Output:",
-    "outputExpired": "Output scaduto in base al criterio di conservazione"
+    "outputExpired": "Output scaduto in base al criterio di conservazione",
+    "unknownTool": "Strumento sconosciuto · non eseguito"
   },
   "aiForOfficePage": {
     "title": "Breeze AI for Office",
@@ -350,6 +351,7 @@
       "pending": "in sospeso",
       "approved": "approvato",
       "rejected": "negato",
+      "stopped": "interrotto",
       "completed": "completato",
       "failed": "non riuscito"
     },
@@ -392,6 +394,7 @@
     "requestedAt": "richiesto {{time}}",
     "approvedAt": "approvato {{time}}",
     "rejectedAt": "negato {{time}}",
+    "stoppedAt": "interrotto {{time}}",
     "appliedAt": "applicato {{time}}",
     "flagDialog": {
       "title": "Segnala sessione",
@@ -605,6 +608,7 @@
   },
   "wisp": {
     "title": "Wisp",
+    "turnLimitRolled": "Questa conversazione ha raggiunto il limite di turni, quindi Wisp ha aperto una nuova sessione in questo thread. Invia di nuovo il tuo messaggio.",
     "locked": {
       "why": "Wisp è disponibile con i piani Pro e superiori.",
       "server": "Wisp funziona su Breeze Cloud. Non è disponibile su questo server."
@@ -787,7 +791,14 @@
       "addedByWisp": "Aggiunto da Wisp",
       "added": "Collegato a Wisp",
       "addFailed": "Impossibile collegare questo elemento.",
-      "count": "{{count}} di {{max}} collegati"
+      "count": "{{count}} di {{max}} collegati",
+      "groupPinned": "Fissati",
+      "groupConcerns": "Segnalazioni aperte",
+      "groupRecent": "Recenti",
+      "pin": "Fissa",
+      "dismiss": "Ignora",
+      "more": "Altro",
+      "neighbours": "Elementi correlati"
     },
     "picker": {
       "title": "Collega un elemento a Wisp",
@@ -811,11 +822,6 @@
       "loadFailed": "Impossibile caricare questo elenco.",
       "alreadyLinked": "Già collegato",
       "close": "Chiudi"
-    },
-    "linkButton": {
-      "link": "Collega a Wisp",
-      "linked": "Collegato in Wisp",
-      "linking": "Collegamento in corso…"
     },
     "sidebar": {
       "openHome": "Apri in Wisp",
@@ -870,6 +876,13 @@
     "composer": {
       "placeholder": "Scrivi a Wisp",
       "link": "Collega un elemento"
+    },
+    "talk": {
+      "openFailed": "Impossibile aprire la chat: {{message}}",
+      "button": "Parla con Wisp",
+      "buttonPlain": "Chiedi all’IA",
+      "draft": "Informazioni su {{label}}: ",
+      "switchFocus": "Wisp si concentra su {{from}}. Passare a {{to}}?"
     }
   },
   "wispConcerns": {
