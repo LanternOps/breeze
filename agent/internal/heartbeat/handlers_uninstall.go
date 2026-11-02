@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/isolation"
 	"github.com/breeze-rmm/agent/internal/macosuninstall"
 	"github.com/breeze-rmm/agent/internal/psscript"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -73,6 +76,10 @@ func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 		"removeConfig", removeConfig,
 	)
 
+	if err := releaseIsolationForUninstallFn(h); err != nil {
+		return tools.NewErrorResult(fmt.Errorf("self-uninstall refused: isolation release could not be confirmed; agent service remains installed: %w", err), time.Since(start).Milliseconds())
+	}
+
 	if err := prepareSelfUninstallFn(removeConfig); err != nil {
 		log.Error("self-uninstall preparation failed — teardown NOT handed off, agent service remains installed",
 			"error", err.Error(),
@@ -95,9 +102,27 @@ func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 // result otherwise, no shutdown scheduled on failure) is unit-testable without
 // touching a real service manager or exiting the test process.
 var (
+	releaseIsolationForUninstallFn  = releaseIsolationForUninstall
 	prepareSelfUninstallFn          = prepareSelfUninstall
 	scheduleSelfUninstallShutdownFn = scheduleSelfUninstallShutdown
 )
+
+// Release uses the live manager when available so it shares the request's
+// machine lock and journal. A local manager also covers legacy initialization
+// paths; absence is never inferred from the advertised capability.
+func releaseIsolationForUninstall(h *Heartbeat) error {
+	ctx := context.Background()
+	if h != nil && h.containment != nil {
+		if releaser, ok := h.containment.manager.(interface {
+			ReleaseAll(context.Context, string) error
+		}); ok {
+			return releaser.ReleaseAll(ctx, "uninstall")
+		}
+		return errors.New("containment manager cannot confirm uninstall release")
+	}
+	dir := config.GetDataDir()
+	return isolation.NewManager(isolation.ManagerDeps{DataDir: dir, Isolator: isolation.NewPlatformIsolator(), Scheduler: isolation.NewPlatformScheduler(dir)}).ReleaseAll(ctx, "uninstall")
+}
 
 // scheduleSelfUninstallShutdown shuts the agent down gracefully once the
 // result has had time to be submitted. The detached helper stops the service
@@ -396,7 +421,8 @@ type windowsUninstallScriptOptions struct {
 // buildWindowsUninstallScript renders the detached PowerShell teardown script.
 // Ordering is load-bearing:
 //
-//  1. re-assert the watchdog teardown FIRST (phase 1 already stopped/deleted
+//  0. confirm isolation release; abort without teardown if it fails,
+//  1. re-assert the watchdog teardown (phase 1 already stopped/deleted
 //     it, but sc.exe stop is asynchronous — a watchdog that survived phase 1
 //     must be dead before the agent stops or it may respawn it),
 //  2. Stop-Service on the agent (waits for Stopped — this is what kills the
@@ -414,6 +440,10 @@ type windowsUninstallScriptOptions struct {
 // gone, so best-effort is all there is.
 func buildWindowsUninstallScript(opts windowsUninstallScriptOptions) string {
 	lines := []string{
+		"try {",
+		fmt.Sprintf("  & '%s' containment release-all --reason uninstall", psQuote(opts.AgentBinaryPath)),
+		"  if ($LASTEXITCODE -ne 0) { exit 1 }",
+		"} catch { exit 1 }",
 		fmt.Sprintf("Start-Sleep -Seconds %d", opts.DelaySeconds),
 		fmt.Sprintf("sc.exe stop '%s' | Out-Null", psQuote(opts.WatchdogServiceName)),
 		fmt.Sprintf("sc.exe delete '%s' | Out-Null", psQuote(opts.WatchdogServiceName)),

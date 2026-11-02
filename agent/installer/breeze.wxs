@@ -151,6 +151,23 @@
       <FindRelatedProducts Before="LaunchConditions" />
       <AppSearch Before="LaunchConditions" />
     </InstallUISequence>
+    <!-- Release must be confirmed before deleting the agent or its recovery
+         state. The agent command succeeds on clean devices; a cleanup failure
+         fails uninstall (Return="check"). Nested MSI upgrade removal never runs
+         this action. The journal-schema probe first: the installed binary may
+         have been raw-swapped to a build that predates these subcommands (a
+         version pin or downgrade). Such a build cannot hold isolation rules
+         (the server refuses a downgrade below the gate while isolated), and
+         without the probe its non-zero exit would block uninstall forever. -->
+    <SetProperty Id="IsolationReleaseOnUninstall" Value="&quot;[System64Folder]cmd.exe&quot; /c (&quot;[#filBreezeAgentExe]&quot; containment journal-schema >nul 2>&amp;1 || exit /b 0) &amp;&amp; &quot;[#filBreezeAgentExe]&quot; containment release-all --reason uninstall" Before="IsolationReleaseOnUninstall" Sequence="execute" />
+    <CustomAction
+      Id="IsolationReleaseOnUninstall"
+      BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+      DllEntry="WixQuietExec"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+
     <InstallExecuteSequence>
       <FindRelatedProducts Before="LaunchConditions" />
       <AppSearch Before="LaunchConditions" />
@@ -852,6 +869,7 @@
            cmpCleanConfigOnUninstall component above), which is this CA's
            own credential source. Never fires on an upgrade's nested
            old-product removal. -->
+      <Custom Action="IsolationReleaseOnUninstall" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
       <Custom Action="UninstallNotify" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
 

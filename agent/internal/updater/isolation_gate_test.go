@@ -22,6 +22,8 @@ import (
 func setTestIsolation(t *testing.T, active bool) {
 	t.Helper()
 	SetIsolationGate(func() bool { return active })
+	SetIsolationInstallHook(func(string, string) error { return nil })
+	t.Cleanup(func() { SetIsolationInstallHook(nil) })
 	t.Cleanup(func() { SetIsolationGate(nil) })
 }
 
@@ -334,6 +336,14 @@ func TestIsolationGateEmptyPkgSourcesFail(t *testing.T) {
 }
 
 func TestIsolationGateRechecksBeforeInstall(t *testing.T) {
+	handoffs := 0
+	SetIsolationInstallHook(func(string, string) error { handoffs++; return nil })
+	t.Cleanup(func() { SetIsolationInstallHook(nil) })
+	defer func() {
+		if handoffs != 1 {
+			t.Errorf("handoffs = %d, want only the verified active install", handoffs)
+		}
+	}()
 	var active atomic.Bool
 	SetIsolationGate(active.Load)
 	t.Cleanup(func() { SetIsolationGate(nil) })
@@ -398,5 +408,49 @@ func TestIsolationGateDownloadAndVerifyRefused(t *testing.T) {
 	}
 	if hits.Load() != 0 {
 		t.Fatal("a containment-refused download still reached the server")
+	}
+}
+
+func TestIsolationInstallHandoffRunsOnlyAfterArtifactVerification(t *testing.T) {
+	setTestIsolation(t, true)
+	path := filepath.Join(t.TempDir(), "staged")
+	data := []byte("verified agent")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := &updateManifest{Size: int64(len(data)), Checksum: sha256Hex(data)}
+	u := New(&Config{BinaryPath: "protected-agent"})
+	calls := 0
+	SetIsolationInstallHook(func(staged, target string) error {
+		calls++
+		if staged != path || target != "protected-agent" {
+			t.Fatal("wrong handoff paths")
+		}
+		return errors.New("schema probe failed")
+	})
+	t.Cleanup(func() { SetIsolationInstallHook(nil) })
+	if err := u.checkIsolationInstall(path, manifest, UpdateOptions{}); !errors.Is(err, ErrUpdateBlockedByIsolation) || calls != 1 {
+		t.Fatalf("handoff failure: %v calls=%d", err, calls)
+	}
+	manifest.Checksum = sha256Hex([]byte("tampered"))
+	_ = u.checkIsolationInstall(path, manifest, UpdateOptions{})
+	if calls != 1 {
+		t.Fatal("unverified artifact reached handoff")
+	}
+	SetIsolationInstallHook(nil)
+	manifest.Checksum = sha256Hex(data)
+	if err := u.checkIsolationInstall(path, manifest, UpdateOptions{}); !errors.Is(err, ErrUpdateBlockedByIsolation) {
+		t.Fatalf("missing handoff accepted: %v", err)
+	}
+}
+
+func TestStagedIsolationSchemaProbeRejectsBadResponses(t *testing.T) {
+	for _, output := range []string{"", "0", "-1", "1 trailing", "1\n2"} {
+		if _, err := parseIsolationSchema([]byte(output)); err == nil {
+			t.Errorf("accepted %q", output)
+		}
+	}
+	if schema, err := parseIsolationSchema([]byte("1\n")); err != nil || schema != 1 {
+		t.Fatalf("schema=%d err=%v", schema, err)
 	}
 }

@@ -368,3 +368,27 @@ func TestRecoveryActionsAlsoCoverNonCrashFailures(t *testing.T) {
 		}
 	}
 }
+
+func TestIsolationReleaseOnUninstall(t *testing.T) {
+	wxs := readWxs(t)
+	const id = "IsolationReleaseOnUninstall"
+	// The agent binary may have been raw-swapped to a build that predates
+	// `containment journal-schema` / `release-all` (a version pin or downgrade).
+	// Such a build exits non-zero on both and cannot hold isolation rules (the
+	// server refuses a downgrade below the gate while isolated), so the probe
+	// lets uninstall proceed instead of blocking it forever. A build that
+	// answers the probe decides the outcome with its release-all exit code.
+	const want = "&quot;[System64Folder]cmd.exe&quot; /c (&quot;[#filBreezeAgentExe]&quot; containment journal-schema >nul 2>&amp;1 || exit /b 0) &amp;&amp; &quot;[#filBreezeAgentExe]&quot; containment release-all --reason uninstall"
+	if got := quietExecCmd(t, wxs, id); got != want {
+		t.Fatalf("release command = %q\nwant            %q", got, want)
+	}
+	attrs := customActionAttrs(wxs, id)
+	for key, want := range map[string]string{"DllEntry": "WixQuietExec", "Execute": "deferred", "Impersonate": "no", "Return": "check"} {
+		if attrs[key] != want {
+			t.Errorf("%s = %q, want %q", key, attrs[key], want)
+		}
+	}
+	if !regexp.MustCompile(`<Custom\s+Action="IsolationReleaseOnUninstall"\s+Before="RemoveFiles"\s+Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE"\s*/>`).MatchString(wxs) {
+		t.Error("release must run before RemoveFiles only on full uninstall, never nested upgrade removal")
+	}
+}
