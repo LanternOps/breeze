@@ -99,6 +99,9 @@ func (m *Manager) ReleaseAll(ctx context.Context, kind string) error {
 	owned, inspectErr := m.deps.Isolator.Owned(ctx)
 	if inspectErr != nil {
 		if o.missing || (errors.Is(inspectErr, ErrUnsupported) && !activePhase(o.state.Phase) && !o.state.RulesMayExist) {
+			if !errors.Is(inspectErr, ErrUnsupported) {
+				log.Warn("isolation engine unavailable during release-all; no journal exists, treating device as never isolated", "error", inspectErr.Error())
+			}
 			return nil
 		}
 		return fmt.Errorf("cannot confirm isolation absence: %w", inspectErr)
@@ -114,6 +117,11 @@ func (m *Manager) ReleaseAll(ctx context.Context, kind string) error {
 		// an uninstall outcome. Preserve a system cleanup receipt instead.
 		o.state.RulesMayExist = true
 		return o.runRecovery(Event{Kind: EvRelease, ReleaseKind: ReleaseSystem}, !owned)
+	}
+	if o.state.Phase == journal.PhaseReleasing && o.state.IsolationID == "" {
+		// An interrupted orphan cleanup has no episode to release by id; the
+		// tick retries its release exactly as recoveryCheck does.
+		return o.runRecovery(Event{Kind: EvTick}, !owned)
 	}
 	return o.runRecovery(Event{Kind: EvRelease, IsolationID: o.state.IsolationID, Generation: o.state.Generation, ReleaseKind: kind}, !owned)
 }
@@ -194,8 +202,14 @@ func (o *op) runRecovery(ev Event, knownAbsent bool) error {
 // at all, lets uninstall proceed; rules the engine still shows refuse it,
 // because their release could not be journalled or receipted.
 func (m *Manager) releaseAllWithoutState(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	owned, err := m.deps.Isolator.Owned(ctx)
 	if err != nil {
+		if !errors.Is(err, ErrUnsupported) {
+			log.Warn("isolation engine unavailable and no state directory; treating device as never isolated", "error", err.Error())
+		}
 		return nil // no journal at all: the same rule as an unreadable engine above
 	}
 	if owned {

@@ -35,6 +35,9 @@ func TestRecoveryCrashAtEveryCleanupEffect(t *testing.T) {
 		if err := perform(ref); err != nil {
 			t.Fatal(err)
 		}
+		if *count == 0 {
+			t.Fatalf("%s: no cleanup effects observed; the crash matrix would run zero cases", operation)
+		}
 		for n := 0; n < *count; n++ {
 			t.Run(fmt.Sprintf("%s/%d", operation, n), func(t *testing.T) {
 				h := newHarness(t)

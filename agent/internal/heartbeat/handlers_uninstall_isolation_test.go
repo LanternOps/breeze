@@ -73,12 +73,32 @@ func TestUninstallUnsupportedPlatformCleanJournal(t *testing.T) {
 }
 
 func TestWindowsUninstallReleaseGuardGolden(t *testing.T) {
-	script := buildWindowsUninstallScript(windowsUninstallScriptOptions{AgentBinaryPath: `C:\O'Brien\breeze-agent.exe`, ServiceName: "BreezeAgent", WatchdogServiceName: "BreezeWatchdog", DelaySeconds: 5})
-	want := "try {\r\n  & 'C:\\O''Brien\\breeze-agent.exe' containment release-all --reason uninstall\r\n  if ($LASTEXITCODE -ne 0) { exit 1 }\r\n} catch { exit 1 }\r\n"
+	script := buildWindowsUninstallScript(windowsUninstallScriptOptions{AgentBinaryPath: `C:\O'Brien\breeze-agent.exe`, ServiceName: "BreezeAgent", WatchdogServiceName: "BreezeWatchdog", ConfigDir: `C:\ProgramData\Breeze`, DelaySeconds: 5})
+	want := "try {\r\n" +
+		"  & 'C:\\O''Brien\\breeze-agent.exe' containment release-all --reason uninstall\r\n" +
+		"  $breezeReleaseExit = $LASTEXITCODE\r\n" +
+		"} catch { $breezeReleaseExit = 1 }\r\n" +
+		"if ($breezeReleaseExit -ne 0) {\r\n" +
+		"  \"$(Get-Date -Format o) self-uninstall aborted: isolation release could not be confirmed (exit $breezeReleaseExit); agent service re-enabled\" | Out-File -LiteralPath 'C:\\ProgramData\\Breeze\\logs\\uninstall-isolation-release-error.txt' -Append -Encoding utf8 -ErrorAction SilentlyContinue\r\n" +
+		"  sc.exe config 'BreezeAgent' start= auto | Out-Null\r\n" +
+		"  sc.exe failure 'BreezeAgent' reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null\r\n" +
+		"  exit 1\r\n" +
+		"}\r\n"
 	if !strings.HasPrefix(script, want) {
 		t.Fatalf("release guard missing or changed:\n%s", script)
 	}
-	assertOrder(t, script, "containment release-all --reason uninstall", "if ($LASTEXITCODE -ne 0) { exit 1 }", "Start-Sleep -Seconds 5", "sc.exe stop 'BreezeWatchdog'", "Stop-Service -Name 'BreezeAgent'")
+	assertOrder(t, script, "containment release-all --reason uninstall", "sc.exe config 'BreezeAgent' start= auto", "exit 1", "Start-Sleep -Seconds 5", "sc.exe stop 'BreezeWatchdog'", "Stop-Service -Name 'BreezeAgent'")
+}
+
+// Phase 1 already disabled the service and cleared its recovery actions; a
+// failed release must undo that, or the device is left stopped and disabled
+// (#2796) while Breeze-owned filters may remain.
+func TestWindowsUninstallReleaseFailureWithoutConfigDirStillRestoresService(t *testing.T) {
+	script := buildWindowsUninstallScript(windowsUninstallScriptOptions{AgentBinaryPath: `C:\a\breeze-agent.exe`, ServiceName: "BreezeAgent", WatchdogServiceName: "BreezeWatchdog", DelaySeconds: 5})
+	if strings.Contains(script, "Out-File") {
+		t.Fatal("no config dir: must not write a log to a relative path")
+	}
+	assertOrder(t, script, "if ($breezeReleaseExit -ne 0) {", "sc.exe config 'BreezeAgent' start= auto", "exit 1", "Start-Sleep -Seconds 5")
 }
 
 // Keep the release seam's context-bearing contract explicit for fake managers.

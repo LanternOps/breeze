@@ -34,6 +34,9 @@ type windowsDropWindow struct {
 }
 
 type windowsIsolator struct {
+	// activated is windowsIsolationActivated; a field only so tests can force
+	// the activated wiring. Production never changes it.
+	activated  bool
 	readiness  readinessCache
 	bins       func() []string
 	open       func() (windowsWFPSession, error)
@@ -72,9 +75,10 @@ func newWindowsIsolator(bins func() []string) Isolator {
 		}
 	}
 	return &windowsIsolator{
-		bins:  bins,
-		open:  func() (windowsWFPSession, error) { return wfp.OpenSession() },
-		appID: wfp.AppIDFromPath,
+		activated: windowsIsolationActivated,
+		bins:      bins,
+		open:      func() (windowsWFPSession, error) { return wfp.OpenSession() },
+		appID:     wfp.AppIDFromPath,
 		stat: func(path string) error {
 			info, err := os.Stat(path)
 			if err != nil {
@@ -93,7 +97,7 @@ func newWindowsIsolator(bins func() []string) Isolator {
 // Capability reads only cached startup/pre-apply readiness; heartbeats never
 // invoke the installer, self-test, or Task Scheduler.
 func (i *windowsIsolator) Capability() Capability {
-	return i.readiness.capability(windowsIsolationActivated)
+	return i.readiness.capability(i.activated)
 }
 
 func (i *windowsIsolator) configureRecoveryReadiness(scheduler RecoveryScheduler, wantVersion string) {
@@ -118,10 +122,19 @@ func (i *windowsIsolator) configureReadiness(ensure func(context.Context) (strin
 	i.readiness.checkedAt = time.Time{}
 }
 
-func (i *windowsIsolator) RefreshReadiness(ctx context.Context) { i.readiness.refresh(ctx, true) }
+// While not activated, readiness is never probed: the result would be masked
+// by not_activated anyway, and a shipped capability-0 agent must not open WFP
+// sessions or query Task Scheduler on a timer.
+func (i *windowsIsolator) RefreshReadiness(ctx context.Context) {
+	if i.activated {
+		i.readiness.refresh(ctx, true)
+	}
+}
 
 func (i *windowsIsolator) refreshCachedReadiness(ctx context.Context) {
-	i.readiness.refresh(ctx, false)
+	if i.activated {
+		i.readiness.refresh(ctx, false)
+	}
 }
 
 func closeWindowsSession(s windowsWFPSession) {

@@ -372,13 +372,14 @@ func TestRecoveryActionsAlsoCoverNonCrashFailures(t *testing.T) {
 func TestIsolationReleaseOnUninstall(t *testing.T) {
 	wxs := readWxs(t)
 	const id = "IsolationReleaseOnUninstall"
-	// The agent binary may have been raw-swapped to a build that predates
-	// `containment journal-schema` / `release-all` (a version pin or downgrade).
-	// Such a build exits non-zero on both and cannot hold isolation rules (the
-	// server refuses a downgrade below the gate while isolated), so the probe
-	// lets uninstall proceed instead of blocking it forever. A build that
-	// answers the probe decides the outcome with its release-all exit code.
-	const want = "&quot;[System64Folder]cmd.exe&quot; /c (&quot;[#filBreezeAgentExe]&quot; containment journal-schema >nul 2>&amp;1 || exit /b 0) &amp;&amp; &quot;[#filBreezeAgentExe]&quot; containment release-all --reason uninstall"
+	// A never-isolated device has no isolation journal (the agent writes one
+	// only once an episode or recovery exists), so uninstall proceeds without
+	// running the agent at all; this also covers a binary raw-swapped to a
+	// build that predates release-all. When a journal (or a set-aside corrupt
+	// one) exists, release-all must succeed: a crashing, blocked or outdated
+	// binary fails the uninstall instead of removing the agent while
+	// Breeze-owned filters may remain.
+	const want = "&quot;[System64Folder]cmd.exe&quot; /c (if not exist &quot;[ProgramDataBreezeDataDir]isolation.json&quot; if not exist &quot;[ProgramDataBreezeDataDir]isolation.json.corrupt&quot; exit /b 0) &amp; &quot;[#filBreezeAgentExe]&quot; containment release-all --reason uninstall"
 	if got := quietExecCmd(t, wxs, id); got != want {
 		t.Fatalf("release command = %q\nwant            %q", got, want)
 	}
@@ -390,5 +391,10 @@ func TestIsolationReleaseOnUninstall(t *testing.T) {
 	}
 	if !regexp.MustCompile(`<Custom\s+Action="IsolationReleaseOnUninstall"\s+Before="RemoveFiles"\s+Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE"\s*/>`).MatchString(wxs) {
 		t.Error("release must run before RemoveFiles only on full uninstall, never nested upgrade removal")
+	}
+	// The server must not be told "uninstalled" by a run whose release then
+	// fails and rolls the uninstall back.
+	if !regexp.MustCompile(`<Custom\s+Action="UninstallNotify"\s+After="IsolationReleaseOnUninstall"\s+Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE"\s*/>`).MatchString(wxs) {
+		t.Error("UninstallNotify must run after IsolationReleaseOnUninstall")
 	}
 }

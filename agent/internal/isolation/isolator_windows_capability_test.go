@@ -13,8 +13,12 @@ func TestWindowsShippedActivationSwitchRemainsOff(t *testing.T) {
 		t.Fatal("activation PR must visibly update this fail-closed test")
 	}
 	i := newWindowsIsolator(nil).(*windowsIsolator)
-	i.readiness.probe = func(context.Context) (error, error, bool, string) { return nil, nil, true, "" }
+	probed := false
+	i.readiness.probe = func(context.Context) (error, error, bool, string) { probed = true; return nil, nil, true, "" }
 	i.RefreshReadiness(context.Background())
+	if probed {
+		t.Fatal("a not-activated agent must not probe readiness (WFP session / Task Scheduler on a timer)")
+	}
 	got := i.Capability()
 	if got != (Capability{Mechanism: "wfp", UnsupportedReason: "not_activated"}) {
 		t.Fatalf("shipped capability %+v", got)
@@ -33,6 +37,7 @@ func TestWindowsReadinessWiring(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			i := newWindowsIsolator(nil).(*windowsIsolator)
+			i.activated = true // test seam: the shipped value is covered by the tripwire above
 			i.open = func() (windowsWFPSession, error) { return &fakeWindowsSession{}, tc.engine }
 			recoveryCalls, schedulerCalls := 0, 0
 			i.configureReadiness(func(context.Context) (string, error) { recoveryCalls++; return "recovery.exe", tc.recovery }, func() (bool, string) { schedulerCalls++; return tc.ready, "details" })

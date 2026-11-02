@@ -11,6 +11,11 @@ import (
 // it; an old successful result expires rather than advertising stale readiness.
 const readinessMaxAge = 5 * time.Minute
 
+// readinessRefreshAge is when the periodic (one-minute) tick re-probes. It is
+// well inside readinessMaxAge so a healthy result never ages out between
+// ticks, and the previous result stays readable while a probe runs.
+const readinessRefreshAge = readinessMaxAge / 2
+
 func wfpCapability(engineErr, recoveryErr error, schedulerReady bool, _ string, activated bool) Capability {
 	c := Capability{Mechanism: "wfp"}
 	switch {
@@ -52,7 +57,7 @@ func (c *readinessCache) refresh(ctx context.Context, force bool) {
 	c.mu.Lock()
 	probe := c.probe
 	now := c.clock()
-	fresh := !c.checkedAt.IsZero() && now.Sub(c.checkedAt) >= 0 && now.Sub(c.checkedAt) < readinessMaxAge
+	fresh := !c.checkedAt.IsZero() && now.Sub(c.checkedAt) >= 0 && now.Sub(c.checkedAt) < readinessRefreshAge
 	c.mu.Unlock()
 	if probe == nil || (!force && fresh) {
 		return

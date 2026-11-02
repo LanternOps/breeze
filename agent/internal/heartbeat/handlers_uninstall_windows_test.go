@@ -21,7 +21,7 @@ func TestWindowsUninstallReleaseGuardExecution(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setup := "function Invoke-FixtureAgent { " + tc.release + " }; " +
-				"function Start-Sleep { }; function sc.exe { Write-Output 'teardown' }; " +
+				"function Start-Sleep { }; function sc.exe { Write-Output ('sc ' + ($args -join ' ')) }; " +
 				"function Stop-Service { Write-Output 'teardown' }; function Get-Process { }; " +
 				"function Stop-Process { Write-Output 'teardown' }; function Remove-Item { Write-Output 'teardown' }; "
 			script := buildWindowsUninstallScript(windowsUninstallScriptOptions{AgentBinaryPath: "Invoke-FixtureAgent", ServiceName: "Fixture", WatchdogServiceName: "FixtureWatchdog"})
@@ -31,6 +31,15 @@ func TestWindowsUninstallReleaseGuardExecution(t *testing.T) {
 			}
 			if strings.Contains(string(out), "teardown") == tc.wantFailure {
 				t.Fatalf("unexpected teardown state: %s", out)
+			}
+			// A failed release re-enables the service phase 1 disabled; a
+			// confirmed one goes on to delete the watchdog.
+			restored := strings.Contains(string(out), "sc config Fixture start= auto")
+			if restored != tc.wantFailure {
+				t.Fatalf("service restore = %v, want %v: %s", restored, tc.wantFailure, out)
+			}
+			if !tc.wantFailure && !strings.Contains(string(out), "sc delete FixtureWatchdog") {
+				t.Fatalf("confirmed release must proceed to teardown: %s", out)
 			}
 		})
 	}

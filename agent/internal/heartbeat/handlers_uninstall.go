@@ -421,7 +421,9 @@ type windowsUninstallScriptOptions struct {
 // buildWindowsUninstallScript renders the detached PowerShell teardown script.
 // Ordering is load-bearing:
 //
-//  0. confirm isolation release; abort without teardown if it fails,
+//  0. confirm isolation release; if it fails, re-enable the agent service
+//     (undoing phase 1's start=disabled and cleared recovery actions), log
+//     under <ConfigDir>\logs, and abort without teardown,
 //  1. re-assert the watchdog teardown (phase 1 already stopped/deleted
 //     it, but sc.exe stop is asynchronous — a watchdog that survived phase 1
 //     must be dead before the agent stops or it may respawn it),
@@ -439,11 +441,24 @@ type windowsUninstallScriptOptions struct {
 // SilentlyContinue: by this point the process that could report errors is
 // gone, so best-effort is all there is.
 func buildWindowsUninstallScript(opts windowsUninstallScriptOptions) string {
+	// Phase 1 already disabled the service and cleared its recovery actions.
+	// A failed release must undo that before aborting, or the device is left
+	// stopped and disabled (#2796) while Breeze-owned filters may remain.
 	lines := []string{
 		"try {",
 		fmt.Sprintf("  & '%s' containment release-all --reason uninstall", psQuote(opts.AgentBinaryPath)),
-		"  if ($LASTEXITCODE -ne 0) { exit 1 }",
-		"} catch { exit 1 }",
+		"  $breezeReleaseExit = $LASTEXITCODE",
+		"} catch { $breezeReleaseExit = 1 }",
+		"if ($breezeReleaseExit -ne 0) {",
+	}
+	if opts.ConfigDir != "" {
+		lines = append(lines, fmt.Sprintf("  \"$(Get-Date -Format o) self-uninstall aborted: isolation release could not be confirmed (exit $breezeReleaseExit); agent service re-enabled\" | Out-File -LiteralPath '%s' -Append -Encoding utf8 -ErrorAction SilentlyContinue", psQuote(strings.TrimRight(opts.ConfigDir, `\`)+`\logs\uninstall-isolation-release-error.txt`)))
+	}
+	lines = append(lines,
+		fmt.Sprintf("  sc.exe config '%s' start= auto | Out-Null", psQuote(opts.ServiceName)),
+		fmt.Sprintf("  sc.exe failure '%s' reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null", psQuote(opts.ServiceName)),
+		"  exit 1",
+		"}",
 		fmt.Sprintf("Start-Sleep -Seconds %d", opts.DelaySeconds),
 		fmt.Sprintf("sc.exe stop '%s' | Out-Null", psQuote(opts.WatchdogServiceName)),
 		fmt.Sprintf("sc.exe delete '%s' | Out-Null", psQuote(opts.WatchdogServiceName)),
@@ -453,7 +468,7 @@ func buildWindowsUninstallScript(opts windowsUninstallScriptOptions) string {
 		"Start-Sleep -Seconds 1",
 		fmt.Sprintf("Remove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", psQuote(opts.WatchdogBinaryPath)),
 		fmt.Sprintf("Remove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", psQuote(opts.AgentBinaryPath)),
-	}
+	)
 	if opts.RemoveConfig && opts.ConfigDir != "" {
 		lines = append(lines,
 			fmt.Sprintf("Remove-Item -LiteralPath '%s' -Recurse -Force -ErrorAction SilentlyContinue", psQuote(opts.ConfigDir)),
