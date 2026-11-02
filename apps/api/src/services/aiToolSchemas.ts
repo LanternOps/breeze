@@ -2474,6 +2474,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     incidentId: uuid,
     deviceId: uuid,
     actionType: z.enum(['process_kill', 'network_isolation', 'account_disable', 'usb_block']),
+    ttlHours: z.number().int().min(1).max(720).optional(),
+    reason: z.string().trim().min(1).max(2000).optional(),
     parameters: z.record(z.string(), z.unknown()).optional(),
     approvalRef: z.string().max(128).optional(),
   }),
