@@ -590,14 +590,39 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
+          # breeze-agent alone carries allow-unsigned-executable-memory (its
+          # YARA engine compiles code into anonymous memory; without it macOS
+          # kills the agent on the first scan). The other binaries keep the
+          # helpers set. Releases that predate the split have no helpers plist
+          # and signed every binary with the agent plist, which then had no
+          # such key; signing one of them here reproduces exactly that.
+          # Assert the signed result against what the release's plists ask for.
+          uem='<key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>'
+          agent_entitlements=breeze/agent/entitlements/agent-macos.entitlements.plist
+          helpers_entitlements=breeze/agent/entitlements/helpers-macos.entitlements.plist
+          [ -f "$helpers_entitlements" ] || helpers_entitlements="$agent_entitlements"
+          if grep -qF '<key>com.apple.security.cs.allow-unsigned-executable-memory</key>' "$agent_entitlements"; then agent_uem=yes; else agent_uem=no; fi
           for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-* staging/breeze-watchdog-darwin-*; do
             [ -f "$bin" ] || continue
             case "$bin" in *.pkg|*.zip) continue ;; esac
+            case "$bin" in
+              staging/breeze-agent-darwin-*) entitlements="$agent_entitlements"; want_uem="$agent_uem" ;;
+              *) entitlements="$helpers_entitlements"; want_uem=no ;;
+            esac
             codesign --force --options runtime \
-              --entitlements breeze/agent/entitlements/agent-macos.entitlements.plist \
+              --entitlements "$entitlements" \
               --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$bin"
             codesign --verify --verbose "$bin"
-            echo "Signed: $bin"
+            signed_entitlements="$(codesign -d --entitlements - --xml "$bin")"
+            case "$signed_entitlements" in *"$uem"*) has_uem=yes ;; *) has_uem=no ;; esac
+            if [ "$has_uem" != "$want_uem" ]; then
+              echo "::error::$bin allow-unsigned-executable-memory=$has_uem, want $want_uem"
+              exit 1
+            fi
+            case "$bin:$has_uem" in
+              staging/breeze-agent-darwin-*:no) echo "::warning::$bin signed without allow-unsigned-executable-memory (this release predates it); macOS agents will run IOC scans with the built-in signatures instead of YARA" ;;
+            esac
+            echo "Signed: $bin ($entitlements)"
           done
 
       - name: Notarize binaries

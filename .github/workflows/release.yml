@@ -892,13 +892,27 @@ jobs:
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
+          # breeze-agent alone carries allow-unsigned-executable-memory (its
+          # YARA engine compiles code into anonymous memory, #10375); the other
+          # binaries keep the helpers set. Assert the signed result both ways.
+          uem='<key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>'
           for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-* staging/breeze-watchdog-darwin-*; do
             [ -f "$bin" ] || continue
+            case "$bin" in
+              staging/breeze-agent-darwin-*) entitlements=agent/entitlements/agent-macos.entitlements.plist; want_uem=yes ;;
+              *) entitlements=agent/entitlements/helpers-macos.entitlements.plist; want_uem=no ;;
+            esac
             codesign --force --options runtime \
-              --entitlements agent/entitlements/agent-macos.entitlements.plist \
+              --entitlements "$entitlements" \
               --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$bin"
             codesign --verify --verbose "$bin"
-            echo "Signed: $bin"
+            signed_entitlements="$(codesign -d --entitlements - --xml "$bin")"
+            case "$signed_entitlements" in *"$uem"*) has_uem=yes ;; *) has_uem=no ;; esac
+            if [ "$has_uem" != "$want_uem" ]; then
+              echo "::error::$bin allow-unsigned-executable-memory=$has_uem, want $want_uem (#10375)"
+              exit 1
+            fi
+            echo "Signed: $bin ($entitlements)"
           done
 
       - name: Notarize binaries

@@ -71,6 +71,8 @@ If migrations are listed, you're committing prod to those migrations the moment 
    - `sqlite3` on the TCC DB shows the helper's grant still at `auth_value=2` — a grant that was re-created rather than kept means the signing identity changed, which is a packaging regression even if no prompt appeared.
 4. Any failure blocks the tag. Open an issue with the probe output, `codesign -dvv` of the installed helper, and the macOS build, and link it from the sweep doc.
 
+**YARA on the signed build (#10375).** The YARA engine executes code it compiles at run time, which the hardened runtime kills unless `breeze-agent` carries `com.apple.security.cs.allow-unsigned-executable-memory`. On each leg, after the update: `codesign -d --entitlements - --xml /usr/local/bin/breeze-agent` lists that key (and `breeze-desktop-helper` / `breeze-watchdog` do not), then dispatch an IOC scan with one marker rule over a folder holding the marker. Pass = the agent PID is unchanged, no new `breeze-agent-*.ips` in `/Library/Logs/DiagnosticReports`, and the scan result reports engine `yara` (not `legacy` / `engine_unavailable`) with the marker found. Before the cut, `cd agent && go test -count=1 -run Hardened ./internal/yarascan/yarac` on any Mac (without `-short`) re-signs a test binary with the hardened runtime and proves the plists still behave.
+
 **Restore:** leave a partner-donated host on the promoted release, not a lab build, and tell the partner which version it runs.
 
 ## Step 0.3 — Dynamic security gates, at the exact commit you will tag
