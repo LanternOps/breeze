@@ -156,8 +156,12 @@ static OSStatus breeze_check_csreq(const void *blob, int len, char **text, int *
 	return st;
 }
 
-static int breeze_sqlite_open_ro(const char *path, sqlite3 **db) {
-	int rc = sqlite3_open_v2(path, db, SQLITE_OPEN_READONLY, NULL);
+// breeze_sqlite_open_copy opens the reader's private snapshot. It is
+// read-write so SQLite can rebuild the -shm from the -wal (or roll back a hot
+// journal) inside the snapshot directory. No CREATE: a missing copy is an
+// error, not an empty database.
+static int breeze_sqlite_open_copy(const char *path, sqlite3 **db) {
+	int rc = sqlite3_open_v2(path, db, SQLITE_OPEN_READWRITE, NULL);
 	if (rc == SQLITE_OK) {
 		sqlite3_busy_timeout(*db, 1000);
 	}
@@ -303,29 +307,27 @@ func (securityInspector) CheckRequirement(csreq []byte) (string, bool, error) {
 	return req, satisfied, err
 }
 
-// sqliteRowReader reads TCC.db through the system SQLite library, read-only
-// and in-process (never the sqlite3 tool, #3380).
+// sqliteRowReader reads TCC.db through the system SQLite library, in-process
+// (never the sqlite3 tool, #3380), from a private snapshot of the database so
+// the TCC directory is only ever read (see snapshot_darwin.go).
 type sqliteRowReader struct{}
 
 func (sqliteRowReader) ReadRows(path string, clients []string, services []Service) ([]Row, error) {
 	if len(clients) == 0 || len(services) == 0 {
 		return nil, nil
 	}
-	// Open the file first for a clean errno: TCC refuses with EPERM, which
-	// SQLite reports only as "unable to open database file".
-	f, err := os.Open(path)
+	// Copying in Go also gives a clean errno: TCC refuses with EPERM, which
+	// SQLite would report only as "unable to open database file".
+	copyPath, cleanup, err := snapshotDatabase(path)
 	if err != nil {
-		if errors.Is(err, os.ErrPermission) {
-			return nil, ErrNotReadable
-		}
 		return nil, err
 	}
-	_ = f.Close()
+	defer cleanup()
 
-	cPath := C.CString(path)
+	cPath := C.CString(copyPath)
 	defer C.free(unsafe.Pointer(cPath))
 	var db *C.sqlite3
-	if rc := C.breeze_sqlite_open_ro(cPath, &db); rc != C.SQLITE_OK {
+	if rc := C.breeze_sqlite_open_copy(cPath, &db); rc != C.SQLITE_OK {
 		err := sqliteError("open", db, rc)
 		C.sqlite3_close(db)
 		return nil, err
