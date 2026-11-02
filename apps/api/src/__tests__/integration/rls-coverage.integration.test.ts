@@ -379,7 +379,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // migrationWindowsRls.integration.test.ts.
   ['migration_windows', 'partner_id'],
   ['migration_window_orgs', 'partner_id'],
-  // Ticket import framework (#8313 W4, 2027-01-18-100000): a connected
+  // Ticket import framework (#8313 W4, 2027-01-20-100000): a connected
   // source, its org and category maps, its runs, its ticket ledger and the run
   // report's issue rows. Partner-axis, no org owner: an import spans orgs and
   // is a partner-admin action. Policy: breeze_current_scope()='system' OR

@@ -1083,7 +1083,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // partner_id sweep (information_schema-driven), not a static list; this
   // entry only covers the org-owned axis of the GDPR org cascade.
   'ticket_forms',
-  // ticket_import_org_maps (#8313 W4, 2027-01-18-100000): partner-axis, but
+  // ticket_import_org_maps (#8313 W4, 2027-01-20-100000): partner-axis, but
   // its org_id is the Breeze org a source org imports into, so erasing the org
   // drops it from every source's map. It references organizations (deleted
   // last) and ticket_import_sources (a partner table, not in this list).
