@@ -906,8 +906,8 @@ jobs:
               --entitlements "$entitlements" \
               --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$bin"
             codesign --verify --verbose "$bin"
-            signed_entitlements="$(codesign -d --entitlements - --xml "$bin" 2>/dev/null)"
-            if printf '%s' "$signed_entitlements" | grep -qF "$uem"; then has_uem=yes; else has_uem=no; fi
+            signed_entitlements="$(codesign -d --entitlements - --xml "$bin")"
+            case "$signed_entitlements" in *"$uem"*) has_uem=yes ;; *) has_uem=no ;; esac
             if [ "$has_uem" != "$want_uem" ]; then
               echo "::error::$bin allow-unsigned-executable-memory=$has_uem, want $want_uem (#10375)"
               exit 1
