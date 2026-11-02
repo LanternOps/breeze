@@ -40,7 +40,7 @@ function publishTransitionAfterCommit(row: DeviceNetworkIsolation, next: Episode
           break;
       }
     } catch (err) {
-      const tags = { phase: 'isolation_outcome_publish', isolationId: payload.isolationId, incidentId: payload.incidentId, state: payload.state };
+      const tags = { phase: 'isolation_outcome_publish', isolationId: payload.isolationId, incidentId: payload.incidentId ?? 'none', state: payload.state };
       console.error('[isolation] transition event publish failed', tags);
       captureException(err, undefined, tags);
     }
@@ -91,7 +91,7 @@ export async function synchronizeEpisodeOutcome(
         await publishEvent('alert.triggered', orgId, payload, 'network-isolation-result', { siteId });
       } catch (err) {
         const tags = { phase: 'isolation_alert_publish', alertId: payload.alertId, orgId, deviceId: payload.deviceId,
-          isolationId: payload.isolationId, incidentId: payload.incidentId };
+          isolationId: payload.isolationId, incidentId: payload.incidentId ?? 'none' };
         console.error('[isolation] alert event publish failed', tags);
         captureException(err, undefined, tags);
       }

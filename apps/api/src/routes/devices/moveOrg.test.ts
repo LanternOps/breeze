@@ -553,7 +553,7 @@ describe('POST /devices/:id/move-org', () => {
     it('refuses unresolved isolation before mutations and proceeds once resolved', async () => {
       const rig = rigMove();
       executeResultFor = text => text.includes('device_network_isolations')
-        ? [{ isolationId: 'isolation-1', deviceId: DEVICE_ID }] : undefined;
+        ? [{ isolationId: 'isolation-1', deviceId: DEVICE_ID }] : null;
       const refused = await move();
       expect(refused.status).toBe(409);
       expect(await refused.json()).toEqual({ error: 'isolation_unresolved', message: 'Release network isolation first' });
