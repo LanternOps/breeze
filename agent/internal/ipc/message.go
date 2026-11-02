@@ -693,6 +693,15 @@ type TCCStatus struct {
 	FullDiskAccess       bool      `json:"fullDiskAccess"`
 	RemoteDesktop        *bool     `json:"remoteDesktop,omitempty"`
 	CheckedAt            time.Time `json:"checkedAt"`
+	// DenialVerdict names why Screen Recording or Accessibility is denied
+	// (#10300): "requirement_mismatch" (the TCC row's stored code
+	// requirement does not match this binary), "legacy_row_no_csreq" (a
+	// requirement-less row from the retired self-heal), "not_granted",
+	// "unexplained" (the row matches; the cause is elsewhere) or
+	// "unobservable" (the row could not be read). Empty when nothing is
+	// denied, and from helpers older than #10300: readers must treat an
+	// absent value as "not diagnosed", never as healthy.
+	DenialVerdict string `json:"denialVerdict,omitempty"`
 }
 
 // SessionInfoItem describes one interactive Windows session for the
