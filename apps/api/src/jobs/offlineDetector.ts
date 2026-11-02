@@ -23,6 +23,7 @@ import { captureMessage } from '../services/sentry';
 import { throttledReporter } from '../services/sentryThrottle';
 import { EDITION_MIGRATION_SETTLE_INTERVAL } from '../services/editionMigrationWindow';
 import { requestDeviceGroupReevaluation } from './deviceGroupJobs';
+import { scheduleReinstallLinkClear } from '../services/reinstallCandidates/clearLinks';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -750,6 +751,9 @@ export async function processReapUninstallIntent(): Promise<{
               eq(devices.orgId, candidate.orgId)
             )
           );
+        // #8318 §7.3: and links from the partner's other orgs, after commit,
+        // in a system context (services/reinstallCandidates/clearLinks.ts).
+        scheduleReinstallLinkClear(candidate.id);
 
         return true;
       });

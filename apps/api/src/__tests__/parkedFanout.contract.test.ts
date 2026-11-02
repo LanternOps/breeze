@@ -477,6 +477,7 @@ const EXEMPT: Record<string, string> = {
   'services/unassignedPool/assignParkedDeviceSteps.ts': 'lifecycle: locked reads of the one named parked device and of its destination identity rows, for the assignment operation',
   'services/deviceReattach/intentStore.ts': 'reinstall reattach (#8318): locked reads of the TWO devices one intent names (source and target, by id); selects no targets and dispatches nothing',
   'services/reinstallCandidates/index.ts': 'reinstall hints (#8318 §7.3): targets in hidden orgs are excluded by construction; writes only the source row (its own flag) and dispatches nothing',
+  'services/reinstallCandidates/clearLinks.ts': 'reinstall hints (#8318 §7.3): clears other devices\' links to ONE retired record (named by id) across its partner, parked sources included on purpose; selects no targets and dispatches nothing',
   'services/reinstallCandidates/ranking.ts': 'reinstall hints (#8318 §7.3): the pure target-qualification rule that leaves hidden-org targets out; selects and dispatches nothing',
   'services/deviceReattach/requestIntent.ts': 'reinstall reattach (#8318): eligibility of the ONE target a human named (a hidden-org target is refused); selects no targets and dispatches nothing',
   'services/unassignedPool/parkedDeviceReads.ts': 'the parked-device list itself, shown only to full partner admins through the pre-assignment routes; reads, never selects work',

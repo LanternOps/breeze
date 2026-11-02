@@ -71,6 +71,7 @@ import {
   type RemoteAccessLaunchSkipReason,
 } from '../../services/remoteAccessLauncher';
 import { readPartnerRemoteAccessSettings } from '../../services/remoteAccessProviders';
+import { scheduleReinstallLinkClear } from '../../services/reinstallCandidates/clearLinks';
 import { captureException } from '../../services/sentry';
 import type { InheritableRemoteAccessSettings } from '@breeze/shared';
 import { ERROR_CODES } from '@breeze/shared';
@@ -2450,6 +2451,10 @@ coreRoutes.delete(
           eq(devices.orgId, device.orgId)
         )
       );
+    // #8318 §7.3: links from the partner's OTHER orgs (hardware hints are
+    // partner-wide) are cleared after this request commits, in a system
+    // context; see services/reinstallCandidates/clearLinks.ts.
+    scheduleReinstallLinkClear(deviceId);
 
     // Cut any live remote-control session to the device being decommissioned —
     // device `status` is only checked at session connect time, so an in-flight

@@ -139,6 +139,12 @@ export const AGENT_OWN_DEVICE_ROW_ALLOWLIST: readonly OwnDeviceRowAllowlistEntry
     reason: 'The scheduled offline sweep (processMarkOffline): a worker, not an agent credential.',
   },
   {
+    file: 'src/services/reinstallCandidates/clearLinks.ts',
+    marker: 'reinstall-link-clear',
+    kind: 'non_agent_path',
+    reason: 'Clears other devices\' reinstall links to a retired record across its partner, after the decommission or reaper transaction commits: a system sweep, never an agent writing its own row.',
+  },
+  {
     file: 'src/jobs/offlineDetector.ts',
     marker: 'uninstall-intent-reaper',
     kind: 'non_agent_path',
