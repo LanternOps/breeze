@@ -68,7 +68,7 @@ export type BreezeEntityRef = { kind: WispEntityKind; id: string; orgId: string 
 export type WispLinkRefusal = 'not_found' | 'forbidden' | 'outside_ceiling' | 'outside_token_scope' | 'link_limit';
 
 export type WispThreadLink = {
-  /** Null only for a derived concern link (`source === 'concern'`). */
+  /** Null for derived concern links and unstored auto neighbour previews. */
   id: string | null;
   ref: BreezeEntityRef;
   /** Freshly resolved from the entity on this read (≤ 200 chars). */

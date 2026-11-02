@@ -351,6 +351,7 @@
       "pending": "pending",
       "approved": "approved",
       "rejected": "denied",
+      "stopped": "stopped",
       "completed": "completed",
       "failed": "failed"
     },
@@ -393,6 +394,7 @@
     "requestedAt": "requested {{time}}",
     "approvedAt": "approved {{time}}",
     "rejectedAt": "denied {{time}}",
+    "stoppedAt": "stopped {{time}}",
     "appliedAt": "applied {{time}}",
     "flagDialog": {
       "title": "Flag session",
@@ -789,7 +791,14 @@
       "addedByWisp": "Added by Wisp",
       "added": "Linked to Wisp",
       "addFailed": "Could not link that item.",
-      "count": "{{count}} of {{max}} linked"
+      "count": "{{count}} of {{max}} linked",
+      "groupPinned": "Pinned",
+      "groupConcerns": "Open concerns",
+      "groupRecent": "Recent",
+      "pin": "Pin",
+      "dismiss": "Dismiss",
+      "more": "More",
+      "neighbours": "Related items"
     },
     "picker": {
       "title": "Link an item to Wisp",
@@ -813,11 +822,6 @@
       "loadFailed": "Could not load this list.",
       "alreadyLinked": "Already linked",
       "close": "Close"
-    },
-    "linkButton": {
-      "link": "Link to Wisp",
-      "linked": "Linked in Wisp",
-      "linking": "Linking…"
     },
     "sidebar": {
       "openHome": "Open in Wisp",
@@ -872,6 +876,13 @@
     "composer": {
       "placeholder": "Message Wisp",
       "link": "Link an item"
+    },
+    "talk": {
+      "openFailed": "Could not open chat: {{message}}",
+      "button": "Talk to Wisp",
+      "buttonPlain": "Ask AI about this",
+      "draft": "About {{label}}: ",
+      "switchFocus": "Wisp is focused on {{from}}. Switch to {{to}}?"
     }
   },
   "wispConcerns": {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode, type Dispatch, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus } from 'lucide-react';
 import { isPinnedLink } from '@/lib/wispLinksApi';
@@ -109,7 +109,7 @@ export default function WispHomeThread({
   leading?: ReactNode;
   scopeLabel: string;
   links: WispThreadLink[] | null;
-  onLinksChange: (links: WispThreadLink[]) => void;
+  onLinksChange: Dispatch<SetStateAction<WispThreadLink[]>>;
   refreshKey?: number;
 }) {
   const { t } = useTranslation('ai');
@@ -120,7 +120,7 @@ export default function WispHomeThread({
   // Read at bind time only: a poll reporting a newer last session must not rebind a live thread.
   const lastSessionRef = useRef(lastSessionId);
   lastSessionRef.current = lastSessionId;
-  const linkedKeys = useMemo(() => new Set((links ?? []).map((l) => linkKey(l.ref.kind, l.ref.id))), [links]);
+  const linkedKeys = useMemo(() => new Set((links ?? []).filter((l) => l.id !== null).map((l) => linkKey(l.ref.kind, l.ref.id))), [links]);
 
   // The whole store, as AiChatSidebar binds it (a selector returning a fresh object would never settle).
   const {
@@ -191,11 +191,11 @@ export default function WispHomeThread({
   const threadLeading = historyNotice || leading ? <>{historyNotice}{leading}</> : null;
 
   const onLinked = (link: WispThreadLink) => {
-    // As WispLinksPanel: the add is idempotent server-side (a re-add returns
-    // the existing row with a refreshed label), so replace by id, never append twice.
-    const current = links ?? [];
-    const exists = current.some((l) => l.id === link.id);
-    onLinksChange(exists ? current.map((l) => (l.id === link.id ? link : l)) : [...current, link]);
+    // Derived concerns have null row ids; the entity key identifies what was pinned.
+    const key = linkKey(link.ref.kind, link.ref.id);
+    onLinksChange((prev) => prev.some((l) => linkKey(l.ref.kind, l.ref.id) === key)
+      ? prev.map((l) => (linkKey(l.ref.kind, l.ref.id) === key ? link : l))
+      : [...prev, link]);
     setPickerOpen(false);
   };
 

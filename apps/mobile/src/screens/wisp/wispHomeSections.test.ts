@@ -140,7 +140,7 @@ describe('normalizeLink', () => {
 });
 
 describe('linksForDisplay', () => {
-  it('puts user-added first, newest first, without mutating', () => {
+  it('puts pins first by recency without mutating', () => {
     const input = [
       link({ id: 'w-new', source: 'wisp_pin', lastTouchedAt: '', refId: 'a', createdAt: '2026-10-05T00:00:00Z' }),
       link({ id: 'u-old', source: 'user_pin', lastTouchedAt: '', refId: 'b', createdAt: '2026-10-01T00:00:00Z' }),
@@ -149,7 +149,7 @@ describe('linksForDisplay', () => {
     ];
     const snapshot = input.map((l) => l.id);
     const out = linksForDisplay(input);
-    expect(out.map((l) => l.id)).toEqual(['u-new', 'u-old', 'u-bad', 'w-new']);
+    expect(out.map((l) => l.id)).toEqual(['w-new', 'u-new', 'u-old', 'u-bad']);
     expect(input.map((l) => l.id)).toEqual(snapshot);
     expect(out).not.toBe(input);
   });
@@ -159,7 +159,7 @@ describe('linksForDisplay', () => {
       link({ id: 'u', source: 'user_pin', lastTouchedAt: '', refId: 'same' }),
       link({ id: 'dev', kind: 'device', refId: 'same' }),
     ]);
-    expect(out.map((l) => l.id)).toEqual(['u', 'dev']);
+    expect(out.map((l) => l.id)).toEqual(['w', 'dev']);
   });
   it('is stable for equal dates', () => {
     const out = linksForDisplay([link({ id: 'a', refId: '1' }), link({ id: 'b', refId: '2' })]);
@@ -334,7 +334,7 @@ describe('homeSectionsFromPayload', () => {
     expect(homeSectionsFromPayload('x')).toEqual({ brief: null, links: [] });
   });
 
-  it('orders links for display (user-added first)', () => {
+  it('orders links for display (pins by recency)', () => {
     const fromWisp = {
       ...raw,
       id: 'l2',
@@ -342,6 +342,16 @@ describe('homeSectionsFromPayload', () => {
       source: 'wisp_pin', lastTouchedAt: '',
       createdAt: '2026-10-24T10:00:00Z',
     };
-    expect(homeSectionsFromPayload({ links: [fromWisp, raw] }).links.map((l) => l.id)).toEqual(['l1', 'l2']);
+    expect(homeSectionsFromPayload({ links: [fromWisp, raw] }).links.map((l) => l.id)).toEqual(['l2', 'l1']);
   });
+});
+
+it('orders pins, concerns, then autos using touch time rather than creation', () => {
+  const rows = [
+    link({ id: 'auto', refId: 'a', source: 'auto', lastTouchedAt: '2026-10-30T00:00:00Z' }),
+    { ...link({ id: 'concern', refId: 'c', source: 'concern' }), id: null },
+    link({ id: 'pin-old', refId: 'p1', lastTouchedAt: '2026-10-01T00:00:00Z', createdAt: '2026-10-30T00:00:00Z' }),
+    link({ id: 'pin-new', refId: 'p2', source: 'wisp_pin', lastTouchedAt: '2026-10-29T00:00:00Z' }),
+  ];
+  expect(linksForDisplay(rows).map((l) => l.id)).toEqual(['pin-new', 'pin-old', null, 'auto']);
 });

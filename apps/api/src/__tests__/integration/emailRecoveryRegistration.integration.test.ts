@@ -410,8 +410,9 @@ describe('SR2-21 pending registration — real Postgres + real Redis', () => {
   const STEP1_UA = 'integration-signup/1.0';
   const CLICK_UA = 'mail-scanner/9.9 (link-prefetch)';
 
-  function park(companyName: string, email: string) {
+  function park(companyName: string, email: string, signupIntent?: { intent: 'cloud' | 'wisp'; offer?: string }) {
     return createPendingRegistration({
+      ...(signupIntent ? { signupIntent } : {}),
       email,
       companyName,
       name: 'New Admin',
@@ -529,6 +530,22 @@ describe('SR2-21 pending registration — real Postgres + real Redis', () => {
     expect((row as { signup_user_agent: string }).signup_user_agent).not.toBe(CLICK_UA);
   });
 
+  it('step 2 stores the parked signup intent in partners.purchase_selection', async () => {
+    const marker = uniq();
+    const companyName = `IntentCo-${marker}`;
+    const email = `intent-${marker}@example.com`;
+
+    const { rawToken } = await park(companyName, email, { intent: 'wisp', offer: 'founding' });
+    const res = await verify(rawToken);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.verified).toBe(true);
+
+    const [row] = await getTestDb().select({ purchaseSelection: partners.purchaseSelection })
+      .from(partners).where(eq(partners.id, body.partner.id));
+    expect(row!.purchaseSelection).toEqual({ intent: 'wisp', offer: 'founding' });
+  });
+
   it('CONCURRENCY: two clicks on the same pending-registration token — exactly one partner is created', async () => {
     const marker = uniq();
     const companyName = `RaceRegCo-${marker}`;
@@ -569,7 +586,7 @@ describe('SR2-21 pending registration — real Postgres + real Redis', () => {
     expect(await res.json()).toEqual({
       verified: false,
       status: 'sign_in',
-      purchaseSelection: { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly' },
+      signupIntent: { intent: 'cloud' },
     });
 
     // No DUPLICATE tenant: the pending company was never created, and the address

@@ -2,6 +2,11 @@ import { type ConnectwiseAlertTicketingStored } from '@breeze/shared';
 import { matchesTicketingFilters } from './filters';
 import { loadAdmission, insertAdmission, wakeAlertMappings } from './storage';
 export type AdmissionResult = 'admitted' | 'exists' | 'filtered' | 'inactive';
+export interface AdmissionOptions {
+  bypassFilters?: boolean;
+  /** Request-path callers pin the organization authorized before system admission. */
+  expectedOrgId?: string;
+}
 export interface AdmissionAlert {
   id: string;
   orgId: string;
@@ -24,7 +29,7 @@ export interface AdmissionDeps {
     alert: AdmissionAlert,
     target: AdmissionTarget,
     source: 'auto' | 'manual',
-    opts?: { bypassFilters?: boolean }
+    opts?: AdmissionOptions
   ): Promise<string | null>;
   wake(alertId: string): Promise<void>;
 }
@@ -32,11 +37,15 @@ export function makeAdmission(deps: AdmissionDeps) {
   return async (
     alertId: string,
     source: 'auto' | 'manual',
-    opts?: { bypassFilters?: boolean }
+    opts?: AdmissionOptions
   ): Promise<AdmissionResult> => {
     const loaded = await deps.load(alertId);
     if (!loaded) return 'inactive';
     const { alert, target } = loaded;
+    // Never let a move between caller authorization and this system-scope read
+    // create a ticket for another organization. insertAdmission locks/rechecks
+    // the same alert.orgId, covering a move after this read as well.
+    if (opts?.expectedOrgId !== undefined && alert.orgId !== opts.expectedOrgId) return 'inactive';
     if (!['active', 'acknowledged'].includes(alert.status)) return 'filtered';
     if (!opts?.bypassFilters && !matchesTicketingFilters(alert, target.config)) return 'filtered';
     const id = await deps.insert(alert, target, source, opts);

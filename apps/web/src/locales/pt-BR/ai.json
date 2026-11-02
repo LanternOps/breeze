@@ -351,6 +351,7 @@
       "pending": "pendente",
       "approved": "aprovado",
       "rejected": "negado",
+      "stopped": "interrompido",
       "completed": "concluído",
       "failed": "com falha"
     },
@@ -393,6 +394,7 @@
     "requestedAt": "solicitado em {{time}}",
     "approvedAt": "aprovado em {{time}}",
     "rejectedAt": "negado em {{time}}",
+    "stoppedAt": "interrompido em {{time}}",
     "appliedAt": "aplicado em {{time}}",
     "flagDialog": {
       "title": "Sinalizar sessão",
@@ -789,7 +791,14 @@
       "addedByWisp": "Adicionado pelo Wisp",
       "added": "Vinculado ao Wisp",
       "addFailed": "Não foi possível vincular esse item.",
-      "count": "{{count}} de {{max}} vinculados"
+      "count": "{{count}} de {{max}} vinculados",
+      "groupPinned": "Fixados",
+      "groupConcerns": "Preocupações em aberto",
+      "groupRecent": "Recentes",
+      "pin": "Fixar",
+      "dismiss": "Dispensar",
+      "more": "Mais",
+      "neighbours": "Itens relacionados"
     },
     "picker": {
       "title": "Vincular um item ao Wisp",
@@ -813,11 +822,6 @@
       "loadFailed": "Não foi possível carregar esta lista.",
       "alreadyLinked": "Já vinculado",
       "close": "Fechar"
-    },
-    "linkButton": {
-      "link": "Vincular ao Wisp",
-      "linked": "Vinculado no Wisp",
-      "linking": "Vinculando…"
     },
     "sidebar": {
       "openHome": "Abrir no Wisp",
@@ -872,6 +876,13 @@
     "composer": {
       "placeholder": "Mensagem para o Wisp",
       "link": "Vincular um item"
+    },
+    "talk": {
+      "openFailed": "Não foi possível abrir o chat: {{message}}",
+      "button": "Falar com Wisp",
+      "buttonPlain": "Perguntar à IA sobre isso",
+      "draft": "Sobre {{label}}: ",
+      "switchFocus": "O Wisp está focado em {{from}}. Mudar para {{to}}?"
     }
   },
   "wispConcerns": {

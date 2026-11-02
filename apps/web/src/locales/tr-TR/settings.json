@@ -69,7 +69,8 @@
           "executing": "Yürütülüyor",
           "completed": "Tamamlandı",
           "failed": "Başarısız",
-          "rejected": "Reddedildi"
+          "rejected": "Reddedildi",
+          "stopped": "Durduruldu"
         }
       },
       "intents": {
@@ -3686,6 +3687,7 @@
         }
       },
       "tools": {
+        "acknowledge_network_device": "Bir ağ değişikliğini onayla",
         "analyze_boot_performance": "Önyükleme performansı analizi",
         "analyze_disk_usage": "Disk kullanımı analizi",
         "analyze_fleet_metrics": "Filo metrikleri analizi",
@@ -3693,55 +3695,154 @@
         "analyze_screen": "Ekran analizi",
         "apply_cis_remediation": "CIS düzeltmesi",
         "apply_configuration_policy": "Yapılandırma politikası uygula",
+        "assign_security_training": "Güvenlik eğitimi ata",
+        "browse_device_event_log": "Bir cihazın olay günlüğüne göz at",
+        "browse_snapshots": "Yedekleme anlık görüntüleri",
         "cancel_script_execution": "Betik çalıştırmayı iptal et",
         "capture_agent_pprof": "Aracı tanılama verisi yakala",
+        "collect_evidence": "Olay kanıtlarını topla",
         "computer_control": "Uzaktan denetim",
         "configuration_policy_compliance": "Yapılandırma politikası uyumluluğu",
+        "configure_backup_sla": "Yedekleme SLA'larını yapılandır",
+        "configure_network_baseline": "Bir ağ taban çizgisini yapılandır",
+        "configure_vault": "Yerel kasaları yapılandır",
+        "create_incident": "Bir güvenlik olayı oluştur",
+        "create_remote_session": "Bir uzak oturum başlat",
+        "create_watch": "Bir Wisp izleme kaydı oluştur",
         "delete_tenant": "Bir organizasyonu sil",
         "detect_log_correlations": "Günlük korelasyonlarını tespit et",
+        "diagnose_connectivity": "Bir bağlantı denetimi çalıştır",
         "disk_cleanup": "Disk temizliği",
         "edr_endpoint_action": "EDR: cihazı yalıt, serbest bırak veya tara",
         "execute_command": "Bir sistem komutu çalıştır",
+        "execute_containment": "Bir cihazı kısıtla",
+        "execute_dr_plan": "Bir DR planı çalıştır",
         "execute_playbook": "Bir playbook çalıştır",
+        "export_dataset": "Bir veri kümesini dışa aktar",
         "file_operations": "Dosya işlemleri",
+        "find_proven_fixes": "Kanıtlanmış düzeltmeleri bul",
+        "generate_incident_report": "Olay raporu",
         "generate_report": "Raporlar",
         "get_active_users": "Etkin kullanıcılar",
+        "get_ai_agent_run": "Yapay zeka aracısı çalıştırma ayrıntıları",
+        "get_alert_correlations": "Uyarı korelasyonları",
+        "get_backup_status": "Yedekleme durumu",
+        "get_browser_security": "Tarayıcı güvenliği",
         "get_catalog_item": "Katalog öğesi arama",
         "get_cis_compliance": "CIS uyumluluk raporu",
         "get_cis_device_report": "CIS cihaz raporu",
+        "get_compliance_status": "Cihaz uyumluluk durumu",
         "get_configuration_policy": "Yapılandırma politikası ayrıntıları",
         "get_contract": "Sözleşme ayrıntıları",
+        "get_device_ai_activity": "Bir cihazdaki yapay zeka etkinliği",
+        "get_device_billing": "Cihaz faturalama kalemleri",
         "get_device_context": "Cihaz bağlamı",
         "get_device_details": "Cihaz ayrıntıları",
+        "get_device_events": "Cihaz etkinlik zaman çizelgesi",
+        "get_device_hardware_health": "Donanım sağlığı",
+        "get_device_health": "Aracının bildirdiği cihaz sağlığı",
+        "get_device_software": "Yüklü yazılımlar",
+        "get_device_time_status": "Saat eşitleme durumu",
         "get_device_vulnerabilities": "Cihaz güvenlik açıkları",
+        "get_diagnostic_run": "Topoloji tanılama çalıştırması",
         "get_dns_security": "DNS güvenlik etkinliği",
+        "get_dr_execution_status": "DR yürütme durumu",
+        "get_dr_plan_details": "DR planı ayrıntıları",
+        "get_edr_status": "EDR durumu",
         "get_effective_configuration": "Etkin yapılandırma",
+        "get_elevation_history": "Yetki yükseltme isteği geçmişi",
+        "get_executive_summary": "Yönetici özeti",
+        "get_fleet_design": "Fleet Design raporu",
+        "get_fleet_device_stats": "Filo cihaz sayıları",
         "get_fleet_findings": "Filo bulguları",
         "get_fleet_health": "Filo sağlığı",
+        "get_flow": "Akış ayrıntıları",
+        "get_flow_run": "Akış çalıştırma ayrıntıları",
+        "get_huntress_agents": "Huntress ajanları",
         "get_huntress_incidents": "Huntress olayları",
         "get_huntress_status": "Huntress durumu",
+        "get_hyperv_vm_details": "Hyper-V VM ayrıntıları",
+        "get_incident_timeline": "Olay zaman çizelgesi",
+        "get_interface_history": "Ağ arayüzü geçmişi",
         "get_invite_funnel": "Dağıtım davet hunisi",
         "get_invoice": "Fatura ayrıntıları",
+        "get_ip_history": "IP adresi geçmişi",
+        "get_link_evidence": "Ağ bağlantısı kanıtı",
+        "get_link_health": "Ağ bağlantısı sağlığı",
         "get_log_trends": "Günlük eğilimleri",
+        "get_management_posture": "Yönetim aracı kapsamı",
+        "get_monitor": "İzleyici ayrıntıları",
+        "get_monitor_activity": "İzleyici eşik aşımı etkinliği",
+        "get_mssql_backup_status": "MSSQL yedekleme durumu",
+        "get_network_asset": "Ağ varlığı ayrıntıları",
+        "get_network_asset_reachability": "Ağ varlığı erişilebilirliği",
+        "get_network_changes": "Ağ değişiklikleri",
+        "get_partner_settings_inheritance": "İş ortağı ayarlarının devralınması",
+        "get_pax8_status": "Pax8 durumu",
+        "get_peripheral_activity": "USB ve çevre birimi etkinliği",
         "get_playbook_history": "Playbook çalıştırma geçmişi",
+        "get_process_samples": "Süreç anlık görüntüsü",
         "get_quote": "Teklif ayrıntıları",
+        "get_recent_network_changes": "Son topoloji değişiklikleri",
+        "get_running_timer": "Çalışan zamanlayıcı",
         "get_s1_status": "SentinelOne durumu",
         "get_s1_threats": "SentinelOne tehditleri",
         "get_script_details": "Betik ayrıntıları",
         "get_script_execution": "Betik çalıştırma ayrıntıları",
         "get_script_execution_history": "Betik çalıştırma geçmişi",
+        "get_script_proposal": "Betik önerisi ayrıntıları",
+        "get_security_compliance": "Güvenlik uyumluluğu görünümleri",
         "get_security_posture": "Güvenlik duruşu",
         "get_service_monitoring_status": "Hizmet izleme durumu",
+        "get_site": "Site ayrıntıları",
+        "get_sla_breaches": "Yedekleme SLA ihlalleri",
+        "get_sla_compliance_report": "Yedekleme SLA uyumluluk raporu",
+        "get_snmp_metrics": "SNMP metrikleri",
+        "get_software_compliance": "Yazılım uyumluluğu",
+        "get_ticket_approval_status": "Bilet onay durumu",
+        "get_timesheet": "Zaman çizelgesi",
+        "get_topology": "Ağ topolojisi",
+        "get_topology_impact": "Topoloji arıza etkisi",
+        "get_topology_monitoring_status": "Topoloji izleme durumu",
+        "get_trust_page_status": "Güven sayfası durumu",
         "get_user_experience_metrics": "Kullanıcı deneyimi metrikleri",
+        "get_vault_status": "Kasa durumu",
+        "get_vm_restore_estimate": "VM geri yükleme tahmini",
         "get_vulnerability_report": "Güvenlik açığı raporu",
+        "instant_boot_vm": "Bir yedeği VM olarak anında başlat",
+        "link_entity": "Bir öğeyi Wisp konuşmasına bağla",
+        "list_ai_agent_runs": "Yapay zeka aracısı çalıştırmaları",
+        "list_ai_agent_schedules": "Yapay zeka aracısı zamanlamaları",
+        "list_ai_agents": "Yapay zeka aracıları listesi",
+        "list_business_calendars": "Çalışma saati takvimleri",
+        "list_concerns": "Wisp endişeleri",
         "list_configuration_policies": "Yapılandırma politikaları listesi",
         "list_contracts": "Sözleşme listesi",
+        "list_deliverable_templates": "Teslimat şablonları",
+        "list_deliverables": "Hizmet teslimatları",
+        "list_device_restore_point_attempts": "Geri yükleme noktası denemeleri",
+        "list_edr_detections": "EDR tespitleri",
+        "list_fleet_designs": "Fleet Design raporları",
+        "list_flow_runs": "Akış çalıştırmaları",
+        "list_flows": "Akışlar listesi",
+        "list_incidents": "Güvenlik olayları",
         "list_invoices": "Fatura listesi",
+        "list_links": "Wisp konuşma bağlantıları",
+        "list_monitors": "İzleyiciler listesi",
+        "list_network_assets": "Ağ varlıkları",
+        "list_org_contacts": "Organizasyon kişileri",
+        "list_org_documents": "Organizasyon belgeleri",
         "list_organizations": "Organizasyon listesi",
         "list_playbooks": "Playbook listesi",
         "list_quotes": "Teklif listesi",
+        "list_remediation_suggestions": "Düzeltme önerileri",
+        "list_remote_sessions": "Uzak oturumlar",
         "list_script_templates": "Betik şablonları listesi",
         "list_scripts": "Betik listesi",
+        "list_sites": "Siteler listesi",
+        "list_ticket_routing_rules": "Bilet yönlendirme kuralları",
+        "list_time_entries": "Zaman girişleri",
+        "list_time_sync_issues": "Saat eşitleme sorunları",
         "lookup_distributor_product": "Distribütör ürünü arama",
         "m365_query_groups": "Microsoft 365 grupları",
         "m365_query_intune_devices": "Microsoft Intune cihazları",
@@ -3749,54 +3850,166 @@
         "m365_query_signins": "Microsoft 365 oturum açmaları",
         "m365_query_sites": "Microsoft 365 siteleri",
         "m365_query_users": "Microsoft 365 kullanıcıları",
+        "manage_accounting_sync": "Muhasebe senkronizasyonunu yönet",
         "manage_alert_rules": "Uyarı kurallarını yönet",
         "manage_alerts": "Uyarıları yönet",
+        "manage_audit_baselines": "Denetim taban çizgilerini yönet",
         "manage_automations": "Otomasyonları yönet",
         "manage_backup_configs": "Yedekleme yapılandırmalarını yönet",
+        "manage_backup_profiles": "Yedekleme profillerini yönet",
+        "manage_billing_catalog": "Faturalama fiyat listesini yönet",
+        "manage_billing_profiles": "Faturalama ücret çizelgelerini yönet",
+        "manage_billing_settings": "Faturalama ayarlarını yönet",
+        "manage_browser_policy": "Tarayıcı politikalarını yönet",
+        "manage_compliance_policies": "Uyumluluk politikalarını yönet",
         "manage_configuration_policy": "Yapılandırma politikalarını yönet",
+        "manage_contract_documents": "İmzalı sözleşmeleri yönet",
+        "manage_contract_templates": "Sözleşme şablonlarını yönet",
         "manage_contracts": "Sözleşmeleri yönet",
+        "manage_deliverables": "Hizmet teslimatlarını yönet",
+        "manage_delivery": "Uyarı iletimini yönet",
         "manage_deployments": "Dağıtımları yönet",
+        "manage_device_anomalies": "Cihaz anormalliklerini yönet",
+        "manage_device_function": "Bir cihazın işlevini yönet",
+        "manage_device_links": "Bağlı cihaz kayıtlarını yönet",
+        "manage_device_software": "Yüklü yazılımları yönet",
+        "manage_device_warranty": "Cihaz garantisini yönet",
         "manage_dns_policy": "DNS politikasını yönet",
+        "manage_dr_plan": "DR planlarını yönet",
+        "manage_fleet_findings": "Filo bulgularını yönet",
         "manage_groups": "Cihaz gruplarını yönet",
+        "manage_hyperv_checkpoints": "Hyper-V kontrol noktalarını yönet",
+        "manage_hyperv_vm": "Hyper-V VM'lerini yönet",
         "manage_invoices": "Faturaları yönet",
+        "manage_key_dates": "Önemli tarihleri yönet",
         "manage_maintenance_windows": "Bakım pencerelerini yönet",
+        "manage_manual_assets": "Manuel varlıkları yönet",
+        "manage_monitor_definitions": "İzleyici tanımlarını yönet",
         "manage_monitors": "Çalışma süresi izleyicilerini yönet",
+        "manage_notification_channels": "Bildirim kanallarını yönet",
+        "manage_org_documents": "Organizasyon belgelerini yönet",
         "manage_organizations": "Organizasyonları yönet",
         "manage_patches": "Yamaları yönet",
+        "manage_pax8_orders": "Pax8 siparişlerini yönet",
+        "manage_pax8_subscriptions": "Pax8 aboneliklerini yönet",
         "manage_peripheral_policies": "Çevre birimi politikalarını yönet",
+        "manage_peripheral_policy": "Çevre birimi politikalarını ve istisnalarını düzenle",
         "manage_policy_feature_link": "Bir politikayı bir özelliğe bağla",
+        "manage_processes": "Süreçleri yönet",
+        "manage_quotes": "Teklifleri yönet",
+        "manage_recovery_keys": "Kurtarma anahtarlarını yönet",
+        "manage_saved_filters": "Kayıtlı filtreleri yönet",
+        "manage_scheduled_tasks": "Zamanlanmış görevleri yönet",
+        "manage_security_policies": "Güvenlik politikalarını yönet",
+        "manage_security_recommendations": "Güvenlik önerilerini yönet",
         "manage_service_monitors": "Hizmet izleyicilerini yönet",
         "manage_services": "Hizmetleri yönet",
+        "manage_snmp_templates": "SNMP şablonlarını yönet",
+        "manage_software_catalog": "Yazılım kataloğunu yönet",
+        "manage_software_deployments": "Yazılım dağıtımlarını yönet",
+        "manage_software_inventory": "Yazılım envanterini yönet",
         "manage_software_policies": "Yazılım politikalarını yönet",
+        "manage_software_policy": "Yazılım izin ve engelleme listelerini yönet",
         "manage_startup_items": "Başlangıç öğelerini yönet",
+        "manage_support_sessions": "Quick Support oturumlarını yönet",
+        "manage_tags": "Cihaz etiketlerini yönet",
+        "manage_tenant_variables": "Betik değişkenlerini yönet",
+        "manage_ticket_attachments": "Bilet eklerini yönet",
+        "manage_ticket_checklist": "Bilet kontrol listelerini yönet",
+        "manage_ticket_checklist_templates": "Biletler için kontrol listesi şablonlarını yönet",
+        "manage_ticket_config": "Bilet ayarlarını yönet",
+        "manage_ticket_forms": "Bilet formlarını yönet",
+        "manage_ticket_inbox": "Bilet e-posta gelen kutusunu yönet",
+        "manage_ticket_response_templates": "Bilet yanıt şablonlarını yönet",
+        "manage_ticket_routing_rules": "Biletler için yönlendirme kurallarını yönet",
+        "manage_tickets": "Biletleri yönet",
+        "manage_time_suggestions": "Zaman önerilerini yönet",
         "manage_update_rings": "Güncelleme halkalarını yönet",
         "network_discovery": "Ağ keşfi",
         "preview_configuration_change": "Bir yapılandırma değişikliğini önizle",
+        "probe_network_asset": "Bir ağ varlığına ping at",
+        "propose_script": "Bir betik öner",
+        "query_agent_versions": "Aracı sürümleri",
+        "query_analytics": "Analizler",
         "query_audit_log": "Denetim günlüğünü sorgula",
+        "query_backup_sla": "Yedekleme SLA yapılandırmaları",
+        "query_backups": "Yedeklemeler",
+        "query_c2c_connections": "Buluttan buluta bağlantılar",
         "query_change_log": "Değişiklik günlüğünü sorgula",
+        "query_compliance_policies": "Uyumluluk politikaları",
+        "query_custom_fields": "Özel alanlar",
+        "query_device_workloads": "Bir cihazdaki kapsayıcılar ve VM'ler",
         "query_devices": "Cihazları sorgula",
+        "query_dr_plans": "DR planları listesi",
+        "query_hyperv_vms": "Hyper-V VM listesi",
         "query_monitors": "İzleyicileri sorgula",
+        "query_mssql_instances": "MSSQL örnekleri",
+        "query_psa_status": "PSA bağlantı durumu",
+        "query_vaults": "Yerel kasalar",
+        "query_webhooks": "Web kancaları listesi",
+        "raise_concern": "Bir Wisp endişesi bildir",
+        "read_artifact": "Saklanan bir sonucu oku",
+        "recall": "Wisp belleği",
+        "registry_operations": "Windows kayıt defteri",
+        "reliability_feedback": "Güvenilirlik puanı geri bildirimi",
+        "remediate_sensitive_data": "Hassas verileri düzelt",
+        "remediate_software_violation": "Bir yazılım ihlalini düzelt",
         "remediate_vulnerability": "Bir güvenlik açığını düzelt",
+        "remember": "Bir Wisp belleği kaydet",
         "remove_configuration_policy_assignment": "Bir yapılandırma politikası atamasını kaldır",
+        "request_elevation": "PAM yetki yükseltme iste",
+        "reset_monitor_escalation": "İzleyici yükseltmesini sıfırla",
+        "resolve_concern": "Bir Wisp endişesini çözümle",
         "resolve_device_context": "Bir cihazı çözümle",
+        "restore_as_vm": "Bir anlık görüntüyü VM olarak geri yükle",
+        "restore_c2c_items": "Buluttan buluta öğeleri geri yükle",
+        "restore_hyperv_vm": "Bir Hyper-V VM'sini geri yükle",
+        "restore_mssql_database": "Bir MSSQL veritabanını geri yükle",
+        "restore_snapshot": "Bir anlık görüntüyü geri yükle",
+        "revoke_elevation": "PAM yetki yükseltmeyi iptal et",
         "run_script": "Bir betik çalıştır",
         "s1_isolate_device": "SentinelOne: cihazı izole et",
         "s1_threat_action": "SentinelOne tehdit eylemleri",
         "search_agent_logs": "Aracı günlüklerinde ara",
         "search_catalog": "Ürün kataloğunda ara",
+        "search_documentation": "Belgelerde ara",
         "search_logs": "Cihaz günlüklerinde ara",
+        "search_packages": "Yazılım paketlerinde ara",
+        "search_pax8_products": "Pax8 ürünlerini ara",
+        "search_script_library": "Betik kütüphanesinde ara",
         "security_scan": "Güvenlik taraması",
         "set_agent_log_level": "Aracı günlük düzeyini ayarla",
         "set_device_context": "Cihaz bağlamını ayarla",
+        "snooze_concern": "Bir Wisp endişesini ertele",
         "sync_edr_data": "EDR verilerini eşitle",
         "sync_huntress_data": "Huntress verilerini eşitle",
         "system_cleanup": "Sistem temizliği",
-        "take_screenshot": "Ekran görüntüsü al"
+        "take_screenshot": "Ekran görüntüsü al",
+        "test_ticket_routing_rule": "Bir bilet yönlendirme kuralını test et",
+        "test_webhook": "Bir test web kancası gönder",
+        "trigger_agent_restart": "Bir aracıyı yeniden başlat",
+        "trigger_agent_upgrade": "Bir aracıyı yükselt",
+        "trigger_backup": "Bir yedekleme çalıştır",
+        "trigger_c2c_sync": "Bir buluttan buluta eşitleme çalıştır",
+        "trigger_hyperv_backup": "Bir Hyper-V VM'sini yedekle",
+        "trigger_mssql_backup": "Bir MSSQL veritabanını yedekle",
+        "trigger_vault_sync": "Bir yerel kasayı eşitle",
+        "validate_flow": "Bir akışı doğrula",
+        "verify_mssql_backup": "Bir MSSQL yedeğini doğrula",
+        "workspace_cancel": "Analiz korumalı alanını iptal et",
+        "workspace_collect": "Korumalı alan dosyalarını topla",
+        "workspace_run": "Bir korumalı alan betiği çalıştır",
+        "workspace_stage": "Dosyaları korumalı alanda hazırla"
       },
       "actions": {
         "apply_cis_remediation": {
           "apply": "CIS düzeltmesini uygula",
           "rollback": "CIS düzeltmesini geri al"
+        },
+        "browse_device_event_log": {
+          "get_event": "Olay ayrıntıları",
+          "list_logs": "Olay günlüklerini listele",
+          "query": "Olay günlüğü girişlerini sorgula"
         },
         "computer_control": {
           "double_click": "Çift tıkla",
@@ -3813,9 +4026,22 @@
           "status": "Uyumluluk durumu",
           "summary": "Uyumluluk özeti"
         },
+        "configure_backup_sla": {
+          "create": "Bir yedekleme SLA'sı oluştur",
+          "update": "Bir yedekleme SLA'sını güncelle"
+        },
+        "configure_vault": {
+          "create": "Bir yerel kasa oluştur",
+          "update": "Bir yerel kasayı güncelle"
+        },
         "disk_cleanup": {
           "execute": "Disk temizliğini çalıştır",
           "preview": "Disk temizliğini önizle"
+        },
+        "edr_endpoint_action": {
+          "isolate": "Bir cihazı yalıt",
+          "scan": "Bir EDR taraması çalıştır",
+          "unisolate": "Bir cihazı yalıtımdan çıkar"
         },
         "execute_command": {
           "event_logs_list": "Olay günlüklerini listele",
@@ -3847,16 +4073,44 @@
           "list": "Raporları listele",
           "update": "Bir raporu güncelle"
         },
+        "get_alert_correlations": {
+          "analyze": "Uyarıları korelasyon için analiz et",
+          "by_alert": "Bir uyarının korelasyonları",
+          "evaluation": "Korelasyon kalitesi",
+          "explain": "Bir korelasyon grubunu açıkla",
+          "get": "Korelasyon grubu ayrıntıları",
+          "groups": "Korelasyon gruplarını listele",
+          "links": "Korelasyon bağlantıları"
+        },
         "get_dns_security": {
           "allowed": "İzin verilen DNS etkinliği",
           "blocked": "Engellenen DNS etkinliği",
           "redirected": "Yönlendirilen DNS etkinliği"
+        },
+        "get_fleet_health": {
+          "evaluation": "Güvenilirlik değerlendirmesi",
+          "history": "Güvenilirlik geçmişi",
+          "list": "Cihaz güvenilirlik puanlarını listele",
+          "offenders": "Güvenilirliği düşük cihazlar",
+          "org_summary": "Organizasyon güvenilirlik özeti"
         },
         "get_service_monitoring_status": {
           "known_services": "Bilinen hizmetler",
           "results": "İzleme sonuçları",
           "status": "İzleme durumu",
           "summary": "İzleme özeti"
+        },
+        "get_snmp_metrics": {
+          "dashboard": "SNMP panosu",
+          "history": "SNMP metrik geçmişi"
+        },
+        "manage_accounting_sync": {
+          "customers": "Muhasebe müşterilerini listele",
+          "income_accounts": "Gelir hesaplarını listele",
+          "mappings": "Muhasebe eşlemelerini listele",
+          "owed_operations": "Bekleyen senkronizasyon işlemlerini listele",
+          "remote_candidates": "Bağlanacak sağlayıcı kayıtlarını ara",
+          "status": "Muhasebe senkronizasyon durumunu göster"
         },
         "manage_alert_rules": {
           "alert_summary": "Uyarı özeti",
@@ -3876,6 +4130,11 @@
           "resolve": "Bir uyarıyı çözümle",
           "suppress": "Bir uyarıyı bastır"
         },
+        "manage_audit_baselines": {
+          "compliance": "Denetim taban çizgisi uyumluluğu",
+          "device_results": "Cihaz denetim sonuçları",
+          "list": "Denetim taban çizgilerini listele"
+        },
         "manage_automations": {
           "create": "Bir otomasyon oluştur",
           "delete": "Bir otomasyonu sil",
@@ -3893,12 +4152,70 @@
           "list": "Yedekleme yapılandırmalarını listele",
           "update": "Bir yedekleme yapılandırmasını güncelle"
         },
+        "manage_backup_profiles": {
+          "create": "Bir yedekleme profili oluştur",
+          "delete": "Bir yedekleme profilini sil",
+          "get": "Yedekleme profili ayrıntıları",
+          "list": "Yedekleme profillerini listele",
+          "update": "Bir yedekleme profilini güncelle"
+        },
+        "manage_billing_catalog": {
+          "archive_item": "Bir fiyat listesi öğesini arşivle",
+          "create_item": "Bir fiyat listesi öğesi oluştur",
+          "remove_org_price": "Bir organizasyon fiyatını kaldır",
+          "remove_price": "Bir fiyatı kaldır",
+          "set_bundle_components": "Paket bileşenlerini ayarla",
+          "set_org_price": "Bir organizasyon fiyatı ayarla",
+          "set_price": "Bir fiyat ayarla",
+          "update_item": "Bir fiyat listesi öğesini güncelle"
+        },
+        "manage_billing_profiles": {
+          "archive": "Bir ücret çizelgesini arşivle",
+          "clear_org_profile": "Bir organizasyonun ücret çizelgesini temizle",
+          "clone": "Bir ücret çizelgesini kopyala",
+          "create": "Bir ücret çizelgesi oluştur",
+          "create_work_type": "Bir iş türü oluştur",
+          "get": "Ücret çizelgesi ayrıntıları",
+          "get_org_profile": "Organizasyon ücret çizelgesi",
+          "list": "Ücret çizelgelerini listele",
+          "list_work_types": "İş türlerini listele",
+          "set_org_profile": "Bir organizasyonun ücret çizelgesini ayarla",
+          "set_rows": "Ücret çizelgesi satırlarını ayarla",
+          "update": "Bir ücret çizelgesini güncelle",
+          "update_work_type": "Bir iş türünü güncelle"
+        },
+        "manage_billing_settings": {
+          "currency_impact": "Para birimi değişikliğini önizle",
+          "get_org": "Organizasyon faturalama ayarları",
+          "get_partner": "Partner faturalama ayarları",
+          "reporting_totals": "Faturalama rapor toplamları",
+          "update_org": "Organizasyon faturalama ayarlarını güncelle",
+          "update_partner": "Partner faturalama ayarlarını güncelle"
+        },
+        "manage_browser_policy": {
+          "apply": "Bir tarayıcı politikası uygula",
+          "create": "Bir tarayıcı politikası oluştur",
+          "list": "Tarayıcı politikalarını listele",
+          "update": "Bir tarayıcı politikasını güncelle"
+        },
+        "manage_compliance_policies": {
+          "deactivate": "Bir uyumluluk politikasını devre dışı bırak"
+        },
         "manage_configuration_policy": {
           "activate": "Bir yapılandırma politikasını etkinleştir",
           "create": "Bir yapılandırma politikası oluştur",
           "deactivate": "Bir yapılandırma politikasını devre dışı bırak",
           "delete": "Bir yapılandırma politikasını sil",
           "update": "Bir yapılandırma politikasını güncelle"
+        },
+        "manage_contract_documents": {
+          "list": "İmzalı sözleşmeleri listele"
+        },
+        "manage_contract_templates": {
+          "get": "Sözleşme şablonu ayrıntıları",
+          "get_version": "Sözleşme şablonu sürümü",
+          "list": "Sözleşme şablonlarını listele",
+          "usage": "Sözleşme şablonu kullanımı"
         },
         "manage_contracts": {
           "activate": "Bir sözleşmeyi etkinleştir",
@@ -3907,10 +4224,34 @@
           "create_draft": "Bir sözleşme taslağı oluştur",
           "delete_draft": "Bir sözleşme taslağını sil",
           "pause": "Bir sözleşmeyi duraklat",
+          "preview_invoice": "Sonraki sözleşme faturasını önizle",
           "remove_line": "Bir sözleşme kalemini kaldır",
           "resume": "Bir sözleşmeyi sürdür",
           "update": "Bir sözleşmeyi güncelle",
           "update_line": "Bir sözleşme kalemini güncelle"
+        },
+        "manage_deliverables": {
+          "apply_template": "Bir teslimat şablonu uygula",
+          "create": "Bir teslimat oluştur",
+          "deactivate": "Bir teslimatı devre dışı bırak",
+          "deliver": "Bir teslimatı teslim edildi olarak işaretle",
+          "link_evidence": "Teslimat kanıtını bağla",
+          "reopen": "Bir teslimatı yeniden aç",
+          "reschedule": "Bir teslimatı yeniden zamanla",
+          "update": "Bir teslimatı güncelle",
+          "waive": "Bir teslimattan feragat et"
+        },
+        "manage_delivery": {
+          "create_escalation": "Bir eskalasyon kuralı oluştur",
+          "create_routing": "Bir iletim rotası oluştur",
+          "delete_escalation": "Bir eskalasyon kuralını sil",
+          "delete_routing": "Bir iletim rotasını sil",
+          "list_escalation": "Eskalasyon kurallarını listele",
+          "list_routing": "İletim rotalarını listele",
+          "resolve": "Uyarı iletimini çözümle",
+          "set_default": "Varsayılan iletim rotasını ayarla",
+          "update_escalation": "Bir eskalasyon kuralını güncelle",
+          "update_routing": "Bir iletim rotasını güncelle"
         },
         "manage_deployments": {
           "cancel": "Bir dağıtımı iptal et",
@@ -3922,11 +4263,48 @@
           "resume": "Bir dağıtımı sürdür",
           "start": "Bir dağıtımı başlat"
         },
+        "manage_device_anomalies": {
+          "dismiss": "Bir anormalliği yoksay",
+          "list": "Anormallikleri listele",
+          "promote": "Bir anormalliği uyarıya dönüştür",
+          "resolve": "Bir anormalliği çözümle"
+        },
+        "manage_device_function": {
+          "get": "Cihaz işlevi"
+        },
+        "manage_device_links": {
+          "create": "Cihaz kayıtlarını bağla",
+          "dissolve": "Bir cihaz bağlantısını kaldır",
+          "for_device": "Bir cihazın bağlantıları",
+          "get": "Cihaz bağlantısı ayrıntıları",
+          "list": "Cihaz bağlantılarını listele",
+          "update": "Bir cihaz bağlantısını güncelle"
+        },
+        "manage_device_software": {
+          "update": "Bir uygulamayı güncelle"
+        },
+        "manage_device_warranty": {
+          "expiring": "Süresi dolmak üzere olan garantileri listele",
+          "get": "Cihaz garantisi",
+          "refresh": "Bir cihaz garantisini yenile"
+        },
         "manage_dns_policy": {
           "add_allow": "Bir alan adına izin ver",
           "add_block": "Bir alan adını engelle",
           "remove_allow": "İzin verilen bir alan adını kaldır",
           "remove_block": "Engellenen bir alan adını kaldır"
+        },
+        "manage_dr_plan": {
+          "add_group": "Bir plan grubu ekle",
+          "create_plan": "Bir DR planı oluştur",
+          "delete_group": "Bir plan grubunu sil",
+          "update_group": "Bir plan grubunu güncelle",
+          "update_plan": "Bir DR planını güncelle"
+        },
+        "manage_fleet_findings": {
+          "acknowledge": "Bir filo bulgusunu onayla",
+          "dismiss": "Bir filo bulgusunu yoksay",
+          "reopen": "Bir filo bulgusunu yeniden aç"
         },
         "manage_groups": {
           "add_devices": "Bir gruba cihaz ekle",
@@ -3938,6 +4316,19 @@
           "preview": "Grup üyeliğini önizle",
           "remove_devices": "Bir gruptan cihaz kaldır",
           "update": "Bir cihaz grubunu güncelle"
+        },
+        "manage_hyperv_checkpoints": {
+          "apply": "Bir kontrol noktası uygula",
+          "create": "Bir kontrol noktası oluştur",
+          "delete": "Bir kontrol noktasını sil"
+        },
+        "manage_hyperv_vm": {
+          "force_stop": "Bir VM'yi zorla durdur",
+          "pause": "Bir VM'yi duraklat",
+          "resume": "Bir VM'yi sürdür",
+          "save": "Bir VM'nin durumunu kaydet",
+          "start": "Bir VM'yi başlat",
+          "stop": "Bir VM'yi durdur"
         },
         "manage_invoices": {
           "add_bundle_line": "Bir paket kalemi ekle",
@@ -3951,11 +4342,18 @@
           "delete_draft": "Bir fatura taslağını sil",
           "issue": "Bir fatura düzenle",
           "record_payment": "Bir ödemeyi kaydet",
+          "refresh_time_lines": "Zaman kalemlerini yenile",
           "remove_line": "Bir fatura kalemini kaldır",
           "update_header": "Fatura ayrıntılarını güncelle",
           "update_line": "Bir fatura kalemini güncelle",
           "void": "Bir faturayı iptal et",
           "void_payment": "Bir ödemeyi iptal et"
+        },
+        "manage_key_dates": {
+          "create": "Bir önemli tarih oluştur",
+          "delete": "Bir önemli tarihi sil",
+          "list": "Önemli tarihleri listele",
+          "update": "Bir önemli tarihi güncelle"
         },
         "manage_maintenance_windows": {
           "active_now": "Etkin bakım pencereleri",
@@ -3965,11 +4363,41 @@
           "list": "Bakım pencerelerini listele",
           "update": "Bir bakım penceresini güncelle"
         },
+        "manage_manual_assets": {
+          "create": "Bir manuel varlık oluştur",
+          "delete": "Bir manuel varlığı sil",
+          "link": "Bir manuel varlığı bağla",
+          "list": "Manuel varlıkları listele",
+          "unlink": "Bir manuel varlığın bağlantısını kaldır",
+          "update": "Bir manuel varlığı güncelle"
+        },
+        "manage_monitor_definitions": {
+          "attach": "Bir izleyici tanımı iliştir",
+          "create": "Bir izleyici tanımı oluştur",
+          "delete": "Bir izleyici tanımını sil",
+          "describe": "İzleyici tanımı seçeneklerini açıkla",
+          "detach": "Bir izleyici tanımını ayır",
+          "disable": "Bir izleyici tanımını devre dışı bırak",
+          "enable": "Bir izleyici tanımını etkinleştir",
+          "update": "Bir izleyici tanımını güncelle"
+        },
         "manage_monitors": {
           "create": "Bir izleyici oluştur",
           "delete": "Bir izleyiciyi sil",
           "get": "İzleyici ayrıntıları",
           "update": "Bir izleyiciyi güncelle"
+        },
+        "manage_notification_channels": {
+          "create": "Bir bildirim kanalı oluştur",
+          "delete": "Bir bildirim kanalını sil",
+          "list": "Bildirim kanallarını listele",
+          "test": "Bir bildirim kanalını test et",
+          "update": "Bir bildirim kanalını güncelle"
+        },
+        "manage_org_documents": {
+          "set_portal_visibility": "Portal görünürlüğünü ayarla",
+          "supersede": "Bir belgenin yerine yenisini koy",
+          "update_metadata": "Belge ayrıntılarını güncelle"
         },
         "manage_organizations": {
           "add_contact": "Bir organizasyon kişisi ekle",
@@ -3983,6 +4411,7 @@
           "compliance": "Yama uyumluluğu",
           "decline": "Bir yamayı reddet",
           "defer": "Bir yamayı ertele",
+          "device_history": "Cihaz yama geçmişi",
           "install": "Bir yama yükle",
           "list": "Yamaları listele",
           "rollback": "Bir yamayı geri al",
@@ -3995,11 +4424,68 @@
           "list": "Çevre birimi politikalarını listele",
           "update": "Bir çevre birimi politikasını güncelle"
         },
+        "manage_peripheral_policy": {
+          "add_exception": "Bir çevre birimi istisnası ekle",
+          "create": "Bir çevre birimi politikası oluştur",
+          "disable": "Bir çevre birimi politikasını devre dışı bırak",
+          "remove_exception": "Bir çevre birimi istisnasını kaldır",
+          "update": "Bir çevre birimi politikasını güncelle"
+        },
         "manage_policy_feature_link": {
           "add": "Bir politikayı bir özelliğe bağla",
+          "describe": "Politika bağlantılarını açıkla",
           "list": "Politika bağlantılarını listele",
           "remove": "Bir politika bağlantısını kaldır",
           "update": "Bir politika bağlantısını güncelle"
+        },
+        "manage_processes": {
+          "kill": "Bir süreci sonlandır",
+          "list": "Süreçleri listele"
+        },
+        "manage_quotes": {
+          "add_block": "Bir teklif bloğu ekle",
+          "add_catalog_line": "Bir katalog kalemi ekle",
+          "add_manual_line": "Bir manuel kalem ekle",
+          "create_draft": "Bir teklif taslağı oluştur",
+          "create_pay_link": "Bir ödeme bağlantısı oluştur",
+          "decline": "Bir teklifi reddet",
+          "delete_block": "Bir teklif bloğunu sil",
+          "delete_draft": "Bir teklif taslağını sil",
+          "move_line": "Bir teklif kalemini taşı",
+          "remove_line": "Bir teklif kalemini kaldır",
+          "reorder_blocks": "Teklif bloklarını yeniden sırala",
+          "reorder_lines": "Teklif kalemlerini yeniden sırala",
+          "send": "Bir teklif gönder",
+          "update": "Bir teklifi güncelle",
+          "update_block": "Bir teklif bloğunu güncelle",
+          "update_line": "Bir teklif kalemini güncelle"
+        },
+        "manage_recovery_keys": {
+          "collect": "Kurtarma anahtarlarını topla",
+          "list": "Kurtarma anahtarlarını listele",
+          "rotate": "Bir kurtarma anahtarını döndür"
+        },
+        "manage_saved_filters": {
+          "create": "Bir kayıtlı filtre oluştur",
+          "delete": "Bir kayıtlı filtreyi sil",
+          "get": "Kayıtlı filtre ayrıntıları",
+          "list": "Kayıtlı filtreleri listele"
+        },
+        "manage_scheduled_tasks": {
+          "disable": "Bir zamanlanmış görevi devre dışı bırak",
+          "enable": "Bir zamanlanmış görevi etkinleştir",
+          "list": "Zamanlanmış görevleri listele",
+          "run": "Bir zamanlanmış görevi çalıştır"
+        },
+        "manage_security_policies": {
+          "create": "Bir güvenlik politikası oluştur",
+          "list": "Güvenlik politikalarını listele",
+          "update": "Bir güvenlik politikasını güncelle"
+        },
+        "manage_security_recommendations": {
+          "complete": "Bir öneriyi tamamla",
+          "dismiss": "Bir öneriyi yoksay",
+          "list": "Önerileri listele"
         },
         "manage_service_monitors": {
           "list": "Hizmet izleyicilerini listele"
@@ -4010,8 +4496,55 @@
           "start": "Hizmeti başlat",
           "stop": "Hizmeti durdur"
         },
+        "manage_snmp_templates": {
+          "browse_oids": "SNMP OID'lerine göz at",
+          "create": "Bir SNMP şablonu oluştur",
+          "delete": "Bir SNMP şablonunu sil",
+          "get": "SNMP şablonu ayrıntıları",
+          "list": "SNMP şablonlarını listele",
+          "update": "Bir SNMP şablonunu güncelle",
+          "validate_oids": "SNMP OID'lerini doğrula"
+        },
+        "manage_software_catalog": {
+          "add_install_method": "Bir yükleme yöntemi ekle",
+          "add_version": "Bir sürüm ekle",
+          "archive": "Bir katalog öğesini arşivle",
+          "create": "Bir katalog öğesi oluştur",
+          "delete_install_method": "Bir yükleme yöntemini sil",
+          "get": "Katalog öğesi ayrıntıları",
+          "import_package": "Bir paketi içe aktar",
+          "list": "Katalog öğelerini listele",
+          "promote_version": "Bir sürümü yükselt",
+          "update": "Bir katalog öğesini güncelle",
+          "update_install_method": "Bir yükleme yöntemini güncelle",
+          "update_version": "Bir sürümü güncelle"
+        },
+        "manage_software_deployments": {
+          "cancel": "Bir yazılım dağıtımını iptal et",
+          "create": "Bir yazılım dağıtımı oluştur",
+          "get": "Yazılım dağıtımı ayrıntıları",
+          "list": "Yazılım dağıtımlarını listele",
+          "results": "Yazılım dağıtımı sonuçları",
+          "retry": "Bir yazılım dağıtımını yeniden dene",
+          "summary": "Yazılım dağıtımı özeti"
+        },
+        "manage_software_inventory": {
+          "approve": "Yazılımı onayla",
+          "clear": "Bir yazılım kararını temizle",
+          "deny": "Yazılımı engelle",
+          "devices": "Yazılım bulunan cihazlar",
+          "list": "Yazılım envanterini listele",
+          "names": "Yazılım adlarında ara"
+        },
         "manage_software_policies": {
           "create": "Bir yazılım politikası oluştur",
+          "get": "Yazılım politikası ayrıntıları",
+          "list": "Yazılım politikalarını listele",
+          "update": "Bir yazılım politikasını güncelle"
+        },
+        "manage_software_policy": {
+          "create": "Bir yazılım politikası oluştur",
+          "delete": "Bir yazılım politikasını sil",
           "get": "Yazılım politikası ayrıntıları",
           "list": "Yazılım politikalarını listele",
           "update": "Bir yazılım politikasını güncelle"
@@ -4020,11 +4553,160 @@
           "disable": "Başlangıç öğesini devre dışı bırak",
           "enable": "Başlangıç öğesini etkinleştir"
         },
+        "manage_support_sessions": {
+          "end": "Bir destek oturumunu sonlandır",
+          "get": "Destek oturumu ayrıntıları",
+          "list": "Destek oturumlarını listele"
+        },
+        "manage_tags": {
+          "list": "Cihaz etiketlerini listele"
+        },
+        "manage_tenant_variables": {
+          "list": "Betik değişkenlerini listele"
+        },
+        "manage_ticket_attachments": {
+          "attach_from_artifact": "Saklanan bir sonucu ekle",
+          "delete": "Bir eki sil",
+          "list": "Ekleri listele",
+          "read_content": "Bir eki oku"
+        },
+        "manage_ticket_checklist": {
+          "add_item": "Bir kontrol listesi öğesi ekle",
+          "apply_template": "Bir kontrol listesi şablonu uygula",
+          "delete_item": "Bir kontrol listesi öğesini sil",
+          "duplicate_template": "Bir kontrol listesi şablonunu çoğalt",
+          "get_template": "Kontrol listesi şablonu ayrıntıları",
+          "list": "Kontrol listesi öğelerini listele",
+          "list_templates": "Kontrol listesi şablonlarını listele",
+          "reorder": "Kontrol listesi öğelerini yeniden sırala",
+          "save_as_template": "Kontrol listesi şablonu olarak kaydet",
+          "update_item": "Bir kontrol listesi öğesini güncelle"
+        },
+        "manage_ticket_checklist_templates": {
+          "add_item": "Bir şablon öğesi ekle",
+          "create": "Bir kontrol listesi şablonu oluştur",
+          "delete": "Bir kontrol listesi şablonunu sil",
+          "get": "Kontrol listesi şablonu ayrıntıları",
+          "list": "Kontrol listesi şablonlarını listele",
+          "remove_item": "Bir şablon öğesini kaldır",
+          "reorder_items": "Şablon öğelerini yeniden sırala",
+          "update": "Bir kontrol listesi şablonunu güncelle",
+          "update_item": "Bir şablon öğesini güncelle"
+        },
+        "manage_ticket_config": {
+          "create_category": "Bir bilet kategorisi oluştur",
+          "create_domain": "Bir bilet alanı oluştur",
+          "create_status": "Bir bilet durumu oluştur",
+          "delete_category": "Bir bilet kategorisini sil",
+          "delete_domain": "Bir bilet alanını sil",
+          "get_config": "Bilet yapılandırması",
+          "get_org_settings": "Organizasyon bilet ayarları",
+          "list_categories": "Bilet kategorilerini listele",
+          "list_domains": "Bilet alanlarını listele",
+          "reorder_categories": "Bilet kategorilerini yeniden sırala",
+          "reorder_statuses": "Bilet durumlarını yeniden sırala",
+          "set_priorities": "Bilet önceliklerini ayarla",
+          "update_category": "Bir bilet kategorisini güncelle",
+          "update_domain": "Bir bilet alanını güncelle",
+          "update_org_settings": "Organizasyon bilet ayarlarını güncelle",
+          "update_status": "Bir bilet durumunu güncelle"
+        },
+        "manage_ticket_forms": {
+          "available": "Kullanılabilir bilet formları",
+          "create": "Bir bilet formu oluştur",
+          "delete": "Bir bilet formunu sil",
+          "list": "Bilet formlarını listele",
+          "update": "Bir bilet formunu güncelle"
+        },
+        "manage_ticket_inbox": {
+          "convert": "Bir e-postayı bilete dönüştür",
+          "dismiss": "Bir e-postayı yoksay",
+          "list": "Yerleştirilmemiş e-postaları listele"
+        },
+        "manage_ticket_response_templates": {
+          "create": "Bir yanıt şablonu oluştur",
+          "delete": "Bir yanıt şablonunu sil",
+          "list": "Yanıt şablonlarını listele",
+          "update": "Bir yanıt şablonunu güncelle"
+        },
+        "manage_ticket_routing_rules": {
+          "create": "Bir yönlendirme kuralı oluştur",
+          "delete": "Bir yönlendirme kuralını sil",
+          "reorder": "Yönlendirme kurallarını yeniden sırala",
+          "update": "Bir yönlendirme kuralını güncelle"
+        },
+        "manage_tickets": {
+          "assign": "Bir bilet ata",
+          "bulk_update": "Biletleri toplu güncelle",
+          "comment": "Bir bilete yorum yap",
+          "create": "Bir bilet oluştur",
+          "create_from_alert": "Bir uyarıdan bilet oluştur",
+          "delete_comment": "Bir bilet yorumunu sil",
+          "draft": "Bir bilet taslağı hazırla",
+          "edit_comment": "Bir bilet yorumunu düzenle",
+          "get": "Bilet ayrıntıları",
+          "link_alert": "Bir uyarıyı bilete bağla",
+          "link_device": "Bir cihazı bilete bağla",
+          "link_ticket": "İlişkili biletleri bağla",
+          "list": "Biletleri listele",
+          "list_links": "Bilet bağlantılarını listele",
+          "list_work_types": "İş türlerini listele",
+          "log_time_entry": "Bir zaman girişi kaydet",
+          "merge": "Biletleri birleştir",
+          "merge_preview": "Bir bilet birleştirmesini önizle",
+          "move_org": "Bir bileti başka bir organizasyona taşı",
+          "start_timer": "Bir bilet zamanlayıcısı başlat",
+          "stop_timer": "Bir bilet zamanlayıcısını durdur",
+          "unlink_alert": "Bir uyarının bilet bağlantısını kaldır",
+          "unlink_ticket": "İlişkili biletlerin bağlantısını kaldır",
+          "update_fields": "Bilet alanlarını güncelle",
+          "update_status": "Bilet durumunu güncelle",
+          "update_time_entry": "Bir zaman girişini güncelle"
+        },
+        "manage_time_suggestions": {
+          "confirm": "Bir zaman önerisini onayla",
+          "dismiss": "Bir zaman önerisini yoksay",
+          "list": "Zaman önerilerini listele",
+          "undo": "Yoksayılan bir öneriyi geri al"
+        },
         "manage_update_rings": {
           "create": "Bir güncelleme halkası oluştur",
           "get": "Güncelleme halkası ayrıntıları",
           "list": "Güncelleme halkalarını listele",
           "update": "Bir güncelleme halkasını güncelle"
+        },
+        "query_agent_versions": {
+          "check_upgrades": "Cihazlarda yükseltmeleri denetle",
+          "list_versions": "Aracı sürümlerini listele"
+        },
+        "query_analytics": {
+          "capacity_predictions": "Kapasite tahminleri",
+          "sla_compliance": "SLA uyumluluğu",
+          "sla_definitions": "SLA tanımları"
+        },
+        "query_backups": {
+          "list_configs": "Yedekleme yapılandırmalarını listele",
+          "list_jobs": "Yedekleme işlerini listele",
+          "list_policies": "Yedekleme politikalarını listele"
+        },
+        "query_custom_fields": {
+          "get_device_values": "Bir cihazın özel alan değerleri",
+          "list_definitions": "Özel alan tanımlarını listele"
+        },
+        "registry_operations": {
+          "create_key": "Bir kayıt defteri anahtarı oluştur",
+          "delete_key": "Bir kayıt defteri anahtarını sil",
+          "get_value": "Bir kayıt defteri değerini oku",
+          "read_key": "Bir kayıt defteri anahtarını oku",
+          "set_value": "Bir kayıt defteri değeri ayarla"
+        },
+        "remediate_sensitive_data": {
+          "accept_risk": "Riski kabul et",
+          "encrypt": "Bir dosyayı şifrele",
+          "false_positive": "Yanlış pozitif olarak işaretle",
+          "mark_remediated": "Düzeltildi olarak işaretle",
+          "quarantine": "Bir dosyayı karantinaya al",
+          "secure_delete": "Bir dosyayı güvenli şekilde sil"
         },
         "s1_threat_action": {
           "kill": "Tehdit sürecini sonlandır",
@@ -4044,6 +4726,29 @@
           "run": "Sistem temizliğini çalıştır",
           "status": "Sistem temizliği durumu",
           "cancel": "Sistem temizliği çalıştırmasını iptal et"
+        },
+        "manage_pax8_orders": {
+          "list": "Pax8 siparişlerini listele",
+          "get": "Pax8 siparişini getir",
+          "create_draft": "Pax8 taslak siparişi oluştur",
+          "add_line": "Pax8 siparişine satır ekle",
+          "update_line": "Pax8 sipariş satırını güncelle",
+          "remove_line": "Pax8 sipariş satırını kaldır",
+          "preview": "Pax8 siparişini önizle",
+          "preflight": "Pax8 sipariş ön kontrolünü çalıştır"
+        },
+        "manage_pax8_subscriptions": {
+          "list": "Pax8 aboneliklerini listele",
+          "drift": "Pax8 abonelik sapmalarını denetle",
+          "sync": "Pax8 aboneliklerini senkronize et",
+          "link": "Pax8 aboneliğini bağla",
+          "unlink": "Pax8 aboneliğinin bağlantısını kaldır"
+        },
+        "search_pax8_products": {
+          "search": "Pax8 ürünlerini ara",
+          "provision_details": "Pax8 sağlama ayrıntılarını getir",
+          "dependencies": "Pax8 ürün bağımlılıklarını getir",
+          "pricing": "Pax8 ürün fiyatlarını getir"
         }
       },
       "alwaysOnCount_one": "{{count}} salt okunur araç",

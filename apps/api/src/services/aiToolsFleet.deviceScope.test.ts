@@ -723,35 +723,50 @@ describe('manage_automations list — the target scan runs for the device axis t
 
 // ── 11. manage_patches compliance ────────────────────────────────────────────
 describe('manage_patches compliance — the org-wide snapshot is not for narrowed runs', () => {
-  function mockCompliance(orgDevices: Array<{ id: string; siteId: string }>) {
+  /** Returns the WHERE of the device-count query (the counted population). */
+  function mockCompliance(orgDevices: Array<{ id: string; siteId: string }>, deviceCount = 5) {
+    const captured: { count?: SQL } = {};
     mockDb.select.mockImplementation((cols?: any) => {
       const keys = cols ? Object.keys(cols) : [];
       if (keys.length === 2 && keys.includes('id') && keys.includes('siteId')) {
         return { from: () => ({ where: () => Promise.resolve(orgDevices) }) };
       }
       if (keys.includes('devicesNeedingPatches')) {
-        return { from: () => ({ where: () => Promise.resolve([{ pending: 2, installed: 1, failed: 0, missing: 1, devicesNeedingPatches: 1 }]) }) };
+        const where = () => Promise.resolve([{ pending: 2, installed: 1, failed: 0, missing: 1, devicesNeedingPatches: 1 }]);
+        return { from: () => ({ innerJoin: () => ({ where }) }) };
       }
       if (keys.includes('total')) {
         return { from: () => ({ where: () => Promise.resolve([{ total: 3 }]) }) };
       }
-      // precomputed org-wide snapshot
-      return { from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'snap-1', totalDevices: 999 }]) }) }) }) };
+      if (keys.includes('deviceCount')) {
+        return { from: () => ({ where: (cond: SQL) => { captured.count = cond; return Promise.resolve([{ deviceCount }]); } }) };
+      }
+      throw new Error(`unexpected select: ${keys.join(',')}`);
     });
+    return captured;
   }
 
   it('recomputes over the allowlist for a device-LESS run instead of returning the org snapshot', async () => {
-    mockCompliance([{ id: 'dev-1', siteId: 'site-1' }, { id: 'dev-2', siteId: 'site-1' }]);
+    const captured = mockCompliance([{ id: 'dev-1', siteId: 'site-1' }, { id: 'dev-2', siteId: 'site-1' }], 1);
     const body = JSON.parse(await handlerFor('manage_patches')({ action: 'compliance' }, deviceLessRunAuth()));
     expect(body.snapshot.id).toBeUndefined();
     expect(body.snapshot.siteScoped).toBe(true);
     expect(body.snapshot.totalDevices).toBe(1);
+    // The counted population is the run's own device, never its sibling.
+    const { params } = new PgDialect().sqlToQuery(captured.count!);
+    expect(params).toContain('dev-1');
+    expect(params).not.toContain('dev-2');
   });
 
-  it('an unrestricted caller still gets the precomputed snapshot (no regression)', async () => {
+  // #10396: `patch_compliance_snapshots` has no writer, so the unrestricted
+  // caller is computed live too — over every device in the org, unnarrowed.
+  it('an unrestricted caller gets live org-wide figures, not narrowed ones', async () => {
     mockCompliance([]);
     const body = JSON.parse(await handlerFor('manage_patches')({ action: 'compliance' }, unrestrictedAuth()));
-    expect(body.snapshot.id).toBe('snap-1');
+    expect(body.snapshot.totalDevices).toBe(5);
+    expect(body.snapshot.nonCompliantDevices).toBe(1);
+    expect(body.snapshot.siteScoped).toBeUndefined();
+    expect(body.scope).toEqual({ orgId: 'org-1' });
   });
 });
 

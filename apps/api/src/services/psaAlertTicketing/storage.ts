@@ -12,7 +12,7 @@ import { decryptCredentials } from '../psa/credentials';
 import { alertTicketingCredentialState, resolveAlertTicketingConfig } from './config';
 import { matchesTicketingFilters } from './filters';
 import { wakeMapping } from './queue';
-import type { AdmissionAlert, AdmissionTarget } from './admission';
+import type { AdmissionAlert, AdmissionTarget, AdmissionOptions } from './admission';
 export const ticketingDb = <T>(fn: () => Promise<T>) =>
   runOutsideDbContext(() => withSystemDbAccessContext(fn));
 
@@ -79,7 +79,7 @@ export async function insertAdmission(
   alert: AdmissionAlert,
   target: AdmissionTarget,
   source: 'auto' | 'manual',
-  opts?: { bypassFilters?: boolean }
+  opts?: AdmissionOptions
 ) {
   return ticketingDb(async () => {
     // Lock binding/config through insertion: disable/rebind and deletion cannot
@@ -192,8 +192,11 @@ export async function admissionCandidates(
 export async function dueMappings(now: Date): Promise<string[]> {
   return ticketingDb(async () => {
     // Re-arm only skipped rows with a company link and a still-open alert.
+    // Keep create_snapshot (the worker refreshes its inputs and preserves
+    // createAnywayUsed) but start a fresh retry window.
     await db.execute(sql`UPDATE psa_ticket_mappings m SET create_state='never_attempted', next_attempt_at=now(),
-      deadline_at=now()+interval '24 hours', create_snapshot=NULL, updated_at=now()
+      deadline_at=now()+interval '24 hours', updated_at=now(),
+      create_snapshot=m.create_snapshot - 'operationAttempts' - 'unknownDeadline'
       FROM alerts a, psa_connections c, organizations o
       WHERE m.create_state='skipped_no_company' AND m.alert_id=a.id AND m.connection_id=c.id
       AND a.org_id=o.id AND o.partner_id=c.partner_id AND a.status IN ('active','acknowledged')
