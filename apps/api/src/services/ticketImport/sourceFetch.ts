@@ -97,6 +97,15 @@ export type SourceClientOptions = {
   backoffMs?: (attempt: number) => number;
   /** The longest `Retry-After` waited inline; a longer one is handed to the worker. Default 10 s. */
   maxInlineRetryAfterMs?: number;
+  /**
+   * A hard deadline over one whole request (connect, headers and the capped
+   * body), counted from when the request leaves the semaphore. `timeoutMs` is a
+   * socket-INACTIVITY timeout, so a source that trickles bytes would otherwise
+   * hold the request, its semaphore slot, the slice and the import lease
+   * forever. Default 4 × `timeoutMs` (2 min at the 30 s default): a 10 MiB file
+   * from a slow source still fits, a stalled one becomes a transient failure.
+   */
+  requestDeadlineMs?: number;
   /** Tests inject these. */
   fetchImpl?: typeof safeFetch;
   sleep?: (ms: number) => Promise<void>;
@@ -176,6 +185,7 @@ export function createSourceClient(baseUrl: string, options: SourceClientOptions
   const backoff = options.backoffMs ?? defaultBackoff;
   const retries = Math.max(0, options.retries ?? 2);
   const maxInlineRetryAfter = options.maxInlineRetryAfterMs ?? 10_000;
+  const requestDeadline = Math.max(options.timeoutMs, options.requestDeadlineMs ?? 4 * options.timeoutMs);
   const gate = new Semaphore(Math.max(1, options.concurrency));
 
   async function send(request: SourceRequest, defaultMaxBytes: number): Promise<Response> {
@@ -189,14 +199,30 @@ export function createSourceClient(baseUrl: string, options: SourceClientOptions
       }
       let response: Response;
       try {
-        response = await gate.run(() => fetchImpl(url, {
-          method: 'GET',
-          headers: { accept: 'application/json', ...(request.headers ?? {}) },
-          timeoutMs: options.timeoutMs,
-          maxBytes,
-          allowPrivateNetwork: selfHostAllowsPrivateNetwork(),
-          requirePrivateForCleartext: true,
-        }));
+        // safeFetch buffers the capped body before it resolves (no
+        // streamResponse), so aborting this signal bounds the whole exchange.
+        // The clock starts inside the gate: time spent queued is not charged.
+        response = await gate.run(async () => {
+          const deadline = new AbortController();
+          const timer = setTimeout(
+            () => deadline.abort(new Error(`source request deadline of ${requestDeadline}ms exceeded`)),
+            requestDeadline,
+          );
+          try {
+            return await fetchImpl(url, {
+              method: 'GET',
+              headers: { accept: 'application/json', ...(request.headers ?? {}) },
+              timeoutMs: options.timeoutMs,
+              headersTimeoutMs: options.timeoutMs,
+              signal: deadline.signal,
+              maxBytes,
+              allowPrivateNetwork: selfHostAllowsPrivateNetwork(),
+              requirePrivateForCleartext: true,
+            });
+          } finally {
+            clearTimeout(timer);
+          }
+        });
       } catch (error) {
         if (error instanceof SsrfBlockedError) throw error;
         if (error instanceof ResponseTooLargeError) throw new SourceResponseTooLargeError(maxBytes);

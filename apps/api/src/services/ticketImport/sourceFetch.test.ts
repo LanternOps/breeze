@@ -112,11 +112,13 @@ describe('createSourceClient', () => {
     expect(calls[0]!.init).toMatchObject({
       method: 'GET',
       timeoutMs: 1234,
+      headersTimeoutMs: 1234,
       maxBytes: 16 * 1024 * 1024,
       allowPrivateNetwork: false,
       requirePrivateForCleartext: true,
     });
     expect((calls[0]!.init.headers as Record<string, string>).authorization).toBe('Token token=t');
+    expect(calls[0]!.init.signal).toBeInstanceOf(AbortSignal);
   });
 
   it('does not follow a redirect: a 3xx is an answer, not a new URL', async () => {
@@ -178,6 +180,30 @@ describe('createSourceClient', () => {
     const { c, calls } = client([new Response(new Uint8Array([1, 2, 3]), { status: 200 })]);
     expect(Array.from(await c.bytes({ path: ['file', 1] }))).toEqual([1, 2, 3]);
     expect(calls[0]!.init.maxBytes).toBe(10 * 1024 * 1024);
+  });
+
+  it('abandons a request that outlives its whole-exchange deadline, then gives up as transient', async () => {
+    // A source that trickles bytes never trips safeFetch's inactivity timer;
+    // only the deadline's signal ends the request.
+    const impl = vi.fn((_url: string, init: SafeFetchInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+    }));
+    const stalled = createSourceClient('https://helpdesk.example.com/zammad/', {
+      timeoutMs: 10, requestDeadlineMs: 30, concurrency: 1, retries: 2, fetchImpl: impl as never, sleep: async () => {},
+    });
+    const started = Date.now();
+    await expect(stalled.json({ path: ['api'] })).rejects.toBeInstanceOf(SourceUnavailableError);
+    expect(impl).toHaveBeenCalledTimes(3);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('does not charge time spent waiting for the semaphore to the deadline', async () => {
+    const after = (ms: number) => () => new Promise<Response>((r) => setTimeout(() => r(json({ ok: true })), ms));
+    // Concurrency 1: the second request queues ~25 ms behind the first, then
+    // answers in ~25 ms. Each fits the 40 ms deadline only if queueing is free.
+    const { c } = client([after(25), after(25)], { concurrency: 1, timeoutMs: 10, requestDeadlineMs: 40 });
+    const results = await Promise.all([c.json({ path: ['a'] }), c.json({ path: ['b'] })]);
+    expect(results.map((r) => r.body)).toEqual([{ ok: true }, { ok: true }]);
   });
 
   it('keeps at most `concurrency` requests in flight', async () => {
