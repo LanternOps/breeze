@@ -4,7 +4,7 @@
  * §5.5–§5.7, §8 W4 row) against real Postgres, as the unprivileged
  * `breeze_app` role through the production `db`.
  *
- * Migration under test: 2027-01-18-100000-ticket-import-framework.sql
+ * Migration under test: 2027-01-20-100000-ticket-import-framework.sql
  *
  * Proves:
  *   - RLS: another partner can neither read, change, delete nor forge (42501)
