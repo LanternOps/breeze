@@ -68,3 +68,14 @@ describe('migration.window_closed payload', () => {
     expect(Array.from(payloadCell.matchAll(/`([A-Za-z]+)`/g), (m) => m[1])).toEqual([...MIGRATION_WINDOW_CLOSED_KEYS]);
   });
 });
+
+
+describe('network isolation event catalog', () => {
+  it.each([
+    'device.isolated', 'device.isolation_released', 'device.isolation_failed',
+    'device.isolation_self_released', 'device.isolation_expiring',
+  ])('declares %s for webhook and notification subscribers', (event) => {
+    expect(unionMembers).toContain(event);
+    expect(Object.values(EVENT_TYPES)).toContain(event);
+  });
+});

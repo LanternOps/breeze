@@ -501,10 +501,12 @@ See [Backup & Recovery](/backup/overview/) for configuration details.
 
 The AI can create and manage security incidents, execute containment actions, and collect forensic evidence. These tools are available in AI chat and to AI agents.
 
+Network isolation is Windows-only until Linux and macOS support ship. `release_containment` is planned for a **later release**; use the console release control now. See [Network isolation](/features/network-isolation/) for reachability, expiry, and the break-glass runbook.
+
 | Tool | Tier | Description |
 |------|------|-------------|
 | `create_incident` | 2 | Create a new security incident with classification and severity (needs `alerts.write`) |
-| `execute_containment` | 3 | Run a containment action on a device (process kill, network isolation, account disable, USB block). Needs both `devices.execute` and `alerts.write`, because it also records the action on the incident |
+| `execute_containment` | 3 | Isolate a supported device from the network through the isolation service (off by default behind `NETWORK_ISOLATION_ENABLED`), or kill a process. Account disable and USB block remain unimplemented. Needs both `devices.execute` and `alerts.write`, because it also records the action on the incident |
 | `collect_evidence` | 3 | Collect forensic evidence from a device (logs, processes, connections). Evidence without a screenshot runs at Tier 2; a request that includes a screenshot needs approval |
 | `get_incident_timeline` | 1 | View the full timeline of an incident |
 | `generate_incident_report` | 1 | Generate a structured report with action and evidence summaries |

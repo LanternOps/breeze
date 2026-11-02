@@ -248,6 +248,31 @@ describe('device commands routes', () => {
     app.route('/devices', commandsRoutes);
   });
 
+  describe('network isolation route ownership', () => {
+    const deviceId = '11111111-1111-4111-8111-111111111111';
+    it.each([
+      ['single', 'execute_containment'], ['bulk', 'execute_containment'],
+      ['single', 'release_containment'], ['bulk', 'release_containment'],
+    ])('rejects %s %s before dispatch', async (kind, type) => {
+      const response = await app.request(kind === 'bulk' ? '/devices/bulk/commands' : `/devices/${deviceId}/commands`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, payload: { actionType: 'network_isolation' }, ...(kind === 'bulk' ? { deviceIds: [deviceId] } : {}) }),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: 'use_network_isolation_routes' });
+      expect(dispatchDeviceCommandMock).not.toHaveBeenCalled();
+    });
+    it('preserves process_kill admission', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({ id: deviceId, orgId: 'org-123', status: 'online' } as never);
+      const payload = { actionType: 'process_kill', parameters: { pid: 1234 } };
+      const response = await app.request(`/devices/${deviceId}/commands`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'execute_containment', payload }),
+      });
+      expect(response.status).toBe(201);
+      expect(dispatchDeviceCommandMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'execute_containment', payload }));
+    });
+  });
+
   describe('time management command admission', () => {
     const deviceId = '11111111-1111-4111-8111-111111111111';
     const cases = [

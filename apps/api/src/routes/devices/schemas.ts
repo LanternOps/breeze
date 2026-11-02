@@ -75,6 +75,7 @@ export const listDevicesSchema = z.object({
 
   status: z.enum(['online', 'offline', 'maintenance', 'decommissioned', 'updating', 'pending']).optional(),
   includeDecommissioned: boolStr,
+  isolated: boolStr,
   osType: z.enum(['windows', 'macos', 'linux']).optional(),
   role: z.enum(DEVICE_ROLES).optional(),
   search: z.string().optional()

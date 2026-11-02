@@ -2891,7 +2891,10 @@
         "version": "Versión del software",
         "vendor": "Proveedor del software"
       },
-      "logShippingFailing": "Envío de registros con fallas"
+      "logShippingFailing": "Envío de registros con fallas",
+      "networkIsolation": {
+        "active": "Aislado"
+      }
     }
   },
   "filterChipBar": {
@@ -2963,7 +2966,10 @@
         "version": "Versión del software",
         "vendor": "Proveedor del software"
       },
-      "logShippingFailing": "Envío de registros con fallas"
+      "logShippingFailing": "Envío de registros con fallas",
+      "networkIsolation": {
+        "active": "Aislado"
+      }
     }
   },
   "filterHelpPopover": {
@@ -3054,7 +3060,10 @@
         "version": "Versión del software",
         "vendor": "Proveedor del software"
       },
-      "logShippingFailing": "Envío de registros con fallas"
+      "logShippingFailing": "Envío de registros con fallas",
+      "networkIsolation": {
+        "active": "Aislado"
+      }
     }
   },
   "filterValueEditor": {
@@ -4785,5 +4794,80 @@
     "removeResult": "{{group}}: {{removed}} quitados, {{notMember}} no estaban en el grupo",
     "removeResultForbidden": "{{group}}: {{removed}} quitados, {{notMember}} no estaban en el grupo. No se quitaron (sin acceso al sitio del dispositivo): {{devices}}",
     "andMore": "{{names}} y {{n}} más"
+  },
+  "networkIsolation": {
+    "heading": "Aislamiento de red",
+    "isolate": "Aislar de la red…",
+    "release": "Liberar aislamiento…",
+    "release_queued": "Liberar (en cola hasta que el dispositivo se reconecte)",
+    "startTitle": "Aislar de la red",
+    "releaseTitle": "Liberar aislamiento de red",
+    "startDescription": "Bloquear el tráfico de red excepto el plano de administración de Breeze.",
+    "releaseDescription": "Solicitar la eliminación de las reglas de aislamiento de Breeze. Un dispositivo sin conexión recibe la liberación al reconectarse.",
+    "serverWarning": "Este es un sistema operativo de servidor. El aislamiento puede interrumpir servicios de otros dispositivos.",
+    "reason": "Motivo",
+    "ttlHours": "Duración (horas)",
+    "incidentId": "ID de incidente existente (opcional)",
+    "incidentTitle": "Título del nuevo incidente",
+    "remoteRelay": "Mantener el escritorio remoto accesible mediante el relé",
+    "startSuccess": "Aislamiento de red solicitado",
+    "releaseSuccess": "Liberación del aislamiento solicitada",
+    "mutationError": "No se pudo actualizar el aislamiento de red. Inténtelo de nuevo.",
+    "loadError": "No se pudo cargar el aislamiento de red. Inténtelo de nuevo.",
+    "unavailable": "La elegibilidad para aislamiento de red no está disponible.",
+    "extend": "Extender aislamiento",
+    "extendTitle": "Extender aislamiento de red",
+    "extendSuccess": "Vencimiento del aislamiento extendido",
+    "isolatedExpires": "Aislado · vence en {{hours}} h",
+    "acknowledge": "Confirmar liberación local",
+    "acknowledgeSuccess": "Liberación local confirmada",
+    "acknowledgeError": "No se pudo confirmar la liberación local",
+    "showCode": "Mostrar códigos de emergencia",
+    "hideCode": "Ocultar códigos de emergencia",
+    "codeCurrent": "Código actual",
+    "codeNext": "Código de la próxima hora",
+    "codeValidUntil": "Código actual válido hasta {{date}}",
+    "codeError": "No se pudieron cargar los códigos de emergencia. Inténtelo de nuevo.",
+    "incidentHeading": "Aislamiento de red",
+    "retry": "Reintentar estado de aislamiento",
+    "filterLabel": "Aislado",
+    "states": {
+      "requested": "Aislamiento solicitado",
+      "dispatched": "Aislamiento enviado",
+      "applying": "Aplicando aislamiento",
+      "applied": "Verificando aislamiento",
+      "verified": "Aislamiento verificado",
+      "release_requested": "Liberación solicitada",
+      "released": "Aislamiento liberado",
+      "expired": "Aislamiento vencido",
+      "failed": "Aislamiento fallido",
+      "released_locally": "Liberado localmente · requiere confirmación",
+      "self_released": "Liberado automáticamente · requiere confirmación",
+      "uninstalled": "Agente desinstalado"
+    },
+    "refusal": {
+      "feature_disabled": "Los nuevos aislamientos de red están deshabilitados.",
+      "partner_not_enabled": "El aislamiento de red no está habilitado para este socio.",
+      "agent_below_gate": "Actualice a una versión del agente compatible con aislamiento de red.",
+      "agent_not_ready": "El agente no está listo para aplicar el aislamiento de red.",
+      "device_lifecycle": "El estado del ciclo de vida del dispositivo impide un nuevo aislamiento.",
+      "unsupported_platform": "Esta plataforma no admite aislamiento de red.",
+      "trust_restricted": "El estado de confianza del socio impide nuevos aislamientos.",
+      "isolation_already_active": "Este dispositivo ya tiene un episodio de aislamiento activo.",
+      "isolation_unacknowledged": "Confirme la liberación local anterior antes de iniciar otro aislamiento.",
+      "incident_mismatch": "Elija un incidente abierto de la organización de este dispositivo.",
+      "site_forbidden": "No tiene acceso al sitio de este dispositivo.",
+      "device_not_found": "No se encontró este dispositivo.",
+      "isolation_not_found": "No se encontró este episodio de aislamiento.",
+      "relay_unavailable": "No hay un relé de escritorio remoto disponible. Desactive la opción de relé o configure TURN.",
+      "invalid_allowlist": "La lista de permisos de aislamiento del servidor no es válida. Contacte a su administrador.",
+      "isolation_conflict": "El episodio de aislamiento cambió. Actualice su estado e inténtelo de nuevo.",
+      "isolation_secret_unavailable": "Los códigos de recuperación no están disponibles temporalmente. Contacte a su administrador.",
+      "approval_mismatch": "La aprobación no coincide con esta solicitud de aislamiento.",
+      "device_offline": "El dispositivo está sin conexión. Actualice su estado antes de iniciar el aislamiento.",
+      "device_decommissioned": "Un dispositivo retirado no puede iniciar un nuevo aislamiento.",
+      "device_pending_assignment": "Asigne este dispositivo a una organización antes de iniciar el aislamiento.",
+      "backup_helper_update_required": "Actualice el auxiliar de respaldo antes de iniciar el aislamiento."
+    }
   }
 }

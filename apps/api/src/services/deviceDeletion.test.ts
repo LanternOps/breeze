@@ -60,6 +60,7 @@ function captureTx(lockedRowCount = 1) {
     execute: vi.fn().mockImplementation((query: unknown) => {
       const text = JSON.stringify(query);
       statements.push(text);
+      if (text.includes('FROM device_network_isolations')) return Promise.resolve([]);
       if (text.includes('SELECT component_key FROM device_hardware_components')) {
         return Promise.resolve([]);
       }
@@ -188,6 +189,7 @@ describe('deleteDeviceCascade lock ordering', () => {
       execute: vi.fn().mockImplementation((query: unknown) => {
         const text = JSON.stringify(query);
         statements.push(text);
+        if (text.includes('FROM device_network_isolations')) return Promise.resolve([]);
         if (text.includes('SELECT component_key FROM device_hardware_components')) {
           return Promise.resolve([]);
         }
@@ -239,6 +241,7 @@ describe('deleteDeviceCascade lock ordering', () => {
       execute: vi.fn().mockImplementation((query: unknown) => {
         const text = JSON.stringify(query);
         statements.push(text);
+        if (text.includes('FROM device_network_isolations')) return Promise.resolve([]);
         if (text.includes('SELECT component_key FROM device_hardware_components')) {
           return Promise.resolve([]);
         }
