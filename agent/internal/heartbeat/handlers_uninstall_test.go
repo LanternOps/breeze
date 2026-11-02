@@ -292,6 +292,9 @@ func TestBuildLinuxUninstallScript(t *testing.T) {
 // remain installed as a clean uninstall — and no shutdown may be scheduled.
 // On success, the ack says "initiated"/"handed off", never "completed".
 func TestHandleSelfUninstall_ResultContract(t *testing.T) {
+	origRelease := releaseIsolationForUninstallFn
+	releaseIsolationForUninstallFn = func(*Heartbeat) error { return nil }
+	t.Cleanup(func() { releaseIsolationForUninstallFn = origRelease })
 	origPrepare := prepareSelfUninstallFn
 	origSchedule := scheduleSelfUninstallShutdownFn
 	t.Cleanup(func() {
