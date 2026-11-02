@@ -1299,4 +1299,8 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   // #9662: the incident action (and, on success, the incident) follows the
   // agent's containment result.
   execute_containment: handleExecuteContainmentResult,
+  release_containment: async args => {
+    const { handleReleaseContainmentResult } = await import('./networkIsolation/finalizer');
+    return handleReleaseContainmentResult(args);
+  },
 };

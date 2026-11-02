@@ -1153,6 +1153,8 @@ const envObjectSchema = z
     // boot-refuses instead of silently staying on.
     HEARTBEAT_RETAIN_STATE_ENABLED: z.enum(['true', 'false']).default('true'),
     AGENT_ECH_ENABLED: z.enum(['true', 'false']).default('true'),
+    NETWORK_ISOLATION_ENABLED: z.enum(['true', 'false']).default('false'),
+    NETWORK_ISOLATION_ENABLED_PARTNER_IDS: z.string().refine(value => !value.trim() || value.split(',').every(id => z.string().uuid().safeParse(id.trim()).success), 'Expected comma-separated partner UUIDs').optional(),
 
     // Phase 2 of per-partner LLM BYOK (#3922), Task 3.1 — gates catalog-mode
     // routing (partner_ai_connections.catalog_entry_id). Off by default so a

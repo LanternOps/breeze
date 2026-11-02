@@ -5,6 +5,7 @@ import { metricsRoutes } from './metrics';
 import { processSamplesRoutes } from './processSamples';
 import { softwareRoutes } from './software';
 import { commandsRoutes } from './commands';
+import { networkIsolationRoutes } from './networkIsolation';
 import { forceRebootRoutes } from './forceReboot';
 import { hardwareRoutes } from './hardware';
 import { placementRoutes } from './placement';
@@ -102,6 +103,7 @@ deviceRoutes.route('/', filesystemRoutes);
 deviceRoutes.route('/', moveOrgRoutes);
 // #8729: POST /:id/force-reboot, the only (step-up) way to force-reboot a device.
 deviceRoutes.route('/', forceRebootRoutes);
+deviceRoutes.route('/', networkIsolationRoutes);
 
 // Mount the network arm of the unified Devices list (#1322) BEFORE core
 // routes — `GET /network` is a static path that must not be eaten by the

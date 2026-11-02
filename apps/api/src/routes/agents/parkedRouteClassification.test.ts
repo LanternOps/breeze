@@ -50,6 +50,8 @@ const EXPECTED: Record<string, Classification> = {
 
   // --- agent-authenticated, refused for a parked device -------------------
   'GET /:id/config': 'deny',
+  // #4618: a parked device cannot start or verify an isolation episode.
+  'POST /:id/isolation/:isolationId/verify': 'deny',
   'PUT /:id/monitoring-results': 'deny',
   'POST /:id/commands/:commandId/pam-observations': 'deny',
   'POST /:id/pam/reconciliation-bindings': 'deny',
