@@ -2431,7 +2431,14 @@ coreRoutes.delete(
     // as the decommission UPDATE above.
     await db
       .update(devices)
-      .set({ possibleReplacementOfDeviceId: null, updatedAt: new Date() })
+      // #8318: the reason and the detection time go with the link
+      // (devices_possible_replacement_reason_chk).
+      .set({
+        possibleReplacementOfDeviceId: null,
+        possibleReplacementReason: null,
+        possibleReplacementDetectedAt: null,
+        updatedAt: new Date(),
+      })
       .where(
         and(
           eq(devices.possibleReplacementOfDeviceId, deviceId),

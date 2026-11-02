@@ -241,6 +241,9 @@ describe('enrollment idempotency — real Postgres (#2764)', () => {
 
     const secondDevice = await selectDevice(secondDeviceId);
     expect(secondDevice?.possibleReplacementOfDeviceId).toBe(firstDeviceId);
+    // #8318 §7.3: the collision path records why and when.
+    expect(secondDevice?.possibleReplacementReason).toBe('hostname');
+    expect(secondDevice?.possibleReplacementDetectedAt).toBeInstanceOf(Date);
 
     const after = await selectDevice(firstDeviceId);
     // Byte-identical: every column, not just status — the collision path

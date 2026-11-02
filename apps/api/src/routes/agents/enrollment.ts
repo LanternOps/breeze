@@ -951,6 +951,11 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             // be replacing. Set on the collision path only — the decom bypass
             // records its own linkage in the audit trail (#914).
             possibleReplacementOfDeviceId: collisionReplacedDeviceId,
+            // #8318 §7.3: why and when (devices_possible_replacement_reason_chk
+            // requires both exactly when the link is set). The partner-wide
+            // hardware search may upgrade it after commit (reinstallCandidates).
+            possibleReplacementReason: collisionReplacedDeviceId ? 'hostname' : null,
+            possibleReplacementDetectedAt: collisionReplacedDeviceId ? new Date() : null,
             tags: []
           })
           .returning();
@@ -1003,7 +1008,10 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             motherboardManufacturer: data.hardwareInfo.motherboardManufacturer,
             motherboardProduct: data.hardwareInfo.motherboardProduct,
             motherboardVersion: data.hardwareInfo.motherboardVersion,
-            biosVersion: data.hardwareInfo.biosVersion
+            biosVersion: data.hardwareInfo.biosVersion,
+            // #8318 §7.2: normalized by the schema; undefined (not sent) is
+            // skipped, null (rejected) is stored as NULL.
+            systemUuid: data.hardwareInfo.systemUuid
           })
           .onConflictDoUpdate({
             target: deviceHardware.deviceId,
@@ -1021,6 +1029,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
               motherboardProduct: data.hardwareInfo.motherboardProduct,
               motherboardVersion: data.hardwareInfo.motherboardVersion,
               biosVersion: data.hardwareInfo.biosVersion,
+              systemUuid: data.hardwareInfo.systemUuid,
               updatedAt: new Date()
             }
           });

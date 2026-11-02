@@ -5,6 +5,7 @@ import { promptHostTelemetrySchema } from '@breeze/shared/promptHost';
 import { redactSecretsFromOutput } from '../../services/secretRedaction';
 import { MAX_AGENT_WARRANTY_ENTITLEMENTS } from '../../services/warrantyDataSources';
 import { PG_UUID_REGEX } from '../../utils/uuid';
+import { normalizeSystemUuid } from '../../services/reinstallCandidates/systemUuid';
 
 // ============================================
 // Enrollment
@@ -36,6 +37,19 @@ const desktopAccessReasonSchema = z.enum([
   'x11_auth_failed',
 ]);
 
+/**
+ * `systemUuid` on enroll and on the hardware report (#8318 §7.2). Tolerant: a
+ * value of any shape never fails the request. Absent stays `undefined` (the
+ * stored value is left alone); present is normalized with the agent's rules,
+ * and a rejected value (malformed, a placeholder, not a string) becomes
+ * `null`, which is stored as NULL.
+ */
+export const systemUuidField = z
+  .unknown()
+  .optional()
+  .transform((value): string | null | undefined =>
+    value === undefined ? undefined : normalizeSystemUuid(typeof value === 'string' ? value : null));
+
 export const enrollSchema = z.object({
   enrollmentKey: z.string().min(1),
   enrollmentSecret: z.string().min(1).optional(),
@@ -60,7 +74,8 @@ export const enrollSchema = z.object({
     motherboardProduct: z.string().optional(),
     motherboardVersion: z.string().optional(),
     biosVersion: z.string().optional(),
-    gpuModel: z.string().optional()
+    gpuModel: z.string().optional(),
+    systemUuid: systemUuidField,
   }).optional(),
   networkInfo: z.array(z.object({
     name: z.string(),
@@ -1048,6 +1063,7 @@ export const updateHardwareSchema = z.object({
   motherboardVersion: z.string().optional(),
   biosVersion: z.string().optional(),
   gpuModel: z.string().optional(),
+  systemUuid: systemUuidField,
   // #5351: kept RAW here and validated separately with
   // agentMemoryInventorySchema by the route, so an invalid memory block is
   // logged and ignored instead of 400-ing the whole hardware report.
