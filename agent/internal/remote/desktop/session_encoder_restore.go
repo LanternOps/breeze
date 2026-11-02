@@ -184,8 +184,8 @@ func (s *Session) maybeRestoreHardwareEncoder(now time.Time) {
 	}
 
 	if hardwareEncoderKnownDead(w, h) {
-		// An earlier session in this helper process already proved the hardware
-		// encoder produces nothing at this resolution.
+		// A session in this helper process proved, within the verdict TTL, that
+		// the hardware encoder produces nothing at this resolution.
 		s.hwRestore.giveUp()
 		slog.Info("maybeRestoreHardwareEncoder: hardware encoder known to produce no frames at this resolution, staying on software",
 			"session", s.id, "dimensions", fmt.Sprintf("%dx%d", w, h))
@@ -302,7 +302,8 @@ func (s *Session) applyHardwareWarmup(res hardwareWarmupResult) {
 		// failure may be transient and is not proof the encoder is dead.
 		if errors.Is(res.err, errHardwareWarmupNoOutput) {
 			rememberHardwareEncoderDead(res.width, res.height)
-			slog.Warn("Hardware encoder produced no frames at startup or during warm-up; staying on software for this session and for later sessions at this resolution", logArgs...)
+			slog.Warn("Hardware encoder produced no frames at startup or during warm-up; staying on software for this session, and later sessions at this resolution start on software until the verdict expires",
+				append(logArgs, "verdictTTL", hardwareEncoderVerdictTTL)...)
 			return
 		}
 		slog.Warn("Hardware encoder produced no frames at startup and its warm-up could not start; staying on software for this session", logArgs...)

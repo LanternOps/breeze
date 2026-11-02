@@ -309,15 +309,17 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		preferHardware = false
 	}
 
-	// #10880: an earlier session in this helper process found that the
-	// hardware encoder never produces a frame at this resolution (it stalled
-	// at startup and failed a warm-up). Start on software rather than
-	// re-learning that with a 3s frozen startup. The verdict comes from the
+	// #10880: a session in this helper process found, within the last
+	// hardwareEncoderVerdictTTL, that the hardware encoder never produces a
+	// frame at this resolution (it stalled at startup and failed a warm-up).
+	// Start on software rather than re-learning that with a 3s frozen startup.
+	// Once the verdict expires, sessions start on hardware again and the normal
+	// stall/warm-up path re-probes (renewing the verdict if it fails again). The verdict comes from the
 	// CPU-input restore path, so it only applies to CPU-capture sessions — not
 	// to D3D11 capturers, whose zero-copy hardware path was never tested by it.
 	if preferHardware && (knownDeadHardwareForCPUCapture(capturer, w, h) || knownDeadHardwareForCPUCapture(capturer, boundsW, boundsH)) {
-		slog.Info("StartSession: hardware encoder produced no frames at this resolution earlier in this process, starting on software",
-			"session", sessionID, "dimensions", fmt.Sprintf("%dx%d", w, h))
+		slog.Info("StartSession: hardware encoder produced no frames at this resolution recently in this process, starting on software",
+			"session", sessionID, "verdictTTL", hardwareEncoderVerdictTTL, "dimensions", fmt.Sprintf("%dx%d", w, h))
 		preferHardware = false
 	}
 

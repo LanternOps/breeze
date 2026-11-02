@@ -492,3 +492,81 @@ func TestKnownDeadHardwareForCPUCapture(t *testing.T) {
 		t.Fatalf("D3D11 capturers ignore the CPU-path verdict")
 	}
 }
+
+// A verdict expires after hardwareEncoderVerdictTTL so a later session
+// re-probes hardware (transient GPU congestion across startup + warm-up must
+// not pin a resolution to software for the whole helper lifetime). A renewed
+// verdict restarts the clock.
+func TestHardwareEncoderVerdictExpiry(t *testing.T) {
+	base := time.Unix(10_000, 0)
+	cases := []struct {
+		name     string
+		age      time.Duration // time between recording and lookup
+		renewAt  time.Duration // >0: record again this long after the first record
+		wantDead bool
+	}{
+		{name: "fresh verdict applies", age: time.Minute, wantDead: true},
+		{name: "just inside the TTL applies", age: hardwareEncoderVerdictTTL - time.Second, wantDead: true},
+		{name: "exactly at the TTL has expired", age: hardwareEncoderVerdictTTL, wantDead: false},
+		{name: "expired verdict lets the session re-probe hardware", age: hardwareEncoderVerdictTTL + time.Minute, wantDead: false},
+		{name: "renewed after a repeat failure applies again", age: hardwareEncoderVerdictTTL + time.Minute, renewAt: hardwareEncoderVerdictTTL + 30*time.Second, wantDead: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetHardwareEncoderVerdicts()
+			prevClock := hardwareEncoderVerdictClock
+			now := base
+			hardwareEncoderVerdictClock = func() time.Time { return now }
+			t.Cleanup(func() {
+				hardwareEncoderVerdictClock = prevClock
+				resetHardwareEncoderVerdicts()
+			})
+
+			rememberHardwareEncoderDead(1920, 1080)
+			if tc.renewAt > 0 {
+				now = base.Add(tc.renewAt)
+				rememberHardwareEncoderDead(1920, 1080)
+			}
+			now = base.Add(tc.age)
+
+			if got := hardwareEncoderKnownDead(1920, 1080); got != tc.wantDead {
+				t.Fatalf("hardwareEncoderKnownDead = %v, want %v", got, tc.wantDead)
+			}
+			if got := knownDeadHardwareForCPUCapture(&boundsCapturer{1920, 1080}, 1920, 1080); got != tc.wantDead {
+				t.Fatalf("StartSession predicate = %v, want %v", got, tc.wantDead)
+			}
+			if !tc.wantDead && hardwareEncoderVerdictCount() != 0 {
+				t.Fatalf("an expired verdict should be dropped on lookup")
+			}
+		})
+	}
+}
+
+// With the verdict expired, the restore path builds and warms a candidate
+// again instead of giving up up front.
+func TestMaybeRestoreHardwareEncoder_ExpiredVerdictReprobes(t *testing.T) {
+	var built atomic.Int32
+	withWarmupTestHooks(t, time.Second, func() encoderBackend {
+		built.Add(1)
+		return newWarmupStub(encodeOK)
+	})
+	prevClock := hardwareEncoderVerdictClock
+	recorded := time.Unix(10_000, 0)
+	now := recorded
+	hardwareEncoderVerdictClock = func() time.Time { return now }
+	t.Cleanup(func() { hardwareEncoderVerdictClock = prevClock })
+
+	rememberHardwareEncoderDead(1920, 1080)
+	now = recorded.Add(hardwareEncoderVerdictTTL + time.Minute)
+	s, _, tick := newDemotedSession(1920, 1080)
+
+	s.maybeRestoreHardwareEncoder(tick)
+	pumpRestore(t, s, tick)
+
+	if built.Load() != 1 {
+		t.Fatalf("an expired verdict must let the restore build a candidate, built=%d", built.Load())
+	}
+	if s.encoder.Load().BackendName() != "warmup-stub" {
+		t.Fatalf("a re-probed working encoder must be restored")
+	}
+}

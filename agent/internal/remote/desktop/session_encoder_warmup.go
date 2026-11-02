@@ -151,7 +151,7 @@ func warmUpHardwareEncoder(enc *VideoEncoder, w, h int, pf PixelFormat, budget, 
 	}
 }
 
-// Process-lifetime hardware-encoder verdicts.
+// Hardware-encoder verdicts (expire after hardwareEncoderVerdictTTL).
 //
 // When a session's hardware encoder produced no frames at startup and a warm-up
 // also failed, the resolution is recorded here so later sessions in the same
@@ -159,51 +159,71 @@ func warmUpHardwareEncoder(enc *VideoEncoder, w, h int, pf PixelFormat, budget, 
 // 3s startup stall. Keyed by the encoder's even-rounded dimensions rather than
 // global: VideoToolbox creates its session per resolution, and the #1292 stall
 // was resolution-specific (cold 5K first frame), so one bad resolution must not
-// disable hardware on the same Mac's other displays. On a machine whose encoder
-// is dead everywhere, each distinct resolution costs one startup stall per
-// helper lifetime. Not persisted: a helper restart (agent update, re-login)
-// re-probes, which is what you want after an OS or driver update.
+// disable hardware on the same Mac's other displays.
+//
+// A verdict expires after hardwareEncoderVerdictTTL. The evidence (startup
+// stall plus a failed 6s warm-up) can come from transient GPU congestion, and
+// a resolution must not stay pinned to software for the whole helper lifetime
+// on that. Once a verdict expires, the next session at that resolution starts
+// on hardware again with the normal startup-stall and warm-up path. If that
+// fails again, the verdict is recorded afresh. On a machine whose encoder is
+// really dead, that costs one 3s startup stall per resolution per TTL.
+// Not persisted, so a helper restart (agent update, re-login) re-probes too.
 //
 // Shared across sessions, so it has its own lock (unlike the per-session,
 // capture-loop-owned hardwareRestorePolicy).
+
+// hardwareEncoderVerdictTTL is how long a "hardware encoder produces no frames
+// at this resolution" verdict holds. Thirty minutes keeps back-to-back sessions
+// on a dead encoder free of the startup stall while still re-probing a few
+// times per working day, so a transient failure heals without a helper restart.
+const hardwareEncoderVerdictTTL = 30 * time.Minute
 
 // maxHardwareEncoderVerdicts bounds the store; a helper sees a handful of
 // resolutions at most, so hitting it means something is cycling sizes and the
 // oldest verdicts are the least useful.
 const maxHardwareEncoderVerdicts = 16
 
+// hardwareEncoderVerdictClock is the store's time source; tests replace it.
+var hardwareEncoderVerdictClock = time.Now
+
 type encoderDims struct{ w, h int }
 
 var hardwareEncoderVerdicts struct {
-	mu    sync.Mutex
-	dead  map[encoderDims]struct{}
-	order []encoderDims
+	mu sync.Mutex
+	// dead maps a resolution to when its verdict was last recorded.
+	dead map[encoderDims]time.Time
 }
 
 func verdictKey(w, h int) encoderDims { return encoderDims{w &^ 1, h &^ 1} }
 
-// rememberHardwareEncoderDead records that the hardware encoder produced no
-// frames at w x h for the rest of this process.
+// rememberHardwareEncoderDead records (or renews) the verdict that the hardware
+// encoder produced no frames at w x h. It holds for hardwareEncoderVerdictTTL.
 func rememberHardwareEncoderDead(w, h int) {
 	if w <= 0 || h <= 0 {
 		return
 	}
 	k := verdictKey(w, h)
+	now := hardwareEncoderVerdictClock()
 	v := &hardwareEncoderVerdicts
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.dead == nil {
-		v.dead = make(map[encoderDims]struct{})
+		v.dead = make(map[encoderDims]time.Time)
 	}
-	if _, ok := v.dead[k]; ok {
-		return
+	if _, ok := v.dead[k]; !ok && len(v.dead) >= maxHardwareEncoderVerdicts {
+		// Evict the oldest verdict (at most 16 entries, so a scan is fine).
+		var oldest encoderDims
+		var oldestAt time.Time
+		first := true
+		for dk, at := range v.dead {
+			if first || at.Before(oldestAt) {
+				oldest, oldestAt, first = dk, at, false
+			}
+		}
+		delete(v.dead, oldest)
 	}
-	if len(v.order) >= maxHardwareEncoderVerdicts {
-		delete(v.dead, v.order[0])
-		v.order = v.order[1:]
-	}
-	v.dead[k] = struct{}{}
-	v.order = append(v.order, k)
+	v.dead[k] = now
 }
 
 // knownDeadHardwareForCPUCapture reports whether a new session on this
@@ -218,17 +238,27 @@ func knownDeadHardwareForCPUCapture(capturer ScreenCapturer, w, h int) bool {
 	return hardwareEncoderKnownDead(w, h)
 }
 
-// hardwareEncoderKnownDead reports whether a session in this process already
-// found the hardware encoder produces no frames at w x h.
+// hardwareEncoderKnownDead reports whether a session in this process found,
+// within the last hardwareEncoderVerdictTTL, that the hardware encoder produces
+// no frames at w x h. An expired verdict is dropped, so the caller re-probes.
 func hardwareEncoderKnownDead(w, h int) bool {
 	if w <= 0 || h <= 0 {
 		return false
 	}
+	k := verdictKey(w, h)
+	now := hardwareEncoderVerdictClock()
 	v := &hardwareEncoderVerdicts
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	_, ok := v.dead[verdictKey(w, h)]
-	return ok
+	at, ok := v.dead[k]
+	if !ok {
+		return false
+	}
+	if now.Sub(at) >= hardwareEncoderVerdictTTL {
+		delete(v.dead, k)
+		return false
+	}
+	return true
 }
 
 func hardwareEncoderVerdictCount() int {
@@ -243,5 +273,4 @@ func resetHardwareEncoderVerdicts() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.dead = nil
-	v.order = nil
 }
