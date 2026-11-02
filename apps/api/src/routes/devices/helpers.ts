@@ -58,6 +58,34 @@ export function buildPublicDeviceProjection() {
   ) as Pick<typeof columns, PublicDeviceField>;
 }
 
+/**
+ * The reinstall link (#8318 §7.3): `possible_replacement_of_device_id` and its
+ * reason and detection time. Since wave 2-1 the link can name a device in
+ * ANOTHER org of the partner (hardware evidence is searched partner-wide), so
+ * these fields leave the API only through {@link redactReplacementLinksForCaller}
+ * / {@link projectPublicDeviceForCaller}, which keep them only when the caller
+ * can access the target's org. {@link projectPublicDevice} on its own nulls
+ * them (fail closed).
+ */
+export const REPLACEMENT_LINK_FIELDS = [
+  'possibleReplacementOfDeviceId',
+  'possibleReplacementReason',
+  'possibleReplacementDetectedAt',
+] as const;
+
+type ReplacementLinkAuth = Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>;
+
+function nullReplacementLink(row: Record<string, unknown>): void {
+  for (const field of REPLACEMENT_LINK_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(row, field)) row[field] = null;
+  }
+}
+
+/**
+ * Project a device row to its public fields. The reinstall link fields are
+ * nulled; use {@link projectPublicDeviceForCaller} to keep them for a caller
+ * allowed to see the target.
+ */
 export function projectPublicDevice<T extends Record<string, unknown>>(
   device: T
 ): Pick<T, Extract<keyof T, PublicDeviceField>> {
@@ -67,6 +95,49 @@ export function projectPublicDevice<T extends Record<string, unknown>>(
       projected[field] = device[field];
     }
   }
+  nullReplacementLink(projected);
+  return projected as Pick<T, Extract<keyof T, PublicDeviceField>>;
+}
+
+/**
+ * Null the reinstall link on every row whose target device is not in an org
+ * the caller can access (or not visible to it at all). One query for the whole
+ * page, run in the caller's own DB context, so RLS also applies. Rows without
+ * a link are returned untouched. Mutates and returns `rows`.
+ */
+export async function redactReplacementLinksForCaller<T extends { possibleReplacementOfDeviceId?: string | null }>(
+  rows: T[],
+  auth: ReplacementLinkAuth,
+): Promise<T[]> {
+  const targetIds = [...new Set(rows
+    .map((row) => row.possibleReplacementOfDeviceId)
+    .filter((id): id is string => typeof id === 'string' && id.length > 0))];
+  if (targetIds.length === 0) return rows;
+  const targets = await db
+    .select({ id: devices.id, orgId: devices.orgId })
+    .from(devices)
+    .where(inArray(devices.id, targetIds));
+  const visible = new Set<string>();
+  for (const target of targets) {
+    if (await ensureOrgAccess(target.orgId, auth)) visible.add(target.id);
+  }
+  for (const row of rows) {
+    const link = row.possibleReplacementOfDeviceId;
+    if (link && !visible.has(link)) nullReplacementLink(row as Record<string, unknown>);
+  }
+  return rows;
+}
+
+/** {@link projectPublicDevice}, keeping the reinstall link when the caller may see its target. */
+export async function projectPublicDeviceForCaller<T extends Record<string, unknown>>(
+  device: T,
+  auth: ReplacementLinkAuth,
+): Promise<Pick<T, Extract<keyof T, PublicDeviceField>>> {
+  const projected = projectPublicDevice(device) as Record<string, unknown>;
+  for (const field of REPLACEMENT_LINK_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(device, field)) projected[field] = device[field];
+  }
+  await redactReplacementLinksForCaller([projected as { possibleReplacementOfDeviceId?: string | null }], auth);
   return projected as Pick<T, Extract<keyof T, PublicDeviceField>>;
 }
 

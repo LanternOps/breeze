@@ -3,6 +3,8 @@ import {
   PUBLIC_DEVICE_FIELDS,
   buildPublicDeviceProjection,
   projectPublicDevice,
+  projectPublicDeviceForCaller,
+  redactReplacementLinksForCaller,
   canAccessDeviceSite,
   getDeviceWithOrgCheck,
   getDeviceWithOrgAndSiteCheck,
@@ -398,4 +400,67 @@ describe('PUBLIC_DEVICE_FIELDS — watchdog install raw columns stay private (#8
       expect(projectPublicDevice({ id: 'd', [field]: 'x' } as Record<string, unknown>)).not.toHaveProperty(field);
     },
   );
+});
+
+describe('reinstall link visibility (#8318 §7.3: a link may name another org\'s device)', () => {
+  const ORG_A = '00000000-0000-4000-8000-00000000000a';
+  const ORG_B = '00000000-0000-4000-8000-00000000000b';
+  const TARGET_B = '00000000-0000-4000-8000-0000000000b1';
+  const TARGET_A = '00000000-0000-4000-8000-0000000000a1';
+  const linked = (target: string) => ({
+    id: 'src', orgId: ORG_A,
+    possibleReplacementOfDeviceId: target,
+    possibleReplacementReason: 'hardware',
+    possibleReplacementDetectedAt: new Date('2027-01-10T00:00:00Z'),
+  });
+  const auth = (orgIds: string[]) => ({
+    scope: 'partner' as const, orgId: null, accessibleOrgIds: orgIds,
+    canAccessOrg: (id: string) => orgIds.includes(id),
+  });
+  function mockTargets(rows: Array<{ id: string; orgId: string }>) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) }),
+    } as never);
+  }
+
+  beforeEach(() => vi.mocked(db.select).mockReset());
+
+  it('projectPublicDevice alone nulls the link (fail closed)', () => {
+    expect(projectPublicDevice(linked(TARGET_B))).toMatchObject({
+      possibleReplacementOfDeviceId: null, possibleReplacementReason: null, possibleReplacementDetectedAt: null,
+    });
+  });
+
+  it('keeps the link for a caller who can access the target org', async () => {
+    mockTargets([{ id: TARGET_B, orgId: ORG_B }]);
+    const out = await projectPublicDeviceForCaller(linked(TARGET_B), auth([ORG_A, ORG_B]));
+    expect(out).toMatchObject({ possibleReplacementOfDeviceId: TARGET_B, possibleReplacementReason: 'hardware' });
+  });
+
+  it('nulls all three fields when the target org is not the caller\'s', async () => {
+    mockTargets([{ id: TARGET_B, orgId: ORG_B }]);
+    const out = await projectPublicDeviceForCaller(linked(TARGET_B), auth([ORG_A]));
+    expect(out).toMatchObject({
+      possibleReplacementOfDeviceId: null, possibleReplacementReason: null, possibleReplacementDetectedAt: null,
+    });
+  });
+
+  it('nulls the link when the target is not visible at all (RLS hid it)', async () => {
+    mockTargets([]);
+    const [row] = await redactReplacementLinksForCaller([linked(TARGET_B)], auth([ORG_A, ORG_B]));
+    expect(row!.possibleReplacementOfDeviceId).toBeNull();
+  });
+
+  it('redacts a list row by row with one query, and skips the query when nothing is linked', async () => {
+    mockTargets([{ id: TARGET_A, orgId: ORG_A }, { id: TARGET_B, orgId: ORG_B }]);
+    const rows = await redactReplacementLinksForCaller(
+      [linked(TARGET_A), linked(TARGET_B), { possibleReplacementOfDeviceId: null }],
+      auth([ORG_A]),
+    );
+    expect(rows.map((r) => r.possibleReplacementOfDeviceId)).toEqual([TARGET_A, null, null]);
+    expect(db.select).toHaveBeenCalledTimes(1);
+    vi.mocked(db.select).mockReset();
+    await redactReplacementLinksForCaller([{ possibleReplacementOfDeviceId: null }], auth([ORG_A]));
+    expect(db.select).not.toHaveBeenCalled();
+  });
 });

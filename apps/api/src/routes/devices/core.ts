@@ -37,7 +37,8 @@ import {
   getPagination,
   getDeviceWithOrgAndSiteCheck,
   SITE_ACCESS_DENIED,
-  projectPublicDevice,
+  projectPublicDeviceForCaller,
+  redactReplacementLinksForCaller,
 } from './helpers';
 import { listDevicesSchema, updateDeviceSchema, decommissionDeviceSchema } from './schemas';
 import {
@@ -1635,6 +1636,10 @@ coreRoutes.get(
       };
     });
 
+    // #8318 §7.3: a reinstall link may name a device in an org this caller
+    // cannot reach; it is nulled for those rows (one query per page).
+    await redactReplacementLinksForCaller(data, auth);
+
     // Response shape diverges by pagination mode (see route-level comment).
     if (isCursorMode) {
       const pagination: { nextCursor: string | null; limit: number; total?: number } = {
@@ -1838,7 +1843,7 @@ coreRoutes.get(
     const promptHost = await readPromptHostObservation(deviceId);
 
     return c.json({
-      ...projectPublicDevice(device),
+      ...(await projectPublicDeviceForCaller(device, auth)),
       // #8608 — derived view only; the raw columns are not in PUBLIC_DEVICE_FIELDS.
       logShipping: deriveLogShipping(device, new Date()),
       logsNotArriving,
@@ -2265,7 +2270,7 @@ coreRoutes.patch(
     // SR-008: never return agent/helper/watchdog token hashes or mTLS cert
     // material to the client (these are credential verifiers / lifecycle
     // metadata that belong only inside the API).
-    return c.json(updated ? projectPublicDevice(updated) : updated);
+    return c.json(updated ? await projectPublicDeviceForCaller(updated, auth) : updated);
   }
 );
 
@@ -2479,7 +2484,7 @@ coreRoutes.delete(
 
     return c.json({
       success: true,
-      device: updated ? projectPublicDevice(updated) : updated,
+      device: updated ? await projectPublicDeviceForCaller(updated, auth) : updated,
       uninstallQueued,
     });
   }
@@ -2577,7 +2582,7 @@ coreRoutes.post(
 
     return c.json({
       success: true,
-      device: result.device ? projectPublicDevice(result.device) : result.device,
+      device: result.device ? await projectPublicDeviceForCaller(result.device, auth) : result.device,
       uninstallAlreadyDispatched: result.uninstallAlreadyDispatched,
     });
   }
