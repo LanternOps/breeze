@@ -19,6 +19,12 @@
  * 'refusal' when the provider declined). So refusalRate is "declined calls per
  * model call", not per turn.
  *
+ * Fallbacks = rows with fallback_used. Since #10413 the Agent SDK CLI's own
+ * helper call is written as model_role 'background' with fallback_used false,
+ * so it is billed (in cost and tokens) but not counted here. Rows settled
+ * before model_role existed (NULL) keep their old label: the ledger is
+ * append-only, so earlier helper rows still count as fallbacks.
+ *
  * Failovers (W09) = rows served by a failover hop (failover_hop > 0): the
  * primary failed before any output and a backup model served the call. Under
  * groupBy=model they land on the model that served them.

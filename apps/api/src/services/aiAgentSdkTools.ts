@@ -3027,6 +3027,9 @@ export function buildBreezeSdkTools(
         rebootPolicy: z.enum(['if_required', 'always', 'never']).optional(),
         sources: z.array(z.enum(['os', 'third_party', 'custom'])).optional(),
         ...pageZodShape(25, 100),
+        // #10396: install's owner org and the list/compliance narrowing. Not
+        // declared here before, so the chat path stripped it.
+        orgId: uuid.optional(),
       },
       makeHandler('manage_patches', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -3266,6 +3269,8 @@ export function buildBreezeSdkTools(
       'search_agent_logs',
       registryDescription('search_agent_logs'),
       {
+        // #10396: narrows to one org; omitted = every org the caller reaches.
+        orgId: uuid.optional(),
         deviceIds: z.array(uuid).max(50).optional(),
         level: z.enum(['debug', 'info', 'warn', 'error']).optional(),
         component: z.string().max(100).optional(),

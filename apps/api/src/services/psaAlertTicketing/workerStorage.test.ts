@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-const h = vi.hoisted(() => ({ where: vi.fn(), set: vi.fn(), rows: [] as unknown[], selected: [] as unknown[][] }));
+const h = vi.hoisted(() => ({ execute: vi.fn(async (_query: unknown) => []), where: vi.fn(), set: vi.fn(), rows: [] as unknown[], selected: [] as unknown[][] }));
 vi.mock('../../db', () => ({
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: (fn: () => unknown) => fn(),
   db: {
+    execute: h.execute,
     select: () => {
       const rows = h.selected.shift() ?? [];
       const chain = {
@@ -100,7 +103,7 @@ describe('PSA worker storage recovery', () => {
     const credentials = { baseUrl: 'https://example.test', companyId: 'example', publicKey: 'public', privateKey: 'private' };
     const { psaInstanceKey } = await import('./config');
     h.selected = [[{
-      mapping: { ...f.ctx.mapping, createSnapshot: { ...f.ctx.snapshot, operationAttempts: { create: 2 } } },
+      mapping: { ...f.ctx.mapping, createSnapshot: { ...f.ctx.snapshot, operationAttempts: { create: 2 }, createAnywayUsed: true } },
       alert: { ...f.ctx.alert, orgId: 'org', severity: 'high', title: 'Alert', message: 'Message', triggeredAt: f.now() },
       connection: { ...f.ctx.connection, credentials, alertTicketingRev: 1,
         alertTicketing: { enabled: true, boardId: 1, openStatusId: 2, closedStatusId: 3,
@@ -111,6 +114,7 @@ describe('PSA worker storage recovery', () => {
     }], [{ externalId: '1' }]];
     const context = await loadTicketingContext('mapping');
     expect(context?.snapshot.operationAttempts).toEqual({ create: 2 });
+    expect(context?.snapshot.createAnywayUsed).toBe(true);
   });
   it('renews only the matching live PostgreSQL lease using the shared duration', async () => {
     h.rows = [{ id: 'mapping' }];
@@ -135,4 +139,16 @@ describe('PSA worker storage recovery', () => {
     expect(warning).toHaveBeenCalledWith('[psa-ticketing] claim rejected', expect.objectContaining({ mappingId: 'mapping', connectionId: 'connection' }));
     warning.mockRestore();
   });
+});
+
+it('reconciler company-link recovery leaves the permanent create-anyway marker intact', async () => {
+  const { dueMappings } = await vi.importActual<typeof import('./storage')>('./storage');
+  h.execute.mockClear();
+  await dueMappings(new Date());
+  const q = new PgDialect().sqlToQuery(h.execute.mock.calls[0]![0] as never);
+  expect(q.sql).toContain("m.create_state='skipped_no_company'");
+  expect(q.sql).toContain("create_state='never_attempted'");
+  // Never NULLs the snapshot (that would drop createAnywayUsed); only the retry window resets.
+  expect(q.sql).not.toMatch(/create_snapshot\s*=\s*NULL/i);
+  expect(q.sql).toContain("create_snapshot=m.create_snapshot - 'operationAttempts' - 'unknownDeadline'");
 });

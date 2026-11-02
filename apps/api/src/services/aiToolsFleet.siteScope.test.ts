@@ -736,14 +736,25 @@ describe('SR5-20 manage_patches — compliance site scoping', () => {
     expect(parsed.approvals.total).toBe(3);
   });
 
-  it('returns the precomputed snapshot for an unrestricted caller (no regression)', async () => {
-    let call = 0;
-    mockDb.select.mockImplementation(() => {
-      if (call === 0) { call++; return { from: () => ({ where: () => Promise.resolve([{ total: 3 }]) }) }; }
-      return { from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'snap1', totalDevices: 10 }]) }) }) }) };
+  // #10396: computed live (the snapshot table has no writer), unnarrowed.
+  it('computes org-wide figures for an unrestricted caller without a device scan', async () => {
+    const selected: string[][] = [];
+    mockDb.select.mockImplementation((cols?: Record<string, unknown>) => {
+      const keys = cols ? Object.keys(cols) : [];
+      selected.push(keys);
+      const rows = keys.includes('approved') ? [{ total: 3 }]
+        : keys.includes('devicesNeedingPatches') ? [{ pending: 4, installed: 2, failed: 0, missing: 0, devicesNeedingPatches: 3 }]
+          : [{ deviceCount: 10 }];
+      const where = () => Promise.resolve(rows);
+      return { from: () => ({ where, innerJoin: () => ({ where }) }) };
     });
-    const r = await handlerFor('manage_patches')({ action: 'compliance' }, makeAuthWithPartner(undefined, 'p1'));
-    expect(JSON.parse(r).snapshot.id).toBe('snap1');
+    const parsed = JSON.parse(await handlerFor('manage_patches')({ action: 'compliance' }, makeAuthWithPartner(undefined, 'p1')));
+    expect(parsed.snapshot.totalDevices).toBe(10);
+    expect(parsed.snapshot.compliantDevices).toBe(7);
+    expect(parsed.snapshot.siteScoped).toBeUndefined();
+    expect(parsed.approvals.total).toBe(3);
+    // No per-device site scan for an unrestricted caller.
+    expect(selected.some((k) => k.length === 2 && k.includes('siteId'))).toBe(false);
   });
 });
 

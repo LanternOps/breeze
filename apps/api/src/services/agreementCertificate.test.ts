@@ -494,9 +494,29 @@ describe('loadCertifiedAgreementInput', () => {
     });
   });
 
-  it('request label wins over the template name for the agreement name', async () => {
+  it('#10294: the agreement is named by its template, never the staff-internal request label', async () => {
     dbResults.push([loaderRow({ requestLabel: 'BAA — 2027 renewal' })]);
-    expect((await loadCertifiedAgreementInput(DOC_ID))!.agreement.name).toBe('BAA — 2027 renewal');
+    const input = (await loadCertifiedAgreementInput(DOC_ID))!;
+    expect(input.agreement.name).toBe(input.agreement.templateName);
+    expect(JSON.stringify(buildCertificateContent(input))).not.toContain('2027 renewal');
+  });
+
+  it('#10294: a template renamed after signing does not change the certificate (the name is frozen at signing)', async () => {
+    dbResults.push([loaderRow({ templateNameSnapshot: 'BAA' })]);
+    const before = buildCertificateContent((await loadCertifiedAgreementInput(DOC_ID))!);
+    // Same document, the template since renamed.
+    dbResults.push([loaderRow({ templateNameSnapshot: 'BAA', templateName: 'BAA (renamed 2027)' })]);
+    const afterInput = (await loadCertifiedAgreementInput(DOC_ID))!;
+    expect(afterInput.agreement).toEqual({ name: 'BAA', templateName: 'BAA', versionNumber: 2 });
+    expect(buildCertificateContent(afterInput)).toEqual(before);
+    expect(JSON.stringify(buildCertificateContent(afterInput))).not.toContain('renamed');
+  });
+
+  it('a pre-snapshot row (template_name_snapshot NULL) falls back to the live template name', async () => {
+    dbResults.push([loaderRow({ templateNameSnapshot: null, templateName: 'Live BAA' })]);
+    expect((await loadCertifiedAgreementInput(DOC_ID))!.agreement.name).toBe('Live BAA');
+    dbResults.push([loaderRow({ templateNameSnapshot: '   ', templateName: 'Live BAA' })]);
+    expect((await loadCertifiedAgreementInput(DOC_ID))!.agreement.name).toBe('Live BAA');
   });
 
   it('customer accept without a public-link response → portal', async () => {

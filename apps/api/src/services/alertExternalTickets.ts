@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull, isNull, or } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { alertExternalRefs, alerts, psaConnections, psaTicketMappings } from '../db/schema';
 
@@ -43,7 +43,11 @@ export async function listAlertExternalTickets(
     id: psaTicketMappings.id,
     externalId: psaTicketMappings.externalTicketId,
     externalUrl: psaTicketMappings.externalTicketUrl,
-    state: psaTicketMappings.status,
+    externalNumber: psaTicketMappings.externalTicketNumber,
+    // `status` is the remote PSA status the Partner API contract has always
+    // returned (legacy/backfilled rows). The W2-B ledger worker never writes
+    // it, so ledger-driven rows report their create_state instead.
+    state: sql<string>`coalesce(${psaTicketMappings.status}, ${psaTicketMappings.createState})`,
     createdAt: psaTicketMappings.createdAt,
     updatedAt: psaTicketMappings.updatedAt,
   }).from(psaTicketMappings)
@@ -67,7 +71,7 @@ export async function listAlertExternalTickets(
     })),
     ...mappings.map(mapping => ({
       ...mapping, source: 'psa' as const, partnerServicePrincipalId: null,
-      externalId: mapping.externalId!, externalNumber: null,
+      externalId: mapping.externalId!,
       createdAt: mapping.createdAt.toISOString(), updatedAt: mapping.updatedAt?.toISOString() ?? null,
     })),
   ];

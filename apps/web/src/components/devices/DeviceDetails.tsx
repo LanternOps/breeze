@@ -80,7 +80,7 @@ import DeviceRestorePointAttempts from "./DeviceRestorePointAttempts";
 import DeviceWarrantyCard from "./DeviceWarrantyCard";
 import PhysicalPlacementCard from "./PhysicalPlacementCard";
 import { EntityLink } from "@/components/shared/EntityLink";
-import WispLinkButton from "@/components/wisp/WispLinkButton";
+import WispTalkButton from "@/components/wisp/WispTalkButton";
 import DeviceBillingCard from "./DeviceBillingCard";
 import DeviceUserIdleStat from "./DeviceUserIdleStat";
 import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
@@ -1044,7 +1044,7 @@ export default function DeviceDetails({
             <DeviceActions
               device={device}
               onAction={onAction}
-              extraActions={<WispLinkButton kind="device" id={device.id} orgId={device.orgId} />}
+              extraActions={<WispTalkButton kind="device" id={device.id} orgId={device.orgId} label={deviceName} />}
             />
           </div>
         </div>

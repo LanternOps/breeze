@@ -26,8 +26,10 @@ import SendAgreementPreview from './SendAgreementPreview';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 const MAX_RECIPIENTS = 50;
-/** Shown until the partner's own default (GET …/defaults, #9075 W4a) arrives;
- *  also what the server falls back to. */
+/** What the server falls back to when the partner has no setting. The dialog
+ *  never pre-fills it: the date stays blank until the partner's own default
+ *  (GET …/defaults, #9075 W4a) is known, so it never jumps from +30 to the
+ *  partner's value (#10294). A blank date is sent as "use the default". */
 const BUILT_IN_EXPIRY_DAYS = AGREEMENT_REQUEST_DEFAULT_EXPIRY_DAYS;
 const EMAIL_RE = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
 
@@ -94,7 +96,7 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
   const [contractId, setContractId] = useState('');
   const [recipientsText, setRecipientsText] = useState('');
   const [cover, setCover] = useState('');
-  const [expiry, setExpiry] = useState(defaultExpiry());
+  const [expiry, setExpiry] = useState('');
   const [label, setLabel] = useState('');
   const [touched, setTouched] = useState(false);
 
@@ -113,7 +115,9 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
   // expiry day last auto-filled from them (same no-clobber rule as recipients).
   const [defaults, setDefaults] = useState<AgreementRequestDefaultsDto | null>(null);
   const [defaultsFailed, setDefaultsFailed] = useState(false);
-  const prefilledExpiry = useRef(defaultExpiry());
+  // The value the dialog itself filled in ('' until the partner default is
+  // known); a date the tech typed differs from it and is never overwritten.
+  const prefilledExpiry = useRef('');
 
   const orgId = lockedOrgId ?? (contractOrgId || pickedOrgId);
   const orgLocked = Boolean(lockedOrgId || lockedContractId);
@@ -121,10 +125,9 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
   useEffect(() => {
     if (!open) return;
     setPickedOrgId(''); setContractOrgId(''); setTemplateId(''); setContractId(lockedContractId ?? '');
-    const initialExpiry = defaultExpiry();
-    prefilledExpiry.current = initialExpiry;
+    prefilledExpiry.current = '';
     setDefaults(null);
-    setRecipientsText(''); setCover(''); setExpiry(initialExpiry); setLabel(''); setTouched(false);
+    setRecipientsText(''); setCover(''); setExpiry(''); setLabel(''); setTouched(false);
     setDraftId(null); setPreview(null); setPreviewLoading(false); setPreviewError(null); setValues({});
     setLockedContractName(''); setOrgsFailed(false); setContractFailed(false); setContractsFailed(false);
     setBusy(false);
@@ -228,8 +231,8 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
   }, [open, orgId]);
 
   // Expiry defaults to the partner's setting (Billing settings → Agreements),
-  // resolved server-side for the org's owning partner. A read failure keeps the
-  // built-in default already shown; the server never needs this to send.
+  // resolved server-side for the org's owning partner. A read failure leaves the
+  // date blank: the server resolves the same default at create (#10294).
   useEffect(() => {
     // A previous org (possibly another partner's) must not keep its hint.
     setDefaults(null);
@@ -251,10 +254,10 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
         setExpiry((cur) => (cur === previous ? next : cur));
       } catch (err) {
         if (cancelled) return;
-        // Say so next to the date: the sender must not mistake the built-in
-        // default for their partner's setting (it is frozen at create).
+        // Say so next to the date: the sender must know their default was not
+        // loaded, and that a blank date still gets it (frozen at create).
         setDefaultsFailed(true);
-        console.warn('[SendAgreementDialog] agreement defaults read failed; keeping the built-in expiry', err);
+        console.warn('[SendAgreementDialog] agreement defaults read failed; leaving the expiry blank for the server default', err);
       }
     })();
     return () => { cancelled = true; };
@@ -552,6 +555,11 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
                     {t('agreements.send.expiryDefaultHint', { count: defaults.defaultExpiryDays })}
                   </span>
                 )}
+                {expiry === '' && !defaults && !defaultsFailed && (
+                  <span className="mt-1 block text-xs text-muted-foreground" data-testid="agreements-send-expiry-blank">
+                    {t('agreements.send.expiryBlankHint')}
+                  </span>
+                )}
                 {defaultsFailed && (
                   <span className="mt-1 block text-xs text-muted-foreground" data-testid="agreements-send-expiry-default-unavailable">
                     {t('agreements.send.expiryDefaultUnavailable')}
@@ -574,8 +582,12 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
                   onChange={(e) => setLabel(e.target.value)}
                   disabled={busy}
                   data-testid="agreements-send-label"
+                  aria-describedby="agreements-send-label-hint"
                   className={inputCls}
                 />
+                <span id="agreements-send-label-hint" className="mt-1 block text-xs text-muted-foreground" data-testid="agreements-send-label-hint">
+                  {t('agreements.send.labelHint')}
+                </span>
               </label>
             </div>
           </div>

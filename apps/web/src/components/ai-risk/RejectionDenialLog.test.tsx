@@ -65,3 +65,28 @@ describe('RejectionDenialLog decision vocabulary (#10198)', () => {
     expect(screen.getAllByText('Failed')).toHaveLength(1);
   });
 });
+
+describe('RejectionDenialLog platform refusals (#10411)', () => {
+  const executions = [
+    execution({ id: 'exec-refused', toolName: 'query_devices', status: 'refused', errorMessage: 'Rate limit exceeded for query_devices' }),
+    execution({ id: 'exec-rejected', toolName: 'run_script', status: 'rejected', errorMessage: 'Denied by approver' }),
+  ];
+
+  it('lists a platform refusal with its reason', () => {
+    render(<RejectionDenialLog executions={executions} securityEvents={[]} loading={false} />);
+    expect(screen.getByText('Rate limit exceeded for query_devices')).toBeTruthy();
+    expect(screen.getByText('Denied by approver')).toBeTruthy();
+  });
+
+  it('filters refusals apart from approval rejections', () => {
+    render(<RejectionDenialLog executions={executions} securityEvents={[]} loading={false} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stopped' }));
+    expect(screen.getByText('Rate limit exceeded for query_devices')).toBeTruthy();
+    expect(screen.queryByText('Denied by approver')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Denied' }));
+    expect(screen.queryByText('Rate limit exceeded for query_devices')).toBeNull();
+    expect(screen.getByText('Denied by approver')).toBeTruthy();
+  });
+});

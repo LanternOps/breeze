@@ -916,29 +916,22 @@ func findGUIUserUIDs() []string {
 // kickstartDarwinDesktopHelpers re-kickstarts the macOS desktop helper
 // LaunchAgents for every logged-in GUI user session. This is called after a
 // self-update restart to force helpers to reconnect to the new IPC socket
-// immediately instead of waiting for their reconnect backoff.
+// immediately instead of waiting for their reconnect backoff. A user helper
+// that is not loaded at all (the pkg postinstall's bootstrap failed, #10868)
+// is bootstrapped rather than left down until the user logs in again.
 func kickstartDarwinDesktopHelpers() {
 	if runtime.GOOS != "darwin" {
 		return
 	}
 	ensureDarwinHelperPrereqs()
 
-	uids := findGUIUserUIDs()
-	for _, uid := range uids {
-		label := "gui/" + uid + "/com.breeze.desktop-helper-user"
-		if err := exec.Command("launchctl", "kickstart", "-k", label).Run(); err != nil {
-			log.Warn("post-update: launchctl kickstart failed",
-				"uid", uid, "label", label, "error", err.Error())
-		} else {
-			log.Info("post-update: kickstarted desktop helper", "uid", uid)
-		}
-	}
+	reviveDarwinUserHelpers(defaultLaunchAgentReviver, findGUIUserUIDs())
 
 	// Also kickstart the login-window helper.
-	if err := exec.Command("launchctl", "kickstart", "-k",
-		"loginwindow/com.breeze.desktop-helper-loginwindow").Run(); err != nil {
+	if code, out := runLaunchctl("kickstart", "-k",
+		"loginwindow/com.breeze.desktop-helper-loginwindow"); code != 0 {
 		log.Warn("post-update: launchctl kickstart login-window helper failed",
-			"error", err.Error())
+			"exitCode", code, "output", out)
 	} else {
 		log.Info("post-update: kickstarted login-window desktop helper")
 	}

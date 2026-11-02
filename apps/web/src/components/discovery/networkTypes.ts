@@ -61,7 +61,7 @@ export type DiscoveredAssetLinkSource = 'manual' | 'auto' | 'agent_report';
 export type DiscoveredAssetTypeSource = 'manual' | 'auto';
 
 // A discovered asset can only be unlinked when it was linked manually. Auto
-// (MAC/IP-matched) and unknown (NULL, pre-dates link_source) links are not
+// (MAC-matched) and unknown (NULL, pre-dates link_source) links are not
 // unlinkable — the discovery worker would just recreate an auto link. The
 // server enforces this authoritatively; the UI uses this to gate the button.
 export function isManualLink(

@@ -1,0 +1,16 @@
+{
+  "name": "docs-path-read",
+  "source": "synthetic: a docs-only merge since the PR's green run changes a document a test reads by path",
+  "caught_by_job": "path-read-contracts",
+  "cause": "delta edits turn-server.mdx (docs-only, code=false for the classifier); path-reader-map.txt maps it to turnPeerRestrictions.test.ts, which the PR edits",
+  "P": [
+    "apps/api/src/config/turnPeerRestrictions.test.ts"
+  ],
+  "delta": [
+    "apps/docs/src/content/docs/deploy/turn-server.mdx"
+  ],
+  "expect_overlap": [],
+  "expect_reader_tests": [
+    "apps/api/src/config/turnPeerRestrictions.test.ts"
+  ]
+}

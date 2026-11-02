@@ -9,6 +9,7 @@ const RELEASED_CONTEXT = { releaseDecision: RELEASED_INTENT_DECISION };
 import { createSessionPostToolUse, createSessionPreToolUse, intentCreationRefusal, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
 import { classifyChatReadOnlyEventLogsQuery } from './aiChatEventLogsReadOnly';
 import { db } from '../db';
+import { aiToolExecutions } from '../db/schema';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements } from './aiGuardrails';
 import { checkTenantToolRateLimit } from './toolSources/guardrails';
 import type { TenantToolDescriptor } from './toolSources/resolver';
@@ -355,6 +356,19 @@ function mockInsertReturning(row: Record<string, unknown>) {
   const values = vi.fn().mockReturnValue({ returning });
   vi.mocked(db.insert).mockReturnValue({ values } as any);
   return { values, returning };
+}
+
+/**
+ * #10411: a call refused before any approval/audit record exists still leaves
+ * exactly ONE ledger row — the pre hook's `refused` row — and nothing else.
+ */
+function expectOnlyTheRefusalRow() {
+  expect(vi.mocked(db.insert)).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(db.insert)).toHaveBeenCalledWith(aiToolExecutions);
+  const values = (vi.mocked(db.insert).mock.results[0]?.value as { values?: ReturnType<typeof vi.fn> } | undefined)?.values;
+  expect(values?.mock, 'db.insert must be mocked with a values() spy for this assertion').toBeDefined();
+  expect(values).toHaveBeenCalledTimes(1);
+  expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'refused', errorMessage: expect.any(String) }));
 }
 
 function makeActiveSession(overrides: Record<string, unknown> = {}) {
@@ -1430,7 +1444,7 @@ describe('createSessionPreToolUse', () => {
 
       expect(result).toEqual({ allowed: false, error: 'Permission denied: devices:execute' });
       expect(checkToolPermission).toHaveBeenCalledWith('execute_command', input, session.auth);
-      expect(values).not.toHaveBeenCalled();
+      expectOnlyTheRefusalRow();
     });
 
     it('a plan-matched eligible call also carries the pinned payload to dispatch', async () => {
@@ -1582,7 +1596,7 @@ describe('createSessionPreToolUse', () => {
         error: expect.stringMatching(/^Invalid input: payload\.path: .*blocked/i),
       });
       expect(mockCreateActionIntent).not.toHaveBeenCalled();
-      expect(db.insert).not.toHaveBeenCalled();
+      expectOnlyTheRefusalRow();
       expect(session.eventBus.publish).not.toHaveBeenCalled();
       expect(mockWaitForIntentDecision).not.toHaveBeenCalled();
       expect(mockGetUserPushTokens).not.toHaveBeenCalled();
@@ -1633,6 +1647,7 @@ describe('createSessionPreToolUse', () => {
 
       // A deny-listed path never reaches PAM.
       vi.mocked(db.insert).mockClear();
+      mockInsertValues();
       mockDecideHelperToolAction.mockClear();
       const blocked = await createSessionPreToolUse(session)('execute_command', {
         commandType: 'file_read',
@@ -1642,7 +1657,7 @@ describe('createSessionPreToolUse', () => {
         allowed: false,
         error: expect.stringMatching(/^Invalid input: payload\.path: .*blocked/i),
       });
-      expect(db.insert).not.toHaveBeenCalled();
+      expectOnlyTheRefusalRow();
       expect(mockDecideHelperToolAction).not.toHaveBeenCalled();
     });
 
@@ -1659,7 +1674,7 @@ describe('createSessionPreToolUse', () => {
       const result = await createSessionPreToolUse(session)('query_devices', {});
 
       expect(result).toEqual({ allowed: false, error: "Tool 'query_devices' is not available in the Helper context" });
-      expect(db.insert).not.toHaveBeenCalled();
+      expectOnlyTheRefusalRow();
       expect(mockDecideHelperToolAction).not.toHaveBeenCalled();
       expect(checkGuardrails).not.toHaveBeenCalled();
     });
@@ -2942,7 +2957,7 @@ describe('createSessionPreToolUse', () => {
       error: 'Authorization changed before execution; the action was not executed.',
     });
     expect(mockResolveLiveSessionToolAuthority).toHaveBeenCalledTimes(1);
-    expect(db.insert).not.toHaveBeenCalled();
+    expectOnlyTheRefusalRow();
     expect(mockWriteAuditEvent).toHaveBeenCalledWith(undefined, expect.objectContaining({
       action: 'ai.security.tool_authority_changed',
       result: 'failure',
@@ -2964,7 +2979,7 @@ describe('createSessionPreToolUse', () => {
       allowed: false,
       error: 'Authorization changed before execution; the action was not executed.',
     });
-    expect(db.insert).not.toHaveBeenCalled();
+    expectOnlyTheRefusalRow();
     expect(mockWriteAuditEvent).toHaveBeenCalledWith(undefined, expect.objectContaining({
       action: 'ai.security.tool_authority_changed',
       result: 'failure',
@@ -3009,7 +3024,7 @@ describe('createSessionPreToolUse', () => {
       error: "Tool 'execute_command' is not allowed for this session",
     });
     expect(checkGuardrails).not.toHaveBeenCalled();
-    expect(db.insert).not.toHaveBeenCalled();
+    expectOnlyTheRefusalRow();
   });
 
   describe('helper sessions (PAM governance, Phase 1)', () => {
@@ -3216,7 +3231,7 @@ describe('createSessionPreToolUse', () => {
         error: "Tool 'run_script' is not allowed for this session",
       });
       expect(checkGuardrails).not.toHaveBeenCalled();
-      expect(db.insert).not.toHaveBeenCalled();
+      expectOnlyTheRefusalRow();
     });
 
     // The exposed name is AUTHORITATIVE. A session that somehow granted only
@@ -3241,7 +3256,7 @@ describe('createSessionPreToolUse', () => {
         error: "Tool 'execute_script_on_device' is not allowed for this session",
       });
       expect(checkGuardrails).not.toHaveBeenCalled();
-      expect(db.insert).not.toHaveBeenCalled();
+      expectOnlyTheRefusalRow();
     });
 
     it('rejects an exposed name the session never granted', async () => {
@@ -3263,7 +3278,7 @@ describe('createSessionPreToolUse', () => {
         error: "Tool 'take_screenshot' is not allowed for this session",
       });
       expect(checkGuardrails).not.toHaveBeenCalled();
-      expect(db.insert).not.toHaveBeenCalled();
+      expectOnlyTheRefusalRow();
     });
   });
 
@@ -5625,5 +5640,191 @@ describe('intentCreationRefusal — device-group run_script refusals', () => {
   it('keeps the generic message for any other code or tool', () => {
     expect(intentCreationRefusal('run_script', {}, refusal('org_resolution_failed', 'x'))).toBe('Failed to create approval record');
     expect(intentCreationRefusal('execute_command', {}, refusal('group_target_too_large', 'x'))).toBe('Failed to create approval record');
+  });
+});
+
+// #10411: a call the pre-tool hook refused left no ai_tool_executions row when
+// the tool was Tier 2+ (postToolUse only UPDATEs an `executing` row there),
+// so a reviewer counted 36 calls and 35 rows. Every refusal must leave
+// exactly ONE row — status `rejected`, the refusal text in `error_message` —
+// and the tool must not run.
+describe('#10411: a pre-hook refusal leaves exactly one ledger row', () => {
+  let insertedRows: Array<{ table: unknown; values: Record<string, unknown> }>;
+  let updatedRows: Array<{ table: unknown; values: Record<string, unknown> }>;
+  let ledgerInsertFails: boolean;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    insertedRows = [];
+    updatedRows = [];
+    ledgerInsertFails = false;
+    const schema = await import('../db/schema');
+    vi.mocked(db.insert).mockImplementation(((table: unknown) => ({
+      values: vi.fn(async (values: Record<string, unknown>) => {
+        if (ledgerInsertFails && table === schema.aiToolExecutions) throw new Error('db down');
+        insertedRows.push({ table, values });
+      }),
+    })) as any);
+    vi.mocked(db.update).mockImplementation(((table: unknown) => ({
+      set: vi.fn((values: Record<string, unknown>) => ({
+        where: vi.fn(async () => { updatedRows.push({ table, values }); }),
+      })),
+    })) as any);
+    vi.mocked(checkToolPermission).mockResolvedValue(null);
+    vi.mocked(checkToolRateLimit).mockResolvedValue(null);
+  });
+
+  async function ledgerInserts() {
+    const schema = await import('../db/schema');
+    return insertedRows.filter((r) => r.table === schema.aiToolExecutions).map((r) => r.values);
+  }
+  async function ledgerUpdates() {
+    const schema = await import('../db/schema');
+    return updatedRows.filter((r) => r.table === schema.aiToolExecutions).map((r) => r.values);
+  }
+
+  it('a guardrail-blocked Tier 3 call writes one refused row with the reason, and its result echo writes nothing more', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: false, tier: 3, requiresApproval: false, reason: 'Blocked: destructive command',
+    } as any);
+    const session = makeActiveSession();
+    const input = { deviceId: 'device-1', commandType: 'shell', payload: { password: 'hunter2' } };
+
+    const verdict = await createSessionPreToolUse(session)('execute_command', input, undefined, 'tu-1');
+    expect(verdict).toEqual({ allowed: false, error: 'Blocked: destructive command' });
+
+    const rows = await ledgerInserts();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      sessionId: 'session-1',
+      toolName: 'execute_command',
+      status: 'refused',
+      errorMessage: 'Blocked: destructive command',
+      durationMs: 0,
+    });
+    expect(rows[0]!.completedAt).toBeInstanceOf(Date);
+    // Same redaction as every other ledger row's tool_input.
+    expect(JSON.stringify(rows[0]!.toolInput)).not.toContain('hunter2');
+
+    // The handler echoes the denial through postToolUse (aiAgentSdkTools'
+    // preToolUseDenialResult). It must neither add a row nor touch one.
+    await createSessionPostToolUse(session)(
+      'execute_command', input, JSON.stringify({ error: 'Blocked: destructive command' }), true, 0, undefined, undefined, 'tu-1',
+    );
+    expect(await ledgerInserts()).toHaveLength(1);
+    expect(await ledgerUpdates()).toHaveLength(0);
+  });
+
+  it('a Tier 1 call refused by the rate limit gets ONE refused row, not a second failed row from postToolUse', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 1, requiresApproval: false } as any);
+    vi.mocked(checkToolRateLimit).mockResolvedValue('Rate limit exceeded for query_devices');
+    const session = makeActiveSession();
+
+    const verdict = await createSessionPreToolUse(session)('query_devices', {}, undefined, 'tu-2');
+    expect(verdict).toEqual({ allowed: false, error: 'Rate limit exceeded for query_devices' });
+    await createSessionPostToolUse(session)(
+      'query_devices', {}, JSON.stringify({ error: 'Rate limit exceeded for query_devices' }), true, 0, undefined, undefined, 'tu-2',
+    );
+
+    const rows = await ledgerInserts();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'refused', errorMessage: 'Rate limit exceeded for query_devices' });
+  });
+
+  it('pairs a refusal with its echo by tool name and reason when the SDK sent no tool_use id', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 1, requiresApproval: false } as any);
+    vi.mocked(checkToolRateLimit).mockResolvedValue('Rate limit exceeded');
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('query_devices', {});
+    await createSessionPostToolUse(session)('query_devices', {}, JSON.stringify({ error: 'Rate limit exceeded' }), true, 0);
+
+    const rows = await ledgerInserts();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'refused' });
+  });
+
+  it('a refusal echo never swallows a same-name ALLOWED call\'s own row', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 1, requiresApproval: false } as any);
+    vi.mocked(checkToolRateLimit).mockResolvedValueOnce('Rate limit exceeded');
+    const session = makeActiveSession();
+    const pre = createSessionPreToolUse(session);
+    const post = createSessionPostToolUse(session);
+
+    await pre('query_devices', {}, undefined, 'tu-refused');
+    expect(await pre('query_devices', {}, undefined, 'tu-allowed')).toEqual({ allowed: true });
+    // The allowed sibling finishes (with an error of its own) before the echo.
+    await post('query_devices', {}, JSON.stringify({ error: 'Device offline' }), true, 9, undefined, undefined, 'tu-allowed');
+    await post('query_devices', {}, JSON.stringify({ error: 'Rate limit exceeded' }), true, 0, undefined, undefined, 'tu-refused');
+
+    const rows = await ledgerInserts();
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.status).sort()).toEqual(['failed', 'refused']);
+  });
+
+  it('a failed refusal-row write is logged and never changes the verdict', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: false, tier: 3, requiresApproval: false, reason: 'Blocked: nope',
+    } as any);
+    ledgerInsertFails = true;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const session = makeActiveSession();
+
+    const verdict = await createSessionPreToolUse(session)('execute_command', { deviceId: 'device-1' }, undefined, 'tu-4');
+
+    expect(verdict).toEqual({ allowed: false, error: 'Blocked: nope' });
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('refusal ledger row'), 'execute_command', expect.anything());
+    errorSpy.mockRestore();
+  });
+
+  it('a Tier 3 call whose intent cannot be created closes its own pending row as refused — no second row', async () => {
+    const schema = await import('../db/schema');
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true, tier: 3, requiresApproval: true, description: 'Execute command',
+    } as any);
+    vi.mocked(db.insert).mockImplementation(((table: unknown) => ({
+      values: vi.fn((values: Record<string, unknown>) => {
+        insertedRows.push({ table, values });
+        return { returning: vi.fn(async () => [{ id: 'exec-pending' }]) };
+      }),
+    })) as any);
+    mockCreateActionIntent.mockRejectedValueOnce(new Error('connection reset'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const session = makeActiveSession();
+
+    const verdict = await createSessionPreToolUse(session)('execute_command', { deviceId: 'device-1' }, undefined, 'tu-6');
+
+    expect(verdict).toEqual({ allowed: false, error: 'Failed to create approval record' });
+    const rows = await ledgerInserts();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'pending' });
+    expect(await ledgerUpdates()).toContainEqual(expect.objectContaining({
+      status: 'refused', errorMessage: 'Failed to create approval record',
+    }));
+    expect(updatedRows.every((r) => r.table === schema.aiToolExecutions)).toBe(true);
+  });
+
+  it('redacts secret-shaped text in the stored refusal reason', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 1, requiresApproval: false } as any);
+    vi.mocked(checkToolRateLimit).mockResolvedValue('Refused: password=hunter2 is not allowed');
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('query_devices', {}, undefined, 'tu-7');
+
+    const rows = await ledgerInserts();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.errorMessage).not.toContain('hunter2');
+  });
+
+  it('a pre-hook that throws still leaves a refused row, and the throw propagates', async () => {
+    vi.mocked(checkGuardrails).mockImplementation(() => { throw new Error('classifier exploded'); });
+    const session = makeActiveSession();
+
+    await expect(createSessionPreToolUse(session)('execute_command', { deviceId: 'device-1' }, undefined, 'tu-5'))
+      .rejects.toThrow('classifier exploded');
+
+    const rows = await ledgerInserts();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'refused', errorMessage: 'Guardrails check failed' });
   });
 });

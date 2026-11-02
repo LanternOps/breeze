@@ -27,15 +27,18 @@
  *   and a BYOK offering never gets a legacy rate (spec §8: no guessed price).
  */
 import { sql, type SQL } from 'drizzle-orm';
-import type { AiSurface, AnthropicApiConnectionKind } from '@breeze/shared';
+import { PLATFORM_ONLY_AI_SURFACES, type AnthropicApiConnectionKind } from '@breeze/shared';
 import { db, getCurrentDbAccessContext } from '../../db';
 import { hmacFingerprint } from '../secretCrypto';
 import { createConnection, encryptConnectionKey } from './connections';
 import { ensurePlatformModelRow, resolveBootstrapDefaultModelId } from './registryBootstrap';
 import { RegistryWriteError } from './registryWriteErrors';
 
-/** Never moved onto a partner connection (legacy: patch tests always use the platform key, #5557). */
-export const PLATFORM_PINNED_SURFACES = ['patch_test'] as const satisfies readonly AiSurface[];
+/**
+ * Never moved onto a partner connection (legacy: patch tests always use the platform key, #5557).
+ * The bootstrap no longer writes these rows (#9496); the skip still guards any row left before the cleanup migration.
+ */
+export const PLATFORM_PINNED_SURFACES = PLATFORM_ONLY_AI_SURFACES;
 
 export class RegistryNotCutOverError extends Error {
   constructor(readonly partnerId: string) {

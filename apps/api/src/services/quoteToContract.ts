@@ -6,6 +6,8 @@
 import type { DeviceRole } from '@breeze/shared';
 
 export interface QuoteForContract {
+  /** #10361: stamped onto every created contract as source_quote_id. */
+  quoteId?: string | null;
   orgId: string;
   partnerId: string;
   quoteNumber: string;
@@ -75,6 +77,8 @@ export interface NewContractSpec {
   notes?: string | null;
   terms?: string | null;
   createdBy?: string | null;
+  /** #10361: the accepted quote this contract came from (contracts.source_quote_id). */
+  sourceQuoteId?: string | null;
   lines: NewContractLineSpec[];
 }
 
@@ -148,6 +152,7 @@ export function buildContractSpecsFromQuote(
       notes: null,
       terms: quote.terms ?? null,
       createdBy,
+      sourceQuoteId: quote.quoteId ?? null,
       lines: group.map((l, i) => {
         const base = {
           description: (l.name && l.description ? `${l.name} — ${l.description}` : (l.name ?? l.description ?? '')),

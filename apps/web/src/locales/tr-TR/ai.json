@@ -351,6 +351,7 @@
       "pending": "beklemede",
       "approved": "onaylandı",
       "rejected": "reddedildi",
+      "stopped": "durduruldu",
       "completed": "tamamlandı",
       "failed": "başarısız oldu"
     },
@@ -393,6 +394,7 @@
     "requestedAt": "talep edildi {{time}}",
     "approvedAt": "onaylandı {{time}}",
     "rejectedAt": "reddedildi {{time}}",
+    "stoppedAt": "durduruldu {{time}}",
     "appliedAt": "uygulandı {{time}}",
     "flagDialog": {
       "title": "Oturumu işaretle",
@@ -789,7 +791,14 @@
       "addedByWisp": "Wisp tarafından eklendi",
       "added": "Wisp’e bağlandı",
       "addFailed": "Bu öğe bağlanamadı.",
-      "count": "{{count}} / {{max}} bağlı"
+      "count": "{{count}} / {{max}} bağlı",
+      "groupPinned": "Sabitlenenler",
+      "groupConcerns": "Açık konular",
+      "groupRecent": "Son kullanılanlar",
+      "pin": "Sabitle",
+      "dismiss": "Kapat",
+      "more": "Daha fazla",
+      "neighbours": "İlgili öğeler"
     },
     "picker": {
       "title": "Wisp’e öğe bağla",
@@ -813,11 +822,6 @@
       "loadFailed": "Bu liste yüklenemedi.",
       "alreadyLinked": "Zaten bağlı",
       "close": "Kapat"
-    },
-    "linkButton": {
-      "link": "Wisp’e bağla",
-      "linked": "Wisp’te bağlı",
-      "linking": "Bağlanıyor…"
     },
     "sidebar": {
       "openHome": "Wisp’te aç",
@@ -872,6 +876,13 @@
     "composer": {
       "placeholder": "Wisp'e mesaj",
       "link": "Bir öğe bağla"
+    },
+    "talk": {
+      "openFailed": "Sohbet açılamadı: {{message}}",
+      "button": "Wisp ile konuş",
+      "buttonPlain": "Bunu yapay zekâya sor",
+      "draft": "{{label}} hakkında: ",
+      "switchFocus": "Wisp, {{from}} üzerine odaklanmış. {{to}} odağına geçilsin mi?"
     }
   },
   "wispConcerns": {
@@ -912,7 +923,8 @@
       "quote": "Teklif",
       "invoice": "Fatura",
       "contract": "Sözleşme",
-      "site": "Konum"
+      "site": "Konum",
+      "readiness": "Hazırlık"
     },
     "reviewApproval": "Onayı incele",
     "openLink": "Aç",

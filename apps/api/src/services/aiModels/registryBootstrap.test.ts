@@ -1,4 +1,4 @@
-import { AI_SURFACES } from '@breeze/shared';
+import { AI_SURFACES, CONFIGURABLE_AI_SURFACES, PLATFORM_ONLY_AI_SURFACES } from '@breeze/shared';
 import { describe, expect, it } from 'vitest';
 import { BREEZE_FALLBACK_MODEL } from '../aiModel';
 import { ENV_DEFAULT_MODEL_BOOTSTRAP_RATES, mayCreateEnvPlatformModel, pickBootstrapDefaultModelId, planBootstrap } from './registryBootstrap';
@@ -6,17 +6,33 @@ import { ENV_DEFAULT_MODEL_BOOTSTRAP_RATES, mayCreateEnvPlatformModel, pickBoots
 describe('planBootstrap', () => {
   const platformRow = { id: 'pm-1', created: false };
 
-  it('covers every AI surface (currently ten)', () => {
+  it('covers every configurable AI surface (currently nine of ten)', () => {
     const plan = planBootstrap({ modelId: 'model-a', platformRow, connections: [] });
     expect(AI_SURFACES.length).toBe(10);
-    expect(plan.assignments).toHaveLength(AI_SURFACES.length);
+    expect(plan.assignments).toHaveLength(CONFIGURABLE_AI_SURFACES.length);
   });
 
-  it('a partner with no connection: every surface on the platform offering; only chat allows user choice', () => {
+  // The resolver never reads an assignment for a platform-only surface
+  // (patch_test resolves the partnerless platform default), so a partner row
+  // for it is inert, shows up as "Default for N feature(s)" and blocks
+  // removing the model it points at (#9455, #9496).
+  it.each([
+    ['no connection', { platformRow, connections: [] }],
+    ['one connection', { platformRow, connections: [{ id: 'conn-1', kind: 'anthropic_byok' as const }] }],
+    ['no platform row', { platformRow: null, connections: [{ id: 'conn-3', kind: 'anthropic_byok' as const }] }],
+    ['ambiguous connections', { platformRow, connections: [{ id: 'c1', kind: 'anthropic_byok' as const }, { id: 'c2', kind: 'catalog' as const }] }],
+  ])('never plans an assignment for a platform-only surface (%s) (#9496)', (_label, input) => {
+    const plan = planBootstrap({ modelId: 'model-a', ...input });
+    for (const s of PLATFORM_ONLY_AI_SURFACES) {
+      expect(plan.assignments.map((a) => a.surface)).not.toContain(s);
+    }
+  });
+
+  it('a partner with no connection: every configurable surface on the platform offering; only chat allows user choice', () => {
     const plan = planBootstrap({ modelId: 'model-a', platformRow, connections: [] });
     expect(plan.destination).toBe('platform');
     expect(plan.connectionOffering).toBeNull();
-    expect(plan.assignments.map((a) => a.surface)).toEqual([...AI_SURFACES]);
+    expect(plan.assignments.map((a) => a.surface)).toEqual([...CONFIGURABLE_AI_SURFACES]);
     expect(plan.assignments.every((a) => a.target === 'platform')).toBe(true);
     expect(plan.assignments.filter((a) => a.allowUserChoice).map((a) => a.surface)).toEqual(['chat']);
   });
@@ -25,9 +41,7 @@ describe('planBootstrap', () => {
     const plan = planBootstrap({ modelId: 'model-a', platformRow, connections: [{ id: 'conn-1', kind: 'anthropic_byok' }] });
     expect(plan.destination).toBe('connection');
     expect(plan.connectionOffering).toEqual({ connectionId: 'conn-1', source: 'discovered', platformModelId: 'pm-1', enabled: true });
-    for (const a of plan.assignments) {
-      expect(a.target).toBe(a.surface === 'patch_test' ? 'platform' : 'connection');
-    }
+    for (const a of plan.assignments) expect(a.target).toBe('connection');
   });
 
   it('a catalog connection gets a catalog offering of the default model (resolved live from the revision)', () => {
@@ -38,7 +52,7 @@ describe('planBootstrap', () => {
   it('a BYOK connection whose model has no platform row gets a disabled, unpriced manual offering (never a guessed rate)', () => {
     const plan = planBootstrap({ modelId: 'vllm-x', platformRow: null, connections: [{ id: 'conn-3', kind: 'anthropic_byok' }] });
     expect(plan.connectionOffering).toEqual({ connectionId: 'conn-3', source: 'manual', platformModelId: null, enabled: false });
-    expect(plan.assignments.find((a) => a.surface === 'patch_test')!.target).toBeNull();
+    expect(plan.assignments.every((a) => a.target === 'connection')).toBe(true);
   });
 
   it('more than one Anthropic connection fails closed: no default, neither a guessed connection nor platform funding', () => {
@@ -47,7 +61,7 @@ describe('planBootstrap', () => {
       connections: [{ id: 'c1', kind: 'anthropic_byok' }, { id: 'c2', kind: 'catalog' }],
     });
     expect(plan.destination).toBe('ambiguous');
-    for (const a of plan.assignments) expect(a.target).toBe(a.surface === 'patch_test' ? 'platform' : null);
+    for (const a of plan.assignments) expect(a.target).toBeNull();
   });
 
   it('no platform row and no connection: assignments are created with no default (resolver says no_eligible_model)', () => {

@@ -99,7 +99,7 @@ export const wispConcerns = pgTable('wisp_concerns', {
   raisedByGrantIdx: index('wisp_concerns_raised_by_grant_idx')
     .on(t.raisedByGrantId)
     .where(sql`raised_by_grant_id IS NOT NULL`),
-  subjectKindChk: check('wisp_concerns_subject_kind_chk', sql`${t.subjectKind} IN ('ticket','device','alert','org','integration','run','task','incident','quote','invoice','contract','site')`),
+  subjectKindChk: check('wisp_concerns_subject_kind_chk', sql`${t.subjectKind} IN ('ticket','device','alert','org','integration','run','task','incident','quote','invoice','contract','site','readiness')`),
   severityChk: check('wisp_concerns_severity_chk', sql`${t.severity} IN ('info','low','medium','high')`),
   statusChk: check('wisp_concerns_status_chk', sql`${t.status} IN ('open','snoozed','resolved','dismissed')`),
   summaryLenChk: check('wisp_concerns_summary_len_chk', sql`char_length(${t.summary}) BETWEEN 1 AND 2000`),
