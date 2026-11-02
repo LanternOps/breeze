@@ -633,6 +633,7 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'system_cleanup', action: 'list', routeFile: 'devices/filesystemSystemCleanup.ts', method: 'post', path: '/:id/filesystem/system-cleanup/list' },
   { tool: 'system_cleanup', action: 'run', routeFile: 'devices/filesystemSystemCleanup.ts', method: 'post', path: '/:id/filesystem/system-cleanup/run' },
   { tool: 'system_cleanup', action: 'status', routeFile: 'devices/filesystemSystemCleanup.ts', method: 'get', path: '/:id/filesystem/system-cleanup/run/:cleanupRunId' },
+  { tool: 'system_cleanup', action: 'cancel', routeFile: 'devices/filesystemSystemCleanup.ts', method: 'post', path: '/:id/filesystem/system-cleanup/run/:cleanupRunId/cancel' },
   { tool: 'analyze_disk_usage', input: { refresh: true }, routeFile: 'devices/filesystem.ts', method: 'post', path: '/:id/filesystem/scan' },
   { tool: 'analyze_disk_usage', routeFile: 'devices/filesystem.ts', method: 'get', path: '/:id/filesystem' },
   { tool: 'analyze_boot_performance', input: { triggerCollection: true }, routeFile: 'devices/bootMetrics.ts', method: 'post', path: '/:id/collect-boot-metrics' },
@@ -824,6 +825,8 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'list_scripts', routeFile: 'scripts.ts', method: 'get', path: '/' },
   { tool: 'get_script_details', routeFile: 'scripts.ts', method: 'get', path: '/:id' },
   { tool: 'get_script_execution_history', routeFile: 'scripts.ts', method: 'get', path: '/:id/executions' },
+  // #10417: the deviceId form mirrors the device Scripts tab's history read.
+  { tool: 'get_script_execution_history', routeFile: 'devices/scripts.ts', method: 'get', path: '/:id/scripts' },
 
   // Full-control W06 (#6776): every PSA configuration / ticket-ops action binds to the route a technician uses for the same act.
   { tool: 'manage_ticket_config', action: 'get_org_settings', routeFile: 'orgTicketSettings.ts', method: 'get', path: '/organizations/:id/ticket-settings' },

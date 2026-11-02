@@ -25,6 +25,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { isValidIanaTimezone } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
+import { refuseReservedBrandName } from '../../lib/reservedBrandName';
 import { createHash } from 'node:crypto';
 import {
   db,
@@ -133,7 +134,7 @@ function partnerEnrollmentKeyMaxTtlMinutes(): number {
 // partner always wins, and zod strips unrecognized keys on non-strict objects,
 // so a caller-supplied `partnerId` is silently ignored rather than trusted.
 const createOrganizationBodySchema = z.object({
-  name: z.string().min(1).max(255),
+  name: refuseReservedBrandName(z.string().min(1).max(255)),
   slug: z.string().min(1).max(100),
   type: z.enum(['customer', 'internal']).optional(),
   // Narrower than the human create schema on purpose: an unattended

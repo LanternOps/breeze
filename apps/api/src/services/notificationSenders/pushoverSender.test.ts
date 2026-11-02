@@ -75,6 +75,13 @@ describe('sendPushoverNotification', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it.each([true, false])('renders the subject in Pushover (workload=%s)', async (workload) => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ status: 1 }), { status: 200 }));
+    await sendPushoverNotification({ token: 't'.repeat(30), user: 'u'.repeat(30) }, { ...basePayload, subjectName: workload ? 'Microsoft 365 mail backup · Example customer' : 'Server-1', ownerKind: workload ? 'backup_workload' : 'device', deviceName: workload ? undefined : 'Server-1' });
+    const message = new URLSearchParams(fetchSpy.mock.calls[0]?.[1]?.body as string).get('message');
+    expect(message).toContain(workload ? 'Subject: Microsoft 365 mail backup · Example customer' : 'Device: Server-1');
+  });
+
   it('maps severity → priority when config does not pin one', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ status: 1, request: 'r-1' }), { status: 200 })

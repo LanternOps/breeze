@@ -263,7 +263,7 @@ No producer creates device-less alerts in this wave. Every task is a red test fi
 - Locales: all 8
 
 **Changes:**
-- For non-device owners, render a subject chip instead of the device block, and link to backup health (`/backup#health`) or to the topology site.
+- For non-device owners, render a subject chip instead of the device block, and link to the backup overview (`/backup`, which contains BackupHealthOverview) or to the topology site.
 - Hide device actions (DelegateToOperator, the device filter) for non-device owners.
 - Verify mobile is null-safe; this is a check, not a change.
 

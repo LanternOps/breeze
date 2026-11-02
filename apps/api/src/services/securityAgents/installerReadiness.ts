@@ -44,6 +44,14 @@ export type ReadinessReason =
    * values are non-secret by design).
    */
   | 'var_secret'
+  /**
+   * Vendors whose built-in package needs a partner-uploaded installer
+   * (SentinelOne's MSI): the package the rule installs from has no deployable
+   * latest version (#9247). Partner-level, so every reached device of the
+   * vendor reads it. Remedy: upload the installer on the package's Versions
+   * tab (`/software#versions=<catalogId>`).
+   */
+  | 'installer_missing'
   /** The vendor's readiness checks are not wired yet; never ready. */
   | 'vendor_unavailable';
 

@@ -4042,7 +4042,8 @@
         "system_cleanup": {
           "list": "Sistem temizleme eylemlerini listele",
           "run": "Sistem temizliğini çalıştır",
-          "status": "Sistem temizliği durumu"
+          "status": "Sistem temizliği durumu",
+          "cancel": "Sistem temizliği çalıştırmasını iptal et"
         }
       },
       "alwaysOnCount_one": "{{count}} salt okunur araç",

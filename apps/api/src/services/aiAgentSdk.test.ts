@@ -715,13 +715,14 @@ describe('runPreFlightChecks', () => {
   it('returns error when turn limit is reached', async () => {
     mockGetSession.mockResolvedValue(makeSession({ turnCount: 50, maxTurns: 50 }));
     const result = await runPreFlightChecks('session-1', 'hello', auth);
-    expect(result).toEqual({ ok: false, error: 'Session turn limit reached (50)' });
+    // Coded 409 so a client can roll to a fresh session (Wisp does) instead of showing a dead end.
+    expect(result).toEqual({ ok: false, error: 'Session turn limit reached (50)', status: 409, code: 'turn_limit_reached' });
   });
 
   it('returns error when turn count exceeds max', async () => {
     mockGetSession.mockResolvedValue(makeSession({ turnCount: 55, maxTurns: 50 }));
     const result = await runPreFlightChecks('session-1', 'hello', auth);
-    expect(result).toEqual({ ok: false, error: 'Session turn limit reached (50)' });
+    expect(result).toEqual({ ok: false, error: 'Session turn limit reached (50)', status: 409, code: 'turn_limit_reached' });
   });
 
   // --- Session age expiration ---

@@ -156,6 +156,7 @@ import { registerDiagnosticAccessTools } from './aiToolsDiagnosticAccess';
 import { registerExportTools } from './aiToolsExport';
 import { registerArtifactTools } from './aiToolsArtifacts';
 import { registerTrustPageTools } from './aiToolsTrustPage';
+import { registerPartnerSettingsInheritanceTools } from './aiToolsPartnerSettingsInheritance';
 import { registerFlowTools } from './aiToolsFlows';
 import { registerBusinessCalendarTools } from './aiToolsBusinessCalendars';
 import { registerTicketRoutingTools } from './aiToolsTicketRouting';
@@ -510,6 +511,8 @@ registerM365Tools(aiTools);
 registerExportTools(aiTools);
 registerArtifactTools(aiTools);
 registerTrustPageTools(aiTools);
+// #9763: partner settings inheritance read (twin of the two inheritance routes).
+registerPartnerSettingsInheritanceTools(aiTools);
 // Tool Catalog W03 (#5218): flow authoring tools, behind FLOWS_ENABLED.
 registerFlowTools(aiTools);
 registerBusinessCalendarTools(aiTools);

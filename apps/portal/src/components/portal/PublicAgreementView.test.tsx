@@ -153,6 +153,38 @@ describe('PublicAgreementView', () => {
     expect(screen.queryByTestId('public-agreement-error')).toBeNull();
   });
 
+  // #10695: a link that signed the agreement offers that signer's certified copy.
+  it('reopened after signing through this link: offers the signed copy download instead of "contact"', async () => {
+    // The href is the server's path (the API decides which link has a copy).
+    mockLoaded({ signedCopyUrl: '/agreements/public/server-issued/signed-copy' }, { status: 'signed', signedAt: '2026-11-02T10:00:00.000Z' });
+    await renderLoaded();
+    const signed = screen.getByTestId('public-agreement-signed');
+    const link = screen.getByTestId('public-agreement-download-signed') as HTMLAnchorElement;
+    expect(signed.contains(link)).toBe(true);
+    expect(link.getAttribute('href')).toBe('/api/v1/agreements/public/server-issued/signed-copy');
+    expect(link.textContent).toContain('Download signed copy');
+    expect(signed.textContent).toContain('This agreement was signed on');
+    expect(signed.textContent).not.toContain('If you need a copy of the signed agreement, contact');
+  });
+
+  it('just signed on this page: no download button yet, the emailed-copy message instead', async () => {
+    mockLoaded({ signedCopyUrl: null });
+    vi.spyOn(portalApi, 'acceptPublicAgreement')
+      .mockResolvedValue({ data: { data: { status: 'signed', signedAt: '2026-11-02T10:00:00.000Z' } } });
+    await renderLoaded();
+    fillAndSign();
+    const signed = await screen.findByTestId('public-agreement-signed');
+    expect(signed.textContent).toContain("We're emailing a copy to jane@example.com");
+    expect(screen.queryByTestId('public-agreement-download-signed')).toBeNull();
+  });
+
+  it('reopened after signing elsewhere (no signedCopyUrl): no download, points at the provider', async () => {
+    mockLoaded({ signedCopyUrl: null }, { status: 'signed', signedAt: '2026-11-02T10:00:00.000Z' });
+    await renderLoaded();
+    expect(screen.queryByTestId('public-agreement-download-signed')).toBeNull();
+    expect(screen.getByTestId('public-agreement-signed').textContent).toContain('If you need a copy of the signed agreement, contact Lantern IT.');
+  });
+
   it('reopened after signing with no signed date on the row still renders the signed state', async () => {
     mockLoaded({}, { status: 'signed', signedAt: null });
     await renderLoaded();

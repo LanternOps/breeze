@@ -1,6 +1,6 @@
 import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex, index, check, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import type { ImpactWeightOverrides, LaunchPurchaseSelection } from '@breeze/shared';
+import type { ImpactWeightOverrides, PartnerPurchaseSelection } from '@breeze/shared';
 
 export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'internal']);
 // `offboarding` (#2774) is the terminal-intent drain state: users locked out
@@ -50,7 +50,7 @@ export const partners = pgTable('partners', {
   ssoConfig: jsonb('sso_config'),
   billingEmail: varchar('billing_email', { length: 255 }),
   // Durable signup preference. It never grants plan, capacity or subscription authority.
-  purchaseSelection: jsonb('purchase_selection').$type<LaunchPurchaseSelection | null>(),
+  purchaseSelection: jsonb('purchase_selection').$type<PartnerPurchaseSelection | null>(),
   // Plain-text signature appended to outbound customer emails (quote sends).
   emailSignature: text('email_signature'),
   // Auto-email the issued invoice (with its public pay link) when a quote is
@@ -218,6 +218,7 @@ export const partners = pgTable('partners', {
     sql`${table.agreementReminderIntervalDays} IS NULL OR ${table.agreementReminderIntervalDays} BETWEEN 1 AND 30`),
   check('partners_agreement_max_reminders_check', sql`${table.agreementMaxReminders} BETWEEN 1 AND 10`),
   check('partners_purchase_selection_valid', sql`${table.purchaseSelection} IS NULL OR COALESCE((
+  (
     jsonb_typeof(${table.purchaseSelection}) = 'object'
     AND ${table.purchaseSelection} ?& ARRAY['catalogVersion', 'capacity', 'billingPeriod']
     AND ${table.purchaseSelection} - ARRAY['catalogVersion', 'capacity', 'billingPeriod'] = '{}'::jsonb
@@ -226,7 +227,20 @@ export const partners = pgTable('partners', {
       (${table.purchaseSelection}->'billingPeriod' = '"monthly"'::jsonb AND ${table.purchaseSelection}->'capacity' IN ('100'::jsonb, '150'::jsonb, '200'::jsonb, '250'::jsonb, '300'::jsonb, '350'::jsonb, '400'::jsonb, '450'::jsonb, '500'::jsonb, '750'::jsonb, '1000'::jsonb))
       OR (${table.purchaseSelection}->'billingPeriod' = '"annual"'::jsonb AND ${table.purchaseSelection}->'capacity' IN ('100'::jsonb, '250'::jsonb, '500'::jsonb, '1000'::jsonb))
     )
-  ), false)`),
+  )
+  OR (
+    jsonb_typeof(${table.purchaseSelection}) = 'object'
+    AND ${table.purchaseSelection} ? 'intent'
+    AND ${table.purchaseSelection} - ARRAY['intent', 'offer'] = '{}'::jsonb
+    AND ${table.purchaseSelection}->'intent' IN ('"cloud"'::jsonb, '"wisp"'::jsonb)
+    AND (
+      NOT ${table.purchaseSelection} ? 'offer'
+      OR (
+        jsonb_typeof(${table.purchaseSelection}->'offer') = 'string'
+        AND ${table.purchaseSelection}->>'offer' ~ '^[a-z][a-z0-9_-]{0,31}$'
+      )
+    )
+  )), false)`),
 ]);
 
 /**

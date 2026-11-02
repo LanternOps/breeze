@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Plus, Pencil, Trash2, LayoutTemplate } from 'lucide-react';
+import { PortalVisibilityBadge } from '../deliverables/PortalVisibilityBadge';
 import {
   MANAGED_EVIDENCE_REPORT_TYPES,
   defaultPortalVisibleForCadence,
@@ -475,6 +476,9 @@ export default function DeliverableTemplatesPage() {
                       <span className="font-medium">{item.name}</span>
                       <span className="ml-2 text-xs text-muted-foreground">
                         {t(/* i18n-dynamic */ `cadence.${item.cadence}`)}
+                      </span>
+                      <span className="ml-2">
+                        <PortalVisibilityBadge visible={item.portalVisible} testId={`deliverable-template-item-portal-${item.id}`} />
                       </span>
                     </div>
                     <div className="flex items-center gap-1">
