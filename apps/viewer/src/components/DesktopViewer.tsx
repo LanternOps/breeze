@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { type ConnectionParams } from '../lib/protocol';
 import { exchangeDesktopConnectCode, exchangeVncConnectCode } from '../lib/api';
-import { scaleVideoCoords, isWebRTCSupported, AgentSessionError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '../lib/webrtc';
+import { scaleVideoCoords, isWebRTCSupported, AgentSessionError, RelayRequiredError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '../lib/webrtc';
 import { errorCardFor, parseSessionEndingMessage, serverEndReasonText, sessionEndedCardMessage, sessionEndingText, type ErrorCardKind } from '../lib/sessionEnd';
 import {
   startRevocationLeaseRenewal,
@@ -2551,6 +2551,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       if (!ok) throw new Error('WebRTC connection failed');
       setActiveSessionId(sessionId);
     } catch (err) {
+      if (err instanceof RelayRequiredError) {
+        setStatus('error');
+        setConnectedAt(null);
+        setErrorMessage(err.message);
+        onError(err.message);
+        return;
+      }
       // Try to reconnect to the previous session so the viewer isn't dead
       const prevId = activeSessionId ?? undefined;
       try {
@@ -2561,7 +2568,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           setErrorMessage(`Failed to switch to ${label} and could not restore previous session`);
           startReconnectRef.current();
         }
-      } catch {
+      } catch (err) {
+        if (err instanceof RelayRequiredError) {
+          setStatus('error');
+          setConnectedAt(null);
+          setErrorMessage(err.message);
+          onError(err.message);
+          return;
+        }
         setErrorMessage(`Failed to switch to ${label} and could not restore previous session`);
         startReconnectRef.current();
       }

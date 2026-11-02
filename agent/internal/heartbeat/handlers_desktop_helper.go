@@ -293,6 +293,7 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 		StartGeneration:         desktopStartGenerationForHelper(payload),
 		Offer:                   offer,
 		ICEServers:              iceRaw,
+		RelayOnly:               policy.RelayOnly,
 		DisplayIndex:            displayIndex,
 		GPUVendor:               gpuVendor,
 		ClipboardHostToViewer:   &clipHostToViewer,
