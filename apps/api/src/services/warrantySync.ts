@@ -15,6 +15,7 @@ import {
 import { evaluateWarrantyAlerts } from './warrantyAlertEvaluator';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { captureException } from './sentry';
+import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJobs';
 
 export type WarrantyStatus = 'active' | 'expiring' | 'expired' | 'unknown' | 'subscription_active';
 
@@ -38,6 +39,43 @@ export function computeWarrantyStatus(endDate: string | null, warnDays = 90): Wa
   if (diffDays <= 0) return 'expired';
   if (diffDays <= warnDays) return 'expiring';
   return 'active';
+}
+
+/**
+ * #10804 — dynamic groups filtering on `warranty.status` re-evaluate only on a
+ * change event naming that field, and none fires for a `device_warranty` write.
+ * Every device-subject writer calls this with the status it read before the
+ * write and the one it wrote; an unchanged status enqueues nothing. A missing
+ * row (`previous === null`) is 'unknown', exactly as the filter's COALESCE
+ * reads it.
+ *
+ * After commit, not just delayed: the CSV importer writes up to 1000 devices
+ * inside one request transaction, which can outlive the job's 5s delay (see
+ * `requestDeviceGroupReevaluationAfterCommit`). Exported for that importer.
+ */
+export function requestWarrantyStatusReevaluation(
+  deviceId: string,
+  orgId: string,
+  previous: string | null,
+  next: string,
+): void {
+  if ((previous ?? 'unknown') === next) return;
+  requestDeviceGroupReevaluationAfterCommit({
+    deviceId,
+    orgId,
+    eventType: 'device.updated',
+    changedFields: ['warranty.status'],
+    reason: 'warranty_status_change',
+  });
+}
+
+async function storedDeviceWarrantyStatus(deviceId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ status: deviceWarranty.status })
+    .from(deviceWarranty)
+    .where(eq(deviceWarranty.deviceId, deviceId))
+    .limit(1);
+  return row?.status ?? null;
 }
 
 const SYNC_CADENCE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -392,6 +430,7 @@ async function upsertWarranty(
   const conflictTarget = subject.kind === 'device'
     ? deviceWarranty.deviceId
     : deviceWarranty.manualAssetId;
+  const previousStatus = deviceId ? await storedDeviceWarrantyStatus(deviceId) : null;
   // Both unique indexes are PARTIAL now. Postgres can only infer a partial
   // unique index as the ON CONFLICT arbiter when the statement repeats its
   // predicate verbatim — without `targetWhere` this raises 42P10 ("no unique
@@ -468,6 +507,10 @@ async function upsertWarranty(
           }
         : {}),
     });
+
+  // A `setWhere` refusal (a race the advisory reads lost) also lands here and
+  // enqueues a no-op re-evaluation: it reads current state, so that is harmless.
+  if (deviceId) requestWarrantyStatusReevaluation(deviceId, orgId, previousStatus, status);
 
   await recordVendorShipDate(subject, result.shipDate ?? null);
 }
@@ -605,6 +648,7 @@ export async function upsertAgentWarranty(
           }]
         : [];
 
+  const previousStatus = await storedDeviceWarrantyStatus(deviceId);
   await db
     .insert(deviceWarranty)
     .values({
@@ -646,6 +690,7 @@ export async function upsertAgentWarranty(
         updatedAt: now,
       },
     });
+  requestWarrantyStatusReevaluation(deviceId, orgId, previousStatus, status);
 
   // Evaluate warranty alerts after upsert
   try {

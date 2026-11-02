@@ -159,6 +159,7 @@ export type McpExemptReason =
    * plain reboot stays reachable through the existing device-command tools.
    */
   | 'human_only_force_reboot'
+  | 'human_only_network_isolation'
   /**
    * The chat / script-builder session transport itself (sessions, messages,
    * interrupt, approve-plan). This is the plumbing the AI features run over,
@@ -410,6 +411,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'catalog/enrich.ts': { exempt: 'internal_plumbing', note: "AI copy-polish endpoint backing the catalog UI; the AI can draft copy and call manage_billing_catalog directly. From #6795." },
   'catalog/pricing.ts': { tools: ['manage_billing_catalog'] },
   'changes.ts': { tools: ['query_change_log'] },
+  'assetCircuitsResponse.ts': { exempt: 'internal_plumbing', note: 'Shared response builder for the read-only asset circuits routes (W1-D2, #8134); not a route.' },
+  'sitePermissionScope.ts': { exempt: 'internal_plumbing', note: 'Shared caller permission / site-scope helper for circuit and topology routes (W1-D2, #8134); not a route.' },
   'circuits.ts': { exempt: 'internal_plumbing', note: 'Circuits CRUD, termination and served sites (W1-B, #8134): the spec defines no AI/MCP tool for circuits or the WAN role; not an AI surface in this wave.' },
   'cisHardening.ts': { tools: ['get_cis_compliance', 'get_cis_device_report', 'apply_cis_remediation'] },
   'clientAi/admin.ts': { exempt: 'addin_surface' },
@@ -485,10 +488,13 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // GET /devices/:id/monitors (#6371 W05c2): the same per-device monitor state
   // is agent-reachable per monitor via get_monitor_activity's deviceId filter.
   'devices/monitors.ts': { tools: ['list_monitors', 'get_monitor_activity', 'reset_monitor_escalation'] },
+  'devices/networkIsolation.ts': { exempt: 'human_only_network_isolation', note: 'Interactive session and MFA only in W1; AI release is W4b #10101. Unattended MCP stays denied.' },
+  'agents/isolationVerify.ts': { exempt: 'agent_transport' },
   'devices/forceReboot.ts': { exempt: 'human_only_force_reboot', note: 'Force reboot now: closes running apps; step-up bound to one device.' },
   'devices/moveOrg.ts': { exempt: 'human_only_tenant_restructure', note: 'Cross-tenant device move -- rewrites which tenant owns the device.' },
   'devices/network.ts': { tools: ['list_network_assets'] },
   'devices/options.ts': { exempt: 'internal_plumbing' },
+  'devices/circuits.ts': { exempt: 'internal_plumbing', note: 'Read-only WAN circuits/interfaces of a device for the placement card (W1-D2, #8134): the spec defines no AI/MCP tool for circuits.' },
   'devices/placement.ts': { tools: ['get_device_details'] },
   'devices/patches.ts': { tools: ['manage_patches'] },
   'devices/posture.ts': { tools: ['get_management_posture'] }, // W13 (#6783)
@@ -511,6 +517,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // (W04) serves the per-workload list.
   'devices/workloads.ts': { tools: ['query_device_workloads'] },
   'discovery.ts': { tools: ['list_network_assets', 'get_network_asset', 'network_discovery', 'get_network_asset_reachability'] },
+  'discoveryAssetCircuits.ts': { exempt: 'internal_plumbing', note: 'Read-only WAN circuits/interfaces of a discovered asset for the placement card (W1-D2, #8134): the spec defines no AI/MCP tool for circuits.' },
   'discoveryAssetPlacement.ts': { tools: ['get_network_asset'] },
   'discoveryAssetProbe.ts': { tools: ['probe_network_asset'] }, // W09 (#6779): "Check now", tier 2, site-strict executor
   'dnsSecurity.ts': { tools: ['get_dns_security', 'manage_dns_policy'] },

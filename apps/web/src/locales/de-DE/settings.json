@@ -4735,7 +4735,8 @@
           "update_line": "Pax8-Bestellposition aktualisieren",
           "remove_line": "Pax8-Bestellposition entfernen",
           "preview": "Pax8-Bestellung in der Vorschau anzeigen",
-          "preflight": "Pax8-Bestell-Preflight ausführen"
+          "preflight": "Pax8-Bestell-Preflight ausführen",
+          "reconcile": "Pax8-Bestellung abgleichen"
         },
         "manage_pax8_subscriptions": {
           "list": "Pax8-Abonnements auflisten",

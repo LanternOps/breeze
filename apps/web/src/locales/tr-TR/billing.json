@@ -863,8 +863,10 @@
       "expiryDefaultHint_other": "Varsayılan: {{count}} gün, Faturalandırma ayarları → Anlaşmalar bölümünden.",
       "autoReminderHint_one": "Otomatik hatırlatmalar her gün gönderilir, toplamda en fazla {{max}}.",
       "autoReminderHint_other": "Otomatik hatırlatmalar her {{count}} günde bir gönderilir, toplamda en fazla {{max}}.",
-      "expiryDefaultUnavailable": "Faturalandırma ayarlarındaki varsayılan son kullanma süresi yüklenemedi; yerleşik varsayılan gösteriliyor.",
+      "expiryDefaultUnavailable": "Faturalandırma ayarlarındaki varsayılan son kullanma tarihi yüklenemedi. Tarihi boş bırakırsanız anlaşma oluşturulurken varsayılanınız uygulanır.",
+      "expiryBlankHint": "Faturalandırma ayarları → Anlaşmalar bölümündeki varsayılanı kullanmak için boş bırakın.",
       "label": "Etiket (isteğe bağlı)",
+      "labelHint": "Yalnızca dahili. Müşteriler şablon adını görür.",
       "createDraft": "Taslak oluştur ve önizle",
       "creating": "Oluşturuluyor…",
       "preview": {

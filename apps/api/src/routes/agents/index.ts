@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { agentAuthMiddleware } from '../../middleware/agentAuth';
 import { downloadRoutes } from './download';
 import { enrollmentRoutes } from './enrollment';
+import { isolationVerifyRoutes } from './isolationVerify';
 import { heartbeatRoutes } from './heartbeat';
 import { uninstallIntentRoutes } from './uninstallIntent';
 import { commandsRoutes } from './commands';
@@ -122,3 +123,7 @@ agentRoutes.route('/', wingetBootstrapRoutes);
 agentRoutes.route('/', agentStorageSessionRoutes);
 // #10190 W03: the MSP logo for device prompts (read-only, self-managed context).
 agentRoutes.route('/', promptIdentityLogoRoutes);
+
+// This router has a wildcard main-agent role guard. Mount last so it cannot
+// restrict watchdog command polling or other earlier credential routes.
+agentRoutes.route('/', isolationVerifyRoutes);

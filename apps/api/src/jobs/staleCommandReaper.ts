@@ -350,13 +350,20 @@ export async function propagateTimedOutDeviceCommand(params: {
   // not skip the DR reconcile — and, because the manual mark-timed-out route
   // calls this inside its request transaction, it runs in a real savepoint so
   // a caught SQL fault does not leave that transaction aborted.
-  if (params.commandType === CommandTypes.EXECUTE_CONTAINMENT) {
-    const finalize = () => finalizeContainmentAction({
-      commandId,
-      payload,
-      outcome: { kind: 'timeout', error: errorMsg },
-      completedAt,
-    });
+  // Delivery failure cannot prove absence. Legacy AI actions without an episode
+  // still require the generic finalizer to stop waiting for a terminal transport row.
+  if (params.commandType === CommandTypes.EXECUTE_CONTAINMENT || params.commandType === CommandTypes.RELEASE_CONTAINMENT) {
+    const finalize = async () => {
+      const episode = (payload?.actionType === 'network_isolation' || params.commandType === CommandTypes.RELEASE_CONTAINMENT)
+        ? await (await import('../services/networkIsolation/episodeStore')).findEpisodeByCommand(db, commandId) : null;
+      if (episode) {
+        const { journalIsolationEvent } = await import('../services/networkIsolation/reconcile');
+        await journalIsolationEvent(db, episode, 'isolate_command_timed_out', completedAt);
+        console.warn('[isolation] command timed out; heartbeat intent retained', { commandId, deviceId: episode.deviceId, isolationId: episode.id });
+      } else if (params.commandType === CommandTypes.EXECUTE_CONTAINMENT) {
+        await finalizeContainmentAction({ commandId, payload, outcome: { kind: 'timeout', error: errorMsg }, completedAt });
+      }
+    };
     try {
       await (hasDbAccessContext() ? withDbTransaction(finalize) : finalize());
     } catch (err) {

@@ -680,7 +680,8 @@ export async function sendAgreementRequest(auth: AuthContext, id: string, now: D
     partnerReplyTo: partner.billingEmail ?? null,
     partnerSignature: sig?.emailSignature ?? null,
     partnerSettings: partner.settings,
-    agreementName: sent.label?.trim() || renderData.templateName,
+    // The template name, never the staff-internal label (#10294).
+    agreementName: renderData.templateName,
     orgName: sent.clientNameSnapshot,
     expiresAt: sent.expiresAt,
     coverMessage: sent.coverMessage,
@@ -853,7 +854,8 @@ async function remindLockedRequest(
     partnerReplyTo: partner.billingEmail ?? null,
     partnerSignature: sig?.emailSignature ?? null,
     partnerSettings: partner.settings,
-    agreementName: reminded.label?.trim() || renderData.templateName,
+    // The template name, never the staff-internal label (#10294).
+    agreementName: renderData.templateName,
     orgName: reminded.clientNameSnapshot,
     expiresAt: reminded.expiresAt,
     coverMessage: reminded.coverMessage,
