@@ -33,9 +33,23 @@ import { enrollmentRoutes } from '../../routes/agents/enrollment';
 import { inventoryRoutes } from '../../routes/agents/inventory';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { getRedis } from '../../services/redis';
-import { detectReinstallCandidates } from '../../services/reinstallCandidates';
+import { MAX_MATCHES_PER_EVIDENCE, detectReinstallCandidates } from '../../services/reinstallCandidates';
+import { buildOrgExportZip } from '../../services/tenantExport';
+import { createAccessToken } from '../../services/jwt';
+import { coreRoutes } from '../../routes/devices/core';
+import JSZip from 'jszip';
+import { seedHoldingOrg } from './unassignedPoolFixtures';
 import { PARKED_SOURCE_LABEL } from '../../services/reinstallCandidates/notify';
-import { createOrganization, createPartner, createSite } from './db-utils';
+import {
+  assignUserToOrganization,
+  createOrganization,
+  createPartner,
+  createRole,
+  createSite,
+  createUser,
+  grantRolePermissions,
+  setupTestEnvironment,
+} from './db-utils';
 import {
   parkedSource,
   readDevice,
@@ -192,19 +206,29 @@ describe('reinstall candidates — the search (§7.3)', () => {
     expect(await detect(source.id)).toEqual({ written: false, why: 'no_candidate' });
   });
 
-  it('matches the hostname alone (different org, same partner) as hostname, case-insensitively', async () => {
+  it('matches the hostname alone in the source\'s own org as hostname, case-insensitively', async () => {
     const tenant = await seedReattachTenant();
     const target = await oldTarget(tenant.orgA, {}, { hostname: 'FINANCE-PC-07' });
-    const source = await newSource(tenant.orgB, {}, { hostname: 'finance-pc-07' });
+    const source = await newSource(tenant.orgA, {}, { hostname: 'finance-pc-07' });
     expect(await detect(source.id)).toMatchObject({ written: true, targetDeviceId: target.id, reason: 'hostname' });
     expect(await flagOf(source.id)).toMatchObject({ target: target.id, reason: 'hostname' });
+  });
+
+  it('never matches a hostname across orgs, and a parked source gets no hostname candidates (deliberate narrowing of §7.3)', async () => {
+    const tenant = await seedReattachTenant();
+    await oldTarget(tenant.orgA, {}, { hostname: 'FINANCE-PC-07' });
+    const crossOrg = await newSource(tenant.orgB, {}, { hostname: 'FINANCE-PC-07' });
+    expect(await detect(crossOrg.id)).toEqual({ written: false, why: 'no_candidate' });
+    const parked = await newSource(tenant.pool, {}, { parked: true, hostname: 'FINANCE-PC-07' });
+    expect(await detect(parked.id)).toEqual({ written: false, why: 'no_candidate' });
+    expect((await flagOf(parked.id)).target).toBeNull();
   });
 
   it('upgrades a hostname flag to hardware on a later hardware report, and never downgrades', async () => {
     const tenant = await seedReattachTenant();
     const hostTarget = await oldTarget(tenant.orgA, {}, { hostname: 'SHOP-01' });
-    const hwTarget = await oldTarget(tenant.orgA, { systemUuid: UUID }, { hostname: 'SHOP-OLD' });
-    const source = await newSource(tenant.orgB, {}, { hostname: 'SHOP-01' });
+    const hwTarget = await oldTarget(tenant.orgB, { systemUuid: UUID }, { hostname: 'SHOP-OLD' });
+    const source = await newSource(tenant.orgA, {}, { hostname: 'SHOP-01' });
     expect(await detect(source.id)).toMatchObject({ written: true, targetDeviceId: hostTarget.id, reason: 'hostname' });
 
     // The hardware report brings the UUID.
@@ -580,5 +604,232 @@ describe('reinstall candidates — wiring', () => {
     expect(await readUuid()).toBe(UUID_SWAPPED);
     expect((await put({ cpuModel: 'y', systemUuid: 'garbage' })).status).toBe(200);
     expect(await readUuid()).toBeNull();
+  });
+});
+
+// ─── Review fixes: visibility, partner-wide clears, the report window ──────
+
+async function bearer(user: { id: string; email: string }, roleId: string, scope: 'organization' | 'partner', partnerId: string, orgId: string | null) {
+  return createAccessToken({
+    sub: user.id, email: user.email, roleId, orgId, partnerId, scope,
+    mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+  });
+}
+
+/** A partner with org A (and its partner admin, all orgs), org B, the holding org, and an org-A-only user. */
+async function partnerWithUsers() {
+  const env = await setupTestEnvironment({ scope: 'partner' });
+  const orgA = { orgId: env.organization.id, siteId: env.site.id };
+  const orgBRow = await createOrganization({ partnerId: env.partner.id });
+  const orgB = { orgId: orgBRow.id, siteId: (await createSite({ orgId: orgBRow.id })).id };
+  const pool = await seedHoldingOrg(env.partner.id);
+  const orgAUser = await createUser({ partnerId: env.partner.id, orgId: orgA.orgId });
+  const orgARole = await createRole({ scope: 'organization', orgId: orgA.orgId });
+  await grantRolePermissions(orgARole.id, [{ resource: '*', action: '*' }]);
+  await assignUserToOrganization(orgAUser.id, orgA.orgId, orgARole.id);
+  const app = new Hono();
+  app.route('/devices', coreRoutes);
+  return {
+    partnerId: env.partner.id,
+    orgA, orgB, pool, app,
+    adminToken: await bearer(env.user, env.role.id, 'partner', env.partner.id, null),
+    orgAToken: await bearer(orgAUser, orgARole.id, 'organization', env.partner.id, orgA.orgId),
+  };
+}
+
+async function getJson(app: Hono, path: string, token: string) {
+  const res = await app.request(path, { headers: { Authorization: `Bearer ${token}` } });
+  const text = await res.text();
+  return { status: res.status, text, body: JSON.parse(text) as Record<string, unknown> };
+}
+
+describe('reinstall candidates — who sees a cross-org link (finding 1)', () => {
+  it('an org-A user never receives the org-B target id; a partner admin with both orgs does', async () => {
+    const t = await partnerWithUsers();
+    const target = await oldTarget(t.orgB, { systemUuid: UUID });
+    const source = await newSource(t.orgA, { systemUuid: UUID });
+    expect(await detect(source.id)).toMatchObject({ written: true, targetDeviceId: target.id });
+
+    const asOrgUser = await getJson(t.app, `/devices/${source.id}`, t.orgAToken);
+    expect(asOrgUser.status, asOrgUser.text).toBe(200);
+    expect(asOrgUser.body).toMatchObject({
+      possibleReplacementOfDeviceId: null, possibleReplacementReason: null, possibleReplacementDetectedAt: null,
+    });
+    expect(asOrgUser.text).not.toContain(target.id);
+    const listAsOrgUser = await getJson(t.app, `/devices?orgId=${t.orgA.orgId}`, t.orgAToken);
+    expect(listAsOrgUser.status, listAsOrgUser.text).toBe(200);
+    expect(listAsOrgUser.text).toContain(source.id);
+    expect(listAsOrgUser.text).not.toContain(target.id);
+
+    const asAdmin = await getJson(t.app, `/devices/${source.id}`, t.adminToken);
+    expect(asAdmin.status, asAdmin.text).toBe(200);
+    expect(asAdmin.body).toMatchObject({ possibleReplacementOfDeviceId: target.id, possibleReplacementReason: 'hardware' });
+    const listAsAdmin = await getJson(t.app, `/devices?orgId=${t.orgA.orgId}`, t.adminToken);
+    expect(listAsAdmin.text).toContain(target.id);
+  });
+
+  it('a same-org link stays visible to the org user', async () => {
+    const t = await partnerWithUsers();
+    const target = await oldTarget(t.orgA, { systemUuid: UUID });
+    const source = await newSource(t.orgA, { systemUuid: UUID });
+    await detect(source.id);
+    const asOrgUser = await getJson(t.app, `/devices/${source.id}`, t.orgAToken);
+    expect(asOrgUser.body).toMatchObject({ possibleReplacementOfDeviceId: target.id, possibleReplacementReason: 'hardware' });
+  });
+
+  it('a parked, flagged device assigned to a real org follows the same rule', async () => {
+    const t = await partnerWithUsers();
+    const target = await oldTarget(t.orgB, { systemUuid: UUID });
+    const source = await newSource(t.pool, { systemUuid: UUID }, { parked: true });
+    expect(await detect(source.id)).toMatchObject({ written: true, targetDeviceId: target.id });
+    // The assignment's effect on the row: the device (and its hardware row) now
+    // live in org A; the flag is untouched by the move.
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`UPDATE devices SET org_id = ${t.orgA.orgId}::uuid, site_id = ${t.orgA.siteId}::uuid WHERE id = ${source.id}::uuid`);
+      await tx.execute(sql`UPDATE device_hardware SET org_id = ${t.orgA.orgId}::uuid WHERE device_id = ${source.id}::uuid`);
+    });
+    expect(await flagOf(source.id)).toMatchObject({ target: target.id, reason: 'hardware' });
+
+    const asOrgUser = await getJson(t.app, `/devices/${source.id}`, t.orgAToken);
+    expect(asOrgUser.status, asOrgUser.text).toBe(200);
+    expect(asOrgUser.body.possibleReplacementOfDeviceId).toBeNull();
+    expect(asOrgUser.text).not.toContain(target.id);
+    const asAdmin = await getJson(t.app, `/devices/${source.id}`, t.adminToken);
+    expect(asAdmin.body.possibleReplacementOfDeviceId).toBe(target.id);
+  });
+
+  it('an org\'s tenant export never carries another org\'s device id; a same-org link is kept', async () => {
+    const t = await partnerWithUsers();
+    const crossTarget = await oldTarget(t.orgB, { systemUuid: UUID });
+    const crossSource = await newSource(t.orgA, { systemUuid: UUID });
+    await detect(crossSource.id);
+    const sameTarget = await oldTarget(t.orgA, {}, { hostname: 'SAME-ORG-HOST' });
+    const sameSource = await newSource(t.orgA, {}, { hostname: 'SAME-ORG-HOST' });
+    await detect(sameSource.id);
+    expect((await flagOf(crossSource.id)).target).toBe(crossTarget.id);
+    expect((await flagOf(sameSource.id)).target).toBe(sameTarget.id);
+
+    const { zipBuffer } = await buildOrgExportZip(t.orgA.orgId, randomUUID(), 'export@test');
+    const archive = await JSZip.loadAsync(zipBuffer);
+    const text = await archive.file('devices.json')!.async('string');
+    const rows = JSON.parse(text) as Array<Record<string, unknown>>;
+    expect(text).not.toContain(crossTarget.id);
+    expect(rows.find((r) => r.id === crossSource.id)).toMatchObject({
+      possible_replacement_of_device_id: null, possible_replacement_reason: null, possible_replacement_detected_at: null,
+    });
+    expect(rows.find((r) => r.id === sameSource.id)).toMatchObject({
+      possible_replacement_of_device_id: sameTarget.id, possible_replacement_reason: 'hostname',
+    });
+  });
+});
+
+describe('reinstall candidates — partner-wide clears and stale flags (finding 2)', () => {
+  it('decommissioning a target clears links from another org of the partner (after commit)', async () => {
+    const t = await partnerWithUsers();
+    const target = await oldTarget(t.orgA, { systemUuid: UUID });
+    const crossSource = await newSource(t.orgB, { systemUuid: UUID });
+    expect(await detect(crossSource.id)).toMatchObject({ written: true, targetDeviceId: target.id });
+
+    const res = await t.app.request(`/devices/${target.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${t.adminToken}` } });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const flag = await waitFor(() => flagOf(crossSource.id), (f) => f.target === null);
+    expect(flag).toEqual({ target: null, reason: null, detectedAt: null });
+  });
+
+  it('reaping a target clears a parked source\'s link (after commit)', async () => {
+    const tenant = await seedReattachTenant();
+    const target = await oldTarget(tenant.orgA, { systemUuid: UUID });
+    const parked = await newSource(tenant.pool, { systemUuid: UUID }, { parked: true });
+    expect(await detect(parked.id)).toMatchObject({ written: true, targetDeviceId: target.id });
+    await getTestDb().execute(sql`
+      UPDATE devices SET uninstall_intent_at = now() - interval '2 days', last_seen_at = now() - interval '3 days'
+       WHERE id = ${target.id}::uuid`);
+    const previous = process.env.UNINSTALL_INTENT_DECOMMISSION_HOURS;
+    process.env.UNINSTALL_INTENT_DECOMMISSION_HOURS = '0';
+    try {
+      await withSystemDbAccessContext(() => processReapUninstallIntent());
+    } finally {
+      if (previous === undefined) delete process.env.UNINSTALL_INTENT_DECOMMISSION_HOURS;
+      else process.env.UNINSTALL_INTENT_DECOMMISSION_HOURS = previous;
+    }
+    const flag = await waitFor(() => flagOf(parked.id), (f) => f.target === null);
+    expect(flag).toEqual({ target: null, reason: null, detectedAt: null });
+  });
+
+  it('clears a hardware flag whose target came back alive when nothing replaces it', async () => {
+    const tenant = await seedReattachTenant();
+    const target = await oldTarget(tenant.orgB, { systemUuid: UUID });
+    const source = await newSource(tenant.orgA, { systemUuid: UUID });
+    expect(await detect(source.id)).toMatchObject({ written: true });
+    await getTestDb().update(devices).set({ lastSeenAt: new Date(Date.now() + 1000) }).where(eq(devices.id, target.id));
+    expect(await detect(source.id, 'hardware_report')).toEqual({ written: true, kind: 'clear' });
+    expect(await flagOf(source.id)).toEqual({ target: null, reason: null, detectedAt: null });
+  });
+
+  it('keeps a #2764 hostname link to a target that is still online', async () => {
+    const tenant = await seedReattachTenant();
+    const live = await seedAgentDevice(tenant.orgA, { status: 'online', hostname: 'LOOKALIKE' });
+    await getTestDb().execute(sql`UPDATE devices SET created_at = now() - interval '30 days' WHERE id = ${live.id}::uuid`);
+    const source = await newSource(tenant.orgA, {}, { hostname: 'LOOKALIKE', possibleReplacementOfDeviceId: live.id });
+    await getTestDb().update(devices).set({ lastSeenAt: new Date(Date.now() + 1000) }).where(eq(devices.id, live.id));
+    expect(await detect(source.id)).toEqual({ written: false, why: 'kept_live_hostname_link' });
+    expect(await flagOf(source.id)).toMatchObject({ target: live.id, reason: 'hostname' });
+  });
+
+  it('never replaces a stale same-org flag with a cross-org candidate of the same rank (finding 4)', async () => {
+    const tenant = await seedReattachTenant();
+    const sameOrg = await oldTarget(tenant.orgA, { systemUuid: UUID });
+    const source = await newSource(tenant.orgA, { systemUuid: UUID });
+    expect(await detect(source.id)).toMatchObject({ written: true, targetDeviceId: sameOrg.id });
+    // The same-org target is decommissioned after the source enrolled (no
+    // longer qualifies) and a cross-org record with the same UUID exists.
+    await oldTarget(tenant.orgB, { systemUuid: UUID });
+    await getTestDb().execute(sql`UPDATE devices SET status = 'decommissioned', decommissioned_at = now() WHERE id = ${sameOrg.id}::uuid`);
+    expect(await detect(source.id)).toEqual({ written: false, why: 'kept_same_org' });
+    expect(await flagOf(source.id)).toMatchObject({ target: sameOrg.id, reason: 'hardware' });
+  });
+});
+
+describe('reinstall candidates — SQL qualifiers and order (finding 5)', () => {
+  it('ineligible matches never consume the per-evidence limit; the best is deterministic', async () => {
+    const tenant = await seedReattachTenant();
+    // More alive matches than the limit, then one silent one.
+    for (let i = 0; i < MAX_MATCHES_PER_EVIDENCE + 2; i += 1) {
+      const alive = await oldTarget(tenant.orgA, { systemUuid: UUID });
+      await getTestDb().update(devices).set({ lastSeenAt: new Date(Date.now() + 60_000) }).where(eq(devices.id, alive.id));
+    }
+    const silentOld = await oldTarget(tenant.orgA, { systemUuid: UUID });
+    const silentRecent = await oldTarget(tenant.orgA, { systemUuid: UUID });
+    await getTestDb().update(devices).set({ lastSeenAt: new Date(Date.now() - 60 * 60 * 1000) }).where(eq(devices.id, silentRecent.id));
+    await getTestDb().update(devices).set({ lastSeenAt: new Date(Date.now() - 5 * 60 * 60 * 1000) }).where(eq(devices.id, silentOld.id));
+    const source = await newSource(tenant.orgA, { systemUuid: UUID });
+    expect(await detect(source.id)).toMatchObject({ written: true, targetDeviceId: silentRecent.id });
+  });
+});
+
+describe('reinstall candidates — no retroactive fleet sweep (finding 3)', () => {
+  it('a hardware report from a device enrolled long ago triggers nothing', async () => {
+    const tenant = await seedReattachTenant();
+    await oldTarget(tenant.orgA, { systemUuid: UUID });
+    const established = await newSource(tenant.orgB, {});
+    await getTestDb().execute(sql`
+      UPDATE devices SET enrolled_at = now() - interval '30 days', created_at = now() - interval '29 days'
+       WHERE id = ${established.id}::uuid`);
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('agent', { deviceId: established.id, agentId: established.agentId, orgId: tenant.orgB.orgId, siteId: tenant.orgB.siteId, role: 'agent' } as never);
+      await next();
+    });
+    app.route('/agents', inventoryRoutes);
+    const res = await withDbAccessContext(agentRequestContext(tenant.orgB.orgId), async () =>
+      app.request(`/agents/${established.agentId}/hardware`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cpuModel: 'x', systemUuid: UUID }),
+      }));
+    expect(res.status).toBe(200);
+    await sleep(500);
+    expect((await flagOf(established.id)).target).toBeNull();
+    // The UUID is still stored: only the search is gated.
+    const [hw] = await getTestDb().select().from(deviceHardware).where(eq(deviceHardware.deviceId, established.id));
+    expect(hw!.systemUuid).toBe(UUID);
   });
 });
