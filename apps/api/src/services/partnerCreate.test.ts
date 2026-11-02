@@ -121,25 +121,22 @@ beforeEach(() => {
 });
 
 describe('createPartner', () => {
-  it('persists optional purchase intent in the partner creation transaction without granting entitlements', async () => {
-    const purchaseSelection = { catalogVersion: 'launch-2026-10' as const, capacity: 250, billingPeriod: 'annual' as const };
+  it('persists the signup intent in the partner creation transaction without granting entitlements', async () => {
+    const purchaseSelection = { intent: 'wisp' as const, offer: 'founding' };
     await createPartner({ orgName: 'Selected', adminEmail: 'selected@example.com', adminName: 'Admin', passwordHash: 'hashed', origin: { mcp: false }, status: 'pending', purchaseSelection });
     const partner = insertCalls.find((call) => (call.table as { __t: string }).__t === 'partners')!;
     expect(partner.values).toMatchObject({ purchaseSelection, plan: 'free', status: 'pending' });
     expect(partner.values).not.toHaveProperty('maxDevices');
   });
 
-  it.each([false, true])('persists the new-business default for omitted intent (MCP origin: %s) without granting entitlements', async (mcp) => {
+  it.each([false, true])('persists the cloud intent for omitted intent (MCP origin: %s) without granting entitlements', async (mcp) => {
     await createPartner({ orgName: 'Unselected', adminEmail: 'unselected@example.com', adminName: 'Admin', passwordHash: mcp ? null : 'hashed', origin: { mcp }, status: 'pending' });
     const partner = insertCalls.find((call) => (call.table as { __t: string }).__t === 'partners')!;
-    expect(partner.values).toMatchObject({
-      purchaseSelection: { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly' },
-      plan: 'free', status: 'pending',
-    });
+    expect(partner.values).toMatchObject({ purchaseSelection: { intent: 'cloud' }, plan: 'free', status: 'pending' });
     expect(partner.values).not.toHaveProperty('maxDevices');
   });
 
-  it.each([null, {}, { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly', priceId: 'price_untrusted' }])(
+  it.each([null, {}, { intent: 'hosting' }, { intent: 'cloud', priceId: 'price_untrusted' }])(
     'rejects malformed service intent before any tenant is created: %j', async (purchaseSelection) => {
       await expect(createPartner({ orgName: 'Invalid', adminEmail: 'invalid@example.com', adminName: 'Admin', passwordHash: 'hashed', origin: { mcp: false }, status: 'pending', purchaseSelection: purchaseSelection as never })).rejects.toThrow();
       expect(insertCalls).toEqual([]);
