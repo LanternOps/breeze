@@ -405,6 +405,17 @@ describe('contractDocumentService.freezeSignedAgreement (quote source)', () => {
     });
   });
 
+  // #10513: the certificate wording is versioned so signed evidence never
+  // changes after the fact; every new signature is stamped with the version
+  // this build renders, on both sources and every path.
+  it('stamps the current certificate version (2) on every signed agreement, both sources', async () => {
+    await freezeSignedAgreement({ ...base, render: authored('<p>x</p>') });
+    await freezeSignedAgreement({ ...requestBase, render: authored('<p>x</p>') });
+    await freezeSignedAgreement({ ...requestBase, render: authored('<p>x</p>'), externalBytes: { data: Buffer.from('%PDF-1.4 y'), mime: 'application/pdf' } });
+    expect(insertedValues).toHaveLength(3);
+    for (const row of insertedValues) expect(row.certificateVersion).toBe(2);
+  });
+
   it('request path (allowUnresolvedFallback=false): a quote-only token throws 422 AGREEMENT_VARIABLES_UNRESOLVED and inserts nothing', async () => {
     const err = await freezeSignedAgreement({ ...requestBase, render: authored('<p>{{client.name}} pays {{totals.monthly}}</p>') })
       .catch((e: unknown) => e);

@@ -47,6 +47,7 @@ import { sanitizeRichTextHtml } from './richTextSanitize';
 import { formatDate } from './quotePdf';
 import type { AuthContext } from '../middleware/auth';
 import { captureException } from './sentry';
+import { CURRENT_CERTIFICATE_VERSION } from './agreementCertificateVersion';
 
 // Only the three fields this service reads off a quote_blocks row — the caller
 // passes the full Drizzle rows, which satisfy this structurally.
@@ -383,6 +384,9 @@ export async function freezeSignedAgreement(input: FreezeSignedAgreementInput): 
       mime,
       byteSize: pdf.length,
       sha256,
+      // The certificate wording version this signature renders with, forever
+      // (#10513). Not evidence the client supplied, so not in `evidence`.
+      certificateVersion: CURRENT_CERTIFICATE_VERSION,
       signerName: evidence.signerName,
       signerEmail: evidence.signerEmail,
       signedAt: evidence.signedAt,

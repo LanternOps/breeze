@@ -178,6 +178,13 @@ export const contractDocuments = pgTable('contract_documents', {
   acceptanceMethod: varchar('acceptance_method', { length: 32 }),
   acceptanceReference: text('acceptance_reference'),
   recordedByUserId: uuid('recorded_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  // #10513: which wording version of the signature certificate this agreement
+  // renders (services/agreementCertificateVersion.ts). Stamped at signing,
+  // frozen by the append-only trigger. NULL = v1 (signed before the column
+  // existed); contract_documents_certificate_version_chk rejects a stored 1.
+  // The DB default 2 covers an insert from an instance still on older code
+  // during a rolling deploy; freezeSignedAgreement writes it explicitly.
+  certificateVersion: smallint('certificate_version').default(2),
   contentSha256: char('content_sha256', { length: 64 }),
   contentHashVersion: smallint('content_hash_version'),
   acceptanceRenderLocale: varchar('acceptance_render_locale', { length: 16 }),

@@ -43,7 +43,7 @@ import {
 import type { AuthContext } from '../../middleware/auth';
 import { portalRoutes } from '../../routes/portal';
 import { agreementsPublicRoutes } from '../../routes/agreementsPublic';
-import { loadCertifiedAgreementInput } from '../../services/agreementCertificate';
+import { buildCertificateContent, certificateText, loadCertifiedAgreementInput } from '../../services/agreementCertificate';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const PORTAL_PASSWORD = 'PortalPass123!';
@@ -375,7 +375,7 @@ describe('portal agreements (assembled portal router, breeze_app + Redis)', () =
     expect(await documentsFor(other.requestId)).toHaveLength(0);
   });
 
-  runDb('link first, then portal: the portal gets the 409 and the certificate keeps "emailed link"', async () => {
+  runDb('link first, then portal: the portal gets the 409 and the certificate keeps the signing-link channel (v2 wording, #10513)', async () => {
     const s = await seed();
     const users = await threeUsers(s);
     const { requestId, token } = await createAndSend(s, [users.recipientEmail]);
@@ -389,7 +389,11 @@ describe('portal agreements (assembled portal router, breeze_app + Redis)', () =
     expect((await viaPortal.json()).code).toBe('AGREEMENT_ALREADY_SIGNED');
     const docs = await documentsFor(requestId);
     expect(docs).toHaveLength(1);
-    expect((await loadCertifiedAgreementInput(docs[0]!.id as string))?.how).toMatchObject({ kind: 'customer', channel: 'emailed_link' });
+    const certified = (await loadCertifiedAgreementInput(docs[0]!.id as string))!;
+    expect(certified.how).toMatchObject({ kind: 'customer', channel: 'signing_link' });
+    // A new signature is stamped certificate v2 at signing: "via signing link".
+    expect(certified.certificateVersion).toBe(2);
+    expect(certificateText(buildCertificateContent(certified)).join('\n')).toContain('Electronically accepted via signing link');
   });
 
   runDb('portal and emailed link racing: exactly one answer wins, one signed agreement', async () => {
