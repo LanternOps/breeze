@@ -18,7 +18,7 @@ import { listContractDocuments, type ContractDocument } from '../../lib/api/cont
 import { StatusPill } from '../billing/shared/StatusPill';
 import { useStableT } from '@/lib/i18n/useStableT';
 import HashLink from '@/components/shared/HashLink';
-import WispLinkButton from '@/components/wisp/WispLinkButton';
+import WispTalkButton from '@/components/wisp/WispTalkButton';
 import { usePageItemName } from '../layout/usePageItemName';
 import { showToast } from '../shared/Toast';
 
@@ -184,6 +184,12 @@ export default function ContractWorkspace({ contractId }: Props) {
   }
 
   const { contract } = detail;
+  // #10361: a quote with no agreement block files no executed document, so the
+  // agreement-derived link above is absent; fall back to the contract's own
+  // source_quote_id link (named by GET /contracts/:id). Same pill, same rule:
+  // a quote that was never numbered has nothing to name.
+  const fromQuote = sourceQuote
+    ?? (detail.sourceQuote?.quoteNumber ? { id: detail.sourceQuote.id, number: detail.sourceQuote.quoteNumber } : null);
   // Drafts always edit; active contracts read-mostly with an Edit toggle.
   // A read-only viewer (no contracts:write) never sees the editor, even for a
   // draft — the server enforces it too, this just hides the write affordance.
@@ -210,16 +216,16 @@ export default function ContractWorkspace({ contractId }: Props) {
                 })}
               </HashLink>
             )}
-            {sourceQuote && (
-              <a href={`/billing/quotes/${sourceQuote.id}`} data-testid="contract-from-quote-pill"
+            {fromQuote && (
+              <a href={`/billing/quotes/${fromQuote.id}`} data-testid="contract-from-quote-pill"
                  className="inline-flex shrink-0 items-center rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted/70">
-                {t('agreements.contractPill.fromQuote', { number: sourceQuote.number })}
+                {t('agreements.contractPill.fromQuote', { number: fromQuote.number })}
               </a>
             )}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-        <WispLinkButton kind="contract" id={contract.id} orgId={contract.orgId} size="sm" />
+        <WispTalkButton kind="contract" id={contract.id} orgId={contract.orgId} label={contract.name} size="sm" />
         {canSendAgreement && (
           <button
             type="button"

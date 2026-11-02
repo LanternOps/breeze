@@ -117,6 +117,7 @@ import {
 } from './core';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { isAgentConnected, sendCommandToAgent } from '../agentWs';
+import { writeRouteAudit } from '../../services/auditEvents';
 
 const deviceCascadeDeleteTables = getDeviceCascadeDeleteTables();
 
@@ -683,6 +684,7 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     pendingUninstall?: boolean;
     /** Lock returns zero rows (device vanished between lookup and lock). */
     deviceMissing?: boolean;
+    detachedTopologyAlerts?: number;
   }
 
   function rigDeleteTransaction(opts: DeleteTxOptions = {}): string[] {
@@ -720,6 +722,9 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
               },
             ]);
           }
+          if (text.startsWith('UPDATE alerts SET device_id = NULL')) {
+            return pgResult([], opts.detachedTopologyAlerts ?? 0);
+          }
           // The purge refusal probe (deviceLifecycle.ts). Distinct from the
           // cascade's own `DELETE FROM device_commands` — only the probe names
           // the self_uninstall type.
@@ -738,6 +743,29 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     });
     return statements;
   }
+
+  it('audits site-owned alert history as detached on permanent delete', async () => {
+    rigDeviceLookup(DEVICE);
+    rigDeleteTransaction({ detachedTopologyAlerts: 2 });
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE', headers: { Authorization: 'Bearer t' },
+    });
+    expect(res.status).toBe(200);
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'device.permanent_delete',
+      details: { detachedTopologyAlerts: 2 },
+    }));
+  });
+
+  it('omits detachedTopologyAlerts from the audit when no site-owned alert was detached', async () => {
+    rigDeviceLookup(DEVICE);
+    rigDeleteTransaction({ detachedTopologyAlerts: 0 });
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE', headers: { Authorization: 'Bearer t' },
+    });
+    expect(res.status).toBe(200);
+    expect(await auditDetails()).not.toHaveProperty('detachedTopologyAlerts');
+  });
 
   it('hard delete detaches tickets (device_id -> NULL) instead of deleting them', async () => {
     rigDeviceLookup(DEVICE);

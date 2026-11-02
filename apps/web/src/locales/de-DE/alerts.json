@@ -84,7 +84,10 @@
       "resolved": "Gelöst",
       "suppressed": "Unterdrückt",
       "dismissed": "Verworfen"
-    }
+    },
+    "createPsaTicket": "PSA-Ticket erstellen",
+    "psaTicketRequested": "PSA-Ticket angefordert",
+    "failedToCreatePsaTicket": "PSA-Ticket konnte nicht angefordert werden"
   },
   "alertDetails": {
     "closePanel": "Panel schließen",
@@ -967,5 +970,10 @@
       "body": "Bestehende Vorlagen bleiben hier bearbeitbar und werden im nächsten Release umgewandelt.",
       "link": "Monitore öffnen"
     }
+  },
+  "subject": {
+    "label": "Betroffenes Objekt",
+    "backupWorkload": "Backup-Workload",
+    "topologySite": "Topologiestandort"
   }
 }

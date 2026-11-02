@@ -2,10 +2,12 @@
  * AI model registry W08 (#7606): the registry-native bootstrap behind
  * ensurePartnerCutover, against real Postgres.
  *  - a new partner gets one platform offering and a partner assignment per
- *    surface, exactly once (cutover row in the same transaction), and resolves;
- *  - a partner with one W02-copied BYOK connection routes every surface but
- *    patch_test through that connection (funding is kept); a soft-disconnected
- *    connection (#7700) is ignored;
+ *    configurable surface, exactly once (cutover row in the same transaction),
+ *    and resolves; platform-only patch_test gets no row and still resolves
+ *    (#9496);
+ *  - a partner with one W02-copied BYOK connection routes every surface through
+ *    that connection (funding is kept); a soft-disconnected connection (#7700)
+ *    is ignored;
  *  - rows that already exist are never overwritten; a failed bootstrap rolls
  *    back and leaves the partner un-rowed;
  *  - on self-host an unlisted ANTHROPIC_MODEL gets a platform row at the
@@ -16,7 +18,7 @@
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { AI_SURFACES } from '@breeze/shared';
+import { CONFIGURABLE_AI_SURFACES } from '@breeze/shared';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
@@ -98,8 +100,9 @@ describe.skipIf(!RUN)('registry bootstrap (W08)', () => {
     expect(offerings).toHaveLength(1);
     expect(offerings[0]).toMatchObject({ connectionId: null, platformModelId: platform.id, source: 'platform', enabled: true });
     const rows = await partnerAssignments(partnerId);
-    expect(rows).toHaveLength(AI_SURFACES.length);
-    expect(new Set(rows.map((r) => r.surface))).toEqual(new Set(AI_SURFACES));
+    expect(rows).toHaveLength(CONFIGURABLE_AI_SURFACES.length);
+    // No inert patch_test row: the resolver never reads one (#9496).
+    expect(new Set(rows.map((r) => r.surface))).toEqual(new Set(CONFIGURABLE_AI_SURFACES));
     expect(new Set(rows.map((r) => r.defaultOfferingId))).toEqual(new Set([offerings[0]!.id]));
     expect(rows.filter((r) => r.allowUserChoice).map((r) => r.surface)).toEqual(['chat']);
     expect(rows.every((r) => r.fallbackOfferingIds === null && r.fallbackMayCrossFunding === false)).toBe(true);
@@ -107,9 +110,12 @@ describe.skipIf(!RUN)('registry bootstrap (W08)', () => {
 
     expect(await resolveModel({ partnerId, orgId: org.id, surface: 'chat' }))
       .toMatchObject({ ok: true, funding: 'platform', logicalModel: platform.modelId });
+    // patch_test needs no partner row: it resolves the partnerless platform default.
+    expect(await resolveModel({ partnerId: null, orgId: null, surface: 'patch_test' }))
+      .toMatchObject({ ok: true, funding: 'platform' });
   });
 
-  it('bootstrap of a W02-copied BYOK connection routes chat through the connection; patch_test stays on the platform', async () => {
+  it('bootstrap of a W02-copied BYOK connection routes every configurable surface through the connection', async () => {
     delete process.env.ANTHROPIC_MODEL;
     const platform = await seedPricedPlatformModel({ modelId: `w08-default-${randomUUID()}`, isPlatformDefault: true });
     const partnerId = await newPartner();
@@ -123,12 +129,8 @@ describe.skipIf(!RUN)('registry bootstrap (W08)', () => {
     const byok = await sys(() => db.select().from(partnerAiModels).where(eq(partnerAiModels.connectionId, conn.id)));
     expect(byok).toHaveLength(1);
     expect(byok[0]).toMatchObject({ source: 'discovered', platformModelId: platform.id, modelId: platform.modelId, enabled: true });
-    const [platformOffering] = await sys(() => db.select().from(partnerAiModels)
-      .where(and(eq(partnerAiModels.partnerId, partnerId), isNull(partnerAiModels.connectionId))));
-    expect(rows).toHaveLength(AI_SURFACES.length);
-    for (const r of rows) {
-      expect(r.defaultOfferingId).toBe(r.surface === 'patch_test' ? platformOffering!.id : byok[0]!.id);
-    }
+    expect(rows).toHaveLength(CONFIGURABLE_AI_SURFACES.length);
+    for (const r of rows) expect(r.defaultOfferingId).toBe(byok[0]!.id);
   });
 
   it('a soft-disconnected connection is ignored: the partner is bootstrapped onto the platform', async () => {
@@ -164,7 +166,7 @@ describe.skipIf(!RUN)('registry bootstrap (W08)', () => {
       if (!exists) await bootstrapPartnerRegistryInTx(partnerId, { defaultModelId: platform.modelId });
     });
     const rows = await partnerAssignments(partnerId);
-    expect(rows).toHaveLength(AI_SURFACES.length);
+    expect(rows).toHaveLength(CONFIGURABLE_AI_SURFACES.length);
     expect(rows.find((r) => r.surface === 'chat')).toMatchObject({ defaultOfferingId: null, allowUserChoice: false });
   });
 
@@ -213,7 +215,7 @@ describe.skipIf(!RUN)('registry bootstrap (W08)', () => {
     const partnerId = await newPartner();
     const [a, b] = await Promise.all([ensurePartnerCutover(partnerId), ensurePartnerCutover(partnerId)]);
     expect(a && b).toBe(true);
-    expect(await partnerAssignments(partnerId)).toHaveLength(AI_SURFACES.length);
+    expect(await partnerAssignments(partnerId)).toHaveLength(CONFIGURABLE_AI_SURFACES.length);
     expect(await sys(() => db.select().from(partnerAiModels).where(eq(partnerAiModels.partnerId, partnerId)))).toHaveLength(1);
   });
 });

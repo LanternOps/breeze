@@ -395,7 +395,9 @@
         "message_other": "Eliminare {{count}} contratti in bozza? Vengono eliminate solo le bozze{{untouched}}; l'operazione non può essere annullata.",
         "untouchedSuffix": " — eventuali contratti attivi o in pausa nella selezione restano invariati",
         "confirm": "Elimina bozze"
-      }
+      },
+      "fromQuoteReady": "Da {{number}} · pronto da attivare",
+      "fromQuoteReadyUnnumbered": "Da un preventivo · pronto da attivare"
     },
     "contractPax8Drawer": {
       "title": "Collega un abbonamento Pax8",
@@ -861,8 +863,10 @@
       "expiryDefaultHint_other": "Predefinito: {{count}} giorni, da Impostazioni di fatturazione → Accordi.",
       "autoReminderHint_one": "I promemoria automatici vengono inviati ogni giorno, fino a un massimo di {{max}}.",
       "autoReminderHint_other": "I promemoria automatici vengono inviati ogni {{count}} giorni, fino a un massimo di {{max}}.",
-      "expiryDefaultUnavailable": "Impossibile caricare la scadenza predefinita dalle Impostazioni di fatturazione; viene mostrato il valore predefinito integrato.",
+      "expiryDefaultUnavailable": "Impossibile caricare la scadenza predefinita dalle Impostazioni di fatturazione. Lascia la data vuota e il predefinito verrà applicato alla creazione dell’accordo.",
+      "expiryBlankHint": "Lascia vuoto per usare il predefinito da Impostazioni di fatturazione → Accordi.",
       "label": "Etichetta (facoltativo)",
+      "labelHint": "Solo interno. I clienti vedono il nome del modello.",
       "createDraft": "Crea bozza e anteprima",
       "creating": "Creazione…",
       "preview": {
@@ -1667,6 +1671,14 @@
         "attachError": "Impossibile allegare il file di prova.",
         "downloadError": "Impossibile scaricare il file di prova.",
         "tooLarge": "Questo file supera i 10 MB. Scegli un file più piccolo."
+      },
+      "generatedContracts": {
+        "title_one": "Questo preventivo ha creato {{count}} contratto",
+        "title_other": "Questo preventivo ha creato {{count}} contratti",
+        "draftHint_one": "{{count}} bozza non fattura nulla finché non viene attivata. Verificala e attivala per avviare la fatturazione.",
+        "draftHint_other": "{{count}} bozze non fatturano nulla finché non vengono attivate. Verificale e attivale per avviare la fatturazione.",
+        "ready": "Pronto da attivare",
+        "unavailable": "Impossibile caricare i contratti creati da questo preventivo. Ricarica la pagina per riprovare."
       }
     },
     "currency": {

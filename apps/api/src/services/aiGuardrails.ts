@@ -82,7 +82,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // Wisp W07 (spec §3 "acts alone"): the auto-admit specialist kinds, derived
   // from SPECIALIST_KIND_POLICY (leaf data module).
   launch_specialist: [...AUTO_ADMIT_SPECIALIST_KINDS],
-  manage_policy_feature_link: ['describe'],
+  manage_policy_feature_link: ['describe', 'list'], // list is a pure read (#10412); add/update/remove keep their tiers
   // EDR response actions (#8167 W03, spec §4.10): a scan is non-disruptive,
   // so it runs without approval. The tool's base tier is 3, so every OTHER
   // action — isolate, release, and any value not offered yet (no adapter
@@ -268,7 +268,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // #6268: stopping an IOC sweep is the safe direction (queued scans are
   // cancelled, running ones finish), so it auto-executes with an audit row.
   ioc_hunt: ['cancel_sweep'],
-  manage_groups: ['add_devices', 'remove_devices'],
+  // manage_groups add_devices/remove_devices moved to TIER3_ACTIONS (#10149, QW9).
   // manage_maintenance_windows mutations disabled — managed via configuration policies
   manage_automations: ['enable', 'disable'],
   // manage_alert_rules is read-only; author conditions via manage_monitor_definitions
@@ -311,7 +311,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
 // entry does not belong here; leaving a read out only costs one lightweight
 // prompt.
 export const TIER2_READONLY_ACTIONS: Record<string, string[]> = {
-  manage_policy_feature_link: ['describe'],
+  manage_policy_feature_link: ['describe', 'list'],
   // Full-control W14 PR B (#6784): what the next billing run would bill — no write anywhere.
   manage_contracts: ['preview_invoice'],
   execute_command: ['event_logs_list', 'file_list', 'list_processes'],
@@ -522,7 +522,10 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // apt-get/dnf, journalctl, tmutil, brew) as root/LocalSystem with a 90-minute
   // ceiling, and some of its handlers cannot be undone (`Previous
   // Installations` deletes Windows.old, which is the rollback path).
-  system_cleanup: ['run'],
+  // `cancel` (#10161) mirrors POST …/run/:cleanupRunId/cancel, a requireMfa()
+  // route that mutates: the MFA-route invariant (TOOL_EXTRA_PERMISSIONS note)
+  // puts it at Tier 3.
+  system_cleanup: ['run', 'cancel'],
   manage_startup_items: ['disable', 'enable'],
   manage_scheduled_tasks: ['run', 'disable', 'enable'],
   // Fleet tools — Tier 3 actions (require user approval)
@@ -538,7 +541,10 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // resolveApprovalScope) and an IOC rule import (publishes a rule set every
   // policy using it then scans with).
   ioc_hunt: [IOC_HUNT_RUN_ACTION, 'import_iocs'],
-  manage_groups: ['create', 'update', 'delete'],
+  // #10149 (QW9): membership writes are supervised. Membership feeds agent run
+  // scope (triggers.deviceGroupIds), group-targeted config/peripheral policies,
+  // and schedules peripheral reconciliation for every touched device.
+  manage_groups: ['create', 'update', 'delete', 'add_devices', 'remove_devices'],
   // create/update/delete added W01-D3 (#6755): handler-disabled today
   // (aiToolsFleet.ts:2041, managed via configuration policies), same pattern
   // as manage_patches.setup_auto_approval above — escalated so re-enabling
@@ -924,7 +930,9 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // maintenance operations a tech could run by hand on the box, and nothing in
   // it is externally binding or financial. Its irreversibility (Windows.old)
   // is a property of the ACTION the tech picked, not of the approval class.
-  system_cleanup: ['run'],
+  // `cancel` (#10161) fails one run on one device and reaches no one: the
+  // requester approves.
+  system_cleanup: ['run', 'cancel'],
   manage_startup_items: ['disable', 'enable'],
   manage_scheduled_tasks: ['run', 'disable', 'enable'],
   manage_configuration_policy: ['create', 'update', 'delete'],
@@ -935,7 +943,10 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_deliverables: ['apply_template'],
   manage_deployments: ['create', 'start', 'cancel'],
   manage_patches: ['install', 'setup_auto_approval'],
-  manage_groups: ['create', 'update', 'delete'],
+  // #10149 (QW9): membership writes are supervised. Membership feeds agent run
+  // scope (triggers.deviceGroupIds), group-targeted config/peripheral policies,
+  // and schedules peripheral reconciliation for every touched device.
+  manage_groups: ['create', 'update', 'delete', 'add_devices', 'remove_devices'],
   // create/update/delete added W01-D3 (#6755): handler-disabled today, same
   // supervised (not four_eyes) class as the sibling fleet tools above —
   // nothing here is externally binding or financial.
@@ -1863,6 +1874,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   read_artifact: { resource: 'ai_agents', action: 'read' },
   // Same permission as the editor's GET /orgs/:orgId/trust-page.
   get_trust_page_status: { resource: 'organizations', action: 'read' },
+  // #9763: same permission as GET /orgs/partners/me/settings-inheritance(/orgs) (ORGS_READ).
+  get_partner_settings_inheritance: { resource: 'organizations', action: 'read' },
   // Tool Catalog W03 (#5218): flows reuse the automations permissions.
   draft_flow: { resource: 'automations', action: 'write' },
   validate_flow: { resource: 'automations', action: 'read' },
@@ -1953,6 +1966,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     // /devices/:id/filesystem/system-cleanup/list (DEVICES_EXECUTE).
     list: { resource: 'devices', action: 'execute' },
     run: { resource: 'devices', action: 'execute' },
+    // POST …/run/:cleanupRunId/cancel (DEVICES_EXECUTE).
+    cancel: { resource: 'devices', action: 'execute' },
     status: { resource: 'devices', action: 'read' },
   },
   file_operations: {
@@ -4559,6 +4574,10 @@ export function buildApprovalDescription(
     case 'manage_groups':
       if (action === 'create') parts.push(`Create ${input.type ?? 'static'} device group "${input.name}"`);
       else if (action === 'delete') parts.push(`Delete device group ${(input.groupId as string)?.slice(0, 8)}...`);
+      else if (action === 'add_devices' || action === 'remove_devices') {
+        const count = Array.isArray(input.deviceIds) ? input.deviceIds.length : 0;
+        parts.push(`${action === 'add_devices' ? 'Add' : 'Remove'} ${count} device(s) ${action === 'add_devices' ? 'to' : 'from'} device group ${(input.groupId as string)?.slice(0, 8)}...`);
+      }
       else parts.push(`Group ${action}: ${(input.groupId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
       break;
 

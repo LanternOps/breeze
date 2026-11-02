@@ -1337,7 +1337,7 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Aucun ticket ne correspond à votre recherche ou à vos filtres.",
-          "noTickets": "La synchronisation des tickets n'est pas encore disponible ; les tickets PSA ne sont donc pas importés.",
+          "noTickets": "Aucun billet d’alerte pour le moment. Activez les billets d’alerte sur la connexion ConnectWise Manage associée.",
           "title": "Aucun ticket PSA"
         },
         "filters": {
@@ -1358,8 +1358,41 @@
           "waiting": "En attente"
         },
         "ticketCount": "{{filtered}} de {{total}} tickets",
-        "title": "Tickets PSA",
+        "title": "Billets d’alerte",
         "unlinked": "Non lié"
+      },
+      "PsaAlertTicketingActivity": {
+        "title": "Activité des billets",
+        "refresh": "Actualiser",
+        "redrive": "Relancer",
+        "loading": "Chargement de l’activité des billets…",
+        "loadFailed": "Impossible de charger l’activité des billets. Actualisez pour réessayer.",
+        "actionFailed": "Impossible de mettre à jour l’activité des billets.",
+        "actionSucceeded": "Activité des billets mise à jour.",
+        "help": "Relancer reprend les créations échouées et les alertes sans entreprise liée. Marquer comme traité arrête le traitement sans modifier le billet PSA.",
+        "empty": "Aucun billet ne nécessite votre attention.",
+        "viewAlert": "Voir l’alerte",
+        "createAnyway": "Créer quand même",
+        "markHandled": "Marquer comme traité",
+        "duplicateWarning": "Un billet existe peut-être déjà dans le PSA. Vérifiez d’abord : cette unique nouvelle tentative peut créer un doublon.",
+        "confirmCreate": "Créer un billet supplémentaire",
+        "cancel": "Annuler",
+        "previous": "Précédent",
+        "next": "Suivant",
+        "page": "Page {{page}} sur {{total}}",
+        "states": {
+          "never_attempted": "En attente",
+          "create_in_flight": "Création en cours",
+          "created": "Créé",
+          "create_outcome_unknown": "Résultat de création inconnu",
+          "rejected": "Refusé",
+          "failed": "Échec",
+          "needs_attention": "Attention requise",
+          "handled": "Traité",
+          "skipped_no_company": "Aucune entreprise liée",
+          "skipped_ambiguous_company": "Lien d’entreprise ambigu",
+          "skipped_resolved_before_create": "Résolu avant la création"
+        }
       }
     },
     "webhooks": {
@@ -1434,6 +1467,10 @@
           "ticketCreated": {
             "description": "Déclenché lors de la création d’un ticket.",
             "label": "Ticket créé"
+          },
+          "ticketMerged": {
+            "description": "Déclenché lorsqu’un ticket est fusionné avec un autre ticket.",
+            "label": "Ticket fusionné"
           },
           "ticketCommented": {
             "description": "Déclenché lorsqu’un commentaire ou une note est ajouté à un ticket.",

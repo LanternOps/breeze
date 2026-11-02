@@ -1337,7 +1337,7 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "No hay entradas que coincidan con su búsqueda o filtros.",
-          "noTickets": "La sincronización de tickets aún no está disponible, por lo que no se importan tickets de PSA.",
+          "noTickets": "Aún no hay tickets de alertas. Activa la creación de tickets en la conexión vinculada de ConnectWise Manage.",
           "title": "Sin tickets de PSA"
         },
         "filters": {
@@ -1358,8 +1358,41 @@
           "waiting": "En espera"
         },
         "ticketCount": "{{filtered}} de entradas {{total}}",
-        "title": "Tickets de PSA",
+        "title": "Tickets de alertas",
         "unlinked": "Desvinculado"
+      },
+      "PsaAlertTicketingActivity": {
+        "title": "Actividad de tickets",
+        "refresh": "Actualizar",
+        "redrive": "Reintentar",
+        "loading": "Cargando actividad de tickets…",
+        "loadFailed": "No se pudo cargar la actividad de tickets. Actualiza para reintentar.",
+        "actionFailed": "No se pudo actualizar la actividad de tickets.",
+        "actionSucceeded": "Actividad de tickets actualizada.",
+        "help": "Reintentar vuelve a procesar las creaciones fallidas y las alertas sin empresa vinculada. Marcar como atendido detiene el procesamiento sin cambiar el ticket del PSA.",
+        "empty": "Ningún ticket requiere atención.",
+        "viewAlert": "Ver alerta",
+        "createAnyway": "Crear de todos modos",
+        "markHandled": "Marcar como atendido",
+        "duplicateWarning": "Puede que ya exista un ticket en el PSA. Revísalo primero: este único reintento puede crear un duplicado.",
+        "confirmCreate": "Crear un ticket más",
+        "cancel": "Cancelar",
+        "previous": "Anterior",
+        "next": "Siguiente",
+        "page": "Página {{page}} de {{total}}",
+        "states": {
+          "never_attempted": "En cola",
+          "create_in_flight": "Creando",
+          "created": "Creado",
+          "create_outcome_unknown": "Resultado de creación desconocido",
+          "rejected": "Rechazado",
+          "failed": "Fallido",
+          "needs_attention": "Requiere atención",
+          "handled": "Atendido",
+          "skipped_no_company": "Sin empresa vinculada",
+          "skipped_ambiguous_company": "Vínculo de empresa ambiguo",
+          "skipped_resolved_before_create": "Resuelto antes de crear"
+        }
       }
     },
     "webhooks": {
@@ -1434,6 +1467,10 @@
           "ticketCreated": {
             "description": "Se activa cuando se crea un ticket.",
             "label": "Ticket creado"
+          },
+          "ticketMerged": {
+            "description": "Se activa cuando un ticket se combina con otro ticket.",
+            "label": "Ticket combinado"
           },
           "ticketCommented": {
             "description": "Se activa cuando se agrega un comentario o una nota a un ticket.",

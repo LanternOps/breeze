@@ -754,6 +754,32 @@ describe('AI routes', () => {
     });
   });
 
+  describe('GET /ai/admin/tool-executions refusal series (#10411)', () => {
+    const makeChainMock = (result: unknown[]) => {
+      const chain: any = {};
+      for (const m of ['from', 'innerJoin', 'leftJoin', 'where', 'groupBy', 'orderBy', 'limit']) chain[m] = vi.fn(() => chain);
+      chain.then = (resolve: any, reject: any) => Promise.resolve(result).then(resolve, reject);
+      return chain;
+    };
+
+    it('reports platform refusals as their own daily series, apart from approval rejections', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(makeChainMock([{ status: 'rejected', count: 1 }, { status: 'refused', count: 3 }]))
+        .mockReturnValueOnce(makeChainMock([]))
+        .mockReturnValueOnce(makeChainMock([{ date: '2026-10-29', completed: '0', failed: '0', rejected: '1', refused: '3' }]))
+        .mockReturnValueOnce(makeChainMock([]));
+
+      const res = await app.request(`/ai/admin/tool-executions?orgId=${ORG_ID}`, { headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.summary.byStatus).toEqual({ rejected: 1, refused: 3 });
+      expect(body.timeSeries).toEqual([{ date: '2026-10-29', completed: 0, failed: 0, rejected: 1, refused: 3 }]);
+      const seriesFields = vi.mocked(db.select).mock.calls.at(-2)![0] as Record<string, unknown>;
+      expect(seriesFields).toHaveProperty('refused');
+    });
+  });
+
   describe('M4-D2 pinned-site filter on the admin analytics reads', () => {
     const makeChainMock = (result: unknown[]) => {
       const chain: any = {};

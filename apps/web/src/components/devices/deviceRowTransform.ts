@@ -1,7 +1,14 @@
 import type { DeviceRole } from '@/lib/deviceRoles';
 import { i18n } from '@/lib/i18n';
 import { asRecord, toPercent } from '@/lib/deviceUtils';
-import type { Device, DeviceStatus, OSType } from './DeviceList';
+import type { Device, DeviceStatus, OSType, WarrantyStatus } from './DeviceList';
+
+const WARRANTY_STATUSES: ReadonlySet<string> = new Set<WarrantyStatus>([
+  'active', 'expiring', 'expired', 'unknown', 'subscription_active',
+]);
+function isWarrantyStatus(value: unknown): value is WarrantyStatus {
+  return typeof value === 'string' && WARRANTY_STATUSES.has(value);
+}
 
 /** A device row exactly as `GET /devices` returns it (untyped on the wire). */
 export type ApiDeviceRow = Record<string, unknown>;
@@ -129,6 +136,11 @@ export function toDeviceListRow(raw: ApiDeviceRow): DeviceListRow {
           asRecord(asRecord(d.hardwareHealthSummary)?.counts) ?? asRecord(d.hardwareHealthSummary)!,
         ).filter((entry): entry is [string, number] =>
           typeof entry[1] === 'number' && Number.isFinite(entry[1]))) : null,
+    // Warranty column (#9863): both null when the device has no warranty
+    // record. Status is checked against the known values so an unexpected API
+    // value renders as a dash rather than an unlabelled badge.
+    warrantyEndDate: typeof d.warrantyEndDate === 'string' ? d.warrantyEndDate : null,
+    warrantyStatus: isWarrantyStatus(d.warrantyStatus) ? d.warrantyStatus : null,
     // RDS per-session helper mode (Task 12): validated against the known
     // values so an unexpected API value falls back to null rather than
     // leaking through the type — Tasks 13/14 gate the session picker on

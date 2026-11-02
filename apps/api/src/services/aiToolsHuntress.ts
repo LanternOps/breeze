@@ -25,6 +25,7 @@ import {
   SITE_SCOPE_EMPTY_NOTE,
 } from './aiToolsSiteScope';
 import { scheduleHuntressSync } from '../jobs/huntressSync';
+import { resolveReadableToolOrgScope } from './aiToolWriteOrg';
 import { offlineStatusSqlList, resolvedStatusSqlList } from './huntressConstants';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -491,9 +492,14 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
       // has no site_id, so narrow by the in-scope device-id set, exactly like
       // get_huntress_incidents. Unmapped agents (device_id NULL) belong to no
       // site and are excluded for a restricted caller (fail closed).
+      // #10396: the device set spans every org the caller reaches, never an
+      // arbitrary `accessibleOrgIds[0]` pick.
       if (auth.allowedSiteIds && auth.canAccessSite) {
-        const queryOrgId = requestedOrgId ?? auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
-        const allowed = queryOrgId ? await resolveSiteAllowedDeviceIds(queryOrgId, auth) : [];
+        const orgScope = resolveReadableToolOrgScope(auth, requestedOrgId);
+        if (!orgScope.ok) {
+          return JSON.stringify({ error: orgScope.error });
+        }
+        const allowed = await resolveSiteAllowedDeviceIds(orgScope.orgIds, auth);
         if (!allowed || allowed.length === 0) {
           return JSON.stringify({ agents: [], total: 0, limit, offset, mapping, scopeNote: SITE_SCOPE_EMPTY_NOTE });
         }

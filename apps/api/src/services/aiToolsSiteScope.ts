@@ -46,6 +46,17 @@ export function siteAllowlistOf(auth: AuthContext): readonly string[] | undefine
 export const SITE_SCOPE_EMPTY_NOTE =
   'No devices are within your site access — this result is limited by site-based access restrictions, not necessarily an absence of data.';
 
+/**
+ * An org-id column restricted to one org or to a list of orgs (#10396). The
+ * list is the caller's own reach from `resolveReadableToolOrgScope`; callers
+ * must not pass an empty list (it would read as "no orgs", which `inArray`
+ * renders as a false predicate, but a caller should have refused earlier).
+ */
+export function orgIdIn(column: PgColumn, orgIds: string | readonly string[]): SQL {
+  if (typeof orgIds === 'string') return eq(column, orgIds);
+  return orgIds.length === 1 ? eq(column, orgIds[0]!) : inArray(column, [...orgIds]);
+}
+
 /** Exact device scope is independent of site scope. Empty means no devices. */
 export function runFrozenDeviceIds(auth: AuthContext): string[] | null {
   return auth.allowedDeviceIds ? [...auth.allowedDeviceIds] : null;
@@ -109,16 +120,22 @@ export function filterToDeviceScope<T>(
  * restricted on neither axis (unrestricted — no narrowing, and no query); an
  * empty array means restricted with nothing in scope, which is NOT the same
  * thing and must never be collapsed into `null` by a caller.
+ *
+ * `orgId` may be a list (a read across every org the caller reaches, #10396):
+ * the scan then covers those orgs in one query. The list must come from the
+ * caller's own reach (`resolveReadableToolOrgScope`); it is not access-checked
+ * here.
  */
 export async function resolveSiteAllowedDeviceIds(
-  orgId: string,
+  orgId: string | readonly string[],
   auth: AuthContext,
 ): Promise<string[] | null> {
   if (siteAllowlistOf(auth) === undefined && !auth.allowedDeviceIds) return null;
+  if (typeof orgId !== 'string' && orgId.length === 0) return [];
   const orgDevices = await db
     .select({ id: devices.id, siteId: devices.siteId })
     .from(devices)
-    .where(eq(devices.orgId, orgId));
+    .where(orgIdIn(devices.orgId, orgId));
   return orgDevices
     .filter((d) => !deviceSiteDenied(auth, d.siteId, d.id))
     .map((d) => d.id);

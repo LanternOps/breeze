@@ -32,6 +32,8 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
+// To guard a file, add its line here; there is no total to bump (#10030).
+// MIN_GUARDED_FILES below is a floor that additions never touch.
 const TARGET_GLOBS = [
   // Partner-wide groups: policy assignment mutations surface outcomes.
   'src/components/configurationPolicies/PartnerGroupAssignmentSection.tsx',
@@ -102,7 +104,7 @@ const TARGET_GLOBS = [
   'src/components/wisp/WispLinksPanel.tsx',
   'src/components/wisp/WispNeedsYou.tsx',
   'src/components/wisp/WispEntityPicker.tsx',
-  'src/components/wisp/WispLinkButton.tsx',
+  'src/components/wisp/WispTalkButton.tsx',
   'src/components/settings/WispPartnerSettingsCard.tsx',
   'src/components/wisp/WispHomeContent.tsx',
   'src/components/wisp/WispHomeThread.tsx',
@@ -170,7 +172,7 @@ const TARGET_GLOBS = [
   'src/components/toolSources/ToolTestDrawer.tsx',
   // Execution plane W05 (#5716) — the per-org AI external-processing consent
   // switch and the attach-artifact-to-ticket control. Both mutate through
-  // runAction; the count assertion below was bumped by exactly these two.
+  // runAction.
   'src/components/settings/OrgAiProcessingToggle.tsx',
   'src/components/aiAgents/AttachArtifactToTicket.tsx',
   // Account board (W02): org create and restore go through runAction in the
@@ -606,6 +608,13 @@ const TARGET_GLOBS = [
   'src/components/aiOperator/StartRecipeForm.tsx',
 ];
 
+// Ratchet floor, not a total: adding an entry above never touches this line.
+// Lower it only in a PR that deliberately un-guards files (deletes a guarded
+// component, moves one to the backlog); leave a little headroom when you do,
+// so two removals in the queue at once don't both claim the same new floor.
+// Raising it is optional housekeeping.
+const MIN_GUARDED_FILES = 286;
+
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
 const allowAbsolute = new Set(RUN_ACTION_ALLOWLIST.map((a) => resolve(REPO_ROOT, a.file)));
 
@@ -895,158 +904,33 @@ describe('no silent mutations in targeted set', () => {
   const program = ts.createProgram({ rootNames: programFiles, options: parsedConfig.options });
   const checker = program.getTypeChecker();
 
-  it('finds files to scan', () => {
-    // 106: 99 since #3989 added OrganizationsPage.tsx, plus MergeOrgModal.tsx
-    // (org-lifecycle Wave 3), plus ArchiveOrgModal.tsx (org-lifecycle Wave 5),
-    // plus SsoProvidersPage.tsx and ReportBuilder.tsx (2026-08-28 pre-release sweep),
-    // plus AlertVerdictBadge.tsx (P2-1 Task 15), plus
-    // AiAgentSchedulesSection.tsx (P2-2 Task 13, #4189), plus
-    // AccountingMappingWorkbench.tsx (QuickBooks entity mapping, Task 6), plus
-    // ImpactPage.tsx (P2-6 Task 10, #4193), plus ImpactWeightsDrawer.tsx
-    // (P2-6 Task 11, #4193), plus AccountingSyncCard.tsx (QuickBooks invoice
-    // push, Phase C Task 7), plus AccountingConnectionPanel.tsx (QuickBooks payment
-    // pull-back, Phase D Task 7 — the pull-payments PATCH and the "Sync now"
-    // enqueue joined four pre-existing unguarded mutations in that file), plus
-    // AiAgentGraduationPanel.tsx (P2-5 Task 20, #4192). ApprovalsInbox.tsx was
-    // already guarded before P2-5 — Task 21's promote mutation needed no list
-    // edit. Also plus BulkContactImport.tsx, ContactImportPreviewTable.tsx and
-    // ContactsCard.tsx (#3258 W04, the contacts tab and its CSV importer), plus
-    // TrustActionPage.tsx (partner trust probation, #4549 — the TOTP-confirmed
-    // approve/suspend action), plus TrustQueue.tsx (partner trust probation,
-    // #4549 W07 — the admin trust queue page's approve/suspend actions).
-    // NOTE: merge-base held 108; this branch added 1 (TrustActionPage.tsx) and
-    // main added 3 in parallel, so the true merged count was 113. A prior
-    // commit added 1 more (TrustQueue.tsx) to reach 114. A prior commit added 1
-    // more (AssignmentsTab.tsx) to reach 115. A prior commit added 3 more
-    // (#4767 — ExecutionHistory.tsx, ExecutionDetails.tsx,
-    // ScriptExecutionsPage.tsx) to reach 118. This commit adds 1 more
-    // (AutomationRunHistory.tsx), so the count was 119. Task 13 (#5051) adds
-    // 1 more (AgentCreateFlow.tsx), so the count is now 120 — bump it
-    // deliberately on every merge, never by resolving the hunk.
-    // #4622 W04 adds ManualAssetModal.tsx and #5213 W02 adds
-    // AddNetworkAssetModal.tsx, so the count is now 125. #5612 W03 adds
-    // lib/api/scriptProposals.ts (request-changes + promote), so the count is
-    // now 126. #5612 W05 Tasks 23-24 add ScriptAuthoringPage.tsx, so the
-    // count is now 127. Fleet Designer W02 (#5652) adds
-    // devices/DeviceFunctionField.tsx, so the count is now 128. Fleet
-    // Designer W03 (#5653) adds fleetDesign/FleetDesignPage.tsx and
-    // fleetDesign/ApplyDrawer.tsx, so the count was 130. Account board (W02,
-    // #5723) replaces the deleted OrganizationsPage.tsx entry with two files
-    // (OrganizationsBoardPage.tsx, useManualOrder.ts), so the count is now 131.
-    // Monitor Activity tab (#5287 W03 / #5290) adds MonitorActivityTab.tsx, so
-    // the count is now 132. Agreements W03 (#5825) moves three contracts files
-    // into components/agreements/ and DELETES ContractDocumentsSection.tsx
-    // (contract detail embeds the shared list instead), so the count is 131.
-    // Execution plane W05 (#5716) adds two adopters (AiRunCard attach-to-ticket
-    // and the per-org external-processing switch), so the count is 133.
-    // Tool catalog W01 PR C (#5216) took the count to 138; sweep G1-4 added
-    // MonitorEditor.tsx and DeployMonitorDialog.tsx (140); network device page
-    // truth W04 (#5992) adds the network asset single writer: 140 → 141.
-    // Network device page truth W05 adds the probe hook: 141 → 142.
-    // #4050 adds settings/ProfilePage.tsx (account security): 142 → 143.
-    // Partner sending domains W05 adds lib/api/sendingDomains.ts and
-    // settings/PartnerSendingDomainTab.tsx: 143 → 145.
-    // W01 settings consolidation (#6224): PartnerBillingSettings.tsx ->
-    // PartnerBillingSettingsPage.tsx (net 0) then + CatalogDefaultsCard.tsx:
-    // 145 → 146.
-    // Bare-metal W05a adds backup/VMRestoreWizard.tsx (rebuild engine): 146 → 147.
-    // Outbound email templates (PR1 settings UI) add EmailTemplatesTab.tsx
-    // and EmailTemplateEditor.tsx: 147 → 149.
-    // Disk Cleanup v2 W01 adds DeviceFilesystemTab.tsx: 149 → 150.
-    // Work types (#4628 W01) add WorkTypesCard.tsx: 150 → 151.
-    // Disk Cleanup v2 W03 adds filesystem/CleanupPanel.tsx: 151 → 152.
-    // Disk Cleanup v2 W04 adds filesystem/SystemCleanupPanel.tsx: 152 → 153.
-    // Billing profiles W02 adds Rates and the org assignment writer: 153 → 155.
-    // DR plan / BMR token create (#6495) adds DRPlanEditor.tsx and
-    // RecoveryBootstrapTab.tsx: 155 → 157.
-    // #6263 W01 adds SecurityScanManager.tsx, ThreatList.tsx, ThreatDetail.tsx: 157 → 160.
-    // Accept on behalf adds quotes/AcceptOnBehalfDialog.tsx: 160 → 161.
-    // Decline on behalf (#6634) adds quotes/DeclineOnBehalfDialog.tsx: 161 → 162.
-    // Accept-on-behalf evidence (#6633) adds quotes/AcceptanceEvidenceControl.tsx: 162 → 163.
-    // Metric anomaly episodes W04 adds devices/AnomalyEpisodeCard.tsx: 163 → 164.
-    // Business reports (#3198 W03) add reports/ReportTemplates.tsx: 164 → 165.
-    // Alerting W05c2 adopts the shared feature-link mutation hook: 165 → 166.
-    // W05c2 adds NeedsConversionPanel, ConversionPendingBanner, MonitorConversionAdmin: 166 → 169.
-    // Persistent conversion history adds ConversionLedger (Undo): 169 → 170.
-    // LegacyRulesTable (per-rule convert) joins the guard: 170 → 171.
-    // Alert workflows typed filter (W05c2 Task 9) adds automations/AutomationEditPage.tsx: 171 → 172.
-    // W05c2 Tasks 10 + 13 add devices/DeviceMonitoringTab.tsx and monitoring/RecommendedMonitors.tsx: 172 → 174.
-    // #3531 adds ApiKeysPage, QuarantinedDevices, AutomationsPage, PoliciesPage: 174 → 178.
-    // #3531 sweep adds BaselineList, RemoteToolsPage, NetworkBaselinesPanel,
-    // sensitiveData/PoliciesTab, EnrollmentKeyManager, UsersPage, WebhooksPage: 178 → 185.
-    // Backup provider integration (W03 #6011) adds three adopters: 185 → 188.
-    // 188 -> 189: ExternalBackupCard.tsx (W03 Task 12, #6011) added to TARGET_GLOBS.
-    // #5313 adds monitors/CreateMonitorForm.tsx and settings/SiteDetailPage.tsx: 189 → 191.
-    // Network results replace the deleted create form with three mutation adopters: 191 → 193.
-    // Xero W01 renames the two QuickBooks components and adds the previously
-    // unlisted AccountingCustomerImport.tsx: 193 → 194.
-    // 194 -> 195: topology/RelationshipExclusionAction.tsx (#5998 Task 9).
-    // 195 -> 197: topology/MonitoringPolicyPanel.tsx + InterfaceTelemetrySettings.tsx (#5999 Task 11).
-    // Xero W02 Task 11 adds AccountingTenantPicker.tsx: 197 → 198.
-    // Xero W02 Task 12 adds AccountingSettingsStep.tsx: 198 → 199.
-    // AI Suggested Fixes W1 adds remediation/RemediationSuggestionsPanel.tsx: 199 → 200.
-    // 200 -> 202: devices/AssignParkedDeviceDialog.tsx and
-    // devices/UnassignedDevicesPage.tsx (parked-device assignment).
-    // Multi-org report series W03 adds reports/series/seriesApi.ts: 202 → 203.
-    // Multi-org report series W04 adds reports/series/CombineDialog.tsx: 203 → 204.
-    // Backup storage key revocation card (StorageKeyRevocationCard.tsx): 204 → 205.
-    // AI model registry W01 #7599 adds admin/AiModels.tsx: 205 → 206.
-    // AI model registry W04 #7602 Task 11 replaces PartnerAiProviderTab.tsx with
-    // aiModels/{PartnerAiModelsTab,ConnectionDrawer,ResidencySwitch}.tsx: 206 → 208.
-    // Task 12 adds aiModels/{ModelsCard,OfferingDrawer}.tsx: 208 → 210.
-    // Task 13 adds aiModels/FeatureDefaultsCard.tsx: 210 → 211.
-    // Task 14 adds aiModels/OrgModelDefaultsCard.tsx: 211 → 212.
-    // W05 #7603 Task 13 adds ai/AiContinuationPrompt.tsx: 212 -> 213.
-    // W06 #7604 Task 14 adds aiModels/ManualModelForm.tsx: 213 → 214.
-    // (connectionForms/*.tsx hold no fetch calls: ConnectionDrawer performs the connection mutations.)
-    // W02 autopay adds the settings writer and shared transport.
-    // M365 identity-first W03 #7913 adds M365ConfirmTenantPanel.tsx and the
-    // two Customer Graph cards that host it: 216 → 219.
-    // Ticket-assignment Pushover adds settings/TicketPushoverSettings.tsx: 219 → 220.
-    // Reliability baselines (#5876) add devices/ReliabilityBaseline{Dialog,Section}.tsx: 220 → 222.
-    // DeviceSettingsModal.tsx (tag/name/site save moved to runAction) makes 223.
-    // #8385 adds backup/VaultDashboard.tsx and backup/VaultConfigDialog.tsx: 223 → 225.
-    // Caller verification W04 (#6354) adds lib/api/callerVerification.ts and
-    // callerVerification/{VerifyCallerModal,ContactVerificationDrawer,CallerVerificationPolicyForm}.tsx: 225 → 229.
-    // Endpoint messaging W1 (#8741) adds lib/endpointMessages.ts and endpointMessages/SendMessageDialog.tsx: 229 → 231.
-    // Trust Center W1 (#8768) adds TrustCenterTab, TrustStatusCard, TrustPublishDialog: 231 → 234.
-    // Trust Center sections (Task 16) add Controls/Content/Documents sections: 234 → 237.
-    // Trust Center W2 (#8770 W02a) pre-lists six W2 sections, TrustTemplateSettings and OrganizationForm: 237 → 245.
-    // #8330 adds filters/SavedFilterList.tsx: 245 → 246.
-    // Trust Center W03a (#8771) adds TrustEmbedSection: 246 → 247.
-    // Business hours (#8973) adds BusinessHoursCard/Form/Holidays/ApplyDialog: 247 → 251.
-    // Sweep 2026-10-23 adds PeripheralPolicyForm + OrganizationScopePanel: 251 → 253.
-    // Wisp W04b (#9916) adds WispToggle/WispGrantStepUpModal/WispThreadHeader/WispThreadAttachments (+4 = 257).
-    // Wisp W05a (#9911) adds WispConcernsPanel/wispConcernsApi (+2 = 259).
-    // Partner settings W2 (#9788) Task 18 adds partnerSettings/usePartnersMeUnit.ts: 259 → 260.
-    // Partner settings W2 (#9788) Task 20 adds partnerSettings/units/{callerVerificationUnit,loginBrandingUnit}.ts: 260 → 262.
-    // Partner settings W2 (#9788) Task 21 adds partnerSettings/units/trustCenterUnit.ts: 262 → 263.
-    // Partner settings W2 (#9788) Task 22 adds partnerSettings/units/{aiFeatureDefaultsUnit,aiDataPolicyUnit}.ts: 263 → 265.
-    // Partner settings W2 (#9788) Task 24 adds settings/KnownGuestsSettings.tsx: 265 → 266.
-    // Wisp W06b (#9918) adds WispThreadPage/WispGrantPauseControl: 266 → 268;
-    // bulk site move (#9796) adds devices/bulkSiteMove.ts (+1 = 269).
-    // #6958 PR D adds software/BuiltinPackagesPanel.tsx: 269 → 270.
-    // Operator Recipe Library R1b (#6171) adds aiOperator/RecipeCard.tsx and StartRecipeForm.tsx: 270 → 272.
-    // IOC sweeps W05 PR C (#6263) adds security/sweeps/sweepsApi.ts: 272 → 273.
-    // Wisp W08b (#9921) adds wispLinksApi, wispPartnerSettingsApi, WispHomePage, WispLinksPanel,
-    // WispNeedsYou, WispEntityPicker, WispLinkButton, WispPartnerSettingsCard: 273 → 281; then
-    // WispHomeContent and WispHomeThread (G3): 281 → 283.
-    // AI surface cohesion W05 (#10136) deletes WispToggle (the grant decides the panel's voice): 283 → 282.
-    // Tool Catalog W4 flows/api.ts: 282 → 283.
-    // Physical placement W1-D1 (#8134) adds devices/PhysicalPlacementCard.tsx: 283 → 284.
-    // Partner-wide groups W4 adds creation and partner group assignments: 284 → 286.
-    // #9865 deletes devices/CreateGroupModal.tsx (286 → 285); the alert ticketing card (#10535) adds PsaAlertTicketingCard.tsx: 285 → 286.
-    expect(absoluteFiles.length).toBe(286);
-    for (const f of absoluteFiles) {
-      expect(() => statSync(f)).not.toThrow();
-    }
+  it('finds files to scan, and every guarded file exists', () => {
+    // No exact total (#10030). The old `toBe(<n>)` was bumped by every PR that
+    // guarded a file, so any two such PRs collided in the merge queue: a
+    // textual conflict when their bumps differed, a red merged group when they
+    // matched. Adding an entry now touches nothing else. The floor below is a
+    // ratchet against the list shrinking (a bad conflict resolution, or an
+    // entry deleted to silence its scan): only a PR that deliberately un-guards
+    // files below it has to lower it. A deleted or renamed source file fails
+    // here, by name.
+    expect(
+      new Set(TARGET_GLOBS).size,
+      'TARGET_GLOBS shrank below MIN_GUARDED_FILES — restore the dropped entries, ' +
+        'or lower the floor in the same PR that deliberately un-guards a file',
+    ).toBeGreaterThanOrEqual(MIN_GUARDED_FILES);
+    const missing = TARGET_GLOBS.filter((_, i) => {
+      try {
+        return !statSync(absoluteFiles[i]).isFile();
+      } catch {
+        return true;
+      }
+    });
+    expect(missing, 'TARGET_GLOBS entries with no file on disk').toEqual([]);
   });
 
   it('lists every guarded file exactly once', () => {
-    // A duplicated entry inflates the count above without adding coverage: the
-    // file is scanned twice and the next person to bump the counter inherits an
-    // off-by-one that is invisible unless they dedupe the list by hand. Assert
-    // it mechanically instead, and name the offenders so the fix is obvious.
+    // A duplicated entry is scanned twice without adding coverage and makes the
+    // list look longer than it is. Name the offenders so the fix is obvious.
     const seen = new Set<string>();
     const duplicates = TARGET_GLOBS.filter((rel) => {
       if (seen.has(rel)) return true;
@@ -1054,7 +938,6 @@ describe('no silent mutations in targeted set', () => {
       return false;
     });
     expect(duplicates).toEqual([]);
-    expect(seen.size).toBe(absoluteFiles.length);
   });
 
   for (const absPath of absoluteFiles) {

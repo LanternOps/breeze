@@ -1746,6 +1746,11 @@
     "on": "activé",
     "multiBootMachinesTuckExpectedOffline": "Machines multi-boot : cacher les profils de démarrage attendus hors ligne sous leur homologue en ligne sous forme de fines bandes. Off = liste de plats.",
     "collapseLinkedInactiveProfiles": "Réduire les profils inactifs associés",
+    "exportCsv": "Exporter en CSV",
+    "exportCsvSelected": "Exporter en CSV ({{count}} sélectionnés)",
+    "exportingCsv": "Exportation…",
+    "exportCsvFailed": "Impossible d’exporter la liste des appareils. Réessayez.",
+    "exportCsvAttentionPartial": "Exportation terminée, mais les alertes et billets ouverts n’ont pas pu être chargés pour certains appareils; ces cellules indiquent « unavailable ».",
     "columns": "Colonnes",
     "visibleInOrder": "Visible (dans l’ordre)",
     "moveUp": "Avancez",
@@ -1878,7 +1883,10 @@
     "moveToSite": "Déplacer vers un site",
     "moveSelectedToSite": "Déplacer vers un site",
     "moveSiteMixedOrgs": "Les appareils sélectionnés appartiennent à plusieurs organisations",
-    "moveSiteOverCap": "Sélectionnez au maximum {{count}} appareils à déplacer en une fois"
+    "moveSiteOverCap": "Sélectionnez au maximum {{count}} appareils à déplacer en une fois",
+    "addToGroup": "Ajouter au groupe…",
+    "removeFromGroup": "Retirer du groupe…",
+    "groupMembershipOverCap": "Sélectionnez au maximum {{count}} appareils pour modifier l’appartenance au groupe en une fois"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Impossible de récupérer les journaux des périphériques",
@@ -4715,5 +4723,25 @@
     "membersError": "Impossible de charger les membres du groupe.",
     "retry": "Réessayer",
     "emptyMembers": "Aucun appareil dans ce groupe."
+  },
+  "bulkGroupMembership": {
+    "titleAdd": "Ajouter au groupe",
+    "titleRemove": "Retirer du groupe",
+    "selectionSummary": "Appareils sélectionnés : {{n}} · Organisation : {{org}}",
+    "groupLabel": "Groupe statique",
+    "selectGroup": "Sélectionnez un groupe",
+    "loadingGroups": "Chargement des groupes…",
+    "noGroups": "Aucun groupe statique de cette organisation ne peut recevoir cette sélection.",
+    "scopeHint": "Seuls les groupes statiques de cette organisation sont affichés. Un groupe de site n’apparaît que si tous les appareils sélectionnés sont sur ce site. Les groupes dynamiques ne sont pas affichés : leurs règles déterminent les membres.",
+    "cancel": "Annuler",
+    "saving": "Enregistrement…",
+    "submitAdd": "Ajouter les appareils",
+    "submitRemove": "Retirer les appareils",
+    "failedToLoadGroups": "Impossible de charger les groupes",
+    "failedToUpdate": "Impossible de mettre à jour l’appartenance au groupe",
+    "addResult": "{{group}} : {{added}} ajoutés, {{skipped}} déjà dans le groupe",
+    "removeResult": "{{group}} : {{removed}} retirés, {{notMember}} n’étaient pas dans le groupe",
+    "removeResultForbidden": "{{group}} : {{removed}} retirés, {{notMember}} n’étaient pas dans le groupe. Non retirés (aucun accès au site de l’appareil) : {{devices}}",
+    "andMore": "{{names}} et {{n}} autres"
   }
 }

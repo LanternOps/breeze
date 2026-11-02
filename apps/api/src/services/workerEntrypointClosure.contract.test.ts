@@ -270,6 +270,8 @@ function parseRegistrySource(): RegistryEntrySource[] {
 // contract, not a shared fixture, so an edit that silently drops/renames an
 // entry can't slip past both suites at once).
 const EXPECTED_NAMES = [
+  'psaTicketingWorker',
+  'psaTicketingReconciler',
   'topologyReconcileWorker',
   'topologyCollectionRetentionWorker',
   'topologyOutboxWorker',

@@ -1746,6 +1746,11 @@
     "on": "en",
     "multiBootMachinesTuckExpectedOffline": "Máquinas de arranque múltiple: coloque los perfiles de arranque fuera de línea esperados debajo de su hermano en línea como tiras delgadas. Desactivado = lista plana.",
     "collapseLinkedInactiveProfiles": "Contraer perfiles inactivos vinculados",
+    "exportCsv": "Exportar CSV",
+    "exportCsvSelected": "Exportar CSV ({{count}} seleccionados)",
+    "exportingCsv": "Exportando…",
+    "exportCsvFailed": "No se pudo exportar la lista de dispositivos. Inténtalo de nuevo.",
+    "exportCsvAttentionPartial": "Se exportó, pero no se pudieron cargar las alertas y los tickets abiertos de algunos dispositivos; esas celdas dicen \"unavailable\".",
     "columns": "columnas",
     "visibleInOrder": "Visible (en orden)",
     "moveUp": "Subir",
@@ -1878,7 +1883,10 @@
     "moveToSite": "Mover a sitio",
     "moveSelectedToSite": "Mover a sitio",
     "moveSiteMixedOrgs": "Los dispositivos seleccionados pertenecen a más de una organización",
-    "moveSiteOverCap": "Seleccione como máximo {{count}} dispositivos para mover a la vez"
+    "moveSiteOverCap": "Seleccione como máximo {{count}} dispositivos para mover a la vez",
+    "addToGroup": "Agregar al grupo…",
+    "removeFromGroup": "Quitar del grupo…",
+    "groupMembershipOverCap": "Seleccione como máximo {{count}} dispositivos para cambiar la membresía de grupo a la vez"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "No se pudieron recuperar los registros del dispositivo",
@@ -4715,5 +4723,25 @@
     "membersError": "No se pudieron cargar los miembros del grupo.",
     "retry": "Reintentar",
     "emptyMembers": "No hay dispositivos en este grupo."
+  },
+  "bulkGroupMembership": {
+    "titleAdd": "Agregar al grupo",
+    "titleRemove": "Quitar del grupo",
+    "selectionSummary": "Dispositivos seleccionados: {{n}} · Organización: {{org}}",
+    "groupLabel": "Grupo estático",
+    "selectGroup": "Seleccione un grupo",
+    "loadingGroups": "Cargando grupos…",
+    "noGroups": "Ningún grupo estático de esta organización puede recibir esta selección.",
+    "scopeHint": "Solo se muestran los grupos estáticos de esta organización. Un grupo de sitio aparece solo si todos los dispositivos seleccionados están en ese sitio. Los grupos dinámicos no se muestran: sus reglas deciden quién es miembro.",
+    "cancel": "Cancelar",
+    "saving": "Guardando…",
+    "submitAdd": "Agregar dispositivos",
+    "submitRemove": "Quitar dispositivos",
+    "failedToLoadGroups": "No se pudieron cargar los grupos",
+    "failedToUpdate": "No se pudo actualizar la membresía del grupo",
+    "addResult": "{{group}}: {{added}} agregados, {{skipped}} ya estaban en el grupo",
+    "removeResult": "{{group}}: {{removed}} quitados, {{notMember}} no estaban en el grupo",
+    "removeResultForbidden": "{{group}}: {{removed}} quitados, {{notMember}} no estaban en el grupo. No se quitaron (sin acceso al sitio del dispositivo): {{devices}}",
+    "andMore": "{{names}} y {{n}} más"
   }
 }

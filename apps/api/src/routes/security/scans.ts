@@ -169,6 +169,10 @@ scansRoutes.get(
       finishedAt: scan.completedAt?.toISOString() ?? null,
       threatsFound: scan.threatsFound ?? 0,
       durationSeconds: scan.duration ?? null,
+      // The sweep this scan belongs to, and the rule-set errors it reported
+      // (e.g. `rule_set_changed` when a pinned set was republished) (#10049).
+      sweepId: scan.sweepId ?? null,
+      ruleSetErrors: Array.isArray(scan.ruleSetErrors) ? scan.ruleSetErrors : null,
       // #10057 gap 2: set on a Scan now; while `queued` it is waiting for a slot.
       queueExpiresAt: scan.queueExpiresAt?.toISOString() ?? null
     }));

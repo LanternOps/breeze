@@ -77,17 +77,12 @@ func handlePamRequestNotify(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.NewSuccessResult(map[string]any{"shown": false, "notShownReason": "not_tracked"}, time.Since(start).Milliseconds())
 	}
 
-	var title, body string
-	switch payload.Outcome {
-	case pamNotifyOutcomeDenied:
-		reason := ""
-		if payload.Reason != nil {
-			reason = *payload.Reason
+	title, body := h.pamOutcomeNotice(payload.RequestID, entry, state, "", reason, func() (string, string) {
+		if state == ipc.PromptStateDenied {
+			return pamCopyDenied(entry.Program, entry.SupportName, reason)
 		}
-		title, body = pamCopyDenied(entry.Program, entry.SupportName, reason)
-	default: // pamNotifyOutcomeExpired; validated above
-		title, body = pamCopyExpired(entry.Program, entry.SupportName)
-	}
+		return pamCopyExpired(entry.Program, entry.SupportName)
+	})
 	if err := h.notifyPamUser(title, body, entry.WinSession); err != nil {
 		// The command still succeeds: the server never retries it, and the
 		// outcome is final, so the entry stays removed. The result says what

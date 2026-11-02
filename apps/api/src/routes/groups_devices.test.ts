@@ -64,7 +64,9 @@ vi.mock('../services/groupMembership', async () => {
     // /:id/devices used to carry inline. These tests are that logic's
     // coverage, exercised against the already-mocked `../db` / `../db/schema`.
     validateManualMembershipDevices: actual.validateManualMembershipDevices,
-    addManualGroupMemberships: actual.addManualGroupMemberships
+    addManualGroupMemberships: actual.addManualGroupMemberships,
+    // Spied so the route tests can assert WHICH ids reach the delete (site gate).
+    removeManualGroupMemberships: vi.fn(actual.removeManualGroupMemberships)
   };
 });
 
@@ -143,6 +145,8 @@ vi.mock('../middleware/auth', () => ({
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { validateFilter } from '../services/filterEngine';
+import { writeRouteAudit } from '../services/auditEvents';
+import { removeManualGroupMemberships } from '../services/groupMembership';
 
 function makeGroup(overrides: Record<string, unknown> = {}) {
   return {
@@ -442,6 +446,194 @@ describe('groups routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // POST /:id/devices/remove - Remove several devices from a static group (#9866)
+  // ----------------------------------------------------------------
+  describe('POST /groups/:id/devices/remove', () => {
+    const DEVICE_ID_3 = '99999999-9999-4999-8999-999999999999';
+    const OTHER_SITE = '88888888-8888-4888-8888-888888888888';
+
+    function mockGroup(overrides: Record<string, unknown> = {}) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeGroup(overrides)])
+          })
+        })
+      } as any);
+    }
+
+    function mockDeviceSites(rows: Array<{ id: string; siteId: string }>) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) })
+      } as any);
+    }
+
+    function mockDelete(removedIds: string[]) {
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue(removedIds.map((deviceId) => ({ deviceId })))
+        })
+      } as any);
+    }
+
+    const post = (deviceIds: string[]) => app.request(`/groups/${GROUP_ID}/devices/remove`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ deviceIds })
+    });
+
+    it('removes the members in one statement and reports each device', async () => {
+      mockGroup();
+      mockDelete([DEVICE_ID, DEVICE_ID_2]);
+
+      const res = await post([DEVICE_ID, DEVICE_ID_2, DEVICE_ID_3]);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.results).toEqual([
+        { deviceId: DEVICE_ID, outcome: 'removed' },
+        { deviceId: DEVICE_ID_2, outcome: 'removed' },
+        { deviceId: DEVICE_ID_3, outcome: 'not_member' }
+      ]);
+      expect(body.data.summary).toEqual({ removed: 2, notMember: 1, forbidden: 0, total: 3 });
+      expect(db.delete).toHaveBeenCalledTimes(1);
+      expect(schedulePeripheralPolicyDevice).toHaveBeenCalledTimes(2);
+      expect(schedulePeripheralPolicyDevice).toHaveBeenCalledWith(DEVICE_ID, 'manual_membership_changed');
+      expect(schedulePeripheralPolicyDevice).toHaveBeenCalledWith(DEVICE_ID_2, 'manual_membership_changed');
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        orgId: ORG_ID,
+        action: 'device_group.device.remove',
+        resourceId: GROUP_ID,
+        details: expect.objectContaining({ removedCount: 2, deviceIds: [DEVICE_ID, DEVICE_ID_2] })
+      }));
+    });
+
+    it('treats a repeated id as one device', async () => {
+      mockGroup();
+      mockDelete([DEVICE_ID]);
+      const res = await post([DEVICE_ID, DEVICE_ID]);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.results).toEqual([{ deviceId: DEVICE_ID, outcome: 'removed' }]);
+      expect(body.data.summary.total).toBe(1);
+    });
+
+    it("refuses, per device, a device outside a site-bound group's site (same rule as the single DELETE)", async () => {
+      mockGroup({ siteId: SITE_ID });
+      mockDeviceSites([{ id: DEVICE_ID, siteId: SITE_ID }, { id: DEVICE_ID_2, siteId: OTHER_SITE }]);
+      mockDelete([DEVICE_ID]);
+
+      const res = await post([DEVICE_ID, DEVICE_ID_2]);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.results).toEqual([
+        { deviceId: DEVICE_ID, outcome: 'removed' },
+        { deviceId: DEVICE_ID_2, outcome: 'forbidden' }
+      ]);
+      expect(body.data.summary).toEqual({ removed: 1, notMember: 0, forbidden: 1, total: 2 });
+      // The refused device never reaches the delete (not just reported as refused).
+      expect(removeManualGroupMemberships).toHaveBeenCalledWith(expect.objectContaining({ deviceIds: [DEVICE_ID] }));
+    });
+
+    function restrictCallerToSites(allowedSiteIds: string[]) {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'organization',
+          orgId: ORG_ID,
+          partnerId: null,
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID
+        });
+        c.set('permissions', { allowedSiteIds });
+        return next();
+      });
+    }
+
+    it('refuses, per device, a device the site-restricted caller cannot reach', async () => {
+      restrictCallerToSites([SITE_ID]);
+      mockGroup({ siteId: SITE_ID });
+      // DEVICE_ID_2 reads back absent (another org, or deleted): refused, never removed.
+      mockDeviceSites([{ id: DEVICE_ID, siteId: SITE_ID }]);
+      mockDelete([DEVICE_ID]);
+
+      const res = await post([DEVICE_ID, DEVICE_ID_2]);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.results).toEqual([
+        { deviceId: DEVICE_ID, outcome: 'removed' },
+        { deviceId: DEVICE_ID_2, outcome: 'forbidden' }
+      ]);
+      expect(removeManualGroupMemberships).toHaveBeenCalledWith(expect.objectContaining({ deviceIds: [DEVICE_ID] }));
+    });
+
+    it('403s, without writing, a site-restricted caller on a group bound to a site outside their list', async () => {
+      restrictCallerToSites([SITE_ID]);
+      mockGroup({ siteId: OTHER_SITE });
+
+      const res = await post([DEVICE_ID]);
+
+      expect(res.status).toBe(403);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('403s a site-restricted caller on an org-wide group (fails closed, like the single DELETE)', async () => {
+      restrictCallerToSites([SITE_ID]);
+      mockGroup({ siteId: null });
+
+      const res = await post([DEVICE_ID]);
+
+      expect(res.status).toBe(403);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('writes nothing when no requested device is removable', async () => {
+      mockGroup({ siteId: SITE_ID });
+      mockDeviceSites([{ id: DEVICE_ID, siteId: OTHER_SITE }]);
+
+      const res = await post([DEVICE_ID]);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.summary).toEqual({ removed: 0, notMember: 0, forbidden: 1, total: 1 });
+      expect(db.delete).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('rejects a dynamic group without writing', async () => {
+      mockGroup({ type: 'dynamic' });
+      const res = await post([DEVICE_ID]);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('dynamic group');
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    // Partner-owned groups (read-only membership, unknown-id for org users) are
+    // pinned for this route in groups_partnerOwned.test.ts with the other
+    // membership writes.
+
+    it('rejects an empty list and more ids than the cap, without writing', async () => {
+      mockGroup();
+      expect((await post([])).status).toBe(400);
+      mockGroup();
+      const tooMany = Array.from({ length: 501 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
+      expect((await post(tooMany)).status).toBe(400);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('accepts exactly the cap (500 ids)', async () => {
+      mockGroup();
+      mockDelete([]);
+      const atCap = Array.from({ length: 500 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
+      const res = await post(atCap);
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.summary).toEqual({ removed: 0, notMember: 500, forbidden: 0, total: 500 });
     });
   });
 

@@ -84,7 +84,10 @@
       "resolved": "Çözüldü",
       "suppressed": "Bastırıldı",
       "dismissed": "Görevden alındı"
-    }
+    },
+    "createPsaTicket": "PSA bileti oluştur",
+    "psaTicketRequested": "PSA bileti istendi",
+    "failedToCreatePsaTicket": "PSA bileti istenemedi"
   },
   "alertDetails": {
     "closePanel": "Paneli kapat",
@@ -967,5 +970,10 @@
       "body": "Mevcut şablonlar burada düzenlenebilir kalır ve bir sonraki sürümde dönüştürülür.",
       "link": "Monitörleri aç"
     }
+  },
+  "subject": {
+    "label": "Etkilenen öğe",
+    "backupWorkload": "Yedekleme iş yükü",
+    "topologySite": "Topoloji sitesi"
   }
 }

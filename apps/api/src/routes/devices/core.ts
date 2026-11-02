@@ -14,6 +14,7 @@ import {
   deviceHardware,
   deviceHardwareHealth,
   deviceReliability,
+  deviceWarranty,
   deviceNetwork,
   deviceMetrics,
   deviceGroupMemberships,
@@ -747,7 +748,8 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'software_compliance_status', 'software_policy_audit', 'software_remediation_requests',
   // Remote access
   'remote_sessions', 'tunnel_sessions',
-  // Monitoring & logs
+  // Monitoring & logs. Site-owned topology alerts detach before this sweep;
+  // only device-owned alerts still reference the device and are deleted.
   'service_process_check_results', 'alerts', 'agent_logs', 'script_executions',
   // #5291 W04 - probe results now name the device they ran FROM.
   'network_monitor_results',
@@ -1284,7 +1286,8 @@ coreRoutes.get(
     const fetchLimit = isCursorMode ? limit + 1 : limit;
     const offset = isCursorMode ? 0 : Math.max(0, ((Number.parseInt(query.page ?? '1', 10) || 1) - 1) * limit);
 
-    const rows = await db
+    const includeWarranty = query.includeWarranty === 'true';
+    const listQuery = db
       .select({
         id: devices.id,
         orgId: devices.orgId,
@@ -1365,6 +1368,12 @@ coreRoutes.get(
         // Hardware & RAID rollup (#6854 W04) — null when no report yet.
         hardwareHealth: deviceHardwareHealth.health,
         hardwareHealthSummary: deviceHardwareHealth.summary,
+        // #9863 — Warranty column. Stored status, the same value the device's
+        // Warranty card shows; null when no warranty row exists yet.
+        ...(includeWarranty ? {
+          warrantyEndDate: deviceWarranty.warrantyEndDate,
+          warrantyStatus: deviceWarranty.status,
+        } : {}),
         // RDS per-session helpers (plan 2 heartbeat ingest) — UI hint only,
         // see the truthy-guard comment in heartbeat.ts. Tasks 13/14 gate the
         // session picker on this being 'on-demand' at the list-row level.
@@ -1392,7 +1401,13 @@ coreRoutes.get(
       .from(devices)
       .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
       .leftJoin(deviceReliability, eq(devices.id, deviceReliability.deviceId))
-      .leftJoin(deviceHardwareHealth, eq(devices.id, deviceHardwareHealth.deviceId))
+      .leftJoin(deviceHardwareHealth, eq(devices.id, deviceHardwareHealth.deviceId));
+    // The default list keeps its existing joins and query budget. Warranty
+    // is opt-in, backed by a unique device_id index (manual assets cannot
+    // match); the org-scoped table's RLS also applies to this join.
+    const rows = await (includeWarranty
+      ? listQuery.leftJoin(deviceWarranty, eq(devices.id, deviceWarranty.deviceId))
+      : listQuery)
       .where(whereCondition)
       .orderBy(...orderBy)
       .limit(fetchLimit)
@@ -1589,6 +1604,8 @@ coreRoutes.get(
         reliabilityProvisional: d.reliabilityProvisional === true,
         hardwareHealth: d.hardwareHealth ?? null,
         hardwareHealthSummary: d.hardwareHealthSummary ?? null,
+        warrantyEndDate: d.warrantyEndDate ?? null,
+        warrantyStatus: d.warrantyStatus ?? null,
         helperLifecycleMode: d.helperLifecycleMode ?? null,
         // Selected above but historically the mapper is where list fields
         // get silently dropped (#800/#1273/#2138/#5701) — the #7068 stuck-
@@ -2585,7 +2602,7 @@ coreRoutes.delete(
     // #2787 review — omits the whole spread while the dissolve ran anyway.
     let linkGroupId: string | null = null;
     let linkGroupDissolved = false;
-    let removedTopologyAlerts = 0;
+    let detachedTopologyAlerts = 0;
     let screenshotStorageKeys: string[] = [];
 
     // Delegated to `purgeRemovedDevice` (services/deviceLifecycle.ts) since
@@ -2653,7 +2670,7 @@ coreRoutes.delete(
       screenshotStorageKeys = purge.screenshotStorageKeys;
       linkGroupId = purge.linkGroupId;
       linkGroupDissolved = purge.linkGroupDissolved;
-      removedTopologyAlerts = purge.removedTopologyAlerts;
+      detachedTopologyAlerts = purge.detachedTopologyAlerts;
     } catch (err: unknown) {
       if (err instanceof DeviceLifecycleError) {
         return c.json({ error: err.message, code: err.code }, err.status);
@@ -2731,8 +2748,8 @@ coreRoutes.delete(
         // silently lost their grouping.
         ...(linkGroupId ? { linkGroupId, linkGroupDissolved } : {}),
         // Site-owned topology alerts this device originated (M3-D6) — after a
-        // move-org they belong to ANOTHER org, so record that they went.
-        ...(removedTopologyAlerts > 0 ? { removedTopologyAlerts } : {}),
+        // move-org they belong to ANOTHER org; record the detached provenance.
+        ...(detachedTopologyAlerts > 0 ? { detachedTopologyAlerts } : {}),
       }
     });
 

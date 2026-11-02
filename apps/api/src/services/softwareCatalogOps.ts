@@ -7,7 +7,7 @@
  * the REST handlers and the tools run the same code.
  */
 import { z } from 'zod';
-import { and, eq, sql, or, inArray, isNull, type SQL } from 'drizzle-orm';
+import { and, eq, sql, or, inArray, isNotNull, isNull, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   softwareCatalog,
@@ -46,6 +46,28 @@ export function isImmutableBuiltin(row: { builtinPackageKey?: string | null }, a
   return row.builtinPackageKey != null && auth.scope !== 'system';
 }
 export const BUILTIN_PACKAGE_IMMUTABLE = 'Built-in packages are managed by Breeze and cannot be changed';
+
+/**
+ * The NULL-org (partner-owned) catalog rows that a catalog list or search ORs
+ * in next to the caller's own org rows. RLS backs each branch, so none can
+ * reach another partner's rows:
+ * - integration built-ins (Huntress/S1), for every scope (2026-07-02 policy);
+ * - partner scope: every partner-wide row of its own partner (#2135);
+ * - org scope: its own partner's keyed built-ins (#10036). Their rows are
+ *   visible through software_catalog_partner_wide_select, and their versions
+ *   through software_versions_builtin_keyed_select. Un-keyed partner-wide
+ *   custom packages stay out of org-scope lists. Their versions are
+ *   partner-axis only, so the card would be a dead end.
+ */
+export function nullOrgCatalogBranches(auth: Pick<AuthContext, 'scope' | 'partnerId'>): SQL[] {
+  const branches: SQL[] = [isNotNull(softwareCatalog.integrationProvider)];
+  if (auth.scope === 'partner' && auth.partnerId) {
+    branches.push(and(isNull(softwareCatalog.orgId), eq(softwareCatalog.partnerId, auth.partnerId))!);
+  } else if (auth.scope === 'organization' && auth.partnerId) {
+    branches.push(and(isNotNull(softwareCatalog.builtinPackageKey), eq(softwareCatalog.partnerId, auth.partnerId))!);
+  }
+  return branches;
+}
 
 export type ResolveCatalogListScopeResult =
   | { orgCondition?: SQL }

@@ -316,6 +316,36 @@ describe('checkBillingCredits billing-source split', () => {
     );
   });
 });
+describe('checkBillingCreditsDetailed: community partner-key gate pinned', () => {
+  it('does not deny a community partner on a partner key when credits say not allowed', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: false,
+      remainingCredits: 0,
+      plan: 'community',
+    }));
+    setupDbMocks(null);
+
+    await expect(checkBillingCreditsDetailed('org-1', 'partner_key')).resolves.toBeNull();
+  });
+
+  it('still returns the plan_gate denial for a free partner on a partner key', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: false,
+      remainingCredits: 0,
+      plan: 'free',
+    }));
+    setupDbMocks(null);
+
+    await expect(checkBillingCreditsDetailed('org-1', 'partner_key')).resolves.toEqual({
+      message: 'AI assistant requires the Community plan.',
+      reason: 'plan_gate',
+      permanent: true,
+    });
+  });
+});
+
 describe('sumInputTokens', () => {
   it('sums the three disjoint slices the SDK splits input across', () => {
     expect(sumInputTokens({
