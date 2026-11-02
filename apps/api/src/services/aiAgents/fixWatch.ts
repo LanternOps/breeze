@@ -223,6 +223,14 @@ async function loadWatchAnchor(
     return null;
   }
 
+  const deviceId = alertRow.deviceId;
+  if (deviceId === null) {
+    console.warn('[fixWatch] triggering alert has no device — skipping watch', {
+      ...input.logContext, orgId: input.orgId, alertId: input.alertId, reason: 'alert_has_no_device',
+    });
+    return null;
+  }
+
   const [org] = await database
     .select({ partnerId: organizations.partnerId })
     .from(organizations)
@@ -235,7 +243,7 @@ async function loadWatchAnchor(
     return null;
   }
 
-  return { ...alertRow, partnerId: org.partnerId };
+  return { ...alertRow, deviceId, partnerId: org.partnerId };
 }
 
 /**
@@ -922,6 +930,7 @@ async function sendRecurrenceNotifications(
     // `status: 'active'`), with the `configItemName`/`context.source` the
     // plan specifies for this alert family.
     await db.insert(alerts).values({
+      ownerKind: 'device',
       ruleId: null,
       deviceId: watch.deviceId,
       orgId: watch.orgId,

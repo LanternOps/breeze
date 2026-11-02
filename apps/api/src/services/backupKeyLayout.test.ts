@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   BACKUP_KEY_LAYOUTS,
@@ -143,5 +145,34 @@ describe('originKeyRootAllows', () => {
   it('with no origin row left: a legacy chain resolves as before, a prefixed one is refused', () => {
     expect(originKeyRootAllows(LEGACY_FLAT_ROOT, undefined)).toBe(true);
     expect(originKeyRootAllows(P, undefined)).toBe(false);
+  });
+});
+
+// The agent's S3 provider maps keys for an operator-supplied prefix
+// (agent/internal/backup/providers/s3.go SetKeyPrefix) from the same vectors,
+// so the agent and the API agree on where a prefixed snapshot lives (#9441).
+type MapVector = { prefix: string | null; logical: string; physical: string };
+type UnmapVector = { prefix: string | null; physical: string; logical: string | null };
+const sharedVectors: { map: MapVector[]; unmap: UnmapVector[] } = JSON.parse(
+  readFileSync(
+    path.resolve(__dirname, '../../../../agent/internal/backup/providers/testdata/key-prefix-vectors.json'),
+    'utf8',
+  ),
+);
+const rootFor = (prefix: string | null) =>
+  prefix === null ? LEGACY_FLAT_ROOT : ({ layout: 'prefixed_flat', prefix } as const);
+
+describe('backup key layout shared Go/TS vectors', () => {
+  it('loaded the shared fixture', () => {
+    expect(sharedVectors.map.length).toBeGreaterThan(0);
+    expect(sharedVectors.unmap.length).toBeGreaterThan(0);
+  });
+
+  it.each(sharedVectors.map.map((v) => [v.prefix, v.logical, v] as const))('physicalKeyFor(%j, %j)', (_p, _l, v) => {
+    expect(physicalKeyFor(rootFor(v.prefix), v.logical)).toBe(v.physical);
+  });
+
+  it.each(sharedVectors.unmap.map((v) => [v.prefix, v.physical, v] as const))('logicalKeyFrom(%j, %j)', (_p, _k, v) => {
+    expect(logicalKeyFrom(rootFor(v.prefix), v.physical)).toBe(v.logical);
   });
 });

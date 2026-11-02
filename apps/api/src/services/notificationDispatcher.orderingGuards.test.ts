@@ -274,7 +274,21 @@ describe('scheduleEscalation job options (carried Task 8 review handoff)', () =>
 
     await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
 
-    expect(queueAddMock).toHaveBeenCalledTimes(1);
+    // The send, then the occurrence's alert.escalated job (#10565), which gets
+    // the same retry/removal shape so a failed publish cannot pin its jobId.
+    expect(queueAddMock).toHaveBeenCalledTimes(2);
+    expect(queueAddMock.mock.calls[1]).toEqual([
+      'escalation-event',
+      { type: 'escalation-event', alertId: 'alert-1', escalationStep: 1, escalationPolicyId: 'policy-1' },
+      {
+        delay: 5 * 60 * 1000,
+        jobId: 'escalation-alert-1-step1-event',
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 30_000 },
+        removeOnComplete: true,
+        removeOnFail: { age: 3600 },
+      },
+    ]);
     expect(webhookTotalAttemptsMock).toHaveBeenCalledTimes(2);
     expect(webhookTotalAttemptsMock).toHaveBeenNthCalledWith(1, webhookConfig);
     expect(webhookTotalAttemptsMock).toHaveBeenNthCalledWith(2, webhookConfig);

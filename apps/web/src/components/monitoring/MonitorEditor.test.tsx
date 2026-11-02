@@ -7,7 +7,11 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+const authUser: { canManagePartnerWide?: boolean } = {};
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  useAuthStore: (selector: (s: unknown) => unknown) => selector({ user: authUser }),
+}));
 vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (selector: (s: { currentOrgId: string | null }) => unknown) => selector({ currentOrgId: 'org-1' }),
 }));

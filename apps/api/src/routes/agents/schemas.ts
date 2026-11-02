@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { softwareInventoryReportSchema, type RestorePointOutcome } from '@breeze/shared';
+import { softwareInventoryReportSchema, networkIsolationReportSchema, ISOLATION_MECHANISMS, truncated, type RestorePointOutcome } from '@breeze/shared';
 import { promptHostTelemetrySchema } from '@breeze/shared/promptHost';
 import { redactSecretsFromOutput } from '../../services/secretRedaction';
 import { MAX_AGENT_WARRANTY_ENTITLEMENTS } from '../../services/warrantyDataSources';
@@ -421,7 +421,13 @@ export const heartbeatSchema = z.object({
   // `{"outboundNetworkPolicyVersion":1}`. Informational — a bad field drops
   // independently rather than 400-ing the heartbeat, since the route treats
   // every omitted/unrecognized value as capability zero anyway.
+  containment: z.object({ networkIsolation: networkIsolationReportSchema.optional().catch(undefined) }).optional().catch(undefined),
   securityCapabilities: z.object({
+    networkIsolationVersion: z.number().int().min(0).optional().catch(undefined),
+    networkIsolationMechanism: z.enum(ISOLATION_MECHANISMS).optional().catch(undefined),
+    networkIsolationUnsupportedReason: truncated(1000).optional().catch(undefined),
+    networkIsolationReady: z.boolean().optional().catch(undefined),
+
     outboundNetworkPolicyVersion: z.number().int().optional().catch(undefined),
     // #3409 PR4 — encrypted secret-env delivery. Same informational contract:
     // a bad value drops the field rather than 400-ing the heartbeat, since the
@@ -653,6 +659,19 @@ export const AGENT_COMMAND_ERROR_CODES = [
   'unsupported_encoding',
   'invalid_argument',
   'scan_in_progress',
+  // Network-isolation containment (#10088): one per episode failure code, plus
+  // the four refusals. Classified by the isolation finalizer (W1b).
+  'isolation_unsupported_platform',
+  'isolation_mechanism_unavailable',
+  'isolation_apply_error',
+  'isolation_control_plane_unreachable',
+  'isolation_enforcement_not_observed',
+  'isolation_not_delivered',
+  'isolation_agent_unsupported',
+  'isolation_episode_mismatch',
+  'isolation_stale_generation',
+  'isolation_invalid_spec',
+  'isolation_busy',
 ] as const;
 
 export type AgentCommandErrorCode = (typeof AGENT_COMMAND_ERROR_CODES)[number];
@@ -1310,7 +1329,12 @@ export const eventLogRowSchema = z.object({
   level: z.enum(['info', 'warning', 'error', 'critical']),
   category: z.enum(['security', 'hardware', 'application', 'system']),
   source: z.string().min(1),
-  eventId: z.string().optional(),
+  // device_event_logs.event_id is varchar(100). Without this bound an
+  // over-long id passed validation and then failed the whole 100-row insert
+  // batch; now only that row is dropped (counted in invalidDropped). The
+  // agent bounds its own ids to 100 characters (#10731,
+  // agent/internal/collectors/eventlogs_ids.go).
+  eventId: z.string().max(100).optional(),
   // The agent truncates every event message to 500 chars on all collector
   // paths (eventlogs_{windows,darwin,linux}.go), but that cap is agent-side
   // only — a compromised or older agent could POST arbitrarily large messages

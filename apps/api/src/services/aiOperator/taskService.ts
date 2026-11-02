@@ -68,6 +68,7 @@ import {
 } from '../../config/env';
 import { admissionFenced } from './taskTransitions';
 import { createTaskTarget, freezeTargetAccount, upsertContactExternalLinks } from './targetService';
+import { describeReservationConflict, lockAndCheckAccountReservations } from './accountReservations';
 import {
   createContactForTask,
   createNewContactForTask,
@@ -111,6 +112,12 @@ export type AdmitTaskRefusal =
   | 'no_provider_account'
   /** R1a. A task of this recipe is already live for this contact (409). */
   | 'duplicate_live_task'
+  /**
+   * #9981. Another task holds one of the person's provider accounts: it is
+   * live, or it ended `unknown_effect` and an action may still land (409).
+   * `existingTaskId` names the holder.
+   */
+  | 'account_reserved'
   /**
    * R2a, `identity_onboarding`. A contact already uses the new person's
    * address (one contact, or a shared mailbox): either this onboarding was
@@ -312,7 +319,8 @@ interface AdmissionTargets {
  * recipe resolves its person and provider accounts BEFORE the transaction
  * (provider reads never run under admission locks) and inserts its own steps
  * after the deadline: cutoff ≤ deadline, contact pin/create, the per-(recipe,
- * contact) advisory lock, and the one-live-task refusal. A recipe in
+ * contact) advisory lock, the one-live-task refusal, then the per-account
+ * locks (sorted) and the `account_reserved` refusal (#9981). A recipe in
  * `CREATES_CONTACT_RECIPES` (onboarding) does no pre-transaction lookup at
  * all: its steps are startAt ≤ deadline, contact CREATE (refusing an existing
  * one), the same lock, and the same refusal — and it freezes no account.
@@ -783,6 +791,14 @@ async function prepareContactTargets(
       if (live) {
         return refuse('duplicate_live_task', `a ${recipe.key} task is already live for this contact: ${live.taskId}`,
           { existingTaskId: live.taskId });
+      }
+      // #9981: one task per PROVIDER ACCOUNT, whichever contact, recipe or
+      // state got it there. Per-account locks in sorted order, AFTER the
+      // contact lock; `afterInsert` reserves them (via freezeTargetAccount)
+      // while these locks are still held.
+      const held = await lockAndCheckAccountReservations(db, input.orgId, accounts);
+      if (held) {
+        return refuse('account_reserved', describeReservationConflict(held), { existingTaskId: held.taskId });
       }
       return null;
     },

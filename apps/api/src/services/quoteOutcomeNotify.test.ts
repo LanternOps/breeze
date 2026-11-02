@@ -1,13 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Queued select-chain db mock (invoiceResend.test.ts pattern).
-const { dbResults } = vi.hoisted(() => ({ dbResults: [] as unknown[][] }));
+const { dbResults } = vi.hoisted(() => ({ dbResults: [] as Array<unknown[] | Error> }));
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
     for (const m of ['select', 'from', 'where', 'limit']) chain[m] = vi.fn(() => chain);
-    (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) =>
-      Promise.resolve(dbResults.shift() ?? []).then(resolve);
+    // A queued Error rejects that one query (the draft-count isolation test).
+    (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => {
+      const next = dbResults.shift() ?? [];
+      return next instanceof Error ? Promise.reject(next).then(resolve, reject) : Promise.resolve(next).then(resolve, reject);
+    };
     return chain;
   };
   return {
@@ -87,6 +90,45 @@ describe('notifyQuoteOutcome', () => {
     expect(envelope.text).toContain('INV-2026-0099');
   });
 
+  it('#10361: accepted outcome says how many draft contracts are waiting to be activated', async () => {
+    dbResults.push([quoteRow({ declineReason: null, convertedInvoiceId: null })]);
+    dbResults.push([{ email: 'tech@lantern.test' }]);
+    dbResults.push([{ billingEmail: null }]);
+    dbResults.push([{ name: 'Acme Corp' }]);
+    dbResults.push([{ id: 'c-monthly' }, { id: 'c-annual' }]); // draft contracts from this quote
+    await notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'accepted', source: 'customer', signerName: 'Pat Prospect' });
+    const envelope = sendEmailMock.mock.calls[0]![0];
+    expect(envelope.text).toContain('2 recurring contracts were created as drafts');
+    expect(envelope.html).toContain('2 recurring contracts were created as drafts');
+  });
+
+  it('#10361: a failed draft-contract count never costs the accept email — the line is just omitted', async () => {
+    dbResults.push([quoteRow({ declineReason: null, convertedInvoiceId: null })]);
+    dbResults.push([{ email: 'tech@lantern.test' }]);
+    dbResults.push([{ billingEmail: null }]);
+    dbResults.push([{ name: 'Acme Corp' }]);
+    dbResults.push(new Error('lock timeout')); // the draft-contract count
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'accepted', source: 'customer', signerName: 'Pat Prospect' });
+    expect(sendEmailMock).toHaveBeenCalledOnce();
+    const envelope = sendEmailMock.mock.calls[0]![0];
+    expect(envelope.text).toContain('Pat Prospect at Acme Corp has accepted');
+    expect(envelope.text).not.toContain('recurring contract');
+    expect(errSpy).toHaveBeenCalledWith('[quoteOutcomeNotify] draft-contract count failed', expect.objectContaining({ quoteId: QUOTE_ID }), 'lock timeout');
+    errSpy.mockRestore();
+  });
+
+  it('#10361: a declined outcome never runs the draft-contract query', async () => {
+    dbResults.push([quoteRow()]);
+    dbResults.push([{ email: 'tech@lantern.test' }]);
+    dbResults.push([{ billingEmail: null }]);
+    dbResults.push([{ name: 'Acme Corp' }]);
+    dbResults.push(new Error('must not be consumed'));
+    await notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'declined', source: 'customer' });
+    expect(sendEmailMock).toHaveBeenCalledOnce();
+    expect(dbResults).toHaveLength(1); // the sentinel is still queued
+  });
+
   it('skips quietly when no recipient can be resolved (still emits the event)', async () => {
     dbResults.push([quoteRow({ createdBy: null })]);
     dbResults.push([{ billingEmail: null }]);
@@ -128,6 +170,17 @@ describe('buildQuoteOutcomeTemplate', () => {
     });
     expect(t.html).not.toContain('<script>');
     expect(t.html).toContain('&lt;script&gt;');
+  });
+
+  it('#10361: names pending draft contracts on an accept, singular and plural, and nothing when there are none', () => {
+    const one = buildQuoteOutcomeTemplate({ outcome: 'accepted', quoteNumber: 'Q-1', orgName: 'Acme', draftContractCount: 1 });
+    expect(one.text).toContain('1 recurring contract was created as a draft. Review and activate it to start billing.');
+    const two = buildQuoteOutcomeTemplate({ outcome: 'accepted', quoteNumber: 'Q-1', orgName: 'Acme', draftContractCount: 2 });
+    expect(two.text).toContain('2 recurring contracts were created as drafts. Review and activate them to start billing.');
+    const none = buildQuoteOutcomeTemplate({ outcome: 'accepted', quoteNumber: 'Q-1', orgName: 'Acme', draftContractCount: 0 });
+    expect(none.text).not.toContain('recurring contract');
+    const declined = buildQuoteOutcomeTemplate({ outcome: 'declined', quoteNumber: 'Q-1', orgName: 'Acme', draftContractCount: 2 });
+    expect(declined.text).not.toContain('recurring contract');
   });
 
   it('omits the quote button when no app base url is configured', () => {

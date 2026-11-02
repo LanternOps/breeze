@@ -8,6 +8,7 @@ import {
   index,
   uniqueIndex,
   check,
+  integer,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { organizations, partners } from './orgs';
@@ -15,6 +16,7 @@ import { organizations, partners } from './orgs';
 /**
  * Service catalog foundation, R1 (#8325).
  * Migration: 2026-12-28-120000-service-catalog-foundation.sql.
+ * Item configuration: 2027-01-19-100000-service-catalog-item-config.sql.
  * Spec: docs/superpowers/specs/ticketing/2026-10-10-service-catalog-design.md §6.1.
  *
  * Config-ish dual-axis tables: exactly one of `partner_id` / `org_id` is set
@@ -48,7 +50,13 @@ export const serviceCatalogItems = pgTable('service_catalog_items', {
   orgId: uuid('org_id').references(() => organizations.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
+  // Descriptive grouping (pillar -> service line -> activity); no taxonomy tables.
+  pillar: varchar('pillar', { length: 120 }),
+  serviceLine: varchar('service_line', { length: 120 }),
   isActive: boolean('is_active').notNull().default(true),
+  // Starts hidden until explicitly published.
+  showInPortal: boolean('show_in_portal').notNull().default(false),
+  sortOrder: integer('sort_order').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [

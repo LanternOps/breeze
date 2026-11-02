@@ -1084,6 +1084,68 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Ticket di avviso",
+        "scopeNote": "Valido per l’intero partner; nessuna sostituzione per organizzazione.",
+        "pausedBanner": "In pausa: il PSA ha rifiutato le credenziali. Esegui “Testa connessione” per riprendere.",
+        "yes": "Attivi",
+        "no": "Disattivati",
+        "selectPlaceholder": "Seleziona…",
+        "priorityDefault": "Predefinito del PSA",
+        "closedSuffix": "{{name}} (chiuso)",
+        "saved": "Impostazioni dei ticket di avviso salvate",
+        "saving": "Salvataggio…",
+        "save": "Salva",
+        "conflict": "Queste impostazioni sono state modificate altrove. Sono stati caricati i valori più recenti; verificali e salva di nuovo.",
+        "errors": {
+          "save": "Impossibile salvare le impostazioni dei ticket di avviso"
+        },
+        "status": {
+          "active": "I ticket di avviso sono abilitati per questa connessione.",
+          "notExternal": "Associa questa connessione come PSA di gestione dei servizi (modalità esterna) per usare i ticket di avviso.",
+          "disabled": "I ticket di avviso sono disattivati.",
+          "paused": "I ticket di avviso sono in pausa finché la connessione al PSA non funziona di nuovo.",
+          "companyLinksUnverified": "Conferma i collegamenti delle aziende per questa istanza del PSA.",
+          "invalidConfig": "Le impostazioni salvate dei ticket di avviso non sono valide. Verificale e salvale di nuovo.",
+          "unsupportedProvider": "I ticket di avviso non sono disponibili per questo provider PSA.",
+          "credentialsUnusable": "Le credenziali di questa connessione sono incomplete o illeggibili. Modifica la connessione e inseriscile di nuovo."
+        },
+        "fields": {
+          "enabled": "Abilita i ticket di avviso",
+          "board": "Bacheca",
+          "openStatus": "Stato dei nuovi ticket",
+          "closedStatus": "Stato chiuso",
+          "priorityHeading": "Priorità del PSA in base alla gravità dell’avviso",
+          "minSeverity": "Gravità minima",
+          "minSeverityHelp": "Bassa include i monitor a livello di avvertenza",
+          "closeOnResolve": "Chiudi il ticket quando l’avviso viene risolto",
+          "noteOnAcknowledge": "Aggiungi una nota quando l’avviso viene preso in carico",
+          "confirmCompanyLinks": "I collegamenti alle aziende delle organizzazioni corrispondono a questa istanza del PSA"
+        },
+        "severity": {
+          "critical": "Critica",
+          "high": "Alta",
+          "medium": "Media",
+          "low": "Bassa",
+          "info": "Informazione"
+        },
+        "options": {
+          "error": "Impossibile caricare le opzioni dal PSA",
+          "retry": "Riprova",
+          "truncated": "Vengono mostrati solo i primi risultati del PSA."
+        },
+        "readOnly": {
+          "enabled": "Ticket di avviso"
+        },
+        "loadError": {
+          "message": "Impossibile caricare le impostazioni dei ticket di avviso",
+          "retry": "Riprova"
+        },
+        "configInvalid": {
+          "warning": "Le impostazioni salvate dei ticket di avviso non possono essere lette. Il salvataggio le sostituirà.",
+          "confirm": "Sostituisci le impostazioni illeggibili"
+        }
+      },
       "PsaCompanyImport": {
         "title": "Importa aziende",
         "subtitle": "Crea organizzazioni dalle aziende presenti in {{name}}.",
@@ -1275,7 +1337,7 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Nessun ticket corrisponde alla tua ricerca o ai tuoi filtri.",
-          "noTickets": "La sincronizzazione dei ticket non è ancora disponibile, quindi i ticket PSA non vengono importati.",
+          "noTickets": "Nessun ticket di avviso. Abilita i ticket degli avvisi nella connessione ConnectWise Manage associata.",
           "title": "Nessun ticket PSA"
         },
         "filters": {
@@ -1296,8 +1358,41 @@
           "waiting": "In attesa"
         },
         "ticketCount": "{{filtered}} di {{total}} ticket",
-        "title": "Ticket PSA",
+        "title": "Ticket degli avvisi",
         "unlinked": "Scollegato"
+      },
+      "PsaAlertTicketingActivity": {
+        "title": "Attività dei ticket",
+        "refresh": "Aggiorna",
+        "redrive": "Riprova",
+        "loading": "Caricamento dell’attività dei ticket…",
+        "loadFailed": "Impossibile caricare l’attività dei ticket. Aggiorna per riprovare.",
+        "actionFailed": "Impossibile aggiornare l’attività dei ticket.",
+        "actionSucceeded": "Attività dei ticket aggiornata.",
+        "help": "Riprova ripete le creazioni non riuscite e gli avvisi senza azienda collegata. Segna come gestito interrompe l’elaborazione senza modificare il ticket PSA.",
+        "empty": "Nessun ticket richiede attenzione.",
+        "viewAlert": "Visualizza avviso",
+        "createAnyway": "Crea comunque",
+        "markHandled": "Segna come gestito",
+        "duplicateWarning": "Potrebbe già esistere un ticket nel PSA. Controlla prima: questo unico nuovo tentativo può creare un duplicato.",
+        "confirmCreate": "Crea un altro ticket",
+        "cancel": "Annulla",
+        "previous": "Precedente",
+        "next": "Successiva",
+        "page": "Pagina {{page}} di {{total}}",
+        "states": {
+          "never_attempted": "In coda",
+          "create_in_flight": "Creazione in corso",
+          "created": "Creato",
+          "create_outcome_unknown": "Esito della creazione sconosciuto",
+          "rejected": "Rifiutato",
+          "failed": "Non riuscito",
+          "needs_attention": "Richiede attenzione",
+          "handled": "Gestito",
+          "skipped_no_company": "Nessuna azienda collegata",
+          "skipped_ambiguous_company": "Collegamento azienda ambiguo",
+          "skipped_resolved_before_create": "Risolto prima della creazione"
+        }
       }
     },
     "webhooks": {
@@ -1373,6 +1468,10 @@
             "description": "Attivato quando viene creato un ticket.",
             "label": "Ticket creato"
           },
+          "ticketMerged": {
+            "description": "Attivato quando un ticket viene unito a un altro ticket.",
+            "label": "Ticket unito"
+          },
           "ticketCommented": {
             "description": "Attivato quando viene aggiunto un commento o una nota a un ticket.",
             "label": "Ticket commentato"
@@ -1407,7 +1506,11 @@
           },
           "alertSuppressed": {
             "label": "Avviso sospeso",
-            "description": "Attivato quando Breeze AI sospende un avviso. La sospensione dalla dashboard non invia ancora questo evento."
+            "description": "Attivato quando un avviso viene sospeso."
+          },
+          "alertEscalated": {
+            "label": "Avviso escalato",
+            "description": "Attivato quando viene eseguito un passaggio di una policy di escalation per un avviso ancora attivo."
           }
         },
         "fields": {

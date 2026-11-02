@@ -78,8 +78,10 @@ export interface FlowFleetStepOutput {
    * `resolve_targets` only: each device with its hostname and display name (`name` =
    * display name, else hostname — the legacy `{{device}}` value). `run_script_on_targets`
    * carries the id sets and counts only, so its output stays small at 500 devices.
+   * Over an earlier step's `failed` set each device also carries `failureReason`
+   * (#10705) — the converted on-failure notice names it.
    */
-  devices?: { id: string; hostname: string; name: string }[];
+  devices?: { id: string; hostname: string; name: string; failureReason?: string }[];
   count: number;
   warnings: string[];
 }

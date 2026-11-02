@@ -102,7 +102,12 @@ const EE_FILES = existsSync(EE) ? walk(EE).map((f) => `ee/${relative(EE, f).repl
 /** Every background/service module that reads devices or carries a Quick Support/ephemeral exclusion. */
 function discovered(): string[] {
   // This wrapper delegates device reads to filterEngine, so SQL discovery cannot see it.
-  const hits = new Set<string>(['services/partnerGroupPreview.ts']);
+  const hits = new Set<string>([
+    'services/partnerGroupPreview.ts',
+    // W15 (#6785): explicitly classify this billing-only service as required by the wave contract.
+    'services/pax8OrderPreview.ts',
+    'services/actionIntents/pax8OrderDigest.ts',
+  ]);
   for (const file of [...JOB_FILES, ...SERVICE_FILES, ...EE_FILES]) {
     const code = read(file);
     if (DEVICE_READ.test(code) || EXCLUSION_MARKERS.test(code)) hits.add(file);
@@ -208,6 +213,9 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/networkIsolation/service.ts': 'Single-device service under caller RLS and site access; selects no fan-out targets. dispatchDeviceCommand refuses parked devices; heartbeat tombstones retain recovery intent.',
+  'services/actionIntents/pax8OrderDigest.ts': 'W15 (#6785): one Pax8 order approval digest; billing evidence with no device access or fan-out',
+  'services/pax8OrderPreview.ts': 'W15 (#6785): read-only Pax8 order billing evidence; no device access or fan-out',
   'services/webhookPayload/alertEnrichment.ts': 'enriches the webhook payload of one already-raised alert by that alert\'s own device_id; selects no targets',
   'services/manualAssetOps.ts': 'manual (non-networked) inventory CRUD (#4622, lifted from routes/devices/manual.ts): reads agent devices only to resolve the ONE device id a link request names (same-org + same-site check); selects no fan-out targets and runs nothing',
   'services/aiToolsCustomFields.ts': 'manage_custom_fields set_values (W12, #6782): re-reads the custom-field projection of the ONE device the central deviceArgs gate and verifyDeviceAccess already resolved (verifyDeviceAccess excludes parked devices); selects no targets',
@@ -218,6 +226,7 @@ const EXEMPT: Record<string, string> = {
   'services/wisp/readiness.ts': 'Wisp readiness inventory (#9917): per-org "can Wisp watch X here" booleans for the orgs of a grant ceiling (hidden orgs already out); joins devices only to map a device-level patch-policy assignment to its org; selects no targets',
   'services/wisp/specialistLaunchers.ts': 'Wisp W07 coordinator launchers (#9913): one existence check (id, org_id) for the device a remediation_research request names, AFTER the coordinator\'s assertWithinCeiling — the org must be in GrantCeiling.orgIds, which already excludes hidden orgs, so a parked device never matches; selects no targets',
   'services/wisp/specialists/bulkTicketReply.ts': 'Wisp W07 bulk_ticket_reply (#9906, w00 A30): left-joins devices only to read the site of a pinned ticket\'s device for the ceiling site check, under the acting human\'s RLS context; selects no devices or targets — the ticket set is pinned by the approved digest',
+  'services/wisp/entityRelations.ts': 'Wisp working-set relations: identifier-only reads of one named entity, pinned to partner and live visible org; no targets or dispatch',
   'services/wisp/entityLoaders.ts': 'Wisp W08 entity links (#9914): one existence + title read by id for a linked object, inner-joined to organizations with notHiddenOrgType() and the grant partner pinned, so a parked or Quick Support device never resolves; selects no targets and runs nothing',
   'services/wisp/grantAuthority.ts': 'Wisp delegation ceiling (#9908): computes which orgs a grant may reach and only NARROWS it (hidden orgs out of the live reach); selects no devices or targets',
   'services/backupRestoreIntegrity.ts': 'reinstall reattach (#8318 §5.4): reads the ONE device that took a snapshot, to date the snapshot against its install incarnation; selects no targets',
@@ -238,6 +247,7 @@ const EXEMPT: Record<string, string> = {
   'jobs/backupRetention.ts': 'retention of existing snapshots, not target selection',
   'jobs/backupSlaWorker.ts': 'evaluates org-owned SLA configurations; the holding org owns none',
   'jobs/deviceBulkPurge.ts': 'lifecycle removal must reach every device',
+  'jobs/decommissionedGroupMembershipReconcile.ts': 'selects only decommissioned devices that still hold a dynamic group row (#9933) and hands each to the device-group re-evaluation, which removes rows; a parked device is not decommissioned and the holding org owns no groups',
   'jobs/deviceGroupJobs.ts': 'device groups are org-owned; the holding org has none',
   'jobs/dnsSyncJob.ts': 'syncs org-owned DNS integrations; the holding org owns none',
   'jobs/hardwareHealthRetention.ts': 'retention, not target selection',
@@ -481,6 +491,18 @@ const EXEMPT: Record<string, string> = {
 
 describe('contract: background selectors leave parked devices out', () => {
   const found = discovered();
+
+  it('W15 classifies the new Pax8 preview service as billing evidence with no device fan-out', () => {
+    expect(found).toContain('services/pax8OrderPreview.ts');
+    expect(EXEMPT['services/pax8OrderPreview.ts']).toContain('no device');
+    expect(DEVICE_READ.test(read('services/pax8OrderPreview.ts'))).toBe(false);
+  });
+
+  it('W15 classifies the Pax8 order digest as billing evidence with no device fan-out', () => {
+    expect(found).toContain('services/actionIntents/pax8OrderDigest.ts');
+    expect(EXEMPT['services/actionIntents/pax8OrderDigest.ts']).toContain('no device');
+    expect(DEVICE_READ.test(read('services/actionIntents/pax8OrderDigest.ts'))).toBe(false);
+  });
 
   it('discovers the expected shape of the tree (not vacuous)', () => {
     expect(found.length).toBeGreaterThan(60);

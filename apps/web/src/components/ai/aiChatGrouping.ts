@@ -5,7 +5,7 @@
  * unattended note, specialist runs). W02b (#10213) adds timed extras (Wisp's
  * thread posts) merged in by time. Pure: no React, no i18n.
  */
-import { aiToolHandoffIsError, isAiToolHandoffOutput } from '@breeze/shared';
+import { aiToolHandoffIsError, isAiToolHandoffOutput, isAiUnknownToolOutput } from '@breeze/shared';
 import type { AiMessage } from '@/stores/processStreamEvent';
 
 /**
@@ -174,7 +174,8 @@ function finishToolsUnit(calls: ToolCall[]): ToolsUnit {
     id: `tools-${first.key}`,
     calls,
     executing,
-    failed: calls.filter((c) => c.result?.isError === true).length,
+    // #9855: a call to a nonexistent tool name is a neutral note, not a failure.
+    failed: calls.filter((c) => c.result?.isError === true && !isAiUnknownToolOutput(c.result.toolOutput)).length,
     handoff: calls.some(hasHandoff),
     startedAt: startedMs === null ? null : new Date(startedMs),
     finishedAt: finishedMs === null ? null : new Date(finishedMs),

@@ -649,7 +649,11 @@
     "noMatches": "Nenhuma correspondência.",
     "orEnterAPackageIDManually": "Ou insira manualmente um ID de pacote",
     "removeRuleFor": "Remover regra de {{application}}",
-    "scopeNote": "Estas regras se aplicam a todos os dispositivos cuja política de configuração vincula este anel."
+    "scopeNote": "Estas regras se aplicam a todos os dispositivos cuja política de configuração vincula este anel.",
+    "linuxPackage": "Pacote Linux",
+    "appPackage": "Pacote de app",
+    "manualRuleType": "Tipo de regra",
+    "linuxPinHint": "Informe a versão completa da lista de patches, incluindo a época, se houver (ex.: 5:24.0.7-1)."
   },
   "patchDetails": {
     "unknown": "Desconhecido",

@@ -7,6 +7,7 @@ import { showToast } from '../shared/Toast';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { usePermissions } from '@/lib/permissions';
 import type { FilterConditionGroup } from '@breeze/shared';
+import { readColumnVisibility } from './columnVisibility';
 import DeviceList, { type Device, type DeviceClass, type DeviceStatus, type OSType } from './DeviceList';
 import type { DeviceRole } from '@/lib/deviceRoles';
 import DeviceCard from './DeviceCard';
@@ -55,8 +56,9 @@ import ProgressBar from '../shared/ProgressBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 import { applyOrgSwitch } from '@/lib/orgSwitch';
-import { BULK_SITE_MOVE_CAP, CONFIRM_REQUIRED_BULK_COMMANDS, DECOMMISSION_BLOCKED_BULK_ACTIONS, QUEUEING_BULK_COMMANDS, bulkMoveSiteAgents, bulkMoveSiteBlock, isCommandQueueable } from './bulkActionGating';
+import { BULK_GROUP_MEMBERSHIP_CAP, BULK_SITE_MOVE_CAP, CONFIRM_REQUIRED_BULK_COMMANDS, DECOMMISSION_BLOCKED_BULK_ACTIONS, QUEUEING_BULK_COMMANDS, bulkGroupMembershipBlock, bulkMoveSiteAgents, bulkMoveSiteBlock, isCommandQueueable } from './bulkActionGating';
 import ChangeSiteModal from './ChangeSiteModal';
+import BulkGroupMembershipDialog, { type BulkGroupMembershipMode } from './BulkGroupMembershipDialog';
 import { summarizeBulkSiteMove, type BulkSiteMoveFailureOutcome, type BulkSiteMoveResponse } from './bulkSiteMove';
 import { matchesMergedListFilters, sortByDisplayName, summarizeHiddenNonAgentDevices, VPN_FACET_FIELD } from './mergedListFilter';
 import { COLUMN_LABELS } from './columnVisibility';
@@ -393,6 +395,10 @@ export default function DevicesPage() {
   const [moveSiteTarget, setMoveSiteTarget] = useState<
     { kind: 'single'; device: Device } | { kind: 'bulk'; devices: Device[] } | null
   >(null);
+  // Bulk "Add to group" / "Remove from group" (#9866): agents of one org.
+  const [groupMembershipTarget, setGroupMembershipTarget] = useState<
+    { mode: BulkGroupMembershipMode; devices: Device[] } | null
+  >(null);
   // #2787: bulk Delete permanently. The dialog asks for the count to be typed;
   // runBulkPurge then starts the async job and polls it.
   const [pendingBulkPurge, setPendingBulkPurge] = useState<Device[] | null>(null);
@@ -401,6 +407,15 @@ export default function DevicesPage() {
   // tick already in flight cannot land its result over a newer run's.
   const purgePollTokenRef = useRef(0);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
+  const [warrantyRequested, setWarrantyRequested] = useState(() => readColumnVisibility().has('warranty'));
+  // Read by fetchDevices through a ref so toggling the column never changes
+  // fetchDevices' identity (which would re-run the mount effect as a
+  // foreground reload and unmount the list). `rowsHaveWarrantyRef` records
+  // whether the rows on screen were loaded with warranty, so only an off→on
+  // toggle over warranty-less rows triggers a (background) refresh.
+  const warrantyRequestedRef = useRef(warrantyRequested);
+  warrantyRequestedRef.current = warrantyRequested;
+  const rowsHaveWarrantyRef = useRef(false);
   // v2 chip bar seeds its filter from the URL hash so a filtered view is
   // shareable; the legacy DeviceFilterBar owns its own state and ignores it.
   const [advancedFilter, setAdvancedFilter] = useHashState<FilterConditionGroup | null>(null, (h) => decodeFilterFromHash(h) ?? undefined);
@@ -688,9 +703,11 @@ export default function DevicesPage() {
       // `signal` is wired by the mount useEffect's AbortController so a
       // navigate-away mid-walk stops the next page request and prevents
       // setState on an unmounted component (#778 review).
+      const includeWarranty = warrantyRequestedRef.current;
       const [devicesResult, networkResult, manualResult, orgsResponse, sitesResult, groupsResponse] = await Promise.all([
         fetchAllDevices({
           includeDecommissioned: true,
+          includeWarranty,
           signal,
           // Surface the silent-cap case (#778 review). Without this, hitting
           // the safety ceiling would render an incomplete device list and
@@ -888,6 +905,7 @@ export default function DevicesPage() {
       setDeviceGroups(groupsList);
       setGroupMembershipMap(memberMap);
       setDevices(devicesWithNames);
+      rowsHaveWarrantyRef.current = includeWarranty;
       setOrgs(orgsList);
       setSites(sitesList);
 
@@ -989,6 +1007,18 @@ export default function DevicesPage() {
     fetchDevices(controller.signal);
     return () => controller.abort();
   }, [fetchDevices, orgScopeResolving, orgContextFailed, orgScopeKey]);
+
+  // Column turned on over rows loaded without warranty → refresh in the
+  // background so the list (selection, page, column state) stays mounted.
+  // Turning it off, or back on over rows that already carry warranty, is a
+  // no-op. Waiting on `loading` covers a toggle during the first walk: that
+  // walk read the old flag, so this fires once it lands. An error card is left
+  // alone — the user's Retry reads the ref and asks for warranty itself.
+  useEffect(() => {
+    if (!warrantyRequested || rowsHaveWarrantyRef.current || loading || error) return;
+    if (orgScopeResolving || orgContextFailed) return;
+    void fetchDevices(undefined, { background: true });
+  }, [warrantyRequested, loading, error, fetchDevices, orgScopeResolving, orgContextFailed]);
 
   // Real-time device status updates
   const handleDeviceEvent = useCallback((event: { type: string; payload: Record<string, unknown> }) => {
@@ -1739,6 +1769,30 @@ export default function DevicesPage() {
         return;
       }
       setMoveSiteTarget({ kind: 'bulk', devices: bulkMoveSiteAgents(selectedDevices) });
+      return;
+    }
+
+    // #9866: same defence-in-depth as move-site — the bulk bar disables these
+    // for a mixed-org / over-cap selection; re-checked because this funnel
+    // must not trust its callers. Never chunked past the cap.
+    if (action === 'add-to-group' || action === 'remove-from-group') {
+      const block = bulkGroupMembershipBlock(selectedDevices);
+      if (block === 'mixed_org') {
+        showToast({ type: 'error', message: t('deviceList.moveSiteMixedOrgs') });
+        return;
+      }
+      if (block === 'over_cap') {
+        showToast({ type: 'error', message: t('deviceList.groupMembershipOverCap', { count: BULK_GROUP_MEMBERSHIP_CAP }) });
+        return;
+      }
+      if (block === 'no_agents') {
+        showToast({ type: 'error', message: t('devicesPage.toasts.agentOnlyAction') });
+        return;
+      }
+      setGroupMembershipTarget({
+        mode: action === 'add-to-group' ? 'add' : 'remove',
+        devices: bulkMoveSiteAgents(selectedDevices),
+      });
       return;
     }
 
@@ -2537,6 +2591,7 @@ export default function DevicesPage() {
         </div>
       ) : viewMode === 'list' ? (
         <DeviceList
+          onWarrantyRequiredChange={setWarrantyRequested}
           devices={classFilteredDevices}
           orgs={orgs}
           sites={sites}
@@ -2706,6 +2761,16 @@ export default function DevicesPage() {
           onClose={() => setMoveSiteTarget(null)}
           onSaved={() => void refreshDevices()}
           onBulkMoved={(result, site) => reportBulkSiteMove(moveSiteTarget.devices, result, site)}
+          onUnauthorized={handleSessionExpired}
+        />
+      )}
+
+      {groupMembershipTarget && (
+        <BulkGroupMembershipDialog
+          mode={groupMembershipTarget.mode}
+          devices={groupMembershipTarget.devices}
+          onClose={() => setGroupMembershipTarget(null)}
+          onDone={() => void refreshDevices()}
           onUnauthorized={handleSessionExpired}
         />
       )}

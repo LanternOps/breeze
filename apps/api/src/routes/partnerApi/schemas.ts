@@ -657,6 +657,8 @@ export const partnerAlertWriteResponseSchema = z.object({
 }).strict();
 
 export const partnerAlertExportRecordSchema = z.object({
+  // Every alert has an owner kind; only its reference can be unavailable.
+  owner: z.object({ kind: z.enum(['device', 'topology_site', 'backup_workload']), ref: z.string().nullable() }).strict(),
   id: z.string().uuid(),
   orgId: z.string().uuid(),
   // Null when the alert's device is gone or not in the alert's organization.

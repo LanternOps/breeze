@@ -3006,6 +3006,16 @@ describe('buildImpactSummary (#5106)', () => {
       expected: 'Execute a system command on a device.',
     },
     {
+      name: 'Pax8 submit impact names the company, line outcomes, price, and terminal cancellation',
+      toolName: 'manage_pax8_orders',
+      input: { action: 'submit', expectedCompany: { name: 'Fixture Company', pax8CompanyId: 'company-1' },
+        expectedLines: [{ action: 'cancel', productName: 'Fixture Seats', pax8ProductId: 'product-1',
+          fromQuantity: '7.00', quantity: '0', unitCost: '8.00', currency: 'USD', billingTerm: 'Monthly',
+          commitmentTerm: 'Annual', cancellationFeeApplied: true }] },
+      guardrailDescription: 'Generic Pax8 management description.',
+      expected: "Place a real, billable Pax8 order that cannot be undone for Fixture Company (company-1): 0 new subscriptions, 0 quantity changes, 1 cancellations. Cost is estimated at Pax8's current rate, re-checked before sending. CANCEL (terminal) Fixture Seats [product-1]: 7.00 → 0, 8.00 USD per seat / Monthly, commitment Annual, cancellation fee applies",
+    },
+    {
       name: 'manage_invoices void gets plain-language impact (#9657)',
       toolName: 'manage_invoices',
       input: { action: 'void' },

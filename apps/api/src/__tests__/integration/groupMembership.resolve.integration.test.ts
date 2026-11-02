@@ -28,12 +28,13 @@ async function seed() {
       orgId, siteId, agentId: `${agent}-${sfx}`, hostname: agent, status: 'online', deviceRole: role,
       osType: 'linux', osVersion: '22.04', architecture: 'x86_64', agentVersion: '1.0.0', ...extra,
     });
-    const [srvA, srvB, wsA, ephemeralSrv] = await db.insert(devices).values([
+    const [srvA, srvB, wsA, ephemeralSrv, decomSrv] = await db.insert(devices).values([
       dev('srv-a', 'server', sA!.id), dev('srv-b', 'server', sB!.id), dev('ws-a', 'workstation', sA!.id),
       dev('srv-eph', 'server', sA!.id, { isEphemeral: true }),
+      dev('srv-decom', 'server', sA!.id, { status: 'decommissioned', decommissionedAt: new Date() }),
     ]).returning({ id: devices.id });
     const [otherOrgDev] = await db.insert(devices).values([{ ...dev('srv-other', 'server', sB2!.id), orgId: oB!.id }]).returning({ id: devices.id });
-    return { partnerId: p.id, orgId, orgB: oB!.id, siteA: sA!.id, siteB: sB!.id, srvA: srvA!.id, srvB: srvB!.id, wsA: wsA!.id, ephemeralSrv: ephemeralSrv!.id, otherOrgDev: otherOrgDev!.id };
+    return { partnerId: p.id, orgId, orgB: oB!.id, siteA: sA!.id, siteB: sB!.id, srvA: srvA!.id, srvB: srvB!.id, wsA: wsA!.id, ephemeralSrv: ephemeralSrv!.id, decomSrv: decomSrv!.id, otherOrgDev: otherOrgDev!.id };
   });
 }
 
@@ -91,6 +92,17 @@ describe('resolveEffectiveGroupMembers (real DB) #3205 W02', () => {
     const r = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g, f.orgId));
     expect(ids(r.matched)).toEqual([f.srvA]);       // not srvB (stale), not ephemeral
     expect(ids(r.pinned)).toEqual([f.wsA]);
+  });
+
+  // #9933: a removed (decommissioned) device never matches a dynamic group's
+  // filter, even when it carries a stale materialized row from before removal.
+  runDb('dynamic: a decommissioned device is not matched, even with a stale materialized row', async () => {
+    const f = await seed();
+    const g = await group(f.orgId, { type: 'dynamic', filterConditions: SERVER_FILTER });
+    await member(g.id, f.decomSrv, f.orgId);
+    const r = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g, f.orgId));
+    expect(ids(r.matched)).toEqual([f.srvA, f.srvB].sort());
+    expect(r.matched.has(f.decomSrv)).toBe(false);
   });
 
   runDb('dynamic with NULL filter: pinned only', async () => {
