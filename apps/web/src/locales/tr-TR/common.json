@@ -1456,6 +1456,10 @@
             "description": "Bir cihaz bağlandığında tetiklenir.",
             "label": "Cihaz Çevrimiçi"
           },
+          "deviceReinstallSuspected": {
+            "description": "Yeni kaydedilen bir cihaz, mevcut ve sessiz bir cihaz kaydının yeniden kurulumu gibi göründüğünde tetiklenir.",
+            "label": "Olası Cihaz Yeniden Kurulumu"
+          },
           "deviceReinstalled": {
             "description": "Yeniden kurulan bir makine mevcut cihaz kaydına yeniden bağlandığında tetiklenir.",
             "label": "Cihaz Yeniden Kuruldu"

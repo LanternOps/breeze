@@ -1456,6 +1456,10 @@
             "description": "Wird ausgelöst, wenn ein Gerät eine Verbindung herstellt.",
             "label": "Gerät online"
           },
+          "deviceReinstallSuspected": {
+            "description": "Wird ausgelöst, wenn ein neu registriertes Gerät wie eine Neuinstallation eines bestehenden, inaktiven Gerätedatensatzes aussieht.",
+            "label": "Mögliche Neuinstallation"
+          },
           "deviceReinstalled": {
             "description": "Wird ausgelöst, wenn ein neu installierter Rechner wieder mit seinem bestehenden Gerätedatensatz verknüpft wird.",
             "label": "Gerät neu installiert"

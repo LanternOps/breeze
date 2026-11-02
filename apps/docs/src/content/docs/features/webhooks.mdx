@@ -99,6 +99,7 @@ Webhooks subscribe to events emitted by the Breeze event bus. Pass one or more e
 | `device.offline` | A device has stopped sending heartbeats |
 | `device.updated` | Device metadata or configuration has changed |
 | `device.reinstalled` | A reinstalled machine was reattached to its existing device record: the record keeps its id, org, site and history, a new install takes it over, and the install incarnation advances. Payload: `deviceId`, `sourceDeviceId`, `orgId`, `sourceOrgId`, `siteId`, `installIncarnation`, `previousIncarnation`, `evidenceLevel`, `actorUserId`, `reattachmentId` |
+| `device.reinstall_suspected` | A newly enrolled device looks like a reinstall of this existing, silent device record (same SMBIOS system UUID, same serial number and manufacturer, or same hostname within the partner). Sent once when the hint is first recorded or upgraded; nothing is reattached. Published in the existing device's organization. Payload: `targetDeviceId`, `reason` (`hardware` or `hostname`), `detectedAt`, `sourceParked`, and `sourceDeviceId` / `sourceHostname` only when the new device is in the same organization |
 
 ### Alert Events
 

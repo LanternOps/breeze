@@ -1456,6 +1456,10 @@
             "description": "Triggered when a device connects.",
             "label": "Device Online"
           },
+          "deviceReinstallSuspected": {
+            "description": "Triggered when a newly enrolled device looks like a reinstall of an existing, silent device record.",
+            "label": "Possible Device Reinstall"
+          },
           "deviceReinstalled": {
             "description": "Triggered when a reinstalled machine is reattached to its existing device record.",
             "label": "Device Reinstalled"

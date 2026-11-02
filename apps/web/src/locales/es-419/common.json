@@ -1456,6 +1456,10 @@
             "description": "Se activa cuando se conecta un dispositivo.",
             "label": "Dispositivo en línea"
           },
+          "deviceReinstallSuspected": {
+            "description": "Se activa cuando un dispositivo recién inscrito parece una reinstalación de un registro de dispositivo existente e inactivo.",
+            "label": "Posible reinstalación de dispositivo"
+          },
           "deviceReinstalled": {
             "description": "Se activa cuando un equipo reinstalado se vuelve a vincular con su registro de dispositivo existente.",
             "label": "Dispositivo reinstalado"

@@ -1456,6 +1456,10 @@
             "description": "Déclenché lorsqu’un appareil se connecte.",
             "label": "Appareil en ligne"
           },
+          "deviceReinstallSuspected": {
+            "description": "Déclenché lorsqu’un appareil nouvellement inscrit semble être une réinstallation d’une fiche d’appareil existante et inactive.",
+            "label": "Réinstallation possible d’un appareil"
+          },
           "deviceReinstalled": {
             "description": "Déclenché lorsqu’une machine réinstallée est rattachée à sa fiche d’appareil existante.",
             "label": "Appareil réinstallé"

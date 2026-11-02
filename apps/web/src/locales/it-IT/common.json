@@ -1456,6 +1456,10 @@
             "description": "Attivato quando un dispositivo si connette.",
             "label": "Dispositivo online"
           },
+          "deviceReinstallSuspected": {
+            "description": "Si attiva quando un dispositivo appena registrato sembra una reinstallazione di un record di dispositivo esistente e inattivo.",
+            "label": "Possibile reinstallazione del dispositivo"
+          },
           "deviceReinstalled": {
             "description": "Si attiva quando una macchina reinstallata viene ricollegata al record del dispositivo esistente.",
             "label": "Dispositivo reinstallato"
