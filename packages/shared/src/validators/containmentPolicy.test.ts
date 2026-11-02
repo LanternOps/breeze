@@ -55,6 +55,22 @@ describe('containmentInlineSettingsSchema', () => {
     ['embedded wildcard', { host: 'rel*y.example.test' }],
     ['IPv4 literal hostname', { host: '192.0.2.1' }],
     ['IPv6 literal hostname', { host: '2001:db8::1' }],
+    ['IPv4-mapped /96 covering mapped loopback', { cidr: '::ffff:0:0/96' }],
+    ['IPv4-mapped loopback /104 (hex)', { cidr: '::ffff:7f00:0/104' }],
+    ['IPv4-mapped loopback /104 (dotted)', { cidr: '::ffff:127.0.0.1/104' }],
+    ['upper-case IPv4-mapped loopback', { cidr: '::FFFF:7F00:1/128' }],
+    ['IPv4 unspecified address', { cidr: '0.0.0.0/32' }],
+    ['IPv4 this-network range', { cidr: '0.0.0.0/8' }],
+    ['IPv6 unspecified address', { cidr: '::/128' }],
+    ['IPv4-mapped unspecified', { cidr: '::ffff:0.0.0.0/128' }],
+    ['IPv4-compatible loopback (dotted)', { cidr: '::127.0.0.1/128' }],
+    ['IPv4-compatible loopback (hex)', { cidr: '::7f00:1/128' }],
+    ['NAT64 loopback', { cidr: '64:ff9b::7f00:1/128' }],
+    ['hex-address hostname', { host: '0x7f000001' }],
+    ['hex-label hostname', { host: '0x7f.0x1' }],
+    ['localhost.localdomain', { host: 'localhost.localdomain' }],
+    ['ip6-localhost', { host: 'ip6-localhost' }],
+    ['ip6-loopback', { host: 'ip6-loopback' }],
   ])('rejects %s', (_name, target) => {
     expect(containmentInlineSettingsSchema.safeParse(settings([
       { ...target, proto: 'tcp', ports: [443], label: 'Denied' },
@@ -68,6 +84,11 @@ describe('containmentInlineSettingsSchema', () => {
     { cidr: '198.51.100.0/24' },
     { cidr: '203.0.113.0/24' },
     { cidr: '2001:db8::/32' },
+    // Controls: adjacent to a blocked range, must not be over-rejected.
+    { cidr: '::ffff:126.0.0.0/104' },
+    { cidr: '::ffff:c000:200/120' },
+    { cidr: '64:ff9b::c000:200/120' },
+    { host: 'box0x.example.test' },
   ])('accepts documentation destinations %j', (target) => {
     expect(containmentInlineSettingsSchema.safeParse(settings([
       { ...target, proto: 'udp+tcp', ports: [53, 443], label: 'Allowed' },
@@ -93,6 +114,10 @@ describe('containmentInlineSettingsSchema', () => {
 
   it('rejects unsupported protocols', () => {
     expect(containmentInlineSettingsSchema.safeParse(settings([{ ...entry, proto: 'icmp' }])).success).toBe(false);
+  });
+
+  it.each(['a\u0000b', 'tab\there', 'bell\u0007', 'del\u007f'])('refuses a label with control characters %j', (label) => {
+    expect(containmentInlineSettingsSchema.safeParse(settings([{ ...entry, label }])).success).toBe(false);
   });
 
   it('trims labels and bounds them to 1..100 characters', () => {

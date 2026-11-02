@@ -8,42 +8,69 @@ import {
   type IsolationAllowEntry,
 } from './networkIsolation';
 
+// Names that reach the local host without DNS: `localhost` and its subdomains, the common /etc/hosts
+// aliases, and hex labels (`0x7f000001`, `0x7f.0x1`) that inet_aton-style parsers read as addresses.
+// A public DNS name can still resolve to loopback; the agent must drop such addresses when it resolves.
+const LOCAL_HOST_NAMES = new Set(['localhost.localdomain', 'ip6-localhost', 'ip6-loopback']);
 const extraHostSchema = hostNameSchema.refine(
-  (host) => !/(^|\.)localhost$/i.test(host),
+  (host) => {
+    const lower = host.toLowerCase();
+    return !/(^|\.)localhost$/.test(lower)
+      && !LOCAL_HOST_NAMES.has(lower)
+      && !lower.split('.').some((label) => /^0x/.test(label));
+  },
   { message: 'loopback hostnames are not allowed' },
 );
 
-const extraCidrSchema = cidrSchema.refine((cidr) => {
-  const [address, prefixText] = cidr.split('/');
-  const prefix = Number(prefixText);
-  if (!address) return false;
-  if (!address.includes(':')) return prefix >= 8 && address.split('.')[0] !== '127';
-  if (prefix < 32) return false;
-
-  // Expand validated IPv6 (including a dotted IPv4 tail) before checking loopback, so alternate
-  // spellings cannot bypass it. This stays browser-safe and performs no DNS/network access.
-  const hexadecimal = address.replace(/\d+\.\d+\.\d+\.\d+$/, (ipv4) => {
-    const octets = ipv4.split('.').map(Number);
-    return [(octets[0]! << 8) | octets[1]!, (octets[2]! << 8) | octets[3]!]
-      .map((word) => word.toString(16)).join(':');
+/** Address bits as a '0'/'1' string (32 for IPv4, 128 for IPv6). Input is already a valid CIDR address. */
+function addressBits(address: string): string {
+  const v4 = (dotted: string) => dotted.split('.').map((o) => Number(o).toString(2).padStart(8, '0')).join('');
+  if (!address.includes(':')) return v4(address);
+  // A dotted IPv4 tail (`::ffff:127.0.0.1`) becomes two hex words before expansion.
+  const hex = address.replace(/(\d+\.\d+\.\d+\.\d+)$/, (tail) => {
+    const b = v4(tail);
+    return `${parseInt(b.slice(0, 16), 2).toString(16)}:${parseInt(b.slice(16), 2).toString(16)}`;
   });
-  const [left = '', right = ''] = hexadecimal.split('::');
+  const [left = '', right] = hex.split('::');
   const head = left ? left.split(':') : [];
   const tail = right ? right.split(':') : [];
-  const words = hexadecimal.includes('::')
-    ? [...head, ...Array(8 - head.length - tail.length).fill('0'), ...tail]
-    : head;
-  const bits = words.map((word) => Number.parseInt(word, 16).toString(2).padStart(16, '0')).join('');
-  // Reject every CIDR containing the IPv6 loopback, including a network address with host bits set.
-  const loopbackBits = '0'.repeat(127) + '1';
-  // IPv4-mapped IPv6 must also exclude the entire IPv4 loopback /8, in either spelling.
-  const mappedLoopbackBits = '0'.repeat(80) + '1'.repeat(16) + '01111111';
-  const mappedPrefix = Math.min(prefix, mappedLoopbackBits.length);
-  return bits.slice(0, prefix) !== loopbackBits.slice(0, prefix)
-    && bits.slice(0, mappedPrefix) !== mappedLoopbackBits.slice(0, mappedPrefix);
-}, { message: 'CIDR must be at least /8 (IPv4) or /32 (IPv6) and exclude loopback' });
+  const words = right === undefined ? head : [...head, ...Array(8 - head.length - tail.length).fill('0'), ...tail];
+  return words.map((w) => parseInt(w, 16).toString(2).padStart(16, '0')).join('');
+}
 
-const extraFields = { proto: protoSchema, ports: portsSchema, label: z.string().trim().min(1).max(100) };
+function cidrBits(cidr: string): { bits: string; prefix: number } {
+  const [address = '', prefix = ''] = cidr.split('/');
+  return { bits: addressBits(address), prefix: Number(prefix) };
+}
+
+/**
+ * Ranges an extra permit may not overlap: loopback and "this host" (0.0.0.0, ::), which Linux and macOS
+ * route to the local host, in every IPv6 spelling that embeds them (IPv4-compatible ::/96, IPv4-mapped
+ * ::ffff:0:0/96 and NAT64 64:ff9b::/96 forms).
+ */
+const BLOCKED_RANGES = [
+  '127.0.0.0/8', '0.0.0.0/8',
+  '::/96', // IPv4-compatible (deprecated): covers ::, ::1 and ::127.0.0.1
+  '::ffff:127.0.0.0/104', '::ffff:0.0.0.0/104',
+  '64:ff9b::127.0.0.0/104', '64:ff9b::0.0.0.0/104',
+].map(cidrBits);
+
+function overlapsBlockedRange(cidr: string): boolean {
+  const target = cidrBits(cidr);
+  return BLOCKED_RANGES.some((blocked) => {
+    if (blocked.bits.length !== target.bits.length) return false;
+    const n = Math.min(blocked.prefix, target.prefix);
+    return blocked.bits.slice(0, n) === target.bits.slice(0, n);
+  });
+}
+
+const extraCidrSchema = cidrSchema.refine((cidr) => {
+  const { bits, prefix } = cidrBits(cidr);
+  if (prefix < (bits.length === 32 ? 8 : 32)) return false;
+  return !overlapsBlockedRange(cidr);
+}, { message: 'CIDR must be at least /8 (IPv4) or /32 (IPv6) and exclude loopback and unspecified addresses' });
+
+const extraFields = { proto: protoSchema, ports: portsSchema, label: z.string().trim().min(1).max(100).refine((l) => !/[\u0000-\u001f\u007f]/.test(l), { message: 'label must not contain control characters' }) };
 // Strict alternatives enforce exactly one destination and reject guessed wire fields such as scope.
 const extraAllowSchema = z.union([
   z.strictObject({ host: extraHostSchema, ...extraFields }),

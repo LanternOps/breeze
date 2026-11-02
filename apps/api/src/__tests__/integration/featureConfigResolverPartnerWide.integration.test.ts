@@ -705,6 +705,41 @@ describe('per-device config-policy resolvers honour partner-wide policies (#2930
       expect(blind.defaultTtlHours).toBe(72);
     });
 
+    it("another partner's partner-wide containment policy never reaches the device, even under system context", async () => {
+      const partnerA = await createPartner();
+      const partnerB = await createPartner();
+      const org = await createOrganization({ partnerId: partnerA.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+
+      const foreign = await seedContainmentPolicy({ orgId: null, partnerId: partnerB.id }, PARTNER_SEED);
+      await assign(foreign, 'partner', partnerB.id);
+
+      // System context bypasses RLS: policyOwnershipCondition is the only guard.
+      const result = await withDbAccessContext(SYSTEM_CTX, () => resolveContainmentPolicy(device.id));
+      expect(result.isPlatformDefault).toBe(true);
+      expect(result.extraAllow).toEqual([]);
+    });
+
+    it('an inactive partner-wide containment policy grants nothing', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+
+      const policyId = await seedContainmentPolicy({ orgId: null, partnerId: partner.id }, PARTNER_SEED);
+      await assign(policyId, 'partner', partner.id);
+      await withDbAccessContext(SYSTEM_CTX, () =>
+        db.update(configurationPolicies).set({ status: 'inactive' }).where(eq(configurationPolicies.id, policyId)),
+      );
+
+      const result = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
+        resolveContainmentPolicy(device.id),
+      );
+      expect(result.isPlatformDefault).toBe(true);
+      expect(result.extraAllow).toEqual([]);
+    });
+
     it('an org-level containment policy overrides the partner default (closest wins)', async () => {
       const partner = await createPartner();
       const org = await createOrganization({ partnerId: partner.id });

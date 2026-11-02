@@ -186,6 +186,10 @@ describe('resolveContainmentPolicy', () => {
     expect(JSON.stringify(query.innerJoin.mock.calls[0])).toContain('configurationPolicies.partnerId');
     expect(JSON.stringify(query.innerJoin.mock.calls[0])).toContain('partner-1');
     expect(JSON.stringify(query.innerJoin.mock.calls[1])).toContain('containment');
+    // Only active policies grant permits, and role/OS assignment filters apply.
+    expect(JSON.stringify(query.innerJoin.mock.calls[0])).toContain('active');
+    const where = JSON.stringify(query.where.mock.calls);
+    for (const needle of ['roleFilter', 'osFilter', 'workstation', 'windows']) expect(where).toContain(needle);
     expect(runOutsideDbContext).not.toHaveBeenCalled();
     expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });
@@ -207,10 +211,12 @@ describe('resolveContainmentPolicy', () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         const result = await resolveRows([row(settings)]);
-        expect(result).toEqual({ ...DEFAULTS, revision: DEFAULT_REVISION,
+        expect(result).toEqual({ ...DEFAULTS, revision: expect.stringMatching(/^c1i:[0-9a-f]{32}$/),
           isPlatformDefault: false, invalidStoredSettings: true, sourcePolicyId: 'policy-link-1', featureLinkId: 'link-1' });
+        // A policy going invalid is itself a revision change.
+        expect(result.revision).not.toBe(DEFAULT_REVISION);
         expect(warn).toHaveBeenCalledWith(expect.stringContaining('containment'), {
-          featureLinkId: 'link-1', sourcePolicyId: 'policy-link-1', issues: expect.any(Array),
+          deviceId: 'device-1', featureLinkId: 'link-1', sourcePolicyId: 'policy-link-1', issues: expect.any(Array),
         });
         expect(JSON.stringify(warn.mock.calls)).not.toContain('private');
       } finally { warn.mockRestore(); }

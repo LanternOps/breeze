@@ -3391,6 +3391,7 @@ export async function resolveContainmentPolicy(
   const parsed = containmentInlineSettingsSchema.safeParse(winner.inlineSettings);
   if (!parsed.success) {
     console.warn('[featureConfigResolver] Malformed containment settings; using platform defaults', {
+      deviceId,
       featureLinkId: winner.featureLinkId,
       sourcePolicyId: winner.sourcePolicyId,
       // Paths only: messages can contain rejected values or unknown key names.
@@ -3398,6 +3399,9 @@ export async function resolveContainmentPolicy(
     });
     return {
       ...containmentPlatformDefault(),
+      // Distinct from the no-policy revision, so a policy going invalid (or being
+      // repaired) is itself a revision change a consumer can detect.
+      revision: 'c1i:' + createHash('sha256').update(`invalid|${winner.featureLinkId}`).digest('hex').slice(0, 32),
       isPlatformDefault: false,
       invalidStoredSettings: true,
       sourcePolicyId: winner.sourcePolicyId,

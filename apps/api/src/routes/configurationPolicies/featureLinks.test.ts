@@ -2252,6 +2252,20 @@ describe('containment feature links', () => {
     expect(updateFeatureLinkMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['POST', { cidr: '::1/128' }], ['PATCH', { cidr: '::1/128' }],
+    ['POST', { host: 'relay.localhost' }], ['PATCH', { host: 'relay.localhost' }],
+  ])('%s refuses a containment-only loopback target %j before mutation', async (method, target) => {
+    // ::1/128 and relay.localhost pass the base isolation wire schema; only the
+    // containment schema refuses them, so this proves the route uses it.
+    const res = await request(method, { inlineSettings: { version: 1, extraAllow: [
+      { ...target, proto: 'tcp', ports: [443], label: 'Loopback' },
+    ] } });
+    expect(res.status).toBe(400);
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
   it.each(['POST', 'PATCH'])('%s refuses featurePolicyId before mutation', async method => {
     const res = await request(method, { featurePolicyId: LINK_ID, inlineSettings: { version: 1 } });
     expect(res.status).toBe(400);

@@ -248,6 +248,8 @@ export const MAINTENANCE_LINK_MACHINE_PRINCIPAL_DENIED =
   'Authoring a maintenance feature link suppresses monitoring and requires an interactive user session. API-key and OAuth-grant callers cannot perform this action.';
 export const MAINTENANCE_LINK_FEATURE_TYPE_REQUIRED =
   'This feature link is a maintenance link. Re-issue the call with featureType: "maintenance" so the change routes through approval.';
+export const CONTAINMENT_LINK_FEATURE_TYPE_REQUIRED =
+  'This feature link is a containment link. Re-issue the call with featureType: "containment" so the change routes through approval.';
 
 /** Per-feature inline settings reference, returned on demand by describe. */
 export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFeatureType, string>> = {
@@ -1152,6 +1154,12 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         if (action === 'update' && input.featureType !== 'maintenance') {
           return JSON.stringify({ error: MAINTENANCE_LINK_FEATURE_TYPE_REQUIRED });
         }
+      }
+
+      // #10100: same anti-bypass as maintenance. The guardrail escalates
+      // containment to tier 3 from input.featureType, so an update must name it.
+      if (action === 'update' && existingFeatureType === 'containment' && input.featureType !== 'containment') {
+        return JSON.stringify({ error: CONTAINMENT_LINK_FEATURE_TYPE_REQUIRED });
       }
 
       if (action === 'add') {
