@@ -402,7 +402,7 @@ export const devices = pgTable('devices', {
   // path, or a partner-wide hostname match), 'hardware' (SMBIOS UUID or serial
   // + manufacturer, services/reinstallCandidates) or 'tpm' (reserved, wave T2).
   // NULL exactly when the link is NULL (devices_possible_replacement_reason_chk);
-  // devices_possible_replacement_clear nulls both when the link is cleared,
+  // devices_possible_replacement_reason_sync nulls both when the link is cleared,
   // including by the link's ON DELETE SET NULL.
   possibleReplacementReason: text('possible_replacement_reason').$type<PossibleReplacementReason>(),
   possibleReplacementDetectedAt: timestamp('possible_replacement_detected_at', { withTimezone: true }),

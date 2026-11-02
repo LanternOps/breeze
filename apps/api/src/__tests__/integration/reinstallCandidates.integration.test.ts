@@ -399,12 +399,36 @@ describe('reinstall candidates — clears and the CHECK', () => {
     expect(await flagOf(source.id)).toEqual({ target: null, reason: null, detectedAt: null });
   });
 
+  it('a link written without a reason (an API from before this wave, mid rolling deploy) defaults to hostname', async () => {
+    const tenant = await seedReattachTenant();
+    const target = await oldTarget(tenant.orgA, {});
+    // INSERT path: the #2764 fresh row as a pre-2-1 binary writes it.
+    const inserted = await seedAgentDevice(tenant.orgA, { status: 'pending', possibleReplacementOfDeviceId: target.id });
+    const insertedFlag = await flagOf(inserted.id);
+    expect(insertedFlag).toMatchObject({ target: target.id, reason: 'hostname' });
+    expect(insertedFlag.detectedAt).not.toBeNull();
+    // UPDATE path: only the link in the SET list.
+    const updated = await newSource(tenant.orgA, {});
+    await getTestDb().update(devices).set({ possibleReplacementOfDeviceId: target.id }).where(eq(devices.id, updated.id));
+    const updatedFlag = await flagOf(updated.id);
+    expect(updatedFlag).toMatchObject({ target: target.id, reason: 'hostname' });
+    expect(updatedFlag.detectedAt).not.toBeNull();
+    // A writer that names a reason keeps it.
+    const hinted = await newSource(tenant.orgA, {});
+    await getTestDb().update(devices)
+      .set({ possibleReplacementOfDeviceId: target.id, possibleReplacementReason: 'hardware', possibleReplacementDetectedAt: new Date() })
+      .where(eq(devices.id, hinted.id));
+    expect(await flagOf(hinted.id)).toMatchObject({ target: target.id, reason: 'hardware' });
+  });
+
   it('the migration backfills a pre-existing #2764 link to hostname at created_at, then the CHECK holds', async () => {
     const tenant = await seedReattachTenant();
     const target = await oldTarget(tenant.orgA, {});
     const source = await newSource(tenant.orgA, {});
-    // The state before 2027-01-19-110000: a link with no reason.
+    // The state before 2027-01-19-110000: a link with no reason, and neither
+    // the CHECK nor the sync trigger (the replay below re-creates the trigger).
     await getTestDb().execute(sql`ALTER TABLE devices DROP CONSTRAINT devices_possible_replacement_reason_chk`);
+    await getTestDb().execute(sql`DROP TRIGGER devices_possible_replacement_reason_sync ON devices`);
     try {
       await getTestDb().execute(sql`
         UPDATE devices SET possible_replacement_of_device_id = ${target.id}::uuid WHERE id = ${source.id}::uuid`);
@@ -415,6 +439,14 @@ describe('reinstall candidates — clears and the CHECK', () => {
       const file = await readFile(new URL('../../../migrations/2027-01-19-110000-device-possible-replacement-reason.sql', import.meta.url), 'utf8');
       await getTestDb().transaction(async (tx) => { await tx.execute(sql.raw(file)); });
     } finally {
+      await getTestDb().execute(sql`
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'devices_possible_replacement_reason_sync') THEN
+            CREATE TRIGGER devices_possible_replacement_reason_sync
+              BEFORE INSERT OR UPDATE OF possible_replacement_of_device_id ON devices
+              FOR EACH ROW EXECUTE FUNCTION breeze_devices_possible_replacement_reason_sync();
+          END IF;
+        END $$`);
       await getTestDb().execute(sql`
         DO $$ BEGIN
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'devices_possible_replacement_reason_chk') THEN
@@ -430,11 +462,16 @@ describe('reinstall candidates — clears and the CHECK', () => {
     expect(row?.possibleReplacementDetectedAt?.getTime()).toBe(row?.createdAt.getTime());
   });
 
-  it('the CHECK refuses a link without a reason and a reason outside the vocabulary', async () => {
+  it('the CHECK refuses a reason without a link and a reason outside the vocabulary', async () => {
     const tenant = await seedReattachTenant();
     const target = await oldTarget(tenant.orgA, {});
     const source = await newSource(tenant.orgA, {});
-    expect(await violatedConstraint(getTestDb().update(devices).set({ possibleReplacementOfDeviceId: target.id }).where(eq(devices.id, source.id))))
+    // A link without a reason is defaulted by the sync trigger (see the
+    // rolling-deploy test above). A reason written without the link is not
+    // in the trigger's column list, so the pairing CHECK is what refuses it.
+    expect(await violatedConstraint(getTestDb().update(devices)
+      .set({ possibleReplacementReason: 'hostname', possibleReplacementDetectedAt: new Date() })
+      .where(eq(devices.id, source.id))))
       .toBe('devices_possible_replacement_reason_chk');
     expect(await violatedConstraint(getTestDb().execute(sql`
       UPDATE devices SET possible_replacement_of_device_id = ${target.id}::uuid,

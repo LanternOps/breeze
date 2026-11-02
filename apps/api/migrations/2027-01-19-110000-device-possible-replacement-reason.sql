@@ -23,11 +23,19 @@
 --
 -- The link is `ON DELETE SET NULL`. That referential action is an UPDATE of
 -- the link alone and would leave a reason behind, violating the CHECK and
--- failing the target's hard delete. devices_possible_replacement_clear
--- (BEFORE UPDATE OF possible_replacement_of_device_id) clears the reason and
--- the timestamp whenever the link becomes NULL, so the FK action, and any
--- writer that clears only the link, keeps the row consistent. It fires only
--- when the link is in the SET list, so heartbeat updates never run it.
+-- failing the target's hard delete. devices_possible_replacement_reason_sync
+-- (BEFORE INSERT, and BEFORE UPDATE OF possible_replacement_of_device_id)
+-- keeps the row consistent in both directions:
+--   * the link becomes NULL → the reason and the timestamp are cleared, so
+--     the FK action and any writer that clears only the link stay valid;
+--   * a link is written with no reason → 'hostname' and now(). Before this
+--     wave the #2764 path was the only writer of the link, and it writes
+--     none of the new columns. During a rolling deploy an API binary from
+--     before this wave still runs that INSERT against the migrated schema;
+--     without this default the CHECK would refuse it and fail the enroll.
+--     A writer that sets a reason keeps it (the default never overrides).
+-- The UPDATE arm fires only when the link is in the SET list, so heartbeat
+-- updates never run it.
 --
 -- Tenancy: devices is an org-cascade table; both columns are classified
 -- `included` in CORE_TENANT_EXPORT_POLICY. No RLS change.
@@ -64,7 +72,7 @@ BEGIN
   END IF;
 END $$;
 
-CREATE OR REPLACE FUNCTION public.breeze_devices_possible_replacement_clear()
+CREATE OR REPLACE FUNCTION public.breeze_devices_possible_replacement_reason_sync()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
@@ -72,15 +80,23 @@ BEGIN
   IF NEW.possible_replacement_of_device_id IS NULL THEN
     NEW.possible_replacement_reason := NULL;
     NEW.possible_replacement_detected_at := NULL;
+  ELSIF NEW.possible_replacement_reason IS NULL THEN
+    -- A writer from before this wave (the #2764 hostname path): see header.
+    NEW.possible_replacement_reason := 'hostname';
+    NEW.possible_replacement_detected_at := COALESCE(NEW.possible_replacement_detected_at, now());
+  ELSIF NEW.possible_replacement_detected_at IS NULL THEN
+    NEW.possible_replacement_detected_at := now();
   END IF;
   RETURN NEW;
 END;
 $$;
 
 DROP TRIGGER IF EXISTS devices_possible_replacement_clear ON public.devices;
-CREATE TRIGGER devices_possible_replacement_clear
-  BEFORE UPDATE OF possible_replacement_of_device_id ON public.devices
-  FOR EACH ROW EXECUTE FUNCTION public.breeze_devices_possible_replacement_clear();
+DROP TRIGGER IF EXISTS devices_possible_replacement_reason_sync ON public.devices;
+DROP FUNCTION IF EXISTS public.breeze_devices_possible_replacement_clear();
+CREATE TRIGGER devices_possible_replacement_reason_sync
+  BEFORE INSERT OR UPDATE OF possible_replacement_of_device_id ON public.devices
+  FOR EACH ROW EXECUTE FUNCTION public.breeze_devices_possible_replacement_reason_sync();
 
 DO $$
 DECLARE
