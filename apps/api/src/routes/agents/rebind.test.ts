@@ -121,6 +121,16 @@ describe('POST /:id/rebind (phase 1, #8318 §6.3)', () => {
 });
 
 describe('POST /:id/rebind-confirm (#8318 §6.4)', () => {
+  it('maps an isolation-blocked source decommission to 409', async () => {
+    const { NetworkIsolationUnresolvedError } = await import('../../services/networkIsolation/lifecycle');
+    confirmRebindIntentMock.mockRejectedValueOnce(new NetworkIsolationUnresolvedError('decommission', [
+      { deviceId: '11111111-1111-4111-8111-111111111111', isolationId: INTENT_ID },
+    ]));
+    const res = await post(app(), `/${AGENT_ID}/rebind-confirm`, {}, { authorization: `Bearer ${CONFIRM_TOKEN}` });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'isolation_unresolved', message: 'Release network isolation first' });
+  });
+
   const identity = { deviceId: 'dev-tgt', orgId: 'org-a', siteId: 'site-a', agentId: HEX('b') };
 
   it('authenticates with the confirm-only bearer and answers the identity, no secrets', async () => {

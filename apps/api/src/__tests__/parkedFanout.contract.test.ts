@@ -167,6 +167,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/aiToolsAiAgentGovernance.ts': 'joins devices only to show hostnames on an AI run listing',
   'services/aiToolsCompliance.ts': 'compliance report joins; device-targeted actions go through the central device gate',
   'services/aiToolsDns.ts': 'joins devices only to show hostname on org-scoped DNS event/policy listings',
+  'services/dnsSecurityEventsPage.ts': 'joins devices only to show hostname on the org-scoped DNS Events tab listing (#10054)',
   'services/aiToolsHuntress.ts': 'joins devices only for hostname display on org-scoped incident/agent listings',
   'services/aiToolsVulnerability.ts': 'joins devices only to apply the caller\'s site axis to the CVE/software labels of finding ids the caller named or a device-gated read returned (#9532); selects no targets',
   'services/alertCorrelationRca.ts': 'human-facing root-cause read model for the alert correlation route',
@@ -213,6 +214,8 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/networkIsolation/lifecycle.ts': 'lifecycle: locks explicitly scoped devices to block destructive operations while isolation is unresolved; no background target selection',
+  'jobs/networkIsolationSweeper.ts': 'lifecycle: recovery and expiry warnings for existing isolation episodes must survive parked/disabled devices; device lookup only resolves the episode notification site, never selects new isolation targets',
   'services/networkIsolation/service.ts': 'Single-device service under caller RLS and site access; selects no fan-out targets. dispatchDeviceCommand refuses parked devices; heartbeat tombstones retain recovery intent.',
   'services/actionIntents/pax8OrderDigest.ts': 'W15 (#6785): one Pax8 order approval digest; billing evidence with no device access or fan-out',
   'services/pax8OrderPreview.ts': 'W15 (#6785): read-only Pax8 order billing evidence; no device access or fan-out',

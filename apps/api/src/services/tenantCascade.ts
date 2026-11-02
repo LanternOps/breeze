@@ -41,6 +41,7 @@ import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
 import { withExtensionOrgCascade } from '../extensions/tenancyRegistry';
 import { createAuditLog } from './auditService';
+import { assertNoUnresolvedIsolation, findUnresolvedIsolations, NetworkIsolationUnresolvedError } from './networkIsolation/lifecycle';
 // Self-import so cascadeDeletePartner calls cascadeDeleteOrg /
 // topologicalCascadeOrder through the module namespace. This keeps those
 // internal calls interceptable by `vi.spyOn(mod, ...)` (an ESM live-binding
@@ -1800,7 +1801,7 @@ async function detachSharedIdentitiesFromOrg(orgId: string): Promise<string[]> {
   return detachedIds;
 }
 
-export type TenantCascadeRefusalCode = 'LEGAL_HOLD_ACTIVE';
+export type TenantCascadeRefusalCode = 'LEGAL_HOLD_ACTIVE' | 'isolation_unresolved';
 
 /**
  * Thrown by `cascadeDeleteOrg` when the erasure is refused before any row is
@@ -1839,6 +1840,41 @@ export async function hasActiveLegalHoldSnapshots(orgId: string): Promise<boolea
     `),
   );
   return rowsFromExecute<{ id: string }>(result).length > 0;
+}
+
+/** Network recovery must remain possible until every episode is resolved. */
+export async function hasUnresolvedNetworkIsolations(orgId: string): Promise<boolean> {
+  return dbModule.withSystemDbAccessContext(async () =>
+    (await findUnresolvedIsolations(dbModule.db, { orgId })).length > 0,
+  );
+}
+
+/** Recheck inside each transaction that can erase recovery state. */
+export async function assertIsolationErasureSafe(orgId: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await dbModule.withDbTransaction(async () => {
+        // Device-first: let existing starts finish before taking the org FK fence.
+        // NOWAIT avoids a cycle with a new device/start holding org KEY SHARE;
+        // the second scan catches devices committed after the first scan. It must
+        // not wait on a new start that now needs our org lock. A failed savepoint
+        // releases ALL these locks before retry; success retains them until delete commits.
+        await dbModule.db.execute(sql`SELECT id FROM devices WHERE org_id = ${orgId} ORDER BY id FOR NO KEY UPDATE`);
+        await dbModule.db.execute(sql`SELECT id FROM organizations WHERE id = ${orgId} FOR UPDATE NOWAIT`);
+        await dbModule.db.execute(sql`SELECT id FROM devices WHERE org_id = ${orgId} ORDER BY id FOR NO KEY UPDATE NOWAIT`);
+        await assertNoUnresolvedIsolation(dbModule.db, { orgId }, 'organization_erasure', { lockDevices: false });
+      });
+      return;
+    } catch (error) {
+      if (error instanceof NetworkIsolationUnresolvedError) {
+        throw new TenantCascadeRefusalError(error.code, error.message);
+      }
+      // Bound contention retries: preserve the refusal/error and never delete
+      // when the fence could not be established. Drizzle wraps SQLSTATE in cause.
+      if (pgErrorCode(error) === '55P03' && attempt < 2) continue;
+      throw error;
+    }
+  }
 }
 
 /**
@@ -2016,6 +2052,22 @@ async function cascadeDeleteOrgInternal(
   const retainedTables: ReadonlySet<string> = scopedHold
     ? new Set<string>([...EVIDENCE_HOLD_RETAINED_TABLES, 'organizations'])
     : new Set<string>();
+
+  if (await hasUnresolvedNetworkIsolations(orgId)) {
+    await createAuditLog({
+      orgId: null,
+      actorType: 'user',
+      actorId: performedBy,
+      actorEmail: performedByEmail,
+      action: 'tenant.erasure.refused_isolation',
+      resourceType: 'organization',
+      resourceId: orgId,
+      details: { reason: 'isolation_unresolved' },
+      result: 'failure',
+      errorMessage: 'Release network isolation first',
+    });
+    throw new TenantCascadeRefusalError('isolation_unresolved', 'Release network isolation first');
+  }
 
   const holdSource: BackupLegalHoldSource | null = await findActiveBackupLegalHold(orgId);
   if (holdSource) {
@@ -2466,6 +2518,9 @@ async function cascadeDeleteOrgInternal(
               await dbModule.db.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
             }
 
+            if (table === 'device_network_isolations' || table === 'devices' || table === 'organizations') {
+              await assertIsolationErasureSafe(orgId);
+            }
             const result = await deleteOrgRows(table, orgId);
             return extractRowCount(result);
           });
@@ -2482,13 +2537,14 @@ async function cascadeDeleteOrgInternal(
       // `err instanceof TenantCascadeRefusalError` check (tenantErasure.ts)
       // still recognizes it as a skip rather than a generic job failure.
       if (err instanceof TenantCascadeRefusalError) {
+        const isolationRefusal = err.code === 'isolation_unresolved';
         try {
           await createAuditLog({
             orgId: null,
             actorType: 'user',
             actorId: performedBy,
             actorEmail: performedByEmail,
-            action: 'tenant.erasure.refused_legal_hold',
+            action: isolationRefusal ? 'tenant.erasure.refused_isolation' : 'tenant.erasure.refused_legal_hold',
             resourceType: 'organization',
             resourceId: orgId,
             details: {
@@ -2500,12 +2556,17 @@ async function cascadeDeleteOrgInternal(
             errorMessage: err.message,
           });
         } catch (auditErr) {
-          console.warn('[tenantCascade] refused-legal-hold audit write failed:', auditErr);
+          console.warn('[tenantCascade] refusal audit write failed:', auditErr);
         }
-        captureMessage(
-          `[tenantCascade] erasure refused for org=${orgId}: active legal hold appeared mid-cascade`,
-          { eventCode: 'tenant_erasure_refused_legal_hold', level: 'warning', tags: { stage: 'mid_cascade' } },
-        );
+        if (isolationRefusal) {
+          captureMessage(`[tenantCascade] erasure refused for org=${orgId}: network isolation appeared mid-cascade`, {
+            eventCode: 'tenant_erasure_refused_isolation', level: 'warning', tags: { stage: 'mid_cascade' },
+          });
+        } else {
+          captureMessage(`[tenantCascade] erasure refused for org=${orgId}: active legal hold appeared mid-cascade`, {
+            eventCode: 'tenant_erasure_refused_legal_hold', level: 'warning', tags: { stage: 'mid_cascade' },
+          });
+        }
         throw err;
       }
       // A single table failure aborts the WALK. It does NOT roll the erasure
