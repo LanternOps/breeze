@@ -67,6 +67,18 @@ const {
 // similarly just runs its callback. Both pass through so the org->partner lookup
 // (which must escape the request's org-scoped RLS context to read `partners`) works
 // under this file's plain db mock. See helpers.test.ts for the same convention.
+// Existing route cases exercise the non-isolated ICE plan.
+vi.mock('./desktopRelayPolicy', async () => {
+  const { getIceServers } = await import('./helpers');
+  return {
+    resolveDesktopIcePlan: async (_deviceId: string, scope: import('./helpers').TurnCredentialScope) => ({
+      ok: true,
+      relayOnly: false,
+      iceServers: getIceServers(scope),
+    }),
+  };
+});
+
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),

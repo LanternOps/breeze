@@ -81,6 +81,7 @@ import {
 } from '../agentWs';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { decommissionDeviceInTransaction } from '../../services/deviceDecommission';
+import { NetworkIsolationUnresolvedError } from '../../services/networkIsolation/lifecycle';
 import { getDeviceUninstallStatus } from '../../services/deviceUninstallState';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
 import { assertTtlWithinCap } from '../../services/enrollmentDefaults';
@@ -2408,15 +2409,22 @@ coreRoutes.delete(
     // let the command commit independently of the decommission write).
     let updated: typeof devices.$inferSelect | undefined;
     let uninstallQueued = false;
-    await db.transaction(async (tx) => {
-      const outcome = await decommissionDeviceInTransaction(tx, {
-        deviceId,
-        queueUninstall: uninstallAgent,
-        actorUserId: auth.user.id,
+    try {
+      await db.transaction(async (tx) => {
+        const outcome = await decommissionDeviceInTransaction(tx, {
+          deviceId,
+          queueUninstall: uninstallAgent,
+          actorUserId: auth.user.id,
+        });
+        updated = outcome.updated;
+        uninstallQueued = outcome.uninstallQueued;
       });
-      updated = outcome.updated;
-      uninstallQueued = outcome.uninstallQueued;
-    });
+    } catch (err) {
+      if (err instanceof NetworkIsolationUnresolvedError) {
+        return c.json({ error: err.code, message: err.message }, 409);
+      }
+      throw err;
+    }
 
     // Resolve any "possible replacement of THIS device" linkage now that the
     // old device is decommissioned (#2764). The banner/badge on the newer
@@ -2679,6 +2687,9 @@ coreRoutes.delete(
       linkGroupDissolved = purge.linkGroupDissolved;
       detachedTopologyAlerts = purge.detachedTopologyAlerts;
     } catch (err: unknown) {
+      if (err instanceof NetworkIsolationUnresolvedError) {
+        return c.json({ error: err.code, message: err.message }, 409);
+      }
       if (err instanceof DeviceLifecycleError) {
         return c.json({ error: err.message, code: err.code }, err.status);
       }

@@ -43,7 +43,11 @@ vi.mock('drizzle-orm', () => ({
   desc: (col: unknown) => ({ op: 'desc', col }),
 }));
 
-vi.mock('../db', () => ({ db: dbMock, withDbTransaction: async (fn: () => Promise<unknown>) => fn() }));
+vi.mock('../db', () => ({
+  db: dbMock,
+  withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
+  withSystemDbAccessContext: async (fn: () => Promise<unknown>) => fn(),
+}));
 vi.mock('./alertSubjects', () => ({ evaluateSubjectAlerts: vi.fn(async () => 'ok') }));
 
 vi.mock('../db/schema', () => ({
