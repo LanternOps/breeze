@@ -42,7 +42,8 @@ export const PUBLIC_DEVICE_FIELDS = [
   'updateOfferWithheldReason', 'updateOfferWithheldSince',
   'updateAttemptTargetVersion', 'updateAttemptStartedAt', 'updateAttemptLastAt', 'updateAttemptCount',
   'helperInstallIssue', 'helperInstallIssueSince',
-  'uninstallIntentAt', 'possibleReplacementOfDeviceId', 'decommissionedAt',
+  'uninstallIntentAt', 'possibleReplacementOfDeviceId',
+  'possibleReplacementReason', 'possibleReplacementDetectedAt', 'decommissionedAt',
   'purchaseDate', 'purchaseDateSource',
   'createdAt', 'updatedAt', 'partnerExportUpdatedAt',
 ] as const satisfies readonly (keyof typeof devices.$inferSelect)[];

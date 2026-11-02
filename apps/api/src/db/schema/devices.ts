@@ -3,7 +3,7 @@ import { sql } from 'drizzle-orm';
 import { ipClassEnum, organizations, partners, sites } from './orgs';
 import { users } from './users';
 import { aiInitiatorKindEnum } from './aiInitiator';
-import type { IsolationMechanism, BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
+import type { IsolationMechanism, PossibleReplacementReason, BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
 
 export const osTypeEnum = pgEnum('os_type', ['windows', 'macos', 'linux']);
 export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined', 'updating', 'pending']);
@@ -397,6 +397,15 @@ export const devices = pgTable('devices', {
   // (collision detection, Task 4) for operator review (Task 7).
   uninstallIntentAt: timestamp('uninstall_intent_at', { withTimezone: true }),
   possibleReplacementOfDeviceId: uuid('possible_replacement_of_device_id'),
+  // #8318 §4.1/§7.3 — why and when this (source) row was flagged as a probable
+  // reinstall of possibleReplacementOfDeviceId: 'hostname' (the #2764 collision
+  // path, or a partner-wide hostname match), 'hardware' (SMBIOS UUID or serial
+  // + manufacturer, services/reinstallCandidates) or 'tpm' (reserved, wave T2).
+  // NULL exactly when the link is NULL (devices_possible_replacement_reason_chk);
+  // devices_possible_replacement_clear nulls both when the link is cleared,
+  // including by the link's ON DELETE SET NULL.
+  possibleReplacementReason: text('possible_replacement_reason').$type<PossibleReplacementReason>(),
+  possibleReplacementDetectedAt: timestamp('possible_replacement_detected_at', { withTimezone: true }),
   // #2787 item 4 — WHEN this device was removed (status flipped to
   // 'decommissioned'). NULL for every device that is not removed, and cleared
   // again on Restore. `updated_at` cannot stand in for it: it moves on every
@@ -462,6 +471,11 @@ export const deviceHardware = pgTable('device_hardware', {
   motherboardProduct: varchar('motherboard_product', { length: 255 }),
   motherboardVersion: varchar('motherboard_version', { length: 255 }),
   biosVersion: varchar('bios_version', { length: 100 }),
+  // #8318 §7.2 — SMBIOS system UUID, canonical lower-case form; placeholders and
+  // malformed values are stored NULL. A reinstall hint, never authority. Partial
+  // indexes device_hardware_system_uuid_idx and device_hardware_serial_vendor_idx
+  // (2027-01-19-110200) serve the partner-wide candidate search.
+  systemUuid: uuid('system_uuid'),
   // Memory summary (#5351). All NULL until an agent reports a valid `memory`
   // block; `memoryObservedAt` is when one was last applied (updatedAt also
   // advances when memory collection failed). See device_memory_modules.

@@ -449,6 +449,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           motherboardManufacturer: { type: 'string', nullable: true },
           motherboardProduct: { type: 'string', nullable: true },
           motherboardVersion: { type: 'string', nullable: true },
+          systemUuid: { type: 'string', format: 'uuid', nullable: true, description: 'SMBIOS system UUID (canonical lower-case); a reinstall hint, null when unreported or a known placeholder' },
           memorySlotsTotal: { type: 'integer', nullable: true, description: 'Physical memory slots in system-memory arrays; null until reported' },
           memoryMaxCapacityMb: { type: 'integer', nullable: true, description: 'Maximum supported memory (MiB)' },
           memorySoldered: { type: 'boolean', nullable: true, description: 'true = on-package memory with no slot inventory (e.g. Apple Silicon)' },
