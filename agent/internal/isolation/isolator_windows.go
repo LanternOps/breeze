@@ -11,9 +11,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/isolation/recoveryinstall"
 	"github.com/breeze-rmm/agent/internal/isolation/wfp"
 	"github.com/breeze-rmm/agent/internal/serviceinstall"
 )
+
+// TODO(#10095-activation): flip to true only in the activation PR, after L1 passes and NETWORK_ISOLATION_MIN_AGENT_VERSION is pinned. Todd gate.
+const windowsIsolationActivated = false
 
 type windowsWFPSession interface {
 	Close() error
@@ -30,6 +34,7 @@ type windowsDropWindow struct {
 }
 
 type windowsIsolator struct {
+	readiness  readinessCache
 	bins       func() []string
 	open       func() (windowsWFPSession, error)
 	appID      func(string) ([]byte, error)
@@ -85,10 +90,38 @@ func newWindowsIsolator(bins func() []string) Isolator {
 	}
 }
 
-// Capability deliberately stays disabled until recovery distribution and the
-// Windows lab gate land in W1g; inspection and release are still functional.
-func (*windowsIsolator) Capability() Capability {
-	return Capability{Version: 0, Mechanism: "wfp", UnsupportedReason: "wfp isolator not activated in this agent build", Ready: false}
+// Capability reads only cached startup/pre-apply readiness; heartbeats never
+// invoke the installer, self-test, or Task Scheduler.
+func (i *windowsIsolator) Capability() Capability {
+	return i.readiness.capability(windowsIsolationActivated)
+}
+
+func (i *windowsIsolator) configureRecoveryReadiness(scheduler RecoveryScheduler, wantVersion string) {
+	i.configureReadiness(func(ctx context.Context) (string, error) { return recoveryinstall.EnsureRecovery(ctx, wantVersion) }, scheduler.Ready)
+}
+
+func (i *windowsIsolator) configureReadiness(ensure func(context.Context) (string, error), scheduler func() (bool, string)) {
+	i.readiness.mu.Lock()
+	defer i.readiness.mu.Unlock()
+	i.readiness.probe = func(ctx context.Context) (error, error, bool, string) {
+		if err := ctx.Err(); err != nil {
+			return err, err, false, "cancelled"
+		}
+		session, engineErr := i.open()
+		if engineErr == nil {
+			closeWindowsSession(session)
+		}
+		_, recoveryErr := ensure(ctx)
+		ready, reason := scheduler()
+		return engineErr, recoveryErr, ready, reason
+	}
+	i.readiness.checkedAt = time.Time{}
+}
+
+func (i *windowsIsolator) RefreshReadiness(ctx context.Context) { i.readiness.refresh(ctx, true) }
+
+func (i *windowsIsolator) refreshCachedReadiness(ctx context.Context) {
+	i.readiness.refresh(ctx, false)
 }
 
 func closeWindowsSession(s windowsWFPSession) {
@@ -97,11 +130,16 @@ func closeWindowsSession(s windowsWFPSession) {
 	}
 }
 
-func (i *windowsIsolator) applicationIDs() ([]string, map[string][]byte, error) {
+func (i *windowsIsolator) BinaryPaths() []string { return canonicalWindowsPaths(i.bins()) }
+
+func (i *windowsIsolator) applicationIDs(paths ...string) ([]string, map[string][]byte, error) {
 	ids := map[string][]byte{}
 	var bins []string
 	hasAgent := false
-	for _, path := range canonicalWindowsPaths(i.bins()) {
+	if len(paths) == 0 {
+		paths = i.bins()
+	}
+	for _, path := range canonicalWindowsPaths(paths) {
 		isAgent := filepath.Base(path) == "breeze-agent.exe"
 		if err := i.stat(path); err != nil {
 			if !isAgent && errors.Is(err, os.ErrNotExist) {
@@ -133,7 +171,7 @@ func (i *windowsIsolator) Apply(ctx context.Context, spec ResolvedSpec) (Digest,
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	bins, ids, err := i.applicationIDs()
+	bins, ids, err := i.applicationIDs(spec.BinaryPaths...)
 	if err != nil {
 		return "", err
 	}
