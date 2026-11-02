@@ -659,16 +659,34 @@ func (s *Session) captureLoopTicker() captureMode {
 	var wd reattachWatchdog
 	const noVideoReattachTimeout = 3 * time.Second
 	const reattachCooldown = 5 * time.Second
+	// Encoder/sink stalls are handled at the encoder, not by re-attaching;
+	// they have their own cooldown and termination budget.
+	var lastNonCaptureStall time.Time
+	var stallBudget nonCaptureStallBudget
 
 	for {
 		select {
 		case <-s.done:
 			return captureModeStopped
 		case <-ticker.C:
-			// No-video watchdog: force desktop re-attach if video has been stalled for >3s.
+			// No-video watchdog: if video has been stalled for >3s, find out
+			// which stage stopped (#10880). Only a capture stall re-attaches
+			// the desktop / rebuilds the capturer; an encoder stall is handled
+			// at the encoder.
 			if lastWriteNanos := s.lastVideoWriteUnixNano.Load(); lastWriteNanos != 0 {
 				lastWrite := time.Unix(0, lastWriteNanos)
-				if time.Since(lastWrite) > noVideoReattachTimeout &&
+				now := time.Now()
+				kind, action := s.noVideoDecision(now, noVideoReattachTimeout)
+				if (action == noVideoActionDemoteEncoder || action == noVideoActionLogOnly) &&
+					now.Sub(lastNonCaptureStall) > reattachCooldown {
+					lastNonCaptureStall = now
+					if reason := s.handleNonCaptureStall(kind, action, &stallBudget, lastWriteNanos, now); reason != "" {
+						// Same goroutine rationale as the re-attach budget below.
+						go s.StopWithReason(reason)
+						return captureModeStopped
+					}
+				}
+				if action == noVideoActionReattach &&
 					time.Since(wd.lastAttempt) > reattachCooldown {
 					if wd.evaluate(s.id, lastWriteNanos) {
 						// Spawn StopWithReason() in a goroutine because it waits on the capture goroutine via s.wg — calling inline would deadlock.
@@ -681,7 +699,7 @@ func (s *Session) captureLoopTicker() captureMode {
 					}
 					wd.recordAttempt(lastWriteNanos)
 					slog.Warn("Capture watchdog (ticker): no video output, forcing desktop re-attach",
-						"session", s.id,
+						"session", s.id, "stalledStage", kind.String(),
 						"sinceLastWrite", time.Since(lastWrite).Round(time.Millisecond))
 					switchThreadToInputDesktop()
 					s.mu.RLock()
@@ -730,6 +748,8 @@ func (s *Session) captureLoopTicker() captureMode {
 			}
 			if h, ok := currentCap.(TightLoopHint); ok && h.TightLoop() {
 				slog.Info("Capturer supports tight loop again, switching to DXGI loop", "session", s.id)
+				// The DXGI loop never collects warm-up results.
+				s.abandonHardwareWarmup()
 				return captureModeDXGI
 			}
 
@@ -843,6 +863,9 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		return
 	}
 	s.metrics.RecordCapture(time.Since(t0))
+	// Capture-alive signal for the no-video watchdog: the capturer delivered a
+	// frame, whatever the differ and encoder do with it next.
+	s.lastCaptureUnixNano.Store(time.Now().UnixNano())
 
 	s.frameIdx++
 	if enableFramePixelDiagnostics && (s.frameIdx <= 5 || s.frameIdx%300 == 0) {
@@ -941,6 +964,10 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		return
 	}
 
+	s.lastEncodeOutputUnixNano.Store(time.Now().UnixNano())
+	if !s.hwRestore.hardwareProducedOutput && enc.BackendIsHardware() {
+		s.hwRestore.noteHardwareOutput()
+	}
 	s.metrics.RecordEncode(encodeTime, len(h264Data))
 	s.metrics.RecordConvert(enc.LastConvertDuration())
 
@@ -1038,6 +1065,9 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 		return true, false, false
 	}
 
+	if !s.hwRestore.hardwareProducedOutput && enc.BackendIsHardware() {
+		s.hwRestore.noteHardwareOutput()
+	}
 	s.metrics.RecordEncode(encodeTime, len(h264Data))
 	// Zero-copy: no CPU colour conversion on this path. Reset so convertMs
 	// doesn't carry a stale value from an earlier CPU frame in the same session.
