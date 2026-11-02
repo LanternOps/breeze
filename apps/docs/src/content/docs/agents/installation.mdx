@@ -128,9 +128,7 @@ for the script-based fleet install.
     1. Open **Add Device**, select **CLI Commands**, and generate an enrollment token.
     2. Copy the Windows command and run it in PowerShell 5.1 or later as Administrator.
 
-    Windows quick installation requires a configured HTTPS API URL and a certificate trusted by the target machine. The copied command includes the installer's SHA-256 from authenticated onboarding. It verifies the downloaded bytes before running the installer. The installer then checks the agent checksum, signature, and operating system.
-
-    If an installer update causes a checksum mismatch, generate a new command in Add Device. Do not use an unverified `irm | iex` shortcut.
+    The copied command downloads the PowerShell installer from the API URL returned during onboarding. It checks for HTTP 200, disables redirects, and verifies that the first line defines `Install-BreezeAgent` before running the script. HTTPS relies on a certificate trusted by the target machine. Plain HTTP is supported for self-hosted LAN deployments, where the network must be trusted. The installer verifies the agent version and SHA-256 checksum, checks Authenticode when available, and enforces the operating system requirement.
 
     Alternatively, use the MSI installer for silent deployment:
     ```powershell

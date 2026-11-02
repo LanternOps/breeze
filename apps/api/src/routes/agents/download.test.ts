@@ -67,7 +67,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { downloadRoutes } from './download';
-import { getWindowsInstaller } from '../../services/windowsInstaller';
 import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl } from '../../services/binarySource';
 import { isS3Configured, getPresignedUrl, getObjectStream } from '../../services/s3Storage';
 import { getPromotedComponentVersion, getRegisteredComponentVersion } from '../../services/promotedAgentVersion';
@@ -1268,12 +1267,12 @@ describe('GET /install.sh — generated installer script', () => {
 });
 
 describe('GET /install.ps1 — generated Windows installer', () => {
-  it('serves a credential-free function from the configured server URL', async () => {
+  it('serves a credential-free function from the configured HTTP or HTTPS server URL', async () => {
     const originalBreezeServer = process.env.BREEZE_SERVER;
     const originalPublicApiUrl = process.env.PUBLIC_API_URL;
     const originalApiUrl = process.env.API_URL;
     process.env.BREEZE_SERVER = 'https://internal.example.net';
-    process.env.PUBLIC_API_URL = 'https://rmm.example.com///';
+    process.env.PUBLIC_API_URL = 'http://rmm.example.com:3001///';
     delete process.env.API_URL;
 
     try {
@@ -1284,13 +1283,11 @@ describe('GET /install.ps1 — generated Windows installer', () => {
       expect(res.status).toBe(200);
       expect(res.headers.get('content-type')).toBe('text/plain; charset=utf-8');
       expect(res.headers.get('cache-control')).toBe('no-store, no-transform');
-      expect(createHash('sha256').update(new Uint8Array(bytes)).digest('hex'))
-        .toBe(getWindowsInstaller('https://rmm.example.com')?.integrity.sha256);
       expect(script).toMatch(/^function Install-BreezeAgent\s*\{/);
       expect(script).toContain('param(');
       expect(script).toContain('[string]$Token');
       expect(script).toContain('[string]$EnrollmentSecret');
-      expect(script).toContain("$serverUrl = 'https://rmm.example.com'");
+      expect(script).toContain("$serverUrl = 'http://rmm.example.com:3001'");
       expect(script).toContain('$serverUrl/api/v1/agent-versions/latest?platform=windows&arch=amd64&component=agent');
       expect(script).toContain('$serverUrl/api/v1/agents/download/windows/amd64');
       expect(script).not.toContain('enroll_abc123');

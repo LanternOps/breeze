@@ -19,12 +19,12 @@ const fixture = Buffer.from(`function Install-BreezeAgent {
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const literal = (value) => `'${value.replaceAll("'", "''")}'`;
 
-async function runBootstrap({ bytes = fixture, sha256 = digest(fixture), status = 200, token = 'test-token', secret = '', url = 'https://rmm.example.test/api/v1/agents/install.ps1', live = false, setup = '' } = {}) {
+async function runBootstrap({ bytes = fixture, status = 200, token = 'test-token', secret = '', apiUrl = 'https://rmm.example.test', live = false, setup = '' } = {}) {
+  const url = `${apiUrl.replace(/\/+$/, '')}/api/v1/agents/install.ps1`;
   const directory = await mkdtemp(join(tmpdir(), 'breeze-bootstrap-test-'));
   const path = join(directory, 'bootstrap.ps1');
   const command = buildInstallCommands({
-    apiUrl: 'https://dashboard.example.test', token, enrollmentSecret: secret,
-    windowsInstaller: { url, sha256 },
+    apiUrl, token, enrollmentSecret: secret,
   }).windows;
   assert.equal(typeof command, 'string');
   const mock = `function Invoke-WebRequest {
@@ -32,9 +32,8 @@ async function runBootstrap({ bytes = fixture, sha256 = digest(fixture), status 
     param([string]$Uri, [switch]$UseBasicParsing, [int]$TimeoutSec, [int]$MaximumRedirection, [string]$UserAgent, [hashtable]$Headers)
     if ($Uri -ne ${literal(url)} -or !$UseBasicParsing -or $TimeoutSec -ne 10 -or $MaximumRedirection -ne 0 -or $UserAgent -ne 'BreezeInstaller/1.0') { throw 'Invalid download arguments' }
     if ($Headers.Count -ne 1 -or $Headers['Accept-Encoding'] -ne 'identity') { throw 'Unexpected request headers' }
-    $stream = [IO.MemoryStream]::new([Convert]::FromBase64String('${bytes.toString('base64')}'))
-    $stream.Position = $stream.Length
-    [pscustomobject]@{StatusCode=${status}; RawContentStream=$stream; Content='Write-Output "UNVERIFIED CONTENT EXECUTED"'}
+    $content = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${bytes.toString('base64')}'))
+    [pscustomobject]@{StatusCode=${status}; Content=$content}
   }`;
   const source = `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $env:TEMP = ${literal(directory)}
@@ -61,7 +60,7 @@ function assertRejected(result) {
   assert.doesNotMatch(result.stdout, /EXECUTED|verified café/);
 }
 
-test('verified raw UTF-8 bytes execute once with literal enrollment arguments', async () => {
+test('the downloaded PowerShell installer executes with literal enrollment arguments', async () => {
   const token = "token'$(Write-Output INJECTED)`";
   const secret = "secret'\"$env:USERNAME`";
   const result = await runBootstrap({ token, secret });
@@ -108,7 +107,7 @@ test('generated installer retrieves metadata and a pinned binary through browser
     }
     bytes = Buffer.from(source, 'utf8');
     const result = await runBootstrap({
-      url: `${url}/api/v1/agents/install.ps1`, sha256: digest(bytes), live: true, secret: 'test-secret',
+      apiUrl: url, live: true, secret: 'test-secret',
       setup: "function icacls { $global:LASTEXITCODE = 0 }\nfunction Get-AuthenticodeSignature { [pscustomobject]@{Status='NotSigned'} }",
     });
     assert.equal(result.code, 0, result.stderr);
@@ -138,69 +137,56 @@ for (const codePoint of [0x2018, 0x2019, 0x201a, 0x201b]) {
   });
 }
 
-test('a substituted function prefix never executes', async () => {
-  const bytes = Buffer.from('function Install-BreezeAgent {}\nWrite-Output "TAMPERED SCRIPT EXECUTED"');
+test('a substituted first line never executes', async () => {
+  const bytes = Buffer.from('Write-Output \"TAMPERED SCRIPT EXECUTED\"\nfunction Install-BreezeAgent {}');
   const result = await runBootstrap({ bytes });
   assertRejected(result);
-  assert.match(result.stderr, /installer checksum mismatch/);
-});
-
-test('an appended function cannot capture the enrollment arguments', async () => {
-  assertRejected(await runBootstrap({ bytes: Buffer.concat([fixture, Buffer.from('\nfunction Install-BreezeAgent { Write-Output "TAMPERED FUNCTION EXECUTED" }')]) }));
-});
-
-test('changing line endings rejects even otherwise equivalent code', async () => {
-  assertRejected(await runBootstrap({ bytes: Buffer.from(fixture.toString('utf8').replaceAll('\n', '\r\n')) }));
+  assert.match(result.stderr, /not a Breeze PowerShell installer/);
 });
 
 for (const status of [204, 206, 302, 304]) {
-  test(`HTTP ${status} cannot execute even matching bytes`, async () => {
+  test(`HTTP ${status} cannot execute installer content`, async () => {
     assertRejected(await runBootstrap({ status }));
   });
 }
 
-test('a pinned syntax error cannot invoke a stale installer function', async () => {
-  const bytes = Buffer.from('function Install-BreezeAgent {');
-  assertRejected(await runBootstrap({ bytes, sha256: digest(bytes) }));
+test('a response without the expected first line cannot invoke a stale installer function', async () => {
+  const bytes = Buffer.from('Write-Output \"UNTRUSTED CONTENT EXECUTED\"\nfunction Install-BreezeAgent {}');
+  assertRejected(await runBootstrap({ bytes }));
 });
 
-test('pinned invalid UTF-8 cannot execute', async () => {
-  const bytes = Buffer.from([0xff, 0xfe, 0xfd]);
-  assertRejected(await runBootstrap({ bytes, sha256: digest(bytes) }));
-});
-
-test('missing integrity metadata produces no Windows command', () => {
-  assert.equal(buildInstallCommands({ apiUrl: 'https://rmm.example.test', token: 'token', windowsInstaller: null }).windows, null);
-});
-
-test('real Invoke-WebRequest receives the exact bytes and never follows redirects', async () => {
+test('real Invoke-WebRequest receives the expected headers and never follows redirects', async () => {
   let redirectedRequests = 0;
   let receivedHeaders;
+  let redirect = false;
   const server = createServer((request, response) => {
-    if (request.url === '/redirect') {
-      response.writeHead(302, { Location: `${url}/target` });
-      response.end();
-    } else if (request.url === '/target') {
+    if (request.url === '/target') {
       redirectedRequests += 1;
       response.end(fixture);
-    } else {
+    } else if (request.url === '/api/v1/agents/install.ps1') {
       receivedHeaders = request.headers;
-      const scriptRequest = request.headers['user-agent'] === 'BreezeInstaller/1.0';
-      response.writeHead(200, { 'Content-Type': scriptRequest ? 'text/plain; charset=utf-8' : 'text/html; charset=utf-8' });
-      response.end(scriptRequest ? fixture : '<!doctype html><title>browser fallback</title>');
+      if (redirect) {
+        response.writeHead(302, { Location: '/target' });
+        response.end();
+      } else {
+        const scriptRequest = request.headers['user-agent'] === 'BreezeInstaller/1.0';
+        response.writeHead(200, { 'Content-Type': scriptRequest ? 'text/plain; charset=utf-8' : 'text/html; charset=utf-8' });
+        response.end(scriptRequest ? fixture : '<!doctype html><title>browser fallback</title>');
+      }
     }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const url = `http://127.0.0.1:${server.address().port}`;
+  const apiUrl = `http://127.0.0.1:${server.address().port}`;
   try {
-    const success = await runBootstrap({ url: `${url}/api/v1/agents/install.ps1`, live: true });
+    const success = await runBootstrap({ apiUrl, live: true });
     assert.equal(success.code, 0, success.stderr);
     assert.equal(JSON.parse(success.stdout).message, 'verified café');
     assert.equal(receivedHeaders['user-agent'], 'BreezeInstaller/1.0');
     assert.match(receivedHeaders['accept-encoding'], /(?:^|,)\s*identity(?:,|$)/);
     assert.equal(receivedHeaders.authorization, undefined);
     assert.equal(receivedHeaders.cookie, undefined);
-    assertRejected(await runBootstrap({ url: `${url}/redirect`, live: true }));
+    redirect = true;
+    assertRejected(await runBootstrap({ apiUrl, live: true }));
     assert.equal(redirectedRequests, 0);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

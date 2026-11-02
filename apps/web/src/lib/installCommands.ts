@@ -1,5 +1,3 @@
-import type { WindowsInstallerIntegrity } from '@breeze/shared';
-
 export interface InstallCommandOptions {
   /** Breeze API origin, e.g. https://eu.2breeze.app */
   apiUrl: string;
@@ -7,12 +5,10 @@ export interface InstallCommandOptions {
   token: string;
   /** Optional org enrollment secret */
   enrollmentSecret?: string;
-  /** URL and SHA-256 from authenticated onboarding. Null disables Windows commands. */
-  windowsInstaller: WindowsInstallerIntegrity | null;
 }
 
 export interface InstallCommands {
-  windows: string | null;
+  windows: string;
   macos: string;
   linux: string;
 }
@@ -21,9 +17,7 @@ export function buildInstallCommands(opts: InstallCommandOptions): InstallComman
   const apiUrl = opts.apiUrl.replace(/\/+$/, '');
   const { token, enrollmentSecret } = opts;
 
-  // The connectivity message is scoped to the fetch + shebang check only —
-  // once install.sh runs it reports its own failures precisely, and appending
-  // a "could not reach" hint after e.g. an enrollment error would mislead.
+  // Check the shebang before running the fetched installer with sudo bash.
   const unixSecretFlag = enrollmentSecret ? ` --enrollment-secret "${enrollmentSecret}"` : '';
   const unixCmd =
     `f="$(mktemp)" && ` +
@@ -31,19 +25,15 @@ export function buildInstallCommands(opts: InstallCommandOptions): InstallComman
     `{ echo "[ERROR] Could not fetch the Breeze installer from ${apiUrl} — verify this machine has network access to your Breeze server." >&2; false; }; } && ` +
     `sudo bash "$f" --server "${apiUrl}" --token "${token}"${unixSecretFlag}`;
 
-  const installer = opts.windowsInstaller;
   const winSecretFlag = enrollmentSecret ? ` -EnrollmentSecret ${powershellLiteral(enrollmentSecret)}` : '';
-  const windows = installer ?
+  const windows =
     `& { $ErrorActionPreference='Stop'; ` +
     `[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; ` +
-    `$r=iwr ${powershellLiteral(installer.url)} -UseBasicParsing -TimeoutSec 10 -MaximumRedirection 0 -UserAgent 'BreezeInstaller/1.0' -Headers @{'Accept-Encoding'='identity'}; ` +
+    `$r=iwr ${powershellLiteral(`${apiUrl}/api/v1/agents/install.ps1`)} -UseBasicParsing -TimeoutSec 10 -MaximumRedirection 0 -UserAgent 'BreezeInstaller/1.0' -Headers @{'Accept-Encoding'='identity'}; ` +
     `if($r.StatusCode -ne 200){throw 'Breeze: installer download did not return HTTP 200'}; ` +
-    `$r.RawContentStream.Position=0; ` +
-    `if((Get-FileHash -Algorithm SHA256 -InputStream $r.RawContentStream).Hash -ne ${powershellLiteral(installer.sha256)})` +
-    `{throw 'Breeze: installer checksum mismatch. Generate a new command in Add Device'}; ` +
-    `iex ([Text.UTF8Encoding]::new($false,$true).GetString($r.RawContentStream.ToArray())); ` +
-    `Install-BreezeAgent -Token ${powershellLiteral(token)}${winSecretFlag} }`
-    : null;
+    `if($r.Content -notmatch '^function Install-BreezeAgent[ \\t]*\\{'){throw 'Breeze: response is not a Breeze PowerShell installer'}; ` +
+    `iex $r.Content; ` +
+    `Install-BreezeAgent -Token ${powershellLiteral(token)}${winSecretFlag} }`;
 
   return { windows, macos: unixCmd, linux: unixCmd };
 }

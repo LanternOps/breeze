@@ -9,44 +9,11 @@ import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubU
 import { getPromotedComponentVersion, getRegisteredComponentVersion, type PromotedComponent } from '../../services/promotedAgentVersion';
 import { fetchVerifiedMacosPkg, fetchVerifiedHelperInstaller } from '../../services/installerBuilder';
 import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp';
-import { getWindowsInstaller } from '../../services/windowsInstaller';
+import { onboardingServerUrl } from '../../services/onboardingServerUrl';
+import { generateWindowsInstallScript } from '../../services/windowsInstallScript';
 
 export const downloadRoutes = new Hono();
 
-// This whole route prefix (/api/v1/agents/) is exempted from the global rate
-// limiter (it assumes agent-auth's own per-agent limiting applies, which
-// does not cover any of these unauthenticated download routes — see
-// AGENT_AUTH_SKIP_ID_SEGMENTS) and there is no Caddy rate_limit on it
-// either, so every route below must carry its own per-IP bound. Fails
-// CLOSED on Redis errors — a Redis outage must not thereby disable the
-// limiter on a public endpoint.
-//
-// One bucket PER ROUTE (keyed on `logTag`, e.g. `agent-download`,
-// `install-script-download`), not one shared bucket across every route. A
-// single office/site rollout behind one NAT IP legitimately calls several of
-// these routes back-to-back (install.sh/install.ps1, then the agent binary, then
-// watchdog/backup), so a shared bucket means the busiest route (typically
-// installer scripts, hit once per machine) use up capacity meant for every other route's
-// legitimate traffic on the same IP. None of these routes carry an
-// enrollment/download key or any other form of caller identity to key on
-// instead — they are deliberately unauthenticated (see each route's own
-// comment for why) — so per-route-per-IP is the finest-grained bucketing
-// available without adding auth to routes that intentionally have none.
-//
-// Sizing: an earlier 120/min shared bucket 429'd a normal single-site mass
-// rollout (as few as ~20-60 machines starting installs in the same minute
-// already drew 429s; hundreds rejected the vast majority of their requests).
-// A realistic large single-site rollout is bounded in the hundreds of machines (not
-// unbounded) and a real machine's install traffic for ANY ONE of these
-// routes is 1 request, so the target is "a few hundred machines' worth of
-// the SAME route from one IP within a few minutes succeeds, sustained
-// higher-than-that traffic on that IP+route does not." 600 requests / 300s
-// (5 min) per route per IP: comfortably covers a ~500-machine rollout
-// bursting through in a few minutes (the limiter is a sliding window, so the
-// full 600 can land in the rollout's first seconds), while a sustained flood
-// is still capped at an average of 120 req/min indefinitely — an order of
-// magnitude above any real single-site rollout's sustained rate, but still a
-// hard, non-negotiable ceiling per IP per route.
 export const PUBLIC_AGENT_DOWNLOAD_IP_LIMIT = 600;
 export const PUBLIC_AGENT_DOWNLOAD_IP_WINDOW_SECONDS = 300;
 
@@ -100,18 +67,6 @@ async function enforcePublicAgentDownloadRateLimit(
   );
 }
 
-// ============================================
-// Shared component-binary download handler
-// ============================================
-// The agent/watchdog/backup/recovery-iso/user-helper routes below were
-// near-verbatim copies of the same ~90-line shape: validate os/arch → GitHub
-// redirect (BINARY_SOURCE=github) → S3 presigned redirect, or an S3 stream
-// for objectStorageDelivery 'stream' (either way a NotFound falls through to
-// disk and any other fault is a 500) → disk stream. registerComponentDownloadRoute hoists that
-// shape into one place so a future fix (e.g. stream backpressure) lands
-// once. The .pkg and install.sh/install.ps1/uninstall.sh routes have real behavioral
-// differences (macOS-only, different validation/response shape) and are
-// deliberately NOT folded in here.
 interface ComponentDownloadConfig {
   /** Route path registered on downloadRoutes, e.g. '/download/watchdog/:os/:arch'. */
   path: string;
@@ -575,18 +530,6 @@ downloadRoutes.get('/download/:os/:arch/pkg', async (c) => {
   }
 });
 
-// ============================================
-// Helper (Tauri desktop app) Installer Download (public, no auth)
-// ============================================
-// Deliberately NOT folded into registerComponentDownloadRoute like the
-// agent/watchdog/backup/user-helper routes below: those binaries are each
-// independently checksum- or signature-verified downstream (install.sh/install.ps1, or
-// the agent's own Ed25519-pinned self-updater), so a dumb-pipe serve is safe
-// there. The Helper installer has no such downstream check — no client-side
-// updater/signature-pin mechanism exists for it — so this route is the only
-// place its bytes are ever verified. Same shape as the .pkg route above:
-// verify against the signed release manifest, refuse to serve on any
-// mismatch rather than falling back to unverified bytes.
 downloadRoutes.get('/download/helper/:os/:arch', async (c) => {
   // Public and unauthenticated like every other route in this file, so it
   // carries the same per-route-per-IP bound (see
@@ -773,9 +716,9 @@ downloadRoutes.get('/install.ps1', async (c) => {
     });
   }
 
-  const installer = getWindowsInstaller();
-  if (!installer) {
-    return new Response('Installer script unavailable: a valid HTTPS server URL is required', {
+  const serverUrl = onboardingServerUrl();
+  if (!serverUrl) {
+    return new Response('Installer script unavailable: server URL is not configured', {
       status: 503,
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
@@ -784,7 +727,7 @@ downloadRoutes.get('/install.ps1', async (c) => {
     });
   }
 
-  return new Response(installer.body, {
+  return new Response(generateWindowsInstallScript(serverUrl), {
     status: 200,
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',

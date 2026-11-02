@@ -1,14 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { windowsInstallerIntegritySchema } from '@breeze/shared';
 import { buildInstallCommands, type InstallCommandOptions } from './installCommands';
 
 const base = {
   apiUrl: 'https://rmm.example.com',
   token: 'enroll_abc123',
-  windowsInstaller: windowsInstallerIntegritySchema.parse({
-    url: 'https://rmm.example.com/api/v1/agents/install.ps1',
-    sha256: 'a'.repeat(64),
-  }),
 };
 
 describe('buildInstallCommands', () => {
@@ -65,11 +60,10 @@ describe('buildInstallCommands', () => {
   describe('Windows (PowerShell)', () => {
     const commandFor = (options: InstallCommandOptions = base) => {
       const command = buildInstallCommands(options).windows;
-      if (command === null) throw new Error('Expected a verified Windows command');
       return command;
     };
 
-    it('hashes the downloaded bytes before decoding or executing them', () => {
+    it('checks the HTTP response and PowerShell function header before executing', () => {
       const windows = commandFor();
       const fetchStart = windows.indexOf('iwr ');
       const fetchRequest = windows.slice(fetchStart, windows.indexOf(';', fetchStart));
@@ -79,21 +73,18 @@ describe('buildInstallCommands', () => {
       expect(fetchRequest).toContain("-UserAgent 'BreezeInstaller/1.0'");
       expect(fetchRequest).not.toContain(base.token);
       expect(windows).toContain('if($r.StatusCode -ne 200)');
-      expect(windows).toContain('$r.RawContentStream.Position=0');
-      expect(windows).toContain('Get-FileHash -Algorithm SHA256 -InputStream $r.RawContentStream');
-      expect(windows).toContain(base.windowsInstaller.sha256);
-      expect(windows.indexOf('Get-FileHash')).toBeLessThan(windows.indexOf('GetString'));
-      expect(windows.indexOf('installer checksum mismatch')).toBeLessThan(windows.indexOf('iex '));
+      expect(windows).toContain("if($r.Content -notmatch '^function Install-BreezeAgent[ \\t]*\\{')");
+      expect(windows.indexOf('StatusCode -ne 200')).toBeLessThan(windows.indexOf('iex '));
+      expect(windows.indexOf('$r.Content -notmatch')).toBeLessThan(windows.indexOf('iex '));
       expect(windows.indexOf('iex ')).toBeLessThan(windows.indexOf('Install-BreezeAgent -Token'));
       expect(windows).toContain("Install-BreezeAgent -Token 'enroll_abc123'");
-      expect(windows).not.toContain('$r.Content');
-      expect(windows).not.toContain('-notmatch');
+      expect(windows).toContain('iex $r.Content');
+      expect(windows).not.toContain('Get-FileHash');
     });
 
-    it('uses only the authenticated installer URL for the Windows download', () => {
-      const windows = commandFor({ ...base, apiUrl: 'https://dashboard.example.com' });
-      expect(windows).toContain(base.windowsInstaller.url);
-      expect(windows).not.toContain('dashboard.example.com');
+    it('uses the server URL returned by onboarding for the Windows download', () => {
+      const windows = commandFor({ ...base, apiUrl: 'http://agents.example.com:3001/breeze/' });
+      expect(windows).toContain("iwr 'http://agents.example.com:3001/breeze/api/v1/agents/install.ps1'");
     });
 
     it('passes the optional enrollment secret as a literal function argument', () => {
@@ -103,12 +94,6 @@ describe('buildInstallCommands', () => {
       expect(commandFor()).not.toContain('-EnrollmentSecret');
     });
 
-    it('withholds Windows commands without trusted metadata while keeping Unix installation', () => {
-      const commands = buildInstallCommands({ ...base, windowsInstaller: null });
-      expect(commands.windows).toBeNull();
-      expect(commands.linux).toContain('install.sh');
-      expect(commands.linux).toContain(base.token);
-    });
   });
 
   it('strips trailing slashes from apiUrl', () => {

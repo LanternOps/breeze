@@ -94,7 +94,7 @@ turn.your-breeze-domain.com:3478 (UDP)
 2. Copy the Windows command from **CLI Commands**.
 3. Run the command in PowerShell 5.1 or later as Administrator.
 
-For HTTPS requirements and checksum mismatch recovery, see the [Windows installation guide](https://docs.breezermm.com/agents/installation/#quick-install).
+The command checks the HTTP response, disables redirects, and checks the installer function header before execution. HTTPS uses the target machine's trusted certificate store. Plain HTTP is supported for trusted self-hosted LANs. The script verifies the downloaded agent version and checksum before enrollment. See the [Windows installation guide](https://docs.breezermm.com/agents/installation/#quick-install).
 
 ### macOS (Bash)
 

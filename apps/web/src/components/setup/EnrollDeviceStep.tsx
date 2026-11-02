@@ -6,7 +6,6 @@ import { fetchWithAuth } from '../../stores/auth';
 import { extractApiError } from '@/lib/apiError';
 import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
 import { buildInstallCommands } from '@/lib/installCommands';
-import { windowsInstallerIntegritySchema, type WindowsInstallerIntegrity } from '@breeze/shared';
 import { showToast } from '../shared/Toast';
 import { useStableT } from '@/lib/i18n/useStableT';
 
@@ -58,7 +57,6 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
   const [enrollmentSecret, setEnrollmentSecret] = useState('');
   // Server URL agents enroll against, as the API reports it at runtime (#8120).
   const [tokenServerUrl, setTokenServerUrl] = useState('');
-  const [windowsInstaller, setWindowsInstaller] = useState<WindowsInstallerIntegrity | null>(null);
   const [tokenLoading, setTokenLoading] = useState(false);
   const [tokenError, setTokenError] = useState<string>();
   const [tokenCopied, setTokenCopied] = useState(false);
@@ -73,7 +71,6 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
     setOnboardingToken('');
     setEnrollmentSecret('');
     setTokenServerUrl('');
-    setWindowsInstaller(null);
     setTokenError(undefined);
 
     try {
@@ -89,8 +86,6 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
         return;
       }
       setOnboardingToken(data.token);
-      const installer = windowsInstallerIntegritySchema.safeParse(data.windowsInstaller);
-      setWindowsInstaller(installer.success ? installer.data : null);
       if (data.enrollmentSecret) setEnrollmentSecret(data.enrollmentSecret);
       if (typeof data.serverUrl === 'string' && data.serverUrl) setTokenServerUrl(data.serverUrl);
     } catch {
@@ -482,7 +477,6 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
 
           {/* Commands */}
           {(() => {
-            const installerUnavailable = Boolean(onboardingToken) && selectedOS === 'windows' && !windowsInstaller;
             // #7628: never render a command without a real key. A "<TOKEN>"
             // placeholder looked runnable, got copied, and failed enrollment
             // with enrollment_key_not_found (exit 11).
@@ -493,7 +487,6 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
                     apiUrl: tokenServerUrl || import.meta.env.PUBLIC_API_URL || window.location.origin,
                     token: onboardingToken,
                     enrollmentSecret: enrollmentSecret || undefined,
-                    windowsInstaller,
                   })[selectedOS]
                 : null;
 
@@ -540,11 +533,9 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
                   ) : (
                     <p
                       className="text-sm text-muted-foreground"
-                      data-testid={installerUnavailable ? 'setup-cli-command-verification-unavailable' : 'setup-cli-command-needs-token'}
+                      data-testid='setup-cli-command-needs-token'
                     >
-                      {installerUnavailable
-                        ? t('setup.enroll.cli.windowsInstallerUnavailable')
-                        : t('setup.enroll.cli.commandNeedsToken')}
+                      {t('setup.enroll.cli.commandNeedsToken')}
                     </p>
                   )}
                 </div>

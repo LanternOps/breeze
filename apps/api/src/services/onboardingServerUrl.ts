@@ -1,5 +1,4 @@
-// The value is pasted inside double quotes into a bash and a PowerShell
-// command. Reject characters those shells expand inside double quotes.
+// The Unix command embeds this URL in double-quoted Bash arguments.
 const SHELL_LIVE_IN_DOUBLE_QUOTES = /[\s$`"\\!]/;
 
 export function onboardingServerUrl(): string | undefined {
