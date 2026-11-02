@@ -4735,7 +4735,8 @@
           "update_line": "Update Pax8 order line",
           "remove_line": "Remove Pax8 order line",
           "preview": "Preview Pax8 order",
-          "preflight": "Run Pax8 order preflight"
+          "preflight": "Run Pax8 order preflight",
+          "reconcile": "Reconcile Pax8 order"
         },
         "manage_pax8_subscriptions": {
           "list": "List Pax8 subscriptions",

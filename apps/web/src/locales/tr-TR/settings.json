@@ -4735,7 +4735,8 @@
           "update_line": "Pax8 sipariş satırını güncelle",
           "remove_line": "Pax8 sipariş satırını kaldır",
           "preview": "Pax8 siparişini önizle",
-          "preflight": "Pax8 sipariş ön kontrolünü çalıştır"
+          "preflight": "Pax8 sipariş ön kontrolünü çalıştır",
+          "reconcile": "Pax8 siparişini mutabık kıl"
         },
         "manage_pax8_subscriptions": {
           "list": "Pax8 aboneliklerini listele",
