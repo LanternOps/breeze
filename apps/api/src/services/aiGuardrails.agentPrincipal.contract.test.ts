@@ -1029,6 +1029,8 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
       'manage_device_function:set',
       // W12 (#6782, quorum QW6): irreversible removal on a customer machine (conservative D4 exception).
       'manage_device_software:uninstall',
+      // W15: billable orders and terminal cancellations require a person.
+      'manage_pax8_orders:submit',
       'manage_tags:add', 'manage_tags:remove',
       // W13 PR B (#6783): tenant-variable values are script inputs.
       'manage_tenant_variables:create', 'manage_tenant_variables:delete', 'manage_tenant_variables:update',

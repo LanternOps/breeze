@@ -150,6 +150,8 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   // Full-control W15 PR A (#6785): seat drift and local order staging.
   { id: 'g114', prompt: "Which Pax8 seat counts don't match what we bill?", expect: [{ tool: 'manage_pax8_subscriptions', action: 'drift' }] },
   { id: 'g115', prompt: 'Stage 5 more Microsoft 365 Business Premium seats for Contoso in Pax8.', expect: [{ tool: 'search_pax8_products', action: 'search' }, { tool: 'manage_pax8_orders', action: 'create_draft' }, { tool: 'manage_pax8_orders', action: 'add_line' }] },
+  // Full-control W15 PR B (#6785): preview, then a four-eyes submit.
+  { id: 'g116', prompt: "Submit Contoso's Pax8 order.", expect: [{ tool: 'manage_pax8_orders', action: 'preview' }, { tool: 'manage_pax8_orders', action: 'submit' }] },
   // #10161: ticket merge reaches the chat SDK shape (preview first, then the supervised merge).
   { id: 'g117', prompt: 'Ticket 1043 is a duplicate of 1042, merge it in.', expect: [{ tool: 'manage_tickets', action: 'merge_preview' }, { tool: 'manage_tickets', action: 'merge' }] },
 ];

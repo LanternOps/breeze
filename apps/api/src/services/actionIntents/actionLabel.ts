@@ -22,6 +22,18 @@ export function titleCaseWords(snake: string): string {
     .join(' ');
 }
 
+/** Call-specific four-eyes copy: every cancellation is terminal and names its term. */
+export function describePax8Submit(input: Record<string, unknown>): string {
+  const text = (value: unknown) => typeof value === 'string' ? value.replace(/[\r\n\t]/g, ' ').slice(0, 255) : '?';
+  const company = input.expectedCompany && typeof input.expectedCompany === 'object'
+    ? input.expectedCompany as Record<string, unknown> : {};
+  const lines = Array.isArray(input.expectedLines) ? input.expectedLines as Array<Record<string, unknown>> : [];
+  const labels: Record<string, string> = { new_subscription: 'new subscriptions', change_quantity: 'quantity changes', cancel: 'cancellations' };
+  const counts = Object.entries(labels).map(([action, label]) => `${lines.filter(l => l.action === action).length} ${label}`).join(', ');
+  return `Place a real, billable Pax8 order that cannot be undone for ${text(company.name)} (${text(company.pax8CompanyId)}): ${counts}. Cost is estimated at Pax8's current rate, re-checked before sending. `
+    + lines.map(line => `${line.action === 'cancel' ? 'CANCEL (terminal)' : titleCaseWords(text(line.action))} ${text(line.productName)} [${text(line.pax8ProductId)}]: ${line.action === 'new_subscription' ? 'new' : text(line.fromQuantity)} → ${text(line.quantity)}, ${text(line.unitCost)} ${text(line.currency)} per seat / ${text(line.billingTerm)}, commitment ${text(line.commitmentTerm)}${line.cancellationFeeApplied === true ? ', cancellation fee applies' : ''}`).join('; ');
+}
+
 /**
  * Human headlines for approval-gated tools whose prettified identifier reads
  * poorly (#9657). Tools absent here fall back to `titleCaseWords(toolName)`.
@@ -67,6 +79,8 @@ export function describePax8Action(toolName: string, action?: string | null): st
       case 'add_line': return 'Add a line to a Pax8 order draft';
       case 'update_line': return 'Edit a Pax8 order draft line';
       case 'remove_line': return 'Remove a Pax8 order draft line';
+      case 'submit': return 'Place a real, billable Pax8 order that cannot be undone; cost is estimated at Pax8’s current rate';
+      case 'reconcile': return 'Reconcile a previously approved Pax8 attempt from vendor evidence and record billing quantity; ambiguous writes remain unknown';
       case 'preflight': return 'Run a dry run that sends the staged order content to Pax8 (isMock)';
     }
   }

@@ -793,3 +793,17 @@ for (const file of ['pax8OrderPreview', 'aiToolSchemasPax8', 'aiToolsPax8', 'aiT
     assert.equal(out.app, 'true');
   });
 }
+
+
+// W15 PR B (#6785): the pinned money-surface digest and its real-DB proof.
+for (const file of [
+  'apps/api/src/services/actionIntents/pax8OrderDigest.ts',
+  'apps/api/src/__tests__/integration/aiToolsPax8OrderSubmitScope.integration.test.ts',
+]) {
+  test(`W15 PR B ${file} runs API and integration checks`, () => {
+    const out = classifyPrGate([file]);
+    assert.deepEqual(areasOf(out), expectAreas(['api']));
+    assert.equal(out.integration, 'true');
+    assert.equal(out.app, 'true');
+  });
+}

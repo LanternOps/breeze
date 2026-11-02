@@ -4735,7 +4735,8 @@
           "update_line": "Aggiorna riga dell'ordine Pax8",
           "remove_line": "Rimuovi riga dall'ordine Pax8",
           "preview": "Anteprima ordine Pax8",
-          "preflight": "Esegui verifica preliminare dell'ordine Pax8"
+          "preflight": "Esegui verifica preliminare dell'ordine Pax8",
+          "reconcile": "Riconcilia ordine Pax8"
         },
         "manage_pax8_subscriptions": {
           "list": "Elenca abbonamenti Pax8",

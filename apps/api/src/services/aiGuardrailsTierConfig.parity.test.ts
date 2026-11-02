@@ -58,6 +58,10 @@ for (const tier of TIER_DEFINITIONS) {
 }
 
 describe('tierConfig.ts ↔ aiGuardrails tier tables parity (#2686)', () => {
+  it.each(['submit', 'reconcile'])('W15: documents manage_pax8_orders:%s at Tier 3', (action) => {
+    expect(parsed.filter((entry) => entry.tool === 'manage_pax8_orders' && entry.actions.includes(action))
+      .map((entry) => entry.claimedTier)).toEqual([3]);
+  });
   it.each(['get', 'create', 'update', 'delete'])('lists manage_monitors:%s at Tier 1 with read permission only', (action) => {
     const entries = parsed.filter((entry) => entry.tool === 'manage_monitors' && entry.actions.includes(action));
     expect(entries.map((entry) => entry.claimedTier)).toEqual([1]);

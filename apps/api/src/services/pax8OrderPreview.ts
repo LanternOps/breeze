@@ -2,8 +2,12 @@
 import { and, eq } from 'drizzle-orm';
 import { PAX8_BILLING_TERMS, type Pax8BillingTerm, type Pax8OrderAction, type Pax8OrderStatus } from '@breeze/shared';
 import { db, runOutsideDbContext, withDbAccessContext } from '../db';
-import { contracts, contractLines, pax8CompanyMappings, pax8ProductMappings, pax8SubscriptionSnapshots } from '../db/schema';
-import { getOrderWithLines, snapshotActiveCommitmentEvidence } from './pax8OrderService';
+import { contracts, contractLines, pax8CompanyMappings, pax8Orders, pax8ProductMappings, pax8SubscriptionSnapshots } from '../db/schema';
+import { pax8OrderDigestMaterial, hashPax8OrderMaterial } from './actionIntents/pax8OrderDigest';
+import type { z } from 'zod';
+import type { pax8SubmitAssertionsSchema } from './aiToolSchemasPax8';
+import { isSubmittableStatus } from './pax8OrderTypes';
+import { getOrderWithLines, Pax8OrderError, snapshotActiveCommitmentEvidence } from './pax8OrderService';
 import { createPax8ClientForIntegration } from './pax8SyncService';
 import { pax8CompanyOrderReadiness } from './pax8CompanyReadiness';
 import { CatalogServiceError, resolvePrice } from './catalogService';
@@ -31,7 +35,16 @@ export interface Pax8PreviewLine {
   cancellationFeeApplied: boolean | null;
 }
 
+export const PREVIEW_FIELD_SOURCE = {
+  lineId: 'material', action: 'material', pax8ProductId: 'material', productName: 'material',
+  vendorSkuId: 'material', quantity: 'derived', fromQuantity: 'material', billingTerm: 'material',
+  commitmentTerm: 'vendor-live', unitCost: 'derived', currency: 'derived', sellUnitPrice: 'material',
+  sellCurrency: 'material', contractLineId: 'material', allowForQuantityIncrease: 'vendor-live',
+  allowForQuantityDecrease: 'vendor-live', allowForEarlyCancellation: 'vendor-live', cancellationFeeApplied: 'vendor-live',
+} as const satisfies Record<keyof Pax8PreviewLine, 'material' | 'vendor-live' | 'derived'>;
+
 export type Pax8PreviewBlocker =
+  | { code: 'CONTRACT_LINE_MISSING'; lineId: string }
   | { code: 'COST_UNKNOWN'; lineId: string }
   | { code: 'TERM_UNKNOWN'; lineId: string }
   | { code: 'QUANTITY_UNKNOWN'; lineId: string }
@@ -49,10 +62,11 @@ export interface Pax8OrderPreview {
   totals: Array<{ currency: string; billingTerm: Pax8BillingTerm; partnerCost: string }>;
   totalsComplete: boolean;
   blocked: Pax8PreviewBlocker[];
+  previewDigest: string | null;
+  submitWith?: z.infer<typeof pax8SubmitAssertionsSchema> & { orderId: string };
 }
 
 export const MAX_PAX8_PREVIEW_LINES = 20;
-const SUBMITTABLE: ReadonlySet<Pax8OrderStatus> = new Set(['draft', 'awaiting_details', 'ready']);
 const billingTerms: ReadonlySet<string> = new Set(PAX8_BILLING_TERMS);
 const asBillingTerm = (value: string | null): Pax8BillingTerm | null =>
   value !== null && billingTerms.has(value) ? value as Pax8BillingTerm : null;
@@ -67,13 +81,25 @@ export async function previewPax8Order(input: {
   orderId: string;
   client?: Pax8Client;
 }): Promise<Pax8OrderPreview> {
+  // Discover the org through the partner-axis parent before authorizing any
+  // org-axis reads. A partner grant alone cannot see contracts/contract_lines.
+  const [discovered] = await runOutsideDbContext(() => withDbAccessContext({
+    scope: 'partner', orgId: null, accessibleOrgIds: null,
+    accessiblePartnerIds: [input.partnerId], userId: null, currentPartnerId: input.partnerId,
+  }, () => db.select({ orgId: pax8Orders.orgId }).from(pax8Orders).where(and(
+    eq(pax8Orders.id, input.orderId), eq(pax8Orders.partnerId, input.partnerId),
+  )).limit(1)));
+  if (!discovered) throw new Pax8OrderError('Pax8 order not found.', 404);
   // Defensively escape an accidental ambient caller before opening the short read transaction.
   const local = await runOutsideDbContext(() => withDbAccessContext({
-    scope: 'partner', orgId: null, accessibleOrgIds: null,
+    scope: 'partner', orgId: discovered.orgId, accessibleOrgIds: [discovered.orgId],
     accessiblePartnerIds: [input.partnerId], userId: null, currentPartnerId: input.partnerId,
   }, async () => {
     const bundle = await getOrderWithLines(input);
     const { order } = bundle;
+    if (order.orgId !== discovered.orgId) {
+      throw new Pax8OrderError('The Pax8 order organization changed while previewing it.', 409);
+    }
     const companies = await db.select({
       pax8CompanyId: pax8CompanyMappings.pax8CompanyId,
       pax8CompanyName: pax8CompanyMappings.pax8CompanyName,
@@ -107,16 +133,20 @@ export async function previewPax8Order(input: {
         eq(pax8ProductMappings.integrationId, order.integrationId),
         eq(pax8ProductMappings.pax8ProductId, productId),
       )).limit(1) : [];
+      let contractLineMissing = false;
+      let baseline = line.authorizedBaselineQuantity;
       let sellUnitPrice: string | null = null;
       let sellCurrency: string | null = null;
       if (line.contractLineId) {
         const [contractLine] = await db.select({
           contractId: contractLines.contractId, catalogItemId: contractLines.catalogItemId,
-          unitPrice: contractLines.unitPrice,
+          unitPrice: contractLines.unitPrice, manualQuantity: contractLines.manualQuantity,
         }).from(contractLines).where(and(
           eq(contractLines.id, line.contractLineId), eq(contractLines.orgId, order.orgId),
         )).limit(1);
+        contractLineMissing = !contractLine;
         if (contractLine) {
+          baseline = contractLine.manualQuantity;
           const [contract] = await db.select({
             currencyCode: contracts.currencyCode, createdBy: contracts.createdBy,
           }).from(contracts).where(and(
@@ -140,12 +170,13 @@ export async function previewPax8Order(input: {
           }
         }
       }
-      evidence.push({ line, snapshot, mapping, productId, sellUnitPrice, sellCurrency });
+      evidence.push({ line, snapshot, mapping, productId, sellUnitPrice, sellCurrency, baseline, contractLineMissing });
     }
-    return { ...bundle, companies, evidence };
-  }));
+    const material = await pax8OrderDigestMaterial(db, order.id);
+    return { ...bundle, companies, evidence, previewDigest: material ? hashPax8OrderMaterial(material) : null };
+  }, { isolationLevel: 'repeatable read' }));
 
-  const { order } = local;
+  const { order, previewDigest } = local;
   const blocked: Pax8OrderPreview['blocked'] = [];
   const mapping = local.companies.length === 1 ? local.companies[0]! : null;
   const company = mapping && pax8CompanyOrderReadiness(mapping.status, mapping.metadata).orderReady
@@ -154,10 +185,10 @@ export async function previewPax8Order(input: {
   if (local.lines.length > MAX_PAX8_PREVIEW_LINES) blocked.push({ code: 'TOO_MANY_LINES' });
   // The persisted action/status vocabularies are constrained by DB CHECKs.
   const status = order.status as Pax8OrderStatus;
-  if (!SUBMITTABLE.has(status)) blocked.push({ code: 'NOT_PENDING' });
+  if (!isSubmittableStatus(status)) blocked.push({ code: 'NOT_PENDING' });
   const projectedOrder = { id: order.id, orgId: order.orgId, source: order.source, status };
   if (blocked.some(item => item.code === 'TOO_MANY_LINES' || item.code === 'NOT_PENDING')) {
-    return { order: projectedOrder, company, lines: [], totals: [], totalsComplete: local.lines.length === 0, blocked };
+    return { order: projectedOrder, company, lines: [], totals: [], totalsComplete: local.lines.length === 0, blocked, previewDigest };
   }
 
   // Client construction reads encrypted credentials; keep that DB read scoped,
@@ -170,7 +201,8 @@ export async function previewPax8Order(input: {
   // Cache live evidence only for this preview: repeated product lines must share one observation.
   const dependencies = new Map<string, Awaited<ReturnType<Pax8Client['getProductDependencies']>>>();
   const pricing = new Map<string, Awaited<ReturnType<Pax8Client['getProductPricing']>>>();
-  for (const { line, snapshot, mapping: product, productId, sellUnitPrice, sellCurrency } of local.evidence) {
+  for (const { line, snapshot, mapping: product, productId, sellUnitPrice, sellCurrency, baseline, contractLineMissing } of local.evidence) {
+    if (contractLineMissing) blocked.push({ lineId: line.id, code: 'CONTRACT_LINE_MISSING' });
     if (line.submitState !== 'pending') blocked.push({ lineId: line.id, code: 'NOT_PENDING' });
     const missingSnapshot = line.action !== 'new_subscription' && !snapshot;
     if (missingSnapshot) blocked.push({ lineId: line.id, code: 'SUBSCRIPTION_NOT_FOUND' });
@@ -217,7 +249,7 @@ export async function previewPax8Order(input: {
       productName: product?.productName ?? snapshot?.productName ?? null,
       vendorSkuId: product?.vendorSkuId ?? snapshot?.vendorSkuId ?? null,
       quantity,
-      fromQuantity: line.action === 'new_subscription' ? null : line.authorizedBaselineQuantity,
+      fromQuantity: line.action === 'new_subscription' ? null : baseline,
       billingTerm, commitmentTerm: commitment?.term ?? null, unitCost, currency,
       sellUnitPrice, sellCurrency, contractLineId: line.contractLineId,
       allowForQuantityIncrease: commitment?.allowForQuantityIncrease ?? null,
@@ -242,5 +274,11 @@ export async function previewPax8Order(input: {
       lineTotal, taxable: false, customerVisible: true,
     })), null, currency).total,
   }));
-  return { order: projectedOrder, company, lines, totals, totalsComplete, blocked };
+  const submitWith = blocked.length === 0 && lines.length > 0 && company && previewDigest ? {
+    orderId: order.id, previewDigest, expectedCompany: company,
+    expectedLines: lines.map(({ lineId, action, pax8ProductId, productName, quantity, fromQuantity, unitCost, currency, billingTerm, commitmentTerm, cancellationFeeApplied }) => ({
+      lineId, action, pax8ProductId, productName, quantity, fromQuantity, unitCost, currency, billingTerm, commitmentTerm, cancellationFeeApplied,
+    })),
+  } : undefined;
+  return { order: projectedOrder, company, lines, totals, totalsComplete, blocked, previewDigest, ...(submitWith ? { submitWith } : {}) };
 }

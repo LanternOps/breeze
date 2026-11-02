@@ -38,8 +38,10 @@ const mocks = vi.hoisted(() => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withDbAccessContext: vi.fn((_context: unknown, fn: () => unknown) => fn()),
   dbSelect: vi.fn(),
+  captureException: vi.fn(),
 }));
 
+vi.mock('../services/sentry', () => ({captureException:mocks.captureException}));
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     if (state.unauthenticated) return c.json({ error: 'Unauthorized' }, 401);
@@ -179,8 +181,8 @@ beforeEach(() => {
   mocks.removeOrderLine.mockResolvedValue({ removed: true });
   mocks.listPax8Products.mockResolvedValue([{ pax8ProductId: 'prod-1', catalogItemId: 'cat-1', catalogName: 'M365' }]);
   mocks.preflightOrder.mockResolvedValue({ ok: true });
-  mocks.submitOrder.mockResolvedValue({ orderId: ORDER_ID, status: 'completed', lines: [] });
-  mocks.reconcileOrder.mockResolvedValue({ resolved: 1, stillUnknown: 0 });
+  mocks.submitOrder.mockResolvedValue({ orderId: ORDER_ID, status: 'completed', lines: [], billingConflicts: [] });
+  mocks.reconcileOrder.mockResolvedValue({ resolved: 1, stillUnknown: 0, billingConflicts: [] });
   mocks.detectPax8Drift.mockResolvedValue([]);
 });
 
@@ -542,14 +544,14 @@ describe('Pax8 order route handlers', () => {
 
   it('submits and reconciles with the authenticated actor and audits after success', async () => {
     expect((await request(`/orders/${ORDER_ID}/submit`, { method: 'POST' })).status).toBe(200);
-    expect(mocks.submitOrder).toHaveBeenCalledWith({ partnerId: PARTNER_A, orderId: ORDER_ID, actorUserId: USER_ID });
+    expect(mocks.submitOrder).toHaveBeenCalledWith({ partnerId: PARTNER_A, orderId: ORDER_ID, actorUserId: USER_ID, mode: {kind:'rest'} });
     expect((await request(`/orders/${ORDER_ID}/reconcile`, { method: 'POST' })).status).toBe(200);
     expect(mocks.reconcileOrder).toHaveBeenCalledWith({ partnerId: PARTNER_A, orderId: ORDER_ID });
     expect(mocks.writeRouteAudit).toHaveBeenCalledTimes(2);
     expect(mocks.writeRouteAudit).toHaveBeenNthCalledWith(1, expect.anything(), expect.objectContaining({
       action: 'pax8.order.submit', result: 'success',
       details: {
-        partnerId: PARTNER_A, orderStatus: 'completed',
+        partnerId: PARTNER_A, orderStatus: 'completed', billingConflicts: [],
         succeededCount: 0, failedCount: 0, needsReconcileCount: 0,
       },
     }));
@@ -558,14 +560,29 @@ describe('Pax8 order route handlers', () => {
     }));
   });
 
+  it('reports post-send Pax8OrderError conflicts to Sentry', async () => {
+    const error = new Pax8OrderError('post-send persist conflict',409,{phase:'persist'});
+    mocks.submitOrder.mockRejectedValueOnce(error);
+    expect((await request(`/orders/${ORDER_ID}/submit`,{method:'POST'})).status).toBe(409);
+    expect(mocks.captureException).toHaveBeenCalledWith(error,undefined,{errorId:'PAX8_PERSIST_FAILED'});
+  });
+  it.each(['submit', 'reconcile'])('audits %s billing conflicts as failure', async action => {
+    const billingConflicts = [{ lineId: LINE_ID, reason: 'baseline_changed' }];
+    (action === 'submit' ? mocks.submitOrder : mocks.reconcileOrder).mockResolvedValueOnce({
+      kind: 'executed', orderId: ORDER_ID, status: 'completed', lines: [], resolved: 1, stillUnknown: 0, billingConflicts,
+    });
+    const response = await request(`/orders/${ORDER_ID}/${action}`, { method: 'POST' });
+    expect(response.status).toBe(200);
+    expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ result: 'failure', details: expect.objectContaining({ billingConflicts }) }));
+  });
   it('audits a terminally failed submit outcome as failure', async () => {
-    mocks.submitOrder.mockResolvedValueOnce({ orderId: ORDER_ID, status: 'failed', lines: [] });
+    mocks.submitOrder.mockResolvedValueOnce({ orderId: ORDER_ID, status: 'failed', lines: [], billingConflicts: [] });
     const res = await request(`/orders/${ORDER_ID}/submit`, { method: 'POST' });
     expect(res.status).toBe(200);
     expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'pax8.order.submit', result: 'failure',
       details: {
-        partnerId: PARTNER_A, orderStatus: 'failed',
+        partnerId: PARTNER_A, orderStatus: 'failed', billingConflicts: [],
         succeededCount: 0, failedCount: 0, needsReconcileCount: 0,
         status: 200, errorClass: 'OrderResultNotCompleted',
       },
@@ -575,7 +592,7 @@ describe('Pax8 order route handlers', () => {
   it('audits non-completed submit state counts without line payloads', async () => {
     mocks.submitOrder.mockResolvedValueOnce({
       orderId: ORDER_ID,
-      status: 'partially_failed',
+      status: 'partially_failed', billingConflicts: [],
       lines: [
         { lineId: 'line-success', submitState: 'succeeded', error: null },
         { lineId: 'line-failed', submitState: 'failed', error: 'sensitive vendor detail' },
@@ -603,16 +620,17 @@ describe('Pax8 order route handlers', () => {
   });
 
   it('audits incomplete reconciliation totals without changing its response', async () => {
-    mocks.reconcileOrder.mockResolvedValueOnce({ resolved: 2, stillUnknown: 1 });
+    mocks.reconcileOrder.mockResolvedValueOnce({ resolved: 2, stillUnknown: 1, billingConflicts: [] });
     const res = await request(`/orders/${ORDER_ID}/reconcile`, { method: 'POST' });
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({ resolved: 2, stillUnknown: 1 });
+    await expect(res.json()).resolves.toEqual({ resolved: 2, stillUnknown: 1, billingConflicts: [] });
     expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'pax8.order.reconcile', result: 'failure',
       details: {
         partnerId: PARTNER_A,
         resolved: 2,
         stillUnknown: 1,
+        billingConflicts: [],
         status: 200,
         errorClass: 'ReconciliationIncomplete',
       },

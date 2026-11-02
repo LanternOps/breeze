@@ -4735,7 +4735,8 @@
           "update_line": "Atualizar linha do pedido do Pax8",
           "remove_line": "Remover linha do pedido do Pax8",
           "preview": "Visualizar pedido do Pax8",
-          "preflight": "Executar verificação prévia do pedido do Pax8"
+          "preflight": "Executar verificação prévia do pedido do Pax8",
+          "reconcile": "Reconciliar pedido do Pax8"
         },
         "manage_pax8_subscriptions": {
           "list": "Listar assinaturas do Pax8",
