@@ -25,7 +25,10 @@ import {
   monitorDeviceState
 } from '../db/schema';
 import { eq, and, inArray, isNull, isNotNull, or, sql, type SQL } from 'drizzle-orm';
-import { evaluateConditions, evaluateAutoResolveConditions, evidenceLeafPaths, interpolateTemplate, type EvaluateOptions } from './alertConditions';
+import {
+  evaluateConditions, evaluateAutoResolveConditions, evidenceLeafPaths, interpolateTemplate,
+  withMetConditionDescriptions, type EvaluateOptions,
+} from './alertConditions';
 import { isCooldownActive, setCooldown, recordStateTransition, isFlapping } from './alertCooldown';
 import { publishEvent } from './eventBus';
 import { alertOwnerKey, isDeviceOwned } from './alertOwner';
@@ -1666,16 +1669,22 @@ async function evaluateRuleForDevice(input: {
     }
   }
 
-  // Build template context
-  const templateContext: Record<string, unknown> = {
-    deviceName: device.displayName || device.hostname,
-    hostname: device.hostname,
-    osType: device.osType,
-    osVersion: device.osVersion,
-    ruleName: rule.name,
-    severity: effectiveSeverity,
-    ...result.context
-  };
+  // Build template context. #10740 — met-handler text is not on
+  // result.context; attach it before interpolation so {{description}}
+  // and {{conditionsMet}} render. The alert row below still stores
+  // conditionsMet as the array.
+  const templateContext = withMetConditionDescriptions(
+    {
+      deviceName: device.displayName || device.hostname,
+      hostname: device.hostname,
+      osType: device.osType,
+      osVersion: device.osVersion,
+      ruleName: rule.name,
+      severity: effectiveSeverity,
+      ...result.context,
+    },
+    result.conditionsMet,
+  );
 
   // Interpolate title and message
   const title = interpolateTemplate(template.titleTemplate, templateContext);

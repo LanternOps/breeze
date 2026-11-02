@@ -99,6 +99,7 @@ vi.mock('./alertConditions', () => ({
   evidenceLeafPaths: (condition: { type?: string }) => condition?.type === 'event_log' ? ['root'] : [],
   evaluateAutoResolveConditions: vi.fn(),
   interpolateTemplate: vi.fn((template: string) => template),
+  withMetConditionDescriptions: vi.fn((context: Record<string, unknown>) => context),
 }));
 
 vi.mock('./alertCooldown', () => ({
