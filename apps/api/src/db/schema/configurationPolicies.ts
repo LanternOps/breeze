@@ -65,6 +65,8 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'system_protection',
   // #6960. APPENDED, matching the migration's ADD VALUE order.
   'security_agents',
+  // #10100 — network-isolation containment tuning, inline-only, partner-wide
+  'containment',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [
