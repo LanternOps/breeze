@@ -206,6 +206,11 @@ export const alerts = pgTable('alerts', {
   openRuleDeviceSubjectUidx: uniqueIndex('alerts_open_rule_device_subject_uidx')
     .on(table.ruleId, table.deviceId, sql`COALESCE(${table.subjectKey}, '')`)
     .where(sql`${table.ruleId} IS NOT NULL AND ${table.status} IN ('active', 'acknowledged', 'suppressed')`),
+  // #10538 W1 (2027-01-16-210000, built CONCURRENTLY): newest closed alert per
+  // rule/device/subject — the sweep reads its frozen evidence cursor.
+  ruleDeviceSubjectClosedIdx: index('alerts_rule_device_subject_closed_idx')
+    .on(table.ruleId, table.deviceId, sql`(COALESCE(${table.subjectKey}, ''))`, sql`(COALESCE(${table.resolvedAt}, ${table.dismissedAt})) DESC`)
+    .where(sql`${table.ruleId} IS NOT NULL AND ${table.status} IN ('resolved', 'dismissed')`),
   acknowledgedByPrincipalIdx: index('idx_alerts_acknowledged_by_principal')
     .on(table.acknowledgedByPrincipalId)
     .where(sql`acknowledged_by_principal_id IS NOT NULL`),

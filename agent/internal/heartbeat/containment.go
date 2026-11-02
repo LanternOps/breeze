@@ -15,9 +15,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/isolation"
 	"github.com/breeze-rmm/agent/internal/updater"
 )
@@ -197,10 +197,12 @@ type containmentManager interface {
 // the newest pending server assertion is retained while a probe is in flight.
 // Commands retain the Manager's independent release path during probes.
 type containmentRuntime struct {
-	manager   containmentManager
-	desired   chan *isolation.DesiredBlock
-	queueMu   sync.Mutex
-	startOnce sync.Once
+	manager    containmentManager
+	desired    chan *isolation.DesiredBlock
+	queueMu    sync.Mutex
+	startOnce  sync.Once
+	initialize func(context.Context)
+	refresh    func(context.Context)
 }
 
 func newContainmentRuntime(m containmentManager) *containmentRuntime {
@@ -218,6 +220,9 @@ func (r *containmentRuntime) enqueue(d *isolation.DesiredBlock) {
 }
 
 func (r *containmentRuntime) run(ctx context.Context, ticks <-chan time.Time) {
+	if r.initialize != nil {
+		r.initialize(ctx)
+	}
 	r.manager.Startup(ctx)
 	for {
 		if ctx.Err() != nil {
@@ -229,6 +234,9 @@ func (r *containmentRuntime) run(ctx context.Context, ticks <-chan time.Time) {
 		case d := <-r.desired:
 			r.manager.Reconcile(ctx, d)
 		case <-ticks:
+			if r.refresh != nil {
+				r.refresh(ctx)
+			}
 			r.manager.Tick(ctx)
 		}
 	}
@@ -257,8 +265,11 @@ func (h *Heartbeat) startContainment() {
 }
 
 func (h *Heartbeat) initializeContainment(dataDir string) {
+	iso := isolation.NewPlatformIsolator()
+	scheduler := isolation.NewPlatformScheduler(dataDir)
+	currentContainmentPlatform.Store(&containmentPlatform{isolator: iso})
 	m := isolation.NewManager(isolation.ManagerDeps{
-		DataDir: dataDir, Isolator: isolation.NewPlatformIsolator(), Scheduler: isolation.NewPlatformScheduler(dataDir),
+		DataDir: dataDir, Isolator: iso, Scheduler: scheduler,
 		VerifyRoundTrip: func(ctx context.Context, id string) (time.Time, error) {
 			return isolation.NewHTTPVerifier(h.containmentVerifierConfig())(ctx, id)
 		},
@@ -282,7 +293,30 @@ func (h *Heartbeat) initializeContainment(dataDir string) {
 		},
 	})
 	h.containment = newContainmentRuntime(m)
+	h.containment.initialize = func(ctx context.Context) { isolation.ConfigureRecoveryReadiness(ctx, iso, scheduler, h.agentVersion) }
+	h.containment.refresh = func(ctx context.Context) { isolation.RefreshCachedReadiness(ctx, iso) }
 	updater.SetIsolationGate(m.Active)
+	updater.SetIsolationInstallHook(func(staged, target string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		schema, err := updater.StagedIsolationSchema(ctx, staged)
+		if err != nil {
+			return err
+		}
+		// Windows currently swaps the installed agent in place. Include companion
+		// paths chosen by the platform; none are supplied by a command payload.
+		bins := isolation.PlatformBinaryPaths(iso)
+		found := false
+		for _, path := range bins {
+			if strings.EqualFold(path, target) {
+				found = true
+			}
+		}
+		if !found {
+			bins = append(bins, target)
+		}
+		return m.PrepareUpgrade(ctx, bins, schema)
+	})
 }
 
 type containmentDialer func(context.Context, string, string) (net.Conn, error)
@@ -346,16 +380,25 @@ func (h *Heartbeat) reconcileContainment(d *isolation.DesiredBlock) {
 	h.containment.enqueue(d)
 }
 
+// The immutable holder publishes the configured instance; Capability itself
+// reads a race-free snapshot and never performs recovery or scheduler I/O.
+type containmentPlatform struct{ isolator isolation.Isolator }
+
+var currentContainmentPlatform atomic.Pointer[containmentPlatform]
+
 func containmentCapabilities(c *SecurityCapabilities) {
-	cap := isolation.NewPlatformIsolator().Capability()
-	ready, why := isolation.NewPlatformScheduler(config.GetDataDir()).Ready()
+	platform := currentContainmentPlatform.Load()
+	var iso isolation.Isolator
+	if platform != nil {
+		iso = platform.isolator
+	} else {
+		iso = isolation.NewPlatformIsolator()
+	}
+	cap := iso.Capability()
 	c.NetworkIsolationVersion = cap.Version
 	c.NetworkIsolationMechanism = cap.Mechanism
 	c.NetworkIsolationUnsupportedReason = cap.UnsupportedReason
-	c.NetworkIsolationReady = cap.Version >= 1 && cap.Ready && ready
-	if c.NetworkIsolationUnsupportedReason == "" && cap.Version >= 1 && !ready {
-		c.NetworkIsolationUnsupportedReason = "recovery not ready: " + why
-	}
+	c.NetworkIsolationReady = cap.Version >= 1 && cap.Ready
 }
 
 // containmentBlocksUpgrade: no self-update starts while isolated. Companion
