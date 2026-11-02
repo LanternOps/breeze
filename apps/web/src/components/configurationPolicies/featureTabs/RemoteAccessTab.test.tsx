@@ -86,6 +86,28 @@ describe('RemoteAccessTab — clipboard policy toggles', () => {
   });
 });
 
+// #10422: a new policy's idle timeout starts at the same 30 min as the
+// no-policy baseline, so linking the feature (e.g. to turn VNC on) does not
+// silently cut the idle timeout back to 5 min.
+describe('RemoteAccessTab — idle timeout default (#10422)', () => {
+  beforeEach(() => {
+    saveMock.mockClear();
+  });
+
+  it('saves a 30-minute idle timeout for a new policy left at its defaults', () => {
+    render(<RemoteAccessTab {...baseProps} />);
+    const saveButton = screen
+      .getAllByRole('button')
+      .find((b) => /save/i.test(b.textContent ?? '')) as HTMLButtonElement;
+    fireEvent.click(saveButton);
+    expect(saveMock).toHaveBeenCalled();
+    expect(inlineSettingsFromCall(saveMock.mock.calls[0])).toMatchObject({
+      idleTimeoutMinutes: 30,
+      maxSessionDurationHours: 8,
+    });
+  });
+});
+
 // #5080: Remote Access gains the same isInherited/effectiveLink/Override/
 // Revert treatment as the other inline-settings tabs (mirrors PamTab.tsx).
 describe('RemoteAccessTab inheritance (#5080)', () => {

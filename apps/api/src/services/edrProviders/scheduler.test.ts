@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { isStreamDue, planCadence } from './scheduler';
 import type { EdrCapabilities } from './types';
+import { emsisoftAdapter } from './emsisoft/adapter';
 
 const cap = (over: Partial<EdrCapabilities> = {}): EdrCapabilities => ({
   tenantModel: 'partner', perTenantHost: false, detectionDelivery: 'poll',
@@ -75,5 +76,27 @@ describe('isStreamDue', () => {
   it('is due exactly at the interval, not before', () => {
     expect(isStreamDue(new Date(now.getTime() - 10 * 60_000), 10, now)).toBe(true);
     expect(isStreamDue(new Date(now.getTime() - 9 * 60_000), 10, now)).toBe(false);
+  });
+});
+
+describe('planCadence with the Emsisoft capabilities (A2)', () => {
+  it('lengthens inventory (not detections) for 60 mapped workspaces under the 60/min budget', () => {
+    const c = emsisoftAdapter.capabilities;
+    expect(c.estimatedCalls).toBeDefined();
+    const r = planCadence({
+      tenants: 60, mappedTenants: 60, capabilities: c,
+      requested: { detectionsMinutes: null, inventoryMinutes: null }, estimatedCalls: c.estimatedCalls!,
+    });
+    expect(r.lengthened).toBe(true);
+    expect(r.inventoryMinutes).toBeGreaterThan(60);
+    expect(r.detectionsMinutes).toBeGreaterThanOrEqual(15);
+  });
+
+  it('a single workspace fits at the floor intervals', () => {
+    const c = emsisoftAdapter.capabilities;
+    expect(planCadence({
+      tenants: 1, mappedTenants: 1, capabilities: c,
+      requested: { detectionsMinutes: null, inventoryMinutes: null }, estimatedCalls: c.estimatedCalls!,
+    })).toEqual({ detectionsMinutes: 15, inventoryMinutes: 60, lengthened: false });
   });
 });

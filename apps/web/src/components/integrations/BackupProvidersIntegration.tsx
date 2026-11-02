@@ -148,7 +148,7 @@ export default function BackupProvidersIntegration() {
               <input
                 data-testid="backup-add-name"
                 value={form.name}
-                placeholder={t("backupProviders.namePlaceholder")}
+                placeholder={t(/* i18n-dynamic */ form.provider === "dropsuite" ? "backupProviders.namePlaceholderDropsuite" : "backupProviders.namePlaceholder")}
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                 className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
               />

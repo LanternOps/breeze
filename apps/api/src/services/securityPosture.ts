@@ -1203,8 +1203,10 @@ export async function getLatestSecurityPostureForDevice(deviceId: string): Promi
 }
 
 type TrendScoreRow = {
+  /** Organization the snapshot (or rebuilt run) belongs to. */
+  orgId: string;
   capturedAt: Date;
-  /** Weight for the daily average (#9643): the snapshot's device count. */
+  /** Weight across orgs within a day (#9643): the snapshot's device count. */
   devicesAudited: number;
   overallScore: number;
   patchComplianceScore: number;
@@ -1217,18 +1219,31 @@ type TrendScoreRow = {
   adminExposureScore: number;
 };
 
+/**
+ * One trend point per UTC day. Posture runs hourly, so an org writes many
+ * snapshots a day; each day keeps only each org's LAST snapshot of that day,
+ * and those are then device-weighted across orgs (#9643). Averaging the
+ * hourly snapshots made the latest point ("Current score") drift from the
+ * overview score, which reflects the latest posture (#9926).
+ */
 function groupTrendPoints(rows: TrendScoreRow[]): Array<Record<string, string | number>> {
-  const grouped = new Map<string, TrendScoreRow[]>();
+  const latestByDayAndOrg = new Map<string, Map<string, TrendScoreRow>>();
   for (const row of rows) {
     const day = row.capturedAt.toISOString().slice(0, 10);
-    const current = grouped.get(day) ?? [];
-    current.push(row);
-    grouped.set(day, current);
+    let byOrg = latestByDayAndOrg.get(day);
+    if (!byOrg) {
+      byOrg = new Map();
+      latestByDayAndOrg.set(day, byOrg);
+    }
+    const existing = byOrg.get(row.orgId);
+    if (!existing || row.capturedAt.getTime() > existing.capturedAt.getTime()) {
+      byOrg.set(row.orgId, row);
+    }
   }
 
-  return Array.from(grouped.entries())
+  return Array.from(latestByDayAndOrg.entries())
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([timestamp, entries]) => computeTrendPoint(timestamp, entries));
+    .map(([timestamp, byOrg]) => computeTrendPoint(timestamp, Array.from(byOrg.values())));
 }
 
 /**
@@ -1237,7 +1252,7 @@ function groupTrendPoints(rows: TrendScoreRow[]): Array<Record<string, string | 
  * allowed site. Each posture run writes every device snapshot and the org
  * snapshot with one `captured_at`, so grouping by (org, captured_at) yields the
  * org snapshot that run would have written for the visible devices; those then
- * go through the same daily grouping as stored org snapshots.
+ * go through the same latest-per-org daily grouping as stored org snapshots.
  */
 async function listSiteScopedTrendRuns(
   params: { orgId?: string; orgIds?: string[] },
@@ -1259,6 +1274,7 @@ async function listSiteScopedTrendRuns(
 
   return db
     .select({
+      orgId: securityPostureSnapshots.orgId,
       capturedAt: securityPostureSnapshots.capturedAt,
       devicesAudited: sql<number>`count(*)::int`,
       overallScore: avgScore(securityPostureSnapshots.overallScore),
@@ -1301,6 +1317,7 @@ export async function getSecurityPostureTrend(params: {
 
   const rows = await db
     .select({
+      orgId: securityPostureOrgSnapshots.orgId,
       capturedAt: securityPostureOrgSnapshots.capturedAt,
       devicesAudited: securityPostureOrgSnapshots.devicesAudited,
       overallScore: securityPostureOrgSnapshots.overallScore,

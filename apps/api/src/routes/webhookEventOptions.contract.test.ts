@@ -31,7 +31,7 @@ describe('webhook form event options', () => {
   });
 
   it('offers acknowledged and suppressed alerts', () => {
-    expect(formEventValues()).toEqual(expect.arrayContaining(['alert.acknowledged', 'alert.suppressed']));
+    expect(formEventValues()).toEqual(expect.arrayContaining(['alert.acknowledged', 'alert.suppressed', 'alert.escalated']));
   });
 
   it('keeps the API and form never-delivered lists identical and never offers them', () => {
@@ -42,9 +42,15 @@ describe('webhook form event options', () => {
     expect(formBlock).toBeDefined();
     expect(apiBlock).toBeDefined();
     const values = (block: string | undefined) => [...(block ?? '').matchAll(/'([^']+)'/g)].map(m => m[1]).sort();
-    expect(values(formBlock)).toEqual(['alert.escalated']);
+    expect(values(formBlock)).toEqual([]);
     expect(values(formBlock)).toEqual(values(apiBlock));
     expect(formEventValues().filter(value => values(apiBlock).includes(value))).toEqual([]);
+  });
+
+  // #10024: ticket.merged is published (and documented) but was not selectable.
+  it('offers ticket.merged, which the event bus publishes', () => {
+    expect(Object.values(EVENT_TYPES)).toContain('ticket.merged');
+    expect(formEventValues()).toContain('ticket.merged');
   });
 
   it('offers only event types the event bus publishes', () => {

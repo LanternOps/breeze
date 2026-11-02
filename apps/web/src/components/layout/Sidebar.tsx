@@ -321,7 +321,9 @@ export const navSections: NavSection[] = [
       // own-session /ai/* routes, every one of which requires ai_sessions:use
       // (#6396). Without this gate a role holding only devices:read saw the full
       // chat page and a bare "Permission denied" on send.
-      { name: 'Wisp', labelKey: 'nav.wisp', href: '/wisp', icon: Sparkles, lockedWhenWispOff: true, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
+      // #10200: partner tokens only — grants are partner-staff only, so for
+      // anyone else /wisp just forwards to /ai/chat.
+      { name: 'Wisp', labelKey: 'nav.wisp', href: '/wisp', icon: Sparkles, lockedWhenWispOff: true, partnerScopeOnly: true, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
       // The full-page multi-tab chat (formerly "AI Assistant" at /workspace,
       // then /wisp/chat — both redirect here, AI surface cohesion W05 #10136).
       { name: 'Breeze AI', labelKey: 'nav.breezeAi', href: '/ai/chat', icon: MessageSquare, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
@@ -1181,6 +1183,8 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           </div>
         ) : (
           <button
+            data-testid={`nav-section-toggle-${section.id}`}
+            aria-expanded={expanded}
             onClick={() => toggleSection(section.id)}
             className="flex items-center justify-between w-full px-2 py-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
             style={{ fontSize: '12px' }}

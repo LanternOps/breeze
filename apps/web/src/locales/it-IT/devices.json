@@ -354,7 +354,7 @@
     "currentSite": "Sito attuale",
     "newSite": "Nuovo sito",
     "loadingSites": "Caricamento siti...",
-    "thisOrganizationOnlyHasOneSite": "Questa organizzazione ha un solo sito. Aggiungi altri siti da Impostazioni → Organizzazioni per abilitare gli spostamenti.",
+    "thisOrganizationOnlyHasOneSite": "Questa organizzazione ha un solo sito. Aggiungi altri siti dalla scheda Siti dell'organizzazione (Organizzazioni → apri l'organizzazione → Siti) per abilitare gli spostamenti.",
     "current": "(corrente)",
     "cancel": "Annulla",
     "moving": "Spostamento...",
@@ -376,23 +376,6 @@
     "moveDevices_other": "Sposta {{count}} dispositivi",
     "bulkPolicyNote": "Lo spostamento cambia le policy di configurazione, le finestre di manutenzione, l'instradamento degli avvisi e i report del sito che si applicano a questi dispositivi. Breeze non li riporterà indietro automaticamente.",
     "failedToMoveDevices": "Impossibile spostare i dispositivi"
-  },
-  "createGroupModal": {
-    "failedToCreateGroup": "Impossibile creare il gruppo",
-    "newDeviceGroup": "Nuovo gruppo di dispositivi",
-    "name": "Nome",
-    "eGProductionServers": "ad es. server di produzione",
-    "type": "Tipo",
-    "static": "Statico",
-    "dynamic": "Dinamico",
-    "manuallyAddAndRemoveDevicesAfter": "Aggiungi e rimuovi manualmente i dispositivi dopo la creazione.",
-    "devicesAreAutoAssignedBasedOn": "I dispositivi vengono assegnati automaticamente in base alle regole di filtro.",
-    "filterRules": "Regole di filtro",
-    "cancel": "Annulla",
-    "creating": "Creazione...",
-    "createGroup": "Crea gruppo",
-    "created": "Gruppo di dispositivi creato",
-    "missingGroupId": "Il gruppo è stato creato, ma la risposta del server non conteneva l’ID del gruppo. Aggiorna la pagina."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} rimossi nascosti",
@@ -1763,6 +1746,11 @@
     "on": "attivo",
     "multiBootMachinesTuckExpectedOffline": "Macchine multi-boot: mostra i profili di avvio offline previsti sotto il relativo dispositivo online come strisce sottili. Disattivato = elenco piatto.",
     "collapseLinkedInactiveProfiles": "Comprimi profili inattivi collegati",
+    "exportCsv": "Esporta CSV",
+    "exportCsvSelected": "Esporta CSV ({{count}} selezionati)",
+    "exportingCsv": "Esportazione…",
+    "exportCsvFailed": "Impossibile esportare l’elenco dei dispositivi. Riprova.",
+    "exportCsvAttentionPartial": "Esportato, ma non è stato possibile caricare avvisi e ticket aperti per alcuni dispositivi: quelle celle riportano \"unavailable\".",
     "columns": "Colonne",
     "visibleInOrder": "Visibili (in ordine)",
     "moveUp": "Sposta su",
@@ -1895,7 +1883,10 @@
     "moveToSite": "Sposta in un sito",
     "moveSelectedToSite": "Sposta in un sito",
     "moveSiteMixedOrgs": "I dispositivi selezionati appartengono a più di un'organizzazione",
-    "moveSiteOverCap": "Seleziona al massimo {{count}} dispositivi da spostare contemporaneamente"
+    "moveSiteOverCap": "Seleziona al massimo {{count}} dispositivi da spostare contemporaneamente",
+    "addToGroup": "Aggiungi al gruppo…",
+    "removeFromGroup": "Rimuovi dal gruppo…",
+    "groupMembershipOverCap": "Seleziona al massimo {{count}} dispositivi per modificare l’appartenenza al gruppo contemporaneamente"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Impossibile recuperare i log del dispositivo",
@@ -2408,7 +2399,9 @@
       "completed": "Completata",
       "failed": "Non riuscita",
       "queued": "In coda",
-      "running": "In esecuzione"
+      "running": "In esecuzione",
+      "cancelled": "Annullata",
+      "expired": "Scaduta"
     },
     "scanType": "Scansione {{type}}",
     "scanTypes": {
@@ -2430,7 +2423,13 @@
       "quarantined": "In quarantena",
       "removed": "Rimossa"
     },
-    "threatsFound": "Minacce trovate: {{count}}"
+    "threatsFound": "Minacce trovate: {{count}}",
+    "waitingForSlot": "In attesa di uno slot di scansione libero. Scade il {{date}}.",
+    "cancelScan": "Annulla scansione",
+    "scanCancelled": "Scansione annullata",
+    "cancelScanFailed": "Impossibile annullare la scansione",
+    "scanAlreadyRunning": "La scansione è già in esecuzione sul dispositivo e non può essere annullata.",
+    "scanAlreadyQueued": "Per questo dispositivo è già in coda una scansione."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Aggiungi un tag...",
@@ -2892,7 +2891,10 @@
         "version": "Versione del software",
         "vendor": "Fornitore del software"
       },
-      "logShippingFailing": "Invio dei log non riuscito"
+      "logShippingFailing": "Invio dei log non riuscito",
+      "networkIsolation": {
+        "active": "Isolato"
+      }
     }
   },
   "filterChipBar": {
@@ -2964,7 +2966,10 @@
         "version": "Versione del software",
         "vendor": "Fornitore del software"
       },
-      "logShippingFailing": "Invio dei log non riuscito"
+      "logShippingFailing": "Invio dei log non riuscito",
+      "networkIsolation": {
+        "active": "Isolato"
+      }
     }
   },
   "filterHelpPopover": {
@@ -2980,8 +2985,10 @@
     "title": "Scorciatoie filtri"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Scegli un valore per vedere i dispositivi corrispondenti",
     "counting": "…conteggio in corso",
-    "matches": "~{{count}} dispositivi corrispondenti",
+    "matches_one": "~{{count}} dispositivo corrispondente",
+    "matches_other": "~{{count}} dispositivi corrispondenti",
     "unavailable": "anteprima non disponibile"
   },
   "filterSentenceBuilder": {
@@ -3053,7 +3060,10 @@
         "version": "Versione del software",
         "vendor": "Fornitore del software"
       },
-      "logShippingFailing": "Invio dei log non riuscito"
+      "logShippingFailing": "Invio dei log non riuscito",
+      "networkIsolation": {
+        "active": "Isolato"
+      }
     }
   },
   "filterValueEditor": {
@@ -4336,6 +4346,7 @@
       "pending": "Non ancora verificata",
       "private": "Registro privato: credenziali richieste",
       "unsupported_registry": "Registro non supportato",
+      "provenance_unknown": "Provenienza sconosciuta: il nome dell'immagine non viene inviato a nessun registro",
       "error": "Verifica del registro non riuscita: verrà ritentata",
       "behind": "Per questo tag è pubblicata un'immagine più recente",
       "current": "Corrisponde al registro",
@@ -4699,6 +4710,48 @@
       "mfaRequired": "Per modificare la posizione fisica è richiesta l'autenticazione a più fattori."
     }
   },
+  "assetCircuitCard": {
+    "title": "WAN e circuito",
+    "loadFailed": "Impossibile caricare le informazioni su WAN e circuito.",
+    "empty": "Nessun circuito registrato o visibile a te per questo asset.",
+    "provider": "Provider",
+    "cid": "ID circuito",
+    "bandwidth": "Larghezza di banda",
+    "serviceType": "Tipo di servizio",
+    "administrativeStatus": "Stato amministrativo",
+    "sitesServed": "Siti serviti da questo circuito",
+    "terminationSite": "Sito di terminazione: {{site}} (da {{asset}} / {{iface}})",
+    "terminationSiteBare": "Sito di terminazione: {{site}}",
+    "terminationUnassigned": "Terminazione non assegnata",
+    "terminationNeedsReassociation": "La terminazione deve essere riassociata",
+    "interfaces": "Interfacce",
+    "noInterfaces": "Nessuna interfaccia registrata.",
+    "wanBadge": "WAN",
+    "retiredBadge": "Ritirata",
+    "markWan": "Contrassegna come WAN",
+    "unmarkWan": "Rimuovi WAN",
+    "truncated": "Vengono mostrate solo alcune interfacce.",
+    "unmarkConfirm": {
+      "title": "Rimuovere il ruolo WAN?",
+      "message": "{{name}} non verrà più trattata come interfaccia WAN."
+    },
+    "status": {
+      "active": "Attivo",
+      "planned": "Pianificato",
+      "suspended": "Sospeso",
+      "disconnected": "Disconnesso"
+    },
+    "toasts": {
+      "marked": "Interfaccia contrassegnata come WAN",
+      "unmarked": "Ruolo WAN rimosso",
+      "failed": "Impossibile aggiornare il ruolo WAN",
+      "mfaRequired": "Per modificare il ruolo WAN è richiesta l'autenticazione a più fattori.",
+      "hasTermination": "Questa interfaccia ha una terminazione di circuito attiva. Sposta o rimuovi prima la terminazione.",
+      "retired": "Questa interfaccia è ritirata e non può più essere modificata.",
+      "notFound": "Interfaccia non trovata. L'elenco è stato ricaricato.",
+      "permissionDenied": "Non hai il permesso di modificare la topologia."
+    }
+  },
   "partnerGroups": {
     "ownerScope": "Proprietario del gruppo",
     "organization": "Questa organizzazione",
@@ -4721,5 +4774,100 @@
     "membersError": "Impossibile caricare i membri del gruppo.",
     "retry": "Riprova",
     "emptyMembers": "Nessun dispositivo in questo gruppo."
+  },
+  "bulkGroupMembership": {
+    "titleAdd": "Aggiungi al gruppo",
+    "titleRemove": "Rimuovi dal gruppo",
+    "selectionSummary": "Dispositivi selezionati: {{n}} · Organizzazione: {{org}}",
+    "groupLabel": "Gruppo statico",
+    "selectGroup": "Seleziona un gruppo",
+    "loadingGroups": "Caricamento dei gruppi…",
+    "noGroups": "Nessun gruppo statico di questa organizzazione può accogliere questa selezione.",
+    "scopeHint": "Sono elencati solo i gruppi statici di questa organizzazione. Un gruppo di sede compare solo se tutti i dispositivi selezionati si trovano in quella sede. I gruppi dinamici non sono elencati: le loro regole decidono chi ne fa parte.",
+    "cancel": "Annulla",
+    "saving": "Salvataggio…",
+    "submitAdd": "Aggiungi dispositivi",
+    "submitRemove": "Rimuovi dispositivi",
+    "failedToLoadGroups": "Impossibile caricare i gruppi",
+    "failedToUpdate": "Impossibile aggiornare l’appartenenza al gruppo",
+    "addResult": "{{group}}: {{added}} aggiunti, {{skipped}} già nel gruppo",
+    "removeResult": "{{group}}: {{removed}} rimossi, {{notMember}} non erano nel gruppo",
+    "removeResultForbidden": "{{group}}: {{removed}} rimossi, {{notMember}} non erano nel gruppo. Non rimossi (nessun accesso alla sede del dispositivo): {{devices}}",
+    "andMore": "{{names}} e altri {{n}}"
+  },
+  "networkIsolation": {
+    "heading": "Isolamento di rete",
+    "isolate": "Isola dalla rete…",
+    "release": "Rimuovi isolamento…",
+    "release_queued": "Rimuovi (in coda fino alla riconnessione del dispositivo)",
+    "startTitle": "Isola dalla rete",
+    "releaseTitle": "Rimuovi isolamento di rete",
+    "startDescription": "Blocca il traffico di rete tranne le comunicazioni di gestione Breeze.",
+    "releaseDescription": "Richiedi la rimozione delle regole di isolamento Breeze. Un dispositivo offline riceve la richiesta alla riconnessione.",
+    "serverWarning": "Questo è un sistema operativo server. L’isolamento può interrompere i servizi per altri dispositivi.",
+    "reason": "Motivo",
+    "ttlHours": "Durata (ore)",
+    "incidentId": "ID incidente esistente (facoltativo)",
+    "incidentTitle": "Titolo del nuovo incidente",
+    "remoteRelay": "Mantieni il desktop remoto accessibile tramite il relay",
+    "startSuccess": "Isolamento di rete richiesto",
+    "releaseSuccess": "Rimozione dell’isolamento richiesta",
+    "mutationError": "Impossibile aggiornare l’isolamento di rete. Riprova.",
+    "loadError": "Impossibile caricare l’isolamento di rete. Riprova.",
+    "unavailable": "L’idoneità all’isolamento di rete non è disponibile.",
+    "extend": "Estendi isolamento",
+    "extendTitle": "Estendi isolamento di rete",
+    "extendSuccess": "Scadenza dell’isolamento estesa",
+    "isolatedExpires": "Isolato · scade tra {{hours}} h",
+    "acknowledge": "Conferma rimozione locale",
+    "acknowledgeSuccess": "Rimozione locale confermata",
+    "acknowledgeError": "Impossibile confermare la rimozione locale",
+    "showCode": "Mostra codici di emergenza",
+    "hideCode": "Nascondi codici di emergenza",
+    "codeCurrent": "Codice attuale",
+    "codeNext": "Codice della prossima ora",
+    "codeValidUntil": "Codice attuale valido fino a {{date}}",
+    "codeError": "Impossibile caricare i codici di emergenza. Riprova.",
+    "incidentHeading": "Isolamento di rete",
+    "retry": "Riprova lo stato di isolamento",
+    "filterLabel": "Isolato",
+    "states": {
+      "requested": "Isolamento richiesto",
+      "dispatched": "Isolamento inviato",
+      "applying": "Applicazione isolamento",
+      "applied": "Verifica isolamento",
+      "verified": "Isolamento verificato",
+      "release_requested": "Rimozione richiesta",
+      "released": "Isolamento rimosso",
+      "expired": "Isolamento scaduto",
+      "failed": "Isolamento non riuscito",
+      "released_locally": "Rimosso localmente · conferma necessaria",
+      "self_released": "Rimosso automaticamente · conferma necessaria",
+      "uninstalled": "Agente disinstallato"
+    },
+    "refusal": {
+      "feature_disabled": "I nuovi isolamenti di rete sono disabilitati.",
+      "partner_not_enabled": "L’isolamento di rete non è abilitato per questo partner.",
+      "agent_below_gate": "Aggiorna a una versione dell’agente che supporta l’isolamento di rete.",
+      "agent_not_ready": "L’agente non è pronto ad applicare l’isolamento di rete.",
+      "device_lifecycle": "Lo stato del ciclo di vita del dispositivo impedisce un nuovo isolamento.",
+      "unsupported_platform": "Questa piattaforma non supporta l’isolamento di rete.",
+      "trust_restricted": "Lo stato di attendibilità del partner impedisce nuovi isolamenti.",
+      "isolation_already_active": "Questo dispositivo ha già un episodio di isolamento attivo.",
+      "isolation_unacknowledged": "Conferma la precedente rimozione locale prima di avviare un altro isolamento.",
+      "incident_mismatch": "Scegli un incidente aperto dell’organizzazione di questo dispositivo.",
+      "site_forbidden": "Non hai accesso al sito di questo dispositivo.",
+      "device_not_found": "Impossibile trovare questo dispositivo.",
+      "isolation_not_found": "Impossibile trovare questo episodio di isolamento.",
+      "relay_unavailable": "Un relay per il desktop remoto non è disponibile. Disattiva l’opzione relay o configura TURN.",
+      "invalid_allowlist": "L’elenco di autorizzazioni di isolamento del server non è valido. Contatta l’amministratore.",
+      "isolation_conflict": "L’episodio di isolamento è cambiato. Aggiorna lo stato e riprova.",
+      "isolation_secret_unavailable": "I codici di ripristino sono temporaneamente indisponibili. Contatta l’amministratore.",
+      "approval_mismatch": "L’approvazione non corrisponde a questa richiesta di isolamento.",
+      "device_offline": "Il dispositivo è offline. Aggiorna lo stato prima di avviare l’isolamento.",
+      "device_decommissioned": "Un dispositivo dismesso non può avviare un nuovo isolamento.",
+      "device_pending_assignment": "Assegna questo dispositivo a un’organizzazione prima di avviare l’isolamento.",
+      "backup_helper_update_required": "Aggiorna l’assistente di backup prima di avviare l’isolamento."
+    }
   }
 }

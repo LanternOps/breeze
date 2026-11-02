@@ -326,7 +326,7 @@ describe('POST /devices/:id/move-org — alert-axis children (#4867)', () => {
     // alert-keyed children must not be re-stamped into the target org either.
     const [owned] = await f.adminDb.insert(alerts).values({
       orgId: f.orgA.id, deviceId: f.deviceMoved.id, severity: 'high', status: 'active', title: 'site-owned',
-      topologySiteId: f.siteA.id, topologySourceKey: `topology:${'e'.repeat(64)}`,
+      ownerKind: 'topology_site', topologySiteId: f.siteA.id, topologySourceKey: `topology:${'e'.repeat(64)}`,
     }).returning();
     const [ticket] = await f.adminDb.insert(tickets).values({
       orgId: f.orgA.id, partnerId: f.partner.id, ticketNumber: `OWN-${owned.id.slice(0, 8)}`,

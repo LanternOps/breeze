@@ -27,6 +27,7 @@ import {
   getSessionMessages,
   handleApproval,
   isIntentBackedExecution,
+  getDecidedExecutionOutcome,
   searchSessions,
   listM365Connections,
   sanitizeErrorForClient,
@@ -1268,6 +1269,17 @@ aiRoutes.post(
           message: 'This action needs approval in the Approvals area or the Breeze mobile app.',
         });
       }
+      // #9431: a stale card (decided in another window, in Approvals, on
+      // mobile, or timed out). handleApproval's CAS already refused a second
+      // decision; say so, with the outcome, so the card can show it.
+      const decided = await getDecidedExecutionOutcome(executionId, sessionId);
+      if (decided) {
+        return c.json({
+          error: 'This request was already decided.',
+          code: 'approval_already_decided',
+          outcome: decided,
+        }, 409);
+      }
       return c.json({ error: 'Execution not found or already processed' }, 404);
     }
 
@@ -1789,6 +1801,9 @@ aiRoutes.get(
         completed: drizzleSql<number>`COUNT(*) FILTER (WHERE ${aiToolExecutions.status} = 'completed')`,
         failed: drizzleSql<number>`COUNT(*) FILTER (WHERE ${aiToolExecutions.status} = 'failed')`,
         rejected: drizzleSql<number>`COUNT(*) FILTER (WHERE ${aiToolExecutions.status} = 'rejected')`,
+        // #10411: platform refusals (guardrail, RBAC, rate limit, validation)
+        // are their own series; `rejected` stays the approval outcome.
+        refused: drizzleSql<number>`COUNT(*) FILTER (WHERE ${aiToolExecutions.status} = 'refused')`,
       })
       .from(aiToolExecutions)
       .innerJoin(aiSessions, eq(aiToolExecutions.sessionId, aiSessions.id))
@@ -1838,6 +1853,7 @@ aiRoutes.get(
         completed: Number(row.completed),
         failed: Number(row.failed),
         rejected: Number(row.rejected),
+        refused: Number(row.refused),
       })),
       executions: executions.map((execution) => ({
         ...execution,

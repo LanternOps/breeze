@@ -56,6 +56,37 @@ describe('AiCostIndicator polling behavior', () => {
   });
 });
 
+// #10108: the count is the month's billed usage, not the open conversation's
+// messages; "0 msgs" beside a 2-message chat read as a session count.
+describe('AiCostIndicator message count label (#10108)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    useAuthStoreMock.mockImplementation((selector: any) => selector({ isAuthenticated: true }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('says the message count is for this month', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        daily: { totalCostCents: 0, messageCount: 0 },
+        monthly: { totalCostCents: 0, messageCount: 7 },
+        budget: null,
+      }),
+    );
+
+    const { container } = render(<AiCostIndicator />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('7 msgs this month');
+  });
+});
+
 // #4388 W04: when /ai/usage carries a cached partner credit balance, append
 // it to the same cost-summary text the indicator already shows: no separate
 // UI slot, just a trailing " · N credits" clause.

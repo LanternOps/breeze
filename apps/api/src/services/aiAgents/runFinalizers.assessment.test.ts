@@ -28,6 +28,10 @@ vi.mock('../../db', () => ({
 }));
 
 const concerns = vi.hoisted(() => ({
+  ConcernSubjectHeldError: class ConcernSubjectHeldError extends Error {
+    readonly code = 'concern_subject_held' as const;
+    constructor(public readonly signature: string, public readonly heldByConcernId: string) { super('held'); }
+  },
   upsertConcern: vi.fn(),
   updateConcern: vi.fn(),
   resolveConcern: vi.fn(),
@@ -567,12 +571,12 @@ describe('finalizeAssessment (Wisp W05b)', () => {
     };
     const onboarding = () => makeCtx(assessmentCtx({ reason: { kind: 'onboarding' }, readiness }));
 
-    it('the first onboarding run creates one org-subject info concern keyed readiness:<org>', async () => {
+    it('the first onboarding run creates one readiness-subject info concern keyed readiness:<org> (#10386: never the org slot)', async () => {
       await finalizeAssessment(onboarding(), makeResult());
       expect(renderReadinessSummary).toHaveBeenCalledWith(readiness);
       expect(concerns.upsertConcern).toHaveBeenCalledTimes(1);
       expect(concerns.upsertConcern).toHaveBeenCalledWith(expect.objectContaining({
-        partnerId: PARTNER_ID, orgId: ORG_ID, subject: { kind: 'org', id: ORG_ID }, severity: 'info',
+        partnerId: PARTNER_ID, orgId: ORG_ID, subject: { kind: 'readiness', id: ORG_ID }, severity: 'info',
         signature: `readiness:${ORG_ID}`,
         summary: "I can watch tickets here. I can't watch backups (no backup integration configured).",
         evidence: { readiness: { checks: readiness.checks, missingIntegrations: ['backup'] } },
@@ -589,6 +593,16 @@ describe('finalizeAssessment (Wisp W05b)', () => {
         evidence: { readiness: { checks: readiness.checks, missingIntegrations: ['backup'] } },
         lastAssessedRunId: RUN_ID,
       });
+    });
+
+    // #10386: the slot is held by the no-agent note (a race with its clear):
+    // the readiness note is skipped and nothing else is touched.
+    it('a readiness slot held by another note is a recorded skip, never an update of the holder', async () => {
+      concerns.upsertConcern.mockRejectedValue(new concerns.ConcernSubjectHeldError(`readiness:${ORG_ID}`, C2));
+      const result = makeResult();
+      await expect(finalizeAssessment(onboarding(), result)).resolves.toBeNull();
+      expect(concerns.updateConcern).not.toHaveBeenCalledWith(C2, expect.objectContaining({ summary: expect.any(String) }));
+      expect(result.outcome.assessmentSkipped).toEqual(['readiness_slot_held']);
     });
 
     it('writes nothing when every check is serviceable, or the run is not an onboarding one', async () => {

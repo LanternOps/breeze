@@ -205,6 +205,7 @@ vi.mock("../../stores/helpStore", () => ({
 }));
 
 import IntegrationsPage from "./IntegrationsPage";
+import { orgSwitchKeptHash } from "../../lib/orgSwitch";
 
 // Entries in the page's navigation list (desktop). The select that replaces it
 // below md carries the same entries.
@@ -292,6 +293,39 @@ describe("IntegrationsPage — M365 stale-manifest re-consent table mount", () =
     render(<IntegrationsPage />);
     expect(screen.getByTestId("m365-tenant-section")).toBeInTheDocument();
     expect(screen.getByTestId("m365-stale-manifest-table")).toBeInTheDocument();
+  });
+});
+
+// #9954: the scope bar's "Change" opens the header org switcher, whose switch
+// re-renders the page in place. The page asks the switch to keep the entry the
+// user is on — the entry, never a row or a one-shot callback result.
+describe("IntegrationsPage — keeps the selected entry across an org switch (#9954)", () => {
+  beforeEach(() => {
+    scope = "partner";
+  });
+
+  it("offers the selected entry's hash, following the user's clicks", () => {
+    window.history.replaceState({}, "", "/integrations#m365");
+    const { unmount } = render(<IntegrationsPage />);
+    expect(orgSwitchKeptHash()).toBe("m365");
+
+    fireEvent.click(navLink(/PSA/i));
+    expect(orgSwitchKeptHash()).toBe("psa");
+
+    unmount();
+    expect(orgSwitchKeptHash()).toBeNull();
+  });
+
+  it("offers the entry, not the re-consent row a hash selected", () => {
+    window.history.replaceState({}, "", "/integrations#m365-reconsent-11111111-1111-4111-8111-111111111111");
+    render(<IntegrationsPage />);
+    expect(orgSwitchKeptHash()).toBe("m365");
+  });
+
+  it("offers the entry, not a Microsoft consent callback result", () => {
+    window.history.replaceState({}, "", "/integrations#m365/customer-graph-read/active");
+    render(<IntegrationsPage />);
+    expect(orgSwitchKeptHash()).toBe("m365");
   });
 });
 

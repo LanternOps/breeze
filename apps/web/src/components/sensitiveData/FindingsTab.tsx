@@ -7,7 +7,6 @@ import { runAction, handleActionError, ActionError } from '@/lib/runAction';
 import SensitiveDataAccessDenied from './SensitiveDataAccessDenied';
 import {
   DETECTION_CLASSES,
-  dataTypeLabel,
   RISK_LEVELS,
   FINDING_STATUSES,
   RISK_COLORS,
@@ -15,6 +14,7 @@ import {
   STATUS_COLORS,
 } from './constants';
 import RemediationModal from './RemediationModal';
+import { useSensitiveDataLabels } from './useSensitiveDataLabels';
 import { formatPercent } from '@/lib/i18n/format';
 
 type Finding = {
@@ -40,6 +40,7 @@ type Pagination = {
 
 export default function FindingsTab() {
   const { t } = useTranslation('security');
+  const { riskLabel, findingStatusLabel, dataTypeLabel } = useSensitiveDataLabels();
   const [findings, setFindings] = useState<Finding[]>([]);
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 25, total: 0, totalPages: 1 });
   const [loading, setLoading] = useState(true);
@@ -181,15 +182,15 @@ export default function FindingsTab() {
       <div className="flex flex-wrap gap-3">
         <select value={dataType} onChange={(e) => setDataType(e.target.value)} className="h-9 rounded-md border bg-background px-3 text-sm">
           <option value="">{t('sensitiveDataFindingsTab.filters.allTypes', { defaultValue: 'All Types' })}</option>
-          {DETECTION_CLASSES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+          {DETECTION_CLASSES.map((c) => <option key={c.value} value={c.value}>{dataTypeLabel(c.value)}</option>)}
         </select>
         <select value={risk} onChange={(e) => setRisk(e.target.value)} className="h-9 rounded-md border bg-background px-3 text-sm">
           <option value="">{t('sensitiveDataFindingsTab.filters.allRisks', { defaultValue: 'All Risks' })}</option>
-          {RISK_LEVELS.map((r) => <option key={r} value={r} className="capitalize">{r}</option>)}
+          {RISK_LEVELS.map((r) => <option key={r} value={r}>{riskLabel(r)}</option>)}
         </select>
         <select value={status} onChange={(e) => setStatus(e.target.value)} className="h-9 rounded-md border bg-background px-3 text-sm">
           <option value="">{t('sensitiveDataFindingsTab.filters.allStatuses', { defaultValue: 'All Statuses' })}</option>
-          {FINDING_STATUSES.map((s) => <option key={s} value={s} className="capitalize">{s.replace('_', ' ')}</option>)}
+          {FINDING_STATUSES.map((s) => <option key={s} value={s}>{findingStatusLabel(s)}</option>)}
         </select>
         <div className="relative">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -285,14 +286,14 @@ export default function FindingsTab() {
                   </td>
                   <td className="px-4 py-3 text-xs text-muted-foreground">{f.patternId}</td>
                   <td className="px-4 py-3">
-                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${RISK_COLORS[f.risk] ?? ''}`}>
-                      {f.risk}
+                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${RISK_COLORS[f.risk] ?? ''}`}>
+                      {riskLabel(f.risk)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-xs">{formatPercent(f.confidence, { maximumFractionDigits: 0 })}</td>
                   <td className="px-4 py-3">
-                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${STATUS_COLORS[f.status] ?? ''}`}>
-                      {f.status.replace('_', ' ')}
+                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[f.status] ?? ''}`}>
+                      {findingStatusLabel(f.status)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-xs text-muted-foreground">{f.deviceName}</td>
@@ -355,6 +356,8 @@ export default function FindingsTab() {
             type="button"
             disabled={pagination.page <= 1}
             onClick={() => fetchFindings(pagination.page - 1)}
+            aria-label={t('common:actions.previousPage')}
+            title={t('common:actions.previousPage')}
             className="inline-flex h-8 w-8 items-center justify-center rounded-md border disabled:opacity-50 hover:bg-muted"
           >
             <ChevronLeft className="h-4 w-4" />
@@ -370,6 +373,8 @@ export default function FindingsTab() {
             type="button"
             disabled={pagination.page >= pagination.totalPages}
             onClick={() => fetchFindings(pagination.page + 1)}
+            aria-label={t('common:actions.nextPage')}
+            title={t('common:actions.nextPage')}
             className="inline-flex h-8 w-8 items-center justify-center rounded-md border disabled:opacity-50 hover:bg-muted"
           >
             <ChevronRight className="h-4 w-4" />

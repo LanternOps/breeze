@@ -28,6 +28,9 @@
     "deny": "Ablehnen",
     "verificationFailed": "Verifizierung fehlgeschlagen. Bitte erneut versuchen.",
     "alreadyDecided": "Über diese Anfrage wurde bereits entschieden.",
+    "resolvedApproved": "Diese Anfrage wurde genehmigt.",
+    "resolvedNotApproved": "Diese Anfrage wurde nicht genehmigt, daher wurde die Aktion nicht ausgeführt.",
+    "resolvedEnded": "Diese Anfrage wartet hier nicht mehr auf eine Entscheidung.",
     "contentChanged": "Die Details dieser Anfrage haben sich nach ihrer Erstellung geändert, daher kann sie nicht mehr genehmigt werden.",
     "expired": "Diese Anfrage ist abgelaufen, bevor entschieden werden konnte.",
     "notSoleApprover": "Diese Anfrage muss jetzt von einer anderen Person genehmigt werden – Sie können Ihre eigene Anfrage nicht mehr genehmigen.",
@@ -145,9 +148,9 @@
     "dashboard": "Dashboard"
   },
   "aiCostIndicator": {
-    "messageCount": "{{count}} Nachrichten",
-    "messageCount_one": "{{count}} Nachricht",
-    "messageCount_other": "{{count}} Nachrichten",
+    "messageCount": "{{count}} Nachrichten diesen Monat",
+    "messageCount_one": "{{count}} Nachricht diesen Monat",
+    "messageCount_other": "{{count}} Nachrichten diesen Monat",
     "thisMonth": "{{amount}} diesen Monat",
     "credits_one": "{{formatted}} Credit",
     "credits_other": "{{formatted}} Credits"
@@ -176,7 +179,8 @@
     "input": "Eingabe:",
     "error": "Fehler:",
     "output": "Ausgabe:",
-    "outputExpired": "Ausgabe gemäß der Aufbewahrungsrichtlinie abgelaufen"
+    "outputExpired": "Ausgabe gemäß der Aufbewahrungsrichtlinie abgelaufen",
+    "unknownTool": "Unbekanntes Tool · nicht ausgeführt"
   },
   "aiForOfficePage": {
     "title": "Breeze AI for Office",
@@ -347,6 +351,7 @@
       "pending": "ausstehend",
       "approved": "genehmigt",
       "rejected": "abgelehnt",
+      "stopped": "gestoppt",
       "completed": "abgeschlossen",
       "failed": "fehlgeschlagen"
     },
@@ -389,6 +394,7 @@
     "requestedAt": "angefordert {{time}}",
     "approvedAt": "genehmigt {{time}}",
     "rejectedAt": "abgelehnt {{time}}",
+    "stoppedAt": "gestoppt {{time}}",
     "appliedAt": "angewendet {{time}}",
     "flagDialog": {
       "title": "Sitzung markieren",
@@ -602,6 +608,7 @@
   },
   "wisp": {
     "title": "Wisp",
+    "turnLimitRolled": "Diese Unterhaltung hat ihr Zuglimit erreicht, deshalb hat Wisp eine neue Sitzung in diesem Thread geöffnet. Senden Sie Ihre Nachricht erneut.",
     "locked": {
       "why": "Wisp ist in Pro und höheren Tarifen verfügbar.",
       "server": "Wisp läuft in der Breeze Cloud. Auf diesem Server ist es nicht verfügbar."
@@ -631,6 +638,7 @@
     },
     "header": {
       "scopeAll": "Alle Organisationen",
+      "scopeFallback": "dieser Organisation",
       "status": {
         "active": "Aktiv",
         "paused": "Pausiert",
@@ -640,7 +648,7 @@
       },
       "refresh": "Berechtigung erneuern",
       "revoke": "Wisp deaktivieren",
-      "revokeConfirm": "Wisp für diesen Bereich deaktivieren? Offene Threads bleiben lesbar.",
+      "revokeConfirm": "Wisp für diesen Bereich deaktivieren? Wisp arbeitet nicht mehr für Sie, und seine Threads werden geschlossen. Deren Unterhaltungen, Anliegen und Aktivitäten werden nicht mehr angezeigt.",
       "widening": "Sie dürfen mehr, als diese Berechtigung erlaubt – erneuern Sie sie, damit Wisp Schritt halten kann.",
       "refreshKeepsTerms": "Diese Unterhaltung behält die bisherigen Bedingungen der Berechtigung. Starten Sie eine neue Unterhaltung, um die erneuerte Berechtigung zu nutzen.",
       "startNewConversation": "Neue Unterhaltung starten",
@@ -783,7 +791,14 @@
       "addedByWisp": "Von Wisp hinzugefügt",
       "added": "Mit Wisp verknüpft",
       "addFailed": "Dieser Eintrag konnte nicht verknüpft werden.",
-      "count": "{{count}} von {{max}} verknüpft"
+      "count": "{{count}} von {{max}} verknüpft",
+      "groupPinned": "Angeheftet",
+      "groupConcerns": "Offene Anliegen",
+      "groupRecent": "Zuletzt verwendet",
+      "pin": "Anheften",
+      "dismiss": "Verwerfen",
+      "more": "Mehr",
+      "neighbours": "Verwandte Einträge"
     },
     "picker": {
       "title": "Eintrag mit Wisp verknüpfen",
@@ -807,11 +822,6 @@
       "loadFailed": "Diese Liste konnte nicht geladen werden.",
       "alreadyLinked": "Bereits verknüpft",
       "close": "Schließen"
-    },
-    "linkButton": {
-      "link": "Mit Wisp verknüpfen",
-      "linked": "In Wisp verknüpft",
-      "linking": "Wird verknüpft…"
     },
     "sidebar": {
       "openHome": "In Wisp öffnen",
@@ -860,11 +870,19 @@
       "workersTitle": "Worker",
       "workersEmpty": "Keine Spezialisten aktiv.",
       "allRuns": "Alle Läufe",
-      "details": "Einzelheiten"
+      "details": "Einzelheiten",
+      "ended": "Diese Berechtigung ist beendet, daher werden ihre Anliegen, Worker und Aktivitäten nicht mehr angezeigt."
     },
     "composer": {
       "placeholder": "Nachricht an Wisp",
       "link": "Element verknüpfen"
+    },
+    "talk": {
+      "openFailed": "Chat konnte nicht geöffnet werden: {{message}}",
+      "button": "Mit Wisp sprechen",
+      "buttonPlain": "KI dazu fragen",
+      "draft": "Zu {{label}}: ",
+      "switchFocus": "Wisp konzentriert sich auf {{from}}. Zu {{to}} wechseln?"
     }
   },
   "wispConcerns": {
@@ -905,7 +923,8 @@
       "quote": "Angebot",
       "invoice": "Rechnung",
       "contract": "Vertrag",
-      "site": "Standort"
+      "site": "Standort",
+      "readiness": "Bereitschaft"
     },
     "reviewApproval": "Genehmigung prüfen",
     "openLink": "Öffnen",

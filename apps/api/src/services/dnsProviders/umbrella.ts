@@ -8,11 +8,14 @@ import type {
 } from './index';
 import { DnsProviderHttpError, requestJson } from './http';
 import { asArray, asNumber, asRecord, asString } from './helpers';
+import { storesAllowedTraffic } from './syncScope';
 
 export interface UmbrellaProviderConfig {
   organizationId?: string;
   blocklistId?: string;
   allowlistId?: string;
+  /** #10054 — see services/dnsProviders/syncScope.ts. */
+  storeAllowedTraffic?: boolean;
 }
 
 /** Cisco's OAuth2 client-credentials token endpoint (Umbrella API). */
@@ -620,6 +623,13 @@ export class UmbrellaProvider implements DnsProvider {
     // and `meta` is documented as an empty object, so there is no total or
     // has-more to read. `offset` must stay within 0..10000 (#7207).
     url.searchParams.set('offset', String(offset));
+    // #10054 — an integration that does not store allowed traffic asks for
+    // the blocked and proxied verdicts only, so allowed queries (~99% of the
+    // feed) are never paged and cost none of the per-run request budget. The
+    // sync job still drops allowed events before insert, whatever comes back.
+    if (!storesAllowedTraffic(this.config)) {
+      url.searchParams.set('verdict', 'blocked,proxied');
+    }
 
     const payload = await this.withAuth((authorization) =>
       requestJson<Record<string, unknown>>(url, {

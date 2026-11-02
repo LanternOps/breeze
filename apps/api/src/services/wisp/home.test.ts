@@ -6,7 +6,7 @@ const h = vi.hoisted(() => ({
   listConcernsForCeiling: vi.fn(),
   listActivity: vi.fn(),
   currentActivity: vi.fn(),
-  listLinks: vi.fn(),
+  listWorkingSet: vi.fn(),
   getPartnerSettings: vi.fn(),
   briefRows: [] as unknown[],
   briefWhere: [] as unknown[],
@@ -14,7 +14,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('./concerns', () => ({ listConcernsForCeiling: h.listConcernsForCeiling }));
 vi.mock('./activity', () => ({ listActivity: h.listActivity, currentActivity: h.currentActivity }));
-vi.mock('./threadLinks', () => ({ listLinks: h.listLinks }));
+vi.mock('./threadLinks', () => ({ listWorkingSet: h.listWorkingSet }));
 vi.mock('./partnerSettings', () => ({ getPartnerSettings: h.getPartnerSettings }));
 vi.mock('./grantAuthority', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -46,7 +46,7 @@ beforeEach(() => {
   h.listConcernsForCeiling.mockResolvedValue([]);
   h.listActivity.mockResolvedValue({ items: [], nextCursor: null });
   h.currentActivity.mockResolvedValue(null);
-  h.listLinks.mockResolvedValue([]);
+  h.listWorkingSet.mockResolvedValue([]);
   h.getPartnerSettings.mockResolvedValue({ enabled: true, urgentCapableSeverities: [] });
 });
 
@@ -69,7 +69,7 @@ describe('buildHomeSections', () => {
     h.listConcernsForCeiling.mockResolvedValue([concern('c1', 'high')]);
     h.listActivity.mockResolvedValue({ items: [{ id: 'x', kind: 'assessment', orgId: ORG }], nextCursor: 'n' });
     h.currentActivity.mockResolvedValue({ orgId: ORG, orgName: 'Acme', startedAt: '2027-01-05T08:00:00Z' });
-    h.listLinks.mockResolvedValue([{ id: 'l1' }]);
+    h.listWorkingSet.mockResolvedValue([{ id: 'l1' }]);
     h.getPartnerSettings.mockResolvedValue({ enabled: false, urgentCapableSeverities: [] });
 
     const out = await buildHomeSections(input());
@@ -83,7 +83,8 @@ describe('buildHomeSections', () => {
     });
     expect(h.listConcernsForCeiling).toHaveBeenCalledWith(ceiling, { status: ['open', 'snoozed'] });
     expect(h.listActivity).toHaveBeenCalledWith(ceiling, { limit: 20, threadId: 't1' });
-    expect(h.listLinks).toHaveBeenCalledWith({ auth: input().auth, ceiling }, 't1');
+    expect(h.listWorkingSet).toHaveBeenCalledWith({ auth: input().auth, ceiling }, 't1', { concerns: [concern('c1', 'high')] });
+    expect(h.listConcernsForCeiling).toHaveBeenCalledTimes(1);
   });
 
   it('every section empty', async () => {
@@ -99,7 +100,7 @@ describe('buildHomeSections', () => {
     expect(out.links).toEqual([]);
     expect(out.current).toBeNull();
     expect(out.brief).toEqual({ sentAt: '2027-01-05T07:00:00.000Z', sections: [] });
-    for (const fn of [h.listConcernsForCeiling, h.listActivity, h.currentActivity, h.listLinks]) expect(fn).not.toHaveBeenCalled();
+    for (const fn of [h.listConcernsForCeiling, h.listActivity, h.currentActivity, h.listWorkingSet]) expect(fn).not.toHaveBeenCalled();
   });
 
   it('the live line is dropped when its org left the ceiling', async () => {

@@ -987,6 +987,9 @@ func (h *Host) onAction(fromKey string, m ipc.PromptActionRequest) ipc.PromptAct
 	if changed {
 		rec.results[key] = res
 	}
+	if outcome.After != nil {
+		ob.call(outcome.After) // after this outcome's sends (unlockAndFlush)
+	}
 	h.unlockAndFlush(ob)
 	h.log.Info("prompt action accepted", "promptId", m.PromptID, "action", m.ActionID, "via", m.Via, "renderer", fromKey)
 	return res

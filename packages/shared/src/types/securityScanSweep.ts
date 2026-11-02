@@ -64,6 +64,12 @@ export interface SweepProgress {
   expired: number;
   /** Completed or timed-out children that ran the legacy engine or reported rule-set errors. */
   degraded: number;
+  /**
+   * Failed children whose `ruleSetErrors` carry `rule_set_changed`: a pinned
+   * rule set was republished before the scan was claimed (#10049). A subset
+   * of `failed`; the signal for "rules changed — sweep again".
+   */
+  ruleSetChanged: number;
   threatsFound: number;
 }
 
@@ -74,6 +80,8 @@ export interface SweepSummary {
   orgName: string | null;
   ruleSets: Array<{ id: string; name: string | null; version: number }>;
   scanType: SecuritySweepScanType;
+  /** The custom-scan paths, so a re-sweep can carry them over; null unless `scanType` is 'custom'. */
+  paths: string[] | null;
   state: SecuritySweepState;
   /** Devices that received a scan row at create. */
   targeted: number;

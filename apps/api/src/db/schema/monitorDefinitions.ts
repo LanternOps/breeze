@@ -103,6 +103,12 @@ export const monitorDefinitions = pgTable(
     // builtInMonitors.ts ('cpu_high' | 'memory_high' | 'disk_full'). NULL for
     // every user-authored monitor. CHECK: builtin_key IS NULL OR partner_id IS NOT NULL.
     builtinKey: varchar('builtin_key', { length: 64 }),
+    // Alert → PSA ticket (#10499 W2-A, #10528): the PSA board this monitor's
+    // alert tickets go to, overriding the bound connection's
+    // alert_ticketing.boardId. NULL = connection default. Partner-level config:
+    // only callers who can manage partner-wide config may set it (route gate).
+    // CHECK psa_board_id IS NULL OR psa_board_id > 0.
+    psaBoardId: integer('psa_board_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },

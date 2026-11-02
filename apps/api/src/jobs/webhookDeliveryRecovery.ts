@@ -4,6 +4,7 @@ import * as dbModule from '../db';
 import { webhookDeliveries, webhooks } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
+import { countFailedDelivery } from '../services/webhookDeliveryRecord';
 import { enqueueWebhookAttempt } from './webhookDeliveryQueue';
 import { drainLegacyWebhookQueues, legacyWebhookQueuesPending } from './webhookLegacyQueueCutover';
 import { attachWorkerObservability } from './workerObservability';
@@ -214,6 +215,7 @@ export interface WebhookRecoverySweepSummary {
  */
 async function markUnrecoverable(
   deliveryId: string,
+  webhookId: string,
   leaseUntil: Date,
   errorMessage: string,
   now: Date
@@ -224,7 +226,12 @@ async function markUnrecoverable(
     .where(buildLeaseHeldCas(deliveryId, leaseUntil))
     .returning({ id: webhookDeliveries.id });
 
-  return rows.length > 0;
+  if (rows.length === 0) return false;
+  // #9946: an unresolved row (pending/scheduled/retrying) has not been counted
+  // as a failed delivery, so this terminal write is its one count. Only the
+  // write that won the lease CAS reaches here.
+  await countFailedDelivery(webhookId);
+  return true;
 }
 
 /**
@@ -245,7 +252,7 @@ async function resolveTerminally(
   now: Date
 ): Promise<void> {
   const landed = await runWithSystemDbAccess(() =>
-    markUnrecoverable(candidate.id, leaseUntil, errorMessage, now)
+    markUnrecoverable(candidate.id, candidate.webhookId, leaseUntil, errorMessage, now)
   );
 
   if (!landed) {
@@ -524,14 +531,20 @@ export async function runWebhookDeliveryRecoverySweep(
     try {
       if (now.getTime() - candidate.createdAt.getTime() > MAX_RECOVERABLE_AGE_MS) {
         const errorMessage = 'Retry was not sent before the delivery became too old; abandoned without delivery';
-        const written = await runWithSystemDbAccess(() => db.update(webhookDeliveries)
-          .set({ status: 'failed', failedAt: now, nextRetryAt: null, errorMessage })
-          .where(and(
-            eq(webhookDeliveries.id, candidate.id),
-            eq(webhookDeliveries.status, 'scheduled'),
-            eq(webhookDeliveries.attempts, candidate.attempts)
-          ))
-          .returning({ id: webhookDeliveries.id }));
+        const written = await runWithSystemDbAccess(async () => {
+          const rows = await db.update(webhookDeliveries)
+            .set({ status: 'failed', failedAt: now, nextRetryAt: null, errorMessage })
+            .where(and(
+              eq(webhookDeliveries.id, candidate.id),
+              eq(webhookDeliveries.status, 'scheduled'),
+              eq(webhookDeliveries.attempts, candidate.attempts)
+            ))
+            .returning({ id: webhookDeliveries.id });
+          // #9946: the failed attempt that scheduled this retry was not counted;
+          // abandoning the delivery is its one failed-delivery count.
+          if (rows.length > 0) await countFailedDelivery(candidate.webhookId);
+          return rows;
+        });
         if (written.length === 0) {
           summary.scheduledTerminalWriteLost += 1;
           console.warn(`[WebhookDeliveryRecovery] terminal-write-lost ${JSON.stringify({

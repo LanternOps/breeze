@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Download } from 'lucide-react';
 import { DocumentAgreementBody, DocumentHeader, DocumentPaper } from '@breeze/document-ui';
 import type { AgreementBody, DocumentBranding, DocumentHeaderModel, SanitizedHtml } from '@breeze/shared/documents';
-import { portalApi, publicAgreementFilePath, type PublicAgreementDetail } from '@/lib/api';
+import { portalApi, publicAgreementFilePath, publicApiPath, type PublicAgreementDetail } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { portalAgreementHostComponents } from './documentHostComponents';
 import { SignaturePanel } from './SignaturePanel';
+import { BTN_SECONDARY } from './ui';
 
 type Status = PublicAgreementDetail['request']['status'];
 
@@ -54,6 +56,8 @@ export function PublicAgreementView({ token, initial = null }: PublicAgreementVi
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [signedEmail, setSignedEmail] = useState<string | null>(null);
+  /** True only when the decline happened on this page load (vs. reopening an answered link). */
+  const [declinedHere, setDeclinedHere] = useState(false);
 
   useEffect(() => {
     if (initial) return;
@@ -175,8 +179,14 @@ export function PublicAgreementView({ token, initial = null }: PublicAgreementVi
       setMsg(res.error);
       return;
     }
+    setDeclinedHere(true);
     setStatus('declined');
   };
+
+  // Reopening an answered link (#10199): the API keeps the link viewable after
+  // the answer (read-only), so say when it happened instead of "invalid".
+  const signedOn = request.signedAt ? dateOf(request.signedAt) : null;
+  const declinedOn = request.declinedAt ? dateOf(request.declinedAt) : null;
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-5 p-2 sm:p-4">
@@ -213,14 +223,36 @@ export function PublicAgreementView({ token, initial = null }: PublicAgreementVi
 
       {live === 'signed' && (
         <div data-testid="public-agreement-signed" role="status" className="rounded-md bg-success/10 p-4 text-sm text-success-on-tint">
-          {signedEmail
-            ? `Signed. We're emailing a copy to ${signedEmail}. If it doesn't arrive, contact ${parties.partnerName}.`
-            : 'This agreement has been signed.'}
+          {signedEmail ? (
+            `Signed. We're emailing a copy to ${signedEmail}. If it doesn't arrive, contact ${parties.partnerName}.`
+          ) : (
+            <div className="space-y-3">
+              <p>
+                {signedOn
+                  ? <>This agreement was signed on <time dateTime={signedOn.iso}>{signedOn.text}</time>.</>
+                  : 'This agreement has been signed.'}
+                {/* #10695: the API offers the copy only to the link that signed it. */}
+                {!detail.signedCopyUrl && ` If you need a copy of the signed agreement, contact ${parties.partnerName}.`}
+              </p>
+              {detail.signedCopyUrl && (
+                <a
+                  href={publicApiPath(detail.signedCopyUrl)}
+                  data-testid="public-agreement-download-signed"
+                  className={BTN_SECONDARY}
+                >
+                  <Download className="h-4 w-4" />
+                  Download signed copy
+                </a>
+              )}
+            </div>
+          )}
         </div>
       )}
       {live === 'declined' && (
         <div data-testid="public-agreement-declined" role="status" className="rounded-md bg-muted p-3 text-sm">
-          Thanks — {parties.partnerName} has been notified.
+          {declinedHere || !declinedOn
+            ? `Thanks — ${parties.partnerName} has been notified.`
+            : <>This agreement was declined on <time dateTime={declinedOn.iso}>{declinedOn.text}</time>.</>}
         </div>
       )}
     </div>

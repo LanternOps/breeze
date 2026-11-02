@@ -22,6 +22,18 @@ export function titleCaseWords(snake: string): string {
     .join(' ');
 }
 
+/** Call-specific four-eyes copy: every cancellation is terminal and names its term. */
+export function describePax8Submit(input: Record<string, unknown>): string {
+  const text = (value: unknown) => typeof value === 'string' ? value.replace(/[\r\n\t]/g, ' ').slice(0, 255) : '?';
+  const company = input.expectedCompany && typeof input.expectedCompany === 'object'
+    ? input.expectedCompany as Record<string, unknown> : {};
+  const lines = Array.isArray(input.expectedLines) ? input.expectedLines as Array<Record<string, unknown>> : [];
+  const labels: Record<string, string> = { new_subscription: 'new subscriptions', change_quantity: 'quantity changes', cancel: 'cancellations' };
+  const counts = Object.entries(labels).map(([action, label]) => `${lines.filter(l => l.action === action).length} ${label}`).join(', ');
+  return `Place a real, billable Pax8 order that cannot be undone for ${text(company.name)} (${text(company.pax8CompanyId)}): ${counts}. Cost is estimated at Pax8's current rate, re-checked before sending. `
+    + lines.map(line => `${line.action === 'cancel' ? 'CANCEL (terminal)' : titleCaseWords(text(line.action))} ${text(line.productName)} [${text(line.pax8ProductId)}]: ${line.action === 'new_subscription' ? 'new' : text(line.fromQuantity)} → ${text(line.quantity)}, ${text(line.unitCost)} ${text(line.currency)} per seat / ${text(line.billingTerm)}, commitment ${text(line.commitmentTerm)}${line.cancellationFeeApplied === true ? ', cancellation fee applies' : ''}`).join('; ');
+}
+
 /**
  * Human headlines for approval-gated tools whose prettified identifier reads
  * poorly (#9657). Tools absent here fall back to `titleCaseWords(toolName)`.
@@ -52,11 +64,36 @@ const MANAGE_TOOL_NOUNS: Record<string, string> = {
   manage_contracts: 'contract',
 };
 
+/** Shared consequence copy for chat, approval cards and deferred impact descriptions. */
+export function describePax8Action(toolName: string, action?: string | null): string | null {
+  if (toolName === 'manage_pax8_subscriptions') {
+    switch (action) {
+      case 'sync': return 'Sync Pax8 snapshots for every organization of the partner using its vendor credentials';
+      case 'link': return 'Link a Pax8 subscription: decides which contract line later Pax8 orders bill';
+      case 'unlink': return 'Unlink a Pax8 subscription: staged changes on this subscription will be refused; observation history is lost';
+    }
+  }
+  if (toolName === 'manage_pax8_orders') {
+    switch (action) {
+      case 'create_draft': return 'Create or reuse a Pax8 order draft';
+      case 'add_line': return 'Add a line to a Pax8 order draft';
+      case 'update_line': return 'Edit a Pax8 order draft line';
+      case 'remove_line': return 'Remove a Pax8 order draft line';
+      case 'submit': return 'Place a real, billable Pax8 order that cannot be undone; cost is estimated at Pax8’s current rate';
+      case 'reconcile': return 'Reconcile a previously approved Pax8 attempt from vendor evidence and record billing quantity; ambiguous writes remain unknown';
+      case 'preflight': return 'Run a dry run that sends the staged order content to Pax8 (isMock)';
+    }
+  }
+  return null;
+}
+
 /**
  * Human headline for an approval-gated call when no call-specific description
  * exists: never the bare tool identifier (#9657).
  */
 export function humanizeToolAction(toolName: string, action?: string | null): string {
+  const pax8 = describePax8Action(toolName, action);
+  if (pax8) return pax8;
   const verb = action ? action.replace(/[_\s]+/g, ' ').trim().toLowerCase() : '';
   const noun = MANAGE_TOOL_NOUNS[toolName];
   const nounPhrase = verb.endsWith(' payment') ? `${noun} payment` : noun;
@@ -128,6 +165,8 @@ const GOOGLE_DESTINATION_FIELDS: Record<string, { source: string; dest: string; 
  * words plus the one or two arguments a human would actually recognise.
  */
 function fallbackLabel(toolName: string, input: Record<string, unknown>): string {
+  const pax8 = describePax8Action(toolName, str(input.action));
+  if (pax8) return pax8;
   const googleDestination = GOOGLE_DESTINATION_FIELDS[toolName];
   if (googleDestination && (!googleDestination.requiresField || input[googleDestination.requiresField] === true)) {
     const source = str(input[googleDestination.source]);

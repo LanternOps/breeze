@@ -33,6 +33,8 @@
  * per call (follow-up).
  */
 import { and, eq } from 'drizzle-orm';
+import type { AiPageContext } from '@breeze/shared';
+import { isResolveFailure, resolveEntityRef, type ResolvedEntity } from './entityRefs';
 import { db } from '../../db';
 import { aiSessions } from '../../db/schema/ai';
 import { wispThreadSessions } from '../../db/schema/wispThreads';
@@ -236,9 +238,11 @@ export async function enforceWispCeiling(args: {
  * The thread seed for a turn whose system prompt is rebuilt (a turn carrying
  * `pageContext`). '' when the grant is no longer active or the thread's focus
  * fell outside the ceiling — the seed is context, never authority, so dropping
- * it is the safe side; the next tool call refuses on the same ceiling. A
+ * it is the safe side; the next tool call refuses on the same ceiling.
  * A supplied ceiling reuses the live snapshot already resolved for this turn's
- * record prompt; callers without one keep the existing lookup behavior. A
+ * record prompt; callers without one keep the existing lookup behavior. The
+ * turn's record/device context resolves again under that same auth and ceiling
+ * for the fenced Viewing now line. A
  * CORRUPT pin also yields '' but is logged and captured (grantAuthority's
  * contract) — the next tool call fails closed on it as gate-unavailable.
  */
@@ -246,9 +250,31 @@ export async function wispSeedForSession(
   grant: WispSessionGrant,
   auth: AuthContext | null = null,
   ceiling?: GrantCeiling,
+  pageContext?: AiPageContext,
 ): Promise<string> {
   try {
-    return await seedContextForSession(grant.threadId, ceiling ?? await resolveGrantCeiling(grant.grantId, grant.revisionId), auth);
+    const live = ceiling ?? await resolveGrantCeiling(grant.grantId, grant.revisionId);
+    let viewing: ResolvedEntity | null = null;
+    if (pageContext?.type === 'record' || pageContext?.type === 'device' || pageContext?.type === 'alert') {
+      const kind = pageContext.type === 'record' ? pageContext.kind : pageContext.type;
+      try {
+        const resolved = await resolveEntityRef({ auth, ceiling: live }, {
+          kind,
+          id: pageContext.id,
+        });
+        if (isResolveFailure(resolved)) {
+          console.debug('[Wisp] Viewing context refused; omitting viewing from seed:', {
+            reason: resolved.reason, kind, grantId: grant.grantId,
+          });
+        } else viewing = resolved;
+      } catch (err) {
+        console.error('[Wisp] Viewing context lookup failed; omitting viewing from seed:', err);
+        captureException(err, undefined, { grantId: grant.grantId, op: 'wisp.seed_viewing' });
+      }
+    }
+    return viewing
+      ? await seedContextForSession(grant.threadId, live, auth, { viewing })
+      : await seedContextForSession(grant.threadId, live, auth);
   } catch (err) {
     if (err instanceof GrantInactiveError && err.kind === 'corrupt') {
       console.error(`[Wisp] grant ${err.grantId} has a corrupt ceiling pin (thread seed): ${err.message}`);

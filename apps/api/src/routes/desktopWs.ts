@@ -19,7 +19,6 @@ import {
   getViewerAccessTokenExpirySeconds,
 } from '../services/remoteSessionAuth';
 import {
-  getIceServers,
   logSessionAudit,
   buildRemoteSessionPromptPayload,
   createDesktopStartCommandId,
@@ -43,6 +42,7 @@ import {
 } from '../services/remoteDesktopStartIntent';
 import { releaseDesktopStartInFlight } from '../services/desktopStartInFlight';
 import { webrtcOfferSchema } from './remote/schemas';
+import { resolveDesktopIcePlan } from './remote/desktopRelayPolicy';
 import { sendCommandToAgent, sendDesktopIceCandidateToAgent, isAgentConnected } from './agentWs';
 import {
   agentIceCandidatesForViewer,
@@ -1848,12 +1848,17 @@ export function createDesktopWsRoutes(
         }, 400);
       }
 
-      return c.json({
-        iceServers: getIceServers({
+      const icePlan = await withSystemDbAccessContext(() =>
+        resolveDesktopIcePlan(access.device.id, {
           sessionId,
           userId: access.session.userId,
           deviceId: access.session.deviceId,
         })
+      );
+      if (!icePlan.ok) return c.json({ error: icePlan.error, code: icePlan.code }, 409);
+      return c.json({
+        iceServers: icePlan.iceServers,
+        ...(icePlan.relayOnly ? { relayOnly: true } : {}),
       });
     }
   );
@@ -1972,6 +1977,16 @@ export function createDesktopWsRoutes(
           code: CONSENT_UPGRADE_REQUIRED_CODE,
         }, 409);
       }
+      // Refuse isolation policy conflicts before minting a lease or publishing a start intent.
+      const icePlan = await withSystemDbAccessContext(() =>
+        resolveDesktopIcePlan(access.device.id, {
+          sessionId,
+          userId: access.session.userId,
+          deviceId: access.session.deviceId,
+        })
+      );
+      if (!icePlan.ok) return c.json({ error: icePlan.error, code: icePlan.code }, 409);
+
       // Fail-closed revocation lease (same gate as the JWT offer route).
       const offerLease = await prepareRevocationLeaseForStart(sessionId);
       if (!offerLease.ok) {
@@ -2067,11 +2082,8 @@ export function createDesktopWsRoutes(
             sessionId,
             startGeneration: formatDesktopGeneration(startGeneration),
             offer: data.offer,
-            iceServers: getIceServers({
-              sessionId,
-              userId: access.session.userId,
-              deviceId: access.session.deviceId,
-            }),
+            iceServers: icePlan.iceServers,
+            ...(icePlan.relayOnly ? { relayOnly: true } : {}),
             clipboard: desktopPolicy.clipboard,
             idleTimeoutMinutes: desktopPolicy.idleTimeoutMinutes,
             maxSessionDurationHours: desktopPolicy.maxSessionDurationHours,

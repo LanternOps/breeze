@@ -12,6 +12,7 @@ import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJo
 import { resolveInventoryVersion } from '../routes/agents/agentSelfInventory';
 import { sanitizeDate } from '../routes/agents/helpers';
 import { pgErrorCode, retryOnTransientLockError } from '../utils/pgErrors';
+import { chunkRows } from '../utils/chunkRows';
 import { captureMessage } from './sentry';
 import { throttledReporter } from './sentryThrottle';
 import { SOFTWARE_GROUP_FILTER_FIELDS, type SoftwareGroupFilterField } from './softwareGroupFilterFields';
@@ -302,7 +303,13 @@ export async function replaceSoftwareInventoryProjection(
   }));
   const changedFields = changedSoftwareFilterFields(previous, next);
   if (next.length === 0) return { changedFields };
-  await tx.insert(softwareInventory).values(next);
+  // #10859 — bounded statements (12 bound columns per row). One insert of a
+  // ~2,500-item inventory was ~30k params and blocked the event loop while
+  // drizzle built it. Every chunk runs on the caller's `tx`, so the
+  // delete-and-replace stays atomic.
+  for (const batch of chunkRows(next)) {
+    await tx.insert(softwareInventory).values(batch);
+  }
 
   if (linkedFindings.length === 0) return { changedFields };
   const findingNames = [...new Set(linkedFindings.map((finding) => finding.name.trim().toLowerCase()))];

@@ -12,7 +12,10 @@ vi.mock('../../lib/authScope', () => ({
   getJwtClaims: () => ({ scope: 'partner', orgId: null, partnerId: 'partner-1' }),
   useJwtClaims: () => ({ status: 'resolved' as const, claims: { scope: 'partner', orgId: null, partnerId: 'partner-1' } }),
 }));
-vi.mock('../../lib/permissions', () => ({
+// Partial mock: MfaPolicyOffBanner (mounted by PartnerSettingsPage) calls the
+// real hasPermission (#10295), so keep the module's other exports.
+vi.mock('../../lib/permissions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/permissions')>()),
   usePermissions: () => ({ can: () => true }),
 }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));

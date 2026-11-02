@@ -140,6 +140,9 @@ describe('PatchComplianceView', () => {
     fetchMock.mockImplementation(emptyComplianceImpl(() => null));
     render(<PatchComplianceView ringId={null} />);
     expect(await screen.findByRole('combobox', { name: 'Compliance status filter' })).toBeInTheDocument();
+    expect(screen.getByTestId('patch-compliance-status-filter')).toBe(
+      screen.getByRole('combobox', { name: 'Compliance status filter' }),
+    );
   });
 
   it('disables Export in All-orgs mode (no org, no ring) with a select-an-org hint', async () => {

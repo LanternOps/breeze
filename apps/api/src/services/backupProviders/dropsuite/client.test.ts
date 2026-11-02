@@ -19,6 +19,16 @@ function setup(bodies: unknown[], statuses: number[] = [], retryAfter?: string) 
 }
 const page = (start: number) => Array.from({ length: 100 }, (_, i) => ({ id: start + i }));
 describe('Dropsuite client', () => {
+  it.each([
+    ['status', undefined, 401, 'Dropsuite rejected the reseller token (HTTP 401)'],
+    ['users', 'admin', 401, 'Dropsuite rejected the authentication token (HTTP 401)'],
+    ['users', 'admin', 403, 'Dropsuite rejected the authentication token (HTTP 403)'],
+    ['status', undefined, 404, 'Dropsuite API URL not found; check the API URL from API Settings (HTTP 404)'],
+    ['users', 'admin', 503, 'Dropsuite is unavailable; try again later (HTTP 503)'],
+  ])('explains an admin %s failure with %s in plain language (HTTP %i)', async (path, token, status, message) => {
+    const { client } = setup([{}, {}, {}, {}], [status, status, status, status]);
+    await expect(client.get(path, token)).rejects.toMatchObject({ message });
+  });
   it('joins paths and sends GET with credentials and pagination', async () => {
     const { client, fetchImpl } = setup([[{ id: 1 }], []]);
     await expect(client.list('/users', 'admin')).resolves.toEqual([{ id: 1 }]);

@@ -23,7 +23,7 @@ vi.mock('../services/avatarStorage', async (importOriginal) => {
     ...actual,
     writeAvatar: vi.fn(async (userId: string, mime: 'image/png' | 'image/jpeg' | 'image/webp', data: Buffer) => {
       avatarStore.set(userId, { mime, data });
-      return { ext: actual.extForMime(mime), size: data.length, avatarUrl: `/api/v1/users/${userId}/avatar`, updatedAt: new Date() };
+      return { ext: actual.extForMime(mime), size: data.length, avatarUrl: `/api/v1/users/${userId}/avatar?v=test-version`, updatedAt: new Date() };
     }),
     statAvatar: vi.fn(async (userId: string) => {
       const a = avatarStore.get(userId);
@@ -818,6 +818,8 @@ describe('user routes', () => {
       expect(res.status).toBe(201);
       expect(insertedMemberships).toHaveLength(1);
       expect(insertedMemberships[0]).toMatchObject({ siteIds: [SITE_A] });
+      // #10315: device-group restriction is unenforced, so it is never stored.
+      expect(insertedMemberships[0]!.deviceGroupIds).toBeNull();
     });
 
     it('rejects an explicit site outside the live inviter scope before creating the invitee', async () => {
@@ -1189,6 +1191,81 @@ describe('user routes', () => {
       // The probe is scoped to the caller's partner, not a bare id lookup.
       expect(vi.mocked(inArray)).toHaveBeenCalledWith(organizations.id, [MINE, THEIRS]);
       expect(vi.mocked(eq)).toHaveBeenCalledWith(organizations.partnerId, 'partner-123');
+    });
+
+    describe('scope restrictions the invite cannot honour are rejected, never dropped (#10315)', () => {
+      const ROLE_ID = '22222222-2222-4222-8222-222222222222';
+      const SITE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const GROUP_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+      const ORG_ID = '33333333-3333-4333-8333-333333333333';
+
+      function authAsOrgAdmin() {
+        vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+          c.set('auth', {
+            scope: 'organization',
+            partnerId: 'partner-123',
+            orgId: ORG_ID,
+            allowedSiteIds: null,
+            canAccessSite: () => true,
+            user: { id: 'user-123', email: 'org-admin@example.com' },
+          });
+          return next();
+        });
+      }
+
+      async function invite(extra: Record<string, unknown>) {
+        return app.request('/users/invite', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: 'invitee@example.com', name: 'Invitee', roleId: ROLE_ID, ...extra }),
+        });
+      }
+
+      function expectNoSideEffects() {
+        // Rejected before any role lookup, tombstone sweep, or membership write.
+        expect(db.select).not.toHaveBeenCalled();
+        expect(db.transaction).not.toHaveBeenCalled();
+        expect(resetAllFactorsAndInvalidateMock).not.toHaveBeenCalled();
+      }
+
+      it.each([
+        ['siteIds', { siteIds: [SITE_ID] }],
+        ['siteIds', { siteIds: [] }],
+        ['deviceGroupIds', { deviceGroupIds: [GROUP_ID] }],
+        ['deviceGroupIds', { deviceGroupIds: [] }],
+      ])('partner scope: %s → 400 (partner_users has no site/group axis)', async (field, extra) => {
+        const res = await invite({ orgAccess: 'all', ...extra });
+
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error).toContain(field);
+        expect(body.error).toMatch(/organization scope/i);
+        expectNoSideEffects();
+      });
+
+      it.each([
+        [{ deviceGroupIds: [GROUP_ID] }],
+        [{ deviceGroupIds: [] }],
+        [{ siteIds: [SITE_ID], deviceGroupIds: [GROUP_ID] }],
+      ])('organization scope: deviceGroupIds %j → 400 (not enforced, would grant every group)', async (extra) => {
+        authAsOrgAdmin();
+        const res = await invite(extra);
+
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error).toContain('deviceGroupIds');
+        expectNoSideEffects();
+      });
+
+      it('organization scope: orgIds → 400 (partner-only field)', async () => {
+        authAsOrgAdmin();
+        const res = await invite({ orgIds: [ORG_ID] });
+
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error).toContain('orgIds');
+        expectNoSideEffects();
+      });
     });
 
     it('should require orgIds when orgAccess is selected', async () => {
@@ -3751,7 +3828,7 @@ describe('user routes', () => {
 
         expect(res.status).toBe(200);
         const data = await res.json();
-        expect(data.avatarUrl).toBe(`/api/v1/users/${ME_ID}/avatar`);
+        expect(data.avatarUrl).toBe(`/api/v1/users/${ME_ID}/avatar?v=test-version`);
         expect(data.mime).toBe('image/png');
         expect(data.size).toBe(PNG_BYTES.length);
       });

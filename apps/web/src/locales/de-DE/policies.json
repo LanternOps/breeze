@@ -1551,7 +1551,8 @@
       "devicesFinished": "{{finished}} von {{total}} Geräten abgeschlossen",
       "setupNeeded": "Einrichtung erforderlich",
       "managerUnavailableSummary_one": "Auf {{count}} Gerät fehlt der Paketmanager. Das ist eine einmalige Geräteeinrichtung – installieren Sie dort winget (Windows) oder Homebrew (macOS); bis dahin schlägt jede Paketmanager-Bereitstellung darauf fehl.",
-      "managerUnavailableSummary_other": "Auf {{count}} Geräten fehlt der Paketmanager. Das ist eine einmalige Geräteeinrichtung – installieren Sie dort winget (Windows) oder Homebrew (macOS); bis dahin schlägt jede Paketmanager-Bereitstellung darauf fehl."
+      "managerUnavailableSummary_other": "Auf {{count}} Geräten fehlt der Paketmanager. Das ist eine einmalige Geräteeinrichtung – installieren Sie dort winget (Windows) oder Homebrew (macOS); bis dahin schlägt jede Paketmanager-Bereitstellung darauf fehl.",
+      "deviceOutputTail": "Geräteausgabe (letzte Zeilen)"
     },
     "deploymentWizard": {
       "selectSoftware": "Wählen Sie Software",
@@ -1839,7 +1840,11 @@
       "deviceCount": "Geräteanzahl",
       "allowed2": "erlaubt",
       "blocked2": "blockiert",
-      "summary": "Zeigt {{range}} von {{total}}"
+      "summary": "Zeigt {{range}} von {{total}}",
+      "policyWouldNotApply": "„{{policy}}“ würde für kein Gerät in dieser Organisation gelten, daher wurde nichts geändert. Jedes Gerät folgt genau einer Softwarerichtlinie, und auf allen Geräten gilt {{winners}}. Ändern oder entfernen Sie unter „Konfigurationsrichtlinien“ die Zuweisung von {{configPolicy}} und versuchen Sie es erneut.",
+      "policyWouldNotApplySameMode": "„{{policy}}“ würde für kein Gerät in dieser Organisation gelten, daher wurde nichts geändert. Jedes Gerät folgt genau einer Softwarerichtlinie, und auf allen Geräten gilt {{winners}}. Fügen Sie den Titel stattdessen unter „Softwarerichtlinien“ zu {{winner}} hinzu.",
+      "theWinningConfigPolicy": "die geltende Konfigurationsrichtlinie",
+      "nowOverridesPolicies": "„{{policy}}“ hat auf den Geräten dieser Organisation jetzt Vorrang vor {{names}}."
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "Das Abrufen des Softwareinventars ist fehlgeschlagen",
@@ -1936,7 +1941,7 @@
       "windows": "Windows",
       "macOS": "macOS",
       "linux": "Linux",
-      "noFileSelectedMsiExeDmgDeb": "Keine Datei ausgewählt (.msi, .exe, .dmg, .deb, .pkg)",
+      "noFileSelectedMsiExeDmgDeb": "Keine Datei ausgewählt (.msi, .exe, .dmg, .deb, .pkg, .zip)",
       "saving": "Speichern...",
       "uploadSave": "Hochladen und speichern",
       "saveVersion": "Version speichern",
@@ -1951,8 +1956,8 @@
       "failedToUpdateVersion": "Version konnte nicht aktualisiert werden",
       "replaceFileAddNewVersion": "Um die Installationsdatei zu ersetzen, fügen Sie stattdessen eine neue Version hinzu.",
       "inactiveStoredScripts": "Gespeicherte Installationsskripte sind nicht aktiv; erstellen Sie die Version neu, um sie zu aktivieren.",
-      "addZipFromAddPackage": "zip-Pakete fügen Sie über „Paket hinzufügen“ hinzu.",
-      "builtinVersionsReadOnly": "Wird von Breeze verwaltet. Versionen integrierter Pakete können hier nicht hinzugefügt oder geändert werden."
+      "builtinVersionsReadOnly": "Wird von Breeze verwaltet. Versionen integrierter Pakete können hier nicht hinzugefügt oder geändert werden.",
+      "installScriptsReadOnlyOnEdit": "Installationsskripte einer bestehenden Version lassen sich nicht ändern und legen ihr Zielbetriebssystem fest. Um sie zu ändern, fügen Sie eine neue Version hinzu: Sie übernimmt diese Skripte."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Fügen Sie eine Bereitstellungszeitvariable ein",
@@ -2010,6 +2015,18 @@
       "uninstallCommandCopied": "Deinstallationsbefehl kopiert",
       "breezeDoesNotUninstall": "Breeze deinstalliert diese Clients nicht. Führen Sie den Befehl auf dem Gerät aus, um einen zu entfernen.",
       "copyFailed": "Kopieren fehlgeschlagen. Markieren Sie den Befehl und kopieren Sie ihn manuell."
+    },
+    "policyCoverage": {
+      "appliesTo_one": "Gilt für {{count}} Gerät",
+      "appliesTo_other": "Gilt für {{count}} Geräte",
+      "appliesToNone": "Gilt für 0 Geräte",
+      "notAssigned": "Über keine Konfigurationsrichtlinie zugewiesen",
+      "overriddenBy": "Überschrieben von {{names}}",
+      "overriddenHint": "Jedes Gerät folgt genau einer Softwarerichtlinie. Auf den Geräten, denen diese Richtlinie zugewiesen ist, gilt {{names}}.",
+      "partlyOverriddenHint": "Jedes Gerät folgt genau einer Softwarerichtlinie. Auf den übrigen zugewiesenen Geräten gilt {{names}}.",
+      "anotherPolicy": "eine andere Softwarerichtlinie",
+      "partnerWide": "partnerweite Richtlinie {{name}}",
+      "unavailable": "Abdeckung nicht verfügbar"
     }
   }
 }

@@ -904,6 +904,21 @@ describe('renderQuotePdf', () => {
       expect(buf.subarray(0, 4).toString()).toBe('%PDF');
     });
 
+    // #9957: the screen cover (buildQuoteDocumentModel) treats an empty
+    // preparedForName as unset and prints the bill-to name; the PDF used `??`
+    // and printed nothing, so the two covers disagreed.
+    it('an empty preparedForName falls back to the bill-to name, as the screen cover does', async () => {
+      const buf = await renderQuotePdf(
+        { ...baseQuote, coverPage: { enabled: true, title: 'Cover', coverImageId: null, preparedForName: '', showPreparedBy: false } } as never,
+        blocks as never, [], async () => null, {},
+      );
+      // Page 2's header prints its own "PREPARED FOR / Globex Corp", so count:
+      // the cover adds the second of each.
+      const text = extractPdfText(buf);
+      expect(text.split('PREPARED FOR').length - 1).toBe(2);
+      expect(text.split('Globex Corp').length - 1).toBe(2);
+    });
+
     it('omits the Prepared by block when showPreparedBy is false', async () => {
       const buf = await renderQuotePdf(
         { ...baseQuote, coverPage: { enabled: true, title: 'Cover', coverImageId: null, preparedForName: null, showPreparedBy: false } } as never,

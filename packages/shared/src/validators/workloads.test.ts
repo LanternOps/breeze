@@ -192,6 +192,21 @@ describe('workloadsReportSchema', () => {
     expect(workloadsReportSchema.safeParse(report({ runtimes: [runtime({ runtimeVersion: 'a\u0000' })] })).success).toBe(false);
   });
 
+  it('accepts imageProvenance (#9067) and maps an absent one (an older agent) to null', () => {
+    for (const p of ['confirmed', 'local', 'unknown'] as const) {
+      const parsed = workloadsReportSchema.parse(report({ runtimes: [runtime({ workloads: [workload({ imageProvenance: p })] })] }));
+      expect(parsed.runtimes[0]!.workloads[0]!.imageProvenance).toBe(p);
+    }
+    expect(workloadsReportSchema.parse(report()).runtimes[0]!.workloads[0]!.imageProvenance).toBeNull();
+    expect(
+      workloadsReportSchema.parse(report({ runtimes: [runtime({ workloads: [workload({ imageProvenance: null })] })] }))
+        .runtimes[0]!.workloads[0]!.imageProvenance,
+    ).toBeNull();
+    expect(
+      workloadsReportSchema.safeParse(report({ runtimes: [runtime({ workloads: [workload({ imageProvenance: 'pulled' })] })] })).success,
+    ).toBe(false);
+  });
+
   it('rejects out-of-vocabulary values', () => {
     expect(workloadsReportSchema.safeParse(report({ runtimes: [runtime({ detection: 'maybe' })] })).success).toBe(false);
     expect(workloadsReportSchema.safeParse(report({ runtimes: [runtime({ collection: 'partial' })] })).success).toBe(false);

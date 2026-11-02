@@ -1,0 +1,32 @@
+{
+  "data": [
+    {
+      "guid": "00000000-0000-4000-8000-0000000000c1",
+      "type": "File",
+      "verdict": "New",
+      "actionTaken": "Remediated",
+      "actionsTaken": [
+        "Remediated"
+      ],
+      "highestSeverity": "Malicious",
+      "lastDetectionAt": "2026-10-20T07:00:00Z",
+      "detectionComponent": "FileGuard",
+      "involvedDevices": [
+        "PC01",
+        "srv01.corp.example.test"
+      ],
+      "involvedDeviceUsers": [
+        "user1"
+      ],
+      "sha1": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+      "md5": "d41d8cd98f00b204e9800998ecf8427e",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "knownFileNames": [
+        "eicar.example.test.com"
+      ],
+      "hostAddress": null,
+      "detailsPageLink": "https://console.example.test/incident/c1"
+    }
+  ],
+  "totalCount": 1
+}

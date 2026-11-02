@@ -256,6 +256,17 @@ describe('manage_software_inventory', () => {
     expect(out.code).toBe('CONFLICT');
   });
 
+  it('#9635: a would-not-apply refusal keeps its code, winners and sameMode for the model', async () => {
+    h.select.mockImplementationOnce(() => chain([{ id: 'user-1' }]));
+    const winners = [{ policyId: 'p-allow', name: 'Default Allowlist', mode: 'allowlist', deviceCount: 2 }];
+    h.deny.mockResolvedValue({
+      status: 409,
+      body: { error: 'would apply to no devices', code: 'SOFTWARE_POLICY_WOULD_NOT_APPLY', sameMode: false, winners },
+    });
+    const out = await run('manage_software_inventory', { action: 'deny', softwareName: 'TeamViewer' });
+    expect(out).toMatchObject({ error: 'would apply to no devices', code: 'SOFTWARE_POLICY_WOULD_NOT_APPLY', sameMode: false, winners });
+  });
+
   it('the holding org is refused', async () => {
     h.isHoldingOrg.mockResolvedValue(true);
     const out = await run('manage_software_inventory', { action: 'approve', softwareName: 'Firefox' });

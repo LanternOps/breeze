@@ -7,9 +7,30 @@ import { BILLABLE_DEVICE_ROLES } from './deviceRoles';
 // (#3205 W03); an oversize value reached Postgres as a raw 22003 -> 500.
 // String-length, not Number(), so no float rounding decides a boundary.
 // Sibling validators already bound money (quotes.ts:8, catalog.ts:15).
-const money = z.string()
-  .regex(/^\d+(\.\d{1,2})?$/, 'must be a 2-decimal money string')
-  .refine((v) => v.split('.')[0]!.length <= 10, 'must be at most 10 digits before the decimal point');
+// Exported (#10293) so the web contract editor checks the SAME grammar inline
+// instead of re-copying the regex and the digit cap.
+export const CONTRACT_DECIMAL_RE = /^\d+(\.\d{1,2})?$/;
+export const CONTRACT_DECIMAL_MAX_INTEGER_DIGITS = 10;
+const withinIntegerDigits = (v: string): boolean => v.split('.')[0]!.length <= CONTRACT_DECIMAL_MAX_INTEGER_DIGITS;
+const decimal = (formatMessage: string) => z.string()
+  .regex(CONTRACT_DECIMAL_RE, formatMessage)
+  .refine(withinIntegerDigits, `must be at most ${CONTRACT_DECIMAL_MAX_INTEGER_DIGITS} digits before the decimal point`);
+const money = decimal('must be a 2-decimal money string');
+// #10293: same numeric(12,2) grammar as money, but a quantity is not money, so
+// the 400 a client sees names what is actually wrong.
+const quantity = decimal('must be a number with up to 2 decimals');
+
+export type ContractQuantityIssue = 'required' | 'format' | 'tooLarge';
+
+/** Why a contract quantity string would fail `manualQuantity` validation, or
+ *  null when the server would accept it. `required` (blank) is split from
+ *  `format` so a form can say "Enter a quantity" rather than "invalid". */
+export function contractQuantityIssue(value: string): ContractQuantityIssue | null {
+  if (value.trim() === '') return 'required';
+  if (!CONTRACT_DECIMAL_RE.test(value)) return 'format';
+  if (!withinIntegerDigits(value)) return 'tooLarge';
+  return null;
+}
 
 const INT32_MAX = 2_147_483_647;  // sort_order is int4
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD');
@@ -253,7 +274,7 @@ export const contractLineInputSchema = z.object({
   unitPrice: money.optional(),
   taxable: z.boolean().optional(),
   catalogItemId: z.string().guid().optional(),
-  manualQuantity: money.optional(),
+  manualQuantity: quantity.optional(),
   siteId: z.string().guid().optional(),
   // #3205: the SET of roles a per_device_role line bills. 'unknown' is not a
   // rate; the DB CHECK (contract_lines_device_roles_chk) enforces the same list.
@@ -314,7 +335,7 @@ export const updateContractLineSchema = z.object({
   taxable: z.boolean().optional(),
   catalogItemId: z.string().guid().nullable().optional(),
   refreshCatalogPrice: z.boolean().optional(),      // default false
-  manualQuantity: money.optional(),
+  manualQuantity: quantity.optional(),
   // null clears the site narrowing on a per_device / per_device_role line.
   siteId: z.string().guid().nullable().optional(),
   deviceRoles: z.array(z.enum(BILLABLE_DEVICE_ROLES)).min(1).optional(),

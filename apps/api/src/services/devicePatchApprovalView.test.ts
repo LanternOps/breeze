@@ -26,7 +26,7 @@ vi.mock('../db/schema', () => ({
     source: 'source', packageId: 'packageId', version: 'version', supersededBy: 'supersededBy',
   },
   patchApprovals: { patchId: 'patchId', status: 'status', ringId: 'ringId', partnerId: 'partnerId' },
-  patchPolicies: { id: 'id', kind: 'kind', deferralDays: 'deferralDays', partnerId: 'partnerId' },
+  patchPolicies: { id: 'id', kind: 'kind', deferralDays: 'deferralDays', partnerId: 'partnerId', enabled: 'enabled' },
   organizations: { id: 'id', partnerId: 'partnerId' },
   devices: { id: 'id', orgId: 'orgId' },
   OUTSTANDING_DEVICE_PATCH_STATUSES: ['pending'],
@@ -81,8 +81,8 @@ function mockRingPolicy(ringAutoApprove: Record<string, unknown>, ringDeferralDa
       categoryRules: [], categories: [], excludeCategories: [], autoApprove: ringAutoApprove,
     },
   } as never);
-  // ring row (deferral + partner), then the evaluator's three reads.
-  vi.mocked(db.select).mockReturnValueOnce(chain('limit', [{ deferralDays: ringDeferralDays, partnerId: ringPartnerId }]) as never);
+  // ring row (deferral + partner + enabled; a disabled ring fails closed, #8909), then the evaluator's three reads.
+  vi.mocked(db.select).mockReturnValueOnce(chain('limit', [{ deferralDays: ringDeferralDays, partnerId: ringPartnerId, enabled: true }]) as never);
 }
 
 function mockEvaluatorReads(pending: unknown[], approvals: unknown[] = []) {

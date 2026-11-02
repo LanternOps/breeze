@@ -148,7 +148,7 @@ describe('DeviceBackupTab', () => {
     const jobHistoryTable = jobHistoryCard?.querySelector('table');
 
     expect(jobHistoryTable).toBeTruthy();
-    expect(within(jobHistoryTable as HTMLTableElement).getByText('1 KB')).toBeTruthy();
+    expect(within(jobHistoryTable as HTMLTableElement).getByText('1.00 KB')).toBeTruthy();
   });
 
   it('applies legal hold from the device tab', async () => {

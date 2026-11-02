@@ -8,7 +8,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * `incidents`.
  */
 
-const { updateMock, selectMock, publishEventMock, afterCommitMock } = vi.hoisted(() => ({
+const { updateMock, selectMock, publishEventMock, afterCommitMock, ownerMock, isolationFinalizeMock } = vi.hoisted(() => ({
+  ownerMock: vi.fn(async () => null),
+  isolationFinalizeMock: vi.fn(),
   updateMock: vi.fn(),
   selectMock: vi.fn(),
   publishEventMock: vi.fn(async () => 'evt-1'),
@@ -19,6 +21,9 @@ vi.mock('../db', () => ({
   db: { update: updateMock, select: selectMock },
   runAfterDbContextCommit: (label: string, work: () => unknown) => afterCommitMock(label, work),
 }));
+
+vi.mock('./networkIsolation/episodeStore', () => ({ findEpisodeByCommand: ownerMock }));
+vi.mock('./networkIsolation/finalizer', () => ({ handleNetworkIsolationResult: isolationFinalizeMock }));
 
 vi.mock('./eventBus', () => ({ publishEvent: publishEventMock }));
 
@@ -256,6 +261,22 @@ describe('handleExecuteContainmentResult (#9662)', () => {
     type: 'execute_containment',
     payload: { incidentId: INCIDENT_ID, actionType: 'process_kill', parameters: { pid: 4242 } },
   } as never;
+
+  it.each([false, true])('routes network isolation by episode ownership: %s', async (owned) => {
+    ownerMock.mockResolvedValueOnce(owned ? { id: 'episode' } as never : null);
+    const args = {
+      agentId: 'agent-1', command: { id: COMMAND_ID, type: 'execute_containment', payload: { incidentId: INCIDENT_ID, actionType: 'network_isolation' } } as never,
+      commandId: COMMAND_ID, resolvedDeviceId: 'd-1', result: { status: 'failed' as const, error: 'unsupported' }, stdout: undefined,
+    };
+    await handleExecuteContainmentResult(args);
+    if (owned) {
+      expect(isolationFinalizeMock).toHaveBeenCalledWith(args);
+      expect(actionUpdate()).toBeUndefined();
+    } else {
+      expect(isolationFinalizeMock).not.toHaveBeenCalled();
+      expect(actionUpdate()).toMatchObject({ status: 'failed' });
+    }
+  });
 
   it('maps a completed agent result (stdout JSON) onto the action', async () => {
     await handleExecuteContainmentResult({

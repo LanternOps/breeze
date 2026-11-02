@@ -162,6 +162,7 @@ describe('queueEventTriggers — partner-wide fan-out wiring (#2133)', () => {
         type: 'trigger-event',
         automationId: 'auto-pw',
         eventType: 'device.offline',
+        eventOrgId: 'org-member-1',
       }),
       expect.objectContaining({ jobId: 'automation-event-auto-pw-evt-1' }),
     );

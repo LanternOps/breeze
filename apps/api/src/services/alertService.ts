@@ -10,7 +10,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { MonitorKind, AlertResolutionReason } from '@breeze/shared';
-import { db, withDbTransaction } from '../db';
+import { db, withDbTransaction, withSystemDbAccessContext } from '../db';
 import {
   alerts,
   alertRules,
@@ -27,6 +27,7 @@ import { eq, and, inArray, isNull, isNotNull, or, sql, type SQL } from 'drizzle-
 import { evaluateConditions, evaluateAutoResolveConditions, interpolateTemplate, withMetConditionDescriptions } from './alertConditions';
 import { isCooldownActive, setCooldown, recordStateTransition, isFlapping } from './alertCooldown';
 import { publishEvent } from './eventBus';
+import { alertOwnerKey, isDeviceOwned } from './alertOwner';
 import { resolveDeviceSiteId } from './deviceSiteResolver';
 import { enqueueAlertCorrelation } from '../jobs/alertCorrelation';
 import { captureException } from './sentry';
@@ -134,12 +135,14 @@ export interface RuleWithTemplate {
 async function publishAlertTriggeredOrRollback(opts: {
   alertId: string;
   orgId: string;
-  deviceId: string;
+  deviceId: string | null;
   /** Producing subsystem, used for the Sentry tag and log lines. */
   source: string;
   payload: Record<string, unknown>;
   publisher: string;
   siteId: string | null | undefined;
+  ownerKind?: string;
+  ownerRef?: string | null;
 }): Promise<boolean> {
   const { alertId, orgId, deviceId, source, payload, publisher, siteId } = opts;
 
@@ -152,7 +155,8 @@ async function publishAlertTriggeredOrRollback(opts: {
       alertId,
       alertSource: source,
       orgId,
-      deviceId
+      ...(deviceId === null ? {} : { deviceId }),
+      ...(opts.ownerKind ? { ownerKind: opts.ownerKind, ownerRef: opts.ownerRef ?? 'null' } : {}),
     });
     console.error(
       `[AlertService] Failed to publish alert.triggered for ${source} alert ${alertId}; rolling the alert row back:`,
@@ -172,7 +176,8 @@ async function publishAlertTriggeredOrRollback(opts: {
         alertId,
         alertSource: source,
         orgId,
-        deviceId
+        ...(deviceId === null ? {} : { deviceId }),
+        ...(opts.ownerKind ? { ownerKind: opts.ownerKind, ownerRef: opts.ownerRef ?? 'null' } : {}),
       });
       console.error(
         `[AlertService] Could not roll back unpublished alert ${alertId}; it is stranded active with no notification:`,
@@ -293,9 +298,9 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
 
   const insert = async (): Promise<{ id: string } | undefined> => {
     const [row] = await db.execute<{ id: string }>(sql`
-      INSERT INTO alerts (rule_id, device_id, org_id, severity, title, message, context,
+      INSERT INTO alerts (owner_kind, rule_id, device_id, org_id, severity, title, message, context,
         monitor_id, episode_id, requires_human, subject_key, status, triggered_at)
-      VALUES (${ruleId}, ${deviceId}, ${orgId}, ${severity}, ${title}, ${message},
+      VALUES ('device', ${ruleId}, ${deviceId}, ${orgId}, ${severity}, ${title}, ${message},
         ${JSON.stringify(context ?? {})}::jsonb, ${monitorFields.monitorId}, ${episodeId ?? null},
         ${requiresHuman ?? false}, ${subjectKey ?? null}, 'active', now())
       ON CONFLICT (rule_id, device_id, COALESCE(subject_key, ''))
@@ -320,6 +325,7 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
         cooldownMinutes,
         payload: {
           alertId: newAlert.id, ruleId, deviceId, severity, title, message,
+          owner: null, ownerKey: `device:${deviceId}`,
           ...monitorFields, episodeId: subjectEpisodeId, subjectKey, responsesOwner,
         },
       };
@@ -356,6 +362,7 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
       ...monitorFields,
       subjectKey: null,
       responsesOwner: true,
+      owner: null, ownerKey: `device:${deviceId}`,
     },
     publisher: 'alert-service',
     siteId
@@ -378,10 +385,14 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
 }
 
 /**
- * Parameters for {@link createSourcedAlert}.
+ * Org-level owner accepted by {@link createSourcedAlert}.
  */
-export interface CreateSourcedAlertParams {
-  deviceId: string;
+export type SourcedAlertOwner = { kind: 'backup_workload'; ref: string };
+
+export type CreateSourcedAlertParams = (
+  | { deviceId: string; owner?: undefined }
+  | { deviceId: null; owner: SourcedAlertOwner }
+) & {
   orgId: string;
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
   title: string;
@@ -401,6 +412,7 @@ export interface CreateSourcedAlertParams {
   /**
    * Site to scope the published event to. Omit to resolve it from the device;
    * pass it explicitly (including `null`) when the caller already knows it.
+   * Workload owners always publish with a null site.
    */
   siteId?: string | null;
   /**
@@ -417,7 +429,7 @@ export interface CreateSourcedAlertParams {
    * by an AI verdict, always its own correlation root.
    */
   requiresHuman?: boolean;
-}
+};
 
 /**
  * Create an alert that has no `alert_rules` row behind it and publish
@@ -431,7 +443,8 @@ export interface CreateSourcedAlertParams {
  * invisible to every `alert.triggered` consumer: no notifications, no
  * escalation, no automations, no AI verdict.
  *
- * This helper is the shared insert + publish tail. Cooldown, dedupe and
+ * This helper is the shared insert + publish tail. Workload owners dedupe
+ * atomically on their open-owner index. Device cooldown, dedupe and
  * flap-suppression stay with the caller, whose keys are source-specific
  * (a monitor rule id, a warranty end date, …) rather than an `alertRules` id.
  *
@@ -443,10 +456,17 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
   const { deviceId, orgId, severity, title, message, context, publisher, eventPayload, triggeredAt } = params;
   const monitorFields = await monitorEventFields(params.monitorId, params.kind);
 
-  const [newAlert] = await db
+  const ownerKind = params.owner?.kind ?? 'device';
+  const ownerRef = params.owner?.ref ?? null;
+  const ownerKey = alertOwnerKey({
+    ownerKind, ownerRef, deviceId, topologySiteId: null, topologySourceKey: null,
+  });
+  const insert = db
     .insert(alerts)
     .values({
       ruleId: null,
+      ownerKind,
+      ownerRef,
       deviceId,
       orgId,
       configItemName: params.configItemName ?? null,
@@ -459,38 +479,61 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
       requiresHuman: params.requiresHuman ?? false,
       status: 'active',
       triggeredAt: triggeredAt ?? new Date()
-    })
-    .returning({ id: alerts.id });
+    });
+  let newAlert: { id: string } | undefined;
+  try {
+    [newAlert] = await (params.owner
+      ? insert.onConflictDoNothing({
+        target: [alerts.orgId, alerts.ownerKind, alerts.ownerRef],
+        where: sql`owner_kind NOT IN ('device', 'topology_site') AND status IN ('active', 'acknowledged', 'suppressed')`,
+      })
+      : insert).returning({ id: alerts.id });
+  } catch (error) {
+    captureException(error, undefined, {
+      alertSource: context.source, orgId, ownerKind, ownerRef: ownerRef ?? 'null',
+      ...(deviceId === null ? {} : { deviceId }),
+    });
+    throw error;
+  }
 
   const alertId = newAlert?.id;
   if (!alertId) {
+    // The partial unique index arbitrates concurrent writes for an org owner.
+    if (params.owner) {
+      console.info('[AlertService] Deduplicated open sourced alert', { orgId, ownerKind, ownerRef });
+      return null;
+    }
     const err = new Error(
       `[AlertService] Insert returned no row for ${context.source} alert (org=${orgId} device=${deviceId}); nothing published`
     );
     console.error(err.message);
-    captureException(err, undefined, { alertSource: context.source, orgId, deviceId });
+    captureException(err, undefined, { alertSource: context.source, orgId, ownerKind, ownerRef: ownerRef ?? 'null', ...(deviceId === null ? {} : { deviceId }) });
     return null;
   }
 
   // Attach the device's site so site-restricted users see it, same as createAlert.
-  const siteId = params.siteId !== undefined ? params.siteId : await resolveDeviceSiteId(deviceId);
+  const siteId = deviceId === null ? null
+    : params.siteId !== undefined ? params.siteId : await resolveDeviceSiteId(deviceId);
   const published = await publishAlertTriggeredOrRollback({
     alertId,
     orgId,
     deviceId,
     source: context.source,
+    ownerKind,
+    ownerRef,
     payload: {
       alertId,
       ruleId: null,
-      deviceId,
       severity,
       title,
       message,
-      // `source` last so it is always the one persisted in context — a caller
-      // cannot accidentally publish a source that disagrees with the row.
+      // Persisted source and owner identity override caller-supplied fields.
       ...eventPayload,
       ...monitorFields,
-      source: context.source
+      source: context.source,
+      deviceId,
+      owner: params.owner ?? null,
+      ownerKey,
     },
     publisher,
     siteId
@@ -502,7 +545,7 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
 
   // Only correlate an alert that actually published — a rolled-back row must
   // not leave a correlation job pointing at a deleted alert.
-  enqueueAlertCorrelationForDevice(orgId, deviceId);
+  if (deviceId !== null) enqueueAlertCorrelationForDevice(orgId, deviceId);
 
   return alertId;
 }
@@ -541,6 +584,8 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
   if (!alert.ruleId) {
     return false;
   }
+
+  if (!isDeviceOwned(alert)) throw new Error('alert_has_no_device');
 
   // Get rule and template
   const [rule] = await db
@@ -758,6 +803,59 @@ export function buildSuppressAlertCas(alertId: string) {
   return buildAlertStatusCas(alertId, SUPPRESSIBLE_ALERT_STATUSES);
 }
 
+/**
+ * The one producer of `alert.suppressed` (#10573). Every suppress path — the
+ * `manage_alerts` AI tool, `POST /alerts/:id/suppress` and the bulk action —
+ * calls this AFTER its suppress CAS (`buildSuppressAlertCas` or the bulk
+ * snapshot CAS) returned a row, so a lost race never publishes, and so every
+ * producer emits the same v1 payload.
+ *
+ * `durationHours` is the requested mute length: the AI tool passes the duration
+ * it was given; an end-time suppress derives it from `suppressedUntil`
+ * (2 decimals). It is null exactly when the suppression is indefinite.
+ *
+ * Never throws: the suppression is already written, so a publish failure is
+ * logged and reported as `false` for callers that surface a warning.
+ */
+export async function publishAlertSuppressed(input: {
+  alert: { id: string; orgId: string; ruleId: string | null; deviceId: string | null };
+  suppressedBy: string;
+  suppressedUntil: Date | null;
+  durationHours?: number | null;
+  source: string;
+  now?: Date;
+}): Promise<boolean> {
+  const { alert, suppressedBy, suppressedUntil, source } = input;
+  const durationHours = suppressedUntil === null
+    ? null
+    : input.durationHours
+      ?? Math.round(((suppressedUntil.getTime() - (input.now ?? new Date()).getTime()) / 3_600_000) * 100) / 100;
+  try {
+    await publishEvent(
+      'alert.suppressed',
+      alert.orgId,
+      {
+        alertId: alert.id,
+        ruleId: alert.ruleId,
+        deviceId: alert.deviceId,
+        suppressedBy,
+        suppressedUntil: suppressedUntil ? suppressedUntil.toISOString() : null,
+        durationHours,
+      },
+      source,
+      { userId: suppressedBy }
+    );
+    return true;
+  } catch (error) {
+    console.error(
+      `[AlertService] Failed to publish alert.suppressed for alert ${alert.id} (org ${alert.orgId}, source ${source}) — `
+      + 'the suppression is saved; the event is not retried:',
+      error
+    );
+    return false;
+  }
+}
+
 /** The only status an alert can be un-suppressed (restored) FROM (#8966). */
 export const UNSUPPRESSIBLE_ALERT_STATUSES = ['suppressed'] as const;
 
@@ -854,6 +952,11 @@ export async function resolveAlert(
 
   // Already resolved by someone else (or gone). Not an error — just not ours.
   if (!alert) return false;
+  if (alert.ruleId && !isDeviceOwned(alert)) {
+    console.warn('[AlertService] Skipping device cooldown on resolve', {
+      alertId: alert.id, orgId: alert.orgId, ownerKind: alert.ownerKind, reason: 'alert_has_no_device',
+    });
+  }
 
   // W03 — a subject recovery under the locked sweep commits its resolution and
   // pending `alert.resolved` event TOGETHER (in the SAME outer transaction as
@@ -861,7 +964,7 @@ export async function resolveAlert(
   // here. `deferSubjectEffects` defaults to false so every OTHER caller —
   // manual resolution, checkAutoResolve, the config-policy sweep — keeps
   // today's synchronous behaviour unchanged; only Tasks 9 and 12 opt in.
-  if (deferSubjectEffects && alert.subjectKey) {
+  if (deferSubjectEffects && alert.subjectKey && isDeviceOwned(alert)) {
     const [rule] = alert.ruleId
       ? await db.select().from(alertRules).where(eq(alertRules.id, alert.ruleId)).limit(1)
       : [];
@@ -891,7 +994,7 @@ export async function resolveAlert(
 
   // Phase 6a: Record resolution state transition for flapping detection
   try {
-    if (alert.ruleId) {
+    if (alert.ruleId && isDeviceOwned(alert)) {
       await recordStateTransition(alert.ruleId, alert.deviceId, 'resolved', alert.subjectKey ?? undefined);
 
     }
@@ -903,7 +1006,7 @@ export async function resolveAlert(
   // Uses the rule's configured cooldown so the condition must persist
   // beyond the cooldown window before a new alert is created.
   // Retired policy alerts are history-only and need no cooldown.
-  if (alert.ruleId) {
+  if (alert.ruleId && isDeviceOwned(alert)) {
     // Legacy standalone alert rule
     const [rule] = await db
       .select()
@@ -935,7 +1038,7 @@ export async function resolveAlert(
   // spanning the whole sweep). See `alertVerdictSubscriber.ts`'s contract
   // comment. Values come from `alert`, the RETURNING row this same UPDATE
   // just produced — never a second read.
-  const siteId = await resolveDeviceSiteId(alert.deviceId);
+  const siteId = alert.deviceId === null ? null : await resolveDeviceSiteId(alert.deviceId);
   await publishEvent(
     'alert.resolved',
     alert.orgId,
@@ -1184,33 +1287,74 @@ export async function evaluateNetworkCheckAlertsForDevice(
   return evaluateDeviceAlertsInMode(deviceId, { kind: 'network_check', monitorIds });
 }
 
+/**
+ * #10859 — DB context scoping.
+ *
+ * This evaluator opens its OWN short system contexts, one per unit of work:
+ * the rule lookup (`alertEvaluation.prelude`), each rule
+ * (`alertEvaluation.rule`), and the detach scan (`alertEvaluation.detach`).
+ * The alert worker calls it with no ambient context. It used to wrap the whole
+ * call in one, which kept a pooled connection in an open transaction across
+ * all of a device's ~13 managed rules: 2–6 s per device, enough to pin the
+ * request pool. Now a connection is held for one rule at a time and released
+ * between rules.
+ *
+ * Called INSIDE a context (the network_check sweep, integration tests), every
+ * `withSystemDbAccessContext` below joins the caller's transaction, so those
+ * callers keep their single-transaction behaviour.
+ *
+ * What depends on a transaction boundary, and where it now falls:
+ *   - The subject branch's savepoint and `pg_advisory_xact_lock` sit inside the
+ *     rule's own context, so the lock is held until that rule commits. It used
+ *     to be held until the whole device committed.
+ *   - The subject outbox (`subjectAlertOutbox`) is drained by the worker after
+ *     this function returns, which is after every rule context has committed.
+ *     Drain-after-commit still holds.
+ *   - The legacy path's episode latch and `createAlert` share one rule
+ *     context, so their relative ordering is unchanged.
+ *   - Rules do not read each other's uncommitted writes. Each rule's writes are
+ *     keyed by its own rule and monitor ids.
+ *
+ * A SQL error in one rule now rolls back only that rule. Inside the old outer
+ * transaction it aborted the transaction, so every later rule and the detach
+ * scan failed too.
+ */
 async function evaluateDeviceAlertsInMode(deviceId: string, mode: DeviceEvaluationMode): Promise<string[]> {
-  // Match policy maintenance semantics before any monitor evaluation can
-  // create an alert, subject alert, episode or escalation. Component recovery
-  // shares this evaluator, so it must still run without admitting new breaches.
-  const maintenance = await resolveMaintenanceConfigForDevice(deviceId);
-  let suppressAlerts = false;
-  if (maintenance) {
-    const status = isInMaintenanceWindow(maintenance);
-    suppressAlerts = status.active && status.suppressAlerts;
-  }
+  const prelude = await withSystemDbAccessContext(async () => {
+    // Match policy maintenance semantics before any monitor evaluation can
+    // create an alert, subject alert, episode or escalation. Component recovery
+    // shares this evaluator, so it must still run without admitting new breaches.
+    const maintenance = await resolveMaintenanceConfigForDevice(deviceId);
+    let suppressAlerts = false;
+    if (maintenance) {
+      const status = isInMaintenanceWindow(maintenance);
+      suppressAlerts = status.active && status.suppressAlerts;
+    }
 
-  const applicableRules = await getApplicableRules(deviceId);
+    const applicableRules = await getApplicableRules(deviceId);
 
-  if (applicableRules.length === 0) {
+    if (applicableRules.length === 0) {
+      return null;
+    }
+
+    // Get device info for template interpolation
+    const [device] = await db
+      .select()
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
+
+    if (!device) {
+      return null;
+    }
+
+    return { suppressAlerts, applicableRules, device };
+  }, 'alertEvaluation.prelude');
+
+  if (!prelude) {
     return [];
   }
-
-  // Get device info for template interpolation
-  const [device] = await db
-    .select()
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
-
-  if (!device) {
-    return [];
-  }
+  const { suppressAlerts, applicableRules, device } = prelude;
 
   const createdAlerts: string[] = [];
   // #5290 — every monitor the sweep actually evaluated for this device. Any
@@ -1219,7 +1363,8 @@ async function evaluateDeviceAlertsInMode(deviceId: string, mode: DeviceEvaluati
   // closes its open episode as `monitor_detached` after the loop.
   const evaluatedMonitorIds = new Set<string>();
 
-  for (const { rule, template, effectiveConditions, effectiveSeverity, effectiveCooldownMinutes, monitor } of applicableRules) {
+  for (const applicable of applicableRules) {
+    const { rule, monitor } = applicable;
     // Subject monitors still evaluate recovery during maintenance; new breaches remain suppressed.
     if (suppressAlerts && !isSubjectMonitorKind(monitor?.kind)) continue;
     // #6353 — a network_check has ONE verdict per org, evaluated by the
@@ -1238,178 +1383,22 @@ async function evaluateDeviceAlertsInMode(deviceId: string, mode: DeviceEvaluati
       continue;
     }
 
+    // #10859 — counted BEFORE the evaluation. The monitor resolves to this
+    // device whether or not its evaluation succeeds. Counting it only on
+    // success let a failed rule's open episode be closed as
+    // `monitor_detached` by the detach scan, which now commits in its own
+    // context instead of rolling back with the failed rule.
+    if (rule.managedByMonitorId && monitor) evaluatedMonitorIds.add(rule.managedByMonitorId);
+
+    // The catch sits OUTSIDE the rule's context so that a failure the context
+    // itself raises (a SQL error poisons the transaction, so its COMMIT
+    // throws) costs only this rule, never the rest of the device's rules.
     try {
-      // Evaluate conditions
-      const result = await evaluateConditions(effectiveConditions, deviceId);
-
-      // W03 Task 10 — a hardware/RAID leaf reports per-COMPONENT evidence
-      // instead of one device-level verdict. Its whole reconciliation
-      // (create/recover, episode allocation/adoption, the final observation)
-      // runs inside one savepoint under an advisory lock so concurrent sweeps
-      // cannot close an episode between another sweep's creation and its
-      // ownership claim — and, critically, so nothing it does (publish,
-      // Redis write, correlation enqueue) can escape before the CALLER's
-      // outer transaction commits. Task 10's outbox drains the staged
-      // envelope only after that commit. This branch never falls through to
-      // the legacy NULL-subject block below.
-      if (result.subjects !== undefined) {
-        if (rule.managedByMonitorId) evaluatedMonitorIds.add(rule.managedByMonitorId);
-        const subjectAlertIds: string[] = [];
-        await withDbTransaction(async () => {
-          await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`hardware-subject:${rule.id}:${deviceId}`}, 0))`);
-          const evidence = await evaluateConditions(effectiveConditions, deviceId);
-          if (evidence.subjects === undefined) {
-            throw new Error('Subject evidence disappeared during evaluation');
-          }
-          const observation = await evaluateSubjectAlerts({
-            rule: {
-              ...rule,
-              overrideSettings: {
-                ...(rule.overrideSettings as Record<string, unknown> | null),
-                severity: effectiveSeverity,
-                cooldownMinutes: effectiveCooldownMinutes,
-              },
-            },
-            template, device, monitor, evidence: {
-              ...evidence,
-              subjects: suppressAlerts
-                ? evidence.subjects.filter(subject => subject.status !== 'breaching')
-                : evidence.subjects,
-              createdAlertIds: subjectAlertIds,
-            },
-          });
-          if (monitor && !suppressAlerts) {
-            await recordMonitorEvaluation({ monitor, deviceId, orgId: device.orgId, observation });
-          }
-        });
-        createdAlerts.push(...subjectAlertIds);
-        continue;
-      }
-
-      if (suppressAlerts) continue;
-
-      // #5290 — the episode seam sits HERE, after the evaluation and BEFORE
-      // createAlert, on purpose:
-      //   * cooldown and flapping (both inside createAlert) gate the ALERT but
-      //     never the episode — noise controls cannot hide a loop;
-      //   * the escalation latch and its pause are durable before createAlert
-      //     publishes `alert.triggered`, so the compiled response automation
-      //     can never be queued between the latch and the pause;
-      //   * a non-triggering evaluation, which today does nothing at all, now
-      //     closes the open episode.
-      let episodeId: string | null = null;
-      if (rule.managedByMonitorId && monitor) {
-        evaluatedMonitorIds.add(rule.managedByMonitorId);
-        try {
-          const observation: MonitorObservation = result.triggered
-            ? 'breach'
-            : result.dataState === 'unknown'
-              ? 'unknown'
-              : 'ok';
-          const outcome = await recordMonitorEvaluation({
-            monitor,
-            deviceId,
-            // ALWAYS the DEVICE's org (#5290): a partner-wide monitor has no
-            // org of its own and its episodes are org-scoped.
-            orgId: device.orgId,
-            observation,
-          });
-          episodeId = outcome.episodeId;
-          // `needsEscalationAlert` retries an alert that the latch failed to
-          // raise earlier — the pause is already durable, so without the retry
-          // the device's responses stay held with nothing telling a human why.
-          if ((outcome.latched || outcome.needsEscalationAlert) && outcome.episodeId) {
-            await fireEscalationLatch({
-              monitor,
-              deviceId,
-              orgId: device.orgId,
-              episodeId: outcome.episodeId,
-              episodesInWindow: outcome.episodesInWindow,
-            });
-          }
-        } catch (error) {
-          // Episode bookkeeping must never cost the device its alert.
-          console.error(
-            `[AlertService] Episode bookkeeping failed for monitor=${rule.managedByMonitorId} device=${deviceId}:`,
-            error
-          );
-          captureException(error, undefined, {
-            area: 'monitors',
-            issue: 'episode_record_failed',
-            monitorId: rule.managedByMonitorId,
-            deviceId,
-          });
-        }
-      }
-
-      if (result.triggered) {
-        // Build template context. #10740 — met-handler text is not on
-        // result.context; attach it before interpolation so {{description}}
-        // and {{conditionsMet}} render. The alert row below still stores
-        // conditionsMet as the array.
-        const templateContext = withMetConditionDescriptions(
-          {
-            deviceName: device.displayName || device.hostname,
-            hostname: device.hostname,
-            osType: device.osType,
-            osVersion: device.osVersion,
-            ruleName: rule.name,
-            severity: effectiveSeverity,
-            ...result.context,
-          },
-          result.conditionsMet,
-        );
-
-        // Interpolate title and message
-        const title = interpolateTemplate(template.titleTemplate, templateContext);
-        const message = interpolateTemplate(template.messageTemplate, templateContext);
-
-        // Create alert — ALWAYS in the DEVICE's org (alerts.org_id NOT NULL):
-        // a partner-wide rule (#2128) has no org of its own, and for org-owned
-        // rules device.orgId is identical to rule.orgId by the ownership match
-        // above. Notifications then route via the firing org's own channels.
-        const alertId = await createAlert({
-          ruleId: rule.id,
-          deviceId,
-          orgId: device.orgId,
-          severity: effectiveSeverity,
-          title,
-          message,
-          // #5289 — provenance, so the alert links to the authored monitor
-          // rather than to the compiled rule the technician never sees.
-          monitorId: rule.managedByMonitorId ?? null,
-          kind: monitor?.kind ?? null,
-          episodeId,
-          context: {
-            ...result.context,
-            conditionsMet: result.conditionsMet,
-            conditionsNotMet: result.conditionsNotMet,
-            templateId: template.id,
-            cooldownMinutes: effectiveCooldownMinutes
-          }
-        });
-
-        if (alertId) {
-          createdAlerts.push(alertId);
-          if (episodeId) {
-            await linkEpisodeAlert(episodeId, alertId).catch((error) => {
-              console.error(
-                `[AlertService] Failed to link alert ${alertId} to episode ${episodeId}:`,
-                error
-              );
-              // Reported as well as logged: a run of these silently degrades the
-              // episode → alert traceability the Activity tab is built on, and
-              // nothing else would ever notice the pattern.
-              captureException(error, undefined, {
-                area: 'monitors',
-                issue: 'episode_alert_link_failed',
-                episodeId,
-                alertId,
-              });
-            });
-          }
-        }
-      }
+      const ruleAlertIds = await withSystemDbAccessContext(
+        () => evaluateRuleForDevice({ applicable, deviceId, device, suppressAlerts, evaluatedMonitorIds }),
+        'alertEvaluation.rule',
+      );
+      createdAlerts.push(...ruleAlertIds);
     } catch (error) {
       console.error(`[AlertService] Error evaluating rule ${rule.id} for device ${deviceId}:`, error);
       // Also the only guard around the hardware subject transaction (W03):
@@ -1432,29 +1421,224 @@ async function evaluateDeviceAlertsInMode(deviceId: string, mode: DeviceEvaluati
 }
 
 /**
+ * One rule's whole evaluation for one device: one unit of work, run inside its
+ * own system context by {@link evaluateDeviceAlertsInMode}. Returns the alert
+ * ids it created. They are reported only once the context has committed, so an
+ * id from a rolled-back rule never reaches the caller.
+ */
+async function evaluateRuleForDevice(input: {
+  applicable: RuleWithTemplate;
+  deviceId: string;
+  device: typeof devices.$inferSelect;
+  suppressAlerts: boolean;
+  evaluatedMonitorIds: Set<string>;
+}): Promise<string[]> {
+  const { applicable, deviceId, device, suppressAlerts, evaluatedMonitorIds } = input;
+  const { rule, template, effectiveConditions, effectiveSeverity, effectiveCooldownMinutes, monitor } = applicable;
+
+  // Evaluate conditions
+  const result = await evaluateConditions(effectiveConditions, deviceId);
+
+  // W03 Task 10 — a hardware/RAID leaf reports per-COMPONENT evidence
+  // instead of one device-level verdict. Its whole reconciliation
+  // (create/recover, episode allocation/adoption, the final observation)
+  // runs inside one savepoint under an advisory lock so concurrent sweeps
+  // cannot close an episode between another sweep's creation and its
+  // ownership claim — and, critically, so nothing it does (publish,
+  // Redis write, correlation enqueue) can escape before the CALLER's
+  // transaction commits. Since #10859 that is this rule's own context, which
+  // also releases the advisory lock when it commits. Task 10's outbox drains
+  // the staged envelope only after that commit. This branch never falls
+  // through to the legacy NULL-subject block below.
+  if (result.subjects !== undefined) {
+    if (rule.managedByMonitorId) evaluatedMonitorIds.add(rule.managedByMonitorId);
+    const subjectAlertIds: string[] = [];
+    await withDbTransaction(async () => {
+      await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`hardware-subject:${rule.id}:${deviceId}`}, 0))`);
+      const evidence = await evaluateConditions(effectiveConditions, deviceId);
+      if (evidence.subjects === undefined) {
+        throw new Error('Subject evidence disappeared during evaluation');
+      }
+      const observation = await evaluateSubjectAlerts({
+        rule: {
+          ...rule,
+          overrideSettings: {
+            ...(rule.overrideSettings as Record<string, unknown> | null),
+            severity: effectiveSeverity,
+            cooldownMinutes: effectiveCooldownMinutes,
+          },
+        },
+        template, device, monitor, evidence: {
+          ...evidence,
+          subjects: suppressAlerts
+            ? evidence.subjects.filter(subject => subject.status !== 'breaching')
+            : evidence.subjects,
+          createdAlertIds: subjectAlertIds,
+        },
+      });
+      if (monitor && !suppressAlerts) {
+        await recordMonitorEvaluation({ monitor, deviceId, orgId: device.orgId, observation });
+      }
+    });
+    return subjectAlertIds;
+  }
+
+  if (suppressAlerts) return [];
+
+  // #5290 — the episode seam sits HERE, after the evaluation and BEFORE
+  // createAlert, on purpose:
+  //   * cooldown and flapping (both inside createAlert) gate the ALERT but
+  //     never the episode — noise controls cannot hide a loop;
+  //   * the escalation latch and its pause are durable before createAlert
+  //     publishes `alert.triggered`, so the compiled response automation
+  //     can never be queued between the latch and the pause;
+  //   * a non-triggering evaluation, which today does nothing at all, now
+  //     closes the open episode.
+  let episodeId: string | null = null;
+  if (rule.managedByMonitorId && monitor) {
+    try {
+      const observation: MonitorObservation = result.triggered
+        ? 'breach'
+        : result.dataState === 'unknown'
+          ? 'unknown'
+          : 'ok';
+      const outcome = await recordMonitorEvaluation({
+        monitor,
+        deviceId,
+        // ALWAYS the DEVICE's org (#5290): a partner-wide monitor has no
+        // org of its own and its episodes are org-scoped.
+        orgId: device.orgId,
+        observation,
+      });
+      episodeId = outcome.episodeId;
+      // `needsEscalationAlert` retries an alert that the latch failed to
+      // raise earlier — the pause is already durable, so without the retry
+      // the device's responses stay held with nothing telling a human why.
+      if ((outcome.latched || outcome.needsEscalationAlert) && outcome.episodeId) {
+        await fireEscalationLatch({
+          monitor,
+          deviceId,
+          orgId: device.orgId,
+          episodeId: outcome.episodeId,
+          episodesInWindow: outcome.episodesInWindow,
+        });
+      }
+    } catch (error) {
+      // Episode bookkeeping must never cost the device its alert.
+      console.error(
+        `[AlertService] Episode bookkeeping failed for monitor=${rule.managedByMonitorId} device=${deviceId}:`,
+        error
+      );
+      captureException(error, undefined, {
+        area: 'monitors',
+        issue: 'episode_record_failed',
+        monitorId: rule.managedByMonitorId,
+        deviceId,
+      });
+    }
+  }
+
+  if (!result.triggered) return [];
+
+  // Build template context. #10740 — met-handler text is not on
+  // result.context; attach it before interpolation so {{description}}
+  // and {{conditionsMet}} render. The alert row below still stores
+  // conditionsMet as the array.
+  const templateContext = withMetConditionDescriptions(
+    {
+      deviceName: device.displayName || device.hostname,
+      hostname: device.hostname,
+      osType: device.osType,
+      osVersion: device.osVersion,
+      ruleName: rule.name,
+      severity: effectiveSeverity,
+      ...result.context,
+    },
+    result.conditionsMet,
+  );
+
+  // Interpolate title and message
+  const title = interpolateTemplate(template.titleTemplate, templateContext);
+  const message = interpolateTemplate(template.messageTemplate, templateContext);
+
+  // Create alert — ALWAYS in the DEVICE's org (alerts.org_id NOT NULL):
+  // a partner-wide rule (#2128) has no org of its own, and for org-owned
+  // rules device.orgId is identical to rule.orgId by the ownership match
+  // above. Notifications then route via the firing org's own channels.
+  const alertId = await createAlert({
+    ruleId: rule.id,
+    deviceId,
+    orgId: device.orgId,
+    severity: effectiveSeverity,
+    title,
+    message,
+    // #5289 — provenance, so the alert links to the authored monitor
+    // rather than to the compiled rule the technician never sees.
+    monitorId: rule.managedByMonitorId ?? null,
+    kind: monitor?.kind ?? null,
+    episodeId,
+    context: {
+      ...result.context,
+      conditionsMet: result.conditionsMet,
+      conditionsNotMet: result.conditionsNotMet,
+      templateId: template.id,
+      cooldownMinutes: effectiveCooldownMinutes
+    }
+  });
+
+  if (!alertId) return [];
+
+  if (episodeId) {
+    await linkEpisodeAlert(episodeId, alertId).catch((error) => {
+      console.error(
+        `[AlertService] Failed to link alert ${alertId} to episode ${episodeId}:`,
+        error
+      );
+      // Reported as well as logged: a run of these silently degrades the
+      // episode → alert traceability the Activity tab is built on, and
+      // nothing else would ever notice the pattern.
+      captureException(error, undefined, {
+        area: 'monitors',
+        issue: 'episode_alert_link_failed',
+        episodeId,
+        alertId,
+      });
+    });
+  }
+  return [alertId];
+}
+
+/**
  * #5290 — close the open episode of every monitor that still has state for this
  * device but no longer resolves to it. One indexed read per sweep
  * (`monitor_device_state_device_idx`).
+ *
+ * #10859 — runs in its own system context (or joins the caller's). The catch
+ * sits outside that context so a failure raised at COMMIT is reported here
+ * too, rather than failing the device's evaluation after its rules have
+ * already committed.
  */
 async function detachUnresolvedMonitors(
   deviceId: string,
   evaluatedMonitorIds: Set<string>
 ): Promise<void> {
   try {
-    const open = await db
-      .select({ monitorId: monitorDeviceState.monitorId })
-      .from(monitorDeviceState)
-      .where(
-        and(
-          eq(monitorDeviceState.deviceId, deviceId),
-          isNotNull(monitorDeviceState.currentEpisodeId)
-        )
-      );
+    await withSystemDbAccessContext(async () => {
+      const open = await db
+        .select({ monitorId: monitorDeviceState.monitorId })
+        .from(monitorDeviceState)
+        .where(
+          and(
+            eq(monitorDeviceState.deviceId, deviceId),
+            isNotNull(monitorDeviceState.currentEpisodeId)
+          )
+        );
 
-    for (const row of open) {
-      if (evaluatedMonitorIds.has(row.monitorId)) continue;
-      await detachMonitorFromDevice(row.monitorId, deviceId);
-    }
+      for (const row of open) {
+        if (evaluatedMonitorIds.has(row.monitorId)) continue;
+        await detachMonitorFromDevice(row.monitorId, deviceId);
+      }
+    }, 'alertEvaluation.detach');
   } catch (error) {
     console.error(`[AlertService] Failed to detach stale monitor episodes for device ${deviceId}:`, error);
     captureException(error, undefined, {

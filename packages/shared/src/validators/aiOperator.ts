@@ -45,12 +45,16 @@ export type ActionIntentTaskContext = z.infer<typeof actionIntentTaskContextSche
  * Query validator for `GET /ai/operator/tasks` (#5205 W07). Mirrors the
  * shape of the org-wide `GET /ai/agents/runs` query
  * (`apps/api/src/routes/aiAgents.ts`) — keyset `cursor`, clamped `limit`,
- * plus this route's own filters (`deviceId`, `state`).
+ * plus this route's own filters (`deviceId`, `state`) and the optional
+ * single-org `orgId` filter the web's `fetchWithAuth` injects when the org
+ * switcher has one org selected (#10112 — the route enforces it against the
+ * caller's accessible orgs; it narrows, never widens).
  */
 export const operatorTaskListQuerySchema = z.object({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(50).default(25),
   deviceId: z.string().guid().optional(),
+  orgId: z.string().guid().optional(),
   state: z.enum(AI_OPERATOR_TASK_STATES).optional(),
 });
 export type OperatorTaskListQuery = z.infer<typeof operatorTaskListQuerySchema>;

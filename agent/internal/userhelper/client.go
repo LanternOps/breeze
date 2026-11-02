@@ -68,6 +68,10 @@ type Client struct {
 	desktopMgr          *helperDesktopManager
 	prompts             *nativePromptRenderer // prompt host renderer (#10190)
 
+	// pamDialogs holds the open PAM elevation dialogs, for pam_close_dialog
+	// (#10370).
+	pamDialogs pamDialogRegistry
+
 	// agentHandlesTCCNotice is this connection's
 	// AuthResponse.AgentHandlesTCCNotice (#10190 W04), set at authentication.
 	agentHandlesTCCNotice bool
@@ -364,6 +368,7 @@ func (c *Client) authenticate() error {
 		// consentProtocolFromAuth applies the same condition).
 		ConsentProtocolVersion:     consentProtocolForAuth(supportsConsent),
 		SupportsTargetedPamDismiss: supportsTargetedPamDismissForAuth(c.role),
+		SupportsPamDialogClose:     supportsPamDialogCloseForAuth(c.role),
 		// Prompt host (#10190): protocol 1 with zero kinds in W02, so the
 		// broker grants no prompt scope and every prompt stays legacy.
 		PromptProtocolVersion: promptProtocol,
@@ -522,6 +527,9 @@ func (c *Client) commandLoop() error {
 		case ipc.TypePamDismissConsent:
 			safeGo("pam_dismiss_consent", func() { c.handlePamDismissConsent(env) })
 
+		case ipc.TypePamCloseDialog:
+			safeGo("pam_close_dialog", func() { c.handlePamCloseDialog(env) })
+
 		case ipc.TypeConsentRequest:
 			safeGo("consent_request", func() { c.handleConsentRequest(env) })
 
@@ -667,6 +675,31 @@ func safeGo(name string, fn func()) {
 	}()
 }
 
+// runCommandRecovered runs a command handler and converts a panic into a
+// failed result. safeGo already keeps a panic from killing the helper, but it
+// cannot reply: without this the agent waits out its whole IPC budget (65 s for
+// take_screenshot) and reports a timeout instead of the real failure (#10304).
+func runCommandRecovered(cmd ipc.IPCCommand, fn func() ipc.IPCCommandResult) (result ipc.IPCCommandResult) {
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 4096)
+			n := runtime.Stack(buf, false)
+			log.Error("recovered panic in command handler",
+				"command", cmd.Type,
+				"commandId", cmd.CommandID,
+				"panic", fmt.Sprintf("%v", r),
+				"stack", string(buf[:n]),
+			)
+			result = ipc.IPCCommandResult{
+				CommandID: cmd.CommandID,
+				Status:    "failed",
+				Error:     fmt.Sprintf("%s failed: internal panic in user helper: %v", cmd.Type, r),
+			}
+		}
+	}()
+	return fn()
+}
+
 func (c *Client) handleCommand(env *ipc.Envelope) {
 	var cmd ipc.IPCCommand
 	if err := json.Unmarshal(env.Payload, &cmd); err != nil {
@@ -694,21 +727,22 @@ func (c *Client) handleCommand(env *ipc.Envelope) {
 	// Dispatch based on command type. Screenshot/computer_action need to run
 	// in the user session (this process) since the service runs in Session 0
 	// and has no display for DXGI/GDI/SendInput.
-	var result ipc.IPCCommandResult
-	switch cmd.Type {
-	case tools.CmdTakeScreenshot, tools.CmdComputerAction:
-		result = c.executeToolCommand(cmd)
-	case "exec":
-		result = c.executeProcess(cmd)
-	case tools.CmdScript, tools.CmdRunScript, tools.CmdScriptCancel, tools.CmdScriptListRunning:
-		result = c.executeScript(cmd)
-	default:
-		result = ipc.IPCCommandResult{
-			CommandID: cmd.CommandID,
-			Status:    "failed",
-			Error:     fmt.Sprintf("unsupported command type: %s", cmd.Type),
+	result := runCommandRecovered(cmd, func() ipc.IPCCommandResult {
+		switch cmd.Type {
+		case tools.CmdTakeScreenshot, tools.CmdComputerAction:
+			return c.executeToolCommand(cmd)
+		case "exec":
+			return c.executeProcess(cmd)
+		case tools.CmdScript, tools.CmdRunScript, tools.CmdScriptCancel, tools.CmdScriptListRunning:
+			return c.executeScript(cmd)
+		default:
+			return ipc.IPCCommandResult{
+				CommandID: cmd.CommandID,
+				Status:    "failed",
+				Error:     fmt.Sprintf("unsupported command type: %s", cmd.Type),
+			}
 		}
-	}
+	})
 	if err := c.conn.SendTyped(env.ID, ipc.TypeCommandResult, result); err != nil {
 		log.Warn("failed to send command result", "id", env.ID, "error", err)
 	}
@@ -1207,7 +1241,17 @@ func (c *Client) handlePamDialog(env *ipc.Envelope) {
 		return
 	}
 
-	result := showPamDialog(req)
+	// Registered so pam_close_dialog can take the window down before the
+	// agent dismisses consent.exe on a deny (#10370).
+	ctx, cancel := context.WithCancel(context.Background())
+	open := c.pamDialogs.open(env.ID, cancel)
+	result := func() ipc.PamDialogResult {
+		defer func() {
+			c.pamDialogs.finish(env.ID, open)
+			cancel()
+		}()
+		return showPamDialogFn(ctx, req)
+	}()
 	if err := c.conn.SendTyped(env.ID, ipc.TypePamDialogResult, result); err != nil {
 		log.Warn("failed to send PAM dialog result", "id", env.ID, "error", err)
 	}
@@ -1274,7 +1318,7 @@ func (c *Client) handlePamDismissConsent(env *ipc.Envelope) {
 // an actuator that cannot target one consent.exe. Nothing is pressed.
 const reasonTargetedDismissUnsupported = "targeted_dismiss_unsupported"
 
-// dismissPamConsent runs the deny path's untargeted Dismiss, or — when the
+// dismissPamConsent runs the untargeted Dismiss, or — when the
 // agent named a consent.exe instance (#8995) — dismisses only that instance. A
 // targeted request never falls back to the untargeted Escape, which would
 // cancel whichever UAC prompt happened to be found first.

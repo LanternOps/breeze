@@ -43,7 +43,7 @@ import {
 import type { AuthContext } from '../../middleware/auth';
 import { portalRoutes } from '../../routes/portal';
 import { agreementsPublicRoutes } from '../../routes/agreementsPublic';
-import { loadCertifiedAgreementInput } from '../../services/agreementCertificate';
+import { buildCertificateContent, certificateText, loadCertifiedAgreementInput } from '../../services/agreementCertificate';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const PORTAL_PASSWORD = 'PortalPass123!';
@@ -182,7 +182,8 @@ describe('portal agreements (assembled portal router, breeze_app + Redis)', () =
     const list = await users.recipient.get('/portal/agreements');
     expect(list.status).toBe(200);
     const listed = (await list.json()).data as Array<{ id: string; canSign: boolean; name: string }>;
-    expect(listed).toEqual([expect.objectContaining({ id: requestId, canSign: true, name: 'BAA 2027' })]);
+    // Named by the template, never the staff-internal request label (#10294).
+    expect(listed).toEqual([expect.objectContaining({ id: requestId, canSign: true, name: 'Business Associate Agreement' })]);
 
     const view = await users.recipient.get(`/portal/agreements/${requestId}`);
     expect(view.status).toBe(200);
@@ -212,8 +213,14 @@ describe('portal agreements (assembled portal router, breeze_app + Redis)', () =
     expect(row.public_response_consumed_at).toBeNull();
     // …so the certificate reads it as a portal acceptance (real loader SQL).
     expect((await loadCertifiedAgreementInput(data.signedAgreementId))?.how).toMatchObject({ kind: 'customer', channel: 'portal' });
-    // The emailed link is revoked post-commit: a reload is the generic 401.
-    expect((await app().request(`/agreements/public/${encodeURIComponent(token)}`)).status).toBe(401);
+    // The emailed link is revoked post-commit for ANSWERING: a second sign is the generic 401…
+    expect((await app().request(`/agreements/public/${encodeURIComponent(token)}/accept`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ signerName: 'Dana Buyer', signerEmail: users.recipientEmail }),
+    })).status).toBe(401);
+    // …while a reload renders the signed state read-only (#10199).
+    const reopened = await app().request(`/agreements/public/${encodeURIComponent(token)}`);
+    expect(reopened.status).toBe(200);
+    expect((await reopened.json()).data.request).toMatchObject({ status: 'signed', signedAt: expect.any(String) });
     // Second answer from the portal: the honest 409, still one document.
     const again = await users.recipient.post(`/portal/agreements/${requestId}/accept`, { signerName: 'Dana Buyer' });
     expect(again.status).toBe(409);
@@ -224,7 +231,7 @@ describe('portal agreements (assembled portal router, breeze_app + Redis)', () =
 
     // The read model lists it, and the request detail names it.
     const signedList = (await (await users.recipient.get('/portal/signed-agreements')).json()).data as Array<{ id: string; sourceKind: string; name: string }>;
-    expect(signedList).toEqual([expect.objectContaining({ id: data.signedAgreementId, sourceKind: 'request', name: 'BAA 2027' })]);
+    expect(signedList).toEqual([expect.objectContaining({ id: data.signedAgreementId, sourceKind: 'request', name: 'Business Associate Agreement' })]);
     expect((await (await users.recipient.get(`/portal/agreements/${requestId}`)).json()).data.signedAgreementId).toBe(data.signedAgreementId);
 
     const certified = await users.recipient.get(`/portal/signed-agreements/${data.signedAgreementId}/file`);
@@ -341,7 +348,14 @@ describe('portal agreements (assembled portal router, breeze_app + Redis)', () =
     expect(await res.json()).toEqual({ data: { status: 'declined' } });
     const row = await requestRow(requestId);
     expect(row).toMatchObject({ status: 'declined', decline_reason: 'Wrong entity name', public_response_jti: null });
-    expect((await app().request(`/agreements/public/${encodeURIComponent(token)}`)).status).toBe(401);
+    // The emailed link can no longer answer…
+    expect((await app().request(`/agreements/public/${encodeURIComponent(token)}/accept`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ signerName: 'Dana Buyer', signerEmail: users.recipientEmail }),
+    })).status).toBe(401);
+    // …but reopening it shows the declined state read-only (#10199).
+    const reopened = await app().request(`/agreements/public/${encodeURIComponent(token)}`);
+    expect(reopened.status).toBe(200);
+    expect((await reopened.json()).data.request).toMatchObject({ status: 'declined', declinedAt: expect.any(String) });
     // Declined stays readable history.
     expect((await (await users.recipient.get(`/portal/agreements/${requestId}`)).json()).data.request.status).toBe('declined');
   });
@@ -361,7 +375,7 @@ describe('portal agreements (assembled portal router, breeze_app + Redis)', () =
     expect(await documentsFor(other.requestId)).toHaveLength(0);
   });
 
-  runDb('link first, then portal: the portal gets the 409 and the certificate keeps "emailed link"', async () => {
+  runDb('link first, then portal: the portal gets the 409 and the certificate keeps the signing-link channel (v2 wording, #10513)', async () => {
     const s = await seed();
     const users = await threeUsers(s);
     const { requestId, token } = await createAndSend(s, [users.recipientEmail]);
@@ -375,7 +389,11 @@ describe('portal agreements (assembled portal router, breeze_app + Redis)', () =
     expect((await viaPortal.json()).code).toBe('AGREEMENT_ALREADY_SIGNED');
     const docs = await documentsFor(requestId);
     expect(docs).toHaveLength(1);
-    expect((await loadCertifiedAgreementInput(docs[0]!.id as string))?.how).toMatchObject({ kind: 'customer', channel: 'emailed_link' });
+    const certified = (await loadCertifiedAgreementInput(docs[0]!.id as string))!;
+    expect(certified.how).toMatchObject({ kind: 'customer', channel: 'signing_link' });
+    // A new signature is stamped certificate v2 at signing: "via signing link".
+    expect(certified.certificateVersion).toBe(2);
+    expect(certificateText(buildCertificateContent(certified)).join('\n')).toContain('Electronically accepted via signing link');
   });
 
   runDb('portal and emailed link racing: exactly one answer wins, one signed agreement', async () => {

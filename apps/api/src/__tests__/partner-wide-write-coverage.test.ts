@@ -74,6 +74,10 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // --- business calendars (#8973 W4) ------------------------------------------
   'services/ticketRouting/repository.ts': 'data access only; every caller-facing write (routes/tickets/routingRules.ts and the manage_ticket_routing_rules AI tool) goes through services/ticketRouting/service.ts, which gates partner-wide rows on canManagePartnerWidePolicies (selected-access denial pinned in service.test.ts)',
   'services/businessCalendars/repository.ts': 'data access only; every caller-facing write goes through services/businessCalendars/service.ts, which gates partner-wide rows on canManagePartnerWidePolicies (selected-access denial pinned in service.test.ts)',
+  // Worker pauses only tighten operational state after an auth failure. Resume
+  // follows a successful test in routes/psa.ts, behind partnerWideWriteBlocked
+  // (canManagePartnerWidePolicies); neither operation edits ticketing config.
+  'services/psaAlertTicketing/pause.ts': 'system auth-error pause; resume is called only by the capability-gated PSA connection test route to lift that pause',
   // Wisp W02 (#9908): worker/system path only — it only ever TIGHTENS a grant
   // (pause/expire) or lifts a pause it set itself; the caller-facing
   // create/refresh/revoke/settings gates live in services/wisp/grants.ts.

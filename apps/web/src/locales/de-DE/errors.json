@@ -33,5 +33,6 @@
   "NO_UPDATES_PROVIDED": "Es wurden keine Änderungen angegeben",
   "PARTNER_GROUP_TARGET_UNSUPPORTED": "Partnerweite Gerätegruppen können nur als Ziele von Konfigurationsrichtlinien des Partners verwendet werden",
   "PARTNER_GROUP_READ_ONLY": "Diese partnerweite Gerätegruppe kann hier nicht geändert werden",
-  "PARTNER_GROUP_FILTER_UNSUPPORTED": "Partnerweite Gerätegruppen können nicht in Gruppenfiltern verwendet werden; ihre Filter dürfen keine Gruppen oder Organisationen referenzieren"
+  "PARTNER_GROUP_FILTER_UNSUPPORTED": "Partnerweite Gerätegruppen können nicht in Gruppenfiltern verwendet werden; ihre Filter dürfen keine Gruppen oder Organisationen referenzieren",
+  "SCAN_ALREADY_QUEUED": "Für dieses Gerät ist bereits ein Scan in der Warteschlange."
 }

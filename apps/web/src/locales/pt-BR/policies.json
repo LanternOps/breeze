@@ -1551,7 +1551,8 @@
       "devicesFinished": "{{finished}} de {{total}} dispositivos concluídos",
       "setupNeeded": "Configuração necessária",
       "managerUnavailableSummary_one": "Falta o gerenciador de pacotes em {{count}} dispositivo. É uma configuração única do dispositivo: instale o winget (Windows) ou o Homebrew (macOS) nele; até lá, toda implantação por gerenciador de pacotes vai falhar.",
-      "managerUnavailableSummary_other": "Falta o gerenciador de pacotes em {{count}} dispositivos. É uma configuração única dos dispositivos: instale o winget (Windows) ou o Homebrew (macOS) neles; até lá, toda implantação por gerenciador de pacotes vai falhar."
+      "managerUnavailableSummary_other": "Falta o gerenciador de pacotes em {{count}} dispositivos. É uma configuração única dos dispositivos: instale o winget (Windows) ou o Homebrew (macOS) neles; até lá, toda implantação por gerenciador de pacotes vai falhar.",
+      "deviceOutputTail": "Saída do dispositivo (últimas linhas)"
     },
     "deploymentWizard": {
       "selectSoftware": "Selecionar Software",
@@ -1839,7 +1840,11 @@
       "deviceCount": "deviceCount",
       "allowed2": "allowed",
       "blocked2": "blocked",
-      "summary": "Exibindo {{range}} de {{total}}"
+      "summary": "Exibindo {{range}} de {{total}}",
+      "policyWouldNotApply": "\"{{policy}}\" não se aplicaria a nenhum dispositivo desta organização, então nada foi alterado. Cada dispositivo segue uma única política de software, e {{winners}} prevalece em todos os dispositivos. Altere ou remova a atribuição de {{configPolicy}} em Políticas de configuração e tente novamente.",
+      "policyWouldNotApplySameMode": "\"{{policy}}\" não se aplicaria a nenhum dispositivo desta organização, então nada foi alterado. Cada dispositivo segue uma única política de software, e {{winners}} prevalece em todos os dispositivos. Em vez disso, adicione o título a {{winner}} em Políticas de software.",
+      "theWinningConfigPolicy": "a política de configuração que prevalece",
+      "nowOverridesPolicies": "\"{{policy}}\" agora prevalece sobre {{names}} nos dispositivos desta organização."
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "Falha ao buscar o inventário de software",
@@ -1936,7 +1941,7 @@
       "windows": "Windows",
       "macOS": "macOS",
       "linux": "Linux",
-      "noFileSelectedMsiExeDmgDeb": "Nenhum arquivo selecionado (.msi, .exe, .dmg, .deb, .pkg)",
+      "noFileSelectedMsiExeDmgDeb": "Nenhum arquivo selecionado (.msi, .exe, .dmg, .deb, .pkg, .zip)",
       "saving": "Salvando...",
       "uploadSave": "Enviar e salvar",
       "saveVersion": "Salvar versão",
@@ -1951,8 +1956,8 @@
       "failedToUpdateVersion": "Falha ao atualizar a versão",
       "replaceFileAddNewVersion": "Para substituir o arquivo do instalador, adicione uma nova versão.",
       "inactiveStoredScripts": "Os scripts de instalação armazenados não estão ativos; recrie a versão para ativá-los.",
-      "addZipFromAddPackage": "Adicione pacotes zip em Adicionar pacote.",
-      "builtinVersionsReadOnly": "Gerenciado pelo Breeze. As versões dos pacotes integrados não podem ser adicionadas nem alteradas aqui."
+      "builtinVersionsReadOnly": "Gerenciado pelo Breeze. As versões dos pacotes integrados não podem ser adicionadas nem alteradas aqui.",
+      "installScriptsReadOnlyOnEdit": "Os scripts de instalação de uma versão existente não podem ser alterados e fixam o sistema operacional de destino. Para alterá-los, adicione uma nova versão: ela começa com esses scripts."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Inserir uma variável de tempo de implantação",
@@ -2010,6 +2015,18 @@
       "uninstallCommandCopied": "Comando de desinstalação copiado",
       "breezeDoesNotUninstall": "O Breeze não desinstala esses clientes. Execute o comando no dispositivo para remover um.",
       "copyFailed": "Falha ao copiar. Selecione o comando e copie-o manualmente."
+    },
+    "policyCoverage": {
+      "appliesTo_one": "Aplica-se a {{count}} dispositivo",
+      "appliesTo_other": "Aplica-se a {{count}} dispositivos",
+      "appliesToNone": "Aplica-se a 0 dispositivos",
+      "notAssigned": "Não atribuída por nenhuma política de configuração",
+      "overriddenBy": "Substituída por {{names}}",
+      "overriddenHint": "Cada dispositivo segue uma única política de software. Nos dispositivos aos quais esta política está atribuída, prevalece {{names}}.",
+      "partlyOverriddenHint": "Cada dispositivo segue uma única política de software. Nos demais dispositivos atribuídos prevalece {{names}}.",
+      "anotherPolicy": "outra política de software",
+      "partnerWide": "{{name}} (de todo o parceiro)",
+      "unavailable": "Cobertura indisponível"
     }
   }
 }

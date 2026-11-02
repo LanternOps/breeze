@@ -21,14 +21,16 @@ import { aiSessions } from '../../db/schema/ai';
 import { organizations } from '../../db/schema/orgs';
 import { wispGrants } from '../../db/schema/wisp';
 import { wispThreadSessions, wispThreads, type WispThreadRow } from '../../db/schema/wispThreads';
-import { WISP_LINK_LABEL_MAX, type WispThreadLink } from '@breeze/shared';
+import { WISP_LINK_LABEL_MAX, WISP_SEED_AUTO_LINK_MAX_LINES, type WispThreadLink } from '@breeze/shared';
 import { sanitizeUntrustedText, wrapUntrustedData } from '../aiInputSanitizer';
 import type { AuthContext } from '../../middleware/auth';
 import { captureException } from '../sentry';
 import { assertWithinCeiling, inSystemContext, type GrantCeiling } from './grantAuthority';
 import { recallForGrant, renderMemoryForPrompt } from './memoryBroker';
 import { attachmentSeedLines, listThreadAttachments } from './threadAttachments';
-import { listLinks } from './threadLinks';
+import { listWorkingSet } from './threadLinks';
+import { listConcernsForCeiling } from './concerns';
+import type { ResolvedEntity } from './entityRefs';
 import { THREAD_SUMMARY_MAX_CHARS, truncateSummary } from './threadSummary';
 
 export type WispThread = {
@@ -85,27 +87,42 @@ const SEED_LINKS_HEADER = "Linked objects (by handle; call the object's own read
 /**
  * W08 Task 5: the thread's VISIBLE links, one line each by handle — kind,
  * label, status, id, org — never the record body or page link. The links are
- * re-resolved by `listLinks` in seed mode (no caller: the ceiling decides).
- * Lines are newest first and dropped whole past 50 lines / 4 KB; '' when
+ * re-resolved by `listWorkingSet` under the caller and grant ceiling.
+ * The optional resolved viewing entity comes first, then pins, concerns and
+ * autos, with at most 15 autos,
+ * and are dropped whole past 50 lines / 4 KB; '' when
  * nothing is visible. Labels are tenant text: sanitized here and fenced.
  */
-function renderLinkSection(links: WispThreadLink[], flags: string[]): string {
+function renderLinkSection(links: WispThreadLink[], flags: string[], opts?: { viewing?: ResolvedEntity | null }): string {
   const lines: string[] = [];
   let bytes = 0;
+  let autoLines = 0;
+  let renderedLinks = 0;
+  if (opts?.viewing) {
+    const viewing = opts.viewing;
+    const label = sanitizeUntrustedText(viewing.label, WISP_LINK_LABEL_MAX, flags).replace(/\s+/g, ' ');
+    const line = `Viewing now: ${viewing.ref.kind} "${label}" id=${viewing.ref.id} org=${viewing.ref.orgId ?? 'partner'}`;
+    const cost = Buffer.byteLength(line, 'utf8');
+    if (cost <= SEED_LINK_MAX_BYTES) { lines.push(line); bytes += cost; }
+  }
   for (const link of links) {
     if (lines.length >= SEED_LINK_MAX_LINES) break;
+    if (link.source === 'auto' && autoLines >= WISP_SEED_AUTO_LINK_MAX_LINES) continue;
     const label = sanitizeUntrustedText(link.label, WISP_LINK_LABEL_MAX, flags).replace(/\s+/g, ' ');
     const status = link.status === null
       ? ''
       : ` (status ${sanitizeUntrustedText(link.status, SEED_LINK_STATUS_MAX_CHARS, flags).replace(/\s+/g, ' ')})`;
-    const line = `- ${link.ref.kind} "${label}"${status} id=${link.ref.id} org=${link.ref.orgId ?? 'partner'}`;
+    const suffix = link.source === 'concern' ? ' (open concern)' : link.source === 'auto' ? ' (recent)' : '';
+    const line = `- ${link.ref.kind} "${label}"${status} id=${link.ref.id} org=${link.ref.orgId ?? 'partner'}${suffix}`;
     const cost = Buffer.byteLength(line, 'utf8') + (lines.length > 0 ? 1 : 0);
     if (bytes + cost > SEED_LINK_MAX_BYTES) break;
     lines.push(line);
+    renderedLinks += 1;
+    if (link.source === 'auto') autoLines += 1;
     bytes += cost;
   }
   if (lines.length === 0) return '';
-  const held = links.length - lines.length;
+  const held = links.length - renderedLinks;
   const more = held > 0 ? `\n(${held} more linked objects not shown; call list_links)` : '';
   return `${SEED_LINKS_HEADER}\n${wrapUntrustedData('wisp_thread_links', lines.join('\n'), flags)}${more}`;
 }
@@ -115,11 +132,14 @@ function renderLinkSection(links: WispThreadLink[], flags: string[]): string {
  * entity table read) is captured and leaves the rest of the seed intact; the
  * thread still works without its links.
  */
-async function linkSeedSection(threadId: string, ceiling: GrantCeiling, auth: AuthContext | null, flags: string[]): Promise<string> {
+async function linkSeedSection(threadId: string, ceiling: GrantCeiling, auth: AuthContext | null, flags: string[], opts?: { viewing?: ResolvedEntity | null }): Promise<string> {
   try {
     // A savepoint: the seed shares one system transaction, and a Postgres error
     // in the link reads/prunes must not abort the memory reads after it.
-    return renderLinkSection(await withDbTransaction(() => listLinks({ auth, ceiling }, threadId)), flags);
+    return renderLinkSection(await withDbTransaction(async () => {
+      const concerns = await listConcernsForCeiling(ceiling, { status: ['open', 'snoozed'] });
+      return listWorkingSet({ auth, ceiling }, threadId, { concerns });
+    }), flags, opts);
   } catch (err) {
     console.error(`[wisp] seed: listing links of thread ${threadId} failed; omitting the section`, err);
     captureException(err, undefined, { threadId, grantId: ceiling.grantId, op: 'wisp.seed_links' });
@@ -276,7 +296,7 @@ export async function updateThreadSummary(threadId: string, summary: string): Pr
  * CeilingViolationError; it propagates (the caller re-checks the focus at
  * session create, w00 A24).
  */
-export async function seedContextForSession(threadId: string, ceiling: GrantCeiling, auth: AuthContext | null = null): Promise<string> {
+export async function seedContextForSession(threadId: string, ceiling: GrantCeiling, auth: AuthContext | null = null, opts?: { viewing?: ResolvedEntity | null }): Promise<string> {
   return inSystemContext(async () => {
     const [row] = await db
       .select()
@@ -312,7 +332,7 @@ export async function seedContextForSession(threadId: string, ceiling: GrantCeil
       if (lines !== '') parts.push(wrapUntrustedData('wisp_thread_attachments', lines, flags));
     }
 
-    const links = await linkSeedSection(threadId, ceiling, auth, flags);
+    const links = await linkSeedSection(threadId, ceiling, auth, flags, opts);
     if (links !== '') parts.push(links);
 
     if (thread.focusOrgId !== null) {

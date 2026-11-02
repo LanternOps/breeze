@@ -35,6 +35,7 @@ const h = vi.hoisted(() => ({
   createNewContactForTask: vi.fn(),
   lockContactForRecipe: vi.fn(),
   findLiveTaskForContact: vi.fn(),
+  lockAndCheckAccountReservations: vi.fn(async () => null),
   flags: { tasks: true, sr: true, identity: true, onboarding: true },
 }));
 
@@ -106,6 +107,14 @@ vi.mock('./contactResolution', () => ({
   createNewContactForTask: (...a: unknown[]) => { h.calls.push('createNewContactForTask'); return h.createNewContactForTask(...a); },
   lockContactForRecipe: (...a: unknown[]) => { h.calls.push('lockContactForRecipe'); return h.lockContactForRecipe(...a); },
   findLiveTaskForContact: (...a: unknown[]) => { h.calls.push('findLiveTaskForContact'); return h.findLiveTaskForContact(...a); },
+}));
+
+vi.mock('./accountReservations', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  lockAndCheckAccountReservations: (...a: unknown[]) => {
+    h.calls.push('lockAndCheckAccountReservations');
+    return (h.lockAndCheckAccountReservations as (...x: unknown[]) => unknown)(...a);
+  },
 }));
 
 import { parseTaskCheckpointResult } from './taskService';
@@ -313,7 +322,7 @@ describe('admitTask — identity_offboarding (R1a Task 9)', () => {
     expect(h.calls).toEqual([
       'identifyTaskPerson', 'resolveProviderAccounts',
       'tx', 'select', 'lockOrgTaskAdmission', 'select', 'countPendingTasks',
-      'pinContact', 'lockContactForRecipe', 'findLiveTaskForContact',
+      'pinContact', 'lockContactForRecipe', 'findLiveTaskForContact', 'lockAndCheckAccountReservations',
       'insert:task', 'target:contact', 'freeze:m365', 'freeze:google', 'links', 'openStep:intake', 'event:task_admitted',
     ]);
     // Only the provider-resolved account is upserted as a link.
@@ -372,6 +381,24 @@ describe('admitTask — identity_offboarding (R1a Task 9)', () => {
     const r = await taskService.admitTask(base);
     expect(r).toMatchObject({ ok: false, refusal: 'duplicate_live_task', existingTaskId: 'live-task-1' });
     expect((r as { detail: string }).detail).toContain('live-task-1');
+    expect(h.inserts).toHaveLength(0);
+  });
+
+  it('#9981. an account another task holds is account_reserved naming the holder, after the contact rule, and inserts nothing', async () => {
+    h.selectQueue = [[helpdesk]];
+    h.lockAndCheckAccountReservations.mockResolvedValueOnce({
+      taskId: 'holder-task', orgId: ORG, provider: 'google', externalId: '101', principalLabel: 'dana@customer.example',
+      taskState: 'handed_off', taskOutcome: 'unknown_effect', fromMergedOrg: false,
+    } as never);
+    const r = await taskService.admitTask(base);
+    expect(r).toMatchObject({ ok: false, refusal: 'account_reserved', existingTaskId: 'holder-task' });
+    expect((r as { detail: string }).detail).toContain('holder-task');
+    expect((r as { detail: string }).detail).toContain('may still land');
+    // Every resolved account is checked, on the transaction's handle, under this org.
+    const [, orgArg, keys] = h.lockAndCheckAccountReservations.mock.calls[0] as unknown as [unknown, string, Array<{ provider: string }>];
+    expect(orgArg).toBe(ORG);
+    expect(keys.map((k) => k.provider).sort()).toEqual(['google', 'm365']);
+    expect(h.calls.indexOf('findLiveTaskForContact')).toBeLessThan(h.calls.indexOf('lockAndCheckAccountReservations'));
     expect(h.inserts).toHaveLength(0);
   });
 

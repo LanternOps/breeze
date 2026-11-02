@@ -349,10 +349,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           email: { type: 'string', format: 'email' },
           name: { type: 'string', minLength: 1, maxLength: 255 },
           roleId: { type: 'string', format: 'uuid' },
-          orgAccess: { type: 'string', enum: ['all', 'selected', 'none'] },
-          orgIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
-          siteIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
-          deviceGroupIds: { type: 'array', items: { type: 'string', format: 'uuid' } }
+          orgAccess: { type: 'string', enum: ['all', 'selected', 'none'], description: 'Partner scope only; 400 in organization scope.' },
+          orgIds: { type: 'array', items: { type: 'string', format: 'uuid' }, description: 'Partner scope only, with orgAccess=selected; 400 in organization scope.' },
+          siteIds: { type: 'array', items: { type: 'string', format: 'uuid' }, description: 'Organization scope only; 400 in partner scope.' },
+          deviceGroupIds: { type: 'array', items: { type: 'string', format: 'uuid' }, description: 'Not supported yet: any value is rejected with 400.' }
         },
         required: ['email', 'name', 'roleId']
       },

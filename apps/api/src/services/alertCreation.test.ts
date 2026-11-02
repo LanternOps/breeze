@@ -57,6 +57,7 @@ describe('createAutomationStyleAlert', () => {
     expect(out).not.toBeNull();
     const alert = m.inserts.find((i) => i.table === 'alerts')!;
     expect(alert.values).toEqual({
+      ownerKind: 'device',
       id: out!.alertId,
       subjectKey: `automation-alert:${out!.alertId}`,
       ruleId: 'rule-1',

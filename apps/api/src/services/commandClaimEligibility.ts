@@ -1,6 +1,9 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, notInArray, sql } from 'drizzle-orm';
 import type { db } from '../db';
-import { deviceCommands } from '../db/schema';
+import { deviceCommands, deviceNetworkIsolations } from '../db/schema';
+import { isResolvedTerminalIsolationState, RESOLVED_TERMINAL_STATES } from '@breeze/shared';
+import { isolationAgentUpgradeGate } from '../routes/agents/agentUpdatePolicy';
+import { isNetworkIsolationCommand } from './networkIsolation/bypass';
 import {
   propagateCancelledDeviceCommands,
   type DeviceCommandCancelSubject,
@@ -35,6 +38,8 @@ export type ClaimCancelReason =
   | 'submitter_org_erased'
   /** A per-type revalidation found the authority the row was issued under gone. */
   | 'scope_changed'
+  | 'isolation_episode_mismatch'
+  | 'network-isolation-version-floor'
   /** The row carries its own absolute expiry and it has passed. */
   | 'expired'
   /** A type that REQUIRES revalidation had none registered — fail closed. */
@@ -160,7 +165,8 @@ const DRAIN_EXEMPT_TYPES: ReadonlySet<string> = new Set(DRAIN_CLAIM_TYPE_ALLOWLI
  * `LIFECYCLE_COMMAND_TYPES` in partnerTrust.ts).
  *
  * Membership rule: a type is listed ONLY if it reduces capability and carries
- * no operator-chosen content, target, credential or binary. Nothing that
+ * no device-executed operator content, target, credential or binary. A release
+ * reason is audit text only. Nothing that
  * starts, executes, changes or reveals anything may be added (kill_process,
  * stop_service, task_disable and software_uninstall act on the customer's own
  * workload with an operator-chosen target and are deliberately NOT here).
@@ -182,6 +188,7 @@ export const TEARDOWN_CLAIM_EXEMPT_TYPES: ReadonlySet<string> = new Set([
   'backup_stop',
   'pam_cleanup_v2',
   'cancel_reboot',
+  'release_containment',
 ]);
 
 /** Device states in which ordinary queued work must never be delivered. */
@@ -275,6 +282,18 @@ export function __resetCommandRevalidationsForTests(): void {
   for (const key of Object.keys(commandRevalidations)) delete commandRevalidations[key];
 }
 
+function updatesAgentBinary(row: CommandRevalidationRow): boolean {
+  if (row.type === 'update' || row.type === 'update_agent' || row.type === 'agent_rollback_v1') return true;
+  if (row.type !== 'dev_update') return false;
+  const payload = row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+    ? row.payload as Record<string, unknown> : {};
+  return typeof payload.component !== 'string' || !payload.component || payload.component === 'agent';
+}
+
+function needsIsolationRevalidation(row: CommandRevalidationRow): boolean {
+  return updatesAgentBinary(row) || (row.type === 'execute_containment' && isNetworkIsolationCommand(row.type, row.payload));
+}
+
 /**
  * Runs the registered revalidation for one row, fail-closed for every type in
  * {@link REVALIDATION_REQUIRED_TYPES}. Shared by both delivery legs.
@@ -283,6 +302,35 @@ export async function revalidateCommandForDelivery(
   reader: CommandRevalidationReader,
   row: CommandRevalidationRow,
 ): Promise<ClaimCancelReason | null> {
+  // Built in rather than side-effect registered: HTTP and WebSocket delivery must
+  // always re-derive the episode authority, including for legacy queued commands.
+  if (row.type === 'execute_containment' && isNetworkIsolationCommand(row.type, row.payload)) {
+    const payload = row.payload as Record<string, unknown>;
+    const parameters = payload.parameters;
+    if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return 'isolation_episode_mismatch';
+    const { isolationId, generation } = parameters as Record<string, unknown>;
+    if (typeof isolationId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(isolationId) ||
+      typeof generation !== 'number' || !Number.isSafeInteger(generation) || generation < 1) return 'isolation_episode_mismatch';
+    const [episode] = await reader.select({ id: deviceNetworkIsolations.id, deviceId: deviceNetworkIsolations.deviceId,
+      generation: deviceNetworkIsolations.generation, state: deviceNetworkIsolations.state, desiredState: deviceNetworkIsolations.desiredState,
+    }).from(deviceNetworkIsolations).where(and(eq(deviceNetworkIsolations.id, isolationId), eq(deviceNetworkIsolations.deviceId, row.deviceId))).limit(1);
+    if (!episode || episode.id !== isolationId || episode.deviceId !== row.deviceId || episode.generation !== generation ||
+      isResolvedTerminalIsolationState(episode.state) || episode.desiredState !== 'isolated') return 'isolation_episode_mismatch';
+  }
+  if (updatesAgentBinary(row)) {
+    const payload = row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+      ? row.payload as Record<string, unknown> : {};
+    const target = row.type === 'agent_rollback_v1' ? payload.targetVersion : payload.version;
+    const version = typeof target === 'string' ? target : '';
+    // A safe target needs no episode lookup. Missing/implicit targets cannot prove
+    // the floor, so they are withheld only while isolation is unresolved.
+    if (!isolationAgentUpgradeGate(version, true).allow) {
+      const [episode] = await reader.select({ state: deviceNetworkIsolations.state })
+        .from(deviceNetworkIsolations).where(and(eq(deviceNetworkIsolations.deviceId, row.deviceId),
+          notInArray(deviceNetworkIsolations.state, [...RESOLVED_TERMINAL_STATES]))).limit(1);
+      if (episode && !isResolvedTerminalIsolationState(episode.state)) return 'network-isolation-version-floor';
+    }
+  }
   const revalidate = commandRevalidations[row.type];
   if (!revalidate) {
     return REVALIDATION_REQUIRED_TYPES.has(row.type) ? 'authority_unavailable' : null;
@@ -543,7 +591,7 @@ export async function partitionClaimable(
     // another type's reads) rolls back to that savepoint instead of aborting
     // the claim transaction, so only this row is held and the rest of the
     // batch — and the cancel writes below — still run. Types with no
-    // registered revalidation touch no SQL and skip the savepoint.
+    // registered or built-in isolation revalidation touch no SQL and skip the savepoint.
     const revalidationFacts: CommandRevalidationRow = {
       id: row.id,
       type: row.type,
@@ -553,7 +601,7 @@ export async function partitionClaimable(
     };
     let revalidation: ClaimCancelReason | null;
     try {
-      revalidation = commandRevalidations[row.type]
+      revalidation = commandRevalidations[row.type] || needsIsolationRevalidation(revalidationFacts)
         ? await tx.transaction((sp) => revalidateCommandForDelivery(sp, revalidationFacts))
         : await revalidateCommandForDelivery(tx, revalidationFacts);
     } catch (e) {

@@ -68,7 +68,7 @@ vi.mock('./aiModels/sessionModel', () => ({
   })),
 }));
 
-import { getSession, getSessionMessages, handleApproval, isIntentBackedExecution } from './aiAgent';
+import { getSession, getSessionMessages, handleApproval, isIntentBackedExecution, getDecidedExecutionOutcome } from './aiAgent';
 
 type Cond = { op: string; col?: unknown; val?: unknown; conds?: Cond[] };
 
@@ -349,5 +349,43 @@ describe('isIntentBackedExecution', () => {
     stubSelectOnce([]);
 
     await expect(isIntentBackedExecution('exec-missing')).resolves.toBe(false);
+  });
+});
+
+describe('getDecidedExecutionOutcome (#9431)', () => {
+  it.each([
+    ['approved', 'approved'],
+    ['executing', 'approved'],
+    ['completed', 'approved'],
+    ['failed', 'approved'],
+    ['rejected', 'not_approved'],
+  ])('maps a %s execution of this session to %s', async (status, outcome) => {
+    stubSelectOnce([{ status, sessionId: 'session-1', intentId: null }]);
+
+    await expect(getDecidedExecutionOutcome('exec-1', 'session-1')).resolves.toBe(outcome);
+  });
+
+  it('returns null while the execution is still pending', async () => {
+    stubSelectOnce([{ status: 'pending', sessionId: 'session-1', intentId: null }]);
+
+    await expect(getDecidedExecutionOutcome('exec-1', 'session-1')).resolves.toBeNull();
+  });
+
+  it('returns null for an execution of another session (no cross-session disclosure)', async () => {
+    stubSelectOnce([{ status: 'approved', sessionId: 'session-other', intentId: null }]);
+
+    await expect(getDecidedExecutionOutcome('exec-1', 'session-1')).resolves.toBeNull();
+  });
+
+  it('returns null for an intent-backed execution (decided in Approvals, not here)', async () => {
+    stubSelectOnce([{ status: 'approved', sessionId: 'session-1', intentId: 'intent-1' }]);
+
+    await expect(getDecidedExecutionOutcome('exec-1', 'session-1')).resolves.toBeNull();
+  });
+
+  it('returns null when the execution does not exist', async () => {
+    stubSelectOnce([]);
+
+    await expect(getDecidedExecutionOutcome('exec-missing', 'session-1')).resolves.toBeNull();
   });
 });

@@ -76,6 +76,17 @@ function failure(code: string, message: string): ProviderRequestError {
   return new ProviderRequestError(message, { code, reauth: false });
 }
 
+/** `/status` carries only the reseller token; every other admin call adds the authentication token. */
+function describeAdminFailure(status: number, statusProbe: boolean): string {
+  if (status === 401 || status === 403) {
+    return `Dropsuite rejected the ${statusProbe ? 'reseller' : 'authentication'} token (HTTP ${status})`;
+  }
+  if (status === 404) return `Dropsuite API URL not found; check the API URL from API Settings (HTTP ${status})`;
+  if (status === 429) return `Dropsuite is rate limiting requests; try again later (HTTP ${status})`;
+  if (status >= 500) return `Dropsuite is unavailable; try again later (HTTP ${status})`;
+  return `Dropsuite returned HTTP ${status}`;
+}
+
 function retryDelay(header: string | null | undefined, attempt: number): number {
   const seconds = header?.trim() ? Number(header) : Number.NaN;
   const millis = Number.isFinite(seconds) ? seconds * 1000 : header ? Date.parse(header) - Date.now() : Number.NaN;
@@ -134,8 +145,12 @@ export class DropsuiteClient {
       if (!response.ok) {
         const status = response.status;
         const code = `http_${status}`;
-        const message = `Dropsuite returned HTTP ${status}`;
         const unauthorized = status === 401 || status === 403;
+        // Admin-scope failures surface verbatim in the connection form and on
+        // the connection card, so say which credential or setting to fix.
+        const message = scope === 'customer'
+          ? `Dropsuite returned HTTP ${status}`
+          : describeAdminFailure(status, relativePath === 'status');
         if (scope === 'customer' && (unauthorized || status === 400 || status === 404)) {
           throw new CustomerRequestError(message, code);
         }

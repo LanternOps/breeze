@@ -11,6 +11,7 @@ import {
   type AiSurface,
   type OfferingOptions,
   type OptionSupport,
+  PLATFORM_ONLY_AI_SURFACES,
 } from '@breeze/shared';
 import { isHosted } from '../../config/env';
 import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -35,7 +36,8 @@ import type { PromptProfile } from './promptProfiles';
 import { defaultTransport, transportCarries, type DispatchTransport, type TransportCarriage } from './transport';
 import { buildWireParams, type WireParams } from './wireParams';
 
-export const PLATFORM_ONLY_SURFACES = ['patch_test'] as const satisfies readonly AiSurface[];
+/** Re-export of the shared list (one definition, #9496). */
+export const PLATFORM_ONLY_SURFACES = PLATFORM_ONLY_AI_SURFACES;
 export type RequestOrigin = 'user' | 'session' | 'policy';
 
 export interface ResolveModelInput {

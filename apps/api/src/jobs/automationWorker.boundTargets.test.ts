@@ -189,7 +189,7 @@ describe('managed automation event-target binding (#3824)', () => {
       eventPayload: { alertId: 'alert-1', severity: 'high' },
     });
 
-    expect(result).toEqual({ skipped: 'managed_automation_event_has_no_device' });
+    expect(result).toEqual({ skipped: 'alert_has_no_device' });
     expect(createAutomationRunRecordMock).not.toHaveBeenCalled();
   });
 

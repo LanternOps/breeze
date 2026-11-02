@@ -58,21 +58,16 @@ export type AlertRuleOverrides = {
 
 export { getPagination } from '../../utils/pagination';
 
-/** Device-bound alerts follow current device site; deviceless alerts are org-wide.
- * A topology policy alert (M3-D6) is owned by its TOPOLOGY site — its origin
- * device is provenance only, so a moved origin never carries it into another
- * site. Callers applying this predicate must left-join devices. */
+/** Restricted callers see device alerts at the current device site and topology
+ * alerts at their owning site. Org-level alerts require unrestricted access.
+ * Callers applying this predicate must left-join devices. */
 export function alertSiteScopeCondition(allowedSiteIds: string[] | undefined) {
   if (allowedSiteIds === undefined) return undefined;
-  const legacy = allowedSiteIds.length === 0
-    ? isNull(alerts.deviceId)
-    : or(isNull(alerts.deviceId), inArray(devices.siteId, allowedSiteIds));
-  return allowedSiteIds.length === 0
-    ? and(isNull(alerts.topologySiteId), legacy)
-    : or(
-      and(isNotNull(alerts.topologySiteId), inArray(alerts.topologySiteId, allowedSiteIds)),
-      and(isNull(alerts.topologySiteId), legacy),
-    );
+  if (allowedSiteIds.length === 0) return sql`false`;
+  return or(
+    and(isNotNull(alerts.topologySiteId), inArray(alerts.topologySiteId, allowedSiteIds)),
+    and(isNull(alerts.topologySiteId), isNotNull(alerts.deviceId), inArray(devices.siteId, allowedSiteIds)),
+  );
 }
 
 export { alertOwningSiteId } from '../../services/alertOwnership';
@@ -89,7 +84,7 @@ export function alertOwningSiteIdSql(): SQL<string | null> {
 /**
  * Join-free site predicate for paths that pre-resolve the caller's in-scope
  * device ids (mobile, AI tools, report generation). `allowedDeviceIds` null =
- * no device narrowing; `allowedSiteIds` undefined = no site narrowing; both
+ * resolve device sites in SQL when site-restricted; `allowedSiteIds` undefined = no site narrowing; both
  * unrestricted returns undefined.
  *
  *  - device-bound alerts (topology_site_id NULL): device_id IN allowedDeviceIds;
@@ -104,15 +99,18 @@ export function alertSiteScopeByDeviceIds(input: {
 }): SQL | undefined {
   const { allowedSiteIds, allowedDeviceIds, deviceAxis = false } = input;
   if (allowedSiteIds === undefined && allowedDeviceIds === null) return undefined;
-  const deviceBound = allowedDeviceIds === null
-    ? isNull(alerts.topologySiteId)
-    : and(isNull(alerts.topologySiteId), inArray(alerts.deviceId, [...allowedDeviceIds]));
+  // When sites are restricted but device IDs were not pre-resolved, resolve
+  // the site ceiling in SQL rather than admitting every non-topology alert.
+  const deviceIds = allowedDeviceIds === null
+    ? db.select({ id: devices.id }).from(devices).where(inArray(devices.siteId, [...(allowedSiteIds ?? [])]))
+    : [...allowedDeviceIds];
+  const deviceBound = and(isNull(alerts.topologySiteId), inArray(alerts.deviceId, deviceIds));
   const siteOwned = and(
     isNotNull(alerts.topologySiteId),
     allowedSiteIds === undefined ? undefined : inArray(alerts.topologySiteId, [...allowedSiteIds]),
     deviceAxis && allowedDeviceIds !== null ? inArray(alerts.deviceId, [...allowedDeviceIds]) : undefined,
   );
-  return or(deviceBound, siteOwned)!;
+  return or(deviceBound, siteOwned);
 }
 
 /**
@@ -173,8 +171,8 @@ export async function getAlertRuleWithOrgCheck(
  *    device lives in a site outside their allowlist.
  *
  * The site axis mirrors the alert-list narrowing (`alerts.ts` GET /) and the
- * create-ticket gate (`deviceInSiteScope`): deviceless (org-wide) alerts stay
- * visible; out-of-site alerts return null so the caller surfaces a 404 (no
+ * create-ticket gate (`alertInSiteScope`): org-level and out-of-site alerts
+ * return null so the caller surfaces a 404 (no
  * oracle distinguishing "absent" from "forbidden"). Unrestricted callers
  * (partner/system scope, or org users with no site restriction — i.e.
  * `allowedSiteIds` undefined) are unaffected. Centralizing the site check here
@@ -206,8 +204,8 @@ export async function getAlertWithOrgCheck(
   if (auth.allowedSiteIds && alert.topologySiteId) {
     return siteAccessCheck(auth.allowedSiteIds)(alert.topologySiteId) ? alert : null;
   }
-  // Deviceless alerts are org-wide and not site-bound, so they pass.
-  if (auth.allowedSiteIds && alert.deviceId) {
+  if (auth.allowedSiteIds !== undefined) {
+    if (!alert.deviceId) return null;
     const [device] = await db
       .select({ siteId: devices.siteId })
       .from(devices)

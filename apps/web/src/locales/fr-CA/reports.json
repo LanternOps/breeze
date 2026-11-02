@@ -1134,7 +1134,7 @@
       "groups": {
         "business": "Affaires",
         "general": "Général",
-        "businessDescription": "Chiffres internes du MSP — respect des SLA, facturabilité des techniciens et comptes clients — réservés au personnel."
+        "businessDescription": "Chiffres sur l’activité du MSP lui-même, et non sur les appareils des clients — réservés au personnel."
       },
       "delivery": {
         "contactsLoading": "Chargement des contacts de l’organisation…",

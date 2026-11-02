@@ -231,7 +231,13 @@
       "submit": "Aplicar",
       "created_one": "{{count}} entrega criada",
       "created_other": "{{count}} entregas criadas",
-      "skipped": "Ignoradas (já existentes): {{names}}"
+      "skipped": "Ignoradas (já existentes): {{names}}",
+      "items": "Entregas deste conjunto",
+      "noItems": "Este conjunto ainda não tem entregas."
+    },
+    "portal": {
+      "shown": "Visível no portal",
+      "hidden": "Oculto no portal"
     },
     "errors": {
       "collision": "Estas entregas já existem no destino: {{names}}",

@@ -1,7 +1,7 @@
-import type { InheritableSecuritySettings, IpAllowlistStatus } from '@breeze/shared';
+import type { InheritableSecuritySettings, IpAllowlistStatus, SecurityLimitKey } from '@breeze/shared';
+import { SECURITY_LIMIT_BOUNDS, SECURITY_LIMIT_KEYS, isValidSecurityLimit } from '@breeze/shared';
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { SESSION_TIMEOUT_MAX_MINUTES } from '../../lib/sessionTimeout';
 import FieldLabel from './partnerSettings/FieldLabel';
 import SettingBadge from './partnerSettings/SettingBadge';
 import InheritanceLine from './partnerSettings/InheritanceLine';
@@ -12,7 +12,29 @@ type Props = {
   status?: IpAllowlistStatus | null;
   /** True when the status fetch failed (distinct from "no status yet"). */
   statusUnavailable?: boolean;
+  /**
+   * The server's message for a limit it rejected on the last save, while the
+   * field still holds the rejected value. Wins over the local range message.
+   */
+  serverErrors?: Partial<Record<SecurityLimitKey, string>>;
 };
+
+/** Input ids of the scalar limits; also the targets of the status line's "Fix" link. */
+export const SECURITY_LIMIT_FIELD_IDS: Record<SecurityLimitKey, string> = {
+  minLength: 'partner-security-min-length',
+  expirationDays: 'partner-security-expiration',
+  sessionTimeout: 'partner-security-session-timeout',
+  maxSessions: 'partner-security-max-sessions',
+};
+
+/**
+ * The scalar limits holding a value the API would reject, in form order. The
+ * bounds come from @breeze/shared, the same schemas `PATCH /orgs/partners/me`
+ * validates with (#10081).
+ */
+export function invalidSecurityLimits(data: InheritableSecuritySettings): SecurityLimitKey[] {
+  return SECURITY_LIMIT_KEYS.filter(key => !isValidSecurityLimit(key, data[key]));
+}
 
 /** Split textarea input into trimmed, non-empty allowlist entries. */
 export function parseAllowlistInput(text: string): string[] {
@@ -51,10 +73,36 @@ export function displayIp(ip: string): string {
   return ip.replace(/^::ffff:(?=\d{1,3}(?:\.\d{1,3}){3}$)/i, '');
 }
 
-export default function PartnerSecurityTab({ data, onChange, status, statusUnavailable }: Props) {
+export default function PartnerSecurityTab({ data, onChange, status, statusUnavailable, serverErrors }: Props) {
   const { t } = useTranslation('settings');
   const set = (patch: Partial<InheritableSecuritySettings>) =>
     onChange({ ...data, ...patch });
+
+  const invalid = new Set(invalidSecurityLimits(data));
+  const limitError = (key: SecurityLimitKey): string | null => {
+    const server = serverErrors?.[key];
+    if (server) return server;
+    if (!invalid.has(key)) return null;
+    const bounds: { min: number; max?: number } = SECURITY_LIMIT_BOUNDS[key];
+    return bounds.max === undefined
+      ? t('partnerSecurity.errors.atLeast', { min: bounds.min })
+      : t('partnerSecurity.errors.range', { min: bounds.min, max: bounds.max });
+  };
+  /** aria wiring and border for a limit input. */
+  const limitInputProps = (key: SecurityLimitKey) => {
+    const hasError = limitError(key) !== null;
+    return {
+      'aria-invalid': hasError || undefined,
+      'aria-describedby': hasError ? `${SECURITY_LIMIT_FIELD_IDS[key]}-error` : undefined,
+      className: `h-10 w-full rounded-md border bg-background px-3 text-sm${hasError ? ' border-destructive' : ''}`,
+    };
+  };
+  const limitErrorText = (key: SecurityLimitKey) => {
+    const message = limitError(key);
+    if (message === null) return null;
+    const id = `${SECURITY_LIMIT_FIELD_IDS[key]}-error`;
+    return <p id={id} data-testid={id} className="text-xs text-destructive">{message}</p>;
+  };
 
   const list = data.ipAllowlist ?? [];
   const currentIp = status?.currentIp ?? null;
@@ -65,17 +113,18 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
       <div className="grid gap-6 sm:grid-cols-2">
         {/* Password Policy */}
         <div className="space-y-2">
-          <label htmlFor="partner-security-min-length" className="text-sm font-medium">{t('partnerSecurity.minimumLength')}</label>
+          <label htmlFor={SECURITY_LIMIT_FIELD_IDS.minLength} className="text-sm font-medium">{t('partnerSecurity.minimumLength')}</label>
           <input
-            id="partner-security-min-length"
+            id={SECURITY_LIMIT_FIELD_IDS.minLength}
             type="number"
             value={data.minLength ?? ''}
             onChange={e => set({ minLength: e.target.value ? Number(e.target.value) : undefined })}
             placeholder={t('partnerSecurity.notSet')}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-            min={6}
-            max={128}
+            {...limitInputProps('minLength')}
+            min={SECURITY_LIMIT_BOUNDS.minLength.min}
+            max={SECURITY_LIMIT_BOUNDS.minLength.max}
           />
+          {limitErrorText('minLength')}
         </div>
 
         <div className="space-y-2">
@@ -94,46 +143,47 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
         </div>
 
         <div className="space-y-2">
-          <label htmlFor="partner-security-expiration" className="text-sm font-medium">{t('partnerSecurity.expiration')}</label>
+          <label htmlFor={SECURITY_LIMIT_FIELD_IDS.expirationDays} className="text-sm font-medium">{t('partnerSecurity.expiration')}</label>
           <input
-            id="partner-security-expiration"
+            id={SECURITY_LIMIT_FIELD_IDS.expirationDays}
             type="number"
             value={data.expirationDays ?? ''}
             onChange={e => set({ expirationDays: e.target.value ? Number(e.target.value) : undefined })}
             placeholder={t('partnerSecurity.notSet')}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-            min={30}
-            max={365}
+            {...limitInputProps('expirationDays')}
+            min={SECURITY_LIMIT_BOUNDS.expirationDays.min}
           />
+          {limitErrorText('expirationDays')}
         </div>
 
         <div className="space-y-2">
-          <FieldLabel htmlFor="partner-security-session-timeout" fieldId="security.sessionTimeout">{t('partnerSecurity.sessionTimeout')}</FieldLabel>
+          <FieldLabel htmlFor={SECURITY_LIMIT_FIELD_IDS.sessionTimeout} fieldId="security.sessionTimeout">{t('partnerSecurity.sessionTimeout')}</FieldLabel>
           <input
-            id="partner-security-session-timeout"
+            id={SECURITY_LIMIT_FIELD_IDS.sessionTimeout}
             type="number"
             value={data.sessionTimeout ?? ''}
             onChange={e => set({ sessionTimeout: e.target.value ? Number(e.target.value) : undefined })}
             placeholder={t('partnerSecurity.notSet')}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-            min={15}
-            max={SESSION_TIMEOUT_MAX_MINUTES}
+            {...limitInputProps('sessionTimeout')}
+            min={SECURITY_LIMIT_BOUNDS.sessionTimeout.min}
+            max={SECURITY_LIMIT_BOUNDS.sessionTimeout.max}
           />
+          {limitErrorText('sessionTimeout')}
           <InheritanceLine fieldId="security.sessionTimeout" />
         </div>
 
         <div className="space-y-2">
-          <label htmlFor="partner-security-max-sessions" className="text-sm font-medium">{t('partnerSecurity.maxSessions')}</label>
+          <label htmlFor={SECURITY_LIMIT_FIELD_IDS.maxSessions} className="text-sm font-medium">{t('partnerSecurity.maxSessions')}</label>
           <input
-            id="partner-security-max-sessions"
+            id={SECURITY_LIMIT_FIELD_IDS.maxSessions}
             type="number"
             value={data.maxSessions ?? ''}
             onChange={e => set({ maxSessions: e.target.value ? Number(e.target.value) : undefined })}
             placeholder={t('partnerSecurity.notSet')}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-            min={1}
-            max={10}
+            {...limitInputProps('maxSessions')}
+            min={SECURITY_LIMIT_BOUNDS.maxSessions.min}
           />
+          {limitErrorText('maxSessions')}
         </div>
 
         <div className="space-y-1 self-end pb-2">

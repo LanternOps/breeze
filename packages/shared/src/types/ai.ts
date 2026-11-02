@@ -57,7 +57,12 @@ export interface ActionPlan {
 
 export type AiSessionStatus = 'active' | 'closed' | 'expired';
 export type AiMessageRole = 'user' | 'assistant' | 'system' | 'tool_use' | 'tool_result';
-export type AiToolStatus = 'pending' | 'approved' | 'executing' | 'completed' | 'failed' | 'rejected';
+/**
+ * `rejected`: the approval lifecycle ended without an approval (denied, expired,
+ * wait ended). `refused`: the platform refused the call before it ran —
+ * guardrail, RBAC, rate limit, input validation, ceiling (#10411).
+ */
+export type AiToolStatus = 'pending' | 'approved' | 'executing' | 'completed' | 'failed' | 'rejected' | 'refused';
 
 export interface AiSession {
   id: string;
@@ -226,6 +231,15 @@ export interface AiRunResultArtifactRef {
 /** Fixed, server-built phases of a topology investigation turn (M4 #6000); never model text. */
 export type AiTopologyProgressPhase = 'gathering_evidence' | 'analyzing' | 'validating' | 'awaiting_approval';
 
+/**
+ * #9431: how an approval card's wait ended, as far as the session knows.
+ * `not_approved` covers a denial and a timeout alike (the legacy wait cannot
+ * tell them apart); `ended` means the wait stopped without a decision here
+ * (settled by a new message or interrupt, or a durable intent that can still
+ * be decided in Approvals).
+ */
+export type AiApprovalOutcome = 'approved' | 'not_approved' | 'ended';
+
 export type AiStreamEvent =
   | { type: 'message_start'; messageId: string }
   /**
@@ -317,6 +331,13 @@ export type AiStreamEvent =
    * approval card; this informational event replaces it.
    */
   | { type: 'unattended_release'; executionId: string; intentId: string; toolName: string; description: string; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string }; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary }
+  /**
+   * #9431: the wait behind an `approval_required` card ended — decided here,
+   * in another window, in Approvals or on mobile, timed out or settled.
+   * Published to every listener on the session so no surface keeps showing
+   * Approve / Deny for a request that is no longer waiting.
+   */
+  | { type: 'approval_resolved'; executionId: string; outcome: AiApprovalOutcome }
   | { type: 'plan_approval_required'; planId: string; steps: ActionPlanStep[] }
   | { type: 'plan_step_start'; planId: string; stepIndex: number; toolName: string }
   | { type: 'plan_step_complete'; planId: string; stepIndex: number; toolName: string; isError: boolean }
@@ -326,7 +347,8 @@ export type AiStreamEvent =
   | { type: 'title_updated'; title: string }
   | { type: 'message_end'; inputTokens: number; outputTokens: number }
   | { type: 'warning'; message: string; context?: string }
-  | { type: 'error'; message: string }
+  /** `code` names a failure the client can act on; `turn_limit_reached` = the session's turn budget is spent (start a new session). */
+  | { type: 'error'; message: string; code?: 'turn_limit_reached' }
   // ── Generic client-declared session tools (e.g. Helper chat) — published by
   //    services/clientSessionTools.ts when the model calls a client-declared tool.
   | { type: 'client_tool_request'; toolUseId: string; toolName: string; input: Record<string, unknown> }

@@ -12,7 +12,7 @@ const { selectMock, insertMock, updateMock, systemContextCalls } = vi.hoisted(()
 
 vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWithExecutor: vi.fn().mockResolvedValue(undefined) }));
 const responsibilityMocks = vi.hoisted(() => ({
-  reconcileLegacyContactResponsibilities: vi.fn().mockResolvedValue(undefined),
+  syncLegacyContactRoles: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('./responsibilities', () => responsibilityMocks);
 vi.mock('../callerVerification/subjects', () => ({ upsertDirectorySyncBinding: vi.fn(), attestBinding: vi.fn(), bindingsForContact: vi.fn() }));
@@ -540,7 +540,7 @@ describe('commitContactImport', () => {
     ], CTX, ACTOR);
 
     expect(summary.imported).toHaveLength(1);
-    expect(responsibilityMocks.reconcileLegacyContactResponsibilities).toHaveBeenCalledWith(
+    expect(responsibilityMocks.syncLegacyContactRoles).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         contactId: 'new-contact-1',

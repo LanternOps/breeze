@@ -354,7 +354,7 @@
     "currentSite": "Aktueller Standort",
     "newSite": "Neuer Standort",
     "loadingSites": "Standorte werden geladen...",
-    "thisOrganizationOnlyHasOneSite": "Diese Organisation hat nur einen Standort. Unter Einstellungen → Organisationen weitere Standorte hinzufügen, um Verschiebungen zu ermöglichen.",
+    "thisOrganizationOnlyHasOneSite": "Diese Organisation hat nur einen Standort. Auf der Registerkarte „Standorte“ der Organisation (Organisationen → Organisation öffnen → Standorte) weitere Standorte hinzufügen, um Verschiebungen zu ermöglichen.",
     "current": "(aktuell)",
     "cancel": "Abbrechen",
     "moving": "Wird verschoben...",
@@ -376,23 +376,6 @@
     "moveDevices_other": "{{count}} Geräte verschieben",
     "bulkPolicyNote": "Durch das Verschieben ändern sich die Konfigurationsrichtlinien, Wartungsfenster, Alarmweiterleitung und Berichte des Standorts, die für diese Geräte gelten. Breeze verschiebt sie nicht automatisch zurück.",
     "failedToMoveDevices": "Geräte konnten nicht verschoben werden"
-  },
-  "createGroupModal": {
-    "failedToCreateGroup": "Gruppe konnte nicht erstellt werden",
-    "newDeviceGroup": "Neue Gerätegruppe",
-    "name": "Name",
-    "eGProductionServers": "z. B. Produktionsserver",
-    "type": "Typ",
-    "static": "Statisch",
-    "dynamic": "Dynamisch",
-    "manuallyAddAndRemoveDevicesAfter": "Geräte nach der Erstellung manuell hinzufügen und entfernen.",
-    "devicesAreAutoAssignedBasedOn": "Geräte werden anhand von Filterregeln automatisch zugewiesen.",
-    "filterRules": "Filterregeln",
-    "cancel": "Abbrechen",
-    "creating": "Wird erstellt...",
-    "createGroup": "Gruppe erstellen",
-    "created": "Gerätegruppe erstellt",
-    "missingGroupId": "Die Gruppe wurde erstellt, aber die Serverantwort enthielt keine Gruppen-ID. Bitte laden Sie die Seite neu."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} Entfernte ausgeblendet",
@@ -1763,6 +1746,11 @@
     "on": "auf",
     "multiBootMachinesTuckExpectedOffline": "Multi-Boot-Maschinen: Legen Sie erwartete Offline-Boot-Profile als dünne Streifen unter ihre Online-Geschwister. Aus = flache Liste.",
     "collapseLinkedInactiveProfiles": "Verknüpfte inaktive Profile ausblenden",
+    "exportCsv": "CSV exportieren",
+    "exportCsvSelected": "CSV exportieren ({{count}} ausgewählt)",
+    "exportingCsv": "Exportiere…",
+    "exportCsvFailed": "Die Geräteliste konnte nicht exportiert werden. Bitte erneut versuchen.",
+    "exportCsvAttentionPartial": "Exportiert, aber offene Alarme und Tickets konnten für einige Geräte nicht geladen werden – diese Zellen enthalten „unavailable“.",
     "columns": "Spalten",
     "visibleInOrder": "Sichtbar (in der Reihenfolge)",
     "moveUp": "Nach oben verschieben",
@@ -1895,7 +1883,10 @@
     "moveToSite": "An Standort verschieben",
     "moveSelectedToSite": "An Standort verschieben",
     "moveSiteMixedOrgs": "Die ausgewählten Geräte gehören zu mehr als einer Organisation",
-    "moveSiteOverCap": "Wählen Sie höchstens {{count}} Geräte zum gleichzeitigen Verschieben aus"
+    "moveSiteOverCap": "Wählen Sie höchstens {{count}} Geräte zum gleichzeitigen Verschieben aus",
+    "addToGroup": "Zu Gruppe hinzufügen…",
+    "removeFromGroup": "Aus Gruppe entfernen…",
+    "groupMembershipOverCap": "Wählen Sie höchstens {{count}} Geräte aus, um die Gruppenmitgliedschaft gleichzeitig zu ändern"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Geräteprotokolle konnten nicht abgerufen werden",
@@ -2408,7 +2399,9 @@
       "completed": "Abgeschlossen",
       "failed": "Fehlgeschlagen",
       "queued": "In der Warteschlange",
-      "running": "Wird ausgeführt"
+      "running": "Wird ausgeführt",
+      "cancelled": "Abgebrochen",
+      "expired": "Abgelaufen"
     },
     "scanType": "{{type}} scannen",
     "scanTypes": {
@@ -2430,7 +2423,13 @@
       "quarantined": "Unter Quarantäne gestellt",
       "removed": "Entfernt"
     },
-    "threatsFound": "Gefundene Bedrohungen: {{count}}"
+    "threatsFound": "Gefundene Bedrohungen: {{count}}",
+    "waitingForSlot": "Wartet auf einen freien Scan-Platz. Läuft ab: {{date}}.",
+    "cancelScan": "Scan abbrechen",
+    "scanCancelled": "Scan abgebrochen",
+    "cancelScanFailed": "Der Scan konnte nicht abgebrochen werden",
+    "scanAlreadyRunning": "Der Scan läuft bereits auf dem Gerät und kann nicht abgebrochen werden.",
+    "scanAlreadyQueued": "Für dieses Gerät ist bereits ein Scan in der Warteschlange."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Tag hinzufügen...",
@@ -2892,7 +2891,10 @@
         "version": "Softwareversion",
         "vendor": "Softwareanbieter"
       },
-      "logShippingFailing": "Log-Übertragung fehlerhaft"
+      "logShippingFailing": "Log-Übertragung fehlerhaft",
+      "networkIsolation": {
+        "active": "Isoliert"
+      }
     }
   },
   "filterChipBar": {
@@ -2964,7 +2966,10 @@
         "version": "Softwareversion",
         "vendor": "Softwareanbieter"
       },
-      "logShippingFailing": "Log-Übertragung fehlerhaft"
+      "logShippingFailing": "Log-Übertragung fehlerhaft",
+      "networkIsolation": {
+        "active": "Isoliert"
+      }
     }
   },
   "filterHelpPopover": {
@@ -2980,8 +2985,10 @@
     "title": "Verknüpfungen filtern"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Wählen Sie einen Wert, um passende Geräte zu sehen",
     "counting": "…zählen",
-    "matches": "~{{count}} Geräte stimmen überein",
+    "matches_one": "~{{count}} Gerät stimmt überein",
+    "matches_other": "~{{count}} Geräte stimmen überein",
     "unavailable": "Vorschau nicht verfügbar"
   },
   "filterSentenceBuilder": {
@@ -3053,7 +3060,10 @@
         "version": "Softwareversion",
         "vendor": "Softwareanbieter"
       },
-      "logShippingFailing": "Log-Übertragung fehlerhaft"
+      "logShippingFailing": "Log-Übertragung fehlerhaft",
+      "networkIsolation": {
+        "active": "Isoliert"
+      }
     }
   },
   "filterValueEditor": {
@@ -4336,6 +4346,7 @@
       "pending": "Noch nicht geprüft",
       "private": "Private Registry – Anmeldedaten erforderlich",
       "unsupported_registry": "Registry wird nicht unterstützt",
+      "provenance_unknown": "Herkunft unbekannt — der Image-Name wird an keine Registry gesendet",
       "error": "Registry-Prüfung fehlgeschlagen – wird wiederholt",
       "behind": "Für diesen Tag ist ein neueres Image veröffentlicht",
       "current": "Entspricht der Registry",
@@ -4699,6 +4710,48 @@
       "mfaRequired": "Zum Ändern des physischen Standorts ist eine Multi-Faktor-Authentifizierung erforderlich."
     }
   },
+  "assetCircuitCard": {
+    "title": "WAN und Leitung",
+    "loadFailed": "WAN- und Leitungsinformationen konnten nicht geladen werden.",
+    "empty": "Für dieses Asset ist keine Leitung erfasst oder für Sie sichtbar.",
+    "provider": "Anbieter",
+    "cid": "Leitungs-ID",
+    "bandwidth": "Bandbreite",
+    "serviceType": "Diensttyp",
+    "administrativeStatus": "Administrativer Status",
+    "sitesServed": "Von dieser Leitung versorgte Standorte",
+    "terminationSite": "Abschlussstandort: {{site}} (von {{asset}} / {{iface}})",
+    "terminationSiteBare": "Abschlussstandort: {{site}}",
+    "terminationUnassigned": "Abschluss nicht zugewiesen",
+    "terminationNeedsReassociation": "Abschluss muss neu zugeordnet werden",
+    "interfaces": "Schnittstellen",
+    "noInterfaces": "Keine Schnittstellen erfasst.",
+    "wanBadge": "WAN",
+    "retiredBadge": "Außer Betrieb",
+    "markWan": "Als WAN markieren",
+    "unmarkWan": "WAN entfernen",
+    "truncated": "Es werden nur einige Schnittstellen angezeigt.",
+    "unmarkConfirm": {
+      "title": "WAN-Rolle entfernen?",
+      "message": "{{name}} wird nicht mehr als WAN-Schnittstelle behandelt."
+    },
+    "status": {
+      "active": "Aktiv",
+      "planned": "Geplant",
+      "suspended": "Ausgesetzt",
+      "disconnected": "Getrennt"
+    },
+    "toasts": {
+      "marked": "Schnittstelle als WAN markiert",
+      "unmarked": "WAN-Rolle entfernt",
+      "failed": "WAN-Rolle konnte nicht aktualisiert werden",
+      "mfaRequired": "Zum Ändern der WAN-Rolle ist eine Multi-Faktor-Authentifizierung erforderlich.",
+      "hasTermination": "Diese Schnittstelle hat einen aktiven Leitungsabschluss. Verschieben oder entfernen Sie zuerst den Abschluss.",
+      "retired": "Diese Schnittstelle ist außer Betrieb und kann nicht mehr geändert werden.",
+      "notFound": "Schnittstelle nicht gefunden. Die Liste wurde neu geladen.",
+      "permissionDenied": "Sie haben keine Berechtigung, die Topologie zu ändern."
+    }
+  },
   "partnerGroups": {
     "ownerScope": "Gruppeneigentümer",
     "organization": "Diese Organisation",
@@ -4721,5 +4774,100 @@
     "membersError": "Gruppenmitglieder konnten nicht geladen werden.",
     "retry": "Erneut versuchen",
     "emptyMembers": "Keine Geräte in dieser Gruppe."
+  },
+  "bulkGroupMembership": {
+    "titleAdd": "Zu Gruppe hinzufügen",
+    "titleRemove": "Aus Gruppe entfernen",
+    "selectionSummary": "Ausgewählte Geräte: {{n}} · Organisation: {{org}}",
+    "groupLabel": "Statische Gruppe",
+    "selectGroup": "Gruppe auswählen",
+    "loadingGroups": "Gruppen werden geladen…",
+    "noGroups": "Keine statische Gruppe dieser Organisation kann diese Auswahl aufnehmen.",
+    "scopeHint": "Es werden nur statische Gruppen dieser Organisation angezeigt. Eine Standortgruppe erscheint nur, wenn sich alle ausgewählten Geräte an diesem Standort befinden. Dynamische Gruppen werden nicht angezeigt: Ihre Regeln bestimmen die Mitglieder.",
+    "cancel": "Abbrechen",
+    "saving": "Wird gespeichert…",
+    "submitAdd": "Geräte hinzufügen",
+    "submitRemove": "Geräte entfernen",
+    "failedToLoadGroups": "Gruppen konnten nicht geladen werden",
+    "failedToUpdate": "Gruppenmitgliedschaft konnte nicht aktualisiert werden",
+    "addResult": "{{group}}: {{added}} hinzugefügt, {{skipped}} bereits in der Gruppe",
+    "removeResult": "{{group}}: {{removed}} entfernt, {{notMember}} waren nicht in der Gruppe",
+    "removeResultForbidden": "{{group}}: {{removed}} entfernt, {{notMember}} waren nicht in der Gruppe. Nicht entfernt (kein Zugriff auf den Standort des Geräts): {{devices}}",
+    "andMore": "{{names}} und {{n}} weitere"
+  },
+  "networkIsolation": {
+    "heading": "Netzwerkisolierung",
+    "isolate": "Vom Netzwerk isolieren…",
+    "release": "Isolierung aufheben…",
+    "release_queued": "Aufheben (wartet auf erneute Geräteverbindung)",
+    "startTitle": "Vom Netzwerk isolieren",
+    "releaseTitle": "Netzwerkisolierung aufheben",
+    "startDescription": "Netzwerkverkehr außer der Breeze-Verwaltung blockieren.",
+    "releaseDescription": "Entfernung der Breeze-Isolierungsregeln anfordern. Ein Offline-Gerät erhält die Freigabe beim erneuten Verbinden.",
+    "serverWarning": "Dies ist ein Serverbetriebssystem. Die Isolierung kann Dienste für andere Geräte unterbrechen.",
+    "reason": "Begründung",
+    "ttlHours": "Dauer (Stunden)",
+    "incidentId": "Bestehende Vorfall-ID (optional)",
+    "incidentTitle": "Titel des neuen Vorfalls",
+    "remoteRelay": "Remotedesktop über das Relay erreichbar halten",
+    "startSuccess": "Netzwerkisolierung angefordert",
+    "releaseSuccess": "Aufhebung der Isolierung angefordert",
+    "mutationError": "Netzwerkisolierung konnte nicht aktualisiert werden. Versuchen Sie es erneut.",
+    "loadError": "Netzwerkisolierung konnte nicht geladen werden. Versuchen Sie es erneut.",
+    "unavailable": "Die Eignung für Netzwerkisolierung ist nicht verfügbar.",
+    "extend": "Isolierung verlängern",
+    "extendTitle": "Netzwerkisolierung verlängern",
+    "extendSuccess": "Isolierungsablauf verlängert",
+    "isolatedExpires": "Isoliert · läuft in {{hours}} Std. ab",
+    "acknowledge": "Lokale Aufhebung bestätigen",
+    "acknowledgeSuccess": "Lokale Aufhebung bestätigt",
+    "acknowledgeError": "Lokale Aufhebung konnte nicht bestätigt werden",
+    "showCode": "Notfallcodes anzeigen",
+    "hideCode": "Notfallcodes ausblenden",
+    "codeCurrent": "Aktueller Code",
+    "codeNext": "Code für die nächste Stunde",
+    "codeValidUntil": "Aktueller Code gültig bis {{date}}",
+    "codeError": "Notfallcodes konnten nicht geladen werden. Versuchen Sie es erneut.",
+    "incidentHeading": "Netzwerkisolierung",
+    "retry": "Isolierungsstatus erneut laden",
+    "filterLabel": "Isoliert",
+    "states": {
+      "requested": "Isolierung angefordert",
+      "dispatched": "Isolierung gesendet",
+      "applying": "Isolierung wird angewendet",
+      "applied": "Isolierung wird geprüft",
+      "verified": "Isolierung geprüft",
+      "release_requested": "Aufhebung angefordert",
+      "released": "Isolierung aufgehoben",
+      "expired": "Isolierung abgelaufen",
+      "failed": "Isolierung fehlgeschlagen",
+      "released_locally": "Lokal aufgehoben · Bestätigung erforderlich",
+      "self_released": "Selbst aufgehoben · Bestätigung erforderlich",
+      "uninstalled": "Agent deinstalliert"
+    },
+    "refusal": {
+      "feature_disabled": "Neue Netzwerkisolierungen sind deaktiviert.",
+      "partner_not_enabled": "Netzwerkisolierung ist für diesen Partner nicht aktiviert.",
+      "agent_below_gate": "Aktualisieren Sie auf eine Agent-Version mit Netzwerkisolierung.",
+      "agent_not_ready": "Der Agent ist noch nicht bereit, Netzwerkisolierung durchzusetzen.",
+      "device_lifecycle": "Der Lebenszyklusstatus dieses Geräts verhindert eine neue Isolierung.",
+      "unsupported_platform": "Diese Plattform unterstützt keine Netzwerkisolierung.",
+      "trust_restricted": "Der Vertrauensstatus des Partners verhindert neue Isolierungen.",
+      "isolation_already_active": "Dieses Gerät hat bereits eine aktive Isolierung.",
+      "isolation_unacknowledged": "Bestätigen Sie die vorherige lokale Aufhebung, bevor Sie erneut isolieren.",
+      "incident_mismatch": "Wählen Sie einen offenen Vorfall aus der Organisation dieses Geräts.",
+      "site_forbidden": "Sie haben keinen Zugriff auf den Standort dieses Geräts.",
+      "device_not_found": "Dieses Gerät wurde nicht gefunden.",
+      "isolation_not_found": "Diese Isolierung wurde nicht gefunden.",
+      "relay_unavailable": "Kein Remotedesktop-Relay verfügbar. Deaktivieren Sie die Relay-Option oder konfigurieren Sie TURN.",
+      "invalid_allowlist": "Die Isolierungsfreigabeliste des Servers ist ungültig. Wenden Sie sich an Ihre Administration.",
+      "isolation_conflict": "Die Isolierung hat sich geändert. Aktualisieren Sie den Status und versuchen Sie es erneut.",
+      "isolation_secret_unavailable": "Wiederherstellungscodes sind vorübergehend nicht verfügbar. Wenden Sie sich an Ihre Administration.",
+      "approval_mismatch": "Die Genehmigung passt nicht zu dieser Isolierungsanfrage.",
+      "device_offline": "Das Gerät ist offline. Aktualisieren Sie den Status, bevor Sie die Isolierung starten.",
+      "device_decommissioned": "Ein außer Betrieb genommenes Gerät kann keine neue Isolierung starten.",
+      "device_pending_assignment": "Weisen Sie dieses Gerät vor der Isolierung einer Organisation zu.",
+      "backup_helper_update_required": "Aktualisieren Sie den Backup-Helfer, bevor Sie die Isolierung starten."
+    }
   }
 }

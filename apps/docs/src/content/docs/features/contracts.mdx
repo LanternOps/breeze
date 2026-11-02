@@ -121,7 +121,9 @@ A customer can have **one live block at a time**, across all of their contracts,
 
 **Rollover.** Unused hours (the period's included hours plus anything carried in, minus the hours used) carry forward under **Carry forward**, up to the cap if you set one. Carried hours do not expire separately, and the first period of a block carries nothing in.
 
-**Held entries on ad-hoc invoices.** While a period is open, the time it will draw is reserved for the block. A hand-built invoice or a ticket invoice leaves those entries out and reports how many hours were held, so the customer is not charged ad hoc for hours the block already covers.
+**Held entries on ad-hoc invoices.** While a period is open, the time it will draw is reserved for the block. A hand-built invoice or a ticket invoice leaves those entries out and reports how many hours were held, so the customer is not charged ad hoc for hours the block already covers. A draft that picked up those entries before the hold applied (for example, it was built while the contract was paused, or before the block line was added) cannot be issued while they are held: **Issue** is refused (`SOURCE_HELD_FOR_HOUR_BLOCK`) until you remove those lines, and the period close draws them from the block instead.
+
+**Used hours and drafts.** The contract page's used hours leave out time that sits on a draft invoice and that no open period holds, because that draft can still bill it by the hour. Held time on a draft still counts, because the draft cannot be issued with it.
 
 **Entries made after a period closed.** A closed period never reopens. Time that was entered for work done in a period that has already closed is not drawn from the block; it bills ad hoc as usual, and the contract page shows how many hours were entered after close.
 

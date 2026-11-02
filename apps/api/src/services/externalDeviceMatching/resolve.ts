@@ -56,10 +56,18 @@ function normalizeMac(value: string | null | undefined): string | null {
  * Rows are processed in ascending id order so a contested device always goes to
  * the same winner across syncs -- a non-deterministic winner would make the
  * link flap and re-raise alerts every poll.
+ *
+ * `strictUnique` (vendors with no MAC/serial, where "the one left over" is a
+ * guess): link a row ONLY when (a) exactly one candidate device -- claimed or
+ * not -- in the row's org has the name AND it is free, and (b) exactly one row
+ * in `rows` for that org has that match name (the caller passes every row of the
+ * connection, linked or not). Anything else is ambiguous. No MAC step. Default
+ * false = the rules above, unchanged.
  */
 export function resolveDeviceMatches(
   rows: MatchRow[],
   candidates: MatchCandidate[],
+  opts: { strictUnique?: boolean } = {},
 ): { links: MatchLink[]; ambiguous: string[] } {
   const byOrgAndName = new Map<string, MatchCandidate[]>();
   for (const candidate of candidates) {
@@ -76,10 +84,30 @@ export function resolveDeviceMatches(
   const links: MatchLink[] = [];
   const ambiguous: string[] = [];
 
+  const rowCounts = new Map<string, number>();
+  if (opts.strictUnique) {
+    for (const row of rows) {
+      if (!row.matchName) continue;
+      const key = `${row.orgId}::${row.matchName}`;
+      rowCounts.set(key, (rowCounts.get(key) ?? 0) + 1);
+    }
+  }
+
   for (const row of [...rows].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
     if (!row.matchName) continue;
     const all = byOrgAndName.get(`${row.orgId}::${row.matchName}`) ?? [];
     if (all.length === 0) continue;
+
+    if (opts.strictUnique) {
+      const only = all.length === 1 ? all[0]! : null;
+      if (only && !taken.has(only.deviceId) && rowCounts.get(`${row.orgId}::${row.matchName}`) === 1) {
+        taken.add(only.deviceId);
+        links.push({ rowId: row.id, deviceId: only.deviceId, source: 'auto_hostname' });
+      } else {
+        ambiguous.push(row.id);
+      }
+      continue;
+    }
 
     const free = all.filter((c) => !taken.has(c.deviceId));
     if (free.length === 0) {

@@ -30,7 +30,7 @@ vi.mock('../../stores/auth', () => ({
       updateUser: vi.fn(),
       sessionGeneration: 0,
       commitMfaEnrollmentIfCurrent: vi.fn(() => true),
-      commitReissuedSessionIfCurrent: vi.fn(() => true),
+      commitReissuedSessionIfCurrent: vi.fn(() => true), commitMfaStateIfCurrent: vi.fn(() => true),
     }) }
   )
 }));
@@ -235,7 +235,7 @@ describe('ProfilePage — MFA enrollment rejects a wrong TOTP (#4413)', () => {
     expect(await screen.findByText('NEW-0001')).toBeTruthy();
 
     // Disable: a wrong code is a rejected proof, not a dead session.
-    fireEvent.click(screen.getByRole('button', { name: /^Back$/i }));
+    fireEvent.click(screen.getByTestId('mfa-recovery-done'));
     fireEvent.click(await screen.findByRole('button', { name: /^Disable$/i }));
     const digits = document.querySelectorAll<HTMLInputElement>('input[inputmode="numeric"]');
     digits.forEach((input, index) => {

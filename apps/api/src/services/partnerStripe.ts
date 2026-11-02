@@ -527,7 +527,8 @@ export async function isPartnerOnlinePaymentAvailable(partnerId: string): Promis
  * The same answer as isPartnerOnlinePaymentAvailable, read on the CALLER's
  * connection (its open transaction, if any) instead of a second one. For a caller
  * holding a transaction open — the invoice PDF render inside the accepted-quote
- * auto-email (#9454) — a nested second-connection read queues behind any pending
+ * auto-email (#9454), the invoice email's "View & pay" label and the public
+ * invoice view (#9585) — a nested second-connection read queues behind any pending
  * ACCESS EXCLUSIVE lock request on the table while the outer transaction waits on
  * it: a lock-queue stall.
  *

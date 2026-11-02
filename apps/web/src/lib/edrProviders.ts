@@ -418,6 +418,7 @@ export function sendEdrPushTest(id: string, opts: EdrActionOptions) {
  */
 export const EDR_PROVIDER_LABELS: Readonly<Record<string, string>> = {
   bitdefender: 'Bitdefender GravityZone',
+  emsisoft: 'Emsisoft',
 };
 
 /** The known label for a provider key, or null so callers render a translated generic fallback. */

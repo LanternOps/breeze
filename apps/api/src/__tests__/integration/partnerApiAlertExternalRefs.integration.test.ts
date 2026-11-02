@@ -158,11 +158,14 @@ describe('partner API alert external refs', () => {
     const [partnerConnection] = await admin.insert(psaConnections).values({ partnerId: f.partner.id, name: 'Partner PSA', provider: 'jira', credentials: {} }).returning();
     const [orgConnection] = await admin.insert(psaConnections).values({ orgId: f.orgA.id, name: 'Org PSA', provider: 'jira', credentials: {} }).returning();
     const [foreignConnection] = await admin.insert(psaConnections).values({ partnerId: f.otherPartner.id, name: 'Foreign PSA', provider: 'jira', credentials: {} }).returning();
+    // A second partner connection carries the ticket-less mapping: one mapping
+    // per (connection, alert) is a unique index since #10499 W2-A.
+    const [partnerConnectionNoTicket] = await admin.insert(psaConnections).values({ partnerId: f.partner.id, name: 'Partner PSA 2', provider: 'jira', credentials: {} }).returning();
     await admin.insert(psaTicketMappings).values([
       { connectionId: partnerConnection!.id, alertId: f.alert.id, externalTicketId: 'PARTNER-1', externalTicketUrl: 'https://psa.example/1', status: 'open' },
       { connectionId: orgConnection!.id, alertId: f.alert.id, externalTicketId: 'ORG-1', status: 'closed' },
       { connectionId: foreignConnection!.id, alertId: f.alert.id, externalTicketId: 'FOREIGN-SECRET' },
-      { connectionId: partnerConnection!.id, alertId: f.alert.id, externalTicketId: null },
+      { connectionId: partnerConnectionNoTicket!.id, alertId: f.alert.id, externalTicketId: null },
     ]);
     const expected = ['PARTNER-1', 'ORG-1'].sort();
     const response = await jsonOk(await request(application, owner.rawKey, `/alerts/${f.alert.id}/external-tickets`));

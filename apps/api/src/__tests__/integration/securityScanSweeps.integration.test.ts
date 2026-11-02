@@ -20,7 +20,11 @@ import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext
 import { deviceCommands, securityScans, securityScanSweeps } from '../../db/schema';
 import { withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { claimAndDispatchScan } from '../../jobs/securityScanClaim';
-import { pumpSweeps, type SweepDispatchJob } from '../../jobs/securityScanSweepPump';
+import { pumpSweeps, type PumpDispatchJob, type SweepDispatchJob } from '../../jobs/securityScanSweepPump';
+
+// #10057 gap 2: the pump also re-admits waiting Scan now rows; these suites look at sweep jobs only.
+const sweepJobsOf = (jobs: readonly PumpDispatchJob[]): SweepDispatchJob[] =>
+  jobs.filter((j): j is SweepDispatchJob => j.origin === 'sweep');
 import { handleSecurityCommandResult } from '../../routes/agents/helpers';
 import { agentYaraRuleSetRoutes } from '../../routes/agents/yaraRuleSets';
 import {
@@ -470,12 +474,12 @@ describe('races', () => {
   it('Redis job lost → next pump re-admits', async () => {
     const w = await seedSweepWorld({ devices: 1 });
     const lost: SweepDispatchJob[] = [];
-    const first = await pumpSweeps(new Date(), { enqueue: async (jobs) => { lost.push(...jobs); } });
+    const first = await pumpSweeps(new Date(), { enqueue: async (jobs) => { lost.push(...sweepJobsOf(jobs)); } });
     expect(first.admitted).toBe(1);
     // The job never reaches a worker: the row is still queued, so the next tick admits it again.
     expect((await scanRow(w.scanIds[0]!)).status).toBe('queued');
     const delivered: SweepDispatchJob[] = [];
-    const second = await pumpSweeps(new Date(), { enqueue: async (jobs) => { delivered.push(...jobs); } });
+    const second = await pumpSweeps(new Date(), { enqueue: async (jobs) => { delivered.push(...sweepJobsOf(jobs)); } });
     expect(second.admitted).toBe(1);
     expect(delivered).toEqual([{ type: 'dispatch-scan', scanId: w.scanIds[0], origin: 'sweep', sweepId: w.sweepId }]);
     expect((await claimAndDispatchScan(delivered[0]!)).outcome).toBe('dispatched');
@@ -599,6 +603,60 @@ describe('A9 tenancy', () => {
     expect(list.data.map((s) => s.orgId)).toEqual([orgA!.id]);
     expect(list.total).toBe(1);
   });
+
+  it('progress.ruleSetChanged counts only children failed by a republish, under the caller ceiling (#10049)', async () => {
+    const f = await seedPartnerFleet(3);
+    const partner = await partnerUserAuth(f.partnerId, f.orgs.map((o) => o.id));
+    const created = await previewAndCreate(partner, { ruleSetIds: [f.setId], scope: { kind: 'all' } as never, scanType: 'quick' });
+    if (!created.ok) throw new Error(created.code);
+    const [orgA, orgB] = f.orgs;
+    const tdb = getTestDb();
+    // rule_set_changed second in the array: containment, not a first-element lookup.
+    const changed = JSON.stringify([
+      { id: randomUUID(), code: 'fetch_failed' },
+      { id: f.setId, version: 1, code: 'rule_set_changed' },
+    ]);
+    // Org A: one child failed by a republish, one failed for another reason,
+    // and one that is not failed (never counted, whatever its errors say).
+    await tdb.execute(sql`UPDATE security_scans SET status = 'failed', rule_set_errors = ${changed}::jsonb
+                          WHERE device_id = ${orgA!.deviceIds[0]!}`);
+    await tdb.execute(sql`UPDATE security_scans SET status = 'failed',
+                            rule_set_errors = ${JSON.stringify([{ id: '*', code: 'dispatch_refused' }])}::jsonb
+                          WHERE device_id = ${orgA!.deviceIds[1]!}`);
+    await tdb.execute(sql`UPDATE security_scans SET status = 'completed', engine = 'yara', rule_set_errors = ${changed}::jsonb
+                          WHERE device_id = ${orgA!.deviceIds[2]!}`);
+    // Org B: one child failed by a republish.
+    await tdb.execute(sql`UPDATE security_scans SET status = 'failed', rule_set_errors = ${changed}::jsonb
+                          WHERE device_id = ${orgB!.deviceIds[0]!}`);
+
+    const group = await asAuth(partner, () => getSweepGroup(partner, created.groupId));
+    expect(group!.progress).toMatchObject({ failed: 3, ruleSetChanged: 2 });
+    const sweepA = created.sweeps.find((s) => s.orgId === orgA!.id)!;
+    const summaryA = await asAuth(partner, () => getSweep(partner, sweepA.id));
+    expect(summaryA!.progress).toMatchObject({ failed: 2, ruleSetChanged: 1 });
+
+    // Org A user: org B's republish failure is not counted.
+    const orgAUser = await orgUserAuth(f.partnerId, orgA!.id);
+    const orgAGroup = await asAuth(orgAUser, () => getSweepGroup(orgAUser, created.groupId));
+    expect(orgAGroup!.progress).toMatchObject({ failed: 2, ruleSetChanged: 1 });
+
+    // Device pins: pinned to the republish-failed device it counts; to the other failed device it does not.
+    const pinnedTo = (id: string) => ({ ...partner, allowedDeviceIds: [id] }) as AuthContext;
+    const onChanged = pinnedTo(orgA!.deviceIds[0]!);
+    expect((await asAuth(onChanged, () => getSweep(onChanged, sweepA.id)))!.progress)
+      .toMatchObject({ failed: 1, ruleSetChanged: 1 });
+    const onOther = pinnedTo(orgA!.deviceIds[1]!);
+    expect((await asAuth(onOther, () => getSweep(onOther, sweepA.id)))!.progress)
+      .toMatchObject({ failed: 1, ruleSetChanged: 0 });
+
+    // Site allowlist: a caller restricted to org B's site sees nothing of org A's sweep.
+    const siteB = { ...partner, allowedSiteIds: [orgB!.siteId] } as AuthContext;
+    expect((await asAuth(siteB, () => getSweep(siteB, sweepA.id)))!.progress)
+      .toMatchObject({ failed: 0, ruleSetChanged: 0 });
+    const siteA = { ...partner, allowedSiteIds: [orgA!.siteId] } as AuthContext;
+    expect((await asAuth(siteA, () => getSweep(siteA, sweepA.id)))!.progress)
+      .toMatchObject({ failed: 2, ruleSetChanged: 1 });
+  });
 });
 
 describe('A9 races', () => {
@@ -628,7 +686,7 @@ describe('A9 pump and fetch', () => {
   it('pump under breeze_app system context admits and the claim stamps dispatched_rule_sets + command_id', async () => {
     const w = await seedSweepWorld({ devices: 1 });
     const jobs: SweepDispatchJob[] = [];
-    const pump = await pumpSweeps(new Date(), { enqueue: async (j) => { jobs.push(...j); } });
+    const pump = await pumpSweeps(new Date(), { enqueue: async (j) => { jobs.push(...sweepJobsOf(j)); } });
     expect(pump).toMatchObject({ skipped: false, admitted: 1 });
     const claim = await claimAndDispatchScan(jobs[0]!);
     expect(claim.outcome).toBe('dispatched');
@@ -962,7 +1020,7 @@ describe('review: expiry, cancel propagation, caps, MFA, manual-scan fetch, cros
     }
   });
 
-  it('a manual startDeviceScan row (command_id stamped) with dispatched refs authorizes the agent fetch; other device / version / completed → 404', async () => {
+  it('a manual startDeviceScan row (command_id stamped by the claim) with dispatched refs authorizes the agent fetch; other device / version / completed → 404', async () => {
     const tdb = getTestDb();
     const w = await seedSweepWorld({ devices: 2, online: false });
     const auth = await platformAdminAuth(w.partnerId);
@@ -972,6 +1030,10 @@ describe('review: expiry, cancel propagation, caps, MFA, manual-scan fetch, cros
       ),
     );
     if (!started.ok) throw new Error(started.error);
+    // #10057 gap 2: the Scan now waits for the capped claim, which stamps the command.
+    const [waiting] = await tdb.select().from(securityScans).where(eq(securityScans.id, started.scan.id));
+    expect(waiting!.commandId).toBeNull();
+    expect((await claimAndDispatchScan({ type: 'dispatch-scan', scanId: started.scan.id, origin: 'manual' })).outcome).toBe('dispatched');
     const [row] = await tdb.select().from(securityScans).where(eq(securityScans.id, started.scan.id));
     expect(row!.commandId).toMatch(/^[0-9a-f-]{36}$/);
     const [cmd] = await tdb.select().from(deviceCommands).where(eq(deviceCommands.id, row!.commandId!));

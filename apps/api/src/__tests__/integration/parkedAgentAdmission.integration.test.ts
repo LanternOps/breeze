@@ -245,7 +245,9 @@ describe('parked device — minimal heartbeat', () => {
     // and delegations (a parked device is the typical reattach source, and it
     // verifies the signed `rebind` directive against them). No directive here:
     // this device is the source of no reattach intent.
-    expect(Object.keys(body).sort()).toEqual(['commands', 'manifestKeyDelegations', 'manifestTrustKeys', 'renewCert', 'rotateToken']);
+    // #4618: parked beats explicitly clear containment without looking up episodes.
+    expect(Object.keys(body).sort()).toEqual(['commands', 'containment', 'manifestKeyDelegations', 'manifestTrustKeys', 'renewCert', 'rotateToken']);
+    expect(body.containment).toEqual({ networkIsolation: null });
     expect(body.renewCert).toBe(true);
     expect(body.rotateToken).toBe(true);
     const delivered = body.commands as Array<{ id: string; type: string }>;

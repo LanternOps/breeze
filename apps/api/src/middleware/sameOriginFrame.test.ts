@@ -10,10 +10,12 @@ const TOKEN = 'eyJhbGciOiJIUzI1NiJ9.payload.sig';
 const BLOCK = '66666666-6666-4666-8666-666666666666';
 
 describe('SAME_ORIGIN_FRAME_PATHS (#10192)', () => {
-  it('lists exactly the two inline public PDF routes — widening it is a deliberate, reviewed change', () => {
+  it('lists exactly the three inline PDF routes the portal iframes — widening it is a deliberate, reviewed change', () => {
     expect(SAME_ORIGIN_FRAME_PATHS.map((re) => re.source)).toEqual([
       '^\\/api\\/v1\\/agreements\\/public\\/[^/]+\\/file$',
       '^\\/api\\/v1\\/quotes\\/public\\/[^/]+\\/contract-file\\/[^/]+$',
+      // #10290: the portal agreement detail page (session-authenticated)
+      '^\\/api\\/v1\\/portal\\/agreements\\/[^/]+\\/file$',
     ]);
     expect(SAME_ORIGIN_FRAME_PATHS.every((re) => re.flags === '')).toBe(true);
   });
@@ -23,6 +25,8 @@ describe('isSameOriginFramePath', () => {
   it.each([
     [`/api/v1/agreements/public/${TOKEN}/file`, true],
     [`/api/v1/quotes/public/${TOKEN}/contract-file/${BLOCK}`, true],
+    // #10290: the portal agreement detail page iframes the session route
+    [`/api/v1/portal/agreements/${BLOCK}/file`, true],
     // the JSON views and every sibling asset on the same token stay DENY
     [`/api/v1/agreements/public/${TOKEN}`, false],
     [`/api/v1/agreements/public/${TOKEN}/accept`, false],
@@ -39,7 +43,16 @@ describe('isSameOriginFramePath', () => {
     [`/api/v1/quotes/public/${TOKEN}/contract-file`, false],
     [`/api/v1/quotes/public/${TOKEN}/contract-file/`, false],
     [`/api/v1/quotes/public/${TOKEN}/contract-file/${BLOCK}/x`, false],
-    // the authenticated surfaces that serve the same bytes are NOT exempt
+    // the portal agreement JSON view and its siblings stay DENY; anchored like the public patterns
+    [`/api/v1/portal/agreements/${BLOCK}`, false],
+    [`/api/v1/portal/agreements/${BLOCK}/accept`, false],
+    [`/api/v1/portal/agreements/${BLOCK}/file/`, false],
+    [`/api/v1/portal/agreements/${BLOCK}/file/x`, false],
+    ['/api/v1/portal/agreements//file', false],
+    [`/api/v1/portal/agreements/a/b/file`, false],
+    [`/api/v1/portal/signed-agreements/${BLOCK}/file`, false],
+    [`/x/api/v1/portal/agreements/${BLOCK}/file`, false],
+    // the staff (web app) surface that serves the same bytes is NOT exempt
     [`/api/v1/agreements/${BLOCK}/file`, false],
     [`/api/v1/portal/quotes/${BLOCK}/contract-file/${BLOCK}`, false],
     ['/api/v1/devices', false],
@@ -67,6 +80,14 @@ describe('index.ts registration', () => {
     expect(indexSource).toMatch(/^api\.route\('\/quotes\/public', quotesPublicRoutes\);$/m);
   });
 
+  it('mounts the portal agreement router where the #10290 pattern expects it (/api/v1 + /portal + /)', () => {
+    expect(indexSource).toMatch(/^api\.route\('\/portal', portalRoutes\);$/m);
+    const portalIndex = readFileSync(fileURLToPath(new URL('../routes/portal/index.ts', import.meta.url)), 'utf8');
+    expect(portalIndex).toMatch(/^portalRoutes\.route\('\/', portalAgreementRoutes\);$/m);
+    const portalAgreements = readFileSync(fileURLToPath(new URL('../routes/portal/agreements.ts', import.meta.url)), 'utf8');
+    expect(portalAgreements).toMatch(/^portalAgreementRoutes\.get\('\/agreements\/:id\/file',/m);
+  });
+
   it("passes the same predicate to securityMiddleware so the CSP says frame-ancestors 'self' on exactly those paths", () => {
     expect(indexSource).toMatch(
       /app\.use\('\*', securityMiddleware\(\{[^)]*sameOriginFrameWhen: isSameOriginFramePath[^)]*\}\)\);/,
@@ -90,13 +111,21 @@ describe('bySameOriginFramePath + securityMiddleware (the index.ts header stack)
     return c.body('%PDF-1.7', 200, { 'Content-Type': 'application/pdf' });
   });
   app.get('/api/v1/quotes/public/:token/contract-file/:blockId', (c) => c.body('%PDF-1.4', 200, { 'Content-Type': 'application/pdf' }));
+  // Mirrors routes/portal/agreements.ts GET /agreements/:id/file: its own disposition + nosniff must survive.
+  app.get('/api/v1/portal/agreements/:id/file', (c) => c.body('%PDF-1.7', 200, {
+    'Content-Type': 'application/pdf',
+    'Content-Disposition': 'inline; filename="agreement.pdf"',
+    'X-Content-Type-Options': 'nosniff',
+  }));
+  app.get('/api/v1/portal/agreements/:id', (c) => c.json({ ok: true }));
   app.get('/api/v1/agreements/public/:token', (c) => c.json({ ok: true }));
   app.get('/api/v1/devices', (c) => c.json({ ok: true }));
 
   const AGREEMENT_FILE = `/api/v1/agreements/public/${TOKEN}/file`;
   const QUOTE_FILE = `/api/v1/quotes/public/${TOKEN}/contract-file/${BLOCK}`;
+  const PORTAL_AGREEMENT_FILE = `/api/v1/portal/agreements/${BLOCK}/file`;
 
-  it.each([AGREEMENT_FILE, QUOTE_FILE])('%s is frameable by its own origin only', async (path) => {
+  it.each([AGREEMENT_FILE, QUOTE_FILE, PORTAL_AGREEMENT_FILE])('%s is frameable by its own origin only', async (path) => {
     const res = await app.request(path);
     expect(res.status).toBe(200);
     expect(res.headers.get('X-Frame-Options')).toBe('SAMEORIGIN');
@@ -106,7 +135,13 @@ describe('bySameOriginFramePath + securityMiddleware (the index.ts header stack)
     expect(csp.match(/frame-ancestors/g)).toHaveLength(1);
   });
 
-  it.each([`/api/v1/agreements/public/${TOKEN}`, '/api/v1/devices'])('%s keeps DENY and frame-ancestors none', async (path) => {
+  it('the portal agreement file keeps its inline Content-Disposition and nosniff (#10290)', async () => {
+    const res = await app.request(PORTAL_AGREEMENT_FILE);
+    expect(res.headers.get('Content-Disposition')).toBe('inline; filename="agreement.pdf"');
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
+  });
+
+  it.each([`/api/v1/agreements/public/${TOKEN}`, `/api/v1/portal/agreements/${BLOCK}`, '/api/v1/devices'])('%s keeps DENY and frame-ancestors none', async (path) => {
     const res = await app.request(path);
     expect(res.headers.get('X-Frame-Options')).toBe('DENY');
     expect(res.headers.get('Content-Security-Policy')).toContain("frame-ancestors 'none'");
