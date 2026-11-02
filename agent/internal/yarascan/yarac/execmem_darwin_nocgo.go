@@ -19,7 +19,11 @@ import (
 // whose signature enforces code signing fails closed.
 func platformCodeSigning() (codeSigning, error) {
 	var flags uint32
-	// CS_OPS_STATUS = 0; pid 0 is the calling process.
+	// CS_OPS_STATUS = 0; pid 0 is the calling process. x/sys has no
+	// libSystem wrapper for csops and this file is never in a shipped agent
+	// (cgo builds use execmem_darwin.go), so the deprecated raw syscall is
+	// acceptable here; verified on macOS 27 arm64 against a hardened copy.
+	//nolint:staticcheck // SA1019: see above.
 	if _, _, errno := unix.Syscall6(unix.SYS_CSOPS, 0, 0, uintptr(unsafe.Pointer(&flags)), unsafe.Sizeof(flags), 0, 0); errno != 0 {
 		return codeSigning{}, fmt.Errorf("csops(CS_OPS_STATUS) failed: %v", errno)
 	}

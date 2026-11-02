@@ -27,11 +27,6 @@ import (
 // the YARA engine needs on macOS.
 const EntitlementAllowUnsignedExecutableMemory = "com.apple.security.cs.allow-unsigned-executable-memory"
 
-const (
-	entitlementDisableExecutablePageProtection = "com.apple.security.cs.disable-executable-page-protection"
-	entitlementAllowJIT                        = "com.apple.security.cs.allow-jit"
-)
-
 // ErrExecutableMemoryDenied: this process may not execute the machine code
 // the YARA engine generates, so the engine is not started.
 var ErrExecutableMemoryDenied = errors.New("YARA engine disabled: this process may not execute the code the engine compiles")

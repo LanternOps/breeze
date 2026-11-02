@@ -56,6 +56,11 @@ import (
 	"unsafe"
 )
 
+const (
+	entitlementDisableExecutablePageProtection = "com.apple.security.cs.disable-executable-page-protection"
+	entitlementAllowJIT                        = "com.apple.security.cs.allow-jit"
+)
+
 func platformCodeSigning() (codeSigning, error) {
 	var flags C.uint32_t
 	if rc, err := C.breeze_cs_status(&flags); rc != 0 {

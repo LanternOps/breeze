@@ -53,6 +53,11 @@ func TestHardenedRuntimeYaraEngine(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts the YARA engine in four re-signed child processes")
 	}
+	if raceEnabled {
+		// A race-instrumented engine takes ~2 min per child on a CI runner.
+		// Release Step 0.25 runs this without -race on a lab Mac.
+		t.Skip("run without -race: each child starts a race-instrumented YARA engine")
+	}
 	if _, err := exec.LookPath("codesign"); err != nil {
 		t.Skip("codesign not available")
 	}
@@ -75,17 +80,23 @@ func TestHardenedRuntimeYaraEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cases := []struct {
-		name, plist, mode string
-		wantKilled        bool
-	}{
+	cases := []hardenedCase{
 		{"agent entitlements run the engine", agentPlist, "engine", false},
 		{"helpers entitlements are refused by the guard", helpersPlist, "guarded", false},
 		{"control: helpers entitlements without the guard are killed", helpersPlist, "unguarded", true},
 		{"control: allow-jit alone without the guard is killed", jitPlist, "unguarded", true},
 	}
-	for _, tc := range cases {
+	// The first control doubles as a probe of the host: some macOS VMs (CI
+	// runners with SIP/AMFI relaxed) do not enforce code signing on executable
+	// pages at all, so nothing is killed there and the controls prove nothing.
+	// Only that first control may turn into a skip; once it has been killed,
+	// a later control surviving is a real failure.
+	enforcing := true
+	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.wantKilled && !enforcing {
+				t.Skip("this host does not enforce code signing on executable pages (see the first control)")
+			}
 			bin := filepath.Join(t.TempDir(), "yarac.test")
 			copyExecutable(t, os.Args[0], bin)
 			if out, err := exec.Command("codesign", "--force", "--sign", "-", "--options", "runtime",
@@ -102,6 +113,10 @@ func TestHardenedRuntimeYaraEngine(t *testing.T) {
 					killed = true
 				}
 			}
+			if tc.wantKilled && !killed && err == nil && i == firstControl(cases) {
+				enforcing = false
+				t.Skipf("the shipped pre-fix signature ran the engine without being killed: this host does not enforce code signing on executable pages (SIP/AMFI relaxed?), so the controls cannot run here: %s", out)
+			}
 			if killed != tc.wantKilled {
 				t.Fatalf("killed = %v, want %v (err %v): %s", killed, tc.wantKilled, err, out)
 			}
@@ -112,13 +127,27 @@ func TestHardenedRuntimeYaraEngine(t *testing.T) {
 	}
 }
 
+type hardenedCase struct {
+	name, plist, mode string
+	wantKilled        bool
+}
+
+func firstControl(cases []hardenedCase) int {
+	for i, c := range cases {
+		if c.wantKilled {
+			return i
+		}
+	}
+	return -1
+}
+
 func copyExecutable(t *testing.T, src, dst string) {
 	t.Helper()
 	in, err := os.Open(src)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o700)
 	if err != nil {
 		t.Fatal(err)
