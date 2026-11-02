@@ -20,7 +20,7 @@ const namespaceDuplicateBaselines = {
     // +6: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Status" are
     // identical cognates in pt-BR; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
-    'admin.json': 27, // +2 Wisp admin page: product name "Wisp" + cognate
+    'admin.json': 32, // +5 audit.resourceTypes (#9856): cognates/brand names identical to English (Webhook, Script, Ticket, Site, ...); +2 Wisp admin page: product name "Wisp" + cognate
     'ai.json': 6, // +3 W01 #10132: "Breeze AI" brand name is identical in every locale (chat door title, empty-state title); // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun; +1 W08 #9921: wisp.home.needsYouCount_one "{{count}} item" is the pt-BR singular too ("itens" in _other)
     // +2 W07 (#5212, AI Operator task detail): originKind "manual"/"chat" are
     // identical cognates in pt-BR.
@@ -212,7 +212,7 @@ const namespaceDuplicateBaselines = {
     // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the
     // standard CMS loanword in es-419; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
-    'admin.json': 23, // +2 Wisp admin page: product name "Wisp" + cognate
+    'admin.json': 27, // +4 audit.resourceTypes (#9856): cognates/brand names identical to English (Webhook, Script, Ticket, Site, ...); +2 Wisp admin page: product name "Wisp" + cognate
     'ai.json': 8, // +3 W01 #10132: "Breeze AI" brand name is identical in every locale (chat door title, empty-state title); // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
     // +3 W07 (#5212, AI Operator task detail): originKind "manual"/"ticket"/
     // "chat" are identical cognates in es-419.
@@ -394,7 +394,7 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     // W01 #7599 admin.aiModels.*: +3 identical cognates (Actions, Budget, Standard).
     // #7609 admin.aiModels.variants.*: +3 identical cognates (Conversations, Candidate, Active).
-    'admin.json': 42, // +2 Wisp admin page: product name "Wisp" + cognate
+    'admin.json': 51, // +9 audit.resourceTypes (#9856): cognates/brand names identical to English (Webhook, Script, Ticket, Site, ...); +2 Wisp admin page: product name "Wisp" + cognate
     'ai.json': 12, // +2 W01 #10132: "Breeze AI" brand name is identical in every locale (chat door title, empty-state title); // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
     // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
     // waitReason "information" are identical cognates in fr-FR.
@@ -611,7 +611,7 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     // W01 #7599 admin.aiModels.*: +3 identical cognates (Actions, Budget, Standard).
     // #7609 admin.aiModels.variants.*: +3 identical cognates (Conversations, Candidate, Active).
-    'admin.json': 42, // +2 Wisp admin page: product name "Wisp" + cognate
+    'admin.json': 50, // +8 audit.resourceTypes (#9856): cognates/brand names identical to English (Webhook, Script, Ticket, Site, ...); +2 Wisp admin page: product name "Wisp" + cognate
     'ai.json': 12, // +2 W01 #10132: "Breeze AI" brand name is identical in every locale (chat door title, empty-state title); // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
     // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
     // waitReason "information" are identical cognates in fr-CA.
@@ -820,7 +820,7 @@ const namespaceDuplicateBaselines = {
     // are identical cognates in de-DE; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
     // W01 #7599 admin.aiModels.*: +4 identical cognates (Status, Budget, Frontier, Standard).
-    'admin.json': 38, // +3 Wisp admin page: product name "Wisp" + cognates (Partner, Status)
+    'admin.json': 45, // +7 audit.resourceTypes (#9856): cognates/brand names identical to English (Webhook, Script, Ticket, Site, ...); +3 Wisp admin page: product name "Wisp" + cognates (Partner, Status)
     'ai.json': 9, // +3 W01 #10132: "Breeze AI" brand name is identical in every locale (chat door title, empty-state title); // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
     // +4 W07 (#5212, AI Operator task detail): originKind "ticket"/"sweep"/
     // "chat" and waitReason "information" are identical cognates in de-DE.
@@ -1025,7 +1025,7 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     // W01 #7599 admin.aiModels.*: +5 identical cognates (Budget, Standard, Input, Output,
     // "Input / output per MTok"; "No" duplicates an existing counted string).
-    'admin.json': 45, // +2 Wisp admin page: product name "Wisp" + cognate
+    'admin.json': 53, // +8 audit.resourceTypes (#9856): cognates/brand names identical to English (Webhook, Script, Ticket, Site, ...); +2 Wisp admin page: product name "Wisp" + cognate
     'ai.json': 14, // +2 W01 #10132: "Breeze AI" brand name is identical in every locale (chat door title, empty-state title);
     // +2 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" are
     // identical cognates in it-IT.
@@ -1188,7 +1188,7 @@ const namespaceDuplicateBaselines = {
     // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the
     // standard CMS loanword in tr-TR; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
-    'admin.json': 21, // +2 Wisp admin page: product name "Wisp" + cognate
+    'admin.json': 24, // +3 audit.resourceTypes (#9856): cognates/brand names identical to English (Webhook, Script, Ticket, Site, ...); +2 Wisp admin page: product name "Wisp" + cognate
     'ai.json': 5, // +3 W01 #10132: "Breeze AI" brand name is identical in every locale (chat door title, empty-state title); // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
     'aiOperator.json': 0,
     'alerts.json': 25,
