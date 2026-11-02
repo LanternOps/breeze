@@ -13,6 +13,7 @@
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { and, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
@@ -396,6 +397,37 @@ describe('reinstall candidates — clears and the CHECK', () => {
     await getTestDb().delete(deviceHardware).where(eq(deviceHardware.deviceId, target.id));
     await getTestDb().delete(devices).where(eq(devices.id, target.id));
     expect(await flagOf(source.id)).toEqual({ target: null, reason: null, detectedAt: null });
+  });
+
+  it('the migration backfills a pre-existing #2764 link to hostname at created_at, then the CHECK holds', async () => {
+    const tenant = await seedReattachTenant();
+    const target = await oldTarget(tenant.orgA, {});
+    const source = await newSource(tenant.orgA, {});
+    // The state before 2027-01-19-110000: a link with no reason.
+    await getTestDb().execute(sql`ALTER TABLE devices DROP CONSTRAINT devices_possible_replacement_reason_chk`);
+    try {
+      await getTestDb().execute(sql`
+        UPDATE devices SET possible_replacement_of_device_id = ${target.id}::uuid WHERE id = ${source.id}::uuid`);
+      expect(await flagOf(source.id)).toEqual({ target: target.id, reason: null, detectedAt: null });
+      // Bare replay: the file redefines no function a later file redefines; its
+      // only follower (2027-01-19-110200, VALIDATE) is @no-transaction, so the
+      // VALIDATE is run by hand below.
+      const file = await readFile(new URL('../../../migrations/2027-01-19-110000-device-possible-replacement-reason.sql', import.meta.url), 'utf8');
+      await getTestDb().transaction(async (tx) => { await tx.execute(sql.raw(file)); });
+    } finally {
+      await getTestDb().execute(sql`
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'devices_possible_replacement_reason_chk') THEN
+            ALTER TABLE devices ADD CONSTRAINT devices_possible_replacement_reason_chk CHECK (
+              (possible_replacement_of_device_id IS NULL) = (possible_replacement_reason IS NULL)
+              AND (possible_replacement_of_device_id IS NULL) = (possible_replacement_detected_at IS NULL)) NOT VALID;
+          END IF;
+        END $$`);
+      await getTestDb().execute(sql`ALTER TABLE devices VALIDATE CONSTRAINT devices_possible_replacement_reason_chk`);
+    }
+    const row = await readDevice(source.id);
+    expect(row?.possibleReplacementReason).toBe('hostname');
+    expect(row?.possibleReplacementDetectedAt?.getTime()).toBe(row?.createdAt.getTime());
   });
 
   it('the CHECK refuses a link without a reason and a reason outside the vocabulary', async () => {
