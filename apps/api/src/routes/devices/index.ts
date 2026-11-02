@@ -8,6 +8,7 @@ import { commandsRoutes } from './commands';
 import { forceRebootRoutes } from './forceReboot';
 import { hardwareRoutes } from './hardware';
 import { placementRoutes } from './placement';
+import { deviceCircuitsRoutes } from './circuits';
 import { alertsRoutes } from './alerts';
 import { deviceMonitorsRoutes } from './monitors';
 import { anomaliesRoutes } from './anomalies';
@@ -167,6 +168,8 @@ deviceRoutes.route('/', commandsRoutes);
 deviceRoutes.route('/', hardwareRoutes);
 // GET/PUT/DELETE /:id/placement — physical placement (room/rack/U), #8134.
 deviceRoutes.route('/', placementRoutes);
+// GET /:id/circuits — WAN circuits and interfaces of a device (read only), #8134.
+deviceRoutes.route('/', deviceCircuitsRoutes);
 deviceRoutes.route('/', alertsRoutes);
 // #6371 W05c2: GET /:id/monitors — effective monitors for the device page.
 deviceRoutes.route('/', deviceMonitorsRoutes);

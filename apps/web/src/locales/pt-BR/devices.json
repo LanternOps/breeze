@@ -4696,6 +4696,48 @@
       "mfaRequired": "A autenticação multifator é necessária para alterar a localização física."
     }
   },
+  "assetCircuitCard": {
+    "title": "WAN e circuito",
+    "loadFailed": "Não foi possível carregar as informações de WAN e circuito.",
+    "empty": "Nenhum circuito registrado ou visível para você neste ativo.",
+    "provider": "Operadora",
+    "cid": "ID do circuito",
+    "bandwidth": "Largura de banda",
+    "serviceType": "Tipo de serviço",
+    "administrativeStatus": "Status administrativo",
+    "sitesServed": "Sites atendidos por este circuito",
+    "terminationSite": "Site de terminação: {{site}} (de {{asset}} / {{iface}})",
+    "terminationSiteBare": "Site de terminação: {{site}}",
+    "terminationUnassigned": "Terminação não atribuída",
+    "terminationNeedsReassociation": "A terminação precisa ser reassociada",
+    "interfaces": "Interfaces",
+    "noInterfaces": "Nenhuma interface registrada.",
+    "wanBadge": "WAN",
+    "retiredBadge": "Aposentada",
+    "markWan": "Marcar como WAN",
+    "unmarkWan": "Remover WAN",
+    "truncated": "Apenas algumas interfaces são exibidas.",
+    "unmarkConfirm": {
+      "title": "Remover a função WAN?",
+      "message": "{{name}} deixará de ser tratada como interface WAN."
+    },
+    "status": {
+      "active": "Ativo",
+      "planned": "Planejado",
+      "suspended": "Suspenso",
+      "disconnected": "Desconectado"
+    },
+    "toasts": {
+      "marked": "Interface marcada como WAN",
+      "unmarked": "Função WAN removida",
+      "failed": "Não foi possível atualizar a função WAN",
+      "mfaRequired": "A autenticação multifator é necessária para alterar a função WAN.",
+      "hasTermination": "Esta interface tem uma terminação de circuito ativa. Mova ou remova a terminação primeiro.",
+      "retired": "Esta interface está aposentada e não pode mais ser alterada.",
+      "notFound": "Interface não encontrada. A lista foi recarregada.",
+      "permissionDenied": "Você não tem permissão para alterar a topologia."
+    }
+  },
   "partnerGroups": {
     "ownerScope": "Proprietário do grupo",
     "organization": "Esta organização",

@@ -4696,6 +4696,48 @@
       "mfaRequired": "Per modificare la posizione fisica è richiesta l'autenticazione a più fattori."
     }
   },
+  "assetCircuitCard": {
+    "title": "WAN e circuito",
+    "loadFailed": "Impossibile caricare le informazioni su WAN e circuito.",
+    "empty": "Nessun circuito registrato o visibile a te per questo asset.",
+    "provider": "Provider",
+    "cid": "ID circuito",
+    "bandwidth": "Larghezza di banda",
+    "serviceType": "Tipo di servizio",
+    "administrativeStatus": "Stato amministrativo",
+    "sitesServed": "Siti serviti da questo circuito",
+    "terminationSite": "Sito di terminazione: {{site}} (da {{asset}} / {{iface}})",
+    "terminationSiteBare": "Sito di terminazione: {{site}}",
+    "terminationUnassigned": "Terminazione non assegnata",
+    "terminationNeedsReassociation": "La terminazione deve essere riassociata",
+    "interfaces": "Interfacce",
+    "noInterfaces": "Nessuna interfaccia registrata.",
+    "wanBadge": "WAN",
+    "retiredBadge": "Ritirata",
+    "markWan": "Contrassegna come WAN",
+    "unmarkWan": "Rimuovi WAN",
+    "truncated": "Vengono mostrate solo alcune interfacce.",
+    "unmarkConfirm": {
+      "title": "Rimuovere il ruolo WAN?",
+      "message": "{{name}} non verrà più trattata come interfaccia WAN."
+    },
+    "status": {
+      "active": "Attivo",
+      "planned": "Pianificato",
+      "suspended": "Sospeso",
+      "disconnected": "Disconnesso"
+    },
+    "toasts": {
+      "marked": "Interfaccia contrassegnata come WAN",
+      "unmarked": "Ruolo WAN rimosso",
+      "failed": "Impossibile aggiornare il ruolo WAN",
+      "mfaRequired": "Per modificare il ruolo WAN è richiesta l'autenticazione a più fattori.",
+      "hasTermination": "Questa interfaccia ha una terminazione di circuito attiva. Sposta o rimuovi prima la terminazione.",
+      "retired": "Questa interfaccia è ritirata e non può più essere modificata.",
+      "notFound": "Interfaccia non trovata. L'elenco è stato ricaricato.",
+      "permissionDenied": "Non hai il permesso di modificare la topologia."
+    }
+  },
   "partnerGroups": {
     "ownerScope": "Proprietario del gruppo",
     "organization": "Questa organizzazione",

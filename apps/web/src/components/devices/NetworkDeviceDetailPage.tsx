@@ -23,6 +23,7 @@ import type { NetworkDeviceDetailPageProps, Tab } from './networkDevice/types';
 import { useNetworkAsset } from './networkDevice/useNetworkAsset';
 import { IdentityCard } from './networkDevice/IdentityCard';
 import PhysicalPlacementCard from './PhysicalPlacementCard';
+import AssetCircuitCard from './AssetCircuitCard';
 import { NetworkDeviceHeader } from './networkDevice/NetworkDeviceHeader';
 import { ReachabilityCard } from './networkDevice/ReachabilityCard';
 import { resolveHealthCard } from './networkDevice/health';
@@ -327,6 +328,8 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
               id={asset.id}
               linkedDeviceName={asset.linkedDeviceName}
             />
+
+            <AssetCircuitCard subject="discovered" id={asset.id} />
 
             {!asset.linkedDeviceId && extras.autoLinkSuppressedAt && (
               <p className="text-xs text-muted-foreground" data-testid="network-detail-suppressed">
