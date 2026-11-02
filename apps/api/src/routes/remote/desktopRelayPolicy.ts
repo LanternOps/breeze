@@ -1,5 +1,4 @@
 import { db } from '../../db';
-import { findUnresolvedEpisode } from '../../services/networkIsolation/episodeStore';
 import { getIceServers, type TurnCredentialScope } from './helpers';
 
 type DesktopIcePlan =
@@ -15,6 +14,11 @@ export async function resolveDesktopIcePlan(
   deviceId: string,
   scope: TurnCredentialScope,
 ): Promise<DesktopIcePlan> {
+  // Loaded lazily: episodeStore derives its column set from the schema at
+  // module load, and remote/sessions.ts + desktopWs.ts are imported by most of
+  // the API (and its tests). A static import would make every importer pay for,
+  // and depend on, the network-isolation schema just to mount the routes.
+  const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
   const episode = await db.transaction((tx) => findUnresolvedEpisode(tx, deviceId));
   if (!episode || (episode.state !== 'applied' && episode.state !== 'verified')) {
     return { ok: true, relayOnly: false, iceServers: getIceServers(scope) };

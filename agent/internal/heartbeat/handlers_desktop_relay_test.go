@@ -37,13 +37,16 @@ func TestStartDesktopViaHelperPassesRelayOnly(t *testing.T) {
 	serverIPC := ipc.NewConn(serverConn)
 	clientIPC := ipc.NewConn(clientConn)
 	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-relay", []string{"desktop"})
-	defer session.Close()
-	defer clientIPC.Close()
+	defer func() { _ = session.Close() }()
+	defer func() { _ = clientIPC.Close() }()
 	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		clientIPC.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if err := clientIPC.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			t.Errorf("set read deadline: %v", err)
+			return
+		}
 		env, err := clientIPC.Recv()
 		if err != nil {
 			t.Errorf("recv: %v", err)
