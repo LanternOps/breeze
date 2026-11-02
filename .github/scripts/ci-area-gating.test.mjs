@@ -813,3 +813,10 @@ for (const file of [
     assert.equal(out.app, 'true');
   });
 }
+
+// W1c: isolation bypass enforcement must schedule API and integration checks.
+test('network isolation bypass service schedules API and integration', () => {
+  const out = classify(['apps/api/src/services/networkIsolation/bypass.ts']);
+  assert.deepEqual(areasOf(out), expectAreas(['api']));
+  assert.equal(out.integration, 'true');
+});

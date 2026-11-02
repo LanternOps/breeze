@@ -29,6 +29,7 @@ import { partnerServicePrincipalMcpAuthMiddleware } from '../middleware/partnerS
 import { bearerTokenAuthMiddleware } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier, getToolDomain, aiTools, toolManagesDbContext } from '../services/aiTools';
 import { isTopologyAiToolName } from '../services/topology/aiToolGate';
+import { isNetworkIsolationCommand } from '../services/networkIsolation/bypass';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, isReadOnlyResolution, TIER1_ACTIONS, TIER2_ACTIONS, TIER3_ACTIONS, TOOL_ACTION_INPUT_KEYS } from '../services/aiGuardrails';
 import { isTenantToolName } from '@breeze/shared/validators';
 import type { TenantToolDescriptor } from '../services/toolSources/resolver';
@@ -1539,8 +1540,10 @@ const BOOTSTRAP_TOOL_TIER = 3;
 function isMcpApprovalRequired(
   toolName: string,
   effectiveTier: number,
-  opts: { unattendedPrincipal: boolean } = { unattendedPrincipal: false },
+  opts: { unattendedPrincipal: boolean; toolInput?: unknown } = { unattendedPrincipal: false },
 ): boolean {
+  // Isolation always uses the dedicated service; an unattended opt-in cannot lift it.
+  if (isNetworkIsolationCommand(toolName, opts.toolInput)) return true;
   // Only Tier 3 is ever lifted (see MCP_UNATTENDED_TIER3_PRINCIPALS); Tier 4
   // has no approval path and stays denied for everyone.
   if (opts.unattendedPrincipal && effectiveTier === 3) return false;
@@ -2222,6 +2225,15 @@ async function handleToolsCall(
     );
   }
 
+  // Isolation cannot become an MCP intent either. Check before registry lookup so
+  // release_containment stays denied by name even before its AI tool is registered.
+  if (isNetworkIsolationCommand(toolName, toolInput)) {
+    return jsonRpcResult(id, {
+      content: [{ type: 'text', text: JSON.stringify(MCP_APPROVAL_REQUIRED_ERROR) }],
+      isError: true,
+    });
+  }
+
   // Check scope-based access
   const baseTier = getToolTier(toolName);
   if (baseTier === undefined) {
@@ -2293,7 +2305,7 @@ async function handleToolsCall(
   const readBelowIntentTier = tier === 3
     && Math.max(guardrailCheck.tier, mcpTierFloor(toolName)) < 3
     && isReadOnlyResolution(toolName, guardrailCheck);
-  const approvalRequired = isMcpApprovalRequired(toolName, tier, { unattendedPrincipal })
+  const approvalRequired = isMcpApprovalRequired(toolName, tier, { unattendedPrincipal, toolInput })
     && !(readBelowIntentTier && mcpTier3IntentsEnabled());
   // B-W04 (#6158, D-B30): with MCP_TIER3_INTENTS_ENABLED OFF this gate is
   // exactly today's (same position, same body). ON, a call this credential
