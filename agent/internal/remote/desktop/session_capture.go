@@ -263,8 +263,13 @@ func (s *Session) captureLoop() {
 // last Win32 error the capturer swallowed as a nil frame — the same detail
 // describeCaptureFailure attaches on the startup probe path — and falls back
 // to a generic description when the capturer recorded none (e.g. DXGI).
-func noVideoStopReason(capturer ScreenCapturer) string {
+func noVideoStopReason(capturer ScreenCapturer, wake *displayWakeHold) string {
 	if reason := swallowedCaptureError(capturer); reason != "" {
+		return reason
+	}
+	// #10874: a display that is asleep or gone explains the outage better
+	// than the generic text, and the two need opposite fixes.
+	if reason := wake.stopReason(displayPower); reason != "" {
 		return reason
 	}
 	return noVideoStopReasonFallback
@@ -356,7 +361,7 @@ func (s *Session) captureLoopDXGI() captureMode {
 					s.mu.RLock()
 					capturer := s.capturer
 					s.mu.RUnlock()
-					go s.StopWithReason(noVideoStopReason(capturer))
+					go s.StopWithReason(noVideoStopReason(capturer, s.displayWake))
 					return captureModeStopped
 				}
 				wd.recordAttempt(lastWriteNanos)
@@ -367,6 +372,8 @@ func (s *Session) captureLoopDXGI() captureMode {
 				s.mu.RLock()
 				capForReattach := s.capturer
 				s.mu.RUnlock()
+				// Wake the display before the rebuild (#10874).
+				s.displayWake.nudge()
 				if r, ok := capForReattach.(interface{ ForceReattach() }); ok {
 					r.ForceReattach()
 					// Reset GPU path state so the encoder rebinds to the new
@@ -669,7 +676,7 @@ func (s *Session) captureLoopTicker() captureMode {
 						s.mu.RLock()
 						capturer := s.capturer
 						s.mu.RUnlock()
-						go s.StopWithReason(noVideoStopReason(capturer))
+						go s.StopWithReason(noVideoStopReason(capturer, s.displayWake))
 						return captureModeStopped
 					}
 					wd.recordAttempt(lastWriteNanos)
@@ -680,6 +687,8 @@ func (s *Session) captureLoopTicker() captureMode {
 					s.mu.RLock()
 					capForReattach := s.capturer
 					s.mu.RUnlock()
+					// Wake the display before the rebuild (#10874).
+					s.displayWake.nudge()
 					if r, ok := capForReattach.(interface{ ForceReattach() }); ok {
 						r.ForceReattach()
 						// Rebind the encoder to whatever D3D11 device

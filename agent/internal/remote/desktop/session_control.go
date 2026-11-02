@@ -726,7 +726,7 @@ func (s *Session) switchMonitor(index int) {
 	cfg := s.captureConfig
 	s.mu.RUnlock()
 	cfg.DisplayIndex = index
-	newCap, capErr := NewScreenCapturer(cfg)
+	newCap, capErr := openSessionCapturer(cfg)
 	if capErr != nil {
 		slog.Warn("Failed to create capturer for monitor", "display", index, "error", capErr.Error())
 		// The epochs moved above. Tell the viewer it is still on its old
