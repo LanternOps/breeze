@@ -231,4 +231,42 @@ describe('PhysicalPlacementCard', () => {
     expect(await screen.findByText(/Couldn't load physical placement/)).toBeInTheDocument();
     expect(screen.queryByTestId('physical-placement-edit')).toBeNull();
   });
+
+  it('a malformed PUT success body toasts failure and keeps the previous state', async () => {
+    route({
+      get: () => res(getPayload(FULL)),
+      put: () => res({}, 200),
+    });
+    render(<PhysicalPlacementCard subject="device" id={ID} />);
+    fireEvent.click(await screen.findByTestId('physical-placement-edit'));
+    fireEvent.change(screen.getByTestId('physical-placement-room'), { target: { value: 'Other' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(toastMock).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: expect.stringContaining("Couldn't save") }),
+      ),
+    );
+    expect(toastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    // Still in edit mode; previous data intact, no crash.
+    expect(screen.getByTestId('physical-placement-room')).toBeInTheDocument();
+  });
+
+  it('409 followed by a failed re-read shows the load error with Retry, not stale data', async () => {
+    let gets = 0;
+    route({
+      get: () => {
+        gets += 1;
+        if (gets === 2) return res({ error: 'boom' }, 500);
+        return res(getPayload(gets > 2 ? { ...FULL, room: 'Fresh' } : FULL));
+      },
+      put: () => res({ error: 'x', code: 'PLACEMENT_CONCURRENT_UPDATE' }, 409),
+    });
+    render(<PhysicalPlacementCard subject="device" id={ID} />);
+    fireEvent.click(await screen.findByTestId('physical-placement-edit'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText(/Couldn't load physical placement/)).toBeInTheDocument();
+    expect(screen.queryByTestId('physical-placement-value-room')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.getByTestId('physical-placement-value-room')).toHaveTextContent('Fresh'));
+  });
 });

@@ -117,7 +117,7 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   { key: 'hardware.gpuModel', label: 'GPU Model', category: 'hardware', type: 'string', operators: OPERATORS_BY_TYPE.string },
   { key: 'hardware.health', label: 'Hardware Health', category: 'hardware', type: 'enum', operators: OPERATORS_BY_TYPE.enum, enumValues: ['ok', 'warning', 'critical', 'unknown'], description: 'Storage/RAID health rollup; devices with no hardware report match none' },
   // #9863 — stored device_warranty.status (the value the Warranty card shows).
-  { key: 'warranty.status', label: 'Warranty Status', category: 'hardware', type: 'enum', operators: OPERATORS_BY_TYPE.enum, enumValues: ['active', 'expiring', 'expired', 'unknown', 'subscription_active'], description: 'Warranty status from the last warranty sync; devices with no warranty record count as unknown, so "not expired" includes them. Dynamic groups do not re-evaluate when a warranty sync changes the status' },
+  { key: 'warranty.status', label: 'Warranty Status', category: 'hardware', type: 'enum', operators: OPERATORS_BY_TYPE.enum, enumValues: ['active', 'expiring', 'expired', 'unknown', 'subscription_active'], description: 'Warranty status from the last warranty sync; devices with no warranty record count as unknown, so "not expired" includes them' },
 
   // Network fields
   { key: 'network.ipAddress', label: 'IP Address', category: 'network', type: 'string', operators: OPERATORS_BY_TYPE.string },
@@ -136,6 +136,7 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   { key: 'software.vendor', label: 'Software Vendor', category: 'software', type: 'string', operators: ['contains', 'equals'], description: 'Match devices with software from a vendor' },
 
   // Device-state predicates (virtual EXISTS fields against related tables)
+  { key: 'networkIsolation.active', label: 'Network Isolated', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device has an unresolved network isolation episode' },
   { key: 'patches.pending', label: 'Has Pending Patches', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device has at least one pending patch' },
   { key: 'alerts.critical', label: 'Has Critical Alerts', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device has an active critical alert' },
   { key: 'system.rebootRequired', label: 'Reboot Required', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device OS reports a reboot is pending' },
@@ -477,9 +478,12 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
   // on devices.id and needs no join. The chip bar emits `equals 'yes'`/`'no'`;
   // the advanced builder may send a real boolean — treat false/'no'/'false' as
   // the negative, and `notEquals` flips the polarity.
-  if (field === 'patches.pending' || field === 'alerts.critical' || field === 'system.rebootRequired') {
+  if (field === 'patches.pending' || field === 'alerts.critical' || field === 'system.rebootRequired' || field === 'networkIsolation.active') {
     let inner: SQL<unknown>;
-    if (field === 'patches.pending') {
+    if (field === 'networkIsolation.active') {
+      // Matches device_network_isolations_one_unresolved_uniq, including local releases awaiting acknowledgement.
+      inner = sql`EXISTS (SELECT 1 FROM device_network_isolations WHERE device_id = ${devices.id} AND state NOT IN ('released', 'expired', 'failed', 'uninstalled'))`;
+    } else if (field === 'patches.pending') {
       inner = sql`EXISTS (SELECT 1 FROM device_patches WHERE device_id = ${devices.id} AND status = 'pending')`;
     } else if (field === 'alerts.critical') {
       inner = sql`EXISTS (SELECT 1 FROM alerts WHERE device_id = ${devices.id} AND status = 'active' AND severity = 'critical')`;

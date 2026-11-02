@@ -1237,6 +1237,13 @@ coreRoutes.get(
       )`);
     }
 
+    if (query.isolated !== undefined) {
+      // Keep the literal state predicate identical to the unresolved-episode partial index.
+      // The existing request RLS context scopes this correlated subquery too.
+      const isolated = sql`EXISTS (SELECT 1 FROM device_network_isolations WHERE device_id = ${devices.id} AND state NOT IN ('released', 'expired', 'failed', 'uninstalled'))`;
+      conditions.push(query.isolated === 'true' ? isolated : sql`NOT (${isolated})`);
+    }
+
     if (query.status) {
       conditions.push(eq(devices.status, query.status));
     }

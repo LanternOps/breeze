@@ -1,6 +1,7 @@
 package updater
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -35,7 +36,13 @@ func pkgDownloadURLs(serverURL, version, goarch string) []string {
 
 	base := strings.TrimRight(strings.TrimSpace(serverURL), "/")
 	if base == "" {
+		if isolationActive() {
+			return nil
+		}
 		return []string{release}
+	}
+	if isolationActive() {
+		return []string{fmt.Sprintf("%s/api/v1/agents/download/darwin/%s/pkg", base, goarch)}
 	}
 	return []string{
 		fmt.Sprintf("%s/api/v1/agents/download/darwin/%s/pkg", base, goarch),
@@ -58,11 +65,20 @@ func (u *Updater) fetchVerifiedPkg(urls []string, expectedSHA256 string) (string
 	if err := u.checkClient(); err != nil {
 		return "", err
 	}
+	if len(urls) == 0 {
+		if isolationActive() {
+			return "", fmt.Errorf("%w: no control-plane package source", ErrUpdateBlockedByIsolation)
+		}
+		return "", fmt.Errorf("no package download sources available")
+	}
 	var errs []error
 	for _, rawURL := range urls {
 		path, err := u.downloadPkgFrom(rawURL)
 		if err == nil {
 			err = u.verifyChecksum(path, expectedSHA256)
+			if err == nil {
+				err = verifyIsolationSize(path, u.signedPkgSize)
+			}
 			if err == nil {
 				return path, nil
 			}
@@ -79,8 +95,11 @@ func (u *Updater) downloadPkgFrom(rawURL string) (string, error) {
 		return "", fmt.Errorf("invalid pkg URL: %w", err)
 	}
 	log.Info("downloading pkg for update", "url", rawURL)
-	resp, err := u.client.Do(req)
+	resp, err := u.artifactRequest(req)
 	if err != nil {
+		if errors.Is(err, ErrUpdateBlockedByIsolation) {
+			return "", ErrUpdateBlockedByIsolation
+		}
 		return "", fmt.Errorf("pkg download failed: %s", SafeDownloadErrorMessage(err))
 	}
 	defer resp.Body.Close()
@@ -110,4 +129,24 @@ func pkgSourceLabel(rawURL string) string {
 		return rawURL[:i]
 	}
 	return rawURL
+}
+
+// withVerifiedPkgSize binds the package size from the already-verified manifest
+// on a private copy. A missing/unreadable size fails closed during containment.
+func (u *Updater) withVerifiedPkgSize(payload []byte) *Updater {
+	copyUpdater := *u
+	copyUpdater.signedPkgSize = 0
+	var manifest releaseArtifactManifest
+	if err := json.Unmarshal(payload, &manifest); err != nil {
+		// Fails closed under containment (size 0 is refused); visible otherwise.
+		log.Warn("signed release manifest unreadable; .pkg size not bound", "error", err.Error())
+		return &copyUpdater
+	}
+	for _, asset := range manifest.Assets {
+		if asset.Name == pkgAssetName() {
+			copyUpdater.signedPkgSize = asset.Size
+			break
+		}
+	}
+	return &copyUpdater
 }
