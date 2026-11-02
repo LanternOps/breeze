@@ -1150,6 +1150,8 @@
       "ticket_customer_email_domain": "Ticket customer domain",
       "ticket_email_inbound": "Inbound ticket email",
       "ticket_form": "Ticket form",
+      "ticket_import_run": "Ticket import run",
+      "ticket_import_source": "Ticket import source",
       "ticket_mailbox_connection": "Ticket mailbox",
       "ticket_priority_settings": "Ticket priority settings",
       "ticket_response_template": "Ticket response template",
