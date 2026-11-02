@@ -41,9 +41,9 @@
 -- `included` in CORE_TENANT_EXPORT_POLICY. No RLS change.
 --
 -- The CHECK is added NOT VALID (no scan under ACCESS EXCLUSIVE) and VALIDATEd
--- by the @no-transaction 2027-01-19-110200, under SHARE UPDATE EXCLUSIVE.
+-- by the @no-transaction 2027-01-19-120200, under SHARE UPDATE EXCLUSIVE.
 -- One hot table per transaction: this file locks `devices` only; the
--- device_hardware column is 2027-01-19-110100.
+-- device_hardware column is 2027-01-19-120100.
 --
 -- Idempotent: ADD COLUMN IF NOT EXISTS, the backfill matches only rows with a
 -- link and no reason, the CHECKs are added only when absent, the trigger is

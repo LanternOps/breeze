@@ -3,7 +3,7 @@
 -- inside one multi-table transaction. Each statement runs and commits on its
 -- own.
 --
--- 1. VALIDATE the two NOT VALID CHECKs on devices from 2027-01-19-110000,
+-- 1. VALIDATE the two NOT VALID CHECKs on devices from 2027-01-19-120000,
 --    under SHARE UPDATE EXCLUSIVE, so heartbeats keep writing `devices`
 --    during the scan. That file backfilled every linked row first.
 --

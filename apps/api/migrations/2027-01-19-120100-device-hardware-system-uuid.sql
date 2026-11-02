@@ -15,7 +15,7 @@
 -- column outside its excluded map), which is right: the column is exported.
 --
 -- The two lookup indexes are built CONCURRENTLY by the @no-transaction
--- 2027-01-19-110200, so the hardware-report writer is never blocked by a build.
+-- 2027-01-19-120200, so the hardware-report writer is never blocked by a build.
 --
 -- Idempotent: ADD COLUMN IF NOT EXISTS only (nullable, no default: catalog
 -- only, no rewrite). No row is written, so no system-scope election is

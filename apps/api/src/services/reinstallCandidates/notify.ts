@@ -25,7 +25,7 @@ import { createAuditLogAsync } from '../auditService';
 import { EVENT_TYPES, publishEvent } from '../eventBus';
 import type { ReinstallEvidence } from './ranking';
 
-/** `conditions->>'eventType'` of the built-in template (2027-01-19-110300) and the event type. */
+/** `conditions->>'eventType'` of the built-in template (2027-01-19-120300) and the event type. */
 export const DEVICE_REINSTALL_SUSPECTED_EVENT_TYPE = 'device.reinstall_suspected' as const;
 
 /** The neutral label used whenever the source must not be named. */

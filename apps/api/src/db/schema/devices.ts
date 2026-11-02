@@ -474,7 +474,7 @@ export const deviceHardware = pgTable('device_hardware', {
   // #8318 §7.2 — SMBIOS system UUID, canonical lower-case form; placeholders and
   // malformed values are stored NULL. A reinstall hint, never authority. Partial
   // indexes device_hardware_system_uuid_idx and device_hardware_serial_vendor_idx
-  // (2027-01-19-110200) serve the partner-wide candidate search.
+  // (2027-01-19-120200) serve the partner-wide candidate search.
   systemUuid: uuid('system_uuid'),
   // Memory summary (#5351). All NULL until an agent reports a valid `memory`
   // block; `memoryObservedAt` is when one was last applied (updatedAt also

@@ -116,7 +116,7 @@ async function suspectedEvents(orgId: string) {
 
 /** The built-in template (alert_templates is truncated between tests) and an org rule bound to it. */
 async function enableAlertRule(orgId: string): Promise<void> {
-  await replayMigration('2027-01-19-110300-device-reinstall-suspected-alert-template.sql');
+  await replayMigration('2027-01-19-120300-device-reinstall-suspected-alert-template.sql');
   const [template] = await getTestDb().select({ id: alertTemplates.id }).from(alertTemplates)
     .where(sql`${alertTemplates.conditions}->>'eventType' = 'device.reinstall_suspected'`);
   await getTestDb().insert(alertRules).values({
@@ -366,7 +366,7 @@ describe('reinstall candidates — the search (§7.3)', () => {
 
   it('raises no alert without a rule (opt-in), but still flags, publishes and audits', async () => {
     const tenant = await seedReattachTenant();
-    await replayMigration('2027-01-19-110300-device-reinstall-suspected-alert-template.sql');
+    await replayMigration('2027-01-19-120300-device-reinstall-suspected-alert-template.sql');
     const target = await oldTarget(tenant.orgA, { systemUuid: UUID });
     const source = await newSource(tenant.orgB, { systemUuid: UUID });
     expect(await detect(source.id)).toMatchObject({ written: true });
@@ -449,7 +449,7 @@ describe('reinstall candidates — clears and the CHECK', () => {
     const tenant = await seedReattachTenant();
     const target = await oldTarget(tenant.orgA, {});
     const source = await newSource(tenant.orgA, {});
-    // The state before 2027-01-19-110000: a link with no reason, and neither
+    // The state before 2027-01-19-120000: a link with no reason, and neither
     // the CHECK nor the sync trigger (the replay below re-creates the trigger).
     await getTestDb().execute(sql`ALTER TABLE devices DROP CONSTRAINT devices_possible_replacement_reason_chk`);
     await getTestDb().execute(sql`DROP TRIGGER devices_possible_replacement_reason_sync ON devices`);
@@ -458,9 +458,9 @@ describe('reinstall candidates — clears and the CHECK', () => {
         UPDATE devices SET possible_replacement_of_device_id = ${target.id}::uuid WHERE id = ${source.id}::uuid`);
       expect(await flagOf(source.id)).toEqual({ target: target.id, reason: null, detectedAt: null });
       // Bare replay: the file redefines no function a later file redefines; its
-      // only follower (2027-01-19-110200, VALIDATE) is @no-transaction, so the
+      // only follower (2027-01-19-120200, VALIDATE) is @no-transaction, so the
       // VALIDATE is run by hand below.
-      const file = await readFile(new URL('../../../migrations/2027-01-19-110000-device-possible-replacement-reason.sql', import.meta.url), 'utf8');
+      const file = await readFile(new URL('../../../migrations/2027-01-19-120000-device-possible-replacement-reason.sql', import.meta.url), 'utf8');
       await getTestDb().transaction(async (tx) => { await tx.execute(sql.raw(file)); });
     } finally {
       await getTestDb().execute(sql`
