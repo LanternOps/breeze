@@ -215,7 +215,6 @@ export default function LoginPage({ next, partnerSlug }: LoginPageProps = {}) {
     login(user, tokens);
     fetchAndApplyPreferences();
     try {
-      // Setup wizard wins over `next` — user can't do anything useful before setup completes.
       await navigateTo(postLoginDestination(requiresSetup, safeNext));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to complete sign in');
