@@ -14,6 +14,7 @@ import {
   evaluateGroupMembership,
   pinDeviceToGroup,
   pruneGroupMembershipsOutsideSite,
+  removeManualGroupMemberships,
   validateManualMembershipDevices,
 } from '../services/groupMembership';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -177,6 +178,17 @@ const updateGroupSchema = z.object({
 
 const addDevicesSchema = z.object({
   deviceIds: z.array(z.string().guid()).min(1)
+});
+
+/**
+ * Per-request cap of `POST /:id/devices/remove` (#9866). MIRRORED by
+ * `BULK_GROUP_MEMBERSHIP_CAP` in apps/web/src/components/devices/bulkActionGating.ts,
+ * which disables the device-list bulk items above it rather than chunking.
+ */
+export const BULK_GROUP_MEMBERSHIP_CAP = 500;
+
+const removeDevicesSchema = z.object({
+  deviceIds: z.array(z.string().guid()).min(1).max(BULK_GROUP_MEMBERSHIP_CAP)
 });
 
 const groupIdParamSchema = z.object({
@@ -1330,6 +1342,103 @@ groupRoutes.delete(
   }
 );
 
+type BulkRemoveOutcome = 'removed' | 'not_member' | 'forbidden';
+
+// POST /:id/devices/remove - Remove several devices from a static group (#9866)
+//
+// The bulk sibling of DELETE /:id/devices/:deviceId, with the same gates in the
+// same order (org-owned, group site, static, then the per-device site check).
+// A device the caller may not touch is refused PER DEVICE (`forbidden`) instead
+// of failing the batch, so one restricted device does not block the rest; the
+// answer is 200 with one outcome per requested id. POST, not DELETE-with-body,
+// because DELETE bodies are dropped by some proxies.
+groupRoutes.post(
+  '/:id/devices/remove',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('param', groupIdParamSchema),
+  requireReadableGroup,
+  requireGroupWrite,
+  requireMfa(),
+  async (c) => {
+    const { id } = c.req.valid('param');
+
+    const group = c.get('resolvedGroup');
+    if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
+    const body = await parseGroupRequestBody(c.req);
+    if (!body.ok) return c.json({ error: body.error }, 400);
+    const parsed = removeDevicesSchema.safeParse(body.body);
+    if (!parsed.success) return c.json(formatZodError(parsed.error), 400);
+    const requested = [...new Set(parsed.data.deviceIds)];
+
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (!groupSiteAllowed(group, perms)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    if (group.type === 'dynamic') {
+      return c.json({ error: 'Cannot manually remove devices from a dynamic group' }, 400);
+    }
+
+    // Same predicate as canAccessDeviceSite, batched: needed only when the
+    // caller is site-restricted or the group is site-bound. A device that reads
+    // back absent (deleted, or invisible under RLS) is refused, never removed.
+    const forbidden = new Set<string>();
+    if (perms?.allowedSiteIds || group.siteId) {
+      const rows = await db
+        .select({ id: devices.id, siteId: devices.siteId })
+        .from(devices)
+        .where(inArray(devices.id, requested));
+      const siteById = new Map(rows.map((row) => [row.id, row.siteId]));
+      for (const deviceId of requested) {
+        const siteId = siteById.get(deviceId);
+        const allowed = typeof siteId === 'string'
+          && (!group.siteId || siteId === group.siteId)
+          && (!perms?.allowedSiteIds || canAccessSite(perms, siteId));
+        if (!allowed) forbidden.add(deviceId);
+      }
+    }
+
+    const candidates = requested.filter((deviceId) => !forbidden.has(deviceId));
+    const { removed } = await removeManualGroupMemberships({
+      groupId: id,
+      group,
+      deviceIds: candidates
+    });
+    const removedSet = new Set(removed);
+
+    if (removed.length > 0) {
+      writeRouteAudit(c, {
+        orgId: group.orgId,
+        action: 'device_group.device.remove',
+        resourceType: 'device_group',
+        resourceId: group.id,
+        resourceName: group.name,
+        details: {
+          removedCount: removed.length,
+          deviceIds: removed
+        }
+      });
+    }
+
+    const results = requested.map((deviceId) => ({
+      deviceId,
+      outcome: (forbidden.has(deviceId) ? 'forbidden' : removedSet.has(deviceId) ? 'removed' : 'not_member') as BulkRemoveOutcome
+    }));
+
+    return c.json({
+      data: {
+        results,
+        summary: {
+          removed: removed.length,
+          notMember: results.filter((r) => r.outcome === 'not_member').length,
+          forbidden: forbidden.size,
+          total: requested.length
+        }
+      }
+    });
+  }
+);
+
 // POST /:id/preview - Preview devices matching the group's filter
 const previewQuerySchema = z.object({
   limit: z.coerce.number().min(1).max(100).default(10)
@@ -1379,7 +1488,9 @@ groupRoutes.post(
       preview = await evaluateFilterWithPreview(filter, {
         orgId: group.orgId,
         allowedSiteIds: group.siteId ? [group.siteId] : null,
-        previewLimit: limit
+        previewLimit: limit,
+        // Same population membership evaluation uses (#9933).
+        excludeDecommissioned: true
       });
     } catch (error) {
       // The fourth preview endpoint, and the one most likely to time out: a

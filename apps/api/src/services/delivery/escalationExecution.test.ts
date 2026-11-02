@@ -1,5 +1,5 @@
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const state = vi.hoisted(() => ({ rows: [] as unknown[][], values: vi.fn(), execute: vi.fn() }));
 vi.mock('../../db', () => ({
   db: {
@@ -10,9 +10,13 @@ vi.mock('../../db', () => ({
   },
   assertInTransaction: vi.fn(),
 }));
+const publishEvent = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => 'evt'));
+vi.mock('../eventBus', () => ({ publishEvent: (...args: unknown[]) => publishEvent(...args) }));
 import { assertInTransaction } from '../../db';
-import { escalationOccurrences, listEscalationUsers, processUserEscalation, validateEscalationUsers } from './escalationExecution';
-beforeEach(() => { state.rows.length = 0; vi.clearAllMocks(); state.execute.mockReset(); });
+import {
+  escalationEventId, escalationOccurrences, listEscalationUsers, processEscalationEvent, processUserEscalation, validateEscalationUsers,
+} from './escalationExecution';
+beforeEach(() => { state.rows.length = 0; vi.clearAllMocks(); state.execute.mockReset(); publishEvent.mockResolvedValue('evt'); });
 afterEach(() => vi.restoreAllMocks());
 it('keeps old step IDs and allocates unique repeat identities at exact delays', () => {
   expect(escalationOccurrences([{ delayMinutes: 5, channelIds: ['ch'], userIds: ['u'], renotify: { everyMinutes: 10, maxTimes: 2 } }])
@@ -144,4 +148,67 @@ it('keeps policy scheduling metadata out of delivery occurrences', () => {
     { channelIds: ['ch'], userIds: ['u'], escalationStep: 1, delayMs: 300000 },
     { channelIds: ['ch'], userIds: ['u'], escalationStep: 11, delayMs: 900000 },
   ]);
+});
+
+// #10565: alert.escalated is published once per (alert, escalation occurrence)
+// from the step's own `escalation-event` job — never per channel or per user.
+describe('processEscalationEvent', () => {
+  const job = { type: 'escalation-event' as const, alertId: 'alert-1', escalationStep: 12, escalationPolicyId: 'policy-1' };
+  it('publishes alert.escalated with a deterministic event id while the alert is active', async () => {
+    state.rows.push([{ id: 'alert-1', orgId: 'org-1', ruleId: 'rule-1', deviceId: 'device-1', status: 'active' }]);
+    await expect(processEscalationEvent(job)).resolves.toBe(true);
+    expect(publishEvent).toHaveBeenCalledTimes(1);
+    expect(publishEvent.mock.calls[0]).toEqual([
+      'alert.escalated',
+      'org-1',
+      {
+        alertId: 'alert-1', ruleId: 'rule-1', deviceId: 'device-1',
+        escalationPolicyId: 'policy-1', escalationStep: 12, policyStep: 2, repeat: 1,
+      },
+      'notification-dispatcher',
+      { eventId: escalationEventId('alert-1', 12) },
+    ]);
+  });
+  it('publishes alert.escalated with deviceId null for an org-subject alert', async () => {
+    state.rows.push([{
+      id: 'alert-1', orgId: 'org-1', ruleId: 'rule-1', deviceId: null,
+      ownerKind: 'backup_workload', ownerRef: 'workload-1', status: 'active',
+    }]);
+    await expect(processEscalationEvent(job)).resolves.toBe(true);
+    expect(publishEvent).toHaveBeenCalledExactlyOnceWith(
+      'alert.escalated',
+      'org-1',
+      {
+        alertId: 'alert-1', ruleId: 'rule-1', deviceId: null,
+        escalationPolicyId: 'policy-1', escalationStep: 12, policyStep: 2, repeat: 1,
+      },
+      'notification-dispatcher',
+      { eventId: escalationEventId('alert-1', 12) },
+    );
+  });
+  it.each(['acknowledged', 'resolved', 'suppressed', 'dismissed'])('publishes nothing once the alert is %s', async status => {
+    state.rows.push([{ id: 'alert-1', orgId: 'org-1', ruleId: null, deviceId: 'device-1', status }]);
+    await expect(processEscalationEvent(job)).resolves.toBe(false);
+    expect(publishEvent).not.toHaveBeenCalled();
+  });
+  it('publishes nothing for a deleted alert', async () => {
+    state.rows.push([]);
+    await expect(processEscalationEvent(job)).resolves.toBe(false);
+    expect(publishEvent).not.toHaveBeenCalled();
+  });
+  it('lets a publish failure throw so BullMQ retries under the same event id', async () => {
+    state.rows.push([{ id: 'alert-1', orgId: 'org-1', ruleId: null, deviceId: 'device-1', status: 'active' }]);
+    publishEvent.mockRejectedValueOnce(new Error('redis down'));
+    await expect(processEscalationEvent(job)).rejects.toThrow('redis down');
+  });
+  it('derives a stable UUID per (alert, occurrence) that the event bus accepts', () => {
+    const id = escalationEventId('alert-1', 12);
+    expect(id).toBe(escalationEventId('alert-1', 12));
+    expect(id).not.toBe(escalationEventId('alert-1', 2));
+    expect(id).not.toBe(escalationEventId('alert-2', 12));
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    // Pinned: webhook delivery dedupes on (webhook_id, event_id), so the id
+    // must not change across deploys for a job retried after an upgrade.
+    expect(id).toBe('8a5ada06-8a4d-5fdc-a72b-e3ee71057aa9');
+  });
 });

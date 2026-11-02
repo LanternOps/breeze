@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { newPartnerPurchaseSelectionSchema, type LaunchPurchaseSelection } from '@breeze/shared';
+import { normalizeSignupIntent, type SignupIntent } from '@breeze/shared';
 import type { Context } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq, sql } from 'drizzle-orm';
@@ -380,11 +380,17 @@ verifyEmailRoutes.post('/resend-verification', authMiddleware, async (c) => {
   return c.json({ sent: true });
 });
 
+/** sign_in responses echo the normalized intent when the record carried one; never a purchaseSelection. */
+function signInIntent(rec: PendingRegistration): { signupIntent?: SignupIntent } {
+  const carried = rec.signupIntent ?? rec.purchaseSelection;
+  return carried ? { signupIntent: normalizeSignupIntent(carried) } : {};
+}
+
 type CreatedRegistration = Awaited<ReturnType<typeof createPartner>>;
 
 interface RegistrationFacts {
   created: CreatedRegistration;
-  purchaseSelection: LaunchPurchaseSelection;
+  purchaseSelection: SignupIntent;
   partnerRow: {
     id: string;
     name: string;
@@ -423,10 +429,10 @@ async function createRegistrationAccount(
     .limit(1);
   if (existing) return null;
 
-  // Old pending snapshots can predate purchase intent. Resolve the fresh-account
-  // default only after ruling out an existing user, and carry the same value
-  // through the durable insert and the post-commit billing hook.
-  const purchaseSelection = newPartnerPurchaseSelectionSchema.parse(rec.purchaseSelection);
+  // Old pending snapshots can predate signup intent or carry the legacy launch
+  // tuple. Resolve the cloud default only after ruling out an existing user, and
+  // carry the same value through the durable insert and the post-commit billing hook.
+  const purchaseSelection = normalizeSignupIntent(rec.signupIntent ?? rec.purchaseSelection);
   const created = await createPartner({
     orgName: rec.companyName,
     adminEmail: rec.email,
@@ -638,7 +644,7 @@ async function finalizePendingRegistration(
           reason: 'already_registered',
           email: rec.email,
         });
-        return c.json({ verified: false, status: 'sign_in' as const, ...(rec.purchaseSelection ? { purchaseSelection: rec.purchaseSelection } : {}) }, 200);
+        return c.json({ verified: false, status: 'sign_in' as const, ...signInIntent(rec) }, 200);
       }
       return c.json({ error: 'Authentication temporarily unavailable' }, 409);
     }
@@ -657,7 +663,7 @@ async function finalizePendingRegistration(
       reason: 'already_registered',
       email: rec.email,
     });
-    return c.json({ verified: false, status: 'sign_in' as const, ...(rec.purchaseSelection ? { purchaseSelection: rec.purchaseSelection } : {}) }, 200);
+    return c.json({ verified: false, status: 'sign_in' as const, ...signInIntent(rec) }, 200);
   }
 
   const { facts } = committed;

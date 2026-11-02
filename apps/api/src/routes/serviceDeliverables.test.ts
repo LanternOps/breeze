@@ -58,7 +58,7 @@ vi.mock('../services/deliverableTemplateService', () => ({
 }));
 
 import { authMiddleware } from '../middleware/auth';
-import { serviceDeliverableRoutes } from './serviceDeliverables';
+import { deliverableActorFrom, serviceDeliverableRoutes } from './serviceDeliverables';
 
 const {
   listDeliverables, getDeliverable, createDeliverable, updateDeliverable, deactivateDeliverable,
@@ -74,7 +74,9 @@ const RUN = '44444444-4444-4444-8444-444444444444';
 const NO_PERM = { authorization: 'Bearer token' };
 const AUTH = { authorization: 'Bearer token', 'x-allow': 'true' };
 const JSON_AUTH = { ...AUTH, 'content-type': 'application/json' };
-const ACTOR = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+// #9961: the mocked authMiddleware resolves contracts:read only, so no
+// evidence kind may carry a display label.
+const ACTOR = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'], evidenceLabelAccess: { documents: false, reports: false, agreements: false } };
 const post = (path: string, body: unknown) =>
   app.request(path, { method: 'POST', headers: JSON_AUTH, body: JSON.stringify(body) });
 
@@ -439,5 +441,34 @@ describe('service deliverable routes (#5573 W01)', () => {
     const res = await post(`/${ORG}/deliverables/apply-template`, { setId: DEL });
     expect(res.status).toBe(200);
     expect(getDeliverable).not.toHaveBeenCalled();
+  });
+});
+
+describe('deliverableActorFrom evidence label access (#9961)', () => {
+  const ctx = (permissions: unknown) => {
+    const vals: Record<string, unknown> = {
+      auth: { user: { id: 'u1' }, partnerId: 'p1', accessibleOrgIds: ['org1'] },
+      permissions,
+    };
+    return { get: (k: string) => vals[k] };
+  };
+
+  it('grants a label per kind only for that kind\'s own read permission', () => {
+    const actor = deliverableActorFrom(ctx({ permissions: [
+      { resource: 'contracts', action: 'read' },
+      { resource: 'documents', action: 'read' },
+      { resource: 'agreements', action: 'write' }, // write is not read
+    ] }));
+    expect(actor.evidenceLabelAccess).toEqual({ documents: true, reports: false, agreements: false });
+  });
+
+  it('honours a wildcard grant', () => {
+    expect(deliverableActorFrom(ctx({ permissions: [{ resource: '*', action: '*' }] })).evidenceLabelAccess)
+      .toEqual({ documents: true, reports: true, agreements: true });
+  });
+
+  it('fails closed when no permission gate resolved permissions', () => {
+    expect(deliverableActorFrom(ctx(undefined)).evidenceLabelAccess)
+      .toEqual({ documents: false, reports: false, agreements: false });
   });
 });

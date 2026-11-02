@@ -71,7 +71,7 @@ type Operation = typeof operations[number];
 
 function chain(rows: unknown[]) {
   const result = Object.assign(Promise.resolve(rows), {} as Record<string, unknown>);
-  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin', 'leftJoin', 'orderBy', 'offset']) {
+  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin', 'leftJoin', 'orderBy', 'offset', 'for']) {
     result[method] = vi.fn(() => result);
   }
   return result;

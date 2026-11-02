@@ -649,7 +649,11 @@
     "noMatches": "No matches.",
     "orEnterAPackageIDManually": "Or enter a package ID manually",
     "removeRuleFor": "Remove rule for {{application}}",
-    "scopeNote": "These rules apply to every device whose configuration policy links this ring."
+    "scopeNote": "These rules apply to every device whose configuration policy links this ring.",
+    "linuxPackage": "Linux package",
+    "appPackage": "App package",
+    "manualRuleType": "Rule type",
+    "linuxPinHint": "Enter the full version from the patch list, including any epoch (e.g. 5:24.0.7-1)."
   },
   "patchDetails": {
     "unknown": "Unknown",

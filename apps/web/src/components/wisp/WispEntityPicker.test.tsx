@@ -37,7 +37,7 @@ const quotes = {
   ],
 };
 
-const link = { id: 'l1', ref: { kind: 'ticket', id: 't1', orgId: 'org-a' }, label: '#7 Printer jam', status: 'open', href: '/tickets/t1', addedBy: 'user', createdAt: '2026-10-24T00:00:00.000Z' };
+const link = { id: 'l1', ref: { kind: 'ticket', id: 't1', orgId: 'org-a' }, label: '#7 Printer jam', status: 'open', href: '/tickets/t1', source: 'user_pin', lastTouchedAt: '2026-10-24T08:00:00Z', createdAt: '2026-10-24T00:00:00.000Z' };
 
 function renderPicker(props: Partial<Parameters<typeof WispEntityPicker>[0]> = {}) {
   const onClose = vi.fn();

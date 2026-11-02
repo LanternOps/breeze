@@ -21,7 +21,6 @@ import { useFeaturesStore } from '@/stores/featuresStore';
 vi.mock('@/stores/aiStore', () => ({ useAiStore: vi.fn() }));
 // Children pull in streaming/fetch concerns irrelevant to the shell test.
 vi.mock('./AiChatMessages', () => ({ default: () => null }));
-vi.mock('./AiChatInput', () => ({ default: () => null }));
 vi.mock('./AiContextBadge', () => ({ default: () => null }));
 vi.mock('./AiCostIndicator', () => ({ default: () => null }));
 // #9840 W4: History renders the shared list; its source is tested in its own
@@ -36,7 +35,7 @@ const baseState = {
   toggle: noop, close: noop, messages: [], isStreaming: false, isLoading: false,
   error: null, pageContext: null, pendingApproval: null, pendingPlan: null,
   activePlan: null, approvalMode: 'manual', isPaused: false, sessionId: null,
-  showHistory: false, sessions: [],
+  showHistory: false, sessions: [], composerDraft: '', composerFocusRequest: 0, setComposerDraft: noop,
   sendMessage: noop, approveExecution: noop, approvePlan: noop, abortPlan: noop,
   pauseAi: noop, createSession: noop, closeSession: noop, clearError: noop,
   toggleHistory: noop, loadSessions: noop, loadSession: noop,
@@ -278,5 +277,26 @@ describe('AiChatSidebar header test ids (#9840 W5)', () => {
     expect(screen.getByTestId('ai-chat-history-toggle')).toBeInTheDocument();
     expect(screen.getByTestId('ai-chat-close')).toBeInTheDocument();
     expect(screen.queryByTestId('ai-chat-new-conversation')).toBeNull();
+  });
+});
+
+// W04 X3: exercise the sidebar-to-composer wiring with the real input.
+describe('AiChatSidebar external composer focus', () => {
+  it('focuses ai-chat-input when composerFocusRequest is bumped', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true });
+    const { rerender } = render(<AiChatSidebar />);
+    const input = screen.getByTestId('ai-chat-input');
+    const close = screen.getByTestId('ai-chat-close');
+    close.focus();
+    expect(input).not.toHaveFocus();
+
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, composerFocusRequest: 1 });
+    rerender(<AiChatSidebar />);
+    expect(input).toHaveFocus();
+
+    close.focus();
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, composerFocusRequest: 2 });
+    rerender(<AiChatSidebar />);
+    expect(input).toHaveFocus();
   });
 });

@@ -72,6 +72,7 @@ const USER = '00000000-0000-4000-8000-000000000c01';
 const USER_2 = '00000000-0000-4000-8000-000000000c02';
 const USER_3 = '00000000-0000-4000-8000-000000000c03';
 const ORG = '00000000-0000-4000-8000-000000000d01';
+const ORG2 = '00000000-0000-4000-8000-000000000d02';
 const THREAD = '00000000-0000-4000-8000-000000000e01';
 
 const CEILING = { grantId: GRANT, revisionId: REVISION, partnerId: PARTNER, grantorUserId: USER, status: 'active' };
@@ -259,8 +260,11 @@ describe('buildBrief', () => {
         concern({ status: 'resolved', resolvedAt: '2026-10-22T04:00:00Z' }),
       ]
       : [
-        concern({ severity: 'info', subject: { kind: 'org', id: ORG }, signature: `readiness:${ORG}`, evidence: { readiness: { checks: [] } } }),
+        concern({ severity: 'info', subject: { kind: 'readiness', id: ORG }, signature: `readiness:${ORG}`, evidence: { readiness: { checks: [] } } }),
         concern({ severity: 'info', subject: { kind: 'org', id: ORG }, evidence: {} }),
+        concern({ severity: 'info', subject: { kind: 'readiness', id: ORG2 }, signature: `readiness:${ORG2}`, evidence: { readiness: { checks: [] } } }),
+        // #10386: an org-level concern is never a readiness gap, whatever its evidence says.
+        concern({ severity: 'high', subject: { kind: 'org', id: ORG }, evidence: { readiness: { checks: [] } } }),
       ]));
     h.spendSummary.mockResolvedValue({ spentTodayCents: 42, budgetCentsPerDay: 200, budgetResetsAt: NOW });
     h.listWatches.mockResolvedValue([{ status: 'active' }, { status: 'active' }, { status: 'stopped' }]);
@@ -269,7 +273,7 @@ describe('buildBrief', () => {
     const byHeading = Object.fromEntries(brief.sections.map((s) => [s.heading, s.lines]));
     expect(byHeading.Overnight).toEqual(['2 assessments run', '1 specialist launched', '1 concern resolved']);
     expect(byHeading.Spend).toEqual(['$0.42 of $2.00 today']);
-    expect(byHeading.Watching).toEqual(['2 active watches', '1 readiness gap']);
+    expect(byHeading.Watching).toEqual(['2 active watches', '2 readiness gaps']);
     expect(h.listActivity).toHaveBeenCalledWith(CEILING, { limit: 100 });
     expect(h.spendSummary).toHaveBeenCalledWith(GRANT, NOW);
   });

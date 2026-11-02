@@ -1252,7 +1252,7 @@ func TestPamApplyV2ApprovedToastOnce(t *testing.T) {
 			t.Fatalf("apply %d result = %+v", i, result)
 		}
 	}
-	want := pamNotifyCall{Title: "Request approved", Body: "mmc.exe was approved by Contoso IT and is starting.", WinSession: "5"}
+	want := pamNotifyCall{Title: "Request approved", Body: "Contoso IT approved mmc.exe. It is starting.", WinSession: "5"}
 	if calls := rec.Calls(); len(calls) != 1 || calls[0] != want {
 		t.Fatalf("notices = %+v, want exactly [%+v]", calls, want)
 	}
@@ -1279,7 +1279,7 @@ func TestPamApplyV2ApprovedToastRetriedAfterFailedSend(t *testing.T) {
 			t.Fatalf("apply %d result = %+v", i, result)
 		}
 	}
-	want := pamNotifyCall{Title: "Request approved", Body: "mmc.exe was approved by Contoso IT and is starting.", WinSession: "5"}
+	want := pamNotifyCall{Title: "Request approved", Body: "Contoso IT approved mmc.exe. It is starting.", WinSession: "5"}
 	if calls := rec.Calls(); len(calls) != 1 || calls[0] != want {
 		t.Fatalf("notices = %+v, want exactly [%+v]", calls, want)
 	}
@@ -1293,7 +1293,7 @@ func TestPamApplyV2LaunchFailedToast(t *testing.T) {
 	}
 	// A redelivered failure does not toast again.
 	_ = handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000000002"))
-	want := pamNotifyCall{Title: "Request approved", Body: "mmc.exe was approved but couldn't start. Contact Contoso IT.", WinSession: "5"}
+	want := pamNotifyCall{Title: "The program couldn't start", Body: "mmc.exe was approved but couldn't start. Contact Contoso IT.", WinSession: "5"}
 	if calls := rec.Calls(); len(calls) != 1 || calls[0] != want {
 		t.Fatalf("notices = %+v, want exactly [%+v]", calls, want)
 	}

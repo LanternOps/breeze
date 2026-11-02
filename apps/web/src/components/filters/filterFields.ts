@@ -74,6 +74,9 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   // Storage/RAID health rollup (#6854) — device_hardware_health, not device_hardware.
   { key: 'hardware.health', label: 'Hardware Health', category: 'hardware', type: 'enum', operators: E,
     enumValues: ['ok', 'warning', 'critical', 'unknown'] },
+  // Stored device_warranty.status (#9863); a device with no warranty record is 'unknown'.
+  { key: 'warranty.status', label: 'Warranty Status', category: 'hardware', type: 'enum', operators: E,
+    enumValues: ['active', 'expiring', 'expired', 'unknown', 'subscription_active'] },
 
   // Network
   { key: 'network.ipAddress', label: 'IP Address', category: 'network', type: 'string', operators: S },

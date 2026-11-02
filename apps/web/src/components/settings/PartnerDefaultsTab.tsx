@@ -165,7 +165,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
               })}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             >
-              <option value="">{t('partnerDefaults.notSet')}</option>
+              <option value="">{t('partnerDefaults.notSetTtl')}</option>
               {renderTtlOptions(
                 enrollmentTtlOptionsIncluding(partnerCap, data.defaultEnrollmentTtlMinutes),
               )}
@@ -212,7 +212,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
               })}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm sm:max-w-xs"
             >
-              <option value="">{t('partnerDefaults.notSet')}</option>
+              <option value="">{t('partnerDefaults.notSetMaxTtl')}</option>
               {renderTtlOptions(ENROLLMENT_TTL_OPTIONS)}
             </select>
             <InheritanceLine fieldId="defaults.maxEnrollmentLinkTtlMinutes" />

@@ -1801,6 +1801,9 @@ aiRoutes.get(
         completed: drizzleSql<number>`COUNT(*) FILTER (WHERE ${aiToolExecutions.status} = 'completed')`,
         failed: drizzleSql<number>`COUNT(*) FILTER (WHERE ${aiToolExecutions.status} = 'failed')`,
         rejected: drizzleSql<number>`COUNT(*) FILTER (WHERE ${aiToolExecutions.status} = 'rejected')`,
+        // #10411: platform refusals (guardrail, RBAC, rate limit, validation)
+        // are their own series; `rejected` stays the approval outcome.
+        refused: drizzleSql<number>`COUNT(*) FILTER (WHERE ${aiToolExecutions.status} = 'refused')`,
       })
       .from(aiToolExecutions)
       .innerJoin(aiSessions, eq(aiToolExecutions.sessionId, aiSessions.id))
@@ -1850,6 +1853,7 @@ aiRoutes.get(
         completed: Number(row.completed),
         failed: Number(row.failed),
         rejected: Number(row.rejected),
+        refused: Number(row.refused),
       })),
       executions: executions.map((execution) => ({
         ...execution,

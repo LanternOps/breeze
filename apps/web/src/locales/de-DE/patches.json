@@ -649,7 +649,11 @@
     "noMatches": "Keine Übereinstimmungen.",
     "orEnterAPackageIDManually": "Oder geben Sie manuell eine Paket-ID ein",
     "removeRuleFor": "Regel für {{application}} entfernen",
-    "scopeNote": "Diese Regeln gelten für jedes Gerät, dessen Konfigurationsrichtlinie mit diesem Ring verknüpft ist."
+    "scopeNote": "Diese Regeln gelten für jedes Gerät, dessen Konfigurationsrichtlinie mit diesem Ring verknüpft ist.",
+    "linuxPackage": "Linux-Paket",
+    "appPackage": "App-Paket",
+    "manualRuleType": "Regeltyp",
+    "linuxPinHint": "Geben Sie die vollständige Version aus der Patchliste ein, einschließlich einer eventuellen Epoche (z. B. 5:24.0.7-1)."
   },
   "patchDetails": {
     "unknown": "Unbekannt",

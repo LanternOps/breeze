@@ -28,6 +28,7 @@ import {
   Plug,
   Link2,
   MapPin,
+  Download,
 } from "lucide-react";
 import type {
   BatteryStatus,
@@ -39,6 +40,8 @@ import type {
 } from "@breeze/shared";
 import { HARDWARE_HEALTH_RANK, isAgentUpdateStuck } from "@breeze/shared";
 import ComponentStatePill from "./hardware/ComponentStatePill";
+import { WARRANTY_STATUS_BADGE } from "./DeviceWarrantyCard";
+import { formatDateOnly, parseDateOnly } from "@/lib/dateOnly";
 import {
   matchesMergedListFilters,
   sortByDisplayName,
@@ -51,7 +54,9 @@ import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 // verified API contract lives next to it — read that before changing this.
 import {
   actionGateHint,
+  BULK_GROUP_MEMBERSHIP_CAP,
   BULK_SITE_MOVE_CAP,
+  bulkGroupMembershipBlock,
   bulkMoveSiteBlock,
   classifyBulkSelection,
   isCommandQueueable,
@@ -82,6 +87,7 @@ import {
 } from "./pageSizePreference";
 import {
   COLUMN_IDS,
+  COLUMN_LABELS,
   DEVICES_PAGE_COLUMN_PRESET,
   readColumnOrder,
   readColumnVisibility,
@@ -123,7 +129,14 @@ import { getAgentVersionRelation } from "./agentVersionRelation";
 import { EntityLink } from "@/components/shared/EntityLink";
 import { ColumnChooser, type ColumnGateReason } from "./ColumnChooser";
 import { readSortFromHash, writeSortToHash } from "./deviceListSort";
-import { DeviceAttentionPills, useDeviceAttentionCounts } from "./deviceAttentionCounts";
+import {
+  DeviceAttentionPills,
+  loadDeviceAttentionCounts,
+  useDeviceAttentionCounts,
+} from "./deviceAttentionCounts";
+import { buildDevicesCsv, devicesCsvFilename, type AttentionExportValue } from "./deviceCsvExport";
+import { downloadBlob } from "../../lib/downloadBlob";
+import { showToast } from "../shared/Toast";
 import { helperInstallIssueKey, helperInstalledDespiteIssue } from "./promptRenderer";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
@@ -147,6 +160,8 @@ export type DeviceStatus =
    */
   | "unknown";
 export type OSType = "windows" | "macos" | "linux";
+/** Stored device_warranty.status values (#9863). */
+export type WarrantyStatus = "active" | "expiring" | "expired" | "unknown" | "subscription_active";
 
 /**
  * Presentation-level discriminator for the unified Devices list (#1322, #4622).
@@ -375,6 +390,13 @@ export type Device = {
   hardwareHealth?: HardwareHealth | null;
   hardwareHealthSummary?: Record<string, number> | null;
   /**
+   * Warranty column (#9863): device_warranty end date (bare YYYY-MM-DD) and
+   * its stored status — the same value the device's Warranty card shows.
+   * Both null when the device has no warranty record; the column dashes.
+   */
+  warrantyEndDate?: string | null;
+  warrantyStatus?: WarrantyStatus | null;
+  /**
    * Current-state power/battery snapshot (#2142). null/undefined = no data
    * reported yet (old agent or network device) → the Power column renders a
    * dash. { present: false } = a real no-battery desktop → also a dash.
@@ -484,6 +506,8 @@ const AGENT_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
   "desktopAccess",
   "reliability",
   "hardwareHealth",
+  // #9863 — the list joins device_warranty on the device subject only.
+  "warranty",
   "vpn",
   // #9038 — alerts/tickets hang off the device record, which non-agent rows lack.
   "attention",
@@ -516,6 +540,7 @@ type DeviceListProps = {
   // through `onListFiltersChange` so the page's counts can see it.
   listFilters?: ListFilters;
   onListFiltersChange?: (next: ListFilters) => void;
+  onWarrantyRequiredChange?: (required: boolean) => void;
   // Initial page size if the user has no stored preference for this browser.
   // Once the component mounts, the live page size comes from localStorage
   // (see pageSizePreference.ts); subsequent changes to this prop are ignored.
@@ -847,6 +872,11 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   // < "warning" would otherwise put the worst rows in the middle).
   hardwareHealth: (d) =>
     d.hardwareHealth ? HARDWARE_HEALTH_RANK[d.hardwareHealth] : null,
+  // Chronological by end date (#9863); no warranty record sorts blanks-last.
+  warranty: (d) =>
+    (d.deviceClass ?? "agent") === "agent" && d.warrantyEndDate
+      ? parseDateOnly(d.warrantyEndDate).getTime() || null
+      : null,
   // Sort by the first badge's provider label — active VPNs sort ahead of
   // running-but-disconnected ones because vpnList orders them first. Devices
   // with no VPN at all sort blanks-last (null) to match the dash the cell
@@ -867,6 +897,9 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
     (d.deviceClass ?? "agent") === "network" ? (d.source ?? null) : null,
 };
 
+// Ids per export wave = 5 attention-counts requests (100 ids each) in flight.
+const ATTENTION_EXPORT_WAVE = 500;
+
 export default function DeviceList({
   devices,
   timezone,
@@ -885,6 +918,7 @@ export default function DeviceList({
   networkDevicesEnabled = false,
   listFilters,
   onListFiltersChange,
+  onWarrantyRequiredChange,
   forceSingleOrg = false,
   columnPreset = DEVICES_PAGE_COLUMN_PRESET,
   effectiveAgentVersionByOrgId,
@@ -898,6 +932,8 @@ export default function DeviceList({
   const canWake = can("devices", "execute"); // UX gate; POST /devices/:id/commands requires devices.execute
   // UX gate; PATCH /devices/:id and POST /devices/bulk/site (#9796) both require devices.write (+ MFA).
   const canMoveSite = can("devices", "write");
+  // UX gate; POST /device-groups/:id/devices and .../devices/remove (#9866) require devices.write (+ MFA).
+  const canEditGroupMembership = can("devices", "write");
   // UX gate; the terminal session (routes/remote) requires remote.access.
   const canRemoteTerminal = can("remote", "access");
   // Use provided timezone or browser default
@@ -936,6 +972,10 @@ export default function DeviceList({
   const [visibleColumns, setVisibleColumns] = useState<Set<ColumnId>>(
     () => new Set(readColumnVisibility(columnPreset)),
   );
+  const warrantyVisible = visibleColumns.has('warranty');
+  useEffect(() => {
+    onWarrantyRequiredChange?.(warrantyVisible);
+  }, [warrantyVisible, onWarrantyRequiredChange]);
   const [columnOrder, setColumnOrder] = useState<ColumnId[]>(() =>
     readColumnOrder(columnPreset),
   );
@@ -1354,6 +1394,17 @@ export default function DeviceList({
         : moveSiteBlock === "no_agents"
           ? t("deviceList.agentOnlyBulkAction")
           : undefined;
+  // Bulk "Add to group" / "Remove from group" (#9866): same one-org agent rule
+  // as Move to site, its own cap; one visible reason under both items.
+  const groupBlock = useMemo(() => bulkGroupMembershipBlock(selectedDevices), [selectedDevices]);
+  const groupBlockReason =
+    groupBlock === "mixed_org"
+      ? t("deviceList.moveSiteMixedOrgs")
+      : groupBlock === "over_cap"
+        ? t("deviceList.groupMembershipOverCap", { count: BULK_GROUP_MEMBERSHIP_CAP })
+        : groupBlock === "no_agents"
+          ? t("deviceList.agentOnlyBulkAction")
+          : undefined;
   const agentOnlyTitle = agentOnlyDisabled
     ? t("deviceList.agentOnlyBulkAction")
     : undefined;
@@ -1501,6 +1552,69 @@ export default function DeviceList({
     attentionIds,
     renderedColumns.includes("attention"),
   );
+
+  // #9726 Export CSV. Scope: the checked rows when any are checked, else EVERY
+  // device the current view matches (sortedDevices = all filters applied, in
+  // the drawn order, before paging — the page size only controls what is
+  // drawn). Columns: exactly what is drawn, in drawn order.
+  const [exportingCsv, setExportingCsv] = useState(false);
+  const exportInFlight = useRef(false);
+  const handleExportCsv = async () => {
+    if (exportInFlight.current) return;
+    exportInFlight.current = true;
+    setExportingCsv(true);
+    try {
+      const rows =
+        selectedIds.size > 0
+          ? sortedDevices.filter((d) => selectedIds.has(d.id))
+          : sortedDevices;
+      let attention: Map<string, AttentionExportValue> | undefined;
+      let attentionFailed = false;
+      if (renderedColumns.includes("attention")) {
+        // Same loader + 100-id batching the column uses; only agent rows have
+        // counts, and only a rendered column pays for the request.
+        const ids = rows
+          .filter((d) => (d.deviceClass ?? "agent") === "agent")
+          .map((d) => d.id);
+        // Bounded fan-out: the loader fires every 100-id request of one call at
+        // once, so feed it a few requests' worth of ids at a time instead of
+        // ~100 simultaneous requests on a 10k-device fleet.
+        attention = new Map<string, AttentionExportValue>();
+        for (let i = 0; i < ids.length; i += ATTENTION_EXPORT_WAVE) {
+          const wave = ids.slice(i, i + ATTENTION_EXPORT_WAVE);
+          const { counts, failed } = await loadDeviceAttentionCounts(wave);
+          if (failed.size > 0) attentionFailed = true;
+          for (const id of wave) {
+            attention.set(id, failed.has(id) ? "failed" : (counts[id] ?? null));
+          }
+        }
+      }
+      const csv = buildDevicesCsv({
+        devices: rows,
+        columns: renderedColumns,
+        customFieldDefs: visibleCustomFieldDefs,
+        statusLabel: (d) => t(/* i18n-dynamic */ statusFullLabelKeys[d.status]),
+        attention,
+      });
+      downloadBlob(
+        new Blob([csv], { type: "text/csv;charset=utf-8" }),
+        devicesCsvFilename(),
+      );
+      if (attentionFailed) {
+        showToast({
+          type: "warning",
+          message: t("deviceList.exportCsvAttentionPartial"),
+          duration: 8000,
+        });
+      }
+    } catch (err) {
+      console.error("[devices] CSV export failed", err);
+      showToast({ type: "error", message: t("deviceList.exportCsvFailed") });
+    } finally {
+      exportInFlight.current = false;
+      setExportingCsv(false);
+    }
+  };
 
   // sortHeader factors out the repeated header pattern for sortable
   // columns to keep the column-defs table below readable. The column id
@@ -2645,6 +2759,40 @@ export default function DeviceList({
         </td>
       ),
     },
+    warranty: {
+      header: () => sortHeader("warranty", COLUMN_LABELS.warranty, "Sort by warranty end date"),
+      cell: (device) => {
+        const badge = device.warrantyStatus ? WARRANTY_STATUS_BADGE[device.warrantyStatus] : null;
+        return (
+          <td
+            key="warranty"
+            className="px-3 py-3 text-sm whitespace-nowrap"
+            data-testid={`device-${device.id}-warranty`}
+          >
+            {agentCell(
+              device,
+              device.warrantyEndDate || badge ? (
+                <span className="inline-flex items-center gap-2">
+                  {device.warrantyEndDate && (
+                    <span className="tabular-nums">{formatDateOnly(device.warrantyEndDate)}</span>
+                  )}
+                  {badge && (
+                    <span
+                      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${badge.color}`}
+                      data-testid={`device-${device.id}-warranty-status`}
+                    >
+                      {t(/* i18n-dynamic */ `deviceWarrantyCard.status.${badge.label}`)}
+                    </span>
+                  )}
+                </span>
+              ) : (
+                dash
+              ),
+            )}
+          </td>
+        );
+      },
+    },
     vpn: {
       header: () => sortHeader("vpn", "VPN", "Sort by VPN provider"),
       cell: (device) => {
@@ -2918,6 +3066,20 @@ export default function DeviceList({
               visibleCustomFieldKeys={visibleCustomFieldKeys}
               onToggleCustomField={toggleCustomFieldColumn}
             />
+            <button
+              type="button"
+              data-testid="device-list-export-csv"
+              onClick={() => void handleExportCsv()}
+              disabled={exportingCsv || sortedDevices.length === 0}
+              className="flex h-8 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 text-sm font-medium text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Download className="h-3.5 w-3.5" aria-hidden="true" />
+              {exportingCsv
+                ? t("deviceList.exportingCsv")
+                : selectedIds.size > 0
+                  ? t("deviceList.exportCsvSelected", { count: selectedIds.size })
+                  : t("deviceList.exportCsv")}
+            </button>
             {headerActions}
             {/* A per-page picker only earns its slot when some page size could
                 split the list; below the smallest option it is a dead control
@@ -3077,6 +3239,41 @@ export default function DeviceList({
                         className="px-4 pb-2 text-xs text-muted-foreground"
                       >
                         {moveSiteBlockReason}
+                      </p>
+                    )}
+                  </>
+                )}
+                {canEditGroupMembership && (
+                  <>
+                    <button
+                      type="button"
+                      data-testid="devices-bulk-add-to-group"
+                      onClick={() => handleBulkAction("add-to-group")}
+                      disabled={filterBlocked || groupBlock !== null}
+                      aria-describedby={groupBlock ? "devices-bulk-group-disabled-reason" : undefined}
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {t("deviceList.addToGroup")}
+                      {agentOnlySuffix}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="devices-bulk-remove-from-group"
+                      onClick={() => handleBulkAction("remove-from-group")}
+                      disabled={filterBlocked || groupBlock !== null}
+                      aria-describedby={groupBlock ? "devices-bulk-group-disabled-reason" : undefined}
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {t("deviceList.removeFromGroup")}
+                      {agentOnlySuffix}
+                    </button>
+                    {groupBlockReason && (
+                      <p
+                        id="devices-bulk-group-disabled-reason"
+                        data-testid="devices-bulk-group-disabled-reason"
+                        className="px-4 pb-2 text-xs text-muted-foreground"
+                      >
+                        {groupBlockReason}
                       </p>
                     )}
                   </>

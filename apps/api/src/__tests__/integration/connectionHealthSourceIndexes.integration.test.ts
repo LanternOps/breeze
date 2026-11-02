@@ -20,6 +20,8 @@ const NOW = new Date();
 /** Tables whose rows grow with orgs or users: never sequentially scanned. */
 const PER_ORG_TABLES = new Set([
   'oauth_grants', 'dns_filter_integrations', 'm365_connections', 'm365_sync_state',
+  // PSA connections are dual-axis; the alert ledger grows per alert/org.
+  'psa_connections', 'psa_ticket_mappings',
   // W4
   'webhooks', 'webhook_deliveries', 'google_workspace_connections',
 ]);

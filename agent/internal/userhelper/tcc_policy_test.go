@@ -11,14 +11,14 @@ import (
 // desktop helper may prompt or report the remote-desktop permission.
 func TestTCCLoopPolicyFor(t *testing.T) {
 	desktop := tccLoopPolicyFor(ipc.HelperBinaryDesktopHelper, false)
-	if !desktop.requestScreenRecording || !desktop.promptAccessibility || !desktop.reportRemoteDesktop {
-		t.Fatalf("desktop helper policy = %+v, want prompts and remote-desktop reporting allowed", desktop)
+	if !desktop.requestScreenRecording || !desktop.promptAccessibility || !desktop.reportRemoteDesktop || !desktop.diagnoseDenial {
+		t.Fatalf("desktop helper policy = %+v, want prompts, remote-desktop reporting and denial diagnosis allowed", desktop)
 	}
 	for _, kind := range []string{ipc.HelperBinaryUserHelper, "", "something-else"} {
 		got := tccLoopPolicyFor(kind, false)
 		got.remindPermissions = false
 		if got != (tccLoopPolicy{}) {
-			t.Fatalf("policy for %q = %+v, want no prompts and no remote-desktop report", kind, got)
+			t.Fatalf("policy for %q = %+v, want no prompts, no remote-desktop report and no diagnosis", kind, got)
 		}
 	}
 }

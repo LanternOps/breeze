@@ -1746,6 +1746,11 @@
     "on": "auf",
     "multiBootMachinesTuckExpectedOffline": "Multi-Boot-Maschinen: Legen Sie erwartete Offline-Boot-Profile als dünne Streifen unter ihre Online-Geschwister. Aus = flache Liste.",
     "collapseLinkedInactiveProfiles": "Verknüpfte inaktive Profile ausblenden",
+    "exportCsv": "CSV exportieren",
+    "exportCsvSelected": "CSV exportieren ({{count}} ausgewählt)",
+    "exportingCsv": "Exportiere…",
+    "exportCsvFailed": "Die Geräteliste konnte nicht exportiert werden. Bitte erneut versuchen.",
+    "exportCsvAttentionPartial": "Exportiert, aber offene Alarme und Tickets konnten für einige Geräte nicht geladen werden – diese Zellen enthalten „unavailable“.",
     "columns": "Spalten",
     "visibleInOrder": "Sichtbar (in der Reihenfolge)",
     "moveUp": "Nach oben verschieben",
@@ -1878,7 +1883,10 @@
     "moveToSite": "An Standort verschieben",
     "moveSelectedToSite": "An Standort verschieben",
     "moveSiteMixedOrgs": "Die ausgewählten Geräte gehören zu mehr als einer Organisation",
-    "moveSiteOverCap": "Wählen Sie höchstens {{count}} Geräte zum gleichzeitigen Verschieben aus"
+    "moveSiteOverCap": "Wählen Sie höchstens {{count}} Geräte zum gleichzeitigen Verschieben aus",
+    "addToGroup": "Zu Gruppe hinzufügen…",
+    "removeFromGroup": "Aus Gruppe entfernen…",
+    "groupMembershipOverCap": "Wählen Sie höchstens {{count}} Geräte aus, um die Gruppenmitgliedschaft gleichzeitig zu ändern"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Geräteprotokolle konnten nicht abgerufen werden",
@@ -4693,6 +4701,48 @@
       "mfaRequired": "Zum Ändern des physischen Standorts ist eine Multi-Faktor-Authentifizierung erforderlich."
     }
   },
+  "assetCircuitCard": {
+    "title": "WAN und Leitung",
+    "loadFailed": "WAN- und Leitungsinformationen konnten nicht geladen werden.",
+    "empty": "Für dieses Asset ist keine Leitung erfasst oder für Sie sichtbar.",
+    "provider": "Anbieter",
+    "cid": "Leitungs-ID",
+    "bandwidth": "Bandbreite",
+    "serviceType": "Diensttyp",
+    "administrativeStatus": "Administrativer Status",
+    "sitesServed": "Von dieser Leitung versorgte Standorte",
+    "terminationSite": "Abschlussstandort: {{site}} (von {{asset}} / {{iface}})",
+    "terminationSiteBare": "Abschlussstandort: {{site}}",
+    "terminationUnassigned": "Abschluss nicht zugewiesen",
+    "terminationNeedsReassociation": "Abschluss muss neu zugeordnet werden",
+    "interfaces": "Schnittstellen",
+    "noInterfaces": "Keine Schnittstellen erfasst.",
+    "wanBadge": "WAN",
+    "retiredBadge": "Außer Betrieb",
+    "markWan": "Als WAN markieren",
+    "unmarkWan": "WAN entfernen",
+    "truncated": "Es werden nur einige Schnittstellen angezeigt.",
+    "unmarkConfirm": {
+      "title": "WAN-Rolle entfernen?",
+      "message": "{{name}} wird nicht mehr als WAN-Schnittstelle behandelt."
+    },
+    "status": {
+      "active": "Aktiv",
+      "planned": "Geplant",
+      "suspended": "Ausgesetzt",
+      "disconnected": "Getrennt"
+    },
+    "toasts": {
+      "marked": "Schnittstelle als WAN markiert",
+      "unmarked": "WAN-Rolle entfernt",
+      "failed": "WAN-Rolle konnte nicht aktualisiert werden",
+      "mfaRequired": "Zum Ändern der WAN-Rolle ist eine Multi-Faktor-Authentifizierung erforderlich.",
+      "hasTermination": "Diese Schnittstelle hat einen aktiven Leitungsabschluss. Verschieben oder entfernen Sie zuerst den Abschluss.",
+      "retired": "Diese Schnittstelle ist außer Betrieb und kann nicht mehr geändert werden.",
+      "notFound": "Schnittstelle nicht gefunden. Die Liste wurde neu geladen.",
+      "permissionDenied": "Sie haben keine Berechtigung, die Topologie zu ändern."
+    }
+  },
   "partnerGroups": {
     "ownerScope": "Gruppeneigentümer",
     "organization": "Diese Organisation",
@@ -4715,5 +4765,25 @@
     "membersError": "Gruppenmitglieder konnten nicht geladen werden.",
     "retry": "Erneut versuchen",
     "emptyMembers": "Keine Geräte in dieser Gruppe."
+  },
+  "bulkGroupMembership": {
+    "titleAdd": "Zu Gruppe hinzufügen",
+    "titleRemove": "Aus Gruppe entfernen",
+    "selectionSummary": "Ausgewählte Geräte: {{n}} · Organisation: {{org}}",
+    "groupLabel": "Statische Gruppe",
+    "selectGroup": "Gruppe auswählen",
+    "loadingGroups": "Gruppen werden geladen…",
+    "noGroups": "Keine statische Gruppe dieser Organisation kann diese Auswahl aufnehmen.",
+    "scopeHint": "Es werden nur statische Gruppen dieser Organisation angezeigt. Eine Standortgruppe erscheint nur, wenn sich alle ausgewählten Geräte an diesem Standort befinden. Dynamische Gruppen werden nicht angezeigt: Ihre Regeln bestimmen die Mitglieder.",
+    "cancel": "Abbrechen",
+    "saving": "Wird gespeichert…",
+    "submitAdd": "Geräte hinzufügen",
+    "submitRemove": "Geräte entfernen",
+    "failedToLoadGroups": "Gruppen konnten nicht geladen werden",
+    "failedToUpdate": "Gruppenmitgliedschaft konnte nicht aktualisiert werden",
+    "addResult": "{{group}}: {{added}} hinzugefügt, {{skipped}} bereits in der Gruppe",
+    "removeResult": "{{group}}: {{removed}} entfernt, {{notMember}} waren nicht in der Gruppe",
+    "removeResultForbidden": "{{group}}: {{removed}} entfernt, {{notMember}} waren nicht in der Gruppe. Nicht entfernt (kein Zugriff auf den Standort des Geräts): {{devices}}",
+    "andMore": "{{names}} und {{n}} weitere"
   }
 }

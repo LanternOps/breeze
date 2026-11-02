@@ -131,6 +131,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 | `GET` | `/groups/:id/devices` | List devices in group |
 | `POST` | `/groups/:id/devices` | Add devices to group |
 | `DELETE` | `/groups/:id/devices/:deviceId` | Remove device from group |
+| `POST` | `/groups/:id/devices/remove` | Remove up to 500 devices from a static group; body `{ deviceIds }`; answers 200 with one outcome per device (`removed`, `not_member`, `forbidden`) |
 | `POST` | `/groups/:id/preview` | Preview dynamic group membership |
 | `POST` | `/groups/:id/devices/:deviceId/pin` | Pin device to dynamic group |
 | `DELETE` | `/groups/:id/devices/:deviceId/pin` | Unpin device |

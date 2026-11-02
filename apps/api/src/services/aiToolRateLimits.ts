@@ -271,6 +271,11 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   // W14 PR B (#6784): tight limits on the tools that bill (generate_invoice) and push to the books.
   manage_contracts: { limit: 30, windowSeconds: 300 },
   manage_accounting_sync: { limit: 10, windowSeconds: 300 },
+  // W15 PR A (#6785, W15-D11): per tool, so reads and writes share one counter.
+  get_pax8_status: { limit: 30, windowSeconds: 300 },
+  search_pax8_products: { limit: 30, windowSeconds: 300 },
+  manage_pax8_orders: { limit: 30, windowSeconds: 300 },
+  manage_pax8_subscriptions: { limit: 10, windowSeconds: 300 },
 };
 
 /**
