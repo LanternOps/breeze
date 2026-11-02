@@ -243,6 +243,8 @@ const TARGET_GLOBS = [
   'src/components/devices/DeviceWarrantyCard.tsx',
   // Physical placement W1-D1 (#8134): the placement PUT is its own file.
   'src/components/devices/PhysicalPlacementCard.tsx',
+  // Physical placement W1-D2 (#8134): the WAN role PATCH is its own file.
+  'src/components/devices/AssetCircuitCard.tsx',
   'src/components/devices/PossibleReplacementBanner.tsx',
   'src/components/pam/PamRespondModal.tsx',
   'src/components/pam/PamRevokeModal.tsx',

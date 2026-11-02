@@ -2891,7 +2891,10 @@
         "version": "Yazılım sürümü",
         "vendor": "Yazılım sağlayıcısı"
       },
-      "logShippingFailing": "Günlük gönderimi başarısız"
+      "logShippingFailing": "Günlük gönderimi başarısız",
+      "networkIsolation": {
+        "active": "Yalıtılmış"
+      }
     }
   },
   "filterChipBar": {
@@ -2963,7 +2966,10 @@
         "version": "Yazılım sürümü",
         "vendor": "Yazılım sağlayıcısı"
       },
-      "logShippingFailing": "Günlük gönderimi başarısız"
+      "logShippingFailing": "Günlük gönderimi başarısız",
+      "networkIsolation": {
+        "active": "Yalıtılmış"
+      }
     }
   },
   "filterHelpPopover": {
@@ -3054,7 +3060,10 @@
         "version": "Yazılım sürümü",
         "vendor": "Yazılım sağlayıcısı"
       },
-      "logShippingFailing": "Günlük gönderimi başarısız"
+      "logShippingFailing": "Günlük gönderimi başarısız",
+      "networkIsolation": {
+        "active": "Yalıtılmış"
+      }
     }
   },
   "filterValueEditor": {
@@ -4701,6 +4710,48 @@
       "mfaRequired": "Fiziksel konumu değiştirmek için çok faktörlü kimlik doğrulama gerekir."
     }
   },
+  "assetCircuitCard": {
+    "title": "WAN ve devre",
+    "loadFailed": "WAN ve devre bilgileri yüklenemedi.",
+    "empty": "Bu varlık için kayıtlı veya size görünen bir devre yok.",
+    "provider": "Sağlayıcı",
+    "cid": "Devre kimliği",
+    "bandwidth": "Bant genişliği",
+    "serviceType": "Hizmet türü",
+    "administrativeStatus": "Yönetim durumu",
+    "sitesServed": "Bu devrenin hizmet verdiği siteler",
+    "terminationSite": "Sonlandırma sitesi: {{site}} ({{asset}} / {{iface}} üzerinden)",
+    "terminationSiteBare": "Sonlandırma sitesi: {{site}}",
+    "terminationUnassigned": "Sonlandırma atanmadı",
+    "terminationNeedsReassociation": "Sonlandırmanın yeniden ilişkilendirilmesi gerekiyor",
+    "interfaces": "Arayüzler",
+    "noInterfaces": "Kayıtlı arayüz yok.",
+    "wanBadge": "WAN",
+    "retiredBadge": "Kullanımdan kaldırıldı",
+    "markWan": "WAN olarak işaretle",
+    "unmarkWan": "WAN'ı kaldır",
+    "truncated": "Yalnızca bazı arayüzler gösteriliyor.",
+    "unmarkConfirm": {
+      "title": "WAN rolü kaldırılsın mı?",
+      "message": "{{name}} artık WAN arayüzü olarak değerlendirilmeyecek."
+    },
+    "status": {
+      "active": "Etkin",
+      "planned": "Planlandı",
+      "suspended": "Askıya alındı",
+      "disconnected": "Bağlantı kesildi"
+    },
+    "toasts": {
+      "marked": "Arayüz WAN olarak işaretlendi",
+      "unmarked": "WAN rolü kaldırıldı",
+      "failed": "WAN rolü güncellenemedi",
+      "mfaRequired": "WAN rolünü değiştirmek için çok faktörlü kimlik doğrulama gerekir.",
+      "hasTermination": "Bu arayüzün etkin bir devre sonlandırması var. Önce sonlandırmayı taşıyın veya kaldırın.",
+      "retired": "Bu arayüz kullanımdan kaldırıldı ve artık değiştirilemez.",
+      "notFound": "Arayüz bulunamadı. Liste yeniden yüklendi.",
+      "permissionDenied": "Topolojiyi değiştirme izniniz yok."
+    }
+  },
   "partnerGroups": {
     "ownerScope": "Grup sahibi",
     "organization": "Bu kuruluş",
@@ -4743,5 +4794,80 @@
     "removeResult": "{{group}}: {{removed}} kaldırıldı, {{notMember}} grupta değildi",
     "removeResultForbidden": "{{group}}: {{removed}} kaldırıldı, {{notMember}} grupta değildi. Kaldırılmayanlar (cihazın sitesine erişim yok): {{devices}}",
     "andMore": "{{names}} ve {{n}} tane daha"
+  },
+  "networkIsolation": {
+    "heading": "Ağ yalıtımı",
+    "isolate": "Ağdan yalıt…",
+    "release": "Yalıtımı kaldır…",
+    "release_queued": "Kaldır (cihaz yeniden bağlanana kadar sırada)",
+    "startTitle": "Ağdan yalıt",
+    "releaseTitle": "Ağ yalıtımını kaldır",
+    "startDescription": "Breeze yönetim iletişimi dışındaki ağ trafiğini engelleyin.",
+    "releaseDescription": "Breeze yalıtım kurallarının kaldırılmasını isteyin. Çevrimdışı cihaz yeniden bağlandığında isteği alır.",
+    "serverWarning": "Bu bir sunucu işletim sistemidir. Yalıtım diğer cihazların hizmetlerini kesintiye uğratabilir.",
+    "reason": "Gerekçe",
+    "ttlHours": "Süre (saat)",
+    "incidentId": "Mevcut olay kimliği (isteğe bağlı)",
+    "incidentTitle": "Yeni olay başlığı",
+    "remoteRelay": "Uzak masaüstünü aktarma üzerinden erişilebilir tut",
+    "startSuccess": "Ağ yalıtımı istendi",
+    "releaseSuccess": "Yalıtımın kaldırılması istendi",
+    "mutationError": "Ağ yalıtımı güncellenemedi. Yeniden deneyin.",
+    "loadError": "Ağ yalıtımı yüklenemedi. Yeniden deneyin.",
+    "unavailable": "Ağ yalıtımı uygunluğu bilgisi kullanılamıyor.",
+    "extend": "Yalıtımı uzat",
+    "extendTitle": "Ağ yalıtımını uzat",
+    "extendSuccess": "Yalıtım süresi uzatıldı",
+    "isolatedExpires": "Yalıtılmış · {{hours}} saat sonra sona erer",
+    "acknowledge": "Yerel kaldırmayı onayla",
+    "acknowledgeSuccess": "Yerel kaldırma onaylandı",
+    "acknowledgeError": "Yerel kaldırma onaylanamadı",
+    "showCode": "Acil durum kodlarını göster",
+    "hideCode": "Acil durum kodlarını gizle",
+    "codeCurrent": "Geçerli kod",
+    "codeNext": "Sonraki saatin kodu",
+    "codeValidUntil": "Geçerli kodun son kullanımı: {{date}}",
+    "codeError": "Acil durum kodları yüklenemedi. Yeniden deneyin.",
+    "incidentHeading": "Ağ yalıtımı",
+    "retry": "Yalıtım durumunu yeniden dene",
+    "filterLabel": "Yalıtılmış",
+    "states": {
+      "requested": "Yalıtım istendi",
+      "dispatched": "Yalıtım gönderildi",
+      "applying": "Yalıtım uygulanıyor",
+      "applied": "Yalıtım doğrulanıyor",
+      "verified": "Yalıtım doğrulandı",
+      "release_requested": "Kaldırma istendi",
+      "released": "Yalıtım kaldırıldı",
+      "expired": "Yalıtım süresi doldu",
+      "failed": "Yalıtım başarısız",
+      "released_locally": "Yerel olarak kaldırıldı · onay gerekiyor",
+      "self_released": "Kendiliğinden kaldırıldı · onay gerekiyor",
+      "uninstalled": "Agent kaldırıldı"
+    },
+    "refusal": {
+      "feature_disabled": "Yeni ağ yalıtımları devre dışı.",
+      "partner_not_enabled": "Bu iş ortağı için ağ yalıtımı etkin değil.",
+      "agent_below_gate": "Ağ yalıtımını destekleyen bir agent sürümüne güncelleyin.",
+      "agent_not_ready": "Agent ağ yalıtımını uygulamaya hazır değil.",
+      "device_lifecycle": "Bu cihazın yaşam döngüsü durumu yeni yalıtımı engelliyor.",
+      "unsupported_platform": "Bu platform ağ yalıtımını desteklemiyor.",
+      "trust_restricted": "İş ortağının güven durumu yeni yalıtımları engelliyor.",
+      "isolation_already_active": "Bu cihazın zaten etkin bir yalıtım kaydı var.",
+      "isolation_unacknowledged": "Yeni bir yalıtım başlatmadan önce önceki yerel kaldırmayı onaylayın.",
+      "incident_mismatch": "Bu cihazın kuruluşuna ait açık bir olay seçin.",
+      "site_forbidden": "Bu cihazın konumuna erişiminiz yok.",
+      "device_not_found": "Bu cihaz bulunamadı.",
+      "isolation_not_found": "Bu yalıtım kaydı bulunamadı.",
+      "relay_unavailable": "Uzak masaüstü aktarıcısı yok. Aktarma seçeneğini kapatın veya TURN yapılandırın.",
+      "invalid_allowlist": "Sunucunun yalıtım izin listesi geçersiz. Yöneticinize başvurun.",
+      "isolation_conflict": "Yalıtım kaydı değişti. Durumu yenileyip yeniden deneyin.",
+      "isolation_secret_unavailable": "Kurtarma kodları geçici olarak kullanılamıyor. Yöneticinize başvurun.",
+      "approval_mismatch": "Onay bu yalıtım isteğiyle eşleşmiyor.",
+      "device_offline": "Cihaz çevrimdışı. Yalıtımı başlatmadan önce durumunu yenileyin.",
+      "device_decommissioned": "Hizmet dışı bir cihaz yeni yalıtım başlatamaz.",
+      "device_pending_assignment": "Yalıtımı başlatmadan önce bu cihazı bir kuruluşa atayın.",
+      "backup_helper_update_required": "Yalıtımı başlatmadan önce yedekleme yardımcısını güncelleyin."
+    }
   }
 }
