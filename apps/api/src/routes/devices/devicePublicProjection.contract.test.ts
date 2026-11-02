@@ -13,7 +13,9 @@ describe('device response projection wiring', () => {
     ['AI device detail', '../../services/aiToolsDevice.ts', 1],
   ] as const)('%s sends every full device-row response through the public projection', (_name, file, expected) => {
     const body = source(file);
-    expect(body.match(/projectPublicDevice\(/g)).toHaveLength(expected);
+    // #8318 §7.3: the ...ForCaller variant is the same projection plus the
+    // reinstall-link visibility check.
+    expect(body.match(/projectPublicDevice(?:ForCaller)?\(/g)).toHaveLength(expected);
   });
 
   it('does not retain the evolving denylist serializer', () => {

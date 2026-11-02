@@ -71,6 +71,8 @@ vi.mock('bullmq', () => ({
 
 vi.mock('../db', () => ({
   db: mockDb,
+  // #8318: the reaper registers the partner-wide link clear for after commit.
+  runAfterDbContextCommit: vi.fn(),
   // Real-ish context wrapper: tracks depth around fn so the tests can assert
   // what runs inside the context vs after it closes.
   withSystemDbAccessContext: async (fn: () => unknown) => {

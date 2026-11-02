@@ -101,6 +101,9 @@ function rigDeviceListRows(
   // db.execute calls per request in a fixed order — latest metrics first, then
   // the LAN-IP lookup — so the LAN rig has to be the SECOND queued result.
   lanIpRows: Array<{ device_id: string; ip_address: string }> = [],
+  // #8318 §7.3: the reinstall-link visibility lookup
+  // (select({id, orgId}).from(devices).where(...)) resolves the targets.
+  linkTargets: Array<{ id: string; orgId: string }> = [],
 ) {
   const offset = vi.fn().mockResolvedValue(rows);
   const limit = vi.fn().mockReturnValue({ offset });
@@ -113,7 +116,8 @@ function rigDeviceListRows(
   const leftJoin = vi.fn().mockReturnValue(chain);
   chain.leftJoin = leftJoin;
   chain.where = where;
-  const from = vi.fn().mockReturnValue({ leftJoin });
+  const targetWhere = vi.fn().mockResolvedValue(linkTargets);
+  const from = vi.fn().mockReturnValue({ leftJoin, where: targetWhere });
   vi.mocked(db.select).mockReturnValue({ from } as never);
   vi.mocked(db.execute)
     .mockResolvedValue([] as never)
@@ -187,6 +191,8 @@ describe('GET /devices — response shape', () => {
       },
       ],
       [{ device_id: '33333333-3333-4333-8333-333333333333', ip_address: '10.20.30.40' }],
+      // The linked device is in the caller's own org, so the link is kept.
+      [{ id: '55555555-5555-4555-8555-555555555555', orgId: 'org-1' }],
     );
 
     const res = await app.request('/devices?limit=50', {
