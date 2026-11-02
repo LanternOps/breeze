@@ -71,7 +71,7 @@ export async function synchronizeEpisodeOutcome(
       },
       triggeredAt: at,
     } satisfies typeof alerts.$inferInsert;
-    const [alert] = await tx.insert(alerts).values(fields).returning({ id: alerts.id });
+    const [alert] = await tx.insert(alerts).values({ ...fields, ownerKind: 'device', deviceId: row.deviceId }).returning({ id: alerts.id });
     if (!alert) throw new Error('isolation_alert_insert_missing');
     // Resolve under the transition's DB context, before the post-commit callback
     // leaves that context. The resolver preserves fail-closed site attribution.

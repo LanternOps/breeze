@@ -1,5 +1,5 @@
 import { RESOLVED_TERMINAL_STATES } from '@breeze/shared';
-import { and, eq, inArray, notInArray, sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 
 export type IsolationLifecycleScope = { deviceId: string } | { deviceIds: string[] } | { orgId: string };
 export interface IsolationLifecycleTx {
@@ -19,6 +19,18 @@ export class NetworkIsolationUnresolvedError extends Error {
   }
 }
 
+// Built from the `sql` tag only: this module is imported by many hot request
+// paths, and partial drizzle-orm test mocks rarely expose every operator.
+function idList(ids: readonly string[]): SQL {
+  return sql.join(ids.map(id => sql`${id}`), sql`, `);
+}
+
+function scopePredicate(scope: IsolationLifecycleScope, idColumn: 'id' | 'device_id'): SQL {
+  if ('orgId' in scope) return sql`org_id = ${scope.orgId}`;
+  const ids = 'deviceId' in scope ? [scope.deviceId] : scope.deviceIds;
+  return idColumn === 'id' ? sql`id IN (${idList(ids)})` : sql`device_id IN (${idList(ids)})`;
+}
+
 function emptyScope(scope: IsolationLifecycleScope): boolean {
   return 'deviceIds' in scope && scope.deviceIds.length === 0;
 }
@@ -29,15 +41,11 @@ export async function findUnresolvedIsolations(
   scope: IsolationLifecycleScope,
 ): Promise<UnresolvedIsolation[]> {
   if (emptyScope(scope)) return [];
-  const predicate = 'orgId' in scope
-    ? eq(sql`org_id`, scope.orgId)
-    : 'deviceId' in scope
-      ? eq(sql`device_id`, scope.deviceId)
-      : inArray(sql`device_id`, scope.deviceIds);
   const result = await tx.execute(sql`
     SELECT id AS "isolationId", device_id AS "deviceId"
     FROM device_network_isolations
-    WHERE ${and(predicate, notInArray(sql`state`, [...RESOLVED_TERMINAL_STATES]))}
+    WHERE ${scopePredicate(scope, 'device_id')}
+      AND state NOT IN (${idList(RESOLVED_TERMINAL_STATES)})
     ORDER BY device_id, id
   `);
   // postgres-js returns the row array; node-postgres returns { rows }.
@@ -62,13 +70,8 @@ export async function assertNoUnresolvedIsolation(
   options: { lockDevices?: boolean } = {},
 ): Promise<void> {
   if (emptyScope(scope)) return;
-  const predicate = 'orgId' in scope
-    ? eq(sql`org_id`, scope.orgId)
-    : 'deviceId' in scope
-      ? eq(sql`id`, scope.deviceId)
-      : inArray(sql`id`, scope.deviceIds);
   if (options.lockDevices !== false) {
-    await tx.execute(sql`SELECT id FROM devices WHERE ${predicate} ORDER BY id FOR NO KEY UPDATE`);
+    await tx.execute(sql`SELECT id FROM devices WHERE ${scopePredicate(scope, 'id')} ORDER BY id FOR NO KEY UPDATE`);
   }
   const isolations = await findUnresolvedIsolations(tx, scope);
   if (isolations.length > 0) throw new NetworkIsolationUnresolvedError(action, isolations);
