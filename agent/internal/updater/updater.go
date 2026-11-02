@@ -592,6 +592,12 @@ func (u *Updater) expectedReleaseAssetNames() map[string]struct{} {
 		return map[string]struct{}{
 			fmt.Sprintf("breeze-agent-%s-%s%s", runtime.GOOS, runtime.GOARCH, suffix): {},
 		}
+	case "isolation-recovery":
+		suffix := ""
+		if runtime.GOOS == "windows" {
+			suffix = ".exe"
+		}
+		return map[string]struct{}{fmt.Sprintf("breeze-isolation-recovery-%s-%s%s", runtime.GOOS, runtime.GOARCH, suffix): {}}
 	case "helper":
 		switch runtime.GOOS {
 		case "windows":
