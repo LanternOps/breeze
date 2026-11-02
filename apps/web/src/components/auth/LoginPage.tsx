@@ -214,9 +214,15 @@ export default function LoginPage({ next, partnerSlug }: LoginPageProps = {}) {
     setWelcomeUser(user);
     login(user, tokens);
     fetchAndApplyPreferences();
-    await new Promise((resolve) => window.setTimeout(resolve, 900));
-    // Setup wizard wins over `next` — user can't do anything useful before setup completes.
-    await navigateTo(postLoginDestination(requiresSetup, safeNext));
+    try {
+      // Setup wizard wins over `next` — user can't do anything useful before setup completes.
+      await navigateTo(postLoginDestination(requiresSetup, safeNext));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unable to complete sign in');
+    } finally {
+      setWelcomeUser(null);
+      setLoading(false);
+    }
   };
 
   // Partner SSO: the (memoized) login context tells us whether this deployment
