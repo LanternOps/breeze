@@ -36,6 +36,10 @@ interface OAuthApiKeyContext {
   // B-W02 (#6156): the Grant's mcp_domains, read in the live-user query.
   // Only ever set for a live grant; `undefined` would fail closed.
   mcpDomains: readonly string[] | null | undefined;
+  // #9758: the user's live auth_epoch this request was admitted at (equal to
+  // the token's claim whenever it carries one). A Tier-3 intent filed by this
+  // request records it; release refuses once the live epoch has moved.
+  oauthAuthEpoch: number;
 }
 
 let cachedJwks: ReturnType<typeof createRemoteJWKSet> | null = null;
@@ -540,6 +544,7 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     // B-W02 (#6156): live per request, so a domain edit or revocation needs
     // no token re-mint. Reached only with grantActive === true (401 above).
     mcpDomains: liveUser.grantMcpDomains,
+    oauthAuthEpoch: liveUser.authEpoch,
   });
   if (payload.org_id) c.set('apiKeyOrgId', payload.org_id);
 

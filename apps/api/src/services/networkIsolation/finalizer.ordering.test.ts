@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DeviceNetworkIsolation } from '../../db/schema';
 const state = vi.hoisted(() => ({ row: null as DeviceNetworkIsolation | null, writes: [] as Array<{table: unknown; fields: Record<string, unknown>}>, published: vi.fn(), snapshot: vi.fn(), actionMissing: false, incidentMissing: false }));
 vi.mock('../../db', () => ({ db: { transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(tx) }, runAfterDbContextCommit: (_label: string, fn: () => unknown) => fn() }));
+vi.mock('../deviceSiteResolver', () => ({ resolveDeviceSiteId: vi.fn(async () => 'site') }));
 vi.mock('../eventBus', () => ({ publishEvent: (...args: unknown[]) => state.published(...args) }));
 vi.mock('./episodeStore', async original => {
   const actual = await original<typeof import('./episodeStore')>();
@@ -27,7 +28,7 @@ const id = '11111111-1111-4111-8111-111111111111';
 const commandId = '22222222-2222-4222-8222-222222222222';
 const deviceId = '33333333-3333-4333-8333-333333333333';
 const tx: any = {
-  insert: (table: unknown) => ({ values: async (fields: Record<string, unknown>) => { state.writes.push({ table, fields }); } }),
+  insert: (table: unknown) => ({ values: (fields: Record<string, unknown>) => { state.writes.push({ table, fields }); return { returning: async () => [{ id: 'alert-id' }] }; } }),
   update: (table: unknown) => ({ set: (fields: Record<string, unknown>) => { state.writes.push({ table, fields }); return { where: () => ({ returning: async () => table === incidentActions && state.actionMissing ? [] : [{ id: 'action', executedBy: 'user', description: 'Network isolation' }], then: (resolve: (v: unknown) => unknown) => Promise.resolve([]).then(resolve) }) }; } }),
   select: () => { const q: any = { from: () => q, where: () => q, limit: () => q, for: () => q, then: (resolve: (v: unknown) => unknown) => Promise.resolve(state.incidentMissing ? [] : [{ id: 'incident', orgId: 'org', status: 'detected' }]).then(resolve) }; return q; },
 };
@@ -37,7 +38,7 @@ function input(over: Record<string, unknown> = {}): Parameters<typeof handleNetw
     result: { status: 'completed' }, stdout: JSON.stringify({ isolationId: id, generation: 1, journalSeq: 2, state: 'verified', phase: 'committed' }), ...over } as never;
 }
 beforeEach(() => {
-  vi.clearAllMocks(); state.writes = []; state.actionMissing = false; state.incidentMissing = false;
+  vi.clearAllMocks(); state.published.mockResolvedValue('event-id'); state.writes = []; state.actionMissing = false; state.incidentMissing = false;
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   state.row = { id, deviceId, orgId: 'org', incidentId: 'incident', incidentActionId: 'action', commandId, releaseCommandId: commandId,
@@ -55,7 +56,8 @@ describe('ordered isolation finalizer', () => {
     expect(state.row!.state).toBe('verified');
     expect(state.writes.filter(x => x.table === incidentActions)).toHaveLength(1);
     expect(state.writes.find(x => x.table === incidentActions)?.fields).toMatchObject({ status: 'completed' });
-    expect(state.published).toHaveBeenCalledTimes(1);
+    expect(state.published.mock.calls.filter(([type]) => type === 'incident.contained')).toHaveLength(1);
+    expect(state.published.mock.calls.filter(([type]) => type === 'device.isolated')).toHaveLength(1);
     expect(state.published).toHaveBeenCalledWith('incident.contained', 'org', expect.objectContaining({ actionType: 'network_isolation' }), expect.any(String));
     expect(inspect(state.writes.filter(x => x.table === incidents), { depth: 12 })).toContain('containment_executed');
   });
@@ -88,6 +90,8 @@ describe('ordered isolation finalizer', () => {
     await handleNetworkIsolationResult(input({ stdout: JSON.stringify(report) }));
     await reconcileContainmentReport(tx, { id: deviceId, orgId: 'org' }, report, new Date());
     expect(state.writes.filter(x => x.table === alerts)).toHaveLength(1);
+    await vi.waitFor(() => expect(state.published.mock.calls.filter(([type]) => type === 'alert.triggered')).toHaveLength(1));
+    expect(state.published).toHaveBeenCalledWith('alert.triggered', 'org', expect.objectContaining({ alertId: 'alert-id', source: 'network_isolation', ownerKey: `device:${deviceId}` }), 'network-isolation-result', { siteId: 'site' });
   });
 
   it('a release reverses the action once and confirms the tombstone', async () => {
@@ -141,7 +145,10 @@ describe('incident desynchronization visibility', () => {
     expect(captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { isolationId: id, incidentId: 'incident', incidentActionId: 'action' });
   });
   it('reports event publish errors with context', async () => {
-    state.published.mockRejectedValueOnce(new Error('event bus failed'));
+    state.published.mockImplementation(async (type: string) => {
+      if (type === 'incident.contained') throw new Error('event bus failed');
+      return 'event-id';
+    });
     await handleNetworkIsolationResult(input());
     await vi.waitFor(() => expect(captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { phase: 'isolation_outcome_publish', isolationId: id, incidentId: 'incident', incidentActionId: 'action' }));
     expect(console.error).toHaveBeenCalled();

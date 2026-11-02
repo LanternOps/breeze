@@ -4692,6 +4692,12 @@ func (h *Heartbeat) sendRecoveryKeys() {
 	}
 
 	keys, err := collectRecoveryKeys()
+	if errors.Is(err, security.ErrBitLockerUnavailable) {
+		// No BitLocker on this host (#10902): nothing to escrow, and not a
+		// failure. The security package logged it at debug and re-detects on
+		// its own TTL; keep the full interval and stay quiet.
+		return
+	}
 	if err != nil {
 		// Retry sooner than the full interval: the common transient cause is a
 		// PowerShell cold start after boot hitting its timeout, and a newly

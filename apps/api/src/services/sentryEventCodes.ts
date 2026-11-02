@@ -346,6 +346,10 @@ export const SENTRY_EVENT_CODES = [
    * would otherwise raise no alert on its own.
    */
   'tenant_erasure_refused_legal_hold',
+  /** An unresolved isolation prevents erasing its recovery records. */
+  'tenant_erasure_refused_isolation',
+  /** Forced credential suspension leaves isolation recovery to expiry and the offline code. */
+  'network_isolation_forced_token_suspension',
   /**
    * Helper screenshot files could not be removed after their rows were
    * deleted (org erasure, device purge, site delete) or by the orphan sweep

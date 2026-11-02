@@ -536,6 +536,42 @@ describe('POST /devices/:id/move-org', () => {
     app.route('/devices', moveOrgRoutes);
   });
 
+  describe('network isolation lifecycle refusal', () => {
+    const move = () => app.request(`/devices/${DEVICE_ID}/move-org`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+    });
+    function rigMove() {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows: [
+        { id: SOURCE_ORG, partnerId: 'partner-1' },
+        { id: TARGET_ORG, partnerId: 'partner-1' },
+      ], siteRow: { id: TARGET_SITE } });
+      return rigTransactionSuccess();
+    }
+    it('refuses unresolved isolation before mutations and proceeds once resolved', async () => {
+      const rig = rigMove();
+      executeResultFor = text => text.includes('device_network_isolations')
+        ? [{ isolationId: 'isolation-1', deviceId: DEVICE_ID }] : null;
+      const refused = await move();
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toEqual({ error: 'isolation_unresolved', message: 'Release network isolation first' });
+      expect(rig.deviceUpdateSets).toEqual([]);
+      executeResultFor = null;
+      rigMove();
+      expect((await move()).status).toBe(200);
+    });
+    it('maps the database isolation move fence to the same 409 after a race', async () => {
+      rigMove();
+      rigTransactionSuccess(undefined, Object.assign(new Error('query failed'), { cause: { code: '55000', message: 'isolation_unresolved: release before moving' } }));
+      const response = await move();
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: 'isolation_unresolved', message: 'Release network isolation first' });
+      expect(disconnectAgent).not.toHaveBeenCalled();
+    });
+  });
+
   describe('gate registration', () => {
     it('requires partner+system scope, devices:write, organizations:write, and MFA', () => {
       // requireScope called once with (partner, system) — at minimum, those
@@ -1559,10 +1595,12 @@ describe('POST /devices/:id/move-org', () => {
       const response = await postMove();
 
       expect(response.status).toBe(200);
-      // #4596 — the transaction's unconditional leading statement is
+      // The isolation precheck is read-only; it must not reorder the engine's locks.
+      expect(statements.shift()).toContain('FROM device_network_isolations');
+      // #4596 — the engine's unconditional leading statement is
       // `SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk
       // DEFERRED` (see moveOrg.ts, right after `db.transaction(async (tx) => {`).
-      // It takes no table locks and runs before anything else in the callback,
+      // It takes no table locks and runs before anything else in the engine,
       // so it always occupies index 0 regardless of the PAM guard/lock
       // ordering asserted below — assert it explicitly rather than folding it
       // into the positional slice.
@@ -1741,6 +1779,7 @@ describe('POST /devices/:id/move-org', () => {
       const response = await postMove();
 
       expect(response.status).toBe(200);
+      expect(statements.shift()).toContain('FROM device_network_isolations');
       expect(statements[0]).toBe(
         'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk, tickets_merged_into_org_fk DEFERRED',
       );
