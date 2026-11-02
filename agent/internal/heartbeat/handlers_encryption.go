@@ -20,6 +20,11 @@ var (
 	rotateFileVaultKey = security.RotateFileVaultKey
 )
 
+// redetectBitLocker drops the cached BitLocker availability before an explicit
+// technician command, so a feature installed since the last check is used
+// instead of a day-old "not installed" (#10902). Seam for tests.
+var redetectBitLocker = security.RedetectBitLockerAvailability
+
 // recoveryKeyCollectInterval bounds how often the 5-minute security tick
 // re-reads BitLocker recovery protectors (#9267). Protectors change only when
 // BitLocker is enabled or a key is rotated; rotation through Breeze resets
@@ -29,8 +34,9 @@ var (
 const recoveryKeyCollectInterval = 30 * time.Minute
 
 // recoveryKeyErrorRetry is the wait after a failed read (matches the security
-// package's slowProbeErrorTTL): a persistent failure, such as no BitLocker
-// module on Home editions, is not re-spawned every tick.
+// package's slowProbeErrorTTL): a persistent failure is not re-spawned every
+// tick. A host without BitLocker is not a failure (ErrBitLockerUnavailable)
+// and waits the full interval (#10902).
 const recoveryKeyErrorRetry = 10 * time.Minute
 
 func init() {
@@ -42,6 +48,7 @@ func init() {
 // full snapshot immediately. Results carry counts only — never key material.
 func handleEncryptionCollectKeys(h *Heartbeat, _ Command) tools.CommandResult {
 	start := time.Now()
+	redetectBitLocker()
 	keys, err := collectRecoveryKeys()
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
@@ -76,6 +83,7 @@ func handleEncryptionRotateKey(h *Heartbeat, cmd Command) tools.CommandResult {
 	)
 	switch runtime.GOOS {
 	case "windows":
+		redetectBitLocker()
 		mount := strings.ToUpper(tools.GetPayloadString(cmd.Payload, "volumeMount", "C:"))
 		key, rotateErr = rotateBitLockerKey(mount)
 	case "darwin":
