@@ -5,7 +5,7 @@ description: Isolate a device while retaining Breeze management access, and reco
 
 Network isolation drops network traffic except the traffic needed to manage the device through Breeze. Each isolation episode is linked to an incident and has a mandatory expiry. The incident's recorded containment status alone does not prove that isolation is enforced: check the live episode state.
 
-The feature is **off by default** behind `NETWORK_ISOLATION_ENABLED`. Merging the console or server code activates nothing. Start also requires an eligible partner, supported agent version, advertised isolation capability, and agent readiness. Isolation is **Windows-only until Linux and macOS support ship**.
+The feature is **off by default** behind `NETWORK_ISOLATION_ENABLED`. Merging the console or server code activates nothing. Start also requires an eligible partner, supported agent version, advertised isolation capability, and agent readiness. Windows activation remains disabled: agents advertise capability 0, and the minimum version gate stays at `999.0.0`. No recovery executable is distributed or bundled yet, so Windows readiness also fails closed. The behavior described below is the intended Windows rollout; the feature is **not available in this release**. Linux and macOS support is planned.
 
 ## Start and release
 
@@ -36,6 +36,14 @@ Remote desktop uses **TURN relay only**, with no direct/STUN fallback. A self-ho
 | macOS (planned) | Dedicated pf anchor attached to a compatible ruleset | Destination/port only; pf cannot identify the process |
 
 Breeze removes only its own isolation rules on release. Other firewall or EDR isolation can still block connectivity after Breeze isolation is released. A failed management reachability or enforcement probe causes rollback; a separate recovery component enforces expiry even if the main agent fails. Recovery still depends on working storage, OS scheduling, and firewall facilities. Powered-off devices run overdue recovery at boot or resume.
+
+### Windows recovery, uninstall, and upgrade
+
+The separate `breeze-isolation-recovery.exe` component handles provisional rollback, expiry, and boot recovery even when the main agent cannot run. Its installation path is `<agent install directory>\isolation-recovery\<version>\breeze-isolation-recovery.exe`, alongside the protected agent installation. Versions are installed side by side and are never overwritten in place. An unresolved episode keeps its scheduled tasks pinned to its journaled recovery path. Signature verification and a successful self-test are required before task actions can adopt a version. Strict Windows signature trust also means unsigned self-host recovery binaries cannot become ready.
+
+The agent's self-uninstall and the Windows MSI uninstall release Breeze-owned isolation rules first. If release cannot be confirmed, uninstall fails before removing the agent files or recovery state. A clean, never-isolated device can still uninstall normally. The detached Windows teardown script checks release again before stopping or deleting services.
+
+An MSI upgrade never runs the uninstall release action and does not un-isolate the device. The agent does not start a self-update while the device is isolated. If isolation begins after an update has already been downloaded, the update is checked again just before the binary swap. When executable paths change, both old and new paths are permitted before the swap. After restart the agent reads the journal, re-verifies isolation, and removes the old-path permits. The swap is refused if the new agent's journal schema cannot be confirmed compatible.
 
 Residual risks remain:
 

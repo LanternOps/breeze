@@ -204,6 +204,9 @@ type ResolvedEntry struct {
 
 // ResolvedSpec is what an Isolator installs: numeric permits only.
 type ResolvedSpec struct {
+	// BinaryPaths overrides the installed process set during an upgrade handoff.
+	// It is local engine input, never part of the server wire contract.
+	BinaryPaths []string
 	IsolationID string
 	Generation  int
 	RemoteRelay bool
@@ -227,6 +230,9 @@ func (r ResolvedSpec) Digest() Digest {
 		}
 		sort.Strings(ports)
 		lines = append(lines, strings.Join([]string{e.Kind, e.Host, e.CIDR, e.Proto, e.Scope, strings.Join(ports, ","), strings.Join(addrs, ","), strconv.FormatBool(e.Proxy)}, "|"))
+	}
+	for _, path := range r.BinaryPaths {
+		lines = append(lines, "binary|"+path)
 	}
 	sort.Strings(lines)
 	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))

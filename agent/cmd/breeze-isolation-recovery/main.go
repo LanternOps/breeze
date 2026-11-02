@@ -1,9 +1,9 @@
 // breeze-isolation-recovery is the independently runnable containment recovery
-// skeleton. It must not link the main agent's configuration or update stack.
+// executable. It must not link the main agent's configuration or update stack.
 //
-// Exit codes: 0 = success; 1 = unsupported platform / operation unavailable;
-// 2 = invalid command or arguments. W1g will add effect-specific failure codes
-// when the platform recovery operations are implemented.
+// Exit codes: 0 = success or an attempt-fenced no-op; 1 = unsupported platform,
+// unavailable engine, or unconfirmed cleanup/persistence/task removal;
+// 2 = invalid command or arguments. A cleanup error leaves recovery armed.
 package main
 
 import (
@@ -14,7 +14,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/breeze-rmm/agent/internal/isolation"
+	"github.com/breeze-rmm/agent/internal/isolation/journal"
 )
 
 // Overridden by the release build with -ldflags '-X main.version=...'.
@@ -23,12 +23,22 @@ var version = "dev"
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	return runWithDependencies(args, stdout, stderr, platformRecoveryDependencies())
+}
+
+func runWithDependencies(args []string, stdout, stderr io.Writer, deps recoveryDependencies) int {
 	invalid := func(message string) int { _, _ = fmt.Fprintln(stderr, message); return 2 }
 	if len(args) == 0 {
 		return invalid("a recovery subcommand is required")
 	}
 	name := args[0]
 	switch name {
+	case "--journal-schema":
+		if len(args) != 1 {
+			return invalid("--journal-schema accepts no arguments")
+		}
+		_, _ = fmt.Fprintln(stdout, journal.SchemaVersion)
+		return 0
 	case "--version":
 		if len(args) != 1 {
 			return invalid("--version accepts no arguments")
@@ -39,9 +49,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if len(args) != 1 {
 			return invalid("self-test accepts no arguments")
 		}
-		capability := isolation.NewPlatformIsolator().Capability()
-		if capability.Version < 1 {
-			_, _ = fmt.Fprintln(stderr, capability.UnsupportedReason)
+		if err := deps.selfTest(context.Background()); err != nil {
+			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 		return 0
@@ -77,26 +86,25 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return invalid("--reason is required")
 	}
 
-	isolator := isolation.NewPlatformIsolator()
-	if name == "rollback-if-uncommitted" || name == "release-all" || isolator.Capability().Version < 1 {
-		// No exported manager API provides an attempt-fenced rollback or an
-		// unconditional orphan release. Do not substitute Startup/LocalRelease:
-		// either could affect a different attempt or lose the requested reason.
-		_, _ = fmt.Fprintln(stderr, "not implemented on this platform yet (W1g)")
+	manager, err := deps.manager(*dataDir)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
-	manager := isolation.NewManager(isolation.ManagerDeps{
-		DataDir: *dataDir, Isolator: isolator,
-		Scheduler: isolation.NewPlatformScheduler(*dataDir),
-	})
+	ctx := context.Background()
 	switch name {
 	case "boot-apply":
-		manager.Startup(context.Background())
+		err = manager.BootApply(ctx)
 	case "expire-check":
-		manager.Tick(context.Background())
+		err = manager.RecoveryExpireCheck(ctx)
+	case "rollback-if-uncommitted":
+		err = manager.RollbackIfUncommitted(ctx, attempt)
+	case "release-all":
+		err = manager.ReleaseAll(ctx, reason)
 	}
-	// Startup/Tick currently return no result. W1g must add recovery-specific
-	// confirmation before this skeleton can claim successful OS recovery.
-	_, _ = fmt.Fprintln(stderr, "recovery confirmation not implemented on this platform yet (W1g)")
-	return 1
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return 0
 }
