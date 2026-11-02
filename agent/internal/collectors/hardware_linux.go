@@ -32,13 +32,16 @@ func readDMI(name string) string {
 }
 
 func collectPlatformHardware(hw *HardwareInfo) {
-	hw.SerialNumber = readDMI("product_serial")
-	hw.Manufacturer = readDMI("sys_vendor")
+	hw.SerialNumber = cleanHardwareIdentityValue(readDMI("product_serial"))
+	hw.Manufacturer = cleanHardwareIdentityValue(readDMI("sys_vendor"))
 	hw.Model = readDMI("product_name")
 	hw.MotherboardManufacturer = cleanHardwareIdentityValue(readDMI("board_vendor"))
 	hw.MotherboardProduct = cleanHardwareIdentityValue(readDMI("board_name"))
 	hw.MotherboardVersion = cleanHardwareIdentityValue(readDMI("board_version"))
 	hw.BIOSVersion = readDMI("bios_version")
+	// product_uuid is root-readable only (0400); a non-root agent gets "" and a
+	// warn-once from readDMI, which leaves the hint empty.
+	hw.SystemUUID = normalizeSystemUUID(readDMI("product_uuid"))
 
 	// GPU via lspci (with timeout)
 	out, err := runCollectorOutput(collectorLongCommandTimeout, "lspci")

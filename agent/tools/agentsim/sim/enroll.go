@@ -3,6 +3,7 @@ package sim
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,15 @@ import (
 	"github.com/breeze-rmm/agent/internal/httputil"
 	"github.com/breeze-rmm/agent/pkg/api"
 )
+
+// simSystemUUID derives a stable, canonical system UUID from the simulated
+// hostname, the way a real machine keeps its SMBIOS UUID across reinstalls:
+// re-enrolling the same simulated hostname reports the same UUID (#8318).
+func simSystemUUID(hostname string) string {
+	sum := sha256.Sum256([]byte("agentsim-system-uuid:" + hostname))
+	h := fmt.Sprintf("%x", sum[:16])
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
 
 // ErrEnrollRejected is a terminal (non-429) enrollment refusal.
 var ErrEnrollRejected = errors.New("enrollment rejected")
@@ -42,6 +52,7 @@ func (e *Enroller) Enroll(ctx context.Context, index int, hostname string) (Iden
 		HardwareInfo: &api.HardwareInfo{
 			CPUModel: "agentsim vCPU", CPUCores: 4, CPUThreads: 8, RAMTotalMB: 16384, DiskTotalGB: 500,
 			SerialNumber: "AGENTSIM-" + hostname, Manufacturer: "Breeze", Model: "agentsim",
+			SystemUUID: simSystemUUID(hostname),
 		},
 	})
 	if err != nil {

@@ -250,6 +250,24 @@ func TestParseHardwareJSON(t *testing.T) {
 			},
 		},
 		{
+			name:  "with SysUUID (Win32_ComputerSystemProduct)",
+			input: `{"BiosSerial":"SN1","BiosVersion":"","BoardSerial":"","BoardManufacturer":"","BoardProduct":"","BoardVersion":"","SysManufacturer":"Dell Inc.","SysModel":"","SysUUID":"4C4C4544-0042-3510-8051-B4C04F4D3132","GPUNames":null}`,
+			want: windowsHardwareJSON{
+				BiosSerial:      "SN1",
+				SysManufacturer: "Dell Inc.",
+				SysUUID:         "4C4C4544-0042-3510-8051-B4C04F4D3132",
+			},
+		},
+		{
+			// An older script (or a WMI failure) omits the key: the zero value,
+			// which normalizeSystemUUID turns into "no hint".
+			name:  "without SysUUID",
+			input: `{"BiosSerial":"SN1","BiosVersion":"","BoardSerial":"","BoardManufacturer":"","BoardProduct":"","BoardVersion":"","SysManufacturer":"","SysModel":"","GPUNames":null}`,
+			want: windowsHardwareJSON{
+				BiosSerial: "SN1",
+			},
+		},
+		{
 			name:    "invalid JSON returns error",
 			input:   `not json`,
 			wantErr: true,
@@ -284,6 +302,7 @@ func TestParseHardwareJSON(t *testing.T) {
 			checkStr("BoardVersion", got.BoardVersion, tt.want.BoardVersion)
 			checkStr("SysManufacturer", got.SysManufacturer, tt.want.SysManufacturer)
 			checkStr("SysModel", got.SysModel, tt.want.SysModel)
+			checkStr("SysUUID", got.SysUUID, tt.want.SysUUID)
 			if len(got.GPUNames) != len(tt.want.GPUNames) {
 				t.Errorf("GPUNames len = %d, want %d: got %v, want %v",
 					len(got.GPUNames), len(tt.want.GPUNames), got.GPUNames, tt.want.GPUNames)

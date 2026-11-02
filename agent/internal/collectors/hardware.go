@@ -27,6 +27,11 @@ type HardwareInfo struct {
 	MotherboardVersion      string `json:"motherboardVersion,omitempty"`
 	BIOSVersion             string `json:"biosVersion,omitempty"`
 	ChassisType             string `json:"chassisType,omitempty"`
+	// SystemUUID is the SMBIOS system UUID (Windows Win32_ComputerSystemProduct.UUID,
+	// Linux /sys/class/dmi/id/product_uuid, macOS IOPlatformUUID), normalized by
+	// normalizeSystemUUID. It survives an OS reinstall, so the API uses it as a
+	// reinstall hint (#8318). Never authority: a hint only.
+	SystemUUID string `json:"systemUuid,omitempty"`
 }
 
 type SystemInfo struct {
@@ -187,6 +192,71 @@ func cleanHardwareIdentityValue(value string) string {
 		return ""
 	}
 	return truncateCollectorString(value)
+}
+
+// placeholderSystemUUIDs are SMBIOS system UUIDs that firmware vendors ship
+// unchanged on every board of a model, so they identify nothing. Sources: the
+// AMI Aptio default "03000200-0400-0500-0006-000700080009" (and its SMBIOS
+// < 2.6 byte-swapped reading) is the value behind the Configuration Manager
+// "duplicate hardware identifiers" exclusion list and the many duplicate-UUID
+// reports against MDT/WDS and osquery; "01234567-8901-2345-6789-012345678901"
+// is a fill pattern seen on white-box boards. All-zero, all-F and any single
+// repeated hex digit are rejected by rule (isRepeatedHexDigit), not by list.
+// Keep this a small, reviewed set: the API mirrors it (normalizeSystemUuid in
+// apps/api/src/services/reinstallCandidates/systemUuid.ts) and both sides are
+// pinned by packages/shared/src/testing/system-uuid-normalization-v1.json.
+var placeholderSystemUUIDs = map[string]struct{}{
+	"03000200-0400-0500-0006-000700080009": {},
+	"00020003-0004-0005-0006-000700080009": {},
+	"00000000-0000-0000-0000-000000000000": {},
+	"ffffffff-ffff-ffff-ffff-ffffffffffff": {},
+	"01234567-8901-2345-6789-012345678901": {},
+}
+
+// normalizeSystemUUID returns the canonical lower-case 8-4-4-4-12 form of an
+// SMBIOS system UUID, or "" when the value is not exactly 32 hex digits (with
+// or without the dashes, optionally in braces and surrounded by whitespace) or
+// is a known placeholder.
+func normalizeSystemUUID(raw string) string {
+	s := strings.TrimSpace(raw)
+	s = strings.TrimPrefix(s, "{")
+	s = strings.TrimSuffix(s, "}")
+	s = strings.TrimSpace(s)
+	switch len(s) {
+	case 36:
+		if s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
+			return ""
+		}
+		s = s[0:8] + s[9:13] + s[14:18] + s[19:23] + s[24:36]
+	case 32:
+	default:
+		return ""
+	}
+	s = strings.ToLower(s)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return ""
+		}
+	}
+	if isRepeatedHexDigit(s) {
+		return ""
+	}
+	canonical := s[0:8] + "-" + s[8:12] + "-" + s[12:16] + "-" + s[16:20] + "-" + s[20:32]
+	if _, placeholder := placeholderSystemUUIDs[canonical]; placeholder {
+		return ""
+	}
+	return canonical
+}
+
+// isRepeatedHexDigit reports whether every character of s is the same. It
+// subsumes isAllZeroOrF (memory.go) for the 32-digit case, so that helper is
+// not reused here.
+func isRepeatedHexDigit(s string) bool {
+	if s == "" {
+		return false
+	}
+	return strings.Trim(s, s[0:1]) == ""
 }
 
 func firstCleanHardwareIdentityValue(values ...string) string {

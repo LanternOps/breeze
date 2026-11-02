@@ -1865,6 +1865,7 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 			MotherboardProduct:      hardwareInfo.MotherboardProduct,
 			MotherboardVersion:      hardwareInfo.MotherboardVersion,
 			BIOSVersion:             hardwareInfo.BIOSVersion,
+			SystemUUID:              hardwareInfo.SystemUUID,
 		},
 	}
 

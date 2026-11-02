@@ -67,6 +67,8 @@ type HardwareInfo struct {
 	MotherboardProduct      string `json:"motherboardProduct,omitempty"`
 	MotherboardVersion      string `json:"motherboardVersion,omitempty"`
 	BIOSVersion             string `json:"biosVersion,omitempty"`
+	// SystemUUID is the normalized SMBIOS system UUID, a reinstall hint (#8318).
+	SystemUUID string `json:"systemUuid,omitempty"`
 }
 
 type MtlsCertData struct {
