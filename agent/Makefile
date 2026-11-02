@@ -1,4 +1,4 @@
-.PHONY: build build-agent build-yarac build-desktop-helper build-backup build-all build-all-agent build-all-desktop-helper build-all-backup build-windows-user-helper build-winres build-windows-msi clean test install install-service uninstall-service dev-push dev-push-helper build-watchdog build-watchdog-linux build-watchdog-darwin build-watchdog-windows dev-push-watchdog dev-push-both
+.PHONY: build-isolation-recovery build-isolation-recovery-windows build build-agent build-yarac build-desktop-helper build-backup build-all build-all-agent build-all-desktop-helper build-all-backup build-windows-user-helper build-winres build-windows-msi clean test install install-service uninstall-service dev-push dev-push-helper build-watchdog build-watchdog-linux build-watchdog-darwin build-watchdog-windows dev-push-watchdog dev-push-both
 
 VERSION ?= 0.5.0
 # Local-dev targets intentionally keep plain LDFLAGS (self-host by
@@ -23,6 +23,13 @@ build-backup:
 # W03 server pre-check and the lab benchmark harness. Not shipped to agents.
 build-yarac:
 	CGO_ENABLED=0 go build $(LDFLAGS) -o bin/breeze-yarac ./cmd/breeze-yarac
+
+# Local build targets only; distribution and signing remain activation gates.
+build-isolation-recovery:
+	go build $(LDFLAGS) -o bin/breeze-isolation-recovery ./cmd/breeze-isolation-recovery
+
+build-isolation-recovery-windows:
+	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-isolation-recovery-windows-amd64.exe ./cmd/breeze-isolation-recovery
 
 # Build for all platforms
 build-all: build-all-agent build-all-desktop-helper build-all-backup
