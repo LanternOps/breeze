@@ -103,6 +103,10 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
   // auth.wispGrant, which a flow step never carries, so W05 excludes them from flows
   // (FLOW_EXCLUDED_CORE_TOOLS). Same for the W08 link tools (link_entity.id /
   // link_entity.orgId are id-typed, but link_entity never runs in a flow).
+  // #10161: manage_tickets.intoTicketId uses findTicketWithAccess for org +
+  // device/site authorization of the survivor, as ticketId does for the source.
+  // system_cleanup cancel reuses the already-listed cleanupRunId: verifyDeviceAccess
+  // gates the device, then cancelSystemCleanupRun scopes the run by device/org/kind.
   it('matches the frozen list of id fields left to the tool\'s own runtime authorization', () => {
     expect(unclassifiedIdFields()).toMatchInlineSnapshot(`
       [
@@ -194,6 +198,8 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "get_network_changes.baseline_id",
         "get_network_changes.org_id",
         "get_network_changes.site_id",
+        "get_pax8_status.integrationId",
+        "get_pax8_status.partnerId",
         "get_peripheral_activity.org_id",
         "get_peripheral_activity.policy_id",
         "get_playbook_history.playbookId",
@@ -350,6 +356,15 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "manage_patches.patchId",
         "manage_patches.patchIds",
         "manage_patches.ringId",
+        "manage_pax8_orders.lineId",
+        "manage_pax8_orders.orderId",
+        "manage_pax8_orders.orgId",
+        "manage_pax8_orders.partnerId",
+        "manage_pax8_subscriptions.contractLineId",
+        "manage_pax8_subscriptions.integrationId",
+        "manage_pax8_subscriptions.orgId",
+        "manage_pax8_subscriptions.partnerId",
+        "manage_pax8_subscriptions.subscriptionSnapshotId",
         "manage_peripheral_policies.orgId",
         "manage_peripheral_policies.policyId",
         "manage_peripheral_policy.org_id",
@@ -420,6 +435,7 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "manage_tickets.assigneeId",
         "manage_tickets.commentId",
         "manage_tickets.expectedTicketId",
+        "manage_tickets.intoTicketId",
         "manage_tickets.linkId",
         "manage_tickets.orgId",
         "manage_tickets.targetOrgId",
@@ -454,6 +470,7 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "s1_isolate_device.orgId",
         "s1_threat_action.orgId",
         "search_logs.siteIds",
+        "search_pax8_products.partnerId",
         "sync_edr_data.connectionId",
         "sync_edr_data.orgId",
         "sync_huntress_data.integrationId",

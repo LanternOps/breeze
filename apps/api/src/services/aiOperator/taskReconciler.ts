@@ -55,6 +55,7 @@ import {
 import { parseTaskCheckpoint } from './taskService';
 import { isServiceRecoveryCheckpoint } from '@breeze/shared';
 import { sendHumanWorkReminders } from './humanWorkService';
+import { releaseSettledAccountReservations } from './accountReservations';
 
 /**
  * A NOTE ON EVERY `${...}` BELOW THAT CARRIES A TIMESTAMP.
@@ -108,6 +109,8 @@ export interface ReconcilerPassResult {
   terminalUnsettled: number;
   /** Set 5 (recipe library E3): overdue human-work steps reminded this pass. */
   humanWorkReminders: number;
+  /** Set 6 (#9981): account reservations of terminal tasks with nothing left in flight, released; -1 when the pass failed. */
+  accountReservationsReleased: number;
 }
 
 /**
@@ -124,12 +127,28 @@ export async function runReconcilerPass(now: Date = new Date()): Promise<Reconci
     runningPastLease: 0,
     terminalUnsettled: 0,
     humanWorkReminders: 0,
+    accountReservationsReleased: 0,
   };
 
   result.queuedPastWake = await advanceScanSet('queued_past_wake', await selectQueuedPastWake(now));
   result.waitingPastWake = await advanceScanSet('waiting_past_wake', await selectWaitingPastWake(now));
   result.runningPastLease = await advanceScanSet('running_past_lease', await selectRunningPastLease(now));
   result.terminalUnsettled = await settleTerminalUnsettled(now);
+
+  // SET 6 — account reservations a terminal task still holds (#9981).
+  //
+  // An `unknown_effect` handoff keeps its provider accounts reserved because
+  // an action it sent may still land. Set 4 just wrote any late result it
+  // found onto the operation rows, so this runs right after it: a task with
+  // nothing left in flight gets its accounts back in the same pass. An
+  // operation still `unknown` keeps them; a person releases those.
+  // Guarded: a failure here must not skip set 5 and the census. Reported as -1.
+  try {
+    result.accountReservationsReleased = await releaseSettledAccountReservations();
+  } catch (error) {
+    result.accountReservationsReleased = -1;
+    console.error('[aiOperatorReconciler] account reservation release pass failed', { error });
+  }
 
   // SET 5 — human-work steps past their reminder clock (recipe library E3).
   //
@@ -196,6 +215,15 @@ async function selectWaitingPastWake(now: Date): Promise<TaskRef[]> {
 /**
  * SET 3 — running (or stopping) past its lease.
  *
+ * PLUS every `stopping` task with NO lease (#9979/#9980). The org-merge fence
+ * clears the lease, and the device delete / move / reinstall hooks stop a
+ * `waiting` task whose lease was already null; such a task is otherwise
+ * invisible to every scan and sits `stopping` forever unless some unrelated
+ * event happens to wake it. Claiming it here lets `advanceTask` settle it.
+ * `claimTaskLease` already treats a null lease as expired for `stopping`.
+ * A `running` row with a null lease stays out on purpose: that shape is a
+ * writer bug the poll path must not paper over (see `writeLeasedStep`).
+ *
  * INDEX: the shipped `ai_operator_tasks_lease_idx`
  * (`(lease_expires_at) WHERE state IN ('running','stopping')`). The query
  * restates that `IN` list verbatim so the predicate proof matches: `IN` on a
@@ -207,9 +235,11 @@ async function selectRunningPastLease(now: Date): Promise<TaskRef[]> {
   return claimRefs(sql`
     SELECT id, org_id FROM ai_operator_tasks
     WHERE state IN ('running', 'stopping')
-      AND lease_expires_at IS NOT NULL
-      AND lease_expires_at <= ${now.toISOString()}::timestamptz
-    ORDER BY lease_expires_at
+      AND (
+        (lease_expires_at IS NOT NULL AND lease_expires_at <= ${now.toISOString()}::timestamptz)
+        OR (state = 'stopping' AND lease_expires_at IS NULL)
+      )
+    ORDER BY lease_expires_at NULLS FIRST
     LIMIT ${RECONCILER_SCAN_LIMIT}
     FOR UPDATE SKIP LOCKED
   `);

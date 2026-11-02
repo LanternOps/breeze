@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { formatAlertSubject, type AlertSubjectSource } from '@breeze/shared';
 
 /**
  * Phase 2 wave P2-1 (alert verdicts), Task 14 — `GET /alerts` (list) and
@@ -28,7 +29,7 @@ import { Hono } from 'hono';
  * predicate tree without needing the real SQL compiler.
  */
 
-const { authRef, dbState, latestVerdictsForAlertsMock, projectAlertAiVerdictSummaryMock, getAlertWithOrgCheckMock } = vi.hoisted(() => {
+const { authRef, dbState, latestVerdictsForAlertsMock, projectAlertAiVerdictSummaryMock, getAlertWithOrgCheckMock, enrichAlertSubjectsMock } = vi.hoisted(() => {
   const dbState = {
     selectQueue: [] as unknown[][],
     // Every predicate passed to `.where(...)` on the fake db, in call
@@ -37,6 +38,7 @@ const { authRef, dbState, latestVerdictsForAlertsMock, projectAlertAiVerdictSumm
     // `hideAiNoiseCondition()` into the query rather than just accepting
     // the query param and doing nothing with it.
     whereCalls: [] as unknown[],
+    selectCalls: [] as (Record<string, unknown> | undefined)[],
   };
   return {
     authRef: {
@@ -54,6 +56,7 @@ const { authRef, dbState, latestVerdictsForAlertsMock, projectAlertAiVerdictSumm
     latestVerdictsForAlertsMock: vi.fn(),
     projectAlertAiVerdictSummaryMock: vi.fn(),
     getAlertWithOrgCheckMock: vi.fn(),
+    enrichAlertSubjectsMock: vi.fn(),
   };
 });
 
@@ -106,13 +109,18 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 vi.mock('../../db', () => ({
-  db: { select: vi.fn(() => selectBuilder()) },
+  db: { select: vi.fn((projection?: Record<string, unknown>) => {
+    dbState.selectCalls.push(projection);
+    return selectBuilder();
+  }) },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 vi.mock('../../db/schema', () => ({
   aiAlertVerdicts: {}, alertCorrelationGroups: {}, alertCorrelationMembers: {},
-  alertRules: {}, alertTemplates: {}, alerts: {}, notificationChannels: {},
+  alertRules: {}, alertTemplates: {}, alerts: {
+    ownerKind: 'alerts.ownerKind', ownerRef: 'alerts.ownerRef', topologySiteId: 'alerts.topologySiteId',
+  }, notificationChannels: {},
   alertNotifications: {}, devices: {}, organizations: {}, tickets: {}, ticketAlertLinks: {},
   // #4445 — actorNames.ts (real implementation, not mocked here) selects
   // `users.id`/`users.name`; without this the feedbackByName lookup throws
@@ -120,6 +128,7 @@ vi.mock('../../db/schema', () => ({
   // own catch, masking every feedbackByName test behind a false null.
   users: { id: 'id', name: 'name' },
 }));
+vi.mock('../../services/alertSubject', () => ({ enrichAlertSubjects: enrichAlertSubjectsMock }));
 vi.mock('../../services/alertCooldown', () => ({
   setCooldown: vi.fn(),
 }));
@@ -240,8 +249,11 @@ function baseAlertRow(id: string, overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  enrichAlertSubjectsMock.mockImplementation(async (rows: AlertSubjectSource[]) =>
+    rows.map(row => ({ ...row, ...formatAlertSubject(row) })));
   dbState.selectQueue = [];
   dbState.whereCalls = [];
+  dbState.selectCalls = [];
   authRef.current = {
     scope: 'organization',
     user: { id: 'u-1', name: 'Reed Only', email: 'reed@org.example' },
@@ -434,7 +446,6 @@ describe('GET /alerts — aiVerdict (Task 14)', () => {
 describe('GET /alerts/:id — aiVerdict (Task 14)', () => {
   it('returns aiVerdict: null when no live verdict exists for the alert', async () => {
     getAlertWithOrgCheckMock.mockResolvedValue(baseAlertRow(ALERT_1));
-    dbState.selectQueue.push([]); // device
     dbState.selectQueue.push([]); // notifications
 
     const res = await makeApp().request(`/alerts/${ALERT_1}`);
@@ -446,7 +457,6 @@ describe('GET /alerts/:id — aiVerdict (Task 14)', () => {
 
   it('returns the projected aiVerdict when one exists for the alert', async () => {
     getAlertWithOrgCheckMock.mockResolvedValue(baseAlertRow(ALERT_1));
-    dbState.selectQueue.push([]); // device
     dbState.selectQueue.push([]); // notifications
     const verdictRow = { id: 'verdict-1', alertId: ALERT_1 };
     latestVerdictsForAlertsMock.mockResolvedValue(new Map([[ALERT_1, verdictRow]]));
@@ -464,7 +474,6 @@ describe('GET /alerts/:id — aiVerdict (Task 14)', () => {
   // a non-null feedbackBy through the real `withAlertActorNames` call.
   it('resolves feedbackByName for the single verdict on the detail route', async () => {
     getAlertWithOrgCheckMock.mockResolvedValue(baseAlertRow(ALERT_1));
-    dbState.selectQueue.push([]); // device
     dbState.selectQueue.push([]); // notifications
     dbState.selectQueue.push([{ id: 'user-a', name: 'Alice' }]); // feedbackBy -> feedbackByName lookup
     const verdictRow = { id: 'verdict-1', alertId: ALERT_1, feedbackBy: 'user-a' };
@@ -474,5 +483,75 @@ describe('GET /alerts/:id — aiVerdict (Task 14)', () => {
     const body = await res.json() as { aiVerdict: { feedbackByName: string | null } };
 
     expect(body.aiVerdict.feedbackByName).toBe('Alice');
+  });
+});
+
+
+describe('org-subject alert read payloads (W2)', () => {
+  const workloadSubject = {
+    ownerKind: 'backup_workload',
+    owner: { kind: 'backup_workload', ref: 'workload-1' },
+    ownerLabel: 'Microsoft 365 mail backup',
+    subjectName: 'Microsoft 365 mail backup · Example organization',
+  };
+
+  beforeEach(() => {
+    enrichAlertSubjectsMock.mockImplementation(async (rows: AlertSubjectSource[]) =>
+      rows.map(row => ({ ...row, ...formatAlertSubject(row, row.ownerKind === 'backup_workload'
+        ? { dataSources: ['m365_mail'], customerName: 'Example organization' } : undefined) })));
+  });
+
+  it('enriches the list before filling legacy device placeholders for a workload alert', async () => {
+    dbState.selectQueue.push([{ count: 1 }]);
+    dbState.selectQueue.push([baseAlertRow(ALERT_1, {
+      ownerKind: 'backup_workload', ownerRef: 'workload-1',
+      title: '{{device}} failed', message: 'Check {{deviceName}}',
+    })]);
+    dbState.selectQueue.push([]);
+
+    const res = await makeApp().request('/alerts');
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(enrichAlertSubjectsMock).toHaveBeenCalledWith([
+      expect.objectContaining({ id: ALERT_1, orgId: ORG_1, ownerKind: 'backup_workload', ownerRef: 'workload-1' }),
+    ]);
+    const projection = dbState.selectCalls.find(value => value && 'deviceHostname' in value);
+    expect(projection).toMatchObject({
+      ownerKind: 'alerts.ownerKind', ownerRef: 'alerts.ownerRef', topologySiteId: 'alerts.topologySiteId',
+    });
+    expect(body.data[0]).toMatchObject({
+      ...workloadSubject, deviceId: null,
+      title: `${workloadSubject.subjectName} failed`, message: `Check ${workloadSubject.subjectName}`,
+    });
+    expect(body.data[0].deviceId).toBeNull();
+    expect(body.data[0].owner).toEqual({ kind: 'backup_workload', ref: 'workload-1' });
+  });
+
+  it('enriches the detail payload without loading a missing device', async () => {
+    getAlertWithOrgCheckMock.mockResolvedValue(baseAlertRow(ALERT_1, {
+      ownerKind: 'backup_workload', ownerRef: 'workload-1',
+      title: '{{device}} failed', message: 'Check {{deviceName}}',
+    }));
+    dbState.selectQueue.push([]); // notifications; no device query for null deviceId
+
+    const res = await makeApp().request(`/alerts/${ALERT_1}`);
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(enrichAlertSubjectsMock).toHaveBeenCalledWith([
+      expect.objectContaining({ id: ALERT_1, orgId: ORG_1, ownerKind: 'backup_workload', ownerRef: 'workload-1' }),
+    ]);
+    expect(body).toMatchObject({
+      ...workloadSubject, deviceId: null, device: null,
+      title: `${workloadSubject.subjectName} failed`, message: `Check ${workloadSubject.subjectName}`,
+    });
+  });
+
+  it('does not enrich a denied detail lookup', async () => {
+    getAlertWithOrgCheckMock.mockResolvedValue(null);
+    const res = await makeApp().request(`/alerts/${ALERT_1}`);
+    expect(res.status).toBe(404);
+    expect(enrichAlertSubjectsMock).not.toHaveBeenCalled();
   });
 });

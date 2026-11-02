@@ -1,3 +1,6 @@
+import type { AlertSubject } from '@breeze/shared';
+import { enrichAlertSubjects } from '../../services/alertSubject';
+import { isDeviceOwned } from '../../services/alertOwner';
 import { Hono, type Context } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
@@ -99,7 +102,7 @@ export type AuthContext = {
 };
 
 export type AlertRow = typeof alerts.$inferSelect;
-export type AlertWithDeviceHostname = AlertRow & { deviceHostname: string | null };
+export type AlertWithDeviceHostname = AlertRow & { deviceHostname: string | null } & Partial<AlertSubject>;
 export type CorrelationRow = typeof alertCorrelations.$inferSelect;
 export type CorrelationGroupRow = typeof alertCorrelationGroups.$inferSelect;
 
@@ -156,7 +159,7 @@ export async function getAccessibleAlert(alertId: string, auth: AuthContext): Pr
   // Site axis: a site-restricted caller must not see/act on an alert outside
   // their allowed sites. Out-of-site → not found (no oracle), matching the
   // alerts.ts by-id paths. A site-owned topology alert follows its topology
-  // site (M3-D6); deviceless alerts stay visible.
+  // site (M3-D6); org-level alerts require unrestricted access.
   if (!(await alertInSiteScope(auth, alert))) {
     return null;
   }
@@ -181,13 +184,20 @@ function alertDisplayDevice(alert: AlertRow & { deviceHostname?: string | null }
   return alert.deviceHostname ?? alert.deviceId;
 }
 
-function toGroupAlert(alert: AlertRow & { deviceHostname?: string | null }) {
+function toGroupAlert(alert: AlertWithDeviceHostname) {
   return {
     id: alert.id,
     title: alert.title,
     severity: alert.severity,
     status: alert.status,
     device: alertDisplayDevice(alert),
+    deviceId: alert.deviceId,
+    ownerKind: alert.ownerKind,
+    ownerRef: alert.ownerRef,
+    topologySiteId: alert.topologySiteId,
+    owner: alert.owner,
+    ownerLabel: alert.ownerLabel,
+    subjectName: alert.subjectName,
     triggeredAt: alert.triggeredAt,
   };
 }
@@ -232,11 +242,15 @@ export async function buildCorrelationGroups(auth: AuthContext): Promise<Correla
   const deviceRows = await db
     .select({ id: devices.id, hostname: devices.hostname })
     .from(devices)
-    .where(inArray(devices.id, orgAlerts.map((alert) => alert.deviceId)));
+    .where(and(
+      inArray(devices.id, [...new Set(orgAlerts.flatMap((alert) => isDeviceOwned(alert) ? [alert.deviceId] : []))]),
+      inArray(devices.orgId, [...new Set(orgAlerts.map(alert => alert.orgId))]),
+    ));
   const deviceNames = new Map(deviceRows.map((device) => [device.id, device.hostname]));
-  const alertMap = new Map<string, AlertWithDeviceHostname>(
-    orgAlerts.map((alert) => [alert.id, { ...alert, deviceHostname: deviceNames.get(alert.deviceId) ?? null }])
-  );
+  const alertsWithSubjects: AlertWithDeviceHostname[] = await enrichAlertSubjects(orgAlerts.map((alert) => ({
+    ...alert, deviceHostname: isDeviceOwned(alert) ? deviceNames.get(alert.deviceId) ?? null : null,
+  })));
+  const alertMap = new Map(alertsWithSubjects.map(alert => [alert.id, alert]));
 
   const scopedCorrelations = await db
     .select()
@@ -362,13 +376,16 @@ export async function buildPersistedCorrelationGroups(auth: AuthContext, groupId
     : [];
   // Site axis: hide member alerts on out-of-site devices from a restricted caller.
   const memberAlerts = await filterAlertsBySiteScope(auth, memberAlertsRaw);
-  const alertById = new Map(memberAlerts.map((alert) => [alert.id, alert]));
 
-  const deviceIds = [...new Set(memberAlerts.map((alert) => alert.deviceId))];
+  const deviceIds = [...new Set(memberAlerts.flatMap((alert) => isDeviceOwned(alert) ? [alert.deviceId] : []))];
   const deviceRows = deviceIds.length > 0
     ? await db.select({ id: devices.id, hostname: devices.hostname }).from(devices).where(inArray(devices.id, deviceIds))
     : [];
   const deviceNames = new Map(deviceRows.map((device) => [device.id, device.hostname]));
+  const alertsWithSubjects: AlertWithDeviceHostname[] = await enrichAlertSubjects(memberAlerts.map(alert => ({
+    ...alert, deviceHostname: isDeviceOwned(alert) ? deviceNames.get(alert.deviceId) ?? null : null,
+  })));
+  const alertById = new Map(alertsWithSubjects.map(alert => [alert.id, alert]));
 
   return persistedGroups.map((group) => {
     const groupMembers = members
@@ -379,8 +396,7 @@ export async function buildPersistedCorrelationGroups(auth: AuthContext, groupId
       });
     const groupAlerts = groupMembers
       .map((member) => alertById.get(member.alertId))
-      .filter((alert): alert is AlertRow => Boolean(alert))
-      .map((alert) => ({ ...alert, deviceHostname: deviceNames.get(alert.deviceId) ?? null }))
+      .filter((alert): alert is AlertWithDeviceHostname => Boolean(alert))
       .sort((a, b) => b.triggeredAt.getTime() - a.triggeredAt.getTime());
     const rootCause =
       (group.rootAlertId ? groupAlerts.find((alert) => alert.id === group.rootAlertId) : undefined) ??
@@ -954,7 +970,7 @@ export async function explainCorrelationGroup(
     const allowedDevices = await resolveSiteAllowedDeviceIds(group.orgId, auth);
     if (allowedDevices) {
       const allowed = new Set(allowedDevices);
-      groupAlerts = memberAlerts.filter((alert) => allowed.has(alert.deviceId));
+      groupAlerts = memberAlerts.filter((alert) => isDeviceOwned(alert) && allowed.has(alert.deviceId));
     }
     if (groupAlerts.length === 0) return { status: 'not_found' };
   }

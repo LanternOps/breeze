@@ -420,6 +420,7 @@
     "emptyRingSeverityNotice": "Bu halkada henüz cihaz yok. Cihazların bildirdiği önem derecesi cihazlar atandığında görünür; o zamana kadar yamaların çoğu Derecelendirilmemiş olarak görünür.",
     "shiftedNotice": "{{total}} yamasından {{shown}} gösteriliyor — katalog yüklenirken değişti. Gerisini görmek için yeniden yükleyin.",
     "ringDelete": {
+      "messageNone": "Bu halkayı kullanan ilke yok. Onay kuralları ve zamanlama ayarları silinecek ve geri yüklenemeyecek.",
       "title": "{{name}} silinsin mi?",
       "messageOne": "1 ilke, siz başka bir halka seçene kadar zamanlanmış yama uygulamayı durduracak.",
       "messageMany": "{{count}} ilke, siz başka bir halka seçene kadar zamanlanmış yama uygulamayı durduracak.",
@@ -484,6 +485,11 @@
     "rebootRequired": "Gerekli",
     "rebootDone": "Tamamlandı",
     "rebootNotRequired": "—",
+    "skipReasons": {
+      "ring_deleted": "Gönderimden önce iptal edildi: güncelleme halkası silindi.",
+      "ring_disabled": "Gönderimden önce iptal edildi: güncelleme halkası devre dışı bırakıldı.",
+      "ring_unavailable": "Atlandı: güncelleme halkası bu cihaza gönderilmeden önce silindi veya devre dışı bırakıldı."
+    },
     "errors": {
       "load": "Yama işi yüklenemedi"
     }
@@ -643,7 +649,11 @@
     "noMatches": "Eşleşme yok.",
     "orEnterAPackageIDManually": "Veya manuel olarak bir paket kimliği girin",
     "removeRuleFor": "{{application}} kuralını kaldır",
-    "scopeNote": "Bu kurallar, yapılandırma ilkesi bu halkaya bağlı olan her cihaz için geçerlidir."
+    "scopeNote": "Bu kurallar, yapılandırma ilkesi bu halkaya bağlı olan her cihaz için geçerlidir.",
+    "linuxPackage": "Linux paketi",
+    "appPackage": "Uygulama paketi",
+    "manualRuleType": "Kural türü",
+    "linuxPinHint": "Yama listesindeki tam sürümü, varsa epoch dahil girin (ör. 5:24.0.7-1)."
   },
   "patchDetails": {
     "unknown": "Bilinmiyor",

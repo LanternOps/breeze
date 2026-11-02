@@ -469,10 +469,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/eventlogs.ts': { tools: ['search_logs', 'get_log_trends', 'detect_log_correlations'] },
   'devices/events.ts': { tools: ['get_device_events'] }, // W13 (#6783)
   'devices/filesystem.ts': { tools: ['analyze_disk_usage', 'disk_cleanup'] },
-  // list/run/status are the same OS-native cleanup workflow as the `system_cleanup`
-  // AI tool (W05 gap triage). The route's cancel endpoint (#6485 F-5) has no
-  // matching `system_cleanup` action yet -- a small future addition, not a
-  // fresh MCP_COVERAGE gap.
+  // list/run/status/cancel are the same OS-native cleanup workflow as the
+  // `system_cleanup` AI tool (W05 gap triage; cancel = #6485 F-5 route, AI action #10161).
   'devices/filesystemSystemCleanup.ts': { tools: ['system_cleanup'] },
   'devices/function.ts': { tools: ['manage_device_function'] }, // W13 (#6783)
   'devices/groups.ts': { tools: ['manage_groups'] },
@@ -607,7 +605,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'partner.ts': { exempt: 'internal_plumbing', note: "/me + dashboard reads; get_executive_summary already overlaps most of the value. From #6801." },
   'partnerAiDataPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Partner default/ceiling of the AI data policy (device file read level, tool-output retention) -- the AI must not set its own data-handling policy.' },
   'partnerAiScriptPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Partner-wide ceiling on the unattended AI lane -- the AI must not widen its own authority.' },
-  'partnerSettingsInheritance.ts': { exempt: 'tool_in_later_wave', note: 'Partner-settings inheritance read model (#9170 W3); read tool tracked in #9763.' },
+  'partnerSettingsInheritance.ts': { tools: ['get_partner_settings_inheritance'] }, // #9763: tab counts + org drill-down, same full-partner gate
   'partnerApi/alerts.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/tickets.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API tickets feed for service principals; in-product ticket reads already have tools (manage_tickets).' },
   'partnerApi/alertWrites.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API alert acknowledge and resolve for service principals; in-product alert writes already have tools (manage_alerts).' },
@@ -634,8 +632,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'patches/compliance.ts': { tools: ['manage_patches'] },
   'patches/list.ts': { tools: ['manage_patches'] },
   'patches/operations.ts': { tools: ['manage_patches'] },
-  'pax8.ts': { gap: '#6785' },
-  'pax8Orders.ts': { gap: '#6785' },
+  // Credential save/test and company mapping remain human-only: no AI action is registered.
+  'pax8.ts': { tools: ['get_pax8_status', 'manage_pax8_subscriptions'] },
+  'pax8Orders.ts': { tools: ['manage_pax8_orders', 'search_pax8_products', 'manage_pax8_subscriptions'] },
   'peripheralControl.ts': { tools: ['manage_peripheral_policies', 'get_peripheral_activity', 'manage_peripheral_policy'] },
   'permissionsCatalog.ts': { exempt: 'identity' },
   'playbooks.ts': { tools: ['list_playbooks', 'execute_playbook', 'get_playbook_history'] },
@@ -673,6 +672,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'portal/tickets.ts': { exempt: 'portal' },
   'portal/trustPage.ts': { exempt: 'portal', note: 'Customer org-admin edits of their own trust page draft (Trust Center W3d); human-only, publishing stays with the MSP.' },
   'psa.ts': { tools: ['query_psa_status'] },
+  'psaAlertTicketing.ts': { exempt: 'vendor_console_admin', note: 'Per-PSA-connection alert→ticket configuration (#10499 W2-A); integration setup stays human-only, like integrations.ts.' },
   'quotes/acceptanceEvidence.ts': { exempt: 'human_only_legal_evidence', note: 'Upload/download of the evidence file behind an on-behalf quote acceptance (#6633); the acceptance itself has no AI tool by design.' },
   'quotes/bulk.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk delete/send; the single-item equivalents already have tools.' },
   'quotes/lifecycle.ts': { tools: ['manage_quotes'] },

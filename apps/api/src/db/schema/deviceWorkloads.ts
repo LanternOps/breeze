@@ -15,6 +15,7 @@ import type {
   WorkloadCollection,
   WorkloadDetection,
   WorkloadEnumeratedRuntime,
+  WorkloadImageProvenance,
   WorkloadKind,
   WorkloadRuntime,
   WorkloadState,
@@ -50,6 +51,10 @@ export const deviceWorkloads = pgTable(
     imageTag: varchar('image_tag', { length: 128 }),
     imageDigest: varchar('image_digest', { length: 80 }),
     imageId: varchar('image_id', { length: 80 }),
+    // #9067: the agent's evidence for where the image came from. NULL = an
+    // agent that predates it (behaviour unchanged); `unknown` is never looked
+    // up in any registry (upstream_status `provenance_unknown`).
+    imageProvenance: varchar('image_provenance', { length: 20 }).$type<WorkloadImageProvenance>(),
     guestOs: varchar('guest_os', { length: 128 }),
     composeProject: varchar('compose_project', { length: 128 }),
     composeService: varchar('compose_service', { length: 128 }),
@@ -95,7 +100,11 @@ export const deviceWorkloads = pgTable(
     ),
     check(
       'device_workloads_upstream_status_chk',
-      sql`${t.upstreamStatus} IN ('pending', 'current', 'behind', 'pinned', 'local', 'private', 'unsupported_registry', 'not_found', 'error')`,
+      sql`${t.upstreamStatus} IN ('pending', 'current', 'behind', 'pinned', 'local', 'private', 'unsupported_registry', 'not_found', 'error', 'provenance_unknown')`,
+    ),
+    check(
+      'device_workloads_image_provenance_chk',
+      sql`${t.imageProvenance} IS NULL OR ${t.imageProvenance} IN ('confirmed', 'local', 'unknown')`,
     ),
   ],
 );

@@ -1704,7 +1704,8 @@ describe('POST /devices/:id/move-org', () => {
       expect(collapseStmt(statements[24]!)).toContain('DELETE FROM alert_external_refs');
       expect(collapseStmt(statements[24]!)).toContain(`WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${DEVICE_ID}::uuid AND topology_site_id IS NULL)`);
       expect(collapseStmt(statements[24]!)).toContain('partner_id IS DISTINCT FROM');
-      expect(statements[25]).toBe('UPDATE devices');
+      expect(collapseStmt(statements[25]!)).toContain('WITH moving_mappings AS MATERIALIZED');
+      expect(statements[26]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,
@@ -1744,6 +1745,20 @@ describe('POST /devices/:id/move-org', () => {
         'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk, tickets_merged_into_org_fk DEFERRED',
       );
       expect(statements.some((s) => /SET CONSTRAINTS ALL/i.test(s))).toBe(false);
+    });
+
+    it('refuses a cross-partner move with open PSA ticketing work as a 409', async () => {
+      rigMove();
+      const { statements } = rigTransactionSuccess();
+      executeResultFor = text => text.includes('psa_ticket_mappings') ? [{ openMappings: 1 }] : null;
+      const response = await postMove();
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        code: 'PSA_TICKETING_OPEN', error: expect.stringContaining('PSA ticketing'),
+      });
+      expect(statements).not.toContain('UPDATE devices');
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(disconnectAgent).not.toHaveBeenCalled();
     });
 
     it('#5573 W02: refuses with 409 DELIVERABLE_TICKET_PINNED when a ticket on the device is a deliverable work item', async () => {

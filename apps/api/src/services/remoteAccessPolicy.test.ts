@@ -47,6 +47,7 @@ import {
   resetRemoteAccessClampWarningsForTests,
   MIN_MAX_SESSION_DURATION_HOURS,
   MAX_MAX_SESSION_DURATION_HOURS,
+  resolveDesktopSessionPolicy,
 } from './remoteAccessPolicy';
 import { resolveEffectiveConfig } from './configurationPolicy';
 
@@ -61,9 +62,44 @@ describe('remote access baseline defaults (single source of truth)', () => {
     expect(d.enableProxy).toBe(true);
     expect(d.autoEnableProxy).toBe(false);
     expect(d.maxConcurrentTunnels).toBe(5);
-    expect(d.idleTimeoutMinutes).toBe(5);
+    expect(d.idleTimeoutMinutes).toBe(30); // #10422
     expect(d.maxSessionDurationHours).toBe(8);
     expect(d.clipboardViewerToHost).toBe(true);
+  });
+});
+
+// #10422: the normal default (no remote_access policy anywhere) idles out at
+// 30 min, while the failsafe used when resolution THROWS stays at 5 min.
+describe('resolveDesktopSessionPolicy idle timeout (#10422)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    invalidateRemoteAccessCache();
+  });
+
+  it('ships the 30-minute baseline idle timeout when no policy is assigned', async () => {
+    const deviceId = `test-device-idle-baseline-${Date.now()}`;
+    vi.mocked(resolveEffectiveConfig).mockResolvedValueOnce(
+      { deviceId, features: {}, inheritanceChain: [] } as never,
+    );
+    const policy = await resolveDesktopSessionPolicy(deviceId);
+    expect(policy.idleTimeoutMinutes).toBe(30);
+    expect(policy.maxSessionDurationHours).toBe(8);
+  });
+
+  it('keeps the restrictive 5-minute failsafe when resolution throws', async () => {
+    const deviceId = `test-device-idle-failsafe-${Date.now()}`;
+    vi.mocked(resolveEffectiveConfig).mockRejectedValueOnce(new Error('config engine down'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const policy = await resolveDesktopSessionPolicy(deviceId);
+      expect(policy).toEqual({
+        clipboard: { hostToViewer: false, viewerToHost: false },
+        idleTimeoutMinutes: 5,
+        maxSessionDurationHours: 8,
+      });
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });
 

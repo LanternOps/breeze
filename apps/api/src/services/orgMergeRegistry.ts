@@ -324,6 +324,12 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // custom executor would only duplicate it, and
   // orgMergeRegistry.integration.test.ts requires every `custom` table to have
   // its own CUSTOM_EXECUTORS entry.
+  // #9981. A reservation hangs off a task that stays with the source org
+  // (composite (task_id, org_id) FK), so it stays too. It is not lost to the
+  // survivor: admission there reads the active reservations of every org
+  // merged into it (org_merge_events), so a fenced task whose effect may
+  // still land keeps blocking a second offboarding of the same account.
+  ai_operator_account_reservations: { kind: 'leave-for-erasure', note: 'provider-account reservations of a task that stays with the source org; survivor-side admission still reads them through org_merge_events until the loser shell is erased' },
   ai_operator_task_targets: { kind: 'leave-for-erasure', note: 'frozen targets of a task that stays with the source org; fenceAiOperatorTasks detaches their device/ticket/contact pointers in the resolve phase, before devices/tickets/contacts repoint, then the rows are erased with the loser shell' },
   ai_operator_task_target_accounts: { kind: 'leave-for-erasure', note: 'frozen provider identities behind a contact target; the connection pointers are nulled in the resolve phase before m365_connections repoints and google_workspace_connections keeps the survivor, and the immutable external_id is retained as evidence' },
   ai_operator_task_steps: { kind: 'leave-for-erasure', note: 'step attempts of a task that stays with the source org; erased with it' },
@@ -1024,6 +1030,13 @@ const REPOINT_TABLES: readonly string[] = [
   "device_memory_modules",
   "device_metrics",
   "device_network",
+  // device_network_isolations (#10089): plain repoint — its only unique index
+  // is (device_id) WHERE unresolved, which cannot collide across orgs because
+  // a device belongs to one org. Its composite FKs to devices, incidents and
+  // incident_actions are DEFERRABLE INITIALLY IMMEDIATE, so the merge's
+  // SET CONSTRAINTS ALL DEFERRED lets parents and this row repoint in separate
+  // statements; breeze_network_isolation_device_moved skips a merging org.
+  "device_network_isolations",
   "device_patches",
   "device_process_samples",
   "device_recovery_keys",

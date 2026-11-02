@@ -5,6 +5,7 @@ import type React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import DevicesPage from './DevicesPage';
+import { DEFAULT_VISIBLE_COLUMNS, writeColumnVisibility } from './columnVisibility';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllDevices, fetchAllNetworkDevices, fetchAllManualAssets } from '../../lib/devicesFetch';
 import { navigateTo } from '@/lib/navigation';
@@ -174,12 +175,12 @@ vi.mock('./AddDeviceModal', () => ({
   default: ({ isOpen }: { isOpen: boolean }) => (isOpen ? <div data-testid="add-device-modal-stub" /> : null),
 }));
 vi.mock('./AddNetworkAssetModal', () => ({ default: () => null }));
-vi.mock('./CreateGroupModal', () => ({
-  default: ({ isOpen, onCreated }: { isOpen: boolean; onCreated: (id: string, ownerScope: 'organization' | 'partner') => void }) =>
-    isOpen ? <button data-testid="create-partner-group" onClick={() => onCreated('partner-group-1', 'partner')}>Create partner group</button> : null,
-}));
 vi.mock('../filters/DeviceFilterBar', () => ({ DeviceFilterBar: () => null }));
-vi.mock('./DeviceFilterToolbar', () => ({ DeviceFilterToolbar: ({ onCreateGroup }: { onCreateGroup: () => void }) => <div data-testid="device-filter-toolbar-stub"><button data-testid="open-create-group" onClick={onCreateGroup}>New group</button></div> }));
+vi.mock('./DeviceFilterToolbar', () => ({
+  DeviceFilterToolbar: ({ createGroupHref }: { createGroupHref?: string }) => (
+    <div data-testid="device-filter-toolbar-stub" data-create-group-href={createGroupHref ?? ''} />
+  ),
+}));
 vi.mock('../shared/ProgressBar', () => ({ default: () => null }));
 
 // DeviceCard stub renders the hostname so the grid contents are assertable, and
@@ -231,7 +232,7 @@ vi.mock('./DeviceCard', () => ({
 // the per-action buttons to drive DevicesPage.handleBulkAction directly.
 type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null; status?: string; wanIp?: string | null; lanIp?: string | null; hardwareHealth?: string | null; hardwareHealthSummary?: Record<string, number> | null; reliabilityProvisional?: boolean };
 vi.mock('./DeviceList', () => ({
-  default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, onHideDecommissioned, includeDecommissioned, headerActions, onClearFilters, sortInHash }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; onHideDecommissioned?: () => void; includeDecommissioned?: boolean; headerActions?: React.ReactNode; onClearFilters?: () => void; sortInHash?: boolean }) => (
+  default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, onHideDecommissioned, includeDecommissioned, headerActions, onClearFilters, sortInHash, onWarrantyRequiredChange }: { onWarrantyRequiredChange?: (required: boolean) => void; devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; onHideDecommissioned?: () => void; includeDecommissioned?: boolean; headerActions?: React.ReactNode; onClearFilters?: () => void; sortInHash?: boolean }) => (
     <div
       data-testid="device-list"
       data-device-count={devices.length}
@@ -248,6 +249,8 @@ vi.mock('./DeviceList', () => ({
       data-reliability-provisional={devices.map(d => String(d.reliabilityProvisional)).join(',')}
       data-hardware-summary={JSON.stringify(devices.map(d => d.hardwareHealthSummary ?? null))}
     >
+      <button data-testid="stub-show-warranty" onClick={() => onWarrantyRequiredChange?.(true)}>Show warranty</button>
+      <button data-testid="stub-hide-warranty" onClick={() => onWarrantyRequiredChange?.(false)}>Hide warranty</button>
       {/* #9035: the page hands its list/grid toggle to the table header strip. */}
       <div data-testid="device-list-header-actions">{headerActions}</div>
       {onClearFilters && (
@@ -410,13 +413,50 @@ beforeEach(() => {
   });
 });
 
-it('closes the create modal and refreshes devices after creating a partner group', async () => {
-  render(<DevicesPage />);
-  fireEvent.click(await screen.findByTestId('open-create-group'));
-  const initialFetches = vi.mocked(fetchAllDevices).mock.calls.length;
-  fireEvent.click(screen.getByTestId('create-partner-group'));
-  await waitFor(() => expect(fetchAllDevices).toHaveBeenCalledTimes(initialFetches + 1));
-  expect(screen.queryByTestId('create-partner-group')).not.toBeInTheDocument();
+describe('DevicesPage — optional warranty loading', () => {
+  it('skips warranty by default, then reloads when the column is enabled', async () => {
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    expect(fetchAllDevices).toHaveBeenLastCalledWith(expect.objectContaining({ includeWarranty: false }));
+    fireEvent.click(screen.getByTestId('stub-show-warranty'));
+    await waitFor(() => expect(fetchAllDevices).toHaveBeenLastCalledWith(expect.objectContaining({ includeWarranty: true })));
+  });
+
+  it('reloads in the background and never over an off toggle (review of #9863)', async () => {
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    const before = vi.mocked(fetchAllDevices).mock.calls.length;
+    fireEvent.click(screen.getByTestId('stub-show-warranty'));
+    await waitFor(() => expect(vi.mocked(fetchAllDevices).mock.calls.length).toBe(before + 1));
+    // The list stays mounted: a foreground reload would unmount it (spinner) and drop selection/page state.
+    expect(screen.getByTestId('device-list')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('stub-hide-warranty'));
+    fireEvent.click(screen.getByTestId('stub-show-warranty'));
+    await new Promise(r => setTimeout(r, 50));
+    // Rows already carry warranty data; hiding and re-showing the column is not a reload.
+    expect(vi.mocked(fetchAllDevices).mock.calls.length).toBe(before + 1);
+  });
+
+  it('requests warranty on the first walk when the column was remembered', async () => {
+    writeColumnVisibility([...DEFAULT_VISIBLE_COLUMNS, 'warranty']);
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    expect(fetchAllDevices).toHaveBeenNthCalledWith(1, expect.objectContaining({ includeWarranty: true }));
+  });
+});
+
+describe('DevicesPage — Add filter "New group…" shortcut (#9865)', () => {
+  // The page's own create modal made empty static groups with no org owner;
+  // the shortcut now links to the Device Groups page, which opens its create
+  // dialog on `#create` (DeviceGroupsPage CREATE_HASH).
+  it('links the toolbar shortcut to the Device Groups create flow', async () => {
+    render(<DevicesPage />);
+
+    expect(await screen.findByTestId('device-filter-toolbar-stub')).toHaveAttribute(
+      'data-create-group-href',
+      '/devices/groups#create',
+    );
+  });
 });
 
 describe('DevicesPage — advanced filter applies to BOTH views', () => {

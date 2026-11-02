@@ -420,6 +420,7 @@
     "emptyRingSeverityNotice": "Ainda não há dispositivos neste anel. A severidade informada pelos dispositivos aparece quando dispositivos são atribuídos, então até lá a maioria dos patches fica como Sem classificação.",
     "shiftedNotice": "Exibindo {{shown}} de {{total}} patches — o catálogo mudou enquanto carregava. Recarregue para ver o restante.",
     "ringDelete": {
+      "messageNone": "Nenhuma política usa este anel. Suas regras de aprovação e configurações de agendamento serão excluídas e não poderão ser restauradas.",
       "title": "Excluir {{name}}?",
       "messageOne": "1 política deixará de aplicar patches agendados até que você escolha outro anel.",
       "messageMany": "{{count}} políticas deixarão de aplicar patches agendados até que você escolha outro anel.",
@@ -484,6 +485,11 @@
     "rebootRequired": "Necessária",
     "rebootDone": "Concluída",
     "rebootNotRequired": "—",
+    "skipReasons": {
+      "ring_deleted": "Cancelado antes do envio: o anel de atualização foi excluído.",
+      "ring_disabled": "Cancelado antes do envio: o anel de atualização foi desativado.",
+      "ring_unavailable": "Ignorado: o anel de atualização foi excluído ou desativado antes do envio para este dispositivo."
+    },
     "errors": {
       "load": "Falha ao carregar o trabalho de patch"
     }
@@ -643,7 +649,11 @@
     "noMatches": "Nenhuma correspondência.",
     "orEnterAPackageIDManually": "Ou insira manualmente um ID de pacote",
     "removeRuleFor": "Remover regra de {{application}}",
-    "scopeNote": "Estas regras se aplicam a todos os dispositivos cuja política de configuração vincula este anel."
+    "scopeNote": "Estas regras se aplicam a todos os dispositivos cuja política de configuração vincula este anel.",
+    "linuxPackage": "Pacote Linux",
+    "appPackage": "Pacote de app",
+    "manualRuleType": "Tipo de regra",
+    "linuxPinHint": "Informe a versão completa da lista de patches, incluindo a época, se houver (ex.: 5:24.0.7-1)."
   },
   "patchDetails": {
     "unknown": "Desconhecido",

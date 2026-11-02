@@ -8,12 +8,17 @@ const dbMock = vi.hoisted(() => ({
   executed: [] as unknown[],
   events: [] as Array<'execute' | 'query'>,
   queryError: undefined as Error | undefined,
+  wheres: [] as unknown[],
 }));
 vi.mock('../db', () => {
   // A chainable, awaitable stub for the drizzle query builder. Every builder
   // step returns the same object; awaiting it resolves to an empty row set.
   const chain: Record<string, unknown> = {};
-  for (const m of ['from', 'where', 'limit', 'leftJoin', 'orderBy']) chain[m] = () => chain;
+  for (const m of ['from', 'limit', 'leftJoin', 'orderBy']) chain[m] = () => chain;
+  chain.where = (clause: unknown) => {
+    dbMock.wheres.push(clause);
+    return chain;
+  };
   (chain as { then: unknown }).then = (
     resolve: (rows: unknown[]) => unknown,
     reject: (error: Error) => unknown,
@@ -427,6 +432,49 @@ describe('filterEngine hardware.health', () => {
     const notInSql = renderWithParams({ field: 'hardware.health', operator: 'notIn', value: ['warning', 'critical'] }).sql;
     expect(notInSql).toMatch(/device_hardware_health/i);
     expect(notInSql).toMatch(/not in \(/i);
+  });
+});
+
+// #9863: warranty status lives in device_warranty (1:1 per device subject).
+// A device with no warranty row is 'unknown', the same word the Warranty card
+// and the list column use for "no coverage data".
+describe('filterEngine warranty.status', () => {
+  const renderWithParams = (cond: FilterCondition) => {
+    const q = dialect.sqlToQuery(buildConditionSQL(cond));
+    return { sql: q.sql, params: q.params };
+  };
+
+  it('registers an enum over the stored warranty statuses', () => {
+    const def = getFieldDefinition('warranty.status');
+    expect(def?.type).toBe('enum');
+    expect(def?.enumValues).toEqual(['active', 'expiring', 'expired', 'unknown', 'subscription_active']);
+    expect(def?.operators).toEqual(expect.arrayContaining(['equals', 'notEquals', 'in', 'notIn']));
+  });
+
+  it('reads the status from device_warranty correlated on the device subject', () => {
+    const { sql, params } = renderWithParams({ field: 'warranty.status', operator: 'equals', value: 'expired' });
+    expect(sql).toMatch(/from "device_warranty"/i);
+    expect(sql).toMatch(/"device_warranty"\."device_id" = "devices"\."id"/i);
+    // Compared as text so a bogus value cannot 500 with 22P02 on the pg enum.
+    expect(sql).toMatch(/"device_warranty"\."status"::text/i);
+    // No warranty row reads as 'unknown'.
+    expect(sql).toMatch(/coalesce\(/i);
+    expect(params).toEqual(expect.arrayContaining(['unknown', 'expired']));
+  });
+
+  it('supports in / notIn', () => {
+    const inSql = renderWithParams({ field: 'warranty.status', operator: 'in', value: ['expiring', 'expired'] }).sql;
+    expect(inSql).toMatch(/device_warranty/i);
+    expect(inSql).toMatch(/\) in \(/i);
+    const notInSql = renderWithParams({ field: 'warranty.status', operator: 'notIn', value: ['active'] }).sql;
+    expect(notInSql).toMatch(/not in \(/i);
+  });
+
+  // A case slip in `notEquals` must not compile to match-everything (#8773).
+  it('refuses an unknown warranty status in validateFilter and at build time', () => {
+    const result = validateFilter({ operator: 'AND', conditions: [{ field: 'warranty.status', operator: 'notEquals', value: 'Expired' }] });
+    expect(result.valid).toBe(false);
+    expect(() => buildConditionSQL({ field: 'warranty.status', operator: 'notEquals', value: 'Expired' })).toThrow(FilterValueError);
   });
 });
 
@@ -991,5 +1039,49 @@ describe('filterEngine logShippingFailing (#8611)', () => {
     expect(isAgentReportedFilterField('logShippingFailing')).toBe(true);
     expect(isExecutionRefusedFilterField('logShippingFailing')).toBe(true);
     expect(getExecutionRefusedFieldsUsed(['osType', 'logShippingFailing'])).toEqual(['logShippingFailing']);
+  });
+});
+
+/**
+ * #9933 — dynamic-group preview and membership must leave out removed
+ * (decommissioned) devices, exactly as /devices does. The exclusion is opt-in:
+ * the generic filter preview also drives the device list's "show removed" view
+ * and deployment targeting, whose populations are not this issue's to change.
+ */
+describe('filterEngine excludeDecommissioned option (#9933)', () => {
+  const dialect = new PgDialect();
+  const renderedWheres = () => dbMock.wheres.map((q) => dialect.sqlToQuery(q as never));
+  const filter: FilterConditionGroup = {
+    operator: 'AND',
+    conditions: [{ field: 'osType', operator: 'equals', value: 'windows' }],
+  };
+  const excludesDecommissioned = (q: { sql: string; params: unknown[] }) =>
+    /"devices"\."status" <> \$\d+/.test(q.sql) && q.params.includes('decommissioned');
+
+  beforeEach(() => {
+    dbMock.wheres.length = 0;
+    dbMock.queryError = undefined;
+  });
+
+  it.each([
+    ['evaluateFilter', () => evaluateFilter(filter, { orgId: 'org-1', excludeDecommissioned: true })],
+    ['evaluateFilterWithPreview', () => evaluateFilterWithPreview(filter, { orgId: 'org-1', previewLimit: 5, excludeDecommissioned: true })],
+    ['deviceMatchesFilter', () => deviceMatchesFilter('device-1', filter, { excludeDecommissioned: true })],
+  ] as const)('%s excludes decommissioned devices from every query when asked', async (_name, run) => {
+    await run();
+    const wheres = renderedWheres();
+    expect(wheres.length).toBeGreaterThan(0);
+    for (const where of wheres) expect(excludesDecommissioned(where)).toBe(true);
+  });
+
+  it.each([
+    ['evaluateFilter', () => evaluateFilter(filter, { orgId: 'org-1' })],
+    ['evaluateFilterWithPreview', () => evaluateFilterWithPreview(filter, { orgId: 'org-1', previewLimit: 5 })],
+    ['deviceMatchesFilter', () => deviceMatchesFilter('device-1', filter)],
+  ] as const)('%s keeps decommissioned devices by default', async (_name, run) => {
+    await run();
+    const wheres = renderedWheres();
+    expect(wheres.length).toBeGreaterThan(0);
+    for (const where of wheres) expect(excludesDecommissioned(where)).toBe(false);
   });
 });

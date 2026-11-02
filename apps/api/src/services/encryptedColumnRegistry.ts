@@ -108,6 +108,7 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'td_synnex_sftp_integrations', column: 'credentials', kind: 'json', description: 'TD SYNNEX nightly SFTP P&A password (credentials.password)' },
   { table: 'device_recovery_keys', column: 'encrypted_key', kind: 'text', description: 'escrowed BitLocker/FileVault recovery key (#2021)' },
   { table: 'tenant_variables', column: 'value', kind: 'text', aadBinding: 'row', description: 'tenant variable value (#3409) — AAD bound to the row id' },
+  { table: 'device_network_isolations', column: 'break_glass_secret_enc', kind: 'text', aadBinding: 'row', description: 'per-episode network-isolation break-glass secret (#10089) — AAD bound to the episode id, so a secret swapped onto another episode never decrypts' },
   { table: 'invoices', column: 'public_link_token_ct', kind: 'text', aadBinding: 'row', description: 'public invoice-link bearer token (row-bound: swapping ciphertext between invoices would move a live credential across tenants)' },
   { table: 'tool_sources', column: 'auth_config_encrypted', kind: 'text', aadBinding: 'row', description: 'external tool source credential JSON (#5216, spec 2026-09-07 §5.2) — AAD bound to the row id' },
   { table: 'backup_storage_credential_history', column: 'sealed_previous_secret', kind: 'text', aadBinding: 'row', description: 'replaced S3 backup destination connection settings (endpoint, bucket, key pair), kept only to check the old key is disabled — AAD bound to the row id' },

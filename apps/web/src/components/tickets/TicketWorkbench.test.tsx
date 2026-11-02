@@ -35,8 +35,9 @@ vi.mock('./TicketPartsCard', () => ({
 // #5808 W01), which would block the status changes these tests assert. The
 // checklist's own behaviour is covered by TicketChecklistCard.test.tsx and
 // TicketWorkbench.checklistConfirm.test.tsx.
+const checklistCardProps = vi.hoisted(() => ({ last: null as null | { ticketId: string; readOnly?: boolean } }));
 vi.mock('./TicketChecklistCard', () => ({
-  default: () => <div data-testid="ticket-checklist-card-stub" />,
+  default: (p: { ticketId: string; readOnly?: boolean }) => { checklistCardProps.last = p; return <div data-testid="ticket-checklist-card-stub" />; },
 }));
 
 // Same reason as the checklist: the links card self-fetches /tickets/:id/links.
@@ -3470,6 +3471,7 @@ describe('TicketWorkbench — merged tombstone (#8972)', () => {
       expect(screen.getByTestId(id), id).toBeDisabled();
     }
     expect(partsCardProps.last).toMatchObject({ ticketId: 'tk-1', readOnly: true });
+    expect(checklistCardProps.last).toMatchObject({ ticketId: 'tk-1', readOnly: true });
     expect(screen.getByTestId('ticket-rail-merged-readonly')).toHaveTextContent('Time, billing and parts are read-only');
     expect(screen.getByTestId('ticket-rail-merged-link')).toHaveAttribute('href', '/tickets/tk-surv');
     expect(screen.getByTestId('ticket-rail-merged-link')).toHaveTextContent('Open T-2026-0002');
@@ -3486,6 +3488,7 @@ describe('TicketWorkbench — merged tombstone (#8972)', () => {
     expect(screen.queryByTestId('ticket-rail-merged-readonly')).toBeNull();
     expect(screen.getByTestId('ticket-billing-start-timer')).toBeEnabled();
     expect(partsCardProps.last).toMatchObject({ readOnly: false });
+    expect(checklistCardProps.last).toMatchObject({ readOnly: false });
   });
 });
 
@@ -3525,7 +3528,7 @@ describe('TicketWorkbench — Offboard a person launcher', () => {
   async function resetFeatures() {
     const { useFeaturesStore } = await import('../../stores/featuresStore');
     useFeaturesStore.setState({
-      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false },
       loaded: false,
     });
   }
@@ -3614,7 +3617,7 @@ describe('TicketWorkbench — Onboard a person launcher', () => {
   async function resetFeatures() {
     const { useFeaturesStore } = await import('../../stores/featuresStore');
     useFeaturesStore.setState({
-      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false },
       loaded: false,
     });
   }

@@ -354,7 +354,7 @@
     "currentSite": "Sitio actual",
     "newSite": "Nuevo sitio",
     "loadingSites": "Cargando sitios...",
-    "thisOrganizationOnlyHasOneSite": "Esta organización solo tiene un sitio. Agregue más sitios desde Configuración → Organizaciones para habilitar movimientos.",
+    "thisOrganizationOnlyHasOneSite": "Esta organización solo tiene un sitio. Agregue más sitios en la pestaña Sitios de la organización (Organizaciones → abra la organización → Sitios) para habilitar movimientos.",
     "current": "(actual)",
     "cancel": "Cancelar",
     "moving": "Moviendo...",
@@ -376,23 +376,6 @@
     "moveDevices_other": "Mover {{count}} dispositivos",
     "bulkPolicyNote": "Al moverlos cambian las políticas de configuración, las ventanas de mantenimiento, el enrutamiento de alertas y los informes del sitio que se aplican a estos dispositivos. Breeze no los devolverá automáticamente.",
     "failedToMoveDevices": "No se pudieron mover los dispositivos"
-  },
-  "createGroupModal": {
-    "failedToCreateGroup": "No se pudo crear el grupo",
-    "newDeviceGroup": "Nuevo grupo de dispositivos",
-    "name": "Nombre",
-    "eGProductionServers": "p.ej. Servidores de producción",
-    "type": "Tipo",
-    "static": "Estático",
-    "dynamic": "Dinámica",
-    "manuallyAddAndRemoveDevicesAfter": "Agregue y elimine dispositivos manualmente después de la creación.",
-    "devicesAreAutoAssignedBasedOn": "Los dispositivos se asignan automáticamente según las reglas de filtrado.",
-    "filterRules": "Reglas de filtrado",
-    "cancel": "Cancelar",
-    "creating": "Creando...",
-    "createGroup": "Crear grupo",
-    "created": "Grupo de dispositivos creado",
-    "missingGroupId": "El grupo se creó, pero la respuesta del servidor no incluyó su ID. Actualiza la página."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} quitados ocultos",
@@ -1895,7 +1878,10 @@
     "moveToSite": "Mover a sitio",
     "moveSelectedToSite": "Mover a sitio",
     "moveSiteMixedOrgs": "Los dispositivos seleccionados pertenecen a más de una organización",
-    "moveSiteOverCap": "Seleccione como máximo {{count}} dispositivos para mover a la vez"
+    "moveSiteOverCap": "Seleccione como máximo {{count}} dispositivos para mover a la vez",
+    "addToGroup": "Agregar al grupo…",
+    "removeFromGroup": "Quitar del grupo…",
+    "groupMembershipOverCap": "Seleccione como máximo {{count}} dispositivos para cambiar la membresía de grupo a la vez"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "No se pudieron recuperar los registros del dispositivo",
@@ -2408,7 +2394,9 @@
       "completed": "Terminado",
       "failed": "Fallido",
       "queued": "En cola",
-      "running": "En ejecución"
+      "running": "En ejecución",
+      "cancelled": "Cancelado",
+      "expired": "Vencido"
     },
     "scanType": "escaneo {{type}}",
     "scanTypes": {
@@ -2430,7 +2418,13 @@
       "quarantined": "En cuarentena",
       "removed": "Eliminado"
     },
-    "threatsFound": "Amenazas encontradas: {{count}}"
+    "threatsFound": "Amenazas encontradas: {{count}}",
+    "waitingForSlot": "Esperando un espacio de análisis libre. Vence el {{date}}.",
+    "cancelScan": "Cancelar análisis",
+    "scanCancelled": "Análisis cancelado",
+    "cancelScanFailed": "No se pudo cancelar el análisis",
+    "scanAlreadyRunning": "El análisis ya se está ejecutando en el dispositivo y no se puede cancelar.",
+    "scanAlreadyQueued": "Ya hay un análisis en cola para este dispositivo."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Agregue una etiqueta...",
@@ -4338,6 +4332,7 @@
       "pending": "Aún sin verificar",
       "private": "Registro privado: se requieren credenciales",
       "unsupported_registry": "Registro no compatible",
+      "provenance_unknown": "Origen desconocido: el nombre de la imagen no se envía a ningún registro",
       "error": "Falló la verificación del registro; se reintentará",
       "behind": "Hay una imagen más reciente publicada para esta etiqueta",
       "current": "Coincide con el registro",
@@ -4765,5 +4760,25 @@
     "membersError": "No se pudieron cargar los miembros del grupo.",
     "retry": "Reintentar",
     "emptyMembers": "No hay dispositivos en este grupo."
+  },
+  "bulkGroupMembership": {
+    "titleAdd": "Agregar al grupo",
+    "titleRemove": "Quitar del grupo",
+    "selectionSummary": "Dispositivos seleccionados: {{n}} · Organización: {{org}}",
+    "groupLabel": "Grupo estático",
+    "selectGroup": "Seleccione un grupo",
+    "loadingGroups": "Cargando grupos…",
+    "noGroups": "Ningún grupo estático de esta organización puede recibir esta selección.",
+    "scopeHint": "Solo se muestran los grupos estáticos de esta organización. Un grupo de sitio aparece solo si todos los dispositivos seleccionados están en ese sitio. Los grupos dinámicos no se muestran: sus reglas deciden quién es miembro.",
+    "cancel": "Cancelar",
+    "saving": "Guardando…",
+    "submitAdd": "Agregar dispositivos",
+    "submitRemove": "Quitar dispositivos",
+    "failedToLoadGroups": "No se pudieron cargar los grupos",
+    "failedToUpdate": "No se pudo actualizar la membresía del grupo",
+    "addResult": "{{group}}: {{added}} agregados, {{skipped}} ya estaban en el grupo",
+    "removeResult": "{{group}}: {{removed}} quitados, {{notMember}} no estaban en el grupo",
+    "removeResultForbidden": "{{group}}: {{removed}} quitados, {{notMember}} no estaban en el grupo. No se quitaron (sin acceso al sitio del dispositivo): {{devices}}",
+    "andMore": "{{names}} y {{n}} más"
   }
 }

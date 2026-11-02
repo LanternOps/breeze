@@ -783,7 +783,6 @@
     "threatStatus": "Estado de amenaza",
     "threatWasMovedToQuarantineByPolicy": "La amenaza se movió a cuarentena por política o acción del operador.",
     "timeline": "Línea de tiempo",
-    "actionFailed": "La acción falló",
     "quarantineSucceeded": "Amenaza puesta en cuarentena",
     "restoreSucceeded": "Amenaza restaurada",
     "removeSucceeded": "Amenaza eliminada",
@@ -1748,13 +1747,18 @@
       "totalQueries": "Consultas totales",
       "blocked": "Bloqueado",
       "allowed": "Permitido",
-      "redirected": "Redirigido"
+      "redirected": "Redirigido",
+      "notStored": "No almacenado"
     },
     "topBlocked": {
       "title": "Principales dominios bloqueados",
       "empty": "No hay dominios bloqueados en la ventana actual."
     },
-    "loading": "Cargando…"
+    "loading": "Cargando…",
+    "allowedTraffic": {
+      "none": "Las consultas permitidas no se almacenan para estas integraciones, así que solo se cuentan las consultas bloqueadas y redirigidas. Para contarlas, activa \"Almacenar tráfico permitido\" en la configuración de datos almacenados de una integración.",
+      "some": "Las consultas permitidas solo se almacenan para algunas integraciones, así que el recuento de permitidas es parcial."
+    }
   },
   "dnsSecurityDnsSecurityIntegrationsTab": {
     "title": "Integraciones configuradas",
@@ -1771,7 +1775,7 @@
       "addIntegration": "Agregar integración",
       "syncNow": "Sincronizar ahora",
       "deleteIntegration": "Eliminar integración",
-      "editRetention": "Cambiar el período de retención"
+      "editRetention": "Datos almacenados"
     },
     "messages": {
       "loadHttpError": "No se pudieron cargar las integraciones (HTTP {{status}})",
@@ -1802,8 +1806,8 @@
     "deletingInBackground": "Eliminando…"
   },
   "dnsSecurityEditDnsRetentionModal": {
-    "title": "Retención de datos",
-    "description": "Los eventos y las estadísticas diarias más antiguos se eliminan en la limpieza nocturna de retención.",
+    "title": "Datos almacenados",
+    "description": "Elige qué consultas DNS almacena Breeze para esta integración y durante cuánto tiempo las conserva.",
     "fieldLabel": "Conservar eventos y estadísticas de DNS durante (días)",
     "fieldHelp": "De 1 a 365 días. Déjalo vacío para usar el valor predeterminado de la instalación (90 días, salvo que tu administrador lo haya cambiado).",
     "invalid": "Ingresa un número entero de días entre 1 y 365, o déjalo vacío.",
@@ -1813,8 +1817,13 @@
       "saving": "Guardando…"
     },
     "messages": {
-      "saved": "Retención actualizada para {{name}}",
-      "saveFailed": "No se pudo actualizar la retención de {{name}}"
+      "saved": "Configuración de datos almacenados actualizada para {{name}}",
+      "saveFailed": "No se pudo actualizar la configuración de datos almacenados de {{name}}"
+    },
+    "storeAllowedTraffic": {
+      "label": "Almacenar tráfico permitido",
+      "helpOff": "Solo se almacenan las consultas bloqueadas y redirigidas. Las consultas permitidas suelen ser casi todo el tráfico, y tu proveedor de DNS las conserva en sus propios informes.",
+      "helpOn": "También se almacenan las consultas permitidas, lo que suele suponer unas 100 veces más filas. Desactivarlo más adelante no elimina las consultas permitidas ya almacenadas; la retención las elimina."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
@@ -2401,6 +2410,7 @@
       "platformNotSelected": "Plataforma no seleccionada",
       "varMissing": "Falta la variable de implementación",
       "varSecret": "La variable de implementación está marcada como secreta",
+      "installerMissing": "Instalador no cargado",
       "vendorUnavailable": "Proveedor no disponible",
       "installFailed": "Falló la instalación",
       "installNotArmed": "Instalación no habilitada",
@@ -2408,6 +2418,10 @@
       "awaitingVendorReport": "En espera del informe del proveedor",
       "awaitingEvaluation": "En espera de evaluación",
       "vendorOrgMismatch": "El proveedor informa otra organización"
+    },
+    "setupLink": {
+      "installerMissing": "Cargar el instalador",
+      "default": "Abrir configuración"
     }
   },
   "sweeps": {

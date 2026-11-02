@@ -44,8 +44,14 @@ import { decryptNotificationChannelConfig } from './notificationChannelSecrets';
 import { applyPartnerPushoverDefaults, readPartnerPushoverDefaults } from './partnerPushoverDefaults';
 import { attachWorkerObservability } from '../jobs/workerObservability';
 import { escalationStepSchema, type EscalationStep } from './delivery/escalationSteps';
-import { escalationOccurrences, listEscalationUsers, processUserEscalation, type UserEscalationJob } from './delivery/escalationExecution';
+import {
+  escalationOccurrences, listEscalationUsers, processEscalationEvent, processUserEscalation,
+  type EscalationEventJob, type UserEscalationJob,
+} from './delivery/escalationExecution';
 import { resolveDelivery } from './delivery/resolveDelivery';
+import { alertOwnerKey } from './alertOwner';
+import { enrichAlertSubjects } from './alertSubject';
+import type { AlertSubject } from '@breeze/shared';
 import { alertOwningSiteId } from './alertOwnership';
 import { partnerIdForOrg, railOwnershipCondition } from './delivery/railOwnership';
 
@@ -94,7 +100,7 @@ interface ProcessAlertJobData {
   alertId: string;
 }
 
-type NotificationJobData = SendNotificationJobData | ProcessAlertJobData | UserEscalationJob;
+type NotificationJobData = SendNotificationJobData | ProcessAlertJobData | UserEscalationJob | EscalationEventJob;
 
 /**
  * Create the notification worker
@@ -117,6 +123,14 @@ export function createNotificationWorker(): Worker<NotificationJobData> {
           // Background entry point establishes the same context as process-alert.
           const userJob = job.data;
           return runWithSystemDbAccess(() => processUserEscalation(userJob));
+        }
+
+        case 'escalation-event': {
+          // A read plus publishEvent, which leaves the DB context itself before
+          // any Redis work. A publish failure throws and BullMQ retries.
+          const eventJob = job.data;
+          await runWithSystemDbAccess(() => processEscalationEvent(eventJob));
+          return;
         }
 
         case 'process-alert': {
@@ -214,12 +228,15 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
   // Get device info for in-app notification. Only a device in the ALERT's org
   // is attributable: a site-owned topology alert (M3-D6) stays in its site's
   // org after its origin device moves org, and must not disclose that device.
-  const [deviceRow] = await db
+  const [deviceRow] = alert.deviceId === null ? [] : await db
     .select()
     .from(devices)
     .where(eq(devices.id, alert.deviceId))
     .limit(1);
   const device = deviceRow && deviceRow.orgId === alert.orgId ? deviceRow : undefined;
+
+  const [subject] = await enrichAlertSubjects([{ ...alert, deviceName: device?.displayName || device?.hostname }]);
+  if (!subject) throw new Error('Alert subject missing');
 
   // Always send in-app notifications first (baseline notification)
   let inAppSent = false;
@@ -232,6 +249,8 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
       orgId: alert.orgId,
       deviceId: alert.deviceId,
       deviceName: device?.displayName || device?.hostname,
+      subjectName: subject.subjectName,
+      ownerKind: subject.ownerKind,
       link: `/alerts/${alert.id}`
     });
     inAppSent = inAppResult.success;
@@ -382,6 +401,7 @@ type PrepareSendResult =
       notificationRecord: typeof alertNotifications.$inferSelect;
       device: typeof devices.$inferSelect | undefined;
       org: typeof organizations.$inferSelect | undefined;
+      subject: AlertSubject;
     };
 
 /**
@@ -590,7 +610,7 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
 
     // Get device info for context — only a device in the ALERT's org (a
     // site-owned topology alert outlives its origin device's org move, M3-D6).
-    const [deviceRow] = await db
+    const [deviceRow] = alert.deviceId === null ? [] : await db
       .select()
       .from(devices)
       .where(eq(devices.id, alert.deviceId))
@@ -646,12 +666,13 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
     }
 
     // Feature #4: per-channel sliding-window throttle (defense-in-depth vs alert storms).
-    // Keyed by (channelId, device:<deviceId>) so one flooding device cannot starve other devices.
+    // Keyed by channel and owner so one flooding subject cannot starve another.
     if (channel.throttleMaxPerWindow && channel.throttleMaxPerWindow > 0) {
       const windowSeconds = channel.throttleWindowSeconds ?? 3600;
+      const ownerKey = alertOwnerKey(alert);
       const throttle = await checkNotificationThrottle(
         channel.id,
-        `device:${alert.deviceId}`,
+        ownerKey,
         channel.throttleMaxPerWindow,
         windowSeconds
       );
@@ -659,7 +680,7 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
         const windowExpiresIso = new Date(throttle.windowExpiresAt).toISOString();
         const throttleMessage = `Throttled: ${throttle.currentCount} delivered in last ${windowSeconds}s (cap=${channel.throttleMaxPerWindow})`;
         console.warn(
-          `[NotificationThrottle] Suppressed: channel=${channel.id} device=${alert.deviceId} ` +
+          `[NotificationThrottle] Suppressed: channel=${channel.id} owner=${ownerKey} ` +
           `count=${throttle.currentCount}/${channel.throttleMaxPerWindow} resetsAt=${windowExpiresIso}`
         );
         // Use 'failed' status + descriptive errorMessage so UI / queries that
@@ -718,14 +739,16 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
       }
     }
 
-    return { send: true, alert, channel, notificationRecord, device, org } satisfies PrepareSendResult;
+    const [subject] = await enrichAlertSubjects([{ ...alert, deviceName: device?.displayName || device?.hostname, orgName: org?.name }]);
+    if (!subject) throw new Error('Alert subject missing');
+    return { send: true, alert, channel, notificationRecord, device, org, subject } satisfies PrepareSendResult;
   });
 
   if (!prepared.send) {
     return { ...prepared.result, durationMs: Date.now() - startTime };
   }
 
-  const { alert, channel, notificationRecord, device, org } = prepared;
+  const { alert, channel, notificationRecord, device, org, subject } = prepared;
 
   // Phase 4c: Per-channel notification templates (pure computation — no DB/Redis needed)
   const channelTemplates = channel.templates as Record<string, string> | null;
@@ -736,8 +759,11 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
       severity: alert.severity,
       message: alert.message || '',
       deviceId: alert.deviceId,
-      device: device?.displayName || device?.hostname || '',
-      deviceName: device?.displayName || device?.hostname || '',
+      device: device?.displayName || device?.hostname || subject.subjectName,
+      deviceName: device?.displayName || device?.hostname || subject.subjectName,
+      ownerKind: subject.ownerKind,
+      ownerLabel: subject.ownerLabel,
+      subjectName: subject.subjectName,
       hostname: device?.hostname || '',
       orgName: org?.name || '',
       triggeredAt: alert.triggeredAt.toISOString(),
@@ -746,8 +772,8 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
 
   // Use the per-channel template message body if available
   const alertForSend = messageBody !== (alert.message || alert.title)
-    ? { ...alert, message: messageBody }
-    : alert;
+    ? { ...alert, ...subject, message: messageBody }
+    : { ...alert, ...subject };
 
   // Send notification based on channel type — OUTSIDE any DB context (#1105).
   let success = false;
@@ -920,7 +946,7 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
  */
 async function sendEmailChannelNotification(
   config: Record<string, unknown>,
-  alert: typeof alerts.$inferSelect,
+  alert: typeof alerts.$inferSelect & Partial<AlertSubject>,
   device: typeof devices.$inferSelect | undefined,
   org: typeof organizations.$inferSelect | undefined
 ): Promise<{ success: boolean; error?: string }> {
@@ -940,6 +966,8 @@ async function sendEmailChannelNotification(
     severity: alert.severity as AlertSeverity,
     summary: alert.message || alert.title,
     deviceName: device?.displayName || device?.hostname,
+    subjectName: alert.subjectName,
+    ownerKind: alert.ownerKind,
     occurredAt: alert.triggeredAt,
     dashboardUrl,
     orgName: org?.name
@@ -951,7 +979,7 @@ async function sendEmailChannelNotification(
  */
 async function sendWebhookChannelNotification(
   config: WebhookConfig,
-  alert: typeof alerts.$inferSelect,
+  alert: typeof alerts.$inferSelect & Partial<AlertSubject>,
   device: typeof devices.$inferSelect | undefined,
   org: typeof organizations.$inferSelect | undefined
 ): Promise<{ success: boolean; error?: string; retryable?: boolean }> {
@@ -976,6 +1004,10 @@ async function sendWebhookChannelNotification(
     severity: alert.severity,
     summary: alert.message || alert.title,
     deviceId: alert.deviceId,
+    owner: alert.owner,
+    ownerKind: alert.ownerKind,
+    ownerLabel: alert.ownerLabel,
+    subjectName: alert.subjectName,
     deviceName: device?.displayName ?? device?.hostname ?? undefined,
     orgId: alert.orgId,
     orgName: org?.name,
@@ -992,7 +1024,7 @@ async function sendWebhookChannelNotification(
 async function sendChatWebhookChannelNotification(
   channelType: 'slack' | 'teams',
   config: Record<string, unknown>,
-  alert: typeof alerts.$inferSelect,
+  alert: typeof alerts.$inferSelect & Partial<AlertSubject>,
   device: typeof devices.$inferSelect | undefined,
   org: typeof organizations.$inferSelect | undefined
 ): Promise<{ success: boolean; error?: string; retryable?: boolean }> {
@@ -1005,7 +1037,7 @@ async function sendChatWebhookChannelNotification(
     ? `${process.env.DASHBOARD_URL}/alerts/${alert.id}`
     : undefined;
 
-  const payloadTemplate = '{"text":"[{{severity}}] {{alertName}}: {{summary}}{{dashboardUrl}}"}';
+  const payloadTemplate = '{"text":"[{{severity}}] {{alertName}}{{subjectPart}}: {{summary}}{{dashboardUrl}}"}';
 
   return sendWebhookNotification(
     {
@@ -1021,11 +1053,14 @@ async function sendChatWebhookChannelNotification(
       summary: alert.message || alert.title,
       deviceId: alert.deviceId,
       deviceName: device?.displayName ?? device?.hostname ?? undefined,
+      subjectName: alert.subjectName,
+      ownerKind: alert.ownerKind,
       orgId: alert.orgId,
       orgName: org?.name,
       triggeredAt: alert.triggeredAt.toISOString(),
       ruleId: alert.ruleId ?? undefined,
       context: {
+        subjectPart: alert.ownerKind && alert.ownerKind !== 'device' && alert.subjectName ? ` · ${alert.subjectName}` : '',
         dashboardUrl: dashboardUrl ? ` ${dashboardUrl}` : ''
       }
     }
@@ -1037,7 +1072,7 @@ async function sendChatWebhookChannelNotification(
  */
 export async function sendSmsChannelNotification(
   config: SmsChannelConfig,
-  alert: typeof alerts.$inferSelect,
+  alert: typeof alerts.$inferSelect & Partial<AlertSubject>,
   device: typeof devices.$inferSelect | undefined,
   org: typeof organizations.$inferSelect | undefined
 ): Promise<{ success: boolean; error?: string }> {
@@ -1050,6 +1085,8 @@ export async function sendSmsChannelNotification(
     severity: alert.severity as AlertSeverity,
     summary: alert.message || alert.title,
     deviceName: device?.displayName || device?.hostname,
+    subjectName: alert.subjectName,
+    ownerKind: alert.ownerKind,
     occurredAt: alert.triggeredAt,
     dashboardUrl,
     orgName: org?.name
@@ -1066,7 +1103,7 @@ export async function sendSmsChannelNotification(
  */
 async function sendPagerDutyChannelNotification(
   config: PagerDutyConfig,
-  alert: typeof alerts.$inferSelect,
+  alert: typeof alerts.$inferSelect & Partial<AlertSubject>,
   device: typeof devices.$inferSelect | undefined,
   org: typeof organizations.$inferSelect | undefined
 ): Promise<{ success: boolean; error?: string }> {
@@ -1081,6 +1118,8 @@ async function sendPagerDutyChannelNotification(
     summary: alert.message || alert.title,
     deviceId: alert.deviceId,
     deviceName: device?.displayName ?? device?.hostname ?? undefined,
+    subjectName: alert.subjectName,
+    ownerKind: alert.ownerKind,
     orgId: alert.orgId,
     orgName: org?.name,
     triggeredAt: alert.triggeredAt.toISOString(),
@@ -1103,7 +1142,7 @@ async function sendPagerDutyChannelNotification(
  */
 export async function sendPushoverChannelNotification(
   config: PushoverConfig,
-  alert: typeof alerts.$inferSelect,
+  alert: typeof alerts.$inferSelect & Partial<AlertSubject>,
   device: typeof devices.$inferSelect | undefined,
   org: typeof organizations.$inferSelect | undefined
 ): Promise<{ success: boolean; error?: string }> {
@@ -1136,6 +1175,8 @@ export async function sendPushoverChannelNotification(
     summary: alert.message || alert.title,
     deviceId: alert.deviceId,
     deviceName: device?.displayName ?? device?.hostname ?? undefined,
+    subjectName: alert.subjectName,
+    ownerKind: alert.ownerKind,
     orgId: alert.orgId,
     orgName: org?.name,
     triggeredAt: alert.triggeredAt.toISOString(),
@@ -1221,7 +1262,9 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
   const eligibleUsers = new Set(requestedUsers
     ? (await listEscalationUsers({ orgId, partnerId: null })).map(user => user.id) : []);
   for (const step of escalationOccurrences(steps, originalIndexes, alertId)) {
-    for (const channelId of [...new Set(step.channelIds)].filter(id => validChannelIdSet.has(id))) {
+    const channelIds = [...new Set(step.channelIds)].filter(id => validChannelIdSet.has(id));
+    const userIds = [...new Set(step.userIds)].filter(id => eligibleUsers.has(id));
+    for (const channelId of channelIds) {
       const channel = validChannelById.get(channelId)!;
       const job = await queue.add('send', { type: 'send', alertId, channelId, escalationStep: step.escalationStep }, {
         delay: step.delayMs, jobId: `escalation-${alertId}-step${step.escalationStep}-${channelId}`,
@@ -1230,12 +1273,33 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
       });
       await retryIfFailedJob(job, `alert ${alertId} escalation step ${step.escalationStep}`);
     }
-    for (const userId of [...new Set(step.userIds)].filter(id => eligibleUsers.has(id))) {
+    for (const userId of userIds) {
       const job = await queue.add('escalation-user', { type: 'escalation-user', alertId, userId, escalationStep: step.escalationStep }, {
         delay: step.delayMs, jobId: `escalation-${alertId}-step${step.escalationStep}-user-${userId}`,
         attempts: 3, backoff: { type: 'exponential', delay: 30000 }, removeOnComplete: true, removeOnFail: { age: 3600 },
       });
       await retryIfFailedJob(job, `alert ${alertId} user escalation ${step.escalationStep}`);
+    }
+    // #10565: the occurrence's single alert.escalated publisher. Only for an
+    // occurrence that pages someone; one with no surviving target is not an
+    // escalation anyone sees. The event is secondary to paging: a failed
+    // enqueue is logged and must not stop later occurrences from scheduling.
+    if (channelIds.length > 0 || userIds.length > 0) {
+      try {
+        const job = await queue.add('escalation-event', {
+          type: 'escalation-event', alertId, escalationStep: step.escalationStep, escalationPolicyId: policyId,
+        }, {
+          delay: step.delayMs, jobId: `escalation-${alertId}-step${step.escalationStep}-event`,
+          attempts: 3, backoff: { type: 'exponential', delay: 30000 }, removeOnComplete: true, removeOnFail: { age: 3600 },
+        });
+        await retryIfFailedJob(job, `alert ${alertId} escalation event ${step.escalationStep}`);
+      } catch (err) {
+        console.error(
+          `[NotificationDispatcher] Failed to schedule alert.escalated for alert ${alertId} `
+          + `step ${step.escalationStep} (policy ${policyId}) — its sends are scheduled; the event will not be published:`,
+          err
+        );
+      }
     }
   }
 
@@ -1251,7 +1315,7 @@ export async function cancelAlertEscalations(alertId: string): Promise<number> {
 
   let cancelled = 0;
   for (const job of delayed) {
-    if ((job.data.type === 'send' || job.data.type === 'escalation-user') &&
+    if ((job.data.type === 'send' || job.data.type === 'escalation-user' || job.data.type === 'escalation-event') &&
         job.data.alertId === alertId &&
         job.data.escalationStep) {
       await job.remove();

@@ -130,6 +130,8 @@ import { registerManualAssetTools } from './aiToolsManualAssets';
 import { registerDeviceEventLogTools } from './aiToolsDeviceEventLog';
 import { registerTenantVariableTools } from './aiToolsTenantVariables';
 import { registerSupportSessionTools } from './aiToolsSupportSessions';
+import { registerPax8Tools } from './aiToolsPax8';
+import { registerPax8OrderTools } from './aiToolsPax8Orders';
 import { registerBillingProfileTools } from './aiToolsBillingProfiles';
 import { registerBillingSettingsTools } from './aiToolsBillingSettings';
 import { registerContractTemplateTools } from './aiToolsContractTemplates';
@@ -154,6 +156,7 @@ import { registerDiagnosticAccessTools } from './aiToolsDiagnosticAccess';
 import { registerExportTools } from './aiToolsExport';
 import { registerArtifactTools } from './aiToolsArtifacts';
 import { registerTrustPageTools } from './aiToolsTrustPage';
+import { registerPartnerSettingsInheritanceTools } from './aiToolsPartnerSettingsInheritance';
 import { registerFlowTools } from './aiToolsFlows';
 import { registerBusinessCalendarTools } from './aiToolsBusinessCalendars';
 import { registerTicketRoutingTools } from './aiToolsTicketRouting';
@@ -470,6 +473,8 @@ registerSupportSessionTools(aiTools);
 // Full-control W14 (#6784, PR A): billing lifecycle — rate cards, billing settings, agreement templates, signed
 // agreements, device billing (the contract / invoice read selectors live in aiToolsContracts / aiToolsBilling).
 registerBillingProfileTools(aiTools);
+registerPax8Tools(aiTools);
+registerPax8OrderTools(aiTools);
 registerBillingSettingsTools(aiTools);
 registerContractTemplateTools(aiTools);
 registerDeviceBillingTools(aiTools);
@@ -506,6 +511,8 @@ registerM365Tools(aiTools);
 registerExportTools(aiTools);
 registerArtifactTools(aiTools);
 registerTrustPageTools(aiTools);
+// #9763: partner settings inheritance read (twin of the two inheritance routes).
+registerPartnerSettingsInheritanceTools(aiTools);
 // Tool Catalog W03 (#5218): flow authoring tools, behind FLOWS_ENABLED.
 registerFlowTools(aiTools);
 registerBusinessCalendarTools(aiTools);

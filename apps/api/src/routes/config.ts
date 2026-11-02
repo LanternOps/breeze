@@ -1,12 +1,13 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled, cfAccessTrustEnabled, sweepActEnabled, toolSourcesEnabled, flowsEnabled, preAssignmentEnrollmentEnabled } from '../config/env';
+import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled, cfAccessTrustEnabled, policyDecideEnabled, sweepActEnabled, toolSourcesEnabled, flowsEnabled, preAssignmentEnrollmentEnabled } from '../config/env';
 import { envFlag } from '../utils/envFlag';
 import { isS3Configured } from '../services/s3Storage';
 import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 import { resolveAllMlFeatureFlagsForOrg } from '../services/mlFeatureFlags';
 import { isCallerVerificationEnabled } from '../services/callerVerification/gate';
+import { isPartnerLaneConfigured } from '../services/emailDomains/config';
 import { ERROR_CODES } from '@breeze/shared';
 
 export const configRoutes = new Hono();
@@ -33,6 +34,12 @@ configRoutes.get('/', (c) => {
       // Tool Catalog W3 (#5218) — platform kill switch for Flows.
       flows: flowsEnabled(),
       aiAgentsSweepAct: sweepActEnabled(),
+      // #9939 — BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED (default off). The
+      // approvals inbox reads this before prefetching `GET
+      // /ai/agents/graduation` for "Approve and always allow": while it is
+      // dark that affordance can never render, so the per-(org, kind) reads
+      // are pure waste (and mostly 404s for kinds an org does not run).
+      aiAgentsPolicyDecide: policyDecideEnabled(),
       // Caller verification (#6354): W04's UI reads this before showing any
       // verification surface. Exact-'true' contract via the real getter.
       callerVerification: isCallerVerificationEnabled(),
@@ -41,6 +48,11 @@ configRoutes.get('/', (c) => {
       // pre-assignment API routes stay reachable to full partner admins
       // either way, so incident actions work with the flag off.
       preAssignmentEnrollment: preAssignmentEnrollmentEnabled(),
+      // Partner sending domains: true only while EMAIL_DOMAINS_PROVIDER names a
+      // provider. Off (the default everywhere), every /partner/sending-domains
+      // route answers 404, so the partner settings page reads this before it
+      // probes the list rather than eating a 404 on every load (#9949).
+      sendingDomains: isPartnerLaneConfigured(),
     },
     cfAccessLogin: {
       enabled: cfAccessTrustEnabled(),

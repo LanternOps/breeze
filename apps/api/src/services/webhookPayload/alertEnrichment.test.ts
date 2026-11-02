@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import type { BreezeEvent } from '../eventBus';
+import { formatAlertSubject, type AlertSubjectSource } from '@breeze/shared';
 
 const mocks = vi.hoisted(() => ({
   select: vi.fn(),
@@ -12,7 +13,15 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../db', () => ({ db: { select: mocks.select }, withSystemDbAccessContext: mocks.withSystem }));
 vi.mock('../alertExternalTickets', () => ({ listAlertExternalTickets: mocks.listExternalTickets }));
 vi.mock('../sentry', () => ({ captureException: mocks.captureException }));
+vi.mock('../alertSubject', () => ({
+  enrichAlertSubjects: vi.fn(async (rows: Array<AlertSubjectSource & Record<string, unknown>>, options: { portal?: boolean } = {}) => {
+    const { formatAlertSubject } = await import('@breeze/shared');
+    return rows.map(row => ({ ...row, ...formatAlertSubject(row, row.ownerKind === 'backup_workload'
+      ? { dataSources: ['m365_mail'], customerName: row.orgName } : undefined, options) }));
+  }),
+}));
 
+import { enrichAlertSubjects } from '../alertSubject';
 import { buildAlertWebhookProjections, alertWebhookUrl, __resetAlertUrlWarningForTests } from './alertEnrichment';
 
 const ALERT = '11111111-1111-4111-8111-111111111111';
@@ -66,11 +75,85 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe('alert webhook enrichment', () => {
+  it('uses the portal subject only on the org projection and the partner subject only on the partner projection', async () => {
+    const enrich = vi.mocked(enrichAlertSubjects);
+    enrich.mockImplementationOnce(async rows => rows.map(row => ({
+      ...row, ...formatAlertSubject({ ...row, deviceName: 'Org-visible subject' }),
+    })));
+    enrich.mockImplementationOnce(async rows => rows.map(row => ({
+      ...row, ...formatAlertSubject({ ...row, deviceName: 'Partner-visible subject' }),
+    })));
+
+    const { org, partner } = await buildAlertWebhookProjections(event());
+
+    expect(enrich).toHaveBeenCalledTimes(2);
+    expect(enrich.mock.calls.filter(([, options]) => options?.portal === true)).toHaveLength(1);
+    expect(enrich).toHaveBeenNthCalledWith(1, [expect.objectContaining({ orgId: ORG })], { portal: true });
+    expect(enrich.mock.calls.filter(call => call.length === 1)).toHaveLength(1);
+    expect(enrich).toHaveBeenNthCalledWith(2, [expect.objectContaining({ orgId: ORG })]);
+    expect(org).toMatchObject({ ownerLabel: 'Org-visible subject', subjectName: 'Org-visible subject' });
+    expect(partner).toMatchObject({ ownerLabel: 'Partner-visible subject', subjectName: 'Partner-visible subject' });
+  });
+
+  it('adds a workload owner without moving existing producer keys out of details', async () => {
+    const ref = '77777777-7777-4777-8777-777777777777';
+    const owner = { kind: 'backup_workload', ref };
+    const ownerKey = `backup_workload:${ref}`;
+    rows([{ ...row, deviceId: null, deviceHostname: null, siteId: null, siteName: null,
+      ownerKind: 'backup_workload', ownerRef: ref }]);
+    const { org, partner } = await buildAlertWebhookProjections(event('alert.triggered', {
+      deviceId: null, owner, ownerKey,
+      ownerLabel: 'Microsoft 365 mail backup',
+      subjectName: 'Microsoft 365 mail backup · Example customer',
+    }));
+    for (const projection of [org, partner]) {
+      expect(projection).toMatchObject({
+        deviceId: null, owner, ownerKind: 'backup_workload',
+        ownerLabel: 'Microsoft 365 mail backup',
+        subjectName: 'Microsoft 365 mail backup · Example customer',
+        enrichmentIncomplete: false,
+      });
+      expect(projection.details).toMatchObject({ owner, ownerKey });
+      expect(projection.subjectName).not.toContain('null');
+    }
+  });
+
+  it('recovers a workload owner from the row on resolved events with no owner payload', async () => {
+    const ref = '77777777-7777-4777-8777-777777777777';
+    rows([{ ...row, deviceId: null, deviceHostname: null, siteId: null, siteName: null,
+      ownerKind: 'backup_workload', ownerRef: ref }]);
+    const { org } = await buildAlertWebhookProjections(event('alert.resolved', { deviceId: null }));
+    expect(org).toMatchObject({ deviceId: null, owner: { kind: 'backup_workload', ref }, ownerKind: 'backup_workload' });
+    const selection = queries[0]!.selection as Record<string, unknown>;
+    const dialect = new PgDialect();
+    expect(dialect.sqlToQuery(sql`${selection.ownerKind}`).sql).toBe('"alerts"."owner_kind"');
+    expect(dialect.sqlToQuery(sql`${selection.ownerRef}`).sql).toBe('"alerts"."owner_ref"');
+  });
+
+  it('enriches a workload from its payload owner before the alert row is visible', async () => {
+    const ref = '77777777-7777-4777-8777-777777777777';
+    const owner = { kind: 'backup_workload', ref };
+    rows([{ ...row, alertId: null, ownerKind: null, ownerRef: null, deviceId: null,
+      deviceHostname: null, siteId: null, siteName: null }]);
+    const { org } = await buildAlertWebhookProjections(event('alert.triggered', { deviceId: null, owner }));
+    expect(org).toMatchObject({ owner, ownerKind: 'backup_workload', ownerLabel: 'Microsoft 365 mail backup',
+      subjectName: 'Microsoft 365 mail backup · Example customer', enrichmentIncomplete: true });
+  });
+
   it.each([
     ['alert.triggered', 'active'], ['alert.acknowledged', 'acknowledged'],
     ['alert.resolved', 'resolved'], ['alert.suppressed', 'suppressed'],
   ] as const)('derives %s status from the event, never the row', async (type, status) => {
     expect((await buildAlertWebhookProjections(event(type))).org.status).toBe(status);
+  });
+
+  // #10565: an escalation fires only while the alert is active; its step
+  // fields are not v2 top-level keys, so they travel in `details`.
+  it('projects alert.escalated as active with its step fields in details', async () => {
+    const step = { escalationPolicyId: 'policy-1', escalationStep: 12, policyStep: 2, repeat: 1 };
+    const { org } = await buildAlertWebhookProjections(event('alert.escalated', step));
+    expect(org.status).toBe('active');
+    expect(org.details).toMatchObject(step);
   });
 
   it('keeps partner integration data out of the org projection and freezes both four-key shapes', async () => {

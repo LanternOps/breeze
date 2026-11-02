@@ -85,7 +85,9 @@ import { normalizeContactEmail } from '../services/contacts/crud';
 import type { AnyRecipeDefinition, PlannedEffect } from '../services/aiOperator/recipes/types';
 import { RECIPE_KEYS, resolveAdmissionRecipe } from '../services/aiOperator/recipes';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
-import { listOperatorTasks, loadOperatorTaskDetail } from '../services/aiOperator/taskReadQueries';
+import { findVisibleTask, listOperatorTasks, loadOperatorTaskDetail } from '../services/aiOperator/taskReadQueries';
+import { releaseTaskAccountReservations } from '../services/aiOperator/accountReservations';
+import { writeRouteAudit } from '../services/auditEvents';
 
 /**
  * The agent kind an operator task is delegated to. The effective agent is
@@ -339,7 +341,8 @@ aiOperatorTasksRoutes.post(
 /**
  * Org-wide keyset-paginated task list — every task the caller's accessible
  * orgs admitted, newest-created first. Optional `deviceId`/`state` filters
- * per spec §12's `GET /tasks` contract.
+ * per spec §12's `GET /tasks` contract, plus an optional `orgId` that narrows
+ * to one accessible org (#10112).
  *
  * Sorted by `created_at`, not `updated_at` (review fix, PR #5254) — see
  * `operatorTasksListCursor.ts`'s header for why a keyset needs an immutable
@@ -353,9 +356,18 @@ aiOperatorTasksRoutes.get(
   zValidator('query', operatorTaskListQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const { cursor: cursorToken, limit, deviceId, state } = c.req.valid('query');
+    const { cursor: cursorToken, limit, deviceId, state, orgId } = c.req.valid('query');
 
-    const result = await listOperatorTasks(auth, { cursorToken, limit, deviceId, state });
+    // Optional single-org filter (#10112) — same contract as `GET /ai/agents/runs`.
+    // `fetchWithAuth` injects `?orgId=<selected>` whenever the org switcher has
+    // one org selected; the schema used to strip it, so the switcher (and the
+    // Wisp entity picker's Tasks tab) never narrowed this list. It must name an
+    // org the caller can already see: the filter narrows, never widens.
+    if (orgId && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+
+    const result = await listOperatorTasks(auth, { cursorToken, limit, deviceId, state, orgId });
     if (!result.ok) return c.json({ error: 'Invalid or malformed cursor' }, 400);
     return c.json({ data: result.data, nextCursor: result.nextCursor });
   },
@@ -547,6 +559,10 @@ async function admitIdentityOffboardingFromRoute(c: Context, body: CreateOperato
           code: 'OPERATOR_DUPLICATE_LIVE_TASK',
           taskId: result.existingTaskId ?? null,
         }, 409);
+      // #9981: another task holds one of the person's provider accounts. The
+      // detail names the account, the task and why it is still held.
+      case 'account_reserved':
+        return c.json({ error: result.detail, code: 'OPERATOR_ACCOUNT_RESERVED', taskId: result.existingTaskId ?? null }, 409);
       case 'pending_cap_reached':
         return c.json({ error: result.detail, code: 'OPERATOR_PENDING_CAP_REACHED' }, 429);
       case 'unknown_recipe':
@@ -576,6 +592,74 @@ aiOperatorTasksRoutes.get(
     if (!auth.canAccessOrg(orgId)) return c.json({ error: 'Organization not found' }, 404);
     const readiness = await listWorkflowReadiness(orgId, auth);
     return c.json({ data: readiness.map(toWorkflowDto) });
+  },
+);
+
+/**
+ * `POST /api/v1/ai/operator/tasks/:id/account-reservations/release` (#9981).
+ *
+ * A task reserves every provider account it acts on, and a task that ended
+ * `unknown_effect` keeps them: an action it sent may still land. The
+ * reconciler releases them once the operation settles; when it never will
+ * (a result that stays `unknown`), a person who checked the provider releases
+ * them here. Terminal tasks only — a live task is still acting, and the way
+ * to free its accounts is to stop it.
+ *
+ * Same gates as starting an offboarding (it re-opens the accounts to one):
+ * `ai_agents:write` + MFA, `organizations:write`, no site ceiling, and the
+ * task visible to the caller (non-enumerating 404). Audited.
+ */
+const releaseReservationsSchema = z.object({ note: z.string().trim().max(1000).optional() }).strict();
+
+aiOperatorTasksRoutes.post(
+  '/tasks/:id/account-reservations/release',
+  scopes,
+  requireAiWrite,
+  requireMfa(),
+  zValidator('json', releaseReservationsSchema),
+  async (c) => {
+    const taskId = uuidParam(c, 'id');
+    if (!taskId) return c.json({ error: 'Task not found' }, 404);
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (!perms || !hasPermission(perms, PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action)) {
+      return c.json({ error: 'Permission denied', code: 'PERMISSION_DENIED' }, 403);
+    }
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({
+        error: 'Provider accounts are organization-wide; site-restricted users cannot release them.',
+        code: 'SITE_RESTRICTED',
+      }, 403);
+    }
+    const task = await findVisibleTask(auth, taskId);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    const note = c.req.valid('json').note || null;
+    const result = await releaseTaskAccountReservations({
+      orgId: task.orgId, taskId: task.id, userId: auth.user?.id ?? null, note,
+    });
+    if (!result.ok) {
+      switch (result.reason) {
+        case 'task_live':
+          return c.json({
+            error: 'This task is still running. Stop it to release the accounts it holds.',
+            code: 'OPERATOR_TASK_LIVE',
+          }, 409);
+        case 'task_not_found':
+          return c.json({ error: 'Task not found' }, 404);
+        default: {
+          const unhandled: never = result.reason;
+          throw new Error(`unhandled release refusal ${String(unhandled)}`);
+        }
+      }
+    }
+    writeRouteAudit(c, {
+      orgId: task.orgId,
+      action: 'ai_operator.account_reservations.release',
+      resourceType: 'ai_operator_task',
+      resourceId: task.id,
+      details: { released: result.released, ...(note ? { note } : {}) },
+    });
+    return c.json({ released: result.released });
   },
 );
 

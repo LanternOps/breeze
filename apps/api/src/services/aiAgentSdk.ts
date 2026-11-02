@@ -715,7 +715,7 @@ async function runPreFlightAdmission(
       const ceiling = await resolveGrantCeiling(grant.grantId, grant.revisionId);
       systemPrompt = [
         await buildSystemPrompt(auth, sanitizedPageContext, undefined, ceiling),
-        await wispSeedForSession(grant, auth, ceiling),
+        await wispSeedForSession(grant, auth, ceiling, sanitizedPageContext),
       ].filter(Boolean).join('\n');
     } catch (err) {
       if (err instanceof WispSessionUnavailableError) return { ok: false, error: err.message, status: 409 };
@@ -1075,6 +1075,15 @@ async function runWispCeilingGate(
 }
 
 /**
+ * #10193 — who an approval raised from this chat session is attributed to on
+ * the approval row, the mobile push and the intent: Wisp under a grant (the
+ * grant-driven voice, #10131), Breeze AI otherwise.
+ */
+function chatApprovalClientLabel(session: ActiveSession): string {
+  return session.wispGrant ? 'Wisp' : 'Breeze AI';
+}
+
+/**
  * The org reach of ONE tool call: the session's tool auth, cut to the Wisp
  * ceiling when a grant governs the session (the same narrowing the allowed
  * exit of `createSessionPreToolUse` hands the handler). Used to resolve a
@@ -1093,8 +1102,9 @@ function callReach(session: ActiveSession, wispState: WispCallState | null): Aut
  * `launch_specialist` call, run after RBAC and the rate limit but before any
  * approval card: a call the coordinator would refuse (`wisp_grant_required`,
  * `unknown_kind`, `invalid_params`, `no_sweep_schedule`, `no_effective_agent`,
- * …) is refused here with the SAME code the tool's handler returns, and nobody
- * is asked to approve a request that cannot run. Runs after the Wisp ceiling
+ * `agent_disabled` (#10193), …) is refused here with the SAME code (and
+ * `message`) the tool's handler returns, and nobody is asked to approve a
+ * request that cannot run. Runs after the Wisp ceiling
  * gate, so the target org is already inside the grant; on a pass it returns
  * that org's name for the card.
  *
@@ -1107,7 +1117,7 @@ async function specialistPreApprovalGate(
   session: ActiveSession,
   input: Record<string, unknown>,
   wispState: WispCallState | null,
-): Promise<{ ok: true; orgName: string | null } | { ok: false; denial: { allowed: false; error: string; detail?: string } }> {
+): Promise<{ ok: true; orgName: string | null } | { ok: false; denial: { allowed: false; error: string; detail?: string; message?: string } }> {
   // The tool is inert without a grant (aiToolsWisp: GRANT_REQUIRED) — a plain
   // chat session must not ask for approval first.
   if (!session.wispGrant || !wispState) {
@@ -1125,7 +1135,13 @@ async function specialistPreApprovalGate(
     if (result.ok) return { ok: true, orgName: result.orgName };
     return {
       ok: false,
-      denial: { allowed: false, error: result.refused, ...(result.detail ? { detail: result.detail } : {}) },
+      denial: {
+        allowed: false,
+        error: result.refused,
+        ...(result.detail ? { detail: result.detail } : {}),
+        // #10193: the sentence the model reads back (names a switched-off agent).
+        ...(result.message ? { message: result.message } : {}),
+      },
     };
   } catch (err) {
     console.error(`[AI-SDK] launch_specialist precheck failed (session ${session.breezeSessionId}); asking for approval as before`, err);
@@ -1188,7 +1204,34 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       return { allowed: false, error: WISP_GATE_UNAVAILABLE_MESSAGE };
     }
     const { ceiling, permissionKeys, narrow } = wispCall.current;
-    return { ...result, toolAuth: narrow(session.toolAuth, ceiling, session.breezeSessionId, permissionKeys) };
+    const toolAuth = narrow(session.toolAuth, ceiling, session.breezeSessionId, permissionKeys);
+    const autoLinkTags = {
+      op: 'wisp.auto_link', toolName, threadId: session.wispGrant.threadId,
+      grantId: ceiling.grantId, sessionId: session.breezeSessionId,
+    };
+    // Load while the gate is still awaited. The detached success hook must
+    // enter autoLinkFocalAct (and reserve its slots) synchronously, before the
+    // tool result can reach the SDK and settlement can reset the turn count.
+    let autoLinkFocalAct: typeof import('./wisp/autoLink').autoLinkFocalAct;
+    try {
+      ({ autoLinkFocalAct } = await import('./wisp/autoLink'));
+    } catch (err) {
+      console.error(`[AI-SDK] Auto-link module unavailable for ${toolName}:`, err);
+      captureException(err, undefined, autoLinkTags);
+      return { ...result, toolAuth };
+    }
+    return {
+      ...result,
+      toolAuth,
+      onSuccess: async (callInput) => {
+        try {
+          await autoLinkFocalAct({ session, toolName, input: callInput, auth: toolAuth, ceiling });
+        } catch (err) {
+          console.error(`[AI-SDK] Auto-link failed for ${toolName}:`, err);
+          captureException(err, undefined, autoLinkTags);
+        }
+      },
+    };
   };
 }
 
@@ -2104,6 +2147,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               source: 'chat',
               reason: riskSummary,
               actionLabel: riskSummary,
+              // #10193: a Wisp session's approval is Wisp's; otherwise the
+              // intent service's chat default ("Breeze AI") applies.
+              ...(session.wispGrant ? { requestingClientLabel: chatApprovalClientLabel(session) } : {}),
               orgId: flowBinding ? flowBinding.orgId : intentOrgId,
               ...(flowBinding ? { invokedFlow: flowBinding.invokedFlow } : {}),
               // #6475 — a supervised chat intent expires with the org's
@@ -2843,7 +2889,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                   .values({
                     userId: session.auth.user.id,
                     executionId: approvalExec!.id,
-                    requestingClientLabel: 'Breeze AI',
+                    requestingClientLabel: chatApprovalClientLabel(session),
                     requestingMachineLabel: null,
                     actionLabel,
                     actionToolName: stripMcpPrefix(toolName),
@@ -2888,7 +2934,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               await dispatchApprovalPushToTokens(tokens, {
                 approvalId: approvalRequestId,
                 actionLabel,
-                requestingClientLabel: 'Breeze AI',
+                requestingClientLabel: chatApprovalClientLabel(session),
               });
             } catch (err) {
               console.error('[AI-SDK] Failed to dispatch approval push notification:', err);

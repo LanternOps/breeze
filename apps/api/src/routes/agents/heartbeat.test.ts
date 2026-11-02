@@ -4924,6 +4924,7 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
       hyperv_enabled: true,
       proxmox_enabled: true,
       interval_minutes: 60,
+      accepts_image_provenance: true as const,
     };
     vi.mocked(buildWorkloadInventoryConfigUpdate).mockResolvedValueOnce(payload);
     const res = await buildApp().request('/agents/device-1/heartbeat', {

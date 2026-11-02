@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { TOOL_TIERS } from '../../aiAgentSdkTools';
 import { aiTools } from '../../aiToolNames';
 import '../../aiTools';
+import { toolInputSchemas } from '../../aiToolSchemas';
 import { GOLDEN_CASES } from './goldenPrompts';
 
 // A-W02 Task 5 declares the currently mute documentation tool; remove this set then.
@@ -22,7 +23,7 @@ const PENDING_DECLARATION = new Set<string>([]); // search_documentation was dec
 const BASELINE_UNDECLARED_TOOLS = new Set<string>([]);
 
 describe('GOLDEN_CASES', () => {
-  it('has 113 unique ids', () => {
+  it('has 116 unique ids', () => {
     // g68 (#8167 W03): EDR-framework containment. g69 (#8167 W03 PR-B): EDR "sync now".
     // g70-g75 (full-control W02, #6756; the plan's g73-g78): PSA/billing writes.
     // g76-g78 (full-control W03, #6757): backup restore, DR rehearsal, Hyper-V power.
@@ -38,8 +39,12 @@ describe('GOLDEN_CASES', () => {
     // g106-g108 (full-control W13, #6783 PR B): live event-log query (supervised), tenant variables, end a support session (supervised).
     // g109-g111 (full-control W14, #6784 PR A): an org's rate card, publish a template version (supervised), device billing.
     // g112-g113 (full-control W14, #6784 PR B): generate a contract invoice (preview, then four-eyes), push to Xero (four-eyes).
-    expect(GOLDEN_CASES).toHaveLength(113);
-    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(113);
+    expect(GOLDEN_CASES).toHaveLength(116);
+    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(116);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g114')?.expect[0]).toEqual({ tool: 'manage_pax8_subscriptions', action: 'drift' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g115')?.expect).toEqual([{ tool: 'search_pax8_products', action: 'search' }, { tool: 'manage_pax8_orders', action: 'create_draft' }, { tool: 'manage_pax8_orders', action: 'add_line' }]);
+    // g117 (#10161): ticket merge (preview, then the supervised merge) through the chat SDK shape; g116 is reserved by W15 PR B.
+    expect(GOLDEN_CASES.find((c) => c.id === 'g117')?.expect[0]).toEqual({ tool: 'manage_tickets', action: 'merge_preview' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g112')?.expect.map((e) => e.action)).toContain('generate_invoice');
     expect(GOLDEN_CASES.find((c) => c.id === 'g113')?.expect[0]).toEqual({ tool: 'manage_accounting_sync', action: 'push' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g109')?.expect[0]).toEqual({ tool: 'manage_billing_profiles', action: 'get_org_profile' });
@@ -86,6 +91,10 @@ describe('GOLDEN_CASES', () => {
       if (e.action) {
         const schema = aiTools.get(e.tool)?.definition.input_schema as { properties?: { action?: { enum?: string[] } } };
         expect.soft(schema?.properties?.action?.enum ?? [], `${c.id}: ${e.tool}.${e.action}`).toContain(e.action);
+        // #10161: the chat SDK declares the Zod shape, not the registry JSON schema, so an action the registry
+        // advertises but the Zod enum lacks is unreachable from chat (manage_tickets merge_preview/merge).
+        const zodAction = (toolInputSchemas[e.tool] as unknown as { shape?: { action?: { options?: string[] } } } | undefined)?.shape?.action;
+        if (zodAction?.options) expect.soft(zodAction.options, `${c.id}: ${e.tool}.${e.action} (Zod / chat SDK)`).toContain(e.action);
       }
     }
   });

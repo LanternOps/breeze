@@ -1,12 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { psaRoutes } from './psa';
+import { writeRouteAudit } from '../services/auditEvents';
+import { captureException } from '../services/sentry';
+vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 import { PsaConfigError } from '../services/psa/credentials';
 
 vi.mock('../services', () => ({}));
 
 // Service boundary: the routes construct adapters via createPSAProvider; the
 // adapters themselves are covered by their own unit tests.
+const { resumeTicketingMock } = vi.hoisted(() => ({ resumeTicketingMock: vi.fn(async (_id: string, _audit?: () => void) => {}) }));
+vi.mock('../services/psaAlertTicketing/pause', () => ({ resumeTicketingConnection: resumeTicketingMock }));
+
 const { createPSAProviderMock } = vi.hoisted(() => ({
   createPSAProviderMock: vi.fn(),
 }));
@@ -18,7 +24,7 @@ vi.mock('../services/psa', () => ({
 const { permissionGate, orgsWriteGate, mfaGate, selectMock, insertMock, updateMock, deleteMock } = vi.hoisted(() => {
   function chainMock(resolvedValue: unknown = []) {
     const chain: Record<string, any> = {};
-    for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin', 'leftJoin', 'orderBy', 'offset']) {
+    for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin', 'leftJoin', 'orderBy', 'offset', 'for']) {
       chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
     }
     return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -59,6 +65,7 @@ vi.mock('../db/schema', () => ({
     credentials: 'psa_connections.credentials',
     settings: 'psa_connections.settings',
     syncSettings: 'psa_connections.sync_settings',
+    alertTicketing: 'psa_connections.alert_ticketing',
     createdAt: 'psa_connections.created_at',
     updatedAt: 'psa_connections.updated_at',
     lastSyncAt: 'psa_connections.last_sync_at',
@@ -76,6 +83,9 @@ vi.mock('../db/schema', () => ({
     lastSyncAt: 'psa_ticket_mappings.last_sync_at',
     updatedAt: 'psa_ticket_mappings.updated_at',
     createdAt: 'psa_ticket_mappings.created_at',
+    createState: 'psa_ticket_mappings.create_state',
+    closeState: 'psa_ticket_mappings.close_state',
+    noteState: 'psa_ticket_mappings.note_state',
   },
   devices: {
     id: 'devices.id',
@@ -308,7 +318,7 @@ describe('psa routes', () => {
 
   const makeChain = (rows: unknown[]) => {
     const chain: Record<string, any> = {};
-    for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin', 'leftJoin', 'orderBy', 'offset']) {
+    for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin', 'leftJoin', 'orderBy', 'offset', 'for']) {
       chain[method] = vi.fn(() => Object.assign(Promise.resolve(rows), chain));
     }
     return Object.assign(Promise.resolve(rows), chain);
@@ -720,6 +730,36 @@ describe('psa routes', () => {
     expect(deleteMock).toHaveBeenCalledTimes(2);
   });
 
+  it('refuses (409) to delete a connection while alert-ticket mappings are mid-operation (#10499 W2-A)', async () => {
+    const lockChain = makeChain([{ id: 'conn-1' }]);
+    selectMock
+      .mockReturnValueOnce(makeChain([connectionRow()]) as never)
+      .mockReturnValueOnce(lockChain as never)
+      .mockReturnValueOnce(makeChain([{ count: 2 }]) as never);
+
+    const res = await app.request('/psa/connections/conn-1', { method: 'DELETE' });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body).toMatchObject({ code: 'psa_connection_has_open_alert_tickets', openMappings: 2 });
+    // The connection row is locked first, so a concurrent W2-B admission
+    // (whose FK check takes KEY SHARE on it) cannot slip a mapping in.
+    expect(lockChain.for).toHaveBeenCalledWith('update');
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it('deletes terminal mappings with the connection when none are mid-operation', async () => {
+    selectMock
+      .mockReturnValueOnce(makeChain([connectionRow()]) as never)
+      .mockReturnValueOnce(makeChain([{ id: 'conn-1' }]) as never)
+      .mockReturnValueOnce(makeChain([{ count: 0 }]) as never);
+
+    const res = await app.request('/psa/connections/conn-1', { method: 'DELETE' });
+
+    expect(res.status).toBe(200);
+    expect(deleteMock).toHaveBeenCalledTimes(2);
+  });
+
   it('runs a real connection test and persists verified on success', async () => {
     selectMock.mockReturnValueOnce(makeChain([connectionRow()]) as never);
     const setSpy = vi.fn((_values: Record<string, unknown>) => ({ where: vi.fn(async () => []) }));
@@ -739,9 +779,20 @@ describe('psa routes', () => {
       { defaultQueue: 'OPS' }
     );
     expect(testConnection).toHaveBeenCalledTimes(1);
+    expect(resumeTicketingMock).not.toHaveBeenCalled();
+    expect(writeRouteAudit).toHaveBeenCalledTimes(1);
     const setArg = setSpy.mock.calls[0]![0] as { syncSettings: Record<string, unknown> };
     expect(setArg.syncSettings.status).toBe('verified');
     expect(typeof setArg.syncSettings.lastTestedAt).toBe('string');
+  });
+
+  it('does not resume alert ticketing for an org-owned connection even if config is present', async () => {
+    selectMock.mockReturnValueOnce(makeChain([connectionRow({ alertTicketing: { enabled: true } })]) as never);
+    createPSAProviderMock.mockReturnValueOnce({ testConnection: vi.fn(async () => ({ success: true })) });
+    const res = await app.request('/psa/connections/conn-1/test', { method: 'POST' });
+    expect(await res.json()).toEqual({ success: true, message: 'Credentials verified' });
+    expect(resumeTicketingMock).not.toHaveBeenCalled();
+    expect(writeRouteAudit).toHaveBeenCalledTimes(1);
   });
 
   it('returns success:false and persists failed when the provider rejects the credentials', async () => {
@@ -757,6 +808,7 @@ describe('psa routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(false);
+    expect(resumeTicketingMock).not.toHaveBeenCalled();
     expect(body.error).toBe('Jira API error (401): bad token');
 
     const setArg = setSpy.mock.calls[0]![0] as { syncSettings: Record<string, unknown> };
@@ -854,6 +906,46 @@ describe('psa routes', () => {
 
     const partnerOwnedRow = (overrides: Record<string, unknown> = {}) =>
       connectionRow({ orgId: null, partnerId: 'partner-1', ...overrides });
+
+    it('resumes configured partner ticketing after a successful connection test', async () => {
+      asPartner();
+      selectMock.mockReturnValueOnce(makeChain([partnerOwnedRow({ alertTicketing: { enabled: true } })]) as never);
+      createPSAProviderMock.mockReturnValueOnce({ testConnection: vi.fn(async () => ({ success: true })) });
+      const res = await app.request('/psa/connections/conn-1/test', { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ success: true, message: 'Credentials verified' });
+      expect(resumeTicketingMock).toHaveBeenCalledWith('conn-1', expect.any(Function));
+      const auditResume = vi.mocked(resumeTicketingMock).mock.calls[0]![1] as unknown as () => void;
+      auditResume();
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'psa.alert_ticketing.resume', details: expect.objectContaining({ reason: 'successful_connection_test' }),
+      }));
+    });
+
+    it('does not resume or warn for a partner connection without alert ticketing', async () => {
+      asPartner();
+      selectMock.mockReturnValueOnce(makeChain([partnerOwnedRow({ alertTicketing: null })]) as never);
+      createPSAProviderMock.mockReturnValueOnce({ testConnection: vi.fn(async () => ({ success: true })) });
+      const res = await app.request('/psa/connections/conn-1/test', { method: 'POST' });
+      expect(await res.json()).toEqual({ success: true, message: 'Credentials verified' });
+      expect(resumeTicketingMock).not.toHaveBeenCalled();
+      expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns verified success with a warning when ticketing resume fails', async () => {
+      asPartner();
+      selectMock.mockReturnValueOnce(makeChain([partnerOwnedRow({ alertTicketing: { enabled: true } })]) as never);
+      createPSAProviderMock.mockReturnValueOnce({ testConnection: vi.fn(async () => ({ success: true })) });
+      const error = new Error('resume failed');
+      resumeTicketingMock.mockRejectedValueOnce(error);
+      const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const res = await app.request('/psa/connections/conn-1/test', { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ success: true, warning: expect.any(String) });
+      expect(log).toHaveBeenCalledWith('[psa] Failed to resume alert ticketing', expect.objectContaining({ connectionId: 'conn-1' }));
+      expect(captureException).toHaveBeenCalledWith(error, undefined, { psa_connection_id: 'conn-1' });
+      log.mockRestore();
+    });
 
     it('creates a partner-wide connection with org_id NULL and the token partner', async () => {
       asPartner({ orgAccess: 'all' });

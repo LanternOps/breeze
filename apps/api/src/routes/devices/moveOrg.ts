@@ -28,6 +28,7 @@ import {
   type MoveCurrencyGuardDetails,
 } from '../../services/ticketMoveCurrencyGuard';
 import { TicketMoveHourBlockError } from '../../services/ticketMoveHourBlockGuard';
+import { PsaTicketingMoveBlockedError } from '../../services/deviceOrgMove/psaTicketingGuard';
 import { TicketMoveApprovalPendingError } from '../../services/ticketMoveApprovalGuard';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { requestDeviceGroupReevaluationAfterCommit } from '../../jobs/deviceGroupJobs';
@@ -305,6 +306,9 @@ moveOrgRoutes.post(
       // A currency-policy block is not a failure: the transaction rolled back
       // (device + tickets untouched), so report it and skip Sentry / the
       // failed-move audit.
+      if (err instanceof PsaTicketingMoveBlockedError) {
+        return c.json({ error: err.message, code: err.code }, 409);
+      }
       if (err instanceof TicketMoveCurrencyBlockedError) {
         return c.json({ error: err.message, code: err.code, details: err.details }, 409);
       }

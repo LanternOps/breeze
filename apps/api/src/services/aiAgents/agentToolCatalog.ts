@@ -322,6 +322,11 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   get_device_billing: 'business',
   // W14 PR B (#6784): accounting sync beside the invoice tools (partner-only handler; every write agent-human-only).
   manage_accounting_sync: 'business',
+  // W15 PR A (#6785): reads reachable, writes require explicit grants; handler scope gates still apply.
+  get_pax8_status: 'business',
+  search_pax8_products: 'business',
+  manage_pax8_subscriptions: 'business',
+  manage_pax8_orders: 'business',
   get_user_risk_scores: 'security_response',
   get_user_risk_detail: 'security_response',
   assign_security_training: 'security_response',
@@ -485,6 +490,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   get_site: 'tenancy',
   list_org_contacts: 'tenancy',
   list_organizations: 'tenancy',
+  get_partner_settings_inheritance: 'tenancy', // #9763 read: which orgs override a partner setting
   delete_tenant: 'tenancy',
   test_webhook: 'tenancy',
   query_webhooks: 'tenancy',

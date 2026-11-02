@@ -422,9 +422,13 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
               `No sanctioned agent build resolves for this device (${d.osType}/${normalizedArch}); ` +
               `targetVersion ${explicitVersion} not dispatched (the AI cannot override the org's agent pin or roll an agent back)`;
           } else {
-            errors[d.id] = pin
+            // #7516: null also means the resolver withheld a target this
+            // BINARY_SOURCE=local server cannot serve; say so, or the reader
+            // goes looking for a missing agent_versions row.
+            errors[d.id] = (pin
               ? `Pinned agent version "${pin}" has no build for this device (${d.osType}/${normalizedArch})`
-              : 'No agent build available for this device platform/architecture';
+              : 'No agent build available for this device platform/architecture') +
+              ' (or this server holds a different agent build than the sanctioned version; see the API log for "withholding")';
           }
         }
 

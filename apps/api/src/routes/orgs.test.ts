@@ -2748,6 +2748,38 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       expect(getCaptured().settings.security.sessionTimeout).toBe(720);
     });
+
+    // #10081: the bounds come from @breeze/shared (securityLimits.ts), which the
+    // partner settings form validates with; the web maps these field paths back
+    // onto the form, so the path is part of the contract.
+    it.each([
+      ['minLength', 5],
+      ['minLength', 129],
+      ['sessionTimeout', 721],
+      ['maxSessions', 0],
+      ['expirationDays', -1],
+    ])('rejects security.%s = %s outside the shared bounds, keyed by its field path', async (key, value) => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ security: {} });
+      mockUpdateCapture();
+
+      const res = await patchMe({ settings: { security: { [key]: value } } });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(Object.keys(body.details.fieldErrors)).toEqual([`settings.security.${key}`]);
+    });
+
+    it('accepts the shared bounds themselves', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ security: {} });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { security: { minLength: 6, sessionTimeout: 720, maxSessions: 1, expirationDays: 0 } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.security).toMatchObject({ minLength: 6, sessionTimeout: 720, maxSessions: 1, expirationDays: 0 });
+    });
   });
 
   describe('PATCH /orgs/partners/me — emailSignature', () => {
@@ -6767,7 +6799,8 @@ describe('org routes', () => {
       // chain on the shared mock, so re-declare one that reaches .limit().
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+          // Also awaited bare: the legacy-role adapter reads `contact_roles`.
+          where: vi.fn().mockReturnValue(Object.assign(Promise.resolve([]), { limit: vi.fn().mockResolvedValue([]) }))
         })
       } as any);
 
@@ -6796,7 +6829,8 @@ describe('org routes', () => {
       // See the phone-only test above: the contact mirror reads before writing.
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+          // Also awaited bare: the legacy-role adapter reads `contact_roles`.
+          where: vi.fn().mockReturnValue(Object.assign(Promise.resolve([]), { limit: vi.fn().mockResolvedValue([]) }))
         })
       } as any);
 
@@ -9789,6 +9823,45 @@ describe('org routes', () => {
     });
   });
 
+  // #9762 — the route must carry `partnerDefaults` through: OrgSettingsPage
+  // reads it as the "partner has a pin" signal, and the web tests mock this
+  // response, so only a route-level test catches it being dropped.
+  describe('GET /orgs/organizations/:id/effective-settings — locked vs partnerDefaults (#9762)', () => {
+    beforeEach(() => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const partnerSettings = {
+        defaults: { agentVersionPins: { agent: '0.120.0' }, agentUpdatePolicy: 'manual' },
+        notifications: { pushoverDefaultSound: 'pushover' },
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue(Promise.resolve([{ settings: {}, partnerId: 'partner-123' }])),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue(Promise.resolve([{ settings: partnerSettings }])),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue(Promise.resolve([])),
+          }),
+        } as any);
+    });
+
+    it('reports overridable partner values in partnerDefaults and only in-force locks in locked', async () => {
+      const res = await app.request('/orgs/organizations/org-1/effective-settings');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.locked).toEqual(['defaults.agentUpdatePolicy']);
+      expect(body.partnerDefaults).toEqual(['notifications.pushoverDefaultSound', 'defaults.agentVersionPins']);
+      expect(body.effective.defaults.agentVersionPins).toEqual({ agent: '0.120.0' });
+    });
+  });
+
   // Organization and partner `settings` hold log-forwarding credentials sealed
   // at rest. Responses report that a secret is set (the masked marker) instead
   // of returning the sealed value, and a save that echoes the marker keeps the
@@ -10365,6 +10438,74 @@ describe('org routes', () => {
         });
       });
     });
+  });
+
+  // #10325: the partner name heads every device prompt (and the org name shows
+  // on remote prompts), so a plain reserved brand is refused at save.
+  describe('reserved brand names are refused at save (#10325)', () => {
+    async function send(method: 'POST' | 'PATCH', path: string, body: unknown) {
+      const res = await app.request(path, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return { status: res.status, body: (await res.json()) as { error?: string } };
+    }
+
+    function expectReservedRefusal(r: { status: number; body: { error?: string } }) {
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/reserved/i);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    }
+
+    it('PATCH /orgs/partners/me refuses "Microsoft Support"', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      expectReservedRefusal(await send('PATCH', '/orgs/partners/me', { name: 'Microsoft Support' }));
+    });
+
+    it('PATCH /orgs/partners/me refuses a spaced-out "Windows"', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      expectReservedRefusal(await send('PATCH', '/orgs/partners/me', { name: '  W i n d o w s ' }));
+    });
+
+    it('POST /orgs/partners refuses "Apple Help Desk"', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      expectReservedRefusal(await send('POST', '/orgs/partners', { name: 'Apple Help Desk', slug: 'apple-hd' }));
+    });
+
+    it('PATCH /orgs/partners/:id refuses "Google"', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      expectReservedRefusal(await send('PATCH', '/orgs/partners/partner-1', { name: 'Google' }));
+    });
+
+    it('POST /orgs/organizations refuses "Microsoft"', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      expectReservedRefusal(await send('POST', '/orgs/organizations', { name: 'Microsoft', slug: 'ms' }));
+    });
+
+    it('PATCH /orgs/organizations/:id refuses "Windows Security"', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      expectReservedRefusal(await send('PATCH', '/orgs/organizations/org-1', { name: 'Windows Security' }));
+    });
+  });
+});
+
+describe('reserved brand org names (#10325)', () => {
+  it('keeps a name that only mentions a brand next to the company name', () => {
+    expect(createOrganizationSchema.safeParse({ name: 'Northwind Microsoft Partner', slug: 'nw' }).success).toBe(true);
+    expect(updateOrganizationSchema.safeParse({ name: 'Pineapple IT' }).success).toBe(true);
+  });
+
+  it('refuses a reserved brand on create and update, on the name field', () => {
+    for (const r of [
+      createOrganizationSchema.safeParse({ name: 'Microsoft 365 Support', slug: 'm' }),
+      updateOrganizationSchema.safeParse({ name: 'macOS' }),
+    ]) {
+      expect(r.success).toBe(false);
+      expect(r.error!.issues.map((i) => i.path[0])).toEqual(['name']);
+    }
   });
 });
 

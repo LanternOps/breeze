@@ -354,7 +354,7 @@
     "currentSite": "Mevcut site",
     "newSite": "Yeni site",
     "loadingSites": "Siteler yükleniyor...",
-    "thisOrganizationOnlyHasOneSite": "Bu kuruluşun yalnızca bir sitesi var. Taşımayı etkinleştirmek için Ayarlar → Kuruluşlar'dan daha fazla site ekleyin.",
+    "thisOrganizationOnlyHasOneSite": "Bu kuruluşun yalnızca bir sitesi var. Taşımayı etkinleştirmek için kuruluşun Siteler sekmesinden (Kuruluşlar → kuruluşu açın → Siteler) daha fazla site ekleyin.",
     "current": "(güncel)",
     "cancel": "İptal",
     "moving": "Taşınıyor...",
@@ -376,23 +376,6 @@
     "moveDevices_other": "{{count}} cihazı taşı",
     "bulkPolicyNote": "Taşıma, bu cihazlara uygulanan site yapılandırma ilkelerini, bakım pencerelerini, uyarı yönlendirmesini ve raporları değiştirir. Breeze onları otomatik olarak geri taşımaz.",
     "failedToMoveDevices": "Cihazlar taşınamadı"
-  },
-  "createGroupModal": {
-    "failedToCreateGroup": "Grup oluşturulamadı",
-    "newDeviceGroup": "Yeni Cihaz Grubu",
-    "name": "İsim",
-    "eGProductionServers": "ör. Üretim Sunucuları",
-    "type": "Tür",
-    "static": "Statik",
-    "dynamic": "Dinamik",
-    "manuallyAddAndRemoveDevicesAfter": "Cihazları oluşturduktan sonra manuel olarak ekleyin ve kaldırın.",
-    "devicesAreAutoAssignedBasedOn": "Cihazlar, filtre kurallarına göre otomatik olarak atanır.",
-    "filterRules": "Filtre Kuralları",
-    "cancel": "İptal",
-    "creating": "Oluşturuluyor...",
-    "createGroup": "Grup Oluştur",
-    "created": "Cihaz grubu oluşturuldu",
-    "missingGroupId": "Grup oluşturuldu ancak sunucu yanıtında grup kimliği eksik. Lütfen sayfayı yenileyin."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} çıkarılan gizlendi",
@@ -1895,7 +1878,10 @@
     "moveToSite": "Siteye taşı",
     "moveSelectedToSite": "Siteye taşı",
     "moveSiteMixedOrgs": "Seçilen cihazlar birden fazla kuruluşa ait",
-    "moveSiteOverCap": "Aynı anda taşımak için en fazla {{count}} cihaz seçin"
+    "moveSiteOverCap": "Aynı anda taşımak için en fazla {{count}} cihaz seçin",
+    "addToGroup": "Gruba ekle…",
+    "removeFromGroup": "Gruptan kaldır…",
+    "groupMembershipOverCap": "Grup üyeliğini aynı anda değiştirmek için en fazla {{count}} cihaz seçin"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Cihaz günlükleri getirilemedi",
@@ -2408,7 +2394,9 @@
       "completed": "Tamamlandı",
       "failed": "Başarısız",
       "queued": "Sıraya alındı",
-      "running": "Çalışıyor"
+      "running": "Çalışıyor",
+      "cancelled": "İptal edildi",
+      "expired": "Süresi doldu"
     },
     "scanType": "{{type}} tarama",
     "scanTypes": {
@@ -2430,7 +2418,13 @@
       "quarantined": "Karantinaya alındı",
       "removed": "Kaldırıldı"
     },
-    "threatsFound": "Bulunan tehditler: {{count}}"
+    "threatsFound": "Bulunan tehditler: {{count}}",
+    "waitingForSlot": "Boş bir tarama yuvası bekleniyor. Bitiş: {{date}}.",
+    "cancelScan": "Taramayı iptal et",
+    "scanCancelled": "Tarama iptal edildi",
+    "cancelScanFailed": "Tarama iptal edilemedi",
+    "scanAlreadyRunning": "Tarama cihazda zaten çalışıyor ve iptal edilemez.",
+    "scanAlreadyQueued": "Bu cihaz için zaten kuyrukta bekleyen bir tarama var."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Bir etiket ekleyin...",
@@ -4338,6 +4332,7 @@
       "pending": "Henüz denetlenmedi",
       "private": "Özel kayıt defteri — kimlik bilgileri gerekli",
       "unsupported_registry": "Kayıt defteri desteklenmiyor",
+      "provenance_unknown": "Kaynak bilinmiyor — imaj adı hiçbir kayıt defterine gönderilmez",
       "error": "Kayıt defteri denetimi başarısız — yeniden denenecek",
       "behind": "Bu etiket için daha yeni bir imaj yayımlandı",
       "current": "Kayıt defteriyle eşleşiyor",
@@ -4765,5 +4760,25 @@
     "membersError": "Grup üyeleri yüklenemedi.",
     "retry": "Yeniden dene",
     "emptyMembers": "Bu grupta cihaz yok."
+  },
+  "bulkGroupMembership": {
+    "titleAdd": "Gruba ekle",
+    "titleRemove": "Gruptan kaldır",
+    "selectionSummary": "Seçili cihazlar: {{n}} · Kuruluş: {{org}}",
+    "groupLabel": "Statik grup",
+    "selectGroup": "Bir grup seçin",
+    "loadingGroups": "Gruplar yükleniyor…",
+    "noGroups": "Bu kuruluştaki hiçbir statik grup bu seçimi alamaz.",
+    "scopeHint": "Yalnızca bu kuruluşun statik grupları listelenir. Bir site grubu yalnızca seçili cihazların tümü o sitedeyse listelenir. Dinamik gruplar listelenmez: üyeleri kuralları belirler.",
+    "cancel": "İptal",
+    "saving": "Kaydediliyor…",
+    "submitAdd": "Cihazları ekle",
+    "submitRemove": "Cihazları kaldır",
+    "failedToLoadGroups": "Gruplar yüklenemedi",
+    "failedToUpdate": "Grup üyeliği güncellenemedi",
+    "addResult": "{{group}}: {{added}} eklendi, {{skipped}} zaten grupta",
+    "removeResult": "{{group}}: {{removed}} kaldırıldı, {{notMember}} grupta değildi",
+    "removeResultForbidden": "{{group}}: {{removed}} kaldırıldı, {{notMember}} grupta değildi. Kaldırılmayanlar (cihazın sitesine erişim yok): {{devices}}",
+    "andMore": "{{names}} ve {{n}} tane daha"
   }
 }

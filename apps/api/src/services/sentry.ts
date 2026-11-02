@@ -60,7 +60,12 @@ const ALLOWED_TAG_NAMES = new Set([
   'user_id',
   'scope',
   'org_id',
+  // Sourced alert ownership: a bounded kind and the local workload row UUID.
+  'ownerKind',
+  'ownerRef',
   'partner_id',
+  'psa_connection_id',
+  'psa_provider',
   'stripe_reconcile_stage',
   // Restore-point ledger ingest (#4757): a closed set of literals written at
   // fixed call sites ('tenant_mismatch', 'write_failed', 'call_site'); never an id.

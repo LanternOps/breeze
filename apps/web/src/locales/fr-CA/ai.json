@@ -148,9 +148,9 @@
     "dashboard": "Tableau de bord"
   },
   "aiCostIndicator": {
-    "messageCount": "{{count}} MSGS",
-    "messageCount_one": "{{count}} msg",
-    "messageCount_other": "{{count}} MSGS",
+    "messageCount": "{{count}} messages ce mois-ci",
+    "messageCount_one": "{{count}} message ce mois-ci",
+    "messageCount_other": "{{count}} messages ce mois-ci",
     "thisMonth": "{{amount}} ce mois-ci",
     "credits_one": "{{formatted}} crédit",
     "credits_other": "{{formatted}} crédits"
@@ -634,6 +634,7 @@
     },
     "header": {
       "scopeAll": "Toutes les organisations",
+      "scopeFallback": "cette organisation",
       "status": {
         "active": "Actif",
         "paused": "En pause",
@@ -643,7 +644,7 @@
       },
       "refresh": "Renouveler l’autorisation",
       "revoke": "Désactiver Wisp",
-      "revokeConfirm": "Désactiver Wisp pour cette portée? Les fils ouverts restent consultables.",
+      "revokeConfirm": "Désactiver Wisp pour cette portée? Wisp cesse de travailler pour vous et ses fils sont fermés. Leurs conversations, préoccupations et activités ne sont plus affichées.",
       "widening": "Vous pouvez faire plus que ce que cette autorisation permet; renouvelez-la pour que Wisp suive.",
       "refreshKeepsTerms": "Cette conversation conserve les conditions précédentes de l’autorisation. Démarrez une nouvelle conversation pour utiliser l’autorisation renouvelée.",
       "startNewConversation": "Démarrer une nouvelle conversation",
@@ -863,7 +864,8 @@
       "workersTitle": "Travailleurs",
       "workersEmpty": "Aucun spécialiste en cours.",
       "allRuns": "Toutes les exécutions",
-      "details": "Détails"
+      "details": "Détails",
+      "ended": "Cette autorisation est terminée; ses préoccupations, travailleurs et activités ne sont donc plus affichés."
     },
     "composer": {
       "placeholder": "Message à Wisp",
