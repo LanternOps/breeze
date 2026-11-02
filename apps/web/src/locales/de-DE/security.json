@@ -103,6 +103,7 @@
     "noRejectionsOrDenialsFound": "Keine abgelehnten, blockierten oder fehlgeschlagenen Aktionen gefunden.",
     "rejected": "Abgelehnt",
     "rejectionsAndDenials": "Abgelehnt und blockiert",
+    "stopped": "Gestoppt",
     "search": "Suchen...",
     "session": "Sitzung",
     "status": "Status",
@@ -2410,6 +2411,7 @@
       "platformNotSelected": "Plattform nicht ausgewählt",
       "varMissing": "Bereitstellungsvariable fehlt",
       "varSecret": "Bereitstellungsvariable ist als geheim markiert",
+      "installerMissing": "Installationsprogramm nicht hochgeladen",
       "vendorUnavailable": "Hersteller nicht verfügbar",
       "installFailed": "Installation fehlgeschlagen",
       "installNotArmed": "Installation nicht freigegeben",
@@ -2417,6 +2419,10 @@
       "awaitingVendorReport": "Warten auf Herstellerbericht",
       "awaitingEvaluation": "Warten auf Auswertung",
       "vendorOrgMismatch": "Hersteller meldet eine andere Organisation"
+    },
+    "setupLink": {
+      "installerMissing": "Installationsprogramm hochladen",
+      "default": "Einrichtung öffnen"
     }
   },
   "sweeps": {

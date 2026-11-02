@@ -3,8 +3,10 @@
 package securefs
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -95,11 +97,54 @@ func TestEnsureTrustedDirChainRefusesNonEmptyForeignOwnedDir(t *testing.T) {
 	// test process itself) reproduces "not root-owned" without needing root.
 	wrongUID := os.Getuid() + 1
 
-	if err := EnsureTrustedDirChain(root, dir, wrongUID, os.Getgid(), 0o755); err == nil {
-		t.Fatal("expected refusal for a non-empty, foreign-owned directory")
+	// errors.Is, not just err != nil: without the refusal a non-root run
+	// still errors (EPERM from the repair chown), so a bare nil check passes
+	// vacuously (#10723). Here the refusal fires at the "Breeze" parent.
+	err := EnsureTrustedDirChain(root, dir, wrongUID, os.Getgid(), 0o755)
+	if !errors.Is(err, ErrUnsafeNonEmptyDir) {
+		t.Fatalf("error = %v, want ErrUnsafeNonEmptyDir", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "planted")); err != nil {
 		t.Fatalf("planted file must survive a refused repair: %v", err)
+	}
+}
+
+// TestEnsureTrustedDirChainRefusesNonEmptyUnsafeLeaf pins the refusal at the
+// leaf itself: a safe parent (own uid, 0755) and a non-empty, world-writable
+// "bin" owned by the requested uid. Without the refusal the repair would
+// succeed (same uid, so no EPERM) and the call would return nil.
+func TestEnsureTrustedDirChainRefusesNonEmptyUnsafeLeaf(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "Breeze")
+	dir := filepath.Join(parent, "bin")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "planted"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := EnsureTrustedDirChain(root, dir, os.Getuid(), os.Getgid(), 0o755)
+	if !errors.Is(err, ErrUnsafeNonEmptyDir) {
+		t.Fatalf("error = %v, want ErrUnsafeNonEmptyDir", err)
+	}
+	if !strings.Contains(err.Error(), dir) {
+		t.Fatalf("refusal %q should name the leaf %s, not the parent", err, dir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "planted")); err != nil {
+		t.Fatalf("planted file must survive a refused repair: %v", err)
+	}
+	if info, err := os.Lstat(dir); err != nil || info.Mode().Perm() != 0o777 {
+		t.Fatalf("leaf must be left unrepaired (mode 0777), got %v err=%v", info, err)
 	}
 }
 

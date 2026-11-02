@@ -554,6 +554,7 @@ const emptyProgress = (): SweepProgress => ({
   cancelled: 0,
   expired: 0,
   degraded: 0,
+  ruleSetChanged: 0,
   threatsFound: 0,
 });
 
@@ -574,6 +575,9 @@ const progressFields = () => ({
   // A child that finished but not as a full YARA scan: the agent fell back to
   // the legacy matcher, or reported rule-set fetch/compile errors.
   degraded: sql<number>`count(*) FILTER (WHERE ${securityScans.status} IN ('completed', 'timed_out') AND (coalesce(${securityScans.engine}, 'legacy') <> 'yara' OR (CASE WHEN jsonb_typeof(${securityScans.ruleSetErrors}) = 'array' THEN jsonb_array_length(${securityScans.ruleSetErrors}) ELSE 0 END) > 0))::int`,
+  // A child the claim failed because a pinned rule set was republished after
+  // the sweep was approved (securityScanClaim → yaraScanRefs 'rule_set_changed').
+  ruleSetChanged: sql<number>`count(*) FILTER (WHERE ${securityScans.status} = 'failed' AND ${securityScans.ruleSetErrors} @> '[{"code":"rule_set_changed"}]'::jsonb)::int`,
   threatsFound: sql<number>`coalesce(sum(${securityScans.threatsFound}), 0)::int`,
   total: sql<number>`count(*)::int`,
 });
@@ -748,6 +752,7 @@ async function loadSummaries(
           cancelled: Number(p.cancelled),
           expired: Number(p.expired),
           degraded: Number(p.degraded),
+          ruleSetChanged: Number(p.ruleSetChanged),
           threatsFound: Number(p.threatsFound),
         }
       : emptyProgress();

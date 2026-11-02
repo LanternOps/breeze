@@ -204,7 +204,7 @@ A sweep of more than 50 devices needs an interactive sign-in with multi-factor a
 
 ### Pinned rule versions
 
-When you confirm, the sweep pins each rule set's published version and content hash. Every scan of the sweep runs exactly those versions, and a threat found by a pinned scan shows **Version N** in its rule panel. If someone republishes a pinned rule set while the sweep is running, the scans that have not started yet fail with `rule_set_changed` rather than silently running different rules, and the Sweeps tab marks the row **Rules changed since this sweep started** with **Sweep again with the current rules**.
+When you confirm, the sweep pins each rule set's published version and content hash. Every scan of the sweep runs exactly those versions, and a threat found by a pinned scan shows **Version N** in its rule panel. If someone republishes a pinned rule set while the sweep is running, the scans that have not started yet fail with `rule_set_changed` rather than silently running different rules. Once at least one scan has failed that way, the Sweeps tab marks the row **Rules changed since this sweep started** with **Sweep again with the current rules**; a sweep that finished before the republish is not marked. The API reports the count as `progress.ruleSetChanged` on each sweep, and `GET /security/scans/:deviceId` returns each scan's `sweepId` and `ruleSetErrors`.
 
 ### Duration and offline devices
 

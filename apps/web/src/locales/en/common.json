@@ -1337,7 +1337,7 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "No tickets match your search or filters.",
-          "noTickets": "Ticket sync is not available yet, so PSA tickets are not imported.",
+          "noTickets": "No alert tickets yet. Enable alert ticketing on the bound ConnectWise Manage connection to get started.",
           "title": "No PSA tickets"
         },
         "filters": {
@@ -1358,8 +1358,41 @@
           "waiting": "Waiting"
         },
         "ticketCount": "{{filtered}} of {{total}} tickets",
-        "title": "PSA Tickets",
+        "title": "Alert tickets",
         "unlinked": "Unlinked"
+      },
+      "PsaAlertTicketingActivity": {
+        "title": "Ticket activity",
+        "refresh": "Refresh",
+        "redrive": "Re-drive",
+        "loading": "Loading ticket activity…",
+        "loadFailed": "Could not load ticket activity. Refresh to try again.",
+        "actionFailed": "Could not update ticket activity.",
+        "actionSucceeded": "Ticket activity updated.",
+        "help": "Re-drive retries failed creates and alerts without company links. Mark handled stops work on the mapping without changing the PSA ticket.",
+        "empty": "No tickets need attention.",
+        "viewAlert": "View alert",
+        "createAnyway": "Create anyway",
+        "markHandled": "Mark handled",
+        "duplicateWarning": "A ticket may already exist in the PSA. Check there first: this one-time retry can create a duplicate.",
+        "confirmCreate": "Create one more ticket",
+        "cancel": "Cancel",
+        "previous": "Previous",
+        "next": "Next",
+        "page": "Page {{page}} of {{total}}",
+        "states": {
+          "never_attempted": "Queued",
+          "create_in_flight": "Creating",
+          "created": "Created",
+          "create_outcome_unknown": "Create outcome unknown",
+          "rejected": "Rejected",
+          "failed": "Failed",
+          "needs_attention": "Needs attention",
+          "handled": "Handled",
+          "skipped_no_company": "No company link",
+          "skipped_ambiguous_company": "Ambiguous company link",
+          "skipped_resolved_before_create": "Resolved before create"
+        }
       }
     },
     "webhooks": {
@@ -1434,6 +1467,10 @@
           "ticketCreated": {
             "description": "Triggered when a ticket is created.",
             "label": "Ticket Created"
+          },
+          "ticketMerged": {
+            "description": "Triggered when a ticket is merged into another ticket.",
+            "label": "Ticket Merged"
           },
           "ticketCommented": {
             "description": "Triggered when a comment or note is added to a ticket.",

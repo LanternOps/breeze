@@ -200,11 +200,10 @@ export const AGENT_DENIED_READ_TOOLS: ReadonlyMap<string, string> = new Map<stri
  * either. Entries are added only with Todd's sign-off.
  */
 export const AGENT_HUMAN_ONLY_ACTIONS: ReadonlyMap<string, string> = new Map<string, string>([
-  // Full-control W04 (#6758, W04-D8 — the W02 Task 16 follow-up): the group
-  // analogue of manage_tags. Membership is a live read at run admission and
-  // before tool use (runResourceScope.ts), so these are the same self-scope path.
-  ['manage_groups:add_devices', 'Group membership feeds agent run scope (triggers.deviceGroupIds, a live read in runResourceScope.ts): an allowlisted tier-2 add would let an agent put devices inside its own or another agent\'s future reach unattended.'],
-  ['manage_groups:remove_devices', 'Removing a device from a group changes which group-scoped agents, config-policy assignments and peripheral policies reach it; the same run-scope path as manage_tags:remove.'],
+  // manage_groups add_devices/remove_devices were here (W04-D8, #6758) until
+  // #10149 (QW9) made them supervised with org/site scope guards: an agent's
+  // allowlisted call is now a tier-3 proposal a person approves, never an
+  // unattended membership write, and neither is in ACT_MANIFEST.
   ['manage_tags:add', 'Device tags feed the agent\'s own run scope (triggers.deviceTags, runResourceScope.ts) and dynamic-group membership (triggers.deviceGroupIds): an allowlisted tier-2 add would let an agent widen its future reach unattended.'],
   ['manage_tags:remove', 'Removing a tag can ADMIT a device to a dynamic group whose rule is negative (isEmpty / notContains, filterEngine.ts); membership is re-evaluated on every tag change and feeds the agent\'s run scope through triggers.deviceGroupIds.'],
   // Full-control W11 (#6781, W11-D8, quorum QW5/QW9): both write auth.user.id into a users FK, and a user-owned
@@ -226,6 +225,7 @@ export const AGENT_HUMAN_ONLY_ACTIONS: ReadonlyMap<string, string> = new Map<str
   ['manage_contract_templates:archive', 'Agreement templates are the legal documents customers sign; a person authors them (the human_only_legal_evidence reasoning).'],
   ['manage_contract_documents:link', 'Filing a signed agreement under a contract is an irreversible change to an executed legal record; a person decides it.'],
   // Full-control W14 PR B (#6784, W14 plan agent exposure): money and data that leave the tenant.
+  ['manage_pax8_orders:submit', 'A real billable Pax8 order has no idempotency key and cancellation is terminal; a person asks and two people approve.'],
   ['manage_contracts:generate_invoice', 'Generating a contract invoice bills the customer and may issue and email it; a person asks for it and two people approve it.'],
   ['manage_accounting_sync:push', 'Pushing an invoice writes it into the partner\'s accounting books outside Breeze; a person asks for it and two people approve it.'],
   ['manage_accounting_sync:push_bulk', 'Pushing invoices writes them into the partner\'s accounting books outside Breeze; a person asks for it and two people approve it.'],

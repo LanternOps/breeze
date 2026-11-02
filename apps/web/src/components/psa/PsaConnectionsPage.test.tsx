@@ -287,7 +287,11 @@ describe('PsaConnectionsPage round-trip contract', () => {
     expect(testButton).toBeEnabled();
     expect(screen.queryByTestId('psa-test-dirty-hint')).toBeNull();
 
+    // Dialog autofocus runs on the next animation frame; let it finish before
+    // typing so it cannot move focus away from the token mid-keystroke.
+    await waitFor(() => expect(screen.getByLabelText(/connection name/i)).toHaveFocus());
     await user.type(screen.getByTestId('psa-credential-apiToken'), 'rotated-token');
+    expect(screen.getByTestId('psa-credential-apiToken')).toHaveValue('rotated-token');
 
     await waitFor(() => expect(testButton).toBeDisabled());
     expect(screen.getByTestId('psa-test-dirty-hint')).toBeInTheDocument();
@@ -586,7 +590,7 @@ describe('PsaConnectionsPage round-trip contract', () => {
 
     render(<PsaConnectionsPage />);
 
-    expect(await screen.findByRole('heading', { name: /^psa tickets$/i })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /^alert tickets$/i })).toBeTruthy();
     expect(screen.queryByText(/synced tickets/i)).toBeNull();
   });
 });

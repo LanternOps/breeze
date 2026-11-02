@@ -1,0 +1,31 @@
+# Tests that read docs-classified paths. Format: <reader-test-file> <bash-glob>.
+# Bash * matches slashes; directories must include /* to cover descendants.
+# Keep this map in sync with the derived scan in ci-pr-selection.test.mjs.
+apps/web/src/components/devices/time/timeSyncDocs.test.ts apps/docs/src/content/docs/features/time-sync.mdx
+apps/web/src/components/devices/time/timeSyncDocs.test.ts apps/docs/astro.config.mjs
+apps/api/src/config/turnPeerRestrictions.test.ts apps/docs/src/content/docs/deploy/turn-server.mdx
+apps/api/src/config/envReadComposeCoverage.test.ts apps/docs/src/content/docs/deploy/environment.mdx
+apps/api/src/config/redisEvictionPolicyDocs.test.ts apps/docs/src/content/docs/*
+scripts/agents/build-agents-md.test.mjs CLAUDE.md
+scripts/agents/build-agents-md.test.mjs AGENTS.md
+scripts/security/check-security-guards.test.mjs apps/docs/src/content/docs/agents/building.mdx
+scripts/security/check-security-guards.test.mjs apps/docs/src/content/docs/getting-started/prerequisites.mdx
+
+# Additional literal reads found by the repository-wide contract scan.
+apps/api/src/config/caddyLogRedaction.test.ts docs/operations/TLS_SETUP.md
+apps/api/src/db/bootstrapDocs.test.ts README.md
+apps/api/src/db/bootstrapDocs.test.ts docs/operations/DEPLOY_PRODUCTION.md
+apps/api/src/services/aiGuardrailsAiDocs.parity.test.ts apps/docs/src/content/docs/features/ai.mdx
+apps/api/src/services/aiToolIndex.test.ts apps/docs/src/content/docs/features/mcp-server.mdx
+apps/api/src/services/aiToolUsageReport.test.ts docs/superpowers/specs/ai-mcp/sql/2026-09-17-ai-tool-usage-90d.sql
+apps/api/src/services/eventBus.types.test.ts apps/docs/src/content/docs/features/webhooks.mdx
+apps/api/src/services/installerSigningDocs.test.ts docs/signing/WINDOWS_INSTALLER_SIGNING.md
+apps/api/src/services/installerSigningDocs.test.ts apps/docs/src/content/docs/deploy/verify-installer.mdx
+apps/api/src/services/mcpGuidancePromptTools.test.ts apps/docs/src/content/docs/features/ai-tools.mdx
+apps/web/src/components/devices/hardware/hardwareMonitoringDocs.test.ts apps/docs/src/content/docs/features/hardware-monitoring.mdx
+apps/web/src/components/devices/hardware/hardwareMonitoringDocs.test.ts apps/docs/astro.config.mjs
+apps/web/src/components/devices/time/timeSyncEvidenceDocs.test.ts apps/docs/src/content/docs/features/time-sync.mdx
+apps/web/src/lib/__tests__/alertingDocs.test.ts apps/docs/src/content/docs/*
+apps/web/src/lib/__tests__/alertingDocs.test.ts apps/docs/astro.config.mjs
+scripts/release/check-server-only-eligibility.test.mjs selfhost-signing-template/README.md
+scripts/release/release-path-policy.test.mjs selfhost-signing-template/README.md

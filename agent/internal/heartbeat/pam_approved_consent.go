@@ -23,7 +23,7 @@ import (
 // The fix records which consent.exe raised the request (PID + creation time,
 // in the requester's session) when the flow parks, and dismisses exactly that
 // process once pam_apply_v2 has a verified-active launch. It never uses the
-// deny path's untargeted Escape: other prompts may be open in the same session
+// untargeted Escape: other prompts may be open in the same session
 // (one per pending request on hosts that draw UAC on the normal desktop), and
 // one of them may belong to a local flow that still needs it.
 

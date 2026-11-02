@@ -141,6 +141,14 @@ vi.mock('../../jobs/softwareComplianceWorker', () => ({
   scheduleSoftwareComplianceCheck: vi.fn(),
 }));
 vi.mock('./policyProbeSafety', () => ({ isAllowedPolicyConfigProbe: vi.fn(() => true) }));
+// #7516 — the local-build servability check is its own unit
+// (services/localBinaryBuild.test.ts); here it is a seam the resolvers consult.
+const { isUpgradeTargetServableMock } = vi.hoisted(() => ({
+  isUpgradeTargetServableMock: vi.fn(async (_args: { component: string; version: string }) => true),
+}));
+vi.mock('../../services/localBinaryBuild', () => ({
+  isUpgradeTargetServable: isUpgradeTargetServableMock,
+}));
 
 // ---------------------------------------------------------------------------
 // Import under test — AFTER all mocks are installed.
@@ -150,6 +158,7 @@ import {
   getOrgAgentUpdateConfig,
   getOrgAgentUpdateConfigCached,
   resolvePinnedUpgradeTarget,
+  resolvePinnedUpgradeTargets,
   agentAcceptsServedEdition,
   __resetMalformedWindowWarnCache,
 } from './helpers';
@@ -592,6 +601,63 @@ describe('resolvePinnedUpgradeTarget', () => {
       expect(editionColIdx).toBeGreaterThanOrEqual(0);
       expect(params[editionColIdx + 1]).toBe('self-host');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #7516 — an offer this server cannot serve is withheld at the resolver, so
+// every offer path (heartbeat agent/helper/watchdog, watchdog-failover
+// recovery, edition auto-migrate) stops handing agents a target whose download
+// fails checksum verification on every attempt.
+// ---------------------------------------------------------------------------
+describe('resolvers withhold targets the local build cannot serve (#7516)', () => {
+  const base = { component: 'agent', platform: 'windows', architecture: 'amd64' as const };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isUpgradeTargetServableMock.mockImplementation(async ({ version }) => version === '0.118.2');
+  });
+
+  afterEach(() => {
+    isUpgradeTargetServableMock.mockImplementation(async () => true);
+  });
+
+  it('resolvePinnedUpgradeTarget: promoted 0.118.1, server holds 0.118.2 → null', async () => {
+    dbMock._setResult([{ version: '0.118.1' }]);
+    await expect(resolvePinnedUpgradeTarget({ ...base, pin: null })).resolves.toBeNull();
+    expect(isUpgradeTargetServableMock).toHaveBeenCalledWith(
+      expect.objectContaining({ component: 'agent', platform: 'windows', architecture: 'amd64', version: '0.118.1' }),
+    );
+  });
+
+  it('resolvePinnedUpgradeTarget: a pin the local build cannot serve → null', async () => {
+    dbMock._setResult([{ version: '0.118.1' }]);
+    await expect(resolvePinnedUpgradeTarget({ ...base, pin: '0.118.1' })).resolves.toBeNull();
+  });
+
+  it('resolvePinnedUpgradeTarget: a servable promoted target is offered unchanged', async () => {
+    dbMock._setResult([{ version: '0.118.2' }]);
+    await expect(resolvePinnedUpgradeTarget({ ...base, pin: null })).resolves.toBe('0.118.2');
+  });
+
+  it('resolvePinnedUpgradeTargets: withholds per component, keeps servable ones', async () => {
+    dbMock._setResult([
+      { component: 'agent', version: '0.118.1', isLatest: true },
+      { component: 'helper', version: '0.118.2', isLatest: true },
+      { component: 'watchdog', version: '0.118.1', isLatest: true },
+    ]);
+    const targets = await resolvePinnedUpgradeTargets({
+      platform: 'windows',
+      architecture: 'amd64',
+      requests: [
+        { component: 'agent', pin: null },
+        { component: 'helper', pin: null },
+        { component: 'watchdog', pin: null },
+      ],
+    });
+    expect(targets.get('agent')).toBeNull();
+    expect(targets.get('helper')).toBe('0.118.2');
+    expect(targets.get('watchdog')).toBeNull();
   });
 });
 

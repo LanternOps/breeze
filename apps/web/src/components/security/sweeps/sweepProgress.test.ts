@@ -3,7 +3,7 @@ import type { SweepProgress, SweepSummary } from '@breeze/shared';
 import { describeSweepProgress } from './sweepProgress';
 
 const zero: SweepProgress = {
-  queued: 0, running: 0, completed: 0, timedOut: 0, failed: 0, cancelled: 0, expired: 0, degraded: 0, threatsFound: 0,
+  queued: 0, running: 0, completed: 0, timedOut: 0, failed: 0, cancelled: 0, expired: 0, degraded: 0, ruleSetChanged: 0, threatsFound: 0,
 };
 
 function sweep(over: Partial<Omit<SweepSummary, 'progress'>> & { progress?: Partial<SweepProgress> }): SweepSummary {

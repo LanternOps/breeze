@@ -103,6 +103,7 @@
     "noRejectionsOrDenialsFound": "Reddedilen, engellenen veya başarısız eylem bulunamadı.",
     "rejected": "Reddedildi",
     "rejectionsAndDenials": "Reddedilenler ve engellenenler",
+    "stopped": "Durduruldu",
     "search": "Ara...",
     "session": "Oturum",
     "status": "Durum",
@@ -2410,6 +2411,7 @@
       "platformNotSelected": "Platform seçilmedi",
       "varMissing": "Dağıtım değişkeni eksik",
       "varSecret": "Dağıtım değişkeni gizli olarak işaretlenmiş",
+      "installerMissing": "Yükleyici karşıya yüklenmedi",
       "vendorUnavailable": "Sağlayıcı kullanılamıyor",
       "installFailed": "Kurulum başarısız oldu",
       "installNotArmed": "Kurulum etkinleştirilmedi",
@@ -2417,6 +2419,10 @@
       "awaitingVendorReport": "Sağlayıcı raporu bekleniyor",
       "awaitingEvaluation": "Değerlendirme bekleniyor",
       "vendorOrgMismatch": "Sağlayıcı farklı bir kuruluş bildiriyor"
+    },
+    "setupLink": {
+      "installerMissing": "Yükleyiciyi karşıya yükle",
+      "default": "Kurulumu aç"
     }
   },
   "sweeps": {

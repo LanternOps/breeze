@@ -5,6 +5,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const h = vi.hoisted(() => {
   class ThreadLinkError extends Error {
@@ -12,15 +13,28 @@ const h = vi.hoisted(() => {
   }
   return {
     ThreadLinkError,
+    dbRows: [] as unknown[],
+    dbWhere: vi.fn(),
+    inSystemContext: vi.fn(),
     loadOwnThread: vi.fn(),
     ceilingOf: vi.fn(),
     addLink: vi.fn(),
     removeLink: vi.fn(),
     listWorkingSet: vi.fn(),
     listConcernsForCeiling: vi.fn(),
+    resolveEntityRef: vi.fn(),
+    neighbourRefs: vi.fn(),
     writeRouteAudit: vi.fn(),
   };
 });
+
+vi.mock('../db', () => ({
+  db: { select: () => ({ from: () => ({ where: (condition: unknown) => {
+    h.dbWhere(condition);
+    return { limit: async () => h.dbRows };
+  } }) }) },
+}));
+vi.mock('../services/wisp/grantAuthority', () => ({ inSystemContext: h.inSystemContext }));
 
 vi.mock('./wispThreads', () => ({
   loadOwnThread: h.loadOwnThread,
@@ -36,6 +50,11 @@ vi.mock('../services/wisp/threadLinks', () => ({
   listWorkingSet: h.listWorkingSet,
 }));
 vi.mock('../services/wisp/concerns', () => ({ listConcernsForCeiling: h.listConcernsForCeiling }));
+vi.mock('../services/wisp/entityRefs', () => ({
+  resolveEntityRef: h.resolveEntityRef,
+  isResolveFailure: (result: object) => 'reason' in result,
+}));
+vi.mock('../services/wisp/entityRelations', () => ({ neighbourRefs: h.neighbourRefs }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: h.writeRouteAudit }));
 
 const { wispThreadLinkRoutes } = await import('./wispThreadLinks');
@@ -63,9 +82,15 @@ const req = (method: string, path: string, body?: unknown) => app().request(path
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.dbRows = [{ kind: link.ref.kind, id: link.ref.id }];
+  h.inSystemContext.mockImplementation((fn: () => unknown) => fn());
   h.loadOwnThread.mockResolvedValue(own);
   h.listConcernsForCeiling.mockResolvedValue([]);
   h.ceilingOf.mockResolvedValue({ ok: true, ceiling });
+  h.resolveEntityRef.mockReset().mockResolvedValue({
+    ref: link.ref, orgId: link.ref.orgId, label: link.label, status: link.status, href: link.href,
+  });
+  h.neighbourRefs.mockReset().mockResolvedValue([]);
 });
 
 describe('GET /thread/:id/links', () => {
@@ -155,7 +180,156 @@ describe('DELETE /thread/:id/links/:linkId', () => {
   it('404 for a missing link or a malformed link id; nothing audited', async () => {
     h.removeLink.mockResolvedValue(null);
     expect((await req('DELETE', `/thread/${THREAD}/links/${LINK}`)).status).toBe(404);
-    expect((await req('DELETE', `/thread/${THREAD}/links/nope`)).status).toBe(404);
+    const malformed = await req('DELETE', `/thread/${THREAD}/links/nope`);
+    expect(malformed.status).toBe(404);
+    expect(await malformed.json()).toEqual({ error: 'Link not found', code: 'not_found' });
     expect(h.writeRouteAudit).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('POST /thread/:id/links/:linkId/pin', () => {
+  it.each(['forbidden', 'outside_ceiling', 'outside_token_scope'])(
+    'returns the specific 403 for a stored row omitted from listWorkingSet as %s', async (code) => {
+      h.listWorkingSet.mockResolvedValue([]);
+      h.addLink.mockRejectedValue(new h.ThreadLinkError(code));
+      const res = await req('POST', `/thread/${THREAD}/links/${LINK}/pin`);
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code });
+      expect(h.listWorkingSet).not.toHaveBeenCalled();
+      expect(h.addLink).toHaveBeenCalledWith({ auth, ceiling }, THREAD, { kind: link.ref.kind, id: link.ref.id }, { source: 'user_pin', addedByGrantId: null });
+      expect(h.writeRouteAudit).not.toHaveBeenCalled();
+    },
+  );
+  it('pin promotes an auto link and audits the server-resolved ref', async () => {
+    h.listWorkingSet.mockResolvedValue([{ ...link, source: 'auto' }]);
+    h.addLink.mockResolvedValue(link);
+    const res = await req('POST', `/thread/${THREAD}/links/${LINK}/pin`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { link } });
+    expect(h.listWorkingSet).not.toHaveBeenCalled();
+    expect(h.inSystemContext).toHaveBeenCalledTimes(1);
+    const query = new PgDialect().sqlToQuery(h.dbWhere.mock.calls[0]![0]);
+    expect(query.sql).toContain('"wisp_thread_links"."partner_id" =');
+    expect(query.sql).toContain('"wisp_thread_links"."thread_id" =');
+    expect(query.sql).toContain('"wisp_thread_links"."id" =');
+    expect(query.params).toEqual([LINK, THREAD, PARTNER]);
+    expect(h.addLink).toHaveBeenCalledWith({ auth, ceiling }, THREAD, { kind: link.ref.kind, id: link.ref.id }, { source: 'user_pin', addedByGrantId: null });
+    expect(h.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'wisp.thread.link_added', details: { threadId: THREAD, kind: 'ticket', entityId: TICKET, source: 'user_pin' },
+    }));
+  });
+
+  it.each(['missing', 'malformed', 'foreign thread', 'inactive', 'cap', 'outside_ceiling'])('refuses %s without auditing', async (reason) => {
+    h.dbRows = reason === 'missing' ? [] : [{ kind: link.ref.kind, id: link.ref.id }];
+    h.listWorkingSet.mockResolvedValue(reason === 'missing' ? [] : [{ ...link, source: 'auto' }]);
+    if (reason === 'foreign thread') h.loadOwnThread.mockResolvedValue(null);
+    if (reason === 'inactive') h.ceilingOf.mockResolvedValue({ ok: false, reason: 'inactive' });
+    if (reason === 'cap' || reason === 'outside_ceiling') h.addLink.mockRejectedValue(new h.ThreadLinkError(reason === 'cap' ? 'link_limit' : 'outside_ceiling'));
+    const res = await req('POST', `/thread/${THREAD}/links/${reason === 'malformed' ? 'bad' : LINK}/pin`);
+    expect(res.status).toBe(reason === 'inactive' || reason === 'cap' ? 409 : reason === 'outside_ceiling' ? 403 : 404);
+    if (reason === 'missing' || reason === 'malformed') {
+      expect(await res.json()).toEqual({ error: 'Link not found', code: 'not_found' });
+    }
+    expect(h.writeRouteAudit).not.toHaveBeenCalled();
+    if (!['cap', 'outside_ceiling'].includes(reason)) expect(h.addLink).not.toHaveBeenCalled();
+    if (['malformed', 'foreign thread', 'inactive'].includes(reason)) {
+      expect(h.dbWhere).not.toHaveBeenCalled();
+      expect(h.inSystemContext).not.toHaveBeenCalled();
+    }
+  });
+});
+
+it('GET returns derived concern subjects with null ids', async () => {
+  const concern = { ...link, id: null, source: 'concern' };
+  h.listWorkingSet.mockResolvedValue([concern]);
+  const res = await req('GET', `/thread/${THREAD}/links`);
+  expect(await res.json()).toEqual({ data: { links: [concern] } });
+});
+
+
+describe('GET /thread/:id/links/neighbours', () => {
+  const path = `/thread/${THREAD}/links/neighbours?kind=ticket&id=${TICKET}`;
+  const deviceRef = { kind: 'device', id: '55555555-5555-4555-8555-555555555555' };
+  const orgRef = { kind: 'organization', id: '66666666-6666-4666-8666-666666666666' };
+  const device = {
+    ref: { ...deviceRef, orgId: '77777777-7777-4777-8777-777777777777' },
+    orgId: '77777777-7777-4777-8777-777777777777',
+    label: 'Freshly resolved device', status: 'online', href: `/devices/${deviceRef.id}`,
+  };
+
+  it('neighbours omit an org the caller cannot read', async () => {
+    h.neighbourRefs.mockResolvedValue([deviceRef, orgRef]);
+    h.resolveEntityRef
+      .mockResolvedValueOnce({ ref: link.ref })
+      .mockResolvedValueOnce(device)
+      .mockResolvedValueOnce({ reason: 'forbidden' });
+    const res = await req('GET', path);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { links: [{
+      id: null, ref: device.ref, label: device.label, status: device.status, href: device.href,
+      source: 'auto', lastTouchedAt: expect.any(String), createdAt: expect.any(String),
+    }] } });
+    expect(h.neighbourRefs).toHaveBeenCalledWith(PARTNER, { kind: 'ticket', id: TICKET });
+    expect(h.resolveEntityRef).toHaveBeenNthCalledWith(1, { auth, ceiling }, { kind: 'ticket', id: TICKET });
+    expect(h.resolveEntityRef).toHaveBeenNthCalledWith(2, { auth, ceiling }, deviceRef);
+    expect(h.resolveEntityRef).toHaveBeenNthCalledWith(3, { auth, ceiling }, orgRef);
+    expect(h.resolveEntityRef.mock.invocationCallOrder[0]).toBeLessThan(h.neighbourRefs.mock.invocationCallOrder[0]!);
+    expect(h.addLink).not.toHaveBeenCalled();
+    expect(h.removeLink).not.toHaveBeenCalled();
+    expect(h.writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it.each(['not_found', 'forbidden', 'outside_ceiling', 'outside_token_scope'])(
+    'neighbours 404 when the subject is refused (%s)', async (reason) => {
+      h.resolveEntityRef.mockResolvedValue({ reason });
+      const res = await req('GET', path);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Link not found', code: 'not_found' });
+      expect(h.neighbourRefs).not.toHaveBeenCalled();
+      expect(h.writeRouteAudit).not.toHaveBeenCalled();
+    },
+  );
+
+  it('neighbours cap at 8', async () => {
+    const refs = Array.from({ length: 10 }, (_, i) => ({
+      kind: 'device', id: `55555555-5555-4555-8555-${String(i).padStart(12, '0')}`,
+    }));
+    h.neighbourRefs.mockResolvedValue(refs);
+    h.resolveEntityRef.mockImplementation(async (_ctx, ref) => ({ ...device, ref: { ...ref, orgId: device.orgId } }));
+    const res = await req('GET', path);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.links).toHaveLength(8);
+    expect(body.data.links.map((item: typeof link) => item.ref.id)).toEqual(refs.slice(0, 8).map((ref) => ref.id));
+    expect(body.data.links.every((item: typeof link) => item.id === null && item.source === 'auto')).toBe(true);
+  });
+
+  it('returns an empty list for a subject with no neighbours', async () => {
+    const res = await req('GET', path);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { links: [] } });
+  });
+
+  it.each(['kind=incident&id=' + TICKET, 'kind=ticket&id=bad', 'kind=ticket', 'id=' + TICKET])(
+    'rejects invalid neighbours query %s before any relation read', async (query) => {
+      expect((await req('GET', `/thread/${THREAD}/links/neighbours?${query}`)).status).toBe(400);
+      expect(h.resolveEntityRef).not.toHaveBeenCalled();
+      expect(h.neighbourRefs).not.toHaveBeenCalled();
+    },
+  );
+
+  it('refuses another user\'s thread before resolving the subject', async () => {
+    h.loadOwnThread.mockResolvedValue(null);
+    expect((await req('GET', path)).status).toBe(404);
+    expect(h.resolveEntityRef).not.toHaveBeenCalled();
+    expect(h.neighbourRefs).not.toHaveBeenCalled();
+  });
+
+  it('refuses an inactive grant before resolving the subject', async () => {
+    h.ceilingOf.mockResolvedValue({ ok: false, reason: 'inactive' });
+    expect((await req('GET', path)).status).toBe(409);
+    expect(h.resolveEntityRef).not.toHaveBeenCalled();
+    expect(h.neighbourRefs).not.toHaveBeenCalled();
   });
 });
