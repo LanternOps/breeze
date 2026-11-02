@@ -11,7 +11,13 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runAfterDbContextCommit: vi.fn(),
 }));
+
+vi.mock('../../services/reinstallCandidates', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/reinstallCandidates')>();
+  return { ...actual, detectReinstallCandidates: vi.fn().mockResolvedValue({ written: false, why: 'test' }) };
+});
 
 // Use the real schema (cheap table-definition objects) so the transitive
 // service import graph (warranty -> configuration/discovery policies) resolves
@@ -146,7 +152,8 @@ vi.mock('../../services/softwareInventoryObservations', () => ({
   SoftwareInventoryLockTimeoutError: class SoftwareInventoryLockTimeoutError extends Error {},
 }));
 
-import { db } from '../../db';
+import { db, runAfterDbContextCommit } from '../../db';
+import { detectReinstallCandidates } from '../../services/reinstallCandidates';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import { writeHardwareReport } from '../../services/inventoryChildSync';
 import {
@@ -170,7 +177,7 @@ const V2_REPORT = {
   items: [{ name: 'Breeze Agent', version: '0.105.1' }],
 } as const;
 
-function mockDeviceLookup(device: { id: string; orgId: string; agentVersion?: string | null } | null) {
+function mockDeviceLookup(device: { id: string; orgId: string; agentVersion?: string | null; possibleReplacementReason?: string | null } | null) {
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
@@ -402,5 +409,53 @@ describe('agent hardware inventory — memory modules (#5351)', () => {
     const res = await postHardware(makeApp(), { cpuCores: 'eight', memory: MEMORY });
     expect(res.status).toBe(400);
     expect(writeHardwareReport).not.toHaveBeenCalled();
+  });
+});
+
+describe('agent hardware inventory — reinstall hints (#8318 §7.3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Drop any once-queued lookups an earlier describe left unconsumed.
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('defers the candidate search until the request commits when the report carries a system UUID', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    mockPriorHardware(null);
+    mockHardwareUpsert();
+
+    const res = await postHardware(makeApp(), { ...DELL, systemUuid: '4C4C4544-0042-3510-8051-B4C04F4D3132' });
+
+    expect(res.status).toBe(200);
+    const [, , hardware] = vi.mocked(writeHardwareReport).mock.calls[0]!;
+    expect(hardware).toMatchObject({ systemUuid: '4c4c4544-0042-3510-8051-b4c04f4d3132' });
+    expect(runAfterDbContextCommit).toHaveBeenCalledTimes(1);
+    expect(detectReinstallCandidates).not.toHaveBeenCalled();
+    const [label, work] = vi.mocked(runAfterDbContextCommit).mock.calls[0]!;
+    expect(label).toBe('reinstall-candidates');
+    await (work as () => Promise<unknown>)();
+    expect(detectReinstallCandidates).toHaveBeenCalledWith({ sourceDeviceId: 'device-1', trigger: 'hardware_report' });
+  });
+
+  it('runs no search without hardware evidence', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    mockPriorHardware(null);
+    mockHardwareUpsert();
+
+    const res = await postHardware(makeApp(), { cpuModel: 'x', systemUuid: 'garbage' });
+
+    expect(res.status).toBe(200);
+    expect(runAfterDbContextCommit).not.toHaveBeenCalled();
+  });
+
+  it('runs no search on a source already flagged with hardware evidence', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1', possibleReplacementReason: 'hardware' });
+    mockPriorHardware(null);
+    mockHardwareUpsert();
+
+    const res = await postHardware(makeApp(), DELL);
+
+    expect(res.status).toBe(200);
+    expect(runAfterDbContextCommit).not.toHaveBeenCalled();
   });
 });

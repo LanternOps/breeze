@@ -84,6 +84,31 @@ export async function readRedisLivenessSignals(
   }
 }
 
+/**
+ * The newest of a set of liveness signals, ignoring null and invalid dates.
+ * Pure; shared by the §6.5 confirm-time rule below and by the §7.3 candidate
+ * search (services/reinstallCandidates), which reads the DB half only.
+ */
+export function newestLivenessSignal<S extends string>(
+  signals: ReadonlyArray<readonly [S, Date | null]>,
+): { signal: S; at: Date } | null {
+  let newest: { signal: S; at: Date } | null = null;
+  for (const [signal, at] of signals) {
+    if (at && !Number.isNaN(at.getTime()) && (!newest || at.getTime() > newest.at.getTime())) {
+      newest = { signal, at };
+    }
+  }
+  return newest;
+}
+
+/** The newest DB liveness signal of a device (heartbeat or watchdog beat), or null. Pure. */
+export function newestDbLivenessSignalAt(dbSignals: DbLivenessSignals): Date | null {
+  return newestLivenessSignal([
+    ['heartbeat', dbSignals.lastSeenAt],
+    ['watchdog', dbSignals.watchdogLastSeen],
+  ] as const)?.at ?? null;
+}
+
 /** The §6.5 rule over both halves. Pure. */
 export function decideTargetLiveness(
   redis: RedisLivenessSignals,
@@ -100,12 +125,7 @@ export function decideTargetLiveness(
     ['watchdog', dbSignals.watchdogLastSeen],
     ['credential_use', redis.credentialUseAt],
   ];
-  let newest: { signal: TargetLivenessSignal; at: Date } | null = null;
-  for (const [signal, at] of signals) {
-    if (at && !Number.isNaN(at.getTime()) && (!newest || at.getTime() > newest.at.getTime())) {
-      newest = { signal, at };
-    }
-  }
+  const newest = newestLivenessSignal(signals);
   if (newest && newest.at.getTime() >= threshold) return { state: 'alive', ...newest };
   return { state: 'silent' };
 }

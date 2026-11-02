@@ -36,6 +36,7 @@ import {
   type ManifestKeyDelegation,
 } from '../../services/manifestSigning';
 import { captureException } from '../../services/sentry';
+import { detectReinstallCandidates } from '../../services/reinstallCandidates';
 import { publishEvent } from '../../services/eventBus';
 import {
   disconnectAgentCredentialGeneration,
@@ -1358,6 +1359,14 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       );
     });
   }
+
+  // #8318 §7.3: look for an older, silent record in the partner that this
+  // install is probably a reinstall of, and flag it on this (source) row.
+  // After commit, in its own system contexts; never throws, never fatal.
+  void detectReinstallCandidates({ sourceDeviceId: enrollmentOutcome.deviceId, trigger: 'enroll' })
+    .catch((err) => {
+      console.error('[Enrollment] Reinstall candidate detection failed:', err instanceof Error ? err.message : err);
+    });
 
   return c.json(enrollmentOutcome.responseBody, 201);
 });
