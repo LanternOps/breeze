@@ -216,7 +216,6 @@ func TestHardwareRestorePolicy_WarmupStateMachine(t *testing.T) {
 	type want struct {
 		gaveUp       bool
 		demoted      bool
-		warming      bool
 		attempts     int
 		dueAgainAt   time.Duration // offset from `due`; 0 = never due again
 		notDueBefore time.Duration // offset from `due` at which it must not yet be due

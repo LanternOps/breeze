@@ -38,7 +38,7 @@ func TestVideoToolboxWarmUpLive(t *testing.T) {
 		t.Fatalf("NewVideoEncoder: %v", err)
 	}
 	if enc.BackendName() != "videotoolbox" {
-		enc.Close()
+		_ = enc.Close()
 		t.Skipf("hardware factory picked %q, not videotoolbox", enc.BackendName())
 	}
 	res := warmUpHardwareEncoder(enc, 320, 240, PixelFormatBGRA, hardwareWarmupBudget, hardwareWarmupRetryGap, make(chan struct{}), nil)
@@ -48,7 +48,7 @@ func TestVideoToolboxWarmUpLive(t *testing.T) {
 		}
 		t.Fatalf("warm-up of a working VideoToolbox encoder failed: %v", res.err)
 	}
-	defer res.enc.Close()
+	defer func() { _ = res.enc.Close() }()
 	if res.frames < 1 {
 		t.Fatalf("expected at least one warm-up encode, got %d", res.frames)
 	}

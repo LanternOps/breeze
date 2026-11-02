@@ -77,11 +77,11 @@ func runHardwareWarmup(enc *VideoEncoder, w, h int, pf PixelFormat, budget, retr
 	case out <- res:
 	case <-done:
 		if res.enc != nil {
-			res.enc.Close()
+			_ = res.enc.Close()
 		}
 	case <-cancel:
 		if res.enc != nil {
-			res.enc.Close()
+			_ = res.enc.Close()
 		}
 	}
 }
@@ -94,7 +94,7 @@ func warmUpHardwareEncoder(enc *VideoEncoder, w, h int, pf PixelFormat, budget, 
 	start := time.Now()
 	res := hardwareWarmupResult{width: w, height: h}
 	fail := func(err error) hardwareWarmupResult {
-		enc.Close()
+		_ = enc.Close()
 		res.elapsed = time.Since(start)
 		res.err = err
 		return res
