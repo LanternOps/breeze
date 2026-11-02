@@ -117,6 +117,38 @@ func TestDispatchTCCStatusLogsScreenRecordingState(t *testing.T) {
 	}
 }
 
+// #10300: the helper's denial verdict reaches the agent log and the session's
+// stored status, so a #5953-class report is one "TCC permissions received"
+// line. A helper older than #10300 sends no verdict and none is invented.
+// Not parallel: captureLogs swaps the global logger.
+func TestDispatchTCCStatusCarriesDenialVerdict(t *testing.T) {
+	logs := captureLogs(t)
+	payload, err := json.Marshal(ipc.TCCStatus{
+		ScreenRecordingState: "denied",
+		DenialVerdict:        "requirement_mismatch",
+		CheckedAt:            time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Session{UID: 501, SessionID: "tcc-verdict", AllowedScopes: []string{"desktop"}}
+	(&Broker{}).dispatchHelperMessage(s, &ipc.Envelope{Type: ipc.TypeTCCStatus, Payload: payload})
+
+	if !strings.Contains(logs.String(), "denialVerdict=requirement_mismatch") {
+		t.Fatalf("TCC log line lacks denialVerdict; logs:\n%s", logs.String())
+	}
+	if got := s.GetTCCStatus(); got == nil || got.DenialVerdict != "requirement_mismatch" {
+		t.Fatalf("stored TCC status = %+v, want the verdict kept", got)
+	}
+
+	old := &Session{UID: 501, SessionID: "tcc-old-helper", AllowedScopes: []string{"desktop"}}
+	(&Broker{}).dispatchHelperMessage(old, &ipc.Envelope{Type: ipc.TypeTCCStatus,
+		Payload: []byte(`{"screenRecording":false,"accessibility":true,"fullDiskAccess":true,"checkedAt":"2026-11-01T00:00:00Z"}`)})
+	if got := old.GetTCCStatus(); got == nil || got.DenialVerdict != "" {
+		t.Fatalf("old helper status = %+v, want no verdict", got)
+	}
+}
+
 func TestClipboardSummaryNeedsDesktopScope(t *testing.T) {
 	t.Parallel()
 	session := &Session{AllowedScopes: []string{"tray"}}

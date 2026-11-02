@@ -94,6 +94,29 @@ describe('settle publishes ai.operator.task.finished', () => {
     expect(states.every((s) => s.grantId === null)).toBe(true);
   });
 
+  // #9980: a stopping task settles through the stopping-path arms. A hand-off
+  // is announced (a person owns the remainder); expired / cancelled are not
+  // in the payload's state set and are not published.
+  it('publishes handed_off for settle_handed_off from stopping, and nothing for settle_expired / settle_cancelled', async () => {
+    const stopping = { ...(task as object), state: 'stopping' } as never;
+    await __testOnly.settle({ task: stopping, leaseEpoch: 4, event: 'settle_handed_off', outcome: 'unresolved', detail: 's' });
+    await __testOnly.settle({ task: stopping, leaseEpoch: 4, event: 'settle_expired', outcome: 'unresolved', detail: 'e' });
+    await __testOnly.settle({ task: stopping, leaseEpoch: 4, event: 'settle_cancelled', outcome: 'unresolved', detail: 'c' });
+    expect(bus.publishEvent).toHaveBeenCalledTimes(1);
+    expect(bus.publishEvent).toHaveBeenCalledWith(
+      'ai.operator.task.finished', 'org-1',
+      expect.objectContaining({ state: 'handed_off', outcome: 'unresolved' }),
+      'ai-operator',
+    );
+  });
+
+  it('a live-state event from stopping still throws: hand_off is not a stopping arm', async () => {
+    const stopping = { ...(task as object), state: 'stopping' } as never;
+    await expect(
+      __testOnly.settle({ task: stopping, leaseEpoch: 4, event: 'hand_off', outcome: 'unresolved', detail: 'h' }),
+    ).rejects.toThrow(/'hand_off' is not allowed from task state 'stopping'/);
+  });
+
   it('publishes nothing when the lease CAS is lost', async () => {
     dbState.casRows = [];
     await expect(

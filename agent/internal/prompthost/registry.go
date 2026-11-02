@@ -110,6 +110,16 @@ type Patch struct {
 	// Prompt.Localize for each renderer's locale (a confirm step whose copy
 	// is catalog copy). Default: the patch is sent as given.
 	Relocalize bool
+	// Presentation, Focus and Roles cannot change in place (prompt_update
+	// carries none of them). When any is set the prompt is placed again:
+	// every renderer copy is fenced and the selector picks again under the
+	// prompt's (new) roles, with a new lease and a full prompt_show (the
+	// elevation first question becoming the waiting card, #10190 W07).
+	Presentation *ipc.PromptPresentation
+	Focus        *ipc.PromptFocus
+	Roles        *[]ipc.HelperRole
+	// NeverReask replaces the prompt's own NeverReask (Prompt.NeverReask).
+	NeverReask *bool
 }
 
 // ActionOutcome is the domain's answer to an action.
@@ -122,6 +132,15 @@ type ActionOutcome struct {
 	Patch *Patch
 	// Close, when set, closes the prompt with this reason after the patch.
 	Close *ipc.PromptCloseReason
+	// After, when set, runs once the accepted action has been applied (Patch,
+	// then Close) and sent to the renderers, outside the host's state lock
+	// but still serialized with every other action, so it must not wait on
+	// another action. It also runs when the prompt was closed meanwhile or
+	// the patch was refused. A domain that goes on to Update the prompt
+	// (the elevation flow's waiting card) is woken from here, never from
+	// inside OnAction: an Update made there lands before the action's own
+	// patch, which then overwrites it (#10734).
+	After func()
 }
 
 // Prompt is one prompt the domain asks the host to show.
@@ -162,6 +181,15 @@ type Prompt struct {
 	// was (Presented says whether it had been on screen); reason is
 	// renderer_gone, render_failed, present_budget or send_failed.
 	OnRendererLost func(info PlacementInfo, reason string)
+	// Roles, when set, are the only renderer roles that may draw this
+	// prompt, in preference order (default: Assist, then the kind's native
+	// role). The elevation first question uses it: with UAC on the secure
+	// desktop only the SYSTEM helper can be seen, so only it may draw.
+	Roles []ipc.HelperRole
+	// NeverReask is KindSpec.NeverReask for this prompt alone (either one
+	// set makes it never re-asked). A Patch can clear it: the elevation
+	// first question is never re-asked, its waiting card is replayed.
+	NeverReask bool
 	// Reshowable says the condition the prompt reports can come back (the
 	// macOS permission notice): only a resolved close tombstones it. Closed
 	// undecided — expired, withdrawn, superseded — the domain may show the

@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The holding-org refusal reads the org; the db mocks below do not model it.
 vi.mock('../services/unassignedPool/protectedOrg', () => ({ isHoldingOrg: vi.fn(async () => false) }));
+// #9635 placement guard: its resolver-backed reads are covered on real
+// Postgres by softwarePolicyTie.integration.test.ts.
+vi.mock('../services/softwarePolicyCoverage', () => ({ checkDefaultListPlacement: vi.fn(async () => ({ ok: true, overrides: [] })) }));
 import { Hono } from 'hono';
 import { inArray } from 'drizzle-orm';
 

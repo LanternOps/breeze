@@ -23,6 +23,7 @@
     "metric-rollups:backfill": "tsx scripts/metric-rollup-backfill.ts",
     "dry-run:labour-pricing": "tsx scripts/labour-pricing-dry-run.ts",
     "m365-sync:benchmark": "tsx scripts/m365-sync-benchmark.ts",
+    "partner-group-eval:benchmark": "tsx scripts/partner-group-eval-benchmark.ts",
     "partner-trust:backfill-cards": "tsx scripts/partner-trust-backfill-cards.ts",
     "trust:signing-key": "tsx scripts/trust-signing-key.ts",
     "reports:reprovision-portal-definitions": "tsx scripts/reprovision-portal-report-definitions.ts",

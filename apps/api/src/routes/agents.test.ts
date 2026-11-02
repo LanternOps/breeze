@@ -1003,6 +1003,7 @@ describe('agent routes', () => {
           collect_categories: ['security', 'hardware', 'application', 'system'],
           minimum_level: 'info',
           collection_interval_minutes: 15,
+          application_providers: [],
         },
         policy_registry_state_probes: [
           { registry_path: 'HKLM\\SOFTWARE\\Policies\\Alpha', value_name: 'Flag' },
@@ -1133,6 +1134,7 @@ describe('agent routes', () => {
           collect_categories: ['security', 'hardware', 'application', 'system'],
           minimum_level: 'info',
           collection_interval_minutes: 15,
+          application_providers: [],
         },
         policy_registry_state_probes: [],
         policy_config_state_probes: [],

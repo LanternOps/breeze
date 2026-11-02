@@ -26,7 +26,7 @@ import { publishEvent } from '../services/eventBus';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { PamActuationNotFoundError, requestPamCleanup } from '../services/pamActuationLifecycle';
 import { enqueuePamRequestNotify } from '../services/pamRequestNotify';
-import { envInt } from '../utils/envInt';
+import { pamPendingTtlMinutes } from './pamPendingTtl';
 import { attachWorkerObservability } from './workerObservability';
 
 const ENFORCER_QUEUE = 'pam-elevation-expiry-enforcer';
@@ -35,8 +35,6 @@ const STALE_QUEUE = 'pam-stale-request-expirer';
 const STALE_INTERVAL_MS = 5 * 60 * 1000; // every 5 min
 const MAX_PER_RUN = 500;
 
-// Pending requests older than this are expired. Overridable for ops via env.
-const STALE_PENDING_TTL_MINUTES = envInt('PAM_PENDING_REQUEST_TTL_MINUTES', 15);
 
 type PamJobData = { type: 'enforce-elevation-expiry' | 'expire-stale-requests'; queuedAt: string };
 
@@ -200,9 +198,9 @@ export async function enforceElevationExpiry(): Promise<number> {
  * Exported for tests.
  */
 export async function expireStaleRequests(): Promise<number> {
-  const ttlMinutes = Number.isFinite(STALE_PENDING_TTL_MINUTES) && STALE_PENDING_TTL_MINUTES > 0
-    ? STALE_PENDING_TTL_MINUTES
-    : 15;
+  // Pending requests older than this are expired (PAM_PENDING_REQUEST_TTL_MINUTES).
+  // The ingest 201's pendingExpiresAt is computed from the same function.
+  const ttlMinutes = pamPendingTtlMinutes();
   const rows = await db.transaction(async (tx) => {
     const transitioned = await tx.execute<TransitionedRow>(sql`
     WITH due AS (

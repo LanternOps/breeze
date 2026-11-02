@@ -26,3 +26,30 @@ describe('AuthLayout custom CSS (#5940)', () => {
     expect(customCssIdx).toBeGreaterThan(accentIdx);
   });
 });
+
+describe('AuthLayout welcome message (#9675)', () => {
+  const LOGIN = readFileSync(fileURLToPath(new URL('../pages/login.astro', import.meta.url)), 'utf8');
+
+  it('is opt-in per page, and the sign-in page opts in', () => {
+    expect(SOURCE).toMatch(/showWelcome\?: boolean/);
+    expect(SOURCE).toContain("import { portalWelcomeMessage } from '../lib/welcomeMessage'");
+    expect(SOURCE).toContain('showWelcome ? portalWelcomeMessage(branding) : null');
+    expect(LOGIN).toMatch(/<AuthLayout[^>]*\sshowWelcome[\s/>]/);
+  });
+
+  it('keeps the forgot, reset and invite screens on their task', () => {
+    for (const page of ['forgot-password.astro', 'reset-password.astro', 'accept-invite.astro']) {
+      const src = readFileSync(fileURLToPath(new URL(`../pages/${page}`, import.meta.url)), 'utf8');
+      expect(src, page).toContain('<AuthLayout');
+      expect(src, page).not.toContain('showWelcome');
+    }
+  });
+
+  it("renders it as escaped plain text that keeps the MSP's line breaks, never as HTML", () => {
+    const el = SOURCE.match(/<p[^>]*data-testid="portal-login-welcome"[^>]*>([\s\S]*?)<\/p>/);
+    expect(el).not.toBeNull();
+    expect(el![0]).toContain('whitespace-pre-line');
+    expect(el![0]).not.toContain('set:html');
+    expect(el![1].trim()).toBe('{welcomeMessage}');
+  });
+});

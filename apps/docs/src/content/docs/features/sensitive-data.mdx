@@ -149,7 +149,7 @@ Authorization: Bearer <token>
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `includePaths` | string[] | Paths to scan (max 256, each up to 2,048 chars) |
+| `includePaths` | string[] | Paths to scan (max 256, each up to 2,048 chars). When empty or omitted, the agent scans the `Desktop`, `Documents` and `Downloads` folders of every user profile on the device (`C:\Users\*` on Windows, `/Users/*` on macOS, `/home/*` on Linux). The scan does not follow symbolic links, junctions or other reparse points it finds, in the default scope or below an include path; on Windows that includes OneDrive cloud files. Skipped links are counted in `agentSummary.linksSkipped` |
 | `excludePaths` | string[] | Paths to exclude from scanning (max 256) |
 | `fileTypes` | string[] | File extensions to scan (max 128, each up to 32 chars) |
 | `maxFileSizeBytes` | integer | Maximum file size to scan (1 KB to 1 GB) |
@@ -462,6 +462,9 @@ The scan was created but the agent has not started processing it. Verify that th
 
 **No findings returned after a completed scan.**
 The scan completed but did not detect any sensitive data matching the configured detection classes and scope. Verify the `detectionClasses` include the types you expect to find. Check the `scope.includePaths` to ensure the correct directories are being scanned. Review `scope.excludePaths` and `suppressPaths` to make sure the target files are not being excluded. Also check `scope.maxFileSizeBytes` -- files larger than the limit are skipped.
+
+**Scan `failed` with "no folder in the scan scope could be scanned".**
+The agent could not read any folder in the scope, so it reports the scan as failed instead of a clean scan with 0 files. The scan summary's `agentSummary.errors` lists each path and why it was skipped (missing, inside an excluded path, refused as a credential store, unreadable, a symbolic link or junction, or not a folder). With no `includePaths`, the errors name each profile root and say that no user profile has a `Desktop`, `Documents` or `Downloads` folder (on macOS, also check that the agent has Full Disk Access); set `scope.includePaths` to the folders you want scanned. Agents older than the release that carries this change scan the agent service account's own home by default, which holds no user data -- on Windows they report `completed` with 0 files.
 
 **Duplicate scan created despite idempotency key.**
 Idempotency checks match on both the key and the request fingerprint (a SHA-256 hash of device IDs, policy, scope, and detection classes). If any of these values differ between requests, the fingerprint will not match and a new scan will be created. Idempotency protection also only applies to scans created within the last 24 hours.

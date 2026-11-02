@@ -74,6 +74,9 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   // Storage/RAID health rollup (#6854) — device_hardware_health, not device_hardware.
   { key: 'hardware.health', label: 'Hardware Health', category: 'hardware', type: 'enum', operators: E,
     enumValues: ['ok', 'warning', 'critical', 'unknown'] },
+  // Stored device_warranty.status (#9863); a device with no warranty record is 'unknown'.
+  { key: 'warranty.status', label: 'Warranty Status', category: 'hardware', type: 'enum', operators: E,
+    enumValues: ['active', 'expiring', 'expired', 'unknown', 'subscription_active'] },
 
   // Network
   { key: 'network.ipAddress', label: 'IP Address', category: 'network', type: 'string', operators: S },
@@ -90,6 +93,9 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   // the single-name form working.
   { key: 'software.installed', label: 'Has Software Installed', category: 'software', type: 'string', operators: ['contains', 'notContains', 'equals', 'in', 'hasAny', 'hasAll'] },
   { key: 'software.notInstalled', label: 'Missing Software', category: 'software', type: 'string', operators: ['contains', 'equals', 'in', 'hasAny'] },
+
+  { key: 'software.version', label: 'Software Version', category: 'software', type: 'string', operators: ['below', 'atLeast', 'equals'] },
+  { key: 'software.vendor', label: 'Software Vendor', category: 'software', type: 'string', operators: ['contains', 'equals'] },
 
   // Hierarchy
   { key: 'orgId', label: 'Organization', category: 'hierarchy', type: 'string', operators: ['equals', 'in'] },

@@ -558,6 +558,28 @@ describe('portal quotes /:id/pdf', () => {
     expect(blocksArg[0]!.content.html).not.toContain('script');
   });
 
+  // The renderer is shared with the unauthenticated public link (#9860), so a
+  // hidden line reaching it would leak internal lines/costs to anyone with the link.
+  it('never hands a customer-hidden line to the PDF renderer', async () => {
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',
+      quoteNumber: 'Q-1', currencyCode: 'USD', taxRate: null,
+      depositType: 'none', depositPercent: null, sellerSnapshot: null, terms: null,
+    }]); // quote SELECT
+    dbResults.push([]); // quoteBlocks SELECT
+    dbResults.push([
+      { id: 'visible-line', quoteId: QUOTE_ID, description: 'Firewall', quantity: '1', unitPrice: '100.00', unitCost: '60.00', taxable: false, customerVisible: true, recurrence: 'one_time', sortOrder: 0 },
+      { id: 'hidden-line', quoteId: QUOTE_ID, description: 'Internal labour buffer', quantity: '1', unitPrice: '40.00', unitCost: '40.00', taxable: false, customerVisible: false, recurrence: 'one_time', sortOrder: 1 },
+    ]); // quoteLines SELECT
+    dbResults.push([{ name: 'Lantern IT', billingCompanyName: null, billingEmail: null, billingPhone: null, billingWebsite: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null, invoiceFooter: null, currencyCode: 'USD' }]); // partners SELECT (system ctx)
+    dbResults.push([]); // portalBranding SELECT
+
+    const res = await app().request(`/quotes/${QUOTE_ID}/pdf`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const [, , linesArg] = renderQuotePdfMock.mock.calls[0] as [unknown, unknown, { id: string }[]];
+    expect(linesArg.map((l) => l.id)).toEqual(['visible-line']);
+  });
+
   it('feeds renderQuotePdf the same totals sweep as GET /quotes/:id (dueOnAcceptanceTotal + categoryBreakdown), not the raw tax-exclusive fallback', async () => {
     // One-time $6200 taxable hardware line (deposit-eligible) + $2400 taxable
     // labor line, 10% tax, selected_lines deposit on the hardware line only.

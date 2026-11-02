@@ -41,6 +41,16 @@ vi.mock('@/hooks/useEventStream', () => ({
     unsubscribe: vi.fn(),
   }),
 }));
+// #9939: the always-allow graduation prefetch is gated on the policy-decide
+// flag (/config) and `ai_agents:read`. Both open here so the existing
+// always-allow cases keep exercising the prefetch; the closed gate is pinned
+// in ApprovalsInbox.requests.test.tsx.
+vi.mock('../../stores/featuresStore', () => ({
+  useAiAgentsPolicyDecideGate: () => ({ enabled: true, loaded: true }),
+}));
+vi.mock('@/lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => true }),
+}));
 vi.mock('@/lib/intentApprovals', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/intentApprovals')>();
   return {
@@ -1683,7 +1693,7 @@ describe('ApprovalsInbox — batch scope naming (finding #2)', () => {
     fireEvent.click(screen.getByTestId(`approval-group-decline-${GROUP_KEY}`));
 
     expect(screen.getByTestId(`approval-group-deny-summary-${GROUP_KEY}`)).toHaveTextContent(
-      'This declines 2 requests for Acme Dental.',
+      'This denies 2 requests for Acme Dental.',
     );
   });
 });

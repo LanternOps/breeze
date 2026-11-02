@@ -24,11 +24,12 @@ import { z } from 'zod';
 import { breezeRegion, MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { isPartnerServicePrincipalKeyFormat } from '../services/partnerServicePrincipalCredential';
+import { conversionSummarySql } from '../services/flows/conversion/ledger';
 import { partnerServicePrincipalMcpAuthMiddleware } from '../middleware/partnerServicePrincipalMcpAuth';
 import { bearerTokenAuthMiddleware } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier, getToolDomain, aiTools, toolManagesDbContext } from '../services/aiTools';
 import { isTopologyAiToolName } from '../services/topology/aiToolGate';
-import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, TIER3_ACTIONS } from '../services/aiGuardrails';
+import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, isReadOnlyResolution, TIER1_ACTIONS, TIER2_ACTIONS, TIER3_ACTIONS, TOOL_ACTION_INPUT_KEYS } from '../services/aiGuardrails';
 import { isTenantToolName } from '@breeze/shared/validators';
 import type { TenantToolDescriptor } from '../services/toolSources/resolver';
 import { MCP_SKIP_AMBIENT_DB_CONTEXT_KEY } from '../middleware/mcpTenantToolSelfManagedContext';
@@ -1601,6 +1602,32 @@ function extractActionEnum(inputSchema: unknown): string[] | null {
 }
 
 /**
+ * #10027: the read-only actions of a registry-Tier-3 tool that `tools/call`
+ * runs directly with MCP_TIER3_INTENTS_ENABLED on (see `readBelowIntentTier`).
+ * Classified by the real checkGuardrails, so the description cannot claim a
+ * lift the gate does not grant. Empty for an approval extra (floored to 3).
+ */
+function mcpDirectReadActionsForTool(toolName: string): string[] {
+  if (getToolTier(toolName) !== 3 || mcpTierFloor(toolName) >= 3) return [];
+  const key = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
+  const candidates = new Set([...(TIER1_ACTIONS[toolName] ?? []), ...(TIER2_ACTIONS[toolName] ?? [])]);
+  return [...candidates].filter((action) => {
+    const check = checkGuardrails(toolName, { [key]: action });
+    return check.allowed && check.tier < 3 && isReadOnlyResolution(toolName, check);
+  }).sort();
+}
+
+function mcpIntentFlatSuffix(toolName: string): string {
+  const reads = mcpDirectReadActionsForTool(toolName);
+  if (reads.length === 0) return MCP_INTENT_FLAT_SUFFIX;
+  const key = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
+  const noun = key === 'action' ? 'actions' : `${key} values`;
+  // Built from the flat suffix so the two wordings cannot drift.
+  return `${MCP_INTENT_FLAT_SUFFIX.slice(0, -1)} `
+    + `Read-only ${noun} ${reads.map((a) => `"${a}"`).join(', ')} run directly without approval.)`;
+}
+
+/**
  * Which of a tool's declared actions are gated over MCP — used to append a
  * "these actions require the web app" note to a mixed multiplexer's
  * `tools/list` description. Empty for a wholly-gated tool (it's suppressed
@@ -1897,7 +1924,7 @@ async function handleToolsList(
       description += ` (Actions ${quote(intentActions)} require approval in the Breeze mobile or web app: the call returns a pending action — use get_action_status.)`;
     }
     if (flatIntentTool) {
-      description += MCP_INTENT_FLAT_SUFFIX;
+      description += mcpIntentFlatSuffix(tool.name);
     }
     if (mfaGatedActions.length > 0) {
       description += ` (Actions ${quote(mfaGatedActions)} require a multi-factor-authenticated session and are not available over MCP — use the Breeze web app AI assistant, signed in with MFA, for those.)`;
@@ -2248,7 +2275,26 @@ async function handleToolsCall(
   // Only an effective Tier 3 call can be lifted (isMcpApprovalRequired re-checks
   // this too); checking it here keeps the intent readable at the call site.
   const unattendedPrincipal = tier === 3 && isUnattendedTier3PrincipalOverMcp(apiKey);
-  const approvalRequired = isMcpApprovalRequired(toolName, tier, { unattendedPrincipal });
+  // #10027: with MCP_TIER3_INTENTS_ENABLED on, a READ-ONLY call whose own
+  // classification (checkGuardrails, floored for approval extras) is below
+  // Tier 3 is not filed for approval: createActionIntent refuses a read below
+  // Tier 3 (tool_not_tier3), and a read has nothing to approve. These are the
+  // TIER1_ACTIONS / TIER2_READONLY_ACTIONS reads on a static-Tier-3 tool
+  // (execute_command list_processes, manage_services list, ...), the same
+  // `isReadOnlyResolution` formula headless agents use. A below-Tier-3 action
+  // that is NOT read-only (edr_endpoint_action scan) keeps the intent path;
+  // createMcpActionIntent files it at the tool's Tier 3
+  // (needsRegistryTier3Approval). Only the approval decision follows the
+  // action: `tier` stays the Math.max above, so the ai:execute /
+  // ai:execute_admin / production-allowlist gates and the Tier-3 ledger below
+  // still apply. With the flag off the gate is unchanged (B-W04 D-B37).
+  // Only an effective Tier 3 is ever lifted: Tier 4 has no approval path, so a
+  // per-action table entry must never let a Tier-4 tool past this gate.
+  const readBelowIntentTier = tier === 3
+    && Math.max(guardrailCheck.tier, mcpTierFloor(toolName)) < 3
+    && isReadOnlyResolution(toolName, guardrailCheck);
+  const approvalRequired = isMcpApprovalRequired(toolName, tier, { unattendedPrincipal })
+    && !(readBelowIntentTier && mcpTier3IntentsEnabled());
   // B-W04 (#6158, D-B30): with MCP_TIER3_INTENTS_ENABLED OFF this gate is
   // exactly today's (same position, same body). ON, a call this credential
   // can file continues through every gate below into the intent branch; any
@@ -2292,7 +2338,8 @@ async function handleToolsCall(
   // execution-org resolution — never executed here.
   const fileAsIntent = approvalRequired;
   // Past the gate with an effective Tier 3 call means approval was skipped for
-  // a named principal. Carried to the audit row so an unattended run is
+  // a named principal, or (#10027, flag on) the action itself is a read below Tier 3.
+  // Only the former is an approval bypass. Carried to the audit row so an unattended run is
   // distinguishable from every other Tier 3 row in an investigation.
   const approvalBypassPrincipal = unattendedPrincipal ? mcpPrincipalRef(apiKey) : null;
 
@@ -3807,7 +3854,9 @@ async function handleResourcesRead(
         name: automations.name,
         description: automations.description,
         enabled: automations.enabled,
-        trigger: automations.trigger
+        trigger: automations.trigger,
+        // W06 (#5221, Decision 9): additive `conversion: { id, state, flowId } | null`.
+        conversion: conversionSummarySql(automations.id),
       }, dualAxisResourceCondition(auth, orgCond(automations.orgId), automations, {
         // automations have NO catalog read branch — org-scope callers do NOT
         // see partner-wide automations (aligns with routes/automations.ts).

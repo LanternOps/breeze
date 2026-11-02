@@ -318,7 +318,9 @@ describe('W05 locale key lists match the shared const arrays', () => {
   it('limits.fields.* covers every FLOW_LIMIT_KEYS', () => {
     expect(keys(w.limits.fields)).toEqual(sorted(FLOW_LIMIT_KEYS));
   });
-  it('step.builtin.* covers the three W05 built-ins', () => {
-    expect(keys(w.step.builtin)).toEqual(['ai', 'http_request', 'notify']);
+  it('step.builtin.* covers the W05 built-ins and the three W06 conversion built-ins (#5221)', () => {
+    expect(keys(w.step.builtin)).toEqual([
+      'ai', 'create_alert', 'http_request', 'notify', 'resolve_targets', 'run_script_on_targets',
+    ]);
   });
 });

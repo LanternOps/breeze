@@ -212,6 +212,8 @@ function SingleChangeSiteDialog(props: SingleChangeSiteProps) {
           type="button"
           onClick={onClose}
           disabled={saving}
+          aria-label={t("changeSiteModal.cancel")}
+          data-testid="change-site-close"
           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:cursor-not-allowed"
         >
           <X className="h-4 w-4" />
@@ -268,10 +270,9 @@ function SingleChangeSiteDialog(props: SingleChangeSiteProps) {
             >
               {sites.map((site) => (
                 <option key={site.id} value={site.id}>
-                  {site.name}
                   {site.id === subject.siteId
-                    ? t("changeSiteModal.current")
-                    : ""}
+                    ? `${site.name} ${t("changeSiteModal.current")}`
+                    : site.name}
                 </option>
               ))}
             </select>
@@ -470,8 +471,7 @@ function BulkChangeSiteDialog(props: BulkChangeSiteProps) {
               )}
               {sites.map((site) => (
                 <option key={site.id} value={site.id}>
-                  {site.name}
-                  {site.id === singleSourceSiteId ? t("changeSiteModal.current") : ""}
+                  {site.id === singleSourceSiteId ? `${site.name} ${t("changeSiteModal.current")}` : site.name}
                 </option>
               ))}
             </select>

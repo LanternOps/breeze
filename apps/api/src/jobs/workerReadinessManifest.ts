@@ -22,6 +22,7 @@ export type WorkerInitializerClassification =
   | {
       kind: 'non_consumer';
       initializer:
+        | 'psaTicketingReconciler'
         | 'desktopSessionOrphanRecovery'
         | 'oauthRevocationRetryWorker'
         | 'topologyOutboxWorker'
@@ -50,6 +51,8 @@ const consumers = (
 });
 
 export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification[] = [
+  consumers('psaTicketingWorker'),
+  { kind: 'non_consumer', initializer: 'psaTicketingReconciler' },
   consumers('alertWorkers', ['alertWorker']),
   consumers('monitorConversionPreviewWorker'),
   consumers('alertCorrelationWorker'),
@@ -335,6 +338,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // One Worker, unconditional, attached under its registry name.
   consumers('deviceReattachIntentSweep'),
   consumers('deviceGroupJobs', ['deviceGroupReevaluationWorker']),
+  consumers('partnerGroupEvaluationJobs', ['partnerGroupEvaluationWorker', 'partnerGroupSweepWorker']),
   // Started outside WORKER_REGISTRY, role-gated in index.ts / worker.ts.
   // D3a: the dispatch consumer is constructed only when EVENT_DISPATCH_MODE is
   // on (or an off-mode backlog remains — that drain then attaches as

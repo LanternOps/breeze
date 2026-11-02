@@ -9,12 +9,13 @@ import (
 // Cadence of the Windows security-posture probes (#9267).
 //
 // security.CollectStatus runs on every 5-minute security tick, and on Windows
-// each probe is a PowerShell spawn (+ conhost.exe). Probes whose answer rarely
-// changes go through a slowProbe and are re-run at most every slowProbeTTL:
+// each probe is a process spawn (PowerShell + conhost.exe, or secedit.exe).
+// Probes whose answer rarely changes go through a slowProbe and are re-run at
+// most every slowProbeTTL:
 //
 //	BitLocker system-drive status   Get-BitLockerVolume -MountPoint $env:SystemDrive
 //	BitLocker volume details        Get-BitLockerVolume | ConvertTo-Json
-//	Account password policy         Get-CimInstance Win32_AccountPolicy
+//	Account password policy         secedit /export /areas SECURITYPOLICY (#9597)
 //
 // Probes that report state an attacker or user can toggle at any moment stay
 // on the 5-minute tick: Windows Security Center products, Defender status,

@@ -13,6 +13,11 @@ import (
 
 const maxScreenshotBase64Bytes = 1_000_000
 
+// errNoFrame is returned when a capturer reports success but hands back no
+// image. Without this guard the nil frame reaches the JPEG encoder and panics,
+// which the IPC caller only sees as a 65 s timeout (#10304).
+var errNoFrame = errors.New("screen capture returned no frame")
+
 // CaptureFunc captures a screenshot from an existing source (e.g. an active
 // WebRTC session's capturer). Returns the image and its dimensions.
 // Used to avoid creating a new ScreenCapturer that would conflict with the
@@ -68,6 +73,9 @@ func TakeScreenshotWithCapture(payload map[string]any, capFn CaptureFunc) Comman
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("failed to capture screen: %w", err), time.Since(start).Milliseconds())
 	}
+	if img == nil {
+		return NewErrorResult(errNoFrame, time.Since(start).Milliseconds())
+	}
 
 	width, height, err = capturer.GetScreenBounds()
 	if err != nil {
@@ -89,6 +97,10 @@ func encodeScreenshot(img *image.RGBA, width, height, monitor int, start time.Ti
 // encodeScreenshotResponse scales and encodes an image into a ScreenshotResponse.
 // Used by both screenshot and computer_action encoding paths.
 func encodeScreenshotResponse(img *image.RGBA, width, height, monitor int) (*ScreenshotResponse, error) {
+	if img == nil {
+		return nil, errNoFrame
+	}
+
 	// Preserve original screen resolution for mouse coordinate mapping.
 	// The AI must send click coordinates in screen space, not image space.
 	screenWidth := width

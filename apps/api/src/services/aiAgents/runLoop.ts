@@ -400,7 +400,7 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
     if (!agent) return null;
 
     const [org] = await db
-      .select({ id: organizations.id, partnerId: organizations.partnerId })
+      .select({ id: organizations.id, partnerId: organizations.partnerId, name: organizations.name })
       .from(organizations)
       .where(eq(organizations.id, run.orgId))
       .limit(1);
@@ -686,6 +686,7 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       run: run as RunRow,
       agent: agent as AgentRow,
       orgPartnerId: org.partnerId,
+      orgName: org.name ?? null,
       device,
       alert,
       ticket,
@@ -1647,7 +1648,9 @@ export function createAgentRunPostToolUse(args: {
 
     if (executionId) {
       try {
-        await completeToolExecution({ executionId, isError, durationMs });
+        // A failed call's result rides along so the row keeps WHY it failed
+        // (#10411); the ledger reads only its `error` string, never stores it.
+        await completeToolExecution({ executionId, isError, durationMs, ...(isError ? { output } : {}) });
       } catch (error) {
         console.error('[aiAgentRunLoop] failed to complete execution-ledger row (non-fatal)', {
           toolName, executionId, error,
@@ -1955,8 +1958,10 @@ export function agentRunWispGrant(
  */
 function assessmentPromptContext(
   a: NonNullable<RunContext['assessment']>,
+  org: AgentRunAssessmentPromptContext['org'],
 ): AgentRunAssessmentPromptContext {
   return {
+    org,
     reason: a.reason,
     threadSummary: a.threadSummary,
     openConcerns: a.openConcerns,
@@ -1965,6 +1970,7 @@ function assessmentPromptContext(
     watchLines: a.watch ? watchPromptLines(a.watch) : null,
     readiness: a.readiness,
     nudgeFeedback: a.nudgeFeedback,
+    firstLook: a.firstLook,
   };
 }
 
@@ -1998,7 +2004,9 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
       : null,
     research: ctx.research ?? null,
     provenFixes: ctx.provenFixes ?? null,
-    assessment: ctx.assessment ? assessmentPromptContext(ctx.assessment) : null,
+    assessment: ctx.assessment
+      ? assessmentPromptContext(ctx.assessment, { id: ctx.run.orgId, name: ctx.orgName ?? null })
+      : null,
   };
 }
 
@@ -2598,7 +2606,9 @@ async function driveSdkLoop(
     [
       ...buildOutcomeSdkTools(
         outcomeToolsForRun(run),
-        designRefs || patchRefs || researchRefs ? { design: designRefs, patch: patchRefs, research: researchRefs } : undefined,
+        // `assessment` is consumed only by record_concern (#10387), which only
+        // an assessment run is given.
+        { design: designRefs, patch: patchRefs, research: researchRefs, assessment: { orgId: run.orgId } },
       ),
       ...flowSdkTools,
     ],
@@ -2637,9 +2647,10 @@ async function driveSdkLoop(
   let receivedResult = false;
   // W03 billing (W05 spike rules): every result is billed by the registry from
   // its per-model `modelUsage`. A hop is ONE fresh, non-persisted query, so
-  // the snapshot the deltas are taken against lives only for this hop: the
-  // first result bills its own `result.usage` (capped by modelUsage), any
-  // later one the per-key delta. Never `total_cost_usd`.
+  // its modelUsage starts at zero and the snapshot the deltas are taken
+  // against lives only for this hop: every result bills the per-key delta
+  // (#10413: the first one from zero, so a second key such as the CLI's
+  // background call is billed at its own rate). Never `total_cost_usd`.
   let observation = newSdkTurnObservation();
   let usageSnapshot: SdkUsageSnapshot | null = null;
   let billed: BilledUsage[] = [];
@@ -2822,6 +2833,8 @@ async function driveSdkLoop(
               lastResult = message as unknown as SdkResultLike;
               const turn = sdkTurnUsage({
                 binding: hopBinding, observation, result: lastResult, previousSnapshot: usageSnapshot,
+                // `persistSession: false` and no `resume`: this query's counters start at zero.
+                queryStartedAtZero: true,
               });
               usageSnapshot = turn.nextSnapshot ?? usageSnapshot;
               billed.push(...turn.usage);

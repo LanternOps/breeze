@@ -66,7 +66,7 @@ import {
 } from './serviceDeliverableService';
 
 type MockCalls = { mock: { calls: unknown[][]; invocationCallOrder: number[] } };
-type ChainName = 'select' | 'insert' | 'update' | 'delete' | 'set' | 'values' | 'limit' | 'transaction' | 'where';
+type ChainName = 'select' | 'insert' | 'update' | 'delete' | 'set' | 'values' | 'limit' | 'transaction' | 'where' | 'leftJoin';
 const chain = db as unknown as Record<ChainName, MockCalls>;
 const lastSet = () => chain.set.mock.calls.at(-1)?.[0] as Record<string, unknown>;
 const lastValues = () => chain.values.mock.calls.at(-1)?.[0] as Record<string, unknown>;
@@ -622,7 +622,7 @@ describe('serviceDeliverableService', () => {
       expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'org1', 'open']));
       expect(view.status).toBe('delivered');
       expect(view.late).toBe(false);
-      expect(view.evidence).toEqual([{ id: 'e1', kind: 'report_run', documentId: null, reportId: 'r1', reportRunId: RUN_ID, contractDocumentId: null, createdAt: '2026-10-20T00:00:00.000Z' }]);
+      expect(view.evidence).toEqual([{ id: 'e1', kind: 'report_run', documentId: null, reportId: 'r1', reportRunId: RUN_ID, contractDocumentId: null, label: null, createdAt: '2026-10-20T00:00:00.000Z' }]);
       expect(view).not.toHaveProperty('artifactRequired');
     });
 
@@ -738,15 +738,33 @@ describe('serviceDeliverableService', () => {
       expect(updateWhereParams()).toContain('scheduled');
     });
 
-    it('a missed occurrence moved inside grace becomes open', async () => {
+    it('a missed occurrence WITH a ticket moved inside grace becomes open (its ticket is the work item)', async () => {
       const future = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
-      queueResult([occ({ status: 'missed', graceDays: 14 })]);
+      queueResult([occ({ status: 'missed', graceDays: 14, ticketId: 't1' })]);
       queueResult([{ id: 'o1' }]);
-      queueResult([occ({ status: 'open', dueAt: future })]);
+      queueResult([]); // ticket due-date update
+      queueResult([occ({ status: 'open', ticketId: 't1', dueAt: future })]);
       queueResult([]);
       await rescheduleOccurrence('org1', 'o1', { dueAt: future }, actor);
-      expect(lastSet()).toMatchObject({ dueAt: future, status: 'open' });
+      const occSet = chain.set.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(occSet).toMatchObject({ dueAt: future, status: 'open' });
+      expect(lastSet()).toMatchObject({ dueDate: new Date(`${future}T00:00:00.000Z`) });
+    });
+
+    // #9959: `open` with no ticket is a state the sweep never produces for a
+    // ticketed partner, and nothing ever gives it a ticket afterwards — the work
+    // has no queue item. Back to `scheduled`, the nightly sweep opens it inside
+    // its lead window through the normal path (ticket, checklist, instructions).
+    it('a missed occurrence with NO ticket moved inside grace goes back to scheduled, not open (#9959)', async () => {
+      const future = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
+      queueResult([occ({ status: 'missed', graceDays: 14, ticketId: null })]);
+      queueResult([{ id: 'o1' }]);
+      queueResult([occ({ status: 'scheduled', dueAt: future })]);
+      queueResult([]);
+      await rescheduleOccurrence('org1', 'o1', { dueAt: future }, actor);
+      expect(lastSet()).toMatchObject({ dueAt: future, status: 'scheduled' });
       expect(updateWhereParams()).toContain('missed'); // guard is the status LOADED, not the one being written
+      expect(chain.update.mock.calls).toHaveLength(1);  // no ticket to touch
     });
 
     it('a missed occurrence moved to a date still past grace stays missed', async () => {
@@ -785,17 +803,19 @@ describe('serviceDeliverableService', () => {
 
   describe('rescheduleOccurrences (bulk, #9314)', () => {
     it('moves every live occurrence; reports delivered/waived/foreign ids as refused while the rest still move', async () => {
+      // Relative, so missed `d` stays inside its 14-day grace whatever day this runs.
+      const future = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
       queueResult([occ({ id: 'a', status: 'open' })]);      // a: load
       queueResult([{ id: 'a' }]);                           // a: update
       queueResult([occ({ id: 'a', dueAt: '2026-11-30' })]); // a: view
       queueResult([]);                                      // a: evidence
       queueResult([occ({ id: 'b', status: 'delivered' })]); // b: refused
       queueResult([]);                                      // c: foreign → not found
-      queueResult([occ({ id: 'd', status: 'missed', graceDays: 14 })]);
+      queueResult([occ({ id: 'd', status: 'missed', graceDays: 14, ticketId: null })]); // d: never had a ticket
       queueResult([{ id: 'd' }]);
       queueResult([occ({ id: 'd', dueAt: '2026-11-30' })]);
       queueResult([]);
-      const out = await rescheduleOccurrences('org1', { occurrenceIds: ['a', 'b', 'c', 'd', 'a'], dueAt: '2026-11-30' }, actor);
+      const out = await rescheduleOccurrences('org1', { occurrenceIds: ['a', 'b', 'c', 'd', 'a'], dueAt: future }, actor);
       expect(out.map((r) => [r.occurrenceId, r.ok])).toEqual([['a', true], ['b', false], ['c', false], ['d', true]]);
       expect(out[1]).toMatchObject({ status: 409, code: 'INVALID_OCCURRENCE_TRANSITION' });
       expect(out[2]).toMatchObject({ status: 404, code: 'NOT_FOUND' });
@@ -803,6 +823,9 @@ describe('serviceDeliverableService', () => {
       // only a and d were written, and originalDueAt never is
       expect(chain.set.mock.calls.every((c) => !('originalDueAt' in (c[0] as object)))).toBe(true);
       expect(chain.set.mock.calls.filter((c) => 'dueAt' in (c[0] as object))).toHaveLength(2);
+      // #9959: the bulk path applies the single path's rule — ticketless missed d
+      // goes back to scheduled (the sweep opens it with a ticket), never open.
+      expect(chain.set.mock.calls.map((c) => (c[0] as Record<string, unknown>).status)).toEqual(['open', 'scheduled']);
     });
 
     it('moves the ticket due_date on the bulk path too', async () => {
@@ -1028,6 +1051,131 @@ describe('serviceDeliverableService', () => {
       const views = await listOccurrences('org1', 'd1', { limit: 24 }, actor);
       expect(countsMock).not.toHaveBeenCalled();
       expect(views[0]!.checklist).toBeNull();
+    });
+  });
+
+  // ── #9961: evidence chips show what was cited, not an 8-char id ───────────
+  describe('evidence display labels (#9961)', () => {
+    const DOC_ID = '33333333-3333-4333-8333-333333333333';
+    const AGREEMENT_ID = '44444444-4444-4444-8444-444444444444';
+    const allAccess = { documents: true, reports: true, agreements: true };
+    const noAccess = { documents: false, reports: false, agreements: false };
+    // One evidence row of each kind, as the joined evidence query returns it.
+    const evidenceRows = (over: { doc?: Record<string, unknown>; run?: Record<string, unknown>; agreement?: Record<string, unknown> } = {}) => [
+      {
+        id: 'e-doc', occurrenceId: 'o1', kind: 'document', documentId: DOC_ID, reportId: null, reportRunId: null, contractDocumentId: null,
+        createdAt: new Date('2026-10-02T00:00:00Z'),
+        documentTitle: 'Q3 backup restore test', documentDeletedAt: null,
+        reportName: null, agreementTemplateName: null, agreementVersionNumber: null, ...over.doc,
+      },
+      {
+        id: 'e-run', occurrenceId: 'o1', kind: 'report_run', documentId: null, reportId: 'r1', reportRunId: RUN_ID, contractDocumentId: null,
+        createdAt: new Date('2026-10-03T00:00:00Z'),
+        documentTitle: null, documentDeletedAt: null,
+        reportName: 'Monthly patch compliance', agreementTemplateName: null, agreementVersionNumber: null, ...over.run,
+      },
+      {
+        id: 'e-agr', occurrenceId: 'o1', kind: 'contract_document', documentId: null, reportId: null, reportRunId: null, contractDocumentId: AGREEMENT_ID,
+        createdAt: new Date('2026-10-04T00:00:00Z'),
+        documentTitle: null, documentDeletedAt: null,
+        reportName: null, agreementTemplateName: 'Master services agreement', agreementVersionNumber: 3, ...over.agreement,
+      },
+    ];
+    const listWith = async (rows: unknown[], a: Record<string, unknown>) => {
+      queueResult([{ id: 'd1' }]);
+      queueResult([occ({ id: 'o1' })]);
+      queueResult(rows);
+      const views = await listOccurrences('org1', 'd1', { limit: 24 }, a as typeof actor);
+      return views[0]!.evidence;
+    };
+    const labels = (evidence: Array<{ id: string; label: string | null }>) => evidence.map((e) => [e.id, e.label]);
+
+    it('labels each kind with the cited record\'s name when the caller may read it', async () => {
+      const evidence = await listWith(evidenceRows(), { ...actor, evidenceLabelAccess: allAccess });
+      expect(labels(evidence)).toEqual([
+        ['e-doc', 'Q3 backup restore test'],
+        ['e-run', 'Monthly patch compliance'],
+        ['e-agr', 'Master services agreement v3'],
+      ]);
+      // The ids stay: the label is display only, never a replacement.
+      expect(evidence[0]).toMatchObject({ documentId: DOC_ID });
+    });
+
+    it('gates each label on its own read permission, never on contracts:read alone', async () => {
+      // A contracts:read caller without documents:read / agreements:read must
+      // not learn a document title or an agreement name through a chip.
+      const docsOnly = await listWith(evidenceRows(), { ...actor, evidenceLabelAccess: { ...noAccess, documents: true } });
+      expect(labels(docsOnly)).toEqual([['e-doc', 'Q3 backup restore test'], ['e-run', null], ['e-agr', null]]);
+      const agreementsOnly = await listWith(evidenceRows(), { ...actor, evidenceLabelAccess: { ...noAccess, agreements: true } });
+      expect(labels(agreementsOnly)).toEqual([['e-doc', null], ['e-run', null], ['e-agr', 'Master services agreement v3']]);
+    });
+
+    it('fails closed: an actor that carries no label access gets ids only', async () => {
+      const evidence = await listWith(evidenceRows(), actor);
+      expect(labels(evidence)).toEqual([['e-doc', null], ['e-run', null], ['e-agr', null]]);
+    });
+
+    it('falls back to no label when the cited record is deleted or not visible', async () => {
+      const evidence = await listWith(evidenceRows({
+        doc: { documentDeletedAt: new Date('2026-10-10T00:00:00Z') }, // soft-deleted document
+        run: { reportName: null },                                     // report gone / RLS-hidden
+        agreement: { agreementTemplateName: null, agreementVersionNumber: null },
+      }), { ...actor, evidenceLabelAccess: allAccess });
+      expect(labels(evidence)).toEqual([['e-doc', null], ['e-run', null], ['e-agr', null]]);
+    });
+
+    it('omits the version suffix when the agreement version number is missing', async () => {
+      const evidence = await listWith(evidenceRows({ agreement: { agreementVersionNumber: null } }), { ...actor, evidenceLabelAccess: allAccess });
+      expect(evidence[2]!.label).toBe('Master services agreement');
+    });
+
+    it('joins every cited table on the evidence row\'s own org', async () => {
+      await listWith(evidenceRows(), { ...actor, evidenceLabelAccess: allAccess });
+      const dialect = new PgDialect();
+      const joins = (chain.leftJoin.mock.calls as unknown as Array<[unknown, SQL]>).map(([, on]) => dialect.sqlToQuery(on).sql);
+      for (const table of ['org_documents', 'reports', 'contract_documents']) {
+        expect(joins.some((j) => j.includes(`"${table}"."org_id" = "service_deliverable_evidence"."org_id"`))).toBe(true);
+      }
+      // ...and on the right id column (report_id, not report_run_id), and the
+      // agreement's name comes from ITS template/version, not any other.
+      for (const on of [
+        '"org_documents"."id" = "service_deliverable_evidence"."document_id"',
+        '"reports"."id" = "service_deliverable_evidence"."report_id"',
+        '"contract_documents"."id" = "service_deliverable_evidence"."contract_document_id"',
+        '"contract_templates"."id" = "contract_documents"."template_id"',
+        '"contract_template_versions"."id" = "contract_documents"."template_version_id"',
+      ]) expect(joins.some((j) => j.includes(on))).toBe(true);
+    });
+
+    it('single and bulk reschedule views carry the labels too', async () => {
+      const withAccess = { ...actor, evidenceLabelAccess: allAccess };
+      queueResult([occ({ id: 'o1', status: 'open' })]);                      // load
+      queueResult([{ id: 'o1' }]);                                           // update
+      queueResult([occ({ id: 'o1', status: 'open', dueAt: '2026-11-30' })]); // reload
+      queueResult(evidenceRows());                                           // evidence
+      const single = await rescheduleOccurrence('org1', 'o1', { dueAt: '2026-11-30' }, withAccess);
+      expect(single.evidence[0]!.label).toBe('Q3 backup restore test');
+
+      queueResult([occ({ id: 'o1', status: 'open' })]);
+      queueResult([{ id: 'o1' }]);
+      queueResult([occ({ id: 'o1', status: 'open', dueAt: '2026-12-31' })]);
+      queueResult(evidenceRows());
+      const [bulk] = await rescheduleOccurrences('org1', { occurrenceIds: ['o1'], dueAt: '2026-12-31' }, withAccess);
+      expect(bulk).toMatchObject({ ok: true });
+      expect(bulk!.ok && bulk!.occurrence.evidence[2]!.label).toBe('Master services agreement v3');
+    });
+
+    it('a MUTATION view carries the labels too, so a chip keeps its name after a deliver', async () => {
+      queueResult([occ({ id: 'o1', status: 'open' })]);    // load
+      queueResult([{ id: 'o1' }]);                         // status update
+      queueResult([occ({ id: 'o1', status: 'waived' })]);  // reload
+      queueResult(evidenceRows());                         // evidence
+      const view = await waiveOccurrence('org1', 'o1', { reason: 'n/a' }, { ...actor, evidenceLabelAccess: allAccess });
+      expect(labels(view.evidence)).toEqual([
+        ['e-doc', 'Q3 backup restore test'],
+        ['e-run', 'Monthly patch compliance'],
+        ['e-agr', 'Master services agreement v3'],
+      ]);
     });
   });
 

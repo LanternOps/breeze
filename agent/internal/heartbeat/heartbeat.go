@@ -35,6 +35,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/desktopfence"
 	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/elevaccount"
+	"github.com/breeze-rmm/agent/internal/etwlua"
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/helper"
@@ -92,6 +93,7 @@ const pendingActivationClockSkew = 10 * time.Minute
 const selfInitiatedRenewalLeadTime = 24 * time.Hour
 
 type HeartbeatPayload struct {
+	Containment         *ContainmentReport         `json:"containment,omitempty"`
 	NetworkContextV1    *networkcontext.Report     `json:"networkContextV1,omitempty"`
 	NetworkContextReset *NetworkContextReset       `json:"networkContextReset,omitempty"`
 	Metrics             *collectors.SystemMetrics  `json:"metrics,omitempty"`
@@ -268,7 +270,11 @@ func migrationSignal(server, backup string) (edition string, migrationRequired b
 // this being accurate: internal/netpolicy (Tasks 1-3) is what actually
 // enforces the policy this version number claims to be honoring.
 type SecurityCapabilities struct {
-	OutboundNetworkPolicyVersion int `json:"outboundNetworkPolicyVersion"`
+	NetworkIsolationVersion           int    `json:"networkIsolationVersion"`
+	NetworkIsolationMechanism         string `json:"networkIsolationMechanism,omitempty"`
+	NetworkIsolationUnsupportedReason string `json:"networkIsolationUnsupportedReason,omitempty"`
+	NetworkIsolationReady             bool   `json:"networkIsolationReady"`
+	OutboundNetworkPolicyVersion      int    `json:"outboundNetworkPolicyVersion"`
 	// #3409 PR4b — this build decodes `secretEnv`, injects BREEZE_VAR_*, blocks
 	// user-context runs that would drop the credential, and redacts the values
 	// out of stdout/stderr/error. Declared unconditionally: the behavior is
@@ -366,6 +372,7 @@ type DesktopAccessState struct {
 }
 
 type HeartbeatResponse struct {
+	Containment           *ContainmentDesired     `json:"containment"`
 	NetworkContextReceipt *networkcontext.Receipt `json:"networkContextReceipt,omitempty"`
 	Commands              []Command               `json:"commands"`
 	ConfigUpdate          map[string]any          `json:"configUpdate,omitempty"`
@@ -461,7 +468,8 @@ func (h *Heartbeat) lifecycleMode() string {
 
 type Heartbeat struct {
 	// rebind is the reattach rebind flow's state (#8318, rebind_flow.go).
-	rebind rebindState
+	rebind      rebindState
+	containment *containmentRuntime
 	// Endpoint messaging (#8293): cards the Assist helper drew and the user has
 	// not yet closed, for replay after a helper restart; and the upstream event
 	// sink (nil = post to the API; tests override it).
@@ -475,7 +483,10 @@ type Heartbeat struct {
 	chatReplySink    func(chatReplyEvent) (int, error)
 	// unifiCollectorWake is signalled when configUpdate says this device has
 	// UniFi collectors (#7970); see unifi_collector_hint.go.
-	unifiCollectorWake        atomic.Pointer[func()]
+	unifiCollectorWake atomic.Pointer[func()]
+	// featureUpdateLog dedups the per-heartbeat feature-update policy log
+	// line (#10382); see feature_update.go.
+	featureUpdateLog          featureUpdateLogState
 	topologyDiagnosticMu      sync.Mutex
 	topologyDiagnosticJournal *networkdiagnostic.Journal
 	topologyDiagnosticActive  map[string]activeTopologyDiagnostic
@@ -504,30 +515,33 @@ type Heartbeat struct {
 	hardwareCollectFn    func() (*collectors.HardwareInfo, error)
 	memoryCollectFn      func() (*collectors.MemoryInfo, error)
 	memoryCollectTimeout time.Duration
+	// eventLogSendInFlight protects the collect/send/ack cycle from overlapping ticks.
+	eventLogSendInFlight atomic.Bool
 	// changeTrackerMu serializes the change tracker's collect → send → commit
 	// cycle. sendInventory is dispatched both on the 15-minute tick and by the
 	// "Refresh Inventory" command (handlers.go), so two cycles can genuinely
 	// overlap; without this they would diff the same baseline, upload the same
 	// records twice, and race to commit (#3529).
-	changeTrackerMu    sync.Mutex
-	sessionCol         *collectors.SessionCollector
-	policyStateCol     *collectors.PolicyStateCollector
-	patchCol           *collectors.PatchCollector
-	patchMgr           *patching.PatchManager
-	connectionsCol     *collectors.ConnectionsCollector
-	eventLogCol        *collectors.EventLogCollector
-	bootCol            *collectors.BootPerformanceCollector
-	reliabilityCol     *collectors.ReliabilityCollector
-	loopDefer          loopDeferral // per-route Retry-After deferral (W09, loop_deferral.go)
-	agentVersion       string
-	desktopMgr         *desktop.SessionManager
-	wsDesktopMgr       *desktop.WsSessionManager
-	terminalMgr        *terminal.Manager
-	tunnelMgr          *tunnel.Manager
-	executor           *executor.Executor
-	backupBinaryPath   string
-	rollbackController rollbackController
-	rebootMgr          *patching.RebootManager
+	changeTrackerMu           sync.Mutex
+	sessionCol                *collectors.SessionCollector
+	policyStateCol            *collectors.PolicyStateCollector
+	patchCol                  *collectors.PatchCollector
+	patchMgr                  *patching.PatchManager
+	connectionsCol            *collectors.ConnectionsCollector
+	eventLogCol               *collectors.EventLogCollector
+	eventLogRejectedProviders []string // protected by mu; suppress repeated invalid-config warnings
+	bootCol                   *collectors.BootPerformanceCollector
+	reliabilityCol            *collectors.ReliabilityCollector
+	loopDefer                 loopDeferral // per-route Retry-After deferral (W09, loop_deferral.go)
+	agentVersion              string
+	desktopMgr                *desktop.SessionManager
+	wsDesktopMgr              *desktop.WsSessionManager
+	terminalMgr               *terminal.Manager
+	tunnelMgr                 *tunnel.Manager
+	executor                  *executor.Executor
+	backupBinaryPath          string
+	rollbackController        rollbackController
+	rebootMgr                 *patching.RebootManager
 	// recoveryMarkerVal (W04a) is guarded by mu like the other single-value
 	// fields above (see lifecycleMode()); read every beat by
 	// recoveryMarker() and cleared once the server acks it.
@@ -671,6 +685,10 @@ type Heartbeat struct {
 	// pamDismissConsentInstance dismisses one specific consent.exe (#8995);
 	// nil means sessionBroker.DismissPamConsentInstance.
 	pamDismissConsentInstance func(session *sessionbroker.Session, id string, instance ipc.PamConsentInstance, timeout time.Duration) (ipc.PamDismissConsentResult, error)
+	// pamCloseDialog takes down the helper's own PAM dialog for dialogID
+	// before a deny dismisses consent.exe (#10370); nil means
+	// sessionBroker.ClosePamDialog.
+	pamCloseDialog func(session *sessionbroker.Session, id, dialogID string, timeout time.Duration) (ipc.PamCloseDialogResult, error)
 	// pamPendingConsents remembers the consent.exe each request parked for
 	// technician approval was raised from, so a verified pam_apply_v2 launch
 	// can dismiss that prompt and no other (pam_approved_consent.go).
@@ -683,6 +701,24 @@ type Heartbeat struct {
 	// the session broker (test seam); a non-nil error means "not shown". nil
 	// means sendSessionNotifyTitled.
 	pamNotifySink func(title, body, winSession string) error
+	// Elevation prompts (#10190 W07, pam_prompt.go): the open flows by
+	// request id; test seams for the PromptOnSecureDesktop read, the
+	// requester's prompt owner and the consent.exe exit probe (nil = the
+	// real ones); the consent watch interval; and the renderer that
+	// carried each decline, for the withdraw body (memory only).
+	pamElevations           elevationFlows
+	pamSecureDesktop        func() (bool, error)
+	pamElevationOwner       func(winSession string) (prompthost.Owner, bool)
+	pamConsentExited        func(etwlua.ConsentInstance) (bool, error)
+	elevationConsentPoll    time.Duration
+	pamWithdrawRenderersMap sync.Map
+	// elevationCancelDismissWG tracks UAC dismissals retried after Cancel
+	// request (tests wait on it).
+	elevationCancelDismissWG sync.WaitGroup
+	// elevationAfterSettle (tests) runs after every elevationFlow.settle
+	// (including one whose answer lost to an earlier one), on the settling
+	// goroutine.
+	elevationAfterSettle func()
 	// pamSupportNameCached is the MSP support name last returned by a
 	// successful elevation submit (pam_support_name.go), loaded from its
 	// sidecar in SetStatePath. Guarded by pamSupportNameMu.
@@ -719,7 +755,14 @@ type Heartbeat struct {
 	// wsStreamStopNotify reports a lease-driven stream stop to the control
 	// plane; nil means sendDesktopDisconnectNotification (tests override it).
 	wsStreamStopNotify func(sessionID, reason string)
-	desktopOwners      sync.Map // desktop session ID -> helper session ID
+	// banners tracks the session banners this agent asked a helper to show,
+	// and the banner_hide re-sends still owed to ended ones (#10316,
+	// banner_reliability.go). bannerUISessionFn and bannerHideRetryDelays are
+	// test seams: nil means consentUISessionForTarget and the default schedule.
+	banners               bannerTracker
+	bannerUISessionFn     func(targetWinSession string) *sessionbroker.Session
+	bannerHideRetryDelays []time.Duration
+	desktopOwners         sync.Map // desktop session ID -> helper session ID
 	// endedDesktopOwners: desktopOwnerKey(desktop session ID, helper session
 	// ID) -> desktopOwnerTombstone, so a helper's teardown report that lands
 	// just after it stopped owning the session is still attributed (see
@@ -945,6 +988,11 @@ type Heartbeat struct {
 	badSignatureMu  sync.Mutex
 	badSignatureVer string
 	badSignatureAt  time.Time
+
+	// Exponential per-target backoff after a deterministic artifact failure
+	// (checksum or manifest) on the agent, backup, user-helper and watchdog
+	// download paths. See artifact_backoff.go. Issue #7516.
+	artifactBackoff updater.TargetBackoff
 
 	// Path to the agent state file, set by main after startup.
 	statePath                   string
@@ -1249,7 +1297,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		patchCol:                       collectors.NewPatchCollector(),
 		patchMgr:                       patching.NewDefaultManager(cfg),
 		connectionsCol:                 collectors.NewConnectionsCollector(),
-		eventLogCol:                    collectors.NewEventLogCollector(),
+		eventLogCol:                    collectors.NewPersistentEventLogCollector(filepath.Join(config.GetDataDir(), "eventlog_bookmarks.json")),
 		bootCol:                        collectors.NewBootPerformanceCollector(),
 		reliabilityCol:                 collectors.NewReliabilityCollector(),
 		agentVersion:                   version,
@@ -1531,6 +1579,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// Clean up any orphaned Screen Sharing left running from a previous crash.
 	h.tunnelMgr.CleanupOrphanedVNC()
 	h.initializeRollbackController()
+	h.initializeContainment(config.GetDataDir())
 
 	return h
 }
@@ -2250,6 +2299,7 @@ func bootstrapThenListenWithRetry(ctx context.Context, bootstrap func() error, l
 
 func (h *Heartbeat) Start() {
 	h.startHardwareHealth()
+	h.startContainment()
 	h.startTimeSync()
 	h.startWorkloads()
 	h.startPamReconciliationRetryLoop()
@@ -2310,6 +2360,7 @@ func (h *Heartbeat) Start() {
 	}
 	if h.sessionBroker != nil {
 		h.startDarwinDesktopWatcher()
+		h.startSessionBannerSweep()
 	}
 	if h.promptHost != nil {
 		promptCtx, promptCancel := context.WithCancel(context.Background())
@@ -2831,6 +2882,9 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 		return nil
 	} else {
 		log.Warn("inventory send failed", "label", label, "status", resp.StatusCode)
+	}
+	if endpoint == "eventlogs" {
+		return &eventLogsSubmissionError{status: resp.StatusCode}
 	}
 	if endpoint == "hardware-health" {
 		return &hardwareSubmissionError{status: resp.StatusCode}
@@ -3908,6 +3962,47 @@ func (h *Heartbeat) applyEventLogConfig(raw any) {
 		interval = asInt("collectionIntervalMinutes")
 	}
 
+	// Presence is distinct from an empty list: old servers omit this key, while
+	// an empty array deliberately removes all policy additions.
+	providersRaw, providersPresent := m["application_providers"]
+	if !providersPresent {
+		providersRaw, providersPresent = m["applicationProviders"]
+	}
+	var providers []string
+	var rejectedNonStrings []string
+	providersArray := false
+	switch values := providersRaw.(type) {
+	case []any:
+		providersArray = true
+		for _, value := range values {
+			if name, ok := value.(string); ok {
+				providers = append(providers, name)
+			} else {
+				rejectedNonStrings = append(rejectedNonStrings, fmt.Sprint(value))
+			}
+		}
+	case []string:
+		providersArray = true
+		providers = values
+	}
+	if providersPresent && !providersArray {
+		log.Warn("event log application_providers is not an array; keeping current list", "type", fmt.Sprintf("%T", providersRaw))
+	}
+	if providersPresent && providersArray {
+		changed, rejected := h.eventLogCol.UpdateApplicationProviders(providers)
+		rejected = append(rejected, rejectedNonStrings...)
+		h.mu.Lock()
+		warnRejected := len(rejected) > 0 && (changed || !slices.Equal(h.eventLogRejectedProviders, rejected))
+		h.eventLogRejectedProviders = append([]string(nil), rejected...)
+		h.mu.Unlock()
+		if warnRejected {
+			log.Warn("rejected event log application providers (invalid name or over the 20-provider limit)", "providers", rejected)
+		}
+		if changed {
+			log.Info("applied event log application providers", "applicationProviders", h.eventLogCol.ApplicationProviders())
+		}
+	}
+
 	if maxEvents > 0 || len(categories) > 0 || minLevel != "" || interval > 0 {
 		changed := h.eventLogCol.UpdateConfig(maxEvents, categories, minLevel, interval)
 		if changed {
@@ -3926,7 +4021,7 @@ func (h *Heartbeat) applyEventLogConfig(raw any) {
 			}
 			log.Info("applied event log config update", logFields...)
 		}
-	} else if len(m) > 0 {
+	} else if len(m) > 0 && !providersPresent {
 		keys := make([]string, 0, len(m))
 		for k := range m {
 			keys = append(keys, k)
@@ -4523,9 +4618,34 @@ func (h *Heartbeat) sendConnectionsInventory() {
 	h.sendInventoryData("connections", map[string]any{"connections": items}, fmt.Sprintf("connections (%d active)", len(connections)))
 }
 
+// eventLogsSubmissionError preserves a rejected upload's HTTP status so only
+// permanent client rejections count toward the poison-batch guard.
+type eventLogsSubmissionError struct{ status int }
+
+func (e *eventLogsSubmissionError) Error() string {
+	return fmt.Sprintf("inventory send failed for event logs: status %d", e.status)
+}
+
+func eventLogPassOutcome(err error) collectors.EventLogPassOutcome {
+	if err == nil {
+		return collectors.EventLogPassSent
+	}
+	var submission *eventLogsSubmissionError
+	if errors.As(err, &submission) && submission.status >= http.StatusBadRequest && submission.status < http.StatusInternalServerError &&
+		submission.status != http.StatusRequestTimeout && submission.status != http.StatusTooManyRequests {
+		return collectors.EventLogPassRejected
+	}
+	return collectors.EventLogPassFailed
+}
+
 func (h *Heartbeat) sendEventLogs() {
+	if !h.eventLogSendInFlight.CompareAndSwap(false, true) {
+		log.Debug("event log upload already in flight; skipping this tick")
+		return
+	}
+	defer h.eventLogSendInFlight.Store(false)
 	if !h.loopReady("PUT", h.agentRouteURL("eventlogs")) {
-		return // before Collect: the watermark advances at collect
+		return // Avoid collecting while this upload route is deferred.
 	}
 	events, err := collectors.Guard("eventLogs", h.eventLogCol.Collect)
 	if err != nil {
@@ -4534,10 +4654,15 @@ func (h *Heartbeat) sendEventLogs() {
 	}
 
 	if len(events) == 0 {
+		h.eventLogCol.CompletePass(collectors.EventLogPassSent)
 		return
 	}
 
-	h.sendInventoryData("eventlogs", map[string]any{"events": events}, fmt.Sprintf("event logs (%d events)", len(events)))
+	err = h.sendInventoryData("eventlogs", map[string]any{"events": events}, fmt.Sprintf("event logs (%d events)", len(events)))
+	if errors.Is(err, ErrDeferred) {
+		return
+	}
+	h.eventLogCol.CompletePass(eventLogPassOutcome(err))
 }
 
 // sendSecurityStatus uploads security posture. The 5-minute tick passes
@@ -5392,6 +5517,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		// runtime check): the enforcement is compiled in, not a runtime
 		// toggle.
 		SecurityCapabilities: h.securityCapabilitiesForBeat(),
+		Containment:          h.containmentReport(),
 		ReportedIdentity:     h.reportIdentityForBeat(),
 		// #8382 — why the last identity assertion was refused, once.
 		IdentityAssertionRejection: h.identityRejectionForBeat(),
@@ -5806,6 +5932,7 @@ func (h *Heartbeat) acknowledgeRollbackObservation(id string) {
 }
 
 func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
+	h.reconcileContainment(response.Containment)
 	// First: a scope change purges the old MSP's prompt list entries and
 	// replaces the identity before anything else in this response can create
 	// or replay a prompt (spec §3.6).
@@ -7958,29 +8085,13 @@ func (h *Heartbeat) executePatchInstall(payload map[string]any, rollback bool, b
 
 	// Post-install rescan: trigger an immediate patch inventory so the
 	// dashboard reflects the new state without waiting up to 15 minutes.
-	// A skipped item also means the inventory is stale (the update was
-	// superseded, or the package is already current), so it rescans too.
-	if successCount > 0 || skippedCount > 0 {
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Error("post-install patch rescan panicked", "recover", r)
-				}
-			}()
-			// Wait for macOS to finish installing before rescanning
-			select {
-			case <-time.After(60 * time.Second):
-				log.Info("post-install patch rescan triggered", "successCount", successCount)
-				h.sendPatchInventory()
-				// Reset the daily gate so the scheduler doesn't re-scan immediately.
-				h.mu.Lock()
-				h.lastPatchUpdate = time.Now()
-				h.mu.Unlock()
-			case <-h.stopChan:
-				log.Info("post-install patch rescan cancelled — agent shutting down")
-			}
-		}()
-	}
+	// Every outcome rescans (#10250): an install or skip means the inventory
+	// is stale, and a failure can be too (the update was superseded or the
+	// package already moved on), so a failed run must not leave the device on
+	// the last scheduled scan. refs is non-empty here, so something was tried.
+	log.Info("post-install patch rescan scheduled",
+		"installedCount", successCount, "skippedCount", skippedCount, "failedCount", failedCount)
+	schedulePostInstallRescan(h, postInstallRescanDelay(runtime.GOOS))
 
 	durationMs := time.Since(start).Milliseconds()
 	if failedCount > 0 {
@@ -7995,6 +8106,46 @@ func (h *Heartbeat) executePatchInstall(payload map[string]any, rollback bool, b
 	}
 
 	return tools.NewSuccessResult(summary, durationMs)
+}
+
+// postInstallRescanDelay is how long to wait after a patch command before the
+// follow-up inventory scan. macOS softwareupdate keeps working after the
+// install call returns, so it gets a full minute; Windows (WUA, winget) and
+// Linux installs are synchronous and only need a short settle (#10250).
+func postInstallRescanDelay(goos string) time.Duration {
+	if goos == "darwin" {
+		return 60 * time.Second
+	}
+	return 5 * time.Second
+}
+
+// schedulePostInstallRescan starts the post-install rescan in the background.
+// A variable so tests can observe scheduling without running a real scan.
+var schedulePostInstallRescan = func(h *Heartbeat, delay time.Duration) {
+	go h.runPostInstallRescan(delay)
+}
+
+// runPostInstallRescan waits delay (or until shutdown), then sends a fresh
+// patch inventory and resets the scheduler's gate.
+func (h *Heartbeat) runPostInstallRescan(delay time.Duration) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("post-install patch rescan panicked", "recover", r)
+		}
+	}()
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		log.Info("post-install patch rescan triggered", "delay", delay.String())
+		h.sendPatchInventory()
+		// Reset the daily gate so the scheduler doesn't re-scan immediately.
+		h.mu.Lock()
+		h.lastPatchUpdate = time.Now()
+		h.mu.Unlock()
+	case <-h.stopChan:
+		log.Info("post-install patch rescan cancelled — agent shutting down")
+	}
 }
 
 func patchCommandResultFields(ref patchCommandRef, installID string) map[string]any {
@@ -8341,6 +8492,14 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 			"targetVersion", targetVersion)
 		return
 	}
+	// #7516: a deterministic artifact failure grows the wait past the flat
+	// cooldown above, exponentially per target.
+	if _, active := h.artifactBackoff.Remaining(artifactComponentWatchdog, targetVersion); active {
+		h.watchdogUpgradeMu.Unlock()
+		log.Debug("watchdog upgrade skipped: this version's artifact recently failed verification; backing off",
+			"targetVersion", targetVersion)
+		return
+	}
 	h.watchdogLastAttemptVer = targetVersion
 	h.watchdogLastAttemptAt = time.Now()
 	h.watchdogUpgradeMu.Unlock()
@@ -8370,9 +8529,16 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 		// SafeDownloadErrorFields for why err.Error() must not be logged
 		// directly.
 		key, value := updater.SafeDownloadErrorFields(err)
+		if updater.IsDeterministicArtifactFailure(err) {
+			n, delay := h.artifactBackoff.NoteFailure(artifactComponentWatchdog, targetVersion)
+			log.Error("failed to update watchdog: the artifact the server serves for this version does not verify; backing off",
+				"targetVersion", targetVersion, "consecutiveFailures", n, "retryAfter", delay.String(), key, value)
+			return
+		}
 		log.Error("failed to update watchdog", "targetVersion", targetVersion, key, value)
 		return
 	}
+	h.artifactBackoff.Clear(artifactComponentWatchdog)
 	h.watchdogUpgradeMu.Lock()
 	h.watchdogInstalledVersion = targetVersion
 	h.watchdogUpgradeMu.Unlock()
@@ -8470,6 +8636,15 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 		return nil
 	}
 
+	// #7516: a target whose user-helper artifact recently failed verification
+	// would fail the same way again; skip it (agent-only, as on any failure)
+	// until its backoff lifts. A new target is fetched immediately.
+	if _, active := h.artifactBackoff.Remaining(artifactComponentUserHelper, targetVersion); active {
+		log.Debug("user-helper prefetch skipped: this version's artifact recently failed verification; proceeding with agent-only upgrade",
+			"targetVersion", targetVersion)
+		return nil
+	}
+
 	download := h.userHelperDownloader
 	if download == nil {
 		helperCfg := &updater.Config{
@@ -8487,6 +8662,9 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 
 	tempPath, dlErr := download(targetVersion)
 	if dlErr != nil {
+		if updater.IsDeterministicArtifactFailure(dlErr) {
+			h.artifactBackoff.NoteFailure(artifactComponentUserHelper, targetVersion)
+		}
 		key, value := updater.SafeDownloadErrorFields(dlErr)
 		log.Warn(
 			"user-helper download failed; proceeding with agent-only upgrade",
@@ -8496,6 +8674,7 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 		)
 		return nil
 	}
+	h.artifactBackoff.Clear(artifactComponentUserHelper)
 
 	pair := &updater.BinaryPair{
 		Temp:   tempPath,
@@ -8728,6 +8907,10 @@ func (h *Heartbeat) noteCodeSignatureFailure(targetVersion string) {
 
 // doUpgrade contains the actual upgrade logic, called by handleUpgrade.
 func (h *Heartbeat) doUpgrade(targetVersion string) {
+	if h.containmentBlocksUpgrade() {
+		log.Info("upgrade skipped: network isolation is active", "targetVersion", targetVersion)
+		return
+	}
 	// Checked before sendUpdateStatus and before any download work: the server
 	// re-sends the same upgradeTo on every heartbeat, so without this the
 	// device would keep announcing "Updating" and re-running the whole
@@ -8744,6 +8927,13 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	if h.codeSignatureBackoffActive(targetVersion) {
 		log.Debug("upgrade skipped: this version's binary recently failed macOS code signature verification; backing off",
 			"targetVersion", targetVersion)
+		return
+	}
+	// #7516: same reason again, for an agent (or blocking backup) artifact
+	// that failed checksum/manifest verification. Exponential per target, so
+	// an unsatisfiable offer costs a handful of downloads, not one a minute,
+	// while a NEW offer is attempted on the very next heartbeat.
+	if h.upgradeDeferredByArtifactBackoff(targetVersion) {
 		return
 	}
 
@@ -8877,6 +9067,12 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 				"retryAfter", codeSignatureRetryCooldown.String())
 			return
 		}
+		// The downloaded agent artifact failed checksum or manifest
+		// verification. Retrying immediately fetches the same bytes and fails
+		// the same way (#7516), so back off this target exponentially.
+		if h.noteAgentUpgradeArtifactFailure(targetVersion, err) {
+			return
+		}
 		// A download failure here may carry a *netpolicy.PolicyError, or be a
 		// *url.Error — net/http wraps EVERY transport-level failure that way
 		// (TLS handshake, connection refused/reset, timeout, EOF — not just
@@ -8908,7 +9104,7 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 // revocationLeaseProtocolVersion 0, which makes a silently dropped declaration
 // a fleet-wide outage rather than a degraded feature.
 func compiledSecurityCapabilities() SecurityCapabilities {
-	return SecurityCapabilities{
+	caps := SecurityCapabilities{
 		OutboundNetworkPolicyVersion:          1,
 		ScriptSecretEnvVersion:                1,
 		PeripheralPolicyProtocolVersion:       2,
@@ -8925,14 +9121,24 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		PromptIdentityProtocolVersion:         promptidentity.ProtocolVersion,
 		PamUserNotifyProtocolVersion:          pamUserNotifyProtocolVersion(),
 	}
+	containmentCapabilities(&caps)
+	return caps
 }
 
-// pamUserNotifyProtocolVersion is 1 on Windows builds, the only platform with
+// pamUserNotifyProtocolVersion is 2 on Windows builds, the only platform with
 // UAC interception and so the only one that can have a tracked hand-off to
 // notify about (#8928). Elsewhere it is 0 and omitted from the beat.
+//
+//   - 1 (#8928): claims pam_request_notify and shows the outcome notices.
+//   - 2 (#10190 W07): also accepts `decidedBy` on pam_apply_v2, whose
+//     payload is decoded strictly (an API sends it only to 2 or above) and
+//     shows outcomes on the elevation prompt.
 func pamUserNotifyProtocolVersion() int {
 	if runtime.GOOS == "windows" {
-		return 1
+		return pamUserNotifyProtocolCurrent
 	}
 	return 0
 }
+
+// pamUserNotifyProtocolCurrent is the Windows value (see above).
+const pamUserNotifyProtocolCurrent = 2

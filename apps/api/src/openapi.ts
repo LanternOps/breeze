@@ -349,10 +349,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           email: { type: 'string', format: 'email' },
           name: { type: 'string', minLength: 1, maxLength: 255 },
           roleId: { type: 'string', format: 'uuid' },
-          orgAccess: { type: 'string', enum: ['all', 'selected', 'none'] },
-          orgIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
-          siteIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
-          deviceGroupIds: { type: 'array', items: { type: 'string', format: 'uuid' } }
+          orgAccess: { type: 'string', enum: ['all', 'selected', 'none'], description: 'Partner scope only; 400 in organization scope.' },
+          orgIds: { type: 'array', items: { type: 'string', format: 'uuid' }, description: 'Partner scope only, with orgAccess=selected; 400 in organization scope.' },
+          siteIds: { type: 'array', items: { type: 'string', format: 'uuid' }, description: 'Organization scope only; 400 in partner scope.' },
+          deviceGroupIds: { type: 'array', items: { type: 'string', format: 'uuid' }, description: 'Not supported yet: any value is rejected with 400.' }
         },
         required: ['email', 'name', 'roleId']
       },
@@ -651,6 +651,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           triggeredAt: { type: 'string', format: 'date-time' },
           acknowledgedAt: { type: 'string', format: 'date-time', nullable: true },
           acknowledgedBy: { type: 'string', format: 'uuid', nullable: true },
+          acknowledgedByPrincipalId: { type: 'string', format: 'uuid', nullable: true, description: 'Partner API service principal that acknowledged the alert, or null.' },
           acknowledgedByName: {
             type: 'string',
             nullable: true,
@@ -658,6 +659,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           },
           resolvedAt: { type: 'string', format: 'date-time', nullable: true },
           resolvedBy: { type: 'string', format: 'uuid', nullable: true },
+          resolvedByPrincipalId: { type: 'string', format: 'uuid', nullable: true, description: 'Partner API service principal that resolved the alert, or null.' },
           resolvedByName: {
             type: 'string',
             nullable: true,
@@ -3673,6 +3675,38 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           }
         }
       }
+    },
+    '/alerts/{id}/external-tickets': {
+      get: {
+        operationId: 'listAlertExternalTickets',
+        tags: ['Alerts'],
+        summary: 'List external ticket references and PSA mappings for an alert',
+        description: 'Requires alerts.read and access to the alert organization and site. Partner-level viewers see every integration principal reference and PSA mappings from connections owned by their partner or the alert organization. Org-scoped users see only mappings from PSA connections owned by the alert organization with no partner owner; partner-principal references and partner-owned PSA mappings are excluded.',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        responses: {
+          '200': {
+            description: 'External tickets in deterministic source and creation order',
+            content: { 'application/json': { schema: {
+              type: 'object', required: ['data'], additionalProperties: false,
+              properties: { data: { type: 'array', items: {
+                type: 'object', additionalProperties: false,
+                required: ['source', 'partnerServicePrincipalId', 'externalId', 'externalUrl', 'externalNumber', 'state', 'createdAt', 'updatedAt'],
+                properties: {
+                  source: { type: 'string', enum: ['partner_api', 'psa'] },
+                  partnerServicePrincipalId: { type: 'string', format: 'uuid', nullable: true },
+                  externalId: { type: 'string' },
+                  externalUrl: { type: 'string', nullable: true },
+                  externalNumber: { type: 'string', nullable: true },
+                  state: { type: 'string', nullable: true },
+                  createdAt: { type: 'string', format: 'date-time' },
+                  updatedAt: { type: 'string', format: 'date-time', nullable: true },
+                },
+              } } },
+            } } },
+          },
+          '404': { description: 'Alert not found or outside the caller’s reach' },
+        },
+      },
     },
     '/alerts/{id}/acknowledge': {
       post: {

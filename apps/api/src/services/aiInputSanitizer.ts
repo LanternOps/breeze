@@ -5,14 +5,7 @@
  * and enforces input limits for AI chat messages and page context.
  */
 
-// Page context types (mirror aiAgent.ts)
-type AiPageContext =
-  | { type: 'device'; id: string; hostname: string; os?: string; status?: string; ip?: string }
-  | { type: 'alert'; id: string; title: string; severity?: string; deviceHostname?: string }
-  | { type: 'dashboard'; orgName?: string; deviceCount?: number; alertCount?: number }
-  | { type: 'custom'; label: string; data: Record<string, unknown> }
-  // Topology M4 (#6000): IDs only; mirrors @breeze/shared AiTopologyPageContext.
-  | { type: 'topology'; siteId: string; subject: { kind: 'node' | 'relationship'; id: string }; view: 'overview' | 'physical' | 'logical'; graphRevision: string };
+import type { AiPageContext } from '@breeze/shared';
 
 export interface SanitizeResult {
   sanitized: string;
@@ -156,8 +149,14 @@ export function sanitizePageContext(ctx: AiPageContext, flags?: string[]): AiPag
       break;
 
     case 'custom':
-      clone.label = sanitizeField(clone.label, 200, sink);
+      clone.label = sanitizeField(clone.label, 200, sink, 'codePoints');
       clone.data = sanitizeRecord(clone.data, sink);
+      break;
+
+    case 'record':
+      // Identity is enum/UUID-validated upstream. The label is a client badge
+      // in the snapshot only; the prompt resolves its own label server-side.
+      if (clone.label !== undefined) clone.label = sanitizeField(clone.label, 200, sink, 'codePoints');
       break;
 
     case 'topology':
@@ -171,6 +170,10 @@ export function sanitizePageContext(ctx: AiPageContext, flags?: string[]): AiPag
         view: clone.view,
         graphRevision: clone.graphRevision,
       };
+
+    default:
+      clone satisfies never;
+      throw new Error('Unsupported page context type');
   }
 
   return clone;
@@ -307,8 +310,15 @@ function addFlag(flags: string[], flag: string): void {
   if (!flags.includes(flag)) flags.push(flag);
 }
 
-function sanitizeField(value: string, maxLength: number, flags: string[] = []): string {
-  let sanitized = value.slice(0, maxLength);
+function sanitizeField(
+  value: string,
+  maxLength: number,
+  flags: string[] = [],
+  lengthUnit: 'codeUnits' | 'codePoints' = 'codeUnits',
+): string {
+  let sanitized = lengthUnit === 'codePoints'
+    ? Array.from(value).slice(0, maxLength).join('')
+    : value.slice(0, maxLength);
   const beforeUnicode = sanitized;
   sanitized = sanitized.replace(DANGEROUS_UNICODE, '');
   if (sanitized !== beforeUnicode) addFlag(flags, 'dangerous_unicode');

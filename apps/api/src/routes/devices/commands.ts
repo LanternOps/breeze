@@ -16,7 +16,7 @@ import {
   applyMaintenanceEntry,
   clearMaintenanceLease,
 } from '../../services/deviceMaintenanceLease';
-import { consumeStepUpGrant, maintenanceResourceDigest, validateStepUpGrant, type StepUpGrantBinding } from '../../services/mfaStepUpGrant';
+import { canonicalIds, consumeStepUpGrant, maintenanceResourceDigest, validateStepUpGrant, type StepUpGrantBinding } from '../../services/mfaStepUpGrant';
 import { getUserEpochs } from '../../services/authEpochs';
 import { lockActorAssurance } from '../../services/stepUpActorAssurance';
 import { ENABLE_2FA } from '../auth/schemas';
@@ -338,7 +338,11 @@ commandsRoutes.post(
     const data = c.req.valid('json');
     const now = new Date();
     const permissions = c.get('permissions') as UserPermissions | undefined;
-    const deviceIds = [...new Set(data.deviceIds)].sort();
+    // Canonical, deduplicated and sorted through the same helper the digest
+    // uses, so the set the route acts on is exactly the set the grant covers.
+    // A case-sensitive `new Set` here would keep two spellings of one device as
+    // two entries, apply the lease twice and write two audit rows (#10119).
+    const deviceIds = canonicalIds(data.deviceIds);
 
     type BulkMaintenanceFailureCode = 'TARGET_NOT_FOUND' | 'SITE_ACCESS_DENIED' | 'DECOMMISSIONED' | 'STATE_CONFLICT';
     const failed: Array<{ deviceId: string; code: BulkMaintenanceFailureCode; message: string }> = [];
@@ -666,14 +670,17 @@ commandsRoutes.post(
   requireMaintenanceEntryMfa(),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const deviceId = c.req.param('id')!;
     const data = c.req.valid('json');
     const now = new Date();
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgCheck(c.req.param('id')!, auth);
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
+    // From here on, the device's canonical id, never the raw path segment: an
+    // uppercase uuid in the URL finds the same device, and the step-up binding,
+    // the lease and the audit rows must all use one spelling (#10119).
+    const deviceId = device.id;
     if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
       return c.json({ error: 'Access to this site denied' }, 403);
     }
@@ -1036,6 +1043,11 @@ commandsRoutes.post(
         .limit(1);
 
       if (!existing) return { kind: 'not_found' } as const;
+      if (existing.type === 'execute_containment') {
+        const { findEpisodeByCommand } = await import('../../services/networkIsolation/episodeStore');
+        if (await findEpisodeByCommand(tx, commandId)) return { kind: 'isolation_owned' } as const;
+      }
+
       if (existing.status !== 'pending') {
         return { kind: 'not_pending' as const, status: existing.status };
       }
@@ -1060,6 +1072,9 @@ commandsRoutes.post(
 
     if (outcome.kind === 'not_found') {
       return c.json({ error: 'Command not found' }, 404);
+    }
+    if (outcome.kind === 'isolation_owned') {
+      return c.json({ error: 'Use Release to release this network isolation' }, 409);
     }
     if (outcome.kind === 'not_pending') {
       return c.json({ error: 'Command is not pending', status: outcome.status }, 409);

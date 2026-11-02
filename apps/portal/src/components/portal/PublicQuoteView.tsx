@@ -1,13 +1,16 @@
 import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { replaceLocation } from '@/lib/replaceLocation';
 import { useMemo, useState } from 'react';
+import { Download } from 'lucide-react';
 import { QuoteDocumentView, quoteAgreementLinks, type DocumentHostComponents } from '@breeze/document-ui';
-import { portalApi, publicApiPath, type PublicQuoteDetail } from '@/lib/api';
+import { portalApi, publicApiPath, buildPortalApiUrl, type PublicQuoteAccepted, type PublicQuoteDetail, type PublicQuotePayment } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { money } from '@/lib/format';
 import { quoteModelFor } from '@/lib/quoteDocument';
 import { portalQuoteHostComponents, quoteAssetSource } from './documentHostComponents';
 import { SignaturePanel } from './SignaturePanel';
+import { PublicQuotePaymentStep } from './PublicQuotePaymentStep';
+import { BTN_SECONDARY } from './ui';
 
 interface PublicQuoteViewProps {
   token: string;
@@ -17,15 +20,33 @@ interface PublicQuoteViewProps {
    *  by a newer revision and its link was revoked. Carries only the partner's
    *  name — the server withholds everything else, including the successor's id. */
   superseded?: { partnerName?: string | null } | null;
+  /** #3740: the quote is accepted and this link may still pay its invoice
+   *  (GET /quotes/public/:token/payment). Alone (initial null) when accepting
+   *  spent the link: the page then shows only the payment step, never the
+   *  proposal again. */
+  accepted?: PublicQuoteAccepted | null;
   /** Test seam: parity tests inject deterministic stand-ins for the asset components. */
   components?: DocumentHostComponents;
 }
 
-export function PublicQuoteView({ token, initial, error, superseded, components }: PublicQuoteViewProps) {
+/** What the Download PDF failure notice says: retry advice for the per-proposal
+ *  rate cap, "gone" for a link the API no longer honours (bad/expired/spent token,
+ *  replaced or withdrawn proposal, archived company), else a generic failure. */
+function downloadFailureMessage(status: number): string {
+  if (status === 429) return 'Too many downloads. Please try again in a minute.';
+  if (status === 401 || status === 404 || status === 410) return 'This proposal link is no longer available.';
+  return 'Could not download the proposal PDF.';
+}
+
+export function PublicQuoteView({ token, initial, error, superseded, accepted, components }: PublicQuoteViewProps) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState(initial?.quote.status ?? '');
   const [msg, setMsg] = useState<string | null>(null);
   const [msgError, setMsgError] = useState(false);
+  // What is payable now, when this page offers the payment step (#3740).
+  const [payment, setPayment] = useState<PublicQuotePayment | null>(accepted?.payment ?? null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   // The model follows the status this page moved the proposal into (accepted, declined),
   // so the header pill changes without a refetch.
   const model = useMemo(() => (initial ? quoteModelFor(initial, status) : null), [initial, status]);
@@ -49,6 +70,23 @@ export function PublicQuoteView({ token, initial, error, superseded, components 
           This proposal has been replaced by an updated version — please use the link in the latest email
           {superseded.partnerName ? `, or contact ${superseded.partnerName}` : ''}.
         </p>
+      </div>
+    );
+  }
+
+  // #3740: a revisit of a link that accepting spent. Only the payment step
+  // (or a plain "accepted") — the proposal itself is no longer served to it.
+  if (!initial && accepted) {
+    return (
+      <div className="mx-auto w-full max-w-lg space-y-4 p-4">
+        <div data-testid="public-quote-accepted" role="status" className="rounded-md bg-success/10 p-4 text-sm text-success-on-tint">
+          <p>
+            {payment
+              ? 'This proposal has been accepted.'
+              : `This proposal has been accepted. No online payment is available from this page right now${accepted.partnerName ? ` — contact ${accepted.partnerName} with any questions` : ''}.`}
+          </p>
+        </div>
+        {payment && <PublicQuotePaymentStep token={token} payment={payment} />}
       </div>
     );
   }
@@ -123,11 +161,19 @@ export function PublicQuoteView({ token, initial, error, superseded, components 
       replaceLocation(invoiceUrl);
       return;
     }
-    setMsg(
-      res.data?.data?.payDeferred
-        ? "Signed and accepted. We'll email you your invoice shortly."
-        : 'Signed and accepted. Thank you.'
-    );
+    // No invoice page to land on. payDeferred = an invoice was issued but its
+    // link could not be minted just now: when something is payable, payment is
+    // the next step right here (#3740) — this link may still pay it. No email
+    // is promised: the auto-send is a partner setting and best-effort.
+    if (res.data?.data?.payDeferred) {
+      const due = res.data.data.payment ?? null;
+      setPayment(due);
+      setMsg(due
+        ? 'Signed and accepted.'
+        : `Signed and accepted. Your invoice isn't ready to open yet — come back to this link later, or contact ${branding.partnerName}.`);
+      return;
+    }
+    setMsg('Signed and accepted. Thank you.');
   };
 
   // The reason comes from SignaturePanel's inline confirm block, which is the only
@@ -150,8 +196,44 @@ export function PublicQuoteView({ token, initial, error, superseded, components 
     setMsg(`Thanks — ${branding.partnerName} has been notified.`);
   };
 
+  // #9860: same fetch-then-save as the public invoice page's Download PDF, so a
+  // failed response surfaces as a message instead of saving an error body as a .pdf.
+  const downloadPdf = async () => {
+    if (downloading) return;
+    setDownloading(true);
+    setDownloadError(null);
+    try {
+      const res = await fetch(buildPortalApiUrl(`/quotes/public/${encodeURIComponent(token)}/pdf`));
+      if (!res.ok) { setDownloadError(downloadFailureMessage(res.status)); return; }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${quote.quoteNumber ?? 'proposal'}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch {
+      setDownloadError('Could not download the proposal PDF.');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   return (
     <div className="mx-auto w-full max-w-3xl space-y-5 p-2 sm:p-4">
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        <button type="button" onClick={() => void downloadPdf()} disabled={downloading} data-testid="public-quote-download" className={BTN_SECONDARY}>
+          <Download className="h-4 w-4" aria-hidden="true" />
+          {downloading ? 'Preparing…' : 'Download PDF'}
+        </button>
+      </div>
+      {downloadError && (
+        <div role="alert" data-testid="public-quote-download-error" className="rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint">
+          {downloadError}
+        </div>
+      )}
       <QuoteDocumentView
         model={model}
         components={hostComponents}
@@ -189,6 +271,7 @@ export function PublicQuoteView({ token, initial, error, superseded, components 
           <p>{msg ?? 'This proposal has already been accepted.'}</p>
         </div>
       )}
+      {status === 'converted' && payment && <PublicQuotePaymentStep token={token} payment={payment} />}
       {status === 'declined' && msg && (
         <div role="status" className="rounded-md bg-muted p-3 text-sm">{msg}</div>
       )}

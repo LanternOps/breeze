@@ -1,3 +1,4 @@
+import type { AlertOwnerKind } from '../../services/alertOwner';
 import {
   pgTable,
   uuid,
@@ -128,7 +129,9 @@ export const alerts = pgTable('alerts', {
   // alert must survive that even though it already carries its own
   // title/message/context.
   ruleId: uuid('rule_id').references(() => alertRules.id, { onDelete: 'set null' }),
-  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  deviceId: uuid('device_id').references(() => devices.id),
+  ownerKind: varchar('owner_kind', { length: 30 }).$type<AlertOwnerKind>().notNull().default('device'),
+  ownerRef: varchar('owner_ref', { length: 128 }),
   // W03 (hardware & RAID monitoring, migration 2026-10-30-110300): identifies
   // the specific subject (e.g. a component) an open alert covers, so multiple
   // independently-breaching subjects under the same rule/device can each hold
@@ -153,8 +156,12 @@ export const alerts = pgTable('alerts', {
   triggeredAt: timestamp('triggered_at').defaultNow().notNull(),
   acknowledgedAt: timestamp('acknowledged_at'),
   acknowledgedBy: uuid('acknowledged_by').references(() => users.id),
+  // FK to partner_service_principals ON DELETE SET NULL, declared in SQL only (2027-01-12-400100), like monitorId.
+  acknowledgedByPrincipalId: uuid('acknowledged_by_principal_id'),
   resolvedAt: timestamp('resolved_at'),
   resolvedBy: uuid('resolved_by').references(() => users.id),
+  // FK to partner_service_principals ON DELETE SET NULL, declared in SQL only (2027-01-12-400100), like monitorId.
+  resolvedByPrincipalId: uuid('resolved_by_principal_id'),
   resolutionNote: text('resolution_note'),
   resolutionReason: varchar('resolution_reason', { length: 40 }).$type<AlertResolutionReason>(),
   suppressedUntil: timestamp('suppressed_until'),
@@ -176,6 +183,8 @@ export const alerts = pgTable('alerts', {
   // Never set it from application code.
   partnerFeedXid: xid8('partner_feed_xid').notNull().default(sql`'1'::xid8`)
 }, (table) => ({
+  // Composite target for alert_external_refs' database-driven org restamp.
+  idOrgUq: uniqueIndex('alerts_id_org_uq').on(table.id, table.orgId),
   // Backs the `alerts.critical` device-filter field (#968).
   activeCriticalIdx: index('idx_alerts_active_critical')
     .on(table.deviceId)
@@ -185,10 +194,24 @@ export const alerts = pgTable('alerts', {
   suppressedExpiryIdx: index('idx_alerts_suppressed_expiry')
     .on(table.suppressedUntil)
     .where(sql`status = 'suppressed' AND suppressed_until IS NOT NULL`),
+  ownerCheck: check('alerts_owner_chk', sql`
+    (${table.ownerKind} = 'device' AND ${table.deviceId} IS NOT NULL AND ${table.topologySiteId} IS NULL)
+    OR (${table.ownerKind} = 'topology_site' AND ${table.topologySiteId} IS NOT NULL)
+    OR (${table.ownerKind} = 'backup_workload' AND ${table.deviceId} IS NULL AND ${table.ownerRef} IS NOT NULL)
+  `),
+  openOwnerUidx: uniqueIndex('alerts_open_owner_uidx')
+    .on(table.orgId, table.ownerKind, table.ownerRef)
+    .where(sql`owner_kind NOT IN ('device', 'topology_site') AND status IN ('active', 'acknowledged', 'suppressed')`),
   subjectKeyNonempty: check('alerts_subject_key_nonempty_chk', sql`${table.subjectKey} <> ''`),
   openRuleDeviceSubjectUidx: uniqueIndex('alerts_open_rule_device_subject_uidx')
     .on(table.ruleId, table.deviceId, sql`COALESCE(${table.subjectKey}, '')`)
     .where(sql`${table.ruleId} IS NOT NULL AND ${table.status} IN ('active', 'acknowledged', 'suppressed')`),
+  acknowledgedByPrincipalIdx: index('idx_alerts_acknowledged_by_principal')
+    .on(table.acknowledgedByPrincipalId)
+    .where(sql`acknowledged_by_principal_id IS NOT NULL`),
+  resolvedByPrincipalIdx: index('idx_alerts_resolved_by_principal')
+    .on(table.resolvedByPrincipalId)
+    .where(sql`resolved_by_principal_id IS NOT NULL`),
   // Partner alerts feed keyset (2026-10-30-130100, built CONCURRENTLY).
   partnerFeedXidIdx: index('idx_alerts_partner_feed_xid').on(table.partnerFeedXid, table.id),
   topologyOwnerChk: check('alerts_topology_owner_chk', sql`(topology_site_id IS NULL) = (topology_source_key IS NULL) AND (topology_source_key IS NULL OR topology_source_key ~ '^topology:[a-f0-9]{64}$')`),

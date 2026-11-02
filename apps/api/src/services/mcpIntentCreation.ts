@@ -126,6 +126,9 @@ export async function createMcpActionIntent(input: CreateMcpActionIntentInput): 
       correlationId: input.correlationRequestId,
       requestingClientLabel: input.clientLabel.slice(0, 255),
       maxLiveForOrigin: mcpIntentMaxLivePerPrincipal(),
+      // #10027: the MCP gate files a non-read action rated below Tier 3 on a
+      // registry-Tier-3 tool (edr_endpoint_action scan); approve it at Tier 3.
+      mcpRegistryTierApproval: true,
       beforeInsert: () => chargeCreation(originRef, auth.user.id),
     }));
   } catch (err) {

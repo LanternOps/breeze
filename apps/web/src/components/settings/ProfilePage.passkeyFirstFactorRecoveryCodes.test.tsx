@@ -38,6 +38,7 @@ vi.mock('../../stores/auth', () => ({
         updateUser: vi.fn(),
         sessionGeneration,
         commitReissuedSessionIfCurrent: commitReissuedSessionIfCurrentMock,
+        commitMfaStateIfCurrent: commitReissuedSessionIfCurrentMock,
       }),
     },
   ),
@@ -59,7 +60,7 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     ok,
     status,
     statusText: ok ? 'OK' : 'ERROR',
-    json: vi.fn().mockResolvedValue(payload),
+    json: vi.fn().mockResolvedValue(payload && typeof payload === 'object' && ('passkey' in payload || 'success' in payload) ? { mfaEnabled: true, mfaMethod: 'passkey', ...payload } : payload),
   }) as unknown as Response;
 
 // No prior MFA at all — this is a first-factor enrollment.
@@ -81,17 +82,20 @@ const RECOVERY_CODES = [
 ];
 
 async function addPasskey() {
-  await screen.findByLabelText(/Passkey name/i);
+  await screen.findByTestId('passkey-add');
+  fireEvent.click(screen.getByTestId('passkey-add'));
   fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'iPhone' } });
   fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
     target: { value: 'current-password' },
   });
-  fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+  fireEvent.click(screen.getByTestId('passkey-add-confirm'));
 }
 
 describe('ProfilePage — first passkey enrollment surfaces its recovery codes (G4-14)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    fetchWithAuthMock.mockReset();
+    createPasskeyCredentialMock.mockReset();
     commitReissuedSessionIfCurrentMock.mockReturnValue(true);
     sessionStorage.clear();
     globalThis.URL.createObjectURL = vi.fn(() => 'blob:fake');
@@ -113,11 +117,16 @@ describe('ProfilePage — first passkey enrollment surfaces its recovery codes (
     render(<ProfilePage initialUser={USER} />);
     await addPasskey();
 
+    expect(await screen.findByRole('dialog', { name: 'Save your recovery codes' })).toBeTruthy();
+
     await waitFor(() => {
       for (const code of RECOVERY_CODES) {
         expect(screen.getByText(code)).toBeTruthy();
       }
     });
+    fireEvent.click(screen.getByTestId('mfa-recovery-done'));
+    expect(screen.queryByRole('dialog', { name: 'Save your recovery codes' })).toBeNull();
+    expect(screen.queryByText(RECOVERY_CODES[0])).toBeNull();
   });
 
   it('does not render a stale recovery panel when a SECOND passkey is added (no codes returned)', async () => {

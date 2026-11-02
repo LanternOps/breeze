@@ -128,7 +128,7 @@ describe('SitesPage (#9794)', () => {
     render(<SitesPage />);
     await screen.findByTestId(`sites-row-${SITE_B.id}`);
 
-    fireEvent.click(screen.getAllByTestId(`site-${SITE_B.id}-menu`)[0]!);
+    fireEvent.click(screen.getByTestId(`site-${SITE_B.id}-menu`));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }));
     fireEvent.change(await screen.findByLabelText('Site name'), { target: { value: 'Renamed' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));

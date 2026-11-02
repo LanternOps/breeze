@@ -369,6 +369,7 @@ export const configPolicyEventLogSettings = pgTable('config_policy_event_log_set
   retentionDays: integer('retention_days').notNull().default(30),
   maxEventsPerCycle: integer('max_events_per_cycle').notNull().default(100),
   collectCategories: text('collect_categories').array().notNull().default(['security', 'hardware', 'application', 'system']),
+  applicationProviders: text('application_providers').array().notNull().default(sql`'{}'::text[]`),
   minimumLevel: eventLogLevelEnum('minimum_level').notNull().default('info'),
   // 15m default (was 5m) — issue #2390. Shadowed in practice (writes always go
   // through eventLogInlineSettingsSchema, which supplies the value), but kept in
@@ -379,7 +380,9 @@ export const configPolicyEventLogSettings = pgTable('config_policy_event_log_set
   enableCorrelation: boolean('enable_correlation').notNull().default(true),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+}, (t) => [
+  check('config_policy_event_log_settings_app_providers_max', sql`cardinality(${t.applicationProviders}) <= 20`),
+]);
 
 // Single-item: one row per feature link (inherited RAID/disk-health
 // collection settings, #6856). Inline-only — no linked-policy variant.

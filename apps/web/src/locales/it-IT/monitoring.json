@@ -77,7 +77,8 @@
       "recurrenceThreshold": "Esegui l'escalation dopo",
       "recurrenceWindowDays": "episodi entro (giorni)",
       "pauseResponses": "Sospendi le risposte automatiche finché una persona non le reimposta",
-      "aiAgent": "Agente IA (abilita le risposte di triage con IA)"
+      "aiAgent": "Agente IA (abilita le risposte di triage con IA)",
+      "psaBoard": "Board PSA per i ticket di avviso"
     },
     "deliveryModes": {
       "inherit": "Usa le regole di instradamento",
@@ -170,7 +171,11 @@
       "failed": "Impossibile caricare gli asset",
       "orgRequired": "Seleziona un'organizzazione proprietaria per associare un asset.",
       "pingName": "Ping a {{label}}"
-    }
+    },
+    "psaBoardDefault": "Usa il board predefinito della connessione",
+    "psaBoardHelp": "I ticket di avviso di questo monitor vengono creati in questo board invece che in quello predefinito della connessione.",
+    "psaBoardReadOnly": "I ticket di avviso vanno al board PSA #{{id}}",
+    "psaBoardUnavailable": "Impossibile caricare le bacheche PSA, quindi la sostituzione della bacheca non è disponibile al momento."
   },
   "kinds": {
     "composite": "Composito (tutte o una di più condizioni)",
@@ -247,8 +252,8 @@
     "nameserver": "Server dei nomi",
     "degradedIsFailure": "Considera degradato come errore",
     "maxResponseMs": "Fallisci se più lento di (ms)",
-    "eventLogCollectionNoSource": "Gli eventi Applicazione di livello Informazioni e Avviso vengono raccolti solo da {{providers}}. Gli eventi di altre origini attivano questa regola solo ai livelli Errore o Critico.",
-    "eventLogCollectionSourceNotCollected": "L'agente non raccoglie gli eventi Applicazione di livello Informazioni o Avviso da \"{{source}}\", quindi questa regola corrisponderà solo ai suoi eventi Errore o Critico. Provider raccolti: {{providers}}."
+    "eventLogCollectionNoSource": "Gli eventi applicazione di livello Informazioni e Avviso vengono raccolti solo da {{providers}}. Gli eventi di altre origini corrispondono a questa regola solo ai livelli Errore o Critico, a meno che un criterio di configurazione dei registri eventi non includa l’origine (Criterio di configurazione → Registri eventi → Provider applicazioni).",
+    "eventLogCollectionSourceNotCollected": "L’agente non raccoglie eventi applicazione di livello Informazioni o Avviso da \"{{source}}\", a meno che un criterio di configurazione dei registri eventi non lo includa (Criterio di configurazione → Registri eventi → Provider applicazioni). Altrimenti, questa regola corrisponde solo ai suoi eventi Errore o Critico. Provider integrati: {{providers}}."
   },
   "operators": {
     "gt": "maggiore di",
@@ -333,10 +338,13 @@
     "cancel": "Annulla",
     "detachConfirm": "Scollegare da {{policy}}?",
     "errors": {
+      "loadGroups": "Impossibile caricare i gruppi di dispositivi.",
       "attach": "Impossibile collegare il monitor",
       "detach": "Impossibile scollegare il monitor",
       "linkedFeature": "I monitor di questa policy provengono da una policy di funzionalità condivisa. Modifica quella policy o scegline un'altra."
-    }
+    },
+    "partnerWideGroups": "Tutte le org. (a livello di partner)",
+    "organizationGroups": "Gruppi dell’organizzazione"
   },
   "policyTab": {
     "title": "Monitor",

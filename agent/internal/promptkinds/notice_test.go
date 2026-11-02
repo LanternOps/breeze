@@ -350,18 +350,19 @@ func TestSessionEndedNoticeCopyAndID(t *testing.T) {
 }
 
 // The registry is append-only: W04 notice.info@1, W05's restart kinds, then
-// W06's remote kinds.
+// W06's remote kinds, then W07's elevation.request.
 func TestRegisterSpeaksNoticeInfoV1(t *testing.T) {
 	specs := Specs()
 	// Every kind this build speaks is in the closed kind registry under the
 	// copy class its wave declared (restart kinds carry operator copy; the
 	// notice and remote kinds are Breeze-owned).
 	wantClass := map[string]ipc.PromptCopyClass{
-		"notice.info":    ipc.PromptCopyBreeze,
-		"restart.prompt": ipc.PromptCopyOperator,
-		"restart.final":  ipc.PromptCopyOperator,
-		"remote.consent": ipc.PromptCopyBreeze,
-		"remote.session": ipc.PromptCopyBreeze,
+		"notice.info":       ipc.PromptCopyBreeze,
+		"restart.prompt":    ipc.PromptCopyOperator,
+		"restart.final":     ipc.PromptCopyOperator,
+		"remote.consent":    ipc.PromptCopyBreeze,
+		"remote.session":    ipc.PromptCopyBreeze,
+		"elevation.request": ipc.PromptCopyBreeze,
 	}
 	var got []string
 	for _, s := range specs {
@@ -374,8 +375,8 @@ func TestRegisterSpeaksNoticeInfoV1(t *testing.T) {
 			t.Fatalf("%s class = %v, want %v (known=%v)", s.Name, class, want, known)
 		}
 	}
-	// Append-only order: W04, then W05, then W06.
-	want := []string{"notice.info@1", "restart.prompt@1", "restart.final@1", "remote.consent@1", "remote.session@1"}
+	// Append-only order: W04, then W05, then W06, then W07.
+	want := []string{"notice.info@1", "restart.prompt@1", "restart.final@1", "remote.consent@1", "remote.session@1", "elevation.request@1"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("specs = %v, want %v", got, want)
 	}

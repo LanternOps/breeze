@@ -7,9 +7,16 @@
  */
 import type { Concern, Watch, WatchKind } from '@breeze/shared';
 
-/** Why an assessment was requested (w00 "Triage engine (W05)" + A33). */
+/**
+ * Why an assessment was requested (w00 "Triage engine (W05)" + A33).
+ *
+ * `eventId` is the bus event's own id: kept for traceability, never shown to
+ * the model (no tool can look a bus event up). `alertId` / `deviceId` are the
+ * event's subject, copied from its payload when they are uuids, so the run can
+ * look up the alert the event is about (#10388).
+ */
 export type AssessmentReason =
-  | { kind: 'event'; eventType: string; eventId: string }
+  | { kind: 'event'; eventType: string; eventId: string; alertId?: string; deviceId?: string }
   | { kind: 'tick' }
   | { kind: 'watch'; watchId: string }
   | { kind: 'onboarding' };
@@ -30,10 +37,13 @@ export type WispAssessmentTriggerRef = {
 
 /**
  * What changed in the run's org since the watermark. Each list holds at most
- * 25 rows, newest first; every free-text field has been through
+ * 25 rows, newest first — except on a first look, where `alerts` holds the
+ * org's open (active / acknowledged) alerts, worst severity first, whenever
+ * they fired (#10389). Every free-text field has been through
  * `sanitizeSweepText`. ISO strings for every timestamp.
  */
 export type AssessmentDigest = {
+  /** Triggered or resolved since the watermark; `at` = the later of triggered / resolved. */
   alerts: { id: string; title: string; severity: string; status: string; at: string }[];
   tickets: { id: string; number: string | null; title: string; status: string; updatedAt: string }[];
   incidents: { id: string; sourceKind: string; condition: string; openedAt: string }[];
@@ -62,6 +72,13 @@ export interface AssessmentRunContext {
   openConcerns: Concern[];
   /** ISO lower bound of the digest window (watermark, or now − 24 h). */
   changedSince: string | null;
+  /**
+   * #10389: no earlier assessment for (grant, org) — no watermark, or an
+   * onboarding reason. The digest's alerts are then the org's OPEN alerts
+   * (no time bound) instead of those triggered since `changedSince`, and the
+   * prompt frames the run as a look at the current state.
+   */
+  firstLook: boolean;
   digest: AssessmentDigest;
   /** Set when the run was requested by a watch (`reason.kind === 'watch'`) and the watch still exists. */
   watch: Watch | null;

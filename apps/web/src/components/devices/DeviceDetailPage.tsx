@@ -861,11 +861,16 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
           ...(device.orgId
             ? [{ label: device.orgName, href: `/organizations/${device.orgId}` }]
             : []),
+          // The crumb is the one Back control (#9025's separate row sat on
+          // the header card's border and duplicated it): a plain click pops
+          // history so list filters and scroll survive; the href stays for
+          // new-tab / deep-link cases.
           {
             label: t("deviceDetailPage.devices"),
             href: devicesHref,
             title: devicesCrumbHint,
             description: devicesCrumbHint,
+            onClick: handleBack,
           },
           // #9026: one name — the leaf matches the h1; hostname on hover.
           {
@@ -880,7 +885,6 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
         metricsSampledAt={metricsSampledAt}
         workingOrgId={currentOrgId}
         onSwitchToDeviceOrg={handleSwitchToDeviceOrg}
-        onBack={handleBack}
         onAction={handleAction}
       />
       <DeviceSettingsModal

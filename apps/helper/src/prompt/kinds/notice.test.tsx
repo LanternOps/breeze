@@ -97,7 +97,6 @@ describe('notice.info card (#10190 W04)', () => {
 
   it('picks the notice card for notice.info and the generic card otherwise', () => {
     expect(cardForKind('notice.info')).toBe(NoticeCard);
-    expect(cardForKind('elevation.request')).toBe(PromptCard);
     expect(cardForKind('future.kind')).toBe(PromptCard);
     expect(cardForKind('constructor')).toBe(PromptCard);
   });

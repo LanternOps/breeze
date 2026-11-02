@@ -5,8 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Daily (was weekly): this is where an advisory newly published against a
+  # package already on main surfaces, since ci.yml's security-audit now blocks
+  # only on advisories a change introduces (W1, #10744).
   schedule:
-    - cron: '0 6 * * 1'
+    - cron: '0 6 * * *'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,6 +28,10 @@ jobs:
   npm-audit:
     name: NPM Audit
     runs-on: ubuntu-latest
+    # Read-only: this job installs and scans the checked-out code (PR code on
+    # pull_request runs). The tracking issue is written by npm-audit-issue.
+    outputs:
+      outcome: ${{ steps.audit.outcome }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -48,8 +55,155 @@ jobs:
       - name: Install osv-scanner
         run: bash scripts/security/install-osv-scanner.sh
 
+      # Full gate, no base comparison: on main every blocking advisory counts.
       - name: Run dependency audit
-        run: bash scripts/security/check-npm-audit.sh
+        id: audit
+        run: bash scripts/security/check-npm-audit.sh --findings-json "${RUNNER_TEMP}/npm-audit/npm-audit.json"
+
+      # For npm-audit-issue's finding table. npm-audit.json is absent when the
+      # scan failed an integrity check (the gate then writes no document); the
+      # outcome marker keeps the artifact non-empty, so the download in
+      # npm-audit-issue always finds it (continue-on-error is not allowed in
+      # this workflow — check-supply-chain-hardening.sh).
+      - name: Stage findings document
+        if: always() && (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main'
+        env:
+          AUDIT_OUTCOME: ${{ steps.audit.outcome }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/npm-audit"
+          printf '%s\n' "$AUDIT_OUTCOME" > "${RUNNER_TEMP}/npm-audit/outcome.txt"
+
+      - name: Upload findings document
+        if: always() && (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: npm-audit-findings
+          path: ${{ runner.temp }}/npm-audit/
+          if-no-files-found: error
+          retention-days: 7
+
+  # One open `security-advisory` issue titled "Dependency audit red on main"
+  # while main's audit is red; closed on the next green push or scheduled run
+  # (W1, #10744). Its own job so that `issues: write` never shares a token
+  # with an install of checked-out code. Pattern copied from ci.yml's
+  # main-red-alert: reads are retried, writes get one attempt (a retried write
+  # that had actually landed would open a second issue) and self-heal on the
+  # next run.
+  npm-audit-issue:
+    name: NPM Audit tracking issue
+    runs-on: ubuntu-latest
+    needs: [npm-audit]
+    if: always() && (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # Only the table renderer, from main (this job never runs for a PR);
+      # nothing is installed or built. Runs on the runner's Node.
+      - name: Checkout the finding-table renderer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts/new-findings.mjs
+          sparse-checkout-cone-mode: false
+
+      # Only a red audit needs the table. A failed download must not stop the
+      # issue from being opened, so the next step runs regardless and says so.
+      - name: Download findings document
+        id: download
+        if: needs.npm-audit.outputs.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: npm-audit-findings
+          path: ${{ runner.temp }}/npm-audit
+
+      - name: Open, update, or close the dependency audit issue
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ needs.npm-audit.outputs.outcome }}
+          DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          TITLE: Dependency audit red on main
+        run: |
+          # NOTE: deliberately no `-e` — a notifier must not turn on an API
+          # blip; every call is handled explicitly (see main-red-alert, #3692).
+          set -uo pipefail
+
+          # Progress to STDERR: this is called inside $(...).
+          gh_read_retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              if "$@"; then
+                return 0
+              fi
+              echo "gh read failed (attempt ${attempt}/3): $*" >&2
+              # No sleep after the final attempt — there is no fourth.
+              if [ "$attempt" -lt 3 ]; then
+                sleep $(( attempt * 5 ))
+              fi
+            done
+            return 1
+          }
+
+          gh label create security-advisory --repo "$GITHUB_REPOSITORY" \
+            --color D93F0B --description "Dependency advisory affecting main" 2>/dev/null || true
+
+          # "Could not read" is its own outcome, never "none found" — that
+          # would open a second issue on every red run while the API is down.
+          # Every matching open issue, one number per line (oldest first).
+          if existing=$(gh_read_retry gh issue list --repo "$GITHUB_REPOSITORY" --label security-advisory --state open \
+            --limit 100 --json number,title --jq "[.[] | select(.title == \"$TITLE\") | .number] | sort | .[]"); then
+            :
+          else
+            echo "::error::Could not read security-advisory issues after 3 attempts; skipping reconciliation for this run."
+            exit 0
+          fi
+          first="$(printf '%s\n' "$existing" | sed -n '1p')"
+
+          short_sha="${SHA:0:8}"
+          case "$OUTCOME" in
+            success)
+              # Close every matching issue, not just one: duplicates from an
+              # earlier lost write would otherwise stay open forever.
+              while IFS= read -r n; do
+                [ -n "$n" ] || continue
+                gh issue close "$n" --repo "$GITHUB_REPOSITORY" \
+                  --comment "The dependency audit is green on main as of \`$short_sha\`: $RUN_URL" \
+                  || echo "::error::Failed to close issue #$n; it will close on the next green run."
+              done <<<"$existing"
+              ;;
+            failure)
+              findings="${RUNNER_TEMP}/npm-audit/npm-audit.json"
+              if [ "$DOWNLOAD_OUTCOME" != success ]; then
+                echo "::warning title=Findings artifact missing::Could not download npm-audit-findings (download step: '${DOWNLOAD_OUTCOME}'); the issue is updated without the finding table — see the NPM Audit job log."
+                table="The findings artifact could not be downloaded — see the NPM Audit job log for the advisories."
+              elif [ -s "$findings" ] && table=$(node .github/scripts/new-findings.mjs --table "$findings"); then
+                :
+              else
+                table="The audit failed before producing findings (scan integrity or tooling failure) — see the run log."
+              fi
+              body="The dependency audit (\`scripts/security/check-npm-audit.sh\`) is red on main as of \`${short_sha}\`: ${RUN_URL}
+
+          ${table}
+
+          Fix by upgrading the package, or add a reviewed, expiring entry to \`scripts/security/npm-audit-exceptions.json\` (its header states the bar). PRs are not blocked by an advisory already on main, only by advisories they introduce (ci.yml security-audit).
+
+          Managed by the NPM Audit tracking issue job in security.yml: updated on every red push or daily run, closed on the next green one."
+              if [ -n "$first" ]; then
+                gh issue edit "$first" --repo "$GITHUB_REPOSITORY" --body "$body" \
+                  || echo "::error::Failed to update issue #$first; it is still open, so the red state is tracked."
+              else
+                gh issue create --repo "$GITHUB_REPOSITORY" --label security-advisory \
+                  --title "$TITLE" --body "$body" \
+                  || echo "::error::Failed to open the dependency audit issue — main's audit is red and untracked. Re-run this job once the API recovers."
+              fi
+              ;;
+            *)
+              echo "Audit step outcome is '$OUTCOME' (cancelled/skipped/unset) — no signal, doing nothing."
+              ;;
+          esac
 
   go-vuln:
     name: Go Vulnerability Check

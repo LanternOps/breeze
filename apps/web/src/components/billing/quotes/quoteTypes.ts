@@ -327,6 +327,14 @@ export interface QuoteAcceptance {
   evidence?: { filename: string; contentType: string; sizeBytes: number; uploadedAt: string } | null;
 }
 
+/** One contract a quote's accept created (#10361), as the quote detail lists it. */
+export interface QuoteGeneratedContract {
+  id: string;
+  name: string;
+  status: 'draft' | 'active' | 'paused' | 'cancelled' | 'expired';
+  intervalMonths: number;
+}
+
 /** Shape of `GET /quotes/:id` — `{ data: { quote, blocks, lines, branding, billTo } }`. */
 export interface QuoteDetail {
   quote: Quote;
@@ -375,6 +383,13 @@ export interface QuoteDetail {
    *  (or is about to be) superseded. null when none, or when the successor is
    *  outside the viewer's site scope. */
   successor?: { id: string; quoteNumber: string | null; status: QuoteStatus } | null;
+  /** #10361: the contracts this quote's accept created. `null` = not shown
+   *  (the viewer lacks contracts:read, or the lookup failed); `[]` = none.
+   *  Optional: older payloads and fixtures omit it. */
+  contracts?: QuoteGeneratedContract[] | null;
+  /** #10361: true when the server could not read those contracts (as opposed
+   *  to the viewer lacking permission). Optional: older payloads omit it. */
+  contractsUnavailable?: boolean;
   /** Whether the quote's partner has a connected Stripe account (gates the
    *  send composer's deposit-can't-be-paid warning). `null` = the server could
    *  not look it up (show neither note); omitted on older payloads/fixtures,
@@ -397,6 +412,11 @@ export interface QuoteDetail {
   autoEmailInvoiceOnAccept?: boolean;
   /** #9256: server has an email transport. Omitted (older payload) = unknown. */
   emailConfigured?: boolean;
+  /** #9867: each contract auto variable's value as the client will read it
+   *  (a draft resolves bill-to/seller the way send will freeze them). null =
+   *  the server could not resolve them; omitted on older payloads. Either way
+   *  the editor falls back to showing the `{{token}}`. */
+  contractAutoValues?: Record<string, string> | null;
 }
 
 export const STATUS_LABELS: Record<QuoteStatus, string> = {

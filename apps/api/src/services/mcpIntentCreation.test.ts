@@ -117,6 +117,9 @@ describe('createMcpActionIntent', () => {
     expect(args).toMatchObject({
       toolName: 'execute_command', source: 'mcp_api', orgId: ORG, correlationId: REQ,
       requestingClientLabel: 'MCP · ci key', maxLiveForOrigin: 20,
+      // #10027: every MCP filing asks for registry-Tier-3 approval of a
+      // non-read action rated below Tier 3 (the service applies it only then).
+      mcpRegistryTierApproval: true,
     });
     expect(args.idempotencyKey).toMatch(/^mcp:v1:[0-9a-f]{64}$/);
     expect(args.input).toEqual({ deviceId: 'd1', command: 'whoami' });

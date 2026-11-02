@@ -293,6 +293,26 @@ function digestHintFor(event: BreezeEvent): DeterministicDigestHint {
 }
 
 /**
+ * #10388: the event reason carries the event's subject — `alertId` /
+ * `deviceId` from the payload, uuids only — so the assessment can look up the
+ * alert the event is about. The bus event id alone names nothing a tool can
+ * read (events live in Redis streams, not a table). A request that coalesces
+ * onto a live job keeps the FIRST event's reason (requestAssessment), so a
+ * later event's subject can be lost here; the changes digest (alerts
+ * triggered OR resolved since the watermark) is what covers it.
+ */
+function eventReason(event: BreezeEvent): AssessmentReason {
+  const p = (event.payload ?? {}) as Record<string, unknown>;
+  return {
+    kind: 'event',
+    eventType: event.type,
+    eventId: event.id,
+    ...(isUuid(p.alertId) ? { alertId: p.alertId } : {}),
+    ...(isUuid(p.deviceId) ? { deviceId: p.deviceId } : {}),
+  };
+}
+
+/**
  * No self-wake: an assessment run's own terminal event must not request
  * another assessment. The run events carry no profile, so it is one
  * primary-key read.
@@ -359,7 +379,7 @@ export async function handleWispWakeEvent(event: BreezeEvent): Promise<void> {
 
   const grants = await grantsForEvent(event);
   if (grants.length === 0) return;
-  const reason: AssessmentReason = { kind: 'event', eventType: event.type, eventId: event.id };
+  const reason = eventReason(event);
   const hint = digestHintFor(event);
   for (const g of grants) {
     await requestAssessment({ grantId: g.grantId, orgId: g.orgId, reason, ...hint });

@@ -10,7 +10,7 @@ import {
   requirePermission,
   requireScope,
 } from '../../middleware/auth';
-import { moveOrgResourceDigest, validateStepUpGrant, type StepUpGrantBinding } from '../../services/mfaStepUpGrant';
+import { canonicalId, moveOrgResourceDigest, validateStepUpGrant, type StepUpGrantBinding } from '../../services/mfaStepUpGrant';
 import { getUserEpochs } from '../../services/authEpochs';
 import { ENABLE_2FA } from '../auth/schemas';
 import { hasPermission, PERMISSIONS } from '../../services/permissions';
@@ -28,8 +28,10 @@ import {
   type MoveCurrencyGuardDetails,
 } from '../../services/ticketMoveCurrencyGuard';
 import { TicketMoveHourBlockError } from '../../services/ticketMoveHourBlockGuard';
+import { PsaTicketingMoveBlockedError } from '../../services/deviceOrgMove/psaTicketingGuard';
 import { TicketMoveApprovalPendingError } from '../../services/ticketMoveApprovalGuard';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
+import { requestDeviceGroupReevaluationAfterCommit } from '../../jobs/deviceGroupJobs';
 import { expireDiagnosticApprovalsForMovedDevice } from '../../services/diagnosticAccess/deviceMove';
 import {
   PAM_MOVE_GUARD_CONSTRAINT,
@@ -102,8 +104,15 @@ moveOrgRoutes.post(
   zValidator('json', moveOrgSchema),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id')!;
-    const { orgId: targetOrgId, siteId: targetSiteId, acceptCurrencyMismatch, stepUpGrant } = c.req.valid('json');
+    const { orgId: rawTargetOrgId, siteId: rawTargetSiteId, acceptCurrencyMismatch, stepUpGrant } = c.req.valid('json');
+    // Canonical destination ids from here on (#10119). Both are `.uuid()`-validated,
+    // so case carries no meaning, and the raw spelling would otherwise: slip past
+    // the same-org guard below (a JS `===` against `device.orgId`), fail
+    // `auth.canAccessOrg`, miss the `orgRows.find(r.id === targetOrgId)` row-id
+    // comparison with a 404 for an org that exists, and land in the grant binding,
+    // the move detail and the audit rows in the caller's spelling.
+    const targetOrgId = canonicalId(rawTargetOrgId);
+    const targetSiteId = canonicalId(rawTargetSiteId);
 
     // Multi-currency (#3776): tickets bound to this device move with it, and
     // accepting that their unbilled monetary rows stay in the OLD currency is a
@@ -117,13 +126,17 @@ moveOrgRoutes.post(
     }
 
     // Source-side access check via the standard chokepoint.
-    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, c.req.param('id')!, auth);
     if (device === SITE_ACCESS_DENIED) {
       return c.json({ error: 'Access to this site denied' }, 403);
     }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
+    // From here on, the device's canonical id, never the raw path segment: an
+    // uppercase uuid in the URL finds the same device, and the step-up binding,
+    // the move itself and the audit rows must all use one spelling (#10119).
+    const deviceId = device.id;
 
     const sourceOrgId = device.orgId;
 
@@ -293,6 +306,9 @@ moveOrgRoutes.post(
       // A currency-policy block is not a failure: the transaction rolled back
       // (device + tickets untouched), so report it and skip Sentry / the
       // failed-move audit.
+      if (err instanceof PsaTicketingMoveBlockedError) {
+        return c.json({ error: err.message, code: err.code }, 409);
+      }
       if (err instanceof TicketMoveCurrencyBlockedError) {
         return c.json({ error: err.message, code: err.code, details: err.details }, 409);
       }
@@ -347,6 +363,15 @@ moveOrgRoutes.post(
     // an entry a racing beat writes for the source org is never served to the
     // target org either.
     runAfterDbContextCommit('devices.moveOrg.policyCacheInvalidate', () => invalidateDevicePolicyCaches(deviceId));
+
+    // The move trigger deleted every membership; device.created evaluates all
+    // target-org dynamic groups (device.updated without changed fields is a no-op).
+    requestDeviceGroupReevaluationAfterCommit({
+      deviceId,
+      orgId: targetOrgId,
+      eventType: 'device.created',
+      reason: 'device_org_moved',
+    });
 
     await expireDiagnosticApprovalsForMovedDevice(deviceId).catch((error) => {
       console.error(`[devices.moveOrg] failed to expire diagnostic access approvals for ${deviceId}:`, error);

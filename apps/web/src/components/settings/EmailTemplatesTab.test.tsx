@@ -6,6 +6,9 @@ import {
   EMAIL_TEMPLATE_IDS,
   emailTemplateLabel,
 } from '@breeze/shared';
+import ptBRSettings from '../../locales/pt-BR/settings.json';
+
+const AUTOPAY_ROW_IDS = new Set(['autopay_request', 'autopay_enrolled', 'autopay_stopped', 'autopay_paused', 'autopay_resumed', 'card_expiring']);
 
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
@@ -189,21 +192,28 @@ it('retains translated enrollment and group labels alongside reminder rows', asy
   }
 });
 
-it.each([
-  ['payment_reminder', 'Rappel de paiement'],
-  ['payment_overdue', 'Rappel de paiement en retard'],
-])('translates the %s row and opened editor heading', async (id, label) => {
+it('renders every built-in template name from the pt-BR catalog in the list and editor heading (#9953)', async () => {
   const translated = createInstance();
-  await translated.init({ lng: 'fr', fallbackLng: false, defaultNS: 'settings',
-    resources: { fr: { billing: { reminders: { templates: {
-      paymentReminder: 'Rappel de paiement', paymentOverdue: 'Rappel de paiement en retard',
-    } } } } }, interpolation: { escapeValue: false } });
+  await translated.init({ lng: 'pt-BR', fallbackLng: false, defaultNS: 'settings',
+    resources: { 'pt-BR': { settings: ptBRSettings } }, interpolation: { escapeValue: false } });
+  const ptLabels = (ptBRSettings as { emailTemplates: { labels: Record<string, string> } }).emailTemplates.labels;
+  const rowTestId = (id: string) => AUTOPAY_ROW_IDS.has(id) ? `autopay-email-template-${id}`
+    : id === 'payment_reminder' || id === 'payment_overdue' ? `autopay-template-${id}` : `email-template-row-${id}`;
   routeFetch();
   render(<I18nextProvider i18n={translated}><EmailTemplatesTab /></I18nextProvider>);
-  const row = await screen.findByTestId(`autopay-template-${id}`);
-  expect(row).toHaveTextContent(label);
-  fireEvent.click(row);
-  expect(within(await screen.findByTestId('email-template-editor')).getByRole('heading', { name: label })).toBeInTheDocument();
+  await screen.findByTestId('email-templates-list');
+  for (const id of EMAIL_TEMPLATE_IDS) {
+    const label = ptLabels[id];
+    expect(label, id).toBeTruthy();
+    expect(label, id).not.toBe(emailTemplateLabel(id));
+    const row = screen.getByTestId(rowTestId(id));
+    expect(row).toHaveTextContent(label);
+    fireEvent.click(row);
+    const editor = await screen.findByTestId('email-template-editor');
+    expect(within(editor).getByRole('heading', { name: label })).toBeInTheDocument();
+    fireEvent.click(within(editor).getByTestId('email-template-back'));
+    await screen.findByTestId('email-templates-list');
+  }
 });
 
 it.each([

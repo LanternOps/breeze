@@ -142,12 +142,18 @@ export async function loadAssetMetricHistory(asset: { id: string; orgId: string 
     .groupBy(baseExpr, snmpMetrics.oid, instanceExpr, bucketExpr)
     .orderBy(bucketExpr);
 
+  // A delta request is a counter request by definition — differencing averaged
+  // buckets reports neither a count nor a rate. It also covers counters the
+  // template cannot name: every built-in printer template types
+  // prtMarkerLifeCount "table" (its acquisition shape), which rendered
+  // "49.88780487804797 since yesterday" on the printer card.
+  const wantDeltas = query.delta === '1';
   type Series = { oid: string; instance: string; name: string; points: Array<[string, number]> };
   const seriesByKey = new Map<string, Series>();
   for (const row of rows) {
     const key = `${row.oid}|${row.instance}`;
     const series = seriesByKey.get(key) ?? { oid: row.oid, instance: row.instance, name: row.name, points: [] };
-    const raw = counterOids.has(row.baseOid) ? row.maxValue : row.avgValue;
+    const raw = wantDeltas || counterOids.has(row.baseOid) ? row.maxValue : row.avgValue;
     const value = Number(raw);
     if (Number.isFinite(value)) {
       series.points.push([new Date(row.bucket).toISOString(), value]);
@@ -155,7 +161,6 @@ export async function loadAssetMetricHistory(asset: { id: string; orgId: string 
     seriesByKey.set(key, series);
   }
 
-  const wantDeltas = query.delta === '1';
   const series = Array.from(seriesByKey.values())
     .slice(0, MAX_SERIES)
     .map((s) => ({ ...s, points: wantDeltas ? toResetAwareDeltas(s.points) : s.points }));

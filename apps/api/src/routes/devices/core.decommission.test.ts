@@ -16,6 +16,8 @@ import { Hono } from 'hono';
 
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
+  // Decommission/restore enqueue a dynamic-group re-evaluation after commit (#9933).
+  runAfterDbContextCommit: vi.fn(),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {

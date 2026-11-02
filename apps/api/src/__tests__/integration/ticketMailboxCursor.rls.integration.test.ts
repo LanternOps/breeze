@@ -9,6 +9,7 @@
  * serializes a concurrent disable until the retest transaction releases the row.
  */
 import './setup';
+import { randomUUID } from 'node:crypto';
 import { describe, it, expect, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
@@ -21,7 +22,7 @@ import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
-async function seedConnectedMailbox(): Promise<{
+async function seedConnectedMailbox(tenantId = '11111111-1111-4111-8111-111111111111'): Promise<{
   id: string;
   partnerId: string;
   tenantId: string;
@@ -29,7 +30,6 @@ async function seedConnectedMailbox(): Promise<{
 }> {
   return withSystemDbAccessContext(async () => {
     const partner = await createPartner();
-    const tenantId = '11111111-1111-4111-8111-111111111111';
     await db.insert(ticketMailboxTenantOwnerships).values({
       tenantId,
       partnerId: partner.id,
@@ -57,6 +57,128 @@ async function readBack(id: string): Promise<{ deltaLink: string | null; status:
 }
 
 describe('ticket_mailbox_connections worker writes persist under FORCE RLS (no request context)', () => {
+  runDb('recordPollAttempt persists with no DB context (#8308)', async () => {
+    const snapshot = await seedConnectedMailbox(randomUUID());
+    const { recordPollAttempt } = await import('../../services/ticketMailbox/connectionService');
+    // Called exactly as the worker does: no surrounding withSystemDbAccessContext.
+    await expect(recordPollAttempt(snapshot, 30_000)).resolves.toBe(true);
+    const rows = await withSystemDbAccessContext(async () => db.select({ at: ticketMailboxConnections.lastPollAttemptAt })
+      .from(ticketMailboxConnections).where(eq(ticketMailboxConnections.id, snapshot.id)));
+    expect(rows[0]!.at).toBeInstanceOf(Date);
+  });
+
+  runDb('the sweep lists the never-attempted first, then the oldest attempt (#8308)', async () => {
+    const { listConnectedMailboxes } = await import('../../services/ticketMailbox/connectionService');
+    // Built so the physical row order is the reverse of the expected order (an
+    // UPDATE writes a new row version at the end of the heap), so the result can
+    // only come from the ORDER BY: physical order ends up a, b, never.
+    const a = await seedConnectedMailbox(randomUUID());
+    const b = await seedConnectedMailbox(randomUUID());
+    const stamp = (id: string, at: Date) => withSystemDbAccessContext(async () => db.update(ticketMailboxConnections)
+      .set({ lastPollAttemptAt: at }).where(eq(ticketMailboxConnections.id, id)));
+    await stamp(a.id, new Date(Date.now() - 5_000));
+    await stamp(b.id, new Date(Date.now() - 10_000));
+    const never = await seedConnectedMailbox(randomUUID());
+
+    const ours = new Set([never.id, a.id, b.id]);
+    const order = (await listConnectedMailboxes()).map((c) => c.id).filter((id) => ours.has(id));
+    expect(order).toEqual([never.id, b.id, a.id]);
+  });
+
+  runDb('recordPollAttempt is a claim: a second sweep inside the window gets false and the stamp stays (#8308)', async () => {
+    const snapshot = await seedConnectedMailbox(randomUUID());
+    const { recordPollAttempt } = await import('../../services/ticketMailbox/connectionService');
+    const read = async () => (await withSystemDbAccessContext(async () => db.select({ at: ticketMailboxConnections.lastPollAttemptAt })
+      .from(ticketMailboxConnections).where(eq(ticketMailboxConnections.id, snapshot.id))))[0]!.at;
+
+    await expect(recordPollAttempt(snapshot, 30_000)).resolves.toBe(true);
+    const first = await read();
+    // An overlapping sweep reaching the same mailbox moments later.
+    await expect(recordPollAttempt(snapshot, 30_000)).resolves.toBe(false);
+    expect(await read()).toEqual(first);
+
+    // Once the window has passed, the next sweep claims it again and moves it forward.
+    // (Concurrent overlap is covered by the row-lock test below.)
+    const old = new Date(Date.now() - 31_000);
+    await withSystemDbAccessContext(async () => db.update(ticketMailboxConnections)
+      .set({ lastPollAttemptAt: old }).where(eq(ticketMailboxConnections.id, snapshot.id)));
+    await expect(recordPollAttempt(snapshot, 30_000)).resolves.toBe(true);
+    expect((await read())!.getTime()).toBeGreaterThan(old.getTime());
+  });
+
+  runDb('two overlapping stamps serialize on the row lock and the second gets false (#8308)', async () => {
+    const snapshot = await seedConnectedMailbox(randomUUID());
+    const { recordPollAttempt } = await import('../../services/ticketMailbox/connectionService');
+    let secondSettled = false;
+    let second!: Promise<boolean>;
+    // Sweep A stamps inside a transaction it holds open; sweep B (its own
+    // connection, as recordPollAttempt opens one outside any context) reaches the
+    // same row meanwhile and must wait for A's commit, then see A's stamp.
+    await withSystemDbAccessContext(async () => {
+      await db.update(ticketMailboxConnections)
+        .set({ lastPollAttemptAt: sql`clock_timestamp()` })
+        .where(eq(ticketMailboxConnections.id, snapshot.id));
+      second = recordPollAttempt(snapshot, 30_000);
+      second.then(() => { secondSettled = true; }, () => { secondSettled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(secondSettled).toBe(false);
+    });
+    await expect(second).resolves.toBe(false);
+  });
+
+  runDb('recordPollAttempt never moves a stamp backward (#8308)', async () => {
+    const snapshot = await seedConnectedMailbox(randomUUID());
+    const { recordPollAttempt } = await import('../../services/ticketMailbox/connectionService');
+    // A value from a clock ahead of this one is already committed. With a zero
+    // window the stamp lands, and GREATEST keeps the larger value.
+    const ahead = new Date(Date.now() + 60 * 60 * 1000);
+    await withSystemDbAccessContext(async () => db.update(ticketMailboxConnections)
+      .set({ lastPollAttemptAt: ahead }).where(eq(ticketMailboxConnections.id, snapshot.id)));
+    await expect(recordPollAttempt(snapshot, -2 * 60 * 60 * 1000)).resolves.toBe(true);
+    const rows = await withSystemDbAccessContext(async () => db.select({ at: ticketMailboxConnections.lastPollAttemptAt })
+      .from(ticketMailboxConnections).where(eq(ticketMailboxConnections.id, snapshot.id)));
+    expect(rows[0]!.at).toEqual(ahead);
+  });
+
+  runDb('releasePollAttempt clears the stamp with no DB context, so the mailbox lists first again (#8308)', async () => {
+    const { recordPollAttempt, releasePollAttempt, listConnectedMailboxes } = await import('../../services/ticketMailbox/connectionService');
+    const late = await seedConnectedMailbox(randomUUID());
+    const other = await seedConnectedMailbox(randomUUID());
+    await withSystemDbAccessContext(async () => db.update(ticketMailboxConnections)
+      .set({ lastPollAttemptAt: new Date(Date.now() - 60_000) }).where(eq(ticketMailboxConnections.id, other.id)));
+    await expect(recordPollAttempt(late, 30_000)).resolves.toBe(true);
+    const ours = new Set([late.id, other.id]);
+    const listed = async () => (await listConnectedMailboxes()).map((c) => c.id).filter((id) => ours.has(id));
+    // Freshly stamped, the late mailbox sorts after the older attempt.
+    expect(await listed()).toEqual([other.id, late.id]);
+
+    // Called exactly as the worker does: no surrounding withSystemDbAccessContext.
+    await expect(releasePollAttempt(late)).resolves.toBe(true);
+    const rows = await withSystemDbAccessContext(async () => db.select({ at: ticketMailboxConnections.lastPollAttemptAt })
+      .from(ticketMailboxConnections).where(eq(ticketMailboxConnections.id, late.id)));
+    expect(rows[0]!.at).toBeNull();
+    expect(await listed()).toEqual([late.id, other.id]);
+  });
+
+  runDb('releasePollAttempt leaves a stale generation alone and says so (#8308)', async () => {
+    const snapshot = await seedConnectedMailbox(randomUUID());
+    const { recordPollAttempt, releasePollAttempt } = await import('../../services/ticketMailbox/connectionService');
+    await expect(recordPollAttempt(snapshot, 30_000)).resolves.toBe(true);
+    await expect(releasePollAttempt({ ...snapshot, consentAttemptId: randomUUID() })).resolves.toBe(false);
+    const rows = await withSystemDbAccessContext(async () => db.select({ at: ticketMailboxConnections.lastPollAttemptAt })
+      .from(ticketMailboxConnections).where(eq(ticketMailboxConnections.id, snapshot.id)));
+    expect(rows[0]!.at).toBeInstanceOf(Date);
+  });
+
+  runDb('recordPollAttempt does not stamp a stale generation and says so (#8308)', async () => {
+    const snapshot = await seedConnectedMailbox(randomUUID());
+    const { recordPollAttempt } = await import('../../services/ticketMailbox/connectionService');
+    await expect(recordPollAttempt({ ...snapshot, consentAttemptId: randomUUID() }, 30_000)).resolves.toBe(false);
+    const rows = await withSystemDbAccessContext(async () => db.select({ at: ticketMailboxConnections.lastPollAttemptAt })
+      .from(ticketMailboxConnections).where(eq(ticketMailboxConnections.id, snapshot.id)));
+    expect(rows[0]!.at).toBeNull();
+  });
+
   runDb('updateDeltaCursor persists the cursor when called with no DB context', async () => {
     const snapshot = await seedConnectedMailbox();
     const { updateDeltaCursor } = await import('../../services/ticketMailbox/connectionService');

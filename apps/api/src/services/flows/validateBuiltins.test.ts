@@ -114,6 +114,14 @@ describe('validateBuiltinStep', () => {
       // Templates are run-time values: checked against the run org at execution.
       expect(await codesFor('create_alert', { deviceId: '{{item.id}}', severity: 'high', message: 'm' })).toEqual([]);
       expect(await codesFor('run_script_on_targets', { scriptId: SCRIPT, deviceIds: ['{{trigger.device.id}}'] })).toEqual([]);
+      expect(await codesFor('resolve_targets', { deviceIds: ['{{trigger.device.id}}'] })).toEqual([]);
+      expect(await codesFor('resolve_targets', { deviceIds: [DEVICE] })).toEqual([]);
+    });
+
+    it('resolve_targets naming a literal device the owner does not own is device_not_owned', async () => {
+      vi.mocked(findOwnedDeviceIds).mockResolvedValue(new Set());
+      expect(await codesFor('resolve_targets', { deviceIds: [DEVICE] })).toEqual(['device_not_owned']);
+      expect(await codesFor('resolve_targets', { deviceIds: [DEVICE] }, PARTNER_OWNER)).toEqual(['device_in_partner_flow']);
     });
 
     it('resolve_targets or run_script_on_targets naming a group the owner does not own is reference_not_owned', async () => {

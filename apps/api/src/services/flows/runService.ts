@@ -52,6 +52,16 @@ import { TERMINAL_FLOW_RUN_STATUSES } from './runStore';
 import type { FlowTriggerScope } from './triggerScope';
 import { clampToCallerCredential, triggererPermissions, triggererPermsCleared } from './triggererAccess';
 import { cancelOpenFlowRunIntents, missingPermissionsFor } from './versions';
+import {
+  OccurrenceClaimedError,
+  claimOccurrence,
+  conversionForFlow,
+  flowPrefers,
+  heldParentScheduleClaim,
+  reportOccurrenceAnomaly,
+  type ClaimExisting,
+  type FlowConversionView,
+} from './conversion/claims';
 
 // ── types ───────────────────────────────────────────────────────────────────
 
@@ -125,7 +135,36 @@ export type CreateFlowRunInput = CreateFlowRunBase & (
 export type CreateFlowRunResult =
   | { created: true; runId: string; preApprovalsHonored: boolean }
   | { created: false; reason: 'duplicate'; runId: string; preApprovalsHonored: boolean }
-  | { created: false; reason: 'not_enabled' | FlowRunAdmissionRefusal };
+  | { created: false; reason: 'not_enabled' | FlowRunAdmissionRefusal }
+  /**
+   * #5221 B4 (Decision 7): the flow was converted from a legacy Job and that
+   * conversion was reverted — the Job runs on the legacy engine again and the
+   * flow admits nothing new. (An occurrence-carrying run gets `not_enabled`.)
+   */
+  | { created: false; reason: 'flow_conversion_reverted' };
+
+/**
+ * #5221 B2 (Decision 6) — the trigger occurrence as both engines key it
+ * (`occurrenceKey.*`; several keys are aliases of ONE occurrence) and its
+ * instant (null when the source had no usable one). Consulted only when the
+ * flow was converted from a legacy automation; a plain flow ignores it.
+ * `keys: []` means the occurrence cannot be keyed: a switched flow then does
+ * not attempt it (legacy owns it), so it never runs unclaimed on both engines.
+ */
+export interface FlowRunOccurrence {
+  keys: readonly string[];
+  at: Date | null;
+}
+
+/**
+ * The extra outcome of a run that carries an occurrence: the occurrence was
+ * already claimed (by the legacy engine, pre-claim legacy history, or another
+ * generation's flow). The run, its charge and anything else the transaction
+ * wrote rolled back. Plan Decision 6 calls this "duplicate with the existing
+ * linkage"; it is a separate reason because the linkage may name a LEGACY run,
+ * which `duplicate`'s `runId` (a flow run) cannot.
+ */
+export type OccurrenceClaimedResult = { created: false; reason: 'occurrence_claimed'; claimedBy: ClaimExisting };
 
 export type StartManualRunResult =
   | { ok: true; runId: string; duplicate: boolean; preApprovalsHonored: boolean }
@@ -134,7 +173,7 @@ export type StartManualRunResult =
   | {
       ok: false;
       error: 'flow_not_found' | 'not_enabled' | 'not_manual' | 'org_required' | 'org_forbidden' | 'interactive_user_required'
-        | 'delegation_scope_restricted' | 'flow_tool_changed' | FlowRunAdmissionRefusal;
+        | 'delegation_scope_restricted' | 'flow_tool_changed' | 'flow_conversion_reverted' | FlowRunAdmissionRefusal;
     };
 
 export type CancelFlowRunResult =
@@ -286,12 +325,31 @@ class FlowRunRefused extends Error {
  *  8. the charge (`chargeFlowRun`); a breach throws and rolls the whole
  *     transaction back — run row and counters together;
  *  9. a webhook's `onCreated` (the accepted delivery row), same transaction.
+ * With an `occurrence` (#5221 B2, Decision 6) and a flow converted from a
+ * legacy automation, two more steps in the same transaction:
+ *  5a. after the dedupe probe: the flow attempts only while its
+ *      generation is switched (`flowPrefers`; reverted ⇒ `not_enabled`, it
+ *      admits nothing new) and only an occurrence it can key. Without an
+ *      occurrence (manual, tool, webhook and schedule runs) a reverted
+ *      generation's flow refuses `flow_conversion_reverted` (#5221 B4,
+ *      Decision 7) — except a schedule child whose `schedule:<key>` this
+ *      generation's tick parent-claimed (`heldParentScheduleClaim`, #5221 B5:
+ *      the parent claim was the admission). The generation is read for every
+ *      run (one indexed lookup by flow id);
+ *  8a. after the charge, before the webhook hook: the occurrence claim
+ *      (`claimOccurrence`, engine `flow`, naming the new run). A conflict
+ *      throws, rolling back run, charge and claim; the caller gets
+ *      `occurrence_claimed` with the winner's linkage.
  * After a refusal: the flow's banner marker (`recordAdmissionRefusal`, never
  * a pause). After commit: the first slice is enqueued (a failure is logged —
  * the reconciler re-enqueues queued runs after 2 minutes) and a manual run is
  * audited `flow.run.create`. Throws on DB failure (event/schedule retry).
  */
-export async function createFlowRun(i: CreateFlowRunInput): Promise<CreateFlowRunResult> {
+export async function createFlowRun(i: CreateFlowRunInput & { occurrence: FlowRunOccurrence }): Promise<CreateFlowRunResult | OccurrenceClaimedResult>;
+export async function createFlowRun(i: CreateFlowRunInput): Promise<CreateFlowRunResult>;
+export async function createFlowRun(
+  i: CreateFlowRunInput & { occurrence?: FlowRunOccurrence },
+): Promise<CreateFlowRunResult | OccurrenceClaimedResult> {
   const p = deriveProvenance(i);
   assertChain(p);
   const pinsPublication = i.triggerKind === 'manual' || i.triggerKind === 'webhook' || i.triggerKind === 'tool';
@@ -307,7 +365,7 @@ export async function createFlowRun(i: CreateFlowRunInput): Promise<CreateFlowRu
   }
   const triggerPayload = { ...i.scope, kind: i.triggerKind, orgId: i.orgId };
 
-  let result: CreateFlowRunResult & { flowName?: string };
+  let result: (CreateFlowRunResult | OccurrenceClaimedResult) & { flowName?: string };
   try {
     result = await inSystemTx(async (): Promise<CreateFlowRunResult & { flowName?: string }> => {
       const [org] = await db
@@ -361,6 +419,27 @@ export async function createFlowRun(i: CreateFlowRunInput): Promise<CreateFlowRu
       const existing = await findDedupedRun(flow.id, i.orgId, i.dedupeKey);
       if (existing) return { created: false, reason: 'duplicate', runId: existing.id, preApprovalsHonored: existing.preApprovalsHonored };
 
+      // 5a. A converted flow attempts an occurrence only while switched, and
+      // only one it can key (legacy owns an unkeyable one). #5221 B4: a
+      // REVERTED generation's flow admits nothing new however it is started
+      // (Decision 7); its admitted runs never come back through here.
+      const conversion: FlowConversionView | null = await conversionForFlow(db, flow.id);
+      // #5221 B5: except a schedule child whose occurrence this generation's
+      // tick parent-claimed before the revert — that claim was the admission,
+      // the child is its execution. Read here, in this transaction.
+      if (conversion?.state === 'reverted' && !i.occurrence
+          && !(i.triggerKind === 'schedule' && await heldParentScheduleClaim(db, { id: conversion.id, automationId: conversion.automationId }, i.dedupeKey))) {
+        return { created: false, reason: 'flow_conversion_reverted' };
+      }
+      if (i.occurrence && conversion) {
+        if (!flowPrefers(conversion)) return { created: false, reason: 'not_enabled' };
+        if (i.occurrence.keys.length === 0) {
+          reportOccurrenceAnomaly('flow_conversion_event_key_unbuildable', 'flow', i.dedupeKey);
+          return { created: false, reason: 'not_enabled' };
+        }
+        if (!i.occurrence.at) reportOccurrenceAnomaly('flow_conversion_event_instant_missing', 'flow', i.dedupeKey);
+      }
+
       const at = new Date();
       const admission = await assertFlowRunAdmission(owner, flow.id, { doc: doc.data, at });
       if (!admission.ok) return { created: false, reason: admission.error };
@@ -389,16 +468,36 @@ export async function createFlowRun(i: CreateFlowRunInput): Promise<CreateFlowRu
       // breach rolls back the run row and both increments.
       const charge = await chargeFlowRun({ flowId: flow.id, owner, flowCap: admission.caps.flowCap, ownerCap: admission.caps.ownerCap, at });
       if (!charge.ok) throw new FlowRunRefused(charge.error);
+      // 8a. The cross-engine claim, naming this run; a lost claim rolls it all back.
+      if (conversion && i.occurrence) {
+        const claim = await claimOccurrence(db, {
+          automationId: conversion.automationId,
+          owner: { orgId: conversion.orgId, partnerId: conversion.partnerId },
+          keys: i.occurrence.keys,
+          engine: 'flow',
+          conversionId: conversion.id,
+          flowRunId: row.id,
+          occurrenceAt: i.occurrence.at,
+        });
+        if (!claim.ok) throw new OccurrenceClaimedError(claim.existing);
+      }
       if (i.triggerKind === 'webhook') await i.onCreated(row.id);
       return { created: true, runId: row.id, preApprovalsHonored: p.preApprovalsHonored, flowName: flow.name };
     }, 'flows.runService.createFlowRun');
   } catch (err) {
-    if (!(err instanceof FlowRunRefused)) throw err;
-    result = { created: false, reason: err.reason };
+    if (err instanceof OccurrenceClaimedError) {
+      result = { created: false, reason: 'occurrence_claimed', claimedBy: err.existing };
+    } else {
+      if (!(err instanceof FlowRunRefused)) throw err;
+      result = { created: false, reason: err.reason };
+    }
   }
 
   if (!result.created) {
-    if (result.reason !== 'duplicate' && result.reason !== 'not_enabled') await recordAdmissionRefusal(i.flowId, result.reason);
+    if (result.reason !== 'duplicate' && result.reason !== 'not_enabled' && result.reason !== 'occurrence_claimed'
+        && result.reason !== 'flow_conversion_reverted') {
+      await recordAdmissionRefusal(i.flowId, result.reason);
+    }
     return result;
   }
   const { flowName, ...created } = result;

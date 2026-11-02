@@ -102,7 +102,7 @@ describe('restoreWorkspace hydrates and attaches each session tab', () => {
       tabs: [tab({ id: 'a', sessionId: 'sa' }), tab({ id: 'b', sessionId: 'sb' }), tab({ id: 'c' })],
       activeTabId: 'a',
     });
-    on('/ai/sessions/sa', () => session('sa', { deviceId: 'd1', contextSnapshot: { type: 'device', id: 'd1', hostname: 'h1' } }));
+    on('/ai/sessions/sa', () => session('sa', { deviceId: 'd1', contextSnapshot: { type: 'device', id: 'dddddddd-1111-4222-8333-444455556666', hostname: 'h1' } }));
     on('/ai/sessions/sb', () => session('sb'));
     on('/ai/sessions/sa/stream', () => sse(frame(snap({ turn: 'idle', turnId: null }))));
     on('/ai/sessions/sb/stream', () => sse(frame(snap({ turn: 'idle', turnId: null }))));
@@ -116,6 +116,21 @@ describe('restoreWorkspace hydrates and attaches each session tab', () => {
     expect(callsTo('/ai/sessions/sb/stream')).toHaveLength(1);
     expect(tabOf('a')).toMatchObject({ sessionId: 'sa', orgId: ORG_A, deviceId: 'd1', deviceLabel: 'h1' });
     expect(useWorkspaceStore.getState().activeTabId).toBe('a'); // restore never moves the active tab
+  });
+
+  it('preserves the persisted context label when the snapshot fails parsing', async () => {
+    useWorkspaceStore.setState({
+      tabs: [tab({ id: 'a', sessionId: 'sa', contextLabel: 'Saved ticket label' })],
+      activeTabId: 'a',
+    });
+    on('/ai/sessions/sa', () => session('sa', { contextSnapshot: { type: 'record', kind: 'ticket', id: 'invalid' } }));
+    on('/ai/sessions/sa/stream', () => sse(frame(snap({ turn: 'idle', turnId: null }))));
+
+    await useWorkspaceStore.getState().restoreWorkspace();
+    await flush();
+
+    expect(tabOf('a')).toMatchObject({ sessionId: 'sa', contextLabel: 'Saved ticket label' });
+    expect(callsTo('/ai/sessions/sa/stream')).toHaveLength(1);
   });
 
   it('a non-chat type on restore clears that tab’s session like a 404, with no attach', async () => {

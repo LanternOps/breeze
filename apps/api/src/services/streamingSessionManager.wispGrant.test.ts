@@ -87,6 +87,16 @@ vi.mock('./toolSources/sdkBridge', () => ({
   tenantMcpToolNames: vi.fn(() => []),
 }));
 
+// Tenant (BYO MCP) tool resolution runs for every default-server session; flow
+// tool resolution only for one WITHOUT a Wisp grant (sessionMayStartFlows
+// excludes Wisp). Left unmocked, the ordinary-session test lazily imports the
+// real ./flows/flowTools graph, whose cold transform alone takes ~5 s: the
+// test timed out when this file ran by itself and passed only when another
+// file had warmed the transform cache.
+// Their behaviour is pinned in streamingSessionManager.{tenantTools,flowTools}.test.ts.
+vi.mock('./toolSources/resolver', () => ({ resolveTenantTools: vi.fn(async () => []) }));
+vi.mock('./flows/flowTools', () => ({ resolveFlowTools: vi.fn(async () => []) }));
+
 import { StreamingSessionManager } from './streamingSessionManager';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import { buildOrgAccessClosures, type AuthContext } from '../middleware/auth';

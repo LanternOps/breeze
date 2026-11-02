@@ -91,6 +91,11 @@ export async function cancelDeviceCommands(params: {
   completedAt?: Date;
   executor?: DbExecutor;
   isolateFailures?: boolean;
+  /**
+   * The reason recorded on an owning `patch_job_results` row (#8909, e.g.
+   * `ring_deleted`). Omitted → the generic `cancelled`.
+   */
+  patchCancelReason?: string;
   /** Override the per-command hook (tests). */
   propagate?: typeof propagateCancelledDeviceCommand;
 }): Promise<DeviceCommandCancelSubject[]> {
@@ -145,6 +150,7 @@ export async function cancelDeviceCommands(params: {
         payload: subject.payload,
         completedAt,
         executor: hookExecutor,
+        ...(params.patchCancelReason ? { patchCancelReason: params.patchCancelReason } : {}),
       });
     if (!isolateFailures) {
       await run(executor);
@@ -183,6 +189,8 @@ export async function propagateCancelledDeviceCommand(params: {
    * with a `script_executions` / `deployment_results` row still `pending`.
    */
   executor?: DbExecutor;
+  /** Reason for the owning `patch_job_results` row; default `cancelled` (#8909). */
+  patchCancelReason?: string;
 }): Promise<void> {
   const { commandId, type, payload, completedAt } = params;
   const executor: DbExecutor = params.executor ?? db;
@@ -231,7 +239,7 @@ export async function propagateCancelledDeviceCommand(params: {
     await finalizePatchDeviceForCommand({
       commandId,
       payload,
-      terminal: { kind: 'cancelled', reason: 'cancelled' },
+      terminal: { kind: 'cancelled', reason: params.patchCancelReason ?? 'cancelled' },
       completedAt,
       executor,
     });
@@ -300,15 +308,19 @@ export async function propagateCancelledDeviceCommand(params: {
   // `in_progress` forever otherwise. DYNAMIC import, like the branches above,
   // to keep this module a leaf. Not try/caught, for the same reason: a
   // failure rolls the caller's cancel back with it.
-  if (type === 'execute_containment') {
-    const { finalizeContainmentAction } = await import('./incidentContainmentResults');
-    await finalizeContainmentAction({
-      commandId,
-      payload,
-      outcome: { kind: 'cancelled', error: errorMessage },
-      completedAt,
-      executor,
-    });
+  // Ownership, rather than the payload string, distinguishes W1 episodes from
+  // the existing AI network-isolation action. Cancelling delivery cannot prove absence.
+  if (type === 'execute_containment' || type === 'release_containment') {
+    const episode = (payload?.actionType === 'network_isolation' || type === 'release_containment')
+      ? await (await import('./networkIsolation/episodeStore')).findEpisodeByCommand(executor, commandId) : null;
+    if (episode) {
+      const { journalIsolationEvent } = await import('./networkIsolation/reconcile');
+      await journalIsolationEvent(executor, episode, 'isolate_command_cancelled', completedAt);
+      console.warn('[isolation] command cancelled; heartbeat intent retained', { commandId, deviceId: episode.deviceId, isolationId: episode.id });
+    } else if (type === 'execute_containment') {
+      const { finalizeContainmentAction } = await import('./incidentContainmentResults');
+      await finalizeContainmentAction({ commandId, payload, outcome: { kind: 'cancelled', error: errorMessage }, completedAt, executor });
+    }
   }
 
   // #6263 W05 — a cancelled security_scan leaves its scan row waiting

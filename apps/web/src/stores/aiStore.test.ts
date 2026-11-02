@@ -110,6 +110,41 @@ describe('ai store', () => {
     await vi.waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith('/ai/sessions/session-1/stream', expect.anything()));
   });
 
+  // #10108: a send the server refused before the turn ran (here the 503 a
+  // deployment with no AI provider key returns) must not leave a phantom user
+  // bubble the server never stored, and must give the typed text back.
+  it('sendMessage drops the optimistic bubble and restores the draft on a generic refusal (503)', async () => {
+    const earlier = { id: 'm-1', role: 'assistant' as const, content: 'Earlier', createdAt: new Date() };
+    useAiStore.setState({ sessionId: 'session-1', composerDraft: '', messages: [earlier], errorCode: null });
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeResponse({ error: 'AI is not configured on this deployment', code: 'ai_not_configured' }, false, 503)
+    );
+
+    await useAiStore.getState().sendMessage('  Is the disk still full?  ');
+
+    const s = useAiStore.getState();
+    expect(s.messages).toEqual([earlier]);
+    expect(s.composerDraft).toBe('Is the disk still full?');
+    expect(s.error).toBe('AI is not configured on this deployment');
+    expect(s.errorCode).toBe('ai_not_configured');
+    expect(s.isStreaming).toBe(false);
+    // No attach: nothing is running on the server.
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('sendMessage keeps the bubble when the stream fails after the turn started', async () => {
+    useAiStore.setState({ sessionId: 'session-1', composerDraft: '', messages: [] });
+    const body = new ReadableStream<Uint8Array>({ start(c) { c.error(new Error('connection reset')); } });
+    fetchWithAuthMock.mockResolvedValueOnce({ ok: true, status: 200, body } as unknown as Response);
+
+    await useAiStore.getState().sendMessage('Hello');
+
+    const s = useAiStore.getState();
+    expect(s.messages.map((m) => m.content)).toEqual(['Hello']);
+    expect(s.composerDraft).toBe('');
+    expect(s.error).toBe('connection reset');
+  });
+
   it('startDeviceTask forwards initialMessage to sendMessage', async () => {
     const state = useAiStore.getState();
     const createSpy = vi.spyOn(state, 'createSession').mockImplementation(async () => {

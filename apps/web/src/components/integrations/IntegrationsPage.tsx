@@ -37,6 +37,7 @@ import { usePermissions } from "../../lib/permissions";
 import { getJwtClaims } from "../../lib/authScope";
 import { useHelpStore, rebaseDocsUrl } from "../../stores/helpStore";
 import { useOrgStore } from "../../stores/orgStore";
+import { keepHashAcrossOrgSwitch } from "../../lib/orgSwitch";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import {
@@ -166,6 +167,8 @@ function parseHash(fallbackTab: TabId): ParsedHash {
 }
 
 function parseHashValue(hash: string, fallbackTab: TabId): ParsedHash {
+  // The webhook panel owns its filter state inside this tab's hash.
+  if (hash.startsWith("webhooks?")) return { tab: "webhooks" };
   const customerGraphReadPrefix = "m365/customer-graph-read/";
   if (hash.startsWith(customerGraphReadPrefix)) {
     const candidate = hash.slice(customerGraphReadPrefix.length);
@@ -535,6 +538,15 @@ export default function IntegrationsPage({
     accounting: isOrgScoped ? "accounting" : accountingSubTab === "stripe" ? "stripe" : "accounting",
   };
   const activeNavHash = activeSubTab[activeTab] ?? activeTab;
+  // #9954: the scope bar's "Change" (and the header switcher) re-render this
+  // page in place under the new org. Keep the user on the entry they were on —
+  // the entry's own hash, never a re-consent row or a consent callback result,
+  // which belong to the org being left.
+  const activeNavHashRef = useRef(activeNavHash);
+  useIsomorphicLayoutEffect(() => {
+    activeNavHashRef.current = activeNavHash;
+  }, [activeNavHash]);
+  useEffect(() => keepHashAcrossOrgSwitch(() => activeNavHashRef.current), []);
   const navSections = visibleTabs.map((tab) => ({
     tab,
     items: navItemsFor(tab.id, isOrgScoped),

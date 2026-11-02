@@ -29,6 +29,7 @@ import type {
   YaraRuleSetPin,
 } from '@breeze/shared';
 import { db } from '../db';
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from './deviceGroupOwnership';
 import { deviceGroupMemberships, devices, organizations, sites, yaraRuleSets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { isAutomationPrincipal } from '../middleware/principalKind';
@@ -46,7 +47,8 @@ export type SweepTargetErrorCode =
   | 'RULE_SET_NOT_FOUND'
   | 'RULE_SET_NOT_PUBLISHED'
   | 'SWEEP_TOO_LARGE'
-  | 'NO_ELIGIBLE_DEVICES';
+  | 'NO_ELIGIBLE_DEVICES'
+  | ReturnType<typeof partnerGroupTargetRefusal>['code'];
 
 export interface SweepTargetsInput {
   ruleSetIds: string[];
@@ -180,6 +182,13 @@ export async function resolveSweepTargets(auth: AuthContext, rawInput: SweepTarg
   // Validators accept any-case UUIDs; rows are stored lower-case.
   const input = normalizeIds(rawInput);
   const { scope } = input;
+  if (scope.kind === 'groups') {
+    const partnerGroupIds = await findPartnerOwnedGroupIds(scope.groupIds);
+    if (partnerGroupIds.length > 0) {
+      const refusal = partnerGroupTargetRefusal(partnerGroupIds);
+      return fail(400, refusal.code, { groupIds: refusal.groupIds });
+    }
+  }
 
   // Named / restricting orgs must be reachable at all (RLS + accessibleOrgIds).
   if (input.onlyOrgId && !auth.canAccessOrg(input.onlyOrgId)) {

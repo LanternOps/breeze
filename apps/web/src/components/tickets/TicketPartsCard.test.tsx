@@ -293,4 +293,25 @@ describe('TicketPartsCard', () => {
       expect(screen.getByTestId('ticket-parts-form-cost-basis')).toHaveValue(null);
     });
   });
+
+  // #10073: a merged tombstone answers every part write with 409 TICKET_MERGED.
+  describe('read-only (merged tombstone)', () => {
+    it('lists parts but offers no add, edit or delete', async () => {
+      render(<TicketPartsCard ticketId="tk-1" readOnly />);
+      expect((await screen.findByTestId('ticket-part-p-1')).textContent).toContain('SSD 1TB');
+      expect(screen.getByTestId('ticket-parts-add-toggle')).toBeDisabled();
+      expect(screen.queryByTestId('ticket-part-edit-p-1')).toBeNull();
+      expect(screen.queryByTestId('ticket-part-delete-p-1')).toBeNull();
+      fireEvent.click(screen.getByTestId('ticket-parts-add-toggle'));
+      expect(screen.queryByTestId('ticket-parts-form')).toBeNull();
+    });
+
+    it('closes an open part form when the ticket becomes read-only', async () => {
+      const { rerender } = render(<TicketPartsCard ticketId="tk-1" />);
+      fireEvent.click(await screen.findByTestId('ticket-parts-add-toggle'));
+      expect(screen.getByTestId('ticket-parts-form')).toBeInTheDocument();
+      rerender(<TicketPartsCard ticketId="tk-1" readOnly />);
+      expect(screen.queryByTestId('ticket-parts-form')).toBeNull();
+    });
+  });
 });

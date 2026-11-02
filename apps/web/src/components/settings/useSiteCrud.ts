@@ -130,6 +130,9 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
   const [siteSubmitting, setSiteSubmitting] = useState(false);
   const [guidingFirstSite, setGuidingFirstSite] = useState(false);
   const [writeOrgId, setWriteOrgId] = useState<string | null>(null);
+  // The org whose listing last loaded successfully: an empty `sites` only means
+  // "no sites yet" once that org's list has actually come back.
+  const [listedOrgId, setListedOrgId] = useState<string | null>(null);
   // Only the most recent refresh may write list state: an org switch starts a
   // new listing while the previous (possibly multi-page) one is in flight, and
   // that older response must not land under the new scope.
@@ -155,13 +158,17 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
               { strictShape: true },
             )
           : await fetchAllSites<Site>('/orgs/sites', { orgIdOverride: null }, { strictShape: true });
-        if (isLatest()) setSites(siteList);
+        if (isLatest()) {
+          setSites(siteList);
+          setListedOrgId(targetOrgId ?? null);
+        }
         return siteList;
       } catch (err) {
         console.warn('[useSiteCrud] failed to fetch sites', targetOrgId ?? '(fleet)', err);
         if (isLatest()) {
           setSites([]);
           setSitesFailed(true);
+          setListedOrgId(null);
         }
         return null;
       } finally {
@@ -176,15 +183,22 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
     setSitesLoading(false);
     setSites([]);
     setSitesFailed(false);
+    setListedOrgId(null);
   }, []);
 
   const openAdd = useCallback(
     (targetOrgId?: unknown) => {
-      setWriteOrgId(typeof targetOrgId === 'string' && targetOrgId ? targetOrgId : orgId);
+      const target = typeof targetOrgId === 'string' && targetOrgId ? targetOrgId : orgId;
+      setWriteOrgId(target);
       setSelectedSite(null);
+      // An org confirmed to have no sites gets the "Add the first site" dialog
+      // (#9868) — the destination of the org board's "No site" chip.
+      setGuidingFirstSite(
+        !fleet && !sitesLoading && !sitesFailed && sites.length === 0 && !!target && target === listedOrgId,
+      );
       setSiteModalMode('add');
     },
-    [orgId],
+    [orgId, fleet, sitesLoading, sitesFailed, sites.length, listedOrgId],
   );
 
   const openEdit = useCallback(
@@ -274,6 +288,11 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
           // runAction does not expose when building the fallback — this is the
           // existing status-free sibling, present in all 8 locales.
           errorFallback: t('settings:siteDetailPage.errors.saveSite'),
+          // #10084: confirm the write — the modal closing alone read as nothing happening.
+          successMessage:
+            method === 'POST'
+              ? t('settings:sites.toasts.created', { name: values.name })
+              : t('settings:sites.toasts.saved', { name: values.name }),
           onUnauthorized,
         });
 
@@ -300,6 +319,7 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
       await runAction({
         request: () => fetchWithAuth(`/orgs/sites/${selectedSite.id}`, { method: 'DELETE', orgIdOverride: targetOrgId }),
         errorFallback: t('settings:organizationsPage.errors.deleteSite'),
+        successMessage: t('settings:sites.toasts.deleted', { name: selectedSite.name }),
         onUnauthorized,
       });
 

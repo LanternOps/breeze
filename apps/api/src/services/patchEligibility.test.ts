@@ -22,7 +22,7 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   devicePatches: {
     id: 'id', patchId: 'patchId', deviceId: 'deviceId', orgId: 'orgId', status: 'status',
-    createdAt: 'createdAt', availableVersion: 'availableVersion',
+    createdAt: 'createdAt', availableVersion: 'availableVersion', scope: 'scope',
   },
   patches: {
     id: 'id', externalId: 'externalId', title: 'title', category: 'category',
@@ -70,12 +70,13 @@ type Row = {
   category: string | null; severity: string | null; releaseDate: string | null;
   requiresReboot: boolean; source: string; packageId: string | null; version: string | null;
   firstSeenAt: Date | null; status: string; supersededBy: string | null;
+  scope: string | null;
 };
 const row = (o: Partial<Row>): Row => ({
   devicePatchId: `dp-${o.patchId ?? P1}`, patchId: P1, externalId: 'KB1', title: 'A patch',
   category: 'security', severity: 'critical', releaseDate: '2020-01-01', requiresReboot: false,
   source: 'microsoft', packageId: null, version: null, firstSeenAt: null, status: 'pending',
-  supersededBy: null, ...o,
+  supersededBy: null, scope: null, ...o,
 });
 type Approval = { patchId: string; status: string; ringId: string | null; updatedAt?: Date };
 
@@ -367,6 +368,43 @@ describe('evaluatePatchInstallEligibility — the decision, with a reason for ev
   });
 });
 
+describe('evaluatePatchInstallEligibility — per-user winget installs are never eligible (#10249)', () => {
+  // The SYSTEM agent cannot install into a user's profile (#2727). Before
+  // #10249 the evaluator never read device_patches.scope, so patch jobs and
+  // the AI patch plan dispatched these and failed — or, after an agent
+  // restart, installed a second machine-wide copy.
+  it('denies a manually approved scope=user row with unsupported_user_scope; machine and NULL scope stay eligible', async () => {
+    mockEvaluatorReads(
+      [
+        row({ patchId: P1, source: 'third_party', packageId: 'Zoom.Zoom', scope: 'user' }),
+        row({ patchId: P2, source: 'third_party', packageId: 'Mozilla.Firefox', scope: 'machine' }),
+        row({ patchId: P3, scope: null }),
+      ],
+      [
+        { patchId: P1, status: 'approved', ringId: null },
+        { patchId: P2, status: 'approved', ringId: null },
+        { patchId: P3, status: 'approved', ringId: null },
+      ],
+    );
+    const res = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config: ringConfig() });
+    expect(res.eligible.map((e) => e.patchId)).toEqual([P2, P3]);
+    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'unsupported_user_scope' }]);
+  });
+
+  it('ring auto-approve does not admit a scope=user row either, and the job executor never sees it', async () => {
+    const config = ringConfig({ autoApprove: { enabled: true, severities: ['critical'] } });
+    mockEvaluatorReads([row({ patchId: P1, scope: 'user' }), row({ patchId: P2, scope: 'machine' })], []);
+    const approved = await resolveApprovedPatchesForDevice(DEV, ORG, config);
+    expect(approved.map((p) => p.patchId)).toEqual([P2]);
+  });
+
+  it('a non-outstanding scope=user row still reports not_outstanding (status is checked first)', async () => {
+    mockEvaluatorReads([row({ patchId: P1, scope: 'user', status: 'missing' })], []);
+    const res = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config: ringConfig(), patchIds: [P1] });
+    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'not_outstanding' }]);
+  });
+});
+
 describe('resolveApprovedPatchesForDevice — golden-fixture parity with the pre-extraction evaluator', () => {
   it('returns exactly what it returned before the extraction (shape, order, fields)', async () => {
     mockEvaluatorReads([
@@ -416,7 +454,7 @@ describe('resolvePatchInstallEligibility — the live composition', () => {
     vi.mocked(db.select).mockReturnValueOnce(chain('limit', found ? [{ id: DEV, orgId: ORG }] : []) as never);
   }
   function mockRingRow(deferralDays: number, partnerId = PARTNER) {
-    vi.mocked(db.select).mockReturnValueOnce(chain('limit', [{ deferralDays, partnerId }]) as never);
+    vi.mocked(db.select).mockReturnValueOnce(chain('limit', [{ deferralDays, partnerId, enabled: true }]) as never);
   }
   const policyLocal = (o: Record<string, unknown> = {}) => ({
     configPolicyId: 'cp-1', configPolicyName: 'Workstations', orgId: ORG, featureLinkId: 'fl-1',
@@ -576,7 +614,7 @@ describe('resolveDevicePatchEvaluationConfig — ring app rules (#8184)', () => 
 
   it('carries the ring rules as ringAppRules and no longer reads the policy rules (#8186 cutover)', async () => {
     vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution()) as never);
-    vi.mocked(db.select).mockReturnValueOnce(chain('limit', [{ deferralDays: 0, partnerId: PARTNER }]) as never);
+    vi.mocked(db.select).mockReturnValueOnce(chain('limit', [{ deferralDays: 0, partnerId: PARTNER, enabled: true }]) as never);
     const config = await resolveDevicePatchEvaluationConfig(DEV);
     expect(config.ringAppRules).toEqual([{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }]);
     expect(config.apps ?? []).toEqual([]);
@@ -604,6 +642,24 @@ describe('resolveDevicePatchEvaluationConfig — ring app rules (#8184)', () => 
       expect(config.ringReferenceInvalid, classification).toBe(true);
       expect(config.apps ?? [], classification).toEqual([]);
     }
+  });
+
+  it('a ring deleted or disabled between resolution and the read fails closed (#8909)', async () => {
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution()) as never);
+    // Soft delete = `enabled = false`: the row still exists, so only the
+    // enabled flag tells the live gate the ring is gone.
+    vi.mocked(db.select).mockReturnValueOnce(
+      chain('limit', [{ deferralDays: 0, partnerId: PARTNER, enabled: false }]) as never,
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const config = await resolveDevicePatchEvaluationConfig(DEV);
+    expect(config.ringId).toBeNull();
+    expect(config.ringAppRules ?? []).toEqual([]);
+    expect(config.ringReferenceInvalid).toBe(true);
+    expect(captureException).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining('disabled'),
+    }));
+    warn.mockRestore();
   });
 
   it('a ring that vanishes mid-resolution fails closed: marked invalid, no rules', async () => {
@@ -714,7 +770,7 @@ describe('evaluatePatchInstallEligibility — Windows feature-update policy', ()
     vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
 
     vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution()) as never);
-    vi.mocked(db.select).mockReturnValueOnce(chain('limit', [{ deferralDays: 0, partnerId: PARTNER }]) as never);
+    vi.mocked(db.select).mockReturnValueOnce(chain('limit', [{ deferralDays: 0, partnerId: PARTNER, enabled: true }]) as never);
     expect((await resolveDevicePatchEvaluationConfig(DEV)).featureUpdates)
       .toEqual({ mode: 'pin', product: 'windows-11', targetVersion: '25H2' });
 

@@ -6,7 +6,7 @@ import {
   transportSecurityStatus,
   workspaceExtensionStatus,
 } from './customStatus';
-import { defineEntry } from './statusHelpers';
+import { defineEntry, isFlagOn } from './statusHelpers';
 import type { ConnectionEntry } from './types';
 
 /**
@@ -311,10 +311,15 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
     group: 'ai',
     label: 'Flows (AI-drafted automation flows)',
     vars: [{ name: 'FLOWS_ENABLED', secret: false }],
+    // Default ON since #5221 R1 (mirrors flowsEnabled()): unset or empty is
+    // enabled; only an explicit false-y value turns Flows off.
     status: {
-      kind: 'flags',
-      flags: ['FLOWS_ENABLED'],
-      requiredWhenOn: [],
+      kind: 'custom',
+      fn: (env) => {
+        const raw = env.FLOWS_ENABLED;
+        if (typeof raw !== 'string' || raw.trim() === '') return { status: 'enabled' };
+        return isFlagOn(env, 'FLOWS_ENABLED') ? { status: 'enabled' } : { status: 'disabled' };
+      },
     },
   }),
   // ── billing ─────────────────────────────────────────────────────────────
@@ -709,6 +714,8 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'TRUST_PROXY_HEADERS', secret: false },
       { name: 'TRUSTED_PROXY_CIDRS', secret: false },
       { name: 'TRUST_CF_CONNECTING_IP', secret: false },
+      { name: 'INTERNAL_SERVICE_CIDRS', secret: false },
+      { name: 'INTERNAL_API_HOSTS', secret: false },
     ],
     status: { kind: 'custom', fn: transportSecurityStatus },
   }),

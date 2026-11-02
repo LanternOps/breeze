@@ -121,6 +121,20 @@ describe('AcceptOnBehalfDialog — friendly send-gate error copy (#6637)', () =>
     expect(toasted.message.toLowerCase()).not.toContain('cannot accept');
   });
 
+  // #9963: the button is disabled on an item-less quote, so this only lands in
+  // a race (the quote's last item removed in another tab) — still translated.
+  it('shows friendly copy for a 422 QUOTE_EMPTY', async () => {
+    fetchWithAuth.mockImplementation(async (path: string) => {
+      if (typeof path === 'string' && path.includes('/orgs/partners/me')) {
+        return { ok: true, status: 200, json: async () => ({ autoEmailInvoiceOnQuoteAccept: false }) } as unknown as Response;
+      }
+      return errRes(422, { error: 'Add at least one item before accepting', code: 'QUOTE_EMPTY' });
+    });
+    await fillAndSubmit();
+    const toasted = showToast.mock.calls.at(-1)?.[0] as { message: string };
+    expect(toasted.message).toBe('This quote has no items. Close this dialog and add an item, or use Revise quote if it was already sent.');
+  });
+
   it('leaves an unrelated error code to the server message (no friendly override)', async () => {
     fetchWithAuth.mockImplementation(async (path: string) => {
       if (typeof path === 'string' && path.includes('/orgs/partners/me')) {

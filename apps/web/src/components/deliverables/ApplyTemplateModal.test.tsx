@@ -83,6 +83,36 @@ beforeEach(() => {
 });
 
 describe('ApplyTemplateModal', () => {
+  // #9960: before applying, show which deliverables the set creates and which
+  // of them the customer will see in the portal.
+  it('previews the selected set\'s items with their portal visibility', async () => {
+    const item = (id: string, name: string, cadence: 'monthly' | 'one_time', portalVisible: boolean) => ({
+      id, setId: 'set-org', name, description: null, cadence,
+      leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve' as const,
+      instructions: null, checklistTemplateId: null, sortOrder: 0, autoEvidenceReportType: null, portalVisible,
+    });
+    const sets: TemplateSet[] = [
+      { ...SETS[0]!, items: [item('i-1', 'Monthly report', 'monthly', true), item('i-2', 'Kickoff', 'one_time', false)] },
+      SETS[1]!,
+    ];
+    const fetcher = fetcherFor({ setsResponse: jsonResponse({ data: sets }) });
+    render(<ApplyTemplateModal fetcher={fetcher} orgId={ORG_ID} onApplied={vi.fn()} onClose={vi.fn()} />);
+
+    const select = await screen.findByTestId('apply-template-set');
+    await waitFor(() => expect(select.querySelectorAll('option').length).toBeGreaterThan(1));
+    expect(screen.queryByTestId('apply-template-items')).toBeNull();
+
+    fireEvent.change(select, { target: { value: 'set-org' } });
+    const list = screen.getByTestId('apply-template-items');
+    expect(list).toHaveTextContent('Monthly report');
+    expect(list).toHaveTextContent('Kickoff');
+    expect(screen.getByTestId('apply-template-item-portal-i-1')).toHaveTextContent('Shown in portal');
+    expect(screen.getByTestId('apply-template-item-portal-i-2')).toHaveTextContent('Hidden from portal');
+
+    fireEvent.change(select, { target: { value: 'set-partner' } });
+    expect(screen.getByTestId('apply-template-items')).toHaveTextContent('This set has no deliverables yet.');
+  });
+
   it('lists template sets and badges the partner-wide ones', async () => {
     const fetcher = fetcherFor({});
     render(<ApplyTemplateModal fetcher={fetcher} orgId={ORG_ID} onApplied={vi.fn()} onClose={vi.fn()} />);

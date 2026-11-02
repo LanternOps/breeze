@@ -9,7 +9,7 @@ import {
   type BackupProviderAdapter,
   type ProviderTestResult,
   type VendorCustomer,
-  type VendorDevice,
+  type VendorDeviceList,
 } from '../types';
 
 export const COVE_PROVIDER_KEY = 'cove';
@@ -37,7 +37,7 @@ export const coveCredentialsSchema = z.object({
   // working credential into an unexplained auth failure. Blank/whitespace-only
   // is still rejected via `.refine`, which checks without mutating the value.
   password: z.string().max(5000).refine((v) => v.trim().length > 0, {
-    message: 'password is required',
+    message: 'API user token is required',
   }),
 }).strip();
 
@@ -69,7 +69,7 @@ function parseCredentials(creds: unknown): CoveCredentials {
     // schema is a credential problem the operator must fix by re-entering it,
     // not something a retry can resolve.
     throw new ProviderRequestError(
-      'Cove credentials are incomplete (partner name, username and password are all required)',
+      'Cove credentials are incomplete (partner name, API user login name and token are all required)',
       { code: 'invalid_credentials', reauth: true },
     );
   }
@@ -90,6 +90,8 @@ export const coveAdapter: BackupProviderAdapter = {
   key: COVE_PROVIDER_KEY,
   label: COVE_PROVIDER_LABEL,
   credentialsSchema: coveCredentialsSchema,
+  defaultBaseUrl: COVE_DEFAULT_BASE_URL,
+  defaultSyncIntervalMinutes: 30,
 
   /**
    * Never throws. The create/PATCH/test routes render this straight into a
@@ -129,8 +131,8 @@ export const coveAdapter: BackupProviderAdapter = {
    * vanished, so a truncated enumeration reported as success would delete a
    * customer's whole backup inventory.
    */
-  async listDevices(creds: unknown, baseUrl: string, rootId: string): Promise<VendorDevice[]> {
+  async listDevices(creds: unknown, baseUrl: string, rootId: string): Promise<VendorDeviceList> {
     const { client } = await connect(creds, baseUrl);
-    return client.enumerateAccountStatisticsAll(rootId);
+    return { devices: await client.enumerateAccountStatisticsAll(rootId), failedCustomerIds: [] };
   },
 };

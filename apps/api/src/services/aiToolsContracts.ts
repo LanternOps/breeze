@@ -50,6 +50,8 @@ import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { getPeriodOutcome } from './billingEvidence';
 import { listContractCurrencyMismatches } from './contractCurrencyReportService';
 import { bounded } from './aiToolsSoftwareShared';
+// Full-control W14 PR B (#6784): preview / generate the due invoice (POST /contracts/:id/generate).
+import { generateInvoiceAction, previewInvoiceAction } from './aiToolsContractInvoice';
 
 /**
  * Params each manage_contracts action requires, presence-checked BEFORE any
@@ -67,6 +69,9 @@ const MANAGE_CONTRACTS_REQUIRED: Record<string, readonly string[]> = {
   pause: ['contractId'],
   resume: ['contractId'],
   cancel: ['contractId'],
+  // Full-control W14 PR B (#6784). generate_invoice's assertions are validated in aiToolsContractInvoice.ts.
+  preview_invoice: ['contractId'],
+  generate_invoice: ['contractId', 'periodStart', 'expectedTotal', 'autoIssue', 'expectedRecipients'],
 };
 
 function actorFromAuth(auth: AuthContext): ContractActor {
@@ -282,11 +287,13 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
     tier: 2 as AiToolTier,
     deviceArgs: [],
     domain: 'billing',
-    searchHint: 'recurring contracts: create, edit drafts and lines, activate, pause, resume, cancel',
+    searchHint: 'recurring contracts: create, edit drafts and lines, activate, pause, resume, cancel, generate the due invoice',
+    // W14 PR B (#6784): generate_invoice renders a PDF and emails post-commit; it opens its own short contexts.
+    selfManagedDbContext: ['generate_invoice'],
     definition: {
       name: 'manage_contracts',
       description:
-        "Manage recurring contracts for accessible orgs; prices and totals use the contract currencyCode. Actions: create_draft, update, delete_draft, add_line, remove_line, update_line, activate, pause, resume, cancel. Lifecycle changes require approval.",
+        "Recurring contracts; amounts in the contract currencyCode. Actions: create_draft, update, delete_draft, add_line, remove_line, update_line, activate, pause, resume, cancel, preview_invoice, generate_invoice (pass preview_invoice's generateWith). Lifecycle and generate need approval.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -303,9 +310,15 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
               'pause',
               'resume',
               'cancel',
+              'preview_invoice',
+              'generate_invoice',
             ],
           },
           contractId: { type: 'string', description: 'Contract UUID' },
+          periodStart: { type: 'string', description: 'generate_invoice: generateWith.periodStart from preview_invoice' },
+          expectedTotal: { type: 'string', description: 'generate_invoice: generateWith.expectedTotal (with tax)' },
+          autoIssue: { type: 'boolean', description: 'generate_invoice: generateWith.autoIssue' },
+          expectedRecipients: { type: 'array', items: { type: 'string' }, description: 'generate_invoice: generateWith.expectedRecipients' },
           lineId: { type: 'string', description: 'Contract line UUID' },
           input: { type: 'object', description: 'Full create-contract payload including orgId, name, and schedule fields' },
           patch: {
@@ -407,6 +420,10 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
             return JSON.stringify(await resumeContract(String(input.contractId), actor));
           case 'cancel':
             return JSON.stringify(await cancelContract(String(input.contractId), actor));
+          case 'preview_invoice':
+            return await previewInvoiceAction(String(input.contractId), actor);
+          case 'generate_invoice':
+            return await generateInvoiceAction(String(input.contractId), input, auth, actor);
           default:
             return JSON.stringify({ error: `Unknown action: ${action}`, code: 'VALIDATION_ERROR' });
         }

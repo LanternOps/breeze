@@ -62,6 +62,7 @@ Create `/etc/caddy/Caddyfile`:
             request>headers>X-Xero-Signature replace REDACTED
             request>headers>Stripe-Signature replace REDACTED
             request>headers>Svix-Signature replace REDACTED
+            request>headers>Webhook-Signature replace REDACTED
             request>headers>Intuit-Signature replace REDACTED
             request>headers>Mcp-Session-Id replace REDACTED
             request>headers>Cf-Access-Jwt-Assertion replace REDACTED

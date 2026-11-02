@@ -51,6 +51,7 @@ function toWorkloadRow(args: IngestWorkloadsArgs, runtime: WorkloadRuntime, item
     imageTag: item.imageTag,
     imageDigest: item.imageDigest,
     imageId: item.imageId,
+    imageProvenance: item.imageProvenance,
     guestOs: item.guestOs,
     composeProject: item.composeProject,
     composeService: item.composeService,
@@ -155,9 +156,13 @@ async function applyRuntimePlan(args: IngestWorkloadsArgs, plan: WorkloadRuntime
  *   image list failed), so the stored digest is kept — but only while the
  *   image is provably the same one (same image id and reference).
  * - The upstream comparison describes one specific local image: it is reset
- *   to `pending` (digest/checked-at cleared) when the effective digest or the
- *   image reference changes, and preserved otherwise. A brand-new row takes
- *   the column defaults (`pending`).
+ *   to `pending` (digest/checked-at cleared) when the effective digest, the
+ *   image reference or the effective provenance (#9067) changes, and
+ *   preserved otherwise. A brand-new row takes the column defaults (`pending`).
+ * - Provenance travels with the digest: when the stored digest is kept and
+ *   no provenance was reported, the stored one is kept. NULL (pre-#9067 agent)
+ *   and `confirmed` decide the same thing, so an agent upgrade that starts
+ *   reporting `confirmed` does not reset a row or its behind_since clock.
  */
 function upstreamUpsertSet(incompleteSnapshot: boolean) {
   const t = deviceWorkloads;
@@ -169,9 +174,15 @@ function upstreamUpsertSet(incompleteSnapshot: boolean) {
         AND excluded.image_id IS NOT DISTINCT FROM ${t.imageId} AND ${sameImage})`
     : sql`false`;
   const nextDigest = sql`CASE WHEN ${keepStoredDigest} THEN ${t.imageDigest} ELSE excluded.image_digest END`;
-  const unchanged = sql`(${nextDigest} IS NOT DISTINCT FROM ${t.imageDigest} AND ${sameImage})`;
+  // A kept digest keeps its provenance only when the agent sent none; a fresh
+  // value is newer evidence about the same image and wins.
+  const nextProvenance = sql`CASE WHEN ${keepStoredDigest}
+    THEN COALESCE(excluded.image_provenance, ${t.imageProvenance}) ELSE excluded.image_provenance END`;
+  const sameProvenance = sql`COALESCE(${nextProvenance}, 'confirmed') = COALESCE(${t.imageProvenance}, 'confirmed')`;
+  const unchanged = sql`(${nextDigest} IS NOT DISTINCT FROM ${t.imageDigest} AND ${sameImage} AND ${sameProvenance})`;
   return {
     imageDigest: nextDigest,
+    imageProvenance: nextProvenance,
     upstreamStatus: sql`CASE WHEN ${unchanged} THEN ${t.upstreamStatus} ELSE 'pending' END`,
     upstreamDigest: sql`CASE WHEN ${unchanged} THEN ${t.upstreamDigest} ELSE NULL END`,
     upstreamCheckedAt: sql`CASE WHEN ${unchanged} THEN ${t.upstreamCheckedAt} ELSE NULL END`,

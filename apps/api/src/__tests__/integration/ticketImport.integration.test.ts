@@ -188,6 +188,8 @@ function source(fx: Fx, overrides: Partial<ImportedTicket> = {}): ImportedTicket
 
 /** A resume's report-only fields when the source changed nothing (and a first import's). */
 const NOTHING_CHANGED = { requesterChanged: false, orgChanged: false, commentsChangedInSource: [], commentsMissingInSource: [] };
+/** The attachment fields of a ticket with no files (#8313 W1; files: ticketImportAttachments.integration.test.ts). */
+const NO_FILES = { attachmentsWritten: 0, attachmentsSkipped: [], attachmentBytes: 0 };
 
 async function bucketSize(windowId: string): Promise<number> {
   return Number(await getRedis()!.zcard(migrationWindowRateKey(windowId)));
@@ -218,7 +220,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     const ticket = source(fx);
 
     const result = await importTicket(window.id, ticket, { partnerId: fx.partner.id });
-    expect(result).toEqual({ ticketId: expect.any(String), outcome: 'created', commentsWritten: 3, commentsSkipped: 0, fieldsUpdated: 0, statusSkipped: false, ...NOTHING_CHANGED });
+    expect(result).toEqual({ ticketId: expect.any(String), outcome: 'created', commentsWritten: 3, commentsSkipped: 0, fieldsUpdated: 0, statusSkipped: false, ...NO_FILES, ...NOTHING_CHANGED });
 
     const [row] = await getTestDb().select().from(tickets).where(eq(tickets.id, result.ticketId));
     expect(row).toMatchObject({
@@ -280,7 +282,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
 
     // A second run resumes and finds nothing to do: no write, no charge.
     const again = await importTicket(window.id, ticket, { partnerId: fx.partner.id });
-    expect(again).toEqual({ ticketId: result.ticketId, outcome: 'resumed', commentsWritten: 0, commentsSkipped: 3, fieldsUpdated: 0, statusSkipped: false, ...NOTHING_CHANGED });
+    expect(again).toEqual({ ticketId: result.ticketId, outcome: 'resumed', commentsWritten: 0, commentsSkipped: 3, fieldsUpdated: 0, statusSkipped: false, ...NO_FILES, ...NOTHING_CHANGED });
     expect(await bucketSize(window.id)).toBe(8);
     expect(await getTestDb().select().from(ticketComments).where(eq(ticketComments.ticketId, result.ticketId))).toHaveLength(rows.length);
 
@@ -328,7 +330,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
 
     const second = await openWindow(fx);
     const resumed = await importTicket(second.id, ticket, { chunkSize: 2, partnerId: fx.partner.id });
-    expect(resumed).toEqual({ ticketId: partial!.id, outcome: 'resumed', commentsWritten: 3, commentsSkipped: 2, fieldsUpdated: 0, statusSkipped: false, ...NOTHING_CHANGED });
+    expect(resumed).toEqual({ ticketId: partial!.id, outcome: 'resumed', commentsWritten: 3, commentsSkipped: 2, fieldsUpdated: 0, statusSkipped: false, ...NO_FILES, ...NOTHING_CHANGED });
     const all = await getTestDb().select().from(ticketComments)
       .where(and(eq(ticketComments.ticketId, partial!.id), sql`${ticketComments.importSourceId} IS NOT NULL`));
     expect(all).toHaveLength(5);
@@ -527,6 +529,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
       commentsSkipped: 3,
       fieldsUpdated: 0,
       statusSkipped: false,
+      ...NO_FILES,
       requesterChanged: true,
       orgChanged: true,
       // The flipped flag is listed; the Breeze edit wins, so its source edit is not.
@@ -725,7 +728,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     expect(await getTestDb().select().from(tickets).where(inArray(tickets.orgId, [other.orgA.id, fx.orgA.id]))).toEqual([]);
   });
 
-  runDb('a ticket merged in Breeze between two passes is skipped as merged_in_breeze; a ref the merge moved is refused; nothing is written or charged', async () => {
+  runDb('a ticket merged in Breeze between two passes is skipped as merged_in_breeze, also when the merge moved its ref; a ref moved with no origin is refused; nothing is written or charged', async () => {
     const fx = await seed();
     const first = await openWindow(fx);
     const open = { assigneeUserId: undefined, finalStatus: 'open' as const, resolvedAt: undefined, closedAt: undefined, resolutionNote: undefined };
@@ -770,6 +773,9 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     expect(await refOf(a.sourceId)).toBe(ra.ticketId);
     expect(await refOf(c.sourceId)).toBe(live.id);
     expect(await refOf(e.sourceId)).toBe(rx.ticketId);
+    // E's ref stands for one moved before origin_ticket_id existed (#10120: no backfill).
+    await getTestDb().update(ticketExternalRefs).set({ originTicketId: null })
+      .where(and(eq(ticketExternalRefs.partnerServicePrincipalId, fx.principal.id), eq(ticketExternalRefs.externalId, e.sourceId)));
 
     const touched = [ra.ticketId, rb.ticketId, rc.ticketId, rd.ticketId, re.ticketId, live.id, rx.ticketId];
     const snapshot = async () => ({
@@ -786,12 +792,18 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
       ticketId: ra.ticketId,
       outcome: 'skipped',
       skip: { reason: 'merged_in_breeze', mergedIntoTicketId: rb.ticketId },
-      commentsWritten: 0, commentsSkipped: 0, fieldsUpdated: 0, statusSkipped: false, ...NOTHING_CHANGED,
+      commentsWritten: 0, commentsSkipped: 0, fieldsUpdated: 0, statusSkipped: false, ...NO_FILES, ...NOTHING_CHANGED,
     });
-    // A moved ref resolves to a ticket this principal did not import: refused,
-    // never resumed onto it (the known limit: on every pass).
-    await expect(importTicket(second.id, { ...c, comments: [...c.comments, article(6)] }, { partnerId: fx.partner.id }))
-      .rejects.toMatchObject({ code: 'MIGRATION_SOURCE_ID_IN_USE', status: 409, details: { reason: 'live_ticket', ticketId: live.id } });
+    // A moved ref names its origin, this principal's tombstone C (#10120):
+    // the same answer as a ref still on the tombstone.
+    expect(await importTicket(second.id, { ...c, comments: [...c.comments, article(6)] }, { partnerId: fx.partner.id })).toEqual({
+      ticketId: rc.ticketId,
+      outcome: 'skipped',
+      skip: { reason: 'merged_in_breeze', mergedIntoTicketId: live.id },
+      commentsWritten: 0, commentsSkipped: 0, fieldsUpdated: 0, statusSkipped: false, ...NO_FILES, ...NOTHING_CHANGED,
+    });
+    // A moved ref with no origin resolves to a ticket this principal did not
+    // import: refused, never resumed onto it (on every pass).
     await expect(importTicket(second.id, { ...e, comments: [...e.comments, article(10)] }, { partnerId: fx.partner.id }))
       .rejects.toMatchObject({ code: 'MIGRATION_SOURCE_ID_IN_USE', status: 409, details: { reason: 'other_principal_ticket', ticketId: rx.ticketId } });
     expect(await snapshot()).toEqual(before);

@@ -4,7 +4,22 @@ import { describe, expect, it } from 'vitest';
 import { scanEnglishCatalogue, type VocabularyRule } from './aiVocabularyGuard';
 
 const DECISION_RULES: VocabularyRule[] = [
-  { name: 'Reject/Decline for AI approvals', pattern: /\b(Reject(ed)?|Decline(d)?)\b/, namespaces: ['ai', 'approvals', 'aiOperator'] },
+  // #10198: every AI approval surface, not just the ai/approvals/aiOperator
+  // namespaces, and in any case — the leftovers were lowercase badges,
+  // "refused" toasts and AI screens living in security/settings/scripts.
+  {
+    name: 'Reject/Refuse/Decline for AI approvals',
+    pattern: /\b(reject(s|ed|ing|ions?)?|refuse[sd]?|decline[sd]?)\b/i,
+    keyPrefixes: [
+      'ai:',
+      'approvals:',
+      'aiOperator:',
+      'security:aiRisk',
+      'settings:aiAgentsRuns.',
+      'settings:aiUsagePage.',
+      'scripts:scriptAiMessages.',
+    ],
+  },
   { name: 'remediation reject', pattern: /\bReject\b/, namespaces: ['common'] },
   { name: 'inbox for Approvals', pattern: /\binbox\b/i, namespaces: ['aiOperator', 'settings'] },
   { name: 'cents', pattern: /¢/ },
@@ -13,6 +28,12 @@ const DECISION_RULES: VocabularyRule[] = [
 ];
 
 const ALLOW = new Set<string>([
+  // A model declining to answer a turn (a model refusal), not an approval decision:
+  'ai:aiTurnModel.fellBack',
+  // The automated script reviewer's verdict (approve / changes / reject) is a
+  // recommendation, not a person's approval decision (#10399, #10198):
+  'ai:scriptProposal.reviewVerdictReject',
+  'security:aiRiskScriptProposalsPanel.humanApprovedAfterReject',
   // Gmail mailbox settings describe a mail inbox, not Approvals:
   'settings:gmailMailbox.handling.off',
   'settings:gmailMailbox.handling.onArchive',

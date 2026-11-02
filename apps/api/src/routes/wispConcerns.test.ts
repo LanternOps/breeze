@@ -109,6 +109,15 @@ const grantRow = (o: Record<string, unknown> = {}) => ({
   id: GRANT_ID, partnerId: PARTNER, grantorUserId: USER, currentRevisionId: REV, status: 'active', ...o,
 });
 const ceiling = { grantId: GRANT_ID, revisionId: REV, partnerId: PARTNER, grantorUserId: USER, scopeOrgId: null, partnerWide: true, orgIds: new Set([ORG]) };
+/** What grantAuthority returns for an `allowPaused` read of a paused grant. */
+const pausedCeiling = { ...ceiling, status: 'paused' };
+/** Mirror resolveGrantCeiling: a paused grant resolves only for an allowPaused read. */
+function usePausedResolver() {
+  h.resolveGrantCeiling.mockImplementation(async (_g: string, _r: string, opts?: { allowPaused?: boolean }) => {
+    if (opts?.allowPaused) return pausedCeiling;
+    throw new GrantInactiveError(GRANT_ID, 'paused');
+  });
+}
 const concern = (o: Record<string, unknown> = {}) => ({
   id: CONCERN_ID, partnerId: PARTNER, orgId: ORG, subject: { kind: 'ticket', id: CONCERN_ID }, summary: 'Ticket waiting 3 days',
   severity: 'medium', status: 'open', evidence: {}, outcome: null, signature: null, childConcernIds: [], approvalIntentId: null,
@@ -197,7 +206,7 @@ describe('GET /wisp/concerns', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ concerns: [concern()] });
     expectGrantWhere(h.whereArgs[0]);
-    expect(h.resolveGrantCeiling).toHaveBeenCalledWith(GRANT_ID, REV);
+    expect(h.resolveGrantCeiling).toHaveBeenCalledWith(GRANT_ID, REV, { allowPaused: true });
     expect(h.listConcernsForCeiling).toHaveBeenCalledWith(ceiling, { status: ['open', 'snoozed'], orgId: ORG });
   });
 
@@ -228,12 +237,42 @@ describe('GET /wisp/concerns', () => {
     expect(h.resolveGrantCeiling).not.toHaveBeenCalled();
   });
 
-  it('409 grant_inactive when the grant is paused', async () => {
+  // #10104: a paused grant's own thread stays readable. The resolver mock
+  // behaves like grantAuthority: only an `allowPaused` read resolves a paused
+  // grant (to a ceiling that can never authorise an action).
+  it('a PAUSED grant still lists its concerns under the stored ceiling (#10104)', async () => {
     h.dbResults.push([grantRow({ status: 'paused' })]);
-    h.resolveGrantCeiling.mockRejectedValue(new GrantInactiveError(GRANT_ID, 'paused'));
+    usePausedResolver();
+    const res = await buildApp().request(`/wisp/concerns?grantId=${GRANT_ID}&status=open,snoozed`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ concerns: [concern()] });
+    expect(h.listConcernsForCeiling).toHaveBeenCalledWith(pausedCeiling, { status: ['open', 'snoozed'], orgId: undefined });
+  });
+
+  it('a PAUSED grant does not widen who may read: another tech without partner-wide admin → 404, nothing resolved', async () => {
+    h.dbResults.push([grantRow({ status: 'paused', grantorUserId: OTHER_USER })]);
+    usePausedResolver();
+    const res = await buildApp().request(`/wisp/concerns?grantId=${GRANT_ID}`);
+    expect(res.status).toBe(404);
+    expect(h.resolveGrantCeiling).not.toHaveBeenCalled();
+    expect(h.listConcernsForCeiling).not.toHaveBeenCalled();
+  });
+
+  it('a PAUSED grant is readable by a partner-wide admin, as an active one is (w00 A1)', async () => {
+    h.dbResults.push([grantRow({ status: 'paused', grantorUserId: OTHER_USER })]);
+    usePausedResolver();
+    const res = await buildApp(asPartnerAdmin).request(`/wisp/concerns?grantId=${GRANT_ID}`);
+    expect(res.status).toBe(200);
+    expect(h.listConcernsForCeiling).toHaveBeenCalledWith(pausedCeiling, { status: undefined, orgId: undefined });
+  });
+
+  it('409 grant_inactive when the grant is revoked (only a pause stays readable)', async () => {
+    h.dbResults.push([grantRow({ status: 'revoked' })]);
+    h.resolveGrantCeiling.mockRejectedValue(new GrantInactiveError(GRANT_ID, 'revoked'));
     const res = await buildApp().request(`/wisp/concerns?grantId=${GRANT_ID}`);
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe('grant_inactive');
+    expect(h.listConcernsForCeiling).not.toHaveBeenCalled();
   });
 
   it('409 grant_inactive when the grant has no pinned revision', async () => {
@@ -276,6 +315,14 @@ describe('GET /wisp/concerns/:id (Task 17)', () => {
     h.getConcernForCeiling.mockResolvedValue(null);
     const res = await buildApp().request(`/wisp/concerns/${CONCERN_ID}?grantId=${GRANT_ID}`);
     expect(res.status).toBe(404);
+  });
+
+  it('a PAUSED grant still reads one concern under the stored ceiling (#10104)', async () => {
+    h.dbResults.push([grantRow({ status: 'paused' })]);
+    usePausedResolver();
+    const res = await buildApp().request(`/wisp/concerns/${CONCERN_ID}?grantId=${GRANT_ID}`);
+    expect(res.status).toBe(200);
+    expect(h.getConcernForCeiling).toHaveBeenCalledWith(pausedCeiling, CONCERN_ID);
   });
 
   it('a non-uuid id → 404 without any lookup', async () => {
@@ -379,6 +426,25 @@ describe('POST /wisp/concerns/:id/dismiss', () => {
     }
     expect(h.dismissConcern).not.toHaveBeenCalled();
     expect(h.markAnswered).not.toHaveBeenCalled();
+  });
+});
+
+describe('mutations on a PAUSED grant (#10104: reads open, writes stay closed)', () => {
+  const until = () => daysAhead(2);
+  it.each([
+    ['snooze', () => ({ grantId: GRANT_ID, until: until() })],
+    ['dismiss', () => ({ grantId: GRANT_ID })],
+    ['resolve', () => ({ grantId: GRANT_ID, outcome: 'fixed' })],
+    ['feedback', () => ({ grantId: GRANT_ID, useful: true })],
+  ] as const)('%s → 409 grant_inactive, resolved WITHOUT allowPaused, nothing written', async (verb, body) => {
+    h.dbResults.push([grantRow({ status: 'paused' })]);
+    usePausedResolver();
+    const res = await post(buildApp(), `/wisp/concerns/${CONCERN_ID}/${verb}`, body());
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('grant_inactive');
+    expect(h.resolveGrantCeiling).toHaveBeenCalledWith(GRANT_ID, REV);
+    expect(h.getConcernForCeiling).not.toHaveBeenCalled();
+    for (const write of [h.snoozeConcern, h.dismissConcern, h.resolveConcern, h.markAnswered, h.recordHumanBlock, h.recordFeedback]) expect(write).not.toHaveBeenCalled();
   });
 });
 

@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { Job, Queue, Worker } from 'bullmq';
 import { and, asc, eq, gt, gte, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { deviceGroupMemberships, devices, organizations, peripheralEvents, peripheralPolicies } from '../db/schema';
+import { deviceGroupMemberships, devices, organizations, partners, peripheralEvents, peripheralPolicies } from '../db/schema';
+import type { PartnerTrustState } from '../db/schema/orgs';
+import { evaluateCapabilityContinuationForState } from '../services/partnerTrust';
 import type { PeripheralPolicyTargetIds, PeripheralPolicyTargetType } from '../db/schema/peripheralControl';
 import { publishEvent } from '../services/eventBus';
 import { getBullMQConnection } from '../services/redis';
@@ -502,37 +504,79 @@ export async function schedulePeripheralPolicyDevices(
   ));
 }
 
+type ReconciliationSweepRow = {
+  id: string;
+  partnerId: string | null;
+  trustState: PartnerTrustState | null;
+};
+
 type ReconciliationSweepOptions = {
   pageSize?: number;
-  loadPage?: (afterId: string | null, limit: number) => Promise<Array<{ id: string }>>;
+  loadPage?: (afterId: string | null, limit: number) => Promise<ReconciliationSweepRow[]>;
   reconcile?: typeof reconcilePeripheralPolicyDevice;
 };
 
+/**
+ * Would the partner-trust `device_execute` gate let a sweep push through for
+ * this device? Same predicate `assertDeviceExecuteAllowed` applies inside
+ * reconcile, evaluated from the trust state the page query already read, but
+ * WITHOUT the denial audit side effect. In enforce mode a non-trusted partner
+ * is denied on every attempt and reconcile never records a desired state for
+ * it, so the plan never coalesces: reconciling it from the 15-minute sweep
+ * wrote one `partner.trust.capability_denied` row per device per sweep
+ * (#10362). Shadow mode still allows (and reconcile audits it once, then the
+ * written desired state coalesces), and off mode never gates.
+ */
+function sweepTrustAllows(row: ReconciliationSweepRow): boolean {
+  return evaluateCapabilityContinuationForState(
+    'device_execute',
+    { partnerId: row.partnerId ?? '', deviceId: row.id, commandType: 'peripheral_policy_sync_v2' },
+    row.partnerId && row.trustState ? { trustState: row.trustState, probationEnrollments: 0 } : null,
+  ).allow;
+}
+
 export async function processPeripheralPolicyReconciliationSweep(
   options: ReconciliationSweepOptions = {},
-): Promise<{ scanned: number; queued: number; coalesced: number; incompatible: number }> {
+): Promise<{ scanned: number; queued: number; coalesced: number; incompatible: number; trustDenied: number }> {
   const pageSize = options.pageSize ?? PERIPHERAL_POLICY_RECONCILIATION_PAGE_SIZE;
   const loadPage = options.loadPage ?? ((afterId, limit) => runWithSystemDbAccess(() => db
-    .select({ id: devices.id })
+    .select({
+      id: devices.id,
+      partnerId: organizations.partnerId,
+      trustState: partners.trustState,
+    })
     .from(devices)
+    .innerJoin(organizations, eq(organizations.id, devices.orgId))
+    .innerJoin(partners, eq(partners.id, organizations.partnerId))
     .where(and(
       eq(devices.isEphemeral, false),
       notParkedDeviceCondition(),
       eq(devices.peripheralPolicyProtocolVersion, 2),
       ne(devices.status, 'decommissioned'),
+      // #10362: a suspended/churned/offboarding/soft-deleted tenant is not
+      // reconciled. Mirrors the lifecycle bail in reconcilePeripheralPolicyDevice
+      // (org 'active'|'trial', partner 'active', neither soft-deleted).
+      inArray(organizations.status, ['active', 'trial']),
+      isNull(organizations.deletedAt),
+      eq(partners.status, 'active'),
+      isNull(partners.deletedAt),
       ...(afterId ? [gt(devices.id, afterId)] : []),
     ))
     .orderBy(asc(devices.id))
     .limit(limit)));
   const reconcile = options.reconcile ?? reconcilePeripheralPolicyDevice;
-  const counts = { scanned: 0, queued: 0, coalesced: 0, incompatible: 0 };
+  const counts = { scanned: 0, queued: 0, coalesced: 0, incompatible: 0, trustDenied: 0 };
   let afterId: string | null = null;
 
   while (true) {
     const page = await loadPage(afterId, pageSize);
-    for (const { id } of page) {
-      const outcome = await reconcile(id, 'periodic_drift');
+    for (const row of page) {
       counts.scanned += 1;
+      if (!sweepTrustAllows(row)) {
+        counts.trustDenied += 1;
+        continue;
+      }
+      const outcome = await reconcile(row.id, 'periodic_drift');
       counts[outcome] += 1;
     }
     if (page.length < pageSize) break;

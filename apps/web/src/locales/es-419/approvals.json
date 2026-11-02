@@ -16,7 +16,7 @@
     "declineAll": "Denegar todo ({{count}})",
     "groupTitle": "{{count}} solicitudes similares · {{tool}}",
     "moreHostnames": "+{{count}} más",
-    "denyConfirmSummary": "Esto rechaza {{count}} solicitudes de {{org}}."
+    "denyConfirmSummary": "Esto deniega {{count}} solicitudes de {{org}}."
   },
   "filters": {
     "orgLabel": "Organización",
@@ -108,7 +108,7 @@
       "cancelled": "Cancelada",
       "completed": "Completada",
       "denied": "Denegada",
-      "refused": "Aprobación rechazada",
+      "refused": "Aprobada, luego bloqueada",
       "approved": "Aprobada",
       "reported": "Reportada",
       "unknown": "Desconocido"

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { addBulkMock, selectMock, fromMock, whereMock, groupByMock, workerProcessors, dbCtx } = vi.hoisted(() => ({
   addBulkMock: vi.fn(),
@@ -188,5 +188,72 @@ describe('scan-orgs enqueue context (#1105, BREEZE-K class)', () => {
     expect(result).toEqual({ queued: 1 });
     expect(depthAtRead).toBe(1);
     expect(depthAtEnqueue).toEqual([0]);
+  });
+});
+
+describe('scan-orgs repeatable tick slots compute-org jobs on the wall clock (#10478)', () => {
+  // BullMQ hands every repeat of a repeatable job the data it was registered
+  // with, so `queuedAt` is boot time forever. A jobId slotted from it repeats
+  // every hour, and BullMQ drops the add while the old job is still retained.
+  const REGISTERED = { type: 'scan-orgs', queuedAt: '2026-09-18T01:58:00.000Z' } as const;
+  const ORG = '11111111-1111-1111-1111-111111111111';
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    workerProcessors.length = 0;
+    dbCtx.depth = 0;
+    selectMock.mockReturnValue({ from: fromMock });
+    fromMock.mockReturnValue({ where: whereMock });
+    whereMock.mockReturnValue({ groupBy: groupByMock });
+    groupByMock.mockResolvedValue([{ orgId: ORG }]);
+    addBulkMock.mockResolvedValue([]);
+    await shutdownSecurityPostureWorker();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('two hourly ticks of the same registration enqueue compute-org jobs under different ids', async () => {
+    createSecurityPostureWorker();
+    const tick = () => workerProcessors[0]!({ data: REGISTERED });
+
+    vi.setSystemTime(new Date('2026-09-18T02:15:00.000Z'));
+    await expect(tick()).resolves.toEqual({ queued: 1 });
+    vi.setSystemTime(new Date('2026-09-18T03:15:00.000Z'));
+    await expect(tick()).resolves.toEqual({ queued: 1 });
+
+    expect(addBulkMock).toHaveBeenCalledTimes(2);
+    const jobIds = addBulkMock.mock.calls.map(
+      ([jobs]) => (jobs as Array<{ opts: { jobId: string } }>)[0]!.opts.jobId
+    );
+    expect(jobIds).toEqual([
+      `security-posture-${ORG}-2026-09-18T02`,
+      `security-posture-${ORG}-2026-09-18T03`,
+    ]);
+    expect(addBulkMock.mock.calls[1]![0]).toEqual([
+      expect.objectContaining({
+        data: { type: 'compute-org', orgId: ORG, queuedAt: '2026-09-18T03:15:00.000Z' },
+      }),
+    ]);
+  });
+
+  it('a double-fired tick within the same hour reuses the slot, so BullMQ still dedupes it', async () => {
+    createSecurityPostureWorker();
+    const tick = () => workerProcessors[0]!({ data: REGISTERED });
+
+    vi.setSystemTime(new Date('2026-09-18T03:15:00.000Z'));
+    await tick();
+    vi.setSystemTime(new Date('2026-09-18T03:45:00.000Z'));
+    await tick();
+
+    const jobIds = addBulkMock.mock.calls.map(
+      ([jobs]) => (jobs as Array<{ opts: { jobId: string } }>)[0]!.opts.jobId
+    );
+    expect(jobIds).toEqual([
+      `security-posture-${ORG}-2026-09-18T03`,
+      `security-posture-${ORG}-2026-09-18T03`,
+    ]);
   });
 });

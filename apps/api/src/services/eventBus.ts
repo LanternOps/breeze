@@ -2,7 +2,7 @@ import Redis from 'ioredis';
 import { getRedisConnection } from './redis';
 import { randomUUID } from 'crypto';
 import { runOutsideDbContext } from '../db';
-import { captureException } from './sentry';
+import { captureException, captureMessage } from './sentry';
 import { partitionSubscribersForEvent } from './eventSubscriberRegistry';
 import { eventDispatchMode } from '../config/env';
 import { enqueueRouteEvent, recordShadowLocalInvocation } from './eventDispatchQueue';
@@ -19,10 +19,15 @@ export type EventType =
   | 'device.reinstalled' // #8318: a reinstalled machine reattached to its existing record
   // Alert events
   | 'alert.triggered'
+  // `acknowledgedByPrincipalId` (uuid) is present only when a Partner API
+  // service principal acknowledged; `acknowledgedBy` is then null.
   | 'alert.acknowledged'
   // C2 fix (P2-1 wave B, task 16d): every publisher SHOULD include
-  // `resolvedAt` (ISO string), `resolvedBy` (uuid | null — null means a
-  // system/auto resolve), and `triggeredAt` (ISO string) on the payload,
+  // `resolvedAt` (ISO string), `resolvedBy` (uuid | null), and `triggeredAt`
+  // (ISO string) on the payload. `resolvedByPrincipalId` (uuid) is present
+  // only when a Partner API service principal resolved; `resolvedBy` is then
+  // null and the resolve is human-equivalent, NOT a system resolve. Only a
+  // resolve without either actor is a system/auto resolve. Fields are
   // sourced from the row the publisher's own UPDATE just wrote/returned —
   // never from a second read. This lets a subscriber (see
   // `alertVerdictSubscriber.ts`'s contract comment) gate on the PUBLISHED
@@ -328,6 +333,8 @@ export type EventHandler<T = Record<string, unknown>> = (event: BreezeEvent<T>) 
 // Stream key pattern: breeze:events:{orgId}
 const STREAM_PREFIX = 'breeze:events';
 const MAX_STREAM_LENGTH = 10000; // Trim streams to prevent unbounded growth
+/** #5221: how far ahead of now a publisher's `occurredAt` may be before it is reported. */
+const FUTURE_OCCURRED_AT_REPORT_MS = 60_000;
 
 /**
  * EventBus - Redis Streams + pub/sub based event system.
@@ -383,6 +390,13 @@ class EventBus {
     }
     const occurredAt = options.occurredAt === undefined ? new Date() : new Date(options.occurredAt);
     if (Number.isNaN(occurredAt.getTime())) throw new Error('Invalid occurredAt');
+    // #5221 Decision 6 residual (b): a publisher instant this far ahead can
+    // land after a converted automation's switch_at. Reported only; the event
+    // is published unchanged.
+    if (occurredAt.getTime() > Date.now() + FUTURE_OCCURRED_AT_REPORT_MS) {
+      console.warn(`[EventBus] ${type} ${eventId}: occurredAt ${occurredAt.toISOString()} is more than 60 s in the future`);
+      captureMessage('event published with a future occurredAt', { eventCode: 'event_occurred_at_future', level: 'warning' });
+    }
     const streamKey = `${STREAM_PREFIX}:${orgId}`;
 
     // Normalise an empty-string siteId to "no attribution" so the WS filter

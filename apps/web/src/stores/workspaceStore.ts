@@ -20,6 +20,7 @@ import {
   type PendingPlan,
   type ActivePlan,
   type ChatRunState,
+  alreadyDecidedOutcome,
 } from './processStreamEvent';
 
 export const MAX_TABS = 5;
@@ -84,16 +85,23 @@ export type OpenSessionResult = 'focused' | 'opened' | 'tab_cap' | 'not_found' |
 
 function contextLabelOf(context: AiPageContext | null): string | null {
   if (!context) return null;
-  return context.type === 'device' ? context.hostname
-    : context.type === 'alert' ? context.title
-    : context.type === 'dashboard' ? (context.orgName ?? 'Dashboard')
-    : context.type === 'custom' ? context.label
-    : null;
+  switch (context.type) {
+    case 'device': return context.hostname;
+    case 'alert': return context.title;
+    case 'dashboard': return context.orgName ?? 'Dashboard';
+    case 'record': return context.label ?? i18n.t('ai:aiContextBadge.record');
+    case 'custom': return context.label;
+    case 'topology': return null;
+    default:
+      context satisfies never;
+      return null;
+  }
 }
 
 /** Chip fields and flags a tab takes from a hydrated session. */
 function sessionFieldsOf(view: AiSessionView): Partial<TabState> {
   return {
+    contextLabel: contextLabelOf(view.pageContext),
     orgId: view.orgId || null,
     deviceId: view.deviceId,
     deviceLabel: view.pageContext?.type === 'device' ? view.pageContext.hostname : null,
@@ -211,6 +219,12 @@ interface WorkspaceState {
    * approveExecution: it talks to no endpoint.
    */
   clearPendingApproval: (tabId: string) => void;
+  /**
+   * #9431: the window came back (focus / visible) — re-attach every tab that
+   * shows an undecided approval card but has no live stream to deliver
+   * `approval_resolved`, so the server's pending cards replace it.
+   */
+  recheckPendingApprovals: () => void;
   approvePlan: (tabId: string, approved: boolean) => Promise<void>;
   abortPlan: (tabId: string) => Promise<void>;
   pauseAi: (tabId: string, paused: boolean) => Promise<void>;
@@ -336,6 +350,11 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           if (event.type === 'attach_state' && event.pendingCards.length > 0) {
             updateTab(tabId, { hasApprovalPending: true });
           }
+        }
+        // #9431: the tab's approval was decided (here or anywhere else) — drop
+        // the badge unless a plan card is still waiting.
+        if (event.type === 'approval_resolved' && getTab(tabId)?.pendingApproval?.executionId === event.executionId && !getTab(tabId)?.pendingPlan) {
+          updateTab(tabId, { hasApprovalPending: false });
         }
 
         // Update title from title_updated events — but never stomp on a title
@@ -590,7 +609,6 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             ...createEmptyTab(view.title ?? undefined),
             sessionId,
             pageContext: view.pageContext,
-            contextLabel: contextLabelOf(view.pageContext),
             messages: result.messages,
             composerDraft: draft ?? '',
             ...sessionFieldsOf(view),
@@ -851,11 +869,15 @@ export const useWorkspaceStore = create<WorkspaceState>()(
                 dropBubble({ isStreaming: false, error: CHOOSE_MODEL_IN_PANEL, errorAction: 'continue_in_panel' });
                 return;
               }
-              if (res.status === 409) {
-                dropBubble({ error: extractApiError(data, 'Another response is still in progress.') });
-                return;
-              }
-              throw new Error(extractApiError(data, 'Failed to send message'));
+              // Any other refusal (e.g. 503 ai_not_configured) came before the
+              // turn ran, so the server never stored the message: drop the
+              // bubble and give the text back to the composer (#10108).
+              dropBubble({
+                isStreaming: false,
+                composerDraft: trimmed,
+                error: extractApiError(data, 'Failed to send message'),
+              });
+              return;
             }
 
             reader = res.body?.getReader();
@@ -921,6 +943,15 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             });
             if (!res.ok) {
               const data = await res.json().catch(() => null);
+              // #9431: decided elsewhere first — show that decision on the card.
+              const decided = alreadyDecidedOutcome(res.status, data);
+              if (decided) {
+                const current = getTab(tabId)?.pendingApproval;
+                if (current?.executionId === executionId) {
+                  updateTab(tabId, { pendingApproval: { ...current, resolution: decided }, hasApprovalPending: false });
+                }
+                return;
+              }
               updateTab(tabId, { error: extractApiError(data, 'Failed to process approval. It may have timed out.') });
               return;
             }
@@ -933,6 +964,16 @@ export const useWorkspaceStore = create<WorkspaceState>()(
 
         clearPendingApproval: (tabId: string) => {
           updateTab(tabId, { pendingApproval: null, hasApprovalPending: false });
+        },
+
+        recheckPendingApprovals: () => {
+          const { tabs, _readers, _attachControllers } = get();
+          for (const tab of tabs) {
+            if (!tab.sessionId || !tab.pendingApproval || tab.pendingApproval.resolution) continue;
+            // A live stream delivers approval_resolved itself.
+            if (_readers.has(tab.sessionId) || _attachControllers.has(tab.id)) continue;
+            void startTabAttach(tab.id).finished;
+          }
         },
 
         approvePlan: async (tabId: string, approved: boolean) => {
@@ -1150,7 +1191,13 @@ export const useWorkspaceStore = create<WorkspaceState>()(
                 void resolveTabWisp(tab.id);
                 return;
               }
-              updateTab(tab.id, { messages: result.messages, ...sessionFieldsOf(result.view) });
+              updateTab(tab.id, {
+                messages: result.messages,
+                ...sessionFieldsOf(result.view),
+                contextLabel: result.view.pageContext
+                  ? contextLabelOf(result.view.pageContext)
+                  : getTab(tab.id)?.contextLabel ?? null,
+              });
               await startTabAttach(tab.id).ready;
             })
           );

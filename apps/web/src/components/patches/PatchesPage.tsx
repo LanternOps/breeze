@@ -34,7 +34,8 @@ import { useHashState } from '@/lib/useHashState';
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { replaceUrl } from '../../lib/replaceUrl';
-import { parsePatchesHash, type PatchesTab } from './patchesHash';
+import { keepHashAcrossOrgSwitch } from '../../lib/orgSwitch';
+import { orgAgnosticPatchesHash, parsePatchesHash, type PatchesTab } from './patchesHash';
 
 type TabKey = PatchesTab;
 
@@ -221,6 +222,11 @@ export default function PatchesPage() {
     setDetailsPatchId(null);
     window.location.hash = 'patches';
   }, [setDetailsPatchId]);
+  // #10083: a header org switch re-renders this page in place. Keep the tab and
+  // the compliance status filter (same meaning in every org); never the patch id
+  // the drawer selected, which belongs to the org being left. Read at switch
+  // time, so it follows tab changes that replaceUrl made without a hashchange.
+  useEffect(() => keepHashAcrossOrgSwitch(() => orgAgnosticPatchesHash(window.location.hash)), []);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   // Which tab the approval modal opens on: 'approve' from Review (the default,
@@ -819,7 +825,8 @@ export default function PatchesPage() {
 
   // #8909: a deleted ring strands every config policy linked to it (patching is
   // held until another ring is chosen). Ask the API who is affected BEFORE the
-  // destructive call; confirm only when something is linked.
+  // destructive call, then always confirm by name: even an unlinked ring carries
+  // its whole approval rule set and a delete has no undo.
   const handleRingDelete = async (ring: UpdateRingItem) => {
     let linked: LinkedPolicy[];
     try {
@@ -832,10 +839,6 @@ export default function PatchesPage() {
     } catch {
       // Fail closed: without the linked-policy list we cannot warn, so do not delete.
       showToast({ message: t('patchesPage.errors.checkRingLinks'), type: 'error' });
-      return;
-    }
-    if (linked.length === 0) {
-      await executeRingDelete(ring);
       return;
     }
     setPendingRingDelete({ ring, linked });
@@ -1017,6 +1020,16 @@ export default function PatchesPage() {
               )}
             </div>
           )}
+          {/* An empty ring has no device reports of its own, so device-derived
+              severity reads Unrated until devices are assigned (#9930). */}
+          {selectedRingId && rings.find((r) => r.id === selectedRingId)?.deviceCount === 0 && (
+            <div
+              data-testid="patches-empty-ring-notice"
+              className="mt-4 rounded-md border border-border bg-muted/40 px-4 py-2 text-sm text-muted-foreground"
+            >
+              {t('patchesPage.emptyRingSeverityNotice')}
+            </div>
+          )}
           <PatchList
             patches={sourceFilter === 'all' ? patches : patches.filter((p) => p.source === sourceFilter)}
             loading={patchesLoading}
@@ -1065,7 +1078,7 @@ export default function PatchesPage() {
         onSubmit={handleApprovalSubmit}
       />
 
-      {/* Ring delete confirmation — only shown when config policies still link the ring (#8909) */}
+      {/* Ring delete confirmation — names the ring and lists any linked config policies (#8909) */}
       <ConfirmDialog
         open={pendingRingDelete !== null}
         onClose={() => { if (!ringDeleting) setPendingRingDelete(null); }}
@@ -1074,9 +1087,11 @@ export default function PatchesPage() {
         message={
           pendingRingDelete
             ? t(
-                /* i18n-dynamic */ pendingRingDelete.linked.length === 1
-                  ? 'patchesPage.ringDelete.messageOne'
-                  : 'patchesPage.ringDelete.messageMany',
+                /* i18n-dynamic */ pendingRingDelete.linked.length === 0
+                  ? 'patchesPage.ringDelete.messageNone'
+                  : pendingRingDelete.linked.length === 1
+                    ? 'patchesPage.ringDelete.messageOne'
+                    : 'patchesPage.ringDelete.messageMany',
                 { count: pendingRingDelete.linked.length }
               )
             : ''
@@ -1086,11 +1101,13 @@ export default function PatchesPage() {
         isLoading={ringDeleting}
         confirmTestId="confirm-delete-ring"
       >
-        <ul className="mt-3 max-h-48 list-disc space-y-1 overflow-y-auto pl-5 text-sm">
-          {pendingRingDelete?.linked.map((p) => (
-            <li key={p.id}>{p.name}</li>
-          ))}
-        </ul>
+        {pendingRingDelete && pendingRingDelete.linked.length > 0 && (
+          <ul className="mt-3 max-h-48 list-disc space-y-1 overflow-y-auto pl-5 text-sm">
+            {pendingRingDelete.linked.map((p) => (
+              <li key={p.id}>{p.name}</li>
+            ))}
+          </ul>
+        )}
       </ConfirmDialog>
 
       {/* Scan confirmation — names the scope before POSTing /patches/scan */}

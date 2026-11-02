@@ -198,6 +198,14 @@ describe('manage_device_warranty', () => {
     expect(h.queueWarranty).not.toHaveBeenCalled();
   });
 
+  it('refresh refuses imported data with no vendor lookup, saying the data was kept (#9862)', async () => {
+    h.select.mockImplementation(() => chain([{ manufacturer: 'Acme Whitebox', dataSource: 'import' }]));
+    const out = await run('manage_device_warranty', { action: 'refresh', deviceId: DEV });
+    expect(out.code).toBe('WARRANTY_REFRESH_NOT_AVAILABLE');
+    expect(out.error).toMatch(/existing warranty data was kept/i);
+    expect(h.queueWarranty).not.toHaveBeenCalled();
+  });
+
   it('refresh queues a forced sync for a vendor-looked-up device and audits it', async () => {
     h.select.mockImplementation(() => chain([{ manufacturer: 'Dell Inc.', dataSource: 'provider' }]));
     const out = await run('manage_device_warranty', { action: 'refresh', deviceId: DEV });

@@ -1,0 +1,11 @@
+[
+  {
+    "id": 31,
+    "domain_name": "contoso.example",
+    "group_count": 2,
+    "last_backup": "2026-10-27T05:00:00.000Z",
+    "errors": "",
+    "deactivated_since": null,
+    "added_on": "2025-01-02T03:04:05.000Z"
+  }
+]

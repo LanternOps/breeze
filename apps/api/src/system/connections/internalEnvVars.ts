@@ -36,6 +36,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AGENT_ORG_RATE_LIMIT_PER_MIN: 'rate limit knob',
   AGENT_ROLLBACK_DENYLISTED_VERSIONS: 'agent rollback safety list',
   AGENT_ROLLBACK_MIN_VERSION: 'agent rollback safety floor',
+  AGENT_SERVER_URL: 'network isolation management-plane allowlist fallback URL',
   AGENT_TOKEN_ROTATION_MAX_AGE_DAYS: 'agent token rotation window',
   AGENT_WS_COMMAND_RESULT_MESSAGE_BUDGET_CAPACITY: 'agent WS message budget knob',
   AGENT_WS_COMMAND_RESULT_MESSAGE_BUDGET_REFILL_PER_SECOND: 'agent WS message budget knob',
@@ -383,6 +384,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // MONITOR_*
   MONITOR_EPISODE_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   MONITOR_EPISODE_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
+  // NETWORK_*
+  NETWORK_ISOLATION_ENABLED: 'network isolation rollout kill switch',
+  NETWORK_ISOLATION_ENABLED_PARTNER_IDS: 'network isolation partner canary allowlist',
   // NODE_*
   NODE_ENV: 'runtime mode',
   // NO_*
@@ -504,6 +508,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // SECURITY_*
   SECURITY_POSTURE_WORKER_CONCURRENCY: 'worker throughput knob',
   SECURITY_SCAN_DEVICE_CONCURRENCY_CAP: 'worker throughput knob',
+  SECURITY_SCAN_MANUAL_QUEUE_TTL_MINUTES: 'timing knob',
   SECURITY_SCAN_ORG_CONCURRENCY_CAP: 'worker throughput knob',
   SECURITY_SCAN_ORG_QUEUE_BACKPRESSURE_LIMIT: 'worker throughput knob',
   SECURITY_SCAN_THROTTLE_REQUEUE_SECONDS: 'timing knob',
@@ -563,6 +568,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   TERMINAL_INPUT_MAX_BYTES_PER_MIN: 'rate limit knob',
   TERMINAL_INPUT_MAX_MESSAGES_PER_MIN: 'rate limit knob',
   // TICKET_*
+  TICKET_IMPORT_MAX_BYTES_PER_HOUR: 'rate limit knob',
   TICKET_OUTBOX_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   TICKET_OUTBOX_RETENTION_DAYS: 'data retention window',
   TICKET_OUTBOX_RETENTION_MAX_BATCHES: 'retention sweep batch knob',

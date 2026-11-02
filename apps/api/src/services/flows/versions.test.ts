@@ -64,6 +64,7 @@ vi.mock('../auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnap
 vi.mock('../userNotifications', () => ({ createNotification: vi.fn() }));
 vi.mock('../aiOperator/taskOutbox', () => ({ publishIntentTerminalOutbox: vi.fn() }));
 vi.mock('./builtins/aiBudget', () => ({ aiStepPermanentBudgetDenial: vi.fn() }));
+vi.mock('./conversion/claims', () => ({ conversionForFlow: vi.fn() }));
 
 import { eventDispatchMode, eventDispatchQueueSubscribers } from '../../config/env';
 import { FlowStepPinError, stepPinsFor, validateFlowDocument, type FlowStepPin } from '../flowValidator';
@@ -74,6 +75,7 @@ import { writeAuditEvent } from '../auditEvents';
 import { createNotification } from '../userNotifications';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
 import { aiStepPermanentBudgetDenial } from './builtins/aiBudget';
+import { conversionForFlow } from './conversion/claims';
 import { assertDelegatorAuthority, disableFlow, enableFlow, pauseFlow, webhookSecretSurvivesEnable } from './versions';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -177,6 +179,7 @@ beforeEach(() => {
   vi.mocked(createNotification).mockReset().mockResolvedValue('n1');
   vi.mocked(publishIntentTerminalOutbox).mockReset().mockResolvedValue(undefined);
   vi.mocked(aiStepPermanentBudgetDenial).mockReset().mockResolvedValue(null);
+  vi.mocked(conversionForFlow).mockReset().mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -648,6 +651,84 @@ describe('enableFlow — webhook secret binding (#10270 option b)', () => {
     expect(r).toMatchObject({ ok: true, webhookSecretInvalidated: false });
     const set = setOf(callsOf('update')[0]!);
     for (const k of SECRET_KEYS) expect(set).not.toHaveProperty(k);
+  });
+});
+
+// W06 (#5221) Task B3 — the conversion switch drives enableFlow with options.
+describe('enableFlow — conversion switch options (#5221 B3)', () => {
+  const CONVERSION = '88888888-8888-4888-8888-888888888888';
+  const AUTOMATION = '99999999-9999-4999-8999-999999999999';
+  const conversion = (state: 'shadow' | 'switched' | 'reverted') =>
+    vi.mocked(conversionForFlow).mockResolvedValue({ id: CONVERSION, state, switchAt: null, automationId: AUTOMATION, orgId: ORG, partnerId: null });
+
+  it("a shadow conversion's draft cannot be enabled directly (flow_conversion_not_switched) and nothing is written", async () => {
+    queueEnable();
+    conversion('shadow');
+    expect(await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] }))
+      .toEqual({ ok: false, error: 'flow_conversion_not_switched' });
+    expect(callsOf('update')).toHaveLength(0);
+    expect(callsOf('insert')).toHaveLength(0);
+  });
+
+  it('the switch of that same conversion enables it; another conversion id is still refused', async () => {
+    queueEnable();
+    conversion('shadow');
+    const r = await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] }, { switchingConversionId: CONVERSION });
+    expect(r.ok).toBe(true);
+
+    for (const q of Object.values(queues)) q.length = 0;
+    calls.length = 0;
+    queueEnable();
+    conversion('shadow');
+    expect(await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] }, { switchingConversionId: AUTOMATION }))
+      .toEqual({ ok: false, error: 'flow_conversion_not_switched' });
+  });
+
+  it('a switched flow that was disabled re-enables like any flow', async () => {
+    queueEnable(row({ status: 'disabled' }), 1);
+    conversion('switched');
+    expect((await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] })).ok).toBe(true);
+  });
+
+  it('onPublished runs after the publication insert, on the same executor, with the publication and the flipped row', async () => {
+    queueEnable();
+    const seen: Array<{ inserts: number; pub: unknown; sameDb: boolean }> = [];
+    const { db } = await import('../../db');
+    const r = await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] }, {
+      onPublished: async (tx, pub) => {
+        seen.push({ inserts: callsOf('insert').length, pub, sameDb: tx === db });
+      },
+    });
+    expect(r.ok).toBe(true);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.inserts).toBe(1);
+    expect(seen[0]!.sameDb).toBe(true);
+    expect(seen[0]!.pub).toMatchObject({
+      publication: { id: VERSION_ID, publicationSeq: 1, definitionVersion: 3 },
+      flow: { id: FLOW_ID, status: 'enabled' },
+    });
+  });
+
+  it('an onPublished failure propagates (the caller rolls the whole switch back)', async () => {
+    queueEnable();
+    await expect(enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] }, {
+      onPublished: async () => { throw new Error('ledger write failed'); },
+    })).rejects.toThrow('ledger write failed');
+  });
+
+  it('without options the script reads keep their default context: validation gets { owner } only, assessment no executor', async () => {
+    queueEnable();
+    await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: ['run'] });
+    expect(vi.mocked(validateFlowDocument).mock.calls[0]![1]).toEqual({ owner: { orgId: ORG, partnerId: PARTNER } });
+    expect(vi.mocked(assessPreApprovals).mock.calls[0]![4]).not.toHaveProperty('scriptReadExecutor');
+  });
+
+  it('a scriptReadExecutor reaches validation and the pre-approval assessment, nothing else', async () => {
+    queueEnable();
+    const executor = { marker: 'switch-tx' } as never;
+    await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: ['run'] }, { scriptReadExecutor: executor });
+    expect(vi.mocked(validateFlowDocument).mock.calls[0]![1]).toEqual({ owner: { orgId: ORG, partnerId: PARTNER }, scriptReadExecutor: executor });
+    expect(vi.mocked(assessPreApprovals).mock.calls[0]![4]).toMatchObject({ scriptReadExecutor: executor });
   });
 });
 

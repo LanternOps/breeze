@@ -132,12 +132,16 @@ backupProviderDeviceRoutes.put(
       .select({
         id: backupProviderDevices.id,
         orgId: backupProviderDevices.orgId,
+        accountType: backupProviderDevices.accountType,
         breezeDeviceId: backupProviderDevices.breezeDeviceId,
       })
       .from(backupProviderDevices)
       .where(eq(backupProviderDevices.id, id))
       .limit(1);
     if (!providerRow) return c.json({ error: 'Backup provider device not found' }, 404);
+    if (deviceId !== null && (providerRow.accountType === 'm365' || providerRow.accountType === 'gws')) {
+      return c.json({ error: 'SaaS backup rows cannot be linked to a device' }, 400);
+    }
 
     // Site ceiling on the PREVIOUS device (sibling backup routes enforce this;
     // this route did not). A site-restricted caller must not be able to

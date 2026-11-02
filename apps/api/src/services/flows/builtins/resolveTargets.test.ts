@@ -7,6 +7,7 @@ const m = vi.hoisted(() => ({
   resolve: vi.fn(),
   devices: vi.fn(),
   stepOutputs: vi.fn(),
+  reasons: vi.fn(),
 }));
 
 vi.mock('../../../db', () => ({
@@ -28,11 +29,12 @@ vi.mock('../../automationRuntime', () => ({
     return m.resolve(m.ctx[m.ctx.length - 1] ?? 'none', ...args);
   },
 }));
-vi.mock('./stepOutputs', () => ({ loadFleetStepOutput: m.stepOutputs }));
+vi.mock('./stepOutputs', () => ({ loadFleetStepOutput: m.stepOutputs, loadFleetDeviceFailureReasons: m.reasons }));
 
-import { executeResolveTargets } from './resolveTargets';
+import { executeResolveTargets, FLEET_FAILURE_REASON_MAX_CHARS } from './resolveTargets';
 import { resolveTargetsOnce } from './fleetTargets';
 import type { BuiltinContext } from './types';
+import { FLEET_MAX_TARGETS, FLOW_RUN_LIMITS } from '@breeze/shared';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const PARTNER = '22222222-2222-4222-8222-222222222222';
@@ -54,6 +56,7 @@ beforeEach(() => {
   m.resolve.mockReset();
   m.devices.mockReset();
   m.stepOutputs.mockReset();
+  m.reasons.mockReset();
 });
 
 describe('resolveTargetsOnce', () => {
@@ -157,9 +160,87 @@ describe('executeResolveTargets', () => {
     expect(out).toMatchObject({ kind: 'completed', output: { count: 2, succeededDeviceIds: [D1, D2] } });
   });
 
+  it('deviceIds (an event Job\'s triggering device) resolve in the run org, kept to its devices', async () => {
+    // The DB query is org-scoped: a device of another org never comes back.
+    m.devices.mockResolvedValue(rows([D1]));
+    const out = await executeResolveTargets({ deviceIds: [D1, D2] }, ctx());
+    expect(m.resolve).not.toHaveBeenCalled();
+    expect(m.stepOutputs).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ kind: 'completed', output: { count: 1, succeededDeviceIds: [D1], devices: [{ id: D1, hostname: 'host-0' }] } });
+  });
+
+  it('deviceIds over the cap fail targets_over_cap without a lookup', async () => {
+    const ids = Array.from({ length: FLEET_MAX_TARGETS + 1 }, (_, i) => `aaaaaaaa-0000-4000-8000-${String(i).padStart(12, '0')}`);
+    const out = await executeResolveTargets({ deviceIds: ids }, ctx());
+    expect(out).toMatchObject({ kind: 'failed', code: 'targets_over_cap', policy: true });
+    expect(m.devices).not.toHaveBeenCalled();
+  });
+
   it('fromStep naming a step without a fleet output fails targets_unresolvable', async () => {
     m.stepOutputs.mockResolvedValue(null);
     const out = await executeResolveTargets({ fromStep: { stepId: 'a0_run_script', set: 'failed' } }, ctx());
     expect(out).toMatchObject({ kind: 'failed', code: 'targets_unresolvable', policy: true });
+  });
+
+  // #10705 — a converted Job's on-failure notice names each device's failure reason.
+  it('fromStep failed carries each device\'s recorded failure reason', async () => {
+    m.stepOutputs.mockResolvedValue({ succeededDeviceIds: [], dispatchedDeviceIds: [D1, D2], failedDeviceIds: [D1, D2] });
+    m.devices.mockResolvedValue(rows([D1, D2]));
+    m.reasons.mockResolvedValue(new Map([[D1, 'Script OS type does not match target device']]));
+    const out = await executeResolveTargets({ fromStep: { stepId: 'a0_run_script', set: 'failed' } }, ctx());
+    expect(m.reasons).toHaveBeenCalledWith('run-1', 'a0_run_script', [D1, D2]);
+    expect(out).toMatchObject({
+      kind: 'completed',
+      output: {
+        devices: [
+          { id: D1, hostname: 'host-0', name: 'Web One', failureReason: 'Script OS type does not match target device' },
+          // No recorded reason: the notice still says so instead of ending on an empty string.
+          { id: D2, hostname: 'host-1', name: 'host-1', failureReason: 'No failure reason was recorded.' },
+        ],
+      },
+    });
+  });
+
+  it('a failure reason is cut to FLEET_FAILURE_REASON_MAX_CHARS', async () => {
+    m.stepOutputs.mockResolvedValue({ succeededDeviceIds: [], dispatchedDeviceIds: [D1], failedDeviceIds: [D1] });
+    m.devices.mockResolvedValue(rows([D1]));
+    m.reasons.mockResolvedValue(new Map([[D1, 'x'.repeat(5_000)]]));
+    const out = await executeResolveTargets({ fromStep: { stepId: 'a0_run_script', set: 'failed' } }, ctx());
+    const devices = (out as unknown as { output: { devices: { failureReason: string }[] } }).output.devices;
+    expect(devices[0]!.failureReason).toBe('x'.repeat(FLEET_FAILURE_REASON_MAX_CHARS));
+  });
+
+  it('only the failed set reads failure reasons', async () => {
+    m.stepOutputs.mockResolvedValue({ succeededDeviceIds: [D1], dispatchedDeviceIds: [D1], failedDeviceIds: [] });
+    m.devices.mockResolvedValue(rows([D1]));
+    const out = await executeResolveTargets({ fromStep: { stepId: 'a0_run_script', set: 'succeeded' } }, ctx());
+    expect(m.reasons).not.toHaveBeenCalled();
+    expect((out as unknown as { output: { devices: object[] } }).output.devices[0]).not.toHaveProperty('failureReason');
+  });
+
+  it('500 failed devices with long hostnames and full-length reasons stay under the stored-output cap', async () => {
+    const ids = Array.from({ length: FLEET_MAX_TARGETS }, (_, i) => `aaaaaaaa-0000-4000-8000-${String(i).padStart(12, '0')}`);
+    m.stepOutputs.mockResolvedValue({ succeededDeviceIds: [], dispatchedDeviceIds: ids, failedDeviceIds: ids });
+    m.devices.mockResolvedValue(ids.map((id) => ({ id, hostname: 'h'.repeat(63), displayName: 'n'.repeat(63) })));
+    m.reasons.mockResolvedValue(new Map(ids.map((id) => [id, 'r'.repeat(5_000)])));
+    const out = await executeResolveTargets({ fromStep: { stepId: 'a0_run_script', set: 'failed' } }, ctx());
+    // Over the cap the stored output becomes a truncated preview and every failure notice would be lost.
+    expect(Buffer.byteLength(JSON.stringify((out as { output: unknown }).output))).toBeLessThan(FLOW_RUN_LIMITS.maxStoredOutputBytes);
+  });
+
+  it('a cut never leaves half a surrogate pair', async () => {
+    m.stepOutputs.mockResolvedValue({ succeededDeviceIds: [], dispatchedDeviceIds: [D1], failedDeviceIds: [D1] });
+    m.devices.mockResolvedValue(rows([D1]));
+    m.reasons.mockResolvedValue(new Map([[D1, `${'x'.repeat(FLEET_FAILURE_REASON_MAX_CHARS - 1)}\u{1F600}tail`]]));
+    const out = await executeResolveTargets({ fromStep: { stepId: 'a0_run_script', set: 'failed' } }, ctx());
+    const reason = (out as unknown as { output: { devices: { failureReason: string }[] } }).output.devices[0]!.failureReason;
+    expect(reason).toBe('x'.repeat(FLEET_FAILURE_REASON_MAX_CHARS - 1));
+  });
+
+  it('a failed reasons read fails the step (never a notice built on a guess)', async () => {
+    m.stepOutputs.mockResolvedValue({ succeededDeviceIds: [], dispatchedDeviceIds: [D1], failedDeviceIds: [D1] });
+    m.devices.mockResolvedValue(rows([D1]));
+    m.reasons.mockRejectedValue(new Error('connection reset'));
+    await expect(executeResolveTargets({ fromStep: { stepId: 'a0_run_script', set: 'failed' } }, ctx())).rejects.toThrow('connection reset');
   });
 });

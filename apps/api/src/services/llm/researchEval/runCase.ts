@@ -69,6 +69,7 @@ export async function seedResearchEvalCase(c: ResearchEvalCase): Promise<{ orgId
       ruleId = r!.id;
     }
     const [a] = await db.insert(alerts).values({
+      ownerKind: 'device',
       orgId: o!.id, deviceId: d!.id, ruleId, severity: c.alert.severity, title: c.alert.title, message: c.alert.message,
       context: c.alert.context ?? {},
     }).returning({ id: alerts.id });

@@ -78,6 +78,35 @@ describe('BackupHealthOverview', () => {
     expect(coverage.textContent).toContain('10');
   });
 
+  it('labels the SaaS count for Microsoft 365 and Google Workspace', async () => {
+    respond({ summary: summary({ m365Accounts: 7 }) });
+    render(<BackupHealthOverview orgId="org-1" />);
+    expect(await screen.findByTestId('backup-health-m365')).toHaveTextContent('7 SaaS accounts');
+    expect(screen.getByTestId('backup-health-saas-subtitle')).toHaveTextContent('Microsoft 365 / Google Workspace');
+  });
+
+  it('labels provider sources from their keys and keeps the provider filter contract', async () => {
+    respond({ rows: [row({ source: 'provider', providerKey: 'dropsuite', providerLabel: 'Managed cloud backup' })] });
+    render(<BackupHealthOverview orgId="org-1" />);
+    await screen.findByTestId('backup-health-coverage');
+    const source = screen.getByTestId('backup-health-filter-source');
+    expect(source).toHaveTextContent('NinjaOne SaaS Backup (Dropsuite)');
+    expect(source).not.toHaveTextContent('Cove Data Protection');
+    fireEvent.change(source, { target: { value: 'provider' } });
+    await waitFor(() => expect(String(fetchMock.mock.calls.at(-1)![0])).toContain('source=provider'));
+  });
+
+  it('includes both provider names when the results contain both providers', async () => {
+    respond({ rows: [
+      row({ key: 'provider:cove', source: 'provider', providerKey: 'cove' }),
+      row({ key: 'provider:dropsuite', source: 'provider', providerKey: 'dropsuite' }),
+    ] });
+    render(<BackupHealthOverview orgId="org-1" />);
+    await screen.findByTestId('backup-health-coverage');
+    expect(screen.getByTestId('backup-health-filter-source')).toHaveTextContent('Cove Data Protection');
+    expect(screen.getByTestId('backup-health-filter-source')).toHaveTextContent('NinjaOne SaaS Backup (Dropsuite)');
+  });
+
   it('explains "recent backup" versus a failed latest run (#9626)', async () => {
     render(<BackupHealthOverview orgId="org-1" />);
     const note = await screen.findByTestId('backup-health-definition');

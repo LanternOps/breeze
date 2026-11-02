@@ -329,6 +329,10 @@ const monitorDefinitionFields = {
   recurrenceActions: monitorResponsesSchema.default([]),
   pauseResponsesOnEscalation: z.boolean().default(true),
   aiAgentId: z.string().uuid().nullable().optional(),
+  // Alert → PSA ticket (#10528): the PSA board this monitor's tickets go to,
+  // overriding the bound connection's board. Partner-level config: the API
+  // refuses a change from a caller who cannot manage partner-wide config.
+  psaBoardId: z.number().int().positive().max(2_147_483_647).nullable().optional(),
 };
 
 const baseDefinition = z.object(monitorDefinitionFields);

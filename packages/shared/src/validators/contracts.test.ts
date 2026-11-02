@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   createContractSchema, contractLineInputSchema, updateContractSchema, changeContractCurrencySchema,
   updateContractLineSchema, contractLineInvariantIssues, mergeContractLinePatch, patchHasKey,
-  isSiteDeletedLine,
+  isSiteDeletedLine, contractQuantityIssue, CONTRACT_DECIMAL_MAX_INTEGER_DIGITS,
   HOUR_BLOCK_LINE_TYPE, ROLLOVER_POLICIES,
   type RolloverPolicy,
   type ContractLineShape, type PersistedContractLine,
@@ -739,5 +739,49 @@ describe('hour_block constants (#4547 W01)', () => {
     expect([...ROLLOVER_POLICIES]).toEqual(['none', 'carry_forward']);
     const p: RolloverPolicy = 'carry_forward';
     expect(ROLLOVER_POLICIES).toContain(p);
+  });
+});
+
+// #10293: a manual quantity is not money. The form checks the same grammar
+// client-side via contractQuantityIssue, and the server's message names a
+// quantity, not "a 2-decimal money string".
+describe('manual quantity grammar (#10293)', () => {
+  const manual = { lineType: 'manual' as const, description: 'Hours', unitPrice: '1.00', taxable: false };
+  const qtyMessages = (issues: readonly { path: readonly PropertyKey[]; message: string }[] | undefined) =>
+    (issues ?? []).filter((i) => i.path[0] === 'manualQuantity').map((i) => i.message);
+
+  it('contractQuantityIssue classifies blank, malformed, oversize and valid input', () => {
+    expect(contractQuantityIssue('')).toBe('required');
+    expect(contractQuantityIssue('   ')).toBe('required');
+    expect(contractQuantityIssue('1.234')).toBe('format');
+    expect(contractQuantityIssue('-1')).toBe('format');
+    expect(contractQuantityIssue('abc')).toBe('format');
+    expect(contractQuantityIssue('9'.repeat(CONTRACT_DECIMAL_MAX_INTEGER_DIGITS + 1))).toBe('tooLarge');
+    expect(contractQuantityIssue('9999999999.99')).toBeNull();
+    expect(contractQuantityIssue('2.5')).toBeNull();
+    expect(contractQuantityIssue('0')).toBeNull();
+  });
+
+  it('agrees with the create schema on every sample', () => {
+    for (const v of ['', '1.234', '-1', 'abc', '99999999999', '9999999999.99', '2.5', '0']) {
+      const ok = contractLineInputSchema.safeParse({ ...manual, manualQuantity: v }).success;
+      expect(ok, v).toBe(contractQuantityIssue(v) === null);
+    }
+  });
+
+  it('create schema names a quantity, not money, for an empty manualQuantity', () => {
+    const r = contractLineInputSchema.safeParse({ ...manual, manualQuantity: '' });
+    expect(qtyMessages(r.error?.issues)).toEqual(['must be a number with up to 2 decimals']);
+  });
+
+  it('update schema names a quantity, not money, for a malformed manualQuantity', () => {
+    const r = updateContractLineSchema.safeParse({ manualQuantity: '1.234' });
+    expect(qtyMessages(r.error?.issues)).toEqual(['must be a number with up to 2 decimals']);
+  });
+
+  it('keeps the money message for unitPrice (validation unchanged, not loosened)', () => {
+    const r = contractLineInputSchema.safeParse({ ...manual, unitPrice: '', manualQuantity: '1' });
+    expect(r.success).toBe(false);
+    expect(r.error!.issues.find((i) => i.path[0] === 'unitPrice')?.message).toBe('must be a 2-decimal money string');
   });
 });

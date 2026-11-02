@@ -88,7 +88,7 @@ func (h *Heartbeat) notifyOwner(o prompthost.Owner, req ipc.NotifyRequest) error
 	}
 	for _, s := range h.sessionBroker.NotifyTargetsExcept("") {
 		if noticeOwner(s).Key() == o.Key() {
-			return s.SendNotify("notice-legacy-"+randomNotifyID(), ipc.TypeNotify, req)
+			return s.SendNotification("notice-legacy-"+randomNotifyID(), req)
 		}
 	}
 	return fmt.Errorf("no notify-capable helper for %s", o.Key())
@@ -272,7 +272,7 @@ func (h *Heartbeat) handleTCCNotice(s *sessionbroker.Session, st ipc.TCCStatus) 
 	}
 	reminder := promptkinds.LegacyMacPermissionReminder(missing)
 	legacy := func() {
-		if err := s.SendNotify("tcc-reminder-"+randomNotifyID(), ipc.TypeNotify, reminder); err != nil {
+		if err := s.SendNotification("tcc-reminder-"+randomNotifyID(), reminder); err != nil {
 			log.Warn("permission reminder not sent", "sessionId", s.SessionID, "error", err.Error())
 		}
 	}

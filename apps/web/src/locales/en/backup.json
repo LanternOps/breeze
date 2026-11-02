@@ -558,7 +558,6 @@
     "largeFolderSelectionTitle": "Large selection",
     "selectFolder": "Select folder {{name}}",
     "confirmLargeFolderSelection": "This selection covers about {{formatted}} files and may take a while to restore. Continue?",
-    "unknownDevice": "Unknown device",
     "kindVm": "Restore as VM",
     "kindInstantBoot": "Instant boot",
     "kindSelective": "Selective restore",
@@ -1111,10 +1110,14 @@
       "hyperv": "Hyper-V",
       "vmware": "VMware",
       "bare_metal": "Bare metal",
+      "m365_mail": "Microsoft 365 mail",
       "m365_sharepoint": "SharePoint",
       "m365_exchange": "Exchange",
       "m365_onedrive": "OneDrive",
       "m365_teams": "Teams",
+      "gws_mail": "Google Workspace mail",
+      "gws_drive": "Google Drive",
+      "gws_shared_drive": "Google shared drives",
       "other": "Other"
     },
     "noObservation": "No observation",
@@ -1133,7 +1136,12 @@
       "errorUnlink": "Could not unlink the provider device",
       "error": "Could not load external backup status",
       "alsoCheck": "Also check third-party backup connections under Integrations."
-    }
+    },
+    "saasAccountsSubtitle": "Microsoft 365 / Google Workspace",
+    "saas": "SaaS",
+    "saasAccounts": "{{value}} SaaS accounts",
+    "workloadBackup": "{{workload}} backup",
+    "sourceProvider": "Backup providers"
   },
   "restoreResultNotices": {
     "systemStateRequiresRebuildTitle": "System state is applied by a bare-metal rebuild",
@@ -1171,5 +1179,10 @@
     "checking": "Checking",
     "unverified": "Not verified",
     "failed": "Failed integrity check"
+  },
+  "reparseSkipNotice": {
+    "summary_one": "{{count}} reparse point skipped: junctions and mount points are not followed and are not restored. This is expected, not an error.",
+    "summary_other": "{{count}} reparse points skipped: junctions and mount points are not followed and are not restored. This is expected, not an error.",
+    "showDetails": "Show skipped paths"
   }
 }

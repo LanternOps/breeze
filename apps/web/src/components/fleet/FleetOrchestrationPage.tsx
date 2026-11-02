@@ -244,7 +244,7 @@ export default function FleetOrchestrationPage() {
 
       useAiStore.getState().setPageContext({
         type: 'custom',
-        label: 'Fleet Orchestration',
+        label: 'Findings',
         data: {
           page: 'fleet',
           policyCount: data.policies.total,

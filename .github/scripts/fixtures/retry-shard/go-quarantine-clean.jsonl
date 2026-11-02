@@ -1,0 +1,13 @@
+{"Time":"2026-10-30T08:44:12.166933-06:00","Action":"start","Package":"github.com/breeze-rmm/agent/internal/qclean"}
+{"Time":"2026-10-30T08:44:12.291307-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/internal/qclean","Test":"TestFlaky"}
+{"Time":"2026-10-30T08:44:12.291364-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qclean","Test":"TestFlaky","Output":"=== RUN   TestFlaky\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:44:12.291389-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qclean","Test":"TestFlaky","Output":"    q_test.go:5: flaky assertion\n","OutputType":"error"}
+{"Time":"2026-10-30T08:44:12.291399-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qclean","Test":"TestFlaky","Output":"--- FAIL: TestFlaky (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:44:12.291407-06:00","Action":"fail","Package":"github.com/breeze-rmm/agent/internal/qclean","Test":"TestFlaky","Elapsed":0}
+{"Time":"2026-10-30T08:44:12.291414-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/internal/qclean","Test":"TestOther"}
+{"Time":"2026-10-30T08:44:12.291418-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qclean","Test":"TestOther","Output":"=== RUN   TestOther\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:44:12.291424-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qclean","Test":"TestOther","Output":"--- PASS: TestOther (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:44:12.291429-06:00","Action":"pass","Package":"github.com/breeze-rmm/agent/internal/qclean","Test":"TestOther","Elapsed":0}
+{"Time":"2026-10-30T08:44:12.291434-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qclean","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:44:12.291852-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qclean","Output":"FAIL\tgithub.com/breeze-rmm/agent/internal/qclean\t0.125s\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:44:12.291873-06:00","Action":"fail","Package":"github.com/breeze-rmm/agent/internal/qclean","Elapsed":0.125}

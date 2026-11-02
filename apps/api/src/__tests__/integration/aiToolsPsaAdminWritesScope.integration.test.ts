@@ -50,10 +50,7 @@ vi.mock('../../jobs/deviceGroupJobs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../jobs/deviceGroupJobs')>();
   return { ...actual, requestDeviceGroupReevaluationAfterCommit: reevaluateMock };
 });
-vi.mock('../../workers/webhookDelivery', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../workers/webhookDelivery')>();
-  return { ...actual, getWebhookWorker: () => ({ queueDelivery: queueDeliveryMock }) };
-});
+vi.mock('../../jobs/webhookDeliveryQueue', () => ({ enqueueWebhookAttempt: queueDeliveryMock }));
 
 const registry = new Map<string, AiTool>();
 registerDeviceTools(registry);

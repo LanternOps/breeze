@@ -61,7 +61,7 @@ import type { NarrativeContext } from './narrativeContext';
 // Wisp W05b — the assessment task turn lives in its own module (this file is
 // already ~2k lines); re-exported here so callers keep one import path.
 import { buildAssessmentTaskPrompt, type AgentRunAssessmentPromptContext } from './assessmentPrompt';
-export { ASSESSMENT_NO_CHANGES_LINE, buildAssessmentTaskPrompt, type AgentRunAssessmentPromptContext } from './assessmentPrompt';
+export { ASSESSMENT_FIRST_LOOK_EMPTY_LINE, ASSESSMENT_NO_CHANGES_LINE, buildAssessmentTaskPrompt, type AgentRunAssessmentPromptContext } from './assessmentPrompt';
 
 export const OPERATOR_GUIDANCE_OPEN_TAG = '<operator-guidance>';
 export const OPERATOR_GUIDANCE_CLOSE_TAG = '</operator-guidance>';
@@ -1117,7 +1117,8 @@ export function buildNarrativeTaskPrompt(ctx: AgentRunPromptContext): string {
   // lines above so a "critical" device is not read as a "failed" job.
   const providers = c?.backupProviders;
   const providersMeasured = Boolean(providers?.available);
-  lines.push('third-party backup (current device health, not job counts):');
+  lines.push('third-party backup (current device health and SaaS workloads, not job counts):');
+  lines.push(narrativeLine('third-party SaaS backup workloads', providers?.saasWorkloads ?? null, providersMeasured));
   if (providersMeasured && providers!.devices === 0) {
     lines.push('third-party backup devices: 0 (none reporting for this organization)');
   } else {

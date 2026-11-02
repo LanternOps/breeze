@@ -100,11 +100,12 @@ vi.mock('../db/schema', () => ({
     supportPhone: 'supportPhone',
     welcomeMessage: 'welcomeMessage',
     footerText: 'footerText',
+    primaryColor: 'primaryColor',
     customCss: 'customCss',
     updatedAt: 'updatedAt'
   },
   organizations: { id: 'id', partnerId: 'partnerId', deletedAt: 'deletedAt' },
-  partners: { id: 'id', invoiceFooter: 'invoiceFooter' }
+  partners: { id: 'id', invoiceFooter: 'invoiceFooter', settings: 'settings' }
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -143,6 +144,7 @@ const FULL_ROW = {
   supportPhone: null,
   welcomeMessage: 'Welcome',
   footerText: null,
+  primaryColor: '#c2410c',
   customCss: 'body{}',
   // Read-only columns that must never leak into the response payload:
   customDomain: 'portal.customer.example',
@@ -177,7 +179,7 @@ describe('GET /organizations/:id/portal-settings', () => {
     dbSelectResult
       .mockResolvedValueOnce([{ id: ORG_ID, partnerId: 'p-1' }]) // org existence check
       .mockResolvedValueOnce([FULL_ROW])       // portal_branding row
-      .mockResolvedValueOnce([{ invoiceFooter: 'Partner footer' }]); // partner default footer
+      .mockResolvedValueOnce([{ invoiceFooter: 'Partner footer', settings: { branding: { primaryColor: '#0ea5e9' } } }]); // partner defaults
     const res = await makeApp().request(`/organizations/${ORG_ID}/portal-settings`);
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -207,8 +209,10 @@ describe('GET /organizations/:id/portal-settings', () => {
       supportPhone: null,
       welcomeMessage: 'Welcome',
       footerText: null,
+      primaryColor: '#c2410c',
       customCss: 'body{}',
-      partnerInvoiceFooter: 'Partner footer'
+      partnerInvoiceFooter: 'Partner footer',
+      partnerPrimaryColor: '#0ea5e9'
     });
     expect(JSON.stringify(body)).not.toContain('customDomain');
     expect(JSON.stringify(body)).not.toContain('logo.png');
@@ -254,8 +258,10 @@ describe('GET /organizations/:id/portal-settings', () => {
       supportPhone: null,
       welcomeMessage: null,
       footerText: null,
+      primaryColor: null,
       customCss: null,
-      partnerInvoiceFooter: null
+      partnerInvoiceFooter: null,
+      partnerPrimaryColor: null
     });
   });
 
@@ -272,6 +278,31 @@ describe('GET /organizations/:id/portal-settings', () => {
     expect((await res.json()).data.partnerInvoiceFooter).toBe('Thanks for your business');
   });
 
+  // #9962 (settings rules 4 + 5): the org Branding "Primary color" is the org
+  // override of the partner's Branding colour on quotes/invoices. The editor
+  // shows the inherited partner value beside a blank field, resolved by the
+  // same partnerDocumentBrand the document renderers use.
+  it("reports the partner's Branding colour as the inherited document accent", async () => {
+    dbSelectResult
+      .mockResolvedValueOnce([{ id: ORG_ID, partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ ...FULL_ROW, primaryColor: null }])
+      .mockResolvedValueOnce([{ invoiceFooter: null, settings: { branding: { primaryColor: '#7c3aed' } } }]);
+    const res = await makeApp().request(`/organizations/${ORG_ID}/portal-settings`);
+    expect(res.status).toBe(200);
+    const data = (await res.json()).data;
+    expect(data.primaryColor).toBeNull();
+    expect(data.partnerPrimaryColor).toBe('#7c3aed');
+  });
+
+  it('reports no inherited colour when the partner value is not a hex colour (renderers ignore it too)', async () => {
+    dbSelectResult
+      .mockResolvedValueOnce([{ id: ORG_ID, partnerId: 'p-1' }])
+      .mockResolvedValueOnce([FULL_ROW])
+      .mockResolvedValueOnce([{ invoiceFooter: null, settings: { branding: { primaryColor: 'red' } } }]);
+    const res = await makeApp().request(`/organizations/${ORG_ID}/portal-settings`);
+    expect((await res.json()).data.partnerPrimaryColor).toBeNull();
+  });
+
   it('reports null when the partner row is not visible', async () => {
     dbSelectResult
       .mockResolvedValueOnce([{ id: ORG_ID, partnerId: 'p-1' }])
@@ -279,7 +310,9 @@ describe('GET /organizations/:id/portal-settings', () => {
       .mockResolvedValueOnce([]);
     const res = await makeApp().request(`/organizations/${ORG_ID}/portal-settings`);
     expect(res.status).toBe(200);
-    expect((await res.json()).data.partnerInvoiceFooter).toBeNull();
+    const data = (await res.json()).data;
+    expect(data.partnerInvoiceFooter).toBeNull();
+    expect(data.partnerPrimaryColor).toBeNull();
   });
 
   it('returns false defaults for every visibility flag', async () => {
@@ -477,6 +510,54 @@ describe('PATCH /organizations/:id/portal-settings', () => {
 
   it('rejects partnerInvoiceFooter — the inherited value is read-only here (#7510)', async () => {
     expect((await patch({ partnerInvoiceFooter: 'x' })).status).toBe(400);
+  });
+
+  it('rejects partnerPrimaryColor — the inherited value is read-only here (#9962)', async () => {
+    expect((await patch({ partnerPrimaryColor: '#000000' })).status).toBe(400);
+  });
+
+  it('persists the org primaryColor override of the partner document accent (#9962)', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, primaryColor: '#0f766e' }]);
+    const res = await patch({ primaryColor: '#0f766e' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.primaryColor).toBe('#0f766e');
+
+    const { db } = await import('../db');
+    const valuesArg = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(valuesArg.primaryColor).toBe('#0f766e');
+    const conflictArg = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.calls[0]?.[0];
+    expect(conflictArg.set.primaryColor).toBe('#0f766e');
+  });
+
+  it('a PATCH without primaryColor leaves the stored colour untouched (#9962)', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([FULL_ROW]);
+    const res = await patch({ customCss: null });
+    expect(res.status).toBe(200);
+
+    const { db } = await import('../db');
+    const valuesArg = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect('primaryColor' in valuesArg).toBe(false);
+    const conflictArg = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.calls[0]?.[0];
+    expect('primaryColor' in conflictArg.set).toBe(false);
+  });
+
+  it('accepts null to clear primaryColor back to the partner colour (#9962)', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, primaryColor: null }]);
+    const res = await patch({ primaryColor: null });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.primaryColor).toBeNull();
+  });
+
+  it('400 on a primaryColor that is not a hex colour, with no write (#9962)', async () => {
+    const res = await patch({ primaryColor: 'red;}body{display:none' });
+    expect(res.status).toBe(400);
+    const { db } = await import('../db');
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
   });
 
   it('upserts and returns the managed subset', async () => {

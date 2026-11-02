@@ -917,31 +917,6 @@ func collectLocalAdminSummary() (map[string]any, error) {
 	}
 }
 
-func collectPasswordPolicySummaryWindows() (map[string]any, error) {
-	output, err := runCommand(
-		10*time.Second,
-		"powershell",
-		"-NoProfile",
-		"-NonInteractive",
-		"-Command",
-		"$p=Get-CimInstance -ClassName Win32_AccountPolicy; [pscustomobject]@{minLength=[int]$p.MinPasswordLength;maxAgeDays=[int]$p.MaxPasswordAge.TotalDays;lockoutThreshold=[int]$p.LockoutThreshold;historyCount=[int]$p.PasswordHistorySize} | ConvertTo-Json -Compress",
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	parsed, err := parseJSONValue(output)
-	if err != nil {
-		return nil, err
-	}
-	record, ok := parsed.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("unexpected windows password policy payload")
-	}
-	record["source"] = "win32_account_policy"
-	return record, nil
-}
-
 func parsePwPolicyDarwin(output string) map[string]any {
 	result := map[string]any{
 		"source": "pwpolicy",
@@ -1079,7 +1054,7 @@ func collectPasswordPolicySummary() (map[string]any, error) {
 }
 
 // collectPasswordPolicySummaryForStatus is the security-status tick's read:
-// cached on Windows, where the probe is a PowerShell spawn (#9267).
+// cached on Windows, where the probe spawns secedit.exe (#9267, #9597).
 func collectPasswordPolicySummaryForStatus(goos string) (map[string]any, error) {
 	if goos == "windows" {
 		return collectPasswordPolicySummaryWindowsCached()

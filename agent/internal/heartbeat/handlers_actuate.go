@@ -105,6 +105,10 @@ func handlePamApplyV2(h *Heartbeat, cmd Command) tools.CommandResult {
 	// operation budget starts. The manager then re-checks non-blockingly under
 	// its operation and refuses a declined or unanswered request with a real
 	// boot id, before admission, PinTarget or any ledger entry.
+	// #10190 W07: Cancel request on the elevation card is refused from here
+	// on, so a launch never lands behind a "cancelled" card.
+	applyDone := h.elevationApplyStarted(payload.RequestID)
+	defer applyDone()
 	if refuse, code := h.awaitPamDecline(payload.RequestID); refuse {
 		log.Warn("pam: approved apply for a request the user declined or has not answered; refusing",
 			"elevationRequestId", payload.RequestID, "actuationId", payload.ActuationID, "failureCode", code)
@@ -125,7 +129,7 @@ func handlePamApplyV2(h *Heartbeat, cmd Command) tools.CommandResult {
 		log.Info("pam: approved launch failed; leaving the user's UAC prompt open",
 			"elevationRequestId", payload.RequestID, "failureCode", result.FailureCode)
 	}
-	h.notifyPamApplyOutcome(payload.RequestID, result)
+	h.notifyPamApplyOutcome(payload.RequestID, result, payload.DecidedBy.Technician())
 	commandResult := tools.NewSuccessResult(result, time.Since(start).Milliseconds())
 	commandResult.Result = result
 	return commandResult

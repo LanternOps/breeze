@@ -12,6 +12,8 @@ const AI_KEYS = [
   'showCode','hideCode','acknowledgeTitle','acknowledgeRequirement','acknowledgeIncomplete','expiresIn',
   'requestChanges','notePlaceholder','noteRequired','sendBack','severityInfo','severityWarning','severityBlocking',
   'saveToLibrary','verificationPending','verified','verificationFailed','verificationUnknown',
+  'notRunAwaitingReview','notRunReviewed','notRunApproved','notRun',
+  'reviewVerdictApprove','reviewVerdictChanges','reviewVerdictReject',
   'promoteDescription','ownerScopeOrganization','ownerScopePartner','nameRequired',
 ];
 const SCRIPT_KEYS = [

@@ -564,7 +564,7 @@ describe('resolve_accounts (B2 order, B7)', () => {
     // 1: the CAS at r with an EMPTY patch (no step, checkpoint or revision change).
     expect(Object.keys(writes[0]!.set)).toEqual(['updatedAt']);
     const cas = new PgDialect().sqlToQuery(writes[0]!.where as SQL);
-    expect(cas.params).toEqual(['task-1', ORG, 1, 3]);
+    expect(cas.params).toEqual(['task-1', ORG, 1, 3, 'queued', 'running', 'waiting']); // #9979 state guard
     // 2: the move, at r+1.
     const move = writes[1]!;
     expect(move.set.currentStepKey).toBe('provision_effects');

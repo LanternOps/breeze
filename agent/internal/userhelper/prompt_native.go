@@ -62,18 +62,24 @@ func advertisedNativePromptKinds(role ipc.HelperRole) []string {
 
 // nativePromptKindsFor is what a native helper of role advertises on goos.
 // Kinds are added by the wave that ships each one (plan P2), append-only:
+//
 //   - W04: notice.info@1;
+//
 //   - W05: restart.prompt@1 and its closing card restart.final@1 (drawn
 //     natively as a TaskDialogIndirect / display dialog / zenity question
 //     with the safe action — Postpone or OK — as the default), on every OS;
+//
 //   - W06: remote.consent@1 where the native dialog can draw a Deny-default
 //     decision — the same condition as SupportsConsentUI (Windows and macOS
 //     always; Linux with zenity and a display) — and remote.session@1 on
 //     Windows, the only OS with a native session pill.
 //
-// Only the user helper renders natively; the SYSTEM helper's renderer
-// (elevation) ships in W07 (P14).
+//   - W07: the SYSTEM helper advertises elevation.request@1 on Windows
+//     (system_prompt.go); the user helper never does.
 func nativePromptKindsFor(role ipc.HelperRole, goos string, canDrawConsent bool) []string {
+	if role == ipc.HelperRoleSystem {
+		return systemPromptKindsFor(goos) // W07 (P14): the first elevation question
+	}
 	if role != ipc.HelperRoleUser {
 		return []string{}
 	}
@@ -94,24 +100,30 @@ func nativePromptKindsFor(role ipc.HelperRole, goos string, canDrawConsent bool)
 // NativePromptAdvertisement is what a native helper of this build advertises
 // at auth for a role: AuthRequest.PromptProtocolVersion and PromptKinds.
 func NativePromptAdvertisement(role ipc.HelperRole) (protocol int, kinds []string) {
-	return nativePromptProtocolFor(role), advertisedNativePromptKinds(role)
+	return nativePromptProtocolFor(role, runtime.GOOS), advertisedNativePromptKinds(role)
 }
 
 // NativePromptAdvertisementOn is NativePromptAdvertisement for a helper on
 // goos that can (or cannot) draw a native consent dialog: the same rule,
 // for skew tests that must not depend on the machine running them.
 func NativePromptAdvertisementOn(role ipc.HelperRole, goos string, canDrawConsent bool) (protocol int, kinds []string) {
-	return nativePromptProtocolFor(role), nativePromptKindsFor(role, goos, canDrawConsent)
+	return nativePromptProtocolFor(role, goos), nativePromptKindsFor(role, goos, canDrawConsent)
 }
 
-// nativePromptProtocolFor is the prompt protocol a helper role advertises.
-// The SYSTEM helper's renderer (elevation) ships in W07 (plan P14).
-func nativePromptProtocolFor(role ipc.HelperRole) int {
-	if role == ipc.HelperRoleUser {
+// nativePromptProtocolFor is the prompt protocol a helper role advertises
+// on goos. The SYSTEM helper's renderer (elevation) ships in W07 (plan P14),
+// on Windows only.
+func nativePromptProtocolFor(role ipc.HelperRole, goos string) int {
+	switch {
+	case role == ipc.HelperRoleUser:
+		return ipc.PromptProtocolVersion
+	case role == ipc.HelperRoleSystem && goos == "windows":
 		return ipc.PromptProtocolVersion
 	}
 	return 0
 }
+
+type nativeFact struct{ Label, Value string }
 
 type nativeButton struct {
 	ID    string
@@ -133,6 +145,12 @@ type nativePromptModel struct {
 	Decision bool
 	Deadline time.Time     // absolute response deadline (zero = none)
 	Response time.Duration // response window from presentation, when no Deadline
+	// Intro, Facts and Note are Body in parts, for a renderer that lays
+	// them out itself (the SYSTEM helper's PAM window): the rendered copy
+	// body, the facts, and the consequence lines.
+	Intro string
+	Facts []nativeFact
+	Note  string
 }
 
 func (m nativePromptModel) button(id string) (nativeButton, bool) {
@@ -183,14 +201,17 @@ func buildNativePromptModel(p ipc.PromptShow, now time.Time, loc *time.Location)
 	m.Title = render(p.Copy.Title)
 	var parts []string
 	if p.Copy.Body != "" {
-		parts = append(parts, render(p.Copy.Body))
+		m.Intro = render(p.Copy.Body)
+		parts = append(parts, m.Intro)
 	}
 	if len(p.Facts) > 0 {
 		lines := make([]string, 0, len(p.Facts))
 		for _, f := range p.Facts {
 			// A fact value may carry {time:<unixMs>} (the session's start):
 			// filled here like any copy, never shown raw.
-			lines = append(lines, f.Label+": "+render(f.Value))
+			v := render(f.Value)
+			m.Facts = append(m.Facts, nativeFact{Label: f.Label, Value: v})
+			lines = append(lines, f.Label+": "+v)
 		}
 		parts = append(parts, strings.Join(lines, "\n"))
 	}
@@ -200,11 +221,14 @@ func buildNativePromptModel(p ipc.PromptShow, now time.Time, loc *time.Location)
 		// dialog cannot tick, so the countdown is the one at drawing time.
 		consequence = append(consequence, p.Timing.Expiry.Text)
 	}
+	var notes []string
 	for _, s := range consequence {
 		if s != "" {
 			parts = append(parts, render(s))
+			notes = append(notes, render(s))
 		}
 	}
+	m.Note = strings.Join(notes, "\n")
 	if p.Copy.OperatorNote != "" {
 		parts = append(parts, p.Copy.OperatorNote) // MSP copy, verbatim
 	}

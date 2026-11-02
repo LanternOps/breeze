@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   enqueuedInTx: [] as boolean[],
   failOn: new Map<string, Error>(),
   capture: vi.fn(),
+  audit: vi.fn(),
 }));
 
 const dialect = new PgDialect();
@@ -46,8 +47,14 @@ vi.mock('./flowRunQueue', () => ({
 vi.mock('../services/flows/versions', () => ({ pauseFlow: (...a: unknown[]) => (h.pauseFlow as (...x: unknown[]) => Promise<void>)(...a) }));
 vi.mock('../services/flowValidator', () => ({ isFlowEventDeliveryDurable: () => h.durable }));
 vi.mock('../services/sentry', () => ({ captureException: (...a: unknown[]) => h.capture(...a) }));
+vi.mock('../services/auditEvents', () => ({
+  requestLikeFromSnapshot: () => ({}),
+  writeAuditEvent: (...a: unknown[]) => h.audit(...a),
+}));
 
 import { reconcileFlowRuns, FLOW_RUN_RECONCILE_LIMIT, FlowRunReconcileError } from './flowRunReconciler';
+import { LEGACY_DRAIN_MIN_MS } from '@breeze/shared';
+import { TERMINAL_FLOW_RUN_STATUSES } from '../services/flows/runStore';
 
 const id = (n: number) => `bbbbbbbb-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
@@ -194,6 +201,45 @@ describe('reconcileFlowRuns', () => {
       { org_id: 'cccccccc-0000-4000-8000-000000000001', flow_id: a, flow_site: 'reconciler.pause_event_flow' },
       { fingerprint: ['flow', 'reconciler.pause_event_flow'] },
     );
+  });
+
+  // #5221 B4 (Decision 7) — a reverted conversion's flow, once drained and aged.
+  it('(f) reconciler disables only drained, aged reverted flows and cancels nothing', async () => {
+    const flowId = 'ffffffff-0000-4000-8000-000000000001';
+    const conversionId = 'cccccccc-0000-4000-8000-0000000000f1';
+    h.responses.set("fac.state = 'reverted'", [
+      { id: flowId, org_id: 'cccccccc-0000-4000-8000-000000000001', partner_id: null, name: 'Moved Job', conversion_id: conversionId } as unknown as { id: string },
+    ]);
+    const summary = await reconcileFlowRuns();
+    expect(summary.disabledRevertedFlows).toBe(1);
+
+    const q = h.queries.find((s) => s.includes("fac.state = 'reverted'"))!;
+    // One statement: the flow alone flips, with no publication and no pause reason.
+    expect(q.trim()).toMatch(/^WITH drained AS/);
+    expect(q).toContain("SET status = 'disabled', enabled_publication_seq = NULL, paused_reason = NULL");
+    expect(q).toContain("f.status IN ('enabled', 'paused')");
+    expect(q).toContain(`fac.revert_at < now() - interval '${LEGACY_DRAIN_MIN_MS} milliseconds'`);
+    // Drained: no non-terminal run, no open intent of any of its runs.
+    expect(q).toMatch(/NOT EXISTS \( ?SELECT 1 FROM flow_runs r WHERE r\.flow_id = f\.id AND r\.status NOT IN \(/);
+    for (const status of TERMINAL_FLOW_RUN_STATUSES) expect(q).toContain(`'${status}'`);
+    expect(q).toContain("i.status NOT IN ('completed', 'failed', 'rejected', 'expired', 'cancelled')");
+    expect(q).toContain('LIMIT 500 FOR UPDATE OF f SKIP LOCKED');
+    // Cancels nothing: no run, intent or step is written.
+    expect(h.queries.some((s) => /UPDATE (flow_runs|action_intents|flow_run_steps)/.test(s))).toBe(false);
+    expect(h.enqueue).not.toHaveBeenCalled();
+    expect(h.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'flow.disable', resourceType: 'flow', resourceId: flowId, actorType: 'system',
+      details: { reason: 'flow_conversion_reverted_drained', conversionId },
+    }));
+  });
+
+  it('(f) a failing drain statement is collected like any clause', async () => {
+    h.failOn.set("fac.state = 'reverted'", new Error('lock timeout'));
+    h.responses.set("status = 'queued'", [{ id: id(1) }]);
+    const err = await reconcileFlowRuns().then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowRunReconcileError);
+    expect(h.enqueue).toHaveBeenCalledWith(id(1));
+    expect(h.capture).toHaveBeenCalledWith(expect.any(Error), undefined, { flow_site: 'reconciler.reverted_flows' }, { fingerprint: ['flow', 'reconciler.reverted_flows'] });
   });
 
   it('every clause is bounded', () => {

@@ -6,6 +6,7 @@ import { portalBranding } from '../../db/schema';
 import { brandingParamSchema } from './schemas';
 import { applyPortalCacheHeaders, buildWeakEtag, isEtagFresh } from './helpers';
 import { resolvePortalCapabilities } from './featureFlags';
+import { combinePortalCustomCss, loadPartnerPortalCustomCss } from './portalCustomCss';
 import { ERROR_CODES } from '@breeze/shared';
 
 export const brandingRoutes = new Hono();
@@ -51,7 +52,10 @@ async function resolveBrandingByDomain(domain: string) {
     return null;
   }
 
-  return branding;
+  // #9674: the partner's Custom CSS applies to every child org's portal,
+  // ahead of the org's own (see portalCustomCss.ts).
+  const partnerCss = await loadPartnerPortalCustomCss(branding.orgId);
+  return { ...branding, customCss: combinePortalCustomCss(partnerCss, branding.customCss) };
 }
 
 brandingRoutes.get('/branding/:domain', zValidator('param', brandingParamSchema), async (c) => {
@@ -134,18 +138,31 @@ brandingRoutes.get('/branding', async (c) => {
     .where(eq(portalBranding.orgId, auth.user.orgId))
     .limit(1);
 
+  // #9674: the partner's Custom CSS applies to every child org's portal,
+  // ahead of the org's own (see portalCustomCss.ts). Part of the ETag below.
+  const partnerCss = await loadPartnerPortalCustomCss(auth.user.orgId);
+
+  let payload: { branding: Record<string, unknown> };
   if (!branding) {
     // No row means the MSP has never saved portal settings for this org — the
     // default state, not an error. Match the public /branding/:domain 404
     // contract so the portal falls into its documented 404 → defaultBranding
     // path (flags undefined → every gated surface fails closed).
-    return c.json({ error: 'Branding not found', code: ERROR_CODES.NOT_FOUND }, 404);
+    if (!partnerCss) {
+      return c.json({ error: 'Branding not found', code: ERROR_CODES.NOT_FOUND }, 404);
+    }
+    // The partner's CSS still applies. Return it alone: no visibility flags,
+    // so the portal's merge over defaultBranding fails every gated surface
+    // closed exactly as the 404 path does.
+    payload = { branding: { customCss: partnerCss } };
+  } else {
+    // Trust Center W3d: a per-USER capability (org flag + org-scoped admin contact), read fresh like the
+    // flags; the trust-page routes re-check it on every request. Part of the ETag, so a change is never a 304.
+    const { canEditTrustPage } = await resolvePortalCapabilities({ id: auth.user.id, orgId: auth.user.orgId });
+    payload = {
+      branding: { ...branding, customCss: combinePortalCustomCss(partnerCss, branding.customCss), canEditTrustPage },
+    };
   }
-
-  // Trust Center W3d: a per-USER capability (org flag + org-scoped admin contact), read fresh like the
-  // flags; the trust-page routes re-check it on every request. Part of the ETag, so a change is never a 304.
-  const { canEditTrustPage } = await resolvePortalCapabilities({ id: auth.user.id, orgId: auth.user.orgId });
-  const payload = { branding: { ...branding, canEditTrustPage } };
   applyPortalCacheHeaders(c, {
     scope: 'private',
     browserMaxAgeSeconds: 30,

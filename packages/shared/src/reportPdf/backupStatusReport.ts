@@ -14,7 +14,7 @@ import type {
   BackupRecency,
   ExternalBackupStatus,
 } from '../types/backupHealth';
-import type { BackupStatusBucketId } from '../utils/backupHealth';
+import { saasWorkloadLabel, type BackupStatusBucketId } from '../utils/backupHealth';
 
 type RGB = [number, number, number];
 
@@ -223,7 +223,9 @@ function cellText(row: BackupHealthRow, key: string): string {
     case 'computerName': return row.computerName ?? '-';
     case 'organization': return row.orgName;
     case 'source': return row.source === 'breeze' ? 'Breeze' : (row.providerLabel ?? 'Provider');
-    case 'type': return row.osType === 'workstation' ? 'Workstation' : row.osType === 'server' ? 'Server' : 'Unknown';
+    case 'type': return row.accountType === 'm365' || row.accountType === 'gws'
+      ? row.dataSources.map(saasWorkloadLabel).join(', ') || 'SaaS'
+      : row.osType === 'workstation' ? 'Workstation' : row.osType === 'server' ? 'Server' : 'Unknown';
     case 'dataSources': return row.dataSources.length > 0 ? row.dataSources.join(', ') : '-';
     case 'selected': return formatBytes(row.selectedBytes);
     case 'used': return formatBytes(row.usedBytes);
@@ -272,12 +274,22 @@ export function renderBackupStatusReport(
 ): void {
   const { C, PAGE } = chrome;
   const rows = Array.isArray(data.rows) ? data.rows : [];
+  const saasCount = rows.filter((row) => row.accountType === 'm365' || row.accountType === 'gws').length;
+  // The two sources can both back up the same endpoint; SaaS has no endpoint identity.
+  const deviceCount = new Set(rows
+    .filter((row) => row.accountType !== 'm365' && row.accountType !== 'gws')
+    .map((row) => row.deviceId ?? row.key)).size;
+  const deviceSummary = `${deviceCount} device${deviceCount === 1 ? '' : 's'}`;
+  const populationSummary = saasCount > 0
+    ? `${deviceSummary} and ${saasCount} SaaS workload${saasCount === 1 ? '' : 's'}`
+    : `${deviceSummary} across both sources`;
+  const tableTitle = saasCount > 0 ? (deviceCount > 0 ? 'Devices and SaaS workloads' : 'SaaS workloads') : 'Devices';
 
   let y = chrome.drawTitleBlock(
     doc,
     'Backup Status Report',
     data.org?.name ?? '',
-    `Prepared ${opts.generatedAt} - ${rows.length} device${rows.length === 1 ? '' : 's'} across both sources`,
+    `Prepared ${opts.generatedAt} - ${populationSummary}`,
     PAGE.bandH + 14,
   );
 
@@ -300,7 +312,7 @@ export function renderBackupStatusReport(
   }
 
   y = ensureSpace(doc, chrome, y + 8, 20 + ROW_MIN_H * Math.min(3, rows.length));
-  y = chrome.drawSectionHeading(doc, 'Devices', y);
+  y = chrome.drawSectionHeading(doc, tableTitle, y);
   const contentW = PAGE.w - PAGE.mx * 2;
   const scale = contentW / COLUMNS.reduce((a, c) => a + c.w, 0);
   const columnStyles: Record<number, { cellWidth: number; halign: Col['halign'] }> = {};
@@ -310,7 +322,7 @@ export function renderBackupStatusReport(
   autoTable(doc, {
     startY: y + 1,
     margin: { top: continuationTop, left: PAGE.mx, right: PAGE.mx, bottom: 16 },
-    head: [COLUMNS.map((c) => ({ content: c.label, styles: { halign: c.halign } }))],
+    head: [COLUMNS.map((c) => ({ content: saasCount > 0 && c.key === 'device' ? 'Resource' : c.label, styles: { halign: c.halign } }))],
     body: rows.map((r) => COLUMNS.map((c) => cellText(r, c.key))),
     theme: 'grid',
     rowPageBreak: 'avoid',
@@ -337,7 +349,7 @@ export function renderBackupStatusReport(
       if (info.pageNumber <= 1) return;
       chrome.drawHeaderBand(doc);
       chrome.drawFooter(doc);
-      chrome.drawSectionHeading(doc, 'Devices (continued)', PAGE.bandH + 10);
+      chrome.drawSectionHeading(doc, `${tableTitle} (continued)`, PAGE.bandH + 10);
     },
   });
 
@@ -345,7 +357,9 @@ export function renderBackupStatusReport(
   const finalY = typeof t?.finalY === 'number' ? t.finalY : y;
 
   const truncatedNote = data.truncated
-    ? ' Row limit reached: the device list is cut short and does not cover every device.'
+    ? saasCount > 0
+      ? ' Row limit reached: the backup list is cut short and does not cover every resource.'
+      : ' Row limit reached: the device list is cut short and does not cover every device.'
     : '';
   const note = `Figures as of ${formatSnapshotTime(data.asOf, opts.timezone)}. "28 days" reads oldest (left) to most recent (right); grey is a day with no observation.${truncatedNote}`;
   doc.setFont('helvetica', 'normal');

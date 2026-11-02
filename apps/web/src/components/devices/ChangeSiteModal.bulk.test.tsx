@@ -62,6 +62,12 @@ describe('ChangeSiteModal — bulk variant', () => {
     expect(await screen.findByTestId('change-site-bulk-current')).toHaveTextContent('HQ');
   });
 
+  it('marks the shared current site in the picker with a space before "(current)" (#10082)', async () => {
+    rigFetch(json(200, { results: [], summary: { moved: 0, total: 0 } }));
+    render(<ChangeSiteModal devices={[dev('d1', 'site-hq', 'HQ'), dev('d2', 'site-hq', 'HQ')]} isOpen onClose={vi.fn()} onSaved={vi.fn()} onBulkMoved={vi.fn()} />);
+    expect(await screen.findByRole('option', { name: 'HQ (current)' })).toBeTruthy();
+  });
+
   it('submits ONE POST /devices/bulk/site, then reports the 200 body and closes', async () => {
     const body = { results: [{ id: 'd1', outcome: 'moved' }, { id: 'd2', outcome: 'conflict' }], summary: { moved: 1, total: 2 } };
     rigFetch(json(200, body));

@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react';
 import type { DocumentBranding, DocumentHeaderModel } from '@breeze/shared/documents';
 import type { DocumentHostComponents } from './hostComponents';
+import { DocumentBrandMark } from './DocumentBrandMark';
 
 type Tone = NonNullable<DocumentHeaderModel['status']>['tone'];
 
@@ -13,8 +14,6 @@ const CHIP: Record<Tone, string> = {
   danger: 'bg-destructive/10 text-destructive-on-tint',
 };
 
-const LOGO = 'h-11 w-auto max-w-[220px] object-contain';
-
 /** Header band: logo/wordmark + seller on the left; eyebrow + number + status +
  *  dates on the right; bill-to below. */
 export function DocumentHeader({
@@ -26,19 +25,13 @@ export function DocumentHeader({
   /** h2 when a cover above already carries the page's H1. */
   titleAs?: 'h1' | 'h2';
 }): ReactElement {
-  const { seller, logo, wordmark, logoAlt } = branding;
+  const { seller } = branding;
   const showSeller = seller && (seller.name || seller.lines.length > 0 || seller.phone || seller.email || seller.website);
   return (
     <div className="space-y-8">
       <header className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-3">
-          {logo?.kind === 'asset' ? (
-            <components.Image asset={logo.ref} alt={logoAlt} className={LOGO} />
-          ) : logo?.kind === 'url' ? (
-            <img src={logo.url} alt={logoAlt} className={LOGO} />
-          ) : wordmark ? (
-            <p className="text-xl font-semibold tracking-tight text-foreground">{wordmark}</p>
-          ) : null}
+          <DocumentBrandMark branding={branding} components={components} />
           {showSeller && (
             <address className="space-y-0.5 text-xs not-italic leading-relaxed text-muted-foreground">
               {seller.name && <p className="font-medium text-foreground/80">{seller.name}</p>}

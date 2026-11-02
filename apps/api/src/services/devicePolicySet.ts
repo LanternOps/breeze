@@ -61,7 +61,7 @@ export type PolicySetFeatureType = (typeof POLICY_SET_FEATURE_TYPES)[number];
 export type PolicyAssignmentLevel = (typeof configPolicyAssignments.$inferSelect)['level'];
 
 export type EventLogSettingsRow = Pick<typeof configPolicyEventLogSettings.$inferSelect,
-  'id' | 'retentionDays' | 'maxEventsPerCycle' | 'collectCategories' | 'minimumLevel' | 'collectionIntervalMinutes' | 'rateLimitPerHour'>;
+  'id' | 'retentionDays' | 'maxEventsPerCycle' | 'collectCategories' | 'minimumLevel' | 'collectionIntervalMinutes' | 'rateLimitPerHour' | 'applicationProviders'>;
 export type HardwareMonitoringSettingsRow = Pick<typeof configPolicyHardwareMonitoringSettings.$inferSelect,
   'id' | 'enabled' | 'pollIntervalMinutes' | 'diskHealthIntervalMinutes'>;
 export type PatchSourceSettingsRow = Pick<typeof configPolicyPatchSettings.$inferSelect, 'id' | 'exclusiveWindowsUpdate'>;
@@ -208,6 +208,7 @@ export function policySetQuery(hierarchy: DeviceHierarchy, executor: DbExecutor 
         id: ev.id, retentionDays: ev.retentionDays, maxEventsPerCycle: ev.maxEventsPerCycle,
         collectCategories: ev.collectCategories, minimumLevel: ev.minimumLevel,
         collectionIntervalMinutes: ev.collectionIntervalMinutes, rateLimitPerHour: ev.rateLimitPerHour,
+        applicationProviders: ev.applicationProviders,
       },
       hardwareMonitoring: {
         id: hw.id, enabled: hw.enabled, pollIntervalMinutes: hw.pollIntervalMinutes, diskHealthIntervalMinutes: hw.diskHealthIntervalMinutes,

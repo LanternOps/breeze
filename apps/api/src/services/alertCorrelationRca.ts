@@ -1,3 +1,4 @@
+import { isDeviceOwned } from './alertOwner';
 import { and, desc, eq, gte, inArray, isNull, lte, not, or } from 'drizzle-orm';
 
 import { db } from '../db';
@@ -391,7 +392,7 @@ function rankEvidence(items: RcaEvidenceItem[], maxItems: number): RcaEvidenceIt
 }
 
 function buildAlertEvidence(
-  alertRows: AlertRow[],
+  alertRows: Array<AlertRow & { deviceId: string }>,
   deviceNames: Map<string, DeviceRow>,
   ruleSources: Map<string, AlertRuleSource>,
   configSources: Map<string, ConfigPolicyAlertSource>,
@@ -585,7 +586,11 @@ function buildSuggestedNextSteps(
 }
 
 export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promise<AlertCorrelationRcaResult> {
-  const alertRows = [...options.alerts].sort((a, b) => a.triggeredAt.getTime() - b.triggeredAt.getTime());
+  const alertRows = options.alerts.filter((alert): alert is typeof alert & { deviceId: string } => {
+    if (isDeviceOwned(alert)) return true;
+    console.info('[alertCorrelationRca] skipping alert', { alertId: alert.id, reason: 'alert_has_no_device' });
+    return false;
+  }).sort((a, b) => a.triggeredAt.getTime() - b.triggeredAt.getTime());
   const alertIds = alertRows.map((alert) => alert.id);
   const deviceIds = [...new Set(alertRows.map((alert) => alert.deviceId))];
   const firstAlertAt = alertRows[0]?.triggeredAt ?? new Date();

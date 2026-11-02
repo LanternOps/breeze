@@ -1,3 +1,4 @@
+vi.mock('../../services/networkIsolation/reconcile', () => ({ buildContainmentHeartbeatBlock: vi.fn(async () => ({ networkIsolation: null })), reconcileContainmentReport: vi.fn(async (_tx, _device, _report, _now, context) => { context.row = null; }), noteIsolationReportDropped: vi.fn(), storedContainmentHeartbeatBlock: vi.fn((row) => ({ networkIsolation: row ? { isolationId: row.id, generation: row.generation, desired: row.desiredState, allow: row.allowSnapshot } : null })) }));
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { Hono } from 'hono';
 
@@ -4038,9 +4039,10 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
   });
 
   // #8928 — the user-outcome notice capability is same-heartbeat, non-sticky
-  // truth like every other protocol column: anything but exactly 1 is 0.
+  // truth like every other protocol column. #10190 W07 adds version 2 (the
+  // agent also decodes decidedBy on pam_apply_v2); anything but 1 or 2 is 0.
   it.each([
-    [1, 1], [0, 0], [2, 0], ['1', 0], [undefined, 0], [1.5, 0], [null, 0],
+    [1, 1], [0, 0], [2, 2], [3, 0], ['1', 0], ['2', 0], [undefined, 0], [1.5, 0], [null, 0],
   ])('normalizePamUserNotifyProtocolVersion(%j) === %j', (input, expected) => {
     expect(normalizePamUserNotifyProtocolVersion(input)).toBe(expected);
   });
@@ -4050,7 +4052,8 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     { capabilities: undefined, expected: 0 },
     { capabilities: {}, expected: 0 },
     { capabilities: { pamUserNotifyProtocolVersion: 0 }, expected: 0 },
-    { capabilities: { pamUserNotifyProtocolVersion: 2 }, expected: 0 },
+    { capabilities: { pamUserNotifyProtocolVersion: 2 }, expected: 2 },
+    { capabilities: { pamUserNotifyProtocolVersion: 3 }, expected: 0 },
   ])('rewrites the PAM user-notify capability every beat: %j', async ({ capabilities, expected }) => {
     const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
     await setupMocks(setSpy);
@@ -4820,6 +4823,7 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
       collect_categories: ['security', 'system'],
       minimum_level: 'warning',
       collection_interval_minutes: 15,
+      application_providers: [],
     };
     vi.mocked(buildEventLogConfigUpdate).mockResolvedValueOnce(settings);
 
@@ -4921,6 +4925,7 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
       hyperv_enabled: true,
       proxmox_enabled: true,
       interval_minutes: 60,
+      accepts_image_provenance: true as const,
     };
     vi.mocked(buildWorkloadInventoryConfigUpdate).mockResolvedValueOnce(payload);
     const res = await buildApp().request('/agents/device-1/heartbeat', {
@@ -5457,8 +5462,8 @@ describe('POST /agents/:id/heartbeat — shared post-commit policy context (#805
       .toHaveBeenCalledWith('device-1', 'org-1', expect.objectContaining({ policySet: set }));
     // No onedrive link in the set → no OneDrive DB phase at all.
     expect(helpers.loadOnedriveHelperConfigPlan).not.toHaveBeenCalled();
-    // hierarchy/set savepoint + the policy probe's and the UniFi collector
-    // probe's (#7970) cache-miss savepoints; the helper resolves in memory.
+    // Hierarchy/set + two policy probe savepoints. #4618's negative containment
+    // lookup adds no savepoint, and the absent episode needs no block build.
     expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(3);
   });
 
@@ -8051,7 +8056,8 @@ describe('POST /agents/:id/heartbeat — device-remove uninstall drain (#3986)',
     // ...and the response carries NOTHING the Go agent would act on. Asserted
     // as an exact key set, not key-by-key: a future field added to the normal
     // response must not be able to leak in unnoticed.
-    expect(Object.keys(body)).toEqual(['commands']);
+    expect(Object.keys(body)).toEqual(['commands', 'containment']);
+    expect(body.containment).toEqual({ networkIsolation: null });
   });
 
   it('claims with the derived self_uninstall allowlist and nothing wider', async () => {
@@ -8122,7 +8128,7 @@ describe('POST /agents/:id/heartbeat — device-remove uninstall drain (#3986)',
     const resp = await drainBeat();
 
     expect(resp.status).toBe(200);
-    expect(await resp.json()).toEqual({ commands: [] });
+    expect(await resp.json()).toEqual({ commands: [], containment: { networkIsolation: null } });
   });
 
   it('a TENANT drain still gets the full heartbeat (the minimal branch is device-scoped only)', async () => {
@@ -9033,8 +9039,8 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
   // delegations (so it can verify the signed `rebind` directive) and, while
   // the device is the source of an open reattach intent, the directive.
   const PARKED_ALLOWED_KEYS: Record<'agent' | 'watchdog', string[]> = {
-    agent: ['commands', 'renewCert', 'rotateToken', 'confirmTokenRotation', 'manifestTrustKeys', 'manifestKeyDelegations', 'rebind'],
-    watchdog: ['commands', 'renewCert', 'rotateToken', 'confirmTokenRotation'],
+    agent: ['commands', 'containment', 'renewCert', 'rotateToken', 'confirmTokenRotation', 'manifestTrustKeys', 'manifestKeyDelegations', 'rebind'],
+    watchdog: ['commands', 'containment', 'renewCert', 'rotateToken', 'confirmTokenRotation'],
   };
   const TRUST_KEYS = ['manifestTrustKeys', 'manifestKeyDelegations'];
   const FORBIDDEN_KEYS = [
@@ -9241,7 +9247,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     const resp = await parkedBeat('agent');
 
     const body = (await resp.json()) as Record<string, unknown>;
-    expect(body).toEqual({ commands: [], renewCert: true, rotateToken: true, ...PARKED_TRUST });
+    expect(body).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, rotateToken: true, ...PARKED_TRUST });
   });
 
   it('agent: a superseded-token caller is not asked to rotate (request flags reach the shared helper)', async () => {
@@ -9251,7 +9257,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       body: JSON.stringify(richHeartbeatBody),
     });
 
-    expect(await resp.json()).toEqual({ commands: [], renewCert: true, ...PARKED_TRUST });
+    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, ...PARKED_TRUST });
   });
 
   it('agent (#8318 §6.2): records the declared rebind capability and returns the signed directive', async () => {
@@ -9300,7 +9306,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       body: JSON.stringify(richHeartbeatBody),
     });
 
-    expect(await resp.json()).toEqual({ commands: [], renewCert: true, confirmTokenRotation: true, ...PARKED_TRUST });
+    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, confirmTokenRotation: true, ...PARKED_TRUST });
     // Promotion was attempted for exactly the staged hash the caller presented.
     expect(promotePendingAgentCredentialsMock).toHaveBeenCalledWith(expect.objectContaining({
       agent: expect.objectContaining({ deviceId: 'device-1' }),
@@ -9339,7 +9345,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     const resp = await parkedBeat('watchdog');
 
     const body = (await resp.json()) as Record<string, unknown>;
-    expect(body).toEqual({ commands: [] });
+    expect(body).toEqual({ commands: [], containment: { networkIsolation: null } });
     expect(setSpy).toHaveBeenCalledTimes(1);
     const written = setSpy.mock.calls[0]![0] as Record<string, unknown>;
     expect(Object.keys(written).sort()).toEqual(['watchdogLastSeen', 'watchdogStatus', 'watchdogVersion']);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { flowDocumentV1Schema, isStructurallyValidCron, type FlowConversionFindingCode, type FlowDocumentV1 } from '@breeze/shared';
+import { FLOW_BUILTIN_STEPS, flowDocumentV1Schema, isStructurallyValidCron, type FlowConversionFindingCode, type FlowDocumentV1 } from '@breeze/shared';
 import { isCronDue } from '../../cronDue';
 import { latestCronOccurrence } from '../../aiAgents/sweepOccurrence';
 import { automationSourceDigest, convertAutomation } from './convertAutomation';
@@ -168,7 +168,11 @@ describe('convertAutomation — actions', () => {
     expect(s[1]).toMatchObject({ tool: 'resolve_targets', input: { fromStep: { stepId: 'a0_run_script', set: 'failed' } }, when: 'length(steps.a0_run_script.output.failedDeviceIds) > 0' });
     expect(s[2]).toMatchObject({
       tool: 'notify', when: 'length(steps.a0_run_script.output.failedDeviceIds) > 0', forEach: { items: 'steps.a0_failed.output.devices' },
-      input: { channelId: CHANNEL, title: 'Nightly cleanup action failed', severity: 'warning' },
+      input: {
+        channelId: CHANNEL, title: 'Nightly cleanup action failed', severity: 'warning',
+        // #10705 — the notice names the device and the reason it failed.
+        message: 'Automation Nightly cleanup action 1 failed on {{item.hostname}}: {{item.failureReason}}',
+      },
     });
     expect(has(r, 'notification_emails_unused')).toBe(true);
     // notify narrows like stop
@@ -257,6 +261,9 @@ describe('convertAutomation — output contract', () => {
     row({ trigger: { type: 'webhook', secret: 's' }, actions: [{ type: 'create_alert', alertSeverity: 'low', alertMessage: 'x' }] }),
     row({ trigger: { type: 'manual' }, actions: [{ type: 'execute_command', command: 'Get-Date', shell: 'powershell' }], onFailure: 'notify', notificationTargets: { channelIds: [CHANNEL] } }),
     row({ actions: [{ type: 'run_script', scriptId: SCRIPT }, { type: 'send_notification', notificationChannelId: CHANNEL_PD }], conditions: [{ type: 'os', value: 'windows' }] }),
+    // An event Job whose first action is not a device action resolves the triggering device first (B7 parity).
+    row({ trigger: { type: 'event', eventType: 'alert.triggered' }, actions: [{ type: 'send_notification', notificationChannelId: CHANNEL }] }),
+    row({ trigger: { type: 'event', eventType: 'alert.triggered' }, actions: [{ type: 'create_alert', alertSeverity: 'high', alertMessage: 'x' }] }),
   ];
 
   it('every exact or needs_review document is a valid flow document', () => {
@@ -265,6 +272,13 @@ describe('convertAutomation — output contract', () => {
       expect(r.fidelity, JSON.stringify(r.findings)).not.toBe('unconvertible');
       const parsed = flowDocumentV1Schema.safeParse(r.document);
       expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+      // Every built-in step's input is one its own schema accepts (a draft the save would reject is no draft).
+      for (const st of stepsOf(r)) {
+        const schema = (FLOW_BUILTIN_STEPS as Record<string, { inputSchema: { safeParse: (v: unknown) => { success: boolean; error?: { issues: unknown } } } }>)[st.tool];
+        if (!schema) continue;
+        const res = schema.inputSchema.safeParse(st.input);
+        expect(res.success, `${st.id}: ${JSON.stringify(res.error?.issues)}`).toBe(true);
+      }
       expect(r.documentDigest).toMatch(/^[0-9a-f]{64}$/);
       expect(r.sourceDigest).toBe(automationSourceDigest(r0));
     }

@@ -11,12 +11,22 @@ type DocsSection =
   | 'monitoring'
   | 'reference';
 
+interface DocsIndexSection {
+  /** Raw `##`/`###` heading text; '' for the intro before the first heading. */
+  heading: string;
+  /** Rendered heading id (github-slugger, as Starlight emits it); '' for the intro. */
+  anchor: string;
+  /** Section body with MDX imports/components stripped; code fences kept verbatim. */
+  text: string;
+}
+
 interface DocsIndexEntry {
   path: string;
   title: string;
   description: string;
   headings: string[];
   section: DocsSection;
+  sections: DocsIndexSection[];
 }
 
 const docsRoot = path.resolve('apps/docs/src/content/docs');
@@ -98,6 +108,14 @@ function parseFrontmatter(source: string): { metadata: Record<string, string>; b
   };
 }
 
+const FENCE_RE = /^\s*(```|~~~)/;
+const SECTION_HEADING_RE = /^###?\s+(.+?)\s*$/;
+const ANY_HEADING_RE = /^#{1,6}\s+(.+?)\s*$/;
+
+function cleanHeading(raw: string): string {
+  return raw.replace(/\s+#+\s*$/, '').trim();
+}
+
 function extractHeadings(body: string): string[] {
   const headings: string[] = [];
   let inCodeFence = false;
@@ -110,14 +128,170 @@ function extractHeadings(body: string): string[] {
 
     if (inCodeFence) continue;
 
-    const match = line.match(/^###?\s+(.+?)\s*$/);
+    const match = line.match(SECTION_HEADING_RE);
     if (!match) continue;
 
-    const heading = match[1].replace(/\s+#+\s*$/, '').trim();
+    const heading = cleanHeading(match[1] ?? '');
     if (heading) headings.push(heading);
   }
 
   return headings;
+}
+
+/** Heading markdown → the text Astro renders, which is what the slugger sees. */
+function headingPlainText(heading: string): string {
+  return heading
+    .replace(/<[^>]+>/g, '')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/`/g, '')
+    .replace(/\*\*/g, '')
+    .replace(/\*/g, '');
+}
+
+/** github-slugger (Astro's rehypeHeadingIds): lowercase, drop punctuation, spaces → '-', dedupe with -N. */
+function createSlugger(): (heading: string) => string {
+  const occurrences = new Map<string, number>();
+  return (heading) => {
+    const original = headingPlainText(heading)
+      .toLowerCase()
+      .replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, '')
+      .replace(/ /g, '-');
+    let slug = original;
+    while (occurrences.has(slug)) {
+      const next = (occurrences.get(original) ?? 0) + 1;
+      occurrences.set(original, next);
+      slug = `${original}-${next}`;
+    }
+    occurrences.set(slug, 0);
+    return slug;
+  };
+}
+
+function attrValue(attrs: string, name: string): string | undefined {
+  const match = attrs.match(new RegExp(`\\b${name}=(?:"([^"]*)"|'([^']*)')`));
+  return match ? (match[1] ?? match[2]) : undefined;
+}
+
+/**
+ * Names the page imports (`import { Aside, Tabs } from '...'`, `import Foo from '...'`).
+ * Only these are MDX components; any other `<Capitalized>` token is prose, e.g. the
+ * `<PUBLIC_APP_URL>` placeholder in a documented redirect URI.
+ */
+function importedComponentNames(body: string): string[] {
+  const names = new Set<string>();
+  for (const match of body.matchAll(/^import\s+([^'"]+?)\s+from\s+['"][^'"]+['"]/gm)) {
+    const clause = match[1] ?? '';
+    const named = clause.match(/\{([^}]*)\}/);
+    for (const part of named?.[1]?.split(',') ?? []) {
+      const local = part.split(/\s+as\s+/).pop()?.trim();
+      if (local && /^[A-Z]\w*$/.test(local)) names.add(local);
+    }
+    const defaultName = clause.replace(/\{[^}]*\}/, '').replace(/,/g, ' ').trim().split(/\s+/)[0];
+    if (defaultName && /^[A-Z]\w*$/.test(defaultName)) names.add(defaultName);
+  }
+  return [...names];
+}
+
+const INLINE_CODE_RE = /`[^`\n]+`/g;
+
+/** Strips MDX-only syntax from prose (never from code fences or inline code) so the model reads plain markdown. */
+function cleanProse(prose: string, components: string[]): string {
+  // Inline code is literal text: mask it so neither the component nor the ESM
+  // patterns below can touch it.
+  const codeSpans: string[] = [];
+  let text = prose.replace(INLINE_CODE_RE, (span) => `\u0000${codeSpans.push(span) - 1}\u0000`);
+
+  text = text
+    .replace(/^import\s+(?:[^'"\n]+\s+from\s+)?['"][^'"\n]+['"];?\s*$/gm, '')
+    .replace(/^export\s+(?:const|let|var|function|default)\b.*$/gm, '')
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+
+  if (components.length > 0) {
+    const names = components.join('|');
+    text = text
+      .replace(new RegExp(`<(${names})\\b([^>]*?)\\/>`, 'g'), (_m, _tag: string, attrs: string) => {
+        const label = attrValue(attrs, 'title') ?? attrValue(attrs, 'label');
+        return label ? `**${label}**` : '';
+      })
+      .replace(new RegExp(`<(${names})\\b([^>]*)>`, 'g'), (_m, _tag: string, attrs: string) => {
+        const label = attrValue(attrs, 'label') ?? attrValue(attrs, 'title');
+        return label ? `**${label}:**` : '';
+      })
+      .replace(new RegExp(`<\\/(${names})\\s*>`, 'g'), '');
+  }
+
+  return text
+    .replace(/\u0000(\d+)\u0000/g, (_m, index: string) => codeSpans[Number(index)] ?? '')
+    .split('\n')
+    .map((line) => line.replace(/\s+$/, ''))
+    .join('\n');
+}
+
+function cleanSectionText(lines: string[], components: string[]): string {
+  const parts: string[] = [];
+  let prose: string[] = [];
+  let fence: string[] | null = null;
+
+  for (const line of lines) {
+    if (FENCE_RE.test(line)) {
+      if (fence) {
+        fence.push(line.trim());
+        parts.push(fence.join('\n'));
+        fence = null;
+      } else {
+        parts.push(cleanProse(prose.join('\n'), components));
+        prose = [];
+        fence = [line.trim()];
+      }
+      continue;
+    }
+    if (fence) fence.push(line);
+    else prose.push(line);
+  }
+  if (fence) parts.push(fence.join('\n'));
+  parts.push(cleanProse(prose.join('\n'), components));
+
+  return parts.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** Splits the body at `##`/`###` headings (the same ones `headings` lists) into searchable sections. */
+function extractSections(body: string): DocsIndexSection[] {
+  const slug = createSlugger();
+  const components = importedComponentNames(body);
+  const sections: DocsIndexSection[] = [];
+  let current = { heading: '', anchor: '', lines: [] as string[] };
+  let inCodeFence = false;
+
+  const flush = () => {
+    const text = cleanSectionText(current.lines, components);
+    if (current.heading || text) {
+      sections.push({ heading: current.heading, anchor: current.anchor, text });
+    }
+  };
+
+  for (const line of body.split(/\r?\n/)) {
+    if (FENCE_RE.test(line)) {
+      inCodeFence = !inCodeFence;
+      current.lines.push(line);
+      continue;
+    }
+
+    const anyHeading = inCodeFence ? null : line.match(ANY_HEADING_RE);
+    if (anyHeading) {
+      const heading = cleanHeading(anyHeading[1] ?? '');
+      const anchor = heading ? slug(heading) : '';
+      if (heading && SECTION_HEADING_RE.test(line)) {
+        flush();
+        current = { heading, anchor, lines: [] };
+        continue;
+      }
+    }
+
+    current.lines.push(line);
+  }
+  flush();
+
+  return sections;
 }
 
 function buildDocPath(filePath: string): { routePath: string; section: DocsSection | null } {
@@ -165,7 +339,8 @@ async function main(): Promise<void> {
       title: metadata.title ?? '',
       description: metadata.description ?? '',
       headings: extractHeadings(body),
-      section
+      section,
+      sections: extractSections(body)
     });
   }
 

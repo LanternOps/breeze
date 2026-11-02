@@ -59,6 +59,8 @@ import type { RequestLike } from './auditEvents';
 import type { WispSessionGrant } from './wisp/chatCeiling';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
+import { isUnknownToolErrorText } from '@breeze/shared';
+import { hasCoreAiToolName } from './aiToolNames';
 import { markAiBudgetReservationIndeterminate, readSdkUsageSnapshot } from './aiBudgetReservations';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { DEFAULT_APPROVAL_WAIT_BUDGET_MS, loadApprovalWaitBudgetMs } from './aiApprovalTimeout';
@@ -540,6 +542,8 @@ export interface ActiveSession {
    * after every flush (normal `result` or the abandoned-turn fallback below).
    */
   pendingTurnToolExecutionCount: number;
+  /** Synchronously reserved focal auto-link slots; shares the tool-count reset lifecycle. */
+  pendingTurnAutoLinkCount: number;
   /**
    * tool_use id → bare tool name for each pending call in toolUseIdQueue.
    * Removed when the call's result is recorded, or used by the dropped-call
@@ -1171,6 +1175,7 @@ export class StreamingSessionManager {
       toolUseIdQueue: [],
       pendingTurnUsage: emptyPendingTurnUsage(),
       pendingTurnToolExecutionCount: 0,
+      pendingTurnAutoLinkCount: 0,
       toolUseNames: new Map(),
       resultedToolUseIds: new Set(),
       resultedWithoutIdByName: new Map(),
@@ -1992,7 +1997,11 @@ export class StreamingSessionManager {
               } else if (resultMsg.subtype === 'error_max_budget_usd') {
                 session.eventBus.publish({ type: 'error', message: 'AI budget limit reached for this query.' });
               } else if (resultMsg.subtype === 'error_max_turns') {
-                session.eventBus.publish({ type: 'error', message: 'Maximum conversation turns reached.' });
+                // Coded: the session's remaining turns ran out mid-loop, so the
+                // next send would be refused too (preflight). Wisp rolls to a
+                // fresh session on this code; the user re-sends by hand (work
+                // may have run partway, so never automatically).
+                session.eventBus.publish({ type: 'error', message: 'Maximum conversation turns reached.', code: 'turn_limit_reached' });
               } else {
                 session.eventBus.publish({
                   type: 'error',
@@ -2137,6 +2146,7 @@ export class StreamingSessionManager {
   ): Promise<{ inputTokens: number; outputTokens: number; costCents: number; outcome: TurnOutcome }> {
     const toolExecutionCount = session.pendingTurnToolExecutionCount;
     session.pendingTurnToolExecutionCount = 0;
+    session.pendingTurnAutoLinkCount = 0;
     session.pendingTurnUsage = emptyPendingTurnUsage();
     const observation = session.refusalObservation;
     session.refusalObservation = newSdkTurnObservation();
@@ -2371,7 +2381,15 @@ export class StreamingSessionManager {
     const errorText = redactAiToolOutputText(
       rawText || 'Tool call was rejected before execution and produced no result.',
     ).slice(0, 1000);
-    const output = { error: errorText, droppedBeforeExecution: true };
+    // #9855: the CLI's own "No such tool available" answer for a name that is
+    // not a tool. Marked so the sidebar shows a neutral note (the model
+    // retries with a real tool) rather than a red Failed card. Read from the
+    // raw text: redaction must not decide which card the user sees. A
+    // registered name the CLI calls unknown (e.g. withheld from this session)
+    // is a real capability gap and stays a red failure.
+    const output = isUnknownToolErrorText(rawText) && !hasCoreAiToolName(toolName)
+      ? { error: errorText, droppedBeforeExecution: true, unknownTool: true }
+      : { error: errorText, droppedBeforeExecution: true };
 
     console.warn(
       `[StreamingSessionManager] Tool call ${toolName} (${toolUseId}) was rejected before the MCP handler ran — recording explicit error tool_result`,

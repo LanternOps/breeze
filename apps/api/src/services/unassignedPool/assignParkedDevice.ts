@@ -461,7 +461,8 @@ function afterCommit(
     return requestDeviceGroupReevaluation({
       deviceId: item.deviceId,
       orgId: item.targetOrgId,
-      eventType: 'device.updated',
+      // The move cleared memberships; device.created evaluates every target-org dynamic group.
+      eventType: 'device.created',
       reason: 'parked_device_assigned',
     });
   });

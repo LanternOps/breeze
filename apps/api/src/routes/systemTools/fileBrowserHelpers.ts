@@ -187,6 +187,19 @@ const AGENT_ERROR_CODE_KIND: Record<AgentCommandErrorCode, AgentRefusalKind> = {
   unsupported_encoding: ERROR_CODES.AGENT_COMMAND_REJECTED,
   invalid_argument: ERROR_CODES.AGENT_COMMAND_REJECTED,
   scan_in_progress: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  // Network-isolation codes (#10088) only ever ride isolate/release results,
+  // never a file-browser command; they are refusals if one ever did.
+  isolation_unsupported_platform: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  isolation_mechanism_unavailable: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  isolation_apply_error: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  isolation_control_plane_unreachable: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  isolation_enforcement_not_observed: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  isolation_not_delivered: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  isolation_agent_unsupported: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  isolation_episode_mismatch: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  isolation_stale_generation: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  isolation_invalid_spec: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  isolation_busy: ERROR_CODES.AGENT_COMMAND_REJECTED,
 };
 
 function failureForKind(kind: AgentRefusalKind, raw: string): CommandFailure {

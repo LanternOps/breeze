@@ -28,6 +28,8 @@ import {
 // to catch drift between the plan's documented contract and the actual
 // registry, so it must not import the list from the module under test.
 const EXPECTED_WORKER_NAMES = [
+  'psaTicketingWorker',
+  'psaTicketingReconciler',
   'topologyReconcileWorker',
   'topologyCollectionRetentionWorker',
   'topologyOutboxWorker',
@@ -89,6 +91,7 @@ const EXPECTED_WORKER_NAMES = [
   'securityScanWorker',
   'peripheralJobs',
   'deviceGroupJobs',
+  'partnerGroupEvaluationJobs',
   'browserSecurityWorker', 'c2cBackupWorker', 'backupSlaWorker', 'drExecutionWorker',
   'recoveryMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
   'incidentCorrelationWorker', 'incidentTimelineEnricher', 'incidentSlaMonitor', 'staleCommandReaper',

@@ -28,6 +28,7 @@
  */
 import { and, eq, type SQL } from 'drizzle-orm';
 import { db } from '../db';
+import { groupOwnerMatchesMembershipOrg } from './deviceGroupOwnership';
 import { deviceGroupMemberships, deviceGroups, devices, organizations } from '../db/schema';
 import {
   auditRefusedExecutionGroups,
@@ -177,13 +178,9 @@ async function selectCandidates(
         auditRefusedExecutionGroups(scope.policyOrgId, options.auditAction, refusedGroups);
         if (options.refusedGroups === 'exclude') return { rows: [], refusedGroups };
       }
-      // #3182 — the group id is dereferenced through device_group_memberships,
-      // so both joins carry an org-equality condition, not a bare id match:
-      // group.org_id = membership.org_id = device.org_id. A membership row
-      // could name a group in another org until #3182's composite FK landed (a
-      // cross-org device move produced exactly that shape), and the scheduler
-      // runs under a system DB context with no RLS behind it. The query must
-      // reject that shape on its own, without relying on the constraint.
+      // #3182: membership and device must share an org. An org-owned group
+      // must share that org; a partner-owned group must belong to that org's
+      // partner. Enforce the owner rule even under a system DB context.
       const rows = await db
         .select(candidateColumns)
         .from(deviceGroupMemberships)
@@ -191,7 +188,7 @@ async function selectCandidates(
           deviceGroups,
           and(
             eq(deviceGroupMemberships.groupId, deviceGroups.id),
-            eq(deviceGroups.orgId, deviceGroupMemberships.orgId),
+            groupOwnerMatchesMembershipOrg(),
           ),
         )
         .innerJoin(

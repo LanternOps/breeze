@@ -198,7 +198,7 @@ func TestContainerdBareImageIDRefUsesRecoveredRepository(t *testing.T) {
 		{ID: strings.Repeat("e1", 32), Names: []string{"/by-id-pulled"}, Image: retag, ImageID: retag},
 		{ID: strings.Repeat("e2", 32), Names: []string{"/by-id-local"}, Image: local, ImageID: local},
 		{ID: strings.Repeat("e3", 32), Names: []string{"/pinned-local"}, Image: "lab-local@" + local, ImageID: local},
-	}, images, true))
+	}, images, true, true))
 	checks := []struct{ name, got, want string }{
 		{"recovered ref sorts to the hub tag", val(ws["by-id-pulled"].ImageRef), "nginx:1.27"},
 		{"recovered pulled repository keeps its digest", val(ws["by-id-pulled"].ImageDigest), retag},

@@ -27,7 +27,7 @@ import {
 } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
-import { backupDevicesPage, backupOverview, backupTile } from '../../services/portal/backupReadModel';
+import { backupDevicesPage, backupOverview, backupSaasWorkloads, backupTile } from '../../services/portal/backupReadModel';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const NOW = new Date();
@@ -226,5 +226,50 @@ describe('portal backup read model over third-party rows (#6012)', () => {
     // Configured, but never a claimed verification. a-laptop (linked) plus the
     // vendor-only row — the same two rows the Backups table lists (#7505).
     expect(on).toMatchObject({ status: 'no_data', configured: 2, total: 2, completedAt: null });
+  });
+});
+
+
+runDb('keeps endpoint counts unchanged with M365 SaaS rows and isolates SaaS details', async () => {
+  const accountType = 'm365' as const;
+  const { a, b } = await seed();
+  const read = () => withDbAccessContext(a.portalContext, () => Promise.all([
+    backupTile(a.org.id, NOW), backupOverview(a.org.id, { timezone: 'UTC', now: NOW }), backupDevicesPage(a.org.id, pageArgs),
+  ]));
+  const before = await read();
+  await withSystemDbAccessContext(() => db.insert(backupProviderDevices).values([
+    { ...a.base, vendorDeviceId: 'saas-mail', vendorDeviceName: 'private@example.com', accountType: 'm365', dataSources: ['m365_mail'], status: 'completed', lastSuccessAt: RECENT, vendorRaw: { itemCount: 10, failingItems: [{ name: 'private@example.com', error: 'secret error' }] } },
+    { ...a.base, vendorDeviceId: 'saas-drive', vendorDeviceName: 'private drive', accountType, dataSources: ['m365_sharepoint'], status: 'failed', lastSuccessAt: null, portalShowProviderName: true },
+    { ...b.base, vendorDeviceId: 'saas-other', vendorDeviceName: 'other org', accountType, dataSources: ['m365_onedrive'], status: 'failed' },
+  ]));
+  expect(await read()).toEqual(before);
+  const workloads = await withDbAccessContext(a.portalContext, () => backupSaasWorkloads(a.org.id, { now: NOW }));
+  expect(workloads).toHaveLength(2);
+  expect(workloads).toContainEqual({ providerLabel: null, workload: 'm365_mail', accountType: 'm365', health: 'healthy', status: 'completed', lastSuccessAt: RECENT.toISOString(), itemCount: 10 });
+  expect(workloads).toContainEqual({ providerLabel: 'Cove Data Protection', workload: 'm365_sharepoint', accountType, health: 'critical', status: 'failed', lastSuccessAt: null, itemCount: null });
+  expect(JSON.stringify(workloads)).not.toMatch(/private|secret|failingItems|other org|"provider":/);
+  expect(JSON.stringify(workloads.find((row) => row.providerLabel === null))).not.toMatch(/cove|dropsuite/i);
+  expect(await withDbAccessContext(a.portalContext, () => backupSaasWorkloads(b.org.id, { now: NOW }))).toEqual([]);
+});
+
+runDb.each([
+  ['fresh', true, NOW, 'healthy'],
+  ['inactive', false, NOW, 'unknown'],
+  ['stale', true, new Date(NOW.getTime() - 3 * 60 * 60 * 1000), 'unknown'],
+] as const)('uses %s connection freshness even when portal RLS hides the connection', async (_label, isActive, lastSyncAt, health) => {
+  const { a } = await seed();
+  await withSystemDbAccessContext(async () => {
+    await db.update(backupProviderConnections).set({ isActive, lastSyncAt, syncIntervalMinutes: 60 }).where(eq(backupProviderConnections.id, a.connection.id));
+    await db.insert(backupProviderDevices).values({
+      ...a.base, vendorDeviceId: 'saas-freshness', vendorDeviceName: 'Private', accountType: 'm365',
+      dataSources: ['m365_mail'], status: 'completed', lastSuccessAt: RECENT,
+    });
+  });
+  await withDbAccessContext(a.portalContext, async () => {
+    expect(await db.select({ id: backupProviderConnections.id }).from(backupProviderConnections).where(eq(backupProviderConnections.id, a.connection.id))).toEqual([]);
+    const workloads = await backupSaasWorkloads(a.org.id, { now: NOW });
+    expect(workloads).toHaveLength(1);
+    expect(workloads[0]?.health).toBe(health);
+    expect(JSON.stringify(workloads)).not.toMatch(/"provider":|cove/i);
   });
 });

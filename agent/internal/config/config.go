@@ -123,6 +123,7 @@ type Config struct {
 	BackupLocalPath          string   `mapstructure:"backup_local_path"`
 	BackupS3Bucket           string   `mapstructure:"backup_s3_bucket"`
 	BackupS3Region           string   `mapstructure:"backup_s3_region"`
+	BackupS3Prefix           string   `mapstructure:"backup_s3_prefix"` // Key prefix: snapshots go under <prefix>/snapshots/ (empty = bucket root)
 	BackupS3AccessKey        string   `mapstructure:"backup_s3_access_key"`
 	BackupS3SecretKey        string   `mapstructure:"backup_s3_secret_key"`
 	BackupVSSEnabled         bool     `mapstructure:"backup_vss_enabled"`          // Windows: VSS shadow copy before backup

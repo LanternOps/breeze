@@ -606,3 +606,36 @@ describe('ScriptPickerModal accessible labels', () => {
     expect(screen.getByLabelText('Target session')).toBe(screen.getByTestId('script-session-target'));
   });
 });
+
+// #9935 — importing a catalog (system) script makes an org copy with the same
+// name; the picker lists both, so each row has to say where it comes from.
+describe('ScriptPickerModal source badge (#9935)', () => {
+  const DUPLICATE_NAME_SCRIPTS = [
+    { id: 'sys-1', name: 'Flush DNS Cache', language: 'powershell', category: 'Network', osTypes: ['windows'], isSystem: true, orgId: null, partnerId: null },
+    { id: 'org-1', name: 'Flush DNS Cache', language: 'powershell', category: 'Network', osTypes: ['windows'], isSystem: false, orgId: 'org-a', partnerId: null },
+    { id: 'ptn-1', name: 'Flush DNS Cache', language: 'powershell', category: 'Network', osTypes: ['windows'], isSystem: false, orgId: null, partnerId: 'partner-a' },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse(DUPLICATE_NAME_SCRIPTS));
+  });
+
+  it('labels the catalog script and its imported copies with distinct source badges', async () => {
+    render(<ScriptPickerModal isOpen onClose={vi.fn()} onSelect={vi.fn()} />);
+
+    const system = await screen.findByTestId('script-source-badge-sys-1');
+    expect(system.textContent).toBe('System');
+    expect(screen.getByTestId('script-source-badge-org-1').textContent).toBe('Organization');
+    expect(screen.getByTestId('script-source-badge-ptn-1').textContent).toBe('Partner-wide');
+    // The badge sits inside the row it describes.
+    expect(screen.getByTestId('script-picker-row-sys-1').contains(system)).toBe(true);
+  });
+
+  it('shows no badge when the row carries no ownership fields', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse(SCRIPTS_DATA));
+    render(<ScriptPickerModal isOpen onClose={vi.fn()} onSelect={vi.fn()} />);
+    await screen.findByTestId('script-picker-row-p1');
+    expect(screen.queryByTestId('script-source-badge-p1')).toBeNull();
+  });
+});

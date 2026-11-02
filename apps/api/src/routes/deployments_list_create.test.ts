@@ -1,3 +1,8 @@
+import { findPartnerOwnedGroupIds } from '../services/deviceGroupOwnership';
+vi.mock('../services/deviceGroupOwnership', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/deviceGroupOwnership')>()),
+  findPartnerOwnedGroupIds: vi.fn(async () => [] as string[]),
+}));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { deploymentRoutes } from './deployments';
@@ -141,6 +146,21 @@ const validCreatePayload = {
 
 
 describe('deployment routes', () => {
+  it.each(['POST', 'PUT'])('refuses partner group deployment targets without persisting (%s)', async (method) => {
+    const groupId = '77777777-7777-4777-8777-777777777777';
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValueOnce([groupId]);
+
+    const res = await app.request(method === 'POST' ? '/deployments' : `/deployments/${DEPLOYMENT_ID_1}`, {
+      method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({name:'Deploy',type:'script',payload:{},targetType:'groups',targetConfig:{type:'groups',groupIds:[groupId]},rolloutConfig:{type:'immediate'}}),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [groupId] });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([groupId]);
+  });
+
   let app: Hono;
 
   beforeEach(() => {

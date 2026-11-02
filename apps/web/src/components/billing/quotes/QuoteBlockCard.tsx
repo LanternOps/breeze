@@ -48,7 +48,7 @@ type DeviceSetForm = {
 export function BlockCard({
   block, quoteId, orgId, lines, currency, taxRate, catalog, catalogLoadFailed, isPending, canWrite, showInternal, mixedCadence, depositSelectMode, ecActive, pax8Active, defaultMarkupPct, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveLine, onRemoveLine, onLineDraft,
   moveTargets, onMoveLineToBlock, revealRequest, hasDirtyLines, onDropLine,
-  selectionActive, isLineSelected, onToggleLineSelected, onSetBlockSelection,
+  selectionActive, isLineSelected, onToggleLineSelected, onSetBlockSelection, contractAutoValues,
 }: {
   block: QuoteBlock;
   quoteId: string;
@@ -104,6 +104,8 @@ export function BlockCard({
   isLineSelected: (lineId: string) => boolean;
   onToggleLineSelected: (lineId: string) => void;
   onSetBlockSelection: (lineIds: string[], selected: boolean) => void;
+  /** Resolved contract auto-variable values (#9867), forwarded to ContractBlockEditor. */
+  contractAutoValues?: Record<string, string> | null;
 }) {
   const { t } = useTranslation('billing');
   // Pending state scoped to this block: editing/removing this block, or adding a
@@ -447,7 +449,7 @@ export function BlockCard({
 
         {block.blockType === 'contract' && (
           <>
-            <ContractBlockEditor block={block} canWrite={canWrite} onEditBlock={onEditBlock} />
+            <ContractBlockEditor block={block} canWrite={canWrite} onEditBlock={onEditBlock} autoValues={contractAutoValues} />
             {/* Agreements render after the totals wherever they sit here (#7040). */}
             <p className="mt-2 text-xs text-muted-foreground" data-testid={`quote-block-contract-placement-${block.id}`}>
               {t('quotes.editor.contract.placementHint')}

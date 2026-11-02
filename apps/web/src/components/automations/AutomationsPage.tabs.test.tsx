@@ -6,6 +6,8 @@ vi.mock('../../stores/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../stores/auth')>();
   return { ...actual, fetchWithAuth: vi.fn() };
 });
+// The tab contract is independent of Flows; the "Move to Flows" surface (#5221) has its own suite.
+vi.mock('../../stores/featuresStore', () => ({ useFlowsGate: () => ({ enabled: false, loaded: true }) }));
 import AutomationsPage, { JOB_TABS, triggerFilterForTab } from './AutomationsPage';
 import { fetchWithAuth } from '../../stores/auth';
 

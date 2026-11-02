@@ -59,6 +59,7 @@ const reliabilityInitialLookback = 24 * time.Hour
 
 func NewReliabilityCollector() *ReliabilityCollector {
 	eventCollector := NewEventLogCollector()
+	eventCollector.name = "reliability"
 	// Start reliability collection with a lookback window so first upload
 	// includes recent crash/failure signals instead of only new events.
 	// The full 24h lookback applies to file-based sources (DiagnosticReports

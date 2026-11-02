@@ -1,9 +1,12 @@
 import { db } from '../db';
-import { deviceGroups } from '../db/schema';
-import { eq, or } from 'drizzle-orm';
+import { SOFTWARE_GROUP_FILTER_FIELDS } from '../services/softwareGroupFilterFields';
+import { deviceGroups, organizations } from '../db/schema';
+import { and, eq, isNull, or } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
+import { excludeQuickSupportOrgs } from '../services/quickSupportOrg';
+import { notHoldingOrgCondition } from '../services/unassignedPool/selectorPredicate';
 import {
-  evaluateDeviceMembershipForGroup,
+  evaluateDeviceGroupMemberships,
   removeDeviceFromAllGroups,
   updateDeviceMemberships,
 } from '../services/groupMembership';
@@ -52,10 +55,8 @@ export function onDeviceChange(eventType: DeviceChangeEventType, handler: Device
  * completion via `Promise.allSettled` and every rejection is logged at error
  * level — but the failure must not vanish either. This used to RESOLVE after
  * logging, which made `attempts: 5` on the re-evaluation queue dead code: a
- * transient 40P01 deadlock inside the evaluation (the #3911 shape, which this
- * path can genuinely produce because `evaluateDeviceMembershipForGroup` writes
- * `device_groups.filter_fields_used`) completed the job "successfully" and the
- * membership stayed stale forever with only a log line.
+ * transient database failure inside evaluation completed the job "successfully"
+ * and membership stayed stale forever with only a log line.
  *
  * So it now THROWS an `AggregateError` carrying every rejection once all
  * handlers have settled. Its only caller is the BullMQ processor
@@ -108,6 +109,10 @@ export async function getGroupsFilteringOnFields(
     return [];
   }
 
+  const [org] = await db.select({ partnerId: organizations.partnerId }).from(organizations)
+    .where(and(eq(organizations.id, orgId), excludeQuickSupportOrgs(), notHoldingOrgCondition())).limit(1);
+  const owner = or(eq(deviceGroups.orgId, orgId), org
+    ? and(isNull(deviceGroups.orgId), eq(deviceGroups.partnerId, org.partnerId)) : undefined);
   // Query groups where filterFieldsUsed overlaps with changedFields
   const groups = await db
     .select({
@@ -117,11 +122,11 @@ export async function getGroupsFilteringOnFields(
     })
     .from(deviceGroups)
     .where(
-      sql`${deviceGroups.orgId} = ${orgId}
+      sql`(${owner})
         AND ${deviceGroups.type} = 'dynamic'
         AND ${deviceGroups.filterConditions} IS NOT NULL
         AND ${deviceGroups.filterFieldsUsed} && ${changedFields}`
-    );
+    ).orderBy(deviceGroups.id);
 
   return groups;
 }
@@ -258,52 +263,13 @@ export function initializeDeviceEventHandlers(): void {
     await updateDeviceMemberships(
       event.deviceId,
       event.orgId,
-      ['software.installed', 'software.notInstalled']
+      [...SOFTWARE_GROUP_FILTER_FIELDS]
     );
   });
 
   // Handler for device creation - add to matching dynamic groups
   onDeviceChange('device.created', async (event) => {
-    // Get all dynamic groups for the org and evaluate membership
-    // ORDER BY id: evaluateDeviceMembershipForGroup can UPDATE device_groups
-    // (ensureFilterFieldsUsed backfilling filter_fields_used), so two
-    // concurrent evaluations touching the same pair of groups in opposite
-    // orders deadlock (40P01, the #3911 shape). A stable id order makes every
-    // evaluator acquire the group row locks in the same sequence.
-    const groups = await db
-      .select({ id: deviceGroups.id })
-      .from(deviceGroups)
-      .where(
-        sql`${deviceGroups.orgId} = ${event.orgId}
-          AND ${deviceGroups.type} = 'dynamic'
-          AND ${deviceGroups.filterConditions} IS NOT NULL`
-      )
-      .orderBy(deviceGroups.id);
-
-    // One malformed filter must not strand the remaining groups, so failures
-    // are collected rather than thrown immediately — but they are NOT
-    // swallowed. Swallowing here would defeat emitDeviceChange's throw above
-    // for the whole device.created path (enrollment + provisioning), which is
-    // precisely where a 40P01 deadlock is most likely: N concurrent enrolments
-    // in one org all UPDATE the same device_groups rows.
-    const failures: Error[] = [];
-    for (const group of groups) {
-      try {
-        // Evaluate if device matches the group's filter
-        await evaluateDeviceMembershipForGroup(group.id, event.deviceId);
-      } catch (error) {
-        console.error(`Failed to evaluate membership for group ${group.id}:`, error);
-        failures.push(asError(error));
-      }
-    }
-
-    if (failures.length > 0) {
-      throw new AggregateError(
-        failures,
-        `device.created: ${failures.length} of ${groups.length} dynamic group evaluations `
-        + `failed for device ${event.deviceId} (org ${event.orgId})`,
-      );
-    }
+    await evaluateDeviceGroupMemberships(event.deviceId, { all: true });
   });
 
   // Handler for device deletion - remove from all groups

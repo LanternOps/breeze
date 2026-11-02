@@ -1,7 +1,8 @@
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../services/deviceGroupOwnership';
 import { Hono, type Context, type Next } from 'hono';
 import { zValidator, optionalJsonValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, sql, desc, like, or, inArray, isNotNull, isNull, type SQL } from 'drizzle-orm';
+import { and, eq, sql, desc, like, or, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   softwareCatalog,
@@ -75,6 +76,7 @@ import {
   createVersionSchema,
   deleteCatalogAndUploadedObjects,
   isImmutableBuiltin,
+  nullOrgCatalogBranches,
   platformSchema,
   prepareSoftwareVersionCreate,
   prepareSoftwareVersionUpdate,
@@ -254,18 +256,12 @@ softwareRoutes.get(
     }
 
     const conditions: SQL[] = [activeCatalog];
-    // Include partner-scoped built-in (integration) packages alongside the caller's
-    // own org packages. RLS scopes built-ins to the caller's partner, so widening
-    // the WHERE here cannot leak another partner's rows. Partner-scope callers
-    // additionally see their own partner-wide custom packages (#2135) — gated on
-    // scope === 'partner' because org tokens never pass breeze_has_partner_access
-    // and must not get an app-layer condition RLS won't back.
+    // Include the caller's partner-owned rows (built-ins; for partner scope also
+    // its partner-wide custom packages, #2135) alongside its own org packages.
+    // RLS backs every branch, so widening the WHERE cannot leak another
+    // partner's rows — see nullOrgCatalogBranches.
     if (scopeResult.orgCondition) {
-      const branches: SQL[] = [scopeResult.orgCondition, isNotNull(softwareCatalog.integrationProvider)];
-      if (auth.scope === 'partner' && auth.partnerId) {
-        branches.push(and(isNull(softwareCatalog.orgId), eq(softwareCatalog.partnerId, auth.partnerId))!);
-      }
-      conditions.push(or(...branches)!);
+      conditions.push(or(scopeResult.orgCondition, ...nullOrgCatalogBranches(auth))!);
     }
     if (searchTerm) {
       const term = `%${searchTerm}%`;
@@ -403,16 +399,11 @@ softwareRoutes.get(
 
     const query = c.req.valid('query');
     const term = `%${query.q}%`;
-    // Same dual-axis widening as GET /catalog: built-ins for everyone, the
-    // caller's own partner-wide custom packages for partner scope (#2135) —
-    // search must not return a narrower set than the list it searches.
-    const scopeBranches: SQL[] = [eq(softwareCatalog.orgId, orgId), isNotNull(softwareCatalog.integrationProvider)];
-    if (auth.scope === 'partner' && auth.partnerId) {
-      scopeBranches.push(and(isNull(softwareCatalog.orgId), eq(softwareCatalog.partnerId, auth.partnerId))!);
-    }
+    // Same widening as GET /catalog — search must not return a narrower set
+    // than the list it searches.
     const conditions = [
       activeCatalog,
-      or(...scopeBranches)!,
+      or(eq(softwareCatalog.orgId, orgId), ...nullOrgCatalogBranches(auth))!,
       or(
         like(softwareCatalog.name, term),
         like(softwareCatalog.vendor, term),
@@ -439,10 +430,10 @@ softwareRoutes.get(
 
     const { id } = c.req.valid('param');
     // Look up by id alone, then authorize in JS. RLS bounds what is visible:
-    // the caller's org rows, plus NULL-org partner rows — built-ins for any
-    // caller, but partner-wide custom packages only for partner-scope tokens
-    // (org tokens never pass breeze_has_partner_access, so those rows are
-    // simply invisible here and 404). Partner rows have org_id NULL, so an
+    // the caller's org rows, plus its OWN partner's NULL-org rows (built-ins,
+    // and through software_catalog_partner_wide_select every partner-wide
+    // row, though an org token cannot read an un-keyed partner-wide row's
+    // versions — see #10036). Partner rows have org_id NULL, so an
     // `eq(orgId)` filter would exclude them — matching the /deploy route (#1957).
     // authorizeCatalogItemRead narrows org-owned rows to the request's resolved
     // org (a partner caller acting as org A must not read sibling org B's
@@ -1131,11 +1122,13 @@ softwareRoutes.post(
   // #7347 — self-managed: every row commits before any push (commitThenDeliver).
   async (c) => commitThenDeliver(c, async (deliveries) => {
     const auth = c.get('auth');
+    const payload = c.req.valid('json');
+    const partnerGroupIds = await findPartnerOwnedGroupIds(payload.targetType === 'groups' ? payload.targetIds ?? [] : []);
+    if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
     const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     const { orgId } = orgResult;
-
-    const payload = c.req.valid('json');
 
     const result = await createSoftwareDeploymentFromRequest({
       auth,
@@ -1192,11 +1185,14 @@ softwareRoutes.post(
   // #7347 — self-managed: every row commits before any push (commitThenDeliver).
   async (c) => commitThenDeliver(c, async (deliveries) => {
     const auth = c.get('auth');
+    const body = c.req.valid('json');
+    const partnerGroupIds = await findPartnerOwnedGroupIds(body.targets?.deviceGroupIds ?? []);
+    if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
     const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     const { orgId } = orgResult;
 
-    const body = c.req.valid('json');
     const softwareId = body.softwareId;
     const version = body.version;
     const deviceIds = body.targets?.deviceIds ?? [];

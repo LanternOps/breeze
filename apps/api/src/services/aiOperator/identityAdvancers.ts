@@ -49,7 +49,7 @@ import type { StepAdvancer } from './taskCoordinator';
 import type { DiscoveryFacts, PlannedEffect, RecipeDefinition } from './recipes/types';
 import type { IdentityDiscoveryFacts } from './identityDiscovery';
 import { IDENTITY_OFFBOARDING_EFFECT_TOOLS } from './recipes/identityOffboarding';
-import { nextTaskState } from './taskTransitions';
+import { leasedWriteTargetStates, nextTaskState } from './taskTransitions';
 
 export type StepAdvancerArgs = Parameters<StepAdvancer>[0];
 
@@ -115,7 +115,7 @@ type Ops = Awaited<ReturnType<typeof ops>>;
  * The coordinator's lease CAS with step-row writes in the SAME transaction —
  * a deliberate MIRROR of `taskCoordinator.ts`'s private `writeLeased`, line
  * for line: `UPDATE ai_operator_tasks … WHERE (id, org_id, revision,
- * lease_epoch)`, exactly one row or nothing, and `alsoInTransaction` runs only
+ * lease_epoch) AND state IN (leasedWriteTargetStates(observed))`, exactly one row or nothing, and `alsoInTransaction` runs only
  * when the CAS won, so a stale coordinator commits nothing (Operator spec
  * §6.2). It exists because `COORDINATOR_STEP_OPS` is frozen at six members by
  * a pinned test, and `discover` (the planning snapshot), `review` (its
@@ -127,6 +127,8 @@ export async function leasedWrite(args: {
   taskId: string;
   revision: number;
   leaseEpoch: number;
+  /** The task state the caller's snapshot holds (#9979); see `leasedWriteTargetStates`. */
+  observedState: string;
   patch: Partial<typeof aiOperatorTasks.$inferInsert>;
   alsoInTransaction?: () => Promise<void>;
 }): Promise<boolean> {
@@ -140,6 +142,7 @@ export async function leasedWrite(args: {
           eq(aiOperatorTasks.orgId, args.orgId),
           eq(aiOperatorTasks.revision, args.revision),
           eq(aiOperatorTasks.leaseEpoch, args.leaseEpoch),
+          inArray(aiOperatorTasks.state, [...leasedWriteTargetStates(args.observedState)]),
         ))
         .returning({ id: aiOperatorTasks.id });
       if (rows.length !== 1) return false;
@@ -230,6 +233,7 @@ async function moveWithStepData(args: {
   const { task, leaseEpoch, recipe } = a;
   return leasedWrite({
     orgId: task.orgId, taskId: task.id, revision: task.revision, leaseEpoch,
+    observedState: task.state as string,
     patch: {
       currentStepKey: toStepKey,
       phase: recipe.steps[toStepKey]?.phase ?? 'investigate',
@@ -390,6 +394,7 @@ export async function advanceConfirmIdentity(a: StepAdvancerArgs): Promise<strin
   let itemId: string | null = null;
   const committed = await leasedWrite({
     orgId: a.task.orgId, taskId: a.task.id, revision: a.task.revision, leaseEpoch: a.leaseEpoch,
+    observedState: a.task.state as string,
     patch: {
       state: nextTaskState(a.task.state as string, 'wait'),
       waitReason: 'information', waitDependencyKind: null, waitDependencyId: null,
@@ -648,6 +653,7 @@ export async function advanceManualWork(a: StepAdvancerArgs): Promise<string> {
     let waitOn: string | null = null;
     const committed = await leasedWrite({
       orgId: a.task.orgId, taskId: a.task.id, revision: a.task.revision, leaseEpoch: a.leaseEpoch,
+      observedState: a.task.state as string,
       patch: {
         state: nextTaskState(a.task.state as string, 'wait'),
         waitReason: 'information', waitDependencyKind: null, waitDependencyId: null,
@@ -693,6 +699,7 @@ export async function advanceManualWork(a: StepAdvancerArgs): Promise<string> {
   if (open) {
     const committed = await leasedWrite({
       orgId: a.task.orgId, taskId: a.task.id, revision: a.task.revision, leaseEpoch: a.leaseEpoch,
+      observedState: a.task.state as string,
       patch: {
         state: nextTaskState(a.task.state as string, 'wait'),
         waitReason: 'information', waitDependencyKind: 'user_answer', waitDependencyId: open.itemId,
@@ -850,6 +857,7 @@ export async function advanceDocument(a: StepAdvancerArgs): Promise<string> {
   try {
     const committed = await leasedWrite({
       orgId: a.task.orgId, taskId: a.task.id, revision: a.task.revision, leaseEpoch: a.leaseEpoch,
+      observedState: a.task.state as string,
       patch: {},
       alsoInTransaction: async () => {
         const [t] = await db.select({ id: aiOperatorTaskTargets.id }).from(aiOperatorTaskTargets)

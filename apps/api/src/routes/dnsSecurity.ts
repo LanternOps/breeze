@@ -24,6 +24,12 @@ import { DNS_INTEGRATION_DELETING_STATUS, enqueueDnsIntegrationDelete } from '..
 import { writeRouteAudit } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
 import { encryptSecret } from '../services/secretCrypto';
+import {
+  allowedTrafficCoverage,
+  applyAllowedTrafficCoverage,
+  storesAllowedTraffic,
+  type AllowedTrafficCoverage
+} from '../services/dnsProviders/syncScope';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { checkSsrfSafe, type SsrfMode } from '../services/ssrfGuard';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
@@ -163,6 +169,26 @@ function resolveOrgId(
   return { error: 'orgId is required for this scope', status: 400 };
 }
 
+/**
+ * #10054 — whether the active integrations behind a stats read store allowed
+ * traffic, so the response can say "not stored" instead of reporting zero.
+ * Integration config is org-wide (no site axis) and only this flag is derived
+ * from it, so a site-restricted caller learns nothing site-specific.
+ */
+async function loadAllowedTrafficCoverage(
+  auth: AuthContext,
+  integrationId: string | undefined
+): Promise<AllowedTrafficCoverage> {
+  const conditions: SQL[] = [eq(dnsFilterIntegrations.isActive, true)];
+  withOrgCondition(conditions, auth.orgCondition(dnsFilterIntegrations.orgId));
+  if (integrationId) conditions.push(eq(dnsFilterIntegrations.id, integrationId));
+  const rows = await db
+    .select({ config: dnsFilterIntegrations.config })
+    .from(dnsFilterIntegrations)
+    .where(and(...conditions));
+  return allowedTrafficCoverage(rows.map((row) => row.config));
+}
+
 const integrationConfigSchema = z.object({
   organizationId: z.string().min(1).optional(),
   accountId: z.string().min(1).optional(),
@@ -180,7 +206,10 @@ const integrationConfigSchema = z.object({
   // on-prem appliance providers (Pi-hole / AdGuard Home) on a self-hosted
   // deployment; inert on hosted. Default absent (blocked). Enabling it is
   // recorded by the create-integration audit event below.
-  allowCarrierNatEgress: z.boolean().optional()
+  allowCarrierNatEgress: z.boolean().optional(),
+  // #10054 — store allowed DNS queries too. Default absent = blocked and
+  // redirected events only. Editable later through PATCH /integrations/:id.
+  storeAllowedTraffic: z.boolean().optional()
 });
 
 const createIntegrationSchema = z.object({
@@ -426,7 +455,8 @@ dnsSecurityRoutes.post(
         syncScheduled,
         // Record the carrier-NAT egress opt-in explicitly so enabling it leaves
         // an audit trail, not just a config blob.
-        allowCarrierNatEgress: body.config?.allowCarrierNatEgress === true
+        allowCarrierNatEgress: body.config?.allowCarrierNatEgress === true,
+        storeAllowedTraffic: storesAllowedTraffic(body.config)
       }
     });
 
@@ -521,12 +551,20 @@ dnsSecurityRoutes.delete(
 const updateIntegrationSchema = z.object({
   // null clears the override, so the deployment default
   // (DNS_SECURITY_RETENTION_DAYS_DEFAULT, 90 days) applies.
-  retentionDays: z.number().int().min(1).max(365).nullable()
-}).strict();
+  retentionDays: z.number().int().min(1).max(365).nullable().optional(),
+  // #10054 — store allowed DNS queries too (default: blocked + redirected
+  // only). false removes the key, so the default applies. Future syncs only:
+  // turning it off does not delete allowed rows already stored.
+  storeAllowedTraffic: z.boolean().optional()
+}).strict().refine(
+  (body) => body.retentionDays !== undefined || body.storeAllowedTraffic !== undefined,
+  { message: 'Provide retentionDays or storeAllowedTraffic' }
+);
 
-// #10020 — the only integration field editable after create today is the
-// retention window. Strict schema: credentials and provider config are not
-// editable here (re-create the integration to change them).
+// #10020 / #10054 — the integration fields editable after create are what
+// Breeze stores for it: the retention window and the allowed-traffic opt-in.
+// Strict schema: credentials and provider config are not editable here
+// (re-create the integration to change them).
 dnsSecurityRoutes.patch(
   '/integrations/:id',
   requireScope('organization', 'partner', 'system'),
@@ -562,10 +600,21 @@ dnsSecurityRoutes.patch(
       return c.json({ error: 'Integration is being deleted' }, 409);
     }
 
-    const { retentionDays: previous, ...rest } = (integration.config ?? {}) as DnsIntegrationConfig;
-    const config: DnsIntegrationConfig = body.retentionDays === null
-      ? rest
-      : { ...rest, retentionDays: body.retentionDays };
+    const previous = (integration.config ?? {}) as DnsIntegrationConfig;
+    const config: DnsIntegrationConfig = { ...previous };
+    const details: Record<string, { from: unknown; to: unknown }> = {};
+
+    if (body.retentionDays !== undefined) {
+      if (body.retentionDays === null) delete config.retentionDays;
+      else config.retentionDays = body.retentionDays;
+      details.retentionDays = { from: previous.retentionDays ?? null, to: body.retentionDays };
+    }
+    if (body.storeAllowedTraffic !== undefined) {
+      // Only an explicit true is stored; off removes the key (the default).
+      if (body.storeAllowedTraffic) config.storeAllowedTraffic = true;
+      else delete config.storeAllowedTraffic;
+      details.storeAllowedTraffic = { from: storesAllowedTraffic(previous), to: body.storeAllowedTraffic };
+    }
 
     await db
       .update(dnsFilterIntegrations)
@@ -578,10 +627,14 @@ dnsSecurityRoutes.patch(
       resourceType: 'dns_integration',
       resourceId: integration.id,
       resourceName: integration.name,
-      details: { retentionDays: { from: previous ?? null, to: body.retentionDays } }
+      details
     });
 
-    return c.json({ id: integration.id, retentionDays: body.retentionDays });
+    return c.json({
+      id: integration.id,
+      retentionDays: config.retentionDays ?? null,
+      storeAllowedTraffic: storesAllowedTraffic(config)
+    });
   }
 );
 
@@ -889,12 +942,11 @@ dnsSecurityRoutes.get(
         const blockedRate = summaryRow.totalQueries > 0
           ? Number(((summaryRow.blockedQueries / summaryRow.totalQueries) * 100).toFixed(2))
           : 0;
+        const allowedTraffic = await loadAllowedTrafficCoverage(auth, query.integrationId);
 
         return c.json({
-          summary: {
-            ...summaryRow,
-            blockedRate
-          },
+          summary: applyAllowedTrafficCoverage({ ...summaryRow, blockedRate }, allowedTraffic, query.action),
+          allowedTraffic,
           topBlockedDomains,
           topCategories,
           topDevices,
@@ -961,12 +1013,11 @@ dnsSecurityRoutes.get(
     const blockedRate = summaryRow.totalQueries > 0
       ? Number(((summaryRow.blockedQueries / summaryRow.totalQueries) * 100).toFixed(2))
       : 0;
+    const allowedTraffic = await loadAllowedTrafficCoverage(auth, query.integrationId);
 
     return c.json({
-      summary: {
-        ...summaryRow,
-        blockedRate
-      },
+      summary: applyAllowedTrafficCoverage({ ...summaryRow, blockedRate }, allowedTraffic, query.action),
+      allowedTraffic,
       topBlockedDomains,
       topCategories,
       topDevices,

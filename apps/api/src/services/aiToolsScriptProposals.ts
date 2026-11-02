@@ -22,9 +22,11 @@ import {
 } from '../db';
 import { captureException } from './sentry';
 import {
-  createScriptProposal, enqueueScriptReview, getScriptProposalForPrincipal, selectProposalExecutions,
-  waitForReviewCompletion,
+  createScriptProposal, enqueueScriptReview, getScriptProposalForPrincipal, selectLatestModelReview,
+  selectProposalExecutions, waitForReviewCompletion,
 } from './scriptProposals';
+import { projectFindings } from './scriptProposals/reviewFindings';
+import type { ScriptProposalReviewRow } from '../db/schema/scriptProposals';
 
 /** Spec §4.2: the inline wait before propose_script returns `pending`. */
 const INLINE_REVIEW_WAIT_MS = 45_000;
@@ -81,6 +83,27 @@ async function resolveProposalOrgId(
 function inOwnCommittedContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
   const context = getCurrentDbAccessContext() ?? dbAccessContextFromAuth(auth);
   return runOutsideDbContext(() => withDbAccessContext(context, fn));
+}
+
+/**
+ * The reviewer's outcome as the model reads it (#10399). `verdict` is the
+ * reviewer's recommendation in one word (`approve` | `changes` | `reject`,
+ * null when the review did not complete), so the model reports what the
+ * reviewer actually said instead of inferring "it passed" from
+ * `status: 'completed'`. Advisory: a human still approves every run.
+ */
+function reviewForModel(review: ScriptProposalReviewRow) {
+  const stored = (review.verdict ?? {}) as { findings?: unknown };
+  return {
+    status: review.status,
+    verdict: review.recommendedAction ?? null,
+    summary: review.summary ?? null,
+    riskTier: review.riskTier ?? null,
+    goalMatch: review.goalMatch ?? null,
+    reversible: review.reversible ?? null,
+    verificationAdequate: review.verificationAdequate ?? null,
+    findings: projectFindings(stored.findings),
+  };
 }
 
 function disabled(): string {
@@ -204,12 +227,7 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
         status: review?.status === 'completed' ? 'reviewed' : proposal.status,
         staticScan,
         review: review
-          ? {
-            status: review.status, riskTier: review.riskTier, summary: review.summary,
-            goalMatch: review.goalMatch, reversible: review.reversible,
-            verificationAdequate: review.verificationAdequate,
-            recommendedAction: review.recommendedAction,
-          }
+          ? reviewForModel(review)
           // The review is queued but had not finished inside the inline wait
           // (or the wait was skipped under a caller-held transaction). It means
           // "not yet", never "failed". `nextStep` spells out the poll-and-retry
@@ -242,6 +260,22 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
       if (!aiScriptAuthoringEnabled()) return disabled();
       const proposal = await getScriptProposalForPrincipal(auth, String(input.proposalId));
       if (!proposal) return JSON.stringify({ error: 'not_found: no such proposal in this organization' });
+      // #10399: the newest model review, read in the same caller context as
+      // the runs below. Without it the model saw only `status: 'reviewed'`
+      // and told the user the review "passed" a proposal whose reviewer had
+      // asked for changes. No row: still queued (`proposed`), never requested
+      // (a BASIC scan hit stops before review), failed before writing one
+      // (`review_failed`), or otherwise missing — never a verdict to infer.
+      const latestReview = await selectLatestModelReview(proposal.id);
+      const review = latestReview
+        ? reviewForModel(latestReview)
+        : {
+          status: proposal.status === 'proposed' ? 'pending'
+            : proposal.status === 'scan_rejected' ? 'not_requested'
+              : proposal.status === 'review_failed' ? 'failed'
+                : 'unavailable',
+          verdict: null,
+        };
       // #7918: a run that outlived its run_script call still completed on the
       // device. Its execution id is the only way the model can read that
       // output (get_script_execution), so every run is echoed — narrowed to
@@ -275,6 +309,7 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
           basicHits: proposal.basicHits, strictHits: proposal.strictHits,
           touchClasses: proposal.touchClasses, scannerVersion: proposal.scannerVersion,
         },
+        review,
         decision: {
           decidedBy: proposal.decidedBy, decidedAt: proposal.decidedAt, note: proposal.decisionNote,
         },

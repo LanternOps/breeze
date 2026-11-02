@@ -16,6 +16,11 @@ import { assertNoPendingRevocation, markSessionRevocationRequestedInTx } from '.
 import { portalBase } from './portalUrl';
 import { assertNoHeldDbContextForStripe } from './stripeSettle';
 
+const HOUR_S = 3600;
+/** Buckets open this long before the anchor's phase, absorbing an app clock that
+ * trails the database clock which stamped `created_at` (#10736). */
+const ANCHOR_LEAD_S = 5 * 60;
+
 /**
  * Provider-side expiry for a new Checkout session (defence in depth).
  *
@@ -23,25 +28,38 @@ import { assertNoHeldDbContextForStripe } from './stripeSettle';
  * means the bound is recorded on our side (`provider_expires_at`) and survives a
  * future Stripe default change.
  *
- * Quantised to the hour on purpose. Stripe rejects an idempotent replay whose
- * parameters differ from the first use, so a per-millisecond `expires_at` would
- * turn the double-click dedupe both producers rely on into an
- * `idempotency_key_in_use` error. The quantum is therefore ALSO folded into the
- * idempotency key (the established `idempotencySuffix` pattern): two clicks in
- * the same hour reuse one session; a click in a later hour mints a fresh one,
- * and every one of them is revoked together by the intent phase.
+ * Quantised to one-hour buckets on purpose. Stripe rejects an idempotent replay
+ * whose parameters differ from the first use, so a per-millisecond `expires_at`
+ * would turn the double-click dedupe both producers rely on into an
+ * `idempotency_key_in_use` error. The bucket start (`quantum`) is therefore ALSO
+ * folded into the idempotency key, and `expires_at` is a pure function of it:
+ * one key always carries one `expires_at`. Two clicks in the same bucket reuse
+ * one session; a click in a later bucket mints a fresh one, and every one of
+ * them is revoked together by the intent phase.
+ *
+ * The buckets are anchored to the INVOICE (#10736), not to the wall-clock hour.
+ * Wall-clock buckets split a public quote accept at 08:59:59 (which creates the
+ * invoice and mints the session) from the customer's Pay at 09:00:01 into two
+ * keys, so Stripe minted a second session for one checkout. Anchored buckets
+ * open at `anchor − ANCHOR_LEAD_S + k·1h`, so a Pay up to 55 min after the
+ * invoice was created always replays the accept's request. The lead absorbs an
+ * app clock that trails the database clock which stamped `created_at`. Only the
+ * anchor's phase within the hour is used, so the bucket always opens in
+ * (now − 1h, now] whatever the clock skew.
  *
  * Yields 22h00m01s–23h ahead — comfortably inside Stripe's [30 min, 24 h] window
  * with no risk of tripping the upper bound on a slow request.
  */
-export function checkoutSessionExpiry(now: Date = new Date()): { expiresAt: number; quantum: number } {
-  const quantum = Math.floor(now.getTime() / 1000 / 3600) * 3600;
-  return { expiresAt: quantum + 23 * 3600, quantum };
+export function checkoutSessionExpiry(anchor: Date, now: Date = new Date()): { expiresAt: number; quantum: number } {
+  const phase = (((Math.floor(anchor.getTime() / 1000) - ANCHOR_LEAD_S) % HOUR_S) + HOUR_S) % HOUR_S;
+  const nowS = Math.floor(now.getTime() / 1000);
+  const quantum = Math.floor((nowS - phase) / HOUR_S) * HOUR_S + phase;
+  return { expiresAt: quantum + 23 * HOUR_S, quantum };
 }
 
 // Statuses whose balance can be collected online. Mirrors the customer-portal
 // PAYABLE set (routes/portal/invoices.ts) — drafts/paid/void are excluded.
-const PAYABLE = new Set(['sent', 'partially_paid', 'overdue']);
+export const PAYABLE: ReadonlySet<string> = new Set(['sent', 'partially_paid', 'overdue']);
 
 /** Internal publication gate shared by the portal and partner Checkout producers.
  * Caller must keep this transaction open through mapping and revocation intent.
@@ -134,7 +152,7 @@ export async function createInvoicePayLink(
   // Currency-aware minor units (zero-decimal currencies must not be ×100).
   const chargeMinor = toMinorUnits(chargeNow.amount, inv.currencyCode);
   if (chargeMinor <= 0) throw new InvoiceServiceError('Nothing to pay', 409, 'NOTHING_TO_PAY');
-  const { expiresAt, quantum } = checkoutSessionExpiry();
+  const { expiresAt, quantum } = checkoutSessionExpiry(inv.createdAt);
   const capture = await prepareCardPayAndSave(inv.id, inv.orgId, urls,
     `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${urls.idempotencySuffix ?? ''}_e${quantum}`);
 
@@ -220,11 +238,11 @@ export async function createInvoicePayLink(
     // balance charge (different product name but equal amount), so the amount
     // alone can't disambiguate — the explicit dep/bal discriminator does.
     // `_e<quantum>`: `expires_at` is part of the request, and Stripe
-    // refuses an idempotent replay whose parameters moved. Folding the hour
-    // quantum into the key keeps the replay identical within the hour instead of
-    // erroring across one.
+    // refuses an idempotent replay whose parameters moved. Folding the
+    // invoice-anchored bucket start into the key keeps the replay identical
+    // within the bucket instead of erroring across one (checkoutSessionExpiry).
     // `_pd`: the request now carries a PaymentIntent description; a new key family keeps an
-    // in-hour replay of a pre-description request from failing as a parameter mismatch.
+    // in-bucket replay of a pre-description request from failing as a parameter mismatch.
     idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${urls.idempotencySuffix ?? ''}${capture ? `_save_${capture.id}` : ''}_e${quantum}_pd`,
   }));
   } catch (err) {

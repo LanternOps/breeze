@@ -85,6 +85,7 @@
     "logs": "Günlükler",
     "monitoring": "Ağ",
     "oauthConsent": "Erişimi yetkilendir",
+    "oauthError": "Uygulama bağlantısı başarısız oldu",
     "onedrive": "OneDrive",
     "organizations": "Organizasyonlar",
     "organizationsDetail": "Organizasyon",
@@ -210,6 +211,33 @@
     "referenceIdLabel": "Referans Kimliği:",
     "dashboardLink": "Kontrol paneline git",
     "signInLink": "Giriş yap"
+  },
+  "oauthErrorPage": {
+    "invalidClient": {
+      "heading": "Bu uygulama bağlanamıyor",
+      "body": "Breeze sizi buraya gönderen uygulamayı tanımıyor veya uygulamanın bu Breeze sunucusuna bağlanmasına izin verilmiyor. Uygulamanın bu sunucunun adresiyle ayarlandığını kontrol edin, ardından tekrar deneyin."
+    },
+    "invalidRedirectUri": {
+      "heading": "Bu uygulamanın dönüş adresi kayıtlı değil",
+      "body": "Uygulama, Breeze’den sizi hiç kaydetmediği bir adrese geri göndermesini istedi; bu yüzden Breeze hesabınızı korumak için burada durdu. Uygulamanın geliştiricisi veya yöneticiniz uygulamanın yönlendirme URL’sini düzeltmelidir."
+    },
+    "sessionExpired": {
+      "heading": "Bu oturum açma işleminin süresi doldu",
+      "body": "Bağlantı çok uzun sürdü veya farklı bir tarayıcıda başlatıldı. Uygulamaya dönün ve yeniden bağlanın."
+    },
+    "invalidRequest": {
+      "heading": "Uygulama, Breeze’in kabul edemeyeceği bir istek gönderdi",
+      "body": "Uygulamanın bağlantı isteği eksikti veya bu sunucunun desteklemediği bir şey istedi. Uygulamaya dönün ve tekrar deneyin. Sorun devam ederse uygulamanın geliştiricisiyle iletişime geçin."
+    },
+    "serverError": {
+      "heading": "Breeze bağlantıyı tamamlayamadı",
+      "body": "Bizim tarafımızda bir sorun oluştu. Birkaç dakika bekleyin, ardından uygulamaya dönün ve tekrar deneyin."
+    },
+    "generic": {
+      "heading": "Bu bağlantı tamamlanamadı",
+      "body": "Uygulamaya dönün ve bağlantıyı yeniden başlatın. Sorun devam ederse Breeze yöneticinizle iletişime geçin."
+    },
+    "nextStep": "Hiçbir erişim izni verilmedi. Bu sayfayı kapatabilirsiniz."
   },
   "settingsIndex": {
     "heading": "Ayarlar",

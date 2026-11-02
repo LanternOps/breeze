@@ -84,10 +84,12 @@ async function seedFixture() {
   await seedQuote({ partnerId: p, orgId: acme.id, createdBy: user.id, number: 'A-3', status: 'sent', sentAt: '2026-08-20T10:00:00Z', expiryDate: '2026-12-31', oneTime: '100' });
   // Globex (EUR): one expired by read-time rule (sent, past expiry).
   await seedQuote({ partnerId: p, orgId: globex.id, number: 'G-1', status: 'sent', sentAt: '2026-08-10T10:00:00Z', expiryDate: '2026-09-01', currency: 'EUR', oneTime: '250' });
-  // Outside the period (July) — must not count.
-  await seedQuote({ partnerId: p, orgId: acme.id, createdBy: user.id, number: 'A-old', status: 'accepted', sentAt: '2026-07-10T10:00:00Z', acceptedAt: '2026-07-12T10:00:00Z', oneTime: '9999' });
+  // Outside the period (July) — must not count. The quote numbers below are
+  // the leak sentinels: they contain non-hex letters, so — unlike a bare amount
+  // such as "9999" — they cannot occur by chance inside a random UUID (#10353).
+  await seedQuote({ partnerId: p, orgId: acme.id, createdBy: user.id, number: 'OLD-OUT-OF-PERIOD', status: 'accepted', sentAt: '2026-07-10T10:00:00Z', acceptedAt: '2026-07-12T10:00:00Z', oneTime: '9999' });
   // Foreign partner, accepted in August.
-  await seedQuote({ partnerId: otherPartner.id, orgId: foreignOrg.id, number: 'F-1', status: 'accepted', sentAt: '2026-08-02T10:00:00Z', acceptedAt: '2026-08-03T10:00:00Z', oneTime: '777777' });
+  await seedQuote({ partnerId: otherPartner.id, orgId: foreignOrg.id, number: 'FOREIGN-PARTNER-QUOTE', status: 'accepted', sentAt: '2026-08-02T10:00:00Z', acceptedAt: '2026-08-03T10:00:00Z', oneTime: '777777' });
 
   return { partner, acme, globex, otherPartner, foreignOrg, user };
 }
@@ -144,11 +146,29 @@ describe('quote_win_rate — real Postgres (#9828 W2)', () => {
     // Won A-1 first sent 8/02 10:00, accepted 8/12 10:00 = 10 days; lost A-2 8/03 -> 8/05 = 2 days.
     expect(s.overall.medianDaysToWin).toBe(10);
     expect(s.overall.medianDaysToLoss).toBe(2);
+    // Leak checks. Whole-payload substring checks use only values that cannot
+    // appear by chance in the random UUIDs the payload carries: a full UUID, or
+    // text containing non-hex letters. The excluded amounts (9999 out-of-period,
+    // 777777 foreign) are checked field by field, never as a payload substring —
+    // a random UUID such as "…d0999936" contains "9999" (#10353).
     const everything = JSON.stringify(s);
     expect(everything).not.toContain('Initech');
     expect(everything).not.toContain(f.foreignOrg.id);
-    expect(everything).not.toContain('777777');
-    expect(everything).not.toContain('9999');
+    expect(everything).not.toContain(f.otherPartner.id);
+    expect(everything).not.toContain('OLD-OUT-OF-PERIOD');
+    expect(everything).not.toContain('FOREIGN-PARTNER-QUOTE');
+    expect(s.rows.map((r) => r.quoteNumber).sort()).toEqual(['A-1-R2', 'A-2', 'A-3', 'G-1']);
+    expect(s.rows.every((r) => r.orgId === f.acme.id || r.orgId === f.globex.id)).toBe(true);
+    const moneyRows = [...s.overall.money, ...s.groups.flatMap((g) => g.money)];
+    const amounts = [
+      ...moneyRows.flatMap((m) => [m.quotedOneTime, m.wonOneTime, m.quotedMonthlyRecurring, m.wonMonthlyRecurring]),
+      ...s.rows.flatMap((r) => [r.oneTimeTotal, r.monthlyRecurringValue]),
+    ].map(Number);
+    expect(amounts.length).toBeGreaterThan(0);
+    expect(amounts).not.toContain(9999);
+    expect(amounts).not.toContain(777777);
+    // Totals that would move if either excluded quote leaked into the aggregates.
+    expect(s.overall.money.find((m) => m.currencyCode === 'USD')).toMatchObject({ quotedOneTime: '1100.00', wonOneTime: '400.00' });
   });
 
   runDb('money is per currency, from the terminal version, and never summed across currencies', async () => {

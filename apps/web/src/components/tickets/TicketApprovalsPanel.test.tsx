@@ -121,4 +121,30 @@ describe('TicketApprovalsPanel', () => {
     const { container } = render(<TicketApprovalsPanel summary={summaryWith([])} onChanged={vi.fn()} />);
     expect(container.firstChild).toBeNull();
   });
+
+  // #10073: a merged tombstone refuses every write (409 TICKET_MERGED). The
+  // history stays readable; no action is offered.
+  it('read-only shows the requests but offers no action', () => {
+    render(<TicketApprovalsPanel summary={summaryWith([req(), req({ id: 'req-2', status: 'expired' })])} onChanged={vi.fn()} readOnly />);
+    expect(screen.getByTestId('approval-request-req-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('approval-cancel-req-1')).toBeNull();
+    expect(screen.queryByTestId('approval-record-req-1')).toBeNull();
+    expect(screen.queryByTestId('approval-reask-req-2')).toBeNull();
+  });
+
+  it('drops an open cancel confirm or record dialog when the ticket becomes read-only', async () => {
+    const summary = summaryWith([req()]);
+    const { rerender } = render(<TicketApprovalsPanel summary={summary} onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('approval-cancel-req-1'));
+    expect(await screen.findByTestId('approval-cancel-confirm')).toBeInTheDocument();
+    rerender(<TicketApprovalsPanel summary={summary} onChanged={vi.fn()} readOnly />);
+    await waitFor(() => expect(screen.queryByTestId('approval-cancel-confirm')).toBeNull());
+
+    rerender(<TicketApprovalsPanel summary={summary} onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('approval-record-req-1'));
+    expect(await screen.findByTestId('record-approval-dialog')).toBeInTheDocument();
+    rerender(<TicketApprovalsPanel summary={summary} onChanged={vi.fn()} readOnly />);
+    await waitFor(() => expect(screen.queryByTestId('record-approval-dialog')).toBeNull());
+    expect(fetchWithAuth).not.toHaveBeenCalled();
+  });
 });

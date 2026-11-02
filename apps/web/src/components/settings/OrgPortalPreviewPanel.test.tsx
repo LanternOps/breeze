@@ -124,6 +124,18 @@ describe('OrgPortalPreviewPanel (#9350)', () => {
     expect(screen.queryByTestId('org-portal-preview-section-permission-dashboard')).toBeNull();
   });
 
+  it('renders dashboard tiles through their labels, not raw DTO keys/fields (#9952)', async () => {
+    render(<OrgPortalPreviewPanel orgId="org-1" />);
+    const block = await screen.findByTestId('org-portal-preview-section-dashboard');
+    const text = block.textContent ?? '';
+    expect(text).toContain('settings:orgPortalSettingsEditor.preview.tiles.securityScore');
+    expect(text).toContain('settings:orgPortalSettingsEditor.preview.tiles.awaitingYou');
+    // The pre-fix generic renderer printed "securityScore" / "status: ok · score: 88".
+    expect(text).not.toMatch(/(^|[^.])securityScore/);
+    expect(text).not.toContain('status:');
+    expect(text).not.toContain('score:');
+  });
+
   it('falls back to the org-wide view when the selected portal user is gone (404)', async () => {
     render(<OrgPortalPreviewPanel orgId="org-1" />);
     await screen.findByTestId('org-portal-preview-section-dashboard');

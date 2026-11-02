@@ -145,6 +145,10 @@ describe('W6 fleet built-ins (#5221)', () => {
     expect(r.safeParse({ fromStep: { stepId: 'a0_run_script', set: 'failed' } }).success).toBe(true);
     expect(r.safeParse({ target: { type: 'all' }, fromStep: { stepId: 'a0', set: 'succeeded' } }).success).toBe(false);
     expect(r.safeParse({ conditions: Array.from({ length: 51 }, () => ({ type: 'os', value: 'linux' })) }).success).toBe(false);
+    // The triggering device of an event Job (a template at save time, rendered at run time).
+    expect(r.safeParse({ deviceIds: ['{{trigger.device.id}}'] }).success).toBe(true);
+    expect(r.safeParse({ deviceIds: [] }).success).toBe(false);
+    expect(r.safeParse({ deviceIds: ['d1'], target: { type: 'all' } }).success).toBe(false);
   });
 
   it('unknown legacy condition type is invalid', () => {

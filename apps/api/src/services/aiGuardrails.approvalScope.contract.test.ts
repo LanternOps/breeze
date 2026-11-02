@@ -966,6 +966,40 @@ describe('W14 class rows (#6784)', () => {
   });
 });
 
+// ── W14 PR B class rows (#6784; W14 plan PR B table + PR B quorum) ─────────
+const W14B_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_contracts: {
+    create_draft: 't2', update: 't2', delete_draft: 't2', add_line: 't2', remove_line: 't2', update_line: 't2',
+    activate: 'four_eyes', pause: 'supervised', resume: 'supervised', cancel: 'four_eyes',
+    // New in PR B: a pure read (tier-2 read-only), and the four-eyes generate (Todd sign-off, quorum QW1).
+    preview_invoice: 't2', generate_invoice: 'four_eyes',
+  },
+  manage_accounting_sync: {
+    status: 't1', owed_operations: 't1', customers: 't1', mappings: 't1', income_accounts: 't1', remote_candidates: 't1',
+    link_mapping: 'supervised', unlink_mapping: 'supervised', sync_mapping: 'supervised',
+    push: 'four_eyes', push_bulk: 'four_eyes',
+  },
+};
+
+describe('W14 PR B class rows (#6784)', () => {
+  it.each(Object.keys(W14B_EXPECTED))('%s: W14B_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W14B_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W14B_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action, provider: 'xero' })).toBe(cls);
+    },
+  );
+
+  it('preview_invoice auto-executes as a read; generate_invoice never does', () => {
+    expect(checkGuardrails('manage_contracts', { action: 'preview_invoice', contractId: 'c' }).readOnly).toBe(true);
+    expect(checkGuardrails('manage_contracts', { action: 'generate_invoice', contractId: 'c' }).readOnly).not.toBe(true);
+  });
+});
+
 // ── W02 class rows (#6756, spec checklist item 3) ──────────────────────────
 // Copied from the plan's "Final per-action classes" table, NOT derived from
 // the guardrail tables. Every action-enum member of the seven tools must have
