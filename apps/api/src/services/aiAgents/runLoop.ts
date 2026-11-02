@@ -2647,9 +2647,10 @@ async function driveSdkLoop(
   let receivedResult = false;
   // W03 billing (W05 spike rules): every result is billed by the registry from
   // its per-model `modelUsage`. A hop is ONE fresh, non-persisted query, so
-  // the snapshot the deltas are taken against lives only for this hop: the
-  // first result bills its own `result.usage` (capped by modelUsage), any
-  // later one the per-key delta. Never `total_cost_usd`.
+  // its modelUsage starts at zero and the snapshot the deltas are taken
+  // against lives only for this hop: every result bills the per-key delta
+  // (#10413: the first one from zero, so a second key such as the CLI's
+  // background call is billed at its own rate). Never `total_cost_usd`.
   let observation = newSdkTurnObservation();
   let usageSnapshot: SdkUsageSnapshot | null = null;
   let billed: BilledUsage[] = [];
@@ -2832,6 +2833,8 @@ async function driveSdkLoop(
               lastResult = message as unknown as SdkResultLike;
               const turn = sdkTurnUsage({
                 binding: hopBinding, observation, result: lastResult, previousSnapshot: usageSnapshot,
+                // `persistSession: false` and no `resume`: this query's counters start at zero.
+                queryStartedAtZero: true,
               });
               usageSnapshot = turn.nextSnapshot ?? usageSnapshot;
               billed.push(...turn.usage);
