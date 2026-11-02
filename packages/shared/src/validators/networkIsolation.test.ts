@@ -4,6 +4,7 @@ import {
   extendNetworkIsolationSchema,
   isolationAllowEntrySchema,
   networkIsolationReportSchema,
+  networkIsolationResultSchema,
   releaseNetworkIsolationSchema,
   startNetworkIsolationSchema,
 } from './networkIsolation';
@@ -181,5 +182,22 @@ describe('networkIsolationReportSchema (heartbeat request)', () => {
   it('bounds the event list', () => {
     const events = Array.from({ length: 201 }, (_, i) => ({ seq: i, at: '2026-10-30T10:04:00.000Z', type: 'reverify_ok' }));
     expect(networkIsolationReportSchema.safeParse({ ...report, events }).success).toBe(false);
+  });
+});
+
+describe('networkIsolationResultSchema shared evidence contract', () => {
+  const base = { isolationId: ISOLATION_ID, generation: 1, journalSeq: 2 };
+  it.each([['applying', 'provisional'], ['applied', 'committed'], ['verified', 'committed'], ['failed', 'rolled_back'], ['released', 'released'], ['expired', 'released'], ['released_locally', 'released'], ['self_released', 'released']])('assigns the typed phase for %s', (state, phase) => {
+    expect(networkIsolationResultSchema.parse({ ...base, state }).phase).toBe(phase);
+  });
+  it('shares the report closed state vocabulary and ordering bounds', () => {
+    for (const patch of [{ state: 'unknown' }, { state: 'requested' }, { generation: 0 }, { journalSeq: -1 }]) {
+      expect(networkIsolationResultSchema.safeParse({ ...base, state: 'verified', ...patch }).success).toBe(false);
+    }
+  });
+  it('maps verifiedAt to the report timestamp and strips unknown keys', () => {
+    const verifiedAt = '2026-10-31T12:00:00Z';
+    expect(networkIsolationResultSchema.parse({ ...base, state: 'verified', verifiedAt, breakGlassSecret: SECRET_B64 })).toMatchObject({ lastVerifiedAt: verifiedAt });
+    expect(networkIsolationResultSchema.parse({ ...base, state: 'verified', breakGlassSecret: SECRET_B64 })).not.toHaveProperty('breakGlassSecret');
   });
 });

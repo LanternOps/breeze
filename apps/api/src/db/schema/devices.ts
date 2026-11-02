@@ -3,7 +3,7 @@ import { sql } from 'drizzle-orm';
 import { ipClassEnum, organizations, partners, sites } from './orgs';
 import { users } from './users';
 import { aiInitiatorKindEnum } from './aiInitiator';
-import type { BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
+import type { IsolationMechanism, BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
 
 export const osTypeEnum = pgEnum('os_type', ['windows', 'macos', 'linux']);
 export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined', 'updating', 'pending']);
@@ -233,6 +233,11 @@ export const devices = pgTable('devices', {
   // build correctly reports back down to 0. Task 5 gates managed-software
   // dispatch on this value.
   outboundNetworkPolicyVersion: integer('outbound_network_policy_version').notNull().default(0),
+  // Non-sticky capability truth: written every heartbeat; omission after a downgrade clears it.
+  networkIsolationVersion: integer('network_isolation_version').notNull().default(0),
+  networkIsolationMechanism: text('network_isolation_mechanism').$type<IsolationMechanism>(),
+  networkIsolationUnsupportedReason: text('network_isolation_unsupported_reason'),
+  networkIsolationReady: boolean('network_isolation_ready').notNull().default(false),
   // #3409 PR4 — agent capability for encrypted secret-env delivery. 0 for every
   // agent build predating PR4b and for any heartbeat omitting the field; only
   // the recognized integer version 1 is written as anything else. Non-sticky

@@ -356,6 +356,8 @@ x-api-env: &api-env
   # every agent with the legacy heartbeat payload, as an older API would.
   HEARTBEAT_RETAIN_STATE_ENABLED: ${HEARTBEAT_RETAIN_STATE_ENABLED:-true}
   AGENT_ECH_ENABLED: ${AGENT_ECH_ENABLED:-true}
+  NETWORK_ISOLATION_ENABLED: ${NETWORK_ISOLATION_ENABLED:-false}
+  NETWORK_ISOLATION_ENABLED_PARTNER_IDS: ${NETWORK_ISOLATION_ENABLED_PARTNER_IDS:-}
   # #10190 prompt host kill switch. `-default` (no colon) on purpose: unset
   # passes "default" (the code default), while an explicit empty value passes
   # '' (the kill switch: nothing enabled). `:-` would turn unset into ''.

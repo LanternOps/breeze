@@ -15,6 +15,7 @@ import {
   UNRESOLVED_TERMINAL_STATES,
   agentSupportsNetworkIsolation,
   isActiveIsolationState,
+  isTerminalIsolationState, isUnresolvedTerminalIsolationState, isIsolationFailureCode, failureCodeFromJournalType, ISOLATION_RELEASE_JOURNAL_TYPES,
   isResolvedTerminalIsolationState,
   isUnresolvedIsolationState,
 } from './networkIsolation';
@@ -113,5 +114,21 @@ describe('ECH_DOH_ENDPOINT_URLS parity with agent/internal/ech/doh.go', () => {
     const fromGo = [...block![1]!.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
     expect(fromGo.length).toBeGreaterThan(0);
     expect([...ECH_DOH_ENDPOINT_URLS]).toEqual(fromGo);
+  });
+});
+
+describe('isolation typed classifiers', () => {
+  it('classifies every terminal and failure code', () => {
+    for (const state of ISOLATION_STATES) expect(isTerminalIsolationState(state)).toBe(!ACTIVE_STATES.includes(state as never));
+    for (const state of UNRESOLVED_TERMINAL_STATES) expect(isUnresolvedTerminalIsolationState(state)).toBe(true);
+    for (const code of ISOLATION_FAILURE_CODES) expect(isIsolationFailureCode(code)).toBe(true);
+    expect(isIsolationFailureCode('made_up')).toBe(false);
+  });
+  it.each([['released_dead_man', 'dead_man'], ['released_local_code', 'local_code'], ['released_local_forced', 'local_forced']])('classifies %s as %s', (type, kind) => {
+    expect(ISOLATION_RELEASE_JOURNAL_TYPES[type as keyof typeof ISOLATION_RELEASE_JOURNAL_TYPES]).toBe(kind);
+  });
+  it('classifies failure journals using the closed set', () => {
+    expect(failureCodeFromJournalType('failed_apply_error')).toBe('apply_error');
+    expect(failureCodeFromJournalType('failed_made_up')).toBeUndefined();
   });
 });

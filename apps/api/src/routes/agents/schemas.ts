@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { softwareInventoryReportSchema, type RestorePointOutcome } from '@breeze/shared';
+import { softwareInventoryReportSchema, networkIsolationReportSchema, ISOLATION_MECHANISMS, truncated, type RestorePointOutcome } from '@breeze/shared';
 import { promptHostTelemetrySchema } from '@breeze/shared/promptHost';
 import { redactSecretsFromOutput } from '../../services/secretRedaction';
 import { MAX_AGENT_WARRANTY_ENTITLEMENTS } from '../../services/warrantyDataSources';
@@ -421,7 +421,13 @@ export const heartbeatSchema = z.object({
   // `{"outboundNetworkPolicyVersion":1}`. Informational — a bad field drops
   // independently rather than 400-ing the heartbeat, since the route treats
   // every omitted/unrecognized value as capability zero anyway.
+  containment: z.object({ networkIsolation: networkIsolationReportSchema.optional().catch(undefined) }).optional().catch(undefined),
   securityCapabilities: z.object({
+    networkIsolationVersion: z.number().int().min(0).optional().catch(undefined),
+    networkIsolationMechanism: z.enum(ISOLATION_MECHANISMS).optional().catch(undefined),
+    networkIsolationUnsupportedReason: truncated(1000).optional().catch(undefined),
+    networkIsolationReady: z.boolean().optional().catch(undefined),
+
     outboundNetworkPolicyVersion: z.number().int().optional().catch(undefined),
     // #3409 PR4 — encrypted secret-env delivery. Same informational contract:
     // a bad value drops the field rather than 400-ing the heartbeat, since the

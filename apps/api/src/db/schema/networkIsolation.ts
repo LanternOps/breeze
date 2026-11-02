@@ -14,6 +14,7 @@ import type {
   IsolationReleaseKind,
   IsolationRequestedByKind,
   IsolationState,
+  SafeAgentReport,
 } from '@breeze/shared';
 
 /**
@@ -63,7 +64,7 @@ export const deviceNetworkIsolations = pgTable('device_network_isolations', {
   mechanism: varchar('mechanism', { length: 16 }).$type<IsolationMechanism>(),
   /** What was sent: hostnames only, never resolved addresses. */
   allowSnapshot: jsonb('allow_snapshot').$type<IsolationAllowEntry[]>().notNull().default([]),
-  lastAgentReport: jsonb('last_agent_report').$type<Record<string, unknown>>(),
+  lastAgentReport: jsonb('last_agent_report').$type<SafeAgentReport | null>(),
   failureCode: varchar('failure_code', { length: 48 }).$type<IsolationFailureCode>(),
   releaseKind: varchar('release_kind', { length: 24 }).$type<IsolationReleaseKind>(),
   commandId: uuid('command_id'),

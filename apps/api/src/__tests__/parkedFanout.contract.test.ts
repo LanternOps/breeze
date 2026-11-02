@@ -212,6 +212,7 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/networkIsolation/service.ts': 'Single-device service under caller RLS and site access; selects no fan-out targets. dispatchDeviceCommand refuses parked devices; heartbeat tombstones retain recovery intent.',
   'services/pax8OrderPreview.ts': 'W15 (#6785): read-only Pax8 order billing evidence; no device access or fan-out',
   'services/webhookPayload/alertEnrichment.ts': 'enriches the webhook payload of one already-raised alert by that alert\'s own device_id; selects no targets',
   'services/manualAssetOps.ts': 'manual (non-networked) inventory CRUD (#4622, lifted from routes/devices/manual.ts): reads agent devices only to resolve the ONE device id a link request names (same-org + same-site check); selects no fan-out targets and runs nothing',

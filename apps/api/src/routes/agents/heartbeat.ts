@@ -1,3 +1,4 @@
+import type { HeartbeatEpisodeContext } from '../../services/networkIsolation/reconcile';
 import { topologyHeartbeat, topologyHeartbeatWithoutMaterialization } from '../../services/topology/heartbeat';
 import { loadAgentTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from '../../services/topology/flags';
 import { Hono } from 'hono';
@@ -21,7 +22,7 @@ import {
 } from '../../db/schema';
 import { ownDeviceRowChangedHands, selectOwnDeviceRowForUpdate, updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
-import type { BatteryStatus, DesktopAccessState, TCCPermissions } from '@breeze/shared';
+import type { BatteryStatus, ContainmentDesiredBlock, DesktopAccessState, TCCPermissions } from '@breeze/shared';
 import { ERROR_CODES } from '@breeze/shared';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { refreshReadinessAfterRecovery } from '../../services/bareMetalReadinessRefresh';
@@ -658,7 +659,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }),
     );
 
-    return c.json({ commands: drainCommands });
+    return c.json({ commands: drainCommands, containment: { networkIsolation: null } });
   }
 
   // Pre-assignment — a device parked in its partner's
@@ -1137,6 +1138,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           data.securityCapabilities?.scriptSecretEnvVersion,
         ),
       }),
+      containment: { networkIsolation: null },
       watchdogUpgradeTo,
       upgradeTo: agentUpgradeTo,
     });
@@ -1159,6 +1161,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // a downgrade FROM a capable build back to an old one — correctly
     // reports back down to 0 rather than leaving a stale capability claim
     // that Task 5's dispatch gate would wrongly trust.
+    networkIsolationVersion: data.securityCapabilities?.networkIsolationVersion ?? 0,
+    networkIsolationMechanism: data.securityCapabilities?.networkIsolationMechanism ?? null,
+    networkIsolationUnsupportedReason: data.securityCapabilities?.networkIsolationUnsupportedReason ?? null,
+    networkIsolationReady: data.securityCapabilities?.networkIsolationReady ?? false,
     outboundNetworkPolicyVersion: data.securityCapabilities?.outboundNetworkPolicyVersion === 1 ? 1 : 0,
     // #3409 PR4 — same non-sticky contract as the line above: written every
     // beat so a downgrade is detected. PR4c re-checks this at CLAIM time too,
@@ -2399,6 +2405,45 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
   }
 
+  const isolationContext: HeartbeatEpisodeContext = {};
+  let isolation: typeof import('../../services/networkIsolation/reconcile') | undefined;
+  let savepointFreeLookup = false;
+  try {
+    // Load inside the fault boundary: isolation must not prevent other heartbeat work.
+    isolation = await import('../../services/networkIsolation/reconcile');
+    const { reconcileContainmentReport, noteIsolationReportDropped } = isolation;
+    // Informational input may have collapsed under .catch(undefined); report paths, never values.
+    const rawBeat = await c.req.json();
+    const rawIsolation = rawBeat?.containment?.networkIsolation;
+    if (data.containment?.networkIsolation === undefined) noteIsolationReportDropped(device.id, rawIsolation);
+    const reconcile = () => reconcileContainmentReport(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device, data.containment?.networkIsolation, new Date(), isolationContext);
+    // #4618: without a report reconciliation only does the indexed episode SELECT.
+    // Keep that common path at one statement; real reconciliation retains its savepoint.
+    if (data.containment?.networkIsolation === undefined) { savepointFreeLookup = true; await reconcile(); savepointFreeLookup = false; }
+    else await withDbTransaction(reconcile);
+  } catch (err) {
+    console.error('[heartbeat] isolation reconcile failed', { deviceId: device.id, isolationId: isolationContext.row?.id, savepointFreeLookup });
+    captureException(err, undefined, { phase: 'isolation_heartbeat_block', deviceId: device.id, isolationId: isolationContext.row?.id ?? 'unknown' });
+    // A statement that failed outside a savepoint has aborted the org transaction: nothing after
+    // this point would commit, so fail the beat rather than return command claims that roll back.
+    // (Security review 2026-10-31.) The agent retries on its next beat.
+    if (savepointFreeLookup) throw err;
+  }
+  let containment: ContainmentDesiredBlock = { networkIsolation: null };
+  if (isolation) {
+    const { buildContainmentHeartbeatBlock, storedContainmentHeartbeatBlock } = isolation;
+    try {
+      // A cached absence needs no block build (and no SAVEPOINT / RELEASE).
+      containment = isolationContext.row === null
+        ? storedContainmentHeartbeatBlock(null)
+        : await withDbTransaction(() => buildContainmentHeartbeatBlock(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device, isolationContext));
+    } catch (err) {
+      console.error('[heartbeat] isolation block failed', { deviceId: device.id, isolationId: isolationContext.row?.id });
+      captureException(err, undefined, { phase: 'isolation_heartbeat_block', deviceId: device.id, isolationId: isolationContext.row?.id ?? 'unknown' });
+      containment = storedContainmentHeartbeatBlock(isolationContext.row);
+    }
+  }
+
   // Main-branch response payload — built inside the org context, but the
   // manifest-trust-keyset and policy probe config are fetched AFTER this
   // context closes (see below).
@@ -2409,6 +2454,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceId: device.id,
     remoteManagement,
     mainResponse: {
+      containment,
       commands: deliverableCommands,
       configUpdate: mergedConfigUpdate,
       networkContextReceipt,

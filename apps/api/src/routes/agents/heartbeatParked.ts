@@ -193,7 +193,7 @@ export async function respondParkedHeartbeat(
   );
 
   if (isWatchdog) {
-    return c.json({ commands, ...scoped.maintenance });
+    return c.json({ commands, containment: { networkIsolation: null }, ...scoped.maintenance });
   }
 
   // #8318 §6.2 — outside every DB context (#1105), as on the full beat.
@@ -216,6 +216,7 @@ export async function respondParkedHeartbeat(
   ]);
 
   return c.json({
+    containment: { networkIsolation: null },
     commands,
     ...scoped.maintenance,
     manifestTrustKeys,
