@@ -178,8 +178,11 @@ const EPHEMERAL_ONLY: Record<string, string> = {
  * target selector (a FANOUT_MODULES entry, parked guard beside the filter).
  * 75 → 76 (#9635): services/softwarePolicyCoverage.ts, the org device set the
  * Inventory Approve / Deny placement check resolves (parked guard beside it).
+ * 76 → 77 (#8318 wave 2-1): services/reinstallCandidates/index.ts, the SQL
+ * half of the reinstall-target rule (notHiddenOrgType() beside the filter;
+ * hidden-org targets never qualify).
  */
-const EPHEMERAL_DISCOVERED_FILES = 76;
+const EPHEMERAL_DISCOVERED_FILES = 77;
 
 describe('contract: device counts and listings leave parked devices out', () => {
   const found = DEVICE_FILES

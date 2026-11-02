@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  HARDWARE_REPORT_DETECTION_WINDOW_MS,
   decideFlagWrite,
   evidenceReason,
   rankCandidates,
@@ -148,58 +149,100 @@ describe('reason mapping and rank', () => {
 });
 
 describe('decideFlagWrite', () => {
+  const SRC_ORG = 'org-src';
+  const OTHER_ORG = 'org-other';
   const none = { targetDeviceId: null, reason: null };
-  const hw = (id: string) => ({ targetDeviceId: id, reason: 'hardware' as const });
-  const host = (id: string) => ({ targetDeviceId: id, reason: 'hostname' as const });
+  const stored = (id: string, reason: 'hardware' | 'hostname' | 'tpm', targetOrgId = SRC_ORG) => ({ targetDeviceId: id, reason, targetOrgId });
+  const cand = (id: string, reason: 'hardware' | 'hostname', orgId = SRC_ORG) => ({ targetDeviceId: id, orgId, reason });
+  const decide = (
+    s: { targetDeviceId: string | null; reason: string | null; targetOrgId?: string | null },
+    best: ReturnType<typeof cand> | null,
+    storedIneligibility: Parameters<typeof decideFlagWrite>[0]['storedIneligibility'] = null,
+  ) => decideFlagWrite({ sourceOrgId: SRC_ORG, stored: s, best, storedIneligibility });
 
   it('writes a new flag', () => {
-    expect(decideFlagWrite(none, hw('t1'), true)).toEqual({ write: true, kind: 'new' });
+    expect(decide(none, cand('t1', 'hardware'))).toEqual({ write: true, kind: 'new' });
   });
 
-  it('writes nothing without a candidate', () => {
-    expect(decideFlagWrite(host('t1'), null, false)).toEqual({ write: false, why: 'no_candidate' });
+  it('writes nothing without a flag or a candidate', () => {
+    expect(decide(none, null)).toEqual({ write: false, why: 'no_candidate' });
   });
 
   it('never rewrites an identical flag', () => {
-    expect(decideFlagWrite(hw('t1'), hw('t1'), true)).toEqual({ write: false, why: 'identical' });
+    expect(decide(stored('t1', 'hardware'), cand('t1', 'hardware'))).toEqual({ write: false, why: 'identical' });
   });
 
-  it('upgrades hostname to hardware, same target or another', () => {
-    expect(decideFlagWrite(host('t1'), hw('t1'), true)).toEqual({ write: true, kind: 'upgrade' });
-    expect(decideFlagWrite(host('t1'), hw('t2'), true)).toEqual({ write: true, kind: 'upgrade' });
+  it('upgrades hostname to hardware, same target or another, even cross-org', () => {
+    expect(decide(stored('t1', 'hostname'), cand('t1', 'hardware'))).toEqual({ write: true, kind: 'upgrade' });
+    expect(decide(stored('t1', 'hostname'), cand('t2', 'hardware', OTHER_ORG))).toEqual({ write: true, kind: 'upgrade' });
   });
 
-  it('never downgrades', () => {
-    expect(decideFlagWrite(hw('t1'), host('t1'), true)).toEqual({ write: false, why: 'not_better' });
-    expect(decideFlagWrite(hw('t1'), host('t2'), true)).toEqual({ write: false, why: 'not_better' });
-    expect(decideFlagWrite({ targetDeviceId: 't1', reason: 'tpm' }, hw('t2'), true)).toEqual({ write: false, why: 'not_better' });
+  it('never downgrades a still-qualifying flag', () => {
+    expect(decide(stored('t1', 'hardware'), cand('t1', 'hostname'))).toEqual({ write: false, why: 'not_better' });
+    expect(decide(stored('t1', 'hardware'), cand('t2', 'hostname'))).toEqual({ write: false, why: 'not_better' });
+    expect(decide(stored('t1', 'tpm'), cand('t2', 'hardware'))).toEqual({ write: false, why: 'not_better' });
+    expect(decide(stored('t1', 'hardware'), cand('t2', 'hardware'))).toEqual({ write: false, why: 'not_better' });
+    expect(decide(stored('t1', 'hardware'), null)).toEqual({ write: false, why: 'no_candidate' });
   });
 
   it('replaces a stored flag whose target no longer qualifies', () => {
-    expect(decideFlagWrite(hw('t1'), hw('t2'), false)).toEqual({ write: true, kind: 'replace' });
-    expect(decideFlagWrite(hw('t1'), host('t2'), false)).toEqual({ write: true, kind: 'replace' });
+    expect(decide(stored('t1', 'hardware'), cand('t2', 'hardware'), 'decommissioned_after_source')).toEqual({ write: true, kind: 'replace' });
+    expect(decide(stored('t1', 'hardware'), cand('t2', 'hostname'), 'alive')).toEqual({ write: true, kind: 'replace' });
+    expect(decide(stored('t1', 'hardware', OTHER_ORG), cand('t2', 'hardware', OTHER_ORG), 'missing')).toEqual({ write: true, kind: 'replace' });
   });
 
-  it('keeps an equal-rank flag on a still-qualifying target', () => {
-    expect(decideFlagWrite(hw('t1'), hw('t2'), true)).toEqual({ write: false, why: 'not_better' });
+  it('clears a stale flag when nothing replaces it', () => {
+    expect(decide(stored('t1', 'hardware'), null, 'alive')).toEqual({ write: true, kind: 'clear' });
+    expect(decide(stored('t1', 'hostname'), null, 'decommissioned_after_source')).toEqual({ write: true, kind: 'clear' });
+    expect(decide(stored('t1', 'hardware'), null, 'missing')).toEqual({ write: true, kind: 'clear' });
+  });
+
+  it('keeps a hostname link whose target is merely alive (the #2764 lookalike case)', () => {
+    expect(decide(stored('t1', 'hostname'), null, 'alive')).toEqual({ write: false, why: 'kept_live_hostname_link' });
+    expect(decide(stored('t1', 'hostname'), cand('t2', 'hostname'), 'alive')).toEqual({ write: false, why: 'kept_live_hostname_link' });
+  });
+
+  it('never replaces a same-org flag with a cross-org one of the same rank (finding 4)', () => {
+    expect(decide(stored('t1', 'hardware', SRC_ORG), cand('t2', 'hardware', OTHER_ORG), 'decommissioned_after_source'))
+      .toEqual({ write: false, why: 'kept_same_org' });
+    // A same-org replacement of the same rank is fine, and a cross-org one of a higher rank is an upgrade.
+    expect(decide(stored('t1', 'hardware', SRC_ORG), cand('t2', 'hardware', SRC_ORG), 'decommissioned_after_source'))
+      .toEqual({ write: true, kind: 'replace' });
+    expect(decide(stored('t1', 'hostname', SRC_ORG), cand('t2', 'hardware', OTHER_ORG), 'decommissioned_after_source'))
+      .toEqual({ write: true, kind: 'upgrade' });
   });
 });
 
 describe('shouldDetectAfterHardwareReport', () => {
+  const NOW = new Date('2027-01-20T00:00:00Z');
+  const fresh = { enrolledAt: new Date(NOW.getTime() - 60_000) };
+
   it('needs hardware evidence in the report', () => {
-    expect(shouldDetectAfterHardwareReport({}, {})).toBe(false);
-    expect(shouldDetectAfterHardwareReport({ serialNumber: 'SN1' }, {})).toBe(false);
-    expect(shouldDetectAfterHardwareReport({ serialNumber: ' ', manufacturer: 'Dell' }, {})).toBe(false);
-    expect(shouldDetectAfterHardwareReport({ systemUuid: null }, {})).toBe(false);
-    expect(shouldDetectAfterHardwareReport({ serialNumber: 'SN1', manufacturer: 'Dell' }, {})).toBe(true);
-    expect(shouldDetectAfterHardwareReport({ systemUuid: '4c4c4544-0042-3510-8051-b4c04f4d3132' }, {})).toBe(true);
+    expect(shouldDetectAfterHardwareReport({}, fresh, NOW)).toBe(false);
+    expect(shouldDetectAfterHardwareReport({ serialNumber: 'SN1' }, fresh, NOW)).toBe(false);
+    expect(shouldDetectAfterHardwareReport({ serialNumber: ' ', manufacturer: 'Dell' }, fresh, NOW)).toBe(false);
+    expect(shouldDetectAfterHardwareReport({ systemUuid: null }, fresh, NOW)).toBe(false);
+    expect(shouldDetectAfterHardwareReport({ serialNumber: 'SN1', manufacturer: 'Dell' }, fresh, NOW)).toBe(true);
+    expect(shouldDetectAfterHardwareReport({ systemUuid: '4c4c4544-0042-3510-8051-b4c04f4d3132' }, fresh, NOW)).toBe(true);
   });
 
   it('skips a source already holding a hardware-or-better flag', () => {
     const report = { systemUuid: '4c4c4544-0042-3510-8051-b4c04f4d3132' };
-    expect(shouldDetectAfterHardwareReport(report, { possibleReplacementReason: null })).toBe(true);
-    expect(shouldDetectAfterHardwareReport(report, { possibleReplacementReason: 'hostname' })).toBe(true);
-    expect(shouldDetectAfterHardwareReport(report, { possibleReplacementReason: 'hardware' })).toBe(false);
-    expect(shouldDetectAfterHardwareReport(report, { possibleReplacementReason: 'tpm' })).toBe(false);
+    expect(shouldDetectAfterHardwareReport(report, { ...fresh, possibleReplacementReason: null }, NOW)).toBe(true);
+    expect(shouldDetectAfterHardwareReport(report, { ...fresh, possibleReplacementReason: 'hostname' }, NOW)).toBe(true);
+    expect(shouldDetectAfterHardwareReport(report, { ...fresh, possibleReplacementReason: 'hardware' }, NOW)).toBe(false);
+    expect(shouldDetectAfterHardwareReport(report, { ...fresh, possibleReplacementReason: 'tpm' }, NOW)).toBe(false);
+  });
+
+  it('runs only within the detection window after enrollment (no retroactive fleet sweep)', () => {
+    const report = { systemUuid: '4c4c4544-0042-3510-8051-b4c04f4d3132' };
+    const at = (ms: number) => ({ enrolledAt: new Date(NOW.getTime() - ms) });
+    expect(HARDWARE_REPORT_DETECTION_WINDOW_MS).toBe(7 * 24 * 60 * 60 * 1000);
+    expect(shouldDetectAfterHardwareReport(report, at(HARDWARE_REPORT_DETECTION_WINDOW_MS), NOW)).toBe(true);
+    expect(shouldDetectAfterHardwareReport(report, at(HARDWARE_REPORT_DETECTION_WINDOW_MS + 1), NOW)).toBe(false);
+    expect(shouldDetectAfterHardwareReport(report, at(365 * 24 * 60 * 60 * 1000), NOW)).toBe(false);
+    // Falls back to created_at; no date at all never searches.
+    expect(shouldDetectAfterHardwareReport(report, { createdAt: new Date(NOW.getTime() - 1000) }, NOW)).toBe(true);
+    expect(shouldDetectAfterHardwareReport(report, {}, NOW)).toBe(false);
   });
 });

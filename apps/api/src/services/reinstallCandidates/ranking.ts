@@ -77,8 +77,14 @@ export type IneligibleReason =
  *  - decommissioned records qualify (the reattach route restores them, #914),
  *    unless they were decommissioned AFTER the source enrolled: retiring the
  *    old record after the new one appeared is the human (or the
- *    uninstall-intent reaper) answering the "possible replacement" question,
- *    and that answer clears the flag, so re-raising it would undo it.
+ *    uninstall-intent reaper) answering the "possible replacement" question.
+ *    Both clear every link to that record across the partner
+ *    (clearLinks.ts), so re-raising it on the next report would undo the
+ *    answer.
+ *
+ * index.ts applies the cheap rules (older, silent, not ephemeral, not in a
+ * hidden org) in SQL as well, before its per-evidence LIMIT; this function
+ * stays the authority and also judges a stored target.
  */
 export function targetIneligibility(
   source: CandidateSource,
@@ -138,46 +144,88 @@ export function rankCandidates(
 export interface StoredFlag {
   targetDeviceId: string | null;
   reason: string | null;
+  /** The stored target's org, when its row was read. */
+  targetOrgId?: string | null;
 }
 
 export type FlagDecision =
-  | { write: false; why: 'no_candidate' | 'identical' | 'not_better' }
-  | { write: true; kind: 'new' | 'upgrade' | 'replace' };
+  | { write: false; why: 'no_candidate' | 'identical' | 'not_better' | 'kept_live_hostname_link' | 'kept_same_org' }
+  | { write: true; kind: 'new' | 'upgrade' | 'replace' | 'clear' };
 
-/**
- * Whether to write the best candidate onto the source (§7.3 "What it writes"):
- *  - no flag yet → write (`new`);
- *  - the candidate's reason outranks the stored one → write (`upgrade`), for
- *    the same target or a different one;
- *  - a different target, and the stored one no longer qualifies → write
- *    (`replace`): the stored flag is stale;
- *  - otherwise nothing: never a downgrade, never an identical rewrite (a daily
- *    hardware report on a flagged device writes and notifies nothing).
- */
-export function decideFlagWrite(
-  stored: StoredFlag,
-  best: { targetDeviceId: string; reason: PossibleReplacementReason } | null,
-  storedTargetQualifies: boolean,
-): FlagDecision {
-  if (!best) return { write: false, why: 'no_candidate' };
-  if (!stored.targetDeviceId) return { write: true, kind: 'new' };
-  if (reasonRank(best.reason) > reasonRank(stored.reason)) return { write: true, kind: 'upgrade' };
-  if (stored.targetDeviceId === best.targetDeviceId) {
-    return { write: false, why: reasonRank(best.reason) === reasonRank(stored.reason) ? 'identical' : 'not_better' };
-  }
-  if (!storedTargetQualifies) return { write: true, kind: 'replace' };
-  return { write: false, why: 'not_better' };
+export interface FlagDecisionInput {
+  sourceOrgId: string;
+  stored: StoredFlag;
+  best: { targetDeviceId: string; orgId: string; reason: PossibleReplacementReason } | null;
+  /**
+   * Why the stored target no longer qualifies: null when it still does,
+   * 'missing' when its row is gone. Ignored without a stored flag.
+   */
+  storedIneligibility: IneligibleReason | 'missing' | null;
 }
 
 /**
+ * Whether and how to write the source's flag (§7.3 "What it writes"):
+ *  - no flag yet and a candidate → `new`;
+ *  - the candidate's reason outranks the stored one → `upgrade` (same target
+ *    or another);
+ *  - the stored target still qualifies → nothing more: never a downgrade,
+ *    never an identical rewrite (a daily hardware report on a flagged device
+ *    writes and notifies nothing);
+ *  - the stored target no longer qualifies:
+ *      - a `hostname` link whose target is merely alive is kept: the #2764
+ *        collision path flags a hostname collision with a device that is
+ *        still online on purpose (a lookalike is exactly what it surfaces);
+ *      - a same-org stored flag is never replaced by a cross-org candidate of
+ *        the same rank;
+ *      - otherwise the best candidate replaces it (`replace`), or, with no
+ *        candidate, the stale flag is cleared (`clear`).
+ */
+export function decideFlagWrite(input: FlagDecisionInput): FlagDecision {
+  const { stored, best, sourceOrgId } = input;
+  if (!stored.targetDeviceId) return best ? { write: true, kind: 'new' } : { write: false, why: 'no_candidate' };
+  if (best && reasonRank(best.reason) > reasonRank(stored.reason)) return { write: true, kind: 'upgrade' };
+  if (best && best.targetDeviceId === stored.targetDeviceId) {
+    return { write: false, why: reasonRank(best.reason) === reasonRank(stored.reason) ? 'identical' : 'not_better' };
+  }
+  if (input.storedIneligibility === null) return { write: false, why: best ? 'not_better' : 'no_candidate' };
+  if (stored.reason === 'hostname' && input.storedIneligibility === 'alive') {
+    return { write: false, why: 'kept_live_hostname_link' };
+  }
+  if (!best) return { write: true, kind: 'clear' };
+  if (
+    reasonRank(best.reason) === reasonRank(stored.reason)
+    && stored.targetOrgId === sourceOrgId
+    && best.orgId !== sourceOrgId
+  ) {
+    return { write: false, why: 'kept_same_org' };
+  }
+  return { write: true, kind: 'replace' };
+}
+
+/**
+ * How long after enrollment a hardware report may still search for reinstall
+ * candidates. A reinstall is noticed when the new install enrolls; the first
+ * hardware reports follow within minutes (startup) and then daily, which is
+ * when a UUID an older enroll could not send arrives. Past this window the
+ * device is an established install: a later report must not turn the whole
+ * fleet's daily inventory into a retroactive candidate sweep (and alerts on
+ * records nobody is reinstalling). Enroll-triggered detection is not gated.
+ */
+export const HARDWARE_REPORT_DETECTION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
  * The hardware-report trigger's cheap pre-check (no DB): run the search only
- * when the report carries hardware evidence and the source does not already
- * hold a hardware-or-better flag, which no hardware report could improve.
+ * for a source enrolled within the detection window, when the report carries
+ * hardware evidence and the source does not already hold a hardware-or-better
+ * flag, which no hardware report could improve.
  */
 export function shouldDetectAfterHardwareReport(
   report: { systemUuid?: string | null; serialNumber?: string | null; manufacturer?: string | null },
-  source: { possibleReplacementReason?: string | null },
+  source: { possibleReplacementReason?: string | null; enrolledAt?: Date | null; createdAt?: Date | null },
+  now: Date = new Date(),
 ): boolean {
+  const enrolledAt = source.enrolledAt ?? source.createdAt ?? null;
+  if (!enrolledAt || now.getTime() - enrolledAt.getTime() > HARDWARE_REPORT_DETECTION_WINDOW_MS) return false;
   const hasEvidence = Boolean(report.systemUuid) || Boolean(report.serialNumber?.trim() && report.manufacturer?.trim());
   if (!hasEvidence) return false;
   return reasonRank(source.possibleReplacementReason) < REASON_RANK.hardware;

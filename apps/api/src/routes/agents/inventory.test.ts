@@ -177,7 +177,7 @@ const V2_REPORT = {
   items: [{ name: 'Breeze Agent', version: '0.105.1' }],
 } as const;
 
-function mockDeviceLookup(device: { id: string; orgId: string; agentVersion?: string | null; possibleReplacementReason?: string | null } | null) {
+function mockDeviceLookup(device: { id: string; orgId: string; agentVersion?: string | null; possibleReplacementReason?: string | null; enrolledAt?: Date } | null) {
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
@@ -420,7 +420,7 @@ describe('agent hardware inventory — reinstall hints (#8318 §7.3)', () => {
   });
 
   it('defers the candidate search until the request commits when the report carries a system UUID', async () => {
-    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1', enrolledAt: new Date() });
     mockPriorHardware(null);
     mockHardwareUpsert();
 
@@ -438,7 +438,7 @@ describe('agent hardware inventory — reinstall hints (#8318 §7.3)', () => {
   });
 
   it('runs no search without hardware evidence', async () => {
-    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1', enrolledAt: new Date() });
     mockPriorHardware(null);
     mockHardwareUpsert();
 
@@ -449,11 +449,22 @@ describe('agent hardware inventory — reinstall hints (#8318 §7.3)', () => {
   });
 
   it('runs no search on a source already flagged with hardware evidence', async () => {
-    mockDeviceLookup({ id: 'device-1', orgId: 'org-1', possibleReplacementReason: 'hardware' });
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1', possibleReplacementReason: 'hardware', enrolledAt: new Date() });
     mockPriorHardware(null);
     mockHardwareUpsert();
 
     const res = await postHardware(makeApp(), DELL);
+
+    expect(res.status).toBe(200);
+    expect(runAfterDbContextCommit).not.toHaveBeenCalled();
+  });
+
+  it('runs no search for a device enrolled long ago (no retroactive fleet sweep)', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1', enrolledAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) });
+    mockPriorHardware(null);
+    mockHardwareUpsert();
+
+    const res = await postHardware(makeApp(), { ...DELL, systemUuid: '4c4c4544-0042-3510-8051-b4c04f4d3132' });
 
     expect(res.status).toBe(200);
     expect(runAfterDbContextCommit).not.toHaveBeenCalled();

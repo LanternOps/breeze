@@ -22,13 +22,13 @@
  * Never throws to its caller: a failure is logged and swallowed, because the
  * enrollment or the report that triggered it has already committed.
  */
-import { and, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { deviceHardware, deviceReattachments, devices, organizations } from '../../db/schema';
 import { updateOwnDeviceRow } from '../agentOwnDeviceRow';
 import { captureException } from '../sentry';
 import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
-import { isHiddenOrgType } from '../unassignedPool/visibility';
+import { isHiddenOrgType, notHiddenOrgType } from '../unassignedPool/visibility';
 import { serialManufacturerKey } from './hardwareIdentity';
 import {
   decideFlagWrite,
@@ -36,6 +36,7 @@ import {
   targetIneligibility,
   type CandidateRow,
   type CandidateSource,
+  type IneligibleReason,
   type RankedCandidate,
   type ReinstallEvidence,
 } from './ranking';
@@ -59,7 +60,8 @@ export interface DetectReinstallCandidatesInput {
 
 export type DetectReinstallCandidatesResult =
   | { written: false; why: string }
-  | { written: true; kind: 'new' | 'upgrade' | 'replace'; targetDeviceId: string; reason: RankedCandidate['reason'] };
+  | { written: true; kind: 'new' | 'upgrade' | 'replace'; targetDeviceId: string; reason: RankedCandidate['reason'] }
+  | { written: true; kind: 'clear' };
 
 interface SourceSnapshot extends CandidateSource {
   orgId: string;
@@ -127,9 +129,39 @@ function inSourcePartner(source: SourceSnapshot) {
   return and(eq(organizations.partnerId, source.partnerId), ne(devices.id, source.id));
 }
 
+/**
+ * The cheap §7.3 target rules in SQL, applied before each per-evidence LIMIT
+ * so the limit never spends its rows on devices that cannot qualify:
+ * created before the source; silent since it enrolled (neither the heartbeat
+ * nor the watchdog beat at or after `enrolled_at`); not a Quick Support
+ * session; not in a hidden org (parked or Quick Support). targetIneligibility
+ * (ranking.ts) re-checks all of them, plus the ledger, the link group and
+ * decommission timing, in TypeScript.
+ */
+function cheapQualifiers(source: SourceSnapshot) {
+  return and(
+    lt(devices.createdAt, source.createdAt),
+    or(isNull(devices.lastSeenAt), lt(devices.lastSeenAt, source.enrolledAt)),
+    or(isNull(devices.watchdogLastSeen), lt(devices.watchdogLastSeen, source.enrolledAt)),
+    eq(devices.isEphemeral, false),
+    notHiddenOrgType(),
+  );
+}
+
+/** Deterministic order before the LIMIT: the source's OS first, then the most recently seen, then the id. */
+function candidateOrder(source: SourceSnapshot) {
+  return [
+    sql`CASE WHEN ${devices.osType} = ${source.osType} THEN 0 ELSE 1 END`,
+    sql`${devices.lastSeenAt} DESC NULLS LAST`,
+    asc(devices.id),
+  ];
+}
+
 async function readMatches(source: SourceSnapshot): Promise<Array<{ target: CandidateRow; evidence: ReinstallEvidence }>> {
   const matches: Array<{ target: CandidateRow; evidence: ReinstallEvidence }> = [];
 
+  // Hardware evidence: partner-wide (a reinstall may land in another org of
+  // the partner, or in its holding area).
   const uuidForms = systemUuidMatchForms(source.systemUuid);
   if (uuidForms.length > 0) {
     const rows = await db
@@ -137,7 +169,8 @@ async function readMatches(source: SourceSnapshot): Promise<Array<{ target: Cand
       .from(deviceHardware)
       .innerJoin(devices, eq(devices.id, deviceHardware.deviceId))
       .innerJoin(organizations, eq(organizations.id, devices.orgId))
-      .where(and(inSourcePartner(source), inArray(deviceHardware.systemUuid, uuidForms)))
+      .where(and(inSourcePartner(source), cheapQualifiers(source), inArray(deviceHardware.systemUuid, uuidForms)))
+      .orderBy(...candidateOrder(source))
       .limit(MAX_MATCHES_PER_EVIDENCE);
     for (const target of rows) matches.push({ target, evidence: 'system_uuid' });
   }
@@ -153,20 +186,33 @@ async function readMatches(source: SourceSnapshot): Promise<Array<{ target: Cand
       .innerJoin(organizations, eq(organizations.id, devices.orgId))
       .where(and(
         inSourcePartner(source),
+        cheapQualifiers(source),
         sql`${deviceHardware.serialNumber} IS NOT NULL AND ${deviceHardware.manufacturer} IS NOT NULL`,
         sql`upper(btrim(${deviceHardware.serialNumber})) = ${serialKey.serialKey}`,
         sql`lower(btrim(${deviceHardware.manufacturer})) = ${serialKey.manufacturerKey}`,
       ))
+      .orderBy(...candidateOrder(source))
       .limit(MAX_MATCHES_PER_EVIDENCE);
     for (const target of rows) matches.push({ target, evidence: 'serial' });
   }
 
-  if (source.hostname.trim()) {
+  // Hostname evidence: the source's OWN org only (a deliberate narrowing of
+  // §7.3, see the PR's decisions). A name is weak evidence, and across orgs it
+  // would link unrelated customers' "DESKTOP-01"s. A parked source's org is
+  // the holding area, not a customer org, so it gets no hostname candidates:
+  // it is flagged on hardware evidence only.
+  if (source.hostname.trim() && !isUnassignedPoolOrgType(source.orgType)) {
     const rows = await db
       .select(candidateColumns)
       .from(devices)
       .innerJoin(organizations, eq(organizations.id, devices.orgId))
-      .where(and(inSourcePartner(source), sql`lower(${devices.hostname}) = lower(${source.hostname})`))
+      .where(and(
+        inSourcePartner(source),
+        eq(devices.orgId, source.orgId),
+        cheapQualifiers(source),
+        sql`lower(${devices.hostname}) = lower(${source.hostname})`,
+      ))
+      .orderBy(...candidateOrder(source))
       .limit(MAX_MATCHES_PER_EVIDENCE);
     for (const target of rows) matches.push({ target, evidence: 'hostname' });
   }
@@ -193,11 +239,9 @@ async function readTarget(targetId: string): Promise<CandidateRow | null> {
   return row ?? null;
 }
 
-interface Plan {
-  source: SourceSnapshot;
-  best: RankedCandidate;
-  kind: 'new' | 'upgrade' | 'replace';
-}
+type Plan =
+  | { source: SourceSnapshot; kind: 'new' | 'upgrade' | 'replace'; best: RankedCandidate }
+  | { source: SourceSnapshot; kind: 'clear'; best: null };
 
 async function plan(sourceDeviceId: string): Promise<Plan | { skip: string }> {
   const source = await readSource(sourceDeviceId);
@@ -215,29 +259,34 @@ async function plan(sourceDeviceId: string): Promise<Plan | { skip: string }> {
   const qualifying = matches.filter((m) => targetIneligibility(source, m.target, retired.has(m.target.id)) === null);
   const [best] = rankCandidates(source, qualifying);
 
-  let storedTargetQualifies = true;
-  if (best && source.storedTargetId && source.storedTargetId !== best.target.id) {
-    const storedInSet = qualifying.find((m) => m.target.id === source.storedTargetId)?.target;
-    const stored = storedInSet ?? (await readTarget(source.storedTargetId));
-    storedTargetQualifies = Boolean(stored)
-      && targetIneligibility(source, stored!, retired.has(source.storedTargetId)) === null;
+  let storedIneligibility: IneligibleReason | 'missing' | null = null;
+  let storedTargetOrgId: string | null = null;
+  if (source.storedTargetId && source.storedTargetId !== best?.target.id) {
+    const stored = matches.find((m) => m.target.id === source.storedTargetId)?.target
+      ?? (await readTarget(source.storedTargetId));
+    storedTargetOrgId = stored?.orgId ?? null;
+    storedIneligibility = stored
+      ? targetIneligibility(source, stored, retired.has(source.storedTargetId))
+      : 'missing';
   }
 
-  const decision = decideFlagWrite(
-    { targetDeviceId: source.storedTargetId, reason: source.storedReason },
-    best ? { targetDeviceId: best.target.id, reason: best.reason } : null,
-    storedTargetQualifies,
-  );
+  const decision = decideFlagWrite({
+    sourceOrgId: source.orgId,
+    stored: { targetDeviceId: source.storedTargetId, reason: source.storedReason, targetOrgId: storedTargetOrgId },
+    best: best ? { targetDeviceId: best.target.id, orgId: best.target.orgId, reason: best.reason } : null,
+    storedIneligibility,
+  });
   if (!decision.write) return { skip: decision.why };
+  if (decision.kind === 'clear') return { source, kind: 'clear', best: null };
   return { source, best: best!, kind: decision.kind };
 }
 
 /**
- * Write the flag on the source, bound to the install and the flag that were
- * read. Returns the write time, or null when the row moved on (0 rows).
+ * Write (or clear) the flag on the source, bound to the install and the flag
+ * that were read. Returns the write time, or null when the row moved on.
  */
 async function writeFlag(p: Plan): Promise<Date | null> {
-  const { source, best } = p;
+  const { source } = p;
   const storedMatches = sql`${devices.possibleReplacementOfDeviceId} IS NOT DISTINCT FROM ${source.storedTargetId}::uuid
     AND ${devices.possibleReplacementReason} IS NOT DISTINCT FROM ${source.storedReason}::text`;
   const boundToReadInstall = and(eq(devices.installIncarnation, source.installIncarnation), storedMatches);
@@ -251,15 +300,41 @@ async function writeFlag(p: Plan): Promise<Date | null> {
   const updated = await updateOwnDeviceRow(
     db,
     { deviceId: source.id, agentId: source.agentId },
-    {
-      possibleReplacementOfDeviceId: best.target.id,
-      possibleReplacementReason: best.reason,
-      possibleReplacementDetectedAt: detectedAt,
-      updatedAt: detectedAt,
-    },
+    p.kind === 'clear'
+      ? {
+        possibleReplacementOfDeviceId: null,
+        possibleReplacementReason: null,
+        possibleReplacementDetectedAt: null,
+        updatedAt: detectedAt,
+      }
+      : {
+        possibleReplacementOfDeviceId: p.best.target.id,
+        possibleReplacementReason: p.best.reason,
+        possibleReplacementDetectedAt: detectedAt,
+        updatedAt: detectedAt,
+      },
     { where: boundToReadInstall },
   );
   return updated.length === 1 ? detectedAt : null;
+}
+
+/**
+ * Plan, then write; when the write finds the source changed since the plan
+ * (a concurrent detection, a reattach confirm, a cleared link), plan again
+ * from the new state, once. A second miss gives up: the competing writer has
+ * the newer view. Exported for its unit test.
+ */
+export async function planAndWriteWithOneReplan<P, W>(
+  planOnce: () => Promise<P | { skip: string }>,
+  write: (p: P) => Promise<W | null>,
+): Promise<{ plan: P; written: W } | { skip: string }> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const planned = await planOnce();
+    if (planned && typeof planned === 'object' && 'skip' in planned) return planned;
+    const written = await write(planned as P);
+    if (written !== null) return { plan: planned as P, written };
+  }
+  return { skip: 'source_changed' };
 }
 
 async function notify(s: ReinstallSuspicion): Promise<void> {
@@ -283,11 +358,15 @@ export async function detectReinstallCandidates(
   input: DetectReinstallCandidatesInput,
 ): Promise<DetectReinstallCandidatesResult> {
   try {
-    const planned = await withSystemDbAccessContext(() => plan(input.sourceDeviceId), 'reinstall-candidates:read');
-    if ('skip' in planned) return { written: false, why: planned.skip };
+    const outcome = await planAndWriteWithOneReplan<Plan, Date>(
+      () => withSystemDbAccessContext(() => plan(input.sourceDeviceId), 'reinstall-candidates:read'),
+      (p) => withSystemDbAccessContext(() => writeFlag(p), 'reinstall-candidates:write'),
+    );
+    if ('skip' in outcome) return { written: false, why: outcome.skip };
 
-    const detectedAt = await withSystemDbAccessContext(() => writeFlag(planned), 'reinstall-candidates:write');
-    if (!detectedAt) return { written: false, why: 'source_changed' };
+    const { plan: planned, written: detectedAt } = outcome;
+    // A cleared stale flag notifies nobody: nothing new was suspected.
+    if (planned.kind === 'clear') return { written: true, kind: 'clear' };
 
     const { source, best, kind } = planned;
     await notify({
@@ -316,4 +395,4 @@ export async function detectReinstallCandidates(
 }
 
 export { normalizeSystemUuid, systemUuidMatchForms, byteSwapSystemUuid } from './systemUuid';
-export { shouldDetectAfterHardwareReport } from './ranking';
+export { HARDWARE_REPORT_DETECTION_WINDOW_MS, shouldDetectAfterHardwareReport } from './ranking';
