@@ -56,6 +56,7 @@ vi.mock('./warrantyProviders', () => ({
   normalizeManufacturer: (m: string) => m.toLowerCase(),
 }));
 
+vi.mock('../jobs/deviceGroupJobs', () => ({ requestDeviceGroupReevaluationAfterCommit: vi.fn() }));
 const evaluateWarrantyAlertsMock = vi.fn().mockResolvedValue(null);
 vi.mock('./warrantyAlertEvaluator', () => ({
   evaluateWarrantyAlerts: (...args: unknown[]) => evaluateWarrantyAlertsMock(...args),
