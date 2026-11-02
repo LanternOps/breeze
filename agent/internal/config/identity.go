@@ -53,6 +53,30 @@ func PersistServerIdentity(cfgPath, orgID, siteID string, ownershipEpoch uint64)
 	return saveToLockedWithIdentity(cfg, cfgPath, credentialsFromDisk, identityFromConfig)
 }
 
+// resolveReattachedIDsForSave returns the agent and device id a non-identity
+// save writes. While agent.yaml records a reattach (#8318, reattach_intent_id)
+// they are the ones on disk: a caller's *Config loaded before the swap (the
+// heartbeat's mTLS paths save h.config) still holds the retired source's ids,
+// and only enrollment and the swap change them. The rule #8317 applies to
+// org and site. Otherwise the caller's, as before. Callers hold persistMu.
+func resolveReattachedIDsForSave(cfgPath, agentID, deviceID string) (string, string) {
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return agentID, deviceID
+	}
+	var onDisk agentIdentityOnDisk
+	if err := yaml.Unmarshal(raw, &onDisk); err != nil || onDisk.ReattachIntentID == "" {
+		return agentID, deviceID
+	}
+	if onDisk.AgentID != "" {
+		agentID = onDisk.AgentID
+	}
+	if onDisk.DeviceID != "" {
+		deviceID = onDisk.DeviceID
+	}
+	return agentID, deviceID
+}
+
 // resolveIdentityForSave returns the org/site/ownership epoch a non-identity
 // save writes: the ones already in agent.yaml when it has them, else the
 // caller's (a first save). An unreadable file falls back to the caller's

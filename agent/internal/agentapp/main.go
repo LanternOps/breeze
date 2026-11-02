@@ -770,6 +770,18 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		repairStartupPermissions(cfg.SupportMode, sessionbroker.EnsureIPCGroup, config.FixConfigPermissions)
 	})
 
+	// #8318 — finish a reattach a previous process confirmed but did not
+	// finish swapping, before anything below reads the identity or the
+	// credentials. Never in support mode: a Quick Support client takes no
+	// part in a reattach.
+	if !cfg.SupportMode {
+		reattached, err := finishConfirmedRebindAtStartup(cfg)
+		if err != nil {
+			return nil, err
+		}
+		cfg = reattached
+	}
+
 	// Record this process's live PID immediately, before any startup step that
 	// can wedge (e.g. the mTLS renewal network call below). Otherwise a wedge
 	// leaves agent.state holding a prior run's dead PID, and the watchdog reads
@@ -1462,6 +1474,17 @@ func gateEnrollResponseBackup(backup string) error {
 	return hostpolicy.AllowedURL(backup)
 }
 
+// enrollSecurityCapabilities is what an enrollment declares (#8318): the
+// rebind protocol, since a new install is exactly the device a reinstall
+// reattach makes the source. A Quick Support client declares nothing: a
+// disposable install must never become an existing device's identity.
+func enrollSecurityCapabilities(cfg *config.Config) *api.EnrollSecurityCapabilities {
+	if cfg.SupportMode {
+		return nil
+	}
+	return &api.EnrollSecurityCapabilities{RebindProtocolVersion: heartbeat.RebindProtocolVersion}
+}
+
 // applyEnrollResponseIdentity copies the identity/credential fields an
 // EnrollResponse carries into cfg: AgentID, AuthToken, WatchdogAuthToken,
 // HelperAuthToken, OrgID, SiteID, and DeviceID.
@@ -1840,6 +1863,7 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 	}
 
 	enrollReq := &api.EnrollRequest{
+		SecurityCapabilities:   enrollSecurityCapabilities(cfg),
 		EnrollmentKey:          enrollmentKey,
 		EnrollmentSecret:       secret,
 		Hostname:               systemInfo.Hostname,
