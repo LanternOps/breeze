@@ -19,7 +19,7 @@ it('warns on server OS, bounds TTL and submits through runAction', async () => {
   fireEvent.change(screen.getByTestId('isolation-incident-title'), { target: { value: 'Endpoint investigation' } });
   fireEvent.click(screen.getByTestId('isolation-submit'));
   await waitFor(() => expect(runAction).toHaveBeenCalledTimes(1));
-  expect(fetchWithAuth).toHaveBeenCalledWith('/devices/device-1/network-isolation', expect.objectContaining({ method: 'POST', body: JSON.stringify({ reason: 'Contain incident', ttlHours: 72, remoteRelay: true, createIncident: { title: 'Endpoint investigation', severity: 'p2' } }) }));
+  expect(fetchWithAuth).toHaveBeenCalledWith('/devices/device-1/network-isolation', expect.objectContaining({ method: 'POST', body: JSON.stringify({ reason: 'Contain incident', ttlHours: 72, remoteRelay: false, createIncident: { title: 'Endpoint investigation', severity: 'p2' } }) }));
 });
 it('releases an offline device through runAction', async () => {
   render(<ReleaseDialog deviceId="device-1" episode={{ id: 'episode-1', deviceId: 'device-1', incidentId: null, state: 'verified', expiresAt: '' }} offline onClose={vi.fn()} onSuccess={vi.fn()} />);

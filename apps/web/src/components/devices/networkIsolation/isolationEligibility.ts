@@ -32,6 +32,10 @@ export function refusalKey(reason: string): string {
     ? START_REFUSAL_KEYS[reason as keyof typeof START_REFUSAL_KEYS]
     : 'networkIsolation.unavailable';
 }
+/** Server refusal copy for a mutation error; undefined lets runAction fall back to the generic/`errors:<CODE>` copy. */
+export function isolationRefusalCopy(code: string, t: (key: string) => string): string | undefined {
+  return Object.hasOwn(START_REFUSAL_KEYS, code) ? t(/* i18n-dynamic */ refusalKey(code)) : undefined;
+}
 export function startEligibility(response: Pick<IsolationListResponse, 'startEligibility'> | null | undefined): { enabled: boolean; reason?: StartBlockReason } {
   if (response?.startEligibility.allowed) return { enabled: true };
   const reason = response?.startEligibility.reason;

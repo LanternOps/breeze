@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ACTIVE_STATES, RESOLVED_TERMINAL_STATES, UNRESOLVED_TERMINAL_STATES } from '@breeze/shared';
-import { startEligibility, releaseEligibility, START_REFUSAL_KEYS } from './isolationEligibility';
+import { startEligibility, releaseEligibility, START_REFUSAL_KEYS, isolationRefusalCopy } from './isolationEligibility';
 
 describe('independent isolation eligibility', () => {
   it.each(['feature_disabled', 'partner_not_enabled', 'unsupported_platform', 'device_lifecycle', 'agent_below_gate', 'agent_not_ready', 'trust_restricted', 'isolation_already_active', 'isolation_unacknowledged', 'incident_mismatch', 'site_forbidden', 'device_offline', 'device_decommissioned', 'device_pending_assignment', 'backup_helper_update_required', 'relay_unavailable', 'invalid_allowlist'])('blocks start with copy for %s without blocking release', reason => {
@@ -15,5 +15,10 @@ describe('independent isolation eligibility', () => {
   });
   it('does not release terminal episodes', () => {
     for (const state of [...RESOLVED_TERMINAL_STATES, ...UNRESOLVED_TERMINAL_STATES]) expect(releaseEligibility({ state }).visible).toBe(false);
+  });
+  it('maps only isolation refusal codes to refusal copy, leaving auth/validation errors to runAction', () => {
+    const t = (key: string) => `t:${key}`;
+    expect(isolationRefusalCopy('feature_disabled', t)).toBe('t:networkIsolation.refusal.feature_disabled');
+    for (const code of ['MFA_REQUIRED', 'Access to this site denied', 'Device not found', 'VALIDATION_FAILED']) expect(isolationRefusalCopy(code, t)).toBeUndefined();
   });
 });

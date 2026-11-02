@@ -32,7 +32,7 @@ function IncidentDeviceIsolation({ deviceId, incidentId }: { deviceId: string; i
     {episodes.map(episode => <div key={episode.id} data-testid="incident-isolation-episode" className="flex flex-wrap items-center gap-3 py-2">
       <a href={`/devices/${deviceId}`} data-testid="incident-isolation-device" className="font-mono text-xs text-primary underline">{device?.displayName || device?.hostname || deviceId}</a>
       <IsolationBadge episode={episode} onChange={refresh} />
-      {releaseEligibility(episode).visible && <button type="button" data-testid="incident-isolation-release" onClick={() => setRelease(episode)} className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted">{t(offline ? 'networkIsolation.release_queued' : 'networkIsolation.release')}</button>}
+      {releaseEligibility(episode).visible && <button type="button" data-testid="incident-isolation-release" onClick={() => setRelease(episode)} className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted">{t(/* i18n-dynamic */ offline ? 'networkIsolation.release_queued' : 'networkIsolation.release')}</button>}
     </div>)}
     {release && <ReleaseDialog offline={offline} deviceId={deviceId} episode={release} onClose={() => setRelease(null)} onSuccess={refresh} />}
   </>;

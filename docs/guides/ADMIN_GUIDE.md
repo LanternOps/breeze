@@ -1429,7 +1429,7 @@ The following AI containment actions and manual incident records require an appr
 
 If these actions are submitted without `approvalRef`, the API rejects the request. Human network isolation uses the device-scoped console controls instead and requires an interactive session, device execution permission, site access, and MFA when enabled.
 
-Network isolation is off by default behind `NETWORK_ISOLATION_ENABLED`. It is Windows-only until Linux and macOS support ship. Use **Isolate from network** in device actions, select or create the incident, enter a reason, and confirm the TTL (default 72 hours, maximum 720 hours). Isolating a server can interrupt business services.
+Network isolation is off by default behind `NETWORK_ISOLATION_ENABLED`. It is Windows-only until Linux and macOS support ship. Use **Isolate from network** in device actions, enter an existing incident ID or a new incident title, enter a reason, and confirm the TTL (default 72 hours, maximum 720 hours). Isolating a server can interrupt business services.
 
 Release remains available for active episodes even when start gates fail, the feature is disabled, or the device is offline; an offline release is queued until reconnect. Disabling the flag does not release devices. For a fleet emergency, script one console-authenticated release request per episode and verify the resulting states. If connectivity is lost, explicitly view the audited break-glass code, read it to the person at the device, and have an Administrator run `breeze-agent containment release --code <code>`. Local `--force` release raises an alert. Acknowledge `released_locally` or `self_released` after investigation.
 

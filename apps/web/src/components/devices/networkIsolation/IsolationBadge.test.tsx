@@ -15,6 +15,11 @@ describe('IsolationBadge', () => {
     render(<IsolationBadge episode={{ ...episode, state }} onChange={vi.fn()} />);
     expect(screen.getByTestId('isolation-badge')).toHaveTextContent(text);
   });
+  it('does not offer extend once release is requested, but keeps the code view', () => {
+    render(<IsolationBadge episode={{ ...episode, state: 'release_requested' }} onChange={vi.fn()} />);
+    expect(screen.queryByTestId('isolation-extend')).not.toBeInTheDocument();
+    expect(screen.getByTestId('isolation-show-code')).toBeInTheDocument();
+  });
   it.each(ISOLATION_STATES)('only offers acknowledgement for unresolved terminal state %s', state => {
     render(<IsolationBadge episode={{ ...episode, state }} onChange={vi.fn()} />);
     expect(Boolean(screen.queryByTestId('isolation-acknowledge'))).toBe(['released_locally', 'self_released'].includes(state));

@@ -16,8 +16,8 @@ export function useIsolationMenu(device: Device, permitted: boolean, menuOpen: b
   const episode = data?.episodes.find(row => releaseEligibility(row).visible);
   const start = startEligibility(error ? null : data);
   const blocked = !episode && !start.enabled;
-  const label = episode ? t(device.status === 'offline' ? 'networkIsolation.release_queued' : 'networkIsolation.release') : t('networkIsolation.isolate');
-  const reason = blocked ? t(refusalKey(start.reason ?? 'unavailable')) : undefined;
+  const label = episode ? t(/* i18n-dynamic */ device.status === 'offline' ? 'networkIsolation.release_queued' : 'networkIsolation.release') : t('networkIsolation.isolate');
+  const reason = blocked ? t(/* i18n-dynamic */ refusalKey(start.reason ?? 'unavailable')) : undefined;
   const item = permitted ? <button
     type="button" role="menuitem" tabIndex={-1}
     data-testid={episode ? 'device-isolation-release' : 'device-isolation-start'}

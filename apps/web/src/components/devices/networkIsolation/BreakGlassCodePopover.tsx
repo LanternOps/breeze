@@ -43,7 +43,7 @@ export default function BreakGlassCodePopover({ deviceId, isolationId, generatio
   }
   return <div className="relative text-sm">
     <button type="button" data-testid="isolation-show-code" disabled={busy} aria-expanded={Boolean(codes)} onClick={() => void toggle()} className="rounded-md border px-3 py-1.5 hover:bg-muted disabled:opacity-50">
-      {busy ? t('common:states.loading') : t(codes ? 'networkIsolation.hideCode' : 'networkIsolation.showCode')}
+      {busy ? t('common:states.loading') : t(/* i18n-dynamic */ codes ? 'networkIsolation.hideCode' : 'networkIsolation.showCode')}
     </button>
     {error && <p role="alert" className="mt-2 text-destructive">{t('networkIsolation.codeError')}</p>}
     {codes && <div className="mt-2 space-y-2 rounded-md border bg-background p-3" data-testid="isolation-codes">
