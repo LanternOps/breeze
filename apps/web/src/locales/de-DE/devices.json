@@ -2891,7 +2891,10 @@
         "version": "Softwareversion",
         "vendor": "Softwareanbieter"
       },
-      "logShippingFailing": "Log-Übertragung fehlerhaft"
+      "logShippingFailing": "Log-Übertragung fehlerhaft",
+      "networkIsolation": {
+        "active": "Isoliert"
+      }
     }
   },
   "filterChipBar": {
@@ -2963,7 +2966,10 @@
         "version": "Softwareversion",
         "vendor": "Softwareanbieter"
       },
-      "logShippingFailing": "Log-Übertragung fehlerhaft"
+      "logShippingFailing": "Log-Übertragung fehlerhaft",
+      "networkIsolation": {
+        "active": "Isoliert"
+      }
     }
   },
   "filterHelpPopover": {
@@ -3054,7 +3060,10 @@
         "version": "Softwareversion",
         "vendor": "Softwareanbieter"
       },
-      "logShippingFailing": "Log-Übertragung fehlerhaft"
+      "logShippingFailing": "Log-Übertragung fehlerhaft",
+      "networkIsolation": {
+        "active": "Isoliert"
+      }
     }
   },
   "filterValueEditor": {
@@ -4743,5 +4752,80 @@
     "removeResult": "{{group}}: {{removed}} entfernt, {{notMember}} waren nicht in der Gruppe",
     "removeResultForbidden": "{{group}}: {{removed}} entfernt, {{notMember}} waren nicht in der Gruppe. Nicht entfernt (kein Zugriff auf den Standort des Geräts): {{devices}}",
     "andMore": "{{names}} und {{n}} weitere"
+  },
+  "networkIsolation": {
+    "heading": "Netzwerkisolierung",
+    "isolate": "Vom Netzwerk isolieren…",
+    "release": "Isolierung aufheben…",
+    "release_queued": "Aufheben (wartet auf erneute Geräteverbindung)",
+    "startTitle": "Vom Netzwerk isolieren",
+    "releaseTitle": "Netzwerkisolierung aufheben",
+    "startDescription": "Netzwerkverkehr außer der Breeze-Verwaltung blockieren.",
+    "releaseDescription": "Entfernung der Breeze-Isolierungsregeln anfordern. Ein Offline-Gerät erhält die Freigabe beim erneuten Verbinden.",
+    "serverWarning": "Dies ist ein Serverbetriebssystem. Die Isolierung kann Dienste für andere Geräte unterbrechen.",
+    "reason": "Begründung",
+    "ttlHours": "Dauer (Stunden)",
+    "incidentId": "Bestehende Vorfall-ID (optional)",
+    "incidentTitle": "Titel des neuen Vorfalls",
+    "remoteRelay": "Remotedesktop über das Relay erreichbar halten",
+    "startSuccess": "Netzwerkisolierung angefordert",
+    "releaseSuccess": "Aufhebung der Isolierung angefordert",
+    "mutationError": "Netzwerkisolierung konnte nicht aktualisiert werden. Versuchen Sie es erneut.",
+    "loadError": "Netzwerkisolierung konnte nicht geladen werden. Versuchen Sie es erneut.",
+    "unavailable": "Die Eignung für Netzwerkisolierung ist nicht verfügbar.",
+    "extend": "Isolierung verlängern",
+    "extendTitle": "Netzwerkisolierung verlängern",
+    "extendSuccess": "Isolierungsablauf verlängert",
+    "isolatedExpires": "Isoliert · läuft in {{hours}} Std. ab",
+    "acknowledge": "Lokale Aufhebung bestätigen",
+    "acknowledgeSuccess": "Lokale Aufhebung bestätigt",
+    "acknowledgeError": "Lokale Aufhebung konnte nicht bestätigt werden",
+    "showCode": "Notfallcodes anzeigen",
+    "hideCode": "Notfallcodes ausblenden",
+    "codeCurrent": "Aktueller Code",
+    "codeNext": "Code für die nächste Stunde",
+    "codeValidUntil": "Aktueller Code gültig bis {{date}}",
+    "codeError": "Notfallcodes konnten nicht geladen werden. Versuchen Sie es erneut.",
+    "incidentHeading": "Netzwerkisolierung",
+    "retry": "Isolierungsstatus erneut laden",
+    "filterLabel": "Isoliert",
+    "states": {
+      "requested": "Isolierung angefordert",
+      "dispatched": "Isolierung gesendet",
+      "applying": "Isolierung wird angewendet",
+      "applied": "Isolierung wird geprüft",
+      "verified": "Isolierung geprüft",
+      "release_requested": "Aufhebung angefordert",
+      "released": "Isolierung aufgehoben",
+      "expired": "Isolierung abgelaufen",
+      "failed": "Isolierung fehlgeschlagen",
+      "released_locally": "Lokal aufgehoben · Bestätigung erforderlich",
+      "self_released": "Selbst aufgehoben · Bestätigung erforderlich",
+      "uninstalled": "Agent deinstalliert"
+    },
+    "refusal": {
+      "feature_disabled": "Neue Netzwerkisolierungen sind deaktiviert.",
+      "partner_not_enabled": "Netzwerkisolierung ist für diesen Partner nicht aktiviert.",
+      "agent_below_gate": "Aktualisieren Sie auf eine Agent-Version mit Netzwerkisolierung.",
+      "agent_not_ready": "Der Agent ist noch nicht bereit, Netzwerkisolierung durchzusetzen.",
+      "device_lifecycle": "Der Lebenszyklusstatus dieses Geräts verhindert eine neue Isolierung.",
+      "unsupported_platform": "Diese Plattform unterstützt keine Netzwerkisolierung.",
+      "trust_restricted": "Der Vertrauensstatus des Partners verhindert neue Isolierungen.",
+      "isolation_already_active": "Dieses Gerät hat bereits eine aktive Isolierung.",
+      "isolation_unacknowledged": "Bestätigen Sie die vorherige lokale Aufhebung, bevor Sie erneut isolieren.",
+      "incident_mismatch": "Wählen Sie einen offenen Vorfall aus der Organisation dieses Geräts.",
+      "site_forbidden": "Sie haben keinen Zugriff auf den Standort dieses Geräts.",
+      "device_not_found": "Dieses Gerät wurde nicht gefunden.",
+      "isolation_not_found": "Diese Isolierung wurde nicht gefunden.",
+      "relay_unavailable": "Kein Remotedesktop-Relay verfügbar. Deaktivieren Sie die Relay-Option oder konfigurieren Sie TURN.",
+      "invalid_allowlist": "Die Isolierungsfreigabeliste des Servers ist ungültig. Wenden Sie sich an Ihre Administration.",
+      "isolation_conflict": "Die Isolierung hat sich geändert. Aktualisieren Sie den Status und versuchen Sie es erneut.",
+      "isolation_secret_unavailable": "Wiederherstellungscodes sind vorübergehend nicht verfügbar. Wenden Sie sich an Ihre Administration.",
+      "approval_mismatch": "Die Genehmigung passt nicht zu dieser Isolierungsanfrage.",
+      "device_offline": "Das Gerät ist offline. Aktualisieren Sie den Status, bevor Sie die Isolierung starten.",
+      "device_decommissioned": "Ein außer Betrieb genommenes Gerät kann keine neue Isolierung starten.",
+      "device_pending_assignment": "Weisen Sie dieses Gerät vor der Isolierung einer Organisation zu.",
+      "backup_helper_update_required": "Aktualisieren Sie den Backup-Helfer, bevor Sie die Isolierung starten."
+    }
   }
 }

@@ -2891,7 +2891,10 @@
         "version": "Version du logiciel",
         "vendor": "Fournisseur du logiciel"
       },
-      "logShippingFailing": "Échec de l'envoi des journaux"
+      "logShippingFailing": "Échec de l'envoi des journaux",
+      "networkIsolation": {
+        "active": "Isolé"
+      }
     }
   },
   "filterChipBar": {
@@ -2963,7 +2966,10 @@
         "version": "Version du logiciel",
         "vendor": "Fournisseur du logiciel"
       },
-      "logShippingFailing": "Échec de l'envoi des journaux"
+      "logShippingFailing": "Échec de l'envoi des journaux",
+      "networkIsolation": {
+        "active": "Isolé"
+      }
     }
   },
   "filterHelpPopover": {
@@ -3054,7 +3060,10 @@
         "version": "Version du logiciel",
         "vendor": "Fournisseur du logiciel"
       },
-      "logShippingFailing": "Échec de l'envoi des journaux"
+      "logShippingFailing": "Échec de l'envoi des journaux",
+      "networkIsolation": {
+        "active": "Isolé"
+      }
     }
   },
   "filterValueEditor": {
@@ -4743,5 +4752,80 @@
     "removeResult": "{{group}} : {{removed}} retirés, {{notMember}} n’étaient pas dans le groupe",
     "removeResultForbidden": "{{group}} : {{removed}} retirés, {{notMember}} n’étaient pas dans le groupe. Non retirés (aucun accès au site de l’appareil) : {{devices}}",
     "andMore": "{{names}} et {{n}} autres"
+  },
+  "networkIsolation": {
+    "heading": "Isolement réseau",
+    "isolate": "Isoler du réseau…",
+    "release": "Lever l’isolement…",
+    "release_queued": "Lever l’isolement (en attente de reconnexion de l’appareil)",
+    "startTitle": "Isoler du réseau",
+    "releaseTitle": "Lever l’isolement réseau",
+    "startDescription": "Bloquer le trafic réseau sauf les communications de gestion Breeze.",
+    "releaseDescription": "Demander la suppression des règles d’isolement Breeze. Un appareil hors ligne reçoit la demande à sa reconnexion.",
+    "serverWarning": "Il s’agit d’un système serveur. L’isolement peut interrompre les services d’autres appareils.",
+    "reason": "Motif",
+    "ttlHours": "Durée (heures)",
+    "incidentId": "Identifiant d’incident existant (facultatif)",
+    "incidentTitle": "Titre du nouvel incident",
+    "remoteRelay": "Maintenir l’accès au bureau à distance via le relais",
+    "startSuccess": "Isolement réseau demandé",
+    "releaseSuccess": "Levée de l’isolement demandée",
+    "mutationError": "Impossible de mettre à jour l’isolement réseau. Réessayez.",
+    "loadError": "Impossible de charger l’isolement réseau. Réessayez.",
+    "unavailable": "L’admissibilité à l’isolement réseau est indisponible.",
+    "extend": "Prolonger l’isolement",
+    "extendTitle": "Prolonger l’isolement réseau",
+    "extendSuccess": "Expiration de l’isolement prolongée",
+    "isolatedExpires": "Isolé · expire dans {{hours}} h",
+    "acknowledge": "Confirmer la levée locale",
+    "acknowledgeSuccess": "Levée locale confirmée",
+    "acknowledgeError": "Impossible de confirmer la levée locale",
+    "showCode": "Afficher les codes d’urgence",
+    "hideCode": "Masquer les codes d’urgence",
+    "codeCurrent": "Code actuel",
+    "codeNext": "Code de l’heure suivante",
+    "codeValidUntil": "Code actuel valable jusqu’au {{date}}",
+    "codeError": "Impossible de charger les codes d’urgence. Réessayez.",
+    "incidentHeading": "Isolement réseau",
+    "retry": "Réessayer le statut d’isolement",
+    "filterLabel": "Isolé",
+    "states": {
+      "requested": "Isolement demandé",
+      "dispatched": "Isolement envoyé",
+      "applying": "Application de l’isolement",
+      "applied": "Vérification de l’isolement",
+      "verified": "Isolement vérifié",
+      "release_requested": "Levée demandée",
+      "released": "Isolement levé",
+      "expired": "Isolement expiré",
+      "failed": "Échec de l’isolement",
+      "released_locally": "Levée locale · confirmation requise",
+      "self_released": "Levée automatique · confirmation requise",
+      "uninstalled": "Agent désinstallé"
+    },
+    "refusal": {
+      "feature_disabled": "Les nouveaux isolements réseau sont désactivés.",
+      "partner_not_enabled": "L’isolement réseau n’est pas activé pour ce partenaire.",
+      "agent_below_gate": "Installez une version de l’agent prenant en charge l’isolement réseau.",
+      "agent_not_ready": "L’agent n’est pas prêt à appliquer l’isolement réseau.",
+      "device_lifecycle": "L’état du cycle de vie de cet appareil empêche un nouvel isolement.",
+      "unsupported_platform": "Cette plateforme ne prend pas en charge l’isolement réseau.",
+      "trust_restricted": "Le statut de confiance du partenaire empêche de nouveaux isolements.",
+      "isolation_already_active": "Cet appareil a déjà un épisode d’isolement actif.",
+      "isolation_unacknowledged": "Confirmez la levée locale précédente avant de lancer un autre isolement.",
+      "incident_mismatch": "Choisissez un incident ouvert de l’organisation de cet appareil.",
+      "site_forbidden": "Vous n’avez pas accès au site de cet appareil.",
+      "device_not_found": "Cet appareil est introuvable.",
+      "isolation_not_found": "Cet épisode d’isolement est introuvable.",
+      "relay_unavailable": "Aucun relais de bureau à distance n’est disponible. Désactivez l’option relais ou configurez TURN.",
+      "invalid_allowlist": "La liste d’autorisation d’isolement du serveur est invalide. Contactez votre administrateur.",
+      "isolation_conflict": "L’épisode d’isolement a changé. Actualisez son statut et réessayez.",
+      "isolation_secret_unavailable": "Les codes de récupération sont temporairement indisponibles. Contactez votre administrateur.",
+      "approval_mismatch": "L’approbation ne correspond pas à cette demande d’isolement.",
+      "device_offline": "L’appareil est hors ligne. Actualisez son statut avant de lancer l’isolement.",
+      "device_decommissioned": "Un appareil mis hors service ne peut pas démarrer un nouvel isolement.",
+      "device_pending_assignment": "Attribuez cet appareil à une organisation avant de lancer l’isolement.",
+      "backup_helper_update_required": "Mettez à jour l’assistant de sauvegarde avant de lancer l’isolement."
+    }
   }
 }

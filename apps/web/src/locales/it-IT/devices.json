@@ -2891,7 +2891,10 @@
         "version": "Versione del software",
         "vendor": "Fornitore del software"
       },
-      "logShippingFailing": "Invio dei log non riuscito"
+      "logShippingFailing": "Invio dei log non riuscito",
+      "networkIsolation": {
+        "active": "Isolato"
+      }
     }
   },
   "filterChipBar": {
@@ -2963,7 +2966,10 @@
         "version": "Versione del software",
         "vendor": "Fornitore del software"
       },
-      "logShippingFailing": "Invio dei log non riuscito"
+      "logShippingFailing": "Invio dei log non riuscito",
+      "networkIsolation": {
+        "active": "Isolato"
+      }
     }
   },
   "filterHelpPopover": {
@@ -3054,7 +3060,10 @@
         "version": "Versione del software",
         "vendor": "Fornitore del software"
       },
-      "logShippingFailing": "Invio dei log non riuscito"
+      "logShippingFailing": "Invio dei log non riuscito",
+      "networkIsolation": {
+        "active": "Isolato"
+      }
     }
   },
   "filterValueEditor": {
@@ -4743,5 +4752,80 @@
     "removeResult": "{{group}}: {{removed}} rimossi, {{notMember}} non erano nel gruppo",
     "removeResultForbidden": "{{group}}: {{removed}} rimossi, {{notMember}} non erano nel gruppo. Non rimossi (nessun accesso alla sede del dispositivo): {{devices}}",
     "andMore": "{{names}} e altri {{n}}"
+  },
+  "networkIsolation": {
+    "heading": "Isolamento di rete",
+    "isolate": "Isola dalla rete…",
+    "release": "Rimuovi isolamento…",
+    "release_queued": "Rimuovi (in coda fino alla riconnessione del dispositivo)",
+    "startTitle": "Isola dalla rete",
+    "releaseTitle": "Rimuovi isolamento di rete",
+    "startDescription": "Blocca il traffico di rete tranne le comunicazioni di gestione Breeze.",
+    "releaseDescription": "Richiedi la rimozione delle regole di isolamento Breeze. Un dispositivo offline riceve la richiesta alla riconnessione.",
+    "serverWarning": "Questo è un sistema operativo server. L’isolamento può interrompere i servizi per altri dispositivi.",
+    "reason": "Motivo",
+    "ttlHours": "Durata (ore)",
+    "incidentId": "ID incidente esistente (facoltativo)",
+    "incidentTitle": "Titolo del nuovo incidente",
+    "remoteRelay": "Mantieni il desktop remoto accessibile tramite il relay",
+    "startSuccess": "Isolamento di rete richiesto",
+    "releaseSuccess": "Rimozione dell’isolamento richiesta",
+    "mutationError": "Impossibile aggiornare l’isolamento di rete. Riprova.",
+    "loadError": "Impossibile caricare l’isolamento di rete. Riprova.",
+    "unavailable": "L’idoneità all’isolamento di rete non è disponibile.",
+    "extend": "Estendi isolamento",
+    "extendTitle": "Estendi isolamento di rete",
+    "extendSuccess": "Scadenza dell’isolamento estesa",
+    "isolatedExpires": "Isolato · scade tra {{hours}} h",
+    "acknowledge": "Conferma rimozione locale",
+    "acknowledgeSuccess": "Rimozione locale confermata",
+    "acknowledgeError": "Impossibile confermare la rimozione locale",
+    "showCode": "Mostra codici di emergenza",
+    "hideCode": "Nascondi codici di emergenza",
+    "codeCurrent": "Codice attuale",
+    "codeNext": "Codice della prossima ora",
+    "codeValidUntil": "Codice attuale valido fino a {{date}}",
+    "codeError": "Impossibile caricare i codici di emergenza. Riprova.",
+    "incidentHeading": "Isolamento di rete",
+    "retry": "Riprova lo stato di isolamento",
+    "filterLabel": "Isolato",
+    "states": {
+      "requested": "Isolamento richiesto",
+      "dispatched": "Isolamento inviato",
+      "applying": "Applicazione isolamento",
+      "applied": "Verifica isolamento",
+      "verified": "Isolamento verificato",
+      "release_requested": "Rimozione richiesta",
+      "released": "Isolamento rimosso",
+      "expired": "Isolamento scaduto",
+      "failed": "Isolamento non riuscito",
+      "released_locally": "Rimosso localmente · conferma necessaria",
+      "self_released": "Rimosso automaticamente · conferma necessaria",
+      "uninstalled": "Agente disinstallato"
+    },
+    "refusal": {
+      "feature_disabled": "I nuovi isolamenti di rete sono disabilitati.",
+      "partner_not_enabled": "L’isolamento di rete non è abilitato per questo partner.",
+      "agent_below_gate": "Aggiorna a una versione dell’agente che supporta l’isolamento di rete.",
+      "agent_not_ready": "L’agente non è pronto ad applicare l’isolamento di rete.",
+      "device_lifecycle": "Lo stato del ciclo di vita del dispositivo impedisce un nuovo isolamento.",
+      "unsupported_platform": "Questa piattaforma non supporta l’isolamento di rete.",
+      "trust_restricted": "Lo stato di attendibilità del partner impedisce nuovi isolamenti.",
+      "isolation_already_active": "Questo dispositivo ha già un episodio di isolamento attivo.",
+      "isolation_unacknowledged": "Conferma la precedente rimozione locale prima di avviare un altro isolamento.",
+      "incident_mismatch": "Scegli un incidente aperto dell’organizzazione di questo dispositivo.",
+      "site_forbidden": "Non hai accesso al sito di questo dispositivo.",
+      "device_not_found": "Impossibile trovare questo dispositivo.",
+      "isolation_not_found": "Impossibile trovare questo episodio di isolamento.",
+      "relay_unavailable": "Un relay per il desktop remoto non è disponibile. Disattiva l’opzione relay o configura TURN.",
+      "invalid_allowlist": "L’elenco di autorizzazioni di isolamento del server non è valido. Contatta l’amministratore.",
+      "isolation_conflict": "L’episodio di isolamento è cambiato. Aggiorna lo stato e riprova.",
+      "isolation_secret_unavailable": "I codici di ripristino sono temporaneamente indisponibili. Contatta l’amministratore.",
+      "approval_mismatch": "L’approvazione non corrisponde a questa richiesta di isolamento.",
+      "device_offline": "Il dispositivo è offline. Aggiorna lo stato prima di avviare l’isolamento.",
+      "device_decommissioned": "Un dispositivo dismesso non può avviare un nuovo isolamento.",
+      "device_pending_assignment": "Assegna questo dispositivo a un’organizzazione prima di avviare l’isolamento.",
+      "backup_helper_update_required": "Aggiorna l’assistente di backup prima di avviare l’isolamento."
+    }
   }
 }
