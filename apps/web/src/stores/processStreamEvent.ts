@@ -364,7 +364,7 @@ export function processStreamEvent(
     }
 
     case 'error':
-      set(() => ({ error: event.message, isStreaming: false }));
+      set(() => ({ error: event.message, errorCode: event.code ?? null, isStreaming: false }));
       return currentAssistantId;
 
     case 'plan_approval_required':

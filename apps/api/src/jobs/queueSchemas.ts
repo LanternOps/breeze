@@ -639,3 +639,5 @@ export const webhookAttemptJobDataSchema = z.object({
   attemptsMade: z.number().int().min(0),
 }).strict();
 export type WebhookAttemptJobData = z.infer<typeof webhookAttemptJobDataSchema>;
+
+export const psaTicketingJobDataSchema = z.object({ mappingId: z.string().uuid(), op: z.enum(['create', 'close', 'note']) }).strict();

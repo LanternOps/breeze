@@ -92,7 +92,7 @@ describe('tierConfig.ts ↔ aiGuardrails tier tables parity (#2686)', () => {
     expect(list.map((entry) => entry.claimedTier)).toEqual([2]);
     const status = parsed.filter((entry) => entry.tool === 'system_cleanup' && entry.actions.includes('status'));
     expect(status.map((entry) => entry.claimedTier)).toEqual([1]);
-    expect(RBAC_MAPPINGS.system_cleanup).toEqual({ list: 'devices.execute', run: 'devices.execute', status: 'devices.read' });
+    expect(RBAC_MAPPINGS.system_cleanup).toEqual({ list: 'devices.execute', run: 'devices.execute', cancel: 'devices.execute', status: 'devices.read' });
   });
 
   // A fresh disk scan / boot-metrics collection is claimed under its input

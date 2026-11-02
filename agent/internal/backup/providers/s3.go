@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,7 +24,7 @@ import (
 
 const multipartUploadThreshold = 100 * 1024 * 1024 // 100 MB
 
-// S3Provider is a stub for S3-compatible backup storage.
+// S3Provider stores backups in S3-compatible object storage.
 type S3Provider struct {
 	Bucket          string
 	Region          string
@@ -33,8 +34,11 @@ type S3Provider struct {
 	sessionToken    string
 	sseAlgorithm    string
 	sseKMSKeyID     string
-	client          *s3.Client
-	clientMu        sync.Mutex
+	// keyPrefix ("" = none) is the snapshot key root this provider reads and
+	// writes under; see SetKeyPrefix.
+	keyPrefix string
+	client    *s3.Client
+	clientMu  sync.Mutex
 }
 
 // NewS3Provider creates a new S3Provider.
@@ -45,8 +49,60 @@ func NewS3Provider(bucket, region, accessKeyID, secretAccessKey, sessionToken st
 // BackupIdentity implements JournalIdentity. The endpoint is included
 // because a custom endpoint means an S3-compatible-but-different backend
 // (MinIO, Backblaze's S3 API, ...) even when bucket+region happen to match.
+//
+// A key prefix is part of the identity: a checkpoint journal or incremental
+// base written at the bucket root must never be reused under a prefix, where
+// its objects do not exist. Without one the identity is unchanged, byte for
+// byte the storageIdentity the API delivers for brokered writes
+// (helperStorageIdentity).
 func (s *S3Provider) BackupIdentity() string {
-	return fmt.Sprintf("s3|%s|%s|%s", s.endpoint, s.Region, s.Bucket)
+	id := fmt.Sprintf("s3|%s|%s|%s", s.endpoint, s.Region, s.Bucket)
+	if s.keyPrefix != "" {
+		id += "|prefix=" + s.keyPrefix
+	}
+	return id
+}
+
+// SetKeyPrefix makes the provider map every key it is given — the LOGICAL
+// keys manifests embed (snapshots/<id>/...) — to <prefix>/<key> in the
+// bucket, and strip the prefix again from listed keys, exactly as the API
+// maps a prefixed_flat snapshot (apps/api/src/services/backupKeyLayout.ts).
+// raw is normalized with NormalizeKeyPrefix; "" (or only slashes and
+// whitespace) means no prefix. An invalid prefix is refused and leaves the
+// provider unchanged — it never falls back to the bucket root.
+//
+// Only operator-supplied configurations use this (agent.yaml's
+// backup_s3_prefix, breeze-backup rebuild --key-prefix): the API never sends
+// an S3 destination to a helper; it brokers prefixed access itself. To read
+// a snapshot, pass the snapshot's recorded key_prefix, which differs from
+// the destination's current prefix once that has been changed.
+func (s *S3Provider) SetKeyPrefix(raw string) error {
+	prefix, err := NormalizeKeyPrefix(raw)
+	if err != nil {
+		return err
+	}
+	s.keyPrefix = prefix
+	return nil
+}
+
+// KeyPrefix is the normalized key prefix ("" = none).
+func (s *S3Provider) KeyPrefix() string { return s.keyPrefix }
+
+// physicalKey is the bucket key for a logical key.
+func (s *S3Provider) physicalKey(logical string) string {
+	if s.keyPrefix == "" {
+		return logical
+	}
+	return s.keyPrefix + "/" + logical
+}
+
+// logicalKey inverts physicalKey; false when physical is not under the
+// prefix root.
+func (s *S3Provider) logicalKey(physical string) (string, bool) {
+	if s.keyPrefix == "" {
+		return physical, true
+	}
+	return strings.CutPrefix(physical, s.keyPrefix+"/")
 }
 
 // SetServerSideEncryption requires S3 server-side encryption on future uploads.
@@ -205,7 +261,7 @@ func (s *S3Provider) upload(ctx context.Context, localPath, remotePath string, w
 
 	input := &s3.PutObjectInput{
 		Bucket: aws.String(s.Bucket),
-		Key:    aws.String(remotePath),
+		Key:    aws.String(s.physicalKey(remotePath)),
 		Body:   uploadProgressSource(ctx, file),
 	}
 	switch s.sseAlgorithm {
@@ -334,7 +390,7 @@ func (s *S3Provider) DownloadContext(ctx context.Context, remotePath, localPath 
 
 	resp, err := client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.Bucket),
-		Key:    aws.String(remotePath),
+		Key:    aws.String(s.physicalKey(remotePath)),
 	})
 	if err != nil {
 		var noSuchKey *s3types.NoSuchKey
@@ -379,7 +435,7 @@ func (s *S3Provider) List(prefix string) ([]string, error) {
 	ctx := context.Background()
 	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.Bucket),
-		Prefix: aws.String(prefix),
+		Prefix: aws.String(s.physicalKey(prefix)),
 	})
 
 	keys := []string{}
@@ -389,9 +445,16 @@ func (s *S3Provider) List(prefix string) ([]string, error) {
 			return nil, fmt.Errorf("failed to list s3 objects: %w", err)
 		}
 		for _, object := range page.Contents {
-			if object.Key != nil {
-				keys = append(keys, *object.Key)
+			if object.Key == nil {
+				continue
 			}
+			key, ok := s.logicalKey(*object.Key)
+			if !ok {
+				// Fail closed: storage answered with a key outside the
+				// requested root, which no logical key maps to.
+				return nil, fmt.Errorf("s3 listing returned %q, outside key prefix %q", *object.Key, s.keyPrefix)
+			}
+			keys = append(keys, key)
 		}
 	}
 
@@ -414,7 +477,7 @@ func (s *S3Provider) Delete(remotePath string) error {
 
 	if _, err := client.DeleteObject(context.Background(), &s3.DeleteObjectInput{
 		Bucket: aws.String(s.Bucket),
-		Key:    aws.String(remotePath),
+		Key:    aws.String(s.physicalKey(remotePath)),
 	}); err != nil {
 		return fmt.Errorf("failed to delete s3 object: %w", err)
 	}

@@ -59,6 +59,8 @@ export const listDevicesSchema = z.object({
    *  count it received on page 1. Default off because the count(*) is the
    *  most expensive part of the query at scale. */
   includeTotal: boolStr,
+  /** Opt in to the warranty projection/join for the list column. */
+  includeWarranty: boolStr,
 
   // Single-value filters (compat).
   orgId: z.string().guid().optional(),

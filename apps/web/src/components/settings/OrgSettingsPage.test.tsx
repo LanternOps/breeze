@@ -34,7 +34,11 @@ vi.mock('./OrgBrandingEditor', () => ({ default: (props: { onSave: (data: Record
   brandingProps.push(props);
   return <div data-testid="branding-editor" />;
 } }));
-vi.mock('./OrgDefaultsEditor', () => ({ default: () => <div data-testid="defaults-editor" /> }));
+const defaultsEditorProps: Array<Record<string, unknown>> = [];
+vi.mock('./OrgDefaultsEditor', () => ({ default: (props: Record<string, unknown>) => {
+  defaultsEditorProps.push(props);
+  return <div data-testid="defaults-editor" />;
+} }));
 vi.mock('./OrgNotificationSettings', () => ({ default: () => <div data-testid="notifications" /> }));
 // Capture the props the Security and Event Logs tabs get: both issue their own
 // org-scoped requests, so each must be handed the PAGE's org rather than fall
@@ -713,6 +717,62 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     await screen.findByTestId('org-name-input');
     const select = screen.getByLabelText('Settings section') as HTMLSelectElement;
     expect(select.value).toBe('general');
+  });
+});
+
+// #9762: `locked` no longer carries `defaults.agentVersionPins` (pins are a
+// partner DEFAULT the org may override). The "partner has a pin" signal is
+// `partnerDefaults`; the inherited pins are the merged effective value.
+describe('OrgSettingsPage — partner agent version pins (#9762)', () => {
+  const orgDetails = {
+    id: 'org-1',
+    name: 'Acme Systems',
+    slug: 'acme',
+    status: 'active',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    settings: {},
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    defaultsEditorProps.length = 0;
+    window.location.hash = '#general';
+    useOrgStoreMock.mockReturnValue({ currentOrgId: 'org-1', organizations: [] } as never);
+  });
+
+  function serveEffective(body: Record<string, unknown>) {
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse(body));
+      return Promise.resolve(makeJsonResponse(orgDetails));
+    });
+  }
+
+  it('passes the partner pins when partnerDefaults lists defaults.agentVersionPins', async () => {
+    serveEffective({
+      locked: [],
+      partnerDefaults: ['defaults.agentVersionPins'],
+      effective: { defaults: { agentVersionPins: { agent: '0.120.0' } } },
+    });
+
+    render(<OrgSettingsPage orgId="org-1" />);
+    await screen.findByTestId('defaults-editor');
+
+    await waitFor(() => expect(defaultsEditorProps.at(-1)?.partnerPins).toEqual({ agent: '0.120.0' }));
+  });
+
+  it("does not present the org's own pins as inherited when the partner has none", async () => {
+    serveEffective({
+      locked: [],
+      partnerDefaults: [],
+      effective: { defaults: { agentVersionPins: { agent: '0.121.0' } } },
+    });
+
+    render(<OrgSettingsPage orgId="org-1" />);
+    await screen.findByTestId('defaults-editor');
+
+    // Wait for the effective-settings response to have been applied.
+    await waitFor(() => expect(defaultsEditorProps.at(-1)?.effectiveDefaults).toBeDefined());
+    expect(defaultsEditorProps.at(-1)?.partnerPins).toBeUndefined();
   });
 });
 

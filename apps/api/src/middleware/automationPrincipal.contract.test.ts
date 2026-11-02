@@ -25,7 +25,7 @@ import { listFlowEligibleCoreTools } from '../services/flows/catalog';
 // share one classification.
 //
 // The scan is the plan's inventory grep:
-//   rg -n "kind === 'ai_agent'|kind !== 'ai_agent'|isAiAgentPrincipal\(|case 'ai_agent'|'ai_agent'[,\]]" apps/api/src --glob '!*.test.ts'
+//   rg -n "kind === 'ai_agent'|kind !== 'ai_agent'|isAiAgentPrincipal\(|case 'ai_agent'|'ai_agent'( as const)?[,\]]" apps/api/src --glob '!*.test.ts'
 // plus `isAutomationPrincipal(` (so a converted site stays inventoried), minus
 // comment lines. String uses that are not a principal branch (audit actor
 // types, intent sources, ticket author kinds, AiInitiatorKind) are filtered
@@ -239,7 +239,7 @@ const OUT_OF_SCOPE_SITES: Record<string, string> = {
   "services/auditEvents.ts:case 'ai_agent': initiatedBy = 'ai'; break;": 'audit actorType switch',
   "services/aiOriginSummary.ts:} else if (kind === 'ai_agent' && row.aiAgentRunId) {": 'AiInitiatorKind, not the principal',
   "services/actionIntents/actorContext.ts:case 'ai_agent':": 'stored origin_principal_kind switch (its flow arm is Task A5)',
-  "services/aiToolsFilesystem.ts:actorType: requestedBy ? 'user' : 'ai_agent',": 'audit actorType value',
+  "services/aiToolsFilesystem.ts:actorType: requestedBy ? 'user' as const : 'ai_agent' as const,": 'audit actorType value',
   "services/ticketService.ts:case 'ai_agent': return actor.runId ? { agentRunId: actor.runId } : {};": 'TicketActor discriminant',
   "services/ticketService.ts:case 'ai_agent':": 'TicketActor discriminant',
   "services/ticketService.ts:case 'ai_agent': return 'ai_agent';": 'TicketActor discriminant',
@@ -254,7 +254,7 @@ const OUT_OF_SCOPE_SHAPES: ReadonlyArray<{ re: RegExp; why: string }> = [
   { re: /\baiOrigin\??\.kind\b/, why: 'AiInitiatorKind — who DECIDED a device mutation, not the principal' },
 ];
 
-const RAW_SITE = /kind === 'ai_agent'|kind !== 'ai_agent'|isAiAgentPrincipal\(|case 'ai_agent'|'ai_agent'[,\]]/;
+const RAW_SITE = /kind === 'ai_agent'|kind !== 'ai_agent'|isAiAgentPrincipal\(|case 'ai_agent'|'ai_agent'(?: as const)?[,\]]/;
 const AUTOMATION_CALL = /isAutomationPrincipal\(/;
 
 const API_SRC = path.resolve(__dirname, '..');

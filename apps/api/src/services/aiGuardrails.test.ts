@@ -176,8 +176,6 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       ['manage_patches', 'decline'],
       ['manage_patches', 'defer'],
       ['manage_patches', 'bulk_approve'],
-      ['manage_groups', 'add_devices'],
-      ['manage_groups', 'remove_devices'],
       ['manage_automations', 'enable'],
       ['manage_automations', 'disable'],
       ['generate_report', 'create'],
@@ -266,6 +264,10 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       ['manage_groups', 'create'],
       ['manage_groups', 'update'],
       ['manage_groups', 'delete'],
+      // #10149 (QW9): membership writes feed agent run scope and group-targeted
+      // policies, and schedule peripheral reconciliation — supervised.
+      ['manage_groups', 'add_devices'],
+      ['manage_groups', 'remove_devices'],
       ['manage_automations', 'run'],
       // W01-D3 (#6755): handler-disabled today, escalated so re-enabling the
       // handler cannot silently reopen an unallowlisted agent write.

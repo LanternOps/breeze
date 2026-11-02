@@ -383,6 +383,46 @@ const claimSessionOwnership = (): (() => boolean) => {
 };
 
 /**
+ * True while sendMessage re-sends a message after rolling a Wisp session at
+ * the turn limit: a second refusal on the fresh session is shown, not retried.
+ */
+let resendingAfterTurnLimit = false;
+
+/**
+ * A Wisp thread is one conversation; its sessions are chunks with a turn
+ * budget (`ai_sessions.max_turns`). When a chunk is spent, close it (its
+ * summary lands on the thread) and open the next one under the same grant
+ * and focus — what setWispFocus does for a focus change. True when the
+ * store is bound to the new session.
+ */
+async function rollWispSession(get: AiGet, model?: AiModelChoice): Promise<boolean> {
+  const w = get().wisp;
+  if (!w) return false;
+  // The thread keeps its model across chunks: the pick for the refused
+  // message, else the model the spent session ran on (when the user may pick).
+  const picker = useAiModelPickerStore.getState().choices;
+  const carried: AiModelChoice | undefined = model
+    ?? (picker?.allowUserChoice && picker.current?.offeringId
+      ? { offeringId: picker.current.offeringId, options: { ...(picker.current.options ?? {}) } }
+      : undefined);
+  const oldSessionId = get().sessionId;
+  if (oldSessionId) {
+    await get().closeSession();
+    // A failed close leaves the old session bound (and open on the server);
+    // the roll goes ahead, but say so rather than letting the next create
+    // wipe the error.
+    if (get().sessionId === oldSessionId) {
+      console.warn(`[AiStore] Could not close Wisp session ${oldSessionId} at the turn limit; rolling anyway:`, get().error);
+    }
+  }
+  useAiStore.setState({ ...CLEARED_SESSION });
+  // Closing reset the picker, so the model is handed to the create (it stamps
+  // the new session) instead of the next chunk falling back to the default.
+  await get().createSession({ wispGrantId: w.grantId, orgId: wispSessionOrgId(w) ?? undefined, ...(carried ? { model: carried } : {}) });
+  return get().sessionId !== null && get().wisp?.grantId === w.grantId;
+}
+
+/**
  * #9427: the send stream's reader, held so releaseSession can cancel a parked
  * `read()` synchronously — the stream token alone is only noticed after the
  * next chunk arrives.
@@ -1053,6 +1093,24 @@ export const useAiStore = create<AiState>()(
           return;
         }
 
+        if (refusal === 'turn_limit' && get().wisp && !resendingAfterTurnLimit) {
+          // Nothing ran: roll the thread to a fresh session and carry this
+          // message over. The optimistic bubble is re-added by the re-send.
+          set((s) => ({ messages: s.messages.filter((m) => m.id !== userMsgId), isStreaming: false }));
+          if (!ownsStream()) return;
+          if (await rollWispSession(get, model)) {
+            resendingAfterTurnLimit = true;
+            try {
+              await get().sendMessage(trimmedContent);
+            } finally {
+              resendingAfterTurnLimit = false;
+            }
+            return;
+          }
+          set({ error: extractApiError(data, 'Failed to send message'), errorCode: code });
+          return;
+        }
+
         if (refusal === 'credits') {
           // The credit / plan gate refused the turn before it ran (#9450): drop
           // the optimistic bubble like the coded 409s and keep the code so the
@@ -1128,6 +1186,13 @@ export const useAiStore = create<AiState>()(
             }
           }
         }
+      }
+
+      // The turn spent the session's last turns mid-loop: the next send would
+      // be refused, so under Wisp roll to a fresh session now and ask for the
+      // message again (work may have run partway — never re-send by itself).
+      if (ownsStream() && get().errorCode === 'turn_limit_reached' && get().wisp) {
+        if (await rollWispSession(get)) set({ error: i18n.t('ai:wisp.turnLimitRolled'), errorCode: 'turn_limit_reached' });
       }
     } catch (err) {
       // A superseded stream must not raise an error on the session that

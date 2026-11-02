@@ -109,6 +109,7 @@ import {
 import { scanProjectedAutomationRuns } from './automationReadProjection';
 import { assertReportExecutionPreflight } from './reportGenerationService';
 import { deleteDeviceGroup, DeviceGroupDeleteError } from './deviceGroupDelete';
+import { validateManualMembershipDevices } from './groupMembership';
 import { aiQueueCommandForExecution } from './aiDispatch';
 import { CommandTypes } from './commandTypes';
 import {
@@ -2020,9 +2021,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ success: true, message: `Group "${existing.name}" deleted` });
       }
 
-      if (action === 'add_devices') {
+      if (action === 'add_devices' || action === 'remove_devices') {
         if (!input.groupId) return JSON.stringify({ error: 'groupId is required' });
-        if (!Array.isArray(input.deviceIds)) return JSON.stringify({ error: 'deviceIds is required' });
+        if (!Array.isArray(input.deviceIds) || input.deviceIds.length === 0) return JSON.stringify({ error: 'deviceIds is required' });
+        // The schema caps deviceIds at 100; refuse rather than truncate if a
+        // caller reaches the handler without it.
+        if (input.deviceIds.length > 100) return JSON.stringify({ error: 'At most 100 deviceIds per call' });
         const conditions: SQL[] = [eq(deviceGroups.id, input.groupId as string)];
         const oc = groupReadCondition;
         if (oc) conditions.push(oc);
@@ -2030,73 +2034,71 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const [group] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
         if (!group || !groupReadable(group)) return JSON.stringify({ error: 'Group not found or access denied' });
         if (group.orgId === null) return JSON.stringify(PARTNER_GROUP_AI_READ_ONLY_BODY);
+        const groupOrgId = group.orgId;
 
-        const orgId = group.orgId;
-        const deviceIdList = (input.deviceIds as string[]).slice(0, 100);
-        // Only add devices that belong to the group's org AND are in the caller's
-        // site scope. Site is an app-layer axis (RLS does NOT enforce it), so
-        // restrict the membership write to in-scope, owned devices.
-        const candidateRows = await db.select({ id: devices.id, siteId: devices.siteId })
-          .from(devices)
-          .where(and(eq(devices.orgId, group.orgId), inArray(devices.id, deviceIdList)));
-        const insertableIds = candidateRows
-          .filter((d) => !deviceSiteDenied(auth, d.siteId, d.id))
-          .map((d) => d.id);
-        if (insertableIds.length === 0) {
-          return JSON.stringify({ success: true, added: 0, message: 'No in-scope devices to add' });
+        // #10149 (QW9) scope guards. Every one REFUSES the whole call and
+        // writes nothing: a membership write that quietly drops some ids would
+        // tell the approver (this action is supervised) one thing and do
+        // another. Same rules, same order, as REST POST /:id/devices and
+        // DELETE /:id/devices/:deviceId (routes/groups.ts).
+        //
+        // 1. The caller must be able to see the group's site. An org-wide
+        //    group (siteId null) fails closed for a site-restricted caller,
+        //    as REST groupSiteAllowed does. Checked before the dynamic-group
+        //    refusal so an out-of-site caller learns nothing about the group.
+        if (deviceSiteDenied(auth, group.siteId)) return JSON.stringify({ error: 'Group not found or access denied' });
+        // 2. Dynamic membership is rule-driven; a manual row would be rewritten
+        //    or orphaned by the next evaluation.
+        if (group.type === 'dynamic') {
+          return JSON.stringify({ error: `Cannot manually ${action === 'add_devices' ? 'add devices to' : 'remove devices from'} a dynamic group` });
         }
-        const results = await db.insert(deviceGroupMemberships)
-          .values(insertableIds.map((deviceId) => ({
-            groupId: group.id,
-            deviceId,
-            orgId,
-            addedBy: 'manual' as const,
-          })))
-          .onConflictDoNothing()
-          .returning({ deviceId: deviceGroupMemberships.deviceId });
-
-        await scheduleAiGroupPeripheralReconciliation(results.map(({ deviceId }) => deviceId));
-
-        const skipped = deviceIdList.length - insertableIds.length;
-        return JSON.stringify({ success: true, added: results.length, ...(skipped > 0 ? { skipped } : {}), message: `${results.length} device(s) added to group "${group.name}"${skipped > 0 ? ` (${skipped} skipped — outside org/site scope)` : ''}` });
-      }
-
-      if (action === 'remove_devices') {
-        if (!input.groupId) return JSON.stringify({ error: 'groupId is required' });
-        if (!Array.isArray(input.deviceIds)) return JSON.stringify({ error: 'deviceIds is required' });
-        const conditions: SQL[] = [eq(deviceGroups.id, input.groupId as string)];
-        const oc = groupReadCondition;
-        if (oc) conditions.push(oc);
-
-        const [group] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
-        if (!group || !groupReadable(group)) return JSON.stringify({ error: 'Group not found or access denied' });
-        if (group.orgId === null) return JSON.stringify(PARTNER_GROUP_AI_READ_ONLY_BODY);
-
-        const requestedIds = (input.deviceIds as string[]).slice(0, 100);
-        // Only remove devices in the caller's site scope. Site is an app-layer
-        // axis (RLS does NOT enforce it) — mirror add_devices so a site-restricted
-        // caller can't mutate group membership for out-of-site devices.
-        const candidateRows = await db.select({ id: devices.id, siteId: devices.siteId })
+        const requestedIds = [...new Set(input.deviceIds as string[])];
+        // 3. Every device exists, belongs to the GROUP's org (cross-org ids and
+        //    ids RLS hides both land in invalidDevices), and sits in a
+        //    site-bound group's own site. The one shared tenancy guard (#3159).
+        const validation = await validateManualMembershipDevices({ deviceIds: requestedIds, orgId: groupOrgId, siteId: group.siteId });
+        if (!validation.ok) {
+          return JSON.stringify({ error: validation.error, ...(validation.invalidDevices ? { invalidDevices: validation.invalidDevices } : {}) });
+        }
+        // 4. Every device is inside the CALLER's own site / exact-device scope.
+        //    Site is an app-layer axis (RLS does NOT enforce it).
+        const deviceRows = await db.select({ id: devices.id, siteId: devices.siteId })
           .from(devices)
-          .where(and(eq(devices.orgId, group.orgId), inArray(devices.id, requestedIds)));
-        const removableIds = candidateRows
-          .filter((d) => !deviceSiteDenied(auth, d.siteId, d.id))
-          .map((d) => d.id);
-        const skipped = requestedIds.length - removableIds.length;
-        if (removableIds.length === 0) {
-          return JSON.stringify({ success: true, removed: 0, ...(skipped > 0 ? { skipped } : {}), message: 'No in-scope devices to remove' });
+          .where(and(eq(devices.orgId, groupOrgId), inArray(devices.id, requestedIds)));
+        const siteById = new Map(deviceRows.map((d) => [d.id, d.siteId]));
+        const deniedDevices = requestedIds.filter((id) => !siteById.has(id) || deviceSiteDenied(auth, siteById.get(id) ?? null, id));
+        if (deniedDevices.length > 0) {
+          return JSON.stringify({ error: 'Access denied: some devices are outside your access', deniedDevices });
+        }
+
+        if (action === 'add_devices') {
+          const results = await db.insert(deviceGroupMemberships)
+            .values(requestedIds.map((deviceId) => ({
+              groupId: group.id,
+              deviceId,
+              orgId: groupOrgId,
+              addedBy: 'manual' as const,
+            })))
+            .onConflictDoNothing()
+            .returning({ deviceId: deviceGroupMemberships.deviceId });
+
+          await scheduleAiGroupPeripheralReconciliation(results.map(({ deviceId }) => deviceId));
+
+          const alreadyMembers = requestedIds.length - results.length;
+          return JSON.stringify({ success: true, added: results.length, ...(alreadyMembers > 0 ? { alreadyMembers } : {}), message: `${results.length} device(s) added to group "${group.name}"${alreadyMembers > 0 ? ` (${alreadyMembers} already a member)` : ''}` });
         }
 
         const removedMemberships = await db.delete(deviceGroupMemberships)
           .where(and(
             eq(deviceGroupMemberships.groupId, group.id),
-            inArray(deviceGroupMemberships.deviceId, removableIds),
+            inArray(deviceGroupMemberships.deviceId, requestedIds),
           ))
           .returning({ deviceId: deviceGroupMemberships.deviceId });
 
         await scheduleAiGroupPeripheralReconciliation(removedMemberships.map(({ deviceId }) => deviceId));
 
-        return JSON.stringify({ success: true, removed: removedMemberships.length, ...(skipped > 0 ? { skipped } : {}), message: `Device(s) removed from group "${group.name}"${skipped > 0 ? ` (${skipped} skipped — outside org/site scope)` : ''}` });
+        const notMembers = requestedIds.length - removedMemberships.length;
+        return JSON.stringify({ success: true, removed: removedMemberships.length, ...(notMembers > 0 ? { notMembers } : {}), message: `${removedMemberships.length} device(s) removed from group "${group.name}"${notMembers > 0 ? ` (${notMembers} not a member)` : ''}` });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
