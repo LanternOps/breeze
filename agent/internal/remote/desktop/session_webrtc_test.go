@@ -252,7 +252,7 @@ func TestBuildICEConfigurationRelayOnlyRequiresTURN(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := buildICEConfiguration(tc.servers, true)
-			if err == nil || err.Error() != "relay-only desktop session has no TURN server" {
+			if err == nil || err.Error() != "remote desktop needs the TURN relay while this device is isolated: no TURN server in the session offer" {
 				t.Fatalf("error = %v", err)
 			}
 		})
@@ -289,5 +289,17 @@ func TestResolveSessionPolicyFromIPCRelayOnly(t *testing.T) {
 		if got.RelayOnly != relayOnly {
 			t.Fatalf("RelayOnly = %v, want %v", got.RelayOnly, relayOnly)
 		}
+	}
+}
+
+func TestStartSessionRelayOnlyRefusalKeepsExistingSession(t *testing.T) {
+	existing := &Session{}
+	m := &SessionManager{sessions: map[string]*Session{"live": existing}}
+	_, err := m.StartSession("next", "offer", nil, 0, SessionPolicy{RelayOnly: true})
+	if err == nil {
+		t.Fatal("relay-only start without TURN must fail")
+	}
+	if got := m.sessions["live"]; got != existing {
+		t.Fatal("a refused relay-only start must not tear down the live session")
 	}
 }

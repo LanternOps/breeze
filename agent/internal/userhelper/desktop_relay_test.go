@@ -14,7 +14,7 @@ func TestDesktopRelayOnlyPassesThroughHelper(t *testing.T) {
 	}
 	helper := &helperDesktopManager{mgr: &desktop.SessionManager{}}
 	_, err := helper.startSession(&req)
-	if err == nil || err.Error() != "start desktop session: relay-only desktop session has no TURN server" {
+	if err == nil || err.Error() != "start desktop session: remote desktop needs the TURN relay while this device is isolated: no TURN server in the session offer" {
 		t.Fatalf("helper must reject missing TURN before creating a peer connection: %v", err)
 	}
 }

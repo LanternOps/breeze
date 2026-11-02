@@ -95,7 +95,7 @@ const USER_ID = '33333333-3333-4333-8333-333333333333';
 const SITE_ID = '55555555-5555-4555-8555-555555555555';
 const notPermitted = {
   code: 'isolation_relay_not_permitted',
-  error: 'Remote desktop is unavailable: this device was isolated without permitting the TURN relay',
+  error: 'Remote desktop over WebRTC is unavailable: this device was isolated without permitting the TURN relay',
 };
 const unavailable = {
   code: 'isolation_relay_unavailable',

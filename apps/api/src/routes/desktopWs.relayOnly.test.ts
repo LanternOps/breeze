@@ -227,7 +227,7 @@ describe('viewer relay-only desktop admission', () => {
         if (kind === 'ice-servers') expect(Object.keys(result)).toEqual(['iceServers']);
       });
       it.each([
-        [false, true, 'isolation_relay_not_permitted', 'Remote desktop is unavailable: this device was isolated without permitting the TURN relay'],
+        [false, true, 'isolation_relay_not_permitted', 'Remote desktop over WebRTC is unavailable: this device was isolated without permitting the TURN relay'],
         [true, false, 'isolation_relay_unavailable', 'Remote desktop needs the TURN relay while this device is isolated'],
       ] as const)('refuses remoteRelay=%s TURN=%s before start side effects', async (remoteRelay, turn, code, error) => {
         findEpisode.mockResolvedValue({ state: 'applied', remoteRelay });

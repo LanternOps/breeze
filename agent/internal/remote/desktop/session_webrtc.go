@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -806,7 +807,7 @@ func buildICEConfiguration(iceServers []ICEServerConfig, relayOnly bool) (webrtc
 		}
 	}
 	if len(relayServers) == 0 {
-		return webrtc.Configuration{}, fmt.Errorf("relay-only desktop session has no TURN server")
+		return webrtc.Configuration{}, errors.New("remote desktop needs the TURN relay while this device is isolated: no TURN server in the session offer")
 	}
 	config.ICEServers = relayServers
 	return config, nil

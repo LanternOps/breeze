@@ -373,16 +373,26 @@ describe('createWebRTCSession — isolated device relay policy', () => {
   it('never retries STUN when the relay configuration is rejected', async () => {
     stubResponse({ relayOnly: true, iceServers: turnServers });
     const configs = stubPeer(true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const error = await createWebRTCSession(params, document.createElement('video')).catch((err: unknown) => err);
     expect(configs).toHaveLength(1);
     expect(error).toBeInstanceOf(RelayRequiredError);
     expect(error).not.toBeInstanceOf(WebRTCUnsupportedError);
-    expect(error).toHaveProperty('message', relayMessage);
+    expect(error).toHaveProperty('message', `${relayMessage} (relay configuration rejected: Invalid ICE server URL)`);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('keeps the STUN fallback for a 409 that is not a relay refusal', async () => {
+    stubResponse({ code: 'consent_upgrade_required', error: 'upgrade' }, 409);
+    const configs = stubPeer();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(createWebRTCSession(params, document.createElement('video'))).rejects.toBe(afterConstruction);
+    expect(configs).toEqual([{ iceServers: stunServers }]);
   });
 
   it.each([
     ['isolation_relay_unavailable', relayMessage],
-    ['isolation_relay_not_permitted', 'Remote desktop is unavailable: this device was isolated without permitting the TURN relay'],
+    ['isolation_relay_not_permitted', 'Remote desktop over WebRTC is unavailable: this device was isolated without permitting the TURN relay'],
     ['isolation_relay_unavailable', undefined],
   ])('surfaces terminal 409 %s without constructing a peer', async (code, message) => {
     stubResponse({ code, ...(message ? { error: message } : {}) }, 409);
@@ -407,7 +417,7 @@ describe('createWebRTCSession — isolated device relay policy', () => {
     stubResponse({ iceServers });
     const configs = stubPeer();
     await expect(createWebRTCSession(params, document.createElement('video'))).rejects.toBe(afterConstruction);
-    expect(configs).toEqual([{ iceServers, iceTransportPolicy: 'all' }]);
+    expect(configs).toEqual([{ iceServers }]);
   });
 
   it('still retries STUN after a non-relay constructor rejection', async () => {
@@ -416,8 +426,8 @@ describe('createWebRTCSession — isolated device relay policy', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     await expect(createWebRTCSession(params, document.createElement('video'))).rejects.toBe(afterConstruction);
     expect(configs).toEqual([
-      { iceServers: turnServers, iceTransportPolicy: 'all' },
-      { iceServers: stunServers, iceTransportPolicy: 'all' },
+      { iceServers: turnServers },
+      { iceServers: stunServers },
     ]);
   });
 
@@ -427,7 +437,7 @@ describe('createWebRTCSession — isolated device relay policy', () => {
     const configs = stubPeer();
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     await expect(createWebRTCSession(params, document.createElement('video'))).rejects.toBe(afterConstruction);
-    expect(configs).toEqual([{ iceServers: stunServers, iceTransportPolicy: 'all' }]);
+    expect(configs).toEqual([{ iceServers: stunServers }]);
   });
 
   it.each(['isolation_relay_unavailable', 'isolation_relay_not_permitted'])(
@@ -442,7 +452,7 @@ describe('createWebRTCSession — isolated device relay policy', () => {
         close() {}
       });
       const errorMessage = code === 'isolation_relay_not_permitted'
-        ? 'Remote desktop is unavailable: this device was isolated without permitting the TURN relay'
+        ? 'Remote desktop over WebRTC is unavailable: this device was isolated without permitting the TURN relay'
         : relayMessage;
       vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
         const offer = String(input).endsWith('/viewer/offer');

@@ -23,7 +23,7 @@ export async function resolveDesktopIcePlan(
     return {
       ok: false,
       code: 'isolation_relay_not_permitted',
-      error: 'Remote desktop is unavailable: this device was isolated without permitting the TURN relay',
+      error: 'Remote desktop over WebRTC is unavailable: this device was isolated without permitting the TURN relay',
     };
   }
   const iceServers = getIceServers(scope, { relayOnly: true });

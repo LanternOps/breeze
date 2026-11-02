@@ -221,7 +221,7 @@ function buildPeerConnection(iceServers: RTCIceServer[], relayOnly: boolean): {
 } {
   let pc: RTCPeerConnection | undefined;
   try {
-    pc = new RTCPeerConnection({ iceServers, iceTransportPolicy: relayOnly ? 'relay' : 'all' });
+    pc = new RTCPeerConnection(relayOnly ? { iceServers, iceTransportPolicy: 'relay' } : { iceServers });
 
     // Receive-only video transceiver (agent sends H264 video track)
     pc.addTransceiver('video', { direction: 'recvonly' });
@@ -261,7 +261,13 @@ function createPeerConnection(iceServers: RTCIceServer[], relayOnly: boolean): {
   try {
     return buildPeerConnection(iceServers, relayOnly);
   } catch (firstErr) {
-    if (relayOnly) throw new RelayRequiredError();
+    if (relayOnly) {
+      // Never retry STUN-only while isolated. Keep the constructor's reason:
+      // a malformed TURN entry is a server-config fault, not missing TURN.
+      console.warn('Relay-only ICE servers from the API were rejected by RTCPeerConnection:', firstErr);
+      const cause = firstErr instanceof Error ? firstErr.message : String(firstErr);
+      throw new RelayRequiredError(`${RELAY_REQUIRED_MESSAGE} (relay configuration rejected: ${cause})`);
+    }
 
     // The ICE list comes from the API and is only checked for being a non-empty
     // array — a malformed `urls` or a TURN entry without credentials makes the

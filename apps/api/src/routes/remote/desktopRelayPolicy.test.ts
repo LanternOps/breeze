@@ -34,7 +34,7 @@ describe('resolveDesktopIcePlan', () => {
   });
   it.each(['applied', 'verified'])('refuses %s without relay permission before minting credentials', async (state) => {
     findEpisode.mockResolvedValue({ state, remoteRelay: false });
-    expect(await resolveDesktopIcePlan('device', scope)).toEqual({ ok: false, code: 'isolation_relay_not_permitted', error: 'Remote desktop is unavailable: this device was isolated without permitting the TURN relay' });
+    expect(await resolveDesktopIcePlan('device', scope)).toEqual({ ok: false, code: 'isolation_relay_not_permitted', error: 'Remote desktop over WebRTC is unavailable: this device was isolated without permitting the TURN relay' });
     expect(iceServers).not.toHaveBeenCalled();
   });
   it('refuses active isolation without TURN', async () => {
