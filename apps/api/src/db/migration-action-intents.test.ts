@@ -79,7 +79,7 @@ describe('Action intents migration', () => {
     // 2026-08-06-e: durable origin-principal fact
     'origin_principal_kind',
     'origin_principal_id',
-    // 2027-01-18-100000 (#9758): the requester's auth_epoch at filing for an
+    // 2027-01-19-110200 (#9758): the requester's auth_epoch at filing for an
     // MCP OAuth intent. Release compares it to the live row; an editable
     // value could be rewritten to match.
     'origin_auth_epoch',

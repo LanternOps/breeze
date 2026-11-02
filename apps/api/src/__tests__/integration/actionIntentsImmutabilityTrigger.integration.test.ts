@@ -201,7 +201,7 @@ describe('action_intents immutability trigger (live DB)', () => {
     source: { source: 'mcp_api' },
     origin_principal_kind: { originPrincipalKind: 'api_key' },
     origin_principal_id: { originPrincipalId: `key-${randomUUID().slice(0, 8)}` },
-    // 2027-01-18-100000 (#9758): the seeded intent starts NULL; the BEFORE
+    // 2027-01-19-110200 (#9758): the seeded intent starts NULL; the BEFORE
     // UPDATE trigger raises before action_intents_origin_auth_epoch_chk.
     origin_auth_epoch: { originAuthEpoch: 7 },
     action_name: { actionName: 'm365.mailbox.enable' },
@@ -437,7 +437,7 @@ describe('action_intents external tool binding CHECK (live DB)', () => {
   });
 });
 
-// #9758 (2027-01-18-100000): origin_auth_epoch is recorded only for an
+// #9758 (2027-01-19-110200): origin_auth_epoch is recorded only for an
 // MCP-origin OAuth intent; action_intents_origin_auth_epoch_chk refuses it on
 // every other origin.
 describe('action_intents origin_auth_epoch CHECK (live DB)', () => {
