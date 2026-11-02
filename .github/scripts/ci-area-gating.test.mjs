@@ -69,6 +69,8 @@ for (const [paths, on] of [
   // api-only. apps/api/** is read by nothing outside the api area except the
   // portal's visibility-gate test (apps/api/src/routes/portal/**), below.
   [['apps/api/src/services/foo.ts'], ['api']],
+  [['apps/api/src/routes/devices/networkIsolation.ts'], ['api']],
+  [['apps/api/src/routes/agents/isolationVerify.ts'], ['api']],
   [['apps/api/migrations/2026-10-01-x.sql'], ['api']],
   [['apps/api/src/routes/devices/core.ts', 'apps/api/package.json'], ['api']],
   // web — test-api's repo-wide contract suites (exchangeRateBoundary,
@@ -784,10 +786,28 @@ test('integration gate: on a PR it is never wider than api (integration=true ⇒
   }
 });
 
+for (const file of ['apps/api/src/routes/devices/networkIsolation.ts', 'apps/api/src/routes/agents/isolationVerify.ts']) {
+  test(`network isolation route schedules integration: ${file}`, () => { assert.equal(classify([file]).integration, 'true'); });
+}
+
 // W15 PR A (#6785): new service paths stay in the API and integration gates.
 for (const file of ['pax8OrderPreview', 'aiToolSchemasPax8', 'aiToolsPax8', 'aiToolsPax8Orders']) {
   test(`W15 ${file} runs API and integration checks`, () => {
     const out = classify([`apps/api/src/services/${file}.ts`]);
+    assert.deepEqual(areasOf(out), expectAreas(['api']));
+    assert.equal(out.integration, 'true');
+    assert.equal(out.app, 'true');
+  });
+}
+
+
+// W15 PR B (#6785): the pinned money-surface digest and its real-DB proof.
+for (const file of [
+  'apps/api/src/services/actionIntents/pax8OrderDigest.ts',
+  'apps/api/src/__tests__/integration/aiToolsPax8OrderSubmitScope.integration.test.ts',
+]) {
+  test(`W15 PR B ${file} runs API and integration checks`, () => {
+    const out = classifyPrGate([file]);
     assert.deepEqual(areasOf(out), expectAreas(['api']));
     assert.equal(out.integration, 'true');
     assert.equal(out.app, 'true');

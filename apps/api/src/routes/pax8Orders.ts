@@ -28,6 +28,7 @@ import { preflightOrder, reconcileOrder, submitOrder } from '../services/pax8Ord
 import { createPax8ClientForIntegration } from '../services/pax8SyncService';
 import { detectPax8Drift } from '../services/pax8Drift';
 import { PERMISSIONS } from '../services/permissions';
+import { errorIds } from '../services/pax8OrderObservability';
 import { captureException } from '../services/sentry';
 
 export const pax8OrderRoutes = new Hono();
@@ -160,7 +161,10 @@ function rawBody(c: Context, body: string, status: 422 | 502): Response {
 }
 
 function routeError(c: Context, error: unknown): Response {
-  if (error instanceof Pax8OrderError) return c.json({ error: error.message }, error.status);
+  if (error instanceof Pax8OrderError) {
+    if (error.phase !== 'claim') captureException(error, undefined, { errorId: errorIds.PAX8_PERSIST_FAILED });
+    return c.json({ error: error.message }, error.status);
+  }
   if (error instanceof Pax8ApiError) return rawBody(c, error.body || error.message, 502);
   captureException(error instanceof Error ? error : new Error(String(error)));
   return c.json({ error: 'Internal server error' }, 500);
@@ -242,6 +246,7 @@ function submitAuditDetails(result: Awaited<ReturnType<typeof submitOrder>>) {
   }
   return {
     orderStatus: result.status,
+    billingConflicts: result.billingConflicts,
     succeededCount,
     failedCount,
     needsReconcileCount,
@@ -540,11 +545,11 @@ pax8OrderRoutes.post(
       orgId: bundle.order.orgId, orderId: id,
     };
     const mutation = await runAuditedMutation(c, audit, () =>
-      submitOrder({ partnerId: partner.partnerId, orderId: id, actorUserId: auth.user.id }));
+      submitOrder({ partnerId: partner.partnerId, orderId: id, actorUserId: auth.user.id, mode: { kind: 'rest' } }));
     if ('response' in mutation) return mutation.response;
     const result = mutation.value;
     const details = submitAuditDetails(result);
-    if (result.status === 'completed') {
+    if (result.status === 'completed' && result.billingConflicts.length === 0) {
       auditOrderAction(c, {
         ...audit,
         result: 'success',
@@ -586,14 +591,14 @@ pax8OrderRoutes.post(
       reconcileOrder({ partnerId: partner.partnerId, orderId: id }));
     if ('response' in mutation) return mutation.response;
     const result = mutation.value;
-    if (result.stillUnknown === 0) {
+    if (result.stillUnknown === 0 && result.billingConflicts.length === 0) {
       auditOrderAction(c, {
         ...audit, result: 'success',
-        details: { resolved: result.resolved, stillUnknown: result.stillUnknown },
+        details: { resolved: result.resolved, stillUnknown: result.stillUnknown, billingConflicts: result.billingConflicts },
       });
     } else {
       auditOrderFailure(c, {
-        ...audit, details: { resolved: result.resolved, stillUnknown: result.stillUnknown },
+        ...audit, details: { resolved: result.resolved, stillUnknown: result.stillUnknown, billingConflicts: result.billingConflicts },
       }, { status: 200, errorClass: 'ReconciliationIncomplete' });
     }
     return c.json(result);

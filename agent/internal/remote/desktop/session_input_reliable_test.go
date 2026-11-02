@@ -305,7 +305,7 @@ func TestWebRTCSessionWiresTheReliableInputChannel(t *testing.T) {
 	inOrder("session_control.go", ctl[strings.Index(ctl, "func (s *Session) switchMonitor("):],
 		"s.geometryMu.Lock()",
 		`s.resetInputGeometry("monitor_switch")`,
-		"NewScreenCapturer(cfg)",
+		"openSessionCapturer(cfg)",
 		"s.announceCurrentMonitor()",
 		"applyDisplayOffset(s.inputHandler, index",
 		"s.monitorSwitchedMessage(index, w, h)",

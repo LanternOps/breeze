@@ -336,6 +336,22 @@ describe('contractDocumentService.freezeSignedAgreement (quote source)', () => {
     templateId: 't1', templateVersionId: 'v1', ctx: requestCtx, manualValues: {}, allowUnresolvedFallback: false, evidence: requestEvidence,
   };
 
+  // #10294 follow-up: the template name is frozen with the signed agreement, so
+  // a later template rename never changes its certificate — on every path.
+  it.each([
+    ['authored', () => ({ render: authored('<p>x</p>') })],
+    ['uploaded template', () => ({ render: { sourceType: 'uploaded' as const, bodyHtml: null, fileData: Buffer.from('%PDF-1.4 x'), templateName: 'MSA', versionSha256: 'a'.repeat(64) } })],
+    ['external upload', () => ({ render: authored('<p>x</p>'), externalBytes: { data: Buffer.from('%PDF-1.4 y'), mime: 'application/pdf' } })],
+  ])('snapshots the template name at signing (%s)', async (_path, extra) => {
+    await freezeSignedAgreement({ ...requestBase, ...extra() });
+    expect(insertedValues[0]).toMatchObject({ templateNameSnapshot: 'MSA' });
+  });
+
+  it('snapshots the template name on the quote source too', async () => {
+    await freezeSignedAgreement({ ...base, render: authored('<p>x</p>') });
+    expect(insertedValues[0]).toMatchObject({ templateNameSnapshot: 'MSA' });
+  });
+
   it("source.kind='request' inserts agreement_request_id, no quote columns, source_kind 'request'", async () => {
     await freezeSignedAgreement({ ...requestBase, render: authored('<p>{{client.name}} effective {{dates.effective}}</p>') });
     const row = insertedValues[0]!;
@@ -387,6 +403,17 @@ describe('contractDocumentService.freezeSignedAgreement (quote source)', () => {
       acceptanceReference: 'Signed PDF from client', recordedByUserId: 'tech-1', contentSha256: 'f'.repeat(64),
       contentHashVersion: 1, signerIp: null, signerUserAgent: null,
     });
+  });
+
+  // #10513: the certificate wording is versioned so signed evidence never
+  // changes after the fact; every new signature is stamped with the version
+  // this build renders, on both sources and every path.
+  it('stamps the current certificate version (2) on every signed agreement, both sources', async () => {
+    await freezeSignedAgreement({ ...base, render: authored('<p>x</p>') });
+    await freezeSignedAgreement({ ...requestBase, render: authored('<p>x</p>') });
+    await freezeSignedAgreement({ ...requestBase, render: authored('<p>x</p>'), externalBytes: { data: Buffer.from('%PDF-1.4 y'), mime: 'application/pdf' } });
+    expect(insertedValues).toHaveLength(3);
+    for (const row of insertedValues) expect(row.certificateVersion).toBe(2);
   });
 
   it('request path (allowUnresolvedFallback=false): a quote-only token throws 422 AGREEMENT_VARIABLES_UNRESOLVED and inserts nothing', async () => {

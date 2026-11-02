@@ -679,7 +679,7 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
       'file_read', 'file_write', 'registry_set', 'kill_process', 'stop_service', 'task_run', 'task_disable',
       'software_install', 'software_uninstall', 'update_agent', 'pam_apply_v2', 'actuate_elevation',
       'backup_run', 'backup_restore', 'backup_cleanup', 'system_cleanup_run', 'security_threat_remove',
-      'network_diagnostic', 'restart_agent', 'reboot', 'shutdown',
+      'network_diagnostic', 'restart_agent', 'reboot', 'shutdown', 'execute_containment',
     ];
     for (const type of forbidden) expect(TEARDOWN_CLAIM_EXEMPT_TYPES.has(type)).toBe(false);
   });
