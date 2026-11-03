@@ -1341,6 +1341,10 @@ export function isInputAwareTier3(
   if (action !== 'add' && action !== 'update') return false;
   return (
     input.featureType === 'maintenance'
+    // #10100: containment extraAllow grants an isolated device network permits
+    // (execution_gated); the handler refuses a containment update that omits
+    // featureType, so this input check cannot be bypassed on update.
+    || input.featureType === 'containment'
     || warrantyHpCmslRequested(input.inlineSettings)
   );
 }
