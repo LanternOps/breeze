@@ -256,6 +256,77 @@ describe('contact_roles migration and tenancy contracts (#8087)', () => {
     expect(after!.roles).toEqual(['technical']);
   });
 
+  runDb('a refused legacy roles patch writes nothing — no promotion, no incumbent demotion, no name/email change — even when the surrounding transaction commits', async () => {
+    const testDb = getTestDb();
+    const f = await seedTwoOrgs();
+    const [incumbent] = await testDb.insert(contacts).values({
+      orgId: f.orgA.id, name: 'Incumbent', email: 'inc@example.test', siteId: null, roles: [], isPrimary: true,
+    }).returning();
+    await testDb.update(contacts)
+      .set({ roles: ['technical'], name: 'Target', email: 'target@example.test', isPrimary: false })
+      .where(eq(contacts.id, f.contactA.id));
+    await testDb.insert(contactRoles).values({
+      contactId: f.contactA.id, orgId: f.orgA.id, role: 'technical', deviceGroupId: f.groupA.id,
+    });
+    const ctx = orgContext(f.orgA.id, f.partner.id);
+
+    // The route turns the refusal into a 400 INSIDE the request transaction, so
+    // anything written before it would commit. Catch inside the context to
+    // simulate that: the transaction commits whatever was written.
+    const thrown = await withDbAccessContext(ctx, async () => {
+      try {
+        await updateContact(db, f.contactA.id, f.orgA.id,
+          { roles: ['admin'], isPrimary: true, name: 'Renamed', email: 'renamed@example.test' }, { userId: null });
+        return null;
+      } catch (error) {
+        return error;
+      }
+    });
+    expect(thrown).toMatchObject({ code: 'legacy-write-cannot-represent-scoped-responsibilities' });
+
+    const [target] = await testDb.select().from(contacts).where(eq(contacts.id, f.contactA.id));
+    expect(target).toMatchObject({ name: 'Target', email: 'target@example.test', isPrimary: false, roles: ['technical'] });
+    const [inc] = await testDb.select().from(contacts).where(eq(contacts.id, incumbent!.id));
+    expect(inc!.isPrimary).toBe(true);
+    const held = await testDb.select().from(contactRoles).where(eq(contactRoles.contactId, f.contactA.id));
+    expect(held).toHaveLength(1);
+    expect(held[0]).toMatchObject({ role: 'technical', siteId: null, deviceGroupId: f.groupA.id });
+  });
+
+  runDb('un-pinning a Site primary that holds billing @ Organization makes it the org-level primary and re-projects billing_contact to it', async () => {
+    const testDb = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const [previous] = await testDb.insert(contacts).values({
+      orgId: org.id, name: 'Previous biller', email: 'prev@example.test', siteId: null, roles: ['billing'], isPrimary: false,
+    }).returning();
+    const [sitePrimary] = await testDb.insert(contacts).values({
+      orgId: org.id, name: 'Site biller', email: 'site@example.test', siteId: site.id, roles: ['billing'], isPrimary: true,
+    }).returning();
+    await testDb.insert(contactRoles).values([
+      { contactId: previous!.id, orgId: org.id, role: 'billing', siteId: null, deviceGroupId: null },
+      { contactId: sitePrimary!.id, orgId: org.id, role: 'billing', siteId: null, deviceGroupId: null },
+    ]);
+    await testDb.update(organizations)
+      .set({ billingContact: { contactId: previous!.id, name: 'Previous biller', email: 'prev@example.test' } })
+      .where(eq(organizations.id, org.id));
+    const ctx = orgContext(org.id, partner.id);
+    const recipient = async () =>
+      ((await testDb.select().from(organizations).where(eq(organizations.id, org.id)))[0]!.billingContact as { contactId?: string } | null)?.contactId ?? null;
+    expect(await recipient()).toBe(previous!.id);
+
+    // A Site primary never outranks the incumbent while pinned...
+    await withDbAccessContext(ctx, () =>
+      updateContact(db, previous!.id, org.id, { name: 'Previous biller (edited)' }, { userId: null }));
+    expect(await recipient()).toBe(previous!.id);
+
+    // ...but un-pinned it is the ORGANIZATION-level primary, which ranks first.
+    await withDbAccessContext(ctx, () =>
+      updateContact(db, sitePrimary!.id, org.id, { siteId: null }, { userId: null }));
+    expect(await recipient()).toBe(sitePrimary!.id);
+  });
+
   runDb('legacy roles write that changes nothing is a no-op even on a contact holding scoped assignments', async () => {
     const testDb = getTestDb();
     const f = await seedTwoOrgs();

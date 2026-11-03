@@ -38,7 +38,7 @@ import {
   type ContactExecutor,
 } from './compat';
 import { CONTACT_ROLES, type ContactRole } from './types';
-import { syncLegacyContactRoles } from './responsibilities';
+import { assertLegacyRolesWritable, syncLegacyContactRoles } from './responsibilities';
 import { recordDestinationChangeWithExecutor } from '../callerVerification/destinations';
 import type { DestinationSource } from '../callerVerification/types';
 
@@ -614,7 +614,11 @@ export async function updateContact(
     || patch.email !== undefined
     || patch.phone !== undefined
     || patch.roles !== undefined
-    || patch.isPrimary !== undefined;
+    || patch.isPrimary !== undefined
+    // The pin is affiliation only, but the recipient ORDER ranks an
+    // organization-level primary first, so (un)pinning a primary that holds
+    // `billing @ Organization` can change who invoices go to.
+    || patch.siteId !== undefined;
 
   // The organization (whenever the row is or becomes org-level, or the billing
   // projection may change) plus every site that can lose or gain a primary:
@@ -672,6 +676,15 @@ export async function updateContact(
   const recipientBefore = patch.email !== undefined && heldBillingBefore
     ? await currentBillingContactId(exec, orgId)
     : null;
+
+  // The legacy roles write may be refused. Ask BEFORE the first write below:
+  // the route answers the refusal with a 400 inside the request transaction,
+  // so a refusal raised after the demotion or the UPDATE would commit them.
+  if (patch.roles !== undefined) {
+    await assertLegacyRolesWritable(exec, {
+      contactId, orgId, siteId: nextSiteId, previousSiteId: current.siteId, roles: roles ?? undefined,
+    });
+  }
 
   let demotedBillingContact = false;
   if (nextIsPrimary && !(current.isPrimary && current.siteId === nextSiteId)) {

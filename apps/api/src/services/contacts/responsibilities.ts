@@ -114,17 +114,17 @@ async function replaceCanonicalSet(
  * re-scope an assignment it has no authority over. `contacts.site_id` alone is
  * affiliation/primacy: callers must not invoke this for a siteId-only change.
  */
-export async function syncLegacyContactRoles(
-  exec: ContactExecutor,
-  input: {
-    contactId: string;
-    orgId: string;
-    siteId: string | null;
-    /** The pin before this write; only an un-pin reads it. */
-    previousSiteId?: string | null;
-    roles: readonly ContactRole[] | readonly string[] | null | undefined;
-  },
-): Promise<void> {
+type LegacyRolesWriteInput = {
+  contactId: string;
+  orgId: string;
+  siteId: string | null;
+  /** The pin before this write; only an un-pin reads it. */
+  previousSiteId?: string | null;
+  roles: readonly ContactRole[] | readonly string[] | null | undefined;
+};
+
+/** Reads the canonical set and decides what a legacy roles write would do. Writes nothing. */
+async function planLegacyRolesWrite(exec: ContactExecutor, input: LegacyRolesWriteInput) {
   const desired = new Set<string>(input.roles ?? []);
   const owned = and(eq(contactRoles.contactId, input.contactId), eq(contactRoles.orgId, input.orgId));
 
@@ -151,16 +151,37 @@ export async function syncLegacyContactRoles(
   ];
 
   // Nothing to apply: leave the canonical set (and any scope it carries) alone.
-  if (removed.length === 0 && added.length === 0 && !pinChanged) return;
-
+  const noop = removed.length === 0 && added.length === 0 && !pinChanged;
   const representable = existing.every((row) =>
     row.deviceGroupId === null && row.siteId === legacyScopeBeforeWrite);
-  if (!representable) {
-    throw new ResponsibilityValidationError(
-      'This contact has scoped responsibilities (a Device Group, or a Site other than its current pin) that a roles update cannot express, so the roles were not changed.',
-      'legacy-write-cannot-represent-scoped-responsibilities',
-    );
-  }
+  return { desired, owned, existing, removed, added, noop, representable };
+}
+
+function refuseUnrepresentable(): never {
+  throw new ResponsibilityValidationError(
+    'This contact has scoped responsibilities (a Device Group, or a Site other than its current pin) that a roles update cannot express, so the roles were not changed.',
+    'legacy-write-cannot-represent-scoped-responsibilities',
+  );
+}
+
+/**
+ * The refusal `syncLegacyContactRoles` would raise, without writing anything.
+ * A caller that has already written (primary demotion, the contact UPDATE) must
+ * ask first: the route answers the refusal with a 400 inside the request
+ * transaction, so a refusal raised after a write commits that write.
+ */
+export async function assertLegacyRolesWritable(exec: ContactExecutor, input: LegacyRolesWriteInput): Promise<void> {
+  const plan = await planLegacyRolesWrite(exec, input);
+  if (!plan.noop && !plan.representable) refuseUnrepresentable();
+}
+
+export async function syncLegacyContactRoles(
+  exec: ContactExecutor,
+  input: LegacyRolesWriteInput,
+): Promise<void> {
+  const { desired, owned, existing, removed, added, noop, representable } = await planLegacyRolesWrite(exec, input);
+  if (noop) return;
+  if (!representable) refuseUnrepresentable();
 
   if (removed.length > 0) {
     await exec.delete(contactRoles).where(and(owned, inArray(contactRoles.role, removed)));

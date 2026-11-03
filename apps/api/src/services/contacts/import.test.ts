@@ -13,6 +13,7 @@ const { selectMock, insertMock, updateMock, systemContextCalls } = vi.hoisted(()
 vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWithExecutor: vi.fn().mockResolvedValue(undefined) }));
 const responsibilityMocks = vi.hoisted(() => ({
   syncLegacyContactRoles: vi.fn().mockResolvedValue(undefined),
+  assertLegacyRolesWritable: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('./responsibilities', async () => ({
   ...responsibilityMocks,
@@ -1074,8 +1075,9 @@ describe('commitContactImport', () => {
       // updateContact: getContact, the org pre-lock, then the locked re-read.
       then: [[storedContact()], ...lockedReread()],
     });
-    // The matched row's roles patch is the first legacy sync; the new row's sync resolves.
-    responsibilityMocks.syncLegacyContactRoles.mockRejectedValueOnce(
+    // The matched row's roles patch is refused by the read-only pre-check (before
+    // any write); the new row's check resolves.
+    responsibilityMocks.assertLegacyRolesWritable.mockRejectedValueOnce(
       new ResponsibilityValidationError(message, 'legacy-write-cannot-represent-scoped-responsibilities'),
     );
     const summary = await commitContactImport([
