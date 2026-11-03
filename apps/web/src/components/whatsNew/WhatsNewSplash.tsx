@@ -62,7 +62,9 @@ export default function WhatsNewSplash() {
       title={t('whatsNew.title', { version: entry.version })}
       labelledBy="whats-new-heading"
       maxWidth="lg"
-      className="p-6"
+      // The Dialog centers its panel without a height cap, so a long entry on
+      // a short window pushed the buttons off screen with no way to scroll.
+      className="max-h-[90vh] overflow-y-auto p-6"
     >
       <h2 id="whats-new-heading" className="text-lg font-semibold">
         {t('whatsNew.title', { version: entry.version })}
