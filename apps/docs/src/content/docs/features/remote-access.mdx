@@ -192,7 +192,14 @@ A session is refused most commonly when someone is signed in and **neither** ren
 | When consent can't be asked | Proceed / Block | **Proceed** | What happens when **no one is signed in** to the session being viewed, or when the signed-in user doesn't respond in time. **Proceed** connects anyway; **Block** refuses the session. An explicit **Deny** always blocks regardless of this setting. With current agents, a session where someone **is** signed in but the prompt can't be shown to them (neither Breeze Assist nor the native dialog can reach them) is always refused, whatever this is set to. |
 | Notify on session end | On / Off | **On** | Whether the "session ended" notice is shown. |
 | Show active-session indicator | On / Off | **On** | Whether the top-of-screen indicator appears during the session. |
+| Let the user end the session | On / Off | **On** | Whether the person at the device can end the session from the active-session indicator, after a confirmation. Unavailable while **Show active-session indicator** is off. See *Ending a session from the device* below. |
 | Technician identity shown | Name & email / Name only / Generic | **Name & email** | How much of the technician's identity is revealed to the end user, in the prompt and the notices. **Name & email** shows both, **Name only** omits the address, and **Generic** shows "*A technician*" with no name or email. |
+
+**Ending a session from the device**
+
+With **Let the user end the session** on, the active-session indicator offers **End session**. After the person confirms, the session stops, the session history list and detail show **Ended by the user**, and the audit log records **Remote session ended by the user**.
+
+This button is part of the newer on-device session indicator, which is opt-in: it appears only once your administrator enables the `remote.session` prompt kind with [`PROMPT_HOST_ENABLED_KINDS`](/deploy/environment/#agent-connection-switches). Nothing is enabled by default, so until then the setting has no effect on devices.
 
 <Aside>
   These surfaces are drawn in the signed-in user's desktop session by Breeze Assist or, when Assist isn't running, by the Breeze user helper's native dialogs. On an unattended machine (no user signed in), there is no one to notify or ask — in **Consent** mode, Breeze then applies the *"When consent can't be asked"* fallback. With **Proceed** (the default), unattended and headless machines are never locked out. If a user is signed in but neither can show them the prompt, current agents refuse the session instead of connecting without asking. Only Windows reports whether the screen is locked, so on macOS and Linux a prompt that times out is refused.
