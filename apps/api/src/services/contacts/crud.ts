@@ -32,6 +32,7 @@ import {
   BILLING_ROLE,
   currentBillingContactId,
   lockOrganizationForProjection,
+  anyHoldsOrgBillingResponsibility,
   projectBillingContact,
   replaceSiteContact,
   type ContactExecutor,
@@ -149,7 +150,11 @@ export function assertValidRoles(roles: string[] | undefined): ContactRole[] | u
       );
     }
   }
-  return roles as ContactRole[];
+  // Distinct, in stable vocabulary order: contacts.roles[] is a projection of the
+  // canonical set (spec §8.2), and the legacy adapter returns early when a write
+  // changes nothing, so it can no longer be relied on to normalise it afterwards.
+  const requested = new Set<string>(roles);
+  return CONTACT_ROLES.filter((role) => requested.has(role));
 }
 
 type Identifiers = Pick<ContactRecord, 'name' | 'email' | 'phone' | 'mobile'>;
@@ -244,13 +249,15 @@ async function demoteScopePrimary(
     .update(contacts)
     .set({ isPrimary: false, updatedAt: new Date() })
     .where(exceptContactId ? and(scope, ne(contacts.id, exceptContactId))! : scope)
-    .returning({ siteId: contacts.siteId, roles: contacts.roles });
+    .returning({ id: contacts.id });
   // Primacy is the first tiebreak among billing contacts (compat.ts
   // `billingContactOrder`), so demoting one can change which of them is THE
-  // billing contact even though nobody's billing role moved.
+  // billing contact even though nobody's billing role moved. A site-pinned
+  // contact may hold `billing @ Organization` (siteId is affiliation only —
+  // spec §28 Phase 3), which `roles[]` + `siteId` cannot identify, so ask the
+  // canonical table (the caller already holds the organization lock).
   return {
-    demotedBillingContact: (demoted as Array<{ siteId: string | null; roles: string[] | null }>)
-      .some((row) => holdsOrgBillingRole(row)),
+    demotedBillingContact: await anyHoldsOrgBillingResponsibility(exec, orgId, demoted.map((row) => row.id)),
   };
 }
 
@@ -597,12 +604,22 @@ export async function updateContact(
 
   // Everything above derives from `existing`, which `getContact` read WITHOUT a
   // lock. `current` is that same reading once it has been confirmed under one.
-  let current: Pick<ContactRecord, 'isPrimary' | 'siteId' | 'roles'> = existing;
+  let current: Pick<ContactRecord, 'isPrimary' | 'siteId'> = existing;
 
-  // The organization (whenever the row is or becomes org-level — its billing
-  // role decides organizations.billing_contact) plus every site that can lose
-  // or gain a primary: EXACTLY the set of parents the re-projection may write.
-  if (initialScopes.orgLevel || siteScopes.size > 0) {
+  // Canonical `billing @ Organization` is independent of the contact's pin, so
+  // any field that can change the rendered billing recipient or its order takes
+  // the organization lock up front (parent-first, before the contact UPDATE).
+  const billingProjectionMayChange =
+    patch.name !== undefined
+    || patch.email !== undefined
+    || patch.phone !== undefined
+    || patch.roles !== undefined
+    || patch.isPrimary !== undefined;
+
+  // The organization (whenever the row is or becomes org-level, or the billing
+  // projection may change) plus every site that can lose or gain a primary:
+  // EXACTLY the set of parents the re-projection may write.
+  if (initialScopes.orgLevel || siteScopes.size > 0 || billingProjectionMayChange) {
     await lockProjectionScopes(exec, orgId, [...siteScopes]);
 
     // Re-read the target under those locks, and only then act. Without this,
@@ -612,12 +629,8 @@ export async function updateContact(
     // while the incumbent primary had ALREADY been demoted and the legacy
     // jsonb re-projected, and the enclosing request transaction committed
     // both — a call that reported failure still changed the projection.
-    //
-    // `roles` is read here too: whether this row feeds the org's billing
-    // contact is decided by the LOCKED row, never by the unlocked one — a
-    // concurrent writer may have granted or removed the billing role since.
     const [locked] = await exec
-      .select({ isPrimary: contacts.isPrimary, siteId: contacts.siteId, roles: contacts.roles })
+      .select({ isPrimary: contacts.isPrimary, siteId: contacts.siteId })
       .from(contacts)
       .where(and(eq(contacts.id, contactId), eq(contacts.orgId, orgId)))
       .limit(1)
@@ -651,7 +664,12 @@ export async function updateContact(
   // so an email change on the current recipient would otherwise hand the role
   // to another billing contact. Ask who the recipient is while the stored
   // email still matches, and keep it through the re-projection below.
-  const recipientBefore = patch.email !== undefined && holdsOrgBillingRole(current)
+  // Canonical, read under the organization lock taken above. Asked only when a
+  // billing-affecting field is in play, i.e. exactly when that lock is held.
+  const heldBillingBefore = billingProjectionMayChange
+    ? await anyHoldsOrgBillingResponsibility(exec, orgId, [contactId])
+    : false;
+  const recipientBefore = patch.email !== undefined && heldBillingBefore
     ? await currentBillingContactId(exec, orgId)
     : null;
 
@@ -702,11 +720,14 @@ export async function updateContact(
   // behind it, on a call the route answers 404.
   if (!updated) return null;
 
-  // Legacy compatibility adapter (spec §7.4/§8.3): either half of the legacy
-  // shape (`siteId` + `roles`) is applied to `contact_roles` in this same
-  // transaction. A re-pin re-scopes the legacy-derived assignments to the new
-  // Site and an un-pin widens them back to Organization; it must run before the billing re-projection below, which reads them.
-  if (patch.roles !== undefined || patch.siteId !== undefined) {
+  // Phase 3 retirement (spec §8.4, §28): `siteId` is affiliation/primacy
+  // metadata and NEVER moves responsibilities by itself. Only a legacy `roles`
+  // write reaches the compatibility adapter, which fails closed on a contact
+  // whose canonical assignments `roles[] + siteId` cannot express. When one
+  // request changes both fields the adapter judges the pre-write pin
+  // (`previousSiteId`), so a still-legacy-shaped contact may move and replace
+  // its roles atomically. Must run before the billing re-projection below.
+  if (patch.roles !== undefined) {
     await syncLegacyContactRoles(exec, {
       contactId,
       orgId,
@@ -725,9 +746,13 @@ export async function updateContact(
   }
 
   for (const siteId of siteScopes) await reprojectSiteContact(exec, orgId, siteId, actor.userId);
-  // Before OR after: gaining the role, losing it, moving on or off the org
-  // level, or a field edit while holding it all change what invoices use.
-  if (holdsOrgBillingRole(current) || holdsOrgBillingRole(updated) || demotedBillingContact) {
+  // Before OR after: gaining the billing responsibility, losing it, or a field
+  // edit while holding it all change what invoices use. A contact that held it
+  // neither before nor after leaves `organizations.billing_contact` alone.
+  const holdsBillingAfter = billingProjectionMayChange
+    ? await anyHoldsOrgBillingResponsibility(exec, orgId, [contactId])
+    : false;
+  if (heldBillingBefore || holdsBillingAfter || demotedBillingContact) {
     await projectBillingContact(exec, orgId, { keepContactId: recipientBefore === contactId ? contactId : null });
   }
 
@@ -748,16 +773,19 @@ export async function deleteContact(
   // the org whenever the contact is org-level (it may be the billing contact),
   // and its site when it is that site's primary.
   const sitePrimary = existing.isPrimary && existing.siteId !== null ? existing.siteId : null;
-  if (existing.siteId === null || sitePrimary !== null) {
-    await lockProjectionScopes(exec, orgId, sitePrimary === null ? [] : [sitePrimary]);
-  }
+  // A site-pinned contact may hold canonical `billing @ Organization` (siteId is
+  // affiliation only), so the pin no longer says whether the delete affects the
+  // billing projection: always take the organization lock.
+  await lockProjectionScopes(exec, orgId, sitePrimary === null ? [] : [sitePrimary]);
+  // Read before the DELETE: contact_roles cascades away with the contact.
+  const heldBilling = await anyHoldsOrgBillingResponsibility(exec, orgId, [contactId]);
 
   // RETURNING the row as it was deleted, so what gets re-projected is decided
   // by the row this statement actually removed, not by the unlocked read.
   const [deleted] = await exec
     .delete(contacts)
     .where(and(eq(contacts.id, contactId), eq(contacts.orgId, orgId)))
-    .returning({ id: contacts.id, siteId: contacts.siteId, isPrimary: contacts.isPrimary, roles: contacts.roles });
+    .returning({ id: contacts.id, siteId: contacts.siteId, isPrimary: contacts.isPrimary });
 
   // `existing` came from an unlocked read, so the DELETE is the first statement
   // that can say whether this call actually removed anything. Clearing the
@@ -766,10 +794,10 @@ export async function deleteContact(
   // 404 — the same false-success the update path re-reads to avoid.
   if (!deleted) return null;
 
-  const removed = deleted as { siteId: string | null; isPrimary: boolean; roles: string[] | null };
+  const removed = deleted as { siteId: string | null; isPrimary: boolean };
   if (removed.isPrimary && removed.siteId !== null) {
     await reprojectSiteContact(exec, orgId, removed.siteId, actor.userId);
   }
-  if (holdsOrgBillingRole(removed)) await projectBillingContact(exec, orgId);
+  if (heldBilling) await projectBillingContact(exec, orgId);
   return existing;
 }

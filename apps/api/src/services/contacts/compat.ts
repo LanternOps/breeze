@@ -1,10 +1,10 @@
-import { and, asc, desc, eq, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { contacts } from '../../db/schema/contacts';
 import { contactRoles } from '../../db/schema/contactRoles';
 import { organizations, sites } from '../../db/schema/orgs';
 import { recordDestinationChangeWithExecutor } from '../callerVerification/destinations';
-import { syncLegacyContactRoles } from './responsibilities';
+import { removeContactResponsibility, syncLegacyContactRoles } from './responsibilities';
 
 /**
  * Dual-write bridge between the `contacts` table and the legacy
@@ -229,7 +229,11 @@ function billingContactOrder(orgId: string, keepContactId?: string | null): SQL[
     ? sql`(${contacts.id} = ${keepContactId} OR ${storedIncumbent})`
     : storedIncumbent;
   const legacyIncumbent = sql`COALESCE(lower(${contacts.email}) = lower(${current('email')}), false)`;
-  return [desc(contacts.isPrimary), desc(incumbent), desc(legacyIncumbent), asc(contacts.createdAt), asc(contacts.id)];
+  // Only the ORGANIZATION-level primary outranks: a site-pinned contact may hold
+  // `billing @ Organization` (siteId is affiliation only, spec §28 Phase 3), and
+  // being a Site's primary must not hand it the invoice recipient slot.
+  const orgPrimary = sql`(${contacts.isPrimary} AND ${contacts.siteId} IS NULL)`;
+  return [desc(orgPrimary), desc(incumbent), desc(legacyIncumbent), asc(contacts.createdAt), asc(contacts.id)];
 }
 
 /**
@@ -258,6 +262,33 @@ export async function lockOrganizationForProjection(exec: ContactExecutor, orgId
     .from(organizations)
     .where(eq(organizations.id, orgId))
     .for('no key update');
+}
+
+/**
+ * Whether any of these contacts holds canonical `billing @ Organization` — the
+ * only rows that can feed `organizations.billing_contact`. `siteId`/`roles[]`
+ * cannot answer this once `contacts.site_id` is affiliation-only (spec §28
+ * Phase 3), so a writer asks the canonical table. Read it AFTER taking the
+ * organization lock: a concurrent grant is then serialised behind this write.
+ */
+export async function anyHoldsOrgBillingResponsibility(
+  exec: ContactExecutor,
+  orgId: string,
+  contactIds: readonly string[],
+): Promise<boolean> {
+  if (contactIds.length === 0) return false;
+  const [row] = await exec
+    .select({ id: contactRoles.id })
+    .from(contactRoles)
+    .where(and(
+      eq(contactRoles.orgId, orgId),
+      inArray(contactRoles.contactId, [...contactIds]),
+      eq(contactRoles.role, BILLING_ROLE),
+      isNull(contactRoles.siteId),
+      isNull(contactRoles.deviceGroupId),
+    ))
+    .limit(1);
+  return !!row;
 }
 
 /**
@@ -351,16 +382,12 @@ async function applyToBillingContact(
   const unassign = isEmpty(next) || (!replace && patch.email === null);
   if (unassign) {
     if (existing) {
-      const [updated] = await exec
-        .update(contacts)
-        .set({ roles: sql`array_remove(${contacts.roles}, ${BILLING_ROLE})`, updatedAt: new Date() })
-        .where(and(eq(contacts.id, existing.id), eq(contacts.orgId, orgId)))
-        .returning({ id: contacts.id, siteId: contacts.siteId, roles: contacts.roles });
-      if (updated) {
-        await syncLegacyContactRoles(exec, {
-          contactId: updated.id, orgId, siteId: updated.siteId, roles: updated.roles,
-        });
-      }
+      // The billing settings own exactly `billing @ Organization`. Remove that one
+      // assignment instead of rebuilding the contact's whole canonical set from
+      // roles[], which would flatten (or, now, be refused for) Site/Group rows.
+      await removeContactResponsibility(exec, {
+        contactId: existing.id, orgId, role: BILLING_ROLE, scope: { type: 'organization' },
+      });
     }
     return null;
   }

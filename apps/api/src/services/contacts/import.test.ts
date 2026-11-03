@@ -14,7 +14,12 @@ vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWi
 const responsibilityMocks = vi.hoisted(() => ({
   syncLegacyContactRoles: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock('./responsibilities', () => responsibilityMocks);
+vi.mock('./responsibilities', async () => ({
+  ...responsibilityMocks,
+  // The real error class: import.ts does `instanceof` on it to surface the refusal verbatim.
+  ResponsibilityValidationError: (await vi.importActual<typeof import('./responsibilities')>('./responsibilities'))
+    .ResponsibilityValidationError,
+}));
 vi.mock('../callerVerification/subjects', () => ({ upsertDirectorySyncBinding: vi.fn(), attestBinding: vi.fn(), bindingsForContact: vi.fn() }));
 vi.mock('../../db', () => ({
   db: { select: selectMock, insert: insertMock, update: updateMock },
@@ -609,7 +614,9 @@ describe('commitContactImport', () => {
       then: [
         [storedContact({ roles: ['billing'] })],
         ...lockedReread({ roles: ['billing'] }),
+        [{ id: EXISTING }],   // canonical before: it holds billing @ Organization
         [{ id: EXISTING }],   // pre-write recipient read (the row carries an email)
+        [{ id: EXISTING }],   // canonical after
         [merged],
       ],
     });
@@ -637,6 +644,8 @@ describe('commitContactImport', () => {
     }], CTX, ACTOR);
     // Positive control: the row really was applied.
     expect(summary.updated).toHaveLength(1);
+    // Phase 3: the phone edit locks the org and asks the canonical table; the
+    // contact holds no billing @ Organization, so no organizations update.
     expect(updated.filter((u) => u.table === organizations)).toHaveLength(0);
   });
 
@@ -827,7 +836,11 @@ describe('commitContactImport', () => {
         [{ id: SITE }],   // the site pin is validated against the org
         [], [],           // parent pre-locks: org, then site
         [{ isPrimary: true, siteId: null, roles: ['billing'] }], // the target, re-read under them
+        [{ id: EXISTING }], // canonical before: it holds billing @ Organization
+        [moved],          // pre-write recipient read
+        [],               // demotion canonical check
         [moved], [moved], // claimed site scope
+        [{ id: EXISTING }], // canonical after
         [],               // billing re-projection: no org-level billing contact is left
       ],
     });
@@ -852,7 +865,11 @@ describe('commitContactImport', () => {
     // No `site` on the row means "not specified", never "move to org level".
     stubState({
       contacts: [{ id: EXISTING, orgId: ORG, siteId: SITE, name: 'Jane Ops', email: 'jane@acme.example', isPrimary: false }],
-      then: [[{ id: EXISTING, orgId: ORG, siteId: SITE, name: 'Jane Ops', email: 'jane@acme.example', phone: null, mobile: null, title: null, roles: [], isPrimary: false, notes: null }]],
+      // A phone edit now takes the org lock (Phase 3), so seed the pre-lock and locked re-read.
+      then: [
+        [{ id: EXISTING, orgId: ORG, siteId: SITE, name: 'Jane Ops', email: 'jane@acme.example', phone: null, mobile: null, title: null, roles: [], isPrimary: false, notes: null }],
+        ...lockedReread({ siteId: SITE }),
+      ],
     });
     await commitContactImport([{
       organizationId: ORG, name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100',
@@ -1047,6 +1064,36 @@ describe('commitContactImport', () => {
     expect(summary.errors[0]).toMatchObject({ index: 0, code: 'site-not-in-org' });
     expect(summary.errors[0]!.error).toBe('Site does not belong to this organization');
     expect(summary.updated).toEqual([]);
+  });
+
+  it('records a legacy-write refusal on a matched row under its OWN code and message, and other rows still commit', async () => {
+    const { ResponsibilityValidationError } = await vi.importActual<typeof import('./responsibilities')>('./responsibilities');
+    const message = 'This contact has scoped responsibilities that its roles cannot represent. Use the contact responsibilities API.';
+    stubState({
+      contacts: [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example' }],
+      // updateContact: getContact, the org pre-lock, then the locked re-read.
+      then: [[storedContact()], ...lockedReread()],
+    });
+    // The matched row's roles patch is the first legacy sync; the new row's sync resolves.
+    responsibilityMocks.syncLegacyContactRoles.mockRejectedValueOnce(
+      new ResponsibilityValidationError(message, 'legacy-write-cannot-represent-scoped-responsibilities'),
+    );
+    const summary = await commitContactImport([
+      {
+        organizationId: ORG, name: 'Jane Ops', email: 'jane@acme.example', roles: ['admin'],
+        expectedAnnotation: 'email-match', expectedContactId: EXISTING,
+      },
+      { organizationId: ORG, name: 'Pat Pager', phone: '555-0142' },
+    ], CTX, ACTOR);
+
+    expect(summary.errors).toHaveLength(1);
+    expect(summary.errors[0]).toMatchObject({
+      index: 0, code: 'legacy-write-cannot-represent-scoped-responsibilities', error: message,
+    });
+    expect(summary.errors[0]!.code).not.toBe('write-failed');
+    expect(summary.updated).toEqual([]);
+    expect(summary.imported).toHaveLength(1);
+    expect(contactInserts()[0]!.values).toMatchObject({ name: 'Pat Pager' });
   });
 
   it('names the external-id link when 23505 came from contact_external_links_uniq', async () => {

@@ -18,17 +18,20 @@ export interface ContactResponsibilityInput {
   isPrimary?: boolean;
 }
 
+export type ResponsibilityValidationCode =
+  | 'contact-not-in-org'
+  | 'site-not-in-org'
+  | 'device-group-not-in-org'
+  | 'unsupported-role'
+  | 'unsupported-scope'
+  | 'duplicate-assignment'
+  | 'legacy-write-cannot-represent-scoped-responsibilities';
+
 export class ResponsibilityValidationError extends Error {
   readonly status = 400;
   constructor(
     message: string,
-    readonly code:
-      | 'contact-not-in-org'
-      | 'site-not-in-org'
-      | 'device-group-not-in-org'
-      | 'unsupported-role'
-      | 'unsupported-scope'
-      | 'duplicate-assignment',
+    readonly code: ResponsibilityValidationCode,
   ) {
     super(message);
     this.name = 'ResponsibilityValidationError';
@@ -101,6 +104,15 @@ async function replaceCanonicalSet(
  * Organization scope. Rows at other Sites and Device Group rows are never touched.
  *
  * `contacts.roles[]` is then re-projected from the resulting canonical set.
+ *
+ * Phase 3 retirement (spec §8.4, §28): this adapter is compatibility-only and
+ * fails closed. When the write would change anything, every assignment the
+ * contact holds must be one the legacy shape can express: no Device Group row,
+ * and every Site/Organization row at the scope the contact's pin derived BEFORE
+ * this write. Otherwise it throws
+ * `legacy-write-cannot-represent-scoped-responsibilities` rather than delete or
+ * re-scope an assignment it has no authority over. `contacts.site_id` alone is
+ * affiliation/primacy: callers must not invoke this for a siteId-only change.
  */
 export async function syncLegacyContactRoles(
   exec: ContactExecutor,
@@ -127,6 +139,9 @@ export async function syncLegacyContactRoles(
     .where(owned);
   const held = new Set<string>(existing.map((row) => row.role));
 
+  const legacyScopeBeforeWrite = input.previousSiteId === undefined ? input.siteId : input.previousSiteId;
+  const pinChanged = legacyScopeBeforeWrite !== input.siteId;
+
   const removed = [...held].filter((role) => !desired.has(role));
   // Not filtered to CONTACT_ROLES: an unknown name must reach the role CHECK and
   // be refused, exactly as the replace-the-set adapter did, not dropped silently.
@@ -134,6 +149,18 @@ export async function syncLegacyContactRoles(
     ...CONTACT_ROLES.filter((role) => desired.has(role) && !held.has(role)),
     ...[...desired].filter((role) => !held.has(role) && !(CONTACT_ROLES as readonly string[]).includes(role)),
   ];
+
+  // Nothing to apply: leave the canonical set (and any scope it carries) alone.
+  if (removed.length === 0 && added.length === 0 && !pinChanged) return;
+
+  const representable = existing.every((row) =>
+    row.deviceGroupId === null && row.siteId === legacyScopeBeforeWrite);
+  if (!representable) {
+    throw new ResponsibilityValidationError(
+      'This contact has scoped responsibilities (a Device Group, or a Site other than its current pin) that a roles update cannot express, so the roles were not changed.',
+      'legacy-write-cannot-represent-scoped-responsibilities',
+    );
+  }
 
   if (removed.length > 0) {
     await exec.delete(contactRoles).where(and(owned, inArray(contactRoles.role, removed)));
@@ -207,6 +234,78 @@ export async function syncLegacyContactRoles(
     .update(contacts)
     .set({ roles: resulting, updatedAt: new Date() })
     .where(and(eq(contacts.id, input.contactId), eq(contacts.orgId, input.orgId)));
+}
+
+/**
+ * Additive legacy write: grant roles at the scope derived from the contact's
+ * own pin (site_id NULL => Organization, SET => that Site) without touching any
+ * existing assignment. Unlike `syncLegacyContactRoles` it can never delete or
+ * re-scope, so it is safe on a contact that already holds scoped
+ * responsibilities. Idempotent. Used by login linking (`loginLink.ts`).
+ */
+export async function addLegacyDerivedContactRoles(
+  exec: ContactExecutor,
+  input: { contactId: string; orgId: string; roles: readonly ContactRole[] },
+): Promise<void> {
+  const [contact] = await exec
+    .select({ siteId: contacts.siteId })
+    .from(contacts)
+    .where(and(eq(contacts.id, input.contactId), eq(contacts.orgId, input.orgId)))
+    .limit(1)
+    .for('no key update');
+  if (!contact) throw new ResponsibilityValidationError('Contact does not belong to this organization', 'contact-not-in-org');
+
+  const scope: ResponsibilityScopeInput = contact.siteId === null
+    ? { type: 'organization' }
+    : { type: 'site', siteId: contact.siteId };
+  const wanted = [...new Set(input.roles)];
+  if (wanted.length > 0) {
+    await exec.insert(contactRoles).values(wanted.map((role) => ({
+      contactId: input.contactId,
+      orgId: input.orgId,
+      role,
+      isPrimary: false,
+      ...scopeColumns(scope),
+    }))).onConflictDoNothing();
+  }
+  await reprojectLegacyRoles(exec, input.contactId, input.orgId);
+}
+
+/** Remove one exact canonical assignment and refresh the legacy role projection. */
+export async function removeContactResponsibility(
+  exec: ContactExecutor,
+  input: { contactId: string; orgId: string; role: ContactRole; scope: ResponsibilityScopeInput },
+): Promise<void> {
+  const [contact] = await exec
+    .select({ id: contacts.id })
+    .from(contacts)
+    .where(and(eq(contacts.id, input.contactId), eq(contacts.orgId, input.orgId)))
+    .limit(1)
+    .for('no key update');
+  if (!contact) throw new ResponsibilityValidationError('Contact does not belong to this organization', 'contact-not-in-org');
+
+  const scope = scopeColumns(input.scope);
+  await exec.delete(contactRoles).where(and(
+    eq(contactRoles.contactId, input.contactId),
+    eq(contactRoles.orgId, input.orgId),
+    eq(contactRoles.role, input.role),
+    scope.siteId === null ? isNull(contactRoles.siteId) : eq(contactRoles.siteId, scope.siteId),
+    scope.deviceGroupId === null ? isNull(contactRoles.deviceGroupId) : eq(contactRoles.deviceGroupId, scope.deviceGroupId),
+  ));
+  await reprojectLegacyRoles(exec, input.contactId, input.orgId);
+}
+
+/** `contacts.roles[]` = DISTINCT roles of the canonical set, in stable vocabulary order (spec §8.2). */
+async function reprojectLegacyRoles(exec: ContactExecutor, contactId: string, orgId: string): Promise<void> {
+  const held = await exec
+    .select({ role: contactRoles.role })
+    .from(contactRoles)
+    .where(and(eq(contactRoles.contactId, contactId), eq(contactRoles.orgId, orgId)));
+  const roles = CONTACT_ROLES.filter((role) => held.some((row) => row.role === role));
+  await exec
+    .update(contacts)
+    .set({ roles, updatedAt: new Date() })
+    .where(and(eq(contacts.id, contactId), eq(contacts.orgId, orgId)));
 }
 
 /** Replace a contact's explicit canonical responsibility set atomically. */
