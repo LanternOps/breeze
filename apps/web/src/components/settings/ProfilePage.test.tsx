@@ -118,7 +118,7 @@ describe('ProfilePage avatar settings', () => {
     fetchWithAuthMock.mockImplementation(async (url, init) => {
       if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
       if (String(url) === '/users/me/avatar') return makeJsonResponse({ avatarUrl: '/api/v1/users/user-1/avatar?v=2' });
-      if (String(url) === '/users/me' && init?.method === 'PATCH') return makeJsonResponse({ name: 'Casey Admin', avatarUrl: '/api/v1/users/user-1/avatar?v=2' });
+      if (String(url) === '/users/me' && init?.method === 'PATCH') return makeJsonResponse({ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', avatarUrl: '/api/v1/users/user-1/avatar?v=2' });
       return makeJsonResponse({ name: 'Casey Admin', email: 'casey@example.com' });
     });
 
@@ -166,13 +166,14 @@ describe('ProfilePage avatar settings', () => {
     expect(screen.getByText('avatar.png')).toBeTruthy();
     expect(screen.getByTestId('avatar-dropzone').querySelector('img')?.getAttribute('src')).toBe('blob:fake');
     expect(fetchWithAuthMock.mock.calls.some(([url, init]) => String(url) === '/users/me' && init?.method === 'PATCH')).toBe(false);
+    expect(showToastMock).not.toHaveBeenCalled();
   });
 
   it('keeps avatar removal pending until Save changes', async () => {
     fetchWithAuthMock.mockImplementation(async (url, init) => {
       if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
       if (String(url) === '/users/me/avatar' && init?.method === 'DELETE') return makeJsonResponse({ avatarUrl: null });
-      if (String(url) === '/users/me' && init?.method === 'PATCH') return makeJsonResponse({ name: 'Casey Admin', avatarUrl: null });
+      if (String(url) === '/users/me' && init?.method === 'PATCH') return makeJsonResponse({ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', avatarUrl: null });
       return makeJsonResponse({ name: 'Casey Admin', email: 'casey@example.com' });
     });
     render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', avatarUrl: '/current/avatar', mfaEnabled: false }} />);

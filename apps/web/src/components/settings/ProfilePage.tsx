@@ -22,7 +22,7 @@ import type { MfaMethod, PasskeyAuthenticationOptions, PasskeyRegistrationOption
 import { navigateTo } from '@/lib/navigation';
 import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
 import { formatNumber } from '@/lib/i18n/format';
-import { runAction } from '@/lib/runAction';
+import { ActionError, runAction } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { Dialog } from '../shared/Dialog';
@@ -296,10 +296,6 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   });
 
   const isProfileLoading = useMemo(() => isUpdatingProfile || isSubmitting, [isUpdatingProfile, isSubmitting]);
-  // Preview priority: locally-selected file (object URL) → user's current
-  // avatar (fetched as blob through fetchWithAuth so the Bearer token gets
-  // attached — the API requires auth on GET /users/:id/avatar, and <img src=>
-  // can't send headers).
   const resolvedAvatarUrl = useAvatarBlobUrl(user?.avatarUrl ?? null);
   const previewAvatarUrl = avatarChange?.kind === 'remove'
     ? ''
@@ -308,7 +304,6 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       : resolvedAvatarUrl ?? '';
   const canRemoveAvatar = Boolean(user?.avatarUrl && avatarChange?.kind !== 'remove');
 
-  // Fetch user data on mount
   useEffect(() => {
     if (initialUser) return;
 
@@ -369,38 +364,50 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     try {
       setIsUpdatingProfile(true);
       if (avatarChange) {
-        let response: Response;
+        let avatarUrl: string | null;
         if (avatarChange.kind === 'replace') {
           const body = new FormData();
           body.append('file', avatarChange.file);
-          response = await fetchWithAuth('/users/me/avatar', { method: 'POST', body });
+          const avatar = await runAction<{ avatarUrl: string | null }>({
+            request: () => fetchWithAuth('/users/me/avatar', { method: 'POST', body }),
+            errorFallback: t('profilePage.failedToUploadAvatar'),
+            parseSuccess: (data) => z.object({ avatarUrl: z.string().nullable() }).parse(data),
+            suppressErrorToast: () => true,
+            onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
+          });
+          avatarUrl = avatar.avatarUrl;
         } else {
-          response = await fetchWithAuth('/users/me/avatar', { method: 'DELETE' });
+          const avatar = await runAction<{ avatarUrl: string | null }>({
+            request: () => fetchWithAuth('/users/me/avatar', { method: 'DELETE' }),
+            errorFallback: t('profilePage.failedToRemoveAvatar'),
+            parseSuccess: (data) => z.object({ avatarUrl: z.string().nullable() }).parse(data),
+            suppressErrorToast: () => true,
+            onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
+          });
+          avatarUrl = avatar.avatarUrl;
         }
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.message ?? errorData.error ?? t(avatarChange.kind === 'replace' ? 'profilePage.failedToUploadAvatar' : 'profilePage.failedToRemoveAvatar'));
-        }
-        const avatar = await response.json();
-        const avatarUrl = avatar.avatarUrl ?? undefined;
-        setUser((prev) => prev ? { ...prev, avatarUrl } : prev);
+        setUser((prev) => prev ? { ...prev, avatarUrl: avatarUrl ?? undefined } : prev);
         updateAuthUser({ avatarUrl });
         setAvatarChange(null);
       }
 
-      // runaction-exempt: inline-feedback handler. The catch below routes every failure into
-      // `profileError`, rendered as a banner directly above this form.
-      const response = await fetchWithAuth('/users/me', {
-        method: 'PATCH',
-        body: JSON.stringify({ name: values.name.trim() })
+      const updatedUser = await runAction<Pick<User, 'id' | 'name' | 'email'> & Partial<User>>({
+        request: () => fetchWithAuth('/users/me', {
+          method: 'PATCH',
+          body: JSON.stringify({ name: values.name.trim() }),
+        }),
+        errorFallback: t('profilePage.failedToUpdateProfile'),
+        parseSuccess: (data) => z.object({
+          id: z.string(),
+          name: z.string(),
+          email: z.string(),
+          avatarUrl: z.string().nullable().optional(),
+          mfaEnabled: z.boolean().optional(),
+          mfaMethod: z.enum(['totp', 'sms', 'passkey']).nullable().optional(),
+        }).passthrough().parse(data),
+        suppressErrorToast: () => true,
+        onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
       });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message ?? errorData.error ?? t('profilePage.failedToUpdateProfile'));
-      }
-
-      const updatedUser = await response.json();
       setUser(prev => (prev ? {
         ...prev,
         ...updatedUser,
@@ -412,14 +419,13 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       });
       setProfileSuccess(t('profilePage.profileUpdatedSuccessfully'));
     } catch (error) {
+      if (error instanceof ActionError && error.status === 401) return;
       setProfileError(error instanceof Error ? error.message : t('profilePage.failedToUpdateProfile'));
     } finally {
       profileSavingRef.current = false;
       setIsUpdatingProfile(false);
     }
   };
-
-  // --- Avatar upload handlers ---
 
   const validateAvatarFile = useCallback((file: File): string | null => {
     if (!ALLOWED_AVATAR_MIMES.includes(file.type)) {
@@ -470,10 +476,6 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     const file = evt.dataTransfer.files?.[0];
     if (file) selectAvatarFile(file);
   }, [selectAvatarFile]);
-
-  useEffect(() => () => {
-    if (avatarChange?.kind === 'replace') URL.revokeObjectURL(avatarChange.previewUrl);
-  }, [avatarChange]);
 
   useEffect(() => () => {
     if (avatarChange?.kind === 'replace') URL.revokeObjectURL(avatarChange.previewUrl);
@@ -1558,7 +1560,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={isUpdatingProfile || isSubmitting}
+                  disabled={isProfileLoading}
                   className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted transition-colors disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {t('profilePage.changePicture')}</button>
@@ -1566,7 +1568,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                   <button
                     type="button"
                     onClick={handleAvatarRemove}
-                    disabled={isUpdatingProfile || isSubmitting}
+                    disabled={isProfileLoading}
                     className="rounded-md border px-3 py-1.5 text-sm font-medium text-destructive hover:bg-destructive/10 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {t('profilePage.remove')}
@@ -1577,7 +1579,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                 <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
                   {avatarChange.kind === 'replace' && <span className="truncate">{avatarChange.file.name}</span>}
                   <div className="ml-auto flex gap-2">
-                    <button type="button" onClick={handleAvatarUndo} disabled={isUpdatingProfile || isSubmitting} className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60">{t('profilePage.undoAvatarChange')}</button>
+                    <button type="button" onClick={handleAvatarUndo} disabled={isProfileLoading} className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60">{t('profilePage.undoAvatarChange')}</button>
                   </div>
                 </div>
               )}
@@ -1630,7 +1632,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           disabled={isProfileLoading}
           className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {isUpdatingProfile || isSubmitting ? t('profilePage.saving') : t('profilePage.saveChanges')}
+          {isProfileLoading ? t('profilePage.saving') : t('profilePage.saveChanges')}
         </button>
       </form>
 

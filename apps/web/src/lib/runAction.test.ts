@@ -110,6 +110,17 @@ describe('runAction', () => {
     expect(showToast).toHaveBeenCalledWith({ message: 'Network error', type: 'error' });
   });
 
+  it('suppresses the network toast when the caller renders inline feedback', async () => {
+    const suppressErrorToast = vi.fn((status: number) => status === 0);
+    await expect(runAction({
+      request: async () => { throw new Error('network down'); },
+      errorFallback: 'Network error',
+      suppressErrorToast,
+    })).rejects.toMatchObject({ message: 'Network error', status: 0 });
+    expect(suppressErrorToast).toHaveBeenCalledWith(0, undefined);
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
   it('successMessage as function receives result and toasts formatted string', async () => {
     const out = await runAction<{ id: string }>({
       request: async () => res({ id: '7' }),
