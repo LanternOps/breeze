@@ -180,7 +180,7 @@ The [v0.126.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.126.0/
 | The IOC sweep limits `SECURITY_SWEEP_MAX_DEVICES`, `SECURITY_SWEEP_MAX_ACTIVE_PER_ORG`, `SECURITY_SWEEP_PUMP_INTERVAL_MS`, `SECURITY_SWEEP_PUMP_BATCH`, `SECURITY_SWEEP_PARTNER_RUNNING_CAP`, `SECURITY_SWEEP_TTL_HOURS_DEFAULT`, `SECURITY_SWEEP_MFA_DEVICE_THRESHOLD`, `SECURITY_SWEEP_RUNNING_GRACE_MINUTES` and `IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD` are now mapped as `${VAR:-}`. | Nothing, unless you added your own mapping on v0.125.0; keep one. Defaults are unchanged. |
 | `docker/Caddyfile.prod` redacts the `Webhook-Signature` request header in access logs, as it already did for other webhook secrets. | If you maintain your own copy of `Caddyfile.prod`, carry the line over. |
 
-Not mapped in Compose in v0.126.0: `ALERT_WORKER_CONCURRENCY`, `ALERT_WORKER_STAGGER_WINDOW_MS` and `AGENT_CONNECTIONS_MAX_PER_DEVICE`. Add them to the `api` service's `environment:` block if you need to change one. See [Environment Variables](/deploy/environment/).
+Not mapped in Compose in v0.126.0 (later releases map them): `ALERT_WORKER_CONCURRENCY`, `ALERT_WORKER_STAGGER_WINDOW_MS` and `AGENT_CONNECTIONS_MAX_PER_DEVICE`. On v0.126.0, add them to the `api` service's `environment:` block if you need to change one. See [Environment Variables](/deploy/environment/).
 
 ### v0.125.0 — DNS Security retention, Flows and MCP preview switches, Caddy header defaults
 
@@ -369,7 +369,7 @@ See [Moving Jobs to Flows](/features/automations/#moving-jobs-to-flows).
 - `INTERNAL_SERVICE_CIDRS` (Compose default: your `BREEZE_DOCKER_SUBNET`) and `INTERNAL_API_HOSTS` (`api:3001`). With `FORCE_HTTPS=true`, portal and web server-side rendering calls to the API no longer get `400 FORCE_HTTPS_NON_CANONICAL_HOST`. Leave them unset on the bundled Compose. Every entry must lie wholly inside a private range, or the API refuses to boot; an empty `INTERNAL_SERVICE_CIDRS` turns the exemption off. See [TLS](/deploy/tls/#customer-portal-pages-fail-with-force_https_non_canonical_host).
 - `NETWORK_ISOLATION_ENABLED` (`false`) and `NETWORK_ISOLATION_ENABLED_PARTNER_IDS` (empty). Leave both unset.
 - `TICKET_IMPORT_MAX_BYTES_PER_HOUR` (`2147483648`, 2 GiB, never below 10 MiB): attachment bytes one ticket-import window may download per hour.
-- `ALERT_WORKER_CONCURRENCY`, `ALERT_WORKER_STAGGER_WINDOW_MS` (`50000`, 0–59000) and `AGENT_CONNECTIONS_MAX_PER_DEVICE` (`2000`, up to `10000`), not mapped in Compose.
+- `ALERT_WORKER_CONCURRENCY`, `ALERT_WORKER_STAGGER_WINDOW_MS` (`50000`, 0–59000) and `AGENT_CONNECTIONS_MAX_PER_DEVICE` (`2000`, up to `10000`), not mapped in the v0.126.0 Compose files.
 - Changed default: `FLOWS_ENABLED` (`true`, was `false`).
 
 See [Environment Variables](/deploy/environment/).
