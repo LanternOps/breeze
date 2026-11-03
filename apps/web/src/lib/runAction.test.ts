@@ -276,6 +276,16 @@ describe('runAction', () => {
     expect(showToast).toHaveBeenCalledWith({ message: 'Parse failed', type: 'error' });
   });
 
+  it('suppresses parseSuccess failure toast when the caller renders inline feedback', async () => {
+    await expect(runAction({
+      request: async () => res({ val: 1 }, 200),
+      errorFallback: 'Parse failed',
+      parseSuccess: () => { throw new Error('bad shape'); },
+      suppressErrorToast: () => true,
+    })).rejects.toMatchObject({ message: 'Parse failed', status: 200 });
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
   it('successMessage function throws -> generic success toast, value returned, error logged', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const out = await runAction<{ ok: number }>({

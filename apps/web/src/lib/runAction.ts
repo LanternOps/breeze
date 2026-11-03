@@ -198,7 +198,9 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
   try {
     result = (opts.parseSuccess ? opts.parseSuccess(data) : (data as T));
   } catch {
-    showToast({ message: opts.errorFallback, type: 'error' });
+    if (!opts.suppressErrorToast?.(response.status, undefined, data)) {
+      showToast({ message: opts.errorFallback, type: 'error' });
+    }
     throw new ActionError(opts.errorFallback, response.status);
   }
   if (opts.successMessage) {

@@ -113,6 +113,13 @@ describe('ProfilePage avatar settings', () => {
     });
   });
 
+  it('does not render the legacy avatar URL field or coming soon copy', () => {
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', mfaEnabled: false }} />);
+
+    expect(screen.queryByLabelText('Avatar image URL')).toBeNull();
+    expect(screen.queryByText(/coming soon/i)).toBeNull();
+  });
+
   it('keeps a selected picture local until Save changes uploads it', async () => {
     const file = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'avatar.png', { type: 'image/png' });
     fetchWithAuthMock.mockImplementation(async (url, init) => {
@@ -138,6 +145,63 @@ describe('ProfilePage avatar settings', () => {
     expect(fetchWithAuthMock.mock.calls.findIndex(([url]) => String(url) === '/users/me/avatar'))
       .toBeLessThan(fetchWithAuthMock.mock.calls.findIndex(([url, init]) => String(url) === '/users/me' && init?.method === 'PATCH'));
     expect(updateUserMock).toHaveBeenCalledWith({ name: 'Casey Admin', avatarUrl: '/api/v1/users/user-1/avatar?v=2' });
+  });
+
+  it('reports that the picture saved when the name update fails and retries only the name', async () => {
+    let patchCalls = 0;
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (String(url) === '/users/me/avatar') return makeJsonResponse({ avatarUrl: '/api/v1/users/user-1/avatar?v=2' });
+      if (String(url) === '/users/me' && init?.method === 'PATCH') {
+        patchCalls += 1;
+        return patchCalls === 1
+          ? makeJsonResponse({ error: 'Name update rejected' }, false, 500)
+          : makeJsonResponse({ id: 'user-1', name: 'Casey Renamed', email: 'casey@example.com' });
+      }
+      return makeJsonResponse({ name: 'Casey Admin', email: 'casey@example.com' });
+    });
+
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', avatarUrl: '/current/avatar', mfaEnabled: false }} />);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Casey Renamed' } });
+    fireEvent.change(screen.getByTestId('avatar-file-input'), { target: { files: [new File(['x'], 'avatar.png', { type: 'image/png' })] } });
+    await screen.findByText('avatar.png');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Picture change saved, but your name could not be updated: Name update rejected');
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+    expect(screen.getByTestId('avatar-dropzone').querySelector('img')?.getAttribute('src')).toBe('/api/v1/users/user-1/avatar?v=2');
+    expect(showToastMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Profile updated successfully');
+    expect(fetchWithAuthMock.mock.calls.filter(([url]) => String(url) === '/users/me/avatar')).toHaveLength(1);
+    expect(patchCalls).toBe(2);
+  });
+
+  it('preserves the current avatar when a name-only response omits avatarUrl', async () => {
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (String(url) === '/users/me' && init?.method === 'PATCH') {
+        return makeJsonResponse({ id: 'user-1', name: 'Casey Renamed', email: 'casey@example.com' });
+      }
+      return makeJsonResponse({ name: 'Casey Admin', email: 'casey@example.com' });
+    });
+
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', avatarUrl: '/current/avatar', mfaEnabled: false }} />);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Casey Renamed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Profile updated successfully');
+
+    expect(updateUserMock).toHaveBeenCalledWith({ name: 'Casey Renamed' });
+    expect(screen.getByTestId('avatar-dropzone').querySelector('img')?.getAttribute('src')).toBe('/current/avatar');
+  });
+
+  it('labels a staged avatar removal', async () => {
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', avatarUrl: '/current/avatar', mfaEnabled: false }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+
+    expect(await screen.findByText('Picture removal pending')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeTruthy();
   });
 
   it('undoes a selected picture without calling the API', async () => {

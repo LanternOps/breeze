@@ -88,6 +88,16 @@ type User = {
 
 type AvatarChange = { kind: 'replace'; file: File; previewUrl: string } | { kind: 'remove' };
 
+const avatarMutationResponseSchema = z.object({ avatarUrl: z.string().nullable() });
+const profileUpdateResponseSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  email: z.string(),
+  avatarUrl: z.string().nullable().optional(),
+  mfaEnabled: z.boolean().optional(),
+  mfaMethod: z.enum(['totp', 'sms', 'passkey']).nullable().optional(),
+}).passthrough();
+
 // Typed reason codes the SSO re-auth callback redirects back with
 // (`/settings/profile?ssoReauthError=<code>`). Anything not listed falls back
 // to the generic copy — the server is free to add codes without this going
@@ -360,68 +370,65 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const handleProfileSubmit = async (values: ProfileFormValues) => {
     if (profileSavingRef.current) return;
     profileSavingRef.current = true;
+    let avatarChangeSaved = false;
     clearMessages();
     try {
       setIsUpdatingProfile(true);
       if (avatarChange) {
-        let avatarUrl: string | null;
-        if (avatarChange.kind === 'replace') {
-          const body = new FormData();
-          body.append('file', avatarChange.file);
-          const avatar = await runAction<{ avatarUrl: string | null }>({
-            request: () => fetchWithAuth('/users/me/avatar', { method: 'POST', body }),
-            errorFallback: t('profilePage.failedToUploadAvatar'),
-            parseSuccess: (data) => z.object({ avatarUrl: z.string().nullable() }).parse(data),
-            suppressErrorToast: () => true,
-            onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
-          });
-          avatarUrl = avatar.avatarUrl;
-        } else {
-          const avatar = await runAction<{ avatarUrl: string | null }>({
-            request: () => fetchWithAuth('/users/me/avatar', { method: 'DELETE' }),
-            errorFallback: t('profilePage.failedToRemoveAvatar'),
-            parseSuccess: (data) => z.object({ avatarUrl: z.string().nullable() }).parse(data),
-            suppressErrorToast: () => true,
-            onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
-          });
-          avatarUrl = avatar.avatarUrl;
-        }
+        const avatar = await runAction<z.infer<typeof avatarMutationResponseSchema>>({
+          request: () => {
+            if (avatarChange.kind === 'remove') {
+              return fetchWithAuth('/users/me/avatar', { method: 'DELETE' });
+            }
+            const body = new FormData();
+            body.append('file', avatarChange.file);
+            return fetchWithAuth('/users/me/avatar', { method: 'POST', body });
+          },
+          errorFallback: t(
+            avatarChange.kind === 'replace' ? 'profilePage.failedToUploadAvatar' : 'profilePage.failedToRemoveAvatar',
+          ),
+          parseSuccess: (data) => avatarMutationResponseSchema.parse(data),
+          suppressErrorToast: () => true,
+          onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
+        });
+        const avatarUrl = avatar.avatarUrl;
+        avatarChangeSaved = true;
         setUser((prev) => prev ? { ...prev, avatarUrl: avatarUrl ?? undefined } : prev);
         updateAuthUser({ avatarUrl: avatarUrl ?? undefined });
         setAvatarChange(null);
       }
 
-      const updatedUser = await runAction<Pick<User, 'id' | 'name' | 'email'> & Partial<User>>({
+      const updatedUser = await runAction<z.infer<typeof profileUpdateResponseSchema>>({
         request: () => fetchWithAuth('/users/me', {
           method: 'PATCH',
           body: JSON.stringify({ name: values.name.trim() }),
         }),
         errorFallback: t('profilePage.failedToUpdateProfile'),
-        parseSuccess: (data) => z.object({
-          id: z.string(),
-          name: z.string(),
-          email: z.string(),
-          avatarUrl: z.string().nullable().optional().transform((value) => value ?? undefined),
-          mfaEnabled: z.boolean().optional(),
-          mfaMethod: z.enum(['totp', 'sms', 'passkey']).nullable().optional(),
-        }).passthrough().parse(data),
+        parseSuccess: (data) => profileUpdateResponseSchema.parse(data),
         suppressErrorToast: () => true,
         onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
       });
+      const { avatarUrl: responseAvatarUrl, ...updatedUserFields } = updatedUser;
+      const avatarUpdate = responseAvatarUrl === undefined
+        ? {}
+        : { avatarUrl: responseAvatarUrl ?? undefined };
       setUser(prev => (prev ? {
         ...prev,
-        ...updatedUser,
-        avatarUrl: updatedUser.avatarUrl ?? undefined,
+        ...updatedUserFields,
+        ...avatarUpdate,
         ...(updatedUser.mfaEnabled === false ? { mfaMethod: null } : {}),
-      } : updatedUser));
-      updateAuthUser({ name: updatedUser.name, avatarUrl: updatedUser.avatarUrl ?? undefined });
+      } : { ...updatedUserFields, ...avatarUpdate }));
+      updateAuthUser({ name: updatedUser.name, ...avatarUpdate });
       reset({
         name: updatedUser.name ?? '',
       });
       setProfileSuccess(t('profilePage.profileUpdatedSuccessfully'));
     } catch (error) {
       if (error instanceof ActionError && error.status === 401) return;
-      setProfileError(error instanceof Error ? error.message : t('profilePage.failedToUpdateProfile'));
+      const message = error instanceof Error ? error.message : t('profilePage.failedToUpdateProfile');
+      setProfileError(avatarChangeSaved
+        ? t('profilePage.avatarSavedButNameUpdateFailed', { error: message })
+        : message);
     } finally {
       profileSavingRef.current = false;
       setIsUpdatingProfile(false);
@@ -1578,9 +1585,18 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
               </div>
               {avatarChange && (
                 <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
-                  {avatarChange.kind === 'replace' && <span className="truncate">{avatarChange.file.name}</span>}
+                  <span className="truncate">
+                    {avatarChange.kind === 'replace' ? avatarChange.file.name : t('profilePage.pictureRemovalPending')}
+                  </span>
                   <div className="ml-auto flex gap-2">
-                    <button type="button" onClick={handleAvatarUndo} disabled={isProfileLoading} className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60">{t('profilePage.undoAvatarChange')}</button>
+                    <button
+                      type="button"
+                      onClick={handleAvatarUndo}
+                      disabled={isProfileLoading}
+                      className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {t('profilePage.undoAvatarChange')}
+                    </button>
                   </div>
                 </div>
               )}
