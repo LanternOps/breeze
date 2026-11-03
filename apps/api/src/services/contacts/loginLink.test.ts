@@ -15,10 +15,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
-const { createContactMock, updateContactMock } = vi.hoisted(() => ({
+const { createContactMock, updateContactMock, addDerivedMock, lockOrgMock, projectBillingMock } = vi.hoisted(() => ({
   createContactMock: vi.fn(),
   updateContactMock: vi.fn(),
+  addDerivedMock: vi.fn(),
+  lockOrgMock: vi.fn(),
+  projectBillingMock: vi.fn(),
 }));
+
+vi.mock('./responsibilities', () => ({ addLegacyDerivedContactRoles: addDerivedMock }));
+vi.mock('./compat', async () => {
+  const actual = await vi.importActual<typeof import('./compat')>('./compat');
+  return { ...actual, lockOrganizationForProjection: lockOrgMock, projectBillingContact: projectBillingMock };
+});
 
 vi.mock('./crud', async () => {
   const actual = await vi.importActual<typeof import('./crud')>('./crud');
@@ -89,6 +98,9 @@ const actor = { userId: 'u-1' };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  addDerivedMock.mockResolvedValue(undefined);
+  lockOrgMock.mockResolvedValue(undefined);
+  projectBillingMock.mockResolvedValue(null);
 });
 
 describe('linkLoginToContact', () => {
@@ -156,20 +168,62 @@ describe('linkLoginToContact', () => {
     expect(r.limits).toEqual([2]);
   });
 
-  it('links the one existing contact and unions the portal role it lacked', async () => {
+  it('links the one existing contact and ADDS the portal role it lacked, without updateContact', async () => {
     const r = recorder([[{ id: 'ct-1', roles: ['billing'] }]]);
 
     const result = await linkLoginToContact(r.exec, { orgId: ORG_ID, email: 'known@acme.example', actor });
 
     expect(result).toEqual({ contactId: 'ct-1', outcome: 'linked' });
     expect(createContactMock).not.toHaveBeenCalled();
-    expect(updateContactMock).toHaveBeenCalledTimes(1);
-    const [, contactId, orgId, patch] = updateContactMock.mock.calls[0]!;
-    expect(contactId).toBe('ct-1');
-    expect(orgId).toBe(ORG_ID);
-    // A UNION, never a replace: granting a login does not stop someone being
-    // the billing contact.
-    expect((patch as { roles: string[] }).roles.slice().sort()).toEqual(['billing', 'portal']);
+    // Phase 3: additive, never through the fail-closed legacy `roles` adapter.
+    expect(updateContactMock).not.toHaveBeenCalled();
+    expect(addDerivedMock).toHaveBeenCalledTimes(1);
+    // Only the MISSING role is granted; existing roles are neither re-sent nor replaced.
+    expect(addDerivedMock).toHaveBeenCalledWith(r.exec, { contactId: 'ct-1', orgId: ORG_ID, roles: ['portal'] });
+    // A portal grant cannot change billing_contact: no org lock, no projection.
+    expect(lockOrgMock).not.toHaveBeenCalled();
+    expect(projectBillingMock).not.toHaveBeenCalled();
+  });
+
+  it('adds portal to a contact that holds scoped responsibilities without error and without updateContact', async () => {
+    // The contact is pinned/scoped (e.g. Site or Device Group rows). The old
+    // updateContact({roles}) path would now be refused by the fail-closed adapter;
+    // the additive grant must succeed and touch nothing but the missing role.
+    const r = recorder([[{ id: 'ct-scoped', roles: ['technical', 'admin'] }]]);
+
+    const result = await linkLoginToContact(r.exec, { orgId: ORG_ID, email: 'scoped@acme.example', actor });
+
+    expect(result).toEqual({ contactId: 'ct-scoped', outcome: 'linked' });
+    expect(updateContactMock).not.toHaveBeenCalled();
+    expect(addDerivedMock).toHaveBeenCalledWith(r.exec, { contactId: 'ct-scoped', orgId: ORG_ID, roles: ['portal'] });
+  });
+
+  it('a billing grant locks the organization first and projects billing_contact after', async () => {
+    const r = recorder([[{ id: 'ct-1', roles: ['portal'] }]]);
+    const calls: string[] = [];
+    lockOrgMock.mockImplementation(async () => { calls.push('lock'); });
+    addDerivedMock.mockImplementation(async () => { calls.push('grant'); });
+    projectBillingMock.mockImplementation(async () => { calls.push('project'); return null; });
+
+    await linkLoginToContact(r.exec, {
+      orgId: ORG_ID, email: 'known@acme.example', actor, roles: ['portal'], unionRoles: ['portal', 'billing'],
+    });
+
+    expect(addDerivedMock).toHaveBeenCalledWith(r.exec, { contactId: 'ct-1', orgId: ORG_ID, roles: ['billing'] });
+    expect(lockOrgMock).toHaveBeenCalledWith(r.exec, ORG_ID);
+    expect(projectBillingMock).toHaveBeenCalledWith(r.exec, ORG_ID);
+    // Parent-first: lock the org, then write the child, then project.
+    expect(calls).toEqual(['lock', 'grant', 'project']);
+    expect(updateContactMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an out-of-vocabulary union role before writing anything', async () => {
+    const r = recorder([[{ id: 'ct-1', roles: [] }]]);
+    await expect(linkLoginToContact(r.exec, {
+      orgId: ORG_ID, email: 'known@acme.example', actor, unionRoles: ['owner' as never],
+    })).rejects.toMatchObject({ code: 'invalid-role' });
+    expect(addDerivedMock).not.toHaveBeenCalled();
+    expect(lockOrgMock).not.toHaveBeenCalled();
   });
 
   it('writes nothing when the contact ALREADY holds the portal role', async () => {
@@ -179,6 +233,7 @@ describe('linkLoginToContact', () => {
 
     expect(result).toEqual({ contactId: 'ct-1', outcome: 'linked' });
     expect(updateContactMock).not.toHaveBeenCalled();
+    expect(addDerivedMock).not.toHaveBeenCalled();
   });
 
   it('treats a null roles column as empty rather than throwing', async () => {
@@ -186,7 +241,8 @@ describe('linkLoginToContact', () => {
 
     await linkLoginToContact(r.exec, { orgId: ORG_ID, email: 'known@acme.example', actor });
 
-    expect((updateContactMock.mock.calls[0]![3] as { roles: string[] }).roles).toEqual(['portal']);
+    expect(addDerivedMock).toHaveBeenCalledWith(r.exec, { contactId: 'ct-1', orgId: ORG_ID, roles: ['portal'] });
+    expect(updateContactMock).not.toHaveBeenCalled();
   });
 
   it('creates a portal-role contact when the org has none for the address', async () => {
@@ -256,6 +312,8 @@ describe('linkLoginToContact', () => {
     expect(result).toEqual({ contactId: 'ct-1', outcome: 'linked' });
     // A ticket-create permission must not imply contact mutation.
     expect(updateContactMock).not.toHaveBeenCalled();
+    expect(addDerivedMock).not.toHaveBeenCalled();
+    expect(lockOrgMock).not.toHaveBeenCalled();
   });
 
   it('unions every missing role, not just the first', async () => {
@@ -269,8 +327,11 @@ describe('linkLoginToContact', () => {
       unionRoles: ['portal', 'technical'],
     });
 
-    expect((updateContactMock.mock.calls[0]![3] as { roles: string[] }).roles.slice().sort())
-      .toEqual(['billing', 'portal', 'technical']);
+    // Only the roles the contact lacked, in stable vocabulary order (assertValidRoles
+    // normalises); 'billing' it already holds is not re-sent.
+    expect(addDerivedMock).toHaveBeenCalledWith(r.exec, { contactId: 'ct-1', orgId: ORG_ID, roles: ['technical', 'portal'] });
+    expect(updateContactMock).not.toHaveBeenCalled();
+    expect(lockOrgMock).not.toHaveBeenCalled();
   });
 
   it('leaves a shared mailbox UNLINKED instead of guessing which person it is', async () => {

@@ -5,8 +5,11 @@ vi.mock('../../db', () => ({ db: {} }));
 vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWithExecutor: vi.fn().mockResolvedValue(undefined) }));
 const responsibilityMocks = vi.hoisted(() => ({
   syncLegacyContactRoles: vi.fn().mockResolvedValue(undefined),
+  removeContactResponsibility: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('./responsibilities', () => responsibilityMocks);
+
+beforeEach(() => vi.clearAllMocks());
 
 import {
   readContactBlob,
@@ -162,7 +165,9 @@ describe('the billing path targets the billing-role contact, never the primary',
 
     const order = f.contactSelects()[0]!.orderBy!.map((o) => compile(o));
     expect(order).toHaveLength(5);
-    expect(order[0]!.sql).toBe('"contacts"."is_primary" desc');
+    // Only an ORGANIZATION-level primary outranks: a site-pinned contact may hold
+    // billing @ Organization, and being a Site's primary must not win the slot.
+    expect(order[0]!.sql).toBe('("contacts"."is_primary" AND "contacts"."site_id" IS NULL) desc');
     // The incumbent BY IDENTITY: editing the current recipient's own email must
     // not hand the role to someone else, so an email match alone cannot be it.
     expect(order[1]!.sql).toContain('"contacts"."id"::text = (SELECT "organizations"."billing_contact" ->> $');
@@ -212,18 +217,19 @@ describe('the billing path targets the billing-role contact, never the primary',
     expect(f.contactInserts()[0]!.values).toMatchObject({ roles: ['billing'], isPrimary: true });
   });
 
-  it('a null email unassigns the billing role and changes nothing else — never a DELETE', async () => {
+  it('a null email unassigns exactly billing @ Organization through the responsibility service — never a DELETE of the contact', async () => {
     const f = makeExec([LOCK, [BILL_ROW], []]);
     await mergeBillingContact(f.exec, ORG, { email: null, name: null });
 
     expect(f.deletes()).toHaveLength(0);
-    expect(f.contactUpdates()).toHaveLength(1);
-    const write = f.contactUpdates()[0]!;
-    // Only the role array (and updated_at) — name/email/phone are left intact.
-    expect(Object.keys(write.values!).sort()).toEqual(['roles', 'updatedAt']);
-    expect(compile(write.values!.roles).sql).toBe('array_remove("contacts"."roles", $1)');
-    expect(compile(write.values!.roles).params).toEqual(['billing']);
-    expect(compile(write.where).params).toEqual([BILL, ORG]);
+    // Phase 3: no array_remove on contacts.roles and no whole-set legacy sync;
+    // the one canonical assignment is removed and roles[] re-projected there.
+    expect(f.contactUpdates()).toHaveLength(0);
+    expect(responsibilityMocks.syncLegacyContactRoles).not.toHaveBeenCalled();
+    expect(responsibilityMocks.removeContactResponsibility).toHaveBeenCalledTimes(1);
+    expect(responsibilityMocks.removeContactResponsibility).toHaveBeenCalledWith(f.exec, {
+      contactId: BILL, orgId: ORG, role: 'billing', scope: { type: 'organization' },
+    });
     // Nobody holds the role any more: no recipient, and no fallback to a primary.
     expect(f.blobWrites()).toEqual([null]);
   });
@@ -231,6 +237,7 @@ describe('the billing path targets the billing-role contact, never the primary',
   it('a null email with no billing contact writes no contact at all', async () => {
     const f = makeExec([LOCK, [], []]);
     await mergeBillingContact(f.exec, ORG, { email: null });
+    expect(responsibilityMocks.removeContactResponsibility).not.toHaveBeenCalled();
     expect(f.contactUpdates()).toHaveLength(0);
     expect(f.contactInserts()).toHaveLength(0);
     expect(f.deletes()).toHaveLength(0);
@@ -265,7 +272,11 @@ describe('syncBillingContactRow (org create / PATCH whole-blob replace)', () => 
     const f = makeExec([[BILL_ROW], []]);
     const projected = await syncBillingContactRow(f.exec, ORG, null);
     expect(f.deletes()).toHaveLength(0);
-    expect(Object.keys(f.contactUpdates()[0]!.values!).sort()).toEqual(['roles', 'updatedAt']);
+    expect(f.contactUpdates()).toHaveLength(0);
+    expect(responsibilityMocks.syncLegacyContactRoles).not.toHaveBeenCalled();
+    expect(responsibilityMocks.removeContactResponsibility).toHaveBeenCalledWith(f.exec, {
+      contactId: BILL, orgId: ORG, role: 'billing', scope: { type: 'organization' },
+    });
     expect(projected).toBeNull();
   });
 

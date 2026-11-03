@@ -1,13 +1,15 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { contacts } from '../../db/schema/contacts';
 import { INBOUND_CONTACT_LOCK_NAMESPACE } from '../inboundEmail/resolveOrg';
+import { BILLING_ROLE, lockOrganizationForProjection, projectBillingContact } from './compat';
 import {
+  assertValidRoles,
   createContact,
   normalizeContactEmail,
-  updateContact,
   type ContactActor,
   type ContactExecutor,
 } from './crud';
+import { addLegacyDerivedContactRoles } from './responsibilities';
 
 /**
  * How a LOGIN resolved to the org's CONTACT for its address (#3258).
@@ -144,17 +146,23 @@ export async function linkLoginToContact(
     // stop being one because someone gave them a login.
     const roles = existing.roles ?? [];
     const missing = unionRoles.filter((role) => !roles.includes(role));
-    // The short-circuit is load-bearing, not an optimisation. `updateContact`
-    // locks the organization row for any org-level contact and runs the
-    // billing re-projection (compat.projectBillingContact, which updates
-    // `organizations` by bare id) whenever the matched contact is the org's
-    // billing contact, and on the Entra path that chain is reachable from the
-    // UNAUTHENTICATED /client-ai/auth/exchange under a system context. Writing
-    // only when a role is genuinely missing makes it at most once per contact
-    // and idempotent thereafter, so a token replayed in a loop cannot drive
-    // repeated org-row locks or writes. An empty `unionRoles` skips it outright.
+    // The short-circuit is load-bearing, not an optimisation: on the Entra path
+    // this is reachable from the UNAUTHENTICATED /client-ai/auth/exchange under a
+    // system context. Writing only when a role is genuinely missing makes it at
+    // most once per contact and idempotent thereafter, so a token replayed in a
+    // loop cannot drive repeated writes. An empty `unionRoles` skips it outright.
+    //
+    // Additive on purpose (spec §8.4, Phase 3): granting `portal` must never
+    // fail, delete or re-scope a contact that already holds scoped
+    // responsibilities, so this bypasses the fail-closed legacy `roles` adapter.
     if (missing.length > 0) {
-      await updateContact(exec, existing.id, input.orgId, { roles: [...roles, ...missing] }, input.actor);
+      const granted = assertValidRoles(missing)!;
+      // Only an org-level `billing` grant can change organizations.billing_contact;
+      // it needs the same parent-first org lock `updateContact` takes.
+      const feedsBilling = granted.includes(BILLING_ROLE);
+      if (feedsBilling) await lockOrganizationForProjection(exec, input.orgId);
+      await addLegacyDerivedContactRoles(exec, { contactId: existing.id, orgId: input.orgId, roles: granted });
+      if (feedsBilling) await projectBillingContact(exec, input.orgId);
     }
     return { contactId: existing.id, outcome: 'linked' };
   }
