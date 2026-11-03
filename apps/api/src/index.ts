@@ -76,6 +76,7 @@ import { businessCalendarRoutes } from './routes/businessCalendars';
 import { ticketRoutingRuleRoutes } from './routes/tickets/routingRules';
 import { ticketResponseTemplateRoutes } from './routes/tickets/ticketResponseTemplates';
 import { ticketFormRoutes } from './routes/tickets/forms';
+import { serviceCatalogRoutes } from './routes/tickets/serviceCatalog';
 import { tenantVariableRoutes } from './routes/tenantVariables';
 import { orgRoutes } from './routes/orgs';
 import { orgMergeRoutes } from './routes/orgMerge';
@@ -896,6 +897,7 @@ api.route('/business-calendars', businessCalendarRoutes);
 api.route('/ticket-routing-rules', ticketRoutingRuleRoutes);
 api.route('/', ticketResponseTemplateRoutes);
 api.route('/', ticketFormRoutes);
+api.route('/', serviceCatalogRoutes);
 api.route('/', tenantVariableRoutes);
 // Self-contained autopay auth must run before the broad org/portal routers.
 api.route('/autopay/public', publicAutopayRoutes);
