@@ -21,6 +21,7 @@ import {
   timeSyncInlineSettingsSchema,
   workloadInventoryInlineSettingsSchema,
   systemProtectionInlineSettingsSchema,
+  containmentInlineSettingsSchema,
   warrantyHpCmslRequested,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
@@ -277,6 +278,10 @@ featureLinkRoutes.post(
       data.inlineSettings = check.inlineSettings;
     }
 
+    if (data.featureType === 'containment' && data.featurePolicyId) {
+      return c.json({ error: 'containment is inline-only; featurePolicyId must not be set' }, 400);
+    }
+
     // Validate the referenced feature policy exists (only when a policy ID is provided)
     if (data.featurePolicyId) {
       // Most referenced feature policies are org-scoped and can't be linked to
@@ -465,6 +470,14 @@ featureLinkRoutes.post(
       data.inlineSettings = parsed.data;
     }
 
+    if (data.featureType === 'containment') {
+      const parsed = containmentInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(zodValidationErrorBody('Invalid containment settings', parsed.error), 400);
+      }
+      data.inlineSettings = parsed.data;
+    }
+
     if (data.featureType === 'system_protection' && data.inlineSettings) {
       const parsed = systemProtectionInlineSettingsSchema.safeParse(data.inlineSettings);
       if (!parsed.success) {
@@ -635,6 +648,19 @@ featureLinkRoutes.patch(
       });
       if (!check.ok) return c.json(check.refusal.body, check.refusal.status);
       if (data.inlineSettings !== undefined) data.inlineSettings = check.inlineSettings;
+    }
+
+    if (existingLink.featureType === 'containment') {
+      if (data.featurePolicyId) {
+        return c.json({ error: 'containment is inline-only; featurePolicyId must not be set' }, 400);
+      }
+      if (data.inlineSettings !== undefined) {
+        const parsed = containmentInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(zodValidationErrorBody('Invalid containment settings', parsed.error), 400);
+        }
+        data.inlineSettings = parsed.data;
+      }
     }
 
     if (data.featurePolicyId !== undefined && data.featurePolicyId !== null) {

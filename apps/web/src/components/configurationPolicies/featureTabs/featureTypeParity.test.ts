@@ -35,9 +35,8 @@ describe('config-policy editor feature-type parity (#2004)', () => {
   });
 
   it('exposes every canonical type except the documented exclusions, and no retired type', () => {
-    // Every canonical feature type has an editor tab (security_agents gained
-    // one in #8736), so nothing is excluded any more.
-    expect([...EDITOR_EXCLUDED_FEATURE_TYPES]).toEqual([]);
+    // Containment is config-only until the Part 2 editor ships (#10100).
+    expect([...EDITOR_EXCLUDED_FEATURE_TYPES]).toEqual(['containment']);
     expect(Object.keys(FEATURE_META).sort()).toEqual(
       CONFIG_FEATURE_TYPES.filter((t) => !(EDITOR_EXCLUDED_FEATURE_TYPES as readonly string[]).includes(t)).sort(),
     );

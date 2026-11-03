@@ -49,6 +49,7 @@ import { i18n } from "../../lib/i18n";
 export const EFFECTIVE_CONFIG_EXCLUDED_FEATURE_TYPES = [
   "remote_access",
   "pam",
+  "containment", // #10100 part 2 adds the Containment tab
 ] as const;
 type FeatureType = Exclude<
   ConfigFeatureType,

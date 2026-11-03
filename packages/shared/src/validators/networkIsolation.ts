@@ -41,6 +41,14 @@ const cidrSchema = z
   // Isolation never carries a blanket permit (spec §3.4).
   .refine((cidr) => !cidr.endsWith('/0'), { message: 'a /0 permit is not allowed' });
 
+/** Building blocks reused by the containment policy's `extraAllow` (#10100); prefixed to keep the barrel unambiguous. */
+export {
+  portsSchema as isolationPortsSchema,
+  protoSchema as isolationProtoSchema,
+  hostNameSchema as isolationHostNameSchema,
+  cidrSchema as isolationCidrSchema,
+};
+
 export const isolationAllowEntrySchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('host'), host: hostNameSchema, proto: protoSchema, ports: portsSchema, scope: scopeSchema }),
   z.strictObject({ kind: z.literal('cidr'), cidr: cidrSchema, proto: protoSchema, ports: portsSchema, scope: scopeSchema }),
