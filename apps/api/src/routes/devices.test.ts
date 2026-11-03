@@ -663,6 +663,7 @@ describe('device routes', () => {
           headers: { Authorization: 'Bearer token', Host: 'control.example.test' }
         });
         expect(res.status).toBe(200);
+        expect(res.headers.get('cache-control')).toBe('no-store');
         return res.json();
       };
 
@@ -671,7 +672,7 @@ describe('device routes', () => {
         expect(body.serverUrl).toBe('https://agents.example.test');
       });
 
-      it('falls back to API_URL like the server-built installers', async () => {
+      it('falls back to API_URL', async () => {
         const body = await mintWith({ PUBLIC_API_URL: '', API_URL: 'https://api-only.example.test' });
         expect(body.serverUrl).toBe('https://api-only.example.test');
       });

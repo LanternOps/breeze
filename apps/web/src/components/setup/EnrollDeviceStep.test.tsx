@@ -22,6 +22,7 @@ import { fetchWithAuth } from '../../stores/auth';
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
+
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
     ok,
@@ -228,6 +229,7 @@ describe('EnrollDeviceStep — CLI command server URL (#8120)', () => {
 
     render(<EnrollDeviceStep orgId="org-1" siteId="site-1" onFinish={vi.fn()} />);
     fireEvent.click(screen.getByText('CLI Commands'));
+    fireEvent.click(screen.getByRole('button', { name: 'Linux' }));
 
     const command = await screen.findByTestId('setup-cli-command');
     expect(command.textContent).toContain(window.location.origin);
