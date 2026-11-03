@@ -1129,6 +1129,8 @@
       "sensitive_data_finding": "Achado de dados sensíveis",
       "sensitive_data_policy": "Política de dados sensíveis",
       "sensitive_data_scan": "Verificação de dados sensíveis",
+      "service_catalog": "Catálogo de serviços",
+      "service_catalog_item": "Item do catálogo de serviços",
       "service_principal": "Entidade de serviço",
       "site": "Site",
       "sla_definition": "Definição de SLA",

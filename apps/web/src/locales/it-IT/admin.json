@@ -1129,6 +1129,8 @@
       "sensitive_data_finding": "Rilevamento di dati sensibili",
       "sensitive_data_policy": "Criterio dati sensibili",
       "sensitive_data_scan": "Scansione dati sensibili",
+      "service_catalog": "Catalogo dei servizi",
+      "service_catalog_item": "Voce del catalogo dei servizi",
       "service_principal": "Entità servizio",
       "site": "Sede",
       "sla_definition": "Definizione SLA",
