@@ -283,6 +283,19 @@ Only one measurement is active per device address. Turning on a new one replaces
 
 ---
 
+## WAN and circuits on an asset
+
+A device's **Overview** tab and a discovered network asset's detail page have a **WAN and circuit** card. For each circuit recorded against the asset that you can see, it shows the provider, circuit ID, bandwidth, service type, administrative status (Active, Planned, Suspended or Disconnected), the sites the circuit serves, and the termination site. A circuit whose termination is on an interface that has since been retired shows **Termination needs reassociation**. If no circuit is recorded, or none is visible to you, the card says so.
+
+With `topology:read` on the asset's site, the card also lists the asset's interfaces, with a **WAN** badge on those marked as WAN. To change the WAN role:
+
+1. Find the interface in the card's **Interfaces** list.
+2. Click **Mark as WAN**, or **Clear WAN** and confirm.
+
+Changing the role needs `topology:write` on the site, `devices:write` and an MFA-verified session. Retired interfaces can't be changed, and an interface with an active circuit termination can't be cleared until the termination is moved or removed.
+
+---
+
 ## Recurring monitoring policies
 
 A monitoring policy runs one of the scheduled checks on an interval and raises an alert when it keeps failing. The checks are the reported gateway, the configured DNS, the internet path, or a configured target. Policies need the **Diagnostics** toggle.
@@ -514,6 +527,14 @@ All paths are under `/topology/sites/:siteId`. The Site Map endpoints are listed
 | GET | `/changes` | Recent changes (a window of up to 24 hours) |
 | POST | `/diagnostic-runs` | Start a diagnostic, including `trace_route` with `{trace: {maxHops, probesPerHop}}` |
 | GET | `/presence` | Observed location for the site: its devices not on its own networks, visitors from other sites and wrong-site suggestions. Filtered to the sites you can access; `authority: false` (presentation only) |
+
+WAN and circuit card endpoints:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/devices/:id/circuits` | Circuits and interfaces for a device. Interfaces are returned only with `topology:read` on the site (`capabilities.interfacesVisible`); `capabilities.wanRoleWritable` reports whether the caller may change the WAN role. Up to 1,000 interfaces (`interfacesTruncated`) |
+| GET | `/discovery/assets/:id/circuits` | The same for a discovered asset |
+| PATCH | `/topology/interfaces/:id/role` | Set or clear the WAN role: `{role: 'wan' \| null}`. Requires MFA |
 
 Device endpoints used by wrong-site suggestions (under `/devices/:id`, `devices:write` and MFA):
 
