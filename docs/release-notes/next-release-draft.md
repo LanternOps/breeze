@@ -16,6 +16,8 @@ Last release: **v0.126.0** (2026-11-03).
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
+- **Alert notifications that were silently skipped start sending (#10926, #10944).** Rule, monitor and sourced alerts (patch job, maintenance reboot, policy and config compliance, backup, EDR, warranty, network monitor, script exit code and others) often lost their in-app notification, channel sends and escalations, because the notification job read the alert before its row was committed. After this upgrade those deliveries happen: in-app, email, **SMS**, Slack, Teams, PagerDuty, Pushover, webhooks, and **escalations**. Review notification routing, monitor delivery settings and escalation policies before or right after upgrading — SMS costs money and on-call staff will start getting paged for alerts that were quiet before. A row read too early now logs `PROCESS_ALERT_ROW_NOT_FOUND` instead of returning silently. No migration and no new env vars.
+
 ## Features / API
 
 ## Migrations
