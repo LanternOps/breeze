@@ -10,6 +10,7 @@ export function generateWindowsInstallScript(serverUrl: string): string {
     )
 
     $ErrorActionPreference = 'Stop'
+    $ProgressPreference = 'SilentlyContinue'
     $serverUrl = '${escapedServerUrl}'
     $osv = [System.Environment]::OSVersion.Version
     if ($osv.Major -lt 10) {
