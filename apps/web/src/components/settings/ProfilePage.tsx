@@ -44,7 +44,9 @@ import { replaceUrl } from '../../lib/replaceUrl';
 const SSO_REAUTH_MANAGE_DEAD_GRANT_CODES = new Set(['sso_reauth_required', 'sso_reauth_grant_expired']);
 
 const createProfileSchema = (t: TFunction) => z.object({
-  name: z.string().min(2, t('profilePage.nameMustBeAtLeast2Characters')),
+  name: z.string().trim()
+    .min(2, t('profilePage.nameMustBeAtLeast2Characters'))
+    .max(255, t('profilePage.nameMustBeAtMost255Characters')),
 });
 
 const passkeyMfaStateSchema = z.discriminatedUnion('mfaEnabled', [
@@ -384,9 +386,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
             body.append('file', avatarChange.file);
             return fetchWithAuth('/users/me/avatar', { method: 'POST', body });
           },
-          errorFallback: t(
-            avatarChange.kind === 'replace' ? 'profilePage.failedToUploadAvatar' : 'profilePage.failedToRemoveAvatar',
-          ),
+          errorFallback: avatarChange.kind === 'replace'
+            ? t('profilePage.failedToUploadAvatar')
+            : t('profilePage.failedToRemoveAvatar'),
           parseSuccess: (data) => avatarMutationResponseSchema.parse(data),
           suppressErrorToast: () => true,
           onUnauthorized: () => { void navigateTo('/login', { replace: true }); },

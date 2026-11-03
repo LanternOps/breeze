@@ -5507,6 +5507,7 @@
     "useRecoveryCode": "¿No puede acceder a su clave de acceso? Use un código de recuperación",
     "usePasskeyVerification": "Usar la verificación con clave de acceso",
     "nameMustBeAtLeast2Characters": "El nombre debe tener al menos 2 caracteres.",
+    "nameMustBeAtMost255Characters": "El nombre no puede tener más de 255 caracteres.",
     "loadingProfile": "Cargando perfil...",
     "profileSettings": "Configuración de perfil",
     "manageYourAccountSettingsAndSecurityPreferences": "Administre la configuración de su cuenta y las preferencias de seguridad.",

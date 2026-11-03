@@ -5505,6 +5505,7 @@
     "passkeyRecoveryCodeHint": "Enter an unused recovery code.",
     "recoveryCode": "Recovery code",
     "nameMustBeAtLeast2Characters": "Name must be at least 2 characters",
+    "nameMustBeAtMost255Characters": "Name must be at most 255 characters",
     "loadingProfile": "Loading profile...",
     "profileSettings": "Profile settings",
     "manageYourAccountSettingsAndSecurityPreferences": "Manage your account settings and security preferences.",

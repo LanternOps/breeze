@@ -147,6 +147,36 @@ describe('ProfilePage avatar settings', () => {
     expect(updateUserMock).toHaveBeenCalledWith({ name: 'Casey Admin', avatarUrl: '/api/v1/users/user-1/avatar?v=2' });
   });
 
+  it.each([
+    { name: '  ', message: 'Name must be at least 2 characters', change: 'replace' },
+    { name: '  ', message: 'Name must be at least 2 characters', change: 'remove' },
+    { name: 'A'.repeat(256), message: 'Name must be at most 255 characters', change: 'replace' },
+    { name: 'A'.repeat(256), message: 'Name must be at most 255 characters', change: 'remove' },
+  ] as const)('keeps a staged $change pending when the name is invalid', async ({ name, message, change }) => {
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      return makeJsonResponse({ name: 'Casey Admin', email: 'casey@example.com' });
+    });
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', avatarUrl: '/current/avatar', mfaEnabled: false }} />);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: name } });
+    if (change === 'replace') {
+      fireEvent.change(screen.getByTestId('avatar-file-input'), { target: { files: [new File(['x'], 'avatar.png', { type: 'image/png' })] } });
+      await screen.findByText('avatar.png');
+    } else {
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+      await screen.findByText('Picture removal pending');
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(await screen.findByText(message)).toBeTruthy();
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url) === '/users/me/avatar')).toBe(false);
+    expect(fetchWithAuthMock.mock.calls.some(([url, init]) => String(url) === '/users/me' && init?.method === 'PATCH')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeTruthy();
+    expect(showToastMock).not.toHaveBeenCalled();
+    expect(updateUserMock).not.toHaveBeenCalled();
+  });
+
   it('reports that the picture saved when the name update fails and retries only the name', async () => {
     let patchCalls = 0;
     fetchWithAuthMock.mockImplementation(async (url, init) => {

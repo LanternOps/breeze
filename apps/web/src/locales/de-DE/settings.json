@@ -5507,6 +5507,7 @@
     "useRecoveryCode": "Kein Zugriff auf Ihren Passkey? Wiederherstellungscode verwenden",
     "usePasskeyVerification": "Stattdessen mit Passkey bestätigen",
     "nameMustBeAtLeast2Characters": "Der Name muss mindestens 2 Zeichen lang sein",
+    "nameMustBeAtMost255Characters": "Der Name darf höchstens 255 Zeichen lang sein",
     "loadingProfile": "Profil wird geladen...",
     "profileSettings": "Profileinstellungen",
     "manageYourAccountSettingsAndSecurityPreferences": "Verwalten Sie Ihre Kontoeinstellungen und Sicherheitseinstellungen.",

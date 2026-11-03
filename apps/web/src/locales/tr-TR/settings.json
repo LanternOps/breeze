@@ -5507,6 +5507,7 @@
     "useRecoveryCode": "Geçiş anahtarınıza erişemiyor musunuz? Kurtarma kodu kullanın",
     "usePasskeyVerification": "Bunun yerine geçiş anahtarıyla doğrulayın",
     "nameMustBeAtLeast2Characters": "Ad en az 2 karakterden oluşmalıdır",
+    "nameMustBeAtMost255Characters": "Ad en fazla 255 karakter olabilir",
     "loadingProfile": "Profil yükleniyor...",
     "profileSettings": "Profil ayarları",
     "manageYourAccountSettingsAndSecurityPreferences": "Hesap ayarlarınızı ve güvenlik tercihlerinizi yönetin.",
