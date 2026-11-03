@@ -657,6 +657,7 @@
       "info": "Información"
     },
     "status": {
+      "open": "Abierto",
       "active": "Activo",
       "acknowledged": "Reconocido",
       "resolved": "Resuelto",
