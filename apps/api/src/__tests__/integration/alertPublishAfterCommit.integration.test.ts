@@ -34,6 +34,7 @@ import type { Worker } from 'bullmq';
 const h = vi.hoisted(() => ({
   dropAlertDispatch: false,
   failAck: false,
+  failRetirementOutbox: false,
   failNextTriggeredPublish: false,
   /** True only while a test's inserting transaction is still open. */
   insideOpenTransaction: false,
@@ -72,10 +73,21 @@ vi.mock('../../services/eventBus', async (original) => {
     }),
   };
 });
+// An unrelated step of the minute-tick drain that can fail on its own.
+vi.mock('../../services/hardwareHealth/retirementOutbox', async (original) => {
+  const actual = await original<typeof import('../../services/hardwareHealth/retirementOutbox')>();
+  return {
+    ...actual,
+    drainRetirementOutbox: vi.fn((...args: Parameters<typeof actual.drainRetirementOutbox>) => {
+      if (h.failRetirementOutbox) return Promise.reject(new Error('retirement outbox failed (test)'));
+      return actual.drainRetirementOutbox(...args);
+    }),
+  };
+});
 // Correlation has its own queue and contract; here it only records calls.
 vi.mock('../../jobs/alertCorrelation', () => ({ enqueueAlertCorrelation: vi.fn(async () => null) }));
 
-import { closeDb, db, withSystemDbAccessContext } from '../../db';
+import { closeDb, db, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import {
   alertRules, alertTemplates, alerts, configPolicyAssignments, configPolicyFeatureLinks,
   configPolicyMonitors, configurationPolicies, deviceEventLogs, devices, monitorDefinitions,
@@ -357,6 +369,77 @@ runDb('#10926 — alert.triggered reaches process-alert only after the alert row
     await drainSubjectAlertOutbox();
 
     await expectDelivered(alertId);
+  });
+
+  it('crash recovery still dispatches when an unrelated drain step fails, and the failure still surfaces', async () => {
+    const f = await seedOrgWithRecipient();
+    await seedPlainRule(f);
+    await insertBreachEvent(f);
+
+    h.dropAlertDispatch = true;
+    let alertId: string;
+    try {
+      alertId = await createWithTransactionHeldOpen(() => sweepOneAlert(f));
+    } finally {
+      h.dropAlertDispatch = false;
+    }
+
+    h.failRetirementOutbox = true;
+    try {
+      await expect(drainSubjectAlertOutbox()).rejects.toThrow('retirement outbox failed (test)');
+    } finally {
+      h.failRetirementOutbox = false;
+    }
+
+    await expectDelivered(alertId);
+  });
+
+  it('a rolled-back savepoint inside a committed transaction announces nothing', async () => {
+    const f = await seedOrgWithRecipient();
+    let alertId: string | null = null;
+
+    await withSystemDbAccessContext(async () => {
+      await withDbTransaction(async () => {
+        alertId = await createSourcedAlert({
+          orgId: f.orgId, deviceId: f.deviceId, severity: 'high', title: 'Savepoint', message: 'Savepoint',
+          context: { source: 'publish-after-commit-test' }, publisher: 'publish-after-commit-test',
+        });
+        throw new Error('savepoint rolls back');
+      }).catch(() => undefined);
+    });
+
+    expect(alertId).toEqual(expect.any(String));
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(await readAlert(alertId!)).toBeUndefined();
+    expect(deliveries.filter((d) => d.alertId === alertId)).toEqual([]);
+  });
+
+  it('more than one dispatch batch staged in one transaction is all announced', async () => {
+    const f = await seedOrgWithRecipient();
+    const count = 105;
+
+    const ids = await withSystemDbAccessContext(async () => {
+      const created: string[] = [];
+      for (let i = 0; i < count; i++) {
+        const id = await createSourcedAlert({
+          orgId: f.orgId, deviceId: null, owner: { kind: 'backup_workload', ref: randomUUID() },
+          severity: 'low', title: `Workload ${i}`, message: 'Backup failed',
+          context: { source: 'backup_provider' }, publisher: 'publish-after-commit-test',
+        });
+        if (!id) throw new Error('fixture did not create an alert');
+        created.push(id);
+      }
+      return created;
+    });
+
+    // 105 ids queue for one dispatch loop that takes them 100 at a time.
+    await expect.poll(() => ids.filter((id) => deliveriesFor(id).length === 0).length, {
+      timeout: 30_000, interval: 200,
+    }).toBe(0);
+    expect(ids.every((id) => deliveriesFor(id).length === 1)).toBe(true);
+    const pending = await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT count(*)::int AS n FROM alerts WHERE org_id = ${f.orgId} AND context ? '_subjectDispatch'`));
+    expect(pending).toEqual([{ n: 0 }]);
   });
 
   it('a rolled-back transaction announces nothing', async () => {

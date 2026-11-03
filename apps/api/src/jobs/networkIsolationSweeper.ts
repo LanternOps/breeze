@@ -115,7 +115,7 @@ export async function sweepNetworkIsolations(now: Date): Promise<{ warned: numbe
           context: { source: 'network_isolation', ...payload }, eventPayload: payload,
           publisher: PUBLISHER, triggeredAt: now,
         }));
-        if (!alertId) throw new Error('Network isolation expiry alert was not published');
+        if (!alertId) throw new Error('Network isolation expiry alert was not created');
         const digest = createHash('sha256').update(`${payload.isolationId}:expiring:${payload.generation}`).digest('hex');
         const eventId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
         await publishEvent('device.isolation_expiring', orgId, payload, PUBLISHER, { siteId, eventId });

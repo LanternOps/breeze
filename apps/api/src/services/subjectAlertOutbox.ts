@@ -80,9 +80,20 @@ export async function drainSubjectAlertOutbox(deviceId?: string): Promise<void> 
   if (hasDbAccessContext()) {
     throw new Error('Subject outbox must run after commit — call it with no ambient DB access context');
   }
-  await drainRetirementOutbox(deviceId);
-  await stagePendingSubjectEscalations(deviceId);
+  // Every alert's crash recovery and publish retry runs in the dispatch below,
+  // so neither subject-only step may stop it. A failed step is still rethrown
+  // afterwards, so the tick logs it and an evaluate-device job still fails.
+  const failures: unknown[] = [];
+  for (const step of [() => drainRetirementOutbox(deviceId), () => stagePendingSubjectEscalations(deviceId)]) {
+    try {
+      await step();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
   await dispatchStagedAlerts({ deviceId });
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, 'Subject outbox drain steps failed');
 }
 
 /** How long a `retryOnPublishFailure` envelope waits after a failed publish. */
