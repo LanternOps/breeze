@@ -167,6 +167,21 @@ docker compose config --quiet
 
 Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
 
+### v0.126.0 — Flows on by default, in-cluster HTTPS exemption, IOC sweep limits mapped
+
+The [v0.126.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.126.0/docker-compose.yml) change the `api` environment and `docker/Caddyfile.prod`. Both Compose files gain the same lines.
+
+| Change | Required action |
+|---|---|
+| `FLOWS_ENABLED` is now mapped as `${FLOWS_ENABLED:-true}` (was `false`), and `.env.example` now shows `FLOWS_ENABLED=true`. | If you want Flows off, set `FLOWS_ENABLED=false` in `.env`. If you keep the v0.125.0 Compose file and set nothing, Flows stays off. See [Flows on by default](#flows-on-by-default). |
+| New `api` mappings `INTERNAL_SERVICE_CIDRS` (`${INTERNAL_SERVICE_CIDRS-${BREEZE_DOCKER_SUBNET:-…}}`, no colon) and `INTERNAL_API_HOSTS` (`api:3001`). | Nothing on the bundled Compose. With `FORCE_HTTPS=true`, portal and web server-side rendering calls to the API stop failing with `400 FORCE_HTTPS_NON_CANONICAL_HOST`. Custom Compose or Kubernetes installs set `INTERNAL_SERVICE_CIDRS` to their pod or service network. See [TLS](/deploy/tls/). |
+| New `api` mappings `NETWORK_ISOLATION_ENABLED` (`false`) and `NETWORK_ISOLATION_ENABLED_PARTNER_IDS` (empty). | Nothing. Leave both unset; network isolation is not available yet. |
+| New `api` mapping `TICKET_IMPORT_MAX_BYTES_PER_HOUR` (`${VAR:-}`). | Nothing for the default (2 GiB per hour). See [Ticket import migration windows](/deploy/environment/#ticket-import-migration-windows). |
+| The IOC sweep limits `SECURITY_SWEEP_MAX_DEVICES`, `SECURITY_SWEEP_MAX_ACTIVE_PER_ORG`, `SECURITY_SWEEP_PUMP_INTERVAL_MS`, `SECURITY_SWEEP_PUMP_BATCH`, `SECURITY_SWEEP_PARTNER_RUNNING_CAP`, `SECURITY_SWEEP_TTL_HOURS_DEFAULT`, `SECURITY_SWEEP_MFA_DEVICE_THRESHOLD`, `SECURITY_SWEEP_RUNNING_GRACE_MINUTES` and `IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD` are now mapped as `${VAR:-}`. | Nothing, unless you added your own mapping on v0.125.0; keep one. Defaults are unchanged. |
+| `docker/Caddyfile.prod` redacts the `Webhook-Signature` request header in access logs, as it already did for other webhook secrets. | If you maintain your own copy of `Caddyfile.prod`, carry the line over. |
+
+Not mapped in Compose in v0.126.0 (later releases map them): `ALERT_WORKER_CONCURRENCY`, `ALERT_WORKER_STAGGER_WINDOW_MS` and `AGENT_CONNECTIONS_MAX_PER_DEVICE`. On v0.126.0, add them to the `api` service's `environment:` block if you need to change one. See [Environment Variables](/deploy/environment/).
+
 ### v0.125.0 — DNS Security retention, Flows and MCP preview switches, Caddy header defaults
 
 The [v0.125.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.125.0/docker-compose.yml) change the `api` environment and `docker/Caddyfile.prod`. Both Compose files gain the same lines.
@@ -289,6 +304,97 @@ Changing an existing network's IPAM/subnet requires recreating that network duri
 Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify that `TRUSTED_PROXY_CIDRS` matches the proxy that directly connects to the API. That release's TRANSPORT-001 enforcement only honors forwarded HTTPS headers from trusted peers; a stale address can cause repeated `308` redirects for the UI and agents while `/health` still returns `200`. After restarting, check public sign-in and agent check-ins as well as API logs for `[proxy-trust]` or `[force-https]` warnings (available from v0.104.0).
 
 ## Version-specific notes
+
+### v0.126.0 — alerts to your PSA and webhooks, partner-wide device groups, Jobs moving to Flows
+
+<Aside type="caution" title="Two defaults change after the upgrade">
+  - **Flows is on by default** on most installs: **New job** opens Flows, `POST /api/v1/automations` answers `410 automations_moved_to_flows`, and the Jobs page offers **Move to Flows**. Existing Jobs keep running and stay editable until you switch them. Whether your install turns Flows on depends on your Compose file and `.env`; see [Flows on by default](#flows-on-by-default). To keep Flows off, set `FLOWS_ENABLED=false`.
+  - **DNS Security stops storing allowed queries** for every existing integration. Blocked and redirected queries are still stored. Turn on **Store allowed traffic** per integration to keep allowed queries. See [Stored traffic](/features/dns-security/#stored-traffic).
+</Aside>
+
+**Upgrade order.**
+
+<Steps>
+1. Back up the database, or note a point-in-time recovery point. A rollback keeps the new schema and was not tested (see Migrations below).
+2. On a large install, check the size of `alerts`, `webhook_deliveries` and `incidents` and plan a quiet window (see Migrations below). If you keep a long webhook delivery history, consider pruning it first.
+3. Upgrade the server. Check how your install pins its images with `grep '^BREEZE_API_IMAGE_REF=' .env`:
+   - **Digest-pinned** (the value ends in `@sha256:…`; every `guided-setup.sh` install since v0.112.0): fetch the current `guided-setup.sh` from `main`, then run `bash guided-setup.sh --upgrade 0.126.0`. Don't edit only `BREEZE_VERSION` on a digest-pinned install; that re-pulls the images you already run.
+   - **Tag-form** (the value ends in `:${BREEZE_VERSION}`): set `BREEZE_VERSION=0.126.0`, then run `docker compose pull api web portal && docker compose up -d`. If you run the optional `worker` container, pull and restart it too.
+
+   **Replace every API and worker instance in the same deploy.** Webhook retry state moves from Redis to Postgres in this release, so do not leave a v0.125.0 instance running next to it.
+4. `--upgrade` does not change your `docker-compose.yml`. To pick up this release's new mappings and the new `FLOWS_ENABLED` default, take the v0.126.0 Compose files or add the lines yourself (see [Compose file changes](#v01260--flows-on-by-default-in-cluster-https-exemption-ioc-sweep-limits-mapped)). A value only in `.env` does not reach the container.
+5. Watch the API start log for `[auto-migrate] Applied 56 migration(s)` (from v0.125.0).
+6. Let agents, Breeze Assist and Breeze Viewer update to 0.126.0. Declined-elevation handling and outcome notices for PAM, the new Windows event-log sources, the BitLocker probe gate and the macOS helper reload after an update all need this release's agent.
+</Steps>
+
+#### Stricter than before
+
+No change breaks an install on default settings. If you integrate with the API, check these before you upgrade:
+
+- **`POST /api/v1/automations` answers `410 automations_moved_to_flows`** while Flows is on. Create flows instead, or set `FLOWS_ENABLED=false`. Editing and running existing Jobs is unchanged until they are switched.
+- **`GET /orgs/organizations/:id/effective-settings`** lists a partner field in `locked` only when the partner value wins. Partner defaults an organization may override move to a new `partnerDefaults` list.
+- **Partner and organization names** that are only a reserved brand name (for example "Microsoft", "Windows Security" or "Apple Help Desk") return `400` on create and update.
+- **Breeze AI `manage_groups` `add_devices` / `remove_devices`** now need approval and return `alreadyMembers` / `notMembers` instead of `skipped`. `query_devices` and `manage_alerts` `list` return 20 and 12 rows by default (were 25 and 15).
+
+#### Flows on by default
+
+- Flows turns on after the upgrade if `FLOWS_ENABLED` reaches the API unset: that is, you take the v0.126.0 Compose file (which passes `${FLOWS_ENABLED:-true}`) or run a Compose file from before v0.125.0, and your `.env` has no `FLOWS_ENABLED` line.
+- Flows stays off if your `.env` has `FLOWS_ENABLED=false` (the v0.125.0 `.env.example` line), or if you keep the v0.125.0 Compose file, which passes `false` when the variable is unset.
+- With Flows on, nothing is switched automatically. Managed Jobs (AI triage, monitor compile, policy workflows) are unaffected. With `FLOWS_ENABLED=false`, every flow route answers 404, Jobs stay fully writable, and **Move to Flows** does not appear.
+- Event-triggered Jobs can be moved only with durable event dispatch: `EVENT_DISPATCH_MODE=enforce` and `flow-event-trigger` among `EVENT_DISPATCH_QUEUE_SUBSCRIBERS` (keep the subscribers you already list). Otherwise they show **Can't move yet**.
+- A Job's webhook URL keeps working after the switch. The flow accepts JSON-object bodies only, and senders using the plain-secret header must move to `X-Breeze-Webhook-Token`.
+
+See [Moving Jobs to Flows](/features/automations/#moving-jobs-to-flows).
+
+#### Behaviour changes and feature flags
+
+- **DNS Security stores blocked and redirected queries only.** Overview and `GET /dns-security/stats` say **Not stored** (`allowedTraffic: "none"`) instead of showing zero. Cisco Umbrella integrations also stop downloading allowed records. Allowed rows already stored are kept until retention removes them. See [Stored traffic](/features/dns-security/#stored-traffic).
+- **Webhook retries.** Failed deliveries retry for about 21 hours (1 min, 5 min, 30 min, 2 h, 6 h, 12 h), then end `failed`. The Redis dead-letter queue and the per-webhook `retry_policy` are retired; pending entries are re-driven at upgrade. A webhook's connection-health incident now opens when a delivery fails for good, about 21 hours after the first failure for a dead endpoint, rather than within minutes. Editing or disabling a webhook stops its scheduled retries. See [Retry Logic](/features/webhooks/#retry-logic).
+- **New webhooks default to alert payload v2**, including those created through the API without `payloadVersion`. Existing webhooks stay on v1. See [Payload versions](/features/webhooks/#payload-versions).
+- **Discovery links by MAC address only.** An IP-only match no longer links a discovered asset to a device. Existing automatic links whose MAC is not on the linked device are dropped on the asset's next scan, and a device role that link set is reset so the agent's heartbeat restores it. Manual links are untouched. See [Asset-to-Device Linking](/features/discovery/#asset-to-device-linking).
+- **Alerts auto-resolve when acknowledged or suppressed** and their condition clears. Alerts that require a person never do. Closed alerts do not re-open on events they already alerted on.
+- **Remote desktop idle timeout** is 30 minutes (was 5) on devices with no Remote Access policy and under policies that do not set one. A timeout a policy sets explicitly, including a stored 5, is unchanged. See [Session time limits](/features/remote-access/#session-time-limits).
+- **Alert worker.** Concurrency now follows `DB_POOL_MAX` (a quarter of it, or half with `BREEZE_ROLE=worker`) instead of a fixed 10, and each minute's device evaluations are spread over 50 seconds. Raise `ALERT_WORKER_CONCURRENCY` if the API logs that alert jobs are still pending.
+- **Agent connection inventory** keeps up to 2,000 connections per device report (`AGENT_CONNECTIONS_MAX_PER_DEVICE`).
+- **ConnectWise Manage alert tickets** are opt-in per connection. Nothing is created until you activate them. See [Alert tickets](/features/psa-integrations/#alert-tickets).
+- **On-device dialogs are opt-in.** `PROMPT_HOST_ENABLED_KINDS` enables nothing when unset. Enable a kind only after this release's Breeze Assist build is published; the remote kinds need Breeze Assist 0.1.3 and `elevation.request` needs 0.1.4. See [Environment Variables](/deploy/environment/).
+- **Network isolation is not available yet.** Its migrations run, but nothing activates on upgrade: `NETWORK_ISOLATION_ENABLED` defaults to `false`, the agent version gate is a placeholder, and the Windows agent pieces ship switched off. See [Network Isolation](/features/network-isolation/).
+- **Wisp** stays Breeze Cloud only (`BREEZE_WISP_ENABLED`, default `false`).
+- **Event-log collection on Windows (agent 0.126.0):** the first pass after the agent upgrade starts 15 minutes before the agent started; older events are not back-filled. Linux and macOS events collected around the agent upgrade can appear twice, once with the old id and once with the new one.
+
+#### Environment variables
+
+**No new required variables.** New optional settings, all on the `api` service; see [Compose file changes](#v01260--flows-on-by-default-in-cluster-https-exemption-ioc-sweep-limits-mapped) for which are mapped.
+
+- `INTERNAL_SERVICE_CIDRS` (Compose default: your `BREEZE_DOCKER_SUBNET`) and `INTERNAL_API_HOSTS` (`api:3001`). With `FORCE_HTTPS=true`, portal and web server-side rendering calls to the API no longer get `400 FORCE_HTTPS_NON_CANONICAL_HOST`. Leave them unset on the bundled Compose. Every entry must lie wholly inside a private range, or the API refuses to boot; an empty `INTERNAL_SERVICE_CIDRS` turns the exemption off. See [TLS](/deploy/tls/#customer-portal-pages-fail-with-force_https_non_canonical_host).
+- `NETWORK_ISOLATION_ENABLED` (`false`) and `NETWORK_ISOLATION_ENABLED_PARTNER_IDS` (empty). Leave both unset.
+- `TICKET_IMPORT_MAX_BYTES_PER_HOUR` (`2147483648`, 2 GiB, never below 10 MiB): attachment bytes one ticket-import window may download per hour.
+- `ALERT_WORKER_CONCURRENCY`, `ALERT_WORKER_STAGGER_WINDOW_MS` (`50000`, 0–59000) and `AGENT_CONNECTIONS_MAX_PER_DEVICE` (`2000`, up to `10000`), not mapped in the v0.126.0 Compose files.
+- Changed default: `FLOWS_ENABLED` (`true`, was `false`).
+
+See [Environment Variables](/deploy/environment/).
+
+#### Migrations
+
+56 idempotent migrations apply on boot when upgrading from v0.125.0 (`[auto-migrate] Applied 56 migration(s)`). No shipped migration was modified, renamed or removed.
+
+- **Large installs: plan a quiet window for `alerts`, `webhook_deliveries` and `incidents`.** On a small install these files take seconds. On a large one, check sizes first, for example `SELECT pg_size_pretty(pg_total_relation_size('alerts'))`, and repeat for `webhook_deliveries` and `incidents`.
+  - **`alerts` is locked for the whole of the owner-kind migrations** (`2027-01-18-100000-alerts-owner-kind.sql` and `2027-01-18-130000-alerts-owner-kind-device-topology-chk.sql`). In one transaction they make `device_id` nullable, backfill topology alerts, validate a new CHECK with a full scan and build a unique partial index without `CONCURRENTLY`. Alert reads and writes wait until each file finishes.
+  - **`webhook_deliveries`** gains an `org_id` column with a foreign key validated by a table scan, then a backfill in 10,000-row batches inside one transaction, so locks are held until the whole backfill commits (`2027-01-13-100000-webhooks-partner-ownership.sql`, `2027-01-13-100100-webhook-deliveries-org-id-backfill.sql`).
+  - **`incidents` and `incident_actions`** each gain a unique `(id, org_id)` constraint built without `CONCURRENTLY` (`2027-01-17-200000-device-network-isolations.sql`).
+  - The other changes to busy tables use the safe patterns: constant-default columns on `devices`, concurrent index builds, and foreign keys and CHECKs added `NOT VALID` then validated.
+- **Smaller backfills:** contracts' source quote from executed agreements and Pax8 orders; contract document template names; the legacy `[monitor] ` prefix on network monitors; duplicate PSA mappings removed; Wisp tables; AI model assignments for a retired surface deleted.
+- **New tables** for flow conversions, automation occurrence claims, alert external references, device network isolations and AI operator account reservations enable and force row-level security in the file that creates them. Device groups may now have no organization (partner-owned groups).
+- **One-way enum additions:** `elevation_status` and `elevation_audit_event_type` + `withdrawn`; `webhook_delivery_status` + `scheduled`; `ai_tool_status` + `refused`; `config_feature_type` + `containment`.
+- **Privileged DDL.** There is no `CREATE ROLE`, `OWNER TO`, `CREATE EXTENSION` or schema-level grant. Twenty `SECURITY DEFINER` functions are added, all with a pinned `search_path`. `2027-01-18-188000-contract-documents-template-name-snapshot.sql` disables and re-enables a trigger around its update, which needs table ownership; the migration role owns the table on a standard install.
+- **Rolling back.** A rollback to v0.125.0 keeps the new schema, including the enum values above, and was not tested.
+
+#### Known gaps
+
+- **Not run on a live agent before release:** the BitLocker probe gate on Windows, the sensitive-data scan of user profiles, PAM outcome notices and declined-elevation handling on Windows, and IOC scan command timeouts and sweep results.
+- **macOS upgrade in place** was verified on Intel, not on Apple Silicon.
+- **ConnectWise Manage alert tickets** were tested against a stub, not a live ConnectWise Manage tenant.
+- **Known issues:** Cmd can stay held on a Mac after a shortcut in a remote session; press and release Cmd in the session to clear it ([#9595](https://github.com/LanternOps/breeze/issues/9595)). Some alert notifications can be skipped: in-app notifications, channel sends and escalations for rule-based, monitor and some job-generated alerts may not be sent. This predates this release, and a fix is in progress ([#10926](https://github.com/LanternOps/breeze/issues/10926)).
 
 ### v0.125.0 — agreements sent for signature, ticket merge and business-hours SLAs, ring-controlled Windows feature updates
 
