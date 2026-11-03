@@ -184,6 +184,38 @@ describe('FlowDetailPage', () => {
     expect(screen.queryByTestId('flow-step-notify-preapproved')).toBeNull();
   });
 
+  it('detail shows moved-from: the source Job links back to its conversion panel (#5221 C3)', async () => {
+    const d = detail();
+    Object.assign(d.flow, {
+      convertedFrom: { automationId: 'a-1', name: 'Nightly cleanup', conversionId: 'c-1', state: 'switched' },
+    });
+    api.getFlow.mockResolvedValue(d);
+    render(<FlowDetailPage flowId={ID} />);
+    const moved = await screen.findByTestId('flow-moved-from');
+    expect(moved.textContent).toContain('Moved from Job');
+    const link = within(moved).getByRole('link', { name: 'Nightly cleanup' });
+    expect(link.getAttribute('href')).toBe('/jobs#convert-a-1');
+    expect(screen.queryByTestId('flow-moved-from-reverted')).toBeNull();
+  });
+
+  it('a flow that was never converted shows no moved-from line', async () => {
+    render(<FlowDetailPage flowId={ID} />);
+    await screen.findByTestId('flow-steps');
+    expect(screen.queryByTestId('flow-moved-from')).toBeNull();
+  });
+
+  it('delete hidden for switched: a converted flow offers no Delete (#5221 C3)', async () => {
+    const d = detail();
+    Object.assign(d.flow, {
+      status: 'enabled',
+      convertedFrom: { automationId: 'a-1', name: 'Nightly cleanup', conversionId: 'c-1', state: 'switched' },
+    });
+    api.getFlow.mockResolvedValue(d);
+    render(<FlowDetailPage flowId={ID} />);
+    await screen.findByTestId('flow-moved-from');
+    expect(screen.queryByRole('button', { name: /delete/i })).toBeNull();
+  });
+
   it('shows the not-found state for a 404', async () => {
     api.getFlow.mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }));
     render(<FlowDetailPage flowId={ID} />);

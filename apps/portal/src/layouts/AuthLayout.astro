@@ -6,12 +6,16 @@ import { loadPortalBranding } from '../lib/server';
 import { buildDocAccentCss } from '../lib/docAccent';
 import { isPortalChromeAccent, PORTAL_CHROME_ACCENT_DEFAULT } from '@breeze/shared';
 import { buildPortalCustomCss } from '../lib/customCss';
+import { portalWelcomeMessage } from '../lib/welcomeMessage';
 
 interface Props {
   title: string;
+  /** Show the org's portal welcome message (#9675) under the heading. Only the
+   *  sign-in page opts in; reset/forgot/invite screens keep to their task. */
+  showWelcome?: boolean;
 }
 
-const { title } = Astro.props;
+const { title, showWelcome = false } = Astro.props;
 // The first screen a customer ever sees showed a generic padlock and the words
 // "Customer Portal", so someone arriving from an emailed link had no way to
 // confirm they were in the right place. Branding is unauthenticated-safe here:
@@ -24,6 +28,9 @@ const accentCss = buildDocAccentCss(branding.primaryColor);
 const customCssContent = buildPortalCustomCss(branding.customCss);
 const cspNonce = Astro.locals.cspNonce;
 const portalName = branding.name || 'Customer Portal';
+// Branding resolves here only for a verified custom domain or a live session;
+// a shared-domain visitor gets default branding, so no message shows.
+const welcomeMessage = showWelcome ? portalWelcomeMessage(branding) : null;
 // Curated chrome accent (packages/shared/src/types/portalChromeAccent.ts) — the
 // sign-in page uses branding too, so the primary button and focus ring here
 // must match the same org's accent the signed-in shell will show.
@@ -60,6 +67,12 @@ const chromeAccent =
           )}
           <h1 class="mt-5 font-display text-[1.75rem] font-semibold leading-tight tracking-tight text-foreground">{portalName}</h1>
           <p class="mt-2 text-sm text-muted-foreground">Sign in to review proposals, pay invoices, and reach your IT team.</p>
+          {/* Plain text the MSP typed: escaped, line breaks kept. Never set:html. */}
+          {welcomeMessage && (
+            <p data-testid="portal-login-welcome" class="mt-4 whitespace-pre-line break-words text-sm leading-relaxed text-foreground/80">
+              {welcomeMessage}
+            </p>
+          )}
         </div>
 
         <slot />

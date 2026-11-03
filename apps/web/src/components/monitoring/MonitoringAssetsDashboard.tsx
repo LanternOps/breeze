@@ -261,7 +261,9 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
         <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${COLLECTION_STYLES[state]}`}>
           {t(/* i18n-dynamic */ `longTail.monitoring.MonitoringAssetsDashboard.collectionState.${state}`)}
         </span>
-        {asset.snmp.configured && asset.snmp.lastPolled && (
+        {/* The reachability cell already says "SNMP <age>" when SNMP is the
+            source; repeating the age here is the same fact twice in a row. */}
+        {asset.snmp.configured && asset.snmp.lastPolled && asset.reachability?.source !== 'snmp' && (
           <div className="text-xs text-muted-foreground">
             {t('longTail.monitoring.MonitoringAssetsDashboard.lastPolled', {
               time: formatRelativeTime(asset.snmp.lastPolled, t),
@@ -312,9 +314,6 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
           <span className="text-xs text-muted-foreground">
             {asset.snmp.snmpVersion ?? '—'} • {t('longTail.monitoring.MonitoringAssetsDashboard.everyInterval', { interval: formatInterval(asset.snmp.pollingInterval) })}
           </span>
-        </div>
-        <div className="text-xs text-muted-foreground">
-          {t('longTail.monitoring.MonitoringAssetsDashboard.lastPolled', { time: formatRelativeTime(asset.snmp.lastPolled, t) })}
         </div>
       </div>
     );
@@ -534,9 +533,6 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
                           <p className="truncate text-sm font-medium">
                             {asset.hostname || asset.ipAddress || '—'}
                           </p>
-                          <p className="truncate text-xs text-muted-foreground">
-                            {t('longTail.monitoring.MonitoringAssetsDashboard.lastSeen', { time: formatRelativeTime(asset.lastSeenAt, t) })}
-                          </p>
                         </div>
                       </td>
                       <td className="px-4 py-3 text-sm font-mono">{asset.ipAddress || '—'}</td>
@@ -568,9 +564,6 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="truncate font-medium">{asset.hostname || asset.ipAddress || '—'}</p>
-                      <p className="truncate text-xs text-muted-foreground">
-                        {t('longTail.monitoring.MonitoringAssetsDashboard.lastSeen', { time: formatRelativeTime(asset.lastSeenAt, t) })}
-                      </p>
                     </div>
                     {renderOverallBadge(asset)}
                   </div>

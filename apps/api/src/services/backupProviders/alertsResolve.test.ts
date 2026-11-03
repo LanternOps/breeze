@@ -38,6 +38,7 @@ import {
   BACKUP_PROVIDER_ALERT_SOURCE,
   resolveProviderAlertsForConnection,
   resolveProviderAlertsForProviderDevices,
+  resolveProviderAlertsForCustomer,
 } from './alertsResolve';
 
 describe('resolveProviderAlertsForConnection', () => {
@@ -60,6 +61,19 @@ describe('resolveProviderAlertsForConnection', () => {
     // A resolution note that says WHY is what stops the next technician
     // re-opening it: the row is gone, not fixed.
     expect(String(note)).toMatch(/backup provider connection/i);
+  });
+
+  it('customer remaps resolve alerts by provider row, without requiring a linked device', async () => {
+    // SaaS rows have no linked device; the resolver must keep using provider IDs.
+    dbState.rows = [{ id: 'saas-provider-row' }];
+    await expect(resolveProviderAlertsForCustomer('customer-1')).resolves.toBe(1);
+    expect(dbState.capturedWhere).toHaveLength(2);
+    expect(resolveAlertMock).toHaveBeenCalledWith('saas-provider-row',
+      'Backup provider customer remapped to a different organization', undefined, false, 'source_retired');
+    const predicates = JSON.stringify(dbState.capturedWhere);
+    expect(predicates).toContain('customer-1');
+    expect(predicates).toContain('providerDeviceId');
+    expect(predicates).not.toContain('breeze_device_id');
   });
 
   it('counts only the alerts whose compare-and-swap it actually won', async () => {

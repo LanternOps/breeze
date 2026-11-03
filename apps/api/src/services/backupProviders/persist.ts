@@ -37,6 +37,7 @@ export type ProviderSyncTx = Pick<
 export interface VendorSnapshot {
   customers: VendorCustomer[];
   devices: VendorDevice[];
+  failedCustomerIds?: string[];
 }
 
 export interface SyncCounters {
@@ -53,6 +54,7 @@ export interface PersistConnection {
   partnerId: string;
   provider: string;
   showProviderNameInPortal: boolean;
+  inventoryKind?: 'endpoint' | 'saas';
 }
 
 /** Spec: rows older than 60 days are pruned per connection. */
@@ -95,9 +97,8 @@ function utcDay(now: Date): string {
  *
  * The caller has already taken the per-connection advisory lock and re-read the
  * connection FOR UPDATE, so nothing here re-checks liveness. Deletions are safe
- * ONLY because the adapter throws on any partial page (spec, Provider adapter):
- * a caught enumeration error never reaches this function, so "absent from the
- * snapshot" genuinely means "gone from the vendor".
+ * only for successfully enumerated customers: explicitly failed customers
+ * retain their prior rows and counts until a complete enumeration succeeds.
  */
 export async function persistVendorSnapshot(
   tx: ProviderSyncTx,
@@ -106,6 +107,11 @@ export async function persistVendorSnapshot(
   options: { now?: Date } = {},
 ): Promise<SyncCounters> {
   const now = options.now ?? new Date();
+  const isSaasInventory = connection.inventoryKind === 'saas';
+  const countsTowardInventory = (accountType: unknown): boolean =>
+    (accountType === 'm365' || accountType === 'gws') === isSaasInventory;
+  const failedCustomerIds = new Set(snapshot.failedCustomerIds ?? []);
+  const devices = snapshot.devices.filter((device) => !failedCustomerIds.has(device.vendorCustomerId));
 
   // Defer the DEFERRABLE INITIALLY IMMEDIATE composite FKs for this transaction
   // (CLAUDE.md, org-merge contract). A customer whose mapping moved org forces
@@ -124,27 +130,30 @@ export async function persistVendorSnapshot(
     .where(eq(backupProviderCustomers.connectionId, connection.id));
 
   const deviceCountByVendorCustomer = new Map<string, number>();
-  for (const device of snapshot.devices) {
+  for (const device of devices) {
+    if (!countsTowardInventory(device.accountType)) continue;
     deviceCountByVendorCustomer.set(
       device.vendorCustomerId,
       (deviceCountByVendorCustomer.get(device.vendorCustomerId) ?? 0) + 1,
     );
   }
 
-  const customerValues = snapshot.customers.map((customer) => ({
-    connectionId: connection.id,
-    partnerId: connection.partnerId,
-    vendorCustomerId: customer.vendorCustomerId,
-    vendorCustomerName: customer.name.slice(0, 255),
-    vendorParentId: customer.parentId?.slice(0, 128) ?? null,
-    vendorLevel: customer.level?.slice(0, 40) ?? null,
-    vendorExternalCode: customer.externalCode?.slice(0, 255) ?? null,
-    // device_count counts ALL devices under the customer, mapped or not — it is
-    // what the "N customers / M devices unmapped" summary is built from.
-    deviceCount: deviceCountByVendorCustomer.get(customer.vendorCustomerId) ?? 0,
-    lastSeenAt: now,
-    updatedAt: now,
-  }));
+  const customerValues = snapshot.customers
+    .filter((customer) => !failedCustomerIds.has(customer.vendorCustomerId))
+    .map((customer) => ({
+      connectionId: connection.id,
+      partnerId: connection.partnerId,
+      vendorCustomerId: customer.vendorCustomerId,
+      vendorCustomerName: customer.name.slice(0, 255),
+      vendorParentId: customer.parentId?.slice(0, 128) ?? null,
+      vendorLevel: customer.level?.slice(0, 40) ?? null,
+      vendorExternalCode: customer.externalCode?.slice(0, 255) ?? null,
+      // Counts all inventory under the customer, mapped or not. The adapter
+      // determines whether the connection card shows endpoints or workloads.
+      deviceCount: deviceCountByVendorCustomer.get(customer.vendorCustomerId) ?? 0,
+      lastSeenAt: now,
+      updatedAt: now,
+    }));
 
   const upsertedCustomers: Array<{ id: string; vendorCustomerId: string }> = [];
   for (const batch of chunk(customerValues, UPSERT_CHUNK)) {
@@ -172,7 +181,7 @@ export async function persistVendorSnapshot(
 
   const seenVendorCustomerIds = new Set(snapshot.customers.map((c) => c.vendorCustomerId));
   const vanishedCustomerIds = existingCustomers
-    .filter((row) => !seenVendorCustomerIds.has(row.vendorCustomerId))
+    .filter((row) => !seenVendorCustomerIds.has(row.vendorCustomerId) && !failedCustomerIds.has(row.vendorCustomerId))
     .map((row) => row.id);
   for (const batch of chunk(vanishedCustomerIds, UPSERT_CHUNK)) {
     await tx.delete(backupProviderCustomers).where(inArray(backupProviderCustomers.id, batch));
@@ -204,6 +213,7 @@ export async function persistVendorSnapshot(
       id: backupProviderDevices.id,
       vendorDeviceId: backupProviderDevices.vendorDeviceId,
       customerId: backupProviderDevices.customerId,
+      accountType: backupProviderDevices.accountType,
     })
     .from(backupProviderDevices)
     .where(eq(backupProviderDevices.connectionId, connection.id));
@@ -211,10 +221,10 @@ export async function persistVendorSnapshot(
   const mappedCustomerRowIds = new Set([...mappedByVendorId.values()].map((m) => m.id));
   let unmappedDevices = 0;
   const deviceValues: Array<Record<string, unknown>> = [];
-  for (const device of snapshot.devices) {
+  for (const device of devices) {
     const mapping = mappedByVendorId.get(device.vendorCustomerId);
     if (!mapping) {
-      unmappedDevices += 1;
+      if (countsTowardInventory(device.accountType)) unmappedDevices += 1;
       continue;
     }
     deviceValues.push({
@@ -337,9 +347,13 @@ export async function persistVendorSnapshot(
       AND h.org_id <> d.org_id
   `);
 
-  const seenVendorDeviceIds = new Set(snapshot.devices.map((d) => d.vendorDeviceId));
+  const failedCustomerRowIds = new Set(existingCustomers
+    .filter((row) => failedCustomerIds.has(row.vendorCustomerId))
+    .map((row) => row.id));
+  const seenVendorDeviceIds = new Set(devices.map((d) => d.vendorDeviceId));
   const staleDeviceIds = existingDevices
-    .filter((row) => !seenVendorDeviceIds.has(row.vendorDeviceId) || !mappedCustomerRowIds.has(row.customerId))
+    .filter((row) => !failedCustomerRowIds.has(row.customerId)
+      && (!seenVendorDeviceIds.has(row.vendorDeviceId) || !mappedCustomerRowIds.has(row.customerId)))
     .map((row) => row.id);
   for (const batch of chunk(staleDeviceIds, UPSERT_CHUNK)) {
     await tx.delete(backupProviderDevices).where(inArray(backupProviderDevices.id, batch));
@@ -394,11 +408,14 @@ export async function persistVendorSnapshot(
   `);
 
   return {
-    customers: upsertedCustomers.length,
+    customers: upsertedCustomers.length + failedCustomerRowIds.size,
     unmappedCustomers,
-    devices: upsertedDevices.length,
+    // Retained rows count in the same units as fresh inventory.
+    devices: deviceValues.filter((row) => countsTowardInventory(row.accountType)).length
+      + existingDevices.filter((row) => failedCustomerRowIds.has(row.customerId)
+        && countsTowardInventory(row.accountType)).length,
     unmappedDevices,
-    linked,
-    ambiguous,
+    linked: isSaasInventory ? 0 : linked,
+    ambiguous: isSaasInventory ? 0 : ambiguous,
   };
 }

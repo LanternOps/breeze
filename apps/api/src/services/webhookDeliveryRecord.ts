@@ -1,10 +1,9 @@
-import { and, eq, ne, sql, type SQL } from 'drizzle-orm';
+import { and, eq, isNull, inArray, or, sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { webhookDeliveries, webhooks as webhooksTable } from '../db/schema';
 import type { BreezeEvent } from './eventBus';
 import type {
   WebhookFanoutTarget,
-  WebhookDeliveryJob,
   WebhookDeliveryRecordOutcome,
   WebhookDeliveryResult,
   DeliveryClaimOutcome
@@ -40,45 +39,56 @@ export function buildExistingDeliveryLookup(webhookId: string, eventId: string):
 }
 
 /**
- * The EXECUTION CLAIM predicate: `pending` and this id, nothing else.
- *
- * Narrow on purpose. The queue is a plain Redis list with no job identity, so
- * one delivery can legitimately appear on it twice (the recovery sweep
- * re-queues any row that still looks unresolved, and a merely backlogged job is
- * indistinguishable from a lost one). This CAS is what makes that safe: of N
- * popped copies exactly one flips `pending` -> `retrying` and POSTs.
- *
- * It deliberately does NOT test the lease. A row is claimable whenever it is
- * still `pending`, whoever queued it — the sweep's own lease exists to stop two
- * SWEEPERS colliding, not to keep a delivery worker away from work it was
- * handed.
+ * Claim each persisted attempt once, so duplicate BullMQ wake-ups cannot POST
+ * twice. Pending ignores the recovery lease: that lease serializes sweepers,
+ * not workers. Scheduled rows must wait for their due time on the DB clock.
  */
-export function buildExecutionClaimCas(deliveryId: string): SQL {
+export function buildExecutionClaimCas(deliveryId: string, attemptsMade: number): SQL {
   return and(
     eq(webhookDeliveries.id, deliveryId),
-    eq(webhookDeliveries.status, 'pending')
+    eq(webhookDeliveries.attempts, attemptsMade),
+    or(
+      eq(webhookDeliveries.status, 'pending'),
+      and(
+        eq(webhookDeliveries.status, 'scheduled'),
+        or(isNull(webhookDeliveries.nextRetryAt), sql`${webhookDeliveries.nextRetryAt} <= (now() AT TIME ZONE 'UTC')`)
+      )
+    )
   )!;
 }
 
 /**
- * The OUTCOME WRITE predicate: this row, unless it already succeeded.
- *
- * Keying on `id` alone was safe while the delivery callback was the ONLY
- * writer. It no longer is: the recovery sweep also writes terminal outcomes,
- * and `deliverWebhook` clears its abort timeout once response HEADERS arrive,
- * so a slow response body can keep an attempt in flight past the execution
- * lease and land here after the sweep has already resolved the row. Without
- * `ne(status, 'delivered')` a late-arriving FAILURE would overwrite a recorded
- * success and the customer's delivery history would lie.
- *
- * `status` is NOT NULL, so `<>` cannot silently drop rows the way a negation
- * over a nullable column would.
+ * Outcomes belong to one attempt. A late failure must not revive a row the
+ * recovery sweep resolved; a late success can correct that attempt's unknown
+ * outcome so delivery history still reflects the confirmed POST.
  */
-export function buildOutcomeWriteCas(deliveryId: string): SQL {
+export function buildOutcomeWriteCas(deliveryId: string, attemptsBefore: number, success: boolean): SQL {
   return and(
     eq(webhookDeliveries.id, deliveryId),
-    ne(webhookDeliveries.status, 'delivered')
+    eq(webhookDeliveries.attempts, attemptsBefore),
+    success
+      ? inArray(webhookDeliveries.status, ['retrying', 'failed'])
+      : eq(webhookDeliveries.status, 'retrying')
   )!;
+}
+
+export function buildReleaseClaimCas(deliveryId: string, attemptsMade: number): SQL {
+  return and(
+    eq(webhookDeliveries.id, deliveryId),
+    eq(webhookDeliveries.status, 'retrying'),
+    eq(webhookDeliveries.attempts, attemptsMade)
+  )!;
+}
+
+/** A pre-send exception consumed no attempt; let BullMQ retry the same claim. */
+export async function releaseDeliveryClaim(input: { deliveryId: string; attemptsMade: number }): Promise<boolean> {
+  return runWithSystemDbAccess(async () => {
+    const written = await db.update(webhookDeliveries)
+      .set({ status: input.attemptsMade === 0 ? 'pending' : 'scheduled', nextRetryAt: null })
+      .where(buildReleaseClaimCas(input.deliveryId, input.attemptsMade))
+      .returning({ id: webhookDeliveries.id });
+    return written.length > 0;
+  });
 }
 
 /**
@@ -95,14 +105,36 @@ export async function recordWebhookDelivery(
   webhook: WebhookFanoutTarget,
   event: BreezeEvent
 ): Promise<WebhookDeliveryRecordOutcome> {
+  const timestamp = event.metadata.timestamp;
+  const parsedTimestamp = typeof timestamp === 'string' ? new Date(timestamp) : null;
+  const eventTimestamp = parsedTimestamp && Number.isFinite(parsedTimestamp.getTime()) ? parsedTimestamp : null;
+  if (timestamp !== undefined && eventTimestamp === null) {
+    let rawTimestamp: string;
+    try {
+      rawTimestamp = JSON.stringify(timestamp) ?? String(timestamp);
+    } catch {
+      rawTimestamp = String(timestamp);
+    }
+    console.warn(`[WebhookDelivery] event-timestamp-invalid ${JSON.stringify({
+      errorId: 'WEBHOOK_DELIVERY_EVENT_TIMESTAMP_INVALID',
+      eventId: event.id,
+      webhookId: webhook.id,
+      timestamp: rawTimestamp.slice(0, 100)
+    })}`);
+  }
   return runWithSystemDbAccess(async () => {
     const [delivery] = await db
       .insert(webhookDeliveries)
       .values({
         webhookId: webhook.id,
+        orgId: event.orgId,
         eventType: event.type,
         eventId: event.id,
         payload: event.payload,
+        payloadVersion: webhook.payloadVersion ?? 1,
+        webhookGeneration: webhook.approvalGeneration,
+        eventTimestamp,
+        replayRootEventId: null,
         status: 'pending',
         attempts: 0
       })
@@ -134,52 +166,77 @@ export async function recordWebhookDelivery(
 }
 
 /**
- * Win the delivery row before POSTing.
- *
- * Returns the OBSERVED STATUS on failure rather than a bare `false`, because
- * the three ways to lose are operationally different and the worker's log has
- * to name the right one: `retrying` = another copy of this job is delivering it
- * right now; `delivered`/`failed` = it already resolved; `null` = there is no
- * row under this id at all, which is a bug or a hand-crafted job rather than a
- * race. Collapsing them to "duplicate" mislabels two of the three.
+ * Read back a lost claim once so the worker can distinguish a duplicate, an
+ * erased delivery and an early wake. Computing the delay on the DB clock
+ * prevents worker clock skew from repeatedly waking the same scheduled row.
  */
 export async function claimDeliveryForExecution(
-  job: WebhookDeliveryJob
+  job: { deliveryId: string; attemptsMade: number }
 ): Promise<DeliveryClaimOutcome> {
   return runWithSystemDbAccess(async () => {
-    const claimed = await db
+    const [delivery] = await db
       .update(webhookDeliveries)
-      .set({
-        status: 'retrying',
-        // Doubles as the abandonment lease: if this worker dies mid-POST the
-        // sweep can only reconsider the row once this has expired.
-        nextRetryAt: new Date(Date.now() + EXECUTION_LEASE_MS)
-      })
-      .where(buildExecutionClaimCas(job.id))
-      .returning({ id: webhookDeliveries.id });
+      .set({ status: 'retrying', nextRetryAt: new Date(Date.now() + EXECUTION_LEASE_MS) })
+      .where(buildExecutionClaimCas(job.deliveryId, job.attemptsMade))
+      .returning({
+        id: webhookDeliveries.id,
+        webhookId: webhookDeliveries.webhookId,
+        orgId: webhookDeliveries.orgId,
+        eventId: webhookDeliveries.eventId,
+        eventType: webhookDeliveries.eventType,
+        payload: webhookDeliveries.payload,
+        payloadVersion: webhookDeliveries.payloadVersion,
+        webhookGeneration: webhookDeliveries.webhookGeneration,
+        eventTimestamp: webhookDeliveries.eventTimestamp,
+        createdAt: webhookDeliveries.createdAt,
+        replayRootEventId: webhookDeliveries.replayRootEventId,
+        attempts: webhookDeliveries.attempts
+      });
 
-    if (claimed.length > 0) return { claimed: true };
+    if (delivery) return { claimed: true, delivery: { ...delivery, payloadVersion: delivery.payloadVersion as 1 | 2 } };
 
     const [row] = await db
-      .select({ status: webhookDeliveries.status })
+      .select({
+        status: webhookDeliveries.status,
+        attempts: webhookDeliveries.attempts,
+        dueInMs: sql<number | null>`CEIL(EXTRACT(EPOCH FROM (${webhookDeliveries.nextRetryAt} - (now() AT TIME ZONE 'UTC'))) * 1000)::float8`
+      })
       .from(webhookDeliveries)
-      .where(eq(webhookDeliveries.id, job.id))
+      .where(eq(webhookDeliveries.id, job.deliveryId))
       .limit(1);
 
-    return { claimed: false, observedStatus: row?.status ?? null };
+    return {
+      claimed: false,
+      observedStatus: row?.status ?? null,
+      observedAttempts: row?.attempts ?? null,
+      dueInMs: row?.dueInMs == null ? null : Number(row.dueInMs)
+    };
   });
 }
 
 /**
- * Persist the outcome of one delivery attempt and move the webhook aggregates.
+ * Count one failed delivery on its webhook (#9946).
  *
- * Extracted from `index.ts` (#4095) so the CAS above is reachable by a test:
- * as an anonymous closure in a coverage-excluded file, deleting its
- * `ne(status, 'delivered')` conjunct passed everywhere.
+ * For terminal writes that move a delivery to `failed` WITHOUT an attempt
+ * outcome: the recovery sweep's abandon paths. Call it only after that write's
+ * CAS returned the row, in the same system-scope transaction, so a lost race
+ * never counts and each delivery is counted exactly once. `last_delivery_at` is
+ * left alone, because no attempt was made.
  */
-export async function recordDeliveryOutcome(result: WebhookDeliveryResult): Promise<void> {
-  await runWithSystemDbAccess(async () => {
-    const deliveryStatus = result.success ? 'delivered' : 'failed';
+export async function countFailedDelivery(webhookId: string): Promise<void> {
+  await db
+    .update(webhooksTable)
+    .set({ failureCount: sql`${webhooksTable.failureCount} + 1` })
+    .where(eq(webhooksTable.id, webhookId));
+}
+
+/**
+ * Persist the outcome of one delivery attempt and move the webhook aggregates.
+ * The attempt/status CAS above also protects against recovery racing a slow response.
+ */
+export async function recordDeliveryOutcome(result: WebhookDeliveryResult): Promise<boolean> {
+  return runWithSystemDbAccess(async () => {
+    const deliveryStatus = result.success ? 'delivered' : result.nextAttemptAt ? 'scheduled' : 'failed';
     const deliveredAt = result.success
       ? new Date(result.deliveredAt ?? new Date().toISOString())
       : null;
@@ -187,67 +244,57 @@ export async function recordDeliveryOutcome(result: WebhookDeliveryResult): Prom
       ? Math.max(0, Math.round(result.responseTimeMs))
       : null;
 
-    // A DLQ replay carries a delivery id that was minted by `retryFromDLQ` and
-    // has NO `webhook_deliveries` row behind it. Attempting the write anyway
-    // would match zero rows and fire the zero-row warning on EVERY routine
-    // replay, with a stated cause ("someone else resolved it first") that is
-    // simply untrue — which would void that warning for the real race it exists
-    // to catch. The POST still happened, so the aggregates below still move.
-    if (result.hasDeliveryRow === false) {
-      console.log(`[WebhookDelivery] dlq-replay-completed ${JSON.stringify({
-        errorId: 'WEBHOOK_DLQ_REPLAY_COMPLETED',
+    const written = await db
+      .update(webhookDeliveries)
+      .set({
+        status: deliveryStatus,
+        attempts: result.attempts,
+        responseStatus: result.responseStatus ?? null,
+        responseBody: result.responseBody ?? null,
+        responseTimeMs,
+        errorMessage: result.errorMessage ?? null,
+        deliveredAt,
+        failedAt: deliveryStatus === 'failed' ? new Date() : null,
+        nextRetryAt: result.nextAttemptAt ?? null
+      })
+      .where(buildOutcomeWriteCas(result.deliveryId, result.attempts - 1, result.success))
+      .returning({ id: webhookDeliveries.id });
+
+    if (written.length === 0) {
+      console.warn(`[WebhookDelivery] outcome-write-skipped ${JSON.stringify({
+        errorId: 'WEBHOOK_DELIVERY_OUTCOME_WRITE_SKIPPED',
         deliveryId: result.deliveryId,
         webhookId: result.webhookId,
-        eventId: result.eventId,
-        delivered: result.success,
-        responseStatus: result.responseStatus ?? null,
-        attempts: result.attempts
+        attemptedStatus: deliveryStatus
       })}`);
-    } else {
-      const written = await db
-        .update(webhookDeliveries)
-        .set({
-          status: deliveryStatus,
-          attempts: result.attempts,
-          responseStatus: result.responseStatus ?? null,
-          responseBody: result.responseBody ?? null,
-          responseTimeMs,
-          errorMessage: result.errorMessage ?? null,
-          deliveredAt,
-          // Release the execution lease taken by the claim. The row is leaving
-          // the unresolved statuses anyway, but a stale lease would otherwise
-          // surface in the UI as a `nextAttemptAt` that never comes.
-          nextRetryAt: null
-        })
-        .where(buildOutcomeWriteCas(result.deliveryId))
-        .returning({ id: webhookDeliveries.id });
-
-      if (written.length === 0) {
-        // Genuinely surprising now that DLQ replays are routed away: it means
-        // the row was already `delivered` by someone else, or has vanished.
-        console.warn(`[WebhookDelivery] outcome-write-skipped ${JSON.stringify({
-          errorId: 'WEBHOOK_DELIVERY_OUTCOME_WRITE_SKIPPED',
-          deliveryId: result.deliveryId,
-          webhookId: result.webhookId,
-          attemptedStatus: deliveryStatus
-        })}`);
-      }
+      // A retried write may have committed before its acknowledgement was lost.
+      // Only the winning outcome write can move counts and recovery timestamps.
+      return false;
     }
 
+    // `failure_count` counts failed DELIVERIES, not attempts (#9946): only the
+    // terminal `failed` write moves it. A failed attempt with a retry scheduled
+    // moves "Last Triggered" only, so one delivery that exhausts every retry
+    // reads "1 failed" and one that fails then succeeds reads "1 success".
+    // The CAS above already ensured only the winning write reaches here.
+    const now = new Date();
     const aggregateUpdate = result.success
       ? {
         successCount: sql`${webhooksTable.successCount} + 1`,
-        lastSuccessAt: new Date(),
-        lastDeliveryAt: new Date()
+        lastSuccessAt: now,
+        lastDeliveryAt: now
       }
-      : {
-        failureCount: sql`${webhooksTable.failureCount} + 1`,
-        lastDeliveryAt: new Date()
-      };
+      : deliveryStatus === 'failed'
+        ? {
+          failureCount: sql`${webhooksTable.failureCount} + 1`,
+          lastDeliveryAt: now
+        }
+        : { lastDeliveryAt: now };
 
     await db
       .update(webhooksTable)
       .set(aggregateUpdate)
       .where(eq(webhooksTable.id, result.webhookId));
+    return true;
   });
 }

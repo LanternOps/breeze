@@ -111,6 +111,13 @@ func (c *Collector) collectOne(ctx context.Context, d Driver, s Settings) Runtim
 			res = Result{Collection: CollectionError, Error: ReasonPanic}
 		}
 		fillFromResult(&rep, res)
+		if !s.AcceptsImageProvenance {
+			// A server that predates #9067 rejects the whole report if the
+			// key is present, so it never leaves the agent unasked.
+			for i := range rep.Workloads {
+				rep.Workloads[i].ImageProvenance = nil
+			}
+		}
 	}
 	return rep
 }

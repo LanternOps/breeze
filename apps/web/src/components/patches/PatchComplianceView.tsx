@@ -607,6 +607,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           />
         </div>
         <select
+          data-testid="patch-compliance-status-filter"
           aria-label={t('patchComplianceView.filters.statusFilterLabel')}
           value={statusFilter}
           onChange={e => setStatusFilter(e.target.value as ComplianceStatusSelection)}

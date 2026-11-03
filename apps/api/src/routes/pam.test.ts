@@ -174,6 +174,12 @@ const lifecycleMocks = vi.hoisted(() => ({
 }));
 vi.mock('../services/pamActuationLifecycle', () => lifecycleMocks);
 
+// #8928: the deny path queues the end-user outcome notice in the decision tx.
+const notifyMocks = vi.hoisted(() => ({
+  enqueuePamRequestNotify: vi.fn(async () => 'queued' as const),
+}));
+vi.mock('../services/pamRequestNotify', () => notifyMocks);
+
 // Phase 2: the respond path now resolves assurance through assertApprovalAssurance
 // (verifies an optional browser proof). Default the no-proof L1 result; tests
 // override per-case. resolveElevationAssurance stays exported for any callers.
@@ -709,6 +715,56 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
     expect(set.status).toBe('denied');
     expect(set.denialReason).toBe(expectedReason);
     expect(await res.json()).toMatchObject({ success: true, status: 'denied' });
+  });
+
+  describe('end-user outcome notice (#8928)', () => {
+    const respond = (body: Record<string, unknown>) => app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+
+    it('queues one denied notice, on the decision transaction, with the raw reason', async () => {
+      rigTransaction({ row: activeRow, casWins: true });
+      const res = await respond({ decision: 'deny', reason: 'Use the approved version\nfrom the portal' });
+      expect(res.status).toBe(200);
+      expect(notifyMocks.enqueuePamRequestNotify).toHaveBeenCalledTimes(1);
+      expect(notifyMocks.enqueuePamRequestNotify).toHaveBeenCalledWith(
+        expect.objectContaining({ insert: expect.any(Function) }),
+        { id: REQ_ID, deviceId: 'dev-1' },
+        'denied',
+        'Use the approved version\nfrom the portal',
+        // #10190 W07: the decider's name resolver, for decidedBy.technicianName.
+        expect.any(Function),
+      );
+    });
+
+    it('passes no reason when the technician gave none (the stored placeholder is not shown)', async () => {
+      rigTransaction({ row: activeRow, casWins: true });
+      await respond({ decision: 'deny' });
+      expect(notifyMocks.enqueuePamRequestNotify).toHaveBeenCalledWith(
+        expect.anything(), { id: REQ_ID, deviceId: 'dev-1' }, 'denied', undefined, expect.any(Function),
+      );
+    });
+
+    it('does not notify on approve', async () => {
+      rigTransaction({ row: activeRow, casWins: true });
+      expect((await respond({ decision: 'approve' })).status).toBe(200);
+      expect(notifyMocks.enqueuePamRequestNotify).not.toHaveBeenCalled();
+    });
+
+    it('does not notify when the CAS lost (0 rows)', async () => {
+      rigTransaction({ row: activeRow, casWins: false });
+      expect((await respond({ decision: 'deny', reason: 'x' })).status).toBe(409);
+      expect(notifyMocks.enqueuePamRequestNotify).not.toHaveBeenCalled();
+    });
+
+    it('does not notify for a request no end user is waiting on (not uac_intercept)', async () => {
+      rigTransaction({ row: { ...activeRow, flowType: 'tech_jit_admin' }, casWins: true });
+      vi.mocked(db.select).mockReturnValue({
+        from: () => ({ where: () => ({ limit: async () => [{ ...activeRow, flowType: 'tech_jit_admin' }] }) }),
+      } as any);
+      expect((await respond({ decision: 'deny', reason: 'x' })).status).toBe(200);
+      expect(notifyMocks.enqueuePamRequestNotify).not.toHaveBeenCalled();
+    });
   });
 
   it('surfaces a refused decision intent (unverifiable target hash) as denied, not a stale "approved"', async () => {

@@ -9,6 +9,8 @@ const PARTNER_ID = '33333333-3333-4333-8333-333333333333';
 const SOURCE_A = '44444444-4444-4444-8444-444444444444';
 const SOURCE_B = '55555555-5555-4555-8555-555555555555';
 const DEVICE_ID = '66666666-6666-4666-8666-666666666666';
+const SOURCE_C = '77777777-7777-4777-8777-777777777777';
+const SOURCE_D = '88888888-8888-4888-8888-888888888888';
 const CREATED_AT = new Date('2026-07-10T12:00:00.000Z');
 const UPDATED_AT = new Date('2026-07-12T12:00:00.000Z');
 const PATCH_INLINE_MIRROR_MATERIAL = '__breezePatchInlineMirror';
@@ -181,6 +183,8 @@ describe('partner desired-configuration exports', () => {
     });
     const policyQuery = new PgDialect().sqlToQuery(mocks.execute.mock.calls[1]![0]).sql.toLowerCase();
     expect(policyQuery).toContain('breeze_partner_export_effective_policy_settings');
+    expect(policyQuery).toMatch(/dg\.org_id = eo\.id or \(dg\.org_id is null and dg\.partner_id = \$\d+::uuid\)/);
+    expect(new PgDialect().sqlToQuery(mocks.execute.mock.calls[1]![0]).params).toContain(PARTNER_ID);
     // #5080: the parent id travels with the policy, and an unassigned baseline
     // is pulled into the export by the parent closure so an exported child's
     // parentPolicyId never dangles.
@@ -468,14 +472,18 @@ describe('partner desired-configuration exports', () => {
       trigger: { type: 'manual' }, conditions: null,
       actions: [{ type: 'run_script', scriptId: SOURCE_B }, { type: 'reboot' }],
       onFailure: 'stop', notificationTargets: null, dependencies: [{ resource: 'scripts', id: SOURCE_B }],
+      conversion: { id: SOURCE_C, state: 'shadow', flowId: SOURCE_D },
     })]);
     const body = await (await request('/automations', 'configuration:read')).json();
     expect(automationExportEnvelopeSchema.parse(body).data[0]).toMatchObject({
       actions: [{ type: 'run_script', scriptId: SOURCE_B }, { type: 'reboot' }],
       dependencies: [{ resource: 'scripts', id: SOURCE_B }],
+      // W06 (#5221): the additive conversion summary.
+      conversion: { id: SOURCE_C, state: 'shadow', flowId: SOURCE_D },
     });
     expect(JSON.stringify(body)).not.toMatch(/lastRunAt|runCount|logs|output/);
     const renderedQuery = new PgDialect().sqlToQuery(mocks.execute.mock.calls[1]![0]).sql.toLowerCase();
+    expect(renderedQuery).toContain('public.flow_automation_conversions fac');
     expect(renderedQuery).toContain('eo.material_updated_at as updated_at');
     expect(renderedQuery).not.toContain('greatest(a.updated_at');
   });
@@ -614,7 +622,7 @@ function sampleDefinition(path: string): Record<string, unknown> {
     case '/scripts':
       return { sourceScope: 'organization', name: 'S', description: null, category: null, osTypes: ['linux'], language: 'bash', content: 'true', parameters: null, timeoutSeconds: 30, runAs: 'system', version: 1, exitCodeSeverityMapping: null };
     case '/automations':
-      return { sourceScope: 'organization', name: 'A', description: null, enabled: true, trigger: { type: 'manual' }, conditions: null, actions: [{ type: 'reboot' }], onFailure: 'stop', notificationTargets: null, dependencies: [] };
+      return { sourceScope: 'organization', name: 'A', description: null, enabled: true, trigger: { type: 'manual' }, conditions: null, actions: [{ type: 'reboot' }], onFailure: 'stop', notificationTargets: null, dependencies: [], conversion: null };
     case '/backup-configurations':
       return { kind: 'profile', sourceScope: 'organization', name: 'B', description: null, active: true, selections: {}, destinationId: null, schedule: null, retention: null, exclusions: [], completenessGaps: [{ code: 'restore_procedure_unavailable' }] };
     case '/custom-field-values':

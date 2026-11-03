@@ -91,7 +91,10 @@ func (h *Heartbeat) postPamWithdraw(ctx context.Context, e pamdecline.Entry) (ou
 	payload := struct {
 		Reason     string `json:"reason"`
 		DeclinedAt string `json:"declinedAt,omitempty"`
-	}{Reason: string(e.Reason)}
+		// Renderer (#10190 W07) names what drew the decision (assist |
+		// native), when this process still remembers it.
+		Renderer string `json:"renderer,omitempty"`
+	}{Reason: string(e.ServerReason()), Renderer: h.pamWithdrawRenderer(e.RequestID)}
 	if !e.DeclinedAt.IsZero() {
 		payload.DeclinedAt = e.DeclinedAt.UTC().Format(time.RFC3339Nano)
 	}
@@ -136,7 +139,7 @@ func (h *Heartbeat) postPamWithdraw(ctx context.Context, e pamdecline.Entry) (ou
 		return pamWithdrawNotFound, ""
 	case http.StatusBadRequest:
 		log.Error("pam: server rejected the withdraw; not retrying (the local refusal still holds)",
-			"elevationRequestId", e.RequestID, "reason", string(e.Reason), "body", string(respBody))
+			"elevationRequestId", e.RequestID, "reason", string(e.ServerReason()), "body", string(respBody))
 		return pamWithdrawRejected, ""
 	case http.StatusForbidden:
 		// Retried like any other answer, but it cannot succeed until an
@@ -176,7 +179,7 @@ func (h *Heartbeat) drainPamWithdrawals(ctx context.Context) {
 			log.Warn("pam: could not persist the withdraw ack; it may be resent", "elevationRequestId", e.RequestID, "error", err.Error())
 		}
 		log.Info("pam: server answered the user's withdraw", "elevationRequestId", e.RequestID,
-			"reason", string(e.Reason), "outcome", string(outcome))
+			"reason", string(e.ServerReason()), "outcome", string(outcome))
 	}
 	if err := store.Prune(); err != nil {
 		log.Warn("pam: could not persist the decline record prune", "error", err.Error())

@@ -122,8 +122,10 @@ import {
   closeAgentRunSession,
   completeToolExecution,
   createAgentRunSession,
+  LEDGER_ERROR_WITHOUT_TEXT,
   reconcileHungExecutions,
   startToolExecution,
+  toolErrorTextForLedger,
 } from './executionLedger';
 
 const dialect = new PgDialect();
@@ -250,6 +252,44 @@ describe('startToolExecution / completeToolExecution round-trip', () => {
     await completeToolExecution({ executionId: EXECUTION_ID, isError: true, durationMs: 50 });
     const completion = dbMockState.updates.find((u) => u.table === 'ai_tool_executions');
     expect(completion!.values).toMatchObject({ status: 'failed', durationMs: 50 });
+  });
+
+  // #10411: a failed row used to carry no reason at all.
+  it('persists the error text on a failed call', async () => {
+    await completeToolExecution({
+      executionId: EXECUTION_ID, isError: true, durationMs: 50,
+      output: JSON.stringify({ error: 'Device is offline', stdout: 'device output' }),
+    });
+    const completion = dbMockState.updates.find((u) => u.table === 'ai_tool_executions');
+    expect(completion!.values).toMatchObject({ status: 'failed', errorMessage: 'Device is offline' });
+    expect(completion!.values).not.toHaveProperty('toolOutput');
+  });
+
+  it('never writes error text onto a completed call', async () => {
+    await completeToolExecution({
+      executionId: EXECUTION_ID, isError: false, durationMs: 50,
+      output: JSON.stringify({ error: 'a field named error on a success' }),
+    });
+    const completion = dbMockState.updates.find((u) => u.table === 'ai_tool_executions');
+    expect(completion!.values).not.toHaveProperty('errorMessage');
+    expect(completion!.values).not.toHaveProperty('toolOutput');
+  });
+});
+
+describe('toolErrorTextForLedger (#10411)', () => {
+  it('takes the result\'s own `error` string', () => {
+    expect(toolErrorTextForLedger(JSON.stringify({ error: 'Device is offline', stdout: 'secret-ish output' })))
+      .toBe('Device is offline');
+  });
+
+  it('bounds a long error string', () => {
+    const text = toolErrorTextForLedger(JSON.stringify({ error: 'x'.repeat(5_000) }));
+    expect(text.length).toBeLessThanOrEqual(1_000);
+  });
+
+  it('never falls back to the raw output when there is no `error` string', () => {
+    expect(toolErrorTextForLedger('plain stdout that happened to fail')).toBe(LEDGER_ERROR_WITHOUT_TEXT);
+    expect(toolErrorTextForLedger(JSON.stringify({ status: 'failed', stdout: 'device output' }))).toBe(LEDGER_ERROR_WITHOUT_TEXT);
   });
 });
 

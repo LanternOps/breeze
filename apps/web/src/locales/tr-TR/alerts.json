@@ -31,6 +31,8 @@
     "confidenceValue": "{{confidence}}% güven"
   },
   "alertDetailPage": {
+    "externalTickets": "Harici destek talepleri",
+    "externalTicketsFailedToLoad": "Harici destek talepleri yüklenemedi.",
     "loadingAlert": "Uyarı yükleniyor...",
     "backToAlerts": "Uyarılara geri dön",
     "goBack": "Geri dön",
@@ -82,7 +84,10 @@
       "resolved": "Çözüldü",
       "suppressed": "Bastırıldı",
       "dismissed": "Görevden alındı"
-    }
+    },
+    "createPsaTicket": "PSA bileti oluştur",
+    "psaTicketRequested": "PSA bileti istendi",
+    "failedToCreatePsaTicket": "PSA bileti istenemedi"
   },
   "alertDetails": {
     "closePanel": "Paneli kapat",
@@ -652,6 +657,7 @@
       "info": "Bilgi"
     },
     "status": {
+      "open": "Açık",
       "active": "Aktif",
       "acknowledged": "Onaylandı",
       "resolved": "Çözüldü",
@@ -965,5 +971,10 @@
       "body": "Mevcut şablonlar burada düzenlenebilir kalır ve bir sonraki sürümde dönüştürülür.",
       "link": "Monitörleri aç"
     }
+  },
+  "subject": {
+    "label": "Etkilenen öğe",
+    "backupWorkload": "Yedekleme iş yükü",
+    "topologySite": "Topoloji sitesi"
   }
 }

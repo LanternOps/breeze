@@ -1,8 +1,11 @@
-import { eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../db';
+import { and, eq } from 'drizzle-orm';
+import { computeChargeNow, toMinorUnits } from '@breeze/shared';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes } from '../db/schema/quotes';
+import { invoices } from '../db/schema/invoices';
 import { QuoteServiceError, assertQuoteAccess } from './quoteTypes';
-import { createInvoicePayLink } from './invoiceCheckout';
+import { createInvoicePayLink, PAYABLE } from './invoiceCheckout';
+import { isPayOnAcceptAvailable } from './quoteAcceptCheckout';
 import type { InvoiceActor } from './invoiceTypes';
 
 /**
@@ -40,4 +43,43 @@ export async function createQuotePayLink(quoteId: string, actor: InvoiceActor): 
     throw new QuoteServiceError('Quote must be accepted before it can be paid', 409, 'NOT_CONVERTED');
   }
   return createInvoicePayLink(q.convertedInvoiceId, actor);
+}
+
+/** What paying an accepted quote's converted invoice would charge right now. */
+export interface ConvertedQuotePayment {
+  /** Charge-now amount, major units (deposit remaining while unmet, else the balance). */
+  amount: string;
+  currencyCode: string;
+  isDeposit: boolean;
+  invoiceNumber: string | null;
+}
+
+/**
+ * The payment step a public quote page offers once the quote is accepted
+ * (#3740): what a Pay button would charge now, or null when there is nothing a
+ * customer could pay online. Display-only and a strict PRE-CHECK of
+ * createInvoicePayLink's guards (PAYABLE status, positive charge-now amount,
+ * partner takes online payment) — the mint itself re-checks all of them plus
+ * the collection/revocation gates, so this can only ever hide a button the
+ * mint would have refused, never offer one it would accept for a different
+ * invoice.
+ *
+ * Tenancy: the invoice is matched on id AND the quote's org (in the WHERE and
+ * again on the row), so a converted_invoice_id that somehow pointed outside
+ * the quote's tenant yields null, not another tenant's amount. Own short
+ * system context: the public route has no ambient one.
+ */
+export async function getConvertedInvoicePayment(invoiceId: string, orgId: string): Promise<ConvertedQuotePayment | null> {
+  const [inv] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+    .select({
+      orgId: invoices.orgId, partnerId: invoices.partnerId, status: invoices.status,
+      invoiceNumber: invoices.invoiceNumber, currencyCode: invoices.currencyCode,
+      depositDue: invoices.depositDue, amountPaid: invoices.amountPaid, balance: invoices.balance,
+    })
+    .from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.orgId, orgId))).limit(1)));
+  if (!inv || inv.orgId !== orgId || !PAYABLE.has(inv.status)) return null;
+  const charge = computeChargeNow({ depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance }, inv.currencyCode);
+  if (toMinorUnits(charge.amount, inv.currencyCode) <= 0) return null;
+  if (!(await isPayOnAcceptAvailable(inv.partnerId))) return null;
+  return { amount: charge.amount, currencyCode: inv.currencyCode, isDeposit: charge.isDeposit, invoiceNumber: inv.invoiceNumber };
 }

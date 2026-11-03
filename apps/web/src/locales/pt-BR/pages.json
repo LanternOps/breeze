@@ -85,6 +85,7 @@
     "logs": "Logs",
     "monitoring": "Rede",
     "oauthConsent": "Autorizar acesso",
+    "oauthError": "Falha ao conectar o app",
     "onedrive": "OneDrive",
     "organizations": "Organizações",
     "organizationsDetail": "Organização",
@@ -210,6 +211,33 @@
     "referenceIdLabel": "ID de referência:",
     "dashboardLink": "Ir para o painel",
     "signInLink": "Entrar"
+  },
+  "oauthErrorPage": {
+    "invalidClient": {
+      "heading": "Este app não pode se conectar",
+      "body": "O Breeze não reconhece o app que enviou você para cá, ou o app não tem permissão para se conectar a este servidor Breeze. Verifique se o app está configurado com o endereço deste servidor e tente novamente."
+    },
+    "invalidRedirectUri": {
+      "heading": "O endereço de retorno deste app não está registrado",
+      "body": "O app pediu ao Breeze para enviar você de volta a um endereço que nunca registrou, então o Breeze parou aqui para proteger sua conta. O desenvolvedor do app ou seu administrador precisa corrigir a URL de redirecionamento do app."
+    },
+    "sessionExpired": {
+      "heading": "Este login expirou",
+      "body": "A conexão demorou demais ou foi iniciada em outro navegador. Volte ao app e conecte-se novamente."
+    },
+    "invalidRequest": {
+      "heading": "O app enviou uma solicitação que o Breeze não pode aceitar",
+      "body": "A solicitação de conexão do app estava incompleta ou pedia algo que este servidor não suporta. Volte ao app e tente novamente. Se continuar acontecendo, entre em contato com o desenvolvedor do app."
+    },
+    "serverError": {
+      "heading": "O Breeze não conseguiu concluir a conexão",
+      "body": "Ocorreu um erro do nosso lado. Aguarde alguns minutos, depois volte ao app e tente novamente."
+    },
+    "generic": {
+      "heading": "Não foi possível concluir esta conexão",
+      "body": "Volte ao app e inicie a conexão novamente. Se continuar acontecendo, entre em contato com o administrador do Breeze."
+    },
+    "nextStep": "Nenhum acesso foi concedido. Você pode fechar esta página."
   },
   "settingsIndex": {
     "heading": "Configurações",

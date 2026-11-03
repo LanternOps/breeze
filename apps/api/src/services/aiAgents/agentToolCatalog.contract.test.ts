@@ -209,13 +209,14 @@ describe('W04 security/device-ops writes in the agent catalog (#6758)', () => {
     expect(decidable.sort()).toEqual(['manage_scheduled_tasks:disable', 'manage_scheduled_tasks:enable', 'manage_scheduled_tasks:run']);
   });
 
-  it('W04-D8: the picker never offers manage_groups add_devices/remove_devices (agent human-only actions)', () => {
+  it('#10149: the picker offers manage_groups add_devices/remove_devices as supervised, non-act operations', () => {
     const groups = buildAgentToolCatalog().tools.find((t) => t.name === 'manage_groups');
     expect(groups, 'manage_groups is agent-reachable').toBeDefined();
-    const keys = groups!.operations.map((op) => op.key);
-    expect(keys).not.toContain('manage_groups:add_devices');
-    expect(keys).not.toContain('manage_groups:remove_devices');
-    expect(keys).toContain('manage_groups:list');
+    const byKey = Object.fromEntries(groups!.operations.map((op) => [op.key, op]));
+    for (const key of ['manage_groups:add_devices', 'manage_groups:remove_devices']) {
+      expect(byKey[key], key).toMatchObject({ tier: 3, readOnly: false, actEligible: false, policyDecidable: false });
+    }
+    expect(byKey['manage_groups:list']).toBeDefined();
   });
 });
 
@@ -480,6 +481,14 @@ describe('W14 billing lifecycle tools in the agent catalog (#6784)', () => {
     expect(TOOL_CAPABILITY[name]).toBe('business');
     expect(listAgentReachableTools()).toContain(name);
     expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain(name);
+  });
+});
+
+describe('W14 PR B accounting sync in the agent catalog (#6784)', () => {
+  it('manage_accounting_sync is mapped to business and offered (its writes are AGENT_HUMAN_ONLY_ACTIONS)', () => {
+    expect(TOOL_CAPABILITY.manage_accounting_sync).toBe('business');
+    expect(listAgentReachableTools()).toContain('manage_accounting_sync');
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain('manage_accounting_sync');
   });
 });
 

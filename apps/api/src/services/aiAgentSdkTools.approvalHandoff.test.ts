@@ -200,6 +200,18 @@ describe('pre-tool-use denial detail (#10144)', () => {
       const result = (await build(bare as typeof refusal)({ kind: 'sweep' })) as { content?: unknown[] };
       expect(JSON.parse(firstText(result))).toEqual({ error: 'no_sweep_schedule' });
     });
+
+    // #10193: the person-facing sentence travels with the code.
+    it('publishes { error, detail, message } when the denial carries a message', async () => {
+      const withMessage = async () => ({
+        allowed: false as const, error: 'agent_disabled', detail: 'disabled', message: 'The agent "QA Patching agent" is switched off.',
+      });
+      const result = (await build(withMessage as typeof refusal)({ kind: 'patch_plan' })) as { content?: unknown[]; isError?: boolean };
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(firstText(result))).toEqual({
+        error: 'agent_disabled', detail: 'disabled', message: 'The agent "QA Patching agent" is switched off.',
+      });
+    });
   });
 });
 

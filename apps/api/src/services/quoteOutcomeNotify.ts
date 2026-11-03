@@ -1,7 +1,8 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes } from '../db/schema/quotes';
 import { invoices } from '../db/schema/invoices';
+import { contracts } from '../db/schema/contracts';
 import { organizations, partners } from '../db/schema/orgs';
 import { users } from '../db/schema/users';
 import { getEmailService, buildQuoteOutcomeTemplate } from './email';
@@ -75,7 +76,25 @@ export async function notifyQuoteOutcome(input: {
         const [inv] = await db.select({ invoiceNumber: invoices.invoiceNumber }).from(invoices).where(eq(invoices.id, q.convertedInvoiceId)).limit(1);
         invoiceNumber = inv?.invoiceNumber ?? null;
       }
-      return { recipient, quoteNumber: q.quoteNumber ?? 'Quote', orgName: org?.name ?? 'A customer', declineReason: q.declineReason, invoiceNumber };
+      // #10361: the draft contracts this accept created. System context, so the
+      // org predicate is explicit; the composite FK already pins them to q.orgId.
+      // An extra line, not the point of the email: a failed count is reported
+      // and the line omitted, never the accept notification itself.
+      let draftContractCount = 0;
+      if (input.outcome === 'accepted') {
+        try {
+          const drafts = await db.select({ id: contracts.id }).from(contracts).where(and(
+            eq(contracts.sourceQuoteId, input.quoteId),
+            eq(contracts.orgId, q.orgId),
+            eq(contracts.status, 'draft'),
+          ));
+          draftContractCount = drafts.length;
+        } catch (err) {
+          console.error('[quoteOutcomeNotify] draft-contract count failed', { quoteId: input.quoteId }, err instanceof Error ? err.message : err);
+          captureException(err instanceof Error ? err : new Error(String(err)));
+        }
+      }
+      return { recipient, quoteNumber: q.quoteNumber ?? 'Quote', orgName: org?.name ?? 'A customer', declineReason: q.declineReason, invoiceNumber, draftContractCount };
     }));
     if (!prepared) return;
 
@@ -95,6 +114,7 @@ export async function notifyQuoteOutcome(input: {
       signerName: input.signerName ?? null,
       declineReason: input.outcome === 'declined' ? prepared.declineReason : null,
       invoiceNumber: prepared.invoiceNumber,
+      draftContractCount: prepared.draftContractCount,
       quoteUrl,
     });
     // The INTERNAL notification to the MSP tech who sent the quote, not the

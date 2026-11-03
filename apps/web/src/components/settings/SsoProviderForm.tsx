@@ -1,11 +1,12 @@
 import { i18n } from '@/lib/i18n';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { useMemo, useEffect, useState } from 'react';
+import { useMemo, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { SSO_OIDC_PRESET_IDS, type SsoOidcPresetId } from '@breeze/shared';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 
 const createSsoProviderSchema = (t: TFunction) => z.object({
   name: z.string().min(1, t('ssoProviderForm.providerNameIsRequired')),
@@ -116,6 +117,42 @@ const presetOptions: { value: SsoOidcPresetId | ''; labelKey: string }[] = [
   ...SSO_OIDC_PRESET_IDS.map(id => ({ value: id, labelKey: PRESET_LABEL_KEYS[id] }))
 ];
 
+// The fields a preset owns. Every attribute-mapping key is spelled out so that
+// applying a preset REPLACES the whole mapping: a key the new preset omits is
+// written as '' instead of being left at the previous preset's value (#9948 —
+// Okta's `groups=groups` survived a switch to Azure AD, which sets no groups
+// claim, and the groups claim feeds group-based role mapping).
+type PresetFields = {
+  scopes: string;
+  attributeMapping: { email: string; name: string; firstName: string; lastName: string; groups: string };
+};
+
+function toPresetFields(values: {
+  scopes?: string;
+  attributeMapping?: Partial<SsoProviderFormValues['attributeMapping']>;
+}): PresetFields {
+  const mapping = values.attributeMapping ?? {};
+  return {
+    scopes: values.scopes ?? '',
+    attributeMapping: {
+      email: mapping.email ?? '',
+      name: mapping.name ?? '',
+      firstName: mapping.firstName ?? '',
+      lastName: mapping.lastName ?? '',
+      groups: mapping.groups ?? ''
+    }
+  };
+}
+
+function samePresetFields(a: PresetFields, b: PresetFields): boolean {
+  return a.scopes === b.scopes
+    && a.attributeMapping.email === b.attributeMapping.email
+    && a.attributeMapping.name === b.attributeMapping.name
+    && a.attributeMapping.firstName === b.attributeMapping.firstName
+    && a.attributeMapping.lastName === b.attributeMapping.lastName
+    && a.attributeMapping.groups === b.attributeMapping.groups;
+}
+
 export default function SsoProviderForm({
   onSubmit,
   onCancel,
@@ -151,6 +188,7 @@ export default function SsoProviderForm({
     handleSubmit,
     formState: { errors, isSubmitting },
     setValue,
+    getValues,
     control,
   } = useForm<SsoProviderFormValues>({
     resolver: zodResolver(createSsoProviderSchema(t)),
@@ -179,7 +217,6 @@ export default function SsoProviderForm({
     }
   });
 
-  const selectedPreset = useWatch({ control, name: 'preset' });
   const enforceSSO = useWatch({ control, name: 'enforceSSO' });
   const ownerScope = useWatch({ control, name: 'ownerScope' });
 
@@ -212,16 +249,69 @@ export default function SsoProviderForm({
     }
   }, [ownerScope, orgOwnerDisabled, partnerOwnerDisabled, setValue]);
 
-  // Apply preset configuration when preset changes
-  useEffect(() => {
-    if (selectedPreset && presets.length > 0) {
-      const preset = presets.find(p => p.id === selectedPreset);
-      if (preset) {
-        setValue('scopes', preset.scopes);
-        setValue('attributeMapping', preset.attributeMapping);
-      }
+  // Preset application (#9948). Picking a preset replaces every preset-owned
+  // field (scopes + the whole attribute mapping). It does so silently only when
+  // nothing the admin owns would be lost: the fields still hold what the last
+  // preset (or the form's own create defaults) put there, or already equal the
+  // new preset's values. Otherwise — the admin typed over them, or this is an
+  // edit of a saved provider whose stored mapping is the admin's — it asks
+  // first. Cancel keeps both the edits and the previous preset selection.
+  //
+  // Applied from the select's change handler rather than an effect on the
+  // watched value so a re-render (e.g. `presets` arriving) can never re-apply a
+  // preset over edits made after it was picked.
+  //
+  // `presetBaselineRef`: the preset-owned values as the last preset left them;
+  // null when the starting values are the admin's (edit, or caller-supplied).
+  const [initialPresetBaseline] = useState<PresetFields | null>(() =>
+    isEditing || defaultValues?.scopes !== undefined || defaultValues?.attributeMapping !== undefined
+      ? null
+      : toPresetFields(getValues())
+  );
+  const presetBaselineRef = useRef<PresetFields | null>(initialPresetBaseline);
+  const appliedPresetRef = useRef<string>(getValues('preset') ?? '');
+  const [pendingPreset, setPendingPreset] = useState<{ id: string; label: string; fields: PresetFields } | null>(null);
+
+  const applyPreset = (id: string, fields: PresetFields) => {
+    setValue('preset', id);
+    setValue('scopes', fields.scopes);
+    setValue('attributeMapping', fields.attributeMapping);
+    presetBaselineRef.current = fields;
+    appliedPresetRef.current = id;
+  };
+
+  const presetField = register('preset');
+  const handlePresetChange = (event: ChangeEvent<HTMLSelectElement>) => {
+    const id = event.target.value;
+    const preset = id ? presets.find(p => p.id === id) : undefined;
+    if (!preset) {
+      // Custom configuration: keep the current values for the admin to edit.
+      // (Preset options not in the loaded list are disabled, see the select.)
+      appliedPresetRef.current = id;
+      void presetField.onChange(event);
+      return;
     }
-  }, [selectedPreset, presets, setValue]);
+    const next = toPresetFields(preset);
+    const current = toPresetFields(getValues());
+    const baseline = presetBaselineRef.current;
+    if (samePresetFields(current, next) || (baseline !== null && samePresetFields(current, baseline))) {
+      applyPreset(id, next);
+      return;
+    }
+    const labelKey = (PRESET_LABEL_KEYS as Record<string, string | undefined>)[id];
+    setPendingPreset({ id, label: labelKey ? t(/* i18n-dynamic */ labelKey) : preset.name, fields: next });
+  };
+
+  const confirmPendingPreset = () => {
+    if (pendingPreset) applyPreset(pendingPreset.id, pendingPreset.fields);
+    setPendingPreset(null);
+  };
+
+  const cancelPendingPreset = () => {
+    // The uncontrolled select already shows the declined choice; put it back.
+    setValue('preset', appliedPresetRef.current);
+    setPendingPreset(null);
+  };
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
 
@@ -296,10 +386,17 @@ export default function SsoProviderForm({
             <select
               id="provider-preset"
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              {...register('preset')}
+              {...presetField}
+              onChange={handlePresetChange}
             >
               {presetOptions.map(option => (
-                <option key={option.value} value={option.value}>
+                <option
+                  key={option.value}
+                  value={option.value}
+                  // A preset applies only from the loaded list; until it loads
+                  // (or if /sso/presets failed) picking one could fill nothing.
+                  disabled={option.value !== '' && !presets.some(p => p.id === option.value)}
+                >
                   {t(/* i18n-dynamic */ option.labelKey)}
                 </option>
               ))}
@@ -619,6 +716,19 @@ export default function SsoProviderForm({
           </button>
         </div>
       </div>
+
+      {/* #9948: replacing an edited or stored mapping is never silent. Warning,
+          not destructive: nothing is saved until the admin clicks Save. */}
+      <ConfirmDialog
+        open={pendingPreset !== null}
+        onClose={cancelPendingPreset}
+        onConfirm={confirmPendingPreset}
+        variant="warning"
+        title={t('ssoProviderForm.replacePresetFields.title', { preset: pendingPreset?.label ?? '' })}
+        message={t('ssoProviderForm.replacePresetFields.message', { preset: pendingPreset?.label ?? '' })}
+        confirmLabel={t('ssoProviderForm.replacePresetFields.confirm')}
+        confirmTestId="sso-preset-replace-confirm"
+      />
     </form>
   );
 }

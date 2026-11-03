@@ -42,6 +42,7 @@
   },
   "denyPrompt": "Warum lehnen Sie diese Anfrage ab? Eine Begründung ist optional.",
   "denyReasonPlaceholder": "Optional – wird der anfragenden Person mitgeteilt",
+  "denyReasonShownToUserHint": "Die Endbenutzerin bzw. der Endbenutzer sieht dies in der Benachrichtigung (erste 500 Zeichen).",
   "confirmDeny": "Ablehnung bestätigen",
   "cancel": "Abbrechen",
   "deny": "Ablehnen",
@@ -107,7 +108,7 @@
       "cancelled": "Abgebrochen",
       "completed": "Abgeschlossen",
       "denied": "Abgelehnt",
-      "refused": "Genehmigung verweigert",
+      "refused": "Genehmigt, dann blockiert",
       "approved": "Genehmigt",
       "reported": "Gemeldet",
       "unknown": "Unbekannt"

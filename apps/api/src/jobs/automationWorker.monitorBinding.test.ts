@@ -12,6 +12,9 @@
  * suite that pins the same property for AI-agent-managed automations.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+// #5221 B2 — no automation here has a conversion: today's admission path.
+vi.mock('../services/flows/conversion/claims', async () =>
+  (await import('../__tests__/helpers/noConversionClaims')).noConversionClaims());
 
 const {
   addMock,
@@ -181,7 +184,7 @@ describe('monitor-managed automation event-target binding (#5289)', () => {
       eventPayload: { alertId: 'alert-1', ruleId: 'rule-1', severity: 'high' },
     });
 
-    expect(result).toEqual({ skipped: 'managed_automation_event_has_no_device' });
+    expect(result).toEqual({ skipped: 'alert_has_no_device' });
     expect(createAutomationRunRecordMock).not.toHaveBeenCalled();
   });
 

@@ -184,9 +184,9 @@ export const conversionSwitchRequestSchema = z.object({
 }).strict();
 export type ConversionSwitchRequest = z.infer<typeof conversionSwitchRequestSchema>;
 
+/** The additive `conversion` field on automation reads (Decision 9): exactly these three keys, or null. */
 export interface AutomationConversionSummaryDto {
   id: string;
   state: FlowConversionState;
   flowId: string;
-  fidelity: FlowConversionFidelity;
 }

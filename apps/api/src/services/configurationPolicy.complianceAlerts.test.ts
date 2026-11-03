@@ -35,6 +35,7 @@ import {
   addFeatureLink,
   assignPolicy,
   deleteConfigPolicy,
+  ComplianceItemNameTooLongError,
   DuplicateComplianceItemNameError,
   removeFeatureLink,
   unassignPolicy,
@@ -94,6 +95,25 @@ describe('duplicate compliance rule set names', () => {
     expect(tx.delete).not.toHaveBeenCalled();
     expect(tx.insert).not.toHaveBeenCalled();
     expect(scheduleMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('over-long compliance rule set names', () => {
+  it('addFeatureLink refuses a name over 200 characters before the transaction opens', async () => {
+    const long = 'x'.repeat(201);
+    const err = await addFeatureLink(POLICY_ID, 'compliance', null, { items: [item(long)] }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ComplianceItemNameTooLongError);
+    expect((err as ComplianceItemNameTooLongError).names).toEqual([long]);
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('updateFeatureLink refuses one before the rule sets are deleted and re-inserted', async () => {
+    const tx = mockTx(COMPLIANCE_LINK);
+    const err = await updateFeatureLink(LINK_ID, { inlineSettings: { items: [item('x'.repeat(201))] } }, POLICY_ID)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ComplianceItemNameTooLongError);
+    expect(tx.delete).not.toHaveBeenCalled();
+    expect(tx.insert).not.toHaveBeenCalled();
   });
 });
 

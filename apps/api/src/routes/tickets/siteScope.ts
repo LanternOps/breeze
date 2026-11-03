@@ -51,13 +51,13 @@ export async function alertInSiteScope(
   if (alert.topologySiteId) {
     return auth.allowedSiteIds ? siteAccessCheck(auth.allowedSiteIds)(alert.topologySiteId) : true;
   }
-  return alert.deviceId ? deviceInSiteScope(auth, alert.deviceId) : true;
+  return alert.deviceId ? deviceInSiteScope(auth, alert.deviceId) : auth.allowedSiteIds === undefined;
 }
 
 /**
  * Site-axis filter for a batch of alert-like rows. Mirrors the alert list
- * narrowing (`alerts.ts` GET /): a site-restricted caller sees deviceless
- * (org-wide) alerts plus alerts whose device is in their allowed sites; alerts
+ * narrowing (`alerts.ts` GET /): a site-restricted caller sees alerts owned by
+ * their allowed topology sites or devices in their allowed sites; alerts
  * on out-of-site devices (or devices that no longer exist) are dropped.
  * Unrestricted callers (partner/system scope, or org users with no site
  * restriction) get the input back unchanged.
@@ -101,9 +101,8 @@ export async function filterAlertsBySiteScope<T extends { deviceId: string | nul
   const allowSite = siteAccessCheck(allowed);
   return rows.filter((row) => {
     if (row.topologySiteId) return allowSite(row.topologySiteId);
-    // Deviceless (org-wide) alerts are not site-bound — keep them visible,
-    // matching the GET /alerts narrowing.
-    if (!row.deviceId) return true;
+    // Org-level alerts have no site ownership and require unrestricted access.
+    if (!row.deviceId) return false;
     return allowSite(deviceSites.get(row.deviceId) ?? null);
   });
 }

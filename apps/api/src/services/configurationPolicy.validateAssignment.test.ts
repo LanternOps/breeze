@@ -4,10 +4,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // given policy ownership. We only need the pure ownership branches here, so the
 // db is mocked; the org-owned + partner rejection must short-circuit BEFORE any
 // query runs.
-const { selectMock } = vi.hoisted(() => ({ selectMock: vi.fn() }));
+const { selectMock, partnerIds } = vi.hoisted(() => ({ selectMock: vi.fn(), partnerIds: vi.fn() }));
 vi.mock('../db', () => ({
   db: { select: selectMock },
 }));
+
+vi.mock('./deviceGroupOwnership', () => ({ findPartnerOwnedGroupIds: partnerIds }));
 
 import { validateAssignmentTarget } from './configurationPolicy';
 
@@ -17,7 +19,8 @@ import { validateAssignmentTarget } from './configurationPolicy';
 function mockSelectResolving(rows: unknown[]) {
   const chain: any = {
     from: () => chain,
-    innerJoin: () => chain,
+    innerJoin: vi.fn(() => chain),
+    leftJoin: vi.fn(() => chain),
     where: () => chain,
     limit: () => Promise.resolve(rows),
   };
@@ -29,6 +32,7 @@ const PARTNER_ID = '22222222-2222-2222-2222-222222222222';
 
 beforeEach(() => {
   selectMock.mockReset();
+  partnerIds.mockReset().mockResolvedValue([]);
 });
 
 describe('validateAssignmentTarget — ownership gating', () => {
@@ -147,5 +151,36 @@ describe('validateAssignmentTarget — ownership gating', () => {
     );
     expect(result.valid).toBe(false);
     if (!result.valid) expect(result.error).toMatch(/can only target its own partner/i);
+  });
+});
+
+
+describe('partner-owned group assignments', () => {
+  const groupId = '55555555-5555-5555-5555-555555555555';
+  it('partner policy may target its partner group using a left join', async () => {
+    mockSelectResolving([{ id: groupId }]);
+    expect(await validateAssignmentTarget({ orgId: null, partnerId: PARTNER_ID }, 'device_group', groupId)).toEqual({ valid: true });
+    expect(selectMock.mock.results[0]?.value.leftJoin).toHaveBeenCalled();
+    expect(selectMock.mock.results[0]?.value.innerJoin).not.toHaveBeenCalled();
+  });
+  it('another partner group and unknown group have identical errors', async () => {
+    mockSelectResolving([]);
+    const other = await validateAssignmentTarget({ orgId: null, partnerId: PARTNER_ID }, 'device_group', groupId);
+    const unknown = await validateAssignmentTarget({ orgId: null, partnerId: PARTNER_ID }, 'device_group', ORG_ID);
+    expect(other).toEqual(unknown);
+  });
+  it('org policy targeting its own partner group receives a specific refusal', async () => {
+    mockSelectResolving([]);
+    partnerIds.mockResolvedValueOnce([groupId]);
+    expect(await validateAssignmentTarget({ orgId: ORG_ID, partnerId: null }, 'device_group', groupId)).toEqual({
+      valid: false, error: 'Partner-wide device groups can only be targeted by partner-wide policies',
+      code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', status: 400,
+    });
+  });
+  it('org policy cannot distinguish another partner group from an unknown id', async () => {
+    mockSelectResolving([]);
+    const other = await validateAssignmentTarget({ orgId: ORG_ID, partnerId: null }, 'device_group', groupId);
+    const unknown = await validateAssignmentTarget({ orgId: ORG_ID, partnerId: null }, 'device_group', PARTNER_ID);
+    expect(other).toEqual(unknown);
   });
 });

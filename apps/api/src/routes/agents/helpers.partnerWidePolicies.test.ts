@@ -39,6 +39,7 @@
  * context, with and without `currentPartnerId`).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { DevicePolicySet } from '../../services/devicePolicySet';
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks
@@ -148,6 +149,7 @@ vi.mock('../../db/schema', () => ({
     minimumLevel: 'cpels.minimumLevel',
     collectionIntervalMinutes: 'cpels.collectionIntervalMinutes',
     rateLimitPerHour: 'cpels.rateLimitPerHour',
+    applicationProviders: 'cpels.applicationProviders',
   },
   configPolicyMonitoringSettings: {
     id: 'cpms.id',
@@ -414,6 +416,54 @@ describe('partner-owned policies actually reach the agent payload', () => {
 
     expect(settings.collection_interval_minutes).toBe(5);
     expect(settings.max_events_per_cycle).toBe(10);
+  });
+
+  it('event_log: sends only the winning policy providers, never their union', async () => {
+    dbMock._resetQueue([deviceRow, orgWithPartner, [], [
+      { ...eventLogPolicyRow('partner'), applicationProviders: ['Partner Provider'] },
+      { ...eventLogPolicyRow('organization'), applicationProviders: ['Dell UPS Local Node Manager'] },
+    ]]);
+    expect((await buildEventLogConfigUpdate(DEVICE_ID)).application_providers).toEqual(['Dell UPS Local Node Manager']);
+  });
+
+  it('event_log: the preloaded policy-set path also sends only the winner list', async () => {
+    const policySet: DevicePolicySet = {
+      deviceId: DEVICE_ID,
+      hierarchy: {
+        deviceId: DEVICE_ID, orgId: ORG_ID, siteId: SITE_ID, deviceRole: 'workstation', osType: 'windows',
+        org: { partnerId: PARTNER_ID, type: 'customer' }, site: null, groupIds: [],
+      },
+      candidates: (['partner', 'organization'] as const).map((level) => ({
+        assignmentId: level, level, targetId: level === 'partner' ? PARTNER_ID : ORG_ID,
+        priority: 1, roleFilter: null, osFilter: null, assignmentCreatedAt: new Date(0),
+        policyId: level, policyName: level,
+        policyOrgId: level === 'partner' ? null : ORG_ID,
+        policyPartnerId: level === 'partner' ? PARTNER_ID : null,
+        parentPolicyId: null,
+        links: { event_log: {
+          id: level, featureType: 'event_log', featurePolicyId: null, inlineSettings: null,
+          eventLog: {
+            ...eventLogPolicyRow(level), id: level, minimumLevel: 'warning',
+            applicationProviders: [level === 'partner' ? 'Partner Provider' : 'MSSQL$SQLEXPRESS'],
+          },
+          hardwareMonitoring: null, patch: null, timeSync: null, onedrive: null,
+        } },
+      })),
+    };
+    expect((await buildEventLogConfigUpdate(DEVICE_ID, { policySet })).application_providers).toEqual(['MSSQL$SQLEXPRESS']);
+    expect(dbMock.select).not.toHaveBeenCalled();
+  });
+
+  it('event_log: sends an empty provider list when no policy applies', async () => {
+    dbMock._resetQueue([deviceRow, orgWithPartner, [], []]);
+    expect((await buildEventLogConfigUpdate(DEVICE_ID)).application_providers).toEqual([]);
+  });
+
+  it('event_log: sends an empty list for cached settings from the previous release', async () => {
+    getRedisImpl.mockReturnValue(redisMock);
+    redisMock.get.mockResolvedValueOnce(JSON.stringify({ orgId: ORG_ID, settings: eventLogPolicyRow('partner') }));
+    expect((await buildEventLogConfigUpdate(DEVICE_ID, { orgId: ORG_ID })).application_providers).toEqual([]);
+    expect(dbMock.select).not.toHaveBeenCalled();
   });
 
   it('event_log: an assignment with a non-matching osFilter loses to a matching one', async () => {

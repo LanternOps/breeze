@@ -35,6 +35,7 @@ const h = vi.hoisted(() => ({
   createNewContactForTask: vi.fn(),
   lockContactForRecipe: vi.fn(),
   findLiveTaskForContact: vi.fn(),
+  lockAndCheckAccountReservations: vi.fn(async () => null),
   flags: { tasks: true, sr: true, identity: true, onboarding: true },
 }));
 
@@ -106,6 +107,14 @@ vi.mock('./contactResolution', () => ({
   createNewContactForTask: (...a: unknown[]) => { h.calls.push('createNewContactForTask'); return h.createNewContactForTask(...a); },
   lockContactForRecipe: (...a: unknown[]) => { h.calls.push('lockContactForRecipe'); return h.lockContactForRecipe(...a); },
   findLiveTaskForContact: (...a: unknown[]) => { h.calls.push('findLiveTaskForContact'); return h.findLiveTaskForContact(...a); },
+}));
+
+vi.mock('./accountReservations', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  lockAndCheckAccountReservations: (...a: unknown[]) => {
+    h.calls.push('lockAndCheckAccountReservations');
+    return (h.lockAndCheckAccountReservations as (...x: unknown[]) => unknown)(...a);
+  },
 }));
 
 import { parseTaskCheckpointResult } from './taskService';
@@ -313,7 +322,7 @@ describe('admitTask — identity_offboarding (R1a Task 9)', () => {
     expect(h.calls).toEqual([
       'identifyTaskPerson', 'resolveProviderAccounts',
       'tx', 'select', 'lockOrgTaskAdmission', 'select', 'countPendingTasks',
-      'pinContact', 'lockContactForRecipe', 'findLiveTaskForContact',
+      'pinContact', 'lockContactForRecipe', 'findLiveTaskForContact', 'lockAndCheckAccountReservations',
       'insert:task', 'target:contact', 'freeze:m365', 'freeze:google', 'links', 'openStep:intake', 'event:task_admitted',
     ]);
     // Only the provider-resolved account is upserted as a link.
@@ -375,6 +384,24 @@ describe('admitTask — identity_offboarding (R1a Task 9)', () => {
     expect(h.inserts).toHaveLength(0);
   });
 
+  it('#9981. an account another task holds is account_reserved naming the holder, after the contact rule, and inserts nothing', async () => {
+    h.selectQueue = [[helpdesk]];
+    h.lockAndCheckAccountReservations.mockResolvedValueOnce({
+      taskId: 'holder-task', orgId: ORG, provider: 'google', externalId: '101', principalLabel: 'dana@customer.example',
+      taskState: 'handed_off', taskOutcome: 'unknown_effect', fromMergedOrg: false,
+    } as never);
+    const r = await taskService.admitTask(base);
+    expect(r).toMatchObject({ ok: false, refusal: 'account_reserved', existingTaskId: 'holder-task' });
+    expect((r as { detail: string }).detail).toContain('holder-task');
+    expect((r as { detail: string }).detail).toContain('may still land');
+    // Every resolved account is checked, on the transaction's handle, under this org.
+    const [, orgArg, keys] = h.lockAndCheckAccountReservations.mock.calls[0] as unknown as [unknown, string, Array<{ provider: string }>];
+    expect(orgArg).toBe(ORG);
+    expect(keys.map((k) => k.provider).sort()).toEqual(['google', 'm365']);
+    expect(h.calls.indexOf('findLiveTaskForContact')).toBeLessThan(h.calls.indexOf('lockAndCheckAccountReservations'));
+    expect(h.inserts).toHaveLength(0);
+  });
+
   it('13c. a cutoffAt beyond the jittered deadline is invalid_input, before the contact lock, and writes nothing', async () => {
     h.selectQueue = [[helpdesk]];
     const r = await taskService.admitTask({
@@ -400,6 +427,22 @@ describe('admitTask — identity_offboarding (R1a Task 9)', () => {
     expect(await taskService.admitTask(base)).toMatchObject({ ok: false, refusal: 'contact_not_in_org' });
     h.identifyTaskPerson.mockResolvedValue({ ok: false, reason: 'ambiguous', detail: 'several contacts match' });
     expect(await taskService.admitTask(base)).toMatchObject({ ok: false, refusal: 'contact_ambiguous' });
+    expect(h.calls).not.toContain('tx');
+  });
+
+  it('#10076: a hint that resolves to the inheritor contact refuses invalid_input before any provider read', async () => {
+    const r = await taskService.admitTask({ ...base, recipeInput: { personHint: 'Dana Ruiz', inheritorContactId: CONTACT } });
+    expect(r).toMatchObject({ ok: false, refusal: 'invalid_input' });
+    // The bare reason, no field prefix: the route returns it as the error the form shows.
+    expect((r as { detail: string }).detail).toBe("The person leaving cannot inherit their own mail. Choose someone else, or no one.");
+    expect(h.calls).toEqual(['identifyTaskPerson']);
+    expect(h.inserts).toHaveLength(0);
+  });
+
+  it("#10076: a forward address equal to the resolved person's own address refuses invalid_input", async () => {
+    const r = await taskService.admitTask({ ...base, recipeInput: { contactId: CONTACT, forwardTo: 'DANA@customer.example' } });
+    expect(r).toMatchObject({ ok: false, refusal: 'invalid_input' });
+    expect(h.calls).not.toContain('resolveProviderAccounts');
     expect(h.calls).not.toContain('tx');
   });
 

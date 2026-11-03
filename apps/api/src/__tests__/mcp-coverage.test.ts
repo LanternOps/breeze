@@ -27,21 +27,17 @@ function walk(dir: string, out: string[] = []): string[] {
 
 /** Gap entries as of this wave. This list only SHRINKS. Adding a route module with no tool means writing the tool or a real exemption. */
 const FROZEN_GAPS: ReadonlySet<string> = new Set([
-  'accounting/index.ts',
   'backup/bmrRecoveries.ts',
   'backup/health.ts',
   'backup/verification.ts',
   'backup/vss.ts',
   'c2c/configs.ts',
-  'contracts/generate.ts',
   'orgAccountReadiness.ts',
   'orgAuditRetentionSettings.ts',
   'orgPortalSettings.ts',
   'orgPortalUsers.ts',
   'orgSummary.ts',
   'patchPlan.ts',
-  'pax8.ts',
-  'pax8Orders.ts',
   'reports/recipients.ts',
   'roles.ts',
   'tickets/export.ts',
@@ -64,6 +60,9 @@ describe('MCP_COVERAGE (route module → tool surface)', () => {
   });
   it('pins devices/bulkSite.ts as human_only_bulk_destructive (#9796; an MFA-gated bulk write stays off the AI surface)', () => {
     expect(MCP_COVERAGE['devices/bulkSite.ts']).toMatchObject({ exempt: 'human_only_bulk_destructive' });
+  });
+  it('pins partnerSettingsInheritance.ts to its read tool (#9763; the tool_in_later_wave exemption is burned down)', () => {
+    expect(MCP_COVERAGE['partnerSettingsInheritance.ts']).toEqual({ tools: ['get_partner_settings_inheritance'] });
   });
   it('every tool named exists in the registry, and tool entries are non-empty', () => {
     const bad: string[] = [];
@@ -98,4 +97,10 @@ describe('MCP_COVERAGE (route module → tool surface)', () => {
       expect.arrayContaining(['list_flows', 'get_flow', 'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run']),
     );
   });
+});
+
+
+it('W15 burns down both Pax8 route gaps with the PR A surface', () => {
+  expect(MCP_COVERAGE['pax8.ts']).toEqual({ tools: ['get_pax8_status', 'manage_pax8_subscriptions'] });
+  expect(MCP_COVERAGE['pax8Orders.ts']).toEqual({ tools: ['manage_pax8_orders', 'search_pax8_products', 'manage_pax8_subscriptions'] });
 });

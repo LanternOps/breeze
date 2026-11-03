@@ -21,7 +21,20 @@ export interface OrganizationListQueryParams {
   offset: number;
   /** `partners.settings.organizationOrder`, as stored. May be absent or junk. */
   preferredOrder?: string[] | null;
+  /**
+   * Explicit projection. Omitted → full rows. The name-level list served to a
+   * partner caller without organizations:read (#9528) passes the safe fields.
+   */
+  columns?: OrganizationListColumns;
 }
+
+/** The name-level projection; the only narrowed shape the list route serves. */
+export type OrganizationListColumns = {
+  id: typeof organizations.id;
+  name: typeof organizations.name;
+  slug: typeof organizations.slug;
+  status: typeof organizations.status;
+};
 
 /**
  * The stored order, reduced to what can safely be cast to `uuid[]`.
@@ -97,7 +110,29 @@ export function organizationOrderBy(
   ];
 }
 
+export function buildOrganizationListQuery(
+  params: OrganizationListQueryParams & { columns: OrganizationListColumns },
+): ReturnType<typeof namedOrganizationListQuery>;
+export function buildOrganizationListQuery(
+  params: OrganizationListQueryParams & { columns?: undefined },
+): ReturnType<typeof fullOrganizationListQuery>;
 export function buildOrganizationListQuery(params: OrganizationListQueryParams) {
+  return params.columns
+    ? namedOrganizationListQuery(params, params.columns)
+    : fullOrganizationListQuery(params);
+}
+
+function namedOrganizationListQuery(params: OrganizationListQueryParams, columns: OrganizationListColumns) {
+  return db
+    .select(columns)
+    .from(organizations)
+    .where(params.conditions)
+    .limit(params.limit)
+    .offset(params.offset)
+    .orderBy(...organizationOrderBy(params.preferredOrder));
+}
+
+function fullOrganizationListQuery(params: OrganizationListQueryParams) {
   return db
     .select()
     .from(organizations)

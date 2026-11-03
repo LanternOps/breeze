@@ -480,3 +480,61 @@ describe('ingestFlowWebhook — runs and replay protection', () => {
     expect(h.createInputs[0]!.dedupeKey).toMatch(/^webhook:sig:[0-9a-f]{64}$/);
   });
 });
+
+/**
+ * #5221 B6 (Decision 6) — the delivery's occurrence, as the legacy engine keys
+ * it: createFlowRun claims both aliases in its transaction when the flow was
+ * converted from a Job (a plain flow ignores it).
+ */
+describe('ingestFlowWebhook — occurrence claims for a converted flow (#5221 B6)', () => {
+  it('an hmac delivery carries both aliases and the signed instant', async () => {
+    const ts = String(Math.floor(Date.now() / 1000));
+    queueFlow();
+    await ingest(signed(BODY, { 'x-breeze-delivery-id': 'evt_1' }, ts));
+    const { occurrence, dedupeKey } = h.createInputs[0]!;
+    expect(dedupeKey).toBe('webhook:evt_1');
+    expect(occurrence).toEqual({ keys: [expect.stringMatching(/^webhook:sig:[0-9a-f]{64}$/), 'webhook:dlv:evt_1'], at: new Date(Number(ts) * 1000) });
+    expect(occurrence.keys[0]).toBe(`webhook:sig:${h.deliveries[0]!.signatureDigest}`);
+  });
+
+  it('an hmac delivery without an id carries the signature alias only', async () => {
+    queueFlow();
+    await ingest(signed());
+    expect(h.createInputs[0]!.occurrence.keys).toEqual([expect.stringMatching(/^webhook:sig:[0-9a-f]{64}$/)]);
+  });
+
+  it('a token delivery with an id carries its delivery alias, at its receipt', async () => {
+    queueFlow(flowRow(), doc({ type: 'webhook', auth: 'token' }));
+    const receivedAt = new Date('2027-03-01T10:00:00.000Z');
+    await ingestFlowWebhook({
+      flowId: FLOW, rawBody: BODY, receivedAt, clientIp: CLIENT_IP,
+      headers: new Headers({ 'content-type': 'application/json', 'x-breeze-webhook-token': SECRET, 'x-breeze-delivery-id': 't-1' }),
+    });
+    expect(h.createInputs[0]!.occurrence).toEqual({ keys: ['webhook:dlv:t-1'], at: receivedAt });
+  });
+
+  it('a token delivery without an id carries no occurrence (unkeyable: every POST is its own run)', async () => {
+    queueFlow(flowRow(), doc({ type: 'webhook', auth: 'token' }));
+    await ingest(new Headers({ 'content-type': 'application/json', 'x-breeze-webhook-token': SECRET }));
+    expect(h.createInputs[0]).not.toHaveProperty('occurrence');
+  });
+
+  it('an occurrence the legacy engine already admitted is a 200 duplicate naming the legacy run, with no accepted row', async () => {
+    queueFlow();
+    h.nextCreate = async () => ({ created: false, reason: 'occurrence_claimed', claimedBy: { engine: 'legacy', legacyRunId: 'legacy-run-1', flowRunId: null } });
+    expect(await ingest(signed(BODY, { 'x-breeze-delivery-id': 'evt_1' }))).toEqual({ http: 200, body: { status: 'duplicate', legacyRunId: 'legacy-run-1' } });
+    expect(h.deliveries).toEqual([]);
+  });
+
+  it('an occurrence another flow run claimed is a 200 duplicate of that run', async () => {
+    queueFlow();
+    h.nextCreate = async () => ({ created: false, reason: 'occurrence_claimed', claimedBy: { engine: 'flow', legacyRunId: null, flowRunId: 'flow-run-0' } });
+    expect(await ingest(signed())).toEqual({ http: 200, body: { status: 'duplicate', runId: 'flow-run-0' } });
+  });
+
+  it('a claim that names no run is an error, never a silent accept', async () => {
+    queueFlow();
+    h.nextCreate = async () => ({ created: false, reason: 'occurrence_claimed', claimedBy: { engine: 'flow', legacyRunId: null, flowRunId: null } });
+    await expect(ingest(signed())).rejects.toThrow(/names no run/);
+  });
+});

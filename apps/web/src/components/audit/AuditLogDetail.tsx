@@ -35,10 +35,18 @@ type AuditLogDetailProps = {
 
 const formatJson = (value: Record<string, unknown>) => JSON.stringify(value, null, 2);
 
+const hasFields = (value: Record<string, unknown> | null | undefined): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && Object.keys(value).length > 0;
+
 export default function AuditLogDetail({ entry, isOpen, onClose, timezone }: AuditLogDetailProps) {
   const { t } = useTranslation('admin');
   const formatAuditAction = useAuditActionFormatter();
   if (!isOpen) return null;
+
+  // #9941: no before-state is stored and only updates carry an after-state, so
+  // render just the sides that hold fields instead of empty "{}" blocks.
+  const before = hasFields(entry.changes?.before) ? entry.changes.before : null;
+  const after = hasFields(entry.changes?.after) ? entry.changes.after : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
@@ -94,20 +102,36 @@ export default function AuditLogDetail({ entry, isOpen, onClose, timezone }: Aud
                 <Shield className="h-4 w-4 text-muted-foreground" />
                 {t('audit.auditLogDetail.changesSnapshot')}
               </div>
-              <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                <div>
-                  <p className="text-xs font-semibold uppercase text-muted-foreground">{t('audit.auditLogDetail.before')}</p>
-                  <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-muted/50 p-3 text-xs text-muted-foreground">
-                    {formatJson(entry.changes.before)}
-                  </pre>
+              {before || after ? (
+                <div className={`mt-4 grid gap-4${before && after ? ' lg:grid-cols-2' : ''}`}>
+                  {before && (
+                    <div>
+                      <p className="text-xs font-semibold uppercase text-muted-foreground">{t('audit.auditLogDetail.before')}</p>
+                      <pre
+                        data-testid="audit-detail-before"
+                        className="mt-2 max-h-64 overflow-auto rounded-md bg-muted/50 p-3 text-xs text-muted-foreground"
+                      >
+                        {formatJson(before)}
+                      </pre>
+                    </div>
+                  )}
+                  {after && (
+                    <div>
+                      <p className="text-xs font-semibold uppercase text-muted-foreground">{t('audit.auditLogDetail.after')}</p>
+                      <pre
+                        data-testid="audit-detail-after"
+                        className="mt-2 max-h-64 overflow-auto rounded-md bg-muted/50 p-3 text-xs text-muted-foreground"
+                      >
+                        {formatJson(after)}
+                      </pre>
+                    </div>
+                  )}
                 </div>
-                <div>
-                  <p className="text-xs font-semibold uppercase text-muted-foreground">{t('audit.auditLogDetail.after')}</p>
-                  <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-muted/50 p-3 text-xs text-muted-foreground">
-                    {formatJson(entry.changes.after)}
-                  </pre>
-                </div>
-              </div>
+              ) : (
+                <p data-testid="audit-detail-no-changes" className="mt-3 text-sm text-muted-foreground">
+                  {t('audit.auditLogDetail.noFieldChanges')}
+                </p>
+              )}
             </div>
           </div>
 

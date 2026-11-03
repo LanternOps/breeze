@@ -17,7 +17,7 @@
     "declineAll": "Deny all ({{count}})",
     "groupTitle": "{{count}} similar requests · {{tool}}",
     "moreHostnames": "+{{count}} more",
-    "denyConfirmSummary": "This declines {{count}} requests for {{org}}."
+    "denyConfirmSummary": "This denies {{count}} requests for {{org}}."
   },
   "filters": {
     "orgLabel": "Organization",
@@ -43,6 +43,7 @@
   },
   "denyPrompt": "Why are you denying this request? A reason is optional.",
   "denyReasonPlaceholder": "Optional — shared with the requester",
+  "denyReasonShownToUserHint": "The end user sees this in their notification (first 500 characters).",
   "confirmDeny": "Confirm denial",
   "cancel": "Cancel",
   "deny": "Deny",
@@ -108,7 +109,7 @@
       "cancelled": "Cancelled",
       "completed": "Completed",
       "denied": "Denied",
-      "refused": "Approval refused",
+      "refused": "Approved, then blocked",
       "approved": "Approved",
       "reported": "Reported",
       "unknown": "Unknown"

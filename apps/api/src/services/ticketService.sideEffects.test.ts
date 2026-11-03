@@ -62,9 +62,29 @@ describe('import mode side effects are confined to ticketSideEffects (spec §4.5
     expect(functionSource('addTicketComment')).toMatch(/fx\.writeTicketOutbox\(ticket\.orgId, ticketId, 'ticket\.commented'/);
   });
 
+  // #8313 W1 (spec 2026-10-19 §4.3.1): the reservation and skip-delete
+  // statements, and the reserve / store steps around them, run inside
+  // importTicket's transactions with no write mode at all, so they must not
+  // reach a side effect by any path: not directly, not through fx.
+  it.each([
+    'ticketImport/importAttachments.ts',
+    'ticketImport/chunkAttachments.ts',
+    'ticketImport/storeAttachments.ts',
+  ])('%s takes no write mode and calls none of the side-effect helpers at all', (file) => {
+    const body = stripComments(readFileSync(join(__dirname, file), 'utf8'));
+    for (const effect of SIDE_EFFECTS) {
+      expect(body, `${file} calls ${effect}`).not.toMatch(new RegExp(`\\b${effect}\\s*\\(`));
+    }
+    expect(body, `${file} builds side effects`).not.toMatch(/ticketSideEffects\s*\(/);
+    expect(body, `${file} writes the outbox`).not.toMatch(/\bticketOutbox\b|ticket_outbox/);
+    expect(body, `${file} takes a write mode`).not.toMatch(/TicketWriteMode|kind:\s*['"]import['"]/);
+  });
+
   it('the scan really finds a direct call (self-check)', () => {
     const planted = stripComments('export async function x() {\n  await writeTicketOutbox(a, b, c);\n  await fx.emitTicketEvent({});\n}\n');
     expect(planted).toMatch(/(?<![.\w])writeTicketOutbox\s*\(/);
     expect(planted).not.toMatch(/(?<![.\w])emitTicketEvent\s*\(/);
+    // The import-attachment scan above also catches a call through fx.
+    expect(planted).toMatch(/\bemitTicketEvent\s*\(/);
   });
 });

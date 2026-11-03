@@ -1,4 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// #8928: a refused human approve tells the waiting end user "denied".
+const notifyMocks = vi.hoisted(() => ({ enqueuePamRequestNotify: vi.fn(async () => 'queued' as const) }));
+vi.mock('./pamRequestNotify', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./pamRequestNotify')>()),
+  enqueuePamRequestNotify: notifyMocks.enqueuePamRequestNotify,
+}));
 
 import {
   createPamDecisionIntent,
@@ -172,6 +179,56 @@ describe('PAM actuation lifecycle', () => {
     expect(sqlText(auditCall)).toContain("'denied'");
     expect(sqlText(auditCall)).toContain("'system'");
     expect(sqlParams(auditCall)).toContain(PAM_TARGET_HASH_UNVERIFIED_REASON);
+  });
+
+  describe('end-user notice on a hash-unverified refusal (#8928)', () => {
+    beforeEach(() => notifyMocks.enqueuePamRequestNotify.mockClear());
+    const refusalRows = () => txWithRows([
+      [{ ownership_epoch: 1 }],
+      [{ id: request.id, org_id: request.orgId, device_id: request.deviceId, revision: 3 }],
+      [], [], [],
+    ]);
+
+    it('a refused technician approve (prior status pending) queues a denied notice with the user-facing reason', async () => {
+      const tx = refusalRows();
+      await createPamDecisionIntent(tx as never, {
+        request: { ...request, targetExecutableHash: null },
+        requestRevision: 3,
+        decision: 'approved',
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      expect(notifyMocks.enqueuePamRequestNotify).toHaveBeenCalledTimes(1);
+      expect(notifyMocks.enqueuePamRequestNotify).toHaveBeenCalledWith(
+        tx, { id: request.id, deviceId: request.deviceId }, 'denied', 'The program could not be verified.',
+      );
+      // The internal refusal constant is never what the end user sees.
+      expect((notifyMocks.enqueuePamRequestNotify.mock.calls[0] as unknown[])[3]).not.toBe(PAM_TARGET_HASH_UNVERIFIED_REASON);
+    });
+
+    it('an insert-time auto_approved refusal does not notify: nobody is waiting on IT', async () => {
+      const tx = refusalRows();
+      await createPamDecisionIntent(tx as never, {
+        request: { ...request, targetExecutableHash: null },
+        requestRevision: 3,
+        decision: 'auto_approved',
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      expect(notifyMocks.enqueuePamRequestNotify).not.toHaveBeenCalled();
+    });
+
+    it('a normal approve with a verifiable hash does not notify', async () => {
+      const tx = txWithRows([
+        [{ ownership_epoch: 1 }],
+        [{ id: request.id, org_id: request.orgId, device_id: request.deviceId, revision: 7 }],
+        [],
+        [{ id: '20000000-0000-4000-8000-000000000001', elevation_request_id: request.id, request_revision: 7, generation: 1, desired_state: 'active' }],
+        [],
+      ]);
+      await createPamDecisionIntent(tx as never, {
+        request, requestRevision: 7, decision: 'approved', expiresAt: new Date(Date.now() + 60_000),
+      });
+      expect(notifyMocks.enqueuePamRequestNotify).not.toHaveBeenCalled();
+    });
   });
 
   it('refuses a blank (whitespace-only) target hash the same as a missing one', async () => {

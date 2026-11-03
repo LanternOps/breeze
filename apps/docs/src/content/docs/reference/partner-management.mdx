@@ -389,9 +389,12 @@ Registration is two calls: `POST /auth/register-partner` requests the signup and
   "email": "admin@acme-it.com",
   "password": "securePassword123!",
   "name": "Jane Doe",
-  "acceptTerms": true
+  "acceptTerms": true,
+  "signupIntent": { "intent": "cloud", "offer": "founding" }
 }
 ```
+
+`signupIntent` is optional and records what the signup is for: `intent` is `cloud` or `wisp`, and `offer` is an optional lowercase slug of up to 32 characters. When omitted, the signup is recorded as `{ "intent": "cloud" }`. A value that does not match this shape is rejected with a `400`.
 
 **Response (200)** -- identical for every accepted input, including an email that already has an account, so the response cannot be used to enumerate registered addresses:
 

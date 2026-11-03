@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import canonical from '../../../../packages/shared/src/fixtures/pam-lifetime-v2-command-contract.json';
 
-const { executeMock, committed, commitGate, claimMock, releaseMock, connectedMock, dispatchMock, captureMock } = vi.hoisted(() => ({
+const { executeMock, resolveTechnicianNameMock, committed, commitGate, claimMock, releaseMock, connectedMock, dispatchMock, captureMock } = vi.hoisted(() => ({
   executeMock: vi.fn(),
+  resolveTechnicianNameMock: vi.fn(),
   committed: { value: false },
   commitGate: { value: null as Promise<void> | null },
   claimMock: vi.fn(),
@@ -28,6 +29,7 @@ vi.mock('../db', () => ({
   },
 }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}) }));
+vi.mock('../services/pamTechnicianName', () => ({ resolvePamTechnicianName: resolveTechnicianNameMock }));
 vi.mock('../services/sentry', () => ({ captureException: captureMock }));
 vi.mock('../services/commandDispatch', () => ({
   claimPendingCommandForDelivery: claimMock,
@@ -122,6 +124,69 @@ describe('processPamActuationEvent', () => {
       .resolves.toBe('duplicate');
     expect(executeMock).toHaveBeenCalledTimes(1);
     expect(dispatchMock).toHaveBeenCalledTimes(1);
+  });
+
+  describe('decidedBy (#10190 W07)', () => {
+    const APPROVER = '60000000-0000-4000-8000-000000000001';
+
+    it('a device without the capability gets the frozen payload byte for byte (its agent decodes apply strictly)', async () => {
+      executeMock.mockResolvedValueOnce({ rows: [{ ...current, approved_by_user_id: APPROVER }] }).mockResolvedValue({ rows: [] });
+      await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 })).resolves.toBe('dispatched');
+      expect(commandPayloadAt(1)).toEqual(canonical.apply);
+      expect(resolveTechnicianNameMock).not.toHaveBeenCalled();
+    });
+
+    it.each([0, 1, null])('pam_user_notify_protocol_version %s (< 2): payload keys are exactly today\'s', async (version) => {
+      executeMock.mockResolvedValueOnce({ rows: [{ ...current, pam_user_notify_protocol_version: version, approved_by_user_id: APPROVER }] })
+        .mockResolvedValue({ rows: [] });
+      await processPamActuationEvent({ actuationId: current.id, generation: 4 });
+      expect(Object.keys(commandPayloadAt(1)).sort()).toEqual(Object.keys(canonical.apply).sort());
+      expect(resolveTechnicianNameMock).not.toHaveBeenCalled();
+    });
+
+    it('pam_user_notify_protocol_version 2: carries the approver name the resolver allows (never an email)', async () => {
+      resolveTechnicianNameMock.mockResolvedValue('Dana Tech');
+      executeMock.mockResolvedValueOnce({ rows: [{ ...current, pam_user_notify_protocol_version: 2, approved_by_user_id: APPROVER }] })
+        .mockResolvedValue({ rows: [] });
+      await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 })).resolves.toBe('dispatched');
+      expect(resolveTechnicianNameMock).toHaveBeenCalledWith(current.device_id, { userId: APPROVER });
+      expect(commandPayloadAt(1)).toEqual({ ...canonical.apply, decidedBy: { technicianName: 'Dana Tech' } });
+      expect(dispatchMock.mock.calls[0]![1].payload).toEqual({ ...canonical.apply, decidedBy: { technicianName: 'Dana Tech' } });
+    });
+
+    it('pam_user_notify_protocol_version 2 with no approver (policy auto-approval) or a generic level: technicianName null', async () => {
+      resolveTechnicianNameMock.mockResolvedValue(null);
+      executeMock.mockResolvedValueOnce({ rows: [{ ...current, pam_user_notify_protocol_version: 2, approved_by_user_id: null }] })
+        .mockResolvedValue({ rows: [] });
+      await processPamActuationEvent({ actuationId: current.id, generation: 4 });
+      expect(commandPayloadAt(1)).toEqual({ ...canonical.apply, decidedBy: { technicianName: null } });
+    });
+
+    it('a redelivered generation (cleanup→apply bump) builds decidedBy from the same rule', async () => {
+      resolveTechnicianNameMock.mockResolvedValue('Dana Tech');
+      executeMock.mockResolvedValueOnce({ rows: [{ ...current, generation: 5, pam_user_notify_protocol_version: 2, approved_by_user_id: APPROVER }] })
+        .mockResolvedValue({ rows: [] });
+      await processPamActuationEvent({ actuationId: current.id, generation: 5 });
+      expect(commandPayloadAt(1)).toEqual({ ...canonical.apply, generation: 5, decidedBy: { technicianName: 'Dana Tech' } });
+      expect(JSON.stringify(commandPayloadAt(1))).not.toMatch(/email/i);
+    });
+
+    it('cleanup never carries decidedBy, even for a capable device', async () => {
+      executeMock.mockResolvedValueOnce({ rows: [{ ...current, generation: 5, desired_state: 'cleanup', pam_user_notify_protocol_version: 2, approved_by_user_id: APPROVER }] })
+        .mockResolvedValue({ rows: [] });
+      await processPamActuationEvent({ actuationId: current.id, generation: 5 });
+      expect(resolveTechnicianNameMock).not.toHaveBeenCalled();
+      const raw = (executeMock.mock.calls[1]?.[0] ? JSON.stringify(executeMock.mock.calls[1][0]) : '');
+      expect(raw).not.toContain('decidedBy');
+    });
+
+    it('the select reads the capability and the approver', async () => {
+      executeMock.mockResolvedValueOnce({ rows: [current] }).mockResolvedValue({ rows: [] });
+      await processPamActuationEvent({ actuationId: current.id, generation: 4 });
+      const firstSql = JSON.stringify(executeMock.mock.calls[0]![0]);
+      expect(firstSql).toContain('pam_user_notify_protocol_version');
+      expect(firstSql).toContain('approved_by_user_id');
+    });
   });
 
   it('does not dispatch a lower generation or regress cleanup to apply', async () => {

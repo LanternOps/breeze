@@ -30,7 +30,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import postgres from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
@@ -289,6 +289,108 @@ describe('compliance alerts through the scheduled scan', () => {
       .from(alertRules)
       .where(eq(alertRules.orgId, device.orgId)));
     expect(rules.map((r) => r.id)).toEqual(alertRuleIdsBefore);
+  });
+});
+
+/**
+ * #10401 — one device's evaluation failing at the SQL level must not freeze
+ * every other device. The scan runs the whole fleet in one system transaction;
+ * a statement error there aborts it, and postgres.js re-throws the error at
+ * COMMIT even though the per-device catch swallowed it. Nothing the scan wrote
+ * persisted and no event went out, so every open compliance alert stayed open,
+ * on every tenant, for as long as the failing device kept failing.
+ *
+ * The failure here is a real statement error, not a mock: the test seeds a
+ * state row the scan's upsert cannot write next to (see seedUnwritableDevice).
+ */
+describe('a device whose evaluation fails does not hold back the rest of the scan', () => {
+  /**
+   * A rule set whose name is longer than automation_policy_compliance.config_item_name
+   * holds (200). The validators refuse such a name now; rows saved before the
+   * cap can still carry one, which is what this seeds directly.
+   */
+  const LONG_ITEM = { ...RULE_ITEM, name: `Long rule set ${'x'.repeat(230)}` };
+
+  /** A device whose only rule set is LONG_ITEM. */
+  async function seedUnwritableDevice() {
+    return seedDeviceWithRuleSets([LONG_ITEM]);
+  }
+
+  async function seedDeviceWithRuleSets(items: Array<typeof RULE_ITEM>) {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org!.id });
+    const device = await seedDevice(org!.id, site!.id);
+    await withSystemDbAccessContext(async () => {
+      const [policy] = await db
+        .insert(configurationPolicies)
+        .values({ orgId: org!.id, partnerId: null, name: `cad long ${randomUUID()}`, status: 'active' })
+        .returning();
+      const [link] = await db
+        .insert(configPolicyFeatureLinks)
+        .values({ configPolicyId: policy!.id, featureType: 'compliance', inlineSettings: { items } })
+        .returning();
+      await db.insert(configPolicyComplianceRules).values(
+        items.map((item, sortOrder) => ({ featureLinkId: link!.id, ...item, sortOrder })),
+      );
+      await db.insert(configPolicyAssignments).values({
+        configPolicyId: policy!.id,
+        level: 'organization',
+        targetId: org!.id,
+        priority: 0,
+      });
+    });
+    return device;
+  }
+
+  async function complianceRows(deviceId: string) {
+    return withSystemDbAccessContext(() => db
+      .select({ status: automationPolicyCompliance.status })
+      .from(automationPolicyCompliance)
+      .where(eq(automationPolicyCompliance.deviceId, deviceId)));
+  }
+
+  runDb('a compliant device still clears its alert while another device fails', async () => {
+    const { device } = await seedFailingDevice();
+    await __processConfigPolicyComplianceScan();
+    expect(await openAlerts(device.id)).toHaveLength(1);
+
+    const broken = await seedUnwritableDevice();
+    await installApp(device.id);
+    await makeDue(device.id);
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const scan = await __processConfigPolicyComplianceScan();
+      expect(scan.devicesEvaluated).toBe(2);
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(await complianceRows(device.id)).toEqual([{ status: 'compliant' }]);
+    expect(await openAlerts(device.id)).toHaveLength(0);
+    expect(await complianceRows(broken.id)).toEqual([]);
+    expect(await openAlerts(broken.id)).toHaveLength(0);
+  });
+
+  // Per-rule-set isolation: the failing rule set rolls back alone, and the
+  // same device's other rule set still persists its state and raises its alert.
+  runDb('a rule set that fails does not hold back the same device\'s other rule sets', async () => {
+    const device = await seedDeviceWithRuleSets([RULE_ITEM, LONG_ITEM]);
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let scan: Awaited<ReturnType<typeof __processConfigPolicyComplianceScan>>;
+    try {
+      scan = await __processConfigPolicyComplianceScan();
+    } finally {
+      errorSpy.mockRestore();
+    }
+    expect(scan).toMatchObject({ devicesEvaluated: 1, devicesFailed: 0, ruleSetsFailed: 1 });
+
+    expect(await complianceRows(device.id)).toEqual([{ status: 'non_compliant' }]);
+    const open = await openAlerts(device.id);
+    expect(open).toHaveLength(1);
+    expect(open[0]!.context).toMatchObject({ source: CONFIG_COMPLIANCE_ALERT_SOURCE });
   });
 });
 

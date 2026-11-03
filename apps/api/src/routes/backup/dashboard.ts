@@ -18,6 +18,7 @@ import {
   latestBackupRunOrderBy,
   latestBackupRunWindowOrder,
 } from '../../services/backupJobOrdering';
+import { splitReparseSkipNotice } from '@breeze/shared';
 import { getNextRun, resolveScopedOrgId } from './helpers';
 import { usageHistoryQuerySchema } from './schemas';
 import {
@@ -159,7 +160,9 @@ async function resolveAttentionItems(
         if (!NEEDS_ATTENTION_JOB_STATUSES.has(job.status)) break;
         consecutiveFailures += 1;
         if (job.status === 'partial') sawPartial = true;
-        if (!reason && job.errorLog) reason = job.errorLog;
+        // #9543: the agent's skipped-reparse-point note is informational, so
+        // it is never the reason a device needs attention.
+        if (!reason && job.errorLog) reason = splitReparseSkipNotice(job.errorLog).diagnostic;
       }
 
       const deviceName = latest.deviceName ?? latest.deviceHostname ?? deviceId.slice(0, 8);

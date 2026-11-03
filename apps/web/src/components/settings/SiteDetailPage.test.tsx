@@ -1,3 +1,5 @@
+const setPageContext = vi.hoisted(() => vi.fn());
+vi.mock('@/stores/aiStore', () => ({ useAiStore: (select: (s: unknown) => unknown) => select({ setPageContext }) }));
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -96,6 +98,7 @@ describe('SiteDetailPage — address/contact round-trip', () => {
     // If populateForm wrongly read flat keys, these would all be empty.
     expect(await screen.findByPlaceholderText('123 Market Street')).toHaveValue('123 Market Street');
     expect(screen.getByPlaceholderText('San Francisco')).toHaveValue('San Francisco');
+    expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'site', id: SITE_ID, orgId: ORG_ID, label: 'Main Office' }));
     expect(screen.getByPlaceholderText('CA')).toHaveValue('CA');
     expect(screen.getByPlaceholderText('Alex Morgan')).toHaveValue('Alex Morgan');
     expect(screen.getByPlaceholderText('alex@company.com')).toHaveValue('alex@company.com');

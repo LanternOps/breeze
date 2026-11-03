@@ -176,8 +176,10 @@ const EPHEMERAL_ONLY: Record<string, string> = {
  * scan with the ephemeral filter and notParkedDeviceCondition() side by side.
  * 74 → 75 (#6263 W05): services/securityScanSweepTargets.ts, the IOC sweep
  * target selector (a FANOUT_MODULES entry, parked guard beside the filter).
+ * 75 → 76 (#9635): services/softwarePolicyCoverage.ts, the org device set the
+ * Inventory Approve / Deny placement check resolves (parked guard beside it).
  */
-const EPHEMERAL_DISCOVERED_FILES = 75;
+const EPHEMERAL_DISCOVERED_FILES = 76;
 
 describe('contract: device counts and listings leave parked devices out', () => {
   const found = DEVICE_FILES

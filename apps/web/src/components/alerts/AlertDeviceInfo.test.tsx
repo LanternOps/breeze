@@ -50,3 +50,18 @@ describe('AlertDeviceInfo', () => {
     expect(screen.queryByTestId('alert-details-monitor')).toBeNull();
   });
 });
+
+
+describe('AlertDeviceInfo org subjects', () => {
+  it('renders a workload subject without a null device link', () => {
+    const { container } = render(<AlertDeviceInfo deviceId={null} deviceName="" ownerKind="backup_workload" subjectName="Microsoft 365 mail backup · Example organization" />);
+    expect(screen.getByTestId('alert-subject-chip')).toHaveAttribute('href', '/backup');
+    expect(container.querySelector('a[href*="/devices/"]')).toBeNull();
+  });
+
+  it('links topology ownership to the site even when an origin device remains', () => {
+    const { container } = render(<AlertDeviceInfo deviceId="origin-1" deviceName="Origin" ownerKind="topology_site" topologySiteId="site-1" subjectName="Branch" />);
+    expect(screen.getByTestId('alert-subject-chip')).toHaveAttribute('href', '/discovery#topology/site/site-1');
+    expect(container.querySelector('a[href*="/devices/"]')).toBeNull();
+  });
+});

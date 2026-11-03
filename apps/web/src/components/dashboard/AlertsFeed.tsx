@@ -6,6 +6,7 @@ import { formatTimeAgo } from '@/lib/formatTime';
 import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
 import { EntityLink } from '@/components/shared/EntityLink';
+import AlertSubjectChip, { alertSubjectHref, isDeviceAlert } from '../alerts/AlertSubjectChip';
 import { fleetPresence } from './fleetPresence';
 import { DashboardMetric } from './DashboardMetric';
 import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
@@ -21,7 +22,7 @@ const severityConfig: Record<string, { icon: typeof Info; chipClass: string; ico
 
 /**
  * The triage feed: only active/acknowledged alerts appear (the query
- * filters server-side); rows with a device deep-link to it. Hidden when the
+ * filters server-side); rows deep-link to their owner. Hidden when the
  * caller can't read alerts — an empty success state on a 403 would be a
  * false health claim.
  *
@@ -189,7 +190,7 @@ export default function AlertsFeed({
             const Icon = config.icon;
             const title = resolveAlertTitle(
               alert.title || alert.message,
-              alert.deviceHostname,
+              alert.subjectName || alert.deviceHostname,
               t('dashboard.alerts.fallbackTitle'),
             );
             const timestamp = alert.triggeredAt || alert.createdAt;
@@ -201,14 +202,16 @@ export default function AlertsFeed({
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium">{title}</span>
                   <span className="block truncate text-xs text-muted-foreground">
-                    {/* Also links when the hostname is missing, so a row with a
-                        deviceId always has a keyboard path to the device. */}
-                    <EntityLink
-                      kind="device"
-                      id={alert.deviceId ?? ''}
-                      name={alert.deviceHostname || t('states.unknown')}
-                      tone="muted"
-                    />
+                    {alert.ownerKind && alert.ownerKind !== 'device' ? (
+                      <AlertSubjectChip {...alert} />
+                    ) : (
+                      <EntityLink
+                        kind="device"
+                        id={isDeviceAlert(alert) ? alert.deviceId ?? '' : ''}
+                        name={alert.deviceHostname || t('states.unknown')}
+                        tone="muted"
+                      />
+                    )}
                     {showOrg && alert.orgName && (
                       <>
                         {' · '}
@@ -225,17 +228,17 @@ export default function AlertsFeed({
             const rowClass =
               'flex items-center gap-3 rounded-md px-2 py-2.5 transition-colors';
             // The row is a div (not an <a>) so the hostname/org links inside it
-            // are never nested anchors; keyboard reach to the device is the
-            // hostname EntityLink. A row with no deviceId is inert.
-            const deviceId = alert.deviceId;
+            // are never nested anchors; the subject link provides keyboard
+            // access. A row with no available owner destination is inert.
+            const href = alertSubjectHref(alert);
             return (
               <div
                 key={alert.id}
-                className={cn(rowClass, deviceId && 'group cursor-pointer hover:bg-muted/40')}
-                onClick={deviceId ? () => void navigateTo(`/devices/${deviceId}`) : undefined}
+                className={cn(rowClass, href && 'group cursor-pointer hover:bg-muted/40')}
+                onClick={href ? () => void navigateTo(href) : undefined}
               >
                 {inner}
-                {deviceId && (
+                {href && (
                   <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground" aria-hidden="true" />
                 )}
               </div>

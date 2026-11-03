@@ -26,6 +26,7 @@ import type { Device, DeviceStatus } from "./DeviceList";
 import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
 import RemoveDeviceDialog from "./RemoveDeviceDialog";
+import { useIsolationMenu } from "./networkIsolation/useIsolationMenu";
 import ForceRebootDialog from "./ForceRebootDialog";
 import { showToast } from "../shared/Toast";
 import { agentSupportsForceReboot, FORCE_REBOOT_MIN_AGENT_VERSION } from "@breeze/shared";
@@ -153,6 +154,10 @@ type DeviceActionsProps = {
   device: Device;
   onAction?: (action: string, device: Device, opts?: DeviceActionOptions) => void | Promise<void>;
   compact?: boolean;
+  /** Page-level secondary actions (e.g. the Wisp link) rendered in the same
+   *  wrapping row as the device actions, so they never sit in a separate column
+   *  that squeezes into a two-line button. */
+  extraActions?: ReactNode;
 };
 
 type ModalType =
@@ -414,6 +419,7 @@ export default function DeviceActions({
   device,
   onAction,
   compact = false,
+  extraActions,
 }: DeviceActionsProps) {
   const { t } = useTranslation("devices");
   const { can } = usePermissions();
@@ -455,6 +461,8 @@ export default function DeviceActions({
     setMenuOpen(false);
     setPowerMenuOpen(false);
   };
+
+  const isolationMenu = useIsolationMenu(device, can("devices", "execute"), menuOpen, closeMenus);
 
   const handleAction = async (action: string) => {
     // #8729: owned here, not by the page: the dialog collects the typed
@@ -641,6 +649,7 @@ export default function DeviceActions({
             <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
           </button>
           <DropdownPopup>
+              {isolationMenu.item}
               <button
                 type="button"
                 onClick={() => handleAction("run-script")}
@@ -796,6 +805,7 @@ export default function DeviceActions({
         </DropdownRoot>
 
         {forceRebootDialog}
+        {isolationMenu.dialog}
         {modalType === "decommission" ? (
           <RemoveDeviceDialog
             open
@@ -949,6 +959,7 @@ export default function DeviceActions({
             label={t("common:labels.actions")}
             sheetClassName="fixed inset-x-0 bottom-0 z-50 max-h-[75vh] overflow-y-auto rounded-t-xl border-t bg-card pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] shadow-lg"
           >
+            {isolationMenu.item}
             {showWake &&
               sheetItem({
                 action: "run-script",
@@ -1078,15 +1089,21 @@ export default function DeviceActions({
             {offlineTitle}
           </p>
         )}
+        {/* Secondary page actions come after the primary + menu pair so the
+            primary keeps the first row to itself. */}
+        {extraActions}
       </div>
     );
   };
 
   return (
     <>
+      {/* Desktop row is right-aligned so a second row of buttons ends flush
+          with the first instead of leaving a ragged right edge beside the title. */}
       {isPhone ? renderPhoneRow() : (
-      <div data-testid="device-header-actions" className="flex flex-wrap items-center gap-2">
+      <div data-testid="device-header-actions" className="flex flex-wrap items-center gap-2 2xl:justify-end">
         {reasonSpans}
+        {extraActions}
         {/* When the device is offline, Wake is the one action that matters —
             promote it to the primary header button instead of burying it in the
             Power dropdown, where every other action is disabled anyway. */}
@@ -1263,6 +1280,7 @@ export default function DeviceActions({
             <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
           </button>
           <DropdownPopup>
+              {isolationMenu.item}
               <button
                 type="button"
                 onClick={() => handleAction("refresh")}
@@ -1363,6 +1381,7 @@ export default function DeviceActions({
       )}
 
       {forceRebootDialog}
+      {isolationMenu.dialog}
       {modalType === "decommission" ? (
         <RemoveDeviceDialog
           open

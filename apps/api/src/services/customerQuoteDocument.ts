@@ -21,7 +21,7 @@ import type {
   CustomerQuoteDocument, CustomerQuoteHeaderDto, CustomerQuoteLineDto,
 } from '@breeze/shared/documents';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { partners } from '../db/schema';
+import { organizations, partners } from '../db/schema';
 import { portalBranding } from '../db/schema/portal';
 import { quotes, quoteBlocks, quoteLines } from '../db/schema/quotes';
 import { CustomerDocumentModeError, OD9_CUSTOMER_PROJECTION, type DocumentSurface, type Od9Projection } from './customerDocument';
@@ -117,6 +117,21 @@ async function loadQuotePartnerAndBrand(quote: QuoteRow) {
   return { partner: partner ?? null, brand: brand ?? null };
 }
 
+/**
+ * The bill-to name sending a draft would freeze when the tech entered none: the
+ * org's name (quoteLifecycle send; getQuote's draft billTo). Read on the CALLER's
+ * context like both of those — staff mode only, and the caller already
+ * authorized this row. An unreadable org stays null, as send would freeze it.
+ */
+async function draftBillToName(quote: QuoteRow): Promise<string | null> {
+  const [org] = await db.select({ name: organizations.name }).from(organizations)
+    .where(eq(organizations.id, quote.orgId)).limit(1);
+  if (!org) {
+    console.error(`[customerQuoteDocument] org ${quote.orgId} not readable while resolving draft bill-to for quote ${quote.id} — previewing an empty bill-to`);
+  }
+  return org?.name ?? null;
+}
+
 const isoOf = (v: Date | string): string => (v instanceof Date ? v.toISOString() : v);
 
 /**
@@ -155,11 +170,17 @@ export async function assembleCustomerQuoteDocument(
   const { partner, brand } = await loadQuotePartnerAndBrand(quote);
 
   // A staff draft previews what sending freezes (quoteLifecycle send:
-  // `quote.sellerSnapshot ?? buildSellerSnapshot(partner)`). Issued quotes read
-  // their own frozen snapshot in every mode.
-  const row: QuoteRow = isDraft && quote.sellerSnapshot == null && partner
+  // `quote.sellerSnapshot ?? buildSellerSnapshot(partner)`, and a blank
+  // billToName → the org name). Issued quotes read their own frozen snapshot in
+  // every mode. The bill-to name is what the cover's "Prepared for" and a
+  // contract block's {{client.name}} print — the draft PDF already resolves it
+  // (GET /quotes/:id/pdf overlays getQuote's billTo), so the Preview must too (#9957).
+  let row: QuoteRow = isDraft && quote.sellerSnapshot == null && partner
     ? { ...quote, sellerSnapshot: buildSellerSnapshot(partner) }
     : quote;
+  if (isDraft && !quote.billToName?.trim()) {
+    row = { ...row, billToName: await draftBillToName(quote) };
+  }
 
   const documentLocale = quote.documentLocale ?? resolvePartnerDocumentLocale(partner);
   const rendered = await renderContractBlocksForClient(rawBlocks, row, opts.assets.contractFile, documentLocale);

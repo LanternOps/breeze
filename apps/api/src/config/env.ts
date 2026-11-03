@@ -222,10 +222,12 @@ export function toolSourcesEnabled(): boolean {
 }
 
 // Tool Catalog W3 (#5218). Platform kill switch for Flows (flow documents,
-// flow AI tools, /api/v1/flows). Default OFF. Read at CALL time so a test can
-// flip it per-case without vi.resetModules().
+// flow AI tools, /api/v1/flows). Default ON since W06 R1 (#5221, plan
+// Decision 11): unset or empty is on; `FLOWS_ENABLED=false` keeps Flows off
+// and standalone Jobs writable. Read at CALL time so a test can flip it
+// per-case without vi.resetModules().
 export function flowsEnabled(): boolean {
-  return envFlag('FLOWS_ENABLED', false);
+  return envFlag('FLOWS_ENABLED', true);
 }
 
 // Topology rollout deployment kill switch. Partner and organization flags are

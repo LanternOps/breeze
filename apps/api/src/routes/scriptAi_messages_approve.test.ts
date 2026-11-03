@@ -249,8 +249,11 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
 
     it('#3127: waits and reserves with no DB context held; reads and writes each run in a short one', async () => {
       const depths: Record<string, number> = {};
-      vi.mocked(runPreFlightChecks).mockImplementation(async () => {
+      vi.mocked(runPreFlightChecks).mockImplementation(async (...args) => {
+        // #10415: called with no context held, handed a runner that opens one
+        // per DB phase (the Redis rate limit runs between phases).
         depths.preflight = dbCtx.depth;
+        await args[6]!(async () => { depths.preflightPhase = dbCtx.depth; });
         return {
           ok: true,
           session: {
@@ -309,7 +312,7 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
 
       expect(res.status).toBe(200);
       await res.text();
-      expect(depths).toEqual({ preflight: 1, settle: 0, reserve: 0, getOrCreate: 1, insert: 1 });
+      expect(depths).toEqual({ preflight: 0, preflightPhase: 1, settle: 0, reserve: 0, getOrCreate: 1, insert: 1 });
       expect(activeSession.inputController.pushMessage).toHaveBeenCalledWith('Hello');
       expect(dbCtx.depth).toBe(0);
     });

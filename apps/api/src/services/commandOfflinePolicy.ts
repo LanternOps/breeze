@@ -246,6 +246,10 @@ const SHORT: readonly string[] = [
   'set_auto_update',
   // Policy push that converges: the next sync supersedes a stale one.
   'apply_browser_policy',
+  // #8928 PAM outcome notice. The enqueue stamps its own 60-minute deliverBy
+  // (insertQueuedCommandInTransaction does not consult this policy); `short`
+  // is the classification for any other caller.
+  C.PAM_REQUEST_NOTIFY,
 ];
 
 /**
@@ -322,6 +326,7 @@ const STANDARD_REVIEWED: readonly string[] = [
   C.VAULT_CONFIGURE,
   C.COLLECT_EVIDENCE,
   C.EXECUTE_CONTAINMENT,
+  C.RELEASE_CONTAINMENT,
   C.SYSTEM_STATE_COLLECT,
 ];
 

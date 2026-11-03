@@ -56,7 +56,10 @@ vi.mock('../db', () => ({
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve())
     }))
-  }
+  },
+  // groupMembership schedules peripheral reconciliation after commit (#10521 W2b);
+  // there is no transaction here, so run it immediately.
+  runAfterDbContextCommit: vi.fn((_label: string, work: () => unknown) => { void work(); }),
 }));
 
 vi.mock('../db/schema', () => ({

@@ -3,6 +3,7 @@ import {
   describePublishOutcome,
   publishSuccessMessage,
   ruleSetPatchSuccessMessage,
+  staleBannerText,
 } from './publishOutcome';
 import type { YaraPublishBody } from './ruleSetsApi';
 
@@ -154,6 +155,18 @@ describe('publishSuccessMessage (runAction successMessage)', () => {
 
   it('never throws when the set argument is junk', () => {
     expect(() => publishSuccessMessage({ publish: pub({ published: true, stale: false }) }, null as never)).not.toThrow();
+  });
+});
+
+describe('staleBannerText (#10306)', () => {
+  const base = { publishedVersion: 0, enabled: true };
+  it('a missing compiler is not "fix the errors"', () => {
+    const text = staleBannerText({ ...base, staleReason: 'checker_unavailable' });
+    expect(text).toMatch(/YARA compiler is unavailable on this server/i);
+    expect(text).not.toMatch(/fix the errors/i);
+  });
+  it.each([['errors' as const], [null], [undefined]])('staleReason %s (or an older API without it) keeps "fix the errors"', (staleReason) => {
+    expect(staleBannerText({ ...base, staleReason })).toMatch(/fix the errors/i);
   });
 });
 

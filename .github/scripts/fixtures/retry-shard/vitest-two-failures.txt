@@ -1,0 +1,53 @@
+[22m[39m[MCP] request rejected before dispatch { reason: [32m'header_mismatch'[39m, windowSeconds: [33m60[39m, totalSinceBoot: [33m1[39m }
+
+ [31m❯[39m src/routes/mcpServer.tasks.test.ts [2m([22m[2m80 tests[22m[2m | [22m[31m2 failed[39m[2m)[22m[32m 257[2mms[22m[39m
+     [32m✓[39m not declared on this request (Tasks effective) → every Tier-3 response equals the pre-W06 bytes[32m 58[2mms[22m[39m
+ [32m✓[39m src/services/userSession.types.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 2 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m src/routes/mcpServer.tasks.test.ts[2m > [22mB-W06 byte identity when Tasks are not effective, not declared, or legacy[2m > [22mMCP_TASKS_ENABLED off → discover, tasks/* (-32601 / 404) and the Mcp-Name rule equal the pre-W06 bytes
+[31m[1mError[22m: Snapshot `B-W06 byte identity when Tasks are not effective, not declared, or legacy > MCP_TASKS_ENA[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[33m@@ -1,7 +1,7 @@[39m
+[2m  [[22m
+[32m-   "200 {"jsonrpc":"2.0","id":3,"result":{"resultType":"complete","supportedVersions":["2026-07-28","2025-11-25","[39m
+[31m+   "200 {"jsonrpc":"2.0","id":3,"result":{"resultType":"complete","supportedVersions":["2026-07-28","2025-11-25","[39m
+[2m    "404 {"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Method not found: tasks/get"}}",[22m
+[2m    "404 {"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Method not found: tasks/update"}}",[22m
+[2m    "404 {"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Method not found: tasks/cancel"}}",[22m
+[2m    "404 {"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Method not found: tasks/get"}}",[22m
+[2m    "200 {"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Method not found: tasks/get"}}",[22m
+
+[36m [2m❯[22m src/routes/mcpServer.tasks.test.ts:[2m475:38[22m[39m
+
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/mcpServer.tasks.test.ts[2m > [22mB-W06 byte identity when Tasks are not effective, not declared, or legacy[2m > [22mMCP_TASKS_ENABLED off, not declared → discover, tasks/* (-32601 / 404) and the Mcp-Name rule equal the pre-W06 bytes
+[31m[1mError[22m: Snapshot `B-W06 byte identity when Tasks are not effective, not declared, or legacy > MCP_TASKS_ENA[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[33m@@ -1,7 +1,7 @@[39m
+[2m  [[22m
+[32m-   "200 {"jsonrpc":"2.0","id":3,"result":{"resultType":"complete","supportedVersions":["2026-07-28","2025-11-25","[39m
+[31m+   "200 {"jsonrpc":"2.0","id":3,"result":{"resultType":"complete","supportedVersions":["2026-07-28","2025-11-25","[39m
+[2m    "404 {"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Method not found: tasks/get"}}",[22m
+[2m    "404 {"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Method not found: tasks/update"}}",[22m
+[2m    "404 {"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Method not found: tasks/cancel"}}",[22m
+[2m    "404 {"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Method not found: tasks/get"}}",[22m
+[2m    "200 {"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Method not found: tasks/get"}}",[22m
+
+[36m [2m❯[22m src/routes/mcpServer.tasks.test.ts:[2m475:38[22m[39m
+
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯[22m[39m
+
+
+[2m  Snapshots [22m [1m[31m2 failed[39m[22m
+[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m541 passed[39m[22m[90m (542)[39m

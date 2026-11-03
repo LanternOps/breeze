@@ -232,6 +232,18 @@ describe('commandOfflinePolicy registry (#5128 W1)', () => {
     expect(LIFECYCLE_COMMAND_TYPES).not.toContain('notify_user');
   });
 
+  it('registers pam_request_notify as a short queueable type, partner-trust gated (#8928)', () => {
+    expect(CommandTypes.PAM_REQUEST_NOTIFY).toBe('pam_request_notify');
+    expect(EXPLICITLY_CLASSIFIED_COMMAND_TYPES).toContain('pam_request_notify');
+    const policy = defaultOfflinePolicy('pam_request_notify');
+    expect(policy.kind).toBe('queue');
+    expect(policy.kind === 'queue' && policy.deliverWithinMs).toBe(deliveryTtlMs('short'));
+    // Carries technician free text (the deny reason): operator content, so it
+    // is GATED like notify_user and never a lifecycle type (decision T2).
+    expect(GATED_COMMAND_TYPES).toContain('pam_request_notify');
+    expect(LIFECYCLE_COMMAND_TYPES).not.toContain('pam_request_notify');
+  });
+
   it('registers the endpoint chat types as live (never queued for an offline device) (#8743)', () => {
     for (const type of ['chat_open', 'chat_message', 'chat_close']) {
       expect(Object.values(CommandTypes)).toContain(type);

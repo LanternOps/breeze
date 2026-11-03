@@ -69,15 +69,18 @@ describe('summarizeBulkSiteMove — the 200 body decides the tone, never the sta
       results: [{ id: 'd1', outcome: 'moved' }, { id: 'd2', outcome: 'already_there' }, { id: 'd3', outcome: 'moved' }],
       summary: { moved: 2, total: 3 },
     }, devices);
-    expect(s).toEqual({ tone: 'success', moved: 2, total: 3, failedNames: [] });
+    expect(s).toEqual({ tone: 'success', moved: 2, total: 3, failed: [] });
   });
 
-  it('some moved, some refused → warning naming the failures by display name', () => {
+  it('some moved, some refused → warning naming the failures by display name, grouped by reason', () => {
     const s = summarizeBulkSiteMove({
       results: [{ id: 'd1', outcome: 'moved' }, { id: 'd2', outcome: 'conflict' }, { id: 'd3', outcome: 'forbidden' }],
       summary: { moved: 1, total: 3 },
     }, devices);
-    expect(s).toEqual({ tone: 'warning', moved: 1, total: 3, failedNames: ['Lab PC', 'SERVER-03'] });
+    expect(s).toEqual({
+      tone: 'warning', moved: 1, total: 3,
+      failed: [{ outcome: 'conflict', names: ['Lab PC'] }, { outcome: 'forbidden', names: ['SERVER-03'] }],
+    });
   });
 
   it('every device was already at the target (moved 0, no failures) → success, not error', () => {
@@ -85,7 +88,7 @@ describe('summarizeBulkSiteMove — the 200 body decides the tone, never the sta
       results: [{ id: 'd1', outcome: 'already_there' }, { id: 'd2', outcome: 'already_there' }],
       summary: { moved: 0, total: 2 },
     }, devices);
-    expect(s).toEqual({ tone: 'success', moved: 0, total: 2, failedNames: [] });
+    expect(s).toEqual({ tone: 'success', moved: 0, total: 2, failed: [] });
   });
 
   it('none moved, some already there and some refused → error naming only the refused', () => {
@@ -93,7 +96,7 @@ describe('summarizeBulkSiteMove — the 200 body decides the tone, never the sta
       results: [{ id: 'd1', outcome: 'already_there' }, { id: 'd2', outcome: 'conflict' }],
       summary: { moved: 0, total: 2 },
     }, devices);
-    expect(s).toEqual({ tone: 'error', moved: 0, total: 2, failedNames: ['Lab PC'] });
+    expect(s).toEqual({ tone: 'error', moved: 0, total: 2, failed: [{ outcome: 'conflict', names: ['Lab PC'] }] });
   });
 
   it('none moved → error', () => {
@@ -101,11 +104,37 @@ describe('summarizeBulkSiteMove — the 200 body decides the tone, never the sta
       results: [{ id: 'd1', outcome: 'not_found' }, { id: 'd2', outcome: 'error' }],
       summary: { moved: 0, total: 2 },
     }, devices);
-    expect(s).toEqual({ tone: 'error', moved: 0, total: 2, failedNames: ['FRONTDESK-01', 'Lab PC'] });
+    expect(s).toEqual({
+      tone: 'error', moved: 0, total: 2,
+      failed: [{ outcome: 'not_found', names: ['FRONTDESK-01'] }, { outcome: 'error', names: ['Lab PC'] }],
+    });
   });
 
   it('an id the client did not send is named by its id rather than dropped', () => {
     const s = summarizeBulkSiteMove({ results: [{ id: 'zz', outcome: 'error' }], summary: { moved: 0, total: 1 } }, devices);
-    expect(s.failedNames).toEqual(['zz']);
+    expect(s.failed).toEqual([{ outcome: 'error', names: ['zz'] }]);
+  });
+
+  it('groups same-reason failures together in a fixed reason order, keeping request order within a group', () => {
+    const s = summarizeBulkSiteMove({
+      results: [
+        { id: 'd1', outcome: 'error' },
+        { id: 'd2', outcome: 'conflict', message: "The device's site changed since it was read" },
+        { id: 'd3', outcome: 'conflict' },
+      ],
+      summary: { moved: 0, total: 3 },
+    }, devices);
+    expect(s.failed).toEqual([
+      { outcome: 'conflict', names: ['Lab PC', 'SERVER-03'] },
+      { outcome: 'error', names: ['FRONTDESK-01'] },
+    ]);
+  });
+
+  it('an outcome this client does not know (a newer server) is reported as an error, not dropped', () => {
+    const s = summarizeBulkSiteMove({
+      results: [{ id: 'd1', outcome: 'quarantined' as never }],
+      summary: { moved: 0, total: 1 },
+    }, devices);
+    expect(s).toEqual({ tone: 'error', moved: 0, total: 1, failed: [{ outcome: 'error', names: ['FRONTDESK-01'] }] });
   });
 });

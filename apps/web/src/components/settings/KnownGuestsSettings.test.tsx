@@ -59,9 +59,41 @@ describe('KnownGuestsSettings (list kind; mutations via runAction)', () => {
     route({ 'DELETE /partner/known-guests/g-1': () => json({ error: 'nope' }, 500) });
     render(<KnownGuestsSettings />);
     await screen.findByText('Tech laptop');
-    await userEvent.setup().click(screen.getByTitle('Remove'));
+    const user = userEvent.setup();
+    await user.click(screen.getByTitle('Remove'));
+    await user.click(await screen.findByTestId('known-guests-remove-confirm'));
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
     expect(fetchWithAuth).toHaveBeenCalledWith('/partner/known-guests/g-1', expect.objectContaining({ method: 'DELETE' }));
+  });
+
+  // #9950: the trash icon deleted immediately, with no confirmation.
+  it('remove asks for confirmation first; cancel sends no request', async () => {
+    route({});
+    render(<KnownGuestsSettings />);
+    await screen.findByText('Tech laptop');
+    const user = userEvent.setup();
+    await user.click(screen.getByTitle('Remove'));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.textContent).toContain('Tech laptop');
+    expect(dialog.textContent).toContain('AA:BB:CC:DD:EE:FF');
+    expect(fetchWithAuth.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(fetchWithAuth.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
+  });
+
+  it('confirmed remove toasts success and reloads the list', async () => {
+    route({ 'DELETE /partner/known-guests/g-1': () => json({ success: true }) });
+    render(<KnownGuestsSettings />);
+    await screen.findByText('Tech laptop');
+    const user = userEvent.setup();
+    await user.click(screen.getByTitle('Remove'));
+    await user.click(await screen.findByTestId('known-guests-remove-confirm'));
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Known guest removed' })),
+    );
+    expect(fetchWithAuth.mock.calls.filter(([, init]) => !init?.method)).toHaveLength(2);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
   it('client-side validation still blocks a malformed MAC without a request', async () => {

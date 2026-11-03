@@ -152,10 +152,16 @@ export default function SiteList({
   // overflow menu instead of sitting red at parity with it. The wrapper stops
   // clicks here (including the portalled menu's, which bubble through the
   // React tree) from also firing the row's open.
-  const renderActions = (site: Site) => {
+  //
+  // ResponsiveTable mounts both surfaces and hides one with CSS, so the card
+  // copy gets its own testids (`site-<id>-card-*`): the desktop ids stay
+  // unique for Playwright's strict getByTestId (#10084), matching
+  // AccountBoardTable's `org-board-more-*` / `org-board-card-more-*`.
+  const renderActions = (site: Site, surface: 'table' | 'card') => {
+    const tid = (suffix: string) => (surface === 'table' ? `site-${site.id}-${suffix}` : `site-${site.id}-card-${suffix}`);
     const menuItems: ActionMenuItem[] = [];
     if (onSiteClick && onEdit) {
-      menuItems.push({ id: 'edit', label: t('common:actions.edit'), onSelect: () => onEdit(site), testId: `site-${site.id}-edit` });
+      menuItems.push({ id: 'edit', label: t('common:actions.edit'), onSelect: () => onEdit(site), testId: tid('edit') });
     }
     if (onDelete) {
       menuItems.push({
@@ -164,14 +170,14 @@ export default function SiteList({
         onSelect: () => onDelete(site),
         tone: 'destructive',
         separatorBefore: menuItems.length > 0,
-        testId: `site-${site.id}-delete`,
+        testId: tid('delete'),
       });
     }
     return (
       <div className="flex items-center justify-end gap-1" onClick={(event) => event.stopPropagation()}>
         <button
           type="button"
-          data-testid={`site-${site.id}-open`}
+          data-testid={tid('open')}
           onClick={() => (onSiteClick ? onSiteClick(site) : onEdit?.(site))}
           aria-label={
             onSiteClick
@@ -185,7 +191,7 @@ export default function SiteList({
         <ActionMenu
           label={t('siteList.actions.rowMenu', { name: site.name })}
           items={menuItems}
-          testId={`site-${site.id}-menu`}
+          testId={tid('menu')}
           triggerClassName="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
         />
       </div>
@@ -266,7 +272,7 @@ export default function SiteList({
                     <td className="px-4 py-3 text-sm">{renderContact(site)}</td>
                     <td className="px-4 py-3 text-sm">{site.timezone}</td>
                     <td className="px-4 py-3 text-sm tabular-nums">{renderDeviceCount(site)}</td>
-                    <td className="px-4 py-3 text-right">{renderActions(site)}</td>
+                    <td className="px-4 py-3 text-right">{renderActions(site, 'table')}</td>
                   </tr>
                 ))
               )}
@@ -303,7 +309,7 @@ export default function SiteList({
                     <span className="text-sm">{renderDeviceCount(site)}</span>
                   </CardField>
                 </div>
-                <CardActions>{renderActions(site)}</CardActions>
+                <CardActions>{renderActions(site, 'card')}</CardActions>
               </DataCard>
             ))
           )

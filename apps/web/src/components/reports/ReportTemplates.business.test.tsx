@@ -77,6 +77,18 @@ describe('ReportTemplates — Business group (#3198 W03)', () => {
     expect(within(general).getByTestId('report-template-card-identity_access_review')).toBeInTheDocument();
   });
 
+  // #9957: the description listed the first three business reports by name and
+  // went stale as AI usage, MRR & renewals, quote win rate and client
+  // profitability joined the section. It describes the section, not its cards.
+  it('the Business section description names no individual report', async () => {
+    mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }));
+    render(<ReportTemplates />);
+
+    const business = await screen.findByTestId('report-template-group-business');
+    expect(within(business).getByText(/for staff only/i)).toBeInTheDocument();
+    expect(business.textContent).not.toMatch(/SLA attainment, technician billability, and accounts receivable/i);
+  });
+
   it('describes each business card\'s real default range instead of "Custom" (#3198 W03)', async () => {
     mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }));
     render(<ReportTemplates />);

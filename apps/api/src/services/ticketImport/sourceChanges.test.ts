@@ -55,6 +55,18 @@ describe('sourceChanges — what a resume reports and does not apply', () => {
     expect(noSourceChanges().commentsChangedInSource).not.toBe(noSourceChanges().commentsChangedInSource);
   });
 
+  // Review finding 8: the SQL strips a trailing skip note from the stored
+  // content; the input side gets the same normalization.
+  it('a source body that itself ends in a skip-note line is not reported as changed', () => {
+    const body = 'Forwarded.\n\n[Attachments not imported: a.zip (over the 10 MB limit)]';
+    // What the SQL hashes for the stored comment: the content without the trailing note.
+    const storedRow = { ...storedComment('a1', 'Forwarded.'), contentHash: sha256('Forwarded.') };
+    expect(sourceChanges(stored(), [storedRow], ticket({ comments: [comment('a1', body)] })).commentsChangedInSource).toEqual([]);
+    // A real edit is still seen.
+    expect(sourceChanges(stored(), [storedRow], ticket({ comments: [comment('a1', 'Forwarded, edited.')] })).commentsChangedInSource)
+      .toEqual([{ sourceId: 'a1', contentChanged: true, visibility: null }]);
+  });
+
   describe('requesterChanged', () => {
     it('compares a display-only email trimmed and case-insensitively, and never the name', () => {
       expect(sourceChanges(stored(), [], ticket({ requester: { name: 'Maya R.', email: 'Maya@Customer.Example' } })).requesterChanged).toBe(false);

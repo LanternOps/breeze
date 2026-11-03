@@ -79,6 +79,10 @@ export type InvoiceServiceErrorCode =
   | 'SOURCE_ALREADY_BILLED'
   /** 409 — #4617: a draft's source time is now held for customer approval; it cannot be invoiced until released. */
   | 'SOURCE_AWAITING_APPROVAL'
+  /** 409 — #8970: a draft's time entry is held for a block of hours (inside a
+   *  hold window, contractHourBlockHolds.ts); the period close bills it, so the
+   *  draft cannot bill it hourly. Carries `details.heldEntryIds`. */
+  | 'SOURCE_HELD_FOR_HOUR_BLOCK'
   // B10 (#3774): a line's source row no longer exists (or belongs to another
   // org) when re-validated under lock at issue time.
   | 'SOURCE_NOT_FOUND'

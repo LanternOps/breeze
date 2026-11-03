@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Pause, Play } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { showToast } from '@/components/shared/Toast';
 import { ActionError, runAction } from '@/lib/runAction';
 import { fetchWithAuth } from '@/stores/auth';
 import type { WispGrantStatus, WispState } from '@/stores/aiStore';
-import { canPause, canResume } from './wispSpend';
+import { canPause, canResume, hoursUntil, systemPauseKind } from './wispSpend';
 
 type Patch = Partial<NonNullable<WispState>>;
 
@@ -32,6 +32,7 @@ function patchFromDto(dto: unknown, fallback: { status: WispGrantStatus; pausedR
 export default function WispGrantPauseControl({ wisp, onChange }: WispGrantPauseControlProps) {
   const { t } = useTranslation('ai');
   const [busy, setBusy] = useState(false);
+  const reasonId = useId();
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
@@ -82,6 +83,23 @@ export default function WispGrantPauseControl({ wisp, onChange }: WispGrantPause
 
   if (wisp.status !== 'active' && wisp.status !== 'paused') return null;
 
+  // #10106: a system pause names its reason beside the disabled Resume.
+  const systemKind = systemPauseKind(wisp.status, wisp.pausedReason);
+  const systemReason = (() => {
+    switch (systemKind) {
+      case null: return null;
+      case 'budget_exhausted': {
+        const hours = typeof wisp.budgetResetsAt === 'string' ? hoursUntil(wisp.budgetResetsAt) : null;
+        return hours === null ? t('wisp.paused.system.budgetExhaustedNoTime') : t('wisp.paused.system.budgetExhausted', { hours });
+      }
+      case 'grantor_access_lost': return t('wisp.paused.system.grantorAccessLost');
+      case 'grantor_suspended': return t('wisp.paused.system.grantorSuspended');
+      case 'factor_expired': return t('wisp.paused.system.factorExpired');
+      case 'entitlement_lost': return t('wisp.paused.system.entitlementLost');
+      case 'unknown': return t('wisp.paused.system.unknown');
+    }
+  })();
+
   const button = 'flex items-center gap-1 rounded border px-2 py-0.5 hover:bg-muted disabled:opacity-50';
   return (
     <div className="flex flex-wrap items-center gap-2" data-testid="wisp-pause-control">
@@ -99,9 +117,20 @@ export default function WispGrantPauseControl({ wisp, onChange }: WispGrantPause
           {wisp.pausedReason === 'user_paused' && (
             <span className="text-amber-600 dark:text-amber-400" data-testid="wisp-paused-by-you">{t('wisp.paused.byYou')}</span>
           )}
+          {systemReason !== null && (
+            <span
+              id={reasonId}
+              className="text-amber-600 dark:text-amber-400"
+              data-testid="wisp-paused-system"
+              data-reason={systemKind ?? undefined}
+            >
+              {systemReason}
+            </span>
+          )}
           <button
             type="button"
             data-testid="wisp-resume"
+            aria-describedby={systemReason !== null ? reasonId : undefined}
             disabled={busy || !canResume(wisp.status, wisp.pausedReason)}
             onClick={() => void mutate('resume')}
             className={button}

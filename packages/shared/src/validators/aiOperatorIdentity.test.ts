@@ -24,9 +24,12 @@ import {
   identityIntakeOutputSchema,
   identityOffboardingInputSchema,
   identityReviewOutputSchema,
+  SELF_INHERITANCE_MESSAGE,
+  selfInheritanceField,
 } from './aiOperatorIdentity';
 
 const CONTACT = '00000000-0000-4000-8000-000000000001';
+const OTHER = '00000000-0000-4000-8000-000000000002';
 const DEVICE = '00000000-0000-4000-8000-0000000000d1';
 
 describe('identityOffboardingInputSchema — who is being offboarded', () => {
@@ -95,6 +98,28 @@ describe('identityOffboardingInputSchema — safe defaults (spec §6.3)', () => 
     })).toThrow();
   });
 
+  // #10076: the person leaving was offered, and accepted, as their own inheritor.
+  it('REFUSES the person leaving as their own inheritor contact, on the inheritor field', () => {
+    const r = identityOffboardingInputSchema.safeParse({ ...base, inheritorContactId: CONTACT });
+    expect(r.success).toBe(false);
+    expect(r.error!.issues.map((i) => i.path.join('.'))).toEqual(['inheritorContactId']);
+    expect(r.error!.issues[0]!.message).toBe(SELF_INHERITANCE_MESSAGE);
+    // The same id in another case is the same contact.
+    expect(identityOffboardingInputSchema.safeParse({ ...base, inheritorContactId: CONTACT.toUpperCase() }).success).toBe(false);
+  });
+
+  it('REFUSES a forward address equal to the e-mail the person was named by', () => {
+    const r = identityOffboardingInputSchema.safeParse({ personHint: 'Dana@Customer.example', forwardTo: 'dana@customer.example' });
+    expect(r.success).toBe(false);
+    expect(r.error!.issues.map((i) => i.path.join('.'))).toEqual(['forwardTo']);
+  });
+
+  it('accepts a different inheritor contact or address', () => {
+    expect(identityOffboardingInputSchema.safeParse({ ...base, inheritorContactId: OTHER }).success).toBe(true);
+    expect(identityOffboardingInputSchema.safeParse({ personHint: 'dana@customer.example', forwardTo: 'sam@customer.example' }).success).toBe(true);
+    expect(identityOffboardingInputSchema.safeParse({ personHint: 'Dana Ruiz', forwardTo: 'dana@customer.example' }).success).toBe(true);
+  });
+
   it('bounds the auto-reply message and refuses an empty one', () => {
     expect(() => identityOffboardingInputSchema.parse({ ...base, autoReplyMessage: '' })).toThrow();
     expect(() => identityOffboardingInputSchema.parse({ ...base, autoReplyMessage: 'x'.repeat(4001) })).toThrow();
@@ -116,6 +141,22 @@ describe('identityOffboardingInputSchema — safe defaults (spec §6.3)', () => 
 
   it('is strict — an unknown key is a 400, not a silently ignored field', () => {
     expect(() => identityOffboardingInputSchema.parse({ ...base, skipConfirmIdentity: true })).toThrow();
+  });
+});
+
+describe('selfInheritanceField — the leaver cannot inherit their own mail (#10076)', () => {
+  const none = { inheritorContactId: null, forwardTo: null };
+  it('names the inheritor contact when it is the resolved person', () => {
+    expect(selfInheritanceField({ ...none, inheritorContactId: CONTACT }, { contactId: CONTACT, email: null })).toBe('inheritorContactId');
+  });
+  it('names the forward address when it is the person\'s own address, ignoring case and spaces', () => {
+    expect(selfInheritanceField({ ...none, forwardTo: ' Dana@Customer.example ' }, { contactId: CONTACT, email: 'dana@customer.example' })).toBe('forwardTo');
+  });
+  it('is null for someone else, for no inheritor, and for a person with no id or address', () => {
+    expect(selfInheritanceField({ ...none, inheritorContactId: OTHER }, { contactId: CONTACT, email: 'dana@customer.example' })).toBeNull();
+    expect(selfInheritanceField({ ...none, forwardTo: 'sam@customer.example' }, { contactId: CONTACT, email: 'dana@customer.example' })).toBeNull();
+    expect(selfInheritanceField(none, { contactId: CONTACT, email: 'dana@customer.example' })).toBeNull();
+    expect(selfInheritanceField({ inheritorContactId: CONTACT, forwardTo: 'dana@customer.example' }, { contactId: null, email: null })).toBeNull();
   });
 });
 

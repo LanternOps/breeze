@@ -35,7 +35,7 @@ export class WispThreadError extends Error {
 /**
  * - `grant`: an active grant to start the session under.
  * - `none`: the server answered that there is none for this caller — no
- *   grant (404 no_active_grant), Wisp off (404), not entitled or no
+ *   grant (code no_active_grant), Wisp off (404), not entitled or no
  *   permission (4xx), or a caller who cannot hold one (not partner scope).
  * - `unknown`: no usable answer (5xx, 408/429, network, malformed body). The
  *   caller must not treat this as "no grant": a session created plain is
@@ -49,6 +49,8 @@ export type WispGrantLookup =
 /** A definitive server "no" for this caller, as opposed to no answer. */
 function isDefinitiveNo(err: unknown): boolean {
   if (!(err instanceof WispThreadError) || err.status === null) return false;
+  // `fetchWispThread`'s "no grant for this scope" (200 `{ data: null }`, #10200).
+  if (err.status === 200 && (err as { code?: unknown }).code === 'no_active_grant') return true;
   return err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429;
 }
 

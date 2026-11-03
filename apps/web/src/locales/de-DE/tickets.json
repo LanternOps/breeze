@@ -566,7 +566,8 @@
       "pending": "Dieses Ticket wurde am {{date}} mit einem anderen Ticket zusammengeführt.",
       "deleted": "Dieses Ticket wurde am {{date}} mit einem Ticket zusammengeführt, das gelöscht wurde oder für Sie nicht sichtbar ist.",
       "open": "{{number}} öffnen",
-      "readOnly": "Zusammengeführte Tickets sind schreibgeschützt. Antworten Sie in dem Ticket, mit dem es zusammengeführt wurde."
+      "readOnly": "Zusammengeführte Tickets sind schreibgeschützt. Antworten Sie in dem Ticket, mit dem es zusammengeführt wurde.",
+      "railReadOnly": "Zeit, Abrechnung und Teile sind bei einem zusammengeführten Ticket schreibgeschützt. Erfassen Sie Zeit und Teile in dem Ticket, mit dem es zusammengeführt wurde."
     },
     "triage": {
       "title": "Empfohlene Triage",

@@ -4,6 +4,7 @@ import { zValidator } from '../../lib/validation';
 import {
   backupDevicesPage,
   backupOverview,
+  backupSaasWorkloads,
 } from '../../services/portal/backupReadModel';
 import {
   applyPortalCacheHeaders,
@@ -43,10 +44,12 @@ function cached(c: Parameters<typeof applyPortalCacheHeaders>[0], payload: unkno
 
 portalBackupRoutes.get('/backups/overview', async (c) => {
   const auth = c.get('portalAuth');
-  return cached(c, await backupOverview(auth.user.orgId, {
-    timezone: auth.timezone,
-    now: new Date(),
-  }));
+  const now = new Date();
+  const [overview, saasWorkloads] = await Promise.all([
+    backupOverview(auth.user.orgId, { timezone: auth.timezone, now }),
+    backupSaasWorkloads(auth.user.orgId, { now }),
+  ]);
+  return cached(c, { ...overview, saasWorkloads });
 });
 
 portalBackupRoutes.get(

@@ -566,7 +566,8 @@
       "pending": "Ce ticket a été fusionné avec un autre ticket le {{date}}.",
       "deleted": "Ce ticket a été fusionné le {{date}} avec un ticket qui a été supprimé ou que vous ne pouvez pas voir.",
       "open": "Ouvrir {{number}}",
-      "readOnly": "Les tickets fusionnés sont en lecture seule. Répondez sur le ticket avec lequel il a été fusionné."
+      "readOnly": "Les tickets fusionnés sont en lecture seule. Répondez sur le ticket avec lequel il a été fusionné.",
+      "railReadOnly": "Le temps, la facturation et les pièces sont en lecture seule sur un ticket fusionné. Saisissez le temps et les pièces sur le ticket avec lequel il a été fusionné."
     },
     "triage": {
       "title": "Triage suggéré",

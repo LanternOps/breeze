@@ -215,7 +215,7 @@ func TestSessionEndedNoticeReplacesToastWhenPromptPath(t *testing.T) {
 					t.Fatalf("legacy envelope %q did not come from sendSessionNotify", id)
 				}
 				got := decodeNotify(t, envelopesOf(probe, ipc.TypeNotify)[0])
-				if want := sessionNoticeRequest("Remote session ended"); !reflect.DeepEqual(got, want) {
+				if want := sessionNoticeRequest("Breeze Agent", "Remote session ended"); !reflect.DeepEqual(got, want) {
 					t.Fatalf("legacy = %+v, want today's %+v", got, want)
 				}
 				assertNone(t, probe, ipc.TypePromptShow, "a disabled notice")
@@ -235,7 +235,7 @@ func TestSessionEndedNoticeReplacesToastWhenPromptPath(t *testing.T) {
 }
 
 func TestSessionEndedLegacyToastMatchesPromptkinds(t *testing.T) {
-	got, want := sessionNoticeRequest("Remote session ended"), promptkinds.LegacyRemoteSessionEnded()
+	got, want := sessionNoticeRequest("Breeze Agent", "Remote session ended"), promptkinds.LegacyRemoteSessionEnded()
 	same := reflect.DeepEqual(got, want)
 	if !same {
 		t.Fatalf("the constructor's Legacy drifted from today's call: %+v vs %+v", want, got)

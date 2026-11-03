@@ -137,6 +137,7 @@ const REFUSAL_STATUS: Record<ParkedAssignRefusalCode, 400 | 403 | 404 | 409 | 50
   DELIVERABLE_TICKET_PINNED: 409,
   ASSIGNMENT_BUSY: 409,
   ASSIGNMENT_FAILED: 500,
+  isolation_unresolved: 409,
 };
 
 type PartnerResolution = { ok: true; partnerId: string } | { ok: false; response: Response };
@@ -285,6 +286,9 @@ preAssignmentRoutes.post(
     }
 
     if (!result.ok) {
+      if (result.code === 'isolation_unresolved') {
+        return c.json({ error: result.code, message: result.message }, 409);
+      }
       if (result.code === 'STEP_UP_REQUIRED') return c.json(STEP_UP_REQUIRED_BODY, 403);
       if (result.code === 'ASSIGNMENT_BUSY') c.header('Retry-After', String(ASSIGNMENT_BUSY_RETRY_AFTER_SECONDS));
       return c.json(

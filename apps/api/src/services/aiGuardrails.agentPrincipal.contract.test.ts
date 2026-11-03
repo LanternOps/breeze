@@ -9,6 +9,7 @@ import {
   checkAgentGuardrails,
   checkGuardrails,
   isNeverAgentTool,
+  resolveApprovalScope,
   TIER1_ACTIONS,
   TIER2_ACTIONS,
   TIER2_READONLY_ACTIONS,
@@ -234,6 +235,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_fleet_health',
   'get_flow', // Tool Catalog W03 (#5218) Tier-1 read
   'get_flow_run', // Tool Catalog W04 (#5219) Tier-1 read
+  'get_huntress_agents', // #10393 Tier-1 read
   'get_huntress_incidents',
   'get_huntress_status',
   // W01 (#6755)
@@ -258,6 +260,8 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_network_asset_reachability',
   // W01 (#6755)
   'get_network_changes',
+  'get_partner_settings_inheritance', // #9763 Tier-1 read: partner settings inheritance counts + org drill-down
+  'get_pax8_status', // W15 (#6785): tier-1 metadata; handler additionally requires partner scope and full access
   'get_peripheral_activity',
   'get_playbook_history',
   'get_process_samples', // Full-control W13 (#6783): tier-1 recorded process snapshot, device-scoped
@@ -392,6 +396,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'search_documentation', // A-W02 Task 5 declared it on the chat server (Tier 1 read)
   'search_logs',
   'search_packages', // Full-control W12 (#6782): tier-1 winget/Homebrew package search, no tenant data
+  'search_pax8_products', // W15 (#6785): product metadata reads, partner scope enforced in handler
   // W01 (#6755)
   'search_script_library',
   'test_ticket_routing_rule', // #8883 W5 Tier-1 read (dry run)
@@ -1007,20 +1012,25 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
     vi.unstubAllEnvs();
   });
 
-  it('is exactly manage_tags add/remove, manage_groups add_devices/remove_devices (both feed run scope), the two W11 audit-baseline writes, the W12 uninstall, the W13 device-function set and the W14 legal-document writes, each with a real reason', () => {
+  it('is exactly manage_tags add/remove, the two W11 audit-baseline writes, the W12 uninstall, the W13 device-function set and the W14 legal-document writes, each with a real reason', () => {
     expect([...AGENT_HUMAN_ONLY_ACTIONS.keys()].sort()).toEqual([
+      // W14 PR B (#6784): accounting writes leave the tenant (and overwrite the provider's records).
+      'manage_accounting_sync:link_mapping', 'manage_accounting_sync:push', 'manage_accounting_sync:push_bulk',
+      'manage_accounting_sync:sync_mapping', 'manage_accounting_sync:unlink_mapping',
       // W11-D8 (#6781, quorum QW5/QW9): users-FK writes a user-owned release would run without the run's ceiling.
       'manage_audit_baselines:create', 'manage_audit_baselines:request_apply',
       // W14 (#6784): agreement templates and signed agreements are the legal documents customers sign.
       'manage_contract_documents:link',
       'manage_contract_templates:archive', 'manage_contract_templates:create', 'manage_contract_templates:create_version',
       'manage_contract_templates:publish', 'manage_contract_templates:update',
+      // W14 PR B (#6784): generating an invoice bills (and may email) the customer.
+      'manage_contracts:generate_invoice',
       // W13 (#6783): function is an allowed execution-targeting filter -> dynamic groups -> run scope.
       'manage_device_function:set',
       // W12 (#6782, quorum QW6): irreversible removal on a customer machine (conservative D4 exception).
       'manage_device_software:uninstall',
-      // W04-D8 (#6758): group membership is the same self-scope path (triggers.deviceGroupIds).
-      'manage_groups:add_devices', 'manage_groups:remove_devices',
+      // W15: billable orders and terminal cancellations require a person.
+      'manage_pax8_orders:submit',
       'manage_tags:add', 'manage_tags:remove',
       // W13 PR B (#6783): tenant-variable values are script inputs.
       'manage_tenant_variables:create', 'manage_tenant_variables:delete', 'manage_tenant_variables:update',
@@ -1063,17 +1073,34 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
     expect(check.disposition).toBe('allow');
   });
 
-  // W04-D8 (#6758): membership is a live read at run admission and before
-  // tool use (runResourceScope.ts), so an allowlisted add puts a device inside
-  // any agent whose triggers.deviceGroupIds names the group.
+  // #10149 (QW9, lifting W04-D8): add_devices/remove_devices are supervised,
+  // so an allowlisted call becomes a proposal a person approves — never an
+  // unattended membership write. Membership still feeds run scope
+  // (triggers.deviceGroupIds, runResourceScope.ts), which is why they are not
+  // act-eligible and why an unallowlisted call still denies.
   const groupPolicy = policyWith({
     mode: 'act', toolAllowlist: ['manage_groups', 'manage_groups:add_devices', 'manage_groups:remove_devices'],
   });
 
-  it.each(['add_devices', 'remove_devices'])('denies an allowlisted manage_groups:%s (group membership feeds run scope)', (action) => {
+  it.each(['add_devices', 'remove_devices'])('an allowlisted manage_groups:%s is a tier-3 proposal, not a deny and not an act', (action) => {
     const check = checkAgentGuardrails('manage_groups', { action, groupId: 'g-1', deviceIds: ['dev-1'] }, groupPolicy);
+    expect(check.disposition).toBe('propose');
+    expect(check.tier).toBe(3);
+    expect(check.allowed).toBe(false);
+    expect(check.reason ?? '').not.toMatch(/human-only/);
+  });
+
+  it.each(['add_devices', 'remove_devices'])('manage_groups:%s resolves to the supervised approval class and is not act-eligible', (action) => {
+    expect(resolveApprovalScope('manage_groups', action, { action, groupId: 'g-1', deviceIds: ['dev-1'] })).toBe('supervised');
+    expect(ACT_MANIFEST.some((op) => op.key.startsWith("manage_groups"))).toBe(false);
+    expect(resolveActOperation('manage_groups', { action, groupId: 'g-1', deviceIds: ['dev-1'] })).toBeNull();
+  });
+
+  it.each(['add_devices', 'remove_devices'])('an unallowlisted manage_groups:%s still denies on the allowlist', (action) => {
+    const check = checkAgentGuardrails('manage_groups', { action, groupId: 'g-1', deviceIds: ['dev-1'] },
+      policyWith({ mode: 'act', toolAllowlist: ['manage_groups:list'] }));
     expect(check.disposition).toBe('deny');
-    expect(check.reason).toMatch(/never available to agents/);
+    expect(check.reason).toMatch(/not in the agent's allowlist/);
   });
 
   it('control: manage_groups:list still reaches an agent', () => {
@@ -1121,6 +1148,28 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
   ] as const)('%s is never offered to an agent (W12 D4 exception)', (tool, input) => {
     const check = checkAgentGuardrails(tool, input, policyWith({ mode: 'act', toolAllowlist: [tool] }));
     expect(check.disposition).toBe('deny');
+  });
+
+  describe('W14 PR B (#6784)', () => {
+    it.each(['generate_invoice'])('denies an allowlisted manage_contracts:%s (money)', (action) => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_contracts', `manage_contracts:${action}`] });
+      const check = checkAgentGuardrails('manage_contracts', { action, contractId: 'c-1' }, policy);
+      expect(check.disposition).toBe('deny');
+      expect(check.reason).toMatch(/never available to agents/);
+    });
+
+    it.each(['link_mapping', 'unlink_mapping', 'sync_mapping', 'push', 'push_bulk'])(
+      'denies an allowlisted manage_accounting_sync:%s (leaves the tenant)', (action) => {
+        const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_accounting_sync', `manage_accounting_sync:${action}`] });
+        expect(checkAgentGuardrails('manage_accounting_sync', { action, provider: 'xero' }, policy).disposition).toBe('deny');
+      },
+    );
+
+    it('control: preview_invoice and the accounting reads reach an agent with no allowlist entry', () => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: [] });
+      expect(checkAgentGuardrails('manage_contracts', { action: 'preview_invoice', contractId: 'c-1' }, policy).disposition).toBe('allow');
+      expect(checkAgentGuardrails('manage_accounting_sync', { action: 'status', provider: 'xero' }, policy).disposition).toBe('allow');
+    });
   });
 
   describe('W14 (#6784)', () => {

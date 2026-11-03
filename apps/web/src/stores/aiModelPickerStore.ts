@@ -6,6 +6,7 @@
 import { create } from 'zustand';
 import type { AiContinuationRequired, AiModelChoice, AiModelChoicesDto, AiPageContext, OfferingOptions } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
+import { pageContextAnchorsOrg } from './aiPageContext';
 
 export const RECOVERABLE_MODEL_CODES: ReadonlySet<string> = new Set([
   'model_unavailable', 'not_permitted', 'permission_required', 'plan_required',
@@ -36,11 +37,11 @@ const INITIAL = { choices: null, loading: false, selection: null, selectionKey: 
 /**
  * The org whose menu a chat with NO session yet should show. A partner-scope
  * token has no org of its own, so the API needs `?orgId=`. Mirrors where
- * createSession lands a new session: the page-context device's org first,
+ * createSession lands a new session: the page-context device/record org first,
  * then the org the user has selected.
  */
 export function noSessionOrgId(pageContext: AiPageContext | null | undefined, selectedOrgId: string | null | undefined): string | null {
-  if (pageContext?.type === 'device' && pageContext.orgId) return pageContext.orgId;
+  if (pageContextAnchorsOrg(pageContext) && pageContext.orgId) return pageContext.orgId;
   return selectedOrgId ?? null;
 }
 

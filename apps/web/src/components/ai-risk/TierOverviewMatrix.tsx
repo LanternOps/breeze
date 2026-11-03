@@ -80,6 +80,7 @@ function TierCard({
     return tier.tools.filter(
       (t) =>
         t.name.toLowerCase().includes(search) ||
+        formatToolName(t.name).toLowerCase().includes(search) ||
         t.description.toLowerCase().includes(search),
     );
   }, [tier.tools, search]);

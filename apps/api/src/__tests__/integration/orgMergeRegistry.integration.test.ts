@@ -321,6 +321,9 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // #10521 W1 (2027-01-12-200000): RAISEs only on a partner_id change or an
+  // org_id NULL↔NOT NULL flip, so the merge's org_id → org_id repoint passes.
+  'device_groups.device_groups_owner_immutable': 'freezes partner_id and owner kind only; an org-owned group may repoint org_id to another non-null org_id',
   // Tool Catalog W04 (#5219, 2027-01-06-130000-flow-runs.sql): freezes a
   // publication's content (flow_id, publication_seq, definition, pins,
   // bindings, created_at, a non-NULL delegator retarget) but deliberately
@@ -367,6 +370,9 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // Topology site location W2 (#7886, 2026-12-25-140000): deletes the device's presence read-model row and
   // marks the affected orgs dirty on a site/org change; writes nothing on devices, never RAISEs.
   'devices.breeze_topology_presence_device_moved': 'deletes the device\'s topology_device_presence row (and, outside a merge, its day rows on an org change) and marks presence dirty; never RAISEs or reverts org_id',
+  // Network isolation W1a (#10089, 2027-01-17-200000): returns at once while the source org is 'merging', so a
+  // merge repoint passes untouched; only a plain device org move deletes resolved history or refuses (55000).
+  'devices.breeze_network_isolation_device_moved': 'no-op while OLD.org_id is merging (the merge repoints the episodes with the device); outside a merge deletes resolved isolation history and refuses an unresolved episode; writes nothing on devices, never reverts org_id',
   // Topology site location W3 (#7887, 2026-12-26-190000): clears NEW.site_assignment_confirmed_at on a site/org
   // change; touches no other column, never RAISEs.
   'devices.breeze_devices_site_assignment_confirmation_reset': 'clears site_assignment_confirmed_at on a site/org change; never RAISEs or reverts org_id',

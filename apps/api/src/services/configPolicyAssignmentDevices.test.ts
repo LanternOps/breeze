@@ -186,6 +186,27 @@ describe('resolveAssignmentDevices — partner / org scoping', () => {
 });
 
 describe('resolveAssignmentDevices — device_group', () => {
+  it('expands a partner-group assignment through the partner-aware owner predicate, clamped', async () => {
+    const chain = mockChain([{ id: 'dev-a' }, { id: 'dev-b' }]);
+    const result = await resolveAssignmentDevices(
+      assignment('device_group', 'partner-group'),
+      { policyOrgId: null, policyPartnerId: 'partner-a', requirePartnerId: 'partner-a' },
+      resolveOpts,
+    );
+    expect(result.deviceIds).toEqual(['dev-a', 'dev-b']);
+    const owner = render(chain.innerJoin.mock.calls[0][1]).sql;
+    expect(owner).toContain('"device_groups"."org_id" = "device_group_memberships"."org_id"');
+    expect(owner).toMatch(/"device_groups"\."org_id" IS NULL AND "device_groups"\."partner_id" =\s*\(SELECT/);
+    expect(owner).toContain('"organizations"."id" = "device_group_memberships"."org_id"');
+    expect(render(chain.innerJoin.mock.calls[1][1]).sql)
+      .toContain('"devices"."org_id" = "device_group_memberships"."org_id"');
+    const clamp = render(chain.where.mock.calls[0][0]);
+    expect(clamp.sql).toContain('"organizations"."partner_id"');
+    expect(clamp.sql).toContain('"devices"."is_ephemeral"');
+    expect(clamp.sql).toContain('"organizations"."type" <>');
+    expect(clamp.params).toEqual(expect.arrayContaining(['partner-group', 'partner-a', false]));
+  });
+
   it('#3182 — join conditions tie deviceGroups/devices org_id to the membership row, not just id', async () => {
     // An empty result simulates the tightened join filtering out a membership
     // row whose group/device sit in a different org than the membership itself.

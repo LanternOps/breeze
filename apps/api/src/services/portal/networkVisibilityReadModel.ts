@@ -1,4 +1,10 @@
-import type { NetworkOverviewDto, NetworkAssetsDto, NetworkAssetRowDto, NetworkSitesDto } from '@breeze/shared';
+import type {
+  NetworkOverviewDto,
+  NetworkAssetsDto,
+  NetworkAssetRowDto,
+  NetworkSitesDto,
+  PhysicalPlacementDto,
+} from '@breeze/shared';
 import { and, asc, desc, eq, gte, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
@@ -12,6 +18,7 @@ import {
 } from '../../db/schema';
 import { MIN_NETWORK_CHECK_FRESHNESS_MS } from '../assetReachability';
 import { loadReachability } from '../assetReachabilityLoader';
+import { placementKey, readPlacements, resolvePlacementAuthorities } from '../assetPlacement';
 
 // `createMonitorSchema` accepts polling intervals up to 86,400 seconds.
 // The SQL query uses twice that maximum as its absolute lookback so it never
@@ -279,6 +286,56 @@ export async function loadNetworkAssetAlertEnrichment(
   return result;
 }
 
+/**
+ * Physical placement for a page of assets (CPEV-W1). Authority and placement
+ * come from the shared assetPlacement batch helpers, so a linked discovered
+ * asset shows its managed device's placement and that device's live site.
+ * Only the five allowlisted fields leave this function; assets with no
+ * placement have no entry.
+ */
+export async function loadPhysicalPlacements(
+  orgId: string,
+  assets: ReadonlyArray<{ id: string; siteId: string }>,
+): Promise<Map<string, PhysicalPlacementDto>> {
+  const result = new Map<string, PhysicalPlacementDto>();
+  if (assets.length === 0) return result;
+
+  const authorities = await resolvePlacementAuthorities(
+    assets.map((a) => ({ kind: 'discovered' as const, id: a.id, orgId, siteId: a.siteId })),
+  );
+  const placements = await readPlacements(
+    [...authorities.values()].map(({ authority }) => ({ kind: authority.kind, id: authority.id })),
+    orgId,
+  );
+
+  const siteIds = new Set<string>();
+  for (const { authority } of authorities.values()) {
+    if (placements.has(placementKey(authority.kind, authority.id))) siteIds.add(authority.siteId);
+  }
+  if (siteIds.size === 0) return result;
+  const siteRows = await db
+    .select({ id: sites.id, name: sites.name })
+    .from(sites)
+    .where(and(eq(sites.orgId, orgId), inArray(sites.id, [...siteIds])));
+  const siteNameById = new Map(siteRows.map((s) => [s.id, s.name]));
+
+  for (const asset of assets) {
+    const resolved = authorities.get(placementKey('discovered', asset.id));
+    if (!resolved) continue;
+    const placement = placements.get(placementKey(resolved.authority.kind, resolved.authority.id));
+    const siteName = siteNameById.get(resolved.authority.siteId);
+    if (!placement || !siteName) continue;
+    result.set(asset.id, {
+      siteName,
+      room: placement.room,
+      rack: placement.rack,
+      rackUnit: placement.rackUnit,
+      heightU: placement.heightU,
+    });
+  }
+  return result;
+}
+
 // Returned for every asset when enrichWithAlerts is on, whether or not that
 // asset has any active alerts -- so absence of the three enrichment fields
 // on a row means "flag off", never "flag on, zero alerts" (#5861 PR 3 review).
@@ -310,6 +367,7 @@ export async function networkAssets(
   filter: NetworkAssetsFilter = {},
   now: Date = new Date(),
   enrichWithAlerts = false,
+  includePhysicalPlacement = false,
 ): Promise<NetworkAssetsDto> {
   const page = Math.max(1, filter.page ?? 1);
   const limit = Math.min(500, Math.max(1, filter.limit ?? 50));
@@ -365,6 +423,7 @@ export async function networkAssets(
         manufacturer: discoveredAssets.manufacturer,
         model: discoveredAssets.model,
         siteName: sites.name,
+        siteId: discoveredAssets.siteId,
       })
       .from(discoveredAssets)
       .innerJoin(sites, eq(discoveredAssets.siteId, sites.id))
@@ -378,13 +437,17 @@ export async function networkAssets(
       ? await loadNetworkAssetAlertEnrichment(orgId, rows.map((r) => r.id))
       : undefined;
 
+    const placementByAsset = includePhysicalPlacement
+      ? await loadPhysicalPlacements(orgId, rows)
+      : undefined;
+
     return {
       dataStatus: 'ok',
-      data: rows.map((row) => toAssetRow(
+      data: rows.map((row) => withPhysicalPlacement(toAssetRow(
         row,
         reachabilityByAsset.get(row.id),
         enrichWithAlerts ? (alertEnrichmentByAsset?.get(row.id) ?? ZERO_ALERT_ENRICHMENT) : undefined,
-      )),
+      ), placementByAsset?.get(row.id))),
       pagination: { page, limit, total },
     };
   }
@@ -405,6 +468,7 @@ export async function networkAssets(
       manufacturer: discoveredAssets.manufacturer,
       model: discoveredAssets.model,
       siteName: sites.name,
+      siteId: discoveredAssets.siteId,
     })
     .from(discoveredAssets)
     .innerJoin(sites, eq(discoveredAssets.siteId, sites.id))
@@ -432,11 +496,26 @@ export async function networkAssets(
     }
   }
 
+  if (includePhysicalPlacement) {
+    const siteIdByAsset = new Map(rows.map((r) => [r.id, r.siteId]));
+    const placementByAsset = await loadPhysicalPlacements(
+      orgId,
+      pageData.map((row) => ({ id: row.id, siteId: siteIdByAsset.get(row.id) as string })),
+    );
+    for (const row of pageData) withPhysicalPlacement(row, placementByAsset.get(row.id));
+  }
+
   return {
     dataStatus: 'ok',
     data: pageData,
     pagination: { page, limit, total },
   };
+}
+
+/** Adds the placement block only when one exists; never a null or placeholder. */
+function withPhysicalPlacement(row: NetworkAssetRowDto, placement: PhysicalPlacementDto | undefined): NetworkAssetRowDto {
+  if (placement) row.physicalPlacement = placement;
+  return row;
 }
 
 interface AssetQueryRow {

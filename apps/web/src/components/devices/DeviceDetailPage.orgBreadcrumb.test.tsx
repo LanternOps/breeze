@@ -28,16 +28,13 @@ vi.mock('../../services/deviceActions', () => ({
 }));
 vi.mock('./DeviceDetails', () => ({
   default: ({
-    onBack,
     workingOrgId,
     onSwitchToDeviceOrg,
   }: {
-    onBack: () => void;
     workingOrgId?: string | null;
     onSwitchToDeviceOrg?: () => void;
   }) => (
     <>
-      <button onClick={onBack}>back</button>
       <span data-testid="working-org-prop">{String(workingOrgId)}</span>
       {onSwitchToDeviceOrg && <button onClick={onSwitchToDeviceOrg}>switch-scope</button>}
     </>
@@ -138,7 +135,9 @@ describe('Devices crumb (ui-flow A4)', () => {
       'href',
       '/organizations/org-42#devices',
     );
-    fireEvent.click(screen.getByText('back'));
+    // The crumb is the Back control: with no same-origin history to pop it
+    // navigates to the same org-aware route.
+    fireEvent.click(screen.getByRole('link', { name: 'Devices' }));
     expect(navigateTo).toHaveBeenCalledWith('/organizations/org-42#devices');
   });
 

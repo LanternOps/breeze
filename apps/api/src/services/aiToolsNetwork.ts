@@ -281,7 +281,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       const placementDenied = linked && deviceSiteDenied(auth, authority.siteId, authority.id);
       return JSON.stringify({
         asset: { ...row, model: maskOidShapedModel(row.model), nicVendor: nicVendorFromMac(row.macAddress) },
-        placement: placementDenied ? null : await readPlacement(authority.kind, authority.id),
+        placement: placementDenied ? null : await readPlacement(authority.kind, authority.id, authority.orgId),
         placementAuthority: { kind: authority.kind, id: authority.id, linked },
       });
     },

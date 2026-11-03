@@ -8,12 +8,17 @@ const dbMock = vi.hoisted(() => ({
   executed: [] as unknown[],
   events: [] as Array<'execute' | 'query'>,
   queryError: undefined as Error | undefined,
+  wheres: [] as unknown[],
 }));
 vi.mock('../db', () => {
   // A chainable, awaitable stub for the drizzle query builder. Every builder
   // step returns the same object; awaiting it resolves to an empty row set.
   const chain: Record<string, unknown> = {};
-  for (const m of ['from', 'where', 'limit', 'leftJoin', 'orderBy']) chain[m] = () => chain;
+  for (const m of ['from', 'limit', 'leftJoin', 'orderBy']) chain[m] = () => chain;
+  chain.where = (clause: unknown) => {
+    dbMock.wheres.push(clause);
+    return chain;
+  };
   (chain as { then: unknown }).then = (
     resolve: (rows: unknown[]) => unknown,
     reject: (error: Error) => unknown,
@@ -51,6 +56,7 @@ import {
   getAgentReportedFieldsUsed,
   isExecutionRefusedFilterField,
   getExecutionRefusedFieldsUsed,
+  extractFieldsFromFilter,
 } from './filterEngine';
 
 describe('filterEngine input hardening (#1044)', () => {
@@ -83,6 +89,80 @@ describe('filterEngine input hardening (#1044)', () => {
 
 const dialect = new PgDialect();
 const render = (cond: FilterCondition): string => dialect.sqlToQuery(buildConditionSQL(cond)).sql;
+
+describe('software version and vendor predicates (#10539)', () => {
+  it.each([['below', '<'], ['atLeast', '>='], ['equals', '=']] as const)(
+    'compiles software.version %s as a parameterized numeric-array EXISTS', (operator, comparison) => {
+      const value = { name: "Example's App", version: '10.0.5 (x64)' };
+      const query = dialect.sqlToQuery(buildConditionSQL({ field: 'software.version', operator, value }));
+      expect(query.sql).toMatch(/EXISTS \(SELECT 1 FROM "software_inventory"/i);
+      expect(query.sql).toContain('"software_inventory"."device_id" = "devices"."id"');
+      expect(query.sql).toMatch(/lower\("software_inventory"\."name"\) = lower\(\$\d+\)/i);
+      expect(query.sql).toContain(`::numeric[] ${comparison} `);
+      expect(query.sql).toContain('substring(');
+      expect(query.params).toEqual([value.name, value.version]);
+      expect(query.sql).not.toContain(value.name);
+      expect(query.sql).not.toContain(value.version);
+      expect(validateFilter({ field: 'software.version', operator, value }).valid).toBe(true);
+    },
+  );
+
+  it.each(['contains', 'equals'] as const)('compiles software.vendor %s without inlining input', (operator) => {
+    const value = "Vendor's 100%_\\";
+    const query = dialect.sqlToQuery(buildConditionSQL({ field: 'software.vendor', operator, value }));
+    expect(query.sql).toMatch(/EXISTS \(SELECT 1 FROM "software_inventory"/i);
+    expect(query.sql).toContain('"software_inventory"."device_id" = "devices"."id"');
+    expect(query.sql).not.toContain(value);
+    if (operator === 'contains') {
+      expect(query.sql).toContain('"software_inventory"."vendor" ILIKE $1');
+      expect(query.params).toEqual(['%' + escapeLikePattern(value) + '%']);
+    } else {
+      expect(query.sql).toMatch(/lower\("software_inventory"\."vendor"\) = lower\(\$1\)/i);
+      expect(query.params).toEqual([value]);
+    }
+    expect(validateFilter({ field: 'software.vendor', operator, value }).valid).toBe(true);
+  });
+
+  it.each([
+    { field: 'hostname', operator: 'below', value: '1' },
+    { field: 'hostname', operator: 'atLeast', value: '1' },
+    { field: 'software.version', operator: 'contains', value: { name: 'App', version: '1' } },
+    { field: 'software.version', operator: 'below', value: { name: 'App' } },
+    { field: 'software.version', operator: 'equals', value: { version: '1' } },
+    { field: 'software.version', operator: 'atLeast', value: { name: ' ', version: '1' } },
+    { field: 'software.version', operator: 'below', value: { name: 'App', version: '' } },
+    { field: 'software.version', operator: 'below', value: { name: 'App', version: 'latest' } },
+    { field: 'software.version', operator: 'atLeast', value: { name: 'App', version: 'beta-2' } },
+    { field: 'software.vendor', operator: 'equals', value: { name: 'App', version: '1' } },
+  ])('rejects invalid software rule %j', (condition) => {
+    expect(validateFilter(condition as FilterCondition).valid).toBe(false);
+  });
+
+  // Saved rows can bypass validateFilter (route body is z.any(), legacy/imported
+  // rows): the compiler must refuse, never fall back to match-nothing/match-all.
+  it.each([
+    { field: 'software.version', operator: 'below', value: 'Chrome' },
+    { field: 'software.version', operator: 'contains', value: { name: 'A', version: '1' } },
+    { field: 'software.vendor', operator: 'equals', value: { name: 'A', version: '1' } },
+    { field: 'software.vendor', operator: 'below', value: 'x' },
+    // No numeric prefix: would compile to `version < NULL` and match nothing silently.
+    { field: 'software.version', operator: 'below', value: { name: 'A', version: 'latest' } },
+  ])('buildConditionSQL refuses malformed software rule %j', (condition) => {
+    expect(() => buildConditionSQL(condition as FilterCondition)).toThrow(FilterValueError);
+  });
+
+  it('extracts new keys for filter_fields_used, including nested conditions, and refuses execution targeting', () => {
+    expect(extractFieldsFromFilter({ operator: 'AND', conditions: [
+      { field: 'software.version', operator: 'below', value: { name: 'App', version: '2' } },
+      { operator: 'OR', conditions: [
+        { field: 'software.vendor', operator: 'equals', value: 'Vendor' },
+        { field: 'software.version', operator: 'equals', value: { name: 'App', version: '1' } },
+      ] },
+    ] })).toEqual(['software.version', 'software.vendor']);
+    expect(isExecutionRefusedFilterField('software.version')).toBe(true);
+    expect(isExecutionRefusedFilterField('software.vendor')).toBe(true);
+  });
+});
 
 describe('filterEngine deviceFunction field (Fleet Designer W02, #5652)', () => {
   it('validates deviceFunction as a core enum field over the shared SSOT keys', () => {
@@ -352,6 +432,49 @@ describe('filterEngine hardware.health', () => {
     const notInSql = renderWithParams({ field: 'hardware.health', operator: 'notIn', value: ['warning', 'critical'] }).sql;
     expect(notInSql).toMatch(/device_hardware_health/i);
     expect(notInSql).toMatch(/not in \(/i);
+  });
+});
+
+// #9863: warranty status lives in device_warranty (1:1 per device subject).
+// A device with no warranty row is 'unknown', the same word the Warranty card
+// and the list column use for "no coverage data".
+describe('filterEngine warranty.status', () => {
+  const renderWithParams = (cond: FilterCondition) => {
+    const q = dialect.sqlToQuery(buildConditionSQL(cond));
+    return { sql: q.sql, params: q.params };
+  };
+
+  it('registers an enum over the stored warranty statuses', () => {
+    const def = getFieldDefinition('warranty.status');
+    expect(def?.type).toBe('enum');
+    expect(def?.enumValues).toEqual(['active', 'expiring', 'expired', 'unknown', 'subscription_active']);
+    expect(def?.operators).toEqual(expect.arrayContaining(['equals', 'notEquals', 'in', 'notIn']));
+  });
+
+  it('reads the status from device_warranty correlated on the device subject', () => {
+    const { sql, params } = renderWithParams({ field: 'warranty.status', operator: 'equals', value: 'expired' });
+    expect(sql).toMatch(/from "device_warranty"/i);
+    expect(sql).toMatch(/"device_warranty"\."device_id" = "devices"\."id"/i);
+    // Compared as text so a bogus value cannot 500 with 22P02 on the pg enum.
+    expect(sql).toMatch(/"device_warranty"\."status"::text/i);
+    // No warranty row reads as 'unknown'.
+    expect(sql).toMatch(/coalesce\(/i);
+    expect(params).toEqual(expect.arrayContaining(['unknown', 'expired']));
+  });
+
+  it('supports in / notIn', () => {
+    const inSql = renderWithParams({ field: 'warranty.status', operator: 'in', value: ['expiring', 'expired'] }).sql;
+    expect(inSql).toMatch(/device_warranty/i);
+    expect(inSql).toMatch(/\) in \(/i);
+    const notInSql = renderWithParams({ field: 'warranty.status', operator: 'notIn', value: ['active'] }).sql;
+    expect(notInSql).toMatch(/not in \(/i);
+  });
+
+  // A case slip in `notEquals` must not compile to match-everything (#8773).
+  it('refuses an unknown warranty status in validateFilter and at build time', () => {
+    const result = validateFilter({ operator: 'AND', conditions: [{ field: 'warranty.status', operator: 'notEquals', value: 'Expired' }] });
+    expect(result.valid).toBe(false);
+    expect(() => buildConditionSQL({ field: 'warranty.status', operator: 'notEquals', value: 'Expired' })).toThrow(FilterValueError);
   });
 });
 
@@ -916,5 +1039,49 @@ describe('filterEngine logShippingFailing (#8611)', () => {
     expect(isAgentReportedFilterField('logShippingFailing')).toBe(true);
     expect(isExecutionRefusedFilterField('logShippingFailing')).toBe(true);
     expect(getExecutionRefusedFieldsUsed(['osType', 'logShippingFailing'])).toEqual(['logShippingFailing']);
+  });
+});
+
+/**
+ * #9933 — dynamic-group preview and membership must leave out removed
+ * (decommissioned) devices, exactly as /devices does. The exclusion is opt-in:
+ * the generic filter preview also drives the device list's "show removed" view
+ * and deployment targeting, whose populations are not this issue's to change.
+ */
+describe('filterEngine excludeDecommissioned option (#9933)', () => {
+  const dialect = new PgDialect();
+  const renderedWheres = () => dbMock.wheres.map((q) => dialect.sqlToQuery(q as never));
+  const filter: FilterConditionGroup = {
+    operator: 'AND',
+    conditions: [{ field: 'osType', operator: 'equals', value: 'windows' }],
+  };
+  const excludesDecommissioned = (q: { sql: string; params: unknown[] }) =>
+    /"devices"\."status" <> \$\d+/.test(q.sql) && q.params.includes('decommissioned');
+
+  beforeEach(() => {
+    dbMock.wheres.length = 0;
+    dbMock.queryError = undefined;
+  });
+
+  it.each([
+    ['evaluateFilter', () => evaluateFilter(filter, { orgId: 'org-1', excludeDecommissioned: true })],
+    ['evaluateFilterWithPreview', () => evaluateFilterWithPreview(filter, { orgId: 'org-1', previewLimit: 5, excludeDecommissioned: true })],
+    ['deviceMatchesFilter', () => deviceMatchesFilter('device-1', filter, { excludeDecommissioned: true })],
+  ] as const)('%s excludes decommissioned devices from every query when asked', async (_name, run) => {
+    await run();
+    const wheres = renderedWheres();
+    expect(wheres.length).toBeGreaterThan(0);
+    for (const where of wheres) expect(excludesDecommissioned(where)).toBe(true);
+  });
+
+  it.each([
+    ['evaluateFilter', () => evaluateFilter(filter, { orgId: 'org-1' })],
+    ['evaluateFilterWithPreview', () => evaluateFilterWithPreview(filter, { orgId: 'org-1', previewLimit: 5 })],
+    ['deviceMatchesFilter', () => deviceMatchesFilter('device-1', filter)],
+  ] as const)('%s keeps decommissioned devices by default', async (_name, run) => {
+    await run();
+    const wheres = renderedWheres();
+    expect(wheres.length).toBeGreaterThan(0);
+    for (const where of wheres) expect(excludesDecommissioned(where)).toBe(false);
   });
 });

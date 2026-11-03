@@ -8,7 +8,7 @@ it('locks open alerts before moving references, preserving context without chang
   const events: string[] = [];
   const original = { id: 'alert', ruleId: 'legacy', configPolicyId: null, monitorId: null, context: { retained: true } };
   const set = vi.fn(() => ({ where: async () => { events.push('update'); } }));
-  const where = vi.fn((_predicate: unknown) => ({ for: async (lock: string) => { events.push(`lock:${lock}`); return [original]; } }));
+  const where = vi.fn((_predicate: unknown) => ({ for: async (lock: string) => { events.push(`lock:${lock}`); return [{ ...original, deviceId: 'device-1' }]; } }));
   const tx = { select: () => ({ from: () => ({ where }) }), update: () => ({ set }) };
   const refs = await carryOpenAlerts(tx as never, { sourceTable: 'alert_templates', sourceId: 'template', ruleId: 'legacy', compiledRuleId: 'compiled', monitorId: 'monitor' });
   expect(events).toEqual(['lock:update', 'update']);
@@ -19,7 +19,7 @@ it('locks open alerts before moving references, preserving context without chang
 });
 
 it.each([{ context: ['legacy'] }, { context: 'legacy' }, { context: 7 }])('refuses non-object historical context before any mutation: $context', async ({ context }) => {
-  const update = vi.fn();
+  const update = vi.fn(() => ({ set: () => ({ where: async () => [] }) }));
   const tx = { select: () => ({ from: () => ({ where: () => ({ for: async () => [{ id: 'alert', context }] }) }) }), update };
   await expect(carryOpenAlerts(tx as never, { sourceTable: 'config_policy_alert_rules', sourceId: 'source', compiledRuleId: 'compiled', monitorId: 'monitor' })).rejects.toThrow('context');
   expect(update).not.toHaveBeenCalled();
@@ -65,4 +65,13 @@ it('retains a compiled template used by an unmanaged deployment, including inact
   expect(sql).toContain('"managed_by_monitor_id" is null');
   expect(sql).not.toContain('"retired_at"');
   expect(sql).not.toContain('"is_active"');
+});
+
+it('refuses device-less rule history before mutating any alert', async () => {
+  const update = vi.fn(() => ({ set: () => ({ where: async () => [] }) }));
+  const tx = { select: () => ({ from: () => ({ where: () => ({ for: async () => [
+    { id: 'device', deviceId: 'd1', context: null }, { id: 'workload', deviceId: null, context: null },
+  ] }) }) }), update };
+  await expect(carryOpenAlerts(tx as never, { sourceTable: 'alert_templates', sourceId: 'source', compiledRuleId: 'compiled', monitorId: 'monitor' })).rejects.toThrow('alert_has_no_device');
+  expect(update).not.toHaveBeenCalled();
 });

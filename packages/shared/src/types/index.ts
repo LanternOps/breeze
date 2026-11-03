@@ -349,7 +349,8 @@ export interface DeviceMetrics {
 
 export interface DeviceGroup {
   id: string;
-  orgId: string;
+  orgId: string | null;
+  partnerId: string | null;
   siteId: string | null;
   name: string;
   type: DeviceGroupType;
@@ -564,10 +565,21 @@ export interface AlertRule {
   updatedAt: Date;
 }
 
-export interface Alert {
+export type AlertOwnerKind = 'device' | 'topology_site' | 'backup_workload';
+
+export interface AlertSubject {
+  ownerKind: AlertOwnerKind;
+  owner: { kind: AlertOwnerKind; ref: string | null } | null;
+  ownerLabel: string;
+  subjectName: string;
+}
+
+export interface Alert extends AlertSubject {
   id: string;
-  ruleId: string;
-  deviceId: string;
+  ruleId: string | null;
+  deviceId: string | null;
+  ownerRef: string | null;
+  topologySiteId?: string | null;
   orgId: string;
   status: AlertStatus;
   severity: AlertSeverity;

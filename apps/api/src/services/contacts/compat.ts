@@ -4,7 +4,7 @@ import { contacts } from '../../db/schema/contacts';
 import { contactRoles } from '../../db/schema/contactRoles';
 import { organizations, sites } from '../../db/schema/orgs';
 import { recordDestinationChangeWithExecutor } from '../callerVerification/destinations';
-import { reconcileLegacyContactResponsibilities } from './responsibilities';
+import { syncLegacyContactRoles } from './responsibilities';
 
 /**
  * Dual-write bridge between the `contacts` table and the legacy
@@ -166,7 +166,7 @@ async function applyToSiteContactRow(
     isPrimary: true,
     createdBy: actorId ?? null,
   }).returning({ id: contacts.id, siteId: contacts.siteId, roles: contacts.roles });
-  await reconcileLegacyContactResponsibilities(exec, {
+  await syncLegacyContactRoles(exec, {
     contactId: created!.id, orgId, siteId: created!.siteId, roles: created!.roles,
   });
   await recordDestinationChangeWithExecutor(exec, {
@@ -357,7 +357,7 @@ async function applyToBillingContact(
         .where(and(eq(contacts.id, existing.id), eq(contacts.orgId, orgId)))
         .returning({ id: contacts.id, siteId: contacts.siteId, roles: contacts.roles });
       if (updated) {
-        await reconcileLegacyContactResponsibilities(exec, {
+        await syncLegacyContactRoles(exec, {
           contactId: updated.id, orgId, siteId: updated.siteId, roles: updated.roles,
         });
       }
@@ -392,7 +392,7 @@ async function applyToBillingContact(
     isPrimary: !primary,
     createdBy: actorId ?? null,
   }).returning({ id: contacts.id, siteId: contacts.siteId, roles: contacts.roles });
-  await reconcileLegacyContactResponsibilities(exec, {
+  await syncLegacyContactRoles(exec, {
     contactId: created!.id, orgId, siteId: created!.siteId, roles: created!.roles,
   });
   await recordDestinationChangeWithExecutor(exec, {

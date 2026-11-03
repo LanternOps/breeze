@@ -16,7 +16,7 @@
     "declineAll": "Denegar todo ({{count}})",
     "groupTitle": "{{count}} solicitudes similares · {{tool}}",
     "moreHostnames": "+{{count}} más",
-    "denyConfirmSummary": "Esto rechaza {{count}} solicitudes de {{org}}."
+    "denyConfirmSummary": "Esto deniega {{count}} solicitudes de {{org}}."
   },
   "filters": {
     "orgLabel": "Organización",
@@ -42,6 +42,7 @@
   },
   "denyPrompt": "¿Por qué rechazas esta solicitud? El motivo es opcional.",
   "denyReasonPlaceholder": "Opcional: se comparte con quien lo solicitó",
+  "denyReasonShownToUserHint": "El usuario final ve esto en su notificación (primeros 500 caracteres).",
   "confirmDeny": "Confirmar rechazo",
   "cancel": "Cancelar",
   "deny": "Rechazar",
@@ -107,7 +108,7 @@
       "cancelled": "Cancelada",
       "completed": "Completada",
       "denied": "Denegada",
-      "refused": "Aprobación rechazada",
+      "refused": "Aprobada, luego bloqueada",
       "approved": "Aprobada",
       "reported": "Reportada",
       "unknown": "Desconocido"

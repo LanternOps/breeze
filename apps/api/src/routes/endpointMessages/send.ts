@@ -1,3 +1,4 @@
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../../services/deviceGroupOwnership';
 import { createHash, randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { ENDPOINT_MESSAGE_LIMITS, endpointMessageSendSchema, type EndpointMessageSendInput } from '@breeze/shared';
@@ -393,6 +394,9 @@ export async function executeEndpointMessageSend(
   ctx: EndpointMessageSendContext,
   input: EndpointMessageSendInput,
 ): Promise<EndpointMessageSendOutcome> {
+  const partnerGroupIds = await findPartnerOwnedGroupIds(input.targets.deviceGroupIds ?? []);
+  if (partnerGroupIds.length > 0) return { status: 400, body: partnerGroupTargetRefusal(partnerGroupIds) };
+
   const actorId = ctx.auth.user.id;
 
   // Idempotency first: a replay must consume no budget and touch no device.

@@ -10,6 +10,6 @@ export * from './approvalMethod';
 export * from './reviewQueue';
 export * from './intentLink';
 // #7918: get_script_proposal echoes a proposal's runs, read in the caller's own
-// context and narrowed to its devices.
-export { selectProposalExecutions } from './queries';
+// context and narrowed to its devices; #10399: and its latest model review.
+export { selectProposalExecutions, selectLatestModelReview } from './queries';
 export { resolveEffectiveScriptPolicy, mergeScriptPolicies, SCRIPT_POLICY_DEFAULTS, type EffectiveScriptPolicy } from './policy';

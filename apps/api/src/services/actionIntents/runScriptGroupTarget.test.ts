@@ -131,6 +131,15 @@ describe('normalizeRunScriptGroupTarget', () => {
     expect(result.args.deviceIds).toHaveLength(RUN_SCRIPT_AI_MAX_DEVICES);
   });
 
+  it('reports the partner-group refusal as its own outcome and preserves its message', async () => {
+    const error = `Partner-wide device groups can only be targeted by partner configuration policies (${GROUP})`;
+    mocks.resolveScriptRunTargets.mockResolvedValueOnce({
+      ok: false, status: 400, code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', error, groupIds: [GROUP],
+    });
+    await expect(normalizeRunScriptGroupTarget(makeAuth(), { scriptId: SCRIPT, groupId: GROUP }, ORG_A))
+      .rejects.toMatchObject({ name: 'RunScriptGroupTargetError', code: 'group_target_partner_unsupported', message: error });
+  });
+
   it('refuses an empty group with the resolver message', async () => {
     mocks.resolveScriptRunTargets.mockResolvedValueOnce({
       ok: false, status: 400, code: 'NO_TARGETS', error: 'The requested device group(s) have no members; nothing was run', count: 0,

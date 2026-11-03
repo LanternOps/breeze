@@ -139,7 +139,7 @@ var allCommandTypes = []string{
 	tools.CmdSupportEnd,
 
 	// handlers_incident_response.go init()
-	tools.CmdCollectEvidence, tools.CmdExecuteContainment,
+	tools.CmdCollectEvidence, tools.CmdExecuteContainment, tools.CmdReleaseContainment,
 
 	// handlers_tunnel.go init()
 	tools.CmdTunnelOpen, tools.CmdTunnelData, tools.CmdTunnelClose,
@@ -149,6 +149,9 @@ var allCommandTypes = []string{
 	tools.CmdActuateElevation,
 	tools.CmdPamApplyV2, tools.CmdPamCleanupV2,
 	tools.CmdPamReconcileV2,
+
+	// handlers_pam_notify.go init() — #8928 outcome notices
+	tools.CmdPamRequestNotify,
 
 	// handlers_encryption.go init()
 	tools.CmdEncryptionCollectKeys, tools.CmdEncryptionRotateKey,

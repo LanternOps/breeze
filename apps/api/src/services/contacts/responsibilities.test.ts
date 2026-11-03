@@ -6,7 +6,7 @@ import { sites } from '../../db/schema/orgs';
 import { deviceGroupMemberships, deviceGroups } from '../../db/schema/devices';
 import type { ContactExecutor } from './compat';
 import {
-  reconcileLegacyContactResponsibilities,
+  syncLegacyContactRoles,
   replaceContactResponsibilities,
   resolveContactResponsibility,
 } from './responsibilities';
@@ -100,53 +100,132 @@ function assignment(input: Partial<{
   };
 }
 
-describe('reconcileLegacyContactResponsibilities', () => {
-  it('replaces the whole legacy-derived set at Organization scope and deduplicates roles', async () => {
-    const f = makeExec();
-    await reconcileLegacyContactResponsibilities(f.exec, {
-      contactId: CONTACT,
-      orgId: ORG,
-      siteId: null,
-      roles: ['admin', 'billing', 'admin'],
-    });
+describe('syncLegacyContactRoles', () => {
+  const sync = (f: ReturnType<typeof makeExec>, siteId: string | null, roles: string[], previousSiteId?: string | null) =>
+    syncLegacyContactRoles(f.exec, { contactId: CONTACT, orgId: ORG, siteId, previousSiteId, roles });
 
-    expect(f.deletes).toHaveLength(1);
-    expect(f.deletes[0]!.table).toBe(contactRoles);
-    const deletion = compile(f.deletes[0]!.where);
-    expect(deletion.sql).toContain('"contact_roles"."contact_id"');
-    expect(deletion.params).toEqual([CONTACT, ORG]);
+  it('create: adds each distinct role at Organization scope for an unpinned contact', async () => {
+    const f = makeExec([[]]);
+    await sync(f, null, ['admin', 'billing', 'admin']);
 
+    expect(f.deletes).toHaveLength(0);
     expect(f.inserts).toHaveLength(1);
     expect(f.inserts[0]!.values).toEqual([
-      { contactId: CONTACT, orgId: ORG, role: 'admin', isPrimary: false, siteId: null, deviceGroupId: null },
       { contactId: CONTACT, orgId: ORG, role: 'billing', isPrimary: false, siteId: null, deviceGroupId: null },
+      { contactId: CONTACT, orgId: ORG, role: 'admin', isPrimary: false, siteId: null, deviceGroupId: null },
     ]);
-    expect(f.inserts[0]!.onConflict).toBe(false);
     expect(f.updates.at(-1)!.table).toBe(contacts);
     expect(f.updates.at(-1)!.values.roles).toEqual(['billing', 'admin']);
   });
 
-  it('re-pin derives every legacy responsibility to the exact resulting Site scope', async () => {
-    const f = makeExec();
-    await reconcileLegacyContactResponsibilities(f.exec, {
-      contactId: CONTACT,
-      orgId: ORG,
-      siteId: SITE,
-      roles: ['admin', 'technical'],
-    });
-
-    expect(f.deletes).toHaveLength(1);
-    expect(f.inserts[0]!.values).toEqual([
-      { contactId: CONTACT, orgId: ORG, role: 'admin', isPrimary: false, siteId: SITE, deviceGroupId: null },
-      { contactId: CONTACT, orgId: ORG, role: 'technical', isPrimary: false, siteId: SITE, deviceGroupId: null },
-    ]);
+  it('create with a site pin derives Site scope, never Organization', async () => {
+    const f = makeExec([[]]);
+    await sync(f, SITE, ['admin', 'technical']);
+    expect(f.inserts[0]!.values.every((v) => v.siteId === SITE && v.deviceGroupId === null)).toBe(true);
+    expect(f.inserts[0]!.values.map((v) => v.role).sort()).toEqual(['admin', 'technical']);
   });
 
-  it('removes all assignments when the legacy projection has no roles', async () => {
-    const f = makeExec();
-    await reconcileLegacyContactResponsibilities(f.exec, {
-      contactId: CONTACT, orgId: ORG, siteId: null, roles: [],
-    });
+  it('adds only the missing role and preserves assignments at other scopes', async () => {
+    const f = makeExec([[{ role: 'technical' }]]);
+    await sync(f, null, ['technical', 'billing']);
+
+    expect(f.deletes).toHaveLength(0);
+    expect(f.inserts[0]!.values).toEqual([
+      { contactId: CONTACT, orgId: ORG, role: 'billing', isPrimary: false, siteId: null, deviceGroupId: null },
+    ]);
+    expect(f.updates.at(-1)!.values.roles).toEqual(['billing', 'technical']);
+  });
+
+  it('removes every assignment of a dropped role, at any scope, and nothing else', async () => {
+    const f = makeExec([[{ role: 'technical' }, { role: 'technical' }, { role: 'admin' }]]);
+    await sync(f, null, ['admin']);
+
+    expect(f.inserts).toHaveLength(0);
+    expect(f.deletes).toHaveLength(1);
+    expect(f.deletes[0]!.table).toBe(contactRoles);
+    expect(compile(f.deletes[0]!.where).params).toEqual([CONTACT, ORG, 'technical']);
+    expect(f.updates.at(-1)!.values.roles).toEqual(['admin']);
+  });
+
+  it('is a no-op on contact_roles when roles are unchanged and already scoped to the pinned Site', async () => {
+    const f = makeExec([[{ role: 'admin', siteId: SITE, deviceGroupId: null, isPrimary: false }]]);
+    await sync(f, SITE, ['admin']);
+    expect(f.deletes).toHaveLength(0);
+    expect(f.inserts).toHaveLength(0);
+    expect(f.updates.at(-1)!.values.roles).toEqual(['admin']);
+  });
+
+  it('re-pin: moves an Organization-scoped role to the pinned Site and keeps its primacy', async () => {
+    const f = makeExec([[{ role: 'admin', siteId: null, deviceGroupId: null, isPrimary: true }]]);
+    await sync(f, SITE, ['admin']);
+    expect(f.deletes).toHaveLength(1);
+    expect(f.inserts[0]!.values).toEqual([
+      { contactId: CONTACT, orgId: ORG, role: 'admin', isPrimary: true, siteId: SITE, deviceGroupId: null },
+    ]);
+    expect(f.updates.at(-1)!.values.roles).toEqual(['admin']);
+  });
+
+  it('re-pin: moves a role from another Site, leaves Device Group rows alone and does not duplicate a row already at the pinned Site', async () => {
+    const OTHER = '88888888-8888-4888-8888-888888888888';
+    const f = makeExec([[
+      { role: 'admin', siteId: OTHER, deviceGroupId: null, isPrimary: false },
+      { role: 'technical', siteId: SITE, deviceGroupId: null, isPrimary: false },
+      { role: 'technical', siteId: null, deviceGroupId: GROUP, isPrimary: false },
+      { role: 'technical', siteId: null, deviceGroupId: null, isPrimary: false },
+    ]]);
+    await sync(f, SITE, ['admin', 'technical']);
+    expect(f.inserts[0]!.values.map((v) => [v.role, v.siteId])).toEqual([['admin', SITE]]);
+    const where = compile(f.deletes.at(-1)!.where);
+    expect(where.sql).toMatch(/"device_group_id" is null/);
+    expect(where.params).toEqual(expect.arrayContaining([SITE]));
+  });
+
+  it('un-pin: moves roles at the previous Site back to Organization and keeps their primacy', async () => {
+    const f = makeExec([[{ role: 'billing', siteId: SITE, deviceGroupId: null, isPrimary: true }]]);
+    await sync(f, null, ['billing'], SITE);
+    expect(f.deletes).toHaveLength(1);
+    const where = compile(f.deletes[0]!.where);
+    expect(where.sql).toMatch(/"device_group_id" is null/);
+    expect(where.params).toEqual(expect.arrayContaining([CONTACT, ORG, 'billing', SITE]));
+    expect(f.inserts[0]!.values).toEqual([
+      { contactId: CONTACT, orgId: ORG, role: 'billing', isPrimary: true, siteId: null, deviceGroupId: null },
+    ]);
+    expect(f.updates.at(-1)!.values.roles).toEqual(['billing']);
+  });
+
+  it('un-pin: leaves other Sites and Device Group rows alone and deduplicates a role already at Organization', async () => {
+    const OTHER = '88888888-8888-4888-8888-888888888888';
+    const f = makeExec([[
+      { role: 'admin', siteId: OTHER, deviceGroupId: null, isPrimary: false },
+      { role: 'technical', siteId: null, deviceGroupId: GROUP, isPrimary: false },
+      { role: 'technical', siteId: SITE, deviceGroupId: null, isPrimary: false },
+      { role: 'billing', siteId: SITE, deviceGroupId: null, isPrimary: false },
+      { role: 'billing', siteId: null, deviceGroupId: null, isPrimary: false },
+    ]]);
+    await sync(f, null, ['admin', 'technical', 'billing'], SITE);
+    expect(f.inserts[0]!.values.map((v) => [v.role, v.siteId])).toEqual([['technical', null]]);
+    const where = compile(f.deletes.at(-1)!.where);
+    expect(where.params).toEqual(expect.arrayContaining([SITE]));
+    expect(where.params).not.toContain(OTHER);
+    expect(where.params).not.toContain('admin');
+  });
+
+  it('un-pin without a previous Site does not touch Site-scoped assignments', async () => {
+    const f = makeExec([[{ role: 'admin', siteId: SITE, deviceGroupId: null, isPrimary: false }]]);
+    await sync(f, null, ['admin']);
+    expect(f.deletes).toHaveLength(0);
+    expect(f.inserts).toHaveLength(0);
+  });
+
+  it('passes an out-of-vocabulary role through so the role CHECK refuses it, instead of dropping it', async () => {
+    const f = makeExec([[]]);
+    await sync(f, null, ['admin', 'not-a-role']);
+    expect(f.inserts[0]!.values.map((v) => v.role)).toEqual(['admin', 'not-a-role']);
+  });
+
+  it('clearing all roles deletes all assignments and projects an empty list', async () => {
+    const f = makeExec([[{ role: 'admin' }]]);
+    await sync(f, null, []);
     expect(f.deletes).toHaveLength(1);
     expect(f.inserts).toHaveLength(0);
     expect(f.updates.at(-1)!.values.roles).toEqual([]);
@@ -191,13 +270,15 @@ describe('replaceContactResponsibilities', () => {
     expect(f.deletes).toHaveLength(0);
   });
 
-  it('rejects a Device Group that is not in the contact organization', async () => {
+  it('characterization: rejects a Device Group outside the contact organization with 400 before writes', async () => {
     const f = makeExec([[{ id: CONTACT }], []]);
     await expect(replaceContactResponsibilities(f.exec, {
       contactId: CONTACT, orgId: ORG, responsibilities: [
         { role: 'technical', scope: { type: 'device_group', deviceGroupId: GROUP } },
       ],
-    })).rejects.toMatchObject({ code: 'device-group-not-in-org' });
+    })).rejects.toMatchObject({ code: 'device-group-not-in-org', status: 400 });
+    expect(f.inserts).toHaveLength(0);
+    expect(f.updates).toHaveLength(0);
     expect(f.deletes).toHaveLength(0);
   });
 

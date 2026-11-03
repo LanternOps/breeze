@@ -72,38 +72,51 @@ type winConsentInstanceOps struct{}
 // platform-neutral consentProcessMatches decide whether it is still the
 // recorded prompt.
 func (winConsentInstanceOps) InstanceLive(inst ConsentInstance) (bool, error) {
-	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, inst.PID)
+	facts, err := readConsentProcessFacts(inst.PID)
+	if errors.Is(err, errConsentProcessGone) {
+		return false, nil // no process with this PID any more
+	}
+	if err != nil {
+		return false, err
+	}
+	return consentProcessMatches(inst, facts)
+}
+
+// readConsentProcessFacts reads what consentProcessMatches and
+// consentProcessExited decide on, for the process now holding pid.
+func readConsentProcessFacts(pid uint32) (consentProcessFacts, error) {
+	var facts consentProcessFacts
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if err != nil {
 		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
-			return false, nil // no process with this PID any more
+			return facts, errConsentProcessGone
 		}
-		return false, fmt.Errorf("OpenProcess(%d): %w", inst.PID, err)
+		return facts, fmt.Errorf("OpenProcess(%d): %w", pid, err)
 	}
 	defer func() { _ = windows.CloseHandle(process) }()
 
-	var facts consentProcessFacts
 	var creation, exit, kernel, user windows.Filetime
 	if err := windows.GetProcessTimes(process, &creation, &exit, &kernel, &user); err != nil {
-		return false, fmt.Errorf("GetProcessTimes(%d): %w", inst.PID, err)
+		return facts, fmt.Errorf("GetProcessTimes(%d): %w", pid, err)
 	}
 	// Same conversion etwlua uses when it records the instance.
 	facts.CreatedAt = time.Unix(0, creation.Nanoseconds())
 	if err := windows.GetExitCodeProcess(process, &facts.ExitCode); err != nil {
-		return false, fmt.Errorf("GetExitCodeProcess(%d): %w", inst.PID, err)
+		return facts, fmt.Errorf("GetExitCodeProcess(%d): %w", pid, err)
 	}
 	buf := make([]uint16, windows.MAX_LONG_PATH)
 	size := uint32(len(buf))
 	if err := windows.QueryFullProcessImageName(process, 0, &buf[0], &size); err != nil {
-		return false, fmt.Errorf("QueryFullProcessImageName(%d): %w", inst.PID, err)
+		return facts, fmt.Errorf("QueryFullProcessImageName(%d): %w", pid, err)
 	}
 	facts.ImagePath = windows.UTF16ToString(buf[:size])
-	if err := windows.ProcessIdToSessionId(inst.PID, &facts.Session); err != nil {
-		return false, fmt.Errorf("ProcessIdToSessionId(%d): %w", inst.PID, err)
+	if err := windows.ProcessIdToSessionId(pid, &facts.Session); err != nil {
+		return facts, fmt.Errorf("ProcessIdToSessionId(%d): %w", pid, err)
 	}
 	if err := windows.ProcessIdToSessionId(windows.GetCurrentProcessId(), &facts.HelperSession); err != nil {
-		return false, fmt.Errorf("ProcessIdToSessionId(self): %w", err)
+		return facts, fmt.Errorf("ProcessIdToSessionId(self): %w", err)
 	}
-	return consentProcessMatches(inst, facts)
+	return facts, nil
 }
 
 func (winConsentInstanceOps) FindInstanceWindow(pid uint32) uintptr {

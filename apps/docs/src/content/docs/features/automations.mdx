@@ -17,13 +17,39 @@ An automation normally belongs to a single organization, but a partner-scoped us
   Building an `event` automation on `alert.triggered` specifically to respond to a condition you also watch with an Alert Rule? Consider a [Monitor](/features/monitors/) instead -- it bundles the condition, severity, and response actions into one object, deployed through Configuration Policies instead of hand-wiring a rule to a separate automation. Automations you already have under **Jobs** aren't affected -- they keep running exactly as before, as plain event-, schedule-, webhook-, or manually-triggered automations; only a monitor's own generated automation shows up read-only (see [What's read-only, and why](/features/monitors/#whats-read-only-and-why)).
 </Aside>
 
+## Moving Jobs to Flows
+
+Jobs are moving to [Flows](/features/flows/). While Flows are on (the default), **New job** opens Flows and new Jobs can't be created; your existing Jobs keep running, unchanged, until you move them. On a deployment that sets `FLOWS_ENABLED=false`, Jobs work as before and nothing on this section applies.
+
+The **Move to Flows** column on the **Jobs** page shows how each Job would move:
+
+- **Exact** — the flow does the same work.
+- **Needs review** — it moves, but something behaves differently (for example, a command becomes a library script, or the flow is not limited to the Job creator's sites). The panel says what.
+- **Can't move yet** — something has no flow equivalent yet (for example, `deploy_software`, service restarts, elevated scripts, or a Job used for compliance remediation). The badge names it, and the Job keeps running as a Job.
+
+<Steps>
+
+1. **Start a shadow.** Open a Job's **Move to Flows** panel (the page address ends in `#convert-<jobId>`) and click **Start shadow**, or use **Start shadow for all convertible** in the banner for the whole organization. This creates the flow as a draft. Nothing runs twice: the Job keeps running, and on each run Breeze checks whether the flow would have done the same thing.
+
+2. **Watch the shadow.** The panel shows runs checked and differences. Switch is offered after at least 3 runs and 7 days with no differences. Otherwise you can still switch by acknowledging the evidence, but never before the shadow is 10 minutes old. Editing the Job resets the shadow.
+
+3. **Switch.** The dialog asks you to accept, one by one, what the flow gains: pre-approval of each script step with a device cap (off by default — without it each run waits for approval), a wider device scope if the Job was limited to its creator's sites, and that the flow runs as you and pauses if your account is turned off or loses access. Scripts created from `execute_command` actions are shown with their body. A minute after you switch, the flow runs every occurrence and the Job is turned off and becomes read-only, with a link to its flow. Each occurrence runs exactly once, on the Job or on the flow.
+
+4. **Move back if you need to.** **Move back to the job** turns the Job on again and stops the flow starting anything new; flow runs already started finish.
+
+</Steps>
+
+<Aside>
+  A webhook Job keeps its URL after the switch: deliveries are forwarded to the flow with the same secret. The flow accepts JSON-object bodies only, and a sender that sends the plain secret header must switch to `X-Breeze-Webhook-Token`. Event-triggered Jobs move only when the deployment runs `EVENT_DISPATCH_MODE=enforce` with `flow-event-trigger` in `EVENT_DISPATCH_QUEUE_SUBSCRIBERS`.
+</Aside>
+
 ---
 
 ## Creating an Automation
 
 <Steps>
 
-1. **Open the Jobs page.** Navigate to **Jobs** in the sidebar. Click **New Automation** in the top-right corner.
+1. **Open the Jobs page.** Navigate to **Jobs** in the sidebar. Click **New Automation** in the top-right corner. (With Flows on, this opens Flows instead; see [Moving Jobs to Flows](#moving-jobs-to-flows).)
 
 2. **Enter a name and description.** Give the automation a descriptive name (e.g., "Daily maintenance check") and an optional description explaining its purpose.
 

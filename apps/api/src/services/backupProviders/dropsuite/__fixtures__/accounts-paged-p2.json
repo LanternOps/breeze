@@ -1,0 +1,9 @@
+{
+  "result_set": [],
+  "pagination": {
+    "current_page": 2,
+    "per_page": 100,
+    "total_entries": 4,
+    "total_pages": 1
+  }
+}

@@ -36,7 +36,7 @@ vi.mock('./TicketPartsCard', () => ({ default: () => null }));
 vi.mock('./TicketChecklistCard', () => ({ default: () => null }));
 // authScope is stubbed above without useJwtClaims, which the header's
 // Link-to-Wisp button reads; the button has its own suite.
-vi.mock('@/components/wisp/WispLinkButton', () => ({ default: () => null }));
+vi.mock('@/components/wisp/WispTalkButton', () => ({ default: () => null }));
 vi.mock('@/lib/useCallerVerificationEnabled', () => ({ useCallerVerificationEnabled: () => true }));
 vi.mock('../callerVerification/TicketVerificationBadge', () => ({ TicketVerificationBadge: () => null }));
 vi.mock('../callerVerification/VerifyCallerModal', () => ({

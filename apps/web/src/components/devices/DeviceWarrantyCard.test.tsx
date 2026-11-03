@@ -263,6 +263,128 @@ describe('DeviceWarrantyCard — refresh feedback (#1723)', () => {
   });
 });
 
+describe('DeviceWarrantyCard — imported data and source labels (#9862)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    ['import', 'Source: Imported'],
+    ['agent_cmsl', 'Source: Agent (HP CMSL)'],
+    ['agent_plist', 'Source: Agent (macOS plist)'],
+    ['provider', 'Source: Vendor API'],
+  ])('labels data source %s', async (dataSource, label) => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(warrantyPayload({ dataSource })));
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+    expect(await screen.findByText(label)).toBeInTheDocument();
+  });
+
+  const VENDOR_BASE = {
+    provider: 'dell',
+    serviceLevelDescription: 'Basic Hardware Service',
+    entitlementType: 'INITIAL',
+    startDate: '2023-03-31',
+    endDate: '2026-03-31',
+  };
+
+  it('says when the vendor reports an earlier end than the kept import', async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(warrantyPayload({
+      dataSource: 'import', status: 'active', warrantyEndDate: '2028-06-30', entitlements: [VENDOR_BASE],
+    })));
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+    expect(await screen.findByText('Source: Imported (vendor reports earlier end date)')).toBeInTheDocument();
+  });
+
+  it('keeps the plain Imported label when the vendor entitlements do not end earlier', async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(warrantyPayload({
+      dataSource: 'import',
+      status: 'active',
+      warrantyEndDate: '2028-06-30',
+      entitlements: [{ ...VENDOR_BASE, endDate: '2028-06-30' }],
+    })));
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+    expect(await screen.findByText('Source: Imported')).toBeInTheDocument();
+  });
+
+  it('compact view does not pair the vendor service level with the imported end date', async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(warrantyPayload({
+      dataSource: 'import', status: 'active', warrantyEndDate: '2028-06-30', entitlements: [VENDOR_BASE],
+    })));
+    render(<DeviceWarrantyCard deviceId={deviceId} compact />);
+    expect(await screen.findByText('DELL')).toBeInTheDocument();
+    expect(screen.queryByText(/Basic Hardware Service/)).not.toBeInTheDocument();
+  });
+
+  it('prints a prototype-member token as stored instead of crashing the card', async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(warrantyPayload({ dataSource: 'constructor' })));
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+    expect(await screen.findByText('Source: constructor')).toBeInTheDocument();
+  });
+
+  it('falls back to the stored token for a source it does not know', async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(warrantyPayload({ dataSource: 'some_new_source' })));
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+    expect(await screen.findByText('Source: some_new_source')).toBeInTheDocument();
+  });
+
+  it('says the imported data was kept when no vendor lookup exists, as a warning, without polling', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/warranty/refresh') && init?.method === 'POST') {
+        return jsonResponse(
+          { error: 'server copy', code: 'WARRANTY_REFRESH_NOT_AVAILABLE', reason: 'no_vendor_lookup' },
+          false,
+          409,
+        );
+      }
+      return jsonResponse(warrantyPayload({ dataSource: 'import', status: 'active', warrantyEndDate: '2099-05-01' }));
+    });
+
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+    fireEvent.click(await screen.findByRole('button', { name: /refresh/i }));
+
+    await waitFor(() => {
+      expect(showToastMock).toHaveBeenCalledWith({
+        type: 'warning',
+        message: 'No vendor warranty lookup is available for this manufacturer. The existing warranty data was kept.',
+      });
+    });
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^refresh$/i })).toBeInTheDocument();
+    });
+    // One GET on mount, the POST, and no poll GETs afterwards — waited past the
+    // 2s poll interval so a scheduled poll would have fired by now.
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
+  }, 10000);
+
+  it('explains an agent-collected refusal as a warning too', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/warranty/refresh') && init?.method === 'POST') {
+        return jsonResponse(
+          { error: 'server copy', code: 'WARRANTY_REFRESH_NOT_AVAILABLE', reason: 'agent_collected' },
+          false,
+          409,
+        );
+      }
+      return jsonResponse(warrantyPayload({ dataSource: 'agent_cmsl' }));
+    });
+
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+    fireEvent.click(await screen.findByRole('button', { name: /refresh/i }));
+
+    await waitFor(() => {
+      expect(showToastMock).toHaveBeenCalledWith({
+        type: 'warning',
+        message: "This device's warranty is collected by the Breeze agent, so a vendor refresh can't add anything newer.",
+      });
+    });
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+});
+
 describe('DeviceWarrantyCard — compact empty state (#9029)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -287,5 +409,35 @@ describe('DeviceWarrantyCard — compact empty state (#9029)', () => {
         expect.objectContaining({ method: 'POST' }),
       ),
     );
+  });
+});
+
+describe('DeviceWarrantyCard — date-only warranty dates', () => {
+  const originalTz = process.env.TZ;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // A bare YYYY-MM-DD parsed as UTC renders the previous day west of UTC;
+    // pin a western zone so the assertion cannot pass by accident of the host TZ.
+    process.env.TZ = 'America/Denver';
+  });
+
+  afterEach(() => {
+    if (originalTz === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTz;
+  });
+
+  it('shows warrantyEndDate 2027-12-08 as Dec 8, not Dec 7, west of UTC (matches the device list)', async () => {
+    fetchWithAuthMock.mockImplementation(async () =>
+      jsonResponse(warrantyPayload({ status: 'active', warrantyStartDate: '2024-12-08', warrantyEndDate: '2027-12-08' })),
+    );
+
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+
+    // Expected is built from local calendar parts, independent of the code under test.
+    const fmt = (y: number, m: number, d: number) =>
+      new Date(y, m - 1, d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    expect((await screen.findAllByText(new RegExp(fmt(2027, 12, 8)))).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(fmt(2024, 12, 8)).length).toBeGreaterThan(0);
   });
 });

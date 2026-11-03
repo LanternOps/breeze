@@ -48,7 +48,7 @@ async function tenant() {
 function event(orgId: string, over: Partial<BreezeEvent> = {}): BreezeEvent {
   return {
     id: randomUUID(), type: 'alert.triggered', orgId, source: 'test', priority: 'normal',
-    payload: { severity: 'critical' }, metadata: { timestamp: new Date().toISOString() },
+    payload: { deviceId: randomUUID(), severity: 'critical' }, metadata: { timestamp: new Date().toISOString() },
     ...over,
   } as BreezeEvent;
 }
@@ -151,7 +151,7 @@ describe('flow triggers (real Postgres)', () => {
     await handleFlowEventTrigger(inA);
     await handleFlowEventTrigger(inA); // redelivery
     await handleFlowEventTrigger(event(other.orgA)); // another partner's org
-    await handleFlowEventTrigger(event(t.orgA, { payload: { severity: 'low' } })); // filter miss
+    await handleFlowEventTrigger(event(t.orgA, { payload: { deviceId: randomUUID(), severity: 'low' } })); // filter miss
 
     const rows = await runsOf(flowId);
     expect(rows).toHaveLength(1);

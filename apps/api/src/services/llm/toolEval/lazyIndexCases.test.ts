@@ -3,7 +3,7 @@ import '../../aiTools';
 import { aiTools } from '../../aiToolNames';
 import { listChatSurfaceToolNames } from '../../aiAgentSdkTools';
 import { getToolAlwaysLoad, getToolDomain } from '../../aiTools';
-import { PAGE_CONTEXT_TOOL_DOMAINS } from '../../aiToolIndex';
+import { pageContextToolDomains } from '../../aiToolIndex';
 import { LAZY_INDEX_CASES, LAZY_INDEX_PAGES, buildLazyIndexCasePrompt } from './lazyIndexCases';
 
 describe('LAZY_INDEX_CASES (W19)', () => {
@@ -27,7 +27,7 @@ describe('LAZY_INDEX_CASES (W19)', () => {
 
   it('labels each case by what the prompt gives the model', () => {
     for (const c of LAZY_INDEX_CASES) {
-      const pageDomains: readonly string[] = PAGE_CONTEXT_TOOL_DOMAINS[LAZY_INDEX_PAGES[c.page].type];
+      const pageDomains: readonly string[] = pageContextToolDomains(LAZY_INDEX_PAGES[c.page]);
       const domains = c.expect.map((e) => getToolDomain(e.tool));
       if (c.kind === 'page-expanded') expect(domains.some((d) => pageDomains.includes(d!)), c.id).toBe(true);
       if (c.kind === 'unexpanded-domain') expect(domains.every((d) => !pageDomains.includes(d!)), c.id).toBe(true);

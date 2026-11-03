@@ -1,3 +1,4 @@
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../services/deviceGroupOwnership';
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { and, desc, eq, gte, inArray, lte, ne, sql, type SQL } from 'drizzle-orm';
@@ -715,7 +716,8 @@ peripheralControlRoutes.post(
       return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
     }
     const payload = c.req.valid('json');
-
+    const partnerGroupIds = await findPartnerOwnedGroupIds(payload.targetIds?.groupIds ?? []);
+    if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
     const policyId = payload.id;
     const now = new Date();
 

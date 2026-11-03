@@ -51,6 +51,20 @@ export class ConcernNotFoundError extends Error {
   }
 }
 
+/**
+ * A signature-keyed insert found its SUBJECT held by a different live concern
+ * (one without its signature). The two are not the same concern, so the
+ * holder's id is never handed back as if it were (#10386: the readiness note
+ * overwrote a model-raised HIGH org concern that way). The caller decides.
+ */
+export class ConcernSubjectHeldError extends Error {
+  readonly code = 'concern_subject_held' as const;
+  constructor(public readonly signature: string, public readonly heldByConcernId: string) {
+    super(`Wisp concern subject is held by live concern ${heldByConcernId}, which does not carry signature ${signature}`);
+    this.name = 'ConcernSubjectHeldError';
+  }
+}
+
 const LIVE = sql`status IN ('open','snoozed')`;
 const LIVE_WITH_SIGNATURE = sql`status IN ('open','snoozed') AND signature IS NOT NULL`;
 const LIST_LIMIT = 200;
@@ -123,9 +137,14 @@ async function findLiveBySubject(partnerId: string, orgId: string | null, subjec
 }
 
 /**
- * Insert a concern unless a live one already holds the subject (or the
- * signature). The existing live row is returned with `created: false` and is
- * NOT touched — in particular a snooze survives a re-raise (Review Focus 5).
+ * Insert a concern unless a live one already holds it. The existing live row
+ * is returned with `created: false` and is NOT touched — in particular a
+ * snooze survives a re-raise (Review Focus 5).
+ *
+ * "Already holds it" is keyed by the insert's identity: the subject for an
+ * unsigned concern, the signature for a signed one. A signed insert whose
+ * subject is held by a live concern with another (or no) signature throws
+ * `ConcernSubjectHeldError` instead (#10386).
  */
 const LIVE_INDEXES = new Set(['wisp_concerns_live_subject_uq', 'wisp_concerns_live_signature_uq']);
 
@@ -170,11 +189,19 @@ export async function upsertConcern(input: UpsertConcernInput): Promise<{ id: st
         return { id: inserted[0].id, created: true };
       }
 
-      const existing = (signature !== null ? await findLiveBySignature(input.partnerId, signature) : null)
-        ?? await findLiveBySubject(input.partnerId, input.orgId, input.subject);
+      const existing = signature !== null
+        ? await findLiveBySignature(input.partnerId, signature)
+        : await findLiveBySubject(input.partnerId, input.orgId, input.subject);
       if (existing) {
         incWispConcern('updated');
         return { id: existing, created: false };
+      }
+      if (signature !== null) {
+        // Not ours by signature: a subject-index violation means another
+        // concern holds the subject. Nothing live there either = it was
+        // resolved between the violation and this read; retry the insert.
+        const holder = await findLiveBySubject(input.partnerId, input.orgId, input.subject);
+        if (holder) throw new ConcernSubjectHeldError(signature, holder);
       }
     }
     throw new Error('upsertConcern: the live concern vanished twice between conflict and read');
@@ -534,4 +561,29 @@ export async function getConcernForCeiling(ceiling: GrantCeiling, id: string): P
   if (!visible) return null;
   const [concern] = await selectWithRecipient(ceiling, and(visible, eq(wispConcerns.id, id))!, 1);
   return concern ?? null;
+}
+
+/**
+ * #10392: true only when the concern is visible to this ceiling, still live,
+ * and was raised by THIS grant (a chat raise_concern or this grant's own
+ * assessment). The chat gate uses it to let a snooze of Wisp's own loose ends
+ * run without an approval card; a concern raised by a person, another grant,
+ * or nobody (grant deleted → NULL) keeps the card, because parking it changes
+ * state other people see. (Resolve always keeps its card: it writes shared
+ * concern_outcome memory — wisp/selfStateTools.ts.)
+ */
+export async function isLiveConcernRaisedByGrant(ceiling: GrantCeiling, id: string): Promise<boolean> {
+  const visible = visibilityWhere(ceiling);
+  if (!visible) return false;
+  const [row] = await inSystemContext(() => db
+    .select({ id: wispConcerns.id })
+    .from(wispConcerns)
+    .where(and(
+      visible,
+      eq(wispConcerns.id, id),
+      eq(wispConcerns.raisedByGrantId, ceiling.grantId),
+      inArray(wispConcerns.status, [...LIVE_CONCERN_STATUSES]),
+    ))
+    .limit(1));
+  return row !== undefined;
 }

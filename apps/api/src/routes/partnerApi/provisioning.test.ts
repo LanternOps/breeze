@@ -293,11 +293,19 @@ describe('POST /organizations', () => {
     expect(res.status).toBe(201);
     const body = await res.json() as any;
     expect(body.schemaVersion).toBe('1');
-    expect(body.data).toMatchObject({ id: ORG_ID, orgId: ORG_ID, name: 'Acme', slug: 'acme', type: 'customer' });
+    expect(body.data).toMatchObject({ id: ORG_ID, orgId: ORG_ID, name: 'Acme', slug: 'acme', type: 'customer', externalLinks: [] });
     expect(body.data.revision).toMatch(/^[a-f0-9]{64}$/);
     expect(mocks.systemContextOpens).toBe(1);
     expect(ensureDefaultProfile).toHaveBeenCalledWith(PARTNER_ID, 'CAD', expect.anything());
     expect(insertedValues[0]).toMatchObject({ partnerId: PARTNER_ID, currencyCode: 'CAD', name: 'Acme', slug: 'acme' });
+  });
+
+  it('refuses a reserved brand name (#10325)', async () => {
+    primeSuccess();
+    const res = await post('/organizations', 'organizations:write', { name: 'Microsoft Support', slug: 'ms' });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/reserved/i);
+    expect(mocks.insert).not.toHaveBeenCalled();
   });
 
   it('ignores a body-supplied partnerId — the principal partner wins', async () => {

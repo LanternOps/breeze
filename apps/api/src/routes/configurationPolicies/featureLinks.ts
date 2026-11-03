@@ -11,6 +11,8 @@ import {
   clientSuppliedWarrantyHpCmslConsent,
   duplicateComplianceItemNameMessage,
   duplicateComplianceItemNames,
+  overlongComplianceItemNameMessage,
+  overlongComplianceItemNames,
   hardwareMonitoringInlineSettingsSchema,
   maintenanceInlineSettingsSchema,
   monitorsInlineSettingsSchema,
@@ -19,6 +21,7 @@ import {
   timeSyncInlineSettingsSchema,
   workloadInventoryInlineSettingsSchema,
   systemProtectionInlineSettingsSchema,
+  containmentInlineSettingsSchema,
   warrantyHpCmslRequested,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
@@ -70,7 +73,8 @@ import { withoutFeatureLinkAuthority } from '../../services/securityScanQuaranti
 import type { SensitiveDataAuthorityValues } from '../../services/sensitiveDataPolicyAuthority';
 
 /**
- * 400 body when two compliance rule sets in the link share a name, else null.
+ * 400 body when two compliance rule sets in the link share a name, or a name
+ * is longer than 200 characters, else null.
  * A rule set is identified by (feature link, name) across saves: the
  * evaluator's persisted state, the due check and the compliance alert all key
  * on it, so two with one name would share a state row and an alert. The rest
@@ -78,18 +82,29 @@ import type { SensitiveDataAuthorityValues } from '../../services/sensitiveDataP
  * predates complianceInlineSettingsSchema); the service refuses duplicates
  * again for callers that bypass this route.
  */
-function duplicateComplianceNamesRefusal(settings: unknown) {
+function complianceNamesRefusal(settings: unknown) {
   const items = settings && typeof settings === 'object' ? (settings as { items?: unknown }).items : undefined;
   if (!Array.isArray(items)) return null;
-  const names = duplicateComplianceItemNames(
-    items.filter((item): item is { name?: unknown } => !!item && typeof item === 'object'),
-  );
-  if (names.length === 0) return null;
-  return {
-    error: duplicateComplianceItemNameMessage(names[0]!),
-    code: 'DUPLICATE_COMPLIANCE_RULE_SET_NAME' as const,
-    names,
-  };
+  const objects = items.filter((item): item is { name?: unknown } => !!item && typeof item === 'object');
+  const names = duplicateComplianceItemNames(objects);
+  if (names.length > 0) {
+    return {
+      error: duplicateComplianceItemNameMessage(names[0]!),
+      code: 'DUPLICATE_COMPLIANCE_RULE_SET_NAME' as const,
+      names,
+    };
+  }
+  // The name is copied into 200-character state, alert and automation-run
+  // columns; rows saved before this cap keep loading.
+  const overlong = overlongComplianceItemNames(objects);
+  if (overlong.length > 0) {
+    return {
+      error: overlongComplianceItemNameMessage(overlong[0]!),
+      code: 'COMPLIANCE_RULE_SET_NAME_TOO_LONG' as const,
+      names: overlong,
+    };
+  }
+  return null;
 }
 
 // The `config_policy_monitors_compat` deferred constraint trigger
@@ -261,6 +276,10 @@ featureLinkRoutes.post(
       });
       if (!check.ok) return c.json(check.refusal.body, check.refusal.status);
       data.inlineSettings = check.inlineSettings;
+    }
+
+    if (data.featureType === 'containment' && data.featurePolicyId) {
+      return c.json({ error: 'containment is inline-only; featurePolicyId must not be set' }, 400);
     }
 
     // Validate the referenced feature policy exists (only when a policy ID is provided)
@@ -451,6 +470,14 @@ featureLinkRoutes.post(
       data.inlineSettings = parsed.data;
     }
 
+    if (data.featureType === 'containment') {
+      const parsed = containmentInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(zodValidationErrorBody('Invalid containment settings', parsed.error), 400);
+      }
+      data.inlineSettings = parsed.data;
+    }
+
     if (data.featureType === 'system_protection' && data.inlineSettings) {
       const parsed = systemProtectionInlineSettingsSchema.safeParse(data.inlineSettings);
       if (!parsed.success) {
@@ -463,7 +490,7 @@ featureLinkRoutes.post(
     }
 
     if (data.featureType === 'compliance') {
-      const refusal = duplicateComplianceNamesRefusal(data.inlineSettings);
+      const refusal = complianceNamesRefusal(data.inlineSettings);
       if (refusal) return c.json(refusal, 400);
     }
 
@@ -621,6 +648,19 @@ featureLinkRoutes.patch(
       });
       if (!check.ok) return c.json(check.refusal.body, check.refusal.status);
       if (data.inlineSettings !== undefined) data.inlineSettings = check.inlineSettings;
+    }
+
+    if (existingLink.featureType === 'containment') {
+      if (data.featurePolicyId) {
+        return c.json({ error: 'containment is inline-only; featurePolicyId must not be set' }, 400);
+      }
+      if (data.inlineSettings !== undefined) {
+        const parsed = containmentInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(zodValidationErrorBody('Invalid containment settings', parsed.error), 400);
+        }
+        data.inlineSettings = parsed.data;
+      }
     }
 
     if (data.featurePolicyId !== undefined && data.featurePolicyId !== null) {
@@ -797,7 +837,7 @@ featureLinkRoutes.patch(
         data.inlineSettings = parsed.data;
       }
       if (existingLink.featureType === 'compliance') {
-        const refusal = duplicateComplianceNamesRefusal(data.inlineSettings);
+        const refusal = complianceNamesRefusal(data.inlineSettings);
         if (refusal) return c.json(refusal, 400);
       }
     }

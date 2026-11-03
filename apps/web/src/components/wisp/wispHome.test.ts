@@ -80,9 +80,16 @@ describe('wispHome helpers (W08 Task 9)', () => {
     expect(out.payload.partner.enabled).toBe(true);
   });
 
-  it('fetchWispHome: 404 no_grant → noGrant; 403 entitlement_required → locked; other failures throw', async () => {
+  it('fetchWispHome: 200 { data: null } → noGrant; 403 entitlement_required → locked; other failures throw', async () => {
+    // #10200: no grant is a 200 with null data, not a 404 (a red console line on every visit).
+    h.fetchWithAuth.mockResolvedValueOnce(res(200, { data: null }));
+    expect(await fetchWispHome()).toEqual({ kind: 'noGrant' });
+    // A pre-#10200 API still answers 404 no_grant during a rolling deploy.
     h.fetchWithAuth.mockResolvedValueOnce(res(404, { code: 'no_grant' }));
     expect(await fetchWispHome()).toEqual({ kind: 'noGrant' });
+    // A bare 404 (the hub's answer while Wisp is off) is not "no grant".
+    h.fetchWithAuth.mockResolvedValueOnce(res(404, { error: 'Not found' }));
+    await expect(fetchWispHome()).rejects.toThrow();
     h.fetchWithAuth.mockResolvedValueOnce(res(403, { code: 'entitlement_required' }));
     expect(await fetchWispHome()).toEqual({ kind: 'locked' });
     // Any other 403 (e.g. a Partner Viewer without ai_sessions:use) is a permission refusal, not a load error (#10145).
