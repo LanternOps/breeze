@@ -33,6 +33,14 @@ import { devices, dnsSecurityEvents, type DnsAction } from '../db/schema';
 export const DNS_EVENTS_DEFAULT_WINDOW_DAYS = 7;
 export const DNS_EVENTS_MAX_WINDOW_DAYS = 90;
 export const DNS_EVENTS_COUNT_CAP = 10_000;
+/**
+ * Slack on the 90-day ceiling. The UI's "Last 90 days" preset sends
+ * `start = clientNow - 90d`; by the time the server measures against its own
+ * clock the span is 90d plus request latency plus any client clock skew, so a
+ * strict check refused the preset every time. One hour covers both and is
+ * negligible against the work bound; a 91-day range is still refused.
+ */
+export const DNS_EVENTS_WINDOW_TOLERANCE_MS = 3_600_000;
 
 const DAY_MS = 86_400_000;
 
@@ -77,7 +85,8 @@ export type DnsEventsWindow =
  * Resolve the time window a list request reads. A missing `start` becomes
  * `(end ?? now) - 7 days`; an open `end` stays open (newest rows). The 90-day
  * ceiling applies to the effective span, so an open-ended `start` older than
- * 90 days is refused like an explicit 91-day range.
+ * 90 days (plus {@link DNS_EVENTS_WINDOW_TOLERANCE_MS}) is refused like an
+ * explicit 91-day range.
  */
 export function resolveDnsEventsWindow(
   start: Date | null,
@@ -89,7 +98,10 @@ export function resolveDnsEventsWindow(
   }
   const effectiveStart = start ?? new Date((end ?? now).getTime() - DNS_EVENTS_DEFAULT_WINDOW_DAYS * DAY_MS);
   const spanEnd = end ?? now;
-  if (spanEnd.getTime() - effectiveStart.getTime() > DNS_EVENTS_MAX_WINDOW_DAYS * DAY_MS) {
+  if (
+    spanEnd.getTime() - effectiveStart.getTime() >
+    DNS_EVENTS_MAX_WINDOW_DAYS * DAY_MS + DNS_EVENTS_WINDOW_TOLERANCE_MS
+  ) {
     return { ok: false, error: `Time range cannot exceed ${DNS_EVENTS_MAX_WINDOW_DAYS} days` };
   }
   return { ok: true, start: effectiveStart, end };
