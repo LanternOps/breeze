@@ -91,6 +91,8 @@ const DEVICE_WAIT_TOOLS: Readonly<Record<string, WaitEntry>> = {
     why: 'list and kill are separate branches, each one aiExecuteCommand with timeoutMs 30000',
   },
   manage_scheduled_tasks: { file: 'aiToolsScripts.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },
+  // Full-control W13 PR B (#6783): list_logs / query / get_event are separate branches, one 30 s command each.
+  browse_device_event_log: { file: 'aiToolsDeviceEventLog.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },
   registry_operations: { file: 'aiToolsScripts.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },
   set_agent_log_level: { file: 'aiToolsAgentLogs.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },
   capture_agent_pprof: { file: 'aiToolsAgentLogs.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },

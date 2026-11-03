@@ -1,0 +1,22 @@
+[
+  {
+    "id": 311,
+    "group_name": "All Staff",
+    "group_type": "Public",
+    "last_backup": "2026-10-24T05:00:00.000Z",
+    "errors": "",
+    "deactivated_since": null,
+    "current_backup_status": "Completed",
+    "added_on": "2025-01-02T03:04:05.000Z"
+  },
+  {
+    "id": 312,
+    "group_name": "Dropped Team",
+    "group_type": "Private",
+    "last_backup": "2026-01-01T00:00:00.000Z",
+    "errors": "",
+    "deactivated_since": "2026-01-02T00:00:00.000Z",
+    "current_backup_status": "Connecting",
+    "added_on": "2025-01-02T03:04:05.000Z"
+  }
+]

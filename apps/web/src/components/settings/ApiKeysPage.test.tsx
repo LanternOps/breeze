@@ -86,6 +86,10 @@ describe('ApiKeysPage destructive confirmations (#3531)', () => {
     await waitFor(() => expect(screen.queryByText('Revoke API Key')).toBeNull());
     expect(listFetches()).toBe(2);
     expect(toastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    // #9950: the status flip in the row used to be the only confirmation.
+    expect(toastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success', message: 'API key "CI deploy key" revoked' }),
+    );
   });
 
   it('revoke 404 (already gone): toasts, closes the modal, and refetches the list (sweep A2)', async () => {

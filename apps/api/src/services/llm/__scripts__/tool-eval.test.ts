@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeFile } from 'node:fs/promises';
 import { closeDb } from '../../../db';
 import { runSurfaceCapture } from '../toolCapture/runSurface';
+import { GOLDEN_CASES } from '../toolEval/goldenPrompts';
 import { runCli } from './tool-eval';
 
 vi.mock('node:fs/promises', () => ({ writeFile: vi.fn().mockResolvedValue(undefined) }));
@@ -145,8 +146,16 @@ it('bounds concurrency and preserves golden case order', async () => {
   });
 });
 
+// Derived, not hard-coded: a literal like 'g99' becomes a real case once a wave
+// adds golden prompts (W11 did exactly that), and this test then passes the CLI.
+const UNKNOWN_CASE_ID = `g${GOLDEN_CASES.length + 100}`;
+
+it('the unknown case id is not a golden case', () => {
+  expect(GOLDEN_CASES.map((c) => c.id)).not.toContain(UNKNOWN_CASE_ID);
+});
+
 it.each([
-  ['--surface', 'unknown'], ['--cases', 'g99'], ['--cases', 'g01,'],
+  ['--surface', 'unknown'], ['--cases', UNKNOWN_CASE_ID], ['--cases', 'g01,'],
   ['--concurrency', '0'], ['--concurrency', '1.5'], ['--model'],
   ['--unknown', 'x'], ['--tool-search', 'auto'],
 ])('rejects invalid arguments %j with exit 2', async (...args) => {

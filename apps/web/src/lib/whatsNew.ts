@@ -18,6 +18,19 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.125.0',
+    date: '2026-10-27',
+    title: 'Agreements clients sign without a quote, ticket merge and routing, and update rings that decide Windows feature updates',
+    highlights: [
+      'Send any agreement for signature from Agreements, an organization’s Billing tab or a contract. Clients sign on a public page or in the portal’s new Agreements page, everyone gets the signed copy with a signature certificate, and you can remind, void or let it expire automatically.',
+      'Merge duplicate tickets into one, give SLAs business hours and holidays (a partner default with an organization override), and add routing rules that set the category, priority, status or assignee on new tickets.',
+      'Update rings now decide Windows feature updates: block them (the default), allow the newest release, or pin devices to one such as Windows 11 25H2. Needs this release’s agent.',
+      'Software versions can run pre- and post-install scripts and ship as zip packages, and Control D and NextDNS can be added from Software → Catalog → Built-in packages. A new Detection Rules page under Security manages YARA rule sets, and Sweep now runs them across many devices at once.',
+      'AI conversations move between the side panel and the full-page Breeze AI chat with their history, and dashboard numbers now open the filtered lists they count. Breeze Assist no longer crash-loops on an old WebView2 runtime, and the remote-support consent prompt now defaults to Deny.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.124.0',
     date: '2026-10-19',
     title: 'A fuller Trust Center, connection health alerts, and Huntress and SentinelOne deployed from policy',

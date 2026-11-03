@@ -26,6 +26,7 @@ import {
   Ticket,
   UserCircle,
   Users,
+  Workflow,
   type LucideIcon,
 } from 'lucide-react';
 import type { NavGate } from './navGates';
@@ -108,6 +109,8 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'variables', name: 'Variables', labelKey: 'nav.variables', href: '/settings/variables', icon: Braces, group: 'data', requiredPermission: { resource: 'variables', action: 'read' } },
   { id: 'filters', name: 'Saved Filters', labelKey: 'nav.savedFilters', href: '/settings/filters', icon: Filter, group: 'data' },
   { id: 'alert-templates', name: 'Alert templates', labelKey: card('alertTemplates', 'title'), href: '/settings/alert-templates', icon: Bell, group: 'data', requiredPermission: { resource: 'alerts', action: 'read' } },
+  // Tool Catalog W05 (#5220): the one home of the flow caps (partner default, org lower-only override).
+  { id: 'flow-limits', name: 'Flow limits', labelKey: card('flowLimits', 'title'), descriptionKey: card('flowLimits', 'description'), href: '/settings/flow-limits', icon: Workflow, group: 'data', requiresFlows: true, requiredPermission: { resource: 'automations', action: 'read' } },
 
   // AI
   // W04 (#10135): the Settings → AI hub (/settings/ai renders this group). The

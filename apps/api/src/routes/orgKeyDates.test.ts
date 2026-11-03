@@ -38,7 +38,7 @@ const KD = '11111111-1111-4111-8111-111111111111';
 const NO_PERM = { authorization: 'Bearer token' };
 const AUTH = { authorization: 'Bearer token', 'x-allow': 'true' };
 const JSON_AUTH = { ...AUTH, 'content-type': 'application/json' };
-const ACTOR = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+const ACTOR = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'], evidenceLabelAccess: { documents: false, reports: false, agreements: false } };
 
 const app = new Hono();
 app.use('*', authMiddleware);

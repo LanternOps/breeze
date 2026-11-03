@@ -566,7 +566,8 @@
       "pending": "This ticket was merged into another ticket on {{date}}.",
       "deleted": "This ticket was merged on {{date}} into a ticket that was deleted or that you cannot see.",
       "open": "Open {{number}}",
-      "readOnly": "Merged tickets are read-only. Reply on the ticket it was merged into."
+      "readOnly": "Merged tickets are read-only. Reply on the ticket it was merged into.",
+      "railReadOnly": "Time, billing and parts are read-only on a merged ticket. Log time and parts on the ticket it was merged into."
     },
     "triage": {
       "title": "Suggested triage",

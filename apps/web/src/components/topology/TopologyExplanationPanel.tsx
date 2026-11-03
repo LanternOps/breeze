@@ -140,6 +140,7 @@ function ProposedCheck({ proposal, graph, disabled, reason }: { proposal: Pendin
         onReject={() => void useAiStore.getState().approveExecution(proposal.executionId, false)}
         intentBacked={proposal.intentBacked} selfApprovalRequestId={proposal.selfApprovalRequestId} approvalScope={proposal.approvalScope}
         intentExpiresAt={proposal.intentExpiresAt} approvalWindowMs={proposal.approvalWindowMs} approvalExpiresAt={proposal.approvalExpiresAt}
+        resolution={proposal.resolution}
         onIntentDecided={() => useAiStore.getState().clearPendingApproval()} testIdPrefix="topology-proposal" />}
   </div>;
 }

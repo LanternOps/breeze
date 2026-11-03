@@ -19,6 +19,12 @@ const h = vi.hoisted(() => ({
   charges: [] as number[],
   locks: 0,
   writes: [] as Array<[string, ...unknown[]]>,
+  /** #8313 W1: the object store backend, byte charges, and what each comment write received. */
+  backend: 's3' as 's3' | 'db',
+  byteCharges: [] as number[],
+  commentInputs: [] as Array<{ content: string; imported: { sourceId: string; attachments?: unknown[] } }>,
+  /** What deleteSkippedReservations answers (the rows it deleted); null: every id it was given. */
+  deletedSkips: null as string[] | null,
   /** Names each read the writer makes, from its table and the columns it selects. */
   kindOf(q: { table: string; fields: string[]; lock?: string }): string {
     if (q.table === 'ticket_external_refs') return 'ref';
@@ -79,6 +85,33 @@ vi.mock('./windowLock', () => ({
 
 vi.mock('./throughput', () => ({
   chargeWindowThroughput: vi.fn(async (_window: unknown, cost: number) => { if (cost > 0) h.charges.push(cost); }),
+  chargeWindowBytes: vi.fn(async (_window: unknown, bytes: number) => { h.byteCharges.push(bytes); }),
+  refundWindowBytes: vi.fn(async (_window: unknown, bytes: number) => { h.byteCharges.push(-bytes); }),
+}));
+
+// #8313 W1: the object store and the two attachment statements. The rules
+// and the store step are the real ones.
+vi.mock('../ticketAttachmentStorage', () => ({
+  selectBackend: vi.fn(() => h.backend),
+  objectKeyFor: (id: string) => `ticket-attachments/${id}`,
+  putBytes: vi.fn(async (id: string) => ({ backend: 's3', storageKey: `ticket-attachments/${id}`, data: null })),
+  deleteObjectKeys: vi.fn(async (keys: string[]) => { h.writes.push(['deleteObjectKeys', keys]); }),
+}));
+vi.mock('./importAttachments', async (orig) => ({
+  ...(await orig<typeof import('./importAttachments')>()),
+  reserveImportAttachments: vi.fn(async (input: { files: Array<{ sourceId: string }> }) => {
+    h.writes.push(['reserveImportAttachments', input.files.map((f) => f.sourceId)]);
+    return input.files.map((f) => ({ id: `id-${f.sourceId}`, sourceId: f.sourceId }));
+  }),
+  deleteSkippedReservations: vi.fn(async (_ticketId: string, _principalId: string, ids: string[]) => {
+    if (ids.length > 0) h.writes.push(['deleteSkippedReservations', ids]);
+    return h.deletedSkips ?? ids;
+  }),
+  markReservationStored: vi.fn(async (_ticketId: string, _principalId: string, claim: { id: string }) => {
+    h.writes.push(['markReservationStored', claim.id]);
+    return true;
+  }),
+  isReservationPending: vi.fn(async () => true),
 }));
 
 vi.mock('../ticketExternalRefs', () => ({
@@ -91,12 +124,13 @@ vi.mock('../ticketService', () => ({
   assignTicket: vi.fn(async (...args: unknown[]) => { h.writes.push(['assignTicket', ...args]); }),
   updateTicketFields: vi.fn(async (...args: unknown[]) => { h.writes.push(['updateTicketFields', ...args]); }),
   changeTicketStatus: vi.fn(async (id: string, input: { status: string }) => { h.writes.push(['changeTicketStatus', id, input.status]); }),
-  addTicketComment: vi.fn(async (id: string, input: { imported: { sourceId: string } }) => {
+  addTicketComment: vi.fn(async (id: string, input: { content: string; imported: { sourceId: string } }) => {
     h.writes.push(['addTicketComment', id, input.imported.sourceId]);
+    h.commentInputs.push(input);
   }),
 }));
 
-import { importTicket, IMPORT_COMMENT_CHUNK_BYTES, type ImportTicketOptions } from './importWriter';
+import { ImportAttachmentFetchError, importTicket, IMPORT_COMMENT_CHUNK_BYTES, type ImportTicketOptions } from './importWriter';
 import type { ImportedTicket } from './importedTicket';
 
 const PRINCIPAL = '44444444-4444-4444-8444-444444444444';
@@ -155,6 +189,10 @@ beforeEach(() => {
   h.charges.length = 0;
   h.writes.length = 0;
   h.locks = 0;
+  h.backend = 's3';
+  h.byteCharges.length = 0;
+  h.commentInputs.length = 0;
+  h.deletedSkips = null;
   // Under the lock the ticket is still an import, not deleted.
   h.fallback.set('lockedTicket', [{ migrationWindowId: 'w-1', deletedAt: null, mergedIntoTicketId: null }]);
 });
@@ -350,6 +388,7 @@ describe('importTicket — a ticket merged in Breeze (#8972) is skipped, final, 
       outcome: 'skipped',
       skip: { reason: 'merged_in_breeze', mergedIntoTicketId: SURVIVOR },
       commentsWritten: 0, commentsSkipped: 0, fieldsUpdated: 0, statusSkipped: false,
+      attachmentsWritten: 0, attachmentsSkipped: [], attachmentBytes: 0,
       requesterChanged: false, orgChanged: false, commentsChangedInSource: [], commentsMissingInSource: [],
     });
     expect(h.log).toEqual(['ref', 'storedTicket']);
@@ -358,14 +397,49 @@ describe('importTicket — a ticket merged in Breeze (#8972) is skipped, final, 
     expect(h.writes).toEqual([]);
   });
 
+  it('answers a ref the merge moved onto the survivor from its origin, this principal\'s tombstone (#10120)', async () => {
+    const ORIGIN = '77777777-7777-4777-8777-777777777777';
+    answer('ref', [{ ticketId: SURVIVOR, externalNumber: '#41023', externalUrl: null, originTicketId: ORIGIN }]);
+    // The survivor is a live ticket; the origin is this principal's import, merged into it.
+    answer('storedTicket',
+      [storedRow({ id: SURVIVOR, migrationWindowId: null, windowPrincipalId: null })],
+      [storedRow({ id: ORIGIN, mergedIntoTicketId: SURVIVOR, status: 'closed' })]);
+
+    const result = await run(closedWithNotes);
+
+    expect(result).toMatchObject({
+      ticketId: ORIGIN, outcome: 'skipped', skip: { reason: 'merged_in_breeze', mergedIntoTicketId: SURVIVOR },
+      commentsWritten: 0, commentsSkipped: 0, fieldsUpdated: 0,
+    });
+    expect(h.log).toEqual(['ref', 'storedTicket', 'storedTicket']);
+    expect(h.locks).toBe(0);
+    expect(h.charges).toEqual([]);
+    expect(h.writes).toEqual([]);
+  });
+
   it.each([
-    // The merge moved this import's ref onto a live survivor (the known limit: refused on every pass).
+    ["another principal's tombstone", [storedRow({ mergedIntoTicketId: SURVIVOR, windowPrincipalId: '45454545-4545-4545-8545-454545454545' })]],
+    ['a live tombstone', [storedRow({ mergedIntoTicketId: SURVIVOR, migrationWindowId: null, windowPrincipalId: null })]],
+    ['a ticket the window cannot see', []],
+  ])('refuses a moved ref whose origin is %s', async (_label, originRows) => {
+    answer('ref', [{ ticketId: SURVIVOR, externalNumber: '#41023', externalUrl: null, originTicketId: TICKET }]);
+    answer('storedTicket', [storedRow({ id: SURVIVOR, migrationWindowId: null, windowPrincipalId: null })], originRows);
+    await expect(run(closedWithNotes)).rejects.toMatchObject({
+      code: 'MIGRATION_SOURCE_ID_IN_USE', status: 409, details: { reason: 'live_ticket', ticketId: SURVIVOR },
+    });
+    expect(h.writes).toEqual([]);
+  });
+
+  it.each([
+    // The merge moved this import's ref onto a live survivor before origin_ticket_id existed (refused on every pass).
     ['a live ticket', { migrationWindowId: null, windowPrincipalId: null }, 'live_ticket'],
     // Checked before the tombstone: a never-imported live ticket that was later merged stays a conflict.
     ['a live tombstone', { migrationWindowId: null, windowPrincipalId: null, mergedIntoTicketId: SURVIVOR }, 'live_ticket'],
     // The merge moved this import's ref onto another principal's import, which used to be resumed with this source's data.
     ["another principal's import", { windowPrincipalId: '45454545-4545-4545-8545-454545454545' }, 'other_principal_ticket'],
     ["another principal's tombstone", { windowPrincipalId: '45454545-4545-4545-8545-454545454545', mergedIntoTicketId: SURVIVOR }, 'other_principal_ticket'],
+    // The window's orgs are checked before the tombstone, so "merged" never rests on RLS alone (#10034 review).
+    ['a tombstone of this import in an org outside the window', { orgId: '99999999-9999-4999-8999-999999999999', mergedIntoTicketId: SURVIVOR }, 'org_outside_window'],
   ])('refuses, never resumes, a ref that resolves to %s', async (_label, row, reason) => {
     h.fallback.set('storedTicket', [storedRow(row)]);
     await expect(run(closedWithNotes)).rejects.toMatchObject({
@@ -402,5 +476,139 @@ describe('importTicket — a ticket merged in Breeze (#8972) is skipped, final, 
     // header transaction then reads the header alone.
     expect(h.log.filter((k) => k === 'lockedTicket')).toHaveLength(2);
     expect(h.log.filter((k) => k === 'storedTicket')).toHaveLength(2);
+  });
+});
+
+describe('importTicket — attachments: reserve, store, attach (#8313 W1, spec 2026-10-19 §4.3)', () => {
+  const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(24, 1)]);
+  const withFiles = ticket({
+    comments: [
+      { ...comment('a1', 1), attachments: [
+        { sourceId: 'f1', filename: 'photo.png', declaredBytes: PNG.length, inline: false },
+        { sourceId: 'f2', filename: 'invoice.pdf.exe', declaredBytes: 100, inline: false },
+      ] },
+      { ...comment('a2', 2), attachments: [{ sourceId: 'f3', filename: 'empty.txt', declaredBytes: 0, inline: false }] },
+      comment('a3', 3),
+    ],
+  });
+
+  beforeEach(() => {
+    h.fallback.set('statusRow', [{ status: 'new' }]);
+  });
+
+  it('refuses a ticket with files and no object storage (409) before anything is written or charged', async () => {
+    h.backend = 'db';
+    await expect(run(withFiles, { fetchAttachment: vi.fn() }))
+      .rejects.toMatchObject({ code: 'TICKET_IMPORT_OBJECT_STORAGE_REQUIRED', status: 409 });
+    expect(h.locks).toBe(0);
+    expect(h.charges).toEqual([]);
+    expect(h.writes).toEqual([]);
+  });
+
+  it('refuses files without fetchAttachment (400) before anything is written', async () => {
+    await expect(run(withFiles)).rejects.toMatchObject({ code: 'MIGRATION_IMPORT_INVALID', status: 400 });
+    expect(h.writes).toEqual([]);
+  });
+
+  it('a ticket without files needs neither object storage nor fetchAttachment', async () => {
+    h.backend = 'db';
+    await expect(run(ticket({ comments: [comment('a1', 1)] }))).resolves.toMatchObject({ outcome: 'created', attachmentsWritten: 0 });
+  });
+
+  it('reserves what may be fetched in its own transaction (one unit a file), stores it, then the comment claims it; skips ride in a note', async () => {
+    const fetchAttachment = vi.fn(async () => PNG);
+    const result = await run(withFiles, { fetchAttachment });
+
+    // Header (create + ref), the reservation of f1 alone, the chunk (3 comments
+    // + the status); marking f1 stored is a transaction of its own, unit-free.
+    expect(h.charges).toEqual([2, 1, 4]);
+    expect(h.locks).toBe(4);
+    expect(h.byteCharges).toEqual([PNG.length]);
+    expect(fetchAttachment).toHaveBeenCalledWith('f1', 10 * 1024 * 1024);
+    expect(h.writes.map((w) => w[0])).toEqual([
+      'createTicket', 'upsertTicketExternalRef', 'reserveImportAttachments', 'markReservationStored',
+      'addTicketComment', 'addTicketComment', 'addTicketComment', 'changeTicketStatus',
+    ]);
+    expect(h.writes[2]).toEqual(['reserveImportAttachments', ['f1']]);
+    expect(h.commentInputs.map((c) => [c.imported.sourceId, c.content, c.imported.attachments])).toEqual([
+      ['a1', 'x\n\n[Attachments not imported: invoice.pdf.exe (blocked file type)]', [expect.objectContaining({ id: 'id-f1', contentType: 'image/png', byteSize: PNG.length })]],
+      ['a2', 'x\n\n[Attachments not imported: empty.txt (empty file)]', undefined],
+      ['a3', 'x', undefined],
+    ]);
+    expect(result).toMatchObject({
+      outcome: 'created',
+      commentsWritten: 3,
+      attachmentsWritten: 1,
+      attachmentBytes: PNG.length,
+      attachmentsSkipped: [{ sourceId: 'f2', reason: 'blocked_type' }, { sourceId: 'f3', reason: 'empty' }],
+    });
+  });
+
+  it('a file the source no longer has is skipped after its reservation: the chunk transaction deletes its row, then its object goes', async () => {
+    const fetchAttachment = vi.fn(async () => { throw new ImportAttachmentFetchError('not_found'); });
+    const result = await run(ticket({ comments: [{ ...comment('a1', 1), attachments: [{ sourceId: 'f9', filename: 'lost.pdf', inline: false }] }] }), { fetchAttachment });
+    expect(h.writes.map((w) => w[0])).toEqual([
+      'createTicket', 'upsertTicketExternalRef', 'reserveImportAttachments', 'deleteSkippedReservations', 'addTicketComment', 'changeTicketStatus',
+      'deleteObjectKeys',
+    ]);
+    expect(h.writes[3]).toEqual(['deleteSkippedReservations', ['id-f9']]);
+    expect(h.writes[6]).toEqual(['deleteObjectKeys', ['ticket-attachments/id-f9']]);
+    expect(h.commentInputs[0]!.content).toBe('x\n\n[Attachments not imported: lost.pdf (not found in the source)]');
+    expect(result).toMatchObject({ attachmentsWritten: 0, attachmentsSkipped: [{ sourceId: 'f9', reason: 'not_found' }] });
+  });
+
+  it('a claim shortfall in the chunk transaction (another run claimed a file) is transient: 503, the chunk rolls back', async () => {
+    const { addTicketComment } = await import('../ticketService');
+    vi.mocked(addTicketComment).mockRejectedValueOnce(Object.assign(new Error('One or more attachments could not be attached'), { status: 409, code: 'ATTACHMENT_NOT_CLAIMABLE' }));
+    const err = await run(ticket({ comments: [{ ...comment('a1', 1), attachments: [{ sourceId: 'f6', filename: 'a.png', inline: false }] }] }), { fetchAttachment: vi.fn(async () => PNG) })
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: 'TICKET_IMPORT_ATTACHMENT_UNAVAILABLE', status: 503, details: { sourceId: 'a1', stage: 'claim' } });
+    expect((err as Error).cause).toMatchObject({ code: 'ATTACHMENT_NOT_CLAIMABLE' });
+  });
+
+  it('a transient failure fails the ticket after the reservation: no comment, and the reservation stays', async () => {
+    const fetchAttachment = vi.fn(async () => { throw new Error('timeout'); });
+    await expect(run(ticket({ comments: [{ ...comment('a1', 1), attachments: [{ sourceId: 'f8', filename: 'a.png', inline: false }] }] }), { fetchAttachment }))
+      .rejects.toMatchObject({ code: 'TICKET_IMPORT_ATTACHMENT_UNAVAILABLE', status: 503 });
+    expect(h.writes.map((w) => w[0])).toEqual(['createTicket', 'upsertTicketExternalRef', 'reserveImportAttachments']);
+    // The charge taken before the fetch (the cap: no size declared) is given back.
+    expect(h.byteCharges).toEqual([10 * 1024 * 1024, -10 * 1024 * 1024]);
+  });
+
+  it('a reservation that finds the ticket merged in Breeze returns merged_in_breeze and stores nothing', async () => {
+    const SURVIVOR = '88888888-8888-4888-8888-888888888888';
+    h.fallback.set('ref', [{ ticketId: TICKET, externalNumber: '#41023', externalUrl: null }]);
+    h.fallback.set('storedTicket', [storedRow()]);
+    answer('lockedTicket', [{ migrationWindowId: 'w-1', deletedAt: null, mergedIntoTicketId: SURVIVOR }]);
+    const fetchAttachment = vi.fn(async () => PNG);
+    const result = await run(ticket({ comments: [{ ...comment('a1', 1), attachments: [{ sourceId: 'f7', filename: 'a.png', inline: false }] }] }), { fetchAttachment });
+    expect(result).toMatchObject({ outcome: 'skipped', skip: { reason: 'merged_in_breeze', mergedIntoTicketId: SURVIVOR }, attachmentsWritten: 0 });
+    expect(fetchAttachment).not.toHaveBeenCalled();
+    expect(h.writes).toEqual([]);
+  });
+});
+
+describe('importTicket: a skipped reservation another run stored meanwhile (W1 review, Todd 2026-10-26)', () => {
+  beforeEach(() => {
+    h.fallback.set('statusRow', [{ status: 'new' }]);
+  });
+
+  it('keeps its object: only the rows the chunk transaction deleted lose theirs', async () => {
+    h.deletedSkips = [];
+    const fetchAttachment = vi.fn(async () => { throw new ImportAttachmentFetchError('not_found'); });
+    const result = await run(ticket({ comments: [{ ...comment('a1', 1), attachments: [{ sourceId: 'f9', filename: 'lost.pdf', inline: false }] }] }), { fetchAttachment });
+    expect(h.writes.map((w) => w[0])).toEqual([
+      'createTicket', 'upsertTicketExternalRef', 'reserveImportAttachments', 'deleteSkippedReservations', 'addTicketComment', 'changeTicketStatus',
+    ]);
+    expect(result).toMatchObject({ attachmentsSkipped: [{ sourceId: 'f9', reason: 'not_found' }] });
+  });
+
+  it('a chunk transaction that fails deletes no object', async () => {
+    const { addTicketComment } = await import('../ticketService');
+    vi.mocked(addTicketComment).mockRejectedValueOnce(new Error('boom'));
+    const fetchAttachment = vi.fn(async () => { throw new ImportAttachmentFetchError('not_found'); });
+    await expect(run(ticket({ comments: [{ ...comment('a1', 1), attachments: [{ sourceId: 'f9', filename: 'lost.pdf', inline: false }] }] }), { fetchAttachment }))
+      .rejects.toThrow();
+    expect(h.writes.map((w) => w[0])).not.toContain('deleteObjectKeys');
   });
 });

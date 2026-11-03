@@ -59,6 +59,16 @@ const { getUserPermissionsMock, planYaraScanMock } = vi.hoisted(() => ({
 
 vi.mock('../../services/yaraScanRefs', () => ({ planYaraScan: planYaraScanMock }));
 
+// #10057 gap 2: the Scan now / cancel services own their transaction and the
+// claim; their behaviour is covered in services/securityScanStart.test.ts and
+// jobs/securityScanClaim.test.ts. Here: the HTTP mapping only.
+const svc = vi.hoisted(() => ({ start: vi.fn(), cancel: vi.fn(), audit: vi.fn() }));
+vi.mock('../../services/securityScanStart', () => ({
+  startDeviceScan: (...a: unknown[]) => svc.start(...a),
+  cancelDeviceScan: (...a: unknown[]) => svc.cancel(...a),
+}));
+vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: (...a: unknown[]) => svc.audit(...a) }));
+
 vi.mock('../../services/permissions', async () => {
   const actual = await vi.importActual<any>('../../services/permissions');
   return {
@@ -255,158 +265,6 @@ describe('GET /scans/:deviceId — site-scope gate', () => {
   });
 });
 
-describe('POST /scan/:deviceId — attaches the device\'s resolved policy settings', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    getUserPermissionsMock.mockResolvedValue({
-      permissions: [{ resource: 'devices', action: 'execute' }],
-      allowedSiteIds: undefined,
-    });
-    mockDeviceSelect();
-    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
-  });
-
-  it('attaches the device\'s resolved policy settings to the queued command', async () => {
-    resolveSecurityScanSettingsForDeviceMock.mockResolvedValue({
-      ...SECURITY_SCAN_SETTINGS_DEFAULTS,
-      exclusions: ['C:\\Backups'],
-      maxFileSizeMb: 64,
-      scanTimeoutMinutes: 30,
-      autoQuarantine: false,
-    });
-
-    const res = await app().request(`/security/scan/${DEVICE_ID}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scanType: 'quick' }),
-    });
-
-    expect(res.status).toBe(202);
-    expect(queueCommand).toHaveBeenCalledWith(
-      DEVICE_ID,
-      'security_scan',
-      expect.objectContaining({
-        exclusions: ['C:\\Backups'],
-        maxFileSizeMb: 64,
-        timeoutMinutes: 30,
-        autoQuarantine: false,
-      }),
-      expect.any(String),
-      // #6263 W05-11: the reserved command id the scan row also records.
-      expect.objectContaining({ commandId: expect.any(String) }),
-    );
-  });
-
-  it('omits the settings keys entirely when no policy governs the device', async () => {
-    resolveSecurityScanSettingsForDeviceMock.mockResolvedValue(null);
-
-    await app().request(`/security/scan/${DEVICE_ID}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scanType: 'quick' }),
-    });
-
-    const payload = vi.mocked(queueCommand).mock.calls.at(-1)![2];
-    expect(payload).not.toHaveProperty('exclusions');
-    expect(payload).not.toHaveProperty('autoQuarantine');
-  });
-
-  function app(): Hono {
-    return buildApp();
-  }
-});
-
-// A manual scan runs under the CALLER's authority: devices:execute is enforced
-// route-level, and the policy's auto-quarantine additionally needs a satisfied
-// MFA session, otherwise the scan runs detect-only and the row records why.
-describe('POST /scan/:deviceId — auto-quarantine needs an MFA session', () => {
-  let insertedValues: ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    getUserPermissionsMock.mockResolvedValue({
-      permissions: [{ resource: 'devices', action: 'execute' }],
-      allowedSiteIds: undefined,
-    });
-    mockDeviceSelect();
-    insertedValues = vi.fn().mockResolvedValue(undefined);
-    vi.mocked(db.insert).mockReturnValue({ values: insertedValues } as any);
-    resolveSecurityScanSettingsForDeviceMock.mockResolvedValue({
-      ...SECURITY_SCAN_SETTINGS_DEFAULTS,
-      autoQuarantine: true,
-    });
-  });
-
-  function scan(mfa: boolean) {
-    return buildApp({ mfa }).request(`/security/scan/${DEVICE_ID}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scanType: 'quick' }),
-    });
-  }
-
-  it('without MFA: dispatches detect-only and records manual_no_mfa', async () => {
-    const res = await scan(false);
-
-    expect(res.status).toBe(202);
-    expect(vi.mocked(queueCommand).mock.calls.at(-1)![2]).toMatchObject({ autoQuarantine: false });
-    expect(insertedValues).toHaveBeenCalledWith(expect.objectContaining({
-      autoQuarantineSuppressedReason: 'manual_no_mfa',
-    }));
-  });
-
-  it('with MFA: keeps the policy auto-quarantine', async () => {
-    const res = await scan(true);
-
-    expect(res.status).toBe(202);
-    expect(vi.mocked(queueCommand).mock.calls.at(-1)![2]).toMatchObject({ autoQuarantine: true });
-    expect(insertedValues).toHaveBeenCalledWith(expect.objectContaining({
-      autoQuarantineSuppressedReason: null,
-    }));
-  });
-});
-
-// #6263 W03: a manual scan carries the same rule-set refs and records the same
-// explicit outcome as a scheduled one.
-describe('POST /scan/:deviceId — YARA rule sets', () => {
-  let insertedValues: ReturnType<typeof vi.fn>;
-  const REF = {
-    id: 'aaaaaaaa-0000-4000-8000-00000000000a', version: 2, sha256: 'e'.repeat(64),
-    url: '/api/v1/agents/agent-1/yara/rule-sets/aaaaaaaa-0000-4000-8000-00000000000a/2',
-  };
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    getUserPermissionsMock.mockResolvedValue({ permissions: [{ resource: 'devices', action: 'execute' }], allowedSiteIds: undefined });
-    mockDeviceSelect();
-    insertedValues = vi.fn().mockResolvedValue(undefined);
-    vi.mocked(db.insert).mockReturnValue({ values: insertedValues } as any);
-    resolveSecurityScanSettingsForDeviceMock.mockResolvedValue({
-      ...SECURITY_SCAN_SETTINGS_DEFAULTS, autoQuarantine: false, ruleSetIds: [REF.id],
-    });
-  });
-
-  const scan = () => buildApp().request(`/security/scan/${DEVICE_ID}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scanType: 'quick' }),
-  });
-
-  it('sends the resolved refs and records engine + errors on the scan row', async () => {
-    planYaraScanMock.mockResolvedValueOnce({ ruleSets: [REF], engine: 'yara', ruleSetErrors: null });
-    expect((await scan()).status).toBe(202);
-    expect(planYaraScanMock).toHaveBeenCalledWith(expect.objectContaining({ deviceId: DEVICE_ID, ruleSetIds: [REF.id] }));
-    expect(vi.mocked(queueCommand).mock.calls.at(-1)![2]).toMatchObject({ ruleSets: [REF] });
-    expect(insertedValues).toHaveBeenCalledWith(expect.objectContaining({ engine: 'yara', ruleSetErrors: null }));
-  });
-
-  it('an old agent: no ruleSets in the payload, legacy + agent_too_old on the row', async () => {
-    const tooOld = [{ id: '*', code: 'agent_too_old', detail: 'x' }];
-    planYaraScanMock.mockResolvedValueOnce({ ruleSets: [], engine: 'legacy', ruleSetErrors: tooOld });
-    expect((await scan()).status).toBe(202);
-    expect(vi.mocked(queueCommand).mock.calls.at(-1)![2]).not.toHaveProperty('ruleSets');
-    expect(insertedValues).toHaveBeenCalledWith(expect.objectContaining({ engine: 'legacy', ruleSetErrors: tooOld }));
-  });
-});
-
 describe('GET /scans/:deviceId — timed_out filter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -416,6 +274,23 @@ describe('GET /scans/:deviceId — timed_out filter', () => {
     });
   });
 
+  it('lists a waiting Scan now with its queue expiry (#10057 gap 2)', async () => {
+    mockDeviceSelect();
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          orderBy: vi.fn().mockResolvedValue([{
+            id: 's-1', scanType: 'quick', status: 'queued', startedAt: new Date('2027-01-01T00:00:00Z'),
+            completedAt: null, threatsFound: null, duration: null, queueExpiresAt: new Date('2027-01-02T00:00:00Z'),
+          }]),
+        }),
+      }),
+    } as any);
+    const res = await buildApp().request(`/security/scans/${DEVICE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data[0]).toMatchObject({ id: 's-1', status: 'queued', queueExpiresAt: '2027-01-02T00:00:00.000Z' });
+  });
+
   it('accepts timed_out as a scan list filter', async () => {
     mockDeviceSelect();
     mockScansSelect();
@@ -423,5 +298,115 @@ describe('GET /scans/:deviceId — timed_out filter', () => {
       method: 'GET',
     });
     expect(res.status).not.toBe(400);
+  });
+});
+
+describe('GET /scans/:deviceId — sweep id and rule-set errors (#10049)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      allowedSiteIds: undefined,
+    });
+  });
+
+  function mockScanRows(rows: unknown[]) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue(rows) }),
+      }),
+    } as any);
+  }
+
+  const base = {
+    scanType: 'quick', threatsFound: 0, duration: null,
+    startedAt: new Date('2026-10-24T10:00:00.000Z'), completedAt: null,
+  };
+
+  it('projects sweepId and ruleSetErrors so a sweep child failed by a republish is identifiable', async () => {
+    const errors = [{ id: 'set-1', version: 1, code: 'rule_set_changed' }];
+    mockDeviceSelect();
+    mockScanRows([
+      { ...base, id: 'scan-1', status: 'failed', sweepId: 'sweep-1', ruleSetErrors: errors },
+      { ...base, id: 'scan-2', status: 'completed', sweepId: null, ruleSetErrors: null },
+      // A pre-W03 row whose rule_set_errors is not an array is reported as none.
+      { ...base, id: 'scan-3', status: 'completed', sweepId: null, ruleSetErrors: { bogus: true } },
+    ]);
+    const res = await buildApp().request(`/security/scans/${DEVICE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.map((s: any) => [s.id, s.sweepId, s.ruleSetErrors])).toEqual([
+      ['scan-1', 'sweep-1', errors],
+      ['scan-2', null, null],
+      ['scan-3', null, null],
+    ]);
+  });
+});
+
+
+describe('POST /scan/:deviceId and POST /scans/:scanId/cancel (#10057 gap 2)', () => {
+  const SCAN_ID = '33333333-3333-4333-8333-333333333333';
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'execute' }],
+      allowedSiteIds: undefined,
+    });
+  });
+
+  it('202 with the queued scan and its queue expiry; the session MFA state is passed through', async () => {
+    const scan = {
+      id: SCAN_ID, deviceId: DEVICE_ID, deviceName: 'h', orgId: ORG_ID, scanType: 'quick', status: 'queued',
+      startedAt: '2027-01-01T00:00:00.000Z', queueExpiresAt: '2027-01-02T00:00:00.000Z',
+    };
+    svc.start.mockResolvedValue({ ok: true, scan });
+    const res = await buildApp({ mfa: true }).request(`/security/scan/${DEVICE_ID}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scanType: 'quick' }),
+    });
+    expect(res.status).toBe(202);
+    expect((await res.json()).data).toEqual({ ...scan, threatsFound: 0 });
+    expect(svc.start.mock.calls[0]![1]).toMatchObject({ deviceId: DEVICE_ID, scanType: 'quick', mfaSatisfied: true });
+    expect(queueCommand).not.toHaveBeenCalled();
+  });
+
+  it('409 with the waiting scan id when one is already queued', async () => {
+    svc.start.mockResolvedValue({ ok: false, status: 409, error: 'A scan is already queued for this device', scanId: SCAN_ID });
+    const res = await buildApp().request(`/security/scan/${DEVICE_ID}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scanType: 'quick' }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'A scan is already queued for this device', code: 'SCAN_ALREADY_QUEUED', scanId: SCAN_ID });
+  });
+
+  it('cancel: 200 and an audit row on success', async () => {
+    svc.cancel.mockResolvedValue({ ok: true, scan: { id: SCAN_ID, status: 'cancelled' }, orgId: ORG_ID });
+    const res = await buildApp().request(`/security/scans/${SCAN_ID}/cancel`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { id: SCAN_ID, status: 'cancelled' } });
+    expect(svc.cancel).toHaveBeenCalledWith(expect.anything(), SCAN_ID);
+    expect(svc.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_ID, action: 'security.scan.cancel', resourceType: 'security_scan', resourceId: SCAN_ID,
+    }));
+  });
+
+  it('cancel: maps a 409 with its code; no audit row', async () => {
+    svc.cancel.mockResolvedValue({ ok: false, status: 409, code: 'SCAN_RUNNING', error: 'running' });
+    const res = await buildApp().request(`/security/scans/${SCAN_ID}/cancel`, { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'running', code: 'SCAN_RUNNING' });
+    expect(svc.audit).not.toHaveBeenCalled();
+  });
+
+  it('cancel: 400 for a non-uuid id, before the service', async () => {
+    const res = await buildApp().request('/security/scans/not-a-uuid/cancel', { method: 'POST' });
+    expect(res.status).toBe(400);
+    expect(svc.cancel).not.toHaveBeenCalled();
+  });
+
+  it('cancel needs devices:execute', async () => {
+    getUserPermissionsMock.mockResolvedValue({ permissions: [{ resource: 'devices', action: 'read' }], allowedSiteIds: undefined });
+    const res = await buildApp().request(`/security/scans/${SCAN_ID}/cancel`, { method: 'POST' });
+    expect(res.status).toBe(403);
+    expect(svc.cancel).not.toHaveBeenCalled();
   });
 });

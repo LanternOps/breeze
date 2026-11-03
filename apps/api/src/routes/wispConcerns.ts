@@ -24,10 +24,18 @@
  * missing one, a non-uuid id — is the same existence-neutral 404.
  *
  * CEILING. Every route resolves the grant's live ceiling (409 grant_inactive
- * when paused / revoked / expired / unpinned) and reads concerns only through
+ * when revoked / expired / unpinned; also when paused, except for the two
+ * GET reads below) and reads concerns only through
  * `listConcernsForCeiling` / `getConcernForCeiling`. A mutation first reads
  * the concern under the ceiling: one outside it is indistinguishable from a
  * missing one (404) and the service is never called.
+ *
+ * PAUSED READS (#10104). `GET /` and `GET /:id` resolve with `allowPaused`: a
+ * paused grant's thread keeps showing its concerns, filtered by the stored
+ * revision intersected with the grantor's live term (the same ceiling an
+ * active grant gets, flagged `paused`). Who may read is unchanged (the
+ * `reader` check above runs first). Every mutation resolves WITHOUT it, so a
+ * paused grant still refuses snooze / dismiss / resolve / feedback with 409.
  */
 import { Hono, type Context } from 'hono';
 import { and, eq } from 'drizzle-orm';
@@ -99,8 +107,17 @@ export type GrantCeilingOutcome =
  * Load `grantId` (system context, pinned to the caller's partner), check the
  * caller's access to it and resolve its live ceiling. Every refusal is a
  * ready response; unexpected errors propagate.
+ *
+ * `allowPaused` (READ-ONLY routes only): a paused grant resolves to a ceiling
+ * with `status: 'paused'` that assertWithinCeiling refuses, so it can filter
+ * reads but never authorise an action. It does not change who may read.
  */
-export async function grantCeilingFor(c: Context, grantId: string, access: GrantAccess): Promise<GrantCeilingOutcome> {
+export async function grantCeilingFor(
+  c: Context,
+  grantId: string,
+  access: GrantAccess,
+  opts: { allowPaused?: boolean } = {},
+): Promise<GrantCeilingOutcome> {
   const auth = authOf(c);
   const partnerId = auth.partnerId;
   // The hub's requireScope('partner') guarantees it; re-asserted as a belt.
@@ -124,7 +141,10 @@ export async function grantCeilingFor(c: Context, grantId: string, access: Grant
   }
   if (!grant.currentRevisionId) return { ok: false, response: grantInactive(c) };
   try {
-    return { ok: true, grant, ceiling: await resolveGrantCeiling(grant.id, grant.currentRevisionId) };
+    const ceiling = opts.allowPaused
+      ? await resolveGrantCeiling(grant.id, grant.currentRevisionId, { allowPaused: true })
+      : await resolveGrantCeiling(grant.id, grant.currentRevisionId);
+    return { ok: true, grant, ceiling };
   } catch (err) {
     return { ok: false, response: grantErrorResponse(c, err) };
   }
@@ -162,7 +182,7 @@ export const wispConcernsRoutes = new Hono();
 
 wispConcernsRoutes.get('/', zValidator('query', listConcernsQuerySchema), async (c) => {
   const { grantId, status, orgId } = c.req.valid('query');
-  const access = await grantCeilingFor(c, grantId, 'reader');
+  const access = await grantCeilingFor(c, grantId, 'reader', { allowPaused: true });
   if (!access.ok) return access.response;
   const concerns = await listConcernsForCeiling(access.ceiling, { status, orgId });
   return c.json({ concerns });
@@ -171,7 +191,7 @@ wispConcernsRoutes.get('/', zValidator('query', listConcernsQuerySchema), async 
 wispConcernsRoutes.get('/:id', zValidator('query', concernGrantQuerySchema), async (c) => {
   const id = pathId(c);
   if (!id) return c.json(WISP_NOT_FOUND, 404);
-  const access = await grantCeilingFor(c, c.req.valid('query').grantId, 'reader');
+  const access = await grantCeilingFor(c, c.req.valid('query').grantId, 'reader', { allowPaused: true });
   if (!access.ok) return access.response;
   const concern = await getConcernForCeiling(access.ceiling, id);
   if (!concern) return c.json(WISP_NOT_FOUND, 404);

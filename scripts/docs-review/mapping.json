@@ -5058,6 +5058,115 @@
         "security/hardening.mdx",
         "security/overview.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/services/ticketMerge/**",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/tickets/merge.ts",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/tickets/MergeTicketDialog.tsx",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/security/yara*.ts",
+      "docs": [
+        "features/security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/security/detectionRules/**",
+      "docs": [
+        "features/security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/security/ThreatRulePanel.tsx",
+      "docs": [
+        "features/security.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/patching/severity.go",
+      "docs": [
+        "features/patch-management.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/agentRecovery.ts",
+      "docs": [
+        "features/watchdog.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/bulkSite.ts",
+      "docs": [
+        "features/devices.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/deviceSiteMove.ts",
+      "docs": [
+        "features/devices.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/forceReboot.ts",
+      "docs": [
+        "features/devices.mdx",
+        "agents/commands.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/SitesPage.tsx",
+      "docs": [
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/OrgDefaultsEditor.tsx",
+      "docs": [
+        "features/device-groups.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/PhysicalPlacementCard.tsx",
+      "docs": [
+        "features/devices.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/backup/folderSelection.ts",
+      "docs": [
+        "backup/restoring.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/helper/webview2*.go",
+      "docs": [
+        "agents/helper.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/helper/ownership.go",
+      "docs": [
+        "agents/helper.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/pages/settings/ai.astro",
+      "docs": [
+        "features/ai.mdx"
+      ]
     }
   ]
 }

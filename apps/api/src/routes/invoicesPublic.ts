@@ -18,7 +18,7 @@ import { assembleCustomerInvoiceDocument } from '../services/customerDocument';
 import { getInvoicePdf, renderInvoicePdf } from '../services/invoicePdf';
 import { createInvoicePayLink } from '../services/invoiceCheckout';
 import { publicInvoiceCheckoutUrls } from '../services/quoteAcceptCheckout';
-import { isPartnerOnlinePaymentAvailable } from '../services/partnerStripe';
+import { isPartnerOnlinePaymentAvailableOnCallerConnection } from '../services/partnerStripe';
 import { CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../services/stripeCheckoutErrors';
 import { HeldDbContextForStripeError, settleCheckoutSession } from '../services/stripeSettle';
 import { InvoiceServiceError } from '../services/invoiceTypes';
@@ -178,8 +178,10 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       lines: doc.lines,
       chargeNow,
       // #7509: no Pay CTA unless the partner can actually take online payment.
+      // #9585: read on THIS handler's system-context connection — the default
+      // variant would open a second connection inside this open transaction.
       payable: PAYABLE.has(inv.status) && Number(inv.balance) > 0
-        && await isPartnerOnlinePaymentAvailable(inv.partnerId),
+        && await isPartnerOnlinePaymentAvailableOnCallerConnection(inv.partnerId),
       autopay: customerAutopay.enrolled || !autopayKnown ? null : await getInvoiceAutopayOffer(inv.orgId, inv.id),
       bankAutopay: autopayKnown ? await getBankAutopayOffer(inv.id,inv.orgId) : null,
       branding: { ...doc.branding, partnerName: doc.branding.partnerName ?? 'Invoice' },

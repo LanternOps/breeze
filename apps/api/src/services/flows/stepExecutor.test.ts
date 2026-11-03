@@ -39,6 +39,11 @@ vi.mock('../actionIntents/intentService', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../actionIntents/intentService')>()),
   createActionIntent: vi.fn(),
 }));
+vi.mock('./builtins/index', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./builtins/index')>();
+  return { ...actual, executeFlowBuiltin: vi.fn(actual.executeFlowBuiltin) };
+});
+vi.mock('./builtins/runCounters', () => ({ countRunBuiltinCalls: vi.fn() }));
 vi.mock('../actionIntents/runScriptSnapshot', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../actionIntents/runScriptSnapshot')>()),
   buildRunScriptSnapshot: vi.fn(),
@@ -55,7 +60,9 @@ import type { FlowStepPin } from '../flowValidator';
 import type { FlowRunRow, FlowVersionRow } from '../../db/schema/flowRuns';
 import { buildFlowAuthContext } from './flowAuthContext';
 import { currentFlowExecutionFrame } from './flowExecutionContext';
-import { preApprovalMaterialFromSnapshot, type FlowPreApprovalBinding } from './preApproval';
+import { preApprovalMaterialFromSnapshot, type ActAssetPreApprovalBinding } from './preApproval';
+import { executeFlowBuiltin } from './builtins/index';
+import { countRunBuiltinCalls } from './builtins/runCounters';
 import { classifyToolResult, executeFlowStep, isErrorResult, isTransientFlowToolError, type StepExecutionInput } from './stepExecutor';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -92,6 +99,8 @@ function tenantTool(qualifiedName: string, tier: 1 | 2 | 3): TenantToolDescripto
 }
 const TENANT_T2 = tenantTool('halo__update_ticket', 2);
 const TENANT_T1 = tenantTool('halo__get_ticket', 1);
+// #10288: a Tier-3 external tool, with a canonical UUID id as tool_source_tools rows carry.
+const TENANT_T3: TenantToolDescriptor = { ...tenantTool('halo__close_ticket', 3), id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' };
 const tenantPin = (d: TenantToolDescriptor, stepId: string): FlowStepPin => ({
   stepId, tool: d.qualifiedName, source: 'tenant', tier: d.tier, approvalScope: d.tier === 3 ? 'supervised' : null,
   tenantToolId: d.id, tenantRevision: d.revision,
@@ -114,7 +123,7 @@ function built(snap: RunScriptSnapshot) {
   };
 }
 /** The binding enable would have stored for the step's literal input and the ORIGINAL content. */
-function binding(stepId = 'fix', input: Record<string, unknown> = RUN_SCRIPT_INPUT): FlowPreApprovalBinding {
+function binding(stepId = 'fix', input: Record<string, unknown> = RUN_SCRIPT_INPUT): ActAssetPreApprovalBinding {
   return {
     stepId, lane: 'act_asset', assetKind: 'script', scriptId: SCRIPT,
     contentDigest: preApprovalMaterialFromSnapshot(snapshot(), input).contentDigest,
@@ -161,15 +170,17 @@ beforeEach(() => {
   vi.mocked(executeTenantToolDetailed).mockReset().mockResolvedValue({ isError: false, text: '{"ok":true}' });
   vi.mocked(createActionIntent).mockReset().mockResolvedValue({ id: INTENT, status: 'pending_approval', errorCode: null } as never);
   vi.mocked(buildRunScriptSnapshot).mockReset().mockResolvedValue(built(snapshot()));
-  vi.mocked(resolveTenantToolsForOwner).mockReset().mockResolvedValue([TENANT_T2, TENANT_T1]);
+  vi.mocked(resolveTenantToolsForOwner).mockReset().mockResolvedValue([TENANT_T2, TENANT_T1, TENANT_T3]);
   vi.mocked(loadTenantToolForExecution).mockReset().mockImplementation(async (id) => {
-    const d = [TENANT_T2, TENANT_T1].find((t) => t.id === id);
+    const d = [TENANT_T2, TENANT_T1, TENANT_T3].find((t) => t.id === id);
     return d ? ({ descriptor: d, source: {}, tool: {} } as never) : null;
   });
   vi.mocked(findOwnedScriptIds).mockReset().mockImplementation(async (_o, ids) => new Set([...ids].filter((i) => i === SCRIPT)));
   vi.mocked(findOwnedDeviceIds).mockReset().mockImplementation(async (_o, ids) => new Set([...ids].filter((i) => i === DEVICE || i === DEVICE_2)));
   vi.mocked(findOwnedDeviceGroupIds).mockReset().mockResolvedValue(new Set());
   noSleep.sleep.mockClear();
+  vi.mocked(countRunBuiltinCalls).mockReset().mockResolvedValue({ notify: 1, http: 1 });
+  vi.mocked(executeFlowBuiltin).mockClear();
 });
 
 afterEach(() => {
@@ -220,6 +231,152 @@ describe('executeFlowStep — when / render / built-ins', () => {
       pin: { stepId: 'remember', tool: 'set', source: 'builtin', tier: 1, approvalScope: null },
     }));
     expect(out).toMatchObject({ kind: 'failed', code: 'render_failed' });
+  });
+
+  it('set and wait dispatch through executeFlowBuiltin', async () => {
+    await executeFlowStep(input({
+      step: step('remember', 'set', { values: { a: 1 } }),
+      pin: { stepId: 'remember', tool: 'set', source: 'builtin', tier: 1, approvalScope: null },
+    }));
+    expect(executeFlowBuiltin).toHaveBeenCalledWith('set', { values: { a: 1 } }, expect.objectContaining({ stepRowId: STEP_ROW }));
+    // wait/set never read the per-run counters.
+    expect(countRunBuiltinCalls).not.toHaveBeenCalled();
+  });
+});
+
+// W5 PR B (#5220, Decision 12): built-ins go through run-time revalidation and Tier-3 parking.
+describe('executeFlowStep — W5 built-ins', () => {
+  const HTTP_POST_PIN: FlowStepPin = { stepId: 'call', tool: 'http_request', source: 'builtin', tier: 3, approvalScope: 'supervised' };
+  const HTTP_GET_PIN: FlowStepPin = { stepId: 'call', tool: 'http_request', source: 'builtin', tier: 2, approvalScope: null };
+  const NOTIFY_PIN: FlowStepPin = { stepId: 'tell', tool: 'notify', source: 'builtin', tier: 2, approvalScope: null };
+  const AI_PIN: FlowStepPin = { stepId: 'think', tool: 'ai', source: 'builtin', tier: 1, approvalScope: null };
+  const CHANNEL = '7d1c3a5e-2b4f-4c6a-9e8d-1f2a3b4c5d6e';
+
+  it('tier-3 http_request parks with a builtin flow intent and never executes', async () => {
+    const out = await executeFlowStep(input({
+      step: step('call', 'http_request', { method: 'POST', url: 'https://api.example.com/hosts/{{trigger.device.id}}', body: { up: true } }),
+      pin: HTTP_POST_PIN,
+    }));
+    expect(out).toMatchObject({ kind: 'park_approval', intentId: INTENT });
+    const [, intentInput] = vi.mocked(createActionIntent).mock.calls[0]!;
+    expect(intentInput).toMatchObject({
+      source: 'flow',
+      toolName: 'http_request',
+      input: { method: 'POST', url: `https://api.example.com/hosts/${DEVICE}`, body: { up: true } },
+      flowRun: { runId: RUN, stepRowId: STEP_ROW, stepId: 'call', builtin: true },
+    });
+    expect(executeFlowBuiltin).not.toHaveBeenCalled();
+  });
+
+  it('a tier-3 built-in is never pre-approved, even on an honouring run with a binding for its step', async () => {
+    const out = await executeFlowStep(input({
+      run: run({ preApprovalsHonored: true }),
+      version: version({ preApprovals: [binding('call') as unknown as Record<string, unknown>] }),
+      step: step('call', 'http_request', { method: 'DELETE', url: 'https://api.example.com/x' }),
+      pin: HTTP_POST_PIN,
+    }));
+    expect(out).toMatchObject({ kind: 'park_approval' });
+    expect(buildRunScriptSnapshot).not.toHaveBeenCalled();
+    expect(executeFlowBuiltin).not.toHaveBeenCalled();
+  });
+
+  // Review round: an approver is never asked to approve a request that is
+  // certain to be refused at release (policy is checked before parking).
+  it('a tier-3 http_request that the egress policy would refuse fails before it parks (no intent)', async () => {
+    vi.stubEnv('PUBLIC_API_URL', 'https://api.example.com');
+    try {
+      expect(await executeFlowStep(input({ step: step('call', 'http_request', { method: 'POST', url: 'https://api.example.com/x' }), pin: HTTP_POST_PIN })))
+        .toMatchObject({ kind: 'failed', code: 'egress_blocked', policy: true });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    // (An oversized templated body never gets this far: the render bound refuses it first.)
+    vi.mocked(countRunBuiltinCalls).mockResolvedValueOnce({ notify: 0, http: 101 });
+    expect(await executeFlowStep(input({ step: step('call', 'http_request', { method: 'DELETE', url: 'https://api.example.com/x' }), pin: HTTP_POST_PIN })))
+      .toMatchObject({ kind: 'failed', policy: true });
+    expect(createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('rendered built-in input is schema-checked at run time', async () => {
+    const out = await executeFlowStep(input({
+      step: step('call', 'http_request', { method: 'GET', url: 'https://api.example.com/x', timeout: '{{inputs.t}}' }),
+      pin: HTTP_GET_PIN,
+      scope: { ...SCOPE, inputs: { t: 5 } },
+    }));
+    expect(out).toMatchObject({ kind: 'failed', code: 'input_invalid', policy: true });
+    expect(executeFlowBuiltin).not.toHaveBeenCalled();
+  });
+
+  it('a GET pin whose rendered method writes is drift and never executes', async () => {
+    const out = await executeFlowStep(input({
+      step: step('call', 'http_request', { method: 'POST', url: 'https://api.example.com/x' }),
+      pin: HTTP_GET_PIN,
+    }));
+    expect(out).toMatchObject({ kind: 'failed', code: 'drift', policy: true });
+    expect(executeFlowBuiltin).not.toHaveBeenCalled();
+    expect(createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('ai step whose tool tier rose is drift', async () => {
+    vi.mocked(resolveTenantToolsForOwner).mockResolvedValue([tenantTool('halo__get_ticket', 2)]);
+    const out = await executeFlowStep(input({
+      step: step('think', 'ai', { prompt: 'Summarise', tools: ['halo__get_ticket'], output: { type: 'object' } }),
+      pin: AI_PIN,
+    }));
+    expect(out).toMatchObject({ kind: 'failed', code: 'drift', policy: true });
+    expect(executeFlowBuiltin).not.toHaveBeenCalled();
+  });
+
+  it('notify dispatches inside the flow frame with the per-run counters, the publication step and the lease', async () => {
+    vi.mocked(countRunBuiltinCalls).mockResolvedValue({ notify: 3, http: 0 });
+    let frameRunId: string | undefined;
+    vi.mocked(executeFlowBuiltin).mockImplementationOnce(async () => {
+      frameRunId = currentFlowExecutionFrame()?.runId;
+      return { kind: 'completed', output: { channelId: CHANNEL, sent: true }, truncated: false };
+    });
+    const tell = step('tell', 'notify', { channelId: CHANNEL, title: 'Disk on {{trigger.device.id}}', message: 'Cleaned' });
+    const out = await executeFlowStep(input({ step: tell, pin: NOTIFY_PIN, leaseToken: 'lease-1' }));
+    expect(out).toMatchObject({ kind: 'completed', output: { channelId: CHANNEL, sent: true }, renderedInput: { title: `Disk on ${DEVICE}` } });
+    expect(frameRunId).toBe(RUN);
+    expect(countRunBuiltinCalls).toHaveBeenCalledWith(RUN);
+    const [name, rendered, ctx] = vi.mocked(executeFlowBuiltin).mock.calls[0]!;
+    expect(name).toBe('notify');
+    expect(rendered).toMatchObject({ channelId: CHANNEL, title: `Disk on ${DEVICE}`, severity: 'info' });
+    expect(ctx).toMatchObject({
+      counters: { notify: 3, http: 0 }, step: tell, stepRowId: STEP_ROW, leaseToken: 'lease-1',
+      owner: { orgId: ORG, partnerId: PARTNER },
+    });
+    expect(ctx.run.id).toBe(RUN);
+  });
+
+  it('a tier-2 built-in that throws may have taken effect: unknown_outcome', async () => {
+    vi.mocked(executeFlowBuiltin).mockRejectedValueOnce(new Error('socket hang up'));
+    const out = await executeFlowStep(input({
+      step: step('tell', 'notify', { channelId: CHANNEL, title: 't', message: 'm' }), pin: NOTIFY_PIN,
+    }));
+    expect(out).toMatchObject({ kind: 'unknown_outcome' });
+  });
+
+  it('a tier-1 built-in that throws fails the step without retrying', async () => {
+    vi.mocked(executeFlowBuiltin).mockRejectedValueOnce(new Error('ECONNRESET'));
+    const out = await executeFlowStep(input({
+      step: step('think', 'ai', { prompt: 'x', tools: [], output: { type: 'object' } }), pin: AI_PIN,
+    }), noSleep);
+    expect(out).toMatchObject({ kind: 'failed', code: 'step_failed', policy: false });
+    expect(executeFlowBuiltin).toHaveBeenCalledTimes(1);
+  });
+
+  it('a tier-2 built-in past its deadline is unknown_outcome and its late result is dropped', async () => {
+    vi.useFakeTimers();
+    vi.mocked(executeFlowBuiltin).mockImplementationOnce(() => new Promise((resolve) => {
+      setTimeout(() => resolve({ kind: 'completed', output: { late: true }, truncated: false }), 10_000);
+    }));
+    const pending = executeFlowStep(input({
+      step: step('tell', 'notify', { channelId: CHANNEL, title: 't', message: 'm' }), pin: NOTIFY_PIN,
+      deadline: Date.now() + 1_000,
+    }));
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(await pending).toMatchObject({ kind: 'unknown_outcome' });
   });
 });
 
@@ -400,6 +557,79 @@ describe('executeFlowStep — tier 3', () => {
     const pending = executeFlowStep(input({ deadline: Date.now() + 5_000 }));
     await vi.advanceTimersByTimeAsync(5_001);
     await expect(pending).resolves.toMatchObject({ kind: 'unknown_outcome' });
+  });
+});
+
+// #10288: a Tier-3 external (tool-source) step parks on a `source: 'flow'`
+// intent BOUND to the pinned tool row + revision. Without the binding
+// createActionIntent classifies the qualified `<slug>__<name>` with the CORE
+// classifier ("unknown tool", tier 4) and refuses it `tool_blocked`, so the
+// step failed instead of waiting for approval. The binding is what the dispatch
+// claim (tenantStepStillPinned) and release revalidation check against.
+describe('executeFlowStep — tier-3 external (tool-source) steps', () => {
+  const closeStep = () => step('close', TENANT_T3.qualifiedName, { summary: 'resolved on {{trigger.device.id}}' });
+
+  it('parks on a flow intent bound to the pinned tool row and revision, and never executes', async () => {
+    const flowAuth = auth();
+    const out = await executeFlowStep(input({ auth: flowAuth, step: closeStep(), pin: tenantPin(TENANT_T3, 'close') }));
+    expect(out).toMatchObject({ kind: 'park_approval', intentId: INTENT, renderedInput: { summary: `resolved on ${DEVICE}` } });
+    expect(createActionIntent).toHaveBeenCalledTimes(1);
+    const [authArg, intentInput] = vi.mocked(createActionIntent).mock.calls[0]!;
+    expect(authArg).toBe(flowAuth);
+    expect(intentInput).toMatchObject({
+      source: 'flow',
+      orgId: ORG,
+      toolName: TENANT_T3.qualifiedName,
+      input: { summary: `resolved on ${DEVICE}` },
+      externalTool: { toolSourceToolId: TENANT_T3.id, revision: 'rev-1', sourceName: 'Vendor' },
+      flowRun: { runId: RUN, stepRowId: STEP_ROW, delegatorUserId: DELEGATOR, flowName: 'Nightly fix', stepId: 'close' },
+    });
+    // An external step is never a built-in intent.
+    expect(intentInput.flowRun).not.toHaveProperty('builtin');
+    expect(loadTenantToolForExecution).toHaveBeenCalledWith(TENANT_T3.id, flowAuth, ORG);
+    expect(executeTenantToolDetailed).not.toHaveBeenCalled();
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it('a core Tier-3 step carries no external binding', async () => {
+    await executeFlowStep(input({ version: version({ preApprovals: [] }) }));
+    expect(vi.mocked(createActionIntent).mock.calls[0]![1]).not.toHaveProperty('externalTool');
+  });
+
+  it('a tool the flow principal can no longer load fails policy before any intent is minted', async () => {
+    vi.mocked(loadTenantToolForExecution).mockResolvedValue(null);
+    const out = await executeFlowStep(input({ step: closeStep(), pin: tenantPin(TENANT_T3, 'close') }));
+    expect(out).toMatchObject({ kind: 'failed', code: 'tool_unavailable', policy: true });
+    expect(createActionIntent).not.toHaveBeenCalled();
+    expect(executeTenantToolDetailed).not.toHaveBeenCalled();
+  });
+
+  it('a live revision that moved off the pin is drift and never parks', async () => {
+    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: { ...TENANT_T3, revision: 'rev-2' }, source: {}, tool: {} } as never);
+    const out = await executeFlowStep(input({ step: closeStep(), pin: tenantPin(TENANT_T3, 'close') }));
+    expect(out).toMatchObject({ kind: 'failed', code: 'drift', policy: true });
+    expect(createActionIntent).not.toHaveBeenCalled();
+    expect(executeTenantToolDetailed).not.toHaveBeenCalled();
+  });
+
+  it('is never pre-approved: a stored binding for its step on an honouring run fails closed and never executes', async () => {
+    const out = await executeFlowStep(input({
+      run: run({ preApprovalsHonored: true }),
+      version: version({ preApprovals: [binding('close', { summary: 'resolved on {{trigger.device.id}}' }) as unknown as Record<string, unknown>] }),
+      step: closeStep(),
+      pin: tenantPin(TENANT_T3, 'close'),
+    }));
+    expect(out).toMatchObject({ kind: 'failed', code: 'binding_drift', policy: true });
+    expect(createActionIntent).not.toHaveBeenCalled();
+    expect(executeTenantToolDetailed).not.toHaveBeenCalled();
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it('an intent cancelled at creation (nobody may approve) fails the step; it never self-approves', async () => {
+    vi.mocked(createActionIntent).mockResolvedValue({ id: INTENT, status: 'cancelled', errorCode: 'no_eligible_approvers' } as never);
+    const out = await executeFlowStep(input({ step: closeStep(), pin: tenantPin(TENANT_T3, 'close') }));
+    expect(out).toMatchObject({ kind: 'failed', code: 'no_eligible_approvers', policy: true });
+    expect(executeTenantToolDetailed).not.toHaveBeenCalled();
   });
 });
 

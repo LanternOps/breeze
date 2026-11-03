@@ -51,6 +51,17 @@ vi.mock('./preApproval', () => ({ assessPreApprovals: vi.fn() }));
 vi.mock('./owner', () => ({ resolveFlowOwnerForCaller: vi.fn() }));
 vi.mock('./repository', () => ({ takenFlowSlugs: vi.fn(), ownerForFlowRow: vi.fn() }));
 vi.mock('../auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnapshot: () => ({}) }));
+vi.mock('./budgets', () => ({ readFlowUsage: vi.fn() }));
+vi.mock('./conversion/ledger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./conversion/ledger')>()),
+  resetShadowIfChanged: vi.fn(async () => false),
+  shadowPlaceholderAllowance: vi.fn(async () => new Set<string>()),
+  convertedFromForFlow: vi.fn(async () => null),
+}));
+vi.mock('./flowLimits', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./flowLimits')>()),
+  resolveFlowLimits: vi.fn(),
+}));
 
 import { FlowStepPinError, stepPinsFor, validateFlowDocument } from '../flowValidator';
 import { captureException } from '../sentry';
@@ -58,8 +69,12 @@ import { assessPreApprovals } from './preApproval';
 import { resolveFlowOwnerForCaller } from './owner';
 import { ownerForFlowRow, takenFlowSlugs } from './repository';
 import { writeAuditEvent } from '../auditEvents';
-import { assertFlowSlugAvailable, getFlow, saveDraftFlow } from './service';
+import { assertFlowSlugAvailable, getFlow, listFlows, saveDraftFlow } from './service';
+import { readFlowUsage } from './budgets';
+import { computeFlowLimits, resolveFlowLimits } from './flowLimits';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../partnerWideAccess';
+import { convertedFromForFlow, resetShadowIfChanged, shadowPlaceholderAllowance } from './conversion/ledger';
+import { generatedScriptPlaceholderId } from './conversion/convertAutomation';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const PARTNER = '22222222-2222-4222-8222-222222222222';
@@ -279,6 +294,170 @@ describe('saveDraftFlow — update', () => {
     expect(set).toHaveProperty('definitionVersion');
     expect(set).not.toHaveProperty('slug');
     expect(set).not.toHaveProperty('orgId');
+  });
+});
+
+describe('saveDraftFlow — conversion shadow (#5221 W06 B1)', () => {
+  it('editing the draft resets shadow counters', async () => {
+    queues.select.push([row({ definitionVersion: 4 })]);
+    queues.update.push([row({ definitionVersion: 5 })]);
+    vi.mocked(resetShadowIfChanged).mockClear();
+    const r = await saveDraftFlow(auth(), { document: DOC, flowId: FLOW_ID, expectedVersion: 4 });
+    expect(r.saved).toBe(true);
+    // In the same context as the draft UPDATE, keyed by the flow (the ledger compares the stored document digest).
+    expect(resetShadowIfChanged).toHaveBeenCalledTimes(1);
+    expect(resetShadowIfChanged).toHaveBeenCalledWith(expect.anything(), { flowId: FLOW_ID });
+  });
+
+  it('a refused draft save never touches the shadow', async () => {
+    queues.select.push([row({ definitionVersion: 3 })]);
+    vi.mocked(resetShadowIfChanged).mockClear();
+    await saveDraftFlow(auth(), { document: DOC, flowId: FLOW_ID, expectedVersion: 2 });
+    expect(resetShadowIfChanged).not.toHaveBeenCalled();
+  });
+});
+
+// W06 (#5221) B1 defect, lead option 1: a converted draft names each script
+// the switch will generate by a placeholder; only the draft SAVE excuses it.
+describe('saveDraftFlow — generated-script placeholders (#5221 W06)', () => {
+  const AUTOMATION = '66666666-6666-4666-8666-666666666666';
+  const PLACEHOLDER = generatedScriptPlaceholderId(AUTOMATION, 0);
+  const FOREIGN = '88888888-8888-4888-8888-888888888888';
+  const COMMAND_DOC = (scriptId: string) => ({
+    ...DOC,
+    steps: [{ id: 'a0_command', tool: 'run_script_on_targets', approval: 'default', onFailure: 'continue', timeoutSec: 3600,
+      input: { scriptId, whenOffline: 'queue', target: { type: 'devices', deviceIds: [] } } }],
+  });
+  const refused = (scriptId: string) => ({
+    valid: false, effectiveTier: 3, steps: [], document: COMMAND_DOC(scriptId),
+    issues: [{ code: 'reference_not_owned', severity: 'error', message: 'x', stepId: 'a0_command', pointer: '/steps/0/input/scriptId' }],
+  });
+  const COMMAND_ACTIONS = [{ type: 'execute_command', command: 'Get-Date', shell: 'powershell' }];
+
+  it("a draft edit keeps this flow's own shadow placeholder (allowance read for the flow, in the caller's context)", async () => {
+    queues.select.push([row({ definitionVersion: 2 })]);
+    queues.update.push([row({ definitionVersion: 3 })]);
+    vi.mocked(validateFlowDocument).mockResolvedValue(refused(PLACEHOLDER) as never);
+    vi.mocked(shadowPlaceholderAllowance).mockResolvedValueOnce(new Set([PLACEHOLDER]));
+    const r = await saveDraftFlow(auth(), { document: COMMAND_DOC(PLACEHOLDER), flowId: FLOW_ID, expectedVersion: 2 });
+    expect(r.saved).toBe(true);
+    expect(shadowPlaceholderAllowance).toHaveBeenLastCalledWith(expect.anything(), FLOW_ID);
+    if (r.saved) expect(r.validation.issues).toEqual([]);
+  });
+
+  it('with no live shadow conversion the placeholder is refused and nothing is written', async () => {
+    queues.select.push([row({ definitionVersion: 2 })]);
+    vi.mocked(validateFlowDocument).mockResolvedValue(refused(PLACEHOLDER) as never);
+    vi.mocked(shadowPlaceholderAllowance).mockResolvedValueOnce(new Set());
+    const r = await saveDraftFlow(auth(), { document: COMMAND_DOC(PLACEHOLDER), flowId: FLOW_ID, expectedVersion: 2 });
+    expect(r.saved).toBe(false);
+    expect(callsOf('update')).toHaveLength(0);
+  });
+
+  it("another tenant's real script in that draft is still reference_not_owned", async () => {
+    queues.select.push([row({ definitionVersion: 2 })]);
+    vi.mocked(validateFlowDocument).mockResolvedValue(refused(FOREIGN) as never);
+    vi.mocked(shadowPlaceholderAllowance).mockResolvedValueOnce(new Set([PLACEHOLDER]));
+    const r = await saveDraftFlow(auth(), { document: COMMAND_DOC(FOREIGN), flowId: FLOW_ID, expectedVersion: 2 });
+    expect(r).toMatchObject({ saved: false, validation: { issues: [expect.objectContaining({ code: 'reference_not_owned' })] } });
+  });
+
+  it("the conversion's create derives the allowance from the Job it converts (server side)", async () => {
+    queues.insert.push([row()]);
+    vi.mocked(validateFlowDocument).mockResolvedValue(refused(PLACEHOLDER) as never);
+    const r = await saveDraftFlow(auth(), { document: COMMAND_DOC(PLACEHOLDER), convertedFrom: { automationId: AUTOMATION, actions: COMMAND_ACTIONS } });
+    expect(r.saved).toBe(true);
+
+    vi.mocked(validateFlowDocument).mockResolvedValue(refused(generatedScriptPlaceholderId('77777777-7777-4777-8777-777777777777', 0)) as never);
+    const other = await saveDraftFlow(auth(), { document: COMMAND_DOC(PLACEHOLDER), convertedFrom: { automationId: AUTOMATION, actions: COMMAND_ACTIONS } });
+    expect(other.saved).toBe(false);
+  });
+
+  it('a plain create never excuses a placeholder, and a valid save never reads the allowance', async () => {
+    vi.mocked(validateFlowDocument).mockResolvedValue(refused(PLACEHOLDER) as never);
+    expect((await saveDraftFlow(auth(), { document: COMMAND_DOC(PLACEHOLDER) })).saved).toBe(false);
+
+    vi.mocked(shadowPlaceholderAllowance).mockClear();
+    vi.mocked(validateFlowDocument).mockResolvedValue(VALID as never);
+    queues.select.push([row({ definitionVersion: 2 })]);
+    queues.update.push([row({ definitionVersion: 3 })]);
+    expect((await saveDraftFlow(auth(), { document: DOC, flowId: FLOW_ID, expectedVersion: 2 })).saved).toBe(true);
+    expect(shadowPlaceholderAllowance).not.toHaveBeenCalled();
+  });
+});
+
+describe('getFlow — W5 webhook block and usage (#5220 A5)', () => {
+  const WEBHOOK_DOC = { ...DOC, trigger: { type: 'webhook', auth: 'token' } };
+  beforeEach(() => {
+    vi.stubEnv('PUBLIC_API_URL', 'https://api.example.com/');
+    vi.mocked(resolveFlowLimits).mockReset().mockResolvedValue(computeFlowLimits({ flows: { monthlyRunsPerFlow: 50 } }, {}));
+    vi.mocked(readFlowUsage).mockReset().mockResolvedValue({ flowRuns: 4, ownerRuns: 9 });
+    vi.mocked(validateFlowDocument).mockResolvedValue({ valid: false, effectiveTier: null, steps: [], issues: [] } as never);
+  });
+
+  it('a webhook flow carries its url, auth mode and fingerprint — never the ciphertext', async () => {
+    queues.select.push([row({
+      definition: WEBHOOK_DOC, webhookSecretEncrypted: 'enc:v3:k:SECRETCIPHER', webhookSecretFingerprint: 'fp1:k:abc',
+      webhookSecretRotatedAt: new Date('2027-03-01T10:00:00Z'), webhookLastAuthFailureAt: new Date('2027-03-02T10:00:00Z'),
+      webhookLastAuthFailureReason: 'bad_signature',
+    })]);
+    const r = await getFlow(auth(), FLOW_ID);
+    expect(r?.flow.webhook).toEqual({
+      url: `https://api.example.com/api/v1/webhooks/flows/${FLOW_ID}`, authMode: 'token', secretFingerprint: 'fp1:k:abc',
+      secretRotatedAt: '2027-03-01T10:00:00.000Z', lastAuthFailureAt: '2027-03-02T10:00:00.000Z', lastAuthFailureReason: 'bad_signature',
+    });
+    expect(JSON.stringify(r)).not.toContain('SECRETCIPHER');
+  });
+
+  it('detail shows moved-from: a converted flow carries its source Job (#5221 C3)', async () => {
+    const from = { automationId: '55555555-5555-4555-8555-555555555555', name: 'Nightly cleanup', conversionId: '66666666-6666-4666-8666-666666666666', state: 'switched' as const };
+    vi.mocked(convertedFromForFlow).mockResolvedValueOnce(from);
+    queues.select.push([row()]);
+    const r = await getFlow(auth(), FLOW_ID);
+    expect(r?.flow.convertedFrom).toEqual(from);
+    expect(convertedFromForFlow).toHaveBeenCalledWith(FLOW_ID);
+  });
+
+  it('a flow that was never converted has convertedFrom null', async () => {
+    vi.mocked(convertedFromForFlow).mockResolvedValueOnce(null);
+    queues.select.push([row()]);
+    expect((await getFlow(auth(), FLOW_ID))?.flow.convertedFrom).toBeNull();
+  });
+
+  it('a non-webhook flow has no webhook block', async () => {
+    queues.select.push([row()]);
+    expect((await getFlow(auth(), FLOW_ID))?.flow.webhook).toBeNull();
+  });
+
+  it("usage reports this month's runs against the effective caps", async () => {
+    queues.select.push([row({ definition: { ...DOC, limits: { monthlyRuns: 20 } } })]);
+    const r = await getFlow(auth(), FLOW_ID);
+    expect(r?.flow.usage).toMatchObject({ flowRuns: 4, flowCap: 20, ownerRuns: 9, ownerCap: 100_000 });
+    expect(r?.flow.usage?.periodKey).toMatch(/^\d{4}-\d{2}$/);
+  });
+
+  it('an org caller reading a partner-wide flow gets no usage (its counters are partner-private)', async () => {
+    queues.select.push([row({ orgId: null, partnerId: PARTNER })]);
+    vi.mocked(ownerForFlowRow).mockResolvedValueOnce({ orgId: null, partnerId: PARTNER });
+    expect((await getFlow(auth(), FLOW_ID))?.flow.usage).toBeNull();
+    expect(readFlowUsage).not.toHaveBeenCalled();
+    // A partner caller reads them.
+    queues.select.push([row({ orgId: null, partnerId: PARTNER })]);
+    vi.mocked(ownerForFlowRow).mockResolvedValueOnce({ orgId: null, partnerId: PARTNER });
+    expect((await getFlow(partnerAuth('all'), FLOW_ID))?.flow.usage).toMatchObject({ flowRuns: 4, ownerRuns: 9 });
+    expect(readFlowUsage).toHaveBeenCalledWith(FLOW_ID, { orgId: null, partnerId: PARTNER }, expect.any(Date));
+  });
+
+  it('the flow list carries the last admission refusal too, for the list badge (W05 PR D)', async () => {
+    queues.select.push([{ n: 1 }]);
+    queues.select.push([{ ...row({ lastAdmissionRefusalAt: new Date('2027-03-03T00:00:00Z'), lastAdmissionRefusalCode: 'owner_monthly_cap_reached' }), triggerType: 'event' }]);
+    const { flows } = await listFlows(auth(), {});
+    expect(flows[0]!.lastAdmissionRefusal).toEqual({ at: '2027-03-03T00:00:00.000Z', code: 'owner_monthly_cap_reached' });
+  });
+
+  it('the last admission refusal is reported for the banner', async () => {
+    queues.select.push([row({ lastAdmissionRefusalAt: new Date('2027-03-03T00:00:00Z'), lastAdmissionRefusalCode: 'flow_monthly_cap_reached' })]);
+    expect((await getFlow(auth(), FLOW_ID))?.flow.lastAdmissionRefusal).toEqual({ at: '2027-03-03T00:00:00.000Z', code: 'flow_monthly_cap_reached' });
   });
 });
 

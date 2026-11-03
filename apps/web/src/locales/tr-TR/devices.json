@@ -354,7 +354,7 @@
     "currentSite": "Mevcut site",
     "newSite": "Yeni site",
     "loadingSites": "Siteler yükleniyor...",
-    "thisOrganizationOnlyHasOneSite": "Bu kuruluşun yalnızca bir sitesi var. Taşımayı etkinleştirmek için Ayarlar → Kuruluşlar'dan daha fazla site ekleyin.",
+    "thisOrganizationOnlyHasOneSite": "Bu kuruluşun yalnızca bir sitesi var. Taşımayı etkinleştirmek için kuruluşun Siteler sekmesinden (Kuruluşlar → kuruluşu açın → Siteler) daha fazla site ekleyin.",
     "current": "(güncel)",
     "cancel": "İptal",
     "moving": "Taşınıyor...",
@@ -376,21 +376,6 @@
     "moveDevices_other": "{{count}} cihazı taşı",
     "bulkPolicyNote": "Taşıma, bu cihazlara uygulanan site yapılandırma ilkelerini, bakım pencerelerini, uyarı yönlendirmesini ve raporları değiştirir. Breeze onları otomatik olarak geri taşımaz.",
     "failedToMoveDevices": "Cihazlar taşınamadı"
-  },
-  "createGroupModal": {
-    "failedToCreateGroup": "Grup oluşturulamadı",
-    "newDeviceGroup": "Yeni Cihaz Grubu",
-    "name": "İsim",
-    "eGProductionServers": "ör. Üretim Sunucuları",
-    "type": "Tür",
-    "static": "Statik",
-    "dynamic": "Dinamik",
-    "manuallyAddAndRemoveDevicesAfter": "Cihazları oluşturduktan sonra manuel olarak ekleyin ve kaldırın.",
-    "devicesAreAutoAssignedBasedOn": "Cihazlar, filtre kurallarına göre otomatik olarak atanır.",
-    "filterRules": "Filtre Kuralları",
-    "cancel": "İptal",
-    "creating": "Oluşturuluyor...",
-    "createGroup": "Grup Oluştur"
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} çıkarılan gizlendi",
@@ -1361,7 +1346,14 @@
     "assignAPolicyTo": "Şuna bir politika atayın:",
     "policy2": "Politika",
     "selectAPolicy": "Bir politika seçin",
-    "applying": "Başvuruluyor..."
+    "applying": "Başvuruluyor...",
+    "ownerFilterAll": "Tüm gruplar",
+    "ownerFilterOrganization": "Kuruluş grupları",
+    "ownerFilterPartner": "Tüm kuruluşlar",
+    "noGroupsMatchFilter": "Bu filtreyle eşleşen grup yok.",
+    "managedByPartner": "Hizmet sağlayıcınız tarafından yönetilir. Üyelik kuralları gösterilmez; kuruluşunuzun cihazlarını görürsünüz.",
+    "partnerDynamicType": "Dinamik · Tüm kuruluşlar",
+    "partnerDeleteWarning": "Bu işlem grubu tüm kuruluşlardan kaldırır ve ilke atamalarını siler."
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Donanım envanteri getirilemedi",
@@ -1754,6 +1746,11 @@
     "on": "açık",
     "multiBootMachinesTuckExpectedOffline": "Çoklu önyüklemeli makineler: Beklenen çevrimdışı önyükleme profillerini, çevrimiçi kardeşlerinin altına ince şeritler halinde sıkıştırın. Kapalı = düz liste.",
     "collapseLinkedInactiveProfiles": "Bağlantılı etkin olmayan profilleri daralt",
+    "exportCsv": "CSV olarak dışa aktar",
+    "exportCsvSelected": "CSV olarak dışa aktar ({{count}} seçili)",
+    "exportingCsv": "Dışa aktarılıyor…",
+    "exportCsvFailed": "Cihaz listesi dışa aktarılamadı. Tekrar deneyin.",
+    "exportCsvAttentionPartial": "Dışa aktarıldı, ancak bazı cihazlar için açık uyarılar ve talepler yüklenemedi; bu hücrelerde \"unavailable\" yazar.",
     "columns": "Sütunlar",
     "visibleInOrder": "Görünür (sırayla)",
     "moveUp": "Yukarı git",
@@ -1886,7 +1883,10 @@
     "moveToSite": "Siteye taşı",
     "moveSelectedToSite": "Siteye taşı",
     "moveSiteMixedOrgs": "Seçilen cihazlar birden fazla kuruluşa ait",
-    "moveSiteOverCap": "Aynı anda taşımak için en fazla {{count}} cihaz seçin"
+    "moveSiteOverCap": "Aynı anda taşımak için en fazla {{count}} cihaz seçin",
+    "addToGroup": "Gruba ekle…",
+    "removeFromGroup": "Gruptan kaldır…",
+    "groupMembershipOverCap": "Grup üyeliğini aynı anda değiştirmek için en fazla {{count}} cihaz seçin"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Cihaz günlükleri getirilemedi",
@@ -2067,11 +2067,14 @@
     "loading": "Yama durumu yükleniyor...",
     "notDownloadedTitle": "Henüz indirilmedi; yükleme işlemi daha uzun sürecektir",
     "notices": {
+      "installCommandEnded": "Yükleme komutu, cihaz bir sonuç bildirmeden önce sona erdi ({{status}}). Ayrıntılar için cihazın komut geçmişine bakın.",
+      "installFinishedWithIssues": "Yükleme tamamlandı: {{installed}} yüklendi, {{failed}} başarısız, {{awaitingRestart}} yeniden başlatma bekliyor, {{unresolved}} henüz doğrulanmadı. Ayrıntılar için yama satırlarına bakın.",
       "installLongerThanExpected": "Kurulum beklenenden uzun sürüyor. macOS güncellemeleri 30+ dakika sürebilir. Durumu kontrol etmek için sayfayı daha sonra yenileyin.",
       "installPatchFailed": "{{name}} yüklenemedi",
       "installPatchQueued": "Kurulum \"{{name}}\" için sıraya alındı",
       "installPatchQueuedDetail": "Kurulum \"{{name}}\"{{dispatchSuffix}} için sıraya alındı.",
       "installQueuedForPatches": "{{label}} {{count}} yamaları için sıraya girdi{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "Yükleme durumu denetlenemedi: yama listesi yüklenemedi. En son durumu görmek için sayfayı yenileyin.",
       "installedSuccessfully": "{{installed}} yama(lar)ı başarıyla yüklendi. {{pending}} hâlâ beklemede.",
       "installingPolling": "Yamalar yükleniyor... Güncellemeler için oylama.",
       "noPendingForLabel": "{{label}} için bekleyen yama yok.",
@@ -2117,6 +2120,7 @@
       "excludedCategoryTitle": "{{ring}} güncelleme halkası bu yamanın kategorisini hariç tutuyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedAppRuleTitle": "Bağlantılı Güncelleme Halkasındaki bir uygulama engelleme veya sabitleme kuralı bu yamayı bekletiyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedRingReferenceTitle": "Bekletiliyor: bu cihazın yama ilkesi artık var olmayan veya bu iş ortağı için kullanılamayan bir güncelleme halkasına bağlı. Yamalamaya devam etmek için ilkenin güncelleme halkasını düzeltin.",
+      "excludedUserScopeTitle": "Yüklenemez: bu, Breeze'in henüz uygulayamadığı kullanıcı başına bir yükleme olduğundan hiçbir yama çalıştırması onu yüklemez.",
       "excludedFeatureUpdateTitle": "{{ring}} güncelleme halkası bu Windows özellik sürümünü engelliyor (veya cihazları başka bir sürüme sabitliyor), bu nedenle zamanlanmış yama çalıştırmaları bunu atlar.",
       "excludedDeclinedTitle": "Reddedildi: bu yama açıkça reddedildi, bu nedenle halkanın otomatik onayı onu yüklemez. İzin vermek için yeniden onaylayın.",
       "pending": "Onay bekliyor",
@@ -2395,7 +2399,9 @@
       "completed": "Tamamlandı",
       "failed": "Başarısız",
       "queued": "Sıraya alındı",
-      "running": "Çalışıyor"
+      "running": "Çalışıyor",
+      "cancelled": "İptal edildi",
+      "expired": "Süresi doldu"
     },
     "scanType": "{{type}} tarama",
     "scanTypes": {
@@ -2417,7 +2423,13 @@
       "quarantined": "Karantinaya alındı",
       "removed": "Kaldırıldı"
     },
-    "threatsFound": "Bulunan tehditler: {{count}}"
+    "threatsFound": "Bulunan tehditler: {{count}}",
+    "waitingForSlot": "Boş bir tarama yuvası bekleniyor. Bitiş: {{date}}.",
+    "cancelScan": "Taramayı iptal et",
+    "scanCancelled": "Tarama iptal edildi",
+    "cancelScanFailed": "Tarama iptal edilemedi",
+    "scanAlreadyRunning": "Tarama cihazda zaten çalışıyor ve iptal edilemez.",
+    "scanAlreadyQueued": "Bu cihaz için zaten kuyrukta bekleyen bir tarama var."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Bir etiket ekleyin...",
@@ -2608,9 +2620,18 @@
       "refreshFailed": "Garanti yenileme başarısız oldu: {{error}}",
       "refreshing": "Garanti yenileniyor…",
       "stillInProgress": "Garanti yenileme işlemi halen devam etmektedir; kart tamamlandığında güncellenecektir.",
-      "updated": "Garanti bilgileri güncellendi."
+      "updated": "Garanti bilgileri güncellendi.",
+      "agentCollected": "Bu cihazın garantisi Breeze ajanı tarafından toplanıyor, bu nedenle üretici sorgusu daha yeni bir bilgi sağlayamaz.",
+      "noVendorLookupKept": "Bu üretici için garanti sorgusu kullanılamıyor. Mevcut garanti verileri korundu."
     },
-    "lookUp": "Sorgula"
+    "lookUp": "Sorgula",
+    "sources": {
+      "agentCmsl": "Ajan (HP CMSL)",
+      "agentPlist": "Ajan (macOS plist)",
+      "import": "İçe aktarıldı",
+      "importVendorEarlier": "İçe aktarıldı (üretici daha erken bir bitiş tarihi bildiriyor)",
+      "provider": "Üretici API"
+    }
   },
   "devicesPage": {
     "accessDenied": "Cihazları görüntüleme izniniz yok.",
@@ -2749,6 +2770,10 @@
       "bulkMoveSiteSuccess_other": "{{count}} cihaz artık {{site}} konumunda",
       "bulkMoveSiteSomeFailed": "{{total}} cihazdan {{moved}} tanesi {{site}} sitesine taşındı. Taşınmayanlar: {{devices}}",
       "bulkMoveSiteAllFailed": "{{site}} sitesine hiçbir cihaz taşınmadı. Taşınmayanlar: {{devices}}",
+      "bulkMoveSiteNotMovedConflict": "{{devices}} (liste yüklendikten sonra sitesi değişti; liste yenilendi, yeniden deneyin)",
+      "bulkMoveSiteNotMovedForbidden": "{{devices}} (mevcut siteye veya hedef siteye erişiminiz yok)",
+      "bulkMoveSiteNotMovedNotFound": "{{devices}} (artık bulunamıyor; silinmiş olabilir)",
+      "bulkMoveSiteNotMovedError": "{{devices}} (beklenmeyen bir hata oluştu; yeniden deneyin)",
       "deviceMovedToSite": "{{hostname}} yeni bir siteye taşındı"
     },
     "tryAgain": "Tekrar deneyin",
@@ -2862,9 +2887,14 @@
       },
       "software": {
         "installed": "Yazılım Yüklü",
-        "notInstalled": "Eksik Yazılım"
+        "notInstalled": "Eksik Yazılım",
+        "version": "Yazılım sürümü",
+        "vendor": "Yazılım sağlayıcısı"
       },
-      "logShippingFailing": "Günlük gönderimi başarısız"
+      "logShippingFailing": "Günlük gönderimi başarısız",
+      "networkIsolation": {
+        "active": "Yalıtılmış"
+      }
     }
   },
   "filterChipBar": {
@@ -2932,9 +2962,14 @@
       },
       "software": {
         "installed": "Yazılım Yüklü",
-        "notInstalled": "Eksik Yazılım"
+        "notInstalled": "Eksik Yazılım",
+        "version": "Yazılım sürümü",
+        "vendor": "Yazılım sağlayıcısı"
       },
-      "logShippingFailing": "Günlük gönderimi başarısız"
+      "logShippingFailing": "Günlük gönderimi başarısız",
+      "networkIsolation": {
+        "active": "Yalıtılmış"
+      }
     }
   },
   "filterHelpPopover": {
@@ -2950,8 +2985,10 @@
     "title": "Filtre kısayolları"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Eşleşen cihazları görmek için bir değer seçin",
     "counting": "…sayılıyor",
-    "matches": "~{{count}} cihazlar eşleşiyor",
+    "matches_one": "~{{count}} cihaz eşleşiyor",
+    "matches_other": "~{{count}} cihaz eşleşiyor",
     "unavailable": "önizleme kullanılamıyor"
   },
   "filterSentenceBuilder": {
@@ -3019,9 +3056,14 @@
       },
       "software": {
         "installed": "Yazılım Yüklü",
-        "notInstalled": "Eksik Yazılım"
+        "notInstalled": "Eksik Yazılım",
+        "version": "Yazılım sürümü",
+        "vendor": "Yazılım sağlayıcısı"
       },
-      "logShippingFailing": "Günlük gönderimi başarısız"
+      "logShippingFailing": "Günlük gönderimi başarısız",
+      "networkIsolation": {
+        "active": "Yalıtılmış"
+      }
     }
   },
   "filterValueEditor": {
@@ -4304,6 +4346,7 @@
       "pending": "Henüz denetlenmedi",
       "private": "Özel kayıt defteri — kimlik bilgileri gerekli",
       "unsupported_registry": "Kayıt defteri desteklenmiyor",
+      "provenance_unknown": "Kaynak bilinmiyor — imaj adı hiçbir kayıt defterine gönderilmez",
       "error": "Kayıt defteri denetimi başarısız — yeniden denenecek",
       "behind": "Bu etiket için daha yeni bir imaj yayımlandı",
       "current": "Kayıt defteriyle eşleşiyor",
@@ -4633,5 +4676,198 @@
     "untitledAlert": "Uyarı bildirildi",
     "alertsUnavailable": "Açık uyarılar yüklenemedi",
     "viewAlerts": "Uyarıları görüntüle"
+  },
+  "physicalPlacementCard": {
+    "title": "Fiziksel konum",
+    "room": "Oda",
+    "rack": "Kabinet",
+    "rackUnit": "Kabinet birimi",
+    "heightU": "Yükseklik (U)",
+    "add": "Konum ekle",
+    "edit": "Düzenle",
+    "save": "Kaydet",
+    "saving": "Kaydediliyor...",
+    "cancel": "İptal",
+    "remove": "Konumu kaldır",
+    "loadFailed": "Fiziksel konum yüklenemedi.",
+    "linkedNotice": "Bu varlık yönetilen bir cihaza bağlı. Konumu <deviceLink>{{name}}</deviceLink> üzerinden düzenleyin.",
+    "openDevice": "cihaz",
+    "removeConfirm": {
+      "title": "Fiziksel konum kaldırılsın mı?",
+      "message": "Bu varlığın oda, kabin, kabin birimi ve yükseklik bilgileri silinir."
+    },
+    "validation": {
+      "roomTooLong": "Oda en fazla 255 karakter olabilir.",
+      "rackTooLong": "Kabinet en fazla 128 karakter olabilir.",
+      "unitRange": "1 ile 100 arasında bir tam sayı girin."
+    },
+    "toasts": {
+      "saved": "Fiziksel konum kaydedildi",
+      "removed": "Fiziksel konum kaldırıldı",
+      "saveFailed": "Fiziksel konum kaydedilemedi",
+      "concurrent": "Konum başka bir yerde değiştirildi. En son değerler yeniden yüklendi; tekrar deneyin.",
+      "authorityDevice": "Bu varlık artık yönetilen bir cihaza bağlı. Konumu cihazda düzenleyin.",
+      "mfaRequired": "Fiziksel konumu değiştirmek için çok faktörlü kimlik doğrulama gerekir."
+    }
+  },
+  "assetCircuitCard": {
+    "title": "WAN ve devre",
+    "loadFailed": "WAN ve devre bilgileri yüklenemedi.",
+    "empty": "Bu varlık için kayıtlı veya size görünen bir devre yok.",
+    "provider": "Sağlayıcı",
+    "cid": "Devre kimliği",
+    "bandwidth": "Bant genişliği",
+    "serviceType": "Hizmet türü",
+    "administrativeStatus": "Yönetim durumu",
+    "sitesServed": "Bu devrenin hizmet verdiği siteler",
+    "terminationSite": "Sonlandırma sitesi: {{site}} ({{asset}} / {{iface}} üzerinden)",
+    "terminationSiteBare": "Sonlandırma sitesi: {{site}}",
+    "terminationUnassigned": "Sonlandırma atanmadı",
+    "terminationNeedsReassociation": "Sonlandırmanın yeniden ilişkilendirilmesi gerekiyor",
+    "interfaces": "Arayüzler",
+    "noInterfaces": "Kayıtlı arayüz yok.",
+    "wanBadge": "WAN",
+    "retiredBadge": "Kullanımdan kaldırıldı",
+    "markWan": "WAN olarak işaretle",
+    "unmarkWan": "WAN'ı kaldır",
+    "truncated": "Yalnızca bazı arayüzler gösteriliyor.",
+    "unmarkConfirm": {
+      "title": "WAN rolü kaldırılsın mı?",
+      "message": "{{name}} artık WAN arayüzü olarak değerlendirilmeyecek."
+    },
+    "status": {
+      "active": "Etkin",
+      "planned": "Planlandı",
+      "suspended": "Askıya alındı",
+      "disconnected": "Bağlantı kesildi"
+    },
+    "toasts": {
+      "marked": "Arayüz WAN olarak işaretlendi",
+      "unmarked": "WAN rolü kaldırıldı",
+      "failed": "WAN rolü güncellenemedi",
+      "mfaRequired": "WAN rolünü değiştirmek için çok faktörlü kimlik doğrulama gerekir.",
+      "hasTermination": "Bu arayüzün etkin bir devre sonlandırması var. Önce sonlandırmayı taşıyın veya kaldırın.",
+      "retired": "Bu arayüz kullanımdan kaldırıldı ve artık değiştirilemez.",
+      "notFound": "Arayüz bulunamadı. Liste yeniden yüklendi.",
+      "permissionDenied": "Topolojiyi değiştirme izniniz yok."
+    }
+  },
+  "partnerGroups": {
+    "ownerScope": "Grup sahibi",
+    "organization": "Bu kuruluş",
+    "partner": "Tüm kuruluşlar",
+    "dynamicOnly": "iş ortağı genelinde, yalnızca dinamik",
+    "scopeHint": "Üyelik, yönettiğiniz her kuruluşta değerlendirilir; statik üyelik, siteler ve grup veya kuruluş filtre koşulları kullanılamaz.",
+    "allOrgs": "Tüm kuruluşlar",
+    "pending": "Üyelik güncelleniyor…",
+    "current": "Son değerlendirme: {{time}}",
+    "notEvaluated": "Henüz değerlendirilmedi",
+    "partial_one": "{{count}} kuruluş değerlendirilmedi · son başarılı değerlendirme {{time}}",
+    "partial_other": "{{count}} kuruluş değerlendirilmedi · son başarılı değerlendirme {{time}}",
+    "retryHint": "Breeze bu kuruluşları otomatik olarak yeniden dener. Grubun filtresini kaydetmek yeni bir değerlendirme başlatır.",
+    "showMembers": "Üyeleri göster",
+    "hideMembers": "Üyeleri gizle",
+    "device": "Cihaz",
+    "organizationColumn": "Kuruluş",
+    "status": "Durum",
+    "loading": "Üyeler yükleniyor…",
+    "membersError": "Grup üyeleri yüklenemedi.",
+    "retry": "Yeniden dene",
+    "emptyMembers": "Bu grupta cihaz yok."
+  },
+  "bulkGroupMembership": {
+    "titleAdd": "Gruba ekle",
+    "titleRemove": "Gruptan kaldır",
+    "selectionSummary": "Seçili cihazlar: {{n}} · Kuruluş: {{org}}",
+    "groupLabel": "Statik grup",
+    "selectGroup": "Bir grup seçin",
+    "loadingGroups": "Gruplar yükleniyor…",
+    "noGroups": "Bu kuruluştaki hiçbir statik grup bu seçimi alamaz.",
+    "scopeHint": "Yalnızca bu kuruluşun statik grupları listelenir. Bir site grubu yalnızca seçili cihazların tümü o sitedeyse listelenir. Dinamik gruplar listelenmez: üyeleri kuralları belirler.",
+    "cancel": "İptal",
+    "saving": "Kaydediliyor…",
+    "submitAdd": "Cihazları ekle",
+    "submitRemove": "Cihazları kaldır",
+    "failedToLoadGroups": "Gruplar yüklenemedi",
+    "failedToUpdate": "Grup üyeliği güncellenemedi",
+    "addResult": "{{group}}: {{added}} eklendi, {{skipped}} zaten grupta",
+    "removeResult": "{{group}}: {{removed}} kaldırıldı, {{notMember}} grupta değildi",
+    "removeResultForbidden": "{{group}}: {{removed}} kaldırıldı, {{notMember}} grupta değildi. Kaldırılmayanlar (cihazın sitesine erişim yok): {{devices}}",
+    "andMore": "{{names}} ve {{n}} tane daha"
+  },
+  "networkIsolation": {
+    "heading": "Ağ yalıtımı",
+    "isolate": "Ağdan yalıt…",
+    "release": "Yalıtımı kaldır…",
+    "release_queued": "Kaldır (cihaz yeniden bağlanana kadar sırada)",
+    "startTitle": "Ağdan yalıt",
+    "releaseTitle": "Ağ yalıtımını kaldır",
+    "startDescription": "Breeze yönetim iletişimi dışındaki ağ trafiğini engelleyin.",
+    "releaseDescription": "Breeze yalıtım kurallarının kaldırılmasını isteyin. Çevrimdışı cihaz yeniden bağlandığında isteği alır.",
+    "serverWarning": "Bu bir sunucu işletim sistemidir. Yalıtım diğer cihazların hizmetlerini kesintiye uğratabilir.",
+    "reason": "Gerekçe",
+    "ttlHours": "Süre (saat)",
+    "incidentId": "Mevcut olay kimliği (isteğe bağlı)",
+    "incidentTitle": "Yeni olay başlığı",
+    "remoteRelay": "Uzak masaüstünü aktarma üzerinden erişilebilir tut",
+    "startSuccess": "Ağ yalıtımı istendi",
+    "releaseSuccess": "Yalıtımın kaldırılması istendi",
+    "mutationError": "Ağ yalıtımı güncellenemedi. Yeniden deneyin.",
+    "loadError": "Ağ yalıtımı yüklenemedi. Yeniden deneyin.",
+    "unavailable": "Ağ yalıtımı uygunluğu bilgisi kullanılamıyor.",
+    "extend": "Yalıtımı uzat",
+    "extendTitle": "Ağ yalıtımını uzat",
+    "extendSuccess": "Yalıtım süresi uzatıldı",
+    "isolatedExpires": "Yalıtılmış · {{hours}} saat sonra sona erer",
+    "acknowledge": "Yerel kaldırmayı onayla",
+    "acknowledgeSuccess": "Yerel kaldırma onaylandı",
+    "acknowledgeError": "Yerel kaldırma onaylanamadı",
+    "showCode": "Acil durum kodlarını göster",
+    "hideCode": "Acil durum kodlarını gizle",
+    "codeCurrent": "Geçerli kod",
+    "codeNext": "Sonraki saatin kodu",
+    "codeValidUntil": "Geçerli kodun son kullanımı: {{date}}",
+    "codeError": "Acil durum kodları yüklenemedi. Yeniden deneyin.",
+    "incidentHeading": "Ağ yalıtımı",
+    "retry": "Yalıtım durumunu yeniden dene",
+    "filterLabel": "Yalıtılmış",
+    "states": {
+      "requested": "Yalıtım istendi",
+      "dispatched": "Yalıtım gönderildi",
+      "applying": "Yalıtım uygulanıyor",
+      "applied": "Yalıtım doğrulanıyor",
+      "verified": "Yalıtım doğrulandı",
+      "release_requested": "Kaldırma istendi",
+      "released": "Yalıtım kaldırıldı",
+      "expired": "Yalıtım süresi doldu",
+      "failed": "Yalıtım başarısız",
+      "released_locally": "Yerel olarak kaldırıldı · onay gerekiyor",
+      "self_released": "Kendiliğinden kaldırıldı · onay gerekiyor",
+      "uninstalled": "Agent kaldırıldı"
+    },
+    "refusal": {
+      "feature_disabled": "Yeni ağ yalıtımları devre dışı.",
+      "partner_not_enabled": "Bu iş ortağı için ağ yalıtımı etkin değil.",
+      "agent_below_gate": "Ağ yalıtımını destekleyen bir agent sürümüne güncelleyin.",
+      "agent_not_ready": "Agent ağ yalıtımını uygulamaya hazır değil.",
+      "device_lifecycle": "Bu cihazın yaşam döngüsü durumu yeni yalıtımı engelliyor.",
+      "unsupported_platform": "Bu platform ağ yalıtımını desteklemiyor.",
+      "trust_restricted": "İş ortağının güven durumu yeni yalıtımları engelliyor.",
+      "isolation_already_active": "Bu cihazın zaten etkin bir yalıtım kaydı var.",
+      "isolation_unacknowledged": "Yeni bir yalıtım başlatmadan önce önceki yerel kaldırmayı onaylayın.",
+      "incident_mismatch": "Bu cihazın kuruluşuna ait açık bir olay seçin.",
+      "site_forbidden": "Bu cihazın konumuna erişiminiz yok.",
+      "device_not_found": "Bu cihaz bulunamadı.",
+      "isolation_not_found": "Bu yalıtım kaydı bulunamadı.",
+      "relay_unavailable": "Uzak masaüstü aktarıcısı yok. Aktarma seçeneğini kapatın veya TURN yapılandırın.",
+      "invalid_allowlist": "Sunucunun yalıtım izin listesi geçersiz. Yöneticinize başvurun.",
+      "isolation_conflict": "Yalıtım kaydı değişti. Durumu yenileyip yeniden deneyin.",
+      "isolation_secret_unavailable": "Kurtarma kodları geçici olarak kullanılamıyor. Yöneticinize başvurun.",
+      "approval_mismatch": "Onay bu yalıtım isteğiyle eşleşmiyor.",
+      "device_offline": "Cihaz çevrimdışı. Yalıtımı başlatmadan önce durumunu yenileyin.",
+      "device_decommissioned": "Hizmet dışı bir cihaz yeni yalıtım başlatamaz.",
+      "device_pending_assignment": "Yalıtımı başlatmadan önce bu cihazı bir kuruluşa atayın.",
+      "backup_helper_update_required": "Yalıtımı başlatmadan önce yedekleme yardımcısını güncelleyin."
+    }
   }
 }

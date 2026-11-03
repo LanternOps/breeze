@@ -278,6 +278,13 @@ const ACTORS_WITHOUT_SITE_AXIS: Readonly<Record<string, string>> = {
   // `requireScope('partner','system')` — a scope that never carries
   // `allowedSiteIds` at all. Worth re-reading if a second caller appears: the
   // service itself would then be site-blind.
+  // #10532 (alerts:write). `AlertActor` in services/alertActions.ts is who
+  // acknowledged — a user id or a Partner API service principal id stamped on
+  // the alert row and event. No allowlist of any axis: the staff route checks
+  // org + site access on its pre-read (`getAlertWithOrgCheck`) before calling,
+  // and the Partner API route reads the alert under the principal's partner
+  // RLS context with its accessible-org set (principals are not site-scoped).
+  AlertActor: 'acknowledge provenance (user or service principal id); callers gate org/site access before the CAS write',
   DeviceCoverageActor: 'org axis only; its single route gates the site axis at the door and is partner/system scope',
 };
 

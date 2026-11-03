@@ -313,6 +313,13 @@ describe('isPartnerGuardExemptPath — exempt list (table-driven)', () => {
     ['/api/v1/webhooks/edr', false],
     ['/api/v1/webhooks/edr/', false],
     ['/api/v1/edr/connections', false],
+    // flow webhook ingress (W05): exact /webhooks/flows/<uuid> only
+    ['/api/v1/webhooks/flows/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e', true],
+    ['/api/v1/webhooks/flows/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e/extra', false],
+    ['/api/v1/webhooks/flows/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e/', false],
+    ['/api/v1/webhooks/flows/not-a-uuid', false],
+    ['/api/v1/webhooks/flows', false],
+    ['/api/v1/flows/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e/webhook-secret', false],
     // pre-existing exemptions, unchanged
     ['/api/v1/auth/login', true],
     ['/api/v1/config', true],

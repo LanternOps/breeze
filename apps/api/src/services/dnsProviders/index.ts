@@ -28,6 +28,23 @@ export interface DnsEvent {
 export interface DnsEventSlice {
   events: DnsEvent[];
   until: Date;
+  /**
+   * Set when part of this slice could not be fetched and never will be: the
+   * provider's API cannot page through `[from, to]` (Cisco Umbrella's 10,000
+   * offset cap on a window too narrow to split further). `events` holds what
+   * the first `reachableRecords` provider records yielded. The slice is still
+   * a safe checkpoint — re-fetching it would hit the same limit — so the job
+   * advances past it and records the loss on the integration (#10047).
+   */
+  truncated?: DnsEventSliceTruncation;
+}
+
+/** A window a sliced walk could only partly fetch ({@link DnsEventSlice.truncated}). */
+export interface DnsEventSliceTruncation {
+  from: Date;
+  to: Date;
+  /** Provider records the walk reached in the window; it held more. */
+  reachableRecords: number;
 }
 
 /** Hints a sliced walk can use from the previous run (#10018). */
@@ -65,6 +82,8 @@ export interface DnsProvider {
    * caller then resumes from the last slice's `until` on the next run, and the
    * walk's return value says so ({@link DnsEventSliceWalkEnd.stoppedShort}),
    * so the run can be recorded as partial rather than as a success (#10018).
+   * A slice whose window could only be partly fetched says so in
+   * {@link DnsEventSlice.truncated}, so the run is recorded as truncated (#10047).
    * When present, the sync job uses this instead of `syncEvents` and persists
    * each slice as it arrives, so a late failure no longer discards earlier pages.
    */

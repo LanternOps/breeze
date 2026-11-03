@@ -40,6 +40,7 @@ describe('PartnerRemoteAccessTab — dedicated tunnel origin', () => {
   it('says the setting is partner-wide, with no per-organization override', () => {
     renderTab({});
     expect(screen.getByText('Serve Network Proxy from a dedicated origin')).toBeInTheDocument();
-    expect(screen.getByText(/Applies to all organizations/)).toBeInTheDocument();
+    // The partner-wide model is stated by the badge, not restated in the help (#9790).
+    expect(screen.getByTestId('partner-settings-badge-networkProxy.dedicatedTunnelOrigin')).toHaveTextContent('Partner-wide');
   });
 });

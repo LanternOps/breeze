@@ -30,7 +30,12 @@ type consentAttempt struct {
 	// unknown (lowercase snake_case; reported to the API as consentDetail).
 	detail string
 	// helper is the helper session the prompt was sent to (nil when none).
+	// On the prompt path it is the renderer that drew the answered prompt.
 	helper *sessionbroker.Session
+	// renderer is what drew the prompt: assist or native ("" when nothing
+	// was sent). Logged with the gate's decision; not on the wire, because
+	// the API's strict desk-* result object has no field for it yet.
+	renderer string
 }
 
 // consentVerdict is the gate's decision plus what the API records about it.

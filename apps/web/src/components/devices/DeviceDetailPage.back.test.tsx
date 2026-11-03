@@ -25,8 +25,9 @@ vi.mock('../../services/deviceActions', () => ({
   WakeCommandError: class WakeCommandError extends Error {},
   wakeFriendlyErrorMessage: vi.fn(),
 }));
+// The Devices breadcrumb is the Back control; DeviceDetails itself renders none.
 vi.mock('./DeviceDetails', () => ({
-  default: ({ onBack }: { onBack: () => void }) => <button onClick={onBack}>back</button>,
+  default: () => null,
 }));
 vi.mock('@/lib/orgSwitch', () => ({ applyOrgSwitch: vi.fn() }));
 vi.mock('./DeviceSettingsModal', () => ({ default: () => null }));
@@ -61,7 +62,7 @@ describe('DeviceDetailPage Back (#9259)', () => {
     setReferrer(`${window.location.origin}/devices?status=online`);
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => {});
     render(<DeviceDetailPage deviceId={DEVICE_ID} />);
-    fireEvent.click(await screen.findByText('back'));
+    fireEvent.click(await screen.findByRole('link', { name: 'Devices' }));
     expect(back).toHaveBeenCalledTimes(1);
     expect(navigateTo).not.toHaveBeenCalled();
   });
@@ -71,7 +72,7 @@ describe('DeviceDetailPage Back (#9259)', () => {
     window.history.replaceState({ index: 1 }, '', '/devices/x');
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => {});
     render(<DeviceDetailPage deviceId={DEVICE_ID} />);
-    fireEvent.click(await screen.findByText('back'));
+    fireEvent.click(await screen.findByRole('link', { name: 'Devices' }));
     expect(back).toHaveBeenCalledTimes(1);
     expect(navigateTo).not.toHaveBeenCalled();
   });
@@ -83,7 +84,7 @@ describe('DeviceDetailPage Back (#9259)', () => {
       // history.length > 1 is exactly the case that used to call back().
       const back = vi.spyOn(window.history, 'back').mockImplementation(() => {});
       render(<DeviceDetailPage deviceId={DEVICE_ID} />);
-      fireEvent.click(await screen.findByText('back'));
+      fireEvent.click(await screen.findByRole('link', { name: 'Devices' }));
       expect(back).not.toHaveBeenCalled();
       expect(navigateTo).toHaveBeenCalledWith('/devices');
     },

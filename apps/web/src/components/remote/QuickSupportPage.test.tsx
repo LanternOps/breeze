@@ -85,13 +85,14 @@ function installFetch(options: {
   detail?: SupportSessionView[];
   list?: SupportSessionView[];
   endResponse?: Response;
+  created?: typeof CREATED;
 } = {}) {
   const detailQueue = [...(options.detail ?? [view()])];
   let lastDetail = detailQueue[0];
   fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
     if (url === LIST_URL) return makeResponse({ sessions: options.list ?? [] });
     if (url === '/remote/support-sessions' && opts?.method === 'POST') {
-      return makeResponse(CREATED, true, 201);
+      return makeResponse(options.created ?? CREATED, true, 201);
     }
     if (url === `${DETAIL_URL}/end` && opts?.method === 'POST') {
       return options.endResponse ?? makeResponse({ success: true });
@@ -182,6 +183,21 @@ describe('QuickSupportPage', () => {
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(LANDING_URL));
     expect(writeText).not.toHaveBeenCalledWith('ABC-DEF-GHI');
+  });
+
+  // #10508: an API without a configured public base returns a bare path; the
+  // clipboard must still get a link that works when pasted into email or chat.
+  it('copies an absolute URL when the API returns a relative landing path', async () => {
+    installFetch({ created: { ...CREATED, landingUrl: '/quick?code=ABCDEFGHI' } });
+    render(<QuickSupportPage />);
+    await createSession();
+
+    fireEvent.click(screen.getByTestId('quick-support-copy-link'));
+
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/quick?code=ABCDEFGHI`),
+    );
+    expect(writeText).not.toHaveBeenCalledWith('/quick?code=ABCDEFGHI');
   });
 
   it('polls every 3s and stops permanently once the session is terminal', async () => {

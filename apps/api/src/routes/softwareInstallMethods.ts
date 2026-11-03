@@ -9,7 +9,6 @@
  */
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
-import { z } from 'zod';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { softwareCatalog, softwareInstallMethods } from '../db/schema';
@@ -18,47 +17,22 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
 import { resolveScopedOrgId, type AuthScopeContext } from '../services/softwareVersionShared';
 import { pgErrorCode } from '../utils/pgErrors';
+import { importCatalogPackage } from '../services/softwareCatalogOps';
+import {
+  importPackageSchema,
+  installMethodBodySchema,
+  installMethodPatchSchema,
+  validatePackageIdForKind,
+} from '../services/softwareInstallMethodSchemas';
 
-export const WINGET_PACKAGE_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
-export const BREW_PACKAGE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9+._/@-]{0,255}$/;
-
-export function validatePackageIdForKind(kind: string, packageId: string): string | null {
-  if (packageId.length > 256) return 'packageId exceeds 256 characters';
-  if (kind === 'winget') {
-    return WINGET_PACKAGE_ID_RE.test(packageId) ? null : 'Invalid winget package ID';
-  }
-  if (
-    !BREW_PACKAGE_NAME_RE.test(packageId) ||
-    packageId.startsWith('-') || packageId.startsWith('/') || packageId.includes('..')
-  ) {
-    return 'Invalid Homebrew package name';
-  }
-  return null;
-}
-
-export const installMethodBodySchema = z.object({
-  platform: z.enum(['windows', 'macos']),
-  kind: z.enum(['winget', 'homebrew_cask', 'homebrew_formula']),
-  packageId: z.string().min(1).max(256),
-  enabled: z.boolean().optional(),
-}).superRefine((data, ctx) => {
-  const platformOk =
-    (data.kind === 'winget' && data.platform === 'windows') ||
-    (data.kind !== 'winget' && data.platform === 'macos');
-  if (!platformOk) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['kind'], message: 'kind does not match platform' });
-  }
-  const err = validatePackageIdForKind(data.kind, data.packageId);
-  if (err) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['packageId'], message: err });
-});
-
-const installMethodPatchSchema = z.object({
-  packageId: z.string().min(1).max(256).optional(),
-  enabled: z.boolean().optional(),
-}).refine(
-  (data) => data.packageId !== undefined || data.enabled !== undefined,
-  { message: 'At least one of packageId or enabled must be provided' },
-);
+export {
+  BREW_PACKAGE_NAME_RE,
+  importPackageSchema,
+  installMethodBodySchema,
+  installMethodPatchSchema,
+  validatePackageIdForKind,
+  WINGET_PACKAGE_ID_RE,
+} from '../services/softwareInstallMethodSchemas';
 
 export const softwareInstallMethodRoutes = new Hono();
 softwareInstallMethodRoutes.use('*', authMiddleware);
@@ -66,7 +40,7 @@ softwareInstallMethodRoutes.use('*', authMiddleware);
 const requireInstallMethodRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 const requireInstallMethodWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 
-async function loadOwnedCatalogItem(catalogId: string, orgId: string) {
+export async function loadOwnedCatalogItem(catalogId: string, orgId: string) {
   const [item] = await db.select().from(softwareCatalog)
     .where(and(eq(softwareCatalog.id, catalogId), isNull(softwareCatalog.deletedAt))).limit(1);
   // RLS restricts visibility; extra guard mirrors software.ts deploy handlers.
@@ -185,36 +159,6 @@ softwareInstallMethodRoutes.patch(
   },
 );
 
-const importPackageSchema = z.object({
-  name: z.string().min(1).max(200),
-  vendor: z.string().max(200).optional(),
-  category: z.string().max(100).optional(),
-  description: z.string().max(2000).optional(),
-  homepageUrl: z.string().url().optional(),
-  iconUrl: z.string().url().optional(),
-  orgId: z.string().guid().optional(),
-  methods: z.array(
-    z.object({
-      platform: z.enum(['windows', 'macos']),
-      kind: z.enum(['winget', 'homebrew_cask', 'homebrew_formula']),
-      packageId: z.string().min(1).max(256),
-    })
-  ).min(1).max(4),
-}).superRefine((data, ctx) => {
-  const seen = new Set<string>();
-  data.methods.forEach((m, i) => {
-    const key = `${m.platform}:${m.kind}`;
-    if (seen.has(key)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['methods', i], message: 'Duplicate platform+kind' });
-    }
-    seen.add(key);
-    const platformOk = (m.kind === 'winget') === (m.platform === 'windows');
-    if (!platformOk) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['methods', i, 'kind'], message: 'kind does not match platform' });
-    const err = validatePackageIdForKind(m.kind, m.packageId);
-    if (err) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['methods', i, 'packageId'], message: err });
-  });
-});
-
 // One-shot import: creates a catalog row and its install methods together, so
 // the web import modal (Task 9) never leaves a catalog row with zero install
 // methods (or vice versa) if the request is interrupted partway through.
@@ -235,29 +179,7 @@ softwareInstallMethodRoutes.post(
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     const orgId = orgResult.orgId;
 
-    const { catalogItem, methods } = await db.transaction(async (tx) => {
-      const [catalogItem] = await tx.insert(softwareCatalog).values({
-        orgId,
-        name: payload.name,
-        vendor: payload.vendor,
-        category: payload.category ?? 'application',
-        description: payload.description,
-        iconUrl: payload.iconUrl,
-        websiteUrl: payload.homepageUrl,
-      }).returning();
-
-      const methods = await tx.insert(softwareInstallMethods).values(
-        payload.methods.map((m) => ({
-          catalogId: catalogItem!.id,
-          platform: m.platform,
-          kind: m.kind,
-          packageId: m.packageId,
-          enabled: true,
-        }))
-      ).returning();
-
-      return { catalogItem: catalogItem!, methods };
-    });
+    const { catalogItem, methods } = await importCatalogPackage({ orgId, payload });
 
     writeRouteAudit(c, {
       orgId,

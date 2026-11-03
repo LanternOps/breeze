@@ -122,7 +122,12 @@ function AutoApproveBadges({ ring, t }: { ring: UpdateRingItem; t: TFunction<'pa
       data-testid="ring-feature-updates-badge"
     >
       {featureUpdates.mode === 'pin'
-        ? t('updateRingList.badges.featureUpdatesPinned', { release: featureUpdates.targetVersion })
+        ? t('updateRingList.badges.featureUpdatesPinned', {
+            // 22H2 exists for both Windows 10 and 11, so name the version too.
+            release: `${featureUpdates.product === 'windows-10'
+              ? t('updateRingForm.featureUpdates.productWindows10')
+              : t('updateRingForm.featureUpdates.productWindows11')} ${featureUpdates.targetVersion}`,
+          })
         : t('updateRingList.badges.featureUpdatesNewest')}
     </span>
   );

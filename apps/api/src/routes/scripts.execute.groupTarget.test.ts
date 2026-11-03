@@ -344,6 +344,17 @@ describe('POST /scripts/:id/execute — group target (#8598)', () => {
     ]);
   });
 
+  it('returns 400 PARTNER_GROUP_TARGET_UNSUPPORTED without dispatching', async () => {
+    resolveScriptRunTargetsMock.mockResolvedValueOnce({
+      ok: false, status: 400, code: 'PARTNER_GROUP_TARGET_UNSUPPORTED',
+      error: 'Partner-wide device groups can only be targeted by partner configuration policies', groupIds: [G1],
+    });
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}/execute`, post({ target: { type: 'groups', groupIds: [G1] } }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [G1] });
+    expect(executeScriptOnDevicesMock).not.toHaveBeenCalled();
+  });
+
   it('returns 400 with the count and per-group counts, never dispatching, when over the cap', async () => {
     resolveScriptRunTargetsMock.mockResolvedValueOnce({
       ok: false,

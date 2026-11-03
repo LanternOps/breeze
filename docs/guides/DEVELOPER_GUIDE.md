@@ -160,7 +160,15 @@ docker compose -f docker-compose.yml -f docker-compose.override.yml.dev up -d po
 This starts:
 - PostgreSQL on port 5432
 - Redis on port 6379
-- MinIO on port 9000/9001 (optional)
+
+Object storage is not part of this stack. It is configured through the `S3_*`
+settings in `.env.example`; MinIO is only included in the legacy
+`docker-compose.dev.yml` stack.
+
+These publish on `127.0.0.1` only, so the dev services are reachable from this
+machine alone. Set `BREEZE_DEV_BIND_ADDR=0.0.0.0` only if another machine must
+reach the stack, and change the passwords first if you do — see
+`CONTRIBUTING.md` for which ones.
 
 **2. Initialize the database:**
 

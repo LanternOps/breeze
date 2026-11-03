@@ -31,6 +31,8 @@
     "confidenceValue": "{{confidence}}% di affidabilità"
   },
   "alertDetailPage": {
+    "externalTickets": "Ticket esterni",
+    "externalTicketsFailedToLoad": "Impossibile caricare i ticket esterni.",
     "loadingAlert": "Caricamento avviso...",
     "backToAlerts": "Torna agli avvisi",
     "goBack": "Indietro",
@@ -82,7 +84,10 @@
       "resolved": "Risolto",
       "suppressed": "Soppresso",
       "dismissed": "Ignorato"
-    }
+    },
+    "createPsaTicket": "Crea ticket PSA",
+    "psaTicketRequested": "Ticket PSA richiesto",
+    "failedToCreatePsaTicket": "Impossibile richiedere il ticket PSA"
   },
   "alertDetails": {
     "closePanel": "Chiudi pannello",
@@ -965,5 +970,10 @@
       "body": "I modelli esistenti restano modificabili qui e verranno convertiti nella prossima versione.",
       "link": "Apri Monitor"
     }
+  },
+  "subject": {
+    "label": "Elemento interessato",
+    "backupWorkload": "Carico di backup",
+    "topologySite": "Sito topologico"
   }
 }

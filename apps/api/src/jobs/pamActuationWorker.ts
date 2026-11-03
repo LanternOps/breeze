@@ -7,7 +7,8 @@ import { claimPendingCommandForDelivery, releaseClaimedCommandDelivery } from '.
 import type { AgentCommand } from '../routes/agentWs';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
-import { buildPamActuationCommand } from './pamActuationCommandPayload';
+import { buildPamActuationCommand, type PamDecidedBy } from './pamActuationCommandPayload';
+import { resolvePamTechnicianName } from '../services/pamTechnicianName';
 import { attachWorkerObservability } from './workerObservability';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from '../services/partnerTrust.commands';
 import {
@@ -41,6 +42,8 @@ type PamDispatchRow = Record<string, unknown> & {
   target_executable_hash: string | null;
   subject_username: string;
   expires_at: Date | string | null;
+  pam_user_notify_protocol_version?: number | null;
+  approved_by_user_id?: string | null;
 };
 
 function rows<T>(result: unknown): T[] {
@@ -70,7 +73,8 @@ export async function processPamActuationEvent(input: PamActuationJobData): Prom
                a.target_executable_hash, a.subject_username, a.expires_at,
                r.org_id AS request_org_id, d.org_id AS device_org_id,
                d.pam_lifetime_protocol_version, d.ownership_epoch,
-               d.agent_identity_epoch_ack, o.type AS device_org_type
+               d.agent_identity_epoch_ack, o.type AS device_org_type,
+               d.pam_user_notify_protocol_version, r.approved_by_user_id
         FROM pam_actuations a
         JOIN elevation_requests r ON r.id = a.elevation_request_id
         JOIN devices d ON d.id = a.device_id
@@ -125,6 +129,19 @@ export async function processPamActuationEvent(input: PamActuationJobData): Prom
         : actuation.expires_at === null
           ? null
           : new Date(actuation.expires_at);
+      // #10190 W07: the approver's name for the end user's outcome card, only
+      // for an agent that declared it can decode it: pam_user_notify protocol
+      // 2. Every older agent decodes pam_apply_v2 with DisallowUnknownFields
+      // and would refuse the whole apply, so below 2 the payload is exactly
+      // today's. The capability is read per dispatch, so a redelivered
+      // generation follows the same rule. Best effort: the resolver never
+      // throws, and null just omits the name.
+      let decidedBy: PamDecidedBy | undefined;
+      if (actuation.desired_state === 'active' && (actuation.pam_user_notify_protocol_version ?? 0) >= 2) {
+        decidedBy = {
+          technicianName: await resolvePamTechnicianName(actuation.device_id, { userId: actuation.approved_by_user_id ?? null }),
+        };
+      }
       const built = buildPamActuationCommand({
         actuationId: actuation.id,
         generation: actuation.generation,
@@ -136,6 +153,7 @@ export async function processPamActuationEvent(input: PamActuationJobData): Prom
         targetHash: actuation.target_executable_hash,
         subjectUsername: actuation.subject_username,
         expiresAt,
+        ...(decidedBy ? { decidedBy } : {}),
       }, new Date());
       if (built.kind === 'blocked') {
         await tx.execute(sql`

@@ -28,6 +28,8 @@ vi.mock('../../stores/orgStore', () => ({
     selector ? selector(orgState.current) : orgState.current,
 }));
 
+const flowsGate = vi.hoisted(() => ({ value: { enabled: false, loaded: true } }));
+vi.mock('../../stores/featuresStore', () => ({ useFlowsGate: () => flowsGate.value }));
 import AutomationEditPage from './AutomationEditPage';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -271,5 +273,35 @@ describe('AutomationEditPage — alert workflow filter round-trip (#6367 W05c2)'
 
     const call = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')!;
     expect(JSON.parse(String((call[1] as RequestInit).body)).trigger.filter).toEqual(filter);
+  });
+});
+
+describe('AutomationEditPage — Jobs moving to Flows (#5221 W06)', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    flowsGate.value = { enabled: false, loaded: true };
+  });
+
+  it('switched row is read-only with a flow link', async () => {
+    mockEndpoints({ ...baseAutomation, conversion: { id: 'c-1', state: 'switched', flowId: 'f-1' } });
+    render(<AutomationEditPage automationId="automation-1" />);
+    const link = await screen.findByTestId('automation-moved-flow-link');
+    expect(link.getAttribute('href')).toBe('/flows/f-1');
+    expect(screen.queryByRole('button', { name: /save/i })).toBeNull();
+  });
+
+  it('a shadow conversion keeps the editor (editing resets the shadow server-side)', async () => {
+    mockEndpoints({ ...baseAutomation, conversion: { id: 'c-1', state: 'shadow', flowId: 'f-1' } });
+    render(<AutomationEditPage automationId="automation-1" />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/automations/automation-1'));
+    expect(screen.queryByTestId('automation-moved-notice')).toBeNull();
+  });
+
+  it('with Flows on, /jobs/new points to Flows instead of the form', async () => {
+    flowsGate.value = { enabled: true, loaded: true };
+    fetchMock.mockImplementation(() => Promise.resolve(json({ data: [] })));
+    render(<AutomationEditPage isNew />);
+    const notice = await screen.findByTestId('automation-new-opens-flows');
+    expect(notice.querySelector('a')?.getAttribute('href')).toBe('/flows');
   });
 });

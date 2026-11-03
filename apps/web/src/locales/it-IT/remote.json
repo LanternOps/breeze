@@ -681,6 +681,7 @@
       "disconnected": "Disconnessa",
       "failed": "Non riuscita",
       "pending": "In sospeso",
+      "endedByUser": "Terminata dall’utente",
       "teardownPending": "In chiusura (in attesa del dispositivo)"
     },
     "subtitle": "Registro di controllo degli accessi remoti",
@@ -717,6 +718,7 @@
       "timeline": "Sequenza temporale"
     },
     "subtitle": "Visualizza e controlla le sessioni di accesso remoto",
+    "endedByUser": "Terminata dall’utente",
     "teardownPending": "In attesa della conferma del dispositivo",
     "title": "Cronologia sessioni",
     "viewDevice": "Visualizza dispositivo",

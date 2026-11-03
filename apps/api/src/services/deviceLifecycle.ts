@@ -36,6 +36,7 @@ import { eq, sql } from 'drizzle-orm';
 import { devices } from '../db/schema';
 import { lockTimeoutWasChanged, tightenLockTimeout } from '../db/lockTimeout';
 import { deleteDeviceCascade } from './deviceDeletion';
+import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJobs';
 import { findPolicyBackupLegalHoldInContext } from './erasureBackupLegalHold';
 import {
   admitPartnerDeviceCapacity,
@@ -107,9 +108,9 @@ export interface PurgeResult {
   linkGroupDissolved: boolean;
   /**
    * Site-owned topology alerts this device originated that the cascade
-   * removed (possibly owned by another org after a move-org). Audited.
+   * detached (possibly owned by another org after a move-org). Audited.
    */
-  removedTopologyAlerts: number;
+  detachedTopologyAlerts: number;
 }
 
 /**
@@ -219,6 +220,17 @@ export async function restoreRemovedDevice(
     .set({ status: 'offline', decommissionedAt: null, updatedAt: new Date() })
     .where(eq(devices.id, deviceId))
     .returning();
+
+  // #9933 — removed devices are left out of dynamic groups, and decommission
+  // re-evaluated them out (deviceDecommission.ts). Bring the device back into
+  // every dynamic group it matches once this commits. `authorized.orgId` is the
+  // locked row's org (checked above).
+  requestDeviceGroupReevaluationAfterCommit({
+    deviceId,
+    orgId: authorized.orgId,
+    eventType: 'device.created',
+    reason: 'device_restored',
+  });
 
   return { device, uninstallAlreadyDispatched: release.alreadyDispatched > 0 };
 }
@@ -409,7 +421,7 @@ export async function purgeRemovedDevice(
     throw new DeviceLifecycleError('BACKUP_PROTECTED', BACKUP_PROTECTED_MESSAGE);
   }
 
-  const { removedTopologyAlerts } = await deleteDeviceCascade(tx, deviceId);
+  const { detachedTopologyAlerts } = await deleteDeviceCascade(tx, deviceId);
 
   // #2138/#2308 — the deleted device's link_group_id went with its row. If the
   // group now has a lone survivor, or a vm_host group was left headless,
@@ -443,5 +455,5 @@ export async function purgeRemovedDevice(
     }
   }
 
-  return { linkGroupId: row.link_group_id, linkGroupDissolved, removedTopologyAlerts };
+  return { linkGroupId: row.link_group_id, linkGroupDissolved, detachedTopologyAlerts };
 }

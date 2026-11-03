@@ -1,0 +1,37 @@
+/**
+ * Display names for catalog fields in the drill-down and the side panel,
+ * reusing the label each field's editor already shows (one source of copy).
+ * Every classified field on a partner settings tab has an entry (tested).
+ */
+export const FIELD_LABEL_KEYS: Readonly<Record<string, string>> = {
+  'regional.dateFormat': 'partner.regional.dateFormat',
+  'regional.timeFormat': 'partner.regional.timeFormat',
+  'regional.businessHours': 'businessHoursCard.title',
+  'security.requireMfa': 'partnerSecurity.requireMfa',
+  'security.sessionTimeout': 'partnerSecurity.sessionTimeout',
+  'notifications.pushoverAppToken': 'partnerNotifications.applicationToken',
+  'notifications.pushoverDefaultUser': 'partnerNotifications.defaultUserKey',
+  'notifications.pushoverDefaultSound': 'partnerNotifications.defaultSound',
+  'notifications.pushoverDefaultPriority': 'partnerNotifications.defaultPriority',
+  eventLogs: 'partnerEventLogs.enable',
+  'defaults.agentUpdatePolicy': 'partnerDefaults.updatePolicy',
+  'defaults.maintenanceWindow': 'partnerDefaults.maintenanceWindow',
+  'defaults.agentVersionPins.agent': 'agentVersionPins.components.agent',
+  'defaults.agentVersionPins.watchdog': 'agentVersionPins.components.watchdog',
+  'defaults.defaultEnrollmentTtlMinutes': 'partnerDefaults.enrollment.ttl',
+  'defaults.defaultEnrollmentDeviceCount': 'partnerDefaults.enrollment.deviceCount',
+  'defaults.maxEnrollmentLinkTtlMinutes': 'partnerDefaults.enrollment.maxTtl',
+  'aiBudgets.enabled': 'partnerAiBudgets.enable',
+  'aiBudgets.monthlyBudgetCents': 'partnerAiBudgets.monthlyBudget',
+  'aiBudgets.dailyBudgetCents': 'partnerAiBudgets.dailyBudget',
+  'aiBudgets.maxTurnsPerSession': 'partnerAiBudgets.maxTurns',
+  'aiBudgets.messagesPerMinutePerUser': 'partnerAiBudgets.messagesPerMinute',
+  'aiBudgets.messagesPerHourPerOrg': 'partnerAiBudgets.messagesPerHour',
+  'aiBudgets.approvalMode': 'partnerAiBudgets.approvalMode',
+  'aiBudgets.alertThresholdPercents': 'partnerAiBudgets.alertThresholds',
+  'aiBudgets.toolRateLimitMultiplier': 'aiUsagePage.toolRateLimitMultiplier',
+  'aiApprovals.interactiveTimeoutMinutes': 'partnerAiApprovals.timeoutLabel',
+  'remoteAccessProviders.providers': 'partnerRemoteAccess.title',
+  'remoteAccessProviders.defaultProviderId': 'partnerSettingsPage.inheritance.fields.defaultProvider',
+  'networkProxy.dedicatedTunnelOrigin': 'partnerRemoteAccess.networkProxy.label',
+};

@@ -79,6 +79,10 @@ describe('Action intents migration', () => {
     // 2026-08-06-e: durable origin-principal fact
     'origin_principal_kind',
     'origin_principal_id',
+    // 2027-01-19-110200 (#9758): the requester's auth_epoch at filing for an
+    // MCP OAuth intent. Release compares it to the live row; an editable
+    // value could be rewritten to match.
+    'origin_auth_epoch',
     // §3.1/§3.4 action content
     'action_name',
     'action_version',
@@ -152,6 +156,10 @@ describe('Action intents migration', () => {
     // approval would defeat the drift check in revalidateRelease.ts.
     'tool_source_tool_id',
     'tool_revision',
+    // 2027-01-06-160000 (tool catalog W05 PR A, #5220): the flow a chat
+    // Tier-3 flow-tool call approved, bound with tool_revision
+    // 'flowpub:<publicationId>' (plan Decision 8). Immutable for the same reason.
+    'invoked_flow_id',
   ] as const;
 
   // Deliberately MUTABLE. release_by is written by the approve fan-in

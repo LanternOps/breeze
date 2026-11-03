@@ -244,7 +244,16 @@ describe('readAlertRecovery', () => {
     await expect(readAlertRecovery('missing')).resolves.toBeNull();
   });
 
-  it('selects only the four recovery columns, filtered by one where and limited to one row', async () => {
+  it('returns a principal resolve with its attribution for the outcome watcher', async () => {
+    const resolvedAt = new Date('2026-11-01T01:00:00Z');
+    const row = { status: 'resolved', resolvedAt, resolvedBy: null, resolvedByPrincipalId: 'sp-1', resolutionReason: 'manual' };
+    rows.push([row]);
+    await expect(readAlertRecovery('a1')).resolves.toEqual(row);
+  });
+
+  // resolvedByPrincipalId (#10532) is read by readingFromAlert: a Partner API
+  // service principal resolve is human-equivalent, never an objective recovery.
+  it('selects only the five recovery columns, filtered by one where and limited to one row', async () => {
     rows.push([]);
     vi.mocked(db.select).mockClear();
     const chain = db as unknown as { where: ReturnType<typeof vi.fn>; limit: ReturnType<typeof vi.fn> };
@@ -252,7 +261,7 @@ describe('readAlertRecovery', () => {
     chain.limit.mockClear();
     await readAlertRecovery('a1');
     const arg = vi.mocked(db.select).mock.calls[0]![0] as Record<string, unknown>;
-    expect(Object.keys(arg).sort()).toEqual(['resolutionReason', 'resolvedAt', 'resolvedBy', 'status']);
+    expect(Object.keys(arg).sort()).toEqual(['resolutionReason', 'resolvedAt', 'resolvedBy', 'resolvedByPrincipalId', 'status']);
     expect(chain.where).toHaveBeenCalledTimes(1);
     expect(chain.limit).toHaveBeenCalledTimes(1);
     expect(chain.limit).toHaveBeenCalledWith(1);

@@ -50,6 +50,7 @@ import {
   purgePortalSessionsForUsers,
 } from './helpers';
 import { isSelfManagedDbContextRoute } from '../../middleware/selfManagedDbContextRoutes';
+import { portalOrgDbAccessContext } from './portalDbContext';
 import { purgeClientAiSessionsForUsers } from '../../services/clientAiSessionStore';
 import { portalSessionRevokedSql, revokePortalSessionDurably } from '../../services/portal/sessionRevocation';
 import { ANONYMOUS_ACTOR_ID, writeAuditEventAsync } from '../../services/auditEvents';
@@ -420,20 +421,7 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
   // system-scoped sub-query must do runOutsideDbContext(() =>
   // withSystemDbAccessContext(...)) explicitly. Likewise, any un-awaited db.*
   // side effect must not capture this txn (mirror auditService's pattern).
-  return withDbAccessContext(
-    {
-      scope: 'organization',
-      orgId: user.orgId,
-      accessibleOrgIds: [user.orgId],
-      accessiblePartnerIds: [],
-      userId: null,
-      // Generic portal routes intentionally do not receive the partner-wide
-      // SELECT branch. Self-managed routes that explicitly need it (for
-      // example Network Visibility) opt in with the validated owning partner.
-      currentPartnerId: null,
-    },
-    () => next()
-  );
+  return withDbAccessContext(portalOrgDbAccessContext(user.orgId), () => next());
 }
 
 // ============================================

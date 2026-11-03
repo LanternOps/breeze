@@ -1,5 +1,15 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 
+vi.mock('../services/networkIsolation/lifecycle', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/networkIsolation/lifecycle')>()),
+  assertNoUnresolvedIsolation: vi.fn(async () => undefined),
+  findUnresolvedIsolations: vi.fn(async () => []),
+}));
+vi.mock('../services/sentry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/sentry')>()),
+  captureMessage: vi.fn(),
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
@@ -7,6 +17,7 @@ vi.mock('../db', () => ({
   },
   withDbAccessContext: vi.fn(async (_context: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -120,7 +131,7 @@ vi.mock('../services/agentOrgRateLimit', async (importOriginal) => {
 import type { Context } from 'hono';
 import { createHash } from 'crypto';
 
-import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
+import { db, withDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../db';
 import { getRedis, rateLimiter } from '../services';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIp, trustsForwardedHeadersFrom } from '../services/clientIp';
@@ -128,6 +139,9 @@ import { getAgentTenantState } from '../services/tenantStatus';
 import { isDeviceUninstallDraining } from '../services/deviceUninstallDrain';
 import { resolveOrgRateLimit } from '../services/agentOrgRateLimit';
 import { checkAgentStorageSessionRateLimit } from '../services/agentStorageSessionRateLimit';
+import { assertNoUnresolvedIsolation, findUnresolvedIsolations, NetworkIsolationUnresolvedError } from '../services/networkIsolation/lifecycle';
+import { captureMessage } from '../services/sentry';
+import type { AgentTokenSuspendReason } from '../services/agentTokenSuspension';
 import {
   agentAuthMiddleware,
   DRAIN_CLAIM_TYPE_ALLOWLIST,
@@ -658,6 +672,28 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     await agentAuthMiddleware(c, next);
     expect(next).toHaveBeenCalledTimes(1);
     expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
+  // #10190 W03 — the prompt logo route may fetch the MSP's https logo on a
+  // cache miss; that must never run inside the request-long org transaction.
+  it('skips the request-long org wrap for the self-managed prompt-identity/logo route', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/prompt-identity/logo' });
+    const next = vi.fn().mockResolvedValue(undefined);
+    await agentAuthMiddleware(c, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
+  it('keeps the request DB context for another prompt-identity/* path', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/prompt-identity/other' });
+    const next = vi.fn().mockResolvedValue(undefined);
+    await agentAuthMiddleware(c, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the request DB context for a deeper topology/adjacency/* path', async () => {
@@ -2336,9 +2372,73 @@ describe('Task 18 — agentAuthMiddleware rejects suspended tokens', () => {
 describe('Task 18 — suspendAgentToken helper', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(assertNoUnresolvedIsolation).mockResolvedValue(undefined);
+    vi.mocked(findUnresolvedIsolations).mockResolvedValue([]);
   });
 
   const identity = { deviceId: 'device-1', agentId: 'agent-1' };
+
+  it('refuses a future operator suspension while isolation is unresolved', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.mocked(assertNoUnresolvedIsolation).mockRejectedValueOnce(new NetworkIsolationUnresolvedError(
+      'suspend_agent_token', [{ deviceId: identity.deviceId, isolationId: 'isolation-1' }],
+    ));
+    await expect(suspendAgentToken(identity, 'operator_requested' as AgentTokenSuspendReason))
+      .resolves.toBe('isolation_unresolved');
+    expect(assertNoUnresolvedIsolation).toHaveBeenCalledWith(db, { deviceId: identity.deviceId }, 'suspend_agent_token');
+    expect(db.update).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith('[agentAuth] Credential suspension refused: network isolation unresolved', {
+      deviceId: identity.deviceId, isolationIds: ['isolation-1'],
+    });
+    warn.mockRestore();
+  });
+
+  it('keeps forced suspension when the warning lookup fails in its savepoint', async () => {
+    updateReturning([{ id: identity.deviceId }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.mocked(findUnresolvedIsolations).mockImplementationOnce(async () => {
+      expect(withDbTransaction).toHaveBeenCalledTimes(1);
+      throw new Error('warning lookup failed');
+    });
+    try {
+      await expect(suspendAgentToken(identity, 'cross-tenant-probe')).resolves.toBe('suspended');
+      expect(withDbTransaction).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith('[agentAuth] Forced suspension isolation warning lookup failed', {
+        deviceId: identity.deviceId,
+      });
+      expect(captureMessage).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('forces security suspension and warns that isolation recovery is bounded by expiry and offline code', async () => {
+    updateReturning([{ id: identity.deviceId }]);
+    vi.mocked(findUnresolvedIsolations).mockResolvedValueOnce([{ deviceId: identity.deviceId, isolationId: 'isolation-1' }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(suspendAgentToken(identity, 'cross-tenant-probe')).resolves.toBe('suspended');
+      expect(assertNoUnresolvedIsolation).not.toHaveBeenCalled();
+      expect(findUnresolvedIsolations).toHaveBeenCalledWith(db, { deviceId: identity.deviceId });
+      expect(warn).toHaveBeenCalledWith(
+        '[agentAuth] Forced credential suspension: network isolation recovery is now bounded by expiry and the offline code',
+        { deviceId: identity.deviceId, isolationIds: ['isolation-1'] },
+      );
+      expect(captureMessage).toHaveBeenCalledWith(
+        'Forced credential suspension: network isolation recovery is now bounded by expiry and the offline code',
+        { eventCode: 'network_isolation_forced_token_suspension', level: 'warning', tags: { deviceId: identity.deviceId, isolationId: 'isolation-1' } },
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('allows a future operator suspension once isolation is resolved', async () => {
+    updateReturning([{ id: identity.deviceId }]);
+    await expect(suspendAgentToken(identity, 'operator_requested' as AgentTokenSuspendReason)).resolves.toBe('suspended');
+    expect(assertNoUnresolvedIsolation).toHaveBeenCalledWith(db, { deviceId: identity.deviceId }, 'suspend_agent_token');
+    expect(captureMessage).not.toHaveBeenCalled();
+  });
 
   it('writes agentTokenSuspendedAt + reason via UPDATE, bound to the socket\'s id + agent_id (#8318 §6.4)', async () => {
     const whereMock = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'device-1' }]) });

@@ -56,6 +56,21 @@ describe('FlowRunsTab', () => {
     expect(api.listFlowRuns).toHaveBeenLastCalledWith('f1', expect.objectContaining({ status: 'failed' }));
   });
 
+  it('says no runs match the filter, not "No runs yet", when a status filter empties the list', async () => {
+    render(<FlowRunsTab flowId="f1" ownerScope="organization" />);
+    await screen.findByTestId('flow-run-link-run-a');
+    api.listFlowRuns.mockResolvedValue({ runs: [], total: 0 });
+    await userEvent.setup().selectOptions(screen.getByTestId('flow-runs-status-filter'), 'cancelled');
+    const empty = await screen.findByTestId('flow-runs-empty');
+    expect(empty.textContent).toBe('No runs match this filter.');
+  });
+
+  it('says "No runs yet." when the flow has never run', async () => {
+    api.listFlowRuns.mockResolvedValue({ runs: [], total: 0 });
+    render(<FlowRunsTab flowId="f1" ownerScope="organization" />);
+    expect((await screen.findByTestId('flow-runs-empty')).textContent).toBe('No runs yet.');
+  });
+
   it('polls every 10 s while a visible run is active, then stops', async () => {
     vi.useFakeTimers();
     api.listFlowRuns

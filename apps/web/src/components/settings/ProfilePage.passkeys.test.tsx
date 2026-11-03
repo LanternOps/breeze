@@ -13,7 +13,7 @@ vi.mock('../../stores/auth', () => ({
   getPasskeyCredential: getPasskeyCredentialMock,
   useAuthStore: Object.assign(
     (selector: any) => selector({ updateUser: vi.fn() }),
-    { getState: () => ({ updateUser: vi.fn(), sessionGeneration: 0, commitReissuedSessionIfCurrent: vi.fn(() => true) }) },
+    { getState: () => ({ updateUser: vi.fn(), sessionGeneration: 0, commitReissuedSessionIfCurrent: vi.fn(() => true), commitMfaStateIfCurrent: vi.fn(() => true) }) },
   ),
 }));
 
@@ -57,7 +57,7 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     ok,
     status,
     statusText: ok ? 'OK' : 'ERROR',
-    json: vi.fn().mockResolvedValue(payload),
+    json: vi.fn().mockResolvedValue(payload && typeof payload === 'object' && ('passkey' in payload || 'success' in payload) ? { mfaEnabled: true, mfaMethod: 'passkey', ...payload } : payload),
   }) as unknown as Response;
 
 // Captured before any test can stub it. Several tests here replace
@@ -70,6 +70,8 @@ const REAL_LOCATION = window.location;
 describe('ProfilePage passkey management', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    fetchWithAuthMock.mockReset();
+    createPasskeyCredentialMock.mockReset();
     Object.defineProperty(window, 'location', { configurable: true, value: REAL_LOCATION });
     // #4055 records the originating card here; a value bleeding between tests
     // would silently reroute the one after it.
@@ -78,7 +80,7 @@ describe('ProfilePage passkey management', () => {
     globalThis.URL.revokeObjectURL = vi.fn();
   });
 
-  it('starts passkey registration with currentPassword and verifies the browser credential', async () => {
+  it.each([false, true])('registers a passkey with currentPassword when an existing passkey is present = %s', async (hasExistingPasskey) => {
     const registrationOptions = {
       challenge: 'register-challenge',
       rp: { name: 'Breeze' },
@@ -95,7 +97,7 @@ describe('ProfilePage passkey management', () => {
       },
     };
     fetchWithAuthMock
-      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }))
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: hasExistingPasskey ? [{ id: 'existing-key', name: 'Existing key', lastUsedAt: null }] : [] }))
       .mockResolvedValueOnce(makeJsonResponse({ options: registrationOptions }))
       // #5038: register/verify now always returns a replacement session.
       .mockResolvedValueOnce(makeJsonResponse({
@@ -118,14 +120,17 @@ describe('ProfilePage passkey management', () => {
       />,
     );
 
-    await screen.findByText(/No passkeys are registered/i);
+    await screen.findByTestId('passkey-add');
+    expect(screen.queryByLabelText(/Passkey name/i)).toBeNull();
+    if (hasExistingPasskey) await screen.findByText('Existing key');
+    fireEvent.click(screen.getByTestId('passkey-add'));
     fireEvent.change(screen.getByLabelText(/Passkey name/i), {
       target: { value: 'MacBook Touch ID' },
     });
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+    fireEvent.click(screen.getByTestId('passkey-add-confirm'));
 
     await screen.findByText('Passkey added');
 
@@ -168,13 +173,14 @@ describe('ProfilePage passkey management', () => {
     );
 
     await screen.findByText(/No passkeys are registered/i);
+    fireEvent.click(screen.getByTestId('passkey-add'));
     fireEvent.change(screen.getByLabelText(/Passkey name/i), {
       target: { value: 'MacBook Touch ID' },
     });
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+    fireEvent.click(screen.getByTestId('passkey-add-confirm'));
 
     await screen.findByText(/Passkey registration failed\. Please try again\./i);
     expect(screen.queryByText('Internal Server Error')).toBeNull();
@@ -206,13 +212,13 @@ describe('ProfilePage passkey management', () => {
     );
 
     await screen.findByText('MacBook Touch ID');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
     fireEvent.change(screen.getByLabelText(/Current MFA code/i), {
       target: { value: '123456' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     // #5314: the passkey Delete now opens a confirmation first.
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
@@ -260,10 +266,10 @@ describe('ProfilePage passkey management', () => {
     );
 
     await screen.findByText('Security key');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     expect(getPasskeyCredentialMock).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
     await screen.findByText('Passkey deleted');
@@ -283,6 +289,162 @@ describe('ProfilePage passkey management', () => {
         body: JSON.stringify({
           currentPassword: 'current-password',
           stepUpGrantId: '40000000-0000-4000-8000-000000000009',
+        }),
+      }),
+    ]);
+  });
+
+  it('uses a recovery code to delete a passkey whose authenticator is unavailable', async () => {
+    const passkeyId = '70000000-0000-4000-8000-000000000009';
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: passkeyId, name: 'Bitwarden passkey', lastUsedAt: null }] }))
+      .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: '80000000-0000-4000-8000-000000000009' }))
+      .mockResolvedValueOnce(makeJsonResponse({ success: true, tokens: { accessToken: 'reissued-access-token', expiresInSeconds: 900 } }));
+
+    render(<ProfilePage initialUser={{
+      id: 'user-1',
+      name: 'Casey Admin',
+      email: 'casey@example.com',
+      mfaEnabled: true,
+      mfaMethod: 'passkey',
+    }} />);
+
+    await screen.findByText('Bitwarden passkey');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Can’t access your passkey/ }));
+    fireEvent.change(screen.getByLabelText(/Recovery code/i), { target: { value: 'ABCD-1234' } });
+    fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
+
+    await screen.findByText('Passkey deleted');
+    expect(fetchWithAuthMock.mock.calls[1]).toEqual([
+      '/auth/mfa/step-up',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ method: 'recovery', code: 'ABCD-1234', operation: 'delete_passkey', passkeyId }),
+      }),
+    ]);
+    expect(fetchWithAuthMock.mock.calls[2]).toEqual([
+      `/auth/passkeys/${passkeyId}`,
+      expect.objectContaining({ method: 'DELETE' }),
+    ]);
+    expect(getPasskeyCredentialMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['totp', 'sms'] as const)('accepts a recovery code when %s is primary', async (mfaMethod) => {
+    const passkeyId = '90000000-0000-4000-8000-000000000009';
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: passkeyId, name: 'Unavailable passkey', lastUsedAt: null }] }))
+      .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: 'a0000000-0000-4000-8000-000000000009' }))
+      .mockResolvedValueOnce(makeJsonResponse({ success: true, tokens: { accessToken: 'reissued-access-token', expiresInSeconds: 900 } }));
+
+    render(<ProfilePage initialUser={{
+      id: 'user-1',
+      name: 'Casey Admin',
+      email: 'casey@example.com',
+      mfaEnabled: true,
+      mfaMethod,
+    }} />);
+
+    await screen.findByText('Unavailable passkey');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.change(screen.getByLabelText(/Current MFA code or recovery code/i), { target: { value: 'ABCD-1234' } });
+    fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
+
+    await screen.findByText('Passkey deleted');
+    expect(fetchWithAuthMock.mock.calls[1]).toEqual([
+      '/auth/mfa/step-up',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ method: 'recovery', code: 'ABCD-1234', operation: 'delete_passkey', passkeyId }),
+      }),
+    ]);
+  });
+
+  it('reuses the unspent deletion grant after a password typo', async () => {
+    const passkeyId = 'b0000000-0000-4000-8000-000000000009';
+    const stepUpGrantId = 'c0000000-0000-4000-8000-000000000009';
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: passkeyId, name: 'Lost passkey', lastUsedAt: null }] }))
+      .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId }))
+      .mockResolvedValueOnce(makeJsonResponse({ code: 'invalid_credentials', error: 'Invalid credentials' }, false, 400))
+      .mockResolvedValueOnce(makeJsonResponse({ success: true, tokens: { accessToken: 'reissued-access-token', expiresInSeconds: 900 } }));
+
+    render(<ProfilePage initialUser={{
+      id: 'user-1',
+      name: 'Casey Admin',
+      email: 'casey@example.com',
+      mfaEnabled: true,
+      mfaMethod: 'passkey',
+    }} />);
+
+    await screen.findByText('Lost passkey');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'wrong-password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Can’t access your passkey/ }));
+    fireEvent.change(screen.getByLabelText(/Recovery code/i), { target: { value: 'ABCD-1234' } });
+    fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
+
+    await screen.findByText('Invalid credentials');
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'correct-password' },
+    });
+    fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
+
+    await screen.findByText('Passkey deleted');
+    expect(fetchWithAuthMock.mock.calls.filter(([url]) => url === '/auth/mfa/step-up')).toHaveLength(1);
+    expect(fetchWithAuthMock.mock.calls[3]).toEqual([
+      `/auth/passkeys/${passkeyId}`,
+      expect.objectContaining({
+        method: 'DELETE',
+        body: JSON.stringify({ currentPassword: 'correct-password', stepUpGrantId }),
+      }),
+    ]);
+  });
+
+  it('uses an available passkey to delete one after TOTP has been disabled', async () => {
+    const passkeyId = '50000000-0000-4000-8000-000000000009';
+    const assertion = { id: 'browser-credential', response: { signature: 'sig' } };
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: passkeyId, name: 'Security key', lastUsedAt: null }] }))
+      .mockResolvedValueOnce(makeJsonResponse({ options: { challenge: 'step-up-challenge' } }))
+      .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: '60000000-0000-4000-8000-000000000009' }))
+      .mockResolvedValueOnce(makeJsonResponse({ success: true, tokens: { accessToken: 'reissued-access-token', expiresInSeconds: 900 } }));
+    getPasskeyCredentialMock.mockResolvedValueOnce(assertion);
+
+    render(<ProfilePage initialUser={{
+      id: 'user-1',
+      name: 'Casey Admin',
+      email: 'casey@example.com',
+      mfaEnabled: false,
+      mfaMethod: null,
+    }} />);
+
+    await screen.findByText('Security key');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
+
+    await screen.findByText('Passkey deleted');
+    expect(getPasskeyCredentialMock).toHaveBeenCalledWith({ challenge: 'step-up-challenge' });
+    expect(fetchWithAuthMock.mock.calls[2]).toEqual([
+      '/auth/mfa/step-up',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          method: 'passkey',
+          credential: assertion,
+          operation: 'delete_passkey',
+          passkeyId,
         }),
       }),
     ]);
@@ -352,8 +514,9 @@ describe('ProfilePage passkey management', () => {
       // No password field at all for an account that has no password.
       expect(document.querySelector('#passkey-password')).toBeNull();
 
-      fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
       fireEvent.click(screen.getByTestId('passkey-add'));
+      fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
+      fireEvent.click(screen.getByTestId('passkey-add-confirm'));
 
       await screen.findByText('Passkey added');
 
@@ -400,7 +563,7 @@ describe('ProfilePage passkey management', () => {
       // #4055: the OTHER half of the instruction ternary. Asserting only the
       // testids would let the two branches be swapped — telling a user with no
       // grant that their identity is already verified — without a red test.
-      expect(screen.getByText(/Re-verify with your provider before adding a passkey/i))
+      expect(screen.getByTestId('passkey-sso-reauth'))
         .toBeTruthy();
       expect(screen.queryByText(/Your identity is verified/i)).toBeNull();
 
@@ -456,6 +619,8 @@ describe('ProfilePage passkey management', () => {
       );
 
       await screen.findByText(/No passkeys are registered/i);
+      expect(document.querySelector('#passkey-password')).toBeNull();
+      fireEvent.click(screen.getByTestId('passkey-add'));
       expect(document.querySelector('#passkey-password')).toBeTruthy();
       expect(screen.queryByTestId('passkey-sso-reauth')).toBeNull();
     });
@@ -525,6 +690,8 @@ describe('ProfilePage passkey management', () => {
 
         // The grant landed and the card is armed: the submit replaces the CTA.
         expect(screen.getByTestId('passkey-add')).toBeTruthy();
+        expect(await screen.findByLabelText(/Passkey name/i)).toBeTruthy();
+        expect(document.querySelector('#passkey-password')).toBeNull();
         expect(screen.queryByTestId('passkey-sso-reauth')).toBeNull();
 
         // And the user is NOT dropped on the TOTP enrollment screen.
@@ -563,6 +730,7 @@ describe('ProfilePage passkey management', () => {
           await waitFor(() => {
             expect(document.activeElement).toBe(document.querySelector('#passkey-name'));
           });
+          expect(document.querySelector('#passkey-password')).toBeNull();
         } finally {
           Element.prototype.scrollIntoView = realScroll;
         }
@@ -620,7 +788,7 @@ describe('ProfilePage passkey management', () => {
         // they did exactly that reads as a failed round-trip.
         expect(screen.queryByText(/Re-verify with your provider before adding a passkey/i))
           .toBeNull();
-        expect(screen.getByText(/Your identity is verified/i)).toBeTruthy();
+        expect(screen.getByTestId('passkey-add')).toBeTruthy();
       });
 
       it('consumes the recorded intent so a later return cannot replay it', async () => {

@@ -170,13 +170,19 @@ type rebootRung struct {
 	// next rung: a dialog still on screen then would make the helper refuse to
 	// stack a second modal, silently costing the ladder a warning.
 	promptWindow time.Duration
+	// final is the closing rung (fires at OSInvokeAt, the OS countdown
+	// running): the restart card shows restart.final there (#10190 W05).
+	final bool
+	// quietLead is the lead rung a postponement re-planned (#4941): the
+	// restart card is updated where it is rather than shown again.
+	quietLead bool
 }
 
 // planRebootRungs pairs every notification in the plan with its prompt policy.
 func planRebootRungs(plan RebootPlan) []rebootRung {
 	rungs := make([]rebootRung, 0, len(plan.Notifications))
 	for i, n := range plan.Notifications {
-		rung := rebootRung{notification: n}
+		rung := rebootRung{notification: n, final: n.After == plan.OSInvokeAt}
 		if n.After != plan.OSInvokeAt {
 			// The room before the next rung, or before the OS invocation if this
 			// is the last rung that precedes it.
@@ -213,6 +219,7 @@ func planRebootRungsQuietLead(plan RebootPlan) []rebootRung {
 	if len(rungs) > 0 {
 		rungs[0].deferrable = false
 		rungs[0].promptWindow = 0
+		rungs[0].quietLead = true
 	}
 	return rungs
 }

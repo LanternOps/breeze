@@ -65,6 +65,12 @@ type RebootState struct {
 	DeferralsUsed   int  `json:"deferralsUsed"`
 	MaxDeferrals    int  `json:"maxDeferrals"`
 	DeferralMinutes int  `json:"deferralMinutes"`
+
+	// LastUserAction is the most recent decision the person at the keyboard
+	// made on a restart prompt (#10190 W05): Postpone or Restart now, when,
+	// and which renderer carried it. The console audits it once per
+	// decision. Kept across schedules; nil until the first decision.
+	LastUserAction *RebootUserAction `json:"lastUserAction,omitempty"`
 }
 
 // RebootOptions carries everything about a schedule that is not part of the
@@ -155,6 +161,15 @@ type RebootManager struct {
 	// first click would switch the remaining warnings back to English.
 	promptText RebootPromptText
 
+	// surface is the restart card (#10190 W05; nil = today's ladder only).
+	// campaign identifies the operator's restart the card belongs to: set by
+	// every ScheduleWithOptions, kept by the re-plans a postponement or
+	// Restart now make (see RestartRung.Campaign).
+	surface  RestartSurface
+	campaign uint64
+	// lastUserAction is reported through State (RebootState.LastUserAction).
+	lastUserAction *RebootUserAction
+
 	// Injectable seams for deterministic tests, following the repo's nowFn
 	// convention (sessionbroker.Broker, watchdog.Clock). afterFunc in
 	// particular is what lets the notification ladder be asserted without
@@ -205,7 +220,12 @@ func (r *RebootManager) State() RebootState {
 	// Refresh pending reboot detection
 	pending, _ := DetectPendingReboot()
 	r.state.PendingReboot = pending
-	return r.state
+	st := r.state
+	if r.lastUserAction != nil {
+		a := *r.lastUserAction
+		st.LastUserAction = &a
+	}
+	return st
 }
 
 // Schedule schedules a reboot after the given delay with a hard deadline.
@@ -227,7 +247,13 @@ func (r *RebootManager) Schedule(delay time.Duration, deadline time.Time, reason
 func (r *RebootManager) ScheduleWithOptions(delay time.Duration, deadline time.Time, reason, source string, opts RebootOptions) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.scheduleLocked(delay, deadline, reason, source, opts)
+	if err := r.scheduleLocked(delay, deadline, reason, source, opts); err != nil {
+		return err
+	}
+	// An operator's schedule is a new campaign; the re-plans of the
+	// person's own Postpone / Restart now keep theirs (scheduleLockedAt).
+	r.campaign = newCampaignID(r.nowFn())
+	return nil
 }
 
 // leadRung says how a schedule's FIRST warning is delivered. An explicit
@@ -527,6 +553,7 @@ func (r *RebootManager) Cancel() error {
 		r.mu.Unlock()
 		return ErrNoRebootScheduled
 	}
+	surface, campaign := r.surface, r.campaign
 	r.cancelLocked()
 	r.state.RebootScheduled = false
 	r.state.ScheduledAt = time.Time{}
@@ -560,6 +587,7 @@ func (r *RebootManager) Cancel() error {
 	// shutdown(8), so macOS, has no cancel flag), and an unconditional attempt
 	// would make every cancellation there look like a failure.
 	if !aborting {
+		r.tellCancelled(surface, campaign)
 		return nil
 	}
 	err := abort()
@@ -567,10 +595,28 @@ func (r *RebootManager) Cancel() error {
 	r.osAborting = false
 	r.mu.Unlock()
 	if err != nil {
+		// The machine may still go down: the card must not say "cancelled".
 		log.Warn("reboot cancelled locally but the OS countdown could not be aborted", "error", err)
 		return fmt.Errorf("reboot schedule cleared, but the OS countdown could not be aborted: %w", err)
 	}
+	r.tellCancelled(surface, campaign)
 	return nil
+}
+
+// tellOSRestartFailed withdraws the after-the-fact entry of a restart the OS
+// never started. Called with no lock held.
+func (r *RebootManager) tellOSRestartFailed(surface RestartSurface, campaign uint64) {
+	if surface != nil && campaign != 0 {
+		surface.OSRestartFailed(campaign)
+	}
+}
+
+// tellCancelled withdraws the restart card of a cancelled campaign. Called
+// with no lock held, and only once the restart is really off.
+func (r *RebootManager) tellCancelled(surface RestartSurface, campaign uint64) {
+	if surface != nil && campaign != 0 {
+		surface.Cancelled(campaign)
+	}
 }
 
 // Stop stops the reboot manager and cancels any pending reboot.
@@ -677,10 +723,25 @@ func (r *RebootManager) emitNotification(gen uint64, rung rebootRung) {
 		policy, used, r.nowFn(), r.state.ScheduledAt, r.state.Deadline).Granted
 	r.state.NotifiedUser = true
 	r.state.NotificationSent = r.nowFn()
+	surface := r.surface
+	var card RestartRung
+	if surface != nil {
+		card = r.restartRungLocked(rung.final, !rung.quietLead)
+	}
 	r.mu.Unlock()
 
 	title, text := applyRebootPromptText(n, promptText)
 	body := rebootPromptBody(text, rebootDeferralNote(policy, used, canPostpone))
+
+	// The restart card first (#10190 W05). A rung it took is drawn, updated
+	// and decided on the card; only a rung it did not take goes out below,
+	// exactly as before.
+	if surface != nil {
+		card.LegacyTitle, card.LegacyBody, card.LegacyUrgency = title, body, n.Urgency
+		if surface.ShowRung(card) {
+			return
+		}
+	}
 
 	offerPrompt := rung.deferrable && promptFn != nil && canPostpone
 	if !offerPrompt {
@@ -726,6 +787,8 @@ func (r *RebootManager) emitNotification(gen uint64, rung rebootRung) {
 		if err := r.restartNow(gen); err != nil {
 			log.Warn("could not honour Restart now", "error", err.Error())
 			r.notifyUser("Restart Could Not Be Started", err.Error(), "critical")
+		} else {
+			r.recordUserAction(UserActionRestartNow, legacyPromptRenderer())
 		}
 	case actions[1]:
 		// Compared against the label we sent rather than a well-known constant:
@@ -736,6 +799,8 @@ func (r *RebootManager) emitNotification(gen uint64, rung rebootRung) {
 			// rather than leaving the click looking like it worked.
 			log.Info("postponement refused", "reason", err.Error())
 			r.notifyUser("Restart Cannot Be Postponed", err.Error(), "critical")
+		} else {
+			r.recordUserAction(UserActionPostponed, legacyPromptRenderer())
 		}
 	default:
 		log.Warn("reboot prompt returned a label that was never offered", "clicked", clicked)
@@ -832,10 +897,18 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 	// cannot see that it must wait.
 	r.osInvokeDone = make(chan struct{})
 	exec := r.execOSReboot
+	surface, campaign := r.surface, r.campaign
 	r.mu.Unlock()
 
 	// Persist history before rebooting
 	r.saveRebootHistory()
+
+	// The after-the-fact list entry ("Your computer restarted at …") must be
+	// on disk before the OS command: past it the process may not get
+	// another chance (spec §3.2).
+	if surface != nil && campaign != 0 {
+		surface.BeforeOSRestart(campaign, now.Add(grace))
+	}
 
 	if exec == nil {
 		log.Error("no OS reboot implementation for this platform")
@@ -843,6 +916,7 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 		r.finishOSInvokeLocked()
 		r.state.LastError = "no OS reboot implementation for this platform"
 		r.mu.Unlock()
+		r.tellOSRestartFailed(surface, campaign)
 		return
 	}
 	err := exec(grace)
@@ -851,6 +925,7 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 	if err != nil {
 		r.state.LastError = fmt.Sprintf("OS reboot invocation failed: %v", err)
 		r.mu.Unlock()
+		r.tellOSRestartFailed(surface, campaign)
 		// A failed shutdown invocation used to be discarded entirely: the old
 		// code called exec.Command(...).Run() and ignored the error, so a
 		// blocked or missing shutdown binary looked identical to a reboot.

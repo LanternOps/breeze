@@ -47,6 +47,7 @@ import {
 } from '../../db/schema';
 import { aiTools } from '../aiTools';
 import { requiredPermissionsForTool } from '../aiGuardrails';
+import { FLOW_EXTERNAL_TOOL_APPROVER_PERMISSION, flowIntentApproverRule } from './flowIntentApproverRule';
 import {
   PERMISSIONS,
   canAccessOrg,
@@ -600,7 +601,8 @@ export async function isAgentIntentDecideAuthorized(
  * The external-tool grant a flow intent's approvers must hold when the step is
  * a tenant tool (Tier 3 ⇒ `external_tools:write`, toolSources/guardrails.ts).
  */
-export const FLOW_EXTERNAL_TOOL_APPROVER_PERMISSION = { resource: 'external_tools', action: 'write' } as const;
+// The shared create/decide approver rule lives in a leaf (flowIntentApproverRule.ts).
+export { FLOW_EXTERNAL_TOOL_APPROVER_PERMISSION, flowIntentApproverRule };
 
 /**
  * Decide-time twin of the flow fan-out (createActionIntent): the run must still
@@ -615,9 +617,8 @@ async function isFlowIntentDecideAuthorized(
     toolSourceToolId?: string | null;
   },
 ): Promise<boolean> {
-  const required = intent.toolSourceToolId
-    ? [FLOW_EXTERNAL_TOOL_APPROVER_PERMISSION]
-    : requiredPermissionsForTool(intent.actionName, intent.arguments ?? {});
+  const rule = flowIntentApproverRule(intent);
+  const required = rule.required;
   if (required === null) return false;
 
   const { run, partnerId } = await runOutsideDbContext(() =>
@@ -639,7 +640,7 @@ async function isFlowIntentDecideAuthorized(
 
   let targetScope: IntentTargetScope;
   try {
-    targetScope = intent.toolSourceToolId
+    targetScope = rule.indirect
       ? { kind: 'indirect' }
       : await resolveIntentTargetScope(intent.actionName, intent.arguments ?? {}, { deviceId: null }, intent.orgId);
   } catch {

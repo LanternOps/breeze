@@ -165,3 +165,9 @@ describe('run_script run context (#4888)', () => {
     expect(validateToolInput('run_script', base).success).toBe(true);
   });
 });
+
+describe('get_elevation_history status (#8971)', () => {
+  it('accepts the withdrawn status', () => {
+    expect(validateToolInput('get_elevation_history', { status: 'withdrawn' })).toEqual({ success: true });
+  });
+});

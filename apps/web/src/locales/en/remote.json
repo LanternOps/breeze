@@ -681,6 +681,7 @@
       "disconnected": "Disconnected",
       "failed": "Failed",
       "pending": "Pending",
+      "endedByUser": "Ended by the user",
       "teardownPending": "Ending (awaiting device)"
     },
     "subtitle": "Remote access audit log",
@@ -717,6 +718,7 @@
       "timeline": "Timeline"
     },
     "subtitle": "View and audit remote access sessions",
+    "endedByUser": "Ended by the user",
     "teardownPending": "Awaiting device confirmation",
     "title": "Session History",
     "viewDevice": "View Device",

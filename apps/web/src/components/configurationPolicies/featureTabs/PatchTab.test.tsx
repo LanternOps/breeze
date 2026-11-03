@@ -724,6 +724,22 @@ describe('PatchTab', () => {
       );
       await screen.findByText('Approval Ring');
       expect(screen.queryByTestId('patch-reboot-prompt-title')).toBeNull();
+      expect(screen.queryByTestId('reboot-prompt-preview')).toBeNull();
+    });
+
+    // #10190 W05: the card preview follows the fields as they are edited.
+    it('previews the restart card from the fields being edited', async () => {
+      render(<PatchTab {...baseProps} />);
+      const preview = await screen.findByTestId('reboot-prompt-preview');
+      expect(preview).toBeInTheDocument();
+      expect(screen.getByTestId('reboot-preview-restart-now')).toHaveTextContent('Restart now');
+      expect(screen.queryByTestId('reboot-preview-postpone')).toBeNull();
+
+      fireEvent.change(screen.getByTestId('patch-reboot-prompt-button'), { target: { value: 'Restart right away' } });
+      expect(screen.getByTestId('reboot-preview-restart-now')).toHaveTextContent('Restart right away');
+
+      fireEvent.click(screen.getByTestId('patch-reboot-allow-deferral-toggle'));
+      expect(screen.getByTestId('reboot-preview-postpone')).toHaveTextContent(/^Postpone until /);
     });
   });
 });

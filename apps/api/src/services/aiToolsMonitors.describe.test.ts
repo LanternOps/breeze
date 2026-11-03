@@ -1,8 +1,13 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
+const { loadPolicyProviders } = vi.hoisted(() => ({ loadPolicyProviders: vi.fn(async (): Promise<string[]> => []) }));
+vi.mock('./eventLogPolicyProviders', () => ({ loadPolicyApplicationProviders: loadPolicyProviders }));
+
 vi.mock('../db', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../db')>()),
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn(), transaction: vi.fn() },
+  hasDbAccessContext: () => true,
+  withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
 }));
 
 vi.mock('./monitors/monitorService', async (importOriginal) => ({
@@ -202,6 +207,7 @@ describe('manage_monitor_definitions discoverability (#7826)', () => {
       expect(r.guidance).toContain('required_software');
       expect(r.guidance).toContain('Application log error/critical from every provider');
       expect(r.guidance).toContain('MsiInstaller');
+      expect(r.guidance).toContain('Configuration policy → Event Logs → Application providers');
       expect(r.guidance).not.toContain('can never match');
       expect(r.guidance).toContain('WHEA');
       const cpu = await call({ action: 'describe', kind: 'cpu' });
@@ -254,5 +260,19 @@ describe('manage_monitor_definitions discoverability (#7826)', () => {
       expect(r.error).toBeTruthy();
       expect(r.error).not.toContain('required_software');
     });
+  });
+});
+
+
+describe('policy-aware event log warnings (#10493)', () => {
+  beforeEach(() => { vi.clearAllMocks(); loadPolicyProviders.mockResolvedValue([]); });
+  it.each(['create', 'update'])('%s suppresses warnings for a provider collected by scoped policies', async (action) => {
+    const input = { action, monitorId: ORG_ID, definition: {
+      name: 'UPS', severity: 'high', kind: 'event_log', condition: { category: 'application', level: 'warning', sourcePattern: 'Dell UPS Local Node Manager' },
+    } };
+    expect((await call(input)).warnings).toHaveLength(1);
+    loadPolicyProviders.mockResolvedValue(['Dell UPS Local Node Manager']);
+    expect((await call(input)).warnings).toBeUndefined();
+    expect(loadPolicyProviders).toHaveBeenLastCalledWith({ orgId: ORG_ID, partnerId: null });
   });
 });

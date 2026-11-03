@@ -103,18 +103,35 @@ const backupPrefetchFailureCap = 3
 // already broken, so declining to upgrade around it doesn't preserve anything
 // — reconcileBackupHelper will re-fetch it on its own schedule regardless.
 func (h *Heartbeat) backupUpgradeCompanion(targetVersion string) (pair *updater.BinaryPair, abort bool) {
-	installPath, resolveErr := h.resolveBackupBinaryPath()
-	present := false
-	if resolveErr == nil {
-		if fi, statErr := os.Stat(installPath); statErr == nil && fi.Size() > 0 {
-			present = true
+	present := h.backupHelperPresent()
+
+	// #7516: this target's backup artifact recently failed verification, so
+	// downloading it again now would fail the same way. Apply the same
+	// present/cap policy as a failed download, without the download.
+	// doUpgrade's upgradeDeferredByArtifactBackoff gate normally stops the
+	// abort case before this point. This branch covers the cases that pass the
+	// gate (no backup installed, or the failure cap reached), which proceed
+	// agent-only.
+	if _, active := h.artifactBackoff.Remaining(artifactComponentBackup, targetVersion); active {
+		if present && h.backupPrefetchFailuresFor(targetVersion) < backupPrefetchFailureCap {
+			log.Debug("agent upgrade deferred: breeze-backup artifact for this version is backing off after a verification failure",
+				"targetVersion", targetVersion)
+			return nil, true
 		}
+		log.Warn("breeze-backup artifact for this version recently failed verification; proceeding with agent-only upgrade",
+			"targetVersion", targetVersion)
+		return nil, false
 	}
 
 	pair, err := h.prefetchBackupHelper(targetVersion)
 	if err == nil {
 		h.resetBackupPrefetchFailures()
+		h.artifactBackoff.Clear(artifactComponentBackup)
 		return pair, false
+	}
+
+	if updater.IsDeterministicArtifactFailure(err) {
+		h.artifactBackoff.NoteFailure(artifactComponentBackup, targetVersion)
 	}
 
 	key, value := updater.SafeDownloadErrorFields(err)
@@ -148,6 +165,17 @@ func (h *Heartbeat) noteBackupPrefetchFailure(targetVersion string) int {
 		h.backupPrefetchFailureCount = 0
 	}
 	h.backupPrefetchFailureCount++
+	return h.backupPrefetchFailureCount
+}
+
+// backupPrefetchFailuresFor returns the current consecutive prefetch-failure
+// count for targetVersion: 0 when the streak belongs to another version.
+func (h *Heartbeat) backupPrefetchFailuresFor(targetVersion string) int {
+	h.backupPrefetchFailureMu.Lock()
+	defer h.backupPrefetchFailureMu.Unlock()
+	if h.backupPrefetchFailureVersion != targetVersion {
+		return 0
+	}
 	return h.backupPrefetchFailureCount
 }
 

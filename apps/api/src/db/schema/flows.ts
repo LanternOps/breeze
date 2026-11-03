@@ -11,7 +11,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import type { FlowPausedReason, FlowStatus } from '@breeze/shared';
+import type { FlowAdmissionRefusal, FlowPausedReason, FlowStatus, FlowWebhookAuthFailure } from '@breeze/shared';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { aiSessions } from './ai';
@@ -61,6 +61,22 @@ export const flows = pgTable(
     enabledPublicationSeq: integer('enabled_publication_seq'),
     /** W04: the last schedule occurrence the tick enqueued (dedupe across ticks). */
     scheduleLastOccurrenceKey: text('schedule_last_occurrence_key'),
+    /**
+     * W05 (2027-01-07-140000-flow-webhooks-tools-budgets.sql): the per-flow webhook secret,
+     * secretCrypto ciphertext with row-bound AAD (encryptedColumnRegistry
+     * `flows.webhook_secret_encrypted`; export excludedSensitive). Set together with the
+     * fingerprint and rotated_at (flows_webhook_secret_pair_chk). The fingerprint is for
+     * display and change detection only — never a verifier.
+     */
+    webhookSecretEncrypted: text('webhook_secret_encrypted'),
+    webhookSecretFingerprint: text('webhook_secret_fingerprint'),
+    webhookSecretRotatedAt: timestamp('webhook_secret_rotated_at', { withTimezone: true }),
+    /** W05: last unauthenticated delivery, written at most once a minute (flows_webhook_auth_failure_chk). */
+    webhookLastAuthFailureAt: timestamp('webhook_last_auth_failure_at', { withTimezone: true }),
+    webhookLastAuthFailureReason: text('webhook_last_auth_failure_reason').$type<FlowWebhookAuthFailure>(),
+    /** W05: last admission refusal (a monthly cap or the active queue), ≤ once a minute (flows_last_admission_refusal_chk). */
+    lastAdmissionRefusalAt: timestamp('last_admission_refusal_at', { withTimezone: true }),
+    lastAdmissionRefusalCode: text('last_admission_refusal_code').$type<FlowAdmissionRefusal>(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },

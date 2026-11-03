@@ -4,10 +4,20 @@ import { classifyCommandFailure, CLOUDFLARE_SWALLOWED_STATUSES } from './fileBro
 import { AGENT_COMMAND_ERROR_CODES, type AgentCommandErrorCode } from '../agents/schemas';
 
 describe('classifyCommandFailure — typed agent errorCode (#4026)', () => {
-  // One representative prose per code, as today's agents spell it. Typed as a
-  // full Record so adding a code to AGENT_COMMAND_ERROR_CODES without a sample
-  // here is a compile error, and the parity test below then covers it.
-  const PROSE_FOR_CODE: Record<AgentCommandErrorCode, string> = {
+  // Network-isolation codes (#10088) ride only isolate/release results, which
+  // never reach this classifier, and no pre-#4026 agent sent their prose, so
+  // there is no legacy answer to stay in parity with. They are pinned below.
+  type IsolationCode = Extract<AgentCommandErrorCode, `isolation_${string}`>;
+  type FileOpCode = Exclude<AgentCommandErrorCode, IsolationCode>;
+  const isIsolationCode = (code: AgentCommandErrorCode): code is IsolationCode => code.startsWith('isolation_');
+  const FILE_OP_CODES = AGENT_COMMAND_ERROR_CODES.filter((code): code is FileOpCode => !isIsolationCode(code));
+  const ISOLATION_CODES = AGENT_COMMAND_ERROR_CODES.filter(isIsolationCode);
+
+  // One representative prose per file-op code, as today's agents spell it.
+  // Typed as a full Record so adding a code to AGENT_COMMAND_ERROR_CODES
+  // without a sample here is a compile error, and the parity test below then
+  // covers it.
+  const PROSE_FOR_CODE: Record<FileOpCode, string> = {
     path_not_found: 'path does not exist: C:\\nope.txt',
     path_exists: 'cannot restore: path already exists: /home/user/report.pdf',
     file_too_large: 'file too large: 8981850 bytes (max 1048576 bytes)',
@@ -26,7 +36,7 @@ describe('classifyCommandFailure — typed agent errorCode (#4026)', () => {
       'filesystem analysis already in progress on this device (command 6f1c, running for 1m35s); not starting a second scan',
   };
 
-  it.each(AGENT_COMMAND_ERROR_CODES.map((code) => [code]))(
+  it.each(FILE_OP_CODES.map((code) => [code]))(
     'classifies %s identically to the prose an older agent sends',
     (code) => {
       // The code must not change today's answer for any message — it only
@@ -91,6 +101,15 @@ describe('classifyCommandFailure — typed agent errorCode (#4026)', () => {
     });
     expect(unrecognisedProse.kind).toBe(ERROR_CODES.AGENT_EXECUTION_FAILED);
     expect(unrecognisedProse.status).toBe(500);
+  });
+
+  it('classifies every isolation code as a deterministic refusal (422)', () => {
+    expect(ISOLATION_CODES.length).toBeGreaterThan(0);
+    for (const code of ISOLATION_CODES) {
+      const failure = classifyCommandFailure({ status: 'failed', error: 'refused', errorCode: code });
+      expect(failure.kind, code).toBe(ERROR_CODES.AGENT_COMMAND_REJECTED);
+      expect(failure.status, code).toBe(422);
+    }
   });
 
   it('does not let a code on a timed-out result hide the timeout', () => {

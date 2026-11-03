@@ -107,6 +107,36 @@ import { registerSnmpMetricsTools } from './aiToolsSnmpMetrics';
 import { registerNetworkProbeTools } from './aiToolsNetworkProbe';
 import { registerKnownGuestTools } from './aiToolsKnownGuests';
 import { registerUnifiTools } from './aiToolsUnifi';
+import { registerAiActivityTools } from './aiToolsAiActivity';
+import { registerOperatorTaskReadTools } from './aiToolsOperatorTasksRead';
+import { registerFleetDesignReadTools } from './aiToolsFleetDesignsRead';
+import { registerSecurityComplianceTools } from './aiToolsSecurityCompliance';
+import { registerSecurityRecommendationTools } from './aiToolsSecurityRecommendations';
+import { registerAccessReviewTools } from './aiToolsAccessReviews';
+import { registerAuditBaselineTools } from './aiToolsAuditBaselines';
+import { registerSecurityPolicyTools } from './aiToolsSecurityPolicies';
+import { registerRecoveryKeyTools } from './aiToolsRecoveryKeys';
+import { registerPamRuleTools } from './aiToolsPamRules';
+import { registerSoftwareCatalogTools } from './aiToolsSoftwareCatalog';
+import { registerPackageSearchTools } from './aiToolsPackageSearch';
+import { registerSoftwareDeploymentTools } from './aiToolsSoftwareDeployments';
+import { registerDeviceSoftwareTools } from './aiToolsDeviceSoftware';
+import { registerSoftwareInventoryTools } from './aiToolsSoftwareInventory';
+import { registerFleetFindingTools } from './aiToolsFleetFindings';
+import { registerCustomFieldTools } from './aiToolsCustomFields';
+import { registerDeviceInventoryTools } from './aiToolsDeviceInventory';
+import { registerDeviceLinkTools } from './aiToolsDeviceLinks';
+import { registerManualAssetTools } from './aiToolsManualAssets';
+import { registerDeviceEventLogTools } from './aiToolsDeviceEventLog';
+import { registerTenantVariableTools } from './aiToolsTenantVariables';
+import { registerSupportSessionTools } from './aiToolsSupportSessions';
+import { registerPax8Tools } from './aiToolsPax8';
+import { registerPax8OrderTools } from './aiToolsPax8Orders';
+import { registerBillingProfileTools } from './aiToolsBillingProfiles';
+import { registerBillingSettingsTools } from './aiToolsBillingSettings';
+import { registerContractTemplateTools } from './aiToolsContractTemplates';
+import { registerDeviceBillingTools } from './aiToolsDeviceBilling';
+import { registerAccountingSyncTools } from './aiToolsAccountingSync';
 import { registerTicketConfigTools } from './aiToolsTicketConfig';
 import { registerTicketChecklistTemplateTools } from './aiToolsTicketChecklistTemplates';
 import { registerTicketInboxTools } from './aiToolsTicketInbox';
@@ -126,6 +156,7 @@ import { registerDiagnosticAccessTools } from './aiToolsDiagnosticAccess';
 import { registerExportTools } from './aiToolsExport';
 import { registerArtifactTools } from './aiToolsArtifacts';
 import { registerTrustPageTools } from './aiToolsTrustPage';
+import { registerPartnerSettingsInheritanceTools } from './aiToolsPartnerSettingsInheritance';
 import { registerFlowTools } from './aiToolsFlows';
 import { registerBusinessCalendarTools } from './aiToolsBusinessCalendars';
 import { registerTicketRoutingTools } from './aiToolsTicketRouting';
@@ -411,6 +442,44 @@ registerSnmpMetricsTools(aiTools);
 registerNetworkProbeTools(aiTools);
 registerKnownGuestTools(aiTools);
 registerUnifiTools(aiTools);
+// Full-control W10 (#6780): AI-agent read tools.
+registerAiActivityTools(aiTools);
+registerOperatorTaskReadTools(aiTools);
+registerFleetDesignReadTools(aiTools);
+// Full-control W11 (#6781): security policy tools.
+registerSecurityComplianceTools(aiTools);
+registerSecurityRecommendationTools(aiTools);
+registerAccessReviewTools(aiTools);
+registerAuditBaselineTools(aiTools);
+registerSecurityPolicyTools(aiTools);
+registerRecoveryKeyTools(aiTools);
+registerPamRuleTools(aiTools);
+// Full-control W12 (#6782): software, fleet-finding and custom-field tools.
+registerSoftwareCatalogTools(aiTools);
+registerPackageSearchTools(aiTools);
+registerSoftwareDeploymentTools(aiTools);
+registerDeviceSoftwareTools(aiTools);
+registerSoftwareInventoryTools(aiTools);
+registerFleetFindingTools(aiTools);
+registerCustomFieldTools(aiTools);
+// Full-control W13 (#6783, PR A): device inventory reads and per-device records.
+registerDeviceInventoryTools(aiTools);
+registerDeviceLinkTools(aiTools);
+registerManualAssetTools(aiTools);
+// Full-control W13 (#6783, PR B): live event-log browse, tenant variables, Quick Support sessions.
+registerDeviceEventLogTools(aiTools);
+registerTenantVariableTools(aiTools);
+registerSupportSessionTools(aiTools);
+// Full-control W14 (#6784, PR A): billing lifecycle — rate cards, billing settings, agreement templates, signed
+// agreements, device billing (the contract / invoice read selectors live in aiToolsContracts / aiToolsBilling).
+registerBillingProfileTools(aiTools);
+registerPax8Tools(aiTools);
+registerPax8OrderTools(aiTools);
+registerBillingSettingsTools(aiTools);
+registerContractTemplateTools(aiTools);
+registerDeviceBillingTools(aiTools);
+// Full-control W14 PR B (#6784): QuickBooks / Xero sync (generate_invoice lives on manage_contracts).
+registerAccountingSyncTools(aiTools);
 registerMessagingTools(aiTools);
 registerCatalogTools(aiTools);
 registerBillingTools(aiTools);
@@ -442,6 +511,8 @@ registerM365Tools(aiTools);
 registerExportTools(aiTools);
 registerArtifactTools(aiTools);
 registerTrustPageTools(aiTools);
+// #9763: partner settings inheritance read (twin of the two inheritance routes).
+registerPartnerSettingsInheritanceTools(aiTools);
 // Tool Catalog W03 (#5218): flow authoring tools, behind FLOWS_ENABLED.
 registerFlowTools(aiTools);
 registerBusinessCalendarTools(aiTools);

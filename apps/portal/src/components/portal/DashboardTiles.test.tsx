@@ -110,6 +110,52 @@ describe('DashboardTiles', () => {
     expect(awaiting.textContent).toContain('are waiting for you');
   });
 
+  it('counts agreements awaiting the user\'s signature in the awaiting-you line', () => {
+    const agreements = [
+      { id: 'a1', name: 'MSA', templateName: 'MSA', status: 'sent' as const, sentAt: null, expiresAt: '2026-11-10T00:00:00.000Z', canSign: true },
+      // On the recipient list of someone else: not the user's to sign, so not "waiting on you".
+      { id: 'a2', name: 'DPA', templateName: 'DPA', status: 'sent' as const, sentAt: null, expiresAt: '2026-11-10T00:00:00.000Z', canSign: false },
+    ];
+    render(
+      <DashboardTiles
+        dashboard={{ ...dashboard, awaitingYou: { ...dashboard.awaitingYou, proposals: 0, invoices: 0 } }}
+        agreements={agreements}
+      />,
+    );
+    const awaiting = screen.getByTestId('portal-dashboard-tile-awaiting-you');
+    expect(awaiting.textContent).not.toContain('Nothing is waiting on you.');
+    expect(within(awaiting).getByRole('link', { name: '1 agreement' }).getAttribute('href')).toContain('/agreements');
+    expect(awaiting.textContent).toContain('1 agreement is waiting for you.');
+  });
+
+  it('joins three kinds of waiting item with commas and "and"', () => {
+    const agreements = [
+      { id: 'a1', name: 'MSA', templateName: 'MSA', status: 'sent' as const, sentAt: null, expiresAt: '2026-11-10T00:00:00.000Z', canSign: true },
+    ];
+    render(<DashboardTiles dashboard={dashboard} agreements={agreements} />);
+    const awaiting = screen.getByTestId('portal-dashboard-tile-awaiting-you');
+    expect(awaiting.textContent).toContain('1 proposal, 2 invoices and 1 agreement are waiting for you.');
+  });
+
+  it('renders the agreements-to-sign card under the page heading, not above it', () => {
+    const agreements = [
+      { id: 'a1', name: 'MSA', templateName: 'MSA', status: 'sent' as const, sentAt: null, expiresAt: '2026-11-10T00:00:00.000Z', canSign: true },
+    ];
+    render(<DashboardTiles dashboard={dashboard} agreements={agreements} />);
+    const heading = screen.getByRole('heading', { level: 1, name: 'Dashboard' });
+    const card = screen.getByTestId('dashboard-agreements-awaiting');
+    expect(heading.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('dates the agreements card in the dashboard org zone, not the SSR runtime zone (#10291)', () => {
+    const agreements = [
+      { id: 'a1', name: 'MSA', templateName: 'MSA', status: 'sent' as const, sentAt: null, expiresAt: '2026-11-10T06:59:59.999Z', canSign: true },
+    ];
+    render(<DashboardTiles dashboard={dashboard} agreements={agreements} />); // dashboard.timezone = America/Denver
+    expect(screen.getByTestId('dashboard-agreements-awaiting-row-a1').textContent)
+      .toContain(`Expires ${new Date(2026, 10, 9).toLocaleDateString()}`);
+  });
+
   it('says so warmly when nothing is awaiting the customer', () => {
     render(
       <DashboardTiles

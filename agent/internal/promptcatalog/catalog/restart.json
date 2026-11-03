@@ -1,0 +1,165 @@
+{
+  "namespace": "restart",
+  "messages": {
+    "action.ok": {
+      "en": "OK",
+      "de-DE": "OK",
+      "es-419": "Aceptar",
+      "fr-FR": "OK",
+      "fr-CA": "OK",
+      "it-IT": "OK",
+      "pt-BR": "OK",
+      "tr-TR": "Tamam"
+    },
+    "action.postponeUntil": {
+      "en": "Postpone until {at}",
+      "de-DE": "Verschieben bis {at}",
+      "es-419": "Aplazar hasta las {at}",
+      "fr-FR": "Reporter à {at}",
+      "fr-CA": "Reporter à {at}",
+      "it-IT": "Rinvia alle {at}",
+      "pt-BR": "Adiar até as {at}",
+      "tr-TR": "{at} saatine ertele"
+    },
+    "action.restartNow": {
+      "en": "Restart now",
+      "de-DE": "Jetzt neu starten",
+      "es-419": "Reiniciar ahora",
+      "fr-FR": "Redémarrer maintenant",
+      "fr-CA": "Redémarrer maintenant",
+      "it-IT": "Riavvia ora",
+      "pt-BR": "Reiniciar agora",
+      "tr-TR": "Şimdi yeniden başlat"
+    },
+    "afterRestart.body": {
+      "en": "Your computer restarted at {at} to finish installing updates.",
+      "de-DE": "Ihr Computer wurde um {at} neu gestartet, um die Installation der Updates abzuschließen.",
+      "es-419": "Su computadora se reinició a las {at} para terminar de instalar las actualizaciones.",
+      "fr-FR": "Votre ordinateur a redémarré à {at} pour terminer l'installation des mises à jour.",
+      "fr-CA": "Votre ordinateur a redémarré à {at} pour terminer l'installation des mises à jour.",
+      "it-IT": "Il tuo computer è stato riavviato alle {at} per completare l'installazione degli aggiornamenti.",
+      "pt-BR": "Seu computador foi reiniciado às {at} para concluir a instalação das atualizações.",
+      "tr-TR": "Bilgisayarınız güncellemelerin yüklenmesini tamamlamak için {at} saatinde yeniden başlatıldı."
+    },
+    "afterRestart.title": {
+      "en": "Your computer restarted",
+      "de-DE": "Ihr Computer wurde neu gestartet",
+      "es-419": "Su computadora se reinició",
+      "fr-FR": "Votre ordinateur a redémarré",
+      "fr-CA": "Votre ordinateur a redémarré",
+      "it-IT": "Il tuo computer è stato riavviato",
+      "pt-BR": "Seu computador foi reiniciado",
+      "tr-TR": "Bilgisayarınız yeniden başlatıldı"
+    },
+    "cancelled.body": {
+      "en": "{partner} cancelled the restart.",
+      "de-DE": "{partner} hat den Neustart abgebrochen.",
+      "es-419": "{partner} canceló el reinicio.",
+      "fr-FR": "{partner} a annulé le redémarrage.",
+      "fr-CA": "{partner} a annulé le redémarrage.",
+      "it-IT": "{partner} ha annullato il riavvio.",
+      "pt-BR": "{partner} cancelou a reinicialização.",
+      "tr-TR": "{partner} yeniden başlatmayı iptal etti."
+    },
+    "cancelled.title": {
+      "en": "Restart cancelled",
+      "de-DE": "Neustart abgebrochen",
+      "es-419": "Reinicio cancelado",
+      "fr-FR": "Redémarrage annulé",
+      "fr-CA": "Redémarrage annulé",
+      "it-IT": "Riavvio annullato",
+      "pt-BR": "Reinicialização cancelada",
+      "tr-TR": "Yeniden başlatma iptal edildi"
+    },
+    "final.body": {
+      "en": "This computer restarts in {remaining}. Save your work now.",
+      "de-DE": "Dieser Computer wird in {remaining} neu gestartet. Speichern Sie jetzt Ihre Arbeit.",
+      "es-419": "Esta computadora se reiniciará en {remaining}. Guarde su trabajo ahora.",
+      "fr-FR": "Cet ordinateur redémarre dans {remaining}. Enregistrez votre travail maintenant.",
+      "fr-CA": "Cet ordinateur redémarre dans {remaining}. Enregistrez votre travail maintenant.",
+      "it-IT": "Questo computer verrà riavviato tra {remaining}. Salva subito il tuo lavoro.",
+      "pt-BR": "Este computador será reiniciado em {remaining}. Salve seu trabalho agora.",
+      "tr-TR": "Bu bilgisayar {remaining} içinde yeniden başlatılacak. Çalışmanızı şimdi kaydedin."
+    },
+    "final.consequence": {
+      "en": "This computer restarts at {at}. The restart can no longer be postponed.",
+      "de-DE": "Dieser Computer wird um {at} neu gestartet. Der Neustart kann nicht mehr verschoben werden.",
+      "es-419": "Esta computadora se reiniciará a las {at}. El reinicio ya no se puede aplazar.",
+      "fr-FR": "Cet ordinateur redémarrera à {at}. Le redémarrage ne peut plus être reporté.",
+      "fr-CA": "Cet ordinateur redémarrera à {at}. Le redémarrage ne peut plus être reporté.",
+      "it-IT": "Questo computer verrà riavviato alle {at}. Il riavvio non può più essere rinviato.",
+      "pt-BR": "Este computador será reiniciado às {at}. A reinicialização não pode mais ser adiada.",
+      "tr-TR": "Bu bilgisayar {at} saatinde yeniden başlatılacak. Yeniden başlatma artık ertelenemez."
+    },
+    "final.title": {
+      "en": "Restarting now",
+      "de-DE": "Neustart wird ausgeführt",
+      "es-419": "Reiniciando ahora",
+      "fr-FR": "Redémarrage en cours",
+      "fr-CA": "Redémarrage en cours",
+      "it-IT": "Riavvio in corso",
+      "pt-BR": "Reiniciando agora",
+      "tr-TR": "Yeniden başlatılıyor"
+    },
+    "prompt.body": {
+      "en": "{partner} needs to restart this computer to finish installing updates.",
+      "de-DE": "{partner} muss diesen Computer neu starten, um die Installation der Updates abzuschließen.",
+      "es-419": "{partner} necesita reiniciar esta computadora para terminar de instalar las actualizaciones.",
+      "fr-FR": "{partner} doit redémarrer cet ordinateur pour terminer l'installation des mises à jour.",
+      "fr-CA": "{partner} doit redémarrer cet ordinateur pour terminer l'installation des mises à jour.",
+      "it-IT": "{partner} deve riavviare questo computer per completare l'installazione degli aggiornamenti.",
+      "pt-BR": "{partner} precisa reiniciar este computador para concluir a instalação das atualizações.",
+      "tr-TR": "{partner}, güncellemelerin yüklenmesini tamamlamak için bu bilgisayarı yeniden başlatmalı."
+    },
+    "prompt.budgetMany": {
+      "en": "{count} postponements left",
+      "de-DE": "Noch {count} Verschiebungen möglich",
+      "es-419": "Le quedan {count} aplazamientos",
+      "fr-FR": "Encore {count} reports possibles",
+      "fr-CA": "Encore {count} reports possibles",
+      "it-IT": "{count} rinvii rimasti",
+      "pt-BR": "Restam {count} adiamentos",
+      "tr-TR": "{count} erteleme hakkınız kaldı"
+    },
+    "prompt.budgetNone": {
+      "en": "This restart can no longer be postponed.",
+      "de-DE": "Dieser Neustart kann nicht mehr verschoben werden.",
+      "es-419": "Este reinicio ya no se puede aplazar.",
+      "fr-FR": "Ce redémarrage ne peut plus être reporté.",
+      "fr-CA": "Ce redémarrage ne peut plus être reporté.",
+      "it-IT": "Questo riavvio non può più essere rinviato.",
+      "pt-BR": "Esta reinicialização não pode mais ser adiada.",
+      "tr-TR": "Bu yeniden başlatma artık ertelenemez."
+    },
+    "prompt.budgetOne": {
+      "en": "1 postponement left",
+      "de-DE": "Noch 1 Verschiebung möglich",
+      "es-419": "Le queda 1 aplazamiento",
+      "fr-FR": "Encore 1 report possible",
+      "fr-CA": "Encore 1 report possible",
+      "it-IT": "1 rinvio rimasto",
+      "pt-BR": "Resta 1 adiamento",
+      "tr-TR": "1 erteleme hakkınız kaldı"
+    },
+    "prompt.consequence": {
+      "en": "If you do nothing, this computer restarts at {at}. Save your work before then.",
+      "de-DE": "Wenn Sie nichts tun, wird dieser Computer um {at} neu gestartet. Speichern Sie Ihre Arbeit vorher.",
+      "es-419": "Si no hace nada, esta computadora se reiniciará a las {at}. Guarde su trabajo antes de esa hora.",
+      "fr-FR": "Si vous ne faites rien, cet ordinateur redémarrera à {at}. Enregistrez votre travail avant.",
+      "fr-CA": "Si vous ne faites rien, cet ordinateur redémarrera à {at}. Enregistrez votre travail avant.",
+      "it-IT": "Se non fai nulla, questo computer verrà riavviato alle {at}. Salva il tuo lavoro prima di allora.",
+      "pt-BR": "Se você não fizer nada, este computador será reiniciado às {at}. Salve seu trabalho antes disso.",
+      "tr-TR": "Hiçbir şey yapmazsanız bu bilgisayar {at} saatinde yeniden başlatılır. Çalışmanızı bundan önce kaydedin."
+    },
+    "prompt.title": {
+      "en": "Restart to finish installing updates",
+      "de-DE": "Neustart zum Abschließen der Updateinstallation",
+      "es-419": "Reinicie para terminar de instalar las actualizaciones",
+      "fr-FR": "Redémarrage requis pour terminer l'installation des mises à jour",
+      "fr-CA": "Redémarrage requis pour terminer l'installation des mises à jour",
+      "it-IT": "Riavvio necessario per completare l'installazione degli aggiornamenti",
+      "pt-BR": "Reinicie para concluir a instalação das atualizações",
+      "tr-TR": "Güncellemelerin yüklenmesini tamamlamak için yeniden başlatın"
+    }
+  }
+}

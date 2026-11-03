@@ -128,7 +128,7 @@ describe('GET /discovery/assets/:id/placement', () => {
       authority: { kind: 'discovered', id: ASSET_ID, linked: false },
       placement: stored,
     });
-    expect(readPlacement).toHaveBeenCalledWith('discovered', ASSET_ID);
+    expect(readPlacement).toHaveBeenCalledWith('discovered', ASSET_ID, ORG_ID);
   });
 
   it('returns the linked DEVICE placement, flagged as device-authoritative', async () => {
@@ -137,7 +137,7 @@ describe('GET /discovery/assets/:id/placement', () => {
     const body = await (await app().request(url)).json();
     expect(body.authority).toEqual({ kind: 'device', id: DEVICE_ID, linked: true });
     expect(body.subject.kind).toBe('discovered');
-    expect(readPlacement).toHaveBeenCalledWith('device', DEVICE_ID);
+    expect(readPlacement).toHaveBeenCalledWith('device', DEVICE_ID, ORG_ID);
   });
 
   it('is 404 when the asset does not exist in the resolved org', async () => {

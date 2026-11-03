@@ -10,6 +10,10 @@ import { fetchWithAuth } from '../stores/auth';
 import { runAction } from './runAction';
 import { i18n } from './i18n';
 
+export function isPinnedLink(link: WispThreadLink): boolean {
+  return link.source === 'user_pin' || link.source === 'wisp_pin';
+}
+
 const linksPath = (threadId: string) => `/wisp/thread/${encodeURIComponent(threadId)}/links`;
 
 /** `GET /wisp/thread/:id/links` → the links the caller can still see (the server re-resolves each). */
@@ -58,4 +62,27 @@ export async function removeWispLink(threadId: string, linkId: string): Promise<
     errorFallback: i18n.t('ai:wisp.links.removeFailed'),
     successMessage: i18n.t('ai:wisp.links.removed'),
   });
+}
+
+/** Promote an auto row; source and pin-cap enforcement belong to the server. */
+export async function pinWispLink(threadId: string, linkId: string): Promise<WispThreadLink> {
+  const body = await runAction<{ data?: { link?: WispThreadLink } }>({
+    request: () => fetchWithAuth(`${linksPath(threadId)}/${encodeURIComponent(linkId)}/pin`, {
+      method: 'POST', skipOrgIdInjection: true,
+    }),
+    errorFallback: i18n.t('ai:wisp.links.addFailed'),
+    successMessage: i18n.t('ai:wisp.links.added'),
+  });
+  if (!body?.data?.link) throw new Error('wisp link pin: response has no link');
+  return body.data.link;
+}
+
+/** Read authorized neighbour previews without storing links. */
+export async function listWispNeighbours(threadId: string, ref: { kind: WispEntityKind; id: string }): Promise<WispThreadLink[]> {
+  const query = new URLSearchParams({ kind: ref.kind, id: ref.id });
+  const res = await fetchWithAuth(`${linksPath(threadId)}/neighbours?${query}`, { skipOrgIdInjection: true });
+  if (!res.ok) throw new Error(`wisp neighbours list failed: ${res.status}`);
+  const body = (await res.json()) as { data?: { links?: unknown } } | null;
+  if (!Array.isArray(body?.data?.links)) throw new Error('wisp neighbours list: response has no links array');
+  return body.data.links as WispThreadLink[];
 }

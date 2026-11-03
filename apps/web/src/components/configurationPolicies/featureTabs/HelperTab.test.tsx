@@ -44,6 +44,14 @@ describe('HelperTab', () => {
     expect(call[1].inlineSettings.enabled).toBe(true);
   });
 
+  it('exposes the deploy toggle as a named switch with its state (on for a new policy, off for a stored off)', () => {
+    const { unmount } = render(<HelperTab {...baseProps} />);
+    expect(screen.getByRole('switch', { name: 'Deploy Breeze Assist to devices' }).getAttribute('aria-checked')).toBe('true');
+    unmount();
+    render(<HelperTab {...baseProps} existingLink={helperLink(false)} />);
+    expect(screen.getByRole('switch', { name: 'Deploy Breeze Assist to devices' }).getAttribute('aria-checked')).toBe('false');
+  });
+
   it('shows deploy off when a link without settings arrives after the first render', () => {
     const { rerender } = render(<HelperTab {...baseProps} />);
     rerender(<HelperTab {...baseProps} existingLink={{ ...helperLink(false), inlineSettings: null }} />);

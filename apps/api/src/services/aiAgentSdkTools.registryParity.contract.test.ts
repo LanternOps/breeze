@@ -26,6 +26,7 @@
  * aiGuardrails.readonly.contract.test.ts.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 import { aiTools } from './aiToolNames';
 import { TOOL_TIERS, SESSION_TOOL_DESCRIPTIONS, attachRegistryMeta, buildBreezeSdkTools } from './aiAgentSdkTools';
@@ -411,6 +412,165 @@ describe('W03 write wiring (#6757)', () => {
   });
 });
 
+/** Spec 2026-09-23 W11 (#6781): security policy tools. Pinned so a later wave cannot silently un-wire one. */
+const W11_TOOLS = [
+  'get_security_compliance', 'manage_security_recommendations', 'manage_access_reviews', 'manage_audit_baselines',
+  'manage_compliance_policies', 'manage_security_policies', 'manage_recovery_keys', 'manage_pam_rules',
+] as const;
+
+describe('W11 security policy wiring (#6781)', () => {
+  it.each(W11_TOOLS)('%s: TOOL_TIERS === registry tier, declared, SDK shape keys === Zod keys === registry keys', (name) => {
+    expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    const sdkKeys = Object.keys(decl!.inputSchema).sort();
+    expect(sdkKeys).toEqual(
+      Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort(),
+    );
+    const registryKeys = Object.keys(
+      (aiTools.get(name)!.definition.input_schema as { properties?: Record<string, unknown> }).properties ?? {},
+    ).sort();
+    expect(sdkKeys).toEqual(registryKeys);
+  });
+
+  it('manage_compliance_policies is registry tier 3 (W11-D4: deactivation is permanent)', () => {
+    expect(TOOL_TIERS.manage_compliance_policies).toBe(3);
+  });
+
+  it('none of the W11 tools is alwaysLoad (they stay behind tool search)', () => {
+    for (const name of W11_TOOLS) expect(aiTools.get(name)!.alwaysLoad ?? false, name).toBe(false);
+  });
+});
+
+/** Spec 2026-09-23 W12 (#6782): software, fleet-finding and custom-field tools. Pinned so a later wave cannot silently un-wire one. */
+const W12_TOOLS = [
+  'manage_software_catalog', 'search_packages', 'manage_software_deployments', 'get_device_software', 'manage_device_software',
+  'manage_software_inventory', 'bootstrap_homebrew', 'manage_fleet_findings', 'manage_custom_fields',
+] as const;
+
+describe('W12 software tool wiring (#6782)', () => {
+  it.each(W12_TOOLS)('%s: TOOL_TIERS === registry tier, declared, SDK shape keys === Zod keys === registry keys', (name) => {
+    expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    const sdkKeys = Object.keys(decl!.inputSchema).sort();
+    expect(sdkKeys).toEqual(
+      Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort(),
+    );
+    const registryKeys = Object.keys(
+      (aiTools.get(name)!.definition.input_schema as { properties?: Record<string, unknown> }).properties ?? {},
+    ).sort();
+    expect(sdkKeys).toEqual(registryKeys);
+  });
+
+  it('the device-reaching single-purpose tools are registry tier 3', () => {
+    expect(TOOL_TIERS.manage_device_software).toBe(3);
+    expect(TOOL_TIERS.bootstrap_homebrew).toBe(3);
+  });
+
+  it('none of the W12 tools is alwaysLoad (they stay behind tool search)', () => {
+    for (const name of W12_TOOLS) expect(aiTools.get(name)!.alwaysLoad ?? false, name).toBe(false);
+  });
+});
+
+/** Spec 2026-09-23 W13 (#6783, PR A): device inventory and record tools. Pinned so a later wave cannot silently un-wire one. */
+const W13_TOOLS = [
+  'get_device_events', 'get_device_health', 'get_process_samples', 'get_management_posture',
+  'manage_device_function', 'manage_device_links', 'manage_manual_assets', 'manage_device_warranty',
+  // PR B.
+  'browse_device_event_log', 'manage_tenant_variables', 'manage_support_sessions',
+] as const;
+
+const W14_TOOLS = [
+  'manage_billing_profiles', 'manage_billing_settings', 'manage_contract_templates', 'manage_contract_documents',
+  'get_device_billing',
+] as const;
+
+describe('W14 billing lifecycle wiring (#6784, PR A)', () => {
+  it.each(W14_TOOLS)('%s: TOOL_TIERS === registry tier 1, declared, SDK shape keys === Zod keys === registry keys', (name) => {
+    expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));
+    expect(getToolTier(name)).toBe(1);
+    expect(aiTools.get(name)!.alwaysLoad ?? false, name).toBe(false);
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    const sdkKeys = Object.keys(decl!.inputSchema).sort();
+    expect(sdkKeys).toEqual(
+      Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort(),
+    );
+    const registryKeys = Object.keys(
+      (aiTools.get(name)!.definition.input_schema as { properties?: Record<string, unknown> }).properties ?? {},
+    ).sort();
+    expect(sdkKeys).toEqual(registryKeys);
+  });
+
+  it.each([
+    ['get_contract', 'periodId'], ['list_contracts', 'view'], ['list_contracts', 'cursor'],
+    ['get_invoice', 'lineId'], ['get_invoice', 'limit'], ['get_invoice', 'cursor'],
+  ])('%s carries the additive %s selector on all three input surfaces', (name, key) => {
+    const props = (aiTools.get(name)!.definition.input_schema as { properties: Record<string, unknown> }).properties;
+    expect(Object.keys(props)).toContain(key);
+    expect(Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape)).toContain(key);
+    expect(Object.keys(declaredToolsByName().get(name)!.inputSchema)).toContain(key);
+  });
+});
+
+describe('W14 PR B wiring (#6784)', () => {
+  it.each(['manage_accounting_sync', 'manage_contracts'])('%s: declared, SDK shape keys === Zod keys === registry keys', (name) => {
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    const sdkKeys = Object.keys(decl!.inputSchema).sort();
+    expect(sdkKeys).toEqual(
+      Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort(),
+    );
+    const registryKeys = Object.keys(
+      (aiTools.get(name)!.definition.input_schema as { properties?: Record<string, unknown> }).properties ?? {},
+    ).sort();
+    expect(sdkKeys).toEqual(registryKeys);
+  });
+
+  it('manage_accounting_sync is tier 1 at the registry and TOOL_TIERS, not alwaysLoad, self-managed', () => {
+    expect(TOOL_TIERS.manage_accounting_sync).toBe(getToolTier('manage_accounting_sync'));
+    expect(getToolTier('manage_accounting_sync')).toBe(1);
+    expect(aiTools.get('manage_accounting_sync')!.alwaysLoad ?? false).toBe(false);
+    expect(aiTools.get('manage_accounting_sync')!.selfManagedDbContext).toBe(true);
+  });
+
+  it('manage_contracts opts only generate_invoice out of the per-call transaction', () => {
+    expect(aiTools.get('manage_contracts')!.selfManagedDbContext).toEqual(['generate_invoice']);
+  });
+});
+
+describe('W13 device inventory and ops wiring (#6783)', () => {
+  it.each(W13_TOOLS)('%s: TOOL_TIERS === registry tier, declared, SDK shape keys === Zod keys === registry keys', (name) => {
+    expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    const sdkKeys = Object.keys(decl!.inputSchema).sort();
+    expect(sdkKeys).toEqual(
+      Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort(),
+    );
+    const registryKeys = Object.keys(
+      (aiTools.get(name)!.definition.input_schema as { properties?: Record<string, unknown> }).properties ?? {},
+    ).sort();
+    expect(sdkKeys).toEqual(registryKeys);
+  });
+
+  it('every W13 tool is registry tier 1 (writes are classed per action)', () => {
+    for (const name of W13_TOOLS) expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS], name).toBe(1);
+  });
+
+  it('none of the W13 tools is alwaysLoad (they stay behind tool search)', () => {
+    for (const name of W13_TOOLS) expect(aiTools.get(name)!.alwaysLoad ?? false, name).toBe(false);
+  });
+
+  it('search_agent_logs carries the additive source filter on all three input surfaces', () => {
+    const props = (aiTools.get('search_agent_logs')!.definition.input_schema as { properties: Record<string, { enum?: string[] }> }).properties;
+    expect(props.source?.enum).toEqual(['agent', 'watchdog']);
+    expect(Object.keys((toolInputSchemas.search_agent_logs as unknown as { shape: Record<string, unknown> }).shape)).toContain('source');
+    expect(Object.keys(declaredToolsByName().get('search_agent_logs')!.inputSchema)).toContain('source');
+  });
+});
+
 describe('SDK declarations use the registry description (A-W03, one description surface)', () => {
   const configurations = [
     { M365_ENABLED: 'false', GOOGLE_WORKSPACE_ENABLED: 'false', BREEZE_AI_SCRIPT_AUTHORING_ENABLED: 'false', DELEGANT_BASE_URL: '' },
@@ -453,5 +613,60 @@ describe('registry description reconciliation', () => {
     for (const description of Object.values(SESSION_TOOL_DESCRIPTIONS)) {
       expect(description.length).toBeLessThanOrEqual(300);
     }
+  });
+});
+
+/**
+ * #10161: the chat SDK validates against its DECLARED shape, not the registry JSON schema MCP advertises. An
+ * action the registry lists but the SDK enum lacks is rejected in chat while MCP accepts it (manage_tickets
+ * merge_preview/merge; system_cleanup's hand-written enum). Every declared action enum must equal the registry's.
+ */
+/**
+ * Pre-existing drift found when this check landed (#10161), out of that issue's scope and tracked for a
+ * follow-up. FROZEN, shrink-only: fix the drift and delete the entry; never add one.
+ *   manage_alerts      registry `suppress`, SDK lacks it (chat cannot suppress)
+ *   generate_report    registry `download`, SDK lacks it
+ *   manage_automations / manage_maintenance_windows  SDK allows create/update/delete the registry does not list
+ */
+const KNOWN_SDK_ACTION_ENUM_DRIFT: ReadonlySet<string> = new Set([
+  'manage_alerts', 'generate_report', 'manage_automations', 'manage_maintenance_windows',
+]);
+
+describe('SDK action enum === registry action enum (#10161)', () => {
+  function actionEnumDrift(): string[] {
+    const drift: string[] = [];
+    for (const [name, decl] of declaredToolsByName()) {
+      const sdkAction = (decl.inputSchema as Record<string, { options?: unknown[] } | undefined>).action;
+      const registryEnum = (aiTools.get(name)?.definition.input_schema as { properties?: { action?: { enum?: string[] } } } | undefined)
+        ?.properties?.action?.enum;
+      if (!Array.isArray(sdkAction?.options) || !registryEnum) continue;
+      const sdk = (sdkAction.options as string[]).slice().sort();
+      const registry = [...registryEnum].sort();
+      if (JSON.stringify(sdk) !== JSON.stringify(registry)) drift.push(name);
+    }
+    return drift.sort();
+  }
+
+  it('every declared tool with an action enum matches its registry definition', () => {
+    expect(actionEnumDrift().filter((n) => !KNOWN_SDK_ACTION_ENUM_DRIFT.has(n))).toEqual([]);
+  });
+
+  it('pins the two tools #10161 fixed: the declared chat shapes parse merge and cancel payloads', () => {
+    const drift = actionEnumDrift();
+    expect(drift).not.toContain('manage_tickets');
+    expect(drift).not.toContain('system_cleanup');
+    const declared = declaredToolsByName();
+    const A = '11111111-1111-4111-8111-111111111111';
+    const B = '22222222-2222-4222-8222-222222222222';
+    const tickets = z.object(declared.get('manage_tickets')!.inputSchema as z.ZodRawShape)
+      .safeParse({ action: 'merge', ticketId: A, intoTicketId: B, notifyRequester: false });
+    expect(tickets.success).toBe(true);
+    expect((tickets.data as Record<string, unknown>).intoTicketId).toBe(B); // not stripped
+    expect(z.object(declared.get('system_cleanup')!.inputSchema as z.ZodRawShape)
+      .safeParse({ deviceId: A, action: 'cancel', cleanupRunId: B }).success).toBe(true);
+  });
+
+  it('KNOWN_SDK_ACTION_ENUM_DRIFT has no stale entries — the list may only shrink', () => {
+    expect([...KNOWN_SDK_ACTION_ENUM_DRIFT].sort()).toEqual(actionEnumDrift().filter((n) => KNOWN_SDK_ACTION_ENUM_DRIFT.has(n)));
   });
 });

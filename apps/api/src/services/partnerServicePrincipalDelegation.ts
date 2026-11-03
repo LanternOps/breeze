@@ -46,6 +46,9 @@ export const PARTNER_SERVICE_PRINCIPAL_SCOPE_PERMISSIONS = {
   'enrollment-keys:write': [PERMISSION_GRANTS.ORGS_WRITE],
   'contracts:write': [PERMISSION_GRANTS.CONTRACTS_WRITE],
   'tickets:write': [PERMISSION_GRANTS.TICKETS_WRITE],
+  // Resolve requires alerts.write; acknowledge also accepts alerts.acknowledge,
+  // but this combined scope delegates both actions.
+  'alerts:write': [PERMISSION_GRANTS.ALERTS_WRITE],
   'ai:read': API_KEY_SCOPE_POLICIES['ai:read'],
   'ai:write': API_KEY_SCOPE_POLICIES['ai:write'],
   'ai:execute': API_KEY_SCOPE_POLICIES['ai:execute'],

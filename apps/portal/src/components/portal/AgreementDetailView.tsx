@@ -30,12 +30,14 @@ const UNAVAILABLE = 'This agreement is no longer available.';
 const ACCEPT_FALLBACK = 'We could not record your signature. Please try again.';
 const DECLINE_FALLBACK = 'We could not record your decision. Please try again.';
 
-function dateOf(value: string): { text: string; iso: string } {
+/** A calendar day stays put; an instant is formatted in the org zone, the same
+ *  zone the SSR list and dashboard use, so all three print one day (#10291). */
+function dateOf(value: string, timeZone: string | undefined): { text: string; iso: string } {
   const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
   const d = new Date(dateOnly ? `${value}T00:00:00Z` : value);
   if (Number.isNaN(d.getTime())) return { text: value, iso: value };
   return {
-    text: d.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric', ...(dateOnly ? { timeZone: 'UTC' } : {}) }),
+    text: d.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric', timeZone: dateOnly ? 'UTC' : timeZone }),
     iso: dateOnly ? value : d.toISOString(),
   };
 }
@@ -76,9 +78,9 @@ export function AgreementDetailView({ detail: detailProp, initial, error, status
     const live: Status = status || request.status;
     const signed = live === 'signed';
     const dates: DocumentHeaderModel['dates'] = [];
-    if (request.effectiveDate) dates.push({ label: 'Effective', value: dateOf(request.effectiveDate) });
-    if (signed && request.signedAt) dates.push({ label: 'Signed', value: dateOf(request.signedAt) });
-    else if (!signed && live !== 'declined') dates.push({ label: 'Expires', value: dateOf(request.expiresAt) });
+    if (request.effectiveDate) dates.push({ label: 'Effective', value: dateOf(request.effectiveDate, detail.timezone) });
+    if (signed && request.signedAt) dates.push({ label: 'Signed', value: dateOf(request.signedAt, detail.timezone) });
+    else if (!signed && live !== 'declined') dates.push({ label: 'Expires', value: dateOf(request.expiresAt, detail.timezone) });
     const header: DocumentHeaderModel = {
       eyebrow: 'Agreement',
       number: template.name,

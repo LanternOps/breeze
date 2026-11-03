@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { flowMaxRunningPerOwner, flowRunRetentionDays } from './env';
+import {
+  flowForEachMaxParallel,
+  flowMaxRunningPerOwner,
+  flowRunRetentionDays,
+  flowWebhookDeliveryRetentionDays,
+  flowWebhookRatePerMinute,
+} from './env';
 
 /** Tool catalog W04 (#5219), plan Task A8: the runner's capacity and retention knobs. */
 const KEYS = ['FLOW_MAX_RUNNING_PER_OWNER', 'FLOW_RUN_RETENTION_DAYS'] as const;
@@ -46,5 +52,29 @@ describe('FLOW_RUN_RETENTION_DAYS', () => {
     expect(flowRunRetentionDays()).toBe(30);
     process.env.FLOW_RUN_RETENTION_DAYS = '31';
     expect(flowRunRetentionDays()).toBe(31);
+  });
+});
+
+/** Tool catalog W05 (#5220): webhook intake and for-each fan-out knobs. */
+describe.each([
+  ['FLOW_WEBHOOK_RATE_PER_MINUTE', flowWebhookRatePerMinute, 120, 1, 6000],
+  ['FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS', flowWebhookDeliveryRetentionDays, 30, 1, 365],
+  ['FLOW_FOREACH_MAX_PARALLEL', flowForEachMaxParallel, 5, 1, 10],
+] as const)('%s (W05)', (key, fn, def, min, max) => {
+  afterEach(() => {
+    delete process.env[key];
+  });
+
+  it(`defaults to ${def} when unset`, () => {
+    delete process.env[key];
+    expect(fn()).toBe(def);
+  });
+
+  it.each([
+    ['', def], ['abc', def], ['0', def], ['-3', def], ['2.5', def],
+    [String(min), min], [String(max), max], [String(max + 1000), max],
+  ])(`${key}=%s → %s (garbage falls back, out-of-range clamps)`, (raw, expected) => {
+    process.env[key] = raw as string;
+    expect(fn()).toBe(expected);
   });
 });

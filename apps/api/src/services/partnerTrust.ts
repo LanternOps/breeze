@@ -45,6 +45,8 @@ export const LIFECYCLE_COMMAND_TYPES = [
   'restart_agent',
   // Endpoint messaging W02 (#8742): carries only a message id, no content.
   'retract_message',
+  // Reduces only Breeze-owned capability; reason is audit text.
+  'release_containment',
   'script_cancel',
   'script_list_running',
   'security_collect_status',
@@ -143,6 +145,8 @@ export const GATED_COMMAND_TYPES = [
   'notify_user',
   'pam_apply_v2',
   'pam_reconcile_v2',
+  // #8928: carries the technician's deny reason to the end user's screen.
+  'pam_request_notify',
   'peripheral_policy_sync',
   'peripheral_policy_sync_v2',
   'quarantine_file',

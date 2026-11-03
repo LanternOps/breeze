@@ -116,7 +116,9 @@ func StderrRedirect() (replaced bool, reason error) {
 // the guest embedded in its own (signed) binary, so the override is cleared
 // before the first load. It also makes sure os.Stderr is usable as the
 // guest's WASI stderr (ensureUsableStderr) — without that the engine never
-// starts under a Windows service.
+// starts under a Windows service. Before any of that it refuses to start
+// the engine in a process that may not execute the code the engine compiles
+// (checkExecutableMemory, #10375): on macOS that would get the agent killed.
 func EnsureEngine() error {
 	engineOnce.Do(func() {
 		defer func() {
@@ -124,6 +126,10 @@ func EnsureEngine() error {
 				engineErr = fmt.Errorf("YARA engine init panicked: %v", r)
 			}
 		}()
+		if err := checkExecutableMemory(); err != nil {
+			engineErr = err
+			return
+		}
 		if os.Getenv(guestOverrideEnv) != "" {
 			_ = os.Unsetenv(guestOverrideEnv)
 		}
@@ -135,12 +141,14 @@ func EnsureEngine() error {
 		if replaced {
 			stderrReason = reason
 		}
-		if err := yx.Initialise(); err != nil {
+		if err := initialiseEngine(); err != nil {
 			engineErr = fmt.Errorf("YARA engine init failed: %w", err)
 		}
 	})
 	return engineErr
 }
+
+func initialiseYaraX() error { return yx.Initialise() }
 
 func compilerOptions() []yx.CompileOption {
 	return []yx.CompileOption{

@@ -188,14 +188,26 @@ func TestSessionNoticeTarget_PrefersUserRoleInTargetSession(t *testing.T) {
 // the toast cannot be shown (#6864). Other notifications (the reboot ladder)
 // never set it.
 func TestSessionNoticeRequest_AsksForDialogFallback(t *testing.T) {
-	req := sessionNoticeRequest("A technician connected")
+	req := sessionNoticeRequest("Breeze Agent", "A technician connected")
 	if !req.FallbackDialog {
 		t.Fatal("remote-session notice must request the dialog fallback")
 	}
-	if req.Body != "A technician connected" || req.Title == "" {
+	if req.Body != "A technician connected" || req.Title != "Breeze Agent" || req.Urgency != "normal" {
 		t.Fatalf("unexpected request %+v", req)
 	}
 	if len(req.Actions) != 0 {
 		t.Fatalf("the notice must not carry actions (that would make it a prompt): %+v", req.Actions)
+	}
+}
+
+// TestSessionNoticeRequestTitle: the PAM outcome notices (#8928) reuse the
+// session-notice shape with their own title instead of "Breeze Agent".
+func TestSessionNoticeRequestTitle(t *testing.T) {
+	req := sessionNoticeRequest("Request approved", "mmc.exe was approved by IT and is starting.")
+	if req.Title != "Request approved" || req.Body != "mmc.exe was approved by IT and is starting." {
+		t.Fatalf("unexpected request %+v", req)
+	}
+	if !req.FallbackDialog || req.Urgency != "normal" || len(req.Actions) != 0 {
+		t.Fatalf("titled notice must keep the notice shape (fallback dialog, normal urgency, no actions): %+v", req)
 	}
 }

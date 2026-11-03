@@ -120,7 +120,7 @@ describe('TimesheetPage', () => {
     expect(total.textContent).not.toContain('$');
   });
 
-  it('renders each entry rate in its stamped currency and a dash when unrated — no USD fallback', async () => {
+  it('renders each entry rate in its stamped currency — no USD fallback', async () => {
     const jpy = { ...entry, id: 'te-2', hourlyRate: '50.00', currencyCode: 'JPY' };
     const unrated = { ...entry, id: 'te-3', hourlyRate: null, currencyCode: null, isBillable: false };
     fetchWithAuth.mockImplementation(async (url: string) => {
@@ -131,11 +131,28 @@ describe('TimesheetPage', () => {
       return jsonRes({});
     });
     render(<TimesheetPage />);
-    expect((await screen.findByTestId('timesheet-rate-te-1')).textContent).toBe('€100.00');
-    expect(screen.getByTestId('timesheet-rate-te-2').textContent).toBe('¥50');
-    expect(screen.getByTestId('timesheet-rate-te-2').textContent).not.toContain('$');
-    expect(screen.getByTestId('timesheet-rate-te-3').textContent).toBe('—');
+    expect(await screen.findByTestId('timesheet-outcome-te-1')).toHaveTextContent('€100.00');
+    expect(screen.getByTestId('timesheet-outcome-te-2')).toHaveTextContent('¥50');
+    expect(screen.getByTestId('timesheet-entry-te-2').textContent).not.toContain('$');
     expect(screen.getByTestId('timesheet-entry-te-3').textContent).not.toContain('$');
+  });
+
+  // #9957: the outcome ("€100.00/h") already states the rate and the labour line
+  // repeats it in "h × rate = amount"; a third, bare rate figure right after the
+  // amount read like a second amount.
+  it('prints the rate once per row — no bare rate figure beside the labour amount', async () => {
+    const unrated = { ...entry, id: 'te-3', hourlyRate: null, currencyCode: null, isBillable: false };
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/time-entries/timesheet')) {
+        return jsonRes({ ...week, days: [{ ...week.days[0], entries: [entry, unrated] }, ...week.days.slice(1)] });
+      }
+      if (url.startsWith('/users')) return jsonRes([]);
+      return jsonRes({});
+    });
+    render(<TimesheetPage />);
+    expect(await screen.findByTestId('timesheet-outcome-te-1')).toHaveTextContent('€100.00');
+    expect(screen.queryByTestId('timesheet-rate-te-1')).toBeNull();
+    expect(screen.queryByTestId('timesheet-rate-te-3')).toBeNull();
   });
 
   it('#8604: the edit form tells the tech the note prints on the invoice', async () => {

@@ -86,6 +86,28 @@ describe('RemoteAccessTab — clipboard policy toggles', () => {
   });
 });
 
+// #10422: a new policy's idle timeout starts at the same 30 min as the
+// no-policy baseline, so linking the feature (e.g. to turn VNC on) does not
+// silently cut the idle timeout back to 5 min.
+describe('RemoteAccessTab — idle timeout default (#10422)', () => {
+  beforeEach(() => {
+    saveMock.mockClear();
+  });
+
+  it('saves a 30-minute idle timeout for a new policy left at its defaults', () => {
+    render(<RemoteAccessTab {...baseProps} />);
+    const saveButton = screen
+      .getAllByRole('button')
+      .find((b) => /save/i.test(b.textContent ?? '')) as HTMLButtonElement;
+    fireEvent.click(saveButton);
+    expect(saveMock).toHaveBeenCalled();
+    expect(inlineSettingsFromCall(saveMock.mock.calls[0])).toMatchObject({
+      idleTimeoutMinutes: 30,
+      maxSessionDurationHours: 8,
+    });
+  });
+});
+
 // #5080: Remote Access gains the same isInherited/effectiveLink/Override/
 // Revert treatment as the other inline-settings tabs (mirrors PamTab.tsx).
 describe('RemoteAccessTab inheritance (#5080)', () => {
@@ -178,5 +200,64 @@ describe('RemoteAccessTab — consent-mode help', () => {
     expect(screen.queryByTestId('remote-access-consent-vnc-note')).toBeNull();
     selectConsent();
     expect(screen.getByTestId('remote-access-consent-vnc-note').textContent).toMatch(/VNC/);
+  });
+});
+
+describe('RemoteAccessTab saves allowUserEndSession (#10190)', () => {
+  beforeEach(() => {
+    saveMock.mockClear();
+  });
+
+  function clickSave() {
+    const saveButton = screen
+      .getAllByRole('button')
+      .find((b) => /save/i.test(b.textContent ?? '')) as HTMLButtonElement;
+    fireEvent.click(saveButton);
+  }
+
+  it('defaults to true and is saved with the rest of the settings', () => {
+    render(<RemoteAccessTab {...baseProps} />);
+    clickSave();
+    expect(inlineSettingsFromCall(saveMock.mock.calls[0])).toMatchObject({ allowUserEndSession: true });
+  });
+
+  it('saves false after the toggle is switched off', () => {
+    render(<RemoteAccessTab {...baseProps} />);
+    const label = screen.getByText('Let the user end the session');
+    const toggle = label.closest('div')?.parentElement?.querySelector('button') as HTMLButtonElement;
+    fireEvent.click(toggle);
+    clickSave();
+    expect(inlineSettingsFromCall(saveMock.mock.calls[0])).toMatchObject({ allowUserEndSession: false });
+  });
+
+  it('shows the disabled toggle as off while the indicator is off, without changing the saved value', () => {
+    render(<RemoteAccessTab {...baseProps} />);
+    const toggleFor = (text: string) =>
+      screen.getByText(text).closest('div')?.parentElement?.querySelector('button') as HTMLButtonElement;
+    const indicator = toggleFor('Active-session indicator');
+    expect(toggleFor('Let the user end the session').getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(indicator);
+    const endToggle = toggleFor('Let the user end the session');
+    expect(endToggle.disabled).toBe(true);
+    expect(endToggle.getAttribute('aria-pressed')).toBe('false');
+    clickSave();
+    expect(inlineSettingsFromCall(saveMock.mock.calls[0])).toMatchObject({
+      showActiveIndicator: false,
+      allowUserEndSession: true,
+    });
+
+    fireEvent.click(indicator);
+    expect(toggleFor('Let the user end the session').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('disables the toggle with a hint when the active-session indicator is off', () => {
+    render(<RemoteAccessTab {...baseProps} />);
+    const indicator = screen.getByText('Active-session indicator');
+    fireEvent.click(indicator.closest('div')?.parentElement?.querySelector('button') as HTMLButtonElement);
+    const label = screen.getByText('Let the user end the session');
+    const toggle = label.closest('div')?.parentElement?.querySelector('button') as HTMLButtonElement;
+    expect(toggle.disabled).toBe(true);
+    expect(screen.getByText('Turn on the active-session indicator to let users end a session.')).toBeTruthy();
   });
 });

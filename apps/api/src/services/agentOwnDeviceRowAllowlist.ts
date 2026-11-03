@@ -62,6 +62,42 @@ export const AGENT_OWN_DEVICE_ROW_ALLOWLIST: readonly OwnDeviceRowAllowlistEntry
 
   // ── Non-agent paths in files an agent entry point reaches ───────────────
   {
+    file: 'src/services/quickSupportEnd.ts',
+    marker: 'support-session-end-decommission',
+    kind: 'non_agent_path',
+    reason:
+      'Ending a Quick Support session (a technician, the expiry sweep, or the supervised AI tool, W13 #6783) clears the ' +
+      'temporary client\'s token hashes and decommissions it, under system context after the caller\'s own session ' +
+      'lookup. Never an agent writing its own row; reached by agent entry points only through the AI tool registry.',
+  },
+  {
+    file: 'src/services/deviceLinkGroups.ts',
+    marker: 'link-group-unlink',
+    kind: 'non_agent_path',
+    reason:
+      'Clears link_group_id / link_group_role on devices a user session or an AI tool call is unlinking or dissolving ' +
+      '(reached by agent entry points only through the AI tool registry import chain, W13 #6783); never an agent ' +
+      'writing its own row.',
+  },
+  {
+    file: 'src/services/deviceFunction.ts',
+    marker: 'device-function-projection',
+    kind: 'non_agent_path',
+    reason:
+      'The device_function projection rewrite after a manual (user session / supervised AI tool) or fleet-design ' +
+      'assessment, inside the same transaction as the assessment row; pinned to the device\'s org. Never an agent ' +
+      'writing its own row (reached through the AI tool registry import chain, W13 #6783).',
+  },
+  {
+    file: 'src/services/deviceLinkGroupOps.ts',
+    marker: 'link-group-membership',
+    kind: 'non_agent_path',
+    reason:
+      'Link-group membership writes (#2138, moved verbatim from routes/devices/links.ts for the W13 AI tool, #6783). ' +
+      'A user session or an AI tool call (never an agent writing its own row) sets link_group_id / link_group_role on ' +
+      'devices it named, after the org + site checks and the lockAndAuthorizeLinkGroupMutation FOR UPDATE lock.',
+  },
+  {
     file: 'src/services/deviceReattach/confirm.ts',
     marker: 'reattach-confirm-target-identity',
     kind: 'non_agent_path',
@@ -151,5 +187,11 @@ export const AGENT_OWN_DEVICE_ROW_ALLOWLIST: readonly OwnDeviceRowAllowlistEntry
     marker: 'discovery-role-propagation',
     kind: 'non_agent_path',
     reason: 'The discovery worker propagates an asset classification onto a matched device: a job, not the device\'s credential.',
+  },
+  {
+    file: 'src/jobs/discoveryWorker.ts',
+    marker: 'discovery-role-unlink-reset',
+    kind: 'non_agent_path',
+    reason: 'The discovery worker undoes the role it propagated when it drops an auto-link the MAC no longer supports: a job, not the device\'s credential.',
   },
 ];

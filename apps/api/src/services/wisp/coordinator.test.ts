@@ -171,7 +171,9 @@ describe('precheckSpecialistRequest (#10144)', () => {
   };
 
   it('refuses unknown_kind without reading anything', async () => {
-    await expect(check({ kind: 'run_script' })).resolves.toEqual({ ok: false, refused: 'unknown_kind' });
+    await expect(check({ kind: 'run_script' })).resolves.toEqual({
+      ok: false, refused: 'unknown_kind', message: expect.stringContaining('not a specialist kind'),
+    });
     expect(Object.values(h.prereq).every((f) => f.mock.calls.length === 0)).toBe(true);
     touchedNothingElse();
   });
@@ -188,16 +190,30 @@ describe('precheckSpecialistRequest (#10144)', () => {
     h.workspaceEnabled = false;
     await expect(check({ kind: 'analysis', params: PARAMS.analysis })).resolves.toEqual({
       ok: false, refused: 'admission_skipped', detail: 'analysis_not_available',
+      message: 'Sandbox analysis is not available on this server.',
     });
     touchedNothingElse();
   });
 
   it('passes the kind prerequisite refusal through (no_sweep_schedule, no_effective_agent)', async () => {
     h.prereq.sweep!.mockResolvedValue({ refused: 'no_sweep_schedule' });
-    await expect(check({ kind: 'sweep' })).resolves.toEqual({ ok: false, refused: 'no_sweep_schedule' });
+    await expect(check({ kind: 'sweep' })).resolves.toEqual({
+      ok: false, refused: 'no_sweep_schedule', message: expect.stringContaining('/settings/ai-agents'),
+    });
     expect(h.prereq.sweep).toHaveBeenCalledWith({ orgId: ORG, partnerId: PARTNER, params: {} });
     h.prereq.patch_plan!.mockResolvedValue({ refused: 'no_effective_agent' });
-    await expect(check({ kind: 'patch_plan' })).resolves.toEqual({ ok: false, refused: 'no_effective_agent' });
+    await expect(check({ kind: 'patch_plan' })).resolves.toEqual({
+      ok: false, refused: 'no_effective_agent', message: expect.stringContaining('/settings/ai-agents'),
+    });
+    touchedNothingElse();
+  });
+
+  // #10193: a disabled effective agent is refused before the card, and the
+  // prerequisite's own sentence (it names the agent) wins over the generic one.
+  it('passes agent_disabled through with the prerequisite\'s own message', async () => {
+    const message = 'The agent "QA Patching agent" is switched off. Turn it on under Settings → AI Agents (/settings/ai-agents), then ask again.';
+    h.prereq.patch_plan!.mockResolvedValue({ refused: 'agent_disabled', detail: 'disabled', message });
+    await expect(check({ kind: 'patch_plan' })).resolves.toEqual({ ok: false, refused: 'agent_disabled', detail: 'disabled', message });
     touchedNothingElse();
   });
 

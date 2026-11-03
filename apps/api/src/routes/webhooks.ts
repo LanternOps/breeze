@@ -1,14 +1,14 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
-import { db } from '../db';
+import { db, runAfterDbContextCommit, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { webhookDeliveries, webhooks as webhooksTable } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { redactUrlForLogs, validateWebhookUrlSafetyWithDns } from '../services/notificationSenders/webhookSender';
-import { getWebhookWorker, type WebhookConfig as WorkerWebhookConfig } from '../workers/webhookDelivery';
+import { type WebhookConfig as WorkerWebhookConfig } from '../workers/webhookDelivery';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS } from '../services/permissions';
 import {
@@ -21,6 +21,11 @@ import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders } from '../s
 import { urlOriginChanged } from '../services/credentialOriginBinding';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { bumpApprovalGeneration } from '../services/approvalGeneration';
+import { enqueueWebhookAttempt } from '../jobs/webhookDeliveryQueue';
+import { captureException } from '../services/sentry';
+import { organizations } from '../db/schema/orgs';
+import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+import { partnerFanoutOrgCondition } from '../services/partnerFanoutOrgs';
 import { EVENT_TYPES } from '../services/eventBus';
 
 import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
@@ -29,13 +34,14 @@ export const webhookRoutes = new Hono();
 
 type ApiWebhookStatus = 'active' | 'paused' | 'failed';
 type DbWebhookStatus = 'active' | 'disabled' | 'error';
-type WebhookDeliveryStatus = 'pending' | 'delivered' | 'failed' | 'retrying';
+type WebhookDeliveryStatus = 'pending' | 'delivered' | 'failed' | 'retrying' | 'scheduled';
 
 type WebhookHeaders = Array<{ key: string; value: unknown }>;
 
 type RouteAuth = {
   scope: 'organization' | 'partner' | 'system';
   partnerId: string | null;
+  partnerOrgAccess?: 'all' | 'selected';
   orgId: string | null;
   accessibleOrgIds: string[] | null;
   allowedSiteIds?: string[];
@@ -125,6 +131,7 @@ export function toWorkerWebhookConfig(webhook: typeof webhooksTable.$inferSelect
   return {
     id: webhook.id,
     orgId: webhook.orgId,
+    partnerId: webhook.partnerId ?? null,
     name: webhook.name,
     url: decryptWebhookUrl(webhook),
     secret,
@@ -187,9 +194,12 @@ function sanitizeWebhook(webhook: typeof webhooksTable.$inferSelect) {
   return {
     id: webhook.id,
     orgId: webhook.orgId,
+    partnerId: webhook.partnerId ?? null,
+    ownerScope: webhook.partnerId ? 'partner' : 'organization',
     name: webhook.name,
     url: redactUrlForLogs(decryptedUrl),
     events: webhook.events ?? [],
+    payloadVersion: webhook.payloadVersion,
     // Normalise BEFORE redacting: the legacy record shape filters out
     // non-string values, so redacting first turned every legacy header into a
     // marker object and dropped it — the edit form then saved `headers: []`
@@ -208,13 +218,12 @@ function sanitizeWebhook(webhook: typeof webhooksTable.$inferSelect) {
 }
 
 function mapDelivery(
-  delivery: typeof webhookDeliveries.$inferSelect,
-  orgId: string
+  delivery: typeof webhookDeliveries.$inferSelect
 ) {
   return {
     id: delivery.id,
     webhookId: delivery.webhookId,
-    orgId,
+    orgId: delivery.orgId,
     status: delivery.status as WebhookDeliveryStatus,
     event: delivery.eventType,
     eventId: delivery.eventId,
@@ -235,6 +244,7 @@ function mapDelivery(
 const deliverySummaryColumns = {
   id: webhookDeliveries.id,
   webhookId: webhookDeliveries.webhookId,
+  orgId: webhookDeliveries.orgId,
   status: webhookDeliveries.status,
   eventType: webhookDeliveries.eventType,
   eventId: webhookDeliveries.eventId,
@@ -250,11 +260,11 @@ type WebhookDeliverySummaryRow = Pick<
   keyof typeof deliverySummaryColumns
 >;
 
-function mapDeliverySummary(delivery: WebhookDeliverySummaryRow, orgId: string) {
+function mapDeliverySummary(delivery: WebhookDeliverySummaryRow) {
   return {
     id: delivery.id,
     webhookId: delivery.webhookId,
-    orgId,
+    orgId: delivery.orgId,
     status: delivery.status as WebhookDeliveryStatus,
     event: delivery.eventType,
     eventId: delivery.eventId,
@@ -266,7 +276,7 @@ function mapDeliverySummary(delivery: WebhookDeliverySummaryRow, orgId: string) 
   };
 }
 
-async function getWebhookWithOrgCheck(webhookId: string, auth: RouteAuth) {
+async function getWebhookWithOwnerCheck(webhookId: string, auth: RouteAuth) {
   const [webhook] = await db
     .select()
     .from(webhooksTable)
@@ -277,11 +287,24 @@ async function getWebhookWithOrgCheck(webhookId: string, auth: RouteAuth) {
     return null;
   }
 
-  if (!auth.canAccessOrg(webhook.orgId)) {
+  if (webhook.partnerId) {
+    if (auth.scope !== 'system' && !(
+      auth.scope === 'partner'
+      && webhook.partnerId === auth.partnerId
+      && canManagePartnerWidePolicies(auth)
+    )) return null;
+  } else if (!webhook.orgId || !auth.canAccessOrg(webhook.orgId)) {
     return null;
   }
 
   return webhook;
+}
+
+function auditOwnerDetails(webhook: typeof webhooksTable.$inferSelect) {
+  return {
+    ownerScope: webhook.partnerId ? 'partner' : 'organization',
+    partnerId: webhook.partnerId ?? null,
+  };
 }
 
 async function getDeliveryStats(webhookId: string) {
@@ -311,14 +334,15 @@ async function getDeliveryStats(webhookId: string) {
     pending: 0,
     delivered: 0,
     failed: 0,
-    retrying: 0
+    retrying: 0,
+    scheduled: 0
   };
 
   for (const row of counts) {
     stats[row.status as WebhookDeliveryStatus] = Number(row.count ?? 0);
   }
 
-  const total = stats.pending + stats.delivered + stats.failed + stats.retrying;
+  const total = stats.pending + stats.delivered + stats.failed + stats.retrying + stats.scheduled;
 
   return {
     total,
@@ -335,6 +359,7 @@ const listWebhooksSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
   orgId: z.string().guid().optional(),
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   status: z.enum(['active', 'paused', 'failed']).optional()
 });
 
@@ -364,10 +389,15 @@ function rejectUnsupportedAuthFields(
   }
 }
 
-// Every event type the bus can publish. The webhook-delivery subscriber
-// listens on `*` (services/eventSubscribers.ts), so any of these reaches a
-// matching webhook; a name outside this set can never fire.
+// Registered event names. The webhook-delivery subscriber listens on `*`
+// (services/eventSubscribers.ts). Registration alone does not guarantee that
+// a publisher exists.
 const PUBLISHED_EVENT_TYPES: ReadonlySet<string> = new Set<string>(Object.values(EVENT_TYPES));
+
+// Registered names known to have no publisher. Empty since alert.escalated
+// gained one (#10565). Add a name here only together with the web form's
+// NEVER_DELIVERED_EVENTS, and remove it in the same PR that adds a publisher.
+export const NEVER_PUBLISHED_EVENT_TYPES: ReadonlySet<string> = new Set([]);
 
 // Names that were offered for subscription but are not what the bus publishes.
 // The web form offered `alert.created` while alerts publish `alert.triggered`
@@ -383,6 +413,12 @@ const webhookEventsSchema = z
   .min(1)
   .transform((events) => [...new Set(events.map((event) => LEGACY_EVENT_ALIASES[event] ?? event))])
   .superRefine((events, ctx) => {
+    for (const event of events.filter((event) => NEVER_PUBLISHED_EVENT_TYPES.has(event))) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${event} is never sent by Breeze; a webhook subscribed to it would never fire`,
+      });
+    }
     const unknown = events.filter((event) => event !== '*' && !PUBLISHED_EVENT_TYPES.has(event));
     if (unknown.length > 0) {
       ctx.addIssue({
@@ -393,6 +429,8 @@ const webhookEventsSchema = z
   });
 
 const createWebhookSchema = z.object({
+  ownerScope: z.enum(['organization', 'partner']).optional(),
+  partnerId: z.string().guid().optional(),
   orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   url: z.string().url(),
@@ -400,26 +438,43 @@ const createWebhookSchema = z.object({
   // handler requires one or the other.
   secret: z.string().min(1).max(255).optional(),
   events: webhookEventsSchema,
+  payloadVersion: z.union([z.literal(1), z.literal(2)]).optional(),
   headers: customHeadersSchema.optional().default([]),
   status: z.enum(['active', 'paused']).optional(),
   ...unsupportedAuthFields
 }).superRefine(rejectUnsupportedAuthFields);
 
 const updateWebhookSchema = z.object({
+  ownerScope: z.unknown().optional(),
+  partnerId: z.unknown().optional(),
+  orgId: z.unknown().optional(),
   name: z.string().min(1).max(255).optional(),
   url: z.string().url().optional(),
   // `null` removes the signing secret (switching to bearer auth).
   secret: z.string().min(1).max(255).nullable().optional(),
   events: webhookEventsSchema.optional(),
+  payloadVersion: z.union([z.literal(1), z.literal(2)]).optional(),
   headers: customHeadersSchema.optional(),
   status: z.enum(['active', 'paused', 'failed']).optional(),
   ...unsupportedAuthFields
-}).superRefine(rejectUnsupportedAuthFields);
+}).superRefine(rejectUnsupportedAuthFields).superRefine((value, ctx) => {
+  // Preserve unknown-key stripping for existing clients, but never silently
+  // accept an attempted ownership change.
+  for (const field of ['ownerScope', 'partnerId', 'orgId'] as const) {
+    if (Object.prototype.hasOwnProperty.call(value, field)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [field],
+        message: 'Webhook ownership cannot be changed after creation',
+      });
+    }
+  }
+});
 
 const listDeliveriesSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  status: z.enum(['pending', 'delivered', 'failed', 'retrying']).optional()
+  status: z.enum(['pending', 'delivered', 'failed', 'retrying', 'scheduled']).optional()
 });
 
 const testWebhookSchema = z.object({
@@ -465,23 +520,35 @@ webhookRoutes.get(
       }
       conditions.push(eq(webhooksTable.orgId, auth.orgId));
     } else if (auth.scope === 'partner') {
+      const partnerCondition = auth.partnerId && canManagePartnerWidePolicies(auth)
+        ? and(isNull(webhooksTable.orgId), eq(webhooksTable.partnerId, auth.partnerId))
+        : undefined;
       if (query.orgId) {
         if (!auth.canAccessOrg(query.orgId)) {
           return c.json({ error: 'Access to this organization denied' }, 403);
         }
-        conditions.push(eq(webhooksTable.orgId, query.orgId));
+        conditions.push(or(eq(webhooksTable.orgId, query.orgId), partnerCondition)!);
       } else {
         const orgIds = auth.accessibleOrgIds ?? [];
-        if (orgIds.length === 0) {
+        if (orgIds.length === 0 && !partnerCondition) {
           return c.json({
             data: [],
             pagination: { page, limit, total: 0 }
           });
         }
-        conditions.push(inArray(webhooksTable.orgId, orgIds));
+        conditions.push(or(
+          orgIds.length > 0 ? inArray(webhooksTable.orgId, orgIds) : undefined,
+          partnerCondition,
+        )!);
       }
     } else if (query.orgId) {
       conditions.push(eq(webhooksTable.orgId, query.orgId));
+    }
+
+    if (query.ownerScope) {
+      conditions.push(query.ownerScope === 'partner'
+        ? isNull(webhooksTable.orgId)
+        : isNull(webhooksTable.partnerId));
     }
 
     if (query.status) {
@@ -530,30 +597,33 @@ webhookRoutes.post(
     }
     const data = c.req.valid('json');
 
-    let orgId = data.orgId;
-
-    if (auth.scope === 'organization') {
-      if (!auth.orgId) {
-        return c.json({ error: 'Organization context required' }, 403);
+    let orgId: string | null = data.orgId ?? null;
+    let partnerId: string | null = null;
+    if (data.ownerScope === 'partner') {
+      if ((auth.scope !== 'partner' && auth.scope !== 'system') || !canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
       }
-      orgId = auth.orgId;
-    } else if (auth.scope === 'partner') {
-      if (!orgId) {
-        const singleOrg = auth.accessibleOrgIds?.[0];
-        if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
-          orgId = singleOrg;
-        } else {
-          return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+      if (data.orgId !== undefined) {
+        return c.json({ error: 'orgId cannot be supplied for a partner-owned webhook' }, 400);
+      }
+      partnerId = auth.scope === 'system' ? data.partnerId ?? null : auth.partnerId;
+      if (!partnerId) return c.json({ error: 'partnerId is required for a partner-owned webhook' }, 400);
+      orgId = null;
+    } else {
+      if (auth.scope === 'organization') {
+        if (!auth.orgId) return c.json({ error: 'Organization context required' }, 403);
+        orgId = auth.orgId;
+      } else if (auth.scope === 'partner') {
+        if (!orgId) {
+          const singleOrg = auth.accessibleOrgIds?.[0];
+          if (auth.accessibleOrgIds?.length === 1 && singleOrg) orgId = singleOrg;
+          else return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
         }
-      }
-      if (!auth.canAccessOrg(orgId)) {
-        return c.json({ error: 'Access to this organization denied' }, 403);
-      }
-    } else if (!orgId) {
-      return c.json({ error: 'orgId is required' }, 400);
+        if (!auth.canAccessOrg(orgId)) return c.json({ error: 'Access to this organization denied' }, 403);
+      } else if (!orgId) return c.json({ error: 'orgId is required' }, 400);
+      // canAccessOrg is true for system scope: the holding org is never a target.
+      if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
     }
-    // canAccessOrg is true for system scope: the holding org is never a target.
-    if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
     if (!data.secret && !hasBearerAuthorizationHeader(data.headers)) {
       return c.json({ error: AUTH_REQUIRED_MESSAGE }, 400);
@@ -568,10 +638,12 @@ webhookRoutes.post(
       .insert(webhooksTable)
       .values({
         orgId,
+        partnerId,
         name: data.name,
         url: encryptSecret(data.url) ?? data.url,
         secret: data.secret ? encryptSecret(data.secret) : null,
         events: data.events,
+        ...(data.payloadVersion !== undefined ? { payloadVersion: data.payloadVersion } : {}),
         headers: encryptWebhookHeaders(data.headers ?? []),
         status: mapApiStatusToDb(data.status ?? 'active'),
         createdBy: auth.user.id,
@@ -586,11 +658,13 @@ webhookRoutes.post(
 
     writeRouteAudit(c, {
       orgId: created.orgId,
+      partnerId: created.partnerId ?? undefined,
       action: 'webhook.create',
       resourceType: 'webhook',
       resourceId: created.id,
       resourceName: created.name,
       details: {
+        ...auditOwnerDetails(created),
         urlHost: URL.canParse(data.url) ? new URL(data.url).hostname : 'redacted',
         eventCount: created.events?.length ?? 0
       }
@@ -611,7 +685,7 @@ webhookRoutes.get(
     const auth = c.get('auth') as RouteAuth;
     const { id: webhookId } = c.req.valid('param');
 
-    const webhook = await getWebhookWithOrgCheck(webhookId, auth);
+    const webhook = await getWebhookWithOwnerCheck(webhookId, auth);
     if (!webhook) {
       return c.json({ error: 'Webhook not found' }, 404);
     }
@@ -646,7 +720,7 @@ webhookRoutes.patch(
       return c.json({ error: 'No updates provided' }, 400);
     }
 
-    const webhook = await getWebhookWithOrgCheck(webhookId, auth);
+    const webhook = await getWebhookWithOwnerCheck(webhookId, auth);
     if (!webhook) {
       return c.json({ error: 'Webhook not found' }, 404);
     }
@@ -702,6 +776,7 @@ webhookRoutes.patch(
       updatePayload.secret = encryptSecret(data.secret);
     }
     if (data.events !== undefined) updatePayload.events = data.events;
+    if (data.payloadVersion !== undefined) updatePayload.payloadVersion = data.payloadVersion;
     if (data.headers !== undefined) updatePayload.headers = encryptWebhookHeaders(data.headers, webhook.headers);
     if (data.status !== undefined) updatePayload.status = mapApiStatusToDb(data.status);
 
@@ -740,11 +815,13 @@ webhookRoutes.patch(
 
     writeRouteAudit(c, {
       orgId: updated.orgId,
+      partnerId: updated.partnerId ?? undefined,
       action: 'webhook.update',
       resourceType: 'webhook',
       resourceId: updated.id,
       resourceName: updated.name,
       details: {
+        ...auditOwnerDetails(updated),
         changedFields: Object.keys(data)
       }
     });
@@ -768,7 +845,7 @@ webhookRoutes.delete(
     }
     const { id: webhookId } = c.req.valid('param');
 
-    const webhook = await getWebhookWithOrgCheck(webhookId, auth);
+    const webhook = await getWebhookWithOwnerCheck(webhookId, auth);
     if (!webhook) {
       return c.json({ error: 'Webhook not found' }, 404);
     }
@@ -782,10 +859,12 @@ webhookRoutes.delete(
 
     writeRouteAudit(c, {
       orgId: webhook.orgId,
+      partnerId: webhook.partnerId ?? undefined,
       action: 'webhook.delete',
       resourceType: 'webhook',
       resourceId: webhook.id,
-      resourceName: webhook.name
+      resourceName: webhook.name,
+      details: auditOwnerDetails(webhook)
     });
 
     return c.json({ success: true });
@@ -806,7 +885,7 @@ webhookRoutes.get(
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
-    const webhook = await getWebhookWithOrgCheck(webhookId, auth);
+    const webhook = await getWebhookWithOwnerCheck(webhookId, auth);
     if (!webhook) {
       return c.json({ error: 'Webhook not found' }, 404);
     }
@@ -833,7 +912,7 @@ webhookRoutes.get(
     ]);
 
     return c.json({
-      data: deliveryRows.map((delivery) => mapDeliverySummary(delivery, webhook.orgId)),
+      data: deliveryRows.map((delivery) => mapDeliverySummary(delivery)),
       pagination: {
         page,
         limit,
@@ -860,7 +939,7 @@ webhookRoutes.post(
     const { id: webhookId } = c.req.valid('param');
     const data = c.req.valid('json');
 
-    const webhook = await getWebhookWithOrgCheck(webhookId, auth);
+    const webhook = await getWebhookWithOwnerCheck(webhookId, auth);
     if (!webhook) {
       return c.json({ error: 'Webhook not found' }, 404);
     }
@@ -879,16 +958,20 @@ webhookRoutes.post(
       webhookId: webhook.id
     };
 
-    const eventId = randomUUID();
+    const eventId = webhook.partnerId ? `test-${randomUUID()}` : randomUUID();
     const now = new Date();
 
     const [delivery] = await db
       .insert(webhookDeliveries)
       .values({
         webhookId: webhook.id,
+        orgId: webhook.orgId,
         eventType,
         eventId,
         payload,
+        payloadVersion: webhook.payloadVersion,
+        webhookGeneration: webhook.approvalGeneration,
+        eventTimestamp: now,
         status: 'pending',
         attempts: 0,
         createdAt: now
@@ -899,47 +982,30 @@ webhookRoutes.post(
       return c.json({ error: 'Failed to create delivery record' }, 500);
     }
 
-    const event = {
-      id: eventId,
-      type: eventType,
-      orgId: webhook.orgId,
-      source: 'webhook.test',
-      priority: 'normal',
-      payload,
-      metadata: {
-        timestamp: now.toISOString(),
-        userId: auth.user.id
-      }
-    };
-
-    try {
-      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, event as any, delivery.id);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
-      const [failedDelivery] = await db
-        .update(webhookDeliveries)
-        .set({
-          status: 'failed',
-          attempts: 1,
-          errorMessage,
-          deliveredAt: new Date()
-        })
-        .where(eq(webhookDeliveries.id, delivery.id))
-        .returning();
-
-      return c.json({
-        error: 'Failed to queue webhook delivery',
-        delivery: mapDelivery(failedDelivery ?? delivery, webhook.orgId)
-      }, 503);
-    }
+    // A worker must not see the job before this request's delivery row commits.
+    runAfterDbContextCommit('webhook.test', () => enqueueWebhookAttempt({
+      deliveryId: delivery.id,
+      webhookId: webhook.id,
+      generation: webhook.approvalGeneration,
+      attemptsMade: 0,
+    }, new Date()).catch((error) => {
+      captureException(error instanceof Error ? error : new Error(String(error)));
+      console.error(`[webhooks] enqueue-failed ${JSON.stringify({
+        errorId: 'WEBHOOK_DELIVERY_ENQUEUE_FAILED',
+        deliveryId: delivery.id,
+        webhookId: webhook.id,
+      })}`);
+    }));
 
     writeRouteAudit(c, {
       orgId: webhook.orgId,
+      partnerId: webhook.partnerId ?? undefined,
       action: 'webhook.test',
       resourceType: 'webhook',
       resourceId: webhook.id,
       resourceName: webhook.name,
       details: {
+        ...auditOwnerDetails(webhook),
         deliveryId: delivery.id,
         event: eventType
       }
@@ -947,7 +1013,7 @@ webhookRoutes.post(
 
     return c.json({
       message: 'Test delivery queued',
-      delivery: mapDelivery(delivery, webhook.orgId)
+      delivery: mapDelivery(delivery)
     }, 202);
   }
 );
@@ -965,9 +1031,9 @@ webhookRoutes.post(
     if (!canMutateOrgWideGovernance(auth)) {
       return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
     }
-const { id: webhookId, deliveryId } = c.req.valid('param');
+    const { id: webhookId, deliveryId } = c.req.valid('param');
 
-    const webhook = await getWebhookWithOrgCheck(webhookId, auth);
+    const webhook = await getWebhookWithOwnerCheck(webhookId, auth);
     if (!webhook) {
       return c.json({ error: 'Webhook not found' }, 404);
     }
@@ -997,16 +1063,38 @@ const { id: webhookId, deliveryId } = c.req.valid('param');
       return c.json({ error: 'Only failed deliveries can be retried' }, 400);
     }
 
-    const retryEventId = randomUUID();
+    if (webhook.partnerId && delivery.orgId !== null) {
+      // The parent webhook owner is authorized above. Inactive organizations
+      // are absent from request org access, so read only the delivery org's
+      // lifecycle in system scope to distinguish inactivity from departure.
+      const [org] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.select({
+        partnerId: organizations.partnerId,
+        live: sql<boolean>`${partnerFanoutOrgCondition()}`,
+      }).from(organizations).where(eq(organizations.id, delivery.orgId!)).limit(1)));
+      if (!org || org.partnerId !== webhook.partnerId) {
+        return c.json({ error: 'Cannot retry: organization moved to another partner' }, 409);
+      }
+      if (!org.live) {
+        return c.json({ error: 'Cannot retry: organization is not currently active; retry after it is reactivated' }, 409);
+      }
+    }
+
+    const retryEventId = delivery.orgId === null ? `test-${randomUUID()}` : randomUUID();
     const now = new Date();
+    const replayRootEventId = delivery.replayRootEventId ?? delivery.eventId;
 
     const [retryDelivery] = await db
       .insert(webhookDeliveries)
       .values({
         webhookId: webhook.id,
+        orgId: delivery.orgId,
         eventType: delivery.eventType,
         eventId: retryEventId,
         payload: delivery.payload,
+        payloadVersion: delivery.payloadVersion,
+        webhookGeneration: webhook.approvalGeneration,
+        eventTimestamp: now,
+        replayRootEventId,
         status: 'pending',
         attempts: 0,
         createdAt: now
@@ -1017,47 +1105,30 @@ const { id: webhookId, deliveryId } = c.req.valid('param');
       return c.json({ error: 'Failed to create retry delivery record' }, 500);
     }
 
-    const retryEvent = {
-      id: retryEventId,
-      type: delivery.eventType,
-      orgId: webhook.orgId,
-      source: 'webhook.retry',
-      priority: 'normal',
-      payload: delivery.payload,
-      metadata: {
-        timestamp: now.toISOString(),
-        userId: auth.user.id
-      }
-    };
-
-    try {
-      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, retryEvent as any, retryDelivery.id);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
-      const [failedRetry] = await db
-        .update(webhookDeliveries)
-        .set({
-          status: 'failed',
-          attempts: 1,
-          errorMessage,
-          deliveredAt: new Date()
-        })
-        .where(eq(webhookDeliveries.id, retryDelivery.id))
-        .returning();
-
-      return c.json({
-        error: 'Failed to queue retry delivery',
-        delivery: mapDelivery(failedRetry ?? retryDelivery, webhook.orgId)
-      }, 503);
-    }
+    // A worker must not see the job before this request's delivery row commits.
+    runAfterDbContextCommit('webhook.retry', () => enqueueWebhookAttempt({
+      deliveryId: retryDelivery.id,
+      webhookId: webhook.id,
+      generation: webhook.approvalGeneration,
+      attemptsMade: 0,
+    }, new Date()).catch((error) => {
+      captureException(error instanceof Error ? error : new Error(String(error)));
+      console.error(`[webhooks] enqueue-failed ${JSON.stringify({
+        errorId: 'WEBHOOK_DELIVERY_ENQUEUE_FAILED',
+        deliveryId: retryDelivery.id,
+        webhookId: webhook.id,
+      })}`);
+    }));
 
     writeRouteAudit(c, {
       orgId: webhook.orgId,
+      partnerId: webhook.partnerId ?? undefined,
       action: 'webhook.retry',
       resourceType: 'webhook',
       resourceId: webhook.id,
       resourceName: webhook.name,
       details: {
+        ...auditOwnerDetails(webhook),
         sourceDeliveryId: delivery.id,
         retryDeliveryId: retryDelivery.id
       }
@@ -1065,7 +1136,7 @@ const { id: webhookId, deliveryId } = c.req.valid('param');
 
     return c.json({
       message: 'Delivery retry queued',
-      delivery: mapDelivery(retryDelivery, webhook.orgId)
+      delivery: mapDelivery(retryDelivery)
     }, 202);
   }
 );

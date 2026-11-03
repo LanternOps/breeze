@@ -16,7 +16,9 @@
  *     must not exist yet), `lockContactForRecipe`
  *     serializes admissions per (recipe, contact), and `findLiveTaskForContact`
  *     answers "one live task per (contact, recipe)" as a refusal — never as a
- *     caught constraint error.
+ *     caught constraint error. The contact is NOT the account: two contacts
+ *     can resolve to one provider account, so the one-task-per-account rule
+ *     is `accountReservations.ts` (#9981), checked after this one.
  *
  * A FREE-TEXT HINT NEVER CREATES A CONTACT. "Dana in accounting" resolves only
  * when exactly one contact's name matches; otherwise admission refuses as

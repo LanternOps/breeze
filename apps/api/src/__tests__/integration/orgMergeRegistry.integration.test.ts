@@ -207,6 +207,10 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // of a terminal state. flow_runs is leave-for-erasure; resolveFlows only
   // writes cancellation columns on loser runs, never org_id.
   'flow_runs.flow_runs_immutable_trg': 'RAISEs iff org_id (or any identity column) changed; leave-for-erasure, never repointed',
+  // Tool Catalog W5 (#5220, 2027-01-07-140000-flow-webhooks-tools-budgets.sql).
+  'flow_webhook_deliveries.flow_webhook_deliveries_owner_guard_trg': 'BEFORE INSERT only; validates the owner pair against the parent flow on insert and never fires on a merge UPDATE',
+  'flow_webhook_deliveries.flow_webhook_deliveries_immutable_trg': 'BEFORE UPDATE freezing delivery facts; flow_webhook_deliveries is leave-for-erasure so a merge never updates its rows',
+  'flow_usage_counters.flow_usage_counters_owner_guard_trg': 'BEFORE INSERT only; validates the owner pair against the parent flow on insert and never fires on a merge UPDATE',
   // Wisp W02 (#9908, 2027-01-04-100100): ownership columns incl. org_id are
   // immutable; wisp_grants is leave-for-erasure, never repointed.
   'wisp_grants.wisp_grants_update_guard': 'RAISEs 42501 iff an ownership column (incl. org_id) changed',
@@ -312,15 +316,28 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
   ai_invocations: 'append-only invocation ledger (2026-11-14-100300, #7600 W02); usage history follows the merged client, everything but org_id is immutable',
   ai_usage_charge_claims: 'write-once chargeback claims (2026-11-26-100200, #7608 W10); a claim follows its merged invocation so it is never re-claimed, everything but org_id is immutable',
   contract_documents: 'signed agreements, append-only (2027-01-06-150000, #9075 W4b); column-level UPDATE (contract_id, org_id): the filing link and the merge re-point, all evidence immutable',
+  automation_occurrence_claims: 'append-only cross-engine occurrence claims (2027-01-09-100000, #5221 W06); a claim follows its merged automation so the occurrence is never re-admitted, everything but org_id is immutable',
 };
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // #10521 W1 (2027-01-12-200000): RAISEs only on a partner_id change or an
+  // org_id NULL↔NOT NULL flip, so the merge's org_id → org_id repoint passes.
+  'device_groups.device_groups_owner_immutable': 'freezes partner_id and owner kind only; an org-owned group may repoint org_id to another non-null org_id',
   // Tool Catalog W04 (#5219, 2027-01-06-130000-flow-runs.sql): freezes a
   // publication's content (flow_id, publication_seq, definition, pins,
   // bindings, created_at, a non-NULL delegator retarget) but deliberately
   // leaves the owner columns out, so the plain flow_versions repoint passes.
   'flow_versions.flow_versions_immutable_trg': 'freezes publication content only; org_id/partner_id are excluded and may move, so an org_id repoint passes',
+  // Tool Catalog W06 (#5221, 2027-01-09-100000): both guards RAISE on every
+  // change except an org_id → org_id restamp (never to or from NULL, partner_id
+  // unchanged) plus the conversion lifecycle columns. Where the row may move is
+  // pinned by the DEFERRED owner-guard constraint triggers, which require the
+  // owner pair to equal the automation's (and the flow's) at commit — so the
+  // merge's repoint, made after automations/flows move, passes, and any other
+  // retarget fails.
+  'flow_automation_conversions.flow_automation_conversions_immutable_trg': 'admits an org_id → org_id restamp (partner unchanged); the deferred owner guard ties it to the moved automation and flow',
+  'automation_occurrence_claims.automation_occurrence_claims_append_only_trg': 'append-only except an org_id → org_id restamp (partner unchanged); the deferred owner guard ties it to the moved automation',
   // Wisp W04 (#9910, 2027-01-04-110200): BEFORE INSERT OR UPDATE OF
   // wisp_grant_id, wisp_grant_revision_id only — a merge's org_id repoint does
   // not name those columns, so the trigger never fires on it.
@@ -353,6 +370,9 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // Topology site location W2 (#7886, 2026-12-25-140000): deletes the device's presence read-model row and
   // marks the affected orgs dirty on a site/org change; writes nothing on devices, never RAISEs.
   'devices.breeze_topology_presence_device_moved': 'deletes the device\'s topology_device_presence row (and, outside a merge, its day rows on an org change) and marks presence dirty; never RAISEs or reverts org_id',
+  // Network isolation W1a (#10089, 2027-01-17-200000): returns at once while the source org is 'merging', so a
+  // merge repoint passes untouched; only a plain device org move deletes resolved history or refuses (55000).
+  'devices.breeze_network_isolation_device_moved': 'no-op while OLD.org_id is merging (the merge repoints the episodes with the device); outside a merge deletes resolved isolation history and refuses an unresolved episode; writes nothing on devices, never reverts org_id',
   // Topology site location W3 (#7887, 2026-12-26-190000): clears NEW.site_assignment_confirmed_at on a site/org
   // change; touches no other column, never RAISEs.
   'devices.breeze_devices_site_assignment_confirmation_reset': 'clears site_assignment_confirmed_at on a site/org change; never RAISEs or reverts org_id',

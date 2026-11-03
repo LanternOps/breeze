@@ -10,6 +10,9 @@
 import type {
   FlowDetailDto,
   FlowEnableRequest,
+  FlowEnableResultDto,
+  FlowLimitsUpdate,
+  FlowLimitsViewDto,
   FlowManualRunRequest,
   FlowRunDetailDto,
   FlowRunStatus,
@@ -18,6 +21,8 @@ import type {
   FlowSummaryDto,
   FlowStatus,
   FlowValidationResult,
+  FlowWebhookDeliveryDto,
+  FlowWebhookSecretRevealDto,
 } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { extractApiError } from '../../lib/apiError';
@@ -35,6 +40,10 @@ export type {
   FlowSummaryDto,
   FlowStatus,
   FlowValidationResult,
+  FlowLimitsUpdate,
+  FlowLimitsViewDto,
+  FlowWebhookDeliveryDto,
+  FlowWebhookSecretRevealDto,
 };
 
 const BASE = '/flows';
@@ -204,6 +213,8 @@ const ENABLE_INLINE_CODES = new Set([
   'permission_missing',
   'invalid',
   'pre_approval_not_eligible',
+  'webhook_secret_missing',
+  'ai_budget_unavailable',
 ]);
 
 /** Failures the run dialog renders inline. */
@@ -221,10 +232,8 @@ const RUN_INLINE_CODES = new Set([
   'MFA_REQUIRED',
 ]);
 
-export interface EnableFlowResult {
-  ok: true;
-  [key: string]: unknown;
-}
+/** The shared enable result; `webhookSecretInvalidated` must be surfaced (#10270). */
+export type EnableFlowResult = FlowEnableResultDto;
 
 /**
  * Enable the flow's current version. A 422 (validation / missing permissions /
@@ -269,6 +278,97 @@ export function startFlowRun(
     },
     friendly: flowFriendly,
     successMessage: i18n.t('flows:toast.runStarted'),
+  });
+}
+
+// ---- W05 (#5220): webhook secret + delivery log, flow limits -----------------
+
+export interface ListWebhookDeliveriesParams {
+  limit?: number;
+  /** ISO cursor: deliveries received strictly before this time. */
+  before?: string;
+}
+
+export async function listWebhookDeliveries(
+  flowId: string,
+  params: ListWebhookDeliveriesParams = {},
+): Promise<{ deliveries: FlowWebhookDeliveryDto[]; identifiersHidden: boolean }> {
+  const qs = new URLSearchParams();
+  if (params.limit !== undefined) qs.set('limit', String(params.limit));
+  if (params.before) qs.set('before', params.before);
+  const query = qs.toString();
+  const path = `${BASE}/${encodeURIComponent(flowId)}/webhook-deliveries`;
+  const body = await readJson<{ deliveries?: FlowWebhookDeliveryDto[]; identifiersHidden?: boolean }>(
+    await fetchWithAuth(query ? `${path}?${query}` : path),
+  );
+  if (!Array.isArray(body?.deliveries)) {
+    throw new ActionError('Unexpected response shape: missing deliveries', 200);
+  }
+  // A restricted reader (site- or device-limited) gets the delivery id and the
+  // org-resolver value nulled; the flag says they are hidden, not absent.
+  return { deliveries: body.deliveries, identifiersHidden: body.identifiersHidden === true };
+}
+
+/** The partner default (no orgId), or one org's override and what resolves for it. */
+export async function getFlowLimits(orgId?: string): Promise<FlowLimitsViewDto> {
+  const path = orgId ? `${BASE}/limits?orgId=${encodeURIComponent(orgId)}` : `${BASE}/limits`;
+  // The level is explicit in the URL: never let the switcher's org be injected,
+  // or a partner admin with an org selected could never read the partner default.
+  const body = await readJson<FlowLimitsViewDto | null>(await fetchWithAuth(path, { orgIdOverride: null }));
+  if (!body || typeof body !== 'object' || !body.limits) {
+    throw new ActionError('Unexpected response shape: missing limits', 200);
+  }
+  return body;
+}
+
+const SECRET_ERROR_KEYS: Record<string, string> = {
+  draft_unresolvable: 'flows:webhook.secret.draftUnresolvable',
+  not_webhook: 'flows:webhook.secret.notWebhook',
+};
+
+/**
+ * Create or rotate the flow's webhook secret. The plaintext is returned to the
+ * caller (the reveal-once dialog) and never toasted: there is no success toast
+ * at all, so the secret cannot leak into a toast history.
+ */
+export function rotateWebhookSecret(flowId: string): Promise<FlowWebhookSecretRevealDto> {
+  return runAction<FlowWebhookSecretRevealDto>({
+    request: () => fetchWithAuth(`${BASE}/${encodeURIComponent(flowId)}/webhook-secret`, postInit()),
+    errorFallback: i18n.t('flows:webhook.secret.failed'),
+    friendly: (code) => {
+      const key = SECRET_ERROR_KEYS[code];
+      return key ? i18n.t(/* i18n-dynamic */ key) : flowFriendly(code);
+    },
+  });
+}
+
+const LIMITS_ERROR_KEYS: Record<string, string> = {
+  partner_wide_forbidden: 'flows:limits.partnerWideForbidden',
+  org_scope_read_only: 'flows:limits.orgScopeReadOnly',
+  partner_scope_required: 'flows:limits.partnerWideForbidden',
+  org_not_found: 'flows:limits.orgNotFound',
+};
+
+/**
+ * Save one level's limits (`null` clears a field to inherit). A 422
+ * `limit_above_partner_ceiling` carries `{ field, ceiling }` and is rendered
+ * inline by the form, so it is not toasted.
+ */
+export function saveFlowLimits(body: FlowLimitsUpdate): Promise<FlowLimitsViewDto> {
+  return runAction<FlowLimitsViewDto>({
+    request: () => fetchWithAuth(`${BASE}/limits`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      orgIdOverride: null, // the level is in the body, never the ambient switcher org
+    }),
+    errorFallback: i18n.t('flows:limits.saveFailed'),
+    successMessage: i18n.t('flows:limits.saved'),
+    suppressErrorToast: (_status, code, resBody) => errorToken(code, resBody) === 'limit_above_partner_ceiling',
+    friendly: (code) => {
+      const key = LIMITS_ERROR_KEYS[code];
+      return key ? i18n.t(/* i18n-dynamic */ key) : undefined;
+    },
   });
 }
 

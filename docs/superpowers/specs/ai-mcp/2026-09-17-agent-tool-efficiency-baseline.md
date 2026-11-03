@@ -643,3 +643,22 @@ Harness and reading as §14 (`tool-capture.ts --proxy`, `claude-sonnet-5-5`, def
 - **Chat tool index (W19 bounds):** always-on 2,494 B on both. Domain blocks: devices 940 → 1,117, security 970 → 1,268, monitoring 731 → 787, network 452 → 508, patching 337 → 423, admin 260 → 306 B (B2 < 2,048). Worst page turn: alert 4,190 → 4,423 B, device 3,822 → 3,999 B (B3 < 7,040). Legacy `AI_TOOL_INDEX=full` (informational, W03 + W04 merged): 8,199 B default / 8,248 B flag-on.
 - None of the 19 is `alwaysLoad`.
 - **Golden eval (chat, first-call, real key, test-stack DB):** main 26/78, branch 25/81. On the 78 common cases one is a reproducible regression — **g70** (internal note on a ticket) now first calls `manage_tickets:get` instead of `comment` (3/3 runs; read-before-write) — and g51/g69 flip on single runs but match on re-runs (noise). The three new cases g79–g81 score 0/3 on first call: each first resolves its target (`query_devices` / `list_organizations`), the read-before-write pattern W02 and W03 also recorded.
+
+## 16. Full-control W11 (#6781) delta
+
+**Date measured:** 2026-10-26 · **Branch:** `feature/6754-ai-full-control/wave-6781` @ `2c877a8ca4` (based on `25fcb2e35b`, post-W10) against `origin/main` @ `cf78828c23` (one later commit, #10274, adds only `packages/shared/src/promptHost` — no AI tool, prompt or registry change), the main tree measured from a `git archive` export with the branch's dependencies · **Plan:** `plans/ai-mcp/2026-10-26-ai-full-control-w11-security-policy-tools.md` (spec D5, gate ≤ +8,000 turn-1 tokens per surface with tool search **on**; the `off` delta is recorded alongside)
+
+Harness and reading as §14 (`tool-capture.ts --proxy`, `claude-sonnet-5-5`, default prompt; first tool-bearing Sonnet `/v1/messages` row, `inputTokens + cacheCreationInputTokens + cacheReadInputTokens`).
+
+| Surface | Tool search | Tools sent (main → branch) | Turn-1 main | Turn-1 branch | Δ tokens | Gate |
+|---|---|---|---|---|---|---|
+| chat | **on** | 17 → 17 (deferred: +8) | 20,539 | 20,918 | **+379** | pass |
+| chat | off | 289 → 297 (+8) | 153,434 | 160,430 | +6,996 | recorded (not the gate) |
+| agent-full | **on** | 181 → 186 (+5) | 90,894 | 94,368 | **+3,474** | pass |
+| agent-full | off | 181 → 186 (+5) | 90,894 | 94,368 | +3,474 | recorded |
+
+- **chat** gains all eight W11 tools, deferred behind tool search: turn 1 pays their names (+379). The system prompt is 14,260 bytes on both trees: the W19 always-on index does not grow.
+- **agent-full** gains five: a full-profile run with an empty allowlist exposes only tools with a read-only action (`fullRunToolExposure`). `get_security_compliance`, `manage_security_recommendations`, `manage_audit_baselines`, `manage_security_policies` and `manage_recovery_keys` have one; `manage_compliance_policies` (deactivate only) does not, and `manage_access_reviews` / `manage_pam_rules` are `AGENT_HUMAN_ONLY_TOOLS`.
+- **Chat tool index (W19 bounds):** always-on 2,494 B on both. The security block grows 1,268 → 1,644 B (B2 < 2,048 B; still the largest block). The worst page turn stays at 4,731 B (alert; security is not a page-context domain; B3 < 7,040 B).
+- None of the eight is `alwaysLoad`.
+- **Golden eval:** not run (the three new cases g97–g99 are pinned by the count test; the live first-call eval is left for the release sweep).

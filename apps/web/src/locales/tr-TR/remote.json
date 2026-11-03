@@ -681,6 +681,7 @@
       "disconnected": "Bağlantı Kesildi",
       "failed": "Başarısız",
       "pending": "Beklemede",
+      "endedByUser": "Kullanıcı tarafından sonlandırıldı",
       "teardownPending": "Sonlandırılıyor (cihaz bekleniyor)"
     },
     "subtitle": "Uzaktan erişim denetim günlüğü",
@@ -717,6 +718,7 @@
       "timeline": "Zaman Çizelgesi"
     },
     "subtitle": "Uzaktan erişim oturumlarını görüntüleyin ve denetleyin",
+    "endedByUser": "Kullanıcı tarafından sonlandırıldı",
     "teardownPending": "Cihaz onayı bekleniyor",
     "title": "Oturum Geçmişi",
     "viewDevice": "Cihazı Görüntüle",

@@ -360,13 +360,12 @@ describe('(b) ordering: stopping after any dispatch leaves no locked-out account
     }, 120_000);
   }
 
-  // BUG (#9979, missing surface): there is no task-cancel path for recipe
-  // tasks. taskTransitions.ts declares `stop` / `settle_cancelled`, but no
-  // service, route or job writes them, and a one-off probe in R1a showed a
-  // task in `stopping` still mints its next child (advanceTask never checks
-  // the task's own fencing). "A task cancelled at each k records the
-  // remaining ordinals in its handoff summary, and no operation settles after
-  // the cancel" therefore cannot be exercised until #9979 is fixed.
+  // BLOCKED on the cancel route (missing surface, P3-5; see #9979). The
+  // coordinator half of #9979 is fixed: a `stopping` task is never advanced
+  // and always settles (pinned in aiOperatorIdentityOffboardingE2E and
+  // aiOperatorRecovery). What is still missing is a route/service that writes
+  // `stop` on a human's cancel, so "a task cancelled at each k records the
+  // remaining ordinals in its handoff summary" cannot be driven yet.
   skipDb('cancelled at each k: the handoff names the remaining ordinals and no operation settles after the cancel', async () => {
     // Intentionally empty: see the BUG note above.
   });

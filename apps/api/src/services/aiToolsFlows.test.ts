@@ -168,6 +168,19 @@ describe('flow run AI tools (W04)', () => {
     expect(startManualRun).toHaveBeenCalledWith(userAuth, FLOW_ID, { orgId: 'o', inputs: { a: 1 }, idempotencyKey: 'k1' }, 'ai_tool', chatCtx.captureAnchor.sessionId);
   });
 
+  it('run_flow pins the publication its lowered tier was gated on (W5 PR C)', async () => {
+    vi.mocked(startManualRun).mockResolvedValue({ ok: true, runId: RUN_ID, duplicate: false, preApprovalsHonored: false });
+    const gated = { ...chatCtx, runFlowGate: { flowId: FLOW_ID, publicationSeq: 4 } };
+    await callAs(userAuth, 'run_flow', { flowId: FLOW_ID }, gated);
+    expect(startManualRun).toHaveBeenCalledWith(userAuth, FLOW_ID, { orgId: undefined, inputs: {}, idempotencyKey: undefined }, 'ai_tool', chatCtx.captureAnchor.sessionId, { expectedPublicationSeq: 4 });
+  });
+
+  it('run_flow refuses a gate computed for another flow', async () => {
+    const gated = { ...chatCtx, runFlowGate: { flowId: '66666666-6666-4666-8666-666666666666', publicationSeq: 4 } };
+    expect(await callAs(userAuth, 'run_flow', { flowId: FLOW_ID }, gated)).toEqual({ ok: false, error: 'flow_tool_changed' });
+    expect(startManualRun).not.toHaveBeenCalled();
+  });
+
   it('run_flow passes a service refusal through without a runPath', async () => {
     vi.mocked(startManualRun).mockResolvedValue({ ok: false, error: 'org_required' });
     expect(await callAs(userAuth, 'run_flow', { flowId: FLOW_ID }, chatCtx)).toEqual({ ok: false, error: 'org_required' });

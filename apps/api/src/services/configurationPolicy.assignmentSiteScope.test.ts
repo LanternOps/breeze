@@ -127,3 +127,9 @@ describe('authorizeAssignmentTarget — site sub-axis (SR5-07)', () => {
     expect(r.valid).toBe(false);
   });
 });
+
+
+it('authorizeAssignmentTarget fails closed for a siteless partner group', async () => {
+  mockSelectResolving([{ orgId: null, partnerId: 'partner', siteId: null }]);
+  expect((await authorizeAssignmentTarget(restricted([SITE_A]), 'device_group', GROUP_ID)).valid).toBe(false);
+});

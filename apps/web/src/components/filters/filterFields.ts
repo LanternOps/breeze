@@ -10,6 +10,7 @@
 // shared ValueInput renders `between` as a date-range picker only, so exposing
 // it on a number field would render the wrong widget. Every operator listed
 // here is both backend-valid and renderable by ValueInput/OperatorSelector.
+import i18next from 'i18next';
 import type { FilterFieldDefinition, FilterOperator } from '@breeze/shared';
 import { DEVICE_FUNCTION_KEYS, WORKLOAD_RUNTIMES } from '@breeze/shared';
 
@@ -48,6 +49,8 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   // Device-state predicates — backend models these as booleans (EXISTS against
   // device_patches / alerts / patch_job_results); operators equals/notEquals so
   // the negative case ("is not") is expressible.
+  { key: 'networkIsolation.active', category: 'core', type: 'boolean', operators: B,
+    get label() { return i18next.t('devices:networkIsolation.filterLabel', { defaultValue: 'Isolated' }); } },
   { key: 'patches.pending', label: 'Needs Patches', category: 'core', type: 'boolean', operators: B },
   { key: 'alerts.critical', label: 'Critical Alert Active', category: 'core', type: 'boolean', operators: B },
   { key: 'system.rebootRequired', label: 'Reboot Required', category: 'core', type: 'boolean', operators: B },
@@ -74,6 +77,9 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   // Storage/RAID health rollup (#6854) — device_hardware_health, not device_hardware.
   { key: 'hardware.health', label: 'Hardware Health', category: 'hardware', type: 'enum', operators: E,
     enumValues: ['ok', 'warning', 'critical', 'unknown'] },
+  // Stored device_warranty.status (#9863); a device with no warranty record is 'unknown'.
+  { key: 'warranty.status', label: 'Warranty Status', category: 'hardware', type: 'enum', operators: E,
+    enumValues: ['active', 'expiring', 'expired', 'unknown', 'subscription_active'] },
 
   // Network
   { key: 'network.ipAddress', label: 'IP Address', category: 'network', type: 'string', operators: S },
@@ -90,6 +96,9 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   // the single-name form working.
   { key: 'software.installed', label: 'Has Software Installed', category: 'software', type: 'string', operators: ['contains', 'notContains', 'equals', 'in', 'hasAny', 'hasAll'] },
   { key: 'software.notInstalled', label: 'Missing Software', category: 'software', type: 'string', operators: ['contains', 'equals', 'in', 'hasAny'] },
+
+  { key: 'software.version', label: 'Software Version', category: 'software', type: 'string', operators: ['below', 'atLeast', 'equals'] },
+  { key: 'software.vendor', label: 'Software Vendor', category: 'software', type: 'string', operators: ['contains', 'equals'] },
 
   // Hierarchy
   { key: 'orgId', label: 'Organization', category: 'hierarchy', type: 'string', operators: ['equals', 'in'] },

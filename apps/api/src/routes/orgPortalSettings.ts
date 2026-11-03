@@ -7,6 +7,7 @@ import { organizations, partners, portalBranding } from '../db/schema';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
+import { partnerDocumentBrand } from '../services/partnerDocumentBrand';
 import { ERROR_CODES, updatePortalSettingsSchema, PORTAL_CHROME_ACCENT_KEYS } from '@breeze/shared';
 import {
   PORTAL_VISIBILITY_FLAG_KEYS,
@@ -18,9 +19,11 @@ import {
 // Registered onto orgRoutes so it inherits orgRoutes' authMiddleware
 // (mounting at the top-level api app would silently skip auth). The public
 // portal lookup routes in routes/portal/branding.ts stay read-only/pre-auth;
-// this is the only write surface. Visual branding (logo/colors) + customDomain
-// are excluded by the strict schema — they ship with the domain-verification
-// project. customCss IS writable here (#5952) — it is the canonical write
+// this is the only write surface. Logo, favicon, secondary/accent colours and
+// customDomain are excluded by the strict schema — they ship with the
+// domain-verification project. primaryColor IS writable here (#9962): it is the
+// org override of the partner's document accent, edited on the org Branding
+// tab. customCss IS writable here (#5952) — it is the canonical write
 // path for portal_branding.custom_css; sanitisation lives in
 // updatePortalSettingsSchema (@breeze/shared) so both this route and any
 // future caller get the same rejection behavior.
@@ -67,6 +70,7 @@ const PORTAL_SETTINGS_DEFAULTS = {
   supportPhone: null,
   welcomeMessage: null,
   footerText: null,
+  primaryColor: null,
   customCss: null
 } as const;
 
@@ -101,14 +105,15 @@ type PortalSettingsRow = {
   supportPhone: string | null;
   welcomeMessage: string | null;
   footerText: string | null;
+  primaryColor: string | null;
   customCss: string | null;
 };
 
 // Single projection used by BOTH the GET select and the PATCH .returning():
-// every column not listed here (logoUrl, faviconUrl, primary/secondary/accent
-// colors, customDomain, domainVerified) never reaches the app layer on either
-// path, so a toResponse refactor can't accidentally leak them. customCss WAS
-// in that excluded set before #5952; it is now part of the managed subset.
+// every column not listed here (logoUrl, faviconUrl, secondary/accent colors,
+// customDomain, domainVerified) never reaches the app layer on either path, so
+// a toResponse refactor can't accidentally leak them. customCss (#5952) and
+// primaryColor (#9962) WERE in that excluded set; both are now managed.
 // A function, not a module-scope const: other route tests (orgs.test.ts etc.)
 // mock ../db/schema without portalBranding, and an import-time column deref
 // would crash their whole file at collection.
@@ -143,6 +148,7 @@ const portalSettingsColumns = () => ({
   supportPhone: portalBranding.supportPhone,
   welcomeMessage: portalBranding.welcomeMessage,
   footerText: portalBranding.footerText,
+  primaryColor: portalBranding.primaryColor,
   customCss: portalBranding.customCss
 });
 
@@ -180,6 +186,7 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
     supportPhone: row.supportPhone,
     welcomeMessage: row.welcomeMessage,
     footerText: row.footerText,
+    primaryColor: row.primaryColor,
     customCss: row.customCss
   };
 }
@@ -225,14 +232,24 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
       // Read in the AMBIENT request context, like GET /organizations/:id's
       // partnerDefaultTaxRate — this route requires `partner` or `system`
       // scope, and `partners` RLS grants a partner-scoped actor its own row.
+      //
+      // #9962 (settings rules 4 + 5): `primaryColor` is likewise the org
+      // override of the partner's Branding colour on quotes, invoices and the
+      // other customer documents (resolveDocumentBrand). The inherited value is
+      // resolved by the same partnerDocumentBrand the renderers use, so a
+      // partner colour the documents would ignore is reported as none.
       const [partnerRow] = await db
-        .select({ invoiceFooter: partners.invoiceFooter })
+        .select({ invoiceFooter: partners.invoiceFooter, settings: partners.settings })
         .from(partners)
         .where(eq(partners.id, org.partnerId))
         .limit(1);
       // No auto-insert on read: defaults are reported until the first PATCH.
       return c.json({
-        data: { ...toResponse(org.id, rows[0]), partnerInvoiceFooter: partnerRow?.invoiceFooter ?? null }
+        data: {
+          ...toResponse(org.id, rows[0]),
+          partnerInvoiceFooter: partnerRow?.invoiceFooter ?? null,
+          partnerPrimaryColor: partnerDocumentBrand(partnerRow?.settings).primaryColor
+        }
       });
     }
   );

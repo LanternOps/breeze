@@ -419,7 +419,7 @@ describe('processCheckPolicy — service_running bridge (#6958 PR E3)', () => {
 // authored link (applicability) → compliance state → software_versions.
 // ---------------------------------------------------------------------------
 
-describe('processCheckPolicy — managed DNS rules: applicability before the bridge (#6960 W05)', () => {
+describe('processCheckPolicy — managed DNS rules: applicability and the bridge (#6960 W05, #10126)', () => {
   const NEXTDNS = 'catalog-nextdns-win';
   const CONTROLD = 'catalog-controld-win';
   const MANAGED = {
@@ -520,6 +520,68 @@ describe('processCheckPolicy — managed DNS rules: applicability before the bri
     expect(upserted()).toMatchObject({ status: 'compliant', violations: [] });
     expect(result).toMatchObject({ notApplicableByReason: { var_secret: 2 } });
     expect(scheduleInstallMock).not.toHaveBeenCalled();
+  });
+
+  // #10126 (1): derived service watches follow applicability. A rule that is
+  // not applicable to a device (here: var_missing) derives no watch for it, so
+  // the heartbeat never asks that device to monitor the vendor's service.
+  it('derives service watches only from the rules applicable to each device (#10126)', async () => {
+    // org-1: Control D ready, NextDNS var_missing. org-2: nothing ready.
+    tenantVarsByOrg.set('org-1', { controld_provisioning_code: { value: '<provisioning-code>', isSecret: false } });
+    const unready: Device = { ...WIN_NEW, id: 'device-2', orgId: 'org-2' };
+    primeManaged({ devices: [WIN_NEW, unready] });
+    primeObservations([]);
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(upserted('device-1').serviceWatches).toEqual([{ name: 'ctrld' }]);
+    expect(upserted('device-2').serviceWatches).toBeNull();
+    // One observation read, for the one device that still has a watch.
+    expect(dbSelectDistinctOnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a device with no applicable rule gets no service watches and no observation read (#10126)', async () => {
+    primeManaged({ devices: [WIN_NEW] });
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(upserted()).toMatchObject({ status: 'compliant', violations: [], serviceWatches: null });
+    expect(dbSelectDistinctOnMock).not.toHaveBeenCalled();
+  });
+
+  // #10126 (2): an inventory-matched rule has no `missing` for the filter to
+  // drop, so the bridge's not_running / service_unverified for it was ADDED
+  // after the filter ran and reached the stored violations unfiltered.
+  it.each([
+    ['stopped', 'not_running'],
+    [null, 'service_unverified'],
+  ] as const)('an inventory-matched rule that is not applicable yields no bridge violation (fresh %s would be %s) (#10126)', async (status, _wouldBe) => {
+    primeManaged({
+      devices: [WIN_NEW],
+      inventory: [{ name: 'Control D (Windows)', version: '1.0.0', vendor: null, catalogId: CONTROLD }],
+    });
+    primeObservations(status ? [{ deviceId: 'device-1', name: 'ctrld', status, timestamp: fresh() }] : []);
+
+    const result = await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(upserted()).toMatchObject({ status: 'compliant', violations: [], serviceWatches: null });
+    expect(result.violations).toBe(0);
+    expect(scheduleInstallMock).not.toHaveBeenCalled();
+  });
+
+  it('an inventory-matched rule that IS applicable still reports a stopped client as not_running (#10126 control)', async () => {
+    tenantVarsByOrg.set('org-1', { controld_provisioning_code: { value: '<provisioning-code>', isSecret: false } });
+    primeManaged({
+      devices: [WIN_NEW],
+      inventory: [{ name: 'Control D (Windows)', version: '1.0.0', vendor: null, catalogId: CONTROLD }],
+    });
+    primeObservations([{ deviceId: 'device-1', name: 'ctrld', status: 'stopped', timestamp: fresh() }]);
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    const row = upserted();
+    expect((row.violations as SoftwarePolicyViolation[]).map((v) => [v.type, v.rule?.catalogId])).toEqual([['not_running', CONTROLD]]);
+    expect(row.serviceWatches).toEqual([{ name: 'ctrld' }]);
   });
 
   describe('D4 outcomes for a ready managed DNS rule with no inventory match (the rule name matches no ARP entry)', () => {

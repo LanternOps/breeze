@@ -75,6 +75,32 @@ describe('CallerVerifyWindow', () => {
     expect(container.querySelector('img')?.getAttribute('src')).toBe('https://example.com/l.png');
   });
 
+  it('shows the resolved logo (synced bytes as blob:, else https), never any other scheme (W04)', () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const branding = { partnerName: 'N', logoUrl: 'https://example.com/l.png', logoSha256: 'a'.repeat(64) };
+    const at = (logo: { src: string; kind: 'blob' | 'https' } | null) => (
+      <CallerVerifyWindow
+        req={req}
+        deadlineMs={Date.now() + 30000}
+        branding={branding}
+        logo={logo}
+        locale="en"
+        onDecision={send}
+      />
+    );
+    const { container, rerender } = render(at({ src: 'blob:assist/1', kind: 'blob' }));
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:assist/1');
+    rerender(at({ src: 'https://example.com/l.png', kind: 'https' }));
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('https://example.com/l.png');
+    for (const src of ['data:image/png;base64,AAAA', 'javascript:alert(1)', 'http://example.com/l.png', 'blob-ish']) {
+      rerender(at({ src, kind: 'blob' }));
+      expect(container.querySelector('img'), src).toBeNull();
+    }
+    // Resolved to nothing: no logo at all, even though branding has a URL.
+    rerender(at(null));
+    expect(container.querySelector('img')).toBeNull();
+  });
+
   it('timeout never chooses a number and fires once', async () => {
     vi.useFakeTimers();
     const send = vi.fn().mockResolvedValue(undefined);

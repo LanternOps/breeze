@@ -6,6 +6,8 @@ import {
 } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import FieldLabel from './partnerSettings/FieldLabel';
+import InheritanceLine from './partnerSettings/InheritanceLine';
 
 type Props = {
   data: AiApprovalSettings;
@@ -27,9 +29,9 @@ export default function PartnerAiApprovalsTab({ data, onChange }: Props) {
   return (
     <div className="space-y-6">
       <div className="space-y-2">
-        <label htmlFor="partner-ai-approvals-timeout" className="text-sm font-medium">
+        <FieldLabel htmlFor="partner-ai-approvals-timeout" fieldId="aiApprovals.interactiveTimeoutMinutes">
           {t('partnerAiApprovals.timeoutLabel')}
-        </label>
+        </FieldLabel>
         <select
           id="partner-ai-approvals-timeout"
           data-testid="partner-ai-approvals-timeout"
@@ -51,6 +53,7 @@ export default function PartnerAiApprovalsTab({ data, onChange }: Props) {
             </option>
           ))}
         </select>
+        <InheritanceLine fieldId="aiApprovals.interactiveTimeoutMinutes" />
         <p className="text-xs text-muted-foreground">
           {t('partnerAiApprovals.range', {
             min: AI_APPROVAL_TIMEOUT_MIN_MINUTES,
@@ -60,9 +63,6 @@ export default function PartnerAiApprovalsTab({ data, onChange }: Props) {
       </div>
 
       <p className="text-xs text-muted-foreground">{t('partnerAiApprovals.description')}</p>
-      <p className="text-xs text-muted-foreground" data-testid="partner-ai-approvals-org-override-note">
-        {t('partnerAiApprovals.orgOverrideNote')}
-      </p>
       <p className="text-xs text-muted-foreground" data-testid="partner-ai-approvals-not-unattended-note">
         {t('partnerAiApprovals.notForUnattendedNote')}
       </p>

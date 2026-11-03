@@ -1,0 +1,635 @@
+{
+  "description": "sanitizePromptPartnerName (TS: API + Assist) and promptcatalog.SanitizeIdentityName (Go) must produce exactly `expected` for every `input`; null means \"use the generic name\". A spoofing control: plan Task 3.1, Review Focus 3. Reserved brand names (#10325): a name made only of `reservedBrands.brands` and `reservedBrands.qualifiers` words, with at least one brand, sanitizes to null; both implementations also assert their in-code lists equal `reservedBrands`.",
+  "cases": [
+    {
+      "name": "plain name",
+      "input": "Northwind IT",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "leading and trailing spaces trimmed",
+      "input": "  Northwind IT  ",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "internal whitespace collapsed",
+      "input": "Northwind \t\n  IT",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "newline becomes a space",
+      "input": "Northwind\nIT",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "CRLF becomes one space",
+      "input": "Northwind\r\nIT",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "no-break space",
+      "input": "Northwind\u00a0IT",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "ideographic space",
+      "input": "Northwind\u3000IT",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "line and paragraph separators",
+      "input": "Northwind\u2028IT\u2029Desk",
+      "expected": "Northwind IT Desk"
+    },
+    {
+      "name": "next-line control (U+0085)",
+      "input": "Northwind\u0085IT",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "accented Latin kept",
+      "input": "Soci\u00e9t\u00e9 G\u00e9n\u00e9rale IT",
+      "expected": "Soci\u00e9t\u00e9 G\u00e9n\u00e9rale IT"
+    },
+    {
+      "name": "decomposed accents composed (NFKC)",
+      "input": "Socie\u0301te\u0301 IT",
+      "expected": "Soci\u00e9t\u00e9 IT"
+    },
+    {
+      "name": "Turkish letters kept",
+      "input": "Bili\u015fim Hizmetleri",
+      "expected": "Bili\u015fim Hizmetleri"
+    },
+    {
+      "name": "German letters kept",
+      "input": "M\u00fcller & S\u00f6hne IT-Dienste",
+      "expected": "M\u00fcller & S\u00f6hne IT-Dienste"
+    },
+    {
+      "name": "digits and punctuation kept",
+      "input": "IT-Pros 24/7 (Lyon)",
+      "expected": "IT-Pros 24/7 (Lyon)"
+    },
+    {
+      "name": "single-script Cyrillic name kept",
+      "input": "\u0421\u0435\u0440\u0432\u0438\u0441 \u0418\u0422",
+      "expected": "\u0421\u0435\u0440\u0432\u0438\u0441 \u0418\u0422"
+    },
+    {
+      "name": "Cyrillic and Latin in different words kept",
+      "input": "\u0418\u0422 Support",
+      "expected": "\u0418\u0422 Support"
+    },
+    {
+      "name": "single-script Greek name kept",
+      "input": "\u03a4\u03b5\u03c7\u03bd\u03b9\u03ba\u03ae \u03a5\u03c0\u03bf\u03c3\u03c4\u03ae\u03c1\u03b9\u03be\u03b7",
+      "expected": "\u03a4\u03b5\u03c7\u03bd\u03b9\u03ba\u03ae \u03a5\u03c0\u03bf\u03c3\u03c4\u03ae\u03c1\u03b9\u03be\u03b7"
+    },
+    {
+      "name": "emoji kept",
+      "input": "Northwind IT \ud83d\ude80",
+      "expected": "Northwind IT \ud83d\ude80"
+    },
+    {
+      "name": "markup is plain text, never interpreted",
+      "input": "<b>Northwind</b> & <i>IT</i>",
+      "expected": "<b>Northwind</b> & <i>IT</i>"
+    },
+    {
+      "name": "placeholders are plain text, never interpreted",
+      "input": "{partner} {{countdown}} {remaining}",
+      "expected": "{partner} {{countdown}} {remaining}"
+    },
+    {
+      "name": "C0 controls stripped",
+      "input": "North\u0000wind\u0007 IT\u001b[31m",
+      "expected": "Northwind IT[31m"
+    },
+    {
+      "name": "DEL and C1 controls stripped",
+      "input": "North\u007fwind\u009b IT\u0090",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "only controls is empty",
+      "input": "\u0000\u0001\u001f",
+      "expected": null
+    },
+    {
+      "name": "right-to-left override stripped",
+      "input": "\u202eTI dniwhtroN",
+      "expected": "TI dniwhtroN"
+    },
+    {
+      "name": "RLO file-extension spoof neutralised",
+      "input": "Northwind IT\u202excod.exe",
+      "expected": "Northwind ITxcod.exe"
+    },
+    {
+      "name": "LRE RLE PDF LRO stripped",
+      "input": "\u202aNorth\u202bwind\u202c \u202dIT",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "isolates stripped",
+      "input": "\u2066Northwind\u2069 \u2067IT\u2068",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "LRM RLM ALM stripped",
+      "input": "Northwind\u200e \u200fIT\u061c",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "zero-width space, ZWNJ and ZWJ stripped, then refused as a reserved brand",
+      "input": "Mi\u200bcro\u200csoft\u200d Support",
+      "expected": null
+    },
+    {
+      "name": "word joiner and BOM stripped",
+      "input": "\ufeffNorth\u2060wind IT",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "soft hyphen stripped",
+      "input": "North\u00adwind IT",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "invisible tag characters stripped",
+      "input": "Northwind IT\udb40\udc41\udb40\udc42\udb40\udc7f",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "ZWJ emoji sequence loses its joiners",
+      "input": "Team \ud83d\udc68\u200d\ud83d\udc69 IT",
+      "expected": "Team \ud83d\udc68\ud83d\udc69 IT"
+    },
+    {
+      "name": "only invisibles is empty",
+      "input": "\u200b\u202e\ufeff\u2060",
+      "expected": null
+    },
+    {
+      "name": "private-use glyph stripped (renders as a vendor logo on some systems)",
+      "input": "\uf8ff Support",
+      "expected": "Support"
+    },
+    {
+      "name": "replacement character stripped",
+      "input": "North\ufffdwind",
+      "expected": "Northwind"
+    },
+    {
+      "name": "fullwidth Microsoft folded to ASCII (NFKC), then refused as a reserved brand",
+      "input": "\uff2d\uff49\uff43\uff52\uff4f\uff53\uff4f\uff46\uff54 \uff33\uff55\uff50\uff50\uff4f\uff52\uff54",
+      "expected": null
+    },
+    {
+      "name": "mathematical bold Windows folded to ASCII (NFKC), then refused as a reserved brand",
+      "input": "\ud835\udc16\ud835\udc22\ud835\udc27\ud835\udc1d\ud835\udc28\ud835\udc30\ud835\udc2c Update",
+      "expected": null
+    },
+    {
+      "name": "roman numeral M folded (NFKC), then refused as a reserved brand",
+      "input": "\u216ficrosoft",
+      "expected": null
+    },
+    {
+      "name": "ligature fi folded (NFKC)",
+      "input": "Pro\ufb01t IT",
+      "expected": "Profit IT"
+    },
+    {
+      "name": "Cyrillic letters inside a Latin word rejected",
+      "input": "\u041c\u0456\u0441rosoft Support",
+      "expected": null
+    },
+    {
+      "name": "Greek omicron inside a Latin word rejected",
+      "input": "Micr\u03bfsoft",
+      "expected": null
+    },
+    {
+      "name": "Cyrillic o inside Windows rejected",
+      "input": "Wind\u043ews Update",
+      "expected": null
+    },
+    {
+      "name": "Cyrillic WE in Windows rejected",
+      "input": "\u051cindows Security",
+      "expected": null
+    },
+    {
+      "name": "fullwidth Latin mixed with Cyrillic rejected after folding",
+      "input": "\uff2d\u0456crosoft",
+      "expected": null
+    },
+    {
+      "name": "Armenian oh inside a Latin word rejected",
+      "input": "Micr\u0585soft",
+      "expected": null
+    },
+    {
+      "name": "Cherokee A inside a Latin word rejected",
+      "input": "\u13aapple Support",
+      "expected": null
+    },
+    {
+      "name": "Coptic letter inside a Latin word rejected",
+      "input": "Micr\u2c9fsoft",
+      "expected": null
+    },
+    {
+      "name": "Vietnamese (Latin with diacritics) kept",
+      "input": "C\u00f4ng ty Tin h\u1ecdc Vi\u1ec7t",
+      "expected": "C\u00f4ng ty Tin h\u1ecdc Vi\u1ec7t"
+    },
+    {
+      "name": "Hangul filler alone is empty",
+      "input": "\u3164",
+      "expected": null
+    },
+    {
+      "name": "Hangul fillers around a name stripped",
+      "input": "\u3164Northwind\u115f \u1160IT\u3164",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "halfwidth Hangul filler is empty",
+      "input": "\uffa0",
+      "expected": null
+    },
+    {
+      "name": "Braille blank is empty",
+      "input": "\u2800\u2800",
+      "expected": null
+    },
+    {
+      "name": "Mongolian vowel separator stripped",
+      "input": "North\u180ewind",
+      "expected": "Northwind"
+    },
+    {
+      "name": "stacked combining marks capped at two per letter",
+      "input": "Q\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300uest IT",
+      "expected": "Q\u0300\u0300uest IT"
+    },
+    {
+      "name": "enclosing marks count toward the cap",
+      "input": "IT\u20dd\u20dd\u20dd\u20dd\u20dd",
+      "expected": "IT\u20dd\u20dd"
+    },
+    {
+      "name": "mixed word hidden behind zero-width space still rejected",
+      "input": "Mi\u200b\u0441rosoft",
+      "expected": null
+    },
+    {
+      "name": "over-long ASCII capped at 120 code points",
+      "input": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "expected": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+      "name": "over-long multi-byte capped at 120 code points",
+      "input": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+      "expected": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9"
+    },
+    {
+      "name": "astral characters count as one code point each",
+      "input": "\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80",
+      "expected": "\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80"
+    },
+    {
+      "name": "cap lands on a space and the result is trimmed",
+      "input": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA BCD",
+      "expected": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+      "name": "cap applies after whitespace collapse",
+      "input": "A                                                                                                                                                                                                                                                                                                            B",
+      "expected": "A B"
+    },
+    {
+      "name": "500-character name with newlines",
+      "input": "Northwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\nNorthwind\n",
+      "expected": "Northwind Northwind Northwind Northwind Northwind Northwind Northwind Northwind Northwind Northwind Northwind Northwind"
+    },
+    {
+      "name": "empty string",
+      "input": "",
+      "expected": null
+    },
+    {
+      "name": "whitespace only",
+      "input": " \t\n\r ",
+      "expected": null
+    },
+    {
+      "name": "zero-width characters inside a non-brand name stripped",
+      "input": "North\u200bwi\u200cnd\u200d IT",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "fullwidth Northwind folded to ASCII (NFKC)",
+      "input": "\uff2e\uff4f\uff52\uff54\uff48\uff57\uff49\uff4e\uff44 \uff29\uff34",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "mathematical bold Northwind folded to ASCII (NFKC)",
+      "input": "\ud835\udc0d\ud835\udc28\ud835\udc2b\ud835\udc2d\ud835\udc21\ud835\udc30\ud835\udc22\ud835\udc27\ud835\udc1d IT",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "roman numeral M in a non-brand name folded (NFKC)",
+      "input": "\u216fidwest IT",
+      "expected": "Midwest IT"
+    },
+    {
+      "name": "reserved brand: Microsoft",
+      "input": "Microsoft",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: lower case",
+      "input": "microsoft",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Windows Security",
+      "input": "Windows Security",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: upper-case Microsoft Support",
+      "input": "MICROSOFT SUPPORT",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Apple Help Desk",
+      "input": "Apple Help Desk",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Google",
+      "input": "Google",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: macOS",
+      "input": "macOS",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Mac OS split in two words",
+      "input": "Mac OS",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: iCloud Support",
+      "input": "iCloud Support",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Azure Support Team",
+      "input": "Azure Support Team",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Microsoft 365 Support",
+      "input": "Microsoft 365 Support",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Microsoft Corporation",
+      "input": "Microsoft Corporation",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Apple Inc. with punctuation",
+      "input": "Apple Inc.",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: The Microsoft Team",
+      "input": "The Microsoft Team",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Windows Defender Security Center",
+      "input": "Windows Defender Security Center",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Windows Update",
+      "input": "Windows Update",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: trademark sign ignored",
+      "input": "Microsoft\u00ae",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: hyphen-joined qualifier",
+      "input": "Microsoft-Support",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: run together with a qualifier",
+      "input": "MicrosoftSupport",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: split inside the word",
+      "input": "Micro soft",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: letter-spaced",
+      "input": "M i c r o s o f t",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: dot-separated",
+      "input": "Micro.soft Support",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: diacritic on a letter",
+      "input": "M\u00edcrosoft Support",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: decomposed diacritic",
+      "input": "Mi\u0301crosoft",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: Turkish dotted capital I",
+      "input": "M\u0130CROSOFT",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: wrapped in punctuation",
+      "input": "[Microsoft]",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: with emoji",
+      "input": "Microsoft Support \ud83d\udee1\ufe0f",
+      "expected": null
+    },
+    {
+      "name": "brand word next to a partner's own name kept",
+      "input": "Northwind Microsoft Partner",
+      "expected": "Northwind Microsoft Partner"
+    },
+    {
+      "name": "brand word with a non-qualifier word kept",
+      "input": "Contoso Microsoft Solutions",
+      "expected": "Contoso Microsoft Solutions"
+    },
+    {
+      "name": "brand inside a longer word kept",
+      "input": "Pineapple IT",
+      "expected": "Pineapple IT"
+    },
+    {
+      "name": "brand followed by a place name kept",
+      "input": "Apple Valley IT",
+      "expected": "Apple Valley IT"
+    },
+    {
+      "name": "brand word in an unrelated trade kept",
+      "input": "Windows & Doors Ltd",
+      "expected": "Windows & Doors Ltd"
+    },
+    {
+      "name": "qualifiers alone kept",
+      "input": "IT Support Team",
+      "expected": "IT Support Team"
+    },
+    {
+      "name": "brand with a non-Latin word kept",
+      "input": "Microsoft \u0421\u0435\u0440\u0432\u0438\u0441",
+      "expected": "Microsoft \u0421\u0435\u0440\u0432\u0438\u0441"
+    },
+    {
+      "name": "brand with a digit that is not a qualifier kept",
+      "input": "Windows 11",
+      "expected": "Windows 11"
+    },
+    {
+      "name": "reserved brand: stacked combining marks on Microsoft",
+      "input": "M\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300icrosoft",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: trade mark sign (NFKC makes it TM)",
+      "input": "Microsoft\u2122",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: service mark sign (NFKC makes it SM)",
+      "input": "Microsoft Support\u2120",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: copyright sign ignored",
+      "input": "Microsoft\u00a9",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: brand alone (Azure)",
+      "input": "Azure",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: qualifier before the brand",
+      "input": "Support Microsoft",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: split must backtrack past a shorter word (tech|technician)",
+      "input": "Windows Technician",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: plural qualifier (service|services)",
+      "input": "Microsoft Services",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: run-together brand and qualifier (AppleCare)",
+      "input": "AppleCare",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: British spelling",
+      "input": "Google Centre",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: longer than the cap, cut mid-word",
+      "input": "Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: the cap cuts off the only non-list word",
+      "input": "Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft IT Northwind",
+      "expected": null
+    },
+    {
+      "name": "brand plus a word that only starts like a qualifier kept",
+      "input": "Windows Technicolor",
+      "expected": "Windows Technicolor"
+    }
+  ],
+  "reservedBrands": {
+    "brands": [
+      "microsoft",
+      "windows",
+      "apple",
+      "macos",
+      "icloud",
+      "google",
+      "azure"
+    ],
+    "qualifiers": [
+      "support",
+      "security",
+      "help",
+      "desk",
+      "service",
+      "services",
+      "team",
+      "tech",
+      "technical",
+      "technician",
+      "it",
+      "customer",
+      "care",
+      "center",
+      "centre",
+      "update",
+      "updates",
+      "defender",
+      "account",
+      "accounts",
+      "admin",
+      "official",
+      "store",
+      "365",
+      "inc",
+      "corp",
+      "corporation",
+      "llc",
+      "ltd",
+      "the",
+      "tm",
+      "sm"
+    ]
+  }
+}

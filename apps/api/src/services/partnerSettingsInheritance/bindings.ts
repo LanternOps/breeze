@@ -43,6 +43,8 @@ import {
 import { resolveAgentUpdateConfig } from '../agentUpdateConfig';
 import { applyPartnerPushoverDefaults, type PartnerPushoverDefaults } from '../partnerPushoverDefaults';
 import type { PushoverConfig } from '../notificationSenders';
+import { FLOW_LIMIT_CEILINGS, type FlowLimitKey } from '@breeze/shared';
+import { computeFlowLimits } from '../flows/flowLimits';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -90,6 +92,13 @@ export interface FieldBinding {
   partnerValue(partnerSettings: unknown): unknown;
   /** Qualifier 'cap' only: the org's own value is above the partner ceiling. */
   clamped?(partnerSettings: unknown, raw: unknown): boolean;
+  /**
+   * Qualifier 'cap' only: the resolver IGNORES an org value above the ceiling
+   * (it never wins, e.g. flows.*), rather than taking it and clamping it (the
+   * enrollment TTL). A clamped value is then also shadowed: the partner value
+   * wins over it, so the overridable field gets a `shadowed` bucket.
+   */
+  clampedIsShadowed?: true;
 }
 
 // ---------------------------------------------------------------------------
@@ -388,6 +397,45 @@ function aiApprovalBinding(entry: CatalogEntry): FieldBinding {
   });
 }
 
+/**
+ * flows.<field> (Tool Catalog W05 #5220) — org may only LOWER the partner value
+ * (resolveFlowLimits → computeFlowLimits). An org value above the partner's
+ * effective value is clamped: stored, counted, never in effect.
+ */
+function flowLimitBinding(entry: CatalogEntry, field: FlowLimitKey): FieldBinding {
+  const path = ['flows', field] as const;
+  const value = settingsAt(path);
+  const orgSettingsWith = (raw: unknown) => ({ flows: { [field]: raw } });
+  const cap = (partnerSettings: unknown) => computeFlowLimits(partnerSettings, null)[field];
+  const binding = build(entry, {
+    orgSource: { kind: 'orgSettings', path },
+    valueSql: value,
+    // An invalid stored value is ignored by the resolver, so it is not an own value.
+    ownSql: sql`(CASE WHEN jsonb_typeof(${value}) = 'number'
+      THEN ((${value})::numeric BETWEEN 1 AND ${FLOW_LIMIT_CEILINGS[field]} AND (${value})::numeric = trunc((${value})::numeric))
+      ELSE false END)`,
+    hasOwnValue: (raw) => typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw <= FLOW_LIMIT_CEILINGS[field],
+    partnerSet: (partnerSettings) => computeFlowLimits(partnerSettings, null).source[field] === 'partner',
+    orgValueInEffect: (partnerSettings, raw) =>
+      computeFlowLimits(partnerSettings, orgSettingsWith(raw)).source[field] === 'org',
+    partnerValue: (partnerSettings) => at(partnerSettings, path),
+    cap,
+  });
+  // Unlike the enrollment TTL (the org slot wins, then is clamped), an org flow
+  // cap above the ceiling does not win at all: it never overrides, and it is
+  // shadowed (the partner value wins) exactly when it is clamped.
+  const baseBucketSql = binding.bucketSql.bind(binding);
+  binding.bucketSql = (bucket, partnerSettings) => {
+    if (bucket === 'shadowed') return baseBucketSql('clamped', partnerSettings);
+    const inner = baseBucketSql(bucket, partnerSettings);
+    if (bucket !== 'overrides' || inner === null) return inner;
+    // Cast-guarded: the planner may evaluate this before the own-value predicate.
+    return and(inner, sql`(CASE WHEN jsonb_typeof(${value}) = 'number' THEN (${value})::numeric <= ${cap(partnerSettings)} ELSE false END)`);
+  };
+  binding.clampedIsShadowed = true;
+  return binding;
+}
+
 /** aiBudgets.<field> — partner property present wins (getEffectiveAiBudget). */
 function aiBudgetBinding(entry: CatalogEntry, column: AiBudgetColumn): FieldBinding {
   const value = sql`${aiBudgets[column]}`;
@@ -513,6 +561,12 @@ function bindingFor(entry: CatalogEntry): FieldBinding {
       return enrollmentBinding(entry, 'defaultEnrollmentDeviceCount');
     case 'aiApprovals.interactiveTimeoutMinutes':
       return aiApprovalBinding(entry);
+    case 'flows.monthlyRunsPerOwner':
+      return flowLimitBinding(entry, 'monthlyRunsPerOwner');
+    case 'flows.monthlyRunsPerFlow':
+      return flowLimitBinding(entry, 'monthlyRunsPerFlow');
+    case 'flows.aiTokensPerRun':
+      return flowLimitBinding(entry, 'aiTokensPerRun');
     case 'eventLogs':
       return eventLogsBinding(entry);
     case 'notifications.pushoverAppToken':

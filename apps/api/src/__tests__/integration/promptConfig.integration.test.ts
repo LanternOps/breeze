@@ -94,6 +94,7 @@ async function assignRemoteAccessPolicy(
     notifyOnSessionEnd?: boolean;
     showActiveIndicator?: boolean;
     technicianIdentityLevel: string;
+    allowUserEndSession?: boolean;
   },
   opts: { settingsRow?: boolean; linkInlineSettings?: Record<string, unknown> | null } = {},
 ): Promise<void> {
@@ -117,6 +118,7 @@ async function assignRemoteAccessPolicy(
     notifyOnSessionEnd: settings.notifyOnSessionEnd ?? true,
     showActiveIndicator: settings.showActiveIndicator ?? true,
     technicianIdentityLevel: settings.technicianIdentityLevel,
+    ...(settings.allowUserEndSession === undefined ? {} : { allowUserEndSession: settings.allowUserEndSession }),
   });
   await db.insert(configPolicyAssignments).values({
     configPolicyId: policy!.id,
@@ -174,6 +176,21 @@ describe('resolveRemoteSessionPromptConfig', () => {
     expect(cfg.consentUnavailableBehavior).toBe('block');
     expect(cfg.notifyOnEnd).toBe(false);
     expect(cfg.showIndicator).toBe(false);
+    // #10190 W06: a row inserted without the column gets the DB default (ON).
+    expect(cfg.allowUserEndSession).toBe(true);
+  });
+
+  it.runIf(hasDb)('resolves allowUserEndSession = false from the assigned policy row (#10190 W06)', async () => {
+    const sfx = `no-user-end-${Date.now()}`;
+    const deviceId = await seedDevice(sfx);
+    await assignRemoteAccessPolicy(deviceId, sfx, {
+      sessionPromptMode: 'notify',
+      technicianIdentityLevel: 'name_email',
+      allowUserEndSession: false,
+    });
+
+    const cfg = await resolveRemoteSessionPromptConfig(deviceId);
+    expect(cfg.allowUserEndSession).toBe(false);
   });
 
   it.runIf(hasDb)('returns spec defaults when no remote_access policy applies', async () => {
@@ -293,6 +310,8 @@ describe('prompt policy resolution in an org-scoped request context', () => {
       sessionPromptMode: 'consent',
       consentUnavailableBehavior: 'block',
       technicianIdentityLevel: 'name',
+      // #10190 W06: a partner-wide policy can turn the user's End off.
+      allowUserEndSession: false,
     });
     await db.insert(configPolicyAssignments).values({
       configPolicyId: policy!.id,
@@ -318,6 +337,7 @@ describe('prompt policy resolution in an org-scoped request context', () => {
 
     expect(cfg.mode).toBe('consent');
     expect(cfg.consentUnavailableBehavior).toBe('block');
+    expect(cfg.allowUserEndSession).toBe(false);
     expect(gate).toMatchObject({
       ok: false,
       status: 409,

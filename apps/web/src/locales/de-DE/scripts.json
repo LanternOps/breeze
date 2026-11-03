@@ -982,7 +982,8 @@
     },
     "confirm": {
       "title": "Bestätigen Sie die Ausführung",
-      "description": "Führen Sie „{{name}}“ auf {{count}} Geräten als {{runAs}} aus. Skripte werden in die Warteschlange gestellt und beginnen sofort mit der Ausführung."
+      "description": "Führen Sie „{{name}}“ auf {{count}} Geräten als {{runAs}} aus. Skripte werden in die Warteschlange gestellt und beginnen sofort mit der Ausführung.",
+      "descriptionOffline": "„{{name}}“ auf {{count}} Gerät(en) als {{runAs}} ausführen. Skripte werden jetzt in die Warteschlange gestellt: Online-Geräte starten sofort, {{offline}} Offline-Gerät(e) laufen, sobald sie wieder online sind."
     },
     "selectedCount": "{{count}} Gerät(e) ausgewählt",
     "executeBlocked": "Ausführen ist nicht verfügbar: Ein ausgewähltes Gerät kann dieses Skript hier nicht ausführen (es gehört möglicherweise zu einer anderen als der angezeigten Organisation oder ist nicht mehr zugänglich).",
@@ -1027,6 +1028,7 @@
       "submitting": "Wird an {{count}} Gruppe(n) gesendet...",
       "warningsTitle": "Hinweise vom Server",
       "confirmDescription": "„{{name}}“ auf {{groups}} Gerätegruppe(n) als {{runAs}} ausführen. Skripte werden in die Warteschlange gestellt und sofort ausgeführt.",
+      "confirmDescriptionOffline": "„{{name}}“ auf {{groups}} Gerätegruppe(n) als {{runAs}} ausführen. Skripte werden jetzt in die Warteschlange gestellt: Online-Geräte starten sofort, {{offline}} Offline-Gerät(e) laufen, sobald sie wieder online sind.",
       "confirmMembers": "Derzeit gehören {{count}} eindeutige Geräte zu diesen Gruppen; die Mitgliedschaft wird beim Bestätigen erneut gelesen.",
       "confirmMembersUnknown": "Die Anzahl der Geräte ist noch nicht bekannt; die Mitgliedschaft wird beim Bestätigen gelesen.",
       "errors": {

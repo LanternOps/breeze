@@ -7,6 +7,7 @@
  */
 
 import { db } from '../db';
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from './deviceGroupOwnership';
 import {
   organizations,
   peripheralEvents,
@@ -231,6 +232,11 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
       }
       const action = String(input.action ?? '');
       const policyId = typeof input.policy_id === 'string' ? input.policy_id : undefined;
+      if (action === 'create' || action === 'update') {
+        const groupIds = (input.target_ids as { groupIds?: string[] } | undefined)?.groupIds ?? [];
+        const partnerGroupIds = await findPartnerOwnedGroupIds(groupIds);
+        if (partnerGroupIds.length > 0) return JSON.stringify(partnerGroupTargetRefusal(partnerGroupIds));
+      }
       const requestedPriority = input.priority;
       if (requestedPriority !== undefined && (
         typeof requestedPriority !== 'number'
@@ -436,6 +442,11 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
               ? ((policy.targetIds ?? {}) as TargetIds)
               : { siteIds: [], groupIds: [], deviceIds: [] },
         };
+
+        if (rawTargetIds === undefined) {
+          const partnerGroupIds = await findPartnerOwnedGroupIds(updateTargeting.targetIds.groupIds ?? []);
+          if (partnerGroupIds.length > 0) return JSON.stringify(partnerGroupTargetRefusal(partnerGroupIds));
+        }
 
         const [updated] = await db
           .update(peripheralPolicies)

@@ -43,6 +43,10 @@ import PartnerSettingsStatus, { deriveStatus, type AutosaveReport } from './part
 import FormCard from './partnerSettings/FormCard';
 import { PartnerSettingsSaveContext } from './partnerSettings/partnerSettingsSaveContext';
 import { useUnsavedGuard } from './partnerSettings/useUnsavedGuard';
+import BadgeLegend from './partnerSettings/BadgeLegend';
+import { PartnerInheritanceContext } from './partnerSettings/inheritanceContext';
+import InheritanceSidePanel, { InheritanceDrawer } from './partnerSettings/InheritanceSidePanel';
+import { usePartnerInheritanceUi } from './partnerSettings/usePartnerInheritanceUi';
 
 // Kept on this module's surface: existing callers and tests import it from here.
 export { runPartnerSave } from './partnerSettings/usePartnersMeUnit';
@@ -82,11 +86,20 @@ export default function PartnerSettingsPage() {
   useUnsavedGuard(isDirty, t('partnerSettingsPage.unsavedConfirm'));
 
   const { load, markNoPartner } = me;
+  // The partner this page last loaded. `contextLoading` flips with every org
+  // store fetch (partners, orgs, sites) while the partner id stays the same;
+  // reloading on each flip re-read partners/me and every side read, and wiped
+  // the form mid-edit (#9949). Only a partner change reloads; Retry calls
+  // `load` directly.
+  const loadedPartnerRef = useRef<string | null>(null);
   useEffect(() => {
     if (currentPartnerId) {
+      if (loadedPartnerRef.current === currentPartnerId) return;
+      loadedPartnerRef.current = currentPartnerId;
       void load();
       return;
     }
+    loadedPartnerRef.current = null;
     if (contextLoading) return;
     // No partner context in store yet. Seed it from the JWT (handles
     // first-login and cleared-storage cases where currentPartnerId is null).
@@ -193,6 +206,10 @@ export default function PartnerSettingsPage() {
     // Enter on a form that cannot save: take the user to what blocks it.
     if (s.kind === 'invalid') open(s.tab, s.fieldId);
   }, []);
+  const { inheritanceUi, tabState, drill, setDrill, sidePanel } = usePartnerInheritanceUi({
+    partnerId: currentPartnerId, partner, activeTab, state, baseline: me.baseline,
+  });
+
   const saveApi = useMemo(() => ({
     submit: handleSave,
     reportAutosave: (tab: TabKey, outcome: AutosaveReport['outcome']) => setAutosave({ tab, outcome }),
@@ -249,6 +266,7 @@ export default function PartnerSettingsPage() {
 
   return (
     <PartnerSettingsSaveContext.Provider value={saveApi}>
+    <PartnerInheritanceContext.Provider value={inheritanceUi}>
     <div className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
@@ -277,7 +295,10 @@ export default function PartnerSettingsPage() {
         </div>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
+      {/* The third column only exists while the ≥1920 px query matches (sidePanel
+          is gated on it), so its template needs no breakpoint variant — which
+          would also lose to lg:grid-cols in Tailwind's variant order. */}
+      <div className={`grid gap-6 ${sidePanel ? 'grid-cols-[240px_minmax(0,1fr)_360px]' : 'lg:grid-cols-[240px_minmax(0,1fr)]'}`}>
         <SettingsSectionNav
           groups={visibleGroups.map(group => ({
             label: t(/* i18n-dynamic */ group.label),
@@ -290,12 +311,6 @@ export default function PartnerSettingsPage() {
         />
 
         <div className="min-w-0 space-y-6">
-          {activeDef.enforced && (
-            <div className="rounded-md border bg-blue-50 dark:bg-blue-950/30 px-4 py-3 text-sm text-blue-700 dark:text-blue-300">
-              {t('partnerSettingsPage.enforcedDescription')}
-            </div>
-          )}
-
           {/* Ticketing now has its own standalone page (M0) — this tab links out
               to it rather than embedding the tab group. */}
           {activeTab === 'ticketing' && (
@@ -320,6 +335,7 @@ export default function PartnerSettingsPage() {
                 </h2>
                 <p className="max-w-prose text-sm text-muted-foreground">{t(/* i18n-dynamic */ activeDef.description)}</p>
               </div>
+              <BadgeLegend tab={activeTab} />
             {activeTab === 'company' && bare(
                 <PartnerCompanyTab
                   name={state.companyName}
@@ -355,7 +371,7 @@ export default function PartnerSettingsPage() {
             )}
 
             {activeTab === 'security' && card(
-              <PartnerSecurityTab data={state.security} onChange={v => update('security', v)} status={me.ipStatus} statusUnavailable={me.ipStatusUnavailable} />
+              <PartnerSecurityTab data={state.security} onChange={v => update('security', v)} status={me.ipStatus} statusUnavailable={me.ipStatusUnavailable} serverErrors={me.securityServerErrors} />
             )}
             {/* Caller verification (#6354): partner baseline; the rail hides the
                 tab (and the form renders nothing) unless the server flag is on. */}
@@ -421,8 +437,15 @@ export default function PartnerSettingsPage() {
             </section>
           )}
         </div>
+
+        {sidePanel && (
+          <InheritanceSidePanel state={tabState} selection={drill} onSelect={setDrill} onClear={() => setDrill(null)} />
+        )}
       </div>
+
+      {!sidePanel && <InheritanceDrawer selection={drill} onClose={() => setDrill(null)} />}
     </div>
+    </PartnerInheritanceContext.Provider>
     </PartnerSettingsSaveContext.Provider>
   );
 }

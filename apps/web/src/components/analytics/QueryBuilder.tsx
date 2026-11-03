@@ -3,6 +3,7 @@ import { Loader2, Play } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { utcDateOnly } from '@/lib/dateOnly';
 
 // #6832: the picker previously also offered 'availability' | 'security' |
 // 'usage' metric types (Uptime, SLA Compliance, Patch Compliance, Active
@@ -26,10 +27,35 @@ type QueryState = {
   endDate?: string;
 };
 
+type QueryInterval = 'minute' | 'hour' | 'day';
+
 type QueryResult = {
   query: QueryState;
+  interval: QueryInterval;
+  /** For `interval: 'day'` each point's `timestamp` is a bare `YYYY-MM-DD` (#10077). */
   series: Array<Record<string, unknown>>;
 };
+
+const intervalFor = (timeRange: QueryState['timeRange']): QueryInterval =>
+  timeRange === '1h' ? 'minute' : timeRange === '24h' ? 'hour' : 'day';
+
+/**
+ * Day buckets come back as UTC-midnight instants (`date_trunc('day', …)` in
+ * UTC) but mean a calendar date. Hand the chart the bare date so it labels the
+ * bucket's own day instead of the previous day west of UTC (#10077).
+ */
+const toDateOnlyBuckets = (series: Array<Record<string, unknown>>): Array<Record<string, unknown>> =>
+  series.map(entry => {
+    if (!Array.isArray(entry?.data)) return entry;
+    return {
+      ...entry,
+      data: entry.data.map((point: unknown) => {
+        if (!point || typeof point !== 'object') return point;
+        const timestamp = (point as Record<string, unknown>).timestamp;
+        return typeof timestamp === 'string' ? { ...point, timestamp: utcDateOnly(timestamp) } : point;
+      })
+    };
+  });
 
 type QueryBuilderProps = {
   value?: QueryState;
@@ -128,6 +154,7 @@ export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds
     setError(undefined);
 
     const { startTime, endTime } = getDateRange(state.timeRange, state.startDate, state.endDate);
+    const interval = intervalFor(state.timeRange);
 
     try {
       const response = await fetchWithAuth('/api/analytics/query', {
@@ -139,7 +166,7 @@ export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds
           startTime,
           endTime,
           aggregation: state.aggregation,
-          interval: state.timeRange === '1h' ? 'minute' : state.timeRange === '24h' ? 'hour' : 'day'
+          interval
         })
       });
 
@@ -149,7 +176,8 @@ export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds
       }
 
       const result = await response.json();
-      onQueryResult?.({ query: state, series: result.series || [] });
+      const series: Array<Record<string, unknown>> = Array.isArray(result.series) ? result.series : [];
+      onQueryResult?.({ query: state, interval, series: interval === 'day' ? toDateOnlyBuckets(series) : series });
     } catch (err) {
       setError(err instanceof Error ? err.message : t('analytics.queryBuilder.errors.failedToExecuteQuery'));
     } finally {
@@ -265,4 +293,4 @@ export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds
   );
 }
 
-export type { QueryBuilderProps, QueryState, MetricType, QueryResult };
+export type { QueryBuilderProps, QueryState, MetricType, QueryResult, QueryInterval };

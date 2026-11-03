@@ -17,7 +17,12 @@
  *  (d) `waiting` runs 2 minutes past `wake_at` — a lost timed wake;
  *  (e) when this deployment no longer delivers events durably (Decision 10),
  *      every enabled event-triggered flow is paused
- *      `event_dispatch_not_durable` (also once at worker start).
+ *      `event_dispatch_not_durable` (also once at worker start);
+ *  (f) W06 (#5221) B4, Decision 7: the flow of a REVERTED legacy-Job
+ *      conversion becomes `disabled` once the revert is older than
+ *      LEGACY_DRAIN_MIN_MS and the flow has drained — no non-terminal run and
+ *      no open intent. One statement; it cancels nothing (a revert closed the
+ *      flow's admission at once; this only retires the drained flow).
  *
  * Each clause runs in its own try/catch, so one failing clause never starves
  * the rest; any clause, enqueue or pause failure then fails the pass as a
@@ -30,8 +35,11 @@
  */
 import { Job, Queue, Worker } from 'bullmq';
 import { sql, type SQL } from 'drizzle-orm';
+import { LEGACY_DRAIN_MIN_MS } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { isFlowEventDeliveryDurable } from '../services/flowValidator';
+import { requestLikeFromSnapshot, writeAuditEvent } from '../services/auditEvents';
+import { TERMINAL_FLOW_RUN_STATUSES } from '../services/flows/runStore';
 import { pauseFlow } from '../services/flows/versions';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
@@ -52,6 +60,8 @@ export interface FlowRunReconcileSummary {
   leaseExpired: number;
   overdueWaits: number;
   pausedEventFlows: number;
+  /** (f) reverted conversions' flows disabled after draining. */
+  disabledRevertedFlows: number;
   enqueueFailures: number;
   pauseFailures: number;
 }
@@ -141,6 +151,73 @@ const enabledEventFlows = (): SQL => sql`
   WHERE status = 'enabled' AND definition->'trigger'->>'type' = 'event'
   LIMIT ${LIMIT} FOR UPDATE SKIP LOCKED`;
 
+/** The intent statuses after which nothing more happens (clause b's list). */
+const TERMINAL_INTENT_STATUSES = sql.raw(`'completed', 'failed', 'rejected', 'expired', 'cancelled'`);
+const TERMINAL_RUN_STATUSES = sql.raw(TERMINAL_FLOW_RUN_STATUSES.map((st) => `'${st}'`).join(', '));
+const DRAIN_INTERVAL = sql.raw(`interval '${LEGACY_DRAIN_MIN_MS} milliseconds'`);
+
+/**
+ * (f) One statement: pick (SKIP LOCKED) the live flows of reverted
+ * generations older than LEGACY_DRAIN_MIN_MS with no non-terminal run and no
+ * open intent, and disable them — `enabled_publication_seq` and the pause
+ * reason cleared as disableFlow clears them, and NOTHING else written: no run,
+ * step or intent is touched. Holding the flow row lock, no run can be
+ * admitted in between (createFlowRun locks the flow FOR SHARE, and refuses a
+ * reverted generation's flow anyway), so "drained" cannot go stale.
+ */
+const drainedRevertedFlows = (): SQL => sql`
+  WITH drained AS (
+    SELECT f.id, fac.id AS conversion_id FROM flows f
+    JOIN flow_automation_conversions fac ON fac.flow_id = f.id
+    WHERE fac.state = 'reverted'
+      AND fac.revert_at < now() - ${DRAIN_INTERVAL}
+      AND f.status IN ('enabled', 'paused')
+      AND NOT EXISTS (SELECT 1 FROM flow_runs r WHERE r.flow_id = f.id AND r.status NOT IN (${TERMINAL_RUN_STATUSES}))
+      AND NOT EXISTS (
+        SELECT 1 FROM action_intents i JOIN flow_runs r ON r.id = i.requesting_flow_run_id
+        WHERE r.flow_id = f.id AND i.status NOT IN (${TERMINAL_INTENT_STATUSES}))
+    ORDER BY fac.revert_at
+    LIMIT ${LIMIT} FOR UPDATE OF f SKIP LOCKED
+  )
+  UPDATE flows SET status = 'disabled', enabled_publication_seq = NULL, paused_reason = NULL, updated_at = now()
+  FROM drained WHERE flows.id = drained.id
+  RETURNING flows.id, flows.org_id, flows.partner_id, flows.name, drained.conversion_id`;
+
+export interface DisabledRevertedFlow {
+  id: string;
+  org_id: string | null;
+  partner_id: string | null;
+  name: string;
+  conversion_id: string;
+}
+
+/**
+ * Clause (f) alone (exported for the integration suite). A failing statement
+ * throws; the audit of each disabled flow is best effort.
+ */
+export async function disableDrainedRevertedFlows(): Promise<DisabledRevertedFlow[]> {
+  const rows = (await inFreshSystemTx(() => db.execute(drainedRevertedFlows()), 'flowRunReconciler.revertedFlows')) as unknown as DisabledRevertedFlow[];
+  for (const row of rows) {
+    try {
+      writeAuditEvent(requestLikeFromSnapshot({}), {
+        orgId: row.org_id,
+        ...(row.org_id ? {} : { partnerId: row.partner_id }),
+        actorType: 'system',
+        action: 'flow.disable',
+        resourceType: 'flow',
+        resourceId: row.id,
+        resourceName: row.name,
+        result: 'success',
+        details: { reason: 'flow_conversion_reverted_drained', conversionId: row.conversion_id },
+      });
+    } catch (err) {
+      console.error(`${LOG} audit of disabled reverted flow ${row.id} failed`, err);
+    }
+  }
+  if (rows.length > 0) console.log(`${LOG} disabled ${rows.length} drained flow(s) of reverted conversions`);
+  return rows;
+}
+
 async function enqueueAll(rows: ReconcileRow[], summary: FlowRunReconcileSummary): Promise<void> {
   for (const row of rows) {
     try {
@@ -207,7 +284,8 @@ const RUN_CLAUSES: ReadonlyArray<readonly [RunClauseKey, () => SQL, string]> = [
 
 export async function reconcileFlowRuns(): Promise<FlowRunReconcileSummary> {
   const summary: FlowRunReconcileSummary = {
-    queued: 0, awaitingApproval: 0, leaseExpired: 0, overdueWaits: 0, pausedEventFlows: 0, enqueueFailures: 0, pauseFailures: 0,
+    queued: 0, awaitingApproval: 0, leaseExpired: 0, overdueWaits: 0, pausedEventFlows: 0, disabledRevertedFlows: 0,
+    enqueueFailures: 0, pauseFailures: 0,
   };
   const errors: unknown[] = [];
   const clauseFailed = (err: unknown, site: string): void => {
@@ -232,9 +310,15 @@ export async function reconcileFlowRuns(): Promise<FlowRunReconcileSummary> {
   } catch (err) {
     clauseFailed(err, 'reconciler.event_flows');
   }
+  try {
+    summary.disabledRevertedFlows = (await disableDrainedRevertedFlows()).length;
+  } catch (err) {
+    clauseFailed(err, 'reconciler.reverted_flows');
+  }
 
   const failed = errors.length > 0 || summary.enqueueFailures > 0 || summary.pauseFailures > 0;
-  const acted = summary.queued + summary.awaitingApproval + summary.leaseExpired + summary.overdueWaits + summary.pausedEventFlows;
+  const acted = summary.queued + summary.awaitingApproval + summary.leaseExpired + summary.overdueWaits + summary.pausedEventFlows
+    + summary.disabledRevertedFlows;
   if (failed) {
     console.error(
       `${LOG} pass failed: ${errors.length} clause error(s), ${summary.enqueueFailures} enqueue failure(s) (retried next pass), ${summary.pauseFailures} pause failure(s)`,

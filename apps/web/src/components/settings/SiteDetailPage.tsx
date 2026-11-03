@@ -1,3 +1,4 @@
+import { useRecordPageContext } from '@/hooks/useRecordPageContext';
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
@@ -125,6 +126,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
 
   const [site, setSite] = useState<SiteDetails | null>(null);
   usePageItemName(site?.name);
+  useRecordPageContext(site ? { kind: 'site', id: site.id, orgId: site.orgId, label: site.name } : null);
   const [org, setOrg] = useState<OrgInfo | null>(null);
   const [sendMessageOpen, setSendMessageOpen] = useState(false);
   const [loading, setLoading] = useState(true);

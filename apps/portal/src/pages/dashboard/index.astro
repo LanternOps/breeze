@@ -1,7 +1,6 @@
 ---
 import PortalLayout from '../../layouts/PortalLayout.astro';
 import { DashboardTiles, DashboardUnavailable } from '../../components/portal/DashboardTiles';
-import { AgreementsAwaitingSignature } from '../../components/portal/AgreementsAwaitingSignature';
 import { TrustPageLink } from '../../components/portal/TrustPageLink';
 import { portalApi } from '../../lib/api';
 import { fetchTrustPageLink } from '../../lib/trustPageLinkApi';
@@ -54,8 +53,7 @@ const agreements = response.data ? await agreementsPromise : [];
   {
     response.data
       ? <>
-          <AgreementsAwaitingSignature agreements={agreements} />
-          <DashboardTiles dashboard={response.data} />
+          <DashboardTiles dashboard={response.data} agreements={agreements} />
           <TrustPageLink publicPath={trustPath} />
         </>
       : <DashboardUnavailable supportEmail={supportEmail} />

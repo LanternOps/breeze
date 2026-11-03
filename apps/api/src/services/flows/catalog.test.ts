@@ -30,7 +30,10 @@ describe('loadFlowCatalog', () => {
     const cat = await loadFlowCatalog(OWNER);
     expect(cat.get('wait')).toEqual({ source: 'builtin', name: 'wait' });
     expect(cat.get('set')).toEqual({ source: 'builtin', name: 'set' });
-    expect(cat.has('notify')).toBe(false);
+    // W5 PR B (#5220): the gate is lifted — every shared built-in is a catalog entry.
+    for (const name of ['notify', 'http_request', 'ai'] as const) {
+      expect(cat.get(name)).toEqual({ source: 'builtin', name });
+    }
   });
 
   it('excludes agent human-only, session-only M365 and the flow tools themselves', async () => {

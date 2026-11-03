@@ -27,6 +27,9 @@ export interface FlowTriggerScope {
   event?: { id: string; type: string };
   payload?: Record<string, FlowValue>;
   device?: { id: string; hostname: string; siteId: string | null };
+  /** W5 (#5220): a webhook's JSON body, redacted — templates read `trigger.body.*`. */
+  body?: Record<string, FlowValue>;
+  webhook?: { deliveryId: string | null; receivedAt: string };
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -70,13 +73,22 @@ export async function buildTriggerScope(input: {
   kind: FlowTriggerKind;
   orgId: string;
   event?: BreezeEvent;
+  /** W5: the verified webhook delivery (the body is redacted again here). */
+  webhook?: { body: Record<string, unknown>; deliveryId: string | null; receivedAt: string };
 }): Promise<FlowTriggerScope> {
-  const { kind, orgId, event } = input;
+  const { kind, orgId, event, webhook } = input;
   const scope: FlowTriggerScope = {
     kind,
     orgId,
-    firedAt: event?.metadata?.timestamp ?? new Date().toISOString(),
+    firedAt: event?.metadata?.timestamp ?? webhook?.receivedAt ?? new Date().toISOString(),
   };
+  if (webhook) {
+    // No device enrichment: the sender controls the body, so a device id in it
+    // never pulls a device into scope (templates still read trigger.body.*).
+    scope.body = toFlowRecord(redactPersistedToolInput(webhook.body)) ?? {};
+    scope.webhook = { deliveryId: webhook.deliveryId, receivedAt: webhook.receivedAt };
+    return scope;
+  }
   if (!event) return scope;
 
   scope.event = { id: event.id, type: event.type };

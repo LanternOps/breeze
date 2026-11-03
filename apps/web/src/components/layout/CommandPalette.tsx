@@ -290,6 +290,7 @@ export default function CommandPalette() {
   // /config or autopay fetches the gate hooks fire. An unknown gate hides the
   // entry (the nav's own default), and the sidebar loads /config anyway.
   const toolSourcesEnabled = useFeaturesStore((s) => s.features.toolSources);
+  const flowsEnabled = useFeaturesStore((s) => s.features.flows);
   const { wispEnabled, aiForOfficeEnabled } = usePartnerAiFlags(open);
   const openAiPanel = useAiStore((s) => s.open);
   // #6396: every own-session /ai/* route requires ai_sessions:use — the same
@@ -486,14 +487,28 @@ export default function CommandPalette() {
   );
 
   // Instant local matches while the server round-trip is still in flight.
+  const matchesQuery = useCallback(
+    (item: CommandItem) => {
+      const needle = trimmedQuery.toLowerCase();
+      return (
+        item.title.toLowerCase().includes(needle) ||
+        (item.description?.toLowerCase().includes(needle) ?? false)
+      );
+    },
+    [trimmedQuery]
+  );
+
   const localRecentMatches = useMemo<CommandItem[]>(() => {
     if (!trimmedQuery) return [];
-    const needle = trimmedQuery.toLowerCase();
-    const matches = (item: CommandItem) =>
-      item.title.toLowerCase().includes(needle) ||
-      (item.description?.toLowerCase().includes(needle) ?? false);
-    return [...recentDeviceItems.filter(matches), ...recentPageItems.filter(matches)];
-  }, [recentDeviceItems, recentPageItems, trimmedQuery]);
+    return [...recentDeviceItems.filter(matchesQuery), ...recentPageItems.filter(matchesQuery)];
+  }, [matchesQuery, recentDeviceItems, recentPageItems, trimmedQuery]);
+
+  // #10196: quick actions are searchable too ("breeze ai", "open wisp"). Built
+  // from quickActionItems, so the ai_sessions:use and Wisp gates still apply.
+  const localActionMatches = useMemo<CommandItem[]>(() => {
+    if (!trimmedQuery) return [];
+    return quickActionItems.filter(matchesQuery);
+  }, [matchesQuery, quickActionItems, trimmedQuery]);
 
   // Settings results are the web's settings catalogue (#8365), gated like the
   // nav and matched instantly, so they never wait on (or depend on) the server.
@@ -506,6 +521,7 @@ export default function CommandPalette() {
         permissions,
         getScope: () => getJwtClaims().scope,
         toolSourcesEnabled,
+        flowsEnabled,
         // Read on first open, never at mount (usePartnerAiFlags).
         aiForOfficeEnabled,
         wispEnabled,
@@ -521,7 +537,7 @@ export default function CommandPalette() {
       kind: 'result',
       category: 'settings'
     }));
-  }, [trimmedQuery, isPlatformAdmin, permissions, toolSourcesEnabled, aiForOfficeEnabled, wispEnabled, serviceManagementMode, t]);
+  }, [trimmedQuery, isPlatformAdmin, permissions, toolSourcesEnabled, flowsEnabled, aiForOfficeEnabled, wispEnabled, serviceManagementMode, t]);
 
   const resultItemsByCategory = useMemo(() => {
     const grouped = CATEGORY_ORDER.reduce((acc, category) => {
@@ -585,6 +601,13 @@ export default function CommandPalette() {
     }
 
     if (showResults) {
+      // First, so typing an action's name and pressing Enter runs it.
+      pushSection({
+        id: 'quick-actions',
+        label: 'Quick actions',
+        icon: Zap,
+        items: localActionMatches
+      });
       pushSection({
         id: 'recent',
         label: 'Recent',
@@ -605,6 +628,7 @@ export default function CommandPalette() {
 
     return { sections: builtSections, selectableItems: selectable, indexByKey: indexMap };
   }, [
+    localActionMatches,
     localRecentMatches,
     quickActionItems,
     recentDeviceItems,

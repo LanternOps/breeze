@@ -239,4 +239,45 @@ describe('processStreamEvent — attach_state (#9427)', () => {
     );
     expect(h.state.turnModel).toEqual(turnModel);
   });
+
+  // Lab run 2026-10-26 (#9840 checklist A2): a workspace tab's state has no
+  // `sessions` list. The first turn of a conversation replays `title_updated`
+  // first, which mapped over `s.sessions` and threw, so the whole attach was
+  // dropped: the moved tab showed neither the partial reply nor the card.
+  it('a workspace tab (no sessions list) applies a first-turn replay that starts with title_updated, card included', () => {
+    const h = harness({ messages: [u1] });
+    delete (h.state as Partial<StreamableState>).sessions;
+    const id = processStreamEvent(
+      snapshot({
+        turn: 'running', turnId: 't1', lastSeq: 4, turnUserMessageId: 'u1',
+        replay: [
+          { type: 'title_updated', title: 'Check the disk' },
+          { type: 'message_start', messageId: 'm-live' },
+          { type: 'content_delta', delta: 'Checking the disk' },
+        ],
+        pendingCards: [{
+          type: 'approval_required', executionId: 'e1', toolName: 'manage_services', input: { action: 'restart' },
+          description: 'Restart a service', approvalExpiresAt: '2026-10-23T10:00:00Z',
+        }],
+      }),
+      h.set, h.get, null,
+    );
+    expect(id).toBe('m-live');
+    expect(h.state.messages.map((m) => m.content)).toEqual(['Check the disk', 'Checking the disk']);
+    expect(h.state.pendingApproval?.executionId).toBe('e1');
+    expect(h.state.isStreaming).toBe(true);
+  });
+
+  it('a live title_updated on a surface without a sessions list is a no-op, not a throw', () => {
+    const h = harness();
+    delete (h.state as Partial<StreamableState>).sessions;
+    expect(() => processStreamEvent({ type: 'title_updated', title: 'T' }, h.set, h.get, null)).not.toThrow();
+  });
+
+  it('title_updated still renames the current session in the side panel list', () => {
+    const h = harness({ sessionId: 'sess-1', sessions: [{ id: 'sess-1', title: 'old' }, { id: 'other', title: 'keep' }] as unknown as StreamableState['sessions'] });
+    processStreamEvent({ type: 'title_updated', title: 'new' }, h.set, h.get, null);
+    expect((h.state.sessions as unknown as Array<{ id: string; title: string }>).map((x) => x.title)).toEqual(['new', 'keep']);
+  });
 });
+

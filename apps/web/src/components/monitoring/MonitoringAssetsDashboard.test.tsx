@@ -79,13 +79,26 @@ describe.each(['responsive-table-desktop', 'responsive-table-cards'])('%s', (sur
       expect(cell).toHaveAttribute('aria-label', 'unknown');
     });
 
-    it('reports a collecting device with its poll age', async () => {
+    it('states each timestamp once per row: SNMP reachability already carries the poll age', async () => {
+      // The row used to read "Last seen 21h ago", "Responding · SNMP Just
+      // now", "Last polled Just now" and "Last polled Just now" — four ages,
+      // three of them the same fact, one of them a discovery-scan time that
+      // read like the device had gone quiet.
       wire();
       render(<MonitoringAssetsDashboard />);
 
       const cell = await (await row()).findByTestId('monitoring-asset-collection-asset-1');
       expect(cell.textContent).toMatch(/Collecting/);
+      expect((await screen.findByTestId(surface)).textContent).not.toMatch(/Last polled|Last seen/);
+    });
+
+    it('keeps the poll age on the collection cell when reachability came from another source', async () => {
+      wire([{ ...baseAsset, reachability: { state: 'responding', source: 'network_check', observedAt: minutesAgo(1), lastKnown: null } }]);
+      render(<MonitoringAssetsDashboard />);
+
+      const cell = await (await row()).findByTestId('monitoring-asset-collection-asset-1');
       expect(cell.textContent).toMatch(/Last polled \d+m ago/);
+      expect((await screen.findByTestId(surface)).textContent?.match(/Last polled/g)).toHaveLength(1);
     });
 
     it('reports W01\'s no_template status as its own state, not as a failure', async () => {

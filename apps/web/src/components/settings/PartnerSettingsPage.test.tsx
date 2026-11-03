@@ -628,7 +628,7 @@ describe('PartnerSettingsPage Ticketing tab', () => {
     render(<PartnerSettingsPage />);
 
     expect(await screen.findByTestId('partner-settings-ticketing-link')).not.toBeNull();
-    // The inheritance banner is partner-config-only and must be hidden here.
+    // No per-tab "enforced" banner on any tab (#9790 W4).
     expect(screen.queryByText(/enforced across all organizations/i)).toBeNull();
   });
 });

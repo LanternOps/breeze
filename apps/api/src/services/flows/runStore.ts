@@ -229,6 +229,37 @@ export async function renewLease(runId: string, token: string): Promise<boolean>
   return rows.length > 0;
 }
 
+/**
+ * W5 (#5220, Decision 13): reserve `n` AI tokens against the run's ceiling —
+ * one conditional increment under the lease fence, so two parallel `ai` items
+ * can never jointly pass `cap` (the check and the write are one statement).
+ */
+export async function casReserveRunAiTokens(runId: string, token: string, n: number, cap: number): Promise<boolean> {
+  const rows = await db
+    .update(flowRuns)
+    .set({ aiTokensUsed: sql`${flowRuns.aiTokensUsed} + ${n}` })
+    .where(and(
+      eq(flowRuns.id, runId),
+      eq(flowRuns.leaseToken, token),
+      notInArray(flowRuns.status, [...TERMINAL_FLOW_RUN_STATUSES]),
+      sql`${flowRuns.aiTokensUsed} + ${n} <= ${cap}`,
+    ))
+    .returning({ id: flowRuns.id });
+  return rows.length > 0;
+}
+
+/** W5: move the run's AI token counter by `delta` (actual − reserved), never below zero, under the lease fence. */
+export async function settleRunAiTokensSql(runId: string, token: string, delta: number): Promise<void> {
+  await db
+    .update(flowRuns)
+    .set({ aiTokensUsed: sql`GREATEST(0, ${flowRuns.aiTokensUsed} + ${delta})` })
+    .where(and(
+      eq(flowRuns.id, runId),
+      eq(flowRuns.leaseToken, token),
+      notInArray(flowRuns.status, [...TERMINAL_FLOW_RUN_STATUSES]),
+    ));
+}
+
 /** Drop the lease if (and only if) this token still holds it. */
 export async function releaseLease(runId: string, token: string): Promise<void> {
   await db

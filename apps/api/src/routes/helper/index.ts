@@ -48,7 +48,12 @@ import { turnBindingFrom } from '../../services/aiModels/turnBinding';
 import { captureException } from '../../services/sentry';
 import { persistAutoSessionTitle } from '../../services/aiSessionTitle';
 import { callerVerificationEnabled } from '../../config/env';
-import { callerHelperBranding, type CallerHelperBranding } from '../../services/callerVerification/helperBranding';
+import {
+  callerHelperBranding,
+  callerHelperLogo,
+  type CallerHelperBranding,
+  type CallerHelperLogo,
+} from '../../services/callerVerification/helperBranding';
 import {
   isAiBudgetLockTimeout,
   releaseUnusedAiBudgetReservation,
@@ -671,19 +676,61 @@ helperRoutes.get('/device-info', async (c) => {
 
 helperRoutes.get('/config', async (c) => {
   const device = c.get('helperDevice');
-  const permissionLevel = await resolveHelperPermissionLevelForDevice(device.id, DEFAULT_PERMISSION_LEVEL);
+  const partnerId = c.get('auth').helperDevicePartnerId;
 
-  // Caller verification (#6354 W02): partner branding for the Assist card,
-  // derived from the authenticated device's org (never a client value). Null
-  // while the feature is dark or on any failure — branding must never delay
-  // or break the card, and must never fail this config response.
+  // #10190 W04: this route is registered in selfManagedDbContextRoutes, so
+  // helperAuth holds no request transaction across the handler. The reads run
+  // in one short transaction under the device's own helper context; the logo
+  // reference is resolved after it, with no connection held (it opens its own
+  // short system read on a cache miss, as the heartbeat does).
+  const { permissionLevel, baseBranding } = await runOutsideDbContext(() =>
+    withDbAccessContext(helperDbAccessContext({ orgId: device.orgId, partnerId }), async () => {
+      const level = await resolveHelperPermissionLevelForDevice(device.id, DEFAULT_PERMISSION_LEVEL);
+      // Caller verification (#6354 W02): partner branding for the Assist card,
+      // derived from the authenticated device's org (never a client value).
+      // Null while the feature is dark or on any failure — branding must never
+      // delay or break the card, and must never fail this config response.
+      let base: Omit<CallerHelperBranding, 'logo'> | null = null;
+      if (callerVerificationEnabled()) {
+        try {
+          base = await callerHelperBranding(device.orgId);
+        } catch (err) {
+          // Logged and reported, never swallowed: a DB failure here blanks the
+          // card's branding for the whole org until it clears.
+          // This catch sits INSIDE the transaction: if the failed statement
+          // aborted it, any statement after this point in the callback would
+          // fail too. Keep the catch last; add no statement after it.
+          console.warn('[helper] caller verification branding unavailable', {
+            deviceId: device.id,
+            orgId: device.orgId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          captureException(err, c, { service: 'helperRoutes', orgId: device.orgId });
+        }
+      }
+      return { permissionLevel: level, baseBranding: base };
+    }),
+  );
+
+  // The caller-verify logo (#10190 W04, decision 1): the sha the heartbeat's
+  // promptIdentity block carries for this device, so Assist can draw the
+  // bytes the agent synced. Every id is the helper-authenticated device's
+  // (device → org → partner). Null on a cold https cache, an invalid logo or
+  // any failure; never delays or fails this response.
   let branding: CallerHelperBranding | null = null;
-  if (callerVerificationEnabled()) {
+  if (baseBranding) {
+    let logo: CallerHelperLogo | null = null;
     try {
-      branding = await callerHelperBranding(device.orgId);
+      logo = await callerHelperLogo({ deviceId: device.id, orgId: device.orgId, partnerId });
     } catch (err) {
-      console.warn('[helper] caller verification branding unavailable', { deviceId: device.id, error: err instanceof Error ? err.name : String(err) });
+      console.warn('[helper] caller verification logo unavailable', {
+        deviceId: device.id,
+        orgId: device.orgId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      captureException(err, c, { service: 'helperRoutes', orgId: device.orgId });
     }
+    branding = { ...baseBranding, logo };
   }
 
   return c.json({

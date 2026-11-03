@@ -1,0 +1,27 @@
+name: Restore Go cache
+description: >
+  Restore (never save) the Go module and build caches. PR and merge-queue refs
+  cannot share caches with each other and would only evict main's, so only the
+  seed workflow on main saves them (ci-cache-seed.yml, which must save exactly
+  the key and paths below). Run AFTER actions/setup-go. See #10744.
+  The key hashes agent/go.mod as well as agent/go.sum: go.mod carries the Go
+  toolchain pin, and a build cache from another toolchain is dead weight.
+runs:
+  using: composite
+  steps:
+    - name: Resolve Go cache dirs
+      id: go
+      shell: bash
+      run: |
+        echo "gomodcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+        echo "gocache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore Go cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ steps.go.outputs.gomodcache }}
+          ${{ steps.go.outputs.gocache }}
+        key: go-${{ runner.os }}-${{ hashFiles('agent/go.sum', 'agent/go.mod') }}
+        restore-keys: |
+          go-${{ runner.os }}-

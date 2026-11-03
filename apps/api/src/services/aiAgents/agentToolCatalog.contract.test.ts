@@ -9,7 +9,7 @@ import { isSecretBearingTool } from '../actionIntents/secretBearingTools';
 import { isPolicyDecidableKey, POLICY_DECIDABLE_TIER3 } from '../actionIntents/policyDecidable';
 import {
   AGENT_CAPABILITIES, TOOL_CAPABILITY, AGENT_KIND_PRESETS,
-  listAgentReachableTools, listUnreachableRegisteredTools, buildAgentToolCatalog,
+  listAgentReachableTools, listUnreachableRegisteredTools, buildAgentToolCatalog, agentToolCapability,
 } from './agentToolCatalog';
 
 const capabilityIds = new Set(AGENT_CAPABILITIES.map((c) => c.id));
@@ -209,13 +209,14 @@ describe('W04 security/device-ops writes in the agent catalog (#6758)', () => {
     expect(decidable.sort()).toEqual(['manage_scheduled_tasks:disable', 'manage_scheduled_tasks:enable', 'manage_scheduled_tasks:run']);
   });
 
-  it('W04-D8: the picker never offers manage_groups add_devices/remove_devices (agent human-only actions)', () => {
+  it('#10149: the picker offers manage_groups add_devices/remove_devices as supervised, non-act operations', () => {
     const groups = buildAgentToolCatalog().tools.find((t) => t.name === 'manage_groups');
     expect(groups, 'manage_groups is agent-reachable').toBeDefined();
-    const keys = groups!.operations.map((op) => op.key);
-    expect(keys).not.toContain('manage_groups:add_devices');
-    expect(keys).not.toContain('manage_groups:remove_devices');
-    expect(keys).toContain('manage_groups:list');
+    const byKey = Object.fromEntries(groups!.operations.map((op) => [op.key, op]));
+    for (const key of ['manage_groups:add_devices', 'manage_groups:remove_devices']) {
+      expect(byKey[key], key).toMatchObject({ tier: 3, readOnly: false, actEligible: false, policyDecidable: false });
+    }
+    expect(byKey['manage_groups:list']).toBeDefined();
   });
 });
 
@@ -381,6 +382,149 @@ describe('W09 SNMP and network monitoring in the agent catalog (#6779)', () => {
   });
 
   it.each(['manage_known_guests', 'get_unifi_status', 'trigger_unifi_sync'])('%s is never offered to an agent', (name) => {
+    expect(listAgentReachableTools()).not.toContain(name);
+    expect(listUnreachableRegisteredTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain(name);
+  });
+});
+
+// W5 PR C (#5220, Decision 9): flow tools (`flow__<slug>`) are per-org dynamic
+// names, never registry entries: no per-name TOOL_CAPABILITY entry, never in
+// the static catalog, and they map to automations_reports by prefix.
+describe('flow tools in the agent tool catalog (W5 PR C)', () => {
+  it('no flow__ name is statically listed; the prefix maps to automations_reports', () => {
+    expect(Object.keys(TOOL_CAPABILITY).some((n) => n.startsWith('flow__'))).toBe(false);
+    expect(listAgentReachableTools().some((n) => n.startsWith('flow__'))).toBe(false);
+    expect(buildAgentToolCatalog().tools.some((t) => t.name.startsWith('flow__'))).toBe(false);
+    expect(agentToolCapability('flow__weekly_report')).toBe('automations_reports');
+    expect(agentToolCapability('manage_automations')).toBe('automations_reports');
+    expect(agentToolCapability('flow__')).toBeUndefined();
+    expect(agentToolCapability('not_a_tool')).toBeUndefined();
+  });
+
+  it('run_flow stays agent human-only (an agent names each flow it may start)', () => {
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('run_flow')).toBe(true);
+    expect(isNeverAgentTool('run_flow')).toBe(true);
+  });
+});
+
+/** Spec 2026-09-23 W10 (#6780, quorum QW5): the AI-agent reads sit with the other AI-run reads. The device, schedule and
+ * fleet-design reads run on the caller's scope so an agent can use them; the operator-task reads are free text from humans and
+ * other runs with no device axis, so they are AGENT_DENIED_READ_TOOLS and are never offered to an agent. */
+describe('W10 AI-agent reads in the agent catalog (#6780)', () => {
+  it.each([
+    'get_device_ai_activity', 'list_operator_tasks', 'get_operator_task',
+    'list_ai_agent_schedules', 'list_fleet_designs', 'get_fleet_design',
+  ])('%s is mapped to the tenancy capability', (name) => {
+    expect(TOOL_CAPABILITY[name]).toBe('tenancy');
+  });
+
+  it.each(['get_device_ai_activity', 'list_ai_agent_schedules', 'list_fleet_designs', 'get_fleet_design'])('%s is offered to an agent', (name) => {
+    expect(listAgentReachableTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain(name);
+  });
+
+  it.each(['list_operator_tasks', 'get_operator_task'])('%s is never offered to an agent', (name) => {
+    expect(listAgentReachableTools()).not.toContain(name);
+    expect(listUnreachableRegisteredTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain(name);
+  });
+});
+
+/** Spec 2026-09-23 W11 (#6781): security policy tools. Reads and the recommendation / recovery-key / policy writes are
+ * offered (writes become proposals); access reviews and PAM rules are AGENT_HUMAN_ONLY_TOOLS (explicit D4 exceptions). */
+describe('W11 security policy tools in the agent catalog (#6781)', () => {
+  it.each([
+    ['get_security_compliance', 'security_response'], ['manage_security_recommendations', 'security_response'],
+    ['manage_recovery_keys', 'security_response'], ['manage_pam_rules', 'security_response'],
+    ['manage_access_reviews', 'security_response'], ['manage_security_policies', 'config_policies'],
+    ['manage_compliance_policies', 'config_policies'], ['manage_audit_baselines', 'config_policies'],
+  ])('%s is mapped to %s', (name, capability) => {
+    expect(TOOL_CAPABILITY[name]).toBe(capability);
+  });
+
+  it.each([
+    'get_security_compliance', 'manage_security_recommendations', 'manage_recovery_keys',
+    'manage_security_policies', 'manage_compliance_policies', 'manage_audit_baselines',
+  ])('%s is offered to an agent', (name) => {
+    expect(listAgentReachableTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain(name);
+  });
+
+  it.each(['manage_access_reviews', 'manage_pam_rules'])('%s is never offered to an agent', (name) => {
+    expect(listAgentReachableTools()).not.toContain(name);
+    expect(listUnreachableRegisteredTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain(name);
+  });
+});
+
+/** Spec 2026-09-23 W13 (#6783, PR A): device inventory reads and records are offered (deletes and refresh become
+ * proposals); manage_device_function:set is AGENT_HUMAN_ONLY_ACTIONS, so the tool itself stays offered. */
+describe('W13 PR B tools in the agent catalog (#6783)', () => {
+  it.each([
+    ['browse_device_event_log', 'scripts_commands'], ['manage_tenant_variables', 'scripts_commands'],
+    ['manage_support_sessions', 'remote_access'],
+  ])('%s is mapped to %s and offered (writes are proposals or human-only actions)', (name, capability) => {
+    expect(TOOL_CAPABILITY[name]).toBe(capability);
+    expect(listAgentReachableTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain(name);
+  });
+});
+
+/** Spec 2026-09-23 W14 (#6784, PR A): billing lifecycle tools are offered beside the contract / invoice tools (their
+ * partner-only handlers refuse an org-scoped agent run); template and signed-agreement writes are
+ * AGENT_HUMAN_ONLY_ACTIONS, so the tools themselves stay offered. */
+describe('W14 billing lifecycle tools in the agent catalog (#6784)', () => {
+  it.each([
+    'manage_billing_profiles', 'manage_billing_settings', 'manage_contract_templates', 'manage_contract_documents', 'get_device_billing',
+  ])('%s is mapped to business and offered to an agent', (name) => {
+    expect(TOOL_CAPABILITY[name]).toBe('business');
+    expect(listAgentReachableTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain(name);
+  });
+});
+
+describe('W14 PR B accounting sync in the agent catalog (#6784)', () => {
+  it('manage_accounting_sync is mapped to business and offered (its writes are AGENT_HUMAN_ONLY_ACTIONS)', () => {
+    expect(TOOL_CAPABILITY.manage_accounting_sync).toBe('business');
+    expect(listAgentReachableTools()).toContain('manage_accounting_sync');
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain('manage_accounting_sync');
+  });
+});
+
+describe('W13 device inventory and ops tools in the agent catalog (#6783)', () => {
+  it.each([
+    'get_device_events', 'get_device_health', 'get_process_samples', 'get_management_posture',
+    'manage_device_function', 'manage_device_links', 'manage_manual_assets', 'manage_device_warranty',
+  ])('%s is mapped to automations_reports and offered to an agent', (name) => {
+    expect(TOOL_CAPABILITY[name]).toBe('automations_reports');
+    expect(listAgentReachableTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain(name);
+  });
+});
+
+/** Spec 2026-09-23 W12 (#6782): software tools are offered (writes become proposals); bootstrap_homebrew and
+ * manage_custom_fields are AGENT_HUMAN_ONLY_TOOLS (explicit D4 exceptions, W12 plan quorum QW6). */
+describe('W12 software tools in the agent catalog (#6782)', () => {
+  it.each([
+    ['manage_software_catalog', 'patching_software'], ['search_packages', 'patching_software'],
+    ['manage_software_deployments', 'patching_software'], ['get_device_software', 'patching_software'],
+    ['manage_device_software', 'patching_software'], ['manage_software_inventory', 'patching_software'],
+    ['bootstrap_homebrew', 'patching_software'], ['manage_fleet_findings', 'alerts_monitoring'],
+    ['manage_custom_fields', 'automations_reports'],
+  ])('%s is mapped to %s', (name, capability) => {
+    expect(TOOL_CAPABILITY[name]).toBe(capability);
+  });
+
+  it.each([
+    'manage_software_catalog', 'search_packages', 'manage_software_deployments', 'get_device_software',
+    'manage_device_software', 'manage_software_inventory', 'manage_fleet_findings',
+  ])('%s is offered to an agent', (name) => {
+    expect(listAgentReachableTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain(name);
+  });
+
+  it.each(['bootstrap_homebrew', 'manage_custom_fields'])('%s is never offered to an agent', (name) => {
     expect(listAgentReachableTools()).not.toContain(name);
     expect(listUnreachableRegisteredTools()).toContain(name);
     expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain(name);

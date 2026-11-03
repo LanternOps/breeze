@@ -1,12 +1,7 @@
 import { Square, CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import type { ActionPlanStep } from "@breeze/shared";
-import { cn, widthPercentClass } from "@/lib/utils";
+import { cn, formatToolName, widthPercentClass } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
-
-/** Human-readable tool name */
-function formatToolName(name: string): string {
-  return name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 interface AiPlanProgressBarProps {
   steps: ActionPlanStep[];

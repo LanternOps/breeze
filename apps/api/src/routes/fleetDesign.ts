@@ -36,28 +36,28 @@
 import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import {
   enableFleetDesignerSchema,
   fleetDesignApprovalSchema,
   triggerFleetDesignRunSchema,
-  type FleetDesignReportSummary,
 } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { db } from '../db';
-import { reportRuns, reports, sites } from '../db/schema';
+import { sites } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
 import { PartnerWideWriteDeniedError } from '../services/partnerWideAccess';
 import { applyFleetDesign } from '../services/fleetDesign/apply';
 import { loadLedger, toLedgerItem } from '../services/fleetDesign/ledger';
+import { listFleetDesigns } from '../services/fleetDesign/listing';
 import { FleetDesignApplyError, previewFleetDesignApply } from '../services/fleetDesign/preview';
 import { rollbackFleetDesign } from '../services/fleetDesign/rollback';
 import { fileFleetDesignDocument } from '../services/fleetDesign/documents';
 import { DesignerEnableError, describeDesignerSetup, enableDesigner } from '../services/fleetDesign/designerSetup';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
 import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
-import { FLEET_DESIGN_REPORT_TYPE, loadFleetDesignReport } from '../services/aiAgents/fleetDesignReport';
+import { loadFleetDesignReport } from '../services/aiAgents/fleetDesignReport';
 import { writeRouteAudit } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
 
@@ -147,26 +147,6 @@ function mapApplyError(c: Context, err: unknown) {
   }
   if (err instanceof PartnerWideWriteDeniedError) return c.json({ error: err.message }, 403);
   throw err;
-}
-
-/**
- * Counts sections out of a stored `FleetDesignReportSummary` for the list/
- * detail projections below. Every field on the summary is optional
- * (persisted jsonb, old snapshots must still render) — an incomplete or
- * pre-outcome row projects to zero counts rather than throwing.
- */
-function sectionCounts(summary: FleetDesignReportSummary | null | undefined) {
-  const sections = summary?.fleetDesign?.outcome?.sections;
-  const watchCount = sections?.monitoring.reduce((n, m) => n + m.watches.length, 0) ?? 0;
-  const ruleCount = sections?.monitoring.reduce((n, m) => n + m.alertRules.length, 0) ?? 0;
-  return {
-    functionCount: sections?.functions.length ?? 0,
-    watchCount,
-    ruleCount,
-    evidenceTruncated: summary?.fleetDesign?.evidenceTruncated ?? false,
-    generatedAt: summary?.fleetDesign?.generatedAt ?? null,
-    runId: summary?.fleetDesign?.runId ?? null,
-  };
 }
 
 // Triggering a Fleet Design run is at least as consequential as any other
@@ -298,44 +278,7 @@ fleetDesignRoutes.post(
 
 fleetDesignRoutes.get('/', scopes, requireAiRead, async (c) => {
   const auth = c.get('auth');
-  const queryOrgId = c.req.query('orgId');
-
-  if (queryOrgId && !auth.canAccessOrg(queryOrgId)) return c.json({ items: [] });
-
-  const conditions = [eq(reports.type, FLEET_DESIGN_REPORT_TYPE), eq(reportRuns.status, 'completed')];
-  const orgCond = auth.orgCondition(reports.orgId);
-  if (orgCond) conditions.push(orgCond);
-  if (queryOrgId) conditions.push(eq(reports.orgId, queryOrgId));
-
-  const rows = await db
-    .select({
-      reportRunId: reportRuns.id,
-      reportId: reports.id,
-      orgId: reports.orgId,
-      summary: reportRuns.result,
-    })
-    .from(reportRuns)
-    .innerJoin(reports, eq(reportRuns.reportId, reports.id))
-    .where(and(...conditions))
-    .orderBy(desc(reportRuns.completedAt))
-    .limit(100);
-
-  return c.json({
-    items: rows.map((row) => {
-      const counts = sectionCounts((row.summary as { summary?: FleetDesignReportSummary } | null)?.summary);
-      return {
-        reportRunId: row.reportRunId,
-        reportId: row.reportId,
-        orgId: row.orgId,
-        generatedAt: counts.generatedAt,
-        runId: counts.runId,
-        functionCount: counts.functionCount,
-        watchCount: counts.watchCount,
-        ruleCount: counts.ruleCount,
-        evidenceTruncated: counts.evidenceTruncated,
-      };
-    }),
-  });
+  return c.json({ items: await listFleetDesigns(auth, c.req.query('orgId')) });
 });
 
 fleetDesignRoutes.get('/:reportRunId', scopes, requireAiRead, async (c) => {

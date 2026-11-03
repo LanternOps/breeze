@@ -20,7 +20,7 @@ vi.mock('../db/schema', () => ({
   deviceWarranty: { deviceId: 'deviceWarranty.deviceId' },
   devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId' },
   organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
-  alerts: { deviceId: 'alerts.deviceId', configItemName: 'alerts.configItemName', status: 'alerts.status', id: 'alerts.id', orgId: 'alerts.orgId', context: 'alerts.context', suppressedUntil: 'alerts.suppressedUntil' },
+  alerts: { deviceId: 'alerts.deviceId', configItemName: 'alerts.configItemName', status: 'alerts.status', id: 'alerts.id', orgId: 'alerts.orgId', context: 'alerts.context', suppressedUntil: 'alerts.suppressedUntil', severity: 'alerts.severity' },
   configPolicyEffectiveFeatureLinks: { id: 'configPolicyEffectiveFeatureLinks.id', featureType: 'configPolicyEffectiveFeatureLinks.featureType', inlineSettings: 'configPolicyEffectiveFeatureLinks.inlineSettings', configPolicyId: 'configPolicyEffectiveFeatureLinks.configPolicyId', sourcePolicyId: 'configPolicyEffectiveFeatureLinks.sourcePolicyId', inherited: 'configPolicyEffectiveFeatureLinks.inherited' },
   configPolicyAssignments: { configPolicyId: 'configPolicyAssignments.configPolicyId', targetId: 'configPolicyAssignments.targetId', level: 'configPolicyAssignments.level', priority: 'configPolicyAssignments.priority' },
   configurationPolicies: { id: 'configurationPolicies.id', status: 'configurationPolicies.status', orgId: 'configurationPolicies.orgId', partnerId: 'configurationPolicies.partnerId' },
@@ -35,6 +35,23 @@ vi.mock('./sentry', async (importOriginal) => ({
 
 const publishEventMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('./eventBus', () => ({ publishEvent: (...args: unknown[]) => publishEventMock(...args) }));
+
+const writeAuditEventMock = vi.fn();
+vi.mock('./auditEvents', () => ({
+  writeAuditEvent: (...args: unknown[]) => writeAuditEventMock(...args),
+  requestLikeFromSnapshot: () => ({}),
+}));
+
+const cancelAlertEscalationsMock = vi.fn().mockResolvedValue(0);
+vi.mock('./notificationDispatcher', () => ({
+  cancelAlertEscalations: (...args: unknown[]) => cancelAlertEscalationsMock(...args),
+}));
+
+const isRedisAvailableMock = vi.fn(() => true);
+vi.mock('./redis', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  isRedisAvailable: () => isRedisAvailableMock(),
+}));
 
 import { evaluateWarrantyAlerts } from './warrantyAlertEvaluator';
 
@@ -209,7 +226,7 @@ describe('evaluateWarrantyAlerts gating', () => {
 
     expect(result).toBe('alert-1');
     expect(values).toHaveBeenCalledWith(
-      expect.objectContaining({ configItemName: 'warranty_expiry', deviceId: DEVICE_ID, severity: 'critical' })
+      expect.objectContaining({ configItemName: 'warranty_expiry', deviceId: DEVICE_ID, severity: 'low' })
     );
     expect(publishEventMock).toHaveBeenCalledWith(
       'alert.triggered',
@@ -218,6 +235,58 @@ describe('evaluateWarrantyAlerts gating', () => {
       'warranty-alert-evaluator',
       expect.objectContaining({}),
     );
+  });
+
+  // #10371 — warranty expiry is a date-driven lifecycle notice, not a device
+  // fault. It must never land at `critical`/`high` next to disk-full and
+  // offline-server alerts (it inflated active-critical counts and tripped
+  // critical-keyed escalation rules). Ladder: warnDays window → info, the
+  // closer criticalDays window → low, expired → medium.
+  it.each([
+    ['expired yesterday', -1, 'medium'],
+    ['expires today (0 days)', 0, 'medium'],
+    ['inside the criticalDays window', 10, 'low'],
+    ['exactly at criticalDays', 30, 'low'],
+    ['inside the warnDays window only', 60, 'info'],
+    ['exactly at warnDays', 90, 'info'],
+    ['one day past criticalDays', 31, 'info'],
+  ] as const)('raises a lifecycle-grade severity when the warranty %s (#10371)', async (_label, days, expected) => {
+    const { values } = captureInsert();
+    selectMock.mockReturnValueOnce(queueSelect([{ ...baseWarranty, warrantyEndDate: inDays(days) }]));
+    selectMock.mockReturnValueOnce(queueSelect([baseDevice]));
+    selectMock.mockReturnValueOnce(queueSelect([{ orgId: ORG_ID, siteId: null }]));
+    selectMock.mockReturnValueOnce(queueSelect([{ partnerId: null }]));
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    selectMock.mockReturnValueOnce(
+      queueSelect([{ inlineSettings: { enabled: true, warnDays: 90, criticalDays: 30 }, level: 'organization', priority: 0 }])
+    );
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    selectMock.mockReturnValueOnce(queueSelect([]));
+
+    const result = await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(result).toBe('alert-1');
+    expect(values).toHaveBeenCalledTimes(1);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ severity: expected }));
+  });
+
+  it('raises no alert one day past warnDays (#10371 ladder upper bound)', async () => {
+    stubAutoResolve();
+    selectMock.mockReturnValueOnce(queueSelect([{ ...baseWarranty, warrantyEndDate: inDays(91) }]));
+    selectMock.mockReturnValueOnce(queueSelect([baseDevice]));
+    selectMock.mockReturnValueOnce(queueSelect([{ orgId: ORG_ID, siteId: null }]));
+    selectMock.mockReturnValueOnce(queueSelect([{ partnerId: null }]));
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    selectMock.mockReturnValueOnce(
+      queueSelect([{ inlineSettings: { enabled: true, warnDays: 90, criticalDays: 30 }, level: 'organization', priority: 0 }])
+    );
+    // Outside both windows → auto-resolve sweep: open-alert select → none
+    selectMock.mockReturnValueOnce(queueSelect([]));
+
+    const result = await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(result).toBeNull();
+    expect(insertMock).not.toHaveBeenCalled();
   });
 
   it('rolls the warranty alert row back when publishing alert.triggered throws (#5325)', async () => {
@@ -351,6 +420,143 @@ describe('evaluateWarrantyAlerts gating', () => {
     expect(result).toBeNull();
     expect(insertMock).not.toHaveBeenCalled();
     expect(publishEventMock).not.toHaveBeenCalled();
+  });
+
+  // #10371 option (c): an OPEN warranty alert whose stored severity no longer
+  // matches the ladder is re-graded in place. Silent by design — no
+  // alert.triggered (that would re-fan-out the baseline notification set), no
+  // new event at all — but recorded in the audit log, and a DOWNGRADE cancels
+  // any escalation step still delayed from the old, higher grade.
+  function queueRegradeRun(days: number, openAlert: Record<string, unknown>) {
+    selectMock.mockReturnValueOnce(queueSelect([{ ...baseWarranty, warrantyEndDate: inDays(days) }]));
+    selectMock.mockReturnValueOnce(queueSelect([baseDevice]));
+    selectMock.mockReturnValueOnce(queueSelect([{ orgId: ORG_ID, siteId: null }]));
+    selectMock.mockReturnValueOnce(queueSelect([{ partnerId: null }]));
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    selectMock.mockReturnValueOnce(
+      queueSelect([{ inlineSettings: { enabled: true, warnDays: 90, criticalDays: 30 }, level: 'organization', priority: 0 }])
+    );
+    // 7: existing open warranty alert(s)
+    selectMock.mockReturnValueOnce(queueSelect([openAlert]));
+  }
+
+  it('re-grades an open legacy CRITICAL alert down to medium silently: audit row, escalations cancelled, no event (#10371)', async () => {
+    const set = vi.fn().mockReturnValue({ where: vi.fn(() => casWhere([{ id: 'alert-legacy-1' }])) });
+    updateMock.mockReturnValue({ set });
+    queueRegradeRun(-5, {
+      id: 'alert-legacy-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', severity: 'critical',
+      title: 'Warranty expired: Test Mac', context: { source: 'warranty_evaluator' },
+      triggeredAt: new Date(Date.now() - 3_600_000), // inside the escalation window
+    });
+
+    const result = await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(result).toBeNull();
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      severity: 'medium',
+      title: 'Warranty expired: Test Mac',
+    }));
+    // The context patch is merged in SQL (jsonb ||), so a concurrent context
+    // write is not clobbered from a stale read; its content is asserted by the
+    // integration test against real Postgres.
+    expect(publishEventMock).not.toHaveBeenCalled();
+    expect(cancelAlertEscalationsMock).toHaveBeenCalledWith('alert-legacy-1');
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_ID,
+      action: 'alert.severity_regraded',
+      resourceType: 'alert',
+      resourceId: 'alert-legacy-1',
+      actorType: 'system',
+      details: expect.objectContaining({ previousSeverity: 'critical', severity: 'medium' }),
+    }));
+  });
+
+  it('re-grades UP the ladder (info → low) without cancelling escalations or publishing (#10371)', async () => {
+    const set = vi.fn().mockReturnValue({ where: vi.fn(() => casWhere([{ id: 'alert-info-1' }])) });
+    updateMock.mockReturnValue({ set });
+    queueRegradeRun(10, { id: 'alert-info-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', severity: 'info', title: 'x', context: null });
+
+    await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ severity: 'low' }));
+    expect(publishEventMock).not.toHaveBeenCalled();
+    expect(cancelAlertEscalationsMock).not.toHaveBeenCalled();
+    expect(writeAuditEventMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves an open alert already at the ladder severity alone (#10371)', async () => {
+    queueRegradeRun(10, { id: 'alert-low-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', severity: 'low', title: 'x', context: null });
+
+    await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(writeAuditEventMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('skips the audit row and escalation cancel when the re-grade CAS loses the race (#10371)', async () => {
+    const set = vi.fn().mockReturnValue({ where: vi.fn(() => casWhere([])) });
+    updateMock.mockReturnValue({ set });
+    queueRegradeRun(-5, { id: 'alert-raced-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', severity: 'critical', title: 'x', context: null });
+
+    await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(set).toHaveBeenCalled();
+    expect(writeAuditEventMock).not.toHaveBeenCalled();
+    expect(cancelAlertEscalationsMock).not.toHaveBeenCalled();
+  });
+
+  // Review round: the escalation cancel scans every delayed notification job,
+  // and on the agent request path a reconnecting BullMQ connection waits
+  // rather than throwing. So it is skipped when Redis is down, skipped for an
+  // alert older than the longest escalation delay (nothing can still be
+  // pending), and never awaited by the evaluator.
+  it('does not cancel escalations for a downgraded alert older than the longest escalation delay (#10371)', async () => {
+    const set = vi.fn().mockReturnValue({ where: vi.fn(() => casWhere([{ id: 'alert-old-1' }])) });
+    updateMock.mockReturnValue({ set });
+    queueRegradeRun(-5, {
+      id: 'alert-old-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', severity: 'critical', title: 'x', context: null,
+      triggeredAt: new Date(Date.now() - 30 * 86_400_000),
+    });
+
+    await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ severity: 'medium' }));
+    expect(cancelAlertEscalationsMock).not.toHaveBeenCalled();
+  });
+
+  it('does not cancel escalations when Redis is unavailable (#10371)', async () => {
+    isRedisAvailableMock.mockReturnValueOnce(false);
+    const set = vi.fn().mockReturnValue({ where: vi.fn(() => casWhere([{ id: 'alert-recent-1' }])) });
+    updateMock.mockReturnValue({ set });
+    queueRegradeRun(-5, {
+      id: 'alert-recent-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', severity: 'critical', title: 'x', context: null,
+      triggeredAt: new Date(Date.now() - 3_600_000),
+    });
+
+    await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(set).toHaveBeenCalled();
+    expect(cancelAlertEscalationsMock).not.toHaveBeenCalled();
+  });
+
+  it('does not block the evaluation on a hanging escalation cancel (#10371)', async () => {
+    cancelAlertEscalationsMock.mockReturnValueOnce(new Promise(() => {})); // never settles
+    const set = vi.fn().mockReturnValue({ where: vi.fn(() => casWhere([{ id: 'alert-hang-1' }])) });
+    updateMock.mockReturnValue({ set });
+    queueRegradeRun(-5, {
+      id: 'alert-hang-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', severity: 'critical', title: 'x', context: null,
+      triggeredAt: new Date(Date.now() - 3_600_000),
+    });
+
+    const outcome = await Promise.race([
+      evaluateWarrantyAlerts(DEVICE_ID).then(() => 'done'),
+      new Promise((resolve) => setTimeout(() => resolve('blocked'), 500)),
+    ]);
+
+    expect(outcome).toBe('done');
+    expect(cancelAlertEscalationsMock).toHaveBeenCalledWith('alert-hang-1');
   });
 
   it('auto-resolves a stale TIMED-SUPPRESSED expiry alert when the device is now a subscription (#1320)', async () => {

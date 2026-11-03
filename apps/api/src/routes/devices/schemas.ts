@@ -59,6 +59,8 @@ export const listDevicesSchema = z.object({
    *  count it received on page 1. Default off because the count(*) is the
    *  most expensive part of the query at scale. */
   includeTotal: boolStr,
+  /** Opt in to the warranty projection/join for the list column. */
+  includeWarranty: boolStr,
 
   // Single-value filters (compat).
   orgId: z.string().guid().optional(),
@@ -73,6 +75,7 @@ export const listDevicesSchema = z.object({
 
   status: z.enum(['online', 'offline', 'maintenance', 'decommissioned', 'updating', 'pending']).optional(),
   includeDecommissioned: boolStr,
+  isolated: boolStr,
   osType: z.enum(['windows', 'macos', 'linux']).optional(),
   role: z.enum(DEVICE_ROLES).optional(),
   search: z.string().optional()

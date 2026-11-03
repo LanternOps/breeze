@@ -14,7 +14,9 @@
  * the brief), pinned to the ceiling's grant / partner / grantor. Isolation is
  * the ceiling's, applied twice: IN SQL (readable orgs, partner-level rows only
  * for a partner-wide grant with full reach — the concerns.ts rule), then as a
- * belt every item passes `assertWithinCeiling` before it leaves. Org-NULL
+ * belt every item passes `assertReadWithinCeiling` before it leaves (the org /
+ * site terms without the status gate: a PAUSED grant's thread still reads its
+ * history from the stored revision, #10104). Org-NULL
  * nudge / brief / memory items are the grantor's own and need no org term.
  *
  * Keyset: (at DESC, kind DESC, id DESC), compared at MILLISECOND precision in
@@ -30,7 +32,7 @@ import { aiMemoryBlocks } from '../../db/schema/aiMemoryBlocks';
 import { userNotifications } from '../../db/schema/notifications';
 import { organizations } from '../../db/schema/orgs';
 import { wispConcernRecipients, wispConcerns } from '../../db/schema/wispConcerns';
-import { assertWithinCeiling, CeilingViolationError, inSystemContext, type GrantCeiling } from './grantAuthority';
+import { assertReadWithinCeiling, CeilingViolationError, inSystemContext, type GrantCeiling } from './grantAuthority';
 import { webDeepLink } from './nudgeLinks';
 
 export type { ActivityItem, CurrentActivity } from '@breeze/shared';
@@ -126,11 +128,11 @@ function readsPartnerLevel(ceiling: GrantCeiling): boolean {
 
 const GRANTOR_OWN_KINDS: ReadonlySet<WispActivityKind> = new Set(['nudge', 'brief', 'memory']);
 
-/** The belt: the item's org term against the live ceiling. */
+/** The belt: the item's org term against the ceiling (active, or a paused grant's read-only one). */
 function passesCeiling(ceiling: GrantCeiling, item: ActivityItem): boolean {
   if (item.orgId === null && GRANTOR_OWN_KINDS.has(item.kind)) return true;
   try {
-    assertWithinCeiling(ceiling, { orgId: item.orgId });
+    assertReadWithinCeiling(ceiling, { orgId: item.orgId });
     return true;
   } catch (err) {
     if (err instanceof CeilingViolationError) return false;

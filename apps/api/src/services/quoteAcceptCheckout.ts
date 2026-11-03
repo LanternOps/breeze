@@ -13,8 +13,9 @@ import { captureException, captureMessage } from './sentry';
  * Shared by POST /invoices/public/:token/pay and the public quote accept
  * (#8231) so the two mint the SAME session family: identical request params and
  * idempotency key means a customer who cancels out of the accept-time checkout
- * and presses Pay on the durable page within the hour is handed the same
- * session back, not a second competing one (spec §8).
+ * and presses Pay on the durable page within the same invoice-anchored Checkout
+ * bucket (up to 55 min after the accept — see `checkoutSessionExpiry`) is handed
+ * the same session back, not a second competing one (spec §8).
  */
 export function publicInvoiceCheckoutUrls(): Required<Pick<InvoiceCheckoutUrls, 'successUrl' | 'cancelUrl' | 'idempotencySuffix'>> {
   const returnBase = `${portalBase()}/invoice/return`;
@@ -34,10 +35,11 @@ export function publicInvoiceCheckoutUrls(): Required<Pick<InvoiceCheckoutUrls, 
  * the signer wait noticeably. A mint still in flight when this fires keeps
  * running: it writes its pending mapping as usual, and because it used the
  * public-link request key, a Pay on the invoice page after it lands (same key,
- * same hour) gets that very session back from Stripe. A Pay while it is still
- * in flight is refused by Stripe (key in use) and succeeds on retry; a Pay in
- * a later hour mints a second session, exactly as two Pay clicks across an
- * hour already can — the late mint adds no new way to reach a second session.
+ * same invoice-anchored bucket) gets that very session back from Stripe. A Pay
+ * while it is still in flight is refused by Stripe (key in use) and succeeds on
+ * retry; a Pay past the bucket edge mints a second session, exactly as two Pay
+ * clicks across that edge already can — the late mint adds no new way to reach
+ * a second session.
  */
 export const ACCEPT_CHECKOUT_TIMEOUT_MS = 5_000;
 

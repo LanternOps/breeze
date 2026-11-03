@@ -6,6 +6,7 @@ const state = vi.hoisted(() => ({
   perms: [] as Perm[],
   scope: 'partner' as string | null,
   toolSources: false,
+  flows: false,
   extensionNav: [] as { name: string; href: string }[],
 }));
 
@@ -20,6 +21,7 @@ vi.mock('../../stores/auth', () => ({
 vi.mock('../../lib/authScope', () => ({ getJwtClaims: () => ({ scope: state.scope }) }));
 vi.mock('../../stores/featuresStore', () => ({
   useToolSourcesGate: () => ({ enabled: state.toolSources, loaded: true }),
+  useFlowsGate: () => ({ enabled: state.flows, loaded: true }),
 }));
 vi.mock('../extensions/useExtensionNavigation', () => ({
   useExtensionNavigation: () => state.extensionNav,
@@ -35,7 +37,17 @@ describe('SettingsCatalog', () => {
     state.perms = [{ resource: '*', action: '*' }];
     state.scope = 'partner';
     state.toolSources = false;
+    state.flows = false;
     state.extensionNav = [];
+  });
+
+  it('lists Flow limits only while flows are enabled on the server (W05 #5220)', () => {
+    const off = render(<SettingsCatalog />);
+    expect(hrefs(off.container)).not.toContain('/settings/flow-limits');
+    off.unmount();
+    state.flows = true;
+    const { container } = render(<SettingsCatalog />);
+    expect(hrefs(container)).toContain('/settings/flow-limits');
   });
 
   it('renders a grouped card per entry the user may see', () => {

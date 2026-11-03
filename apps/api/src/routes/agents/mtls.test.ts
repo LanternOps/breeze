@@ -84,6 +84,11 @@ const {
   };
 });
 
+const { requestReevaluationMock } = vi.hoisted(() => ({ requestReevaluationMock: vi.fn() }));
+vi.mock('../../jobs/deviceGroupJobs', () => ({
+  requestDeviceGroupReevaluationAfterCommit: requestReevaluationMock,
+}));
+
 vi.mock('../../db', () => ({
   db: {
     select: dbSelectMock,
@@ -729,6 +734,15 @@ describe('remote-session teardown wiring on quarantine / deny', () => {
     const setArg = setSpy.mock.calls[0]![0] as Record<string, unknown>;
     expect(setArg.status).toBe('decommissioned');
     expect(setArg.decommissionedAt).toBeInstanceOf(Date);
+
+    // #9933 — a removed device leaves its dynamic groups: re-evaluate the
+    // org's dynamic groups once the deny commits.
+    expect(requestReevaluationMock).toHaveBeenCalledWith({
+      deviceId: DEVICE_ID,
+      orgId: ORG_ID,
+      eventType: 'device.created',
+      reason: 'device_decommissioned',
+    });
   });
 });
 

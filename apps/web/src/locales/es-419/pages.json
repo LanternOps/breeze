@@ -85,6 +85,7 @@
     "logs": "Registros",
     "monitoring": "Red",
     "oauthConsent": "Autorizar acceso",
+    "oauthError": "No se pudo conectar la app",
     "onedrive": "OneDrive",
     "organizations": "Organizaciones",
     "organizationsDetail": "Organización",
@@ -190,7 +191,8 @@
     "wispChat": "Breeze AI",
     "aiTasks": "Tareas de IA",
     "aiTask": "Tarea de IA",
-    "settingsAi": "Configuración de IA"
+    "settingsAi": "Configuración de IA",
+    "settingsFlowLimits": "Límites de flujos"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoreo y Gestión Remota",
@@ -209,6 +211,33 @@
     "referenceIdLabel": "ID de referencia:",
     "dashboardLink": "Ir al panel",
     "signInLink": "Iniciar sesión"
+  },
+  "oauthErrorPage": {
+    "invalidClient": {
+      "heading": "Esta app no se puede conectar",
+      "body": "Breeze no reconoce la app que lo envió aquí, o la app no tiene permiso para conectarse a este servidor de Breeze. Verifique que la app esté configurada con la dirección de este servidor e inténtelo nuevamente."
+    },
+    "invalidRedirectUri": {
+      "heading": "La dirección de retorno de esta app no está registrada",
+      "body": "La app pidió a Breeze que lo enviara de regreso a una dirección que nunca registró, así que Breeze se detuvo aquí para proteger su cuenta. El desarrollador de la app o su administrador debe corregir la URL de redireccionamiento de la app."
+    },
+    "sessionExpired": {
+      "heading": "Este inicio de sesión expiró",
+      "body": "La conexión tardó demasiado o se inició en otro navegador. Regrese a la app y conéctese nuevamente."
+    },
+    "invalidRequest": {
+      "heading": "La app envió una solicitud que Breeze no puede aceptar",
+      "body": "La solicitud de conexión de la app estaba incompleta o pedía algo que este servidor no admite. Regrese a la app e inténtelo nuevamente. Si sigue ocurriendo, comuníquese con el desarrollador de la app."
+    },
+    "serverError": {
+      "heading": "Breeze no pudo completar la conexión",
+      "body": "Ocurrió un error de nuestro lado. Espere unos minutos, luego regrese a la app e inténtelo nuevamente."
+    },
+    "generic": {
+      "heading": "No se pudo completar esta conexión",
+      "body": "Regrese a la app e inicie la conexión nuevamente. Si sigue ocurriendo, comuníquese con su administrador de Breeze."
+    },
+    "nextStep": "No se otorgó ningún acceso. Puede cerrar esta página."
   },
   "settingsIndex": {
     "heading": "Configuración",
@@ -281,6 +310,10 @@
       "wispMemory": {
         "title": "Memoria de Wisp",
         "description": "Revisa, confirma y retira lo que Wisp recuerda."
+      },
+      "flowLimits": {
+        "title": "Límites de flujos",
+        "description": "Límites mensuales de ejecuciones y límite de tokens de IA para los flujos."
       }
     },
     "groups": {

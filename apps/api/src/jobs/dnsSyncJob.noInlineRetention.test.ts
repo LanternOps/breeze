@@ -80,7 +80,7 @@ describe('dnsSyncJob — no inline retention prune (#10020)', () => {
     }], []];
     createDnsProviderMock.mockReturnValue({
       syncEvents: vi.fn(async () => [
-        { timestamp: new Date('2026-08-01T01:00:00.000Z'), domain: 'one.example', queryType: 'A', action: 'allowed' },
+        { timestamp: new Date('2026-08-01T01:00:00.000Z'), domain: 'one.example', queryType: 'A', action: 'blocked' },
       ]),
     });
 

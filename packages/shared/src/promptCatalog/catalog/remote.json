@@ -1,0 +1,235 @@
+{
+  "namespace": "remote",
+  "messages": {
+    "action.allow": {
+      "en": "Allow",
+      "de-DE": "Zulassen",
+      "es-419": "Permitir",
+      "fr-FR": "Autoriser",
+      "fr-CA": "Autoriser",
+      "it-IT": "Consenti",
+      "pt-BR": "Permitir",
+      "tr-TR": "İzin ver"
+    },
+    "action.deny": {
+      "en": "Deny",
+      "de-DE": "Ablehnen",
+      "es-419": "Denegar",
+      "fr-FR": "Refuser",
+      "fr-CA": "Refuser",
+      "it-IT": "Nega",
+      "pt-BR": "Negar",
+      "tr-TR": "Reddet"
+    },
+    "action.endSession": {
+      "en": "End session",
+      "de-DE": "Sitzung beenden",
+      "es-419": "Finalizar sesión",
+      "fr-FR": "Mettre fin à la session",
+      "fr-CA": "Mettre fin à la session",
+      "it-IT": "Termina sessione",
+      "pt-BR": "Encerrar sessão",
+      "tr-TR": "Oturumu sonlandır"
+    },
+    "action.keepSession": {
+      "en": "Keep session",
+      "de-DE": "Sitzung fortsetzen",
+      "es-419": "Mantener sesión",
+      "fr-FR": "Poursuivre la session",
+      "fr-CA": "Poursuivre la session",
+      "it-IT": "Mantieni sessione",
+      "pt-BR": "Manter sessão",
+      "tr-TR": "Oturumu sürdür"
+    },
+    "action.reportProblem": {
+      "en": "Report a problem",
+      "de-DE": "Problem melden",
+      "es-419": "Informar un problema",
+      "fr-FR": "Signaler un problème",
+      "fr-CA": "Signaler un problème",
+      "it-IT": "Segnala un problema",
+      "pt-BR": "Relatar um problema",
+      "tr-TR": "Sorun bildir"
+    },
+    "consent.title": {
+      "en": "Remote support request",
+      "de-DE": "Anfrage für Remote-Support",
+      "es-419": "Solicitud de soporte remoto",
+      "fr-FR": "Demande d'assistance à distance",
+      "fr-CA": "Demande d'assistance à distance",
+      "it-IT": "Richiesta di assistenza remota",
+      "pt-BR": "Solicitação de suporte remoto",
+      "tr-TR": "Uzaktan destek isteği"
+    },
+    "consent.body": {
+      "en": "{technician} wants to start a remote session on this computer.",
+      "de-DE": "{technician} möchte eine Remotesitzung auf diesem Computer starten.",
+      "es-419": "{technician} quiere iniciar una sesión remota en esta computadora.",
+      "fr-FR": "{technician} souhaite démarrer une session à distance sur cet ordinateur.",
+      "fr-CA": "{technician} souhaite démarrer une session à distance sur cet ordinateur.",
+      "it-IT": "{technician} vuole avviare una sessione remota su questo computer.",
+      "pt-BR": "{technician} quer iniciar uma sessão remota neste computador.",
+      "tr-TR": "{technician} bu bilgisayarda uzak oturum başlatmak istiyor."
+    },
+    "consent.bodyFrom": {
+      "en": "{technician} from {organization} wants to start a remote session on this computer.",
+      "de-DE": "{technician} von {organization} möchte eine Remotesitzung auf diesem Computer starten.",
+      "es-419": "{technician} de {organization} quiere iniciar una sesión remota en esta computadora.",
+      "fr-FR": "{technician} de {organization} souhaite démarrer une session à distance sur cet ordinateur.",
+      "fr-CA": "{technician} de {organization} souhaite démarrer une session à distance sur cet ordinateur.",
+      "it-IT": "{technician} di {organization} vuole avviare una sessione remota su questo computer.",
+      "pt-BR": "{technician}, de {organization}, quer iniciar uma sessão remota neste computador.",
+      "tr-TR": "{organization} ekibinden {technician} bu bilgisayarda uzak oturum başlatmak istiyor."
+    },
+    "consent.bodyOrganization": {
+      "en": "A technician from {organization} wants to start a remote session on this computer.",
+      "de-DE": "Ein Techniker von {organization} möchte eine Remotesitzung auf diesem Computer starten.",
+      "es-419": "Un técnico de {organization} quiere iniciar una sesión remota en esta computadora.",
+      "fr-FR": "Un technicien de {organization} souhaite démarrer une session à distance sur cet ordinateur.",
+      "fr-CA": "Un technicien de {organization} souhaite démarrer une session à distance sur cet ordinateur.",
+      "it-IT": "Un tecnico di {organization} vuole avviare una sessione remota su questo computer.",
+      "pt-BR": "Um técnico de {organization} quer iniciar uma sessão remota neste computador.",
+      "tr-TR": "{organization} ekibinden bir teknisyen bu bilgisayarda uzak oturum başlatmak istiyor."
+    },
+    "consent.bodyGeneric": {
+      "en": "A technician wants to start a remote session on this computer.",
+      "de-DE": "Ein Techniker möchte eine Remotesitzung auf diesem Computer starten.",
+      "es-419": "Un técnico quiere iniciar una sesión remota en esta computadora.",
+      "fr-FR": "Un technicien souhaite démarrer une session à distance sur cet ordinateur.",
+      "fr-CA": "Un technicien souhaite démarrer une session à distance sur cet ordinateur.",
+      "it-IT": "Un tecnico vuole avviare una sessione remota su questo computer.",
+      "pt-BR": "Um técnico quer iniciar uma sessão remota neste computador.",
+      "tr-TR": "Bir teknisyen bu bilgisayarda uzak oturum başlatmak istiyor."
+    },
+    "consent.expiryProceed": {
+      "en": "If no one answers, the session starts in {remaining}.",
+      "de-DE": "Wenn niemand antwortet, beginnt die Sitzung in {remaining}.",
+      "es-419": "Si nadie responde, la sesión comenzará en {remaining}.",
+      "fr-FR": "Si personne ne répond, la session démarrera dans {remaining}.",
+      "fr-CA": "Si personne ne répond, la session démarrera dans {remaining}.",
+      "it-IT": "Se nessuno risponde, la sessione inizierà tra {remaining}.",
+      "pt-BR": "Se ninguém responder, a sessão começará em {remaining}.",
+      "tr-TR": "Kimse yanıt vermezse oturum {remaining} içinde başlayacak."
+    },
+    "consent.expiryBlock": {
+      "en": "If no one answers, the session is declined in {remaining}.",
+      "de-DE": "Wenn niemand antwortet, wird die Sitzung in {remaining} abgelehnt.",
+      "es-419": "Si nadie responde, la sesión se rechazará en {remaining}.",
+      "fr-FR": "Si personne ne répond, la session sera refusée dans {remaining}.",
+      "fr-CA": "Si personne ne répond, la session sera refusée dans {remaining}.",
+      "it-IT": "Se nessuno risponde, la sessione verrà rifiutata tra {remaining}.",
+      "pt-BR": "Se ninguém responder, a sessão será recusada em {remaining}.",
+      "tr-TR": "Kimse yanıt vermezse oturum {remaining} içinde reddedilecek."
+    },
+    "fact.technician": {
+      "en": "Technician",
+      "de-DE": "Techniker",
+      "es-419": "Técnico",
+      "fr-FR": "Technicien",
+      "fr-CA": "Technicien",
+      "it-IT": "Tecnico",
+      "pt-BR": "Técnico",
+      "tr-TR": "Teknisyen"
+    },
+    "fact.email": {
+      "en": "Email",
+      "de-DE": "E-Mail",
+      "es-419": "Correo electrónico",
+      "fr-FR": "E-mail",
+      "fr-CA": "Courriel",
+      "it-IT": "Email",
+      "pt-BR": "E-mail",
+      "tr-TR": "E-posta"
+    },
+    "fact.organization": {
+      "en": "Organization",
+      "de-DE": "Organisation",
+      "es-419": "Organización",
+      "fr-FR": "Organisation",
+      "fr-CA": "Organisation",
+      "it-IT": "Organizzazione",
+      "pt-BR": "Organização",
+      "tr-TR": "Kuruluş"
+    },
+    "fact.started": {
+      "en": "Started",
+      "de-DE": "Begonnen",
+      "es-419": "Inicio",
+      "fr-FR": "Début",
+      "fr-CA": "Début",
+      "it-IT": "Iniziata",
+      "pt-BR": "Início",
+      "tr-TR": "Başlangıç"
+    },
+    "session.title": {
+      "en": "{technician} is connected",
+      "de-DE": "{technician} ist verbunden",
+      "es-419": "{technician} está conectado",
+      "fr-FR": "{technician} est connecté",
+      "fr-CA": "{technician} est connecté",
+      "it-IT": "{technician} è connesso",
+      "pt-BR": "{technician} está conectado",
+      "tr-TR": "{technician} bağlı"
+    },
+    "session.titleFrom": {
+      "en": "{technician} from {organization} is connected",
+      "de-DE": "{technician} von {organization} ist verbunden",
+      "es-419": "{technician} de {organization} está conectado",
+      "fr-FR": "{technician} de {organization} est connecté",
+      "fr-CA": "{technician} de {organization} est connecté",
+      "it-IT": "{technician} di {organization} è connesso",
+      "pt-BR": "{technician}, de {organization}, está conectado",
+      "tr-TR": "{organization} ekibinden {technician} bağlı"
+    },
+    "session.titleOrganization": {
+      "en": "A technician from {organization} is connected",
+      "de-DE": "Ein Techniker von {organization} ist verbunden",
+      "es-419": "Un técnico de {organization} está conectado",
+      "fr-FR": "Un technicien de {organization} est connecté",
+      "fr-CA": "Un technicien de {organization} est connecté",
+      "it-IT": "Un tecnico di {organization} è connesso",
+      "pt-BR": "Um técnico de {organization} está conectado",
+      "tr-TR": "{organization} ekibinden bir teknisyen bağlı"
+    },
+    "session.titleGeneric": {
+      "en": "A technician is connected",
+      "de-DE": "Ein Techniker ist verbunden",
+      "es-419": "Un técnico está conectado",
+      "fr-FR": "Un technicien est connecté",
+      "fr-CA": "Un technicien est connecté",
+      "it-IT": "Un tecnico è connesso",
+      "pt-BR": "Um técnico está conectado",
+      "tr-TR": "Bir teknisyen bağlı"
+    },
+    "session.body": {
+      "en": "A remote support session is in progress on this computer.",
+      "de-DE": "Auf diesem Computer läuft eine Remote-Support-Sitzung.",
+      "es-419": "Hay una sesión de soporte remoto en curso en esta computadora.",
+      "fr-FR": "Une session d'assistance à distance est en cours sur cet ordinateur.",
+      "fr-CA": "Une session d'assistance à distance est en cours sur cet ordinateur.",
+      "it-IT": "Su questo computer è in corso una sessione di assistenza remota.",
+      "pt-BR": "Há uma sessão de suporte remoto em andamento neste computador.",
+      "tr-TR": "Bu bilgisayarda bir uzaktan destek oturumu sürüyor."
+    },
+    "session.endFailed": {
+      "en": "Couldn't end the session. It is still active.",
+      "de-DE": "Die Sitzung konnte nicht beendet werden. Sie ist weiterhin aktiv.",
+      "es-419": "No se pudo finalizar la sesión. Sigue activa.",
+      "fr-FR": "Impossible de mettre fin à la session. Elle est toujours active.",
+      "fr-CA": "Impossible de mettre fin à la session. Elle est toujours active.",
+      "it-IT": "Impossibile terminare la sessione. È ancora attiva.",
+      "pt-BR": "Não foi possível encerrar a sessão. Ela continua ativa.",
+      "tr-TR": "Oturum sonlandırılamadı. Oturum hâlâ etkin."
+    },
+    "session.confirmEnd": {
+      "en": "End this remote session? The technician will be disconnected.",
+      "de-DE": "Diese Remotesitzung beenden? Die Verbindung des Technikers wird getrennt.",
+      "es-419": "¿Finalizar esta sesión remota? El técnico se desconectará.",
+      "fr-FR": "Mettre fin à cette session à distance ? Le technicien sera déconnecté.",
+      "fr-CA": "Mettre fin à cette session à distance? Le technicien sera déconnecté.",
+      "it-IT": "Terminare questa sessione remota? Il tecnico verrà disconnesso.",
+      "pt-BR": "Encerrar esta sessão remota? O técnico será desconectado.",
+      "tr-TR": "Bu uzak oturum sonlandırılsın mı? Teknisyenin bağlantısı kesilecek."
+    }
+  }
+}

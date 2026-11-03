@@ -3006,6 +3006,16 @@ describe('buildImpactSummary (#5106)', () => {
       expected: 'Execute a system command on a device.',
     },
     {
+      name: 'Pax8 submit impact names the company, line outcomes, price, and terminal cancellation',
+      toolName: 'manage_pax8_orders',
+      input: { action: 'submit', expectedCompany: { name: 'Fixture Company', pax8CompanyId: 'company-1' },
+        expectedLines: [{ action: 'cancel', productName: 'Fixture Seats', pax8ProductId: 'product-1',
+          fromQuantity: '7.00', quantity: '0', unitCost: '8.00', currency: 'USD', billingTerm: 'Monthly',
+          commitmentTerm: 'Annual', cancellationFeeApplied: true }] },
+      guardrailDescription: 'Generic Pax8 management description.',
+      expected: "Place a real, billable Pax8 order that cannot be undone for Fixture Company (company-1): 0 new subscriptions, 0 quantity changes, 1 cancellations. Cost is estimated at Pax8's current rate, re-checked before sending. CANCEL (terminal) Fixture Seats [product-1]: 7.00 → 0, 8.00 USD per seat / Monthly, commitment Annual, cancellation fee applies",
+    },
+    {
       name: 'manage_invoices void gets plain-language impact (#9657)',
       toolName: 'manage_invoices',
       input: { action: 'void' },
@@ -3423,6 +3433,49 @@ describe('createActionIntent — mcp_api origin (B-W04)', () => {
     expect(chat!.correlationId).not.toBe(CORR);
     expect(mcp!.originPrincipalKind).toBe('api_key');
     expect(mcp!.originPrincipalId).toBe('key-A');
+  });
+
+  // #9758: an OAuth-originated MCP intent records the auth_epoch its filing
+  // call was verified at, so release can refuse after a password change.
+  it('stores originAuthEpoch on an oauth_grant mcp_api intent', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValue([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-oauth' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-oauth' }]);
+    await createActionIntent(
+      makeAuth({ principal: { kind: 'oauth_grant', grantId: 'grant-1' } }),
+      mcpInput({ originAuthEpoch: 5 }),
+    );
+    const [row] = dbState.insertedActionIntentValues;
+    expect(row!.originPrincipalKind).toBe('oauth_grant');
+    expect(row!.originAuthEpoch).toBe(5);
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['not an integer', 1.5],
+  ])('refuses an oauth_grant mcp_api intent whose auth epoch is %s, before insert', async (_label, epoch) => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValue([APPROVER_1]);
+    await expect(createActionIntent(
+      makeAuth({ principal: { kind: 'oauth_grant', grantId: 'grant-1' } }),
+      mcpInput({ originAuthEpoch: epoch }),
+    )).rejects.toMatchObject({ code: 'principal_not_supported' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('never stores originAuthEpoch on an api_key mcp_api intent or a chat intent', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValue([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-key' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-key' }]);
+    await createActionIntent(makeAuth({ principal: KEY_A }), mcpInput({ originAuthEpoch: 5 }));
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-chat-epoch' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-chat-epoch' }]);
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'chat-epoch', originAuthEpoch: 5 }));
+    const [key, chat] = dbState.insertedActionIntentValues;
+    expect(key!.originAuthEpoch).toBeNull();
+    expect(chat!.originAuthEpoch).toBeNull();
   });
 
   it('supervised mcp_api intent notifies its requester (headless: nobody watches a chat pane)', async () => {

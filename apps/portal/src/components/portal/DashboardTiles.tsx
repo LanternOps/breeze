@@ -1,6 +1,8 @@
 import type { DashboardDto, SecurityScoreBand, TileStatus } from '@breeze/shared';
 import type { ReactNode } from 'react';
 import { withBase } from '@/lib/basePath';
+import type { PortalAgreementSummary } from '@/lib/api';
+import { AgreementsAwaitingSignature } from './AgreementsAwaitingSignature';
 import { cn, formatDateTime, formatRelativeTime } from '@/lib/utils';
 import { ErrorNotice, PageHeader, StatusMark } from './ui';
 
@@ -131,7 +133,14 @@ function countPhrase(count: number, singular: string, plural: string): string {
 }
 
 /** The one line on this page the customer can act on, so it leads. */
-function AwaitingYou({ awaitingYou }: { awaitingYou: DashboardDto['awaitingYou'] }) {
+function AwaitingYou({
+  awaitingYou,
+  agreementsToSign,
+}: {
+  awaitingYou: DashboardDto['awaitingYou'];
+  /** Agreements the signed-in user can sign now (#10202), read by the page, not the dashboard DTO. */
+  agreementsToSign: number;
+}) {
   const { status, proposals, invoices } = awaitingYou;
 
   const links: ReactNode[] = [];
@@ -150,20 +159,28 @@ function AwaitingYou({ awaitingYou }: { awaitingYou: DashboardDto['awaitingYou']
     );
   }
 
+  if (agreementsToSign > 0) {
+    links.push(
+      <a key="agreements" className={LINK} href={withBase('/agreements')}>
+        {countPhrase(agreementsToSign, 'agreement', 'agreements')}
+      </a>,
+    );
+  }
+
   const bothKnown = proposals != null && invoices != null;
-  const singular = links.length === 1 && (proposals === 1 || invoices === 1);
+  const singular = links.length === 1 && (proposals === 1 || invoices === 1 || agreementsToSign === 1);
 
   let statement: ReactNode;
   if (links.length > 0) {
+    // "A", "A and B", "A, B and C".
     statement = (
       <>
-        {links.length === 2 ? (
-          <>
-            {links[0]} and {links[1]}
-          </>
-        ) : (
-          links[0]
-        )}
+        {links.map((link, i) => (
+          <span key={i}>
+            {i > 0 && (i === links.length - 1 ? ' and ' : ', ')}
+            {link}
+          </span>
+        ))}
         {singular ? ' is waiting for you.' : ' are waiting for you.'}
       </>
     );
@@ -296,7 +313,14 @@ function ServiceValue({ tile }: { tile: NonNullable<DashboardDto['service']> }) 
   );
 }
 
-export function DashboardTiles({ dashboard }: { dashboard: DashboardDto }) {
+export function DashboardTiles({
+  dashboard,
+  agreements = [],
+}: {
+  dashboard: DashboardDto;
+  /** The portal agreements read; signable ones feed the awaiting-you line and the card under the heading. */
+  agreements?: PortalAgreementSummary[];
+}) {
   const {
     securityScore,
     devicesProtected,
@@ -312,7 +336,9 @@ export function DashboardTiles({ dashboard }: { dashboard: DashboardDto }) {
     <div>
       <PageHeader title="Dashboard" lede={accountHeadline(dashboard)} />
 
-      <AwaitingYou awaitingYou={awaitingYou} />
+      <AgreementsAwaitingSignature agreements={agreements} timezone={dashboard.timezone} />
+
+      <AwaitingYou awaitingYou={awaitingYou} agreementsToSign={agreements.filter((a) => a.canSign).length} />
 
       <dl className="divide-y divide-border/70">
         <LedgerRow

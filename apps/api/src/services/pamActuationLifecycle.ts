@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../db';
+import { PAM_USER_REASON_UNVERIFIED, enqueuePamRequestNotify } from './pamRequestNotify';
 
 export type PamRequestSnapshot = {
   id: string;
@@ -168,6 +169,18 @@ export async function createPamDecisionIntent(tx: PamLifecycleTx, input: {
         now()
       )
     `);
+    // #8928: a technician's approve (prior status pending) that is refused
+    // here leaves the end user waiting on IT, so tell them it was denied. The
+    // insert-time auto_approved refusal has nobody waiting and stays silent.
+    // The internal constant is never shown; best-effort, never rolls back.
+    if (input.decision === 'approved') {
+      await enqueuePamRequestNotify(
+        tx,
+        { id: input.request.id, deviceId: input.request.deviceId },
+        'denied',
+        PAM_USER_REASON_UNVERIFIED,
+      );
+    }
     return {
       actuationId: '',
       elevationRequestId: input.request.id,

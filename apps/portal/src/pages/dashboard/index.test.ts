@@ -49,8 +49,10 @@ describe('dashboard page agreements card', () => {
     expect(pageSource).toContain("console.warn('[portal] dashboard agreements read");
   });
 
-  it('renders the awaiting-signature card above the tiles, in the success branch only', () => {
-    expect(pageSource).toContain('<AgreementsAwaitingSignature');
-    expect(pageSource.indexOf('<AgreementsAwaitingSignature')).toBeLessThan(pageSource.indexOf('<DashboardTiles'));
+  it('hands the agreements read to DashboardTiles, which places the card under the heading (success branch only)', () => {
+    // DashboardTiles renders the card between the page heading and the tiles and
+    // counts signable agreements in its awaiting-you line (DashboardTiles.test.tsx).
+    expect(pageSource).toContain('<DashboardTiles dashboard={response.data} agreements={agreements} />');
+    expect(pageSource).not.toContain('<AgreementsAwaitingSignature');
   });
 });

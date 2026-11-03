@@ -67,6 +67,10 @@ export const ticketMailboxConnections = pgTable('ticket_mailbox_connections', {
   // raw Graph error text stays in server logs, never in lastError (#6192).
   consecutiveTransientFailures: integer('consecutive_transient_failures').notNull().default(0),
   lastTransientFailureAt: timestamp('last_transient_failure_at', { withTimezone: true }),
+  // When the Microsoft 365 poll sweep last started work on this mailbox, whether
+  // or not Graph answered (#8308). The sweep takes mailboxes oldest attempt
+  // first, so one its pass deadline did not reach goes first next sweep.
+  lastPollAttemptAt: timestamp('last_poll_attempt_at', { withTimezone: true }),
   // Gmail only: per-mailbox "mark handled" (#7949). NULL label = off. When set,
   // mail that became (or joined) a ticket gets this USER label and, if
   // gmailArchiveOnHandle, leaves INBOX. Edited on the mailbox settings card.

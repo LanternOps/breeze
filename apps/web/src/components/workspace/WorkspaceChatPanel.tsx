@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { Sparkles } from "lucide-react";
+import WispWelcome from "../wisp/WispWelcome";
+import { useWispScopeLabel } from "../wisp/useWispScopeLabel";
 
 import AiChatMessages from "../ai/AiChatMessages";
 import AiChatInput from "../ai/AiChatInput";
@@ -12,6 +14,7 @@ import CreateTicketFromChatModal, {
 import { showToast } from "../shared/Toast";
 import { ActionError, handleActionError } from "@/lib/runAction";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useOnWindowReturn } from "@/hooks/useOnWindowReturn";
 import type { AiTicketDraft } from "@breeze/shared";
 import type { TabState } from "@/stores/workspaceStore";
 import { useTranslation } from "react-i18next";
@@ -37,11 +40,19 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
     draftTicketFromChat,
     saveTicketFromChat,
     setComposerDraft,
+    recheckPendingApprovals,
   } = useWorkspaceStore();
+  // #9431: an approval card may have been decided in another window meanwhile.
+  useOnWindowReturn(() => recheckPendingApprovals?.());
 
   const [modalOpen, setModalOpen] = useState(false);
   const [draft, setDraft] = useState<AiTicketDraft | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // #10195: a tab under a Wisp grant speaks as Wisp throughout — its replies,
+  // its empty state and its composer — not only in the mode label above.
+  const tabWisp = tab.wisp?.kind === "wisp" ? tab.wisp : null;
+  const wispScopeLabel = useWispScopeLabel(tabWisp?.orgId ?? null);
 
   const hasAssistantMsg = tab.messages.some((m) => m.role === "assistant");
   const canCreateTicket = !!tab.sessionId && hasAssistantMsg;
@@ -193,6 +204,16 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
         onIntentDecided={() => clearPendingApproval(tab.id)}
         layout="page"
         showTimeDividers
+        assistantLabel={tabWisp ? t("wisp.title") : undefined}
+        emptyState={
+          tabWisp ? (
+            <WispWelcome
+              scopeLabel={wispScopeLabel}
+              onSuggest={(prompt) => sendMessage(tab.id, prompt)}
+              briefNote={false}
+            />
+          ) : undefined
+        }
       />
 
       {/* Input, in the thread's reading-width column (W01 #10211) */}
@@ -205,6 +226,7 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
           disabled={tab.isLoading}
           isStreaming={tab.isStreaming}
           isInterrupting={tab.isInterrupting}
+          placeholder={tabWisp ? t("wisp.composer.placeholder") : undefined}
         />
       </div>
 

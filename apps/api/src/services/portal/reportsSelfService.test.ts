@@ -105,6 +105,7 @@ import {
   renderRunPdf,
 } from './reportsSelfService';
 import { MSP_STAFF_REPORT_TYPES } from '../reportRegistry';
+import { POSTURE_DEVICE_ROW_CSV_LABELS } from '@breeze/shared';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '22222222-2222-4222-8222-222222222222';
@@ -1293,7 +1294,24 @@ describe('portal run rendering', () => {
     await expect(renderRunCsv(RUN_ID, ORG_ID)).resolves.toBe(
       'hostname\ndevice-1',
     );
-    expect(state.rowsToCsv).toHaveBeenCalledWith(rows);
+    // #9964: the customer-facing posture CSV labels its columns.
+    expect(state.rowsToCsv).toHaveBeenCalledWith(rows, {
+      headerLabels: POSTURE_DEVICE_ROW_CSV_LABELS,
+    });
+  });
+
+  it('keeps raw keys for a report type with no CSV labels', async () => {
+    const rows = [{ hostname: 'device-1' }];
+    state.selected.mockResolvedValue([{
+      id: RUN_ID,
+      type: 'hardware_lifecycle',
+      result: { rows },
+      completedAt: new Date('2026-09-02T12:00:00.000Z'),
+    }]);
+    state.rowsToCsv.mockReturnValue('hostname\ndevice-1');
+
+    await renderRunCsv(RUN_ID, ORG_ID);
+    expect(state.rowsToCsv).toHaveBeenCalledWith(rows, { headerLabels: undefined });
   });
 
   it('uses a typed conflict error when a run has no tabular result', async () => {

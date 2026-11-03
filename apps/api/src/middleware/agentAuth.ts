@@ -2,10 +2,12 @@ import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { createHash, timingSafeEqual } from 'crypto';
 import { and, eq, isNull } from 'drizzle-orm';
-import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
+import { db, withDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../db';
 import { devices, organizations } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
-import { type AgentTokenSuspendReason } from '../services/agentTokenSuspension';
+import { isolationBlocksTokenSuspension, type AgentTokenSuspendReason } from '../services/agentTokenSuspension';
+import { assertNoUnresolvedIsolation, findUnresolvedIsolations, NetworkIsolationUnresolvedError, type UnresolvedIsolation } from '../services/networkIsolation/lifecycle';
+import { captureMessage } from '../services/sentry';
 import { enforceAgentCertificateBinding, readAgentCertificateAssertion } from '../services/agentCertificateBinding';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
@@ -308,9 +310,10 @@ export function isAgentTokenRotationDue(tokenIssuedAt: Date | null | undefined, 
  *   authenticated as (#8318 §6.4: a reattach confirm or an in-place re-enroll
  *   after the socket opened). Nothing was suspended, and the row belongs to a
  *   different install;
+ * - `isolation_unresolved`: a non-forced suspension would cut off recovery;
  * - `failed`: the write threw (logged here).
  */
-export type AgentTokenSuspendOutcome = 'suspended' | 'unchanged' | 'stale_caller' | 'failed';
+export type AgentTokenSuspendOutcome = 'suspended' | 'unchanged' | 'stale_caller' | 'isolation_unresolved' | 'failed';
 
 /**
  * Task 18: Persistently suspend an agent token. Called when the WS layer
@@ -325,8 +328,14 @@ export async function suspendAgentToken(
   agent: OwnDeviceRowIdentity,
   reason: AgentTokenSuspendReason,
 ): Promise<AgentTokenSuspendOutcome> {
+  const isolationBlocks = isolationBlocksTokenSuspension(reason);
+  let forcedIsolations: UnresolvedIsolation[] = [];
+  let outcome: AgentTokenSuspendOutcome;
   try {
-    return await withSystemDbAccessContext(async (): Promise<AgentTokenSuspendOutcome> => {
+    outcome = await withSystemDbAccessContext(async (): Promise<AgentTokenSuspendOutcome> => {
+      if (isolationBlocks) {
+        await assertNoUnresolvedIsolation(db, { deviceId: agent.deviceId }, 'suspend_agent_token');
+      }
       // #8318 §6.4: bound to the identity the socket authenticated as, so a
       // probe from a superseded install cannot suspend the row's new owner.
       const suspended = await updateOwnDeviceRow(
@@ -338,10 +347,29 @@ export async function suspendAgentToken(
         },
         { where: isNull(devices.agentTokenSuspendedAt) },
       );
-      if (suspended.length > 0) return 'suspended';
+      if (suspended.length > 0) {
+        // The identity-bound UPDATE holds the device lock until this context
+        // commits, serializing this lookup with isolation start.
+        if (!isolationBlocks) {
+          try {
+            // A failed warning query must roll back only its savepoint, never the
+            // security suspension already written in the outer transaction.
+            forcedIsolations = await withDbTransaction(() => findUnresolvedIsolations(db, { deviceId: agent.deviceId }));
+          } catch {
+            console.warn('[agentAuth] Forced suspension isolation warning lookup failed', { deviceId: agent.deviceId });
+          }
+        }
+        return 'suspended';
+      }
       return (await ownDeviceRowChangedHands(db, agent)) ? 'stale_caller' : 'unchanged';
     });
   } catch (err) {
+    if (err instanceof NetworkIsolationUnresolvedError) {
+      console.warn('[agentAuth] Credential suspension refused: network isolation unresolved', {
+        deviceId: agent.deviceId, isolationIds: err.isolations.map(row => row.isolationId),
+      });
+      return 'isolation_unresolved';
+    }
     // Best-effort: the auth gate is the source of truth. A failed suspension
     // write just means the next probe will try again.
     console.error('[agentAuth] suspendAgentToken failed', {
@@ -351,6 +379,18 @@ export async function suspendAgentToken(
     });
     return 'failed';
   }
+  if (forcedIsolations.length > 0) {
+    console.warn('[agentAuth] Forced credential suspension: network isolation recovery is now bounded by expiry and the offline code', {
+      deviceId: agent.deviceId, isolationIds: forcedIsolations.map(row => row.isolationId),
+    });
+    for (const row of forcedIsolations) {
+      captureMessage('Forced credential suspension: network isolation recovery is now bounded by expiry and the offline code', {
+        eventCode: 'network_isolation_forced_token_suspension', level: 'warning',
+        tags: { deviceId: row.deviceId, isolationId: row.isolationId },
+      });
+    }
+  }
+  return outcome;
 }
 
 /**
@@ -449,6 +489,11 @@ const SELF_MANAGED_DB_CONTEXT_TWO_SEGMENT_ACTIONS: ReadonlyArray<readonly [strin
   // transaction; a request-long wrap would hold a pooled connection across
   // both and re-open the #6671 two-connection shape.
   ['topology', 'adjacency'],
+  // #10190 W03: the prompt logo. On a cache miss the handler may fetch the
+  // MSP's https logo (routes/agents/promptIdentityLogo.ts), which must never
+  // run inside the request-long org transaction (#1105); its DB read is one
+  // short system context keyed by the authenticated device's org.
+  ['prompt-identity', 'logo'],
 ];
 
 /**

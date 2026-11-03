@@ -55,7 +55,7 @@ describe('SiteList', () => {
     expect(onSiteClick).toHaveBeenCalledTimes(1);
 
     // The overflow trigger and its (portalled) item must not also open the site.
-    fireEvent.click(screen.getAllByTestId('site-s1-menu')[0]);
+    fireEvent.click(screen.getByTestId('site-s1-menu'));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }));
     expect(onDelete).toHaveBeenCalledWith(few[0]);
     expect(onSiteClick).toHaveBeenCalledTimes(1);
@@ -91,7 +91,7 @@ describe('SiteList', () => {
 
     // No standalone Delete button on the row any more.
     expect(screen.queryByRole('button', { name: 'Delete Site 1' })).toBeNull();
-    const trigger = screen.getAllByTestId('site-s1-menu')[0];
+    const trigger = screen.getByTestId('site-s1-menu');
     expect(trigger.getAttribute('aria-label')).toBe('Actions for Site 1');
     fireEvent.click(trigger);
     const del = screen.getByRole('menuitem', { name: 'Delete' });
@@ -100,6 +100,34 @@ describe('SiteList', () => {
     expect(screen.getByRole('menuitem', { name: 'Edit' })).toBeInTheDocument();
     fireEvent.click(del);
     expect(onDelete).toHaveBeenCalledWith(few[0]);
+  });
+
+  it('gives each row action one unique testid per surface, so getByTestId is not ambiguous (#10084)', () => {
+    render(<SiteList sites={few} onSiteClick={vi.fn()} onEdit={vi.fn()} onDelete={vi.fn()} />);
+
+    const desktop = screen.getByTestId('responsive-table-desktop');
+    const cards = screen.getByTestId('responsive-table-cards');
+    for (const id of ['site-s1-menu', 'site-s1-open']) {
+      expect(screen.getAllByTestId(id)).toHaveLength(1);
+      expect(within(desktop).getByTestId(id)).toBeInTheDocument();
+    }
+    for (const id of ['site-s1-card-menu', 'site-s1-card-open']) {
+      expect(screen.getAllByTestId(id)).toHaveLength(1);
+      expect(within(cards).getByTestId(id)).toBeInTheDocument();
+    }
+
+    fireEvent.click(screen.getByTestId('site-s1-menu'));
+    expect(screen.getAllByTestId('site-s1-edit')).toHaveLength(1);
+    expect(screen.getAllByTestId('site-s1-delete')).toHaveLength(1);
+  });
+
+  it('the card surface menu carries its own item testids', () => {
+    render(<SiteList sites={few} onSiteClick={vi.fn()} onEdit={vi.fn()} onDelete={vi.fn()} />);
+
+    fireEvent.click(screen.getByTestId('site-s1-card-menu'));
+    expect(screen.getByTestId('site-s1-card-edit')).toBeInTheDocument();
+    expect(screen.getByTestId('site-s1-card-delete')).toBeInTheDocument();
+    expect(screen.queryByTestId('site-s1-edit')).toBeNull();
   });
 
   it('draws one border: the desktop table sits flat inside the card (#9022)', () => {

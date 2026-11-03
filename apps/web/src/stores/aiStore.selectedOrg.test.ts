@@ -84,6 +84,15 @@ describe('ai store createSession sends the header-selected org (#9529)', () => {
     expect(createBody()).not.toHaveProperty('orgId');
   });
 
+  it('sends no header orgId on a record page: the server resolves the record org', async () => {
+    useAiStore.setState({ pageContext: { type: 'record', kind: 'ticket', id: DEVICE_C, orgId: ORG_C, label: 'T-1' } });
+
+    await useAiStore.getState().createSession();
+
+    expect(createBody()).not.toHaveProperty('orgId');
+    expect(createBody()).toMatchObject({ pageContext: { type: 'record', kind: 'ticket', orgId: ORG_C } });
+  });
+
   it('sends no orgId for a device-bound task (startDeviceTask)', async () => {
     await useAiStore.getState().startDeviceTask(DEVICE_C, { type: 'device', id: DEVICE_C, hostname: 'WS-C', orgId: ORG_C });
 

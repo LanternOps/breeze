@@ -60,11 +60,29 @@ export default function FlowsPage() {
   const triggerLabel = (flow: FlowSummaryDto) =>
     t(/* i18n-dynamic */ `trigger.${flow.triggerType}`, { defaultValue: flow.triggerType });
 
+  // W05 (#5220): a monthly cap refuses runs without pausing the flow, so the
+  // list says so next to the status.
+  const refusedBadge = (flow: FlowSummaryDto) =>
+    flow.lastAdmissionRefusal ? (
+      <span
+        className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+        title={t(/* i18n-dynamic */ `usage.refused.${flow.lastAdmissionRefusal.code}`)}
+        data-testid={`flow-refused-${flow.id}`}
+      >
+        {t('usage.refusedBadge')}
+      </span>
+    ) : null;
+
   return (
     <div className="space-y-4 p-4" data-testid="flows-page">
-      <header>
-        <h1 className="text-xl font-semibold">{t('title')}</h1>
-        <p className="max-w-2xl text-sm text-muted-foreground">{t('subtitle')}</p>
+      <header className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h1 className="text-xl font-semibold">{t('title')}</h1>
+          <p className="max-w-2xl text-sm text-muted-foreground">{t('subtitle')}</p>
+        </div>
+        <a className="text-sm text-primary hover:underline" href="/settings/flow-limits" data-testid="flows-limits-link">
+          {t('usage.limitsLink')}
+        </a>
       </header>
 
       {loadFailed && <p data-testid="flow-error" className="text-sm text-destructive">{t('errors.loadFailed')}</p>}
@@ -96,7 +114,7 @@ export default function FlowsPage() {
                       <div className="font-mono text-xs text-muted-foreground">{flow.slug}</div>
                     </td>
                     <td className="p-2">{owner(flow)}</td>
-                    <td className="p-2">{statusChip(flow)}</td>
+                    <td className="p-2"><div className="flex flex-wrap items-center gap-1">{statusChip(flow)}{refusedBadge(flow)}</div></td>
                     <td className="p-2">{tierBadge(flow)}</td>
                     <td className="p-2">{triggerLabel(flow)}</td>
                     <td className="p-2">{formatDateTime(flow.updatedAt)}</td>
@@ -114,6 +132,7 @@ export default function FlowsPage() {
                     <span className="font-mono">{flow.slug}</span>
                     {owner(flow)}
                     {statusChip(flow)}
+                    {refusedBadge(flow)}
                     <span>{tierBadge(flow)}</span>
                     <span>{triggerLabel(flow)}</span>
                   </div>

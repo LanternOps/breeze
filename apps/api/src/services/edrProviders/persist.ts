@@ -5,9 +5,13 @@ import { validateVendorUrl } from './guardedFetch';
 import { getEdrProvider } from './registry';
 import { pgErrorCode } from '../../utils/pgErrors';
 import type {
+  EdrDetailOwnedField,
   EdrDetectionPage,
+  EdrDetectionRef,
+  EdrDetectionStatusUpdate,
   EdrErrorScope,
   VendorEdrEndpoint,
+  VendorEdrDetection,
   VendorEdrEndpointDetail,
   VendorEdrTenant,
 } from './types';
@@ -56,6 +60,8 @@ export type TenantFetch<T> =
 export interface InventoryFetch {
   endpoints: VendorEdrEndpoint[];
   details: VendorEdrEndpointDetail[];
+  /** `reread_open_on_inventory` adapters: the open detections asked about and the verdicts returned (applied by the job). */
+  reread?: { refs: EdrDetectionRef[]; updates: EdrDetectionStatusUpdate[] };
   /** Vendor-reported total, used for UNMAPPED tenants (their endpoints are counted, never stored). */
   count?: number;
 }
@@ -295,33 +301,39 @@ export async function persistInventory(
       updatedAt: now,
     }));
 
+    // Opt-in (capabilities.detailOwnedFields): columns the list call cannot fill
+    // keep their stored value on conflict. A first insert still takes the list value.
+    const detailOwned = new Set<string>(getEdrProvider(conn.provider).capabilities?.detailOwnedFields ?? []);
+    const listSet: Record<EdrDetailOwnedField | string, ReturnType<typeof sql>> = {
+      hostname: sql`excluded.hostname`,
+      fqdn: sql`excluded.fqdn`,
+      serialNumber: sql`excluded.serial_number`,
+      macAddresses: sql`excluded.mac_addresses`,
+      ipAddresses: sql`excluded.ip_addresses`,
+      osPlatform: sql`excluded.os_platform`,
+      osName: sql`excluded.os_name`,
+      endpointType: sql`excluded.endpoint_type`,
+      agentVersion: sql`excluded.agent_version`,
+      health: sql`excluded.health`,
+      online: sql`excluded.online`,
+      isolationState: sql`excluded.isolation_state`,
+      tamperProtection: sql`excluded.tamper_protection`,
+      policyName: sql`excluded.policy_name`,
+      lastSeenAt: sql`excluded.last_seen_at`,
+      vendorRaw: sql`excluded.vendor_raw`,
+      updatedAt: sql`excluded.updated_at`,
+    };
+    for (const field of detailOwned) delete listSet[field];
+
     for (const batch of chunk(values, UPSERT_CHUNK)) {
       await tx
         .insert(edrEndpoints)
         .values(batch)
         .onConflictDoUpdate({
           target: [edrEndpoints.connectionId, edrEndpoints.vendorEndpointId],
-          set: {
-            hostname: sql`excluded.hostname`,
-            fqdn: sql`excluded.fqdn`,
-            serialNumber: sql`excluded.serial_number`,
-            macAddresses: sql`excluded.mac_addresses`,
-            ipAddresses: sql`excluded.ip_addresses`,
-            osPlatform: sql`excluded.os_platform`,
-            osName: sql`excluded.os_name`,
-            endpointType: sql`excluded.endpoint_type`,
-            agentVersion: sql`excluded.agent_version`,
-            health: sql`excluded.health`,
-            online: sql`excluded.online`,
-            isolationState: sql`excluded.isolation_state`,
-            tamperProtection: sql`excluded.tamper_protection`,
-            policyName: sql`excluded.policy_name`,
-            lastSeenAt: sql`excluded.last_seen_at`,
-            vendorRaw: sql`excluded.vendor_raw`,
-            updatedAt: sql`excluded.updated_at`,
-            // org_id / tenant_id are DELIBERATELY absent (a row never moves across
-            // orgs); breeze_device_id / device_match_source belong to Breeze matching.
-          },
+          // org_id / tenant_id are DELIBERATELY absent (a row never moves across
+          // orgs); breeze_device_id / device_match_source belong to Breeze matching.
+          set: listSet,
           setWhere: sql`${edrEndpoints.orgId} = excluded.org_id AND ${edrEndpoints.tenantId} = excluded.tenant_id`,
         });
     }
@@ -335,6 +347,10 @@ export async function persistInventory(
       if (detail.agentVersion !== undefined) set.agentVersion = clip(detail.agentVersion, 64);
       if (detail.osName !== undefined) set.osName = clip(detail.osName, 255);
       if (detail.serialNumber !== undefined) set.serialNumber = clip(detail.serialNumber, 128);
+      if (detail.fqdn !== undefined) set.fqdn = clip(detail.fqdn, 255);
+      if (detail.ipAddresses !== undefined) set.ipAddresses = detail.ipAddresses;
+      if (detail.osPlatform !== undefined) set.osPlatform = detail.osPlatform;
+      if (detail.endpointType !== undefined) set.endpointType = detail.endpointType;
       await tx
         .update(edrEndpoints)
         .set(set as never)
@@ -390,6 +406,19 @@ export async function persistInventory(
 // ---------------------------------------------------------------------------
 // Detections
 // ---------------------------------------------------------------------------
+
+/**
+ * `details._breeze` is framework-reserved: the vendor locator + group key sync
+ * wrote from vendor data. An adapter-supplied `_breeze` is always discarded, so
+ * nothing a vendor's free-form `details` carries can forge a locator.
+ */
+function withBreezeLocator(d: VendorEdrDetection): Record<string, unknown> {
+  const { _breeze: _discarded, ...rest } = d.details;
+  const vendorRef = clip(d.vendorRef, 255);
+  const groupKey = clip(d.groupKey, 128);
+  if (vendorRef === null && groupKey === null) return rest;
+  return { ...rest, _breeze: { vendorRef, groupKey } };
+}
 
 export async function persistDetections(
   tx: EdrSyncTx,
@@ -489,7 +518,7 @@ export async function persistDetections(
         detectedAt: d.detectedAt,
         resolvedAt: d.resolvedAt,
         lastVendorUpdateAt: d.lastVendorUpdateAt,
-        details: d.details,
+        details: withBreezeLocator(d),
         updatedAt: now,
       };
     });
@@ -519,11 +548,17 @@ export async function persistDetections(
             resolvedAt: sql`excluded.resolved_at`,
             lastVendorUpdateAt: sql`excluded.last_vendor_update_at`,
             details: sql`excluded.details`,
-            vendorEndpointId: sql`COALESCE(excluded.vendor_endpoint_id, ${edrDetections.vendorEndpointId})`,
-            endpointId: sql`COALESCE(excluded.endpoint_id, ${edrDetections.endpointId})`,
+            // STICKY attribution: a detection's vendor endpoint is fixed at its first non-null
+            // attribution. A later rename / name reuse can never re-bind it to another machine;
+            // a later value only fills a null. (No-op for GravityZone: its endpoint id never changes.)
+            vendorEndpointId: sql`COALESCE(${edrDetections.vendorEndpointId}, excluded.vendor_endpoint_id)`,
+            // endpoint_id / breeze_device_id may only be FILLED while they describe the SAME vendor endpoint the
+            // row keeps. If the stored vendor id differs from the incoming one (name reuse after a re-enrol), a
+            // NULLed link (endpoint row pruned -> FK SET NULL) must not be filled from the other machine.
+            endpointId: sql`CASE WHEN ${edrDetections.vendorEndpointId} IS NULL OR ${edrDetections.vendorEndpointId} = excluded.vendor_endpoint_id THEN COALESCE(${edrDetections.endpointId}, excluded.endpoint_id) ELSE ${edrDetections.endpointId} END`,
             // A closed detection keeps its historical device; refreshDetectionDeviceLinks
-            // re-points open ones. Only fill a missing link here.
-            breezeDeviceId: sql`COALESCE(${edrDetections.breezeDeviceId}, excluded.breeze_device_id)`,
+            // re-points open ones. Only fill a missing link here (same-endpoint rule as above).
+            breezeDeviceId: sql`CASE WHEN ${edrDetections.vendorEndpointId} IS NULL OR ${edrDetections.vendorEndpointId} = excluded.vendor_endpoint_id THEN COALESCE(${edrDetections.breezeDeviceId}, excluded.breeze_device_id) ELSE ${edrDetections.breezeDeviceId} END`,
             updatedAt: sql`excluded.updated_at`,
             // org_id / tenant_id / notified_severity / detached_at / last_site_id are
             // DELIBERATELY absent: a live row never moves across orgs.
@@ -558,6 +593,138 @@ export async function persistDetections(
   }
 
   return { upserted, failedTenants, skipped };
+}
+
+// ---------------------------------------------------------------------------
+// reread_open_on_inventory (A5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Phase 1 loader: per tenant, at most `perTenant` LIVE open detections, stalest
+ * first. The rotation key is `updated_at` (every applied update and every
+ * omitted-ref bump moves it), so each open row reaches the front of the queue in
+ * turn. The locator comes from `details._breeze`, which sync itself wrote from
+ * vendor data. Takes any drizzle handle with `execute`.
+ */
+export async function loadOpenDetectionRefs(
+  tx: Pick<EdrSyncTx, 'execute'>,
+  connectionId: string,
+  tenantIds: string[],
+  perTenant: number,
+): Promise<Map<string, EdrDetectionRef[]>> {
+  const out = new Map<string, EdrDetectionRef[]>();
+  if (tenantIds.length === 0 || perTenant <= 0) return out;
+  const rows = (await tx.execute(sql`
+    SELECT tenant_id, vendor_detection_id, vendor_kind, vendor_ref, group_key FROM (
+      SELECT tenant_id, vendor_detection_id, vendor_kind,
+             details->'_breeze'->>'vendorRef' AS vendor_ref,
+             details->'_breeze'->>'groupKey' AS group_key,
+             row_number() OVER (PARTITION BY tenant_id ORDER BY updated_at ASC, id ASC) AS rn
+      FROM edr_detections
+      WHERE connection_id = ${connectionId}::uuid
+        AND tenant_id IN (${sql.join(tenantIds.map((id) => sql`${id}::uuid`), sql`, `)})
+        AND detached_at IS NULL
+        AND status IN ('open', 'in_progress', 'unknown')
+    ) ranked
+    WHERE rn <= ${perTenant}
+    ORDER BY tenant_id, rn
+  `)) as unknown as Array<{
+    tenant_id: string; vendor_detection_id: string; vendor_kind: EdrDetectionRef['vendorKind'];
+    vendor_ref: string | null; group_key: string | null;
+  }>;
+  for (const r of rows) {
+    const list = out.get(r.tenant_id) ?? [];
+    list.push({
+      vendorDetectionId: r.vendor_detection_id,
+      vendorKind: r.vendor_kind,
+      vendorRef: r.vendor_ref ?? null,
+      groupKey: r.group_key ?? null,
+    });
+    out.set(r.tenant_id, list);
+  }
+  return out;
+}
+
+/**
+ * Phase 3 writer for the re-read. A narrow UPDATE: status/severity/resolution
+ * fields only. It never moves org_id / tenant_id and never touches
+ * `notified_severity`, so Phase 4 still sees an escalation. Rows the adapter was
+ * asked about but omitted (the vendor no longer knows them) are NOT closed: they
+ * only get `updated_at` bumped so they rotate to the back of the queue.
+ */
+export async function applyDetectionStatusUpdates(
+  tx: EdrSyncTx,
+  o: {
+    connectionId: string;
+    tenantId: string;
+    orgId: string;
+    updates: EdrDetectionStatusUpdate[];
+    /** Every ref the adapter was asked about (for rotation of the omitted ones). */
+    attempted: Array<{ vendorDetectionId: string; vendorKind: string }>;
+  },
+): Promise<number> {
+  let changed = 0;
+  const updatedKeys = new Set(o.updates.map((u) => `${u.vendorKind}\u0000${u.vendorDetectionId}`));
+
+  for (const batch of chunk(o.updates, 200)) {
+    const values = sql.join(
+      batch.map((u) => sql`(
+        ${u.vendorDetectionId.slice(0, 255)}::text, ${u.vendorKind}::text, ${u.status}::text, ${clip(u.vendorStatus, 64)}::text,
+        ${u.severity}::text, ${clip(u.vendorSeverity, 64)}::text,
+        ${u.resolvedAt ? u.resolvedAt.toISOString() : null}::timestamptz,
+        ${u.lastVendorUpdateAt ? u.lastVendorUpdateAt.toISOString() : null}::timestamptz
+      )`),
+      sql`, `,
+    );
+    const written = await tx.execute(sql`
+      UPDATE edr_detections AS d
+      SET status = v.status,
+          vendor_status = v.vendor_status,
+          severity = v.severity,
+          vendor_severity = v.vendor_severity,
+          resolved_at = v.resolved_at,
+          last_vendor_update_at = v.last_vendor_update_at,
+          updated_at = now()
+      FROM (VALUES ${values}) AS v(vendor_detection_id, vendor_kind, status, vendor_status, severity, vendor_severity, resolved_at, last_vendor_update_at)
+      WHERE d.connection_id = ${o.connectionId}::uuid
+        AND d.tenant_id = ${o.tenantId}::uuid
+        AND d.org_id = ${o.orgId}::uuid
+        AND d.vendor_kind = v.vendor_kind
+        AND d.vendor_detection_id = v.vendor_detection_id
+        AND d.detached_at IS NULL
+        AND d.status IN ('open', 'in_progress', 'unknown')
+      RETURNING d.id
+    `);
+    changed += (written as unknown as unknown[]).length;
+  }
+
+  const omitted = o.attempted.filter((a) => !updatedKeys.has(`${a.vendorKind}\u0000${a.vendorDetectionId}`));
+  for (const batch of chunk(omitted, 200)) {
+    await tx.execute(sql`
+      UPDATE edr_detections SET updated_at = now()
+      WHERE connection_id = ${o.connectionId}::uuid
+        AND tenant_id = ${o.tenantId}::uuid
+        AND org_id = ${o.orgId}::uuid
+        AND detached_at IS NULL
+        AND (vendor_kind, vendor_detection_id) IN (${sql.join(
+          batch.map((a) => sql`(${a.vendorKind}::text, ${a.vendorDetectionId.slice(0, 255)}::text)`),
+          sql`, `,
+        )})
+    `);
+  }
+
+  if (changed > 0) {
+    await tx.execute(sql`
+      UPDATE edr_tenants SET open_detection_count = (
+        SELECT count(*)::int FROM edr_detections x
+        WHERE x.tenant_id = ${o.tenantId}::uuid
+          AND x.detached_at IS NULL
+          AND x.status IN ('open', 'in_progress', 'unknown')
+      ), updated_at = now()
+      WHERE id = ${o.tenantId}::uuid
+    `);
+  }
+  return changed;
 }
 
 // ---------------------------------------------------------------------------

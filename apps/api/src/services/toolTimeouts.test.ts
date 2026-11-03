@@ -53,6 +53,9 @@ describe('getToolTimeout', () => {
     expect(getToolTimeout('analyze_screen')).toBeGreaterThanOrEqual(agentRoundTrip);
     expect(getToolTimeout('computer_control')).toBeGreaterThanOrEqual(agentRoundTrip);
   });
+  it('gives a fleet release room to dispatch a full 500-device set (W06 #5221)', () => {
+    expect(getToolTimeout('run_script_on_targets')).toBe(600_000);
+  });
   it('returns the override for report generation', () => {
     expect(getToolTimeout('generate_report')).toBe(90_000);
   });

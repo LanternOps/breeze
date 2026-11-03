@@ -24,7 +24,9 @@ export type HomeLoad =
  */
 export async function fetchWispHome(): Promise<HomeLoad> {
   const res = await fetchWithAuth('/wisp/home', { skipOrgIdInjection: true });
-  const body = (await res.json().catch(() => null)) as { code?: unknown; data?: WispHomePayload } | null;
+  const body = (await res.json().catch(() => null)) as { code?: unknown; data?: WispHomePayload | null } | null;
+  // No grant is a 200 with null data (#10200); a pre-#10200 API answered 404 `no_grant`.
+  if (res.ok && body?.data === null) return { kind: 'noGrant' };
   if (res.status === 404 && body?.code === 'no_grant') return { kind: 'noGrant' };
   if (res.status === 403 && body?.code === 'entitlement_required') return { kind: 'locked' };
   // A JSON permission refusal only: a non-JSON 403 (proxy/WAF) or MFA_REQUIRED stays a load error with retry.

@@ -219,6 +219,34 @@ function bindsMatch(record: GrantBind, bind: GrantBind): boolean {
     && (record.resourceDigest ?? '') === (bind.resourceDigest ?? '');
 }
 
+/**
+ * Canonical form of a uuid id inside a resource digest (#10119). Postgres
+ * renders a `uuid` column lowercase, but a client may send any case in a path
+ * segment or a request body, so the mint and the redeeming route would
+ * otherwise hash two different strings for the same device and the grant could
+ * never be spent: an unrecoverable 403 `STEP_UP_REQUIRED`.
+ *
+ * Only ever apply this to a field that is uuid-typed AT ITS SOURCE — a Zod
+ * `.uuid()` on the binding schema, or a uuid column. Case is not significant
+ * in a uuid, so folding it loses nothing. It IS significant in free text: a
+ * maintenance `reason`, a rollback version string, an Entra tenant or object id
+ * (`z.string().min(1).max(64)`, never uuid-validated) must be hashed as given,
+ * or two genuinely different bindings could collapse onto one digest.
+ */
+export function canonicalId(id: string): string {
+  return id.trim().toLowerCase();
+}
+
+/**
+ * The same, for an array of uuid ids. Folds BEFORE dedup and sort, which is the
+ * order that matters: `[...new Set(ids)].sort()` on raw input keeps two
+ * spellings of one device as two entries, and sorts uppercase ahead of
+ * lowercase, so the digest depends on how the caller typed the ids.
+ */
+export function canonicalIds(ids: readonly string[]): string[] {
+  return [...new Set(ids.map(canonicalId))].sort();
+}
+
 export function rollbackResourceDigest(input: {
   deviceId: string;
   currentVersion: string;
@@ -227,7 +255,7 @@ export function rollbackResourceDigest(input: {
 }): `sha256:${string}` {
   const canonical = JSON.stringify({
     currentVersion: input.currentVersion,
-    deviceId: input.deviceId,
+    deviceId: canonicalId(input.deviceId),
     reason: input.reason,
     targetVersion: input.targetVersion,
   });
@@ -255,7 +283,7 @@ export function maintenanceResourceDigest(input: {
   durationHours: number;
 }): `sha256:${string}` {
   const canonical = JSON.stringify({
-    deviceIds: [...new Set(input.deviceIds)].sort(),
+    deviceIds: canonicalIds(input.deviceIds),
     durationHours: input.durationHours,
     reason: input.reason.trim(),
   });
@@ -269,7 +297,7 @@ export function maintenanceResourceDigest(input: {
  * the uuid in (#9380 review).
  */
 export function forceRebootResourceDigest(input: { deviceId: string }): `sha256:${string}` {
-  const canonical = JSON.stringify({ deviceId: input.deviceId.toLowerCase() });
+  const canonical = JSON.stringify({ deviceId: canonicalId(input.deviceId) });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 
@@ -292,9 +320,9 @@ export function moveOrgResourceDigest(input: {
 }): `sha256:${string}` {
   const canonical = JSON.stringify({
     acceptCurrencyMismatch: input.acceptCurrencyMismatch === true,
-    deviceId: input.deviceId,
-    targetOrgId: input.targetOrgId,
-    targetSiteId: input.targetSiteId,
+    deviceId: canonicalId(input.deviceId),
+    targetOrgId: canonicalId(input.targetOrgId),
+    targetSiteId: canonicalId(input.targetSiteId),
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
@@ -309,9 +337,9 @@ export interface ParkedAssignResource {
 export function parkedAssignResourceDigest(input: ParkedAssignResource): `sha256:${string}` {
   const canonical = JSON.stringify({
     kind: 'parked_device_assign',
-    deviceId: input.deviceId,
-    targetOrgId: input.targetOrgId,
-    targetSiteId: input.targetSiteId,
+    deviceId: canonicalId(input.deviceId),
+    targetOrgId: canonicalId(input.targetOrgId),
+    targetSiteId: canonicalId(input.targetSiteId),
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
@@ -323,7 +351,7 @@ export function parkedAssignResourceDigest(input: ParkedAssignResource): `sha256
  */
 export function parkedBulkAssignResourceDigest(items: readonly ParkedAssignResource[]): `sha256:${string}` {
   const sorted = [...items]
-    .map((item) => ({ deviceId: item.deviceId, targetOrgId: item.targetOrgId, targetSiteId: item.targetSiteId }))
+    .map((item) => ({ deviceId: canonicalId(item.deviceId), targetOrgId: canonicalId(item.targetOrgId), targetSiteId: canonicalId(item.targetSiteId) }))
     .sort((a, b) => (a.deviceId < b.deviceId ? -1 : a.deviceId > b.deviceId ? 1 : 0));
   const canonical = JSON.stringify({ kind: 'parked_device_assign_bulk', items: sorted });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
@@ -331,7 +359,7 @@ export function parkedBulkAssignResourceDigest(items: readonly ParkedAssignResou
 
 /** Binding for turning ON deploy-key enrollment for one partner. */
 export function preAssignmentEnableResourceDigest(input: { partnerId: string }): `sha256:${string}` {
-  const canonical = JSON.stringify({ kind: 'pre_assignment_enable', partnerId: input.partnerId, enabled: true });
+  const canonical = JSON.stringify({ kind: 'pre_assignment_enable', partnerId: canonicalId(input.partnerId), enabled: true });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 
@@ -385,7 +413,7 @@ export function scriptLanePolicyResourceDigest(input: {
   widening?: ScriptLaneWideningDelta;
 }): `sha256:${string}` {
   const canonical = JSON.stringify({
-    orgId: input.orgId,
+    orgId: canonicalId(input.orgId),
     unattendedEnabled: input.unattendedEnabled,
     reset: input.reset === true,
     widening: canonicalWidening(input.widening),
@@ -405,7 +433,7 @@ export function partnerScriptCeilingResourceDigest(input: {
   widening?: ScriptLaneWideningDelta;
 }): `sha256:${string}` {
   const canonical = JSON.stringify({
-    partnerId: input.partnerId,
+    partnerId: canonicalId(input.partnerId),
     unattendedAllowed: input.unattendedAllowed,
     widening: canonicalWidening(input.widening),
   });
@@ -420,8 +448,8 @@ export function topologyArmResourceDigest(input: {
 }): `sha256:${string}` {
   const canonical = JSON.stringify({
     action: input.action,
-    siteId: input.siteId.toLowerCase(),
-    subjectId: input.subjectId.toLowerCase(),
+    siteId: canonicalId(input.siteId),
+    subjectId: canonicalId(input.subjectId),
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
@@ -438,8 +466,8 @@ export function unattestedRestoreResourceDigest(input: {
 }): `sha256:${string}` {
   const canonical = JSON.stringify({
     commandType: input.commandType,
-    snapshotDbId: input.snapshotDbId.toLowerCase(),
-    targetDeviceId: input.targetDeviceId.toLowerCase(),
+    snapshotDbId: canonicalId(input.snapshotDbId),
+    targetDeviceId: canonicalId(input.targetDeviceId),
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
@@ -460,7 +488,7 @@ function canonicalValue(value: unknown): unknown {
 
 /** Charge-now step-up binding: one invoice. */
 export function autopayChargeNowResourceDigest(input: { invoiceId: string }): `sha256:${string}` {
-  const canonical = JSON.stringify({ kind: 'autopay_charge_now', invoiceId: input.invoiceId.toLowerCase() });
+  const canonical = JSON.stringify({ kind: 'autopay_charge_now', invoiceId: canonicalId(input.invoiceId) });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 
@@ -475,7 +503,7 @@ export function partnerPaymentSettingsResourceDigest(input: {
 }): `sha256:${string}` {
   const canonical = JSON.stringify({
     kind: 'partner_payment_settings_update',
-    partnerId: input.partnerId.toLowerCase(),
+    partnerId: canonicalId(input.partnerId),
     settings: canonicalValue(input.settings),
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
@@ -493,7 +521,7 @@ export function orgPaymentSettingsResourceDigest(input: {
 }): `sha256:${string}` {
   const canonical = JSON.stringify({
     kind: 'org_payment_settings_update',
-    orgId: input.orgId.toLowerCase(),
+    orgId: canonicalId(input.orgId),
     settings: canonicalValue(input.settings),
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
@@ -513,9 +541,9 @@ export function migrationWindowOpenResourceDigest(input: {
 }): `sha256:${string}` {
   const canonical = JSON.stringify({
     kind: 'migration_window_open',
-    partnerId: input.partnerId.toLowerCase(),
-    principalId: input.principalId.toLowerCase(),
-    orgIds: [...new Set(input.orgIds.map((id) => id.toLowerCase()))].sort(),
+    partnerId: canonicalId(input.partnerId),
+    principalId: canonicalId(input.principalId),
+    orgIds: canonicalIds(input.orgIds),
     endsAt: new Date(input.endsAt).toISOString(),
     writesPerHour: input.writesPerHour ?? null,
   });
@@ -534,7 +562,7 @@ export function autopayRequestRecipientResourceDigest(input: {
   const canonical = JSON.stringify({
     kind: 'autopay_request_recipient',
     mode: input.mode ?? 'request',
-    orgIds: [...new Set(input.orgIds.map(id => id.toLowerCase()))].sort(),
+    orgIds: canonicalIds(input.orgIds),
     recipientOverride: input.recipientOverride,
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
@@ -544,7 +572,10 @@ export function callerVerificationAdministrativeDigest(input: {
   orgId: string; entraTenantId: string; entraOid: string; reason: string;
 }): `sha256:${string}` {
   const reasonHash = createHash('sha256').update(input.reason.trim()).digest('hex');
-  const canonical = [input.orgId, input.entraTenantId, input.entraOid, reasonHash].join('|');
+  // Only `orgId` is folded: it is `z.string().uuid()`. `entraTenantId` and
+  // `entraOid` are `z.string().min(1).max(64)` and never uuid-validated, so they
+  // are hashed exactly as given (#10119).
+  const canonical = [canonicalId(input.orgId), input.entraTenantId, input.entraOid, reasonHash].join('|');
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 
@@ -559,12 +590,14 @@ export function wispGrantResourceDigest(input: {
   orgId: string | null;
   requestedCeilingHash: string;
 }): `sha256:${string}` {
-  const canonical = `${input.grantorUserId}:${input.partnerId}:${input.orgId ?? '*'}:${input.requestedCeilingHash}`;
+  // `requestedCeilingHash` is a server-computed `^[a-f0-9]{64}$` digest, not an
+  // id, so it is left exactly as given (#10119).
+  const canonical = `${canonicalId(input.grantorUserId)}:${canonicalId(input.partnerId)}:${input.orgId === null ? '*' : canonicalId(input.orgId)}:${input.requestedCeilingHash}`;
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 
 export function passkeyRemovalResourceDigest(passkeyId: string): `sha256:${string}` {
-  const canonical = JSON.stringify({ passkeyId });
+  const canonical = JSON.stringify({ passkeyId: canonicalId(passkeyId) });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 

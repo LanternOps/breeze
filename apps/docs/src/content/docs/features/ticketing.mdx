@@ -99,6 +99,28 @@ If the two organizations bill in different currencies and the ticket still has *
   Tickets can only be moved between organizations of the **same partner**. This is a high-privilege action: it requires ticket and organization edit permissions plus MFA confirmation, and isn't available to site-restricted technicians.
 </Aside>
 
+### Merging duplicate tickets
+
+When the same issue arrives twice (a customer emails and also calls, or two people report one outage), merge the duplicate into the ticket you want to keep.
+
+1. Open the duplicate and choose **Merge into…** in the ticket header.
+2. Pick the ticket to keep. The list shows the organization's open tickets, oldest first, and you can search it. Resolved and closed tickets cannot receive a merge.
+3. Read the preview. It lists what moves to the kept ticket (comments, attachments, time entries, parts, checklist items, linked alerts and emails, tags), the links that are dropped, and whether the kept ticket keeps its own device or takes the duplicate's. When the ticket you picked is not the older one, the preview suggests the older one, which is usually the one to keep.
+4. Decide whether to email the duplicate's requester. **Notify the requester** is ticked by default when the two tickets have different requesters.
+5. Click **Merge** and confirm with MFA.
+
+After the merge:
+
+- The duplicate becomes a **closed, read-only record** with a banner linking to the kept ticket. Nothing can be added to it or changed on it. Comments that moved show "from T-…" next to the author.
+- The kept ticket keeps its own SLA clock, priority and assignee. Time entries and parts move with their amounts and billing state unchanged.
+- **Replies follow the merge.** Email sent to the duplicate's thread is added to the kept ticket.
+- **In the customer portal**, the duplicate shows a "This request was merged into T-…" banner. Its requester can read and reply on the kept ticket.
+- Merged tickets are hidden from the queue. Tick **Show merged** above the list to see them.
+
+A merge cannot be undone. It is refused when the tickets belong to different organizations (move one first), when either ticket has a customer approval request or a budget, when either is tied to a service deliverable or an open migration import, when one is planned work and the other a support ticket, or when the duplicate has AI actions waiting for approval. The preview names the reason before you confirm.
+
+Merging needs ticket edit permission and access to both tickets' sites and devices. The AI assistant can preview and perform a merge through its ticket tool, under the same rules and with approval.
+
 ### Deleting and Restoring Tickets
 
 Click **Delete**, next to **Move to another org…** in the ticket header, to remove a ticket. A confirm dialog explains that the ticket is hidden from every queue and can be restored by an admin, then deletes it. The same **Delete** action is available from the bulk action bar for a batch of selected tickets.

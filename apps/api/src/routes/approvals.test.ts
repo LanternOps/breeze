@@ -213,6 +213,9 @@ vi.mock('./lifecycle', () => ({
 
 const pamLifecycleMocks = vi.hoisted(() => ({ createPamDecisionIntent: vi.fn() }));
 vi.mock('../services/pamActuationLifecycle', () => pamLifecycleMocks);
+// #8928: the elevation deny path queues the end-user outcome notice.
+const pamNotifyMocks = vi.hoisted(() => ({ enqueuePamRequestNotify: vi.fn(async () => 'queued' as const) }));
+vi.mock('../services/pamRequestNotify', () => pamNotifyMocks);
 pamLifecycleMocks.createPamDecisionIntent.mockImplementation(async (_tx, input) => ({
   actuationId: 'actuation-1',
   elevationRequestId: input.request.id,
@@ -1933,6 +1936,53 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
     expect(tx.auditValues).toHaveBeenCalledWith(
       expect.objectContaining({ eventType: 'denied', actor: 'technician' }),
     );
+  });
+
+  describe('end-user outcome notice (#8928)', () => {
+    beforeEach(() => pamNotifyMocks.enqueuePamRequestNotify.mockClear());
+
+    it('a uac_intercept deny queues one denied notice in the decide transaction, with the raw reason', async () => {
+      const { mainTx } = mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+      mockElevationTx([{ id: 'elev-1', orgId: 'org-9', deviceId: 'dev-1', revision: 1, flowType: 'uac_intercept' }]);
+      const res = await buildApp().request('/approvals/appr-1/deny', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'Not on the list' }),
+      });
+      expect(res.status).toBe(200);
+      expect(pamNotifyMocks.enqueuePamRequestNotify).toHaveBeenCalledTimes(1);
+      expect(pamNotifyMocks.enqueuePamRequestNotify).toHaveBeenCalledWith(
+        mainTx, { id: 'elev-1', deviceId: 'dev-1' }, 'denied', 'Not on the list',
+        // #10190 W07: the approver's name resolver, for decidedBy.technicianName.
+        expect.any(Function),
+      );
+    });
+
+    it('an approve does not notify', async () => {
+      mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+      mockElevationTx([{ id: 'elev-1', orgId: 'org-9', deviceId: 'dev-1', revision: 1, flowType: 'uac_intercept' }]);
+      expect((await buildApp().request('/approvals/appr-1/approve', { method: 'POST' })).status).toBe(200);
+      expect(pamNotifyMocks.enqueuePamRequestNotify).not.toHaveBeenCalled();
+    });
+
+    it('a deny of a request no end user waits on (not uac_intercept) does not notify', async () => {
+      mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+      mockElevationTx([{ id: 'elev-1', orgId: 'org-9', deviceId: 'dev-1', revision: 1, flowType: 'ai_tool_action' }]);
+      const res = await buildApp().request('/approvals/appr-1/deny', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'x' }),
+      });
+      expect(res.status).toBe(200);
+      expect(pamNotifyMocks.enqueuePamRequestNotify).not.toHaveBeenCalled();
+    });
+
+    it('a deny that lost the race (elevation decided elsewhere) does not notify', async () => {
+      mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+      mockElevationTx([{ id: 'elev-1', orgId: 'org-9', deviceId: 'dev-1', flowType: 'uac_intercept' }]);
+      lockedElevationRows = [{ status: 'denied' }];
+      const res = await buildApp().request('/approvals/appr-1/deny', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'x' }),
+      });
+      expect(res.status).toBe(409);
+      expect(pamNotifyMocks.enqueuePamRequestNotify).not.toHaveBeenCalled();
+    });
   });
 
   it.each([

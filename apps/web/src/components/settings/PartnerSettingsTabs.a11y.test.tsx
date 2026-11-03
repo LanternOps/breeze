@@ -102,6 +102,8 @@ describe('partner settings page: heading ladder and nesting on every panel (#978
     vi.mocked(fetchWithAuth).mockReset();
     vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
       if (url === '/orgs/partners/me') return json(PARTNER);
+      // The page probes sending domains only when /config reports the feature on (#9949).
+      if (url === '/config') return json({ features: { sendingDomains: true } });
       if (url === '/partner/sending-domains') {
         return json({ capability: { supported: true, provider: 'fake', verifiesByDns: true, eligible: true, maxDomains: 3 }, domains: [], identities: [] });
       }
@@ -150,6 +152,29 @@ describe('partner settings page: heading ladder and nesting on every panel (#978
     if (!['callerVerification', 'emailTemplates'].includes(_key)) expect(controls.length).toBeGreaterThan(0);
     for (const control of controls) {
       expect.soft(control, `${describeControl(control)} has no accessible name`).toHaveAccessibleName();
+    }
+  });
+
+  // #9790 W4 (spec §5.1): the per-tab "enforced" banner is gone from every tab.
+  it.each(panelTabs.map(t => [t.key, t.hash, t.label] as const))('no enforced banner on %s', async (_key, hash, labelKey) => {
+    await mountTab(hash, i18n.t(labelKey, { ns: 'settings' }));
+    expect(screen.queryByText(/enforced across all organizations/i)).toBeNull();
+  });
+
+  // #9790 W4: a badge's meaning is its visible text (not colour or icon), and
+  // its explanation sits behind a named help trigger.
+  it.each(['defaults', 'security', 'ai-budgets', 'remote-access'])('every badge has a text equivalent on #%s', async (hash) => {
+    const tab = panelTabs.find(t => t.hash === hash)!;
+    await mountTab(hash, i18n.t(tab.label, { ns: 'settings' }));
+    const badges = Array.from(document.querySelectorAll('[data-testid^="partner-settings-badge-"]'))
+      .filter(el => el.getAttribute('data-testid') !== 'partner-settings-badge-legend');
+    expect(badges.length).toBeGreaterThan(0);
+    for (const badge of badges) {
+      expect(badge.textContent?.trim()).not.toBe('');
+      const help = badge.parentElement!.querySelector('button');
+      expect(help, `${badge.getAttribute('data-testid')} has no help trigger`).not.toBeNull();
+      const name = help!.getAttribute('aria-label') ?? '';
+      expect(name.startsWith(`About “${badge.textContent!.trim()}” (`) && name.endsWith(')'), name).toBe(true);
     }
   });
 

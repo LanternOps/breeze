@@ -35,9 +35,11 @@ The workers are the built-in AI every Breeze deployment has.
 
 ## Wisp
 
-**[Wisp](/features/wisp/)** is one per person and sits above the workers. It keeps an eye on the estate that person can see, nudges them when something needs a human, and hands focused jobs to the workers. What it hands off shows up as a run or an AI task.
+**[Wisp](/features/wisp/)** is one per person and sits above the workers. It keeps an eye on the estate that person can see, nudges them when something needs a human, and hands focused jobs to the workers. What it hands off shows up as a run or an AI task. Wisp runs on Breeze Cloud only: on a self-hosted server its sidebar entry and page show a lock, and there is nothing to configure.
 
 ## Governance
+
+AI settings have one home, **Settings → AI** (`/settings/ai`, v0.125.0+). It gathers the AI cards you are allowed to open, including AI Usage, Script authoring and Tool Sources; their pages keep their addresses.
 
 The same controls apply to every worker: the [AI risk engine](#ai-risk-engine) and its tiers, [Approvals](#approval-workflow), [rate limits](#rate-limits), [cost tracking](#ai-cost-tracking), [bring your own LLM key](/features/bring-your-own-llm-key/), [tool sources](/features/tool-sources/) and the audit trail.
 
@@ -66,13 +68,13 @@ The assistant and background agents can author a script mid-conversation, have i
 |---|---|---|
 | **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `ioc_hunt` (list_rule_sets/preview_sweep/list_sweeps/sweep_status), `get_active_users`, `disk_cleanup` (preview), `system_cleanup` (status), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `get_service_monitoring_status`, `query_monitors`, `manage_monitors` (get/create/update/delete), `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `manage_software_policy` (list/get), `manage_browser_policy` (list), `list_playbooks`, `get_playbook_history`, `get_vulnerability_report`, `find_proven_fixes`, `get_device_vulnerabilities`, `search_documentation`, `propose_script`, `get_script_proposal` |
 | **Tier 2** | Auto-execute + audit logged | `manage_alerts` (acknowledge/resolve), `manage_services` (list), `ioc_hunt` (cancel_sweep), `manage_processes` (list), `manage_scheduled_tasks` (list), `system_cleanup` (list), `analyze_disk_usage` (refresh), `analyze_boot_performance` (triggerCollection), `set_device_context`, `resolve_device_context`, `apply_configuration_policy`, `remove_configuration_policy_assignment`, `manage_configuration_policy` (activate/deactivate), `create_incident`, `revoke_elevation`, `assign_security_training`, `acknowledge_network_device`, `registry_operations` (read_key/get_value), `file_operations` (list), `execute_command` (list_processes/file_list/event_logs_list) |
-| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `system_cleanup` (run), `network_discovery`, `security_scan` (quarantine/remove/restore), `ioc_hunt` (sweep/import_iocs), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_scheduled_tasks` (run/disable/enable), `registry_operations` (set_value/create_key/delete_key), `create_remote_session`, `request_elevation`, `trigger_agent_restart`, `trigger_agent_upgrade`, `configure_network_baseline`, `trigger_backup`, `restore_snapshot`, `execute_containment`, `collect_evidence`, `execute_playbook`, `remediate_vulnerability`, `manage_ai_agents` (authorize_supervised_key) |
+| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `system_cleanup` (run/cancel), `network_discovery`, `security_scan` (quarantine/remove/restore), `ioc_hunt` (sweep/import_iocs), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_scheduled_tasks` (run/disable/enable), `registry_operations` (set_value/create_key/delete_key), `create_remote_session`, `request_elevation`, `trigger_agent_restart`, `trigger_agent_upgrade`, `configure_network_baseline`, `trigger_backup`, `restore_snapshot`, `execute_containment`, `collect_evidence`, `execute_playbook`, `remediate_vulnerability`, `manage_ai_agents` (authorize_supervised_key) |
 | **Tier 4** | Blocked — never executed | Cross-org operations |
 
 `manage_monitors` supports `get` only. Its retired `create`, `update`, and `delete` actions return guidance without approval or write permission. Author network checks with `manage_monitor_definitions` using kind `network_check`; retire unconverted checks through the conversion ledger to preserve history.
 
 <Aside>
-  Tier classification is action-level, not tool-level. For example, `disk_cleanup` is Tier 1 when previewing and Tier 3 when executing. `system_cleanup` follows the same split — reading a run's status is Tier 1, listing the OS-native cleaners a device offers asks the device live and is Tier 2, running them is Tier 3; `analyze_disk_usage` and `analyze_boot_performance` read stored data at Tier 1, and only a fresh scan (`refresh`) or collection (`triggerCollection`) from the device is Tier 2; `manage_alerts` is Tier 1 for list/get and Tier 2 for acknowledge/resolve. `execute_command` resolves per `commandType`: `list_processes`, `file_list`, and `event_logs_list` are Tier 2; `list_services` and `event_logs_query` stay Tier 3 despite being reads, because they can return unredacted credential- or PII-bearing content (service binary paths, raw event-log messages); mutating types and `file_read` are Tier 3 too. `collect_evidence` is Tier 2 when it collects logs, processes or connections, and Tier 3 as soon as the request includes a screenshot (it is listed under Tier 3 because the unqualified call is checked at the stricter level). The AI resolves the tier for each specific action at runtime. Within Tier 2, strictly read-only entries — the `execute_command` types above, `file_operations` (list), `manage_services` (list), `manage_processes` (list), `manage_scheduled_tasks` (list), `system_cleanup` (list), a fresh `analyze_disk_usage` or `analyze_boot_performance` read, and the single-purpose get/list/search catalog, contract, invoice, and quote tools — auto-execute (with the audit-trail entry) under **every** approval mode, including the default per-step mode. Tier-2 *mutations* still take a lightweight inline confirmation under per-step approval, and a paused session always confirms everything Tier 2 and above.
+  Tier classification is action-level, not tool-level. For example, `disk_cleanup` is Tier 1 when previewing and Tier 3 when executing. `system_cleanup` follows the same split — reading a run's status is Tier 1, listing the OS-native cleaners a device offers asks the device live and is Tier 2, running them or cancelling a running run is Tier 3; `analyze_disk_usage` and `analyze_boot_performance` read stored data at Tier 1, and only a fresh scan (`refresh`) or collection (`triggerCollection`) from the device is Tier 2; `manage_alerts` is Tier 1 for list/get and Tier 2 for acknowledge/resolve. `execute_command` resolves per `commandType`: `list_processes`, `file_list`, and `event_logs_list` are Tier 2; `list_services` and `event_logs_query` stay Tier 3 despite being reads, because they can return unredacted credential- or PII-bearing content (service binary paths, raw event-log messages); mutating types and `file_read` are Tier 3 too. `collect_evidence` is Tier 2 when it collects logs, processes or connections, and Tier 3 as soon as the request includes a screenshot (it is listed under Tier 3 because the unqualified call is checked at the stricter level). The AI resolves the tier for each specific action at runtime. Within Tier 2, strictly read-only entries — the `execute_command` types above, `file_operations` (list), `manage_services` (list), `manage_processes` (list), `manage_scheduled_tasks` (list), `system_cleanup` (list), a fresh `analyze_disk_usage` or `analyze_boot_performance` read, and the single-purpose get/list/search catalog, contract, invoice, and quote tools — auto-execute (with the audit-trail entry) under **every** approval mode, including the default per-step mode. Tier-2 *mutations* still take a lightweight inline confirmation under per-step approval, and a paused session always confirms everything Tier 2 and above.
 </Aside>
 
 <Aside type="note">
@@ -330,7 +332,7 @@ Every AI session tracks token usage and estimated cost. The `aiCostTracker` serv
 
 ### Viewing costs
 
-Navigate to **Settings → AI Usage** to view:
+Navigate to **Settings → AI → AI Usage** (`/settings/ai-usage`) to view:
 
 | Metric | Description |
 |---|---|
@@ -499,10 +501,12 @@ See [Backup & Recovery](/backup/overview/) for configuration details.
 
 The AI can create and manage security incidents, execute containment actions, and collect forensic evidence. These tools are available in AI chat and to AI agents.
 
+Network isolation is Windows-only until Linux and macOS support ship. `release_containment` is planned for a **later release**; use the console release control now. See [Network isolation](/features/network-isolation/) for reachability, expiry, and the break-glass runbook.
+
 | Tool | Tier | Description |
 |------|------|-------------|
 | `create_incident` | 2 | Create a new security incident with classification and severity (needs `alerts.write`) |
-| `execute_containment` | 3 | Run a containment action on a device (process kill, network isolation, account disable, USB block). Needs both `devices.execute` and `alerts.write`, because it also records the action on the incident |
+| `execute_containment` | 3 | Isolate a supported device from the network through the isolation service (off by default behind `NETWORK_ISOLATION_ENABLED`), or kill a process. Account disable and USB block remain unimplemented. Needs both `devices.execute` and `alerts.write`, because it also records the action on the incident |
 | `collect_evidence` | 3 | Collect forensic evidence from a device (logs, processes, connections). Evidence without a screenshot runs at Tier 2; a request that includes a screenshot needs approval |
 | `get_incident_timeline` | 1 | View the full timeline of an incident |
 | `generate_incident_report` | 1 | Generate a structured report with action and evidence summaries |
@@ -541,7 +545,7 @@ Read-only tools wired into chat and headless AI agents in #6755 (W01), covering 
 | `list_scripts` | 1 | List scripts in the library |
 | `get_script_details` | 1 | Script content, versions, and execution stats |
 | `list_script_templates` | 1 | List built-in script templates |
-| `get_script_execution_history` | 1 | Past execution results for a script |
+| `get_script_execution_history` | 1 | Past script runs for one script, one device (`deviceId`, every script run there), or both; optional `since` |
 | `list_device_restore_point_attempts` | 1 | A device's Windows System Restore checkpoint attempts — taken, skipped or failed before each patch run, script or install (v0.124.0+) |
 | `get_trust_page_status` | 1 | Whether an organization's public trust page exists and is published, its public path and freshness, controls met, current and expiring declarations, and pending document access requests; never edits the page (v0.124.0+) |
 
@@ -576,6 +580,90 @@ These tools change security settings or act on devices. They are available in AI
 `sync_edr_data` (Tier 2, v0.124.0+) queues an immediate EDR sync — endpoints and detections — for one connection, the connections serving one organization, or every connection of the partner. Results arrive over the following minutes. It is limited to three calls per ten minutes.
 
 Three of these (user risk scores and detail, plus C2C item search from the backup table above) are available in chat but never to autonomous AI agents — see `AGENT_DENIED_READ_TOOLS` in the codebase for the current denylist, which also covers `query_c2c_jobs`, `get_sensitive_data_overview` and two M365 identity reads.
+
+### Security policy tools
+
+These tools read security status and compliance, and manage security recommendations, access reviews, audit-policy baselines, security and compliance policies, disk-encryption recovery keys and PAM elevation rules. They are available in AI chat and over MCP. Text they return that came from a device or a person (hostnames, local admin account names, audit deviations, policy and rule names, review notes) is shown to the model as untrusted data, never as instructions.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `get_security_compliance` | 1 | Security dashboard, score breakdown, 7/30/90-day trend, and AV, firewall, encryption, password-policy and local-admin status by device (`view`). Only what agents reported: no estimated firewall rules or encryption volumes |
+| `manage_security_recommendations` (list) | 1 | List security recommendations with their status per organization |
+| `manage_security_recommendations` (complete/dismiss) | 2 | Mark a recommendation completed or dismissed for one organization. Nothing changes on devices; reopen it in the web app |
+| `manage_access_reviews` (list/get) | 1 | View access reviews: each member's role, permissions and recorded decision |
+| `manage_access_reviews` (decide_item) | 2 | Record keep (`approved`) or remove (`revoked`) on one member. Nothing changes until a person completes the review in the web app; you cannot decide on your own access |
+| `manage_access_reviews` (create) | 3 | Start an access review of every member of the partner or organization. A review cannot be deleted |
+| `manage_audit_baselines` (list/compliance/device_results) | 1 | View audit-policy baselines, compliance across the devices you can see, and one device's deviations |
+| `manage_audit_baselines` (request_apply) | 2 | Ask for a Windows audit baseline to be applied to devices. A different person approves the request in the web app, and applying it is also done there |
+| `manage_audit_baselines` (create) | 3 | Create a baseline. An active baseline replaces the current one for that OS and starts daily audit-policy collection on those devices |
+| `manage_compliance_policies` (deactivate) | 3 | Turn off a compliance policy and close its alerts. Permanent: nothing re-enables it. A partner-wide policy needs a second approver (four-eyes) |
+| `manage_security_policies` (list) | 1 | List antivirus/EDR security policy templates |
+| `manage_security_policies` (create/update) | 3 | Create or change a security policy template. There is no delete; a partner-wide create needs a second approver (four-eyes) |
+| `manage_recovery_keys` (list) | 1 | BitLocker or FileVault key escrow status for a device. Never the key itself, and never who revealed it |
+| `manage_recovery_keys` (rotate/collect) | 3 | Rotate a Windows BitLocker recovery key (the old key stops working), or re-collect a device's keys into escrow |
+| `manage_pam_rules` (list_rules/get_config/list_signer_groups) | 1 | View PAM elevation rules, the default verdict for unmatched requests, and signer groups |
+| `manage_pam_rules` (create_rule/update_rule/delete_rule/set_config/create_signer_group/update_signer_group/delete_signer_group) | 3 | Change PAM rules, the default verdict or signer groups. The assistant can never create an auto-approve rule, and in an organization that has one it can only add rules or rename them |
+
+Three actions are never available to the assistant or to MCP, by design: completing an access review (it removes members and ends their sessions), approving an audit-baseline apply request, and revealing a recovery key. Do these in the web app. Writes to access reviews, compliance policies and PAM rules need a session that has completed MFA.
+
+Access reviews and PAM rules are available in chat and over MCP only; AI agents are never offered them. AI agents can read the rest. Their recommendation, security-policy, compliance-policy and recovery-key writes become proposals that a person approves, and they cannot create audit baselines or apply requests. A session limited to some sites or devices cannot change organization-wide records (security policies, recommendation status, compliance policies, audit baselines) or use access reviews.
+
+### Software tools
+
+These tools manage the software catalog, search winget and Homebrew, deploy catalog packages, read and change the software installed on a device, review the software inventory, and handle fleet findings and custom fields. They are available in AI chat and over MCP. Package, vendor and version names, finding titles and custom-field values are shown to the model as untrusted data, never as instructions.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `manage_software_catalog` (list/get) | 1 | View catalog packages with their versions and winget/Homebrew install methods. Download links show the host only |
+| `manage_software_catalog` (create/update/import_package) | 2 | Add a package (or import one with its install methods) or edit its name, vendor and description. A partner-wide package (`ownerScope: partner`) needs approval |
+| `manage_software_catalog` (add_version/update_version/promote_version/add_install_method/update_install_method/delete_install_method/archive) | 3 | Change which installer a package uses, or archive it. Armed auto-install policies and automations pick up the new installer without another approval, so each change is approved. Versions with install scripts, and partner-wide packages, are changed in the web app |
+| `search_packages` | 1 | Search winget (Windows) or Homebrew (macOS) for a package id to add as an install method |
+| `manage_software_deployments` (list/get/summary/results) | 1 | View software deployments and each device's result |
+| `manage_software_deployments` (cancel) | 2 | Cancel a deployment's pending installs |
+| `manage_software_deployments` (create/retry) | 3 | Install a catalog package on up to 100 named devices, or retry failed installs. If the package's installer changes after you approve, the deployment is refused |
+| `get_device_software` | 1 | Installed software on one device |
+| `manage_device_software` (update/uninstall) | 3 | Update or uninstall an application on one device |
+| `bootstrap_homebrew` | 3 | Install Homebrew on one Mac (needs a signed-in admin user) |
+| `manage_software_inventory` (list/names/devices) | 1 | Software seen across the fleet, its allow/block status, and the devices that have it |
+| `manage_software_inventory` (approve/deny/clear) | 3 | Add software to the organization's default allowlist or blocklist, or remove it. If that policy removes unapproved software automatically, this changes what is uninstalled |
+| `manage_fleet_findings` (acknowledge/dismiss/reopen) | 2 | Acknowledge, dismiss or reopen a fleet finding (read them with `get_fleet_findings`) |
+| `manage_custom_fields` (create_definition/update_definition) | 2 | Create or edit a custom field definition. A partner-wide definition needs approval to create and is edited in the web app |
+| `manage_custom_fields` (delete_definition/set_values) | 3 | Delete a definition (every device's value for it is removed), or set values on one device (the previous values are returned) |
+
+Not available to the assistant or over MCP: uploading an installer, the installer download link, pre- and post-install scripts, deploying to groups or a whole organization, fleet-finding remediation, and the managed-software download-origin policy. Every software, fleet-finding and custom-field write needs a session that has completed MFA.
+
+AI agents can read the software tools. Their catalog, deployment, inventory, fleet-finding and update writes become proposals that a person approves. They are never offered uninstall, `bootstrap_homebrew` or `manage_custom_fields` (custom-field values decide dynamic-group membership, which can widen what an agent may act on). A session limited to some sites or devices cannot change the catalog or the inventory allow/blocklists.
+
+### Device inventory and ops tools
+
+These tools read a device's activity timeline, agent health and recorded process snapshots, report which other management products are on the fleet, and manage per-device records: a device's function, linked device profiles, hand-entered (manual) assets and warranties. They are available in AI chat and over MCP. Event messages, process names, product names, asset notes and warranty text are shown to the model as untrusted data, never as instructions.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `get_device_events` | 1 | Activity timeline for one device: what ran, changed or failed, and who or what did it. Actor emails, IP addresses and raw event details are not returned |
+| `get_device_health` | 1 | The Breeze agent's latest health report for one device: overall state and each component's state and reason |
+| `get_process_samples` | 1 | The recorded top-process snapshot for one device at or before a time (default now). History, not a live process list |
+| `get_management_posture` | 1 | Other management products (RMM, endpoint security, backup, MDM, ...) detected across the fleet, per organization; pass `product` for the devices running one |
+| `search_agent_logs` | 1 | `source: watchdog` returns only the Breeze watchdog's health journal; `source: agent` leaves it out. Without `source` both are returned, as before |
+| `manage_device_function` (get) | 1 | One device's function (domain controller, file server, ...) |
+| `manage_device_function` (set) | 3 | Set or clear a device's function. Dynamic groups can target devices by function, so the change is approved |
+| `manage_device_links` (list/get/for_device) | 1 | Linked device profiles: multi-boot records of one machine, or a VM host and its guests |
+| `manage_device_links` (create/update/dissolve) | 2 | Link 2-10 device records, add or remove members, rename, or unlink them all. Each device keeps its own data |
+| `manage_manual_assets` (list) | 1 | Hand-entered inventory without an agent (spare laptops, phones, printers) |
+| `manage_manual_assets` (create/update/link/unlink) | 2 | Add or edit a hand-entered asset, retire it (`retiredAt`), or link it to an agent device or discovered asset |
+| `manage_manual_assets` (delete) | 3 | Permanently delete a hand-entered asset. Retire it instead to keep the record |
+| `manage_device_warranty` (get/expiring) | 1 | One device's warranty, or devices whose warranty ends within a number of days |
+| `manage_device_warranty` (refresh) | 3 | Re-check one device's warranty with its manufacturer now. The device's serial number is sent to the manufacturer, so the refresh is approved. Devices whose warranty the agent collects (HP) are refused |
+| `browse_device_event_log` (list_logs) | 2 | List a Windows device's event logs, read live from its agent (runs without a prompt, with an audit row) |
+| `browse_device_event_log` (query/get_event) | 3 | Read event text from a device's live event logs. Security and Application logs can hold credentials and personal data, so every read is approved. `search_logs` reads the ingested copy without reaching the device |
+| `manage_tenant_variables` (list) | 1 | Tenant variables that scripts receive as `{{var.key}}`. Secret values are never shown |
+| `manage_tenant_variables` (create/update/delete) | 3 | Change a value that every script on the organization's devices receives. Secret variables and partner-wide variables are changed in the web app; a partner-wide variable can be created here |
+| `manage_support_sessions` (list/get) | 1 | Quick Support sessions and whether their temporary client is online |
+| `manage_support_sessions` (end) | 3 | End a Quick Support session: the temporary client removes itself from the person's machine. Sessions are started in the web app |
+
+Every write, and every live event-log read, needs a session that has completed MFA. A session limited to some sites or devices cannot change tenant variables or use Quick Support sessions.
+
+AI agents can read these tools. Their link-group and manual-asset writes need an allowlist entry; a manual-asset delete and a warranty refresh become proposals that a person approves. Agents are never offered `manage_tenant_variables` writes (an agent that runs scripts must not also choose their inputs) or `manage_device_function` (set): a device's function decides dynamic-group membership, which can widen what an agent may act on. A session bound to specific devices cannot change link groups or use manual assets, and its reads only show the devices it may see.
 
 ---
 
@@ -652,6 +740,49 @@ The ticket, quote, billing-catalog, and PSA admin write tools are tiered per act
 | `manage_notification_channels (test)` | 2 | Check a channel's configuration (sends nothing) |
 | `manage_notification_channels (create/update/delete)` | 3 | Create, repoint, or delete a channel; the approver sees the destination host. Delete is four-eyes |
 | `test_webhook` | 3 | Send a real test delivery to a webhook |
+
+### Billing lifecycle tools
+
+These tools read and change how your organizations are billed: rate cards and work types, invoice defaults and each organization's tax, terms and billing contact, the agreement templates customers sign, signed agreements, and which contract lines bill a device. They are available in AI chat and over MCP. Rate-card, settings and device-billing tools need a partner-scoped session, as the matching pages do. Template text, rate-card names and notes, invoice footers and signer names are shown to the model as untrusted data, never as instructions.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `get_pax8_status` | 1 | Pax8 integration health and company readiness. Full partner access required |
+| `search_pax8_products` (search/provision_details/dependencies/pricing) | 1 | Mapped products, provisioning requirements, commitments and live vendor cost |
+| `manage_pax8_subscriptions` (list/drift) | 1 | Subscription seat counts and differences from billed quantities. Full partner access required |
+| `manage_pax8_subscriptions` (sync/link/unlink) | 3 | Supervised: sync every organization's snapshots or link/unlink a subscription's billing contract line. A link decides which contract line later Pax8 orders bill; unlink means staged changes on the subscription will be refused |
+| `manage_pax8_orders` (list/get/preview) | 1 | Orders and read-only previews with live cost evidence, customer price and active commitment rules |
+| `manage_pax8_orders` (create_draft/add_line/update_line/remove_line) | 2 | Stage and edit order drafts; nothing is purchased |
+| `manage_pax8_orders` (preflight) | 3 | Supervised: send staged content to Pax8 for an isMock dry run. Nothing is purchased |
+| `manage_pax8_orders` (submit) | 3 | Four-eyes: two people approve a billable order estimated at Pax8's current rate. Changed inputs, prices or commitments refuse submission. Every CANCEL is terminal; its commitment term appears on the approval card. Not offered to AI agents |
+| `manage_pax8_orders` (reconcile) | 3 | Supervised: record an approved attempt from vendor evidence without sending another write. Ambiguous outcomes stay unknown; a concurrent billing edit is preserved and flagged as `billing_conflict` |
+| `manage_billing_profiles` (list/get/list_work_types/get_org_profile) | 1 | Rate cards with their hourly rates per work type, work types, and the card an organization is billed by |
+| `manage_billing_profiles` (create/update/archive/set_rows/clone/create_work_type/update_work_type) | 3 | Change rate cards or work types. They price every organization of the partner, so every change is approved and needs full partner access. The previous values come back with the result. Archiving a work type, and AI price-list edits after a card is created, are done in the web app |
+| `manage_billing_profiles` (set_org_profile/clear_org_profile) | 3 | Choose, or clear, the rate card one organization is billed by |
+| `manage_billing_settings` (get_partner/get_org/currency_impact/reporting_totals) | 1 | Invoice defaults, one organization's tax, terms, billing contact and address, a preview of what an organization currency change would leave behind, and approximate totals across currencies |
+| `manage_billing_settings` (update_partner) | 3 | Change invoice defaults for every organization: currency, tax, invoice prefix and terms, footer, terms and conditions, automatic emails and the seller contact. Needs full partner access. Agreement reminder defaults are set on Billing → Agreements |
+| `manage_billing_settings` (update_org) | 3 | Change one organization's tax, payment terms, billing contact (who receives its quotes and invoices) or billing address. A currency change and the rate-card assignment are made elsewhere |
+| `manage_contract_templates` (list/get/get_version/usage) | 1 | Agreement templates, their versions and where each is used. Version bodies are read one at a time with `get_version` |
+| `manage_contract_templates` (create/update) | 2 | Create or rename an organization's agreement template. For a partner-wide template, pass `ownerScope: partner`; the change is then approved and needs full partner access |
+| `manage_contract_templates` (create_version/publish/archive) | 3 | Add a draft version, publish it so quotes and signature requests can use it, or archive the template. None of these can be undone. Partner-wide templates are versioned, published and archived in the web app |
+| `manage_contract_documents` (list) | 1 | Signed agreements and whether each is filed under a contract. Signer email addresses are not returned |
+| `manage_contract_documents` (link) | 3 | File a signed agreement under a contract of the same organization. It cannot be undone |
+| `get_device_billing` | 1 | Which active contract lines bill a device, or why it is not billable |
+| `manage_contracts` (preview_invoice) | 2 | What a contract's next billing run would invoice: the period, each line's quantity and price, subtotal, tax and total, whether it is issued and emailed automatically, and to whom. Nothing is created |
+| `manage_contracts` (generate_invoice) | 3 | Generate the contract's due invoice. It needs a second approver (four-eyes). The call repeats the preview's period, total, auto-issue setting and recipients, and the approval card shows them. If anything changed before release (a device added, a price, tax rate or billing contact edited, the period already billed) the release is refused and nothing is generated. When the contract issues automatically, the invoice is issued and emailed only if its total is still the approved one, and only to the approved recipients. Contracts with a block-of-hours line are generated in the web app |
+| `manage_accounting_sync` (status/owed_operations/customers/mappings/income_accounts/remote_candidates) | 1 | QuickBooks or Xero: connection status, payments waiting to sync, customers, customer and item mappings, income accounts, and records to link to. A `remote_candidates` search term is applied in Breeze and never sent to the provider |
+| `manage_accounting_sync` (link_mapping/unlink_mapping/sync_mapping) | 3 | Link a Breeze organization or catalog item to a QuickBooks or Xero record, unlink it, or re-send a linked one. Linking and syncing overwrite the provider's record with Breeze's details. Creating a new record in the provider is done in the web app |
+| `manage_accounting_sync` (push/push_bulk) | 3 | Push one invoice, or up to 10, into QuickBooks or Xero. It needs a second approver (four-eyes); the push also syncs the invoice's customer and items if they are not synced yet. If the invoice, its customer or items, or the connection change before release, the release is refused |
+
+Pax8 submission refusal codes (the `PAX8_SUBMIT_REFUSAL_CODES` contract): `PREVIEW_MISMATCH`, `PRICE_CHANGED`, `COMMITMENT_CHANGED`, `COST_UNKNOWN`, `COMMITMENT_AMBIGUOUS`, `TOO_MANY_LINES`, `NOT_PENDING`, `COMPANY_UNRESOLVED`, `TERM_UNKNOWN`, `QUANTITY_UNKNOWN`, `SUBSCRIPTION_NOT_FOUND`, `PRODUCT_UNKNOWN`, `CONTRACT_LINE_MISSING`, `CLAIM_LOST`, `INTEGRATION_UNAVAILABLE`, `BASELINE_NOT_CAPTURED`, `INTEGRATION_CHANGED`, `PREFLIGHT_FAILED`, `CONFLICT`. Claim refusals mean nothing was sent by that attempt; preview and approve again. Post-send persistence conflicts require inspection and reconciliation of unknown writes. A successful vendor write with `billingConflicts` requires a person to resolve billing without resubmitting it.
+
+The existing contract and invoice reads gained one view each: `get_contract` with `periodId` returns that billing period's outcome (devices billed, uncovered and flagged, overages), `list_contracts` with `view: currency_mismatches` lists contracts whose currency differs from their organization's, and `get_invoice` with `lineId` pages the devices one invoice line billed.
+
+Rate-card, work-type and settings writes need a session that has completed MFA. A session limited to some sites or devices cannot change an organization's rate card, billing settings or agreement templates, or file a signed agreement.
+
+AI agents can read these tools. Rate-card and settings writes become proposals that a person approves. Agents are never offered template writes or `manage_contract_documents` (link): agreement templates and signed agreements are the legal documents customers sign. Agents are never offered `generate_invoice` or any accounting write.
+
+The accounting tool needs a partner-scoped session with access to every organization, as the Integrations page does, and every write needs a session that has completed MFA. Connecting, disconnecting and configuring the accounting connection, importing customers as organizations and starting a payment reconcile stay in the web app.
 
 #### PSA configuration and ticket operations
 
@@ -734,6 +865,21 @@ These tools read and manage SNMP monitoring templates, read SNMP metric history,
 | `trigger_unifi_sync` | 2 | Queue a manual sync of the UniFi integration, then read the outcome with `get_unifi_status` `sync_runs` |
 
 Connecting or disconnecting UniFi, editing site mappings and collectors, and the retired per-device SNMP polling, test and threshold pages are not available as tools. The old SNMP device and threshold endpoints are deprecated; per-asset SNMP settings and network-monitor alert rules replace them.
+
+#### AI agent read tools
+
+These tools let you ask the assistant what the AI has done and is planning. They only read: starting, changing or cancelling a schedule, an operator task or a Fleet Design is a separate, approval-gated action. Text they return (task objectives, hand-off notes, step and timeline text, Fleet Design markdown) is shown to the model as untrusted data, never as instructions.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `get_device_ai_activity` | 1 | Count the scripts and commands the AI dispatched to one device in the last 7 to 30 days. Add `source` (`execution` or `command`) and `sourceId` to see who started that one action (AI assistant, AI agent or flow). A device you cannot see is reported as not found |
+| `list_operator_tasks` | 1 | List the multi-step tasks the AI operator is running or has finished, newest first, with state, objective and what happens next |
+| `get_operator_task` | 1 | One operator task: targets, steps, the newest 500 timeline events, the plan it proposed and the agent runs behind it. Credential hand-over details are never shown; an account the task created shows only its credential state |
+| `list_ai_agent_schedules` | 1 | When AI agents run on a schedule, including the effective schedule after an organization override of a partner baseline. A partner baseline's fleet-wide run summary is shown only to callers with access to every organization of the partner |
+| `list_fleet_designs` | 1 | List completed Fleet Design reports (up to 100) with function, watch and rule counts |
+| `get_fleet_design` | 1 | One Fleet Design report as markdown (capped at 60,000 characters), with counts and when it was generated |
+
+The operator task and Fleet Design tools describe a whole organization, so a session limited to some sites or devices cannot use them. The operator task tools are available in AI chat and over MCP only: AI agents are never offered them, because task text is written by people and by other agent runs. The device, schedule and Fleet Design tools are also available to AI agents; a device-bound agent can read only its own device.
 
 All seven tools are now available in the assistant chat, not just over MCP. AI agents get the read actions by default and the write actions only when the agent's tool allowlist names them; tag changes are never available to agents. Public ticket comments, resolving a ticket, and changing a ticket's requester need approval, while internal notes do not. The billing price book tool is `manage_billing_catalog` (renamed from `manage_catalog`; the old name keeps working over MCP for one release).
 

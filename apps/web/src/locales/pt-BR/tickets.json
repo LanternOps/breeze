@@ -566,7 +566,8 @@
       "pending": "Este chamado foi mesclado com outro chamado em {{date}}.",
       "deleted": "Este chamado foi mesclado em {{date}} com um chamado que foi excluído ou que você não pode ver.",
       "open": "Abrir {{number}}",
-      "readOnly": "Chamados mesclados são somente leitura. Responda no chamado com o qual ele foi mesclado."
+      "readOnly": "Chamados mesclados são somente leitura. Responda no chamado com o qual ele foi mesclado.",
+      "railReadOnly": "Tempo, faturamento e peças são somente leitura em um chamado mesclado. Registre tempo e peças no chamado com o qual ele foi mesclado."
     },
     "triage": {
       "title": "Triagem sugerida",

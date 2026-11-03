@@ -239,6 +239,8 @@
       "hintPlaceholder": "p. ej., Dana Smith o dana@example.com",
       "contactChosen": "Contacto: {{name}}",
       "useHint": "Usar un nombre o correo electrónico",
+      "requesterSuggestion": "Solicitante del ticket: {{name}}. Suele ser un responsable que informa de la salida de otra persona.",
+      "useRequester": "Usar como la persona que se va",
       "readOnly": "Iniciado desde este contacto."
     },
     "inheritor": {
@@ -249,7 +251,8 @@
       "pickContact": "Elija un contacto",
       "addressPlaceholder": "nombre@example.com",
       "contactsFailed": "No se pudieron cargar los contactos.",
-      "loadMore": "Cargar más contactos"
+      "loadMore": "Cargar más contactos",
+      "self": "La persona que se va no puede heredar su propio correo. Elija a otra persona o a nadie."
     },
     "autoReply": {
       "label": "Mensaje de respuesta automática",

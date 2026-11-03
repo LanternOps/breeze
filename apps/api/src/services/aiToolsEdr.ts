@@ -96,7 +96,7 @@ export function registerEdrTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_edr_status',
       description:
-        'Get EDR provider status: connections, endpoints, open detections and sync health, with coverage. Partial coverage means data may be missing or stale.',
+        'Get EDR provider status: connections, endpoints, open detections and sync health, with coverage. Huntress/SentinelOne integrations are listed under integrations and count as EDR coverage. Partial coverage means data may be missing or stale.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -108,7 +108,7 @@ export function registerEdrTools(aiTools: Map<string, AiTool>): void {
       try {
         const { scope } = await resolveScope(auth);
         const summary = await getEdrStatus(scope, { orgId: input.orgId as string | undefined });
-        return JSON.stringify({ providers: summary.providers, coverage: summary.coverage });
+        return JSON.stringify({ providers: summary.providers, integrations: summary.integrations ?? [], coverage: summary.coverage });
       } catch (err) {
         return readErrorResult(err);
       }

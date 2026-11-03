@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { resolveDeviceMatches } from './deviceMatching';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { matchProviderDevices, resolveDeviceMatches } from './deviceMatching';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG = '22222222-2222-4222-8222-222222222222';
@@ -107,4 +108,51 @@ describe('resolveDeviceMatches', () => {
     expect(out.links).toEqual([]);
     expect(out.ambiguous).toEqual([]);
   });
+});
+
+
+it('excludes SaaS rows from linked counts and matching candidates', async () => {
+  const statements: string[] = [];
+  const dialect = new PgDialect();
+  let selects = 0;
+  const tx = {
+    execute: async () => [],
+    update: () => ({ set: () => ({ where: async () => [] }) }),
+    select: () => ({ from: () => ({ where: async (condition: Parameters<PgDialect['sqlToQuery']>[0]) => {
+      const query = dialect.sqlToQuery(condition);
+      statements.push(query.sql + ' ' + JSON.stringify(query.params));
+      return selects++ === 0 ? [] : [{ n: 0 }];
+    } }) }),
+  };
+  expect(await matchProviderDevices(tx as never, 'connection')).toEqual({ linked: 0, ambiguous: 0 });
+  expect(statements[0]).toContain('backup_manager');
+  expect(statements[1]).toContain('account_type');
+  expect(statements[1]).toContain('m365');
+  expect(statements[1]).toContain('gws');
+});
+
+it('clears legacy SaaS links and provenance before matching, including manual and automatic links', async () => {
+  const dialect = new PgDialect();
+  const updates: Array<{ values: Record<string, unknown>; query: ReturnType<PgDialect['sqlToQuery']> }> = [];
+  let selects = 0;
+  const tx = {
+    execute: async () => [],
+    update: () => ({ set: (values: Record<string, unknown>) => ({ where: async (condition: Parameters<PgDialect['sqlToQuery']>[0]) => {
+      updates.push({ values, query: dialect.sqlToQuery(condition) });
+      return [];
+    } }) }),
+    select: () => ({ from: () => ({ where: async () => {
+      // Cleanup must happen before potential endpoint candidates are claimed.
+      expect(updates.some(({ values }) => values.breezeDeviceId === null && values.deviceMatchSource === null)).toBe(true);
+      return selects++ === 0 ? [] : [{ n: 0 }];
+    } }) }),
+  };
+  await matchProviderDevices(tx as never, 'connection');
+  const cleanup = updates.find(({ values }) => values.breezeDeviceId === null)!;
+  expect(cleanup.values.deviceMatchSource).toBeNull();
+  expect(cleanup.query.sql).toContain('"connection_id" =');
+  expect(cleanup.query.sql).toContain('"account_type" in');
+  expect(cleanup.query.params).toEqual(['connection', 'm365', 'gws']);
+  // Neither manual nor auto provenance may exempt an existing SaaS link.
+  expect(cleanup.query.sql).not.toContain('device_match_source');
 });

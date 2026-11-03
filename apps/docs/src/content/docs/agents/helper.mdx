@@ -323,6 +323,12 @@ The agent records each Helper install it makes. A Helper installed another way (
 
 On Windows the agent also checks the WebView2 Runtime before it starts the Helper. If the runtime is older than the installed Helper build needs, the agent does not start the Helper and the device reports `webview2_outdated`; update the WebView2 Runtime on the device to clear it. A Helper that keeps closing right after it starts is reported as `crash_loop`, with the exit codes in the agent log, and the agent tries it again after 6 hours or when a new Helper version is installed.
 
+The device page's **Breeze Assist** row shows the last reported state: **Installed**, **Not deployed**, or **Unavailable** with the reason (`webview2_outdated`, `crash_loop` or `unmanaged_install`). In the device list these three show as **Assist unavailable**, with the reason in the tooltip, because Assist is on disk in each case. All of this needs agent 0.125.0; an older server shows the new reasons as unknown.
+
+<Aside type="caution" title="Known issue in v0.125.0">
+  Crash-loop detection does not fire yet: a crash-looping Helper keeps restarting and is not reported as `crash_loop` ([#10302](https://github.com/LanternOps/breeze/issues/10302)).
+</Aside>
+
 ### Window and Tray Behavior
 
 The Helper always runs in the user's session and always shows its tray icon. Its main window starts **hidden**: the agent launches the Helper at logon, after agent or Helper updates, and whenever its session watcher restarts an exited Helper, and none of these put a window on screen. The user opens the window by clicking the tray icon or choosing **Open Breeze Assist** from the tray menu (always present, even when a policy turns off every other item). On macOS, re-opening the app from the Dock or Finder also shows it. Closing the window hides it back to the tray.

@@ -32,7 +32,7 @@ docker compose up --build -d
 ```bash
 docker compose ls -a --format json | jq -r '.[] | select(.ConfigFiles|test("breeze")) | "\(.Name)\t\(.Status)"'   # every Breeze project, all worktrees
 docker compose -f docker-compose.yml -f docker-compose.override.yml.dev down -v --remove-orphans   # this checkout (same -f files as up)
-pnpm wt-stack down            # a wt-stack, from the worktree+branch that created it
+pnpm wt-stack down            # a wt-stack, from the worktree that created it (reads the project it recorded in .breeze-stack.json; any branch or detached HEAD)
 pnpm test-stack down          # a per-worktree integration stack, from the same worktree (reads the project it recorded in .env.test)
 docker compose -p <name> down -v --remove-orphans   # anything else the first command listed (no -f needed)
 ```

@@ -1,0 +1,81 @@
+---
+title: Network Isolation
+description: Isolate a device while retaining Breeze management access, and recover safely using console release, expiry, or offline break-glass.
+---
+
+Network isolation drops network traffic except the traffic needed to manage the device through Breeze. Each isolation episode is linked to an incident and has a mandatory expiry. The incident's recorded containment status alone does not prove that isolation is enforced: check the live episode state.
+
+The feature is **off by default** behind `NETWORK_ISOLATION_ENABLED`. Merging the console or server code activates nothing. Start also requires an eligible partner, supported agent version, advertised isolation capability, and agent readiness. Windows activation remains disabled: agents advertise capability 0, and the minimum version gate stays at `999.0.0`. No recovery executable is distributed or bundled yet, so Windows readiness also fails closed. The behavior described below is the intended Windows rollout; the feature is **not available in this release**. Linux and macOS support is planned.
+
+## Start and release
+
+In device actions, choose **Isolate from network**, enter an existing incident ID or a title for a new incident, enter a reason, and choose a duration. The default is **72 hours**, with a maximum of **720 hours**. Enable the remote relay option when remote desktop is needed. Isolating a server can interrupt services for other devices, including domain authentication and file access.
+
+The header shows whether isolation is applying, verifying, or verified, plus the remaining duration. The incident detail also shows linked device episodes. The **Isolated** device filter includes unresolved episodes, including local or self-releases awaiting acknowledgement; it is not proof that rules are currently enforced.
+
+**Release isolation** remains available for active episodes when start eligibility fails: flag disabled, partner not enabled, old or unready agent, trust restriction, device lifecycle restriction, closed incident, or offline device. Offline release is queued until reconnect. Extension, acknowledgement, and code viewing remain available independently of the start flag. Human routes require an interactive session, device execution permission, appropriate organization/site access, and MFA when enabled; API keys cannot perform these operations. A self-host with 2FA disabled provides **password-only assurance**.
+
+Release requests are not confirmation that rules are gone. Wait for the agent to report release. After investigating `released_locally` or `self_released`, use **Acknowledge local release** to resolve the episode. Other states do not offer this action.
+
+## What stays reachable
+
+The server builds the allowlist; operators cannot supply arbitrary destinations in an isolation request. The allowlist permits the Breeze control plane, configured backup endpoint, ECH DNS-over-HTTPS endpoints, and configured TURN relay when remote relay is enabled. A transport proxy is permitted only as needed for Breeze traffic.
+
+The baseline permits loopback, DHCP lease renewal, DNS to currently configured resolvers, IPv6 neighbor/address discovery and path-MTU traffic, required IPv4 fragmentation notifications, and replies for permitted flows. Everything else is dropped in both directions. Existing non-permitted connections are cut, not grandfathered.
+
+Breeze terminal, file browser, tunnels, and script control traffic continue through the agent management connection. On Windows and Linux, script and terminal child processes do not inherit the agent's network permit: a remediation script cannot download arbitrary tools. Agent updates use the control plane while isolated.
+
+Remote desktop uses **TURN relay only**, with no direct/STUN fallback. A self-host without TURN loses remote desktop while isolated. Direct inbound RDP, SSH, SMB, and VNC are blocked, as are general web access, lateral movement, Windows Update, package mirrors, NTP, and VPN client traffic.
+
+## OS mechanisms and limits
+
+| OS | Mechanism | Permit boundary |
+| --- | --- | --- |
+| Windows (first release) | Windows Filtering Platform (WFP), with a dedicated Breeze provider and sublayer | Breeze application identity **and** destination/port; persistent and boot-time filters protect restart |
+| Linux (planned) | Dedicated nftables table with input, output, and forward chains | Breeze process cgroup **and** destination/port; child processes run separately |
+| macOS (planned) | Dedicated pf anchor attached to a compatible ruleset | Destination/port only; pf cannot identify the process |
+
+Breeze removes only its own isolation rules on release. Other firewall or EDR isolation can still block connectivity after Breeze isolation is released. A failed management reachability or enforcement probe causes rollback; a separate recovery component enforces expiry even if the main agent fails. Recovery still depends on working storage, OS scheduling, and firewall facilities. Powered-off devices run overdue recovery at boot or resume.
+
+### Windows recovery, uninstall, and upgrade
+
+The separate `breeze-isolation-recovery.exe` component handles provisional rollback, expiry, and boot recovery even when the main agent cannot run. Its installation path is `<agent install directory>\isolation-recovery\<version>\breeze-isolation-recovery.exe`, alongside the protected agent installation. Versions are installed side by side and are never overwritten in place. An unresolved episode keeps its scheduled tasks pinned to its journaled recovery path. Signature verification and a successful self-test are required before task actions can adopt a version. Strict Windows signature trust also means unsigned self-host recovery binaries cannot become ready.
+
+The agent's self-uninstall and the Windows MSI uninstall release Breeze-owned isolation rules first. If release cannot be confirmed, uninstall fails before removing the agent files or recovery state. A clean, never-isolated device can still uninstall normally. The detached Windows teardown script checks release again before stopping or deleting services.
+
+An MSI upgrade never runs the uninstall release action and does not un-isolate the device. The agent does not start a self-update while the device is isolated. If isolation begins after an update has already been downloaded, the update is checked again just before the binary swap. When executable paths change, both old and new paths are permitted before the swap. After restart the agent reads the journal, re-verifies isolation, and removes the old-path permits. The swap is refused if the new agent's journal schema cannot be confirmed compatible.
+
+Residual risks remain:
+
+- **Shared CDN/anycast addresses:** Windows and Linux restrict the permit to Breeze processes as well as destinations. macOS permits destinations only, so another process can reach unrelated services sharing an allowed address.
+- **DNS tunnelling:** permitted resolvers and DoH endpoints leave a possible channel. Removing DNS entirely would prevent management reconnection when addresses change.
+- **Captive portals and 802.1X:** EAPOL is unaffected, but a captive portal cannot be completed while isolated. Use expiry or offline break-glass when management cannot reconnect; do not assume an automatic dead-man release is enabled.
+- **Domain-joined Windows:** domain-controller Kerberos, LDAP, and SMB are blocked. Cached logons remain usable; Group Policy pauses. Server isolation is an intentional service outage.
+- **Traffic outside host filtering:** Hyper-V external vSwitch/WSL2 NAT, macOS Internet Sharing, and hardware-offloaded forwarding need separate network controls. Linux drops forwarded traffic but hardware offload is a limitation.
+- **macOS boot window:** the LaunchDaemon cannot guarantee isolation loads before networking. A brief exposure window exists after boot. Incompatible pf configurations are refused rather than overwritten.
+
+## Offline break-glass runbook
+
+1. Open the device episode and explicitly click **Show break-glass codes**. This calls an audited endpoint; codes are never prefetched. The console displays the current and next-hour codes.
+2. Verify the person at the device and read the appropriate code to them. They must open an elevated Administrator/root terminal and run:
+
+   ```sh
+   breeze-agent containment release --code <code>
+   ```
+
+3. The code works without network connectivity. Attempts are limited to five per hour. Use the next-hour code as its time window begins; request fresh codes if the episode generation changes.
+4. On reconnect, investigate the reported local release and acknowledge the episode in the console. Do not treat a code view as proof of a release.
+
+A local administrator can also run `breeze-agent containment release --force`. **`--force` raises an alert** and records a forced local release. Use it only when recovery requires it, and investigate the audit trail afterward. Do not delete firewall rules manually: re-verification can restore them.
+
+## Emergency fleet un-isolate
+
+Emergency fleet release is a **scripted per-episode console release**, never a feature flag change. Turning `NETWORK_ISOLATION_ENABLED` off prevents new starts but leaves current isolation in place.
+
+1. Sign in with an authorized interactive console session and satisfy MFA when required. Use the Isolated filter to enumerate devices in the intended organization/site scope. Account for pagination.
+2. For each device, read `GET /api/v1/devices/:id/network-isolation`, inspect its episodes, and select active states (`requested`, `dispatched`, `applying`, `applied`, `verified`, `release_requested`). Review the target list before submitting.
+3. In a controlled script using that console session and its normal request protections, call `POST /api/v1/devices/:id/network-isolation/:isolationId/release` separately for each selected episode with a JSON body such as `{"reason":"Emergency fleet recovery"}`. Do not use an API key, bypass interactive authentication, or log session credentials. Record per-episode response status and failures; retry failed requests after addressing their cause.
+4. Poll episode state until release is confirmed. An offline endpoint retains a queued release and receives the desired release state on reconnect. Use the break-glass runbook or mandatory expiry where reconnection is impossible.
+5. Investigate and acknowledge local/self-release episodes separately; retain the audit record of the recovery.
+
+The incident `POST /incidents/:id/contain` endpoint is **record-keeping only**. It cannot release isolation or attest to endpoint enforcement. AI `release_containment` is planned for a later release; use console release now.

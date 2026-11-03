@@ -11,3 +11,10 @@ func showBannerOS(label string, _ int64) bool {
 }
 
 func hideBannerOS() {}
+
+// showPillOS: no native session pill on this platform (#10188); the
+// remote.session kind is not advertised here.
+func showPillOS(label string, _ int64, _ bool, _ func()) bool {
+	log.Debug("session pill not supported on this platform", "label", label)
+	return false
+}

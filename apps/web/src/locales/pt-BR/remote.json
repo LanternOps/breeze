@@ -681,6 +681,7 @@
       "disconnected": "Desconectado",
       "failed": "Falhou",
       "pending": "Pendente",
+      "endedByUser": "Encerrada pelo usuário",
       "teardownPending": "Encerrando (aguardando o dispositivo)"
     },
     "subtitle": "Log de auditoria de acesso remoto",
@@ -717,6 +718,7 @@
       "timeline": "Linha do tempo"
     },
     "subtitle": "Visualize e audite sessões de acesso remoto",
+    "endedByUser": "Encerrada pelo usuário",
     "teardownPending": "Aguardando confirmação do dispositivo",
     "title": "Histórico de Sessões",
     "viewDevice": "Ver dispositivo",

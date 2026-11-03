@@ -6,6 +6,7 @@ import type { TenantVariableScope } from './tenantVariableResolution';
 import type { TopologyRequestContext } from './topology/access';
 import type { VerifiedTopologyDiagnostic } from './topology/aiDiagnosticEffect';
 import type { PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
+import type { FlowToolCallInput, FlowToolDescriptor } from './flows/flowTools';
 
 /**
  * One `run_script` release, resolved once and verified against the approval's
@@ -212,4 +213,28 @@ export type ToolExecutionContext = {
    * the call that was classified.
    */
   pinnedEventLogsQuery?: PinnedEventLogsQuery;
+  /**
+   * W5 PR C (#5220): the flow tool the chat gate resolved LIVE and gated at
+   * its invocation tier, with the validated call. Set ONLY by
+   * `createSessionPreToolUse`'s flow branch — never from model arguments —
+   * and carried to the `flow__<slug>` SDK handler (sdkFlowTools.ts) through
+   * `wrapExtraToolWithHooks`, so the handler starts the run on exactly the
+   * publication the gate checked (a re-enable in between is
+   * `flow_tool_changed`, never a run at a tier nobody gated).
+   */
+  flowToolGate?: FlowToolGate;
+  /**
+   * W5 PR C (#5220): set ONLY by `createSessionPreToolUse` when it LOWERED
+   * `run_flow` below its static Tier 3 to the target flow's invocation tier —
+   * the flow and the publication seq that tier was computed for. The run_flow
+   * handler starts the run on exactly that publication or refuses
+   * (`flow_tool_changed`).
+   */
+  runFlowGate?: { flowId: string; publicationSeq: number };
 };
+
+/** See `ToolExecutionContext.flowToolGate`. */
+export interface FlowToolGate {
+  descriptor: FlowToolDescriptor;
+  call: FlowToolCallInput;
+}

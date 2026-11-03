@@ -1,5 +1,5 @@
 import { sql, type SQL } from 'drizzle-orm';
-import { EVIDENCE_CLASSES, OBSERVATION_METHODS, type GraphNode, type GraphQuery, type GraphRelationship, type ObservationMethod, type TopologyScope } from '@breeze/shared';
+import { EVIDENCE_CLASSES, OBSERVATION_METHODS, displayOs, type GraphNode, type GraphQuery, type GraphRelationship, type ObservationMethod, type TopologyScope } from '@breeze/shared';
 import { GraphReadError, type NodeListQuery } from './graphCursor';
 
 /**
@@ -21,7 +21,8 @@ export type NodeRow = {
   lifecycle: GraphNode['lifecycle']; lastObservedAt: string | null; legacy: boolean;
   bindings: GraphNode['bindings'];
   /** Live inventory facts through the node's first device (else asset) binding; null/absent when unbound. */
-  inventory?: NonNullable<GraphNode['inventory']> | null;
+  // `osType` is the raw platform token; presentInventory folds it into a readable `os` and drops it.
+  inventory?: (NonNullable<GraphNode['inventory']> & { osType?: string | null }) | null;
   /** Active, exposure-permitted incident relationships: count, latest support expiry, latest observation, distinct (kind, method, legacy, class). */
   support?: { count: string | number; freshUntil: string | null; observedAt?: string | null; kinds: [string, string | null, boolean, string][] } | null;
 };
@@ -182,7 +183,7 @@ const nodeInventorySql = (scope: TopologyScope) => sql`coalesce(
       'mac', (SELECT nullif(btrim(dn.mac_address), '') FROM device_network dn WHERE dn.device_id = d.id AND dn.org_id = d.org_id
         AND nullif(btrim(dn.mac_address), '') IS NOT NULL ORDER BY ${primaryNetworkOrder('dn')} LIMIT 1),
       'vendor', NULL::text, 'model', NULL::text,
-      'os', nullif(btrim(concat_ws(' ', d.os_type::text, d.os_version)), ''),
+      'os', nullif(btrim(d.os_version), ''), 'osType', d.os_type::text,
       'type', nullif(nullif(btrim(d.device_role), ''), 'unknown'),
       'presence', jsonb_build_object(
         'state', CASE WHEN d.status = 'online' THEN 'online' WHEN d.status IN ('offline', 'decommissioned', 'quarantined') THEN 'offline' ELSE 'unknown' END,
@@ -260,11 +261,17 @@ const latest = (a: string | null, b: string | null) => (a && b ? (a > b ? a : b)
 const freshnessOf = (freshUntil: string | null | undefined): GraphNode['freshness'] =>
   freshUntil ? (Date.parse(freshUntil) > Date.now() ? 'fresh' : 'stale') : 'unknown';
 const text = (value: string | null | undefined, max: number) => (typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : null);
+/** displayOs, plus a platform name in front of a bare version it leaves unlabelled ("6.1" on Linux). */
+function inventoryOs(osType: string | null | undefined, osVersion: string | null | undefined): string {
+  const label = displayOs(osType, osVersion);
+  return label && /^\d/.test(label) && osType ? `${displayOs(osType, null)} ${label}` : label;
+}
 function presentInventory(value: NonNullable<NodeRow['inventory']>): NonNullable<GraphNode['inventory']> {
   const addresses = [...new Set((value.addresses ?? []).filter((address): address is string => typeof address === 'string' && !!address.trim() && address.length <= 64))].slice(0, 8);
   const lastSeenAt = value.presence?.lastSeenAt && !Number.isNaN(Date.parse(value.presence.lastSeenAt)) ? new Date(value.presence.lastSeenAt).toISOString() : null;
   return { source: value.source, name: text(value.name, 255), addresses, mac: text(value.mac, 64), vendor: text(value.vendor, 255), model: text(value.model, 255),
-    os: text(value.os, 255), type: text(value.type, 64),
+    // "Windows 11 Pro", "macOS 15.1" — the reader-facing label the device pages use, not "windows 10.0.19045" (#9868).
+    os: text(inventoryOs(value.osType, value.os), 255), type: text(value.type, 64),
     presence: { state: value.presence?.state ?? 'unknown', source: value.presence?.source ?? (value.source === 'device' ? 'agent' : 'scan'),
       agentStatus: text(value.presence?.agentStatus, 32), lastSeenAt } };
 }

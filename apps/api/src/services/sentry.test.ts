@@ -849,6 +849,10 @@ describe('accounting captureException tags stay allowlisted (#4828)', () => {
     // 10 -> 12: Xero W04 refinement 22 void-recovery persist added its own
     // zero-row and catch captureException calls (same tag shape as the
     // existing SyncToken persist).
+    ['../routes/pax8Orders.ts', 1],
+    ['pax8OrderObservability.ts', 1],
+    ['pax8OrderSubmitRepository.ts', 1],
+    ['aiToolsPax8Orders.ts', 1],
     ['accounting/accountingInvoicePush.ts', 12],
     ['accounting/accountingMappingService.ts', 5],
     // Phase D2. Paths are resolved against THIS file's directory (services/),
@@ -893,4 +897,11 @@ describe('accounting captureException tags stay allowlisted (#4828)', () => {
       expect(allowedTagNames.has(key), `tag "${key}" in ${relativePath} is not in sentry.ts ALLOWED_TAG_NAMES — it will be silently dropped`).toBe(true);
     }
   });
+});
+
+// Sourced-alert diagnostics must survive the outbound scrubber.
+it('retains local alert owner identity in Sentry tags', async () => {
+  const { scrubEvent } = await import('./sentry');
+  const tags = { ownerKind: 'backup_workload', ownerRef: '11111111-1111-4111-8111-111111111111' };
+  expect(scrubEvent({ tags: { ...tags } }).tags).toEqual(tags);
 });

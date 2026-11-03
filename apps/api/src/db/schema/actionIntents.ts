@@ -317,6 +317,14 @@ export const actionIntents = pgTable(
      */
     toolSourceToolId: uuid('tool_source_tool_id'),
     toolRevision: text('tool_revision'),
+    /**
+     * Tool Catalog W05 (#5220, plan Decision 8): the flow a chat Tier-3
+     * `flow__<slug>` call approved, bound with tool_revision
+     * 'flowpub:<publicationId>'. Mutually exclusive with toolSourceToolId
+     * (action_intents_external_tool_chk); immutable content. Bare uuid, no FK:
+     * intents are retained history and a flow can be deleted.
+     */
+    invokedFlowId: uuid('invoked_flow_id'),
     source: text('source').notNull().$type<ActionIntentSource>(),
     /**
      * The KIND of principal that created this intent, recorded as a durable
@@ -342,6 +350,17 @@ export const actionIntents = pgTable(
       .$type<ActionIntentOriginPrincipalKind>(),
     /** Key/grant id when the origin was an api_key or oauth_grant. Immutable. */
     originPrincipalId: text('origin_principal_id'),
+    /**
+     * #9758: the requester's `users.auth_epoch` the OAuth bearer middleware
+     * verified on the MCP call that filed this intent. Set iff the intent is
+     * MCP-origin with an `oauth_grant` principal
+     * (action_intents_origin_auth_epoch_chk allows it on no other kind);
+     * NULL for every other intent. Release refuses when the live epoch has
+     * moved (password change/reset, status change, membership removal, global
+     * logout…) — the exact check, not the best-effort post-commit grant sweep.
+     * Immutable (action_intents_block_content_update()).
+     */
+    originAuthEpoch: integer('origin_auth_epoch'),
     // --- AI origin attribution (#5022 W01) -------------------------------
     // The serializable AiOriginRef, so a chat-minted origin survives
     // intentReleaseWorker's from-scratch AuthContext rebuild. Distinct from
@@ -518,6 +537,8 @@ export const actionIntents = pgTable(
     }).onDelete('restrict'),
     requestingFlowRunIdx: index('action_intents_requesting_flow_run_id_idx')
       .on(table.requestingFlowRunId).where(sql`${table.requestingFlowRunId} IS NOT NULL`),
+    invokedFlowIdx: index('action_intents_invoked_flow_id_idx')
+      .on(table.invokedFlowId).where(sql`${table.invokedFlowId} IS NOT NULL`),
     // P2-2: mirrors migrations/2026-09-23-ai-agents-scheduled-sweeps.sql's
     // action_intents_scope_device_idx.
     scopeDeviceIdx: index('action_intents_scope_device_idx')

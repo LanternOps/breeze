@@ -62,6 +62,9 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/settings/ai-agents', docsPath: '/features/ai-agents/', label: 'AI Agents' },
   { pattern: '/settings/deliverable-templates', docsPath: '/features/contracts/#service-deliverables', label: 'Deliverable Templates' },
   { pattern: '/settings/ai-usage', docsPath: '/features/ai/', label: 'AI Assistant' },
+  { pattern: '/settings/ai-script-authoring', docsPath: '/features/ai-script-authoring/', label: 'AI Script Authoring' },
+  // Settings → AI hub (#10135); segment-boundary matching keeps /settings/ai-* entries above it distinct.
+  { pattern: '/settings/ai', docsPath: '/features/ai/', label: 'AI Settings' },
   { pattern: '/settings/custom-fields', docsPath: '/features/custom-fields/', label: 'Custom Fields' },
   { pattern: '/settings/access-reviews', docsPath: '/reference/access-reviews/', label: 'Access Reviews' },
   { pattern: '/settings/notifications', docsPath: '/features/notifications/', label: 'Notifications' },
@@ -197,6 +200,7 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/security/antivirus', docsPath: '/deploy/antivirus-exceptions/', label: 'Antivirus Exceptions' },
   { pattern: '/security/user-risk', docsPath: '/features/user-risk/', label: 'User Risk' },
   { pattern: '/security/edr', docsPath: '/features/edr-integrations/', label: 'EDR Operations' },
+  { pattern: '/security/detection-rules', docsPath: '/features/security/#detection-rules', label: 'Detection Rules' },
   { pattern: '/security', docsPath: '/features/security/', label: 'Security' },
   { pattern: '/pam', docsPath: '/features/pam/', label: 'Privileged Access' },
   { pattern: '/sensitive-data', docsPath: '/features/sensitive-data/', label: 'Sensitive Data' },

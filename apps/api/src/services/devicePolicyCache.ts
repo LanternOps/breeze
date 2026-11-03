@@ -34,8 +34,13 @@ import { hierarchyFor } from './deviceHierarchy';
 import { policySetFor } from './devicePolicySet';
 import { getRedis } from './redis';
 
-/** Features whose entries this module stores org-bound. */
-export const DEVICE_POLICY_CACHE_FEATURES = ['helper', 'eventlog', 'hwmon', 'monitoring', 'pam'] as const;
+/**
+ * Features whose entries this module stores org-bound. `prompt-identity`
+ * (#10190) is the device's resolved MSP identity for prompts
+ * (services/promptIdentity.ts); it is org-level data, cached per device so the
+ * org move's invalidation and the org binding cover it like the rest.
+ */
+export const DEVICE_POLICY_CACHE_FEATURES = ['helper', 'eventlog', 'hwmon', 'monitoring', 'pam', 'prompt-identity'] as const;
 export type DevicePolicyCacheFeature = (typeof DEVICE_POLICY_CACHE_FEATURES)[number];
 
 /** Features that keep their own org check inside the cached value. */
@@ -50,6 +55,9 @@ export function selfBoundDeviceSettingsKey(feature: SelfBoundDeviceSettingsFeatu
   return `${feature}:settings:device:${deviceId}`;
 }
 
+/** Features that existed before #8257 and so may still have an unbound legacy key. */
+const LEGACY_UNBOUND_FEATURES = ['helper', 'eventlog', 'hwmon', 'monitoring', 'pam'] as const satisfies readonly DevicePolicyCacheFeature[];
+
 /** The pre-#8257 unbound key, still written by an API replica on the previous release. */
 function legacyUnboundKey(feature: DevicePolicyCacheFeature, deviceId: string): string {
   return `${feature}:settings:device:${deviceId}`;
@@ -59,7 +67,7 @@ function legacyUnboundKey(feature: DevicePolicyCacheFeature, deviceId: string): 
 export function allDevicePolicyCacheKeys(deviceId: string): string[] {
   return [
     ...DEVICE_POLICY_CACHE_FEATURES.map((feature) => devicePolicyCacheKey(feature, deviceId)),
-    ...DEVICE_POLICY_CACHE_FEATURES.map((feature) => legacyUnboundKey(feature, deviceId)),
+    ...LEGACY_UNBOUND_FEATURES.map((feature) => legacyUnboundKey(feature, deviceId)),
     ...SELF_BOUND_DEVICE_SETTINGS_FEATURES.map((feature) => selfBoundDeviceSettingsKey(feature, deviceId)),
   ];
 }

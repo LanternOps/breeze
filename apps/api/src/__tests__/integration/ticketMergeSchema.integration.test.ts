@@ -7,6 +7,7 @@
  *   tickets.merged_at              CHECK (merged_into IS NULL) = (merged_at IS NULL)
  *   tickets.merged_by_user_id      → users ON DELETE SET NULL
  *   ticket_comments.merged_from_ticket_id → tickets ON DELETE SET NULL
+ *   ticket_external_refs.origin_ticket_id → tickets ON DELETE SET NULL (#10120)
  */
 import './setup';
 import { sql } from 'drizzle-orm';
@@ -138,6 +139,27 @@ describe('ticket merge schema (#8972 W1, spec §3.2)', () => {
       SELECT merged_from_ticket_id FROM ticket_comments WHERE id = ${rows[0]!.id}::uuid
     `)) as unknown as Array<{ merged_from_ticket_id: string | null }>;
     expect(after).toEqual([{ merged_from_ticket_id: null }]);
+  });
+
+  runDb('origin_ticket_id on external refs nulls when its ticket is hard-deleted (#10120)', async () => {
+    const { partner, org } = await seedOrg();
+    const user = await createUser({ partnerId: partner.id });
+    const src = await insertTicket(org.id, partner.id);
+    const dst = await insertTicket(org.id, partner.id);
+    const [principal] = (await getTestDb().execute(sql`
+      INSERT INTO partner_service_principals (partner_id, name, scopes, created_by, updated_by)
+      VALUES (${partner.id}::uuid, 'origin-fk', ARRAY['tickets:read'], ${user.id}::uuid, ${user.id}::uuid) RETURNING id
+    `)) as unknown as Array<{ id: string }>;
+    const rows = (await getTestDb().execute(sql`
+      INSERT INTO ticket_external_refs (ticket_id, org_id, partner_id, partner_service_principal_id, external_id, origin_ticket_id)
+      VALUES (${dst}::uuid, ${org.id}::uuid, ${partner.id}::uuid, ${principal!.id}::uuid, 'ORIGIN-1', ${src}::uuid)
+      RETURNING id
+    `)) as unknown as Array<{ id: string }>;
+    await getTestDb().execute(sql`DELETE FROM tickets WHERE id = ${src}::uuid`);
+    const after = (await getTestDb().execute(sql`
+      SELECT ticket_id, origin_ticket_id FROM ticket_external_refs WHERE id = ${rows[0]!.id}::uuid
+    `)) as unknown as Array<{ ticket_id: string; origin_ticket_id: string | null }>;
+    expect(after).toEqual([{ ticket_id: dst, origin_ticket_id: null }]);
   });
 
   runDb('partial index exists and is valid', async () => {

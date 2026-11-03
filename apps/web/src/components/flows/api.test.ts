@@ -9,7 +9,12 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  FLOW_ADMISSION_REFUSALS,
+  FLOW_LIMIT_KEYS,
   FLOW_PAUSED_REASONS,
+  FLOW_WEBHOOK_AUTH_FAILURES,
+  FLOW_WEBHOOK_AUTH_MODES,
+  FLOW_WEBHOOK_DELIVERY_STATUSES,
   FLOW_RUN_ERROR_CODES,
   FLOW_RUN_STATUSES,
   FLOW_RUN_STEP_STATUSES,
@@ -31,9 +36,13 @@ import {
   cancelFlowRun,
   disableFlow,
   enableFlow,
+  getFlowLimits,
   getFlowRun,
   getFlowRunStep,
   listFlowRuns,
+  listWebhookDeliveries,
+  rotateWebhookSecret,
+  saveFlowLimits,
   startFlowRun,
 } from './api';
 
@@ -215,5 +224,103 @@ describe('locale key lists match the shared const arrays', () => {
 
   it('previewNotice is gone', () => {
     expect('previewNotice' in en).toBe(false);
+  });
+});
+
+describe('W05 (#5220): webhook, deliveries and limits client', () => {
+  it('listWebhookDeliveries builds /flows/:id/webhook-deliveries with limit and before', async () => {
+    mocks.fetchWithAuth.mockResolvedValue(json(200, { deliveries: [], identifiersHidden: true }));
+    await expect(listWebhookDeliveries('f1', { limit: 50, before: '2026-10-01T00:00:00.000Z' })).resolves.toEqual({ deliveries: [], identifiersHidden: true });
+    expect(mocks.fetchWithAuth).toHaveBeenCalledWith('/flows/f1/webhook-deliveries?limit=50&before=2026-10-01T00%3A00%3A00.000Z');
+  });
+
+  it('getFlowLimits reads the partner level, or one org with ?orgId=', async () => {
+    // The level is explicit: the switcher's org is never injected (#5220 live
+    // check: a partner admin otherwise never reached the partner default).
+    mocks.fetchWithAuth.mockResolvedValue(json(200, { level: 'partner', limits: {} }));
+    await getFlowLimits();
+    expect(mocks.fetchWithAuth).toHaveBeenLastCalledWith('/flows/limits', { orgIdOverride: null });
+    mocks.fetchWithAuth.mockResolvedValue(json(200, { level: 'org', limits: {} }));
+    await getFlowLimits('o1');
+    expect(mocks.fetchWithAuth).toHaveBeenLastCalledWith('/flows/limits?orgId=o1', { orgIdOverride: null });
+  });
+
+  it('rotateWebhookSecret goes through runAction and returns the secret without ever toasting it', async () => {
+    const reveal = { secret: 'bwh_SECRET_VALUE', fingerprint: 'fp', rotatedAt: '2026-10-26T00:00:00.000Z', warning: 'w' };
+    mocks.fetchWithAuth.mockResolvedValue(json(200, reveal));
+    await expect(rotateWebhookSecret('f1')).resolves.toEqual(reveal);
+    const [url, init] = mocks.fetchWithAuth.mock.calls[0]!;
+    expect(url).toBe('/flows/f1/webhook-secret');
+    expect(init.method).toBe('POST');
+    expect(JSON.stringify(mocks.showToast.mock.calls)).not.toContain('bwh_SECRET_VALUE');
+  });
+
+  it('rotateWebhookSecret failures toast localized copy', async () => {
+    mocks.fetchWithAuth.mockResolvedValue(json(409, { error: 'draft_unresolvable' }));
+    await expect(rotateWebhookSecret('f1')).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast).toHaveBeenCalledWith({ message: lookup('webhook.secret.draftUnresolvable'), type: 'error' });
+  });
+
+  it('saveFlowLimits PUTs /flows/limits through runAction with a success toast', async () => {
+    mocks.fetchWithAuth.mockResolvedValue(json(200, { level: 'org' }));
+    await saveFlowLimits({ orgId: 'o1', limits: { monthlyRunsPerFlow: 5, aiTokensPerRun: null } });
+    const [url, init] = mocks.fetchWithAuth.mock.calls[0]!;
+    expect(url).toBe('/flows/limits');
+    expect(init.method).toBe('PUT');
+    expect(init.orgIdOverride).toBeNull();
+    expect(JSON.parse(init.body)).toEqual({ orgId: 'o1', limits: { monthlyRunsPerFlow: 5, aiTokensPerRun: null } });
+    expect(mocks.showToast).toHaveBeenCalledWith({ message: lookup('limits.saved'), type: 'success' });
+  });
+
+  it('saveFlowLimits: a ceiling refusal is rendered inline (not toasted); partner_wide_forbidden toasts localized copy', async () => {
+    mocks.fetchWithAuth.mockResolvedValue(json(422, { error: 'limit_above_partner_ceiling', field: 'monthlyRunsPerFlow', ceiling: 5 }));
+    const err = await saveFlowLimits({ orgId: 'o1', limits: { monthlyRunsPerFlow: 6 } }).catch((e) => e);
+    expect(err).toBeInstanceOf(ActionError);
+    expect(err.body).toMatchObject({ field: 'monthlyRunsPerFlow', ceiling: 5 });
+    expect(mocks.showToast).not.toHaveBeenCalled();
+    mocks.fetchWithAuth.mockResolvedValue(json(403, { error: 'partner_wide_forbidden' }));
+    await expect(saveFlowLimits({ limits: { monthlyRunsPerFlow: 6 } })).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast).toHaveBeenCalledWith({ message: lookup('limits.partnerWideForbidden'), type: 'error' });
+  });
+
+  it('saveFlowLimits: org_not_found toasts the organization-not-found copy, not the load-failed copy', async () => {
+    mocks.fetchWithAuth.mockResolvedValue(json(404, { error: 'org_not_found' }));
+    await expect(saveFlowLimits({ orgId: 'o1', limits: { monthlyRunsPerFlow: 6 } })).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast).toHaveBeenCalledWith({ message: lookup('limits.orgNotFound'), type: 'error' });
+  });
+
+  it.each([[422, 'webhook_secret_missing'], [422, 'ai_budget_unavailable']])(
+    'enable %s %s is rendered inline by the dialog', async (status, code) => {
+      mocks.fetchWithAuth.mockResolvedValue(json(status, { error: code }));
+      await expect(enableFlow('f1', { expectedVersion: 1, preApprovedStepIds: [] })).rejects.toBeInstanceOf(ActionError);
+      expect(mocks.showToast).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe('W05 locale key lists match the shared const arrays', () => {
+  const keys = (o: unknown) => Object.keys(o as object).sort();
+  const sorted = (a: readonly string[]) => [...a].sort();
+  const w = en as unknown as Record<string, any>;
+
+  it('webhook.lastFailure.* covers every FLOW_WEBHOOK_AUTH_FAILURES (+ label, none)', () => {
+    expect(keys(w.webhook.lastFailure)).toEqual(sorted([...FLOW_WEBHOOK_AUTH_FAILURES, 'label', 'none']));
+  });
+  it('webhook.authMode.* covers every FLOW_WEBHOOK_AUTH_MODES (+ label)', () => {
+    expect(keys(w.webhook.authMode)).toEqual(sorted([...FLOW_WEBHOOK_AUTH_MODES, 'label']));
+  });
+  it('deliveries.status.* covers every FLOW_WEBHOOK_DELIVERY_STATUSES', () => {
+    expect(keys(w.deliveries.status)).toEqual(sorted(FLOW_WEBHOOK_DELIVERY_STATUSES));
+  });
+  it('usage.refused.* covers every FLOW_ADMISSION_REFUSALS', () => {
+    expect(keys(w.usage.refused)).toEqual(sorted(FLOW_ADMISSION_REFUSALS));
+  });
+  it('limits.fields.* covers every FLOW_LIMIT_KEYS', () => {
+    expect(keys(w.limits.fields)).toEqual(sorted(FLOW_LIMIT_KEYS));
+  });
+  it('step.builtin.* covers the W05 built-ins and the three W06 conversion built-ins (#5221)', () => {
+    expect(keys(w.step.builtin)).toEqual([
+      'ai', 'create_alert', 'http_request', 'notify', 'resolve_targets', 'run_script_on_targets',
+    ]);
   });
 });

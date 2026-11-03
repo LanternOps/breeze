@@ -29,7 +29,6 @@ import {
 } from './schemas';
 import {
   getPagination,
-  getIceServers,
   getDeviceWithOrgCheck,
   getSessionWithOrgCheck,
   hasSessionOwnership,
@@ -63,6 +62,7 @@ import { revokeViewerSession } from '../../services/viewerTokenRevocation';
 import { captureException, captureMessage } from '../../services/sentry';
 import { ACTIVE_REMOTE_SESSION_STATUSES, teardownDisconnectedSessions } from '../../services/remoteSessionTeardown';
 import { normalizeRecordingUrl } from './recordingUrl';
+import { resolveDesktopIcePlan } from './desktopRelayPolicy';
 import { createRemoteSession, RemoteSessionDeniedError } from '../../services/remoteSessionCreate';
 import {
   AGENT_UPGRADE_REQUIRED_CODE,
@@ -502,6 +502,7 @@ sessionRoutes.get(
         type: remoteSessions.type,
         status: remoteSessions.status,
         terminationPhase: remoteSessions.terminationPhase,
+        endReason: remoteSessions.endReason,
         startedAt: remoteSessions.startedAt,
         endedAt: remoteSessions.endedAt,
         durationSeconds: remoteSessions.durationSeconds,
@@ -528,6 +529,8 @@ sessionRoutes.get(
         type: s.type,
         status: s.status,
         terminationPhase: s.terminationPhase ?? 'none',
+        // #10190 W06: why it ended, when known ('ended_by_user'); else null.
+        endReason: s.endReason ?? null,
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         durationSeconds: s.durationSeconds,
@@ -662,6 +665,7 @@ sessionRoutes.get(
         type: remoteSessions.type,
         status: remoteSessions.status,
         terminationPhase: remoteSessions.terminationPhase,
+        endReason: remoteSessions.endReason,
         startedAt: remoteSessions.startedAt,
         endedAt: remoteSessions.endedAt,
         durationSeconds: remoteSessions.durationSeconds,
@@ -689,6 +693,8 @@ sessionRoutes.get(
         type: s.type,
         status: s.status,
         terminationPhase: s.terminationPhase ?? 'none',
+        // #10190 W06: why it ended, when known ('ended_by_user'); else null.
+        endReason: s.endReason ?? null,
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         durationSeconds: s.durationSeconds,
@@ -767,6 +773,8 @@ sessionRoutes.get(
       // the agent has not yet acknowledged the stop. The web UI must not
       // render such a session as connected.
       terminationPhase: session.terminationPhase ?? 'none',
+      // #10190 W06: 'ended_by_user' when the person at the keyboard ended it.
+      endReason: session.endReason ?? null,
       webrtcOffer: session.webrtcOffer,
       webrtcAnswer: session.webrtcAnswer,
       iceCandidates: session.iceCandidates,
@@ -930,12 +938,15 @@ sessionRoutes.get(
       return jsonError(c, 429, ERROR_CODES.RATE_LIMITED, 'Too many ICE server requests. Please try again later.');
     }
 
+    const icePlan = await resolveDesktopIcePlan(device.id, {
+      sessionId: session.id,
+      userId: session.userId,
+      deviceId: session.deviceId,
+    });
+    if (!icePlan.ok) return c.json({ error: icePlan.error, code: icePlan.code }, 409);
     return c.json({
-      iceServers: getIceServers({
-        sessionId: session.id,
-        userId: session.userId,
-        deviceId: session.deviceId,
-      })
+      iceServers: icePlan.iceServers,
+      ...(icePlan.relayOnly ? { relayOnly: true } : {}),
     });
   }
 );
@@ -1080,6 +1091,15 @@ sessionRoutes.post(
         code: CONSENT_UPGRADE_REQUIRED_CODE,
       }, 409);
     }
+    // Refuse an isolated session before committing a start intent or minting a lease.
+    // This route already runs inside the request's DB access context.
+    const icePlan = await resolveDesktopIcePlan(device.id, {
+      sessionId,
+      userId: session.userId,
+      deviceId: session.deviceId,
+    });
+    if (!icePlan.ok) return c.json({ error: icePlan.error, code: icePlan.code }, 409);
+
     const promptMode = prompt?.mode === 'consent' || prompt?.mode === 'notify' ? prompt.mode : 'off';
     const startCommandId = createDesktopStartCommandId(sessionId);
 
@@ -1177,7 +1197,8 @@ sessionRoutes.post(
           sessionId,
           startGeneration: formatDesktopGeneration(startGeneration),
           offer: data.offer,
-          iceServers: getIceServers({ sessionId, userId: session.userId, deviceId: session.deviceId }),
+          iceServers: icePlan.iceServers,
+          ...(icePlan.relayOnly ? { relayOnly: true } : {}),
           clipboard: desktopPolicy.clipboard,
           idleTimeoutMinutes: desktopPolicy.idleTimeoutMinutes,
           maxSessionDurationHours: desktopPolicy.maxSessionDurationHours,

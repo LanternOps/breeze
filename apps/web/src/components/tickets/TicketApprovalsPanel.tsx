@@ -38,12 +38,14 @@ interface Props {
   summary: ApprovalSummary;
   /** Called after any mutation so the host reloads the summary and the time list. */
   onChanged: () => void;
+  /** #10073: a merged tombstone — every approval write 409s TICKET_MERGED. */
+  readOnly?: boolean;
 }
 
-export default function TicketApprovalsPanel({ summary, onChanged }: Props) {
+export default function TicketApprovalsPanel({ summary, onChanged, readOnly = false }: Props) {
   const { t } = useTranslation('tickets');
   const { can } = usePermissions();
-  const canWrite = can('tickets', 'write');
+  const canWrite = can('tickets', 'write') && !readOnly;
   const canRecord = can('tickets', 'record_approval');
   const [cancelTarget, setCancelTarget] = useState<ApprovalRequest | null>(null);
   const [cancelling, setCancelling] = useState(false);
@@ -210,8 +212,10 @@ export default function TicketApprovalsPanel({ summary, onChanged }: Props) {
         })}
       </ul>
 
+      {/* #10073: canWrite folds in readOnly, so a dialog left open when the
+          ticket turns read-only (merged meanwhile) stops rendering. */}
       <ConfirmDialog
-        open={cancelTarget !== null}
+        open={cancelTarget !== null && canWrite}
         onClose={() => { if (!cancelling) setCancelTarget(null); }}
         onConfirm={() => void confirmCancel()}
         title={t('ticketApproval.panel.cancelConfirmTitle')}
@@ -222,7 +226,7 @@ export default function TicketApprovalsPanel({ summary, onChanged }: Props) {
         confirmTestId="approval-cancel-confirm"
         dialogTestId="approval-cancel-dialog"
       />
-      {recordTarget && (
+      {recordTarget && canWrite && (
         <RecordApprovalDialog
           open
           request={recordTarget}

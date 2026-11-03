@@ -730,6 +730,46 @@ describe('revalidateApprovedIntentForRelease external tool branch (tool catalog 
   });
 });
 
+describe('revalidateApprovedIntentForRelease invoked-flow branch (W5 PR C, #5220)', () => {
+  const FLOW_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const PUB_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const args = { inputs: { count: 3 }, orgId: null, idempotencyKey: null };
+  const digest = computeArgumentDigest(canonicalizeArguments(args));
+  const flowIntent = (overrides: Record<string, unknown> = {}) => intentFixture({
+    actionName: 'flow__disk_cleanup', arguments: args, argumentDigest: digest, riskTier: 3, approvalScope: 'supervised',
+    toolSourceToolId: null, invokedFlowId: FLOW_ID, toolRevision: `flowpub:${PUB_ID}`, ...overrides,
+  });
+
+  it('never consults the core registry; the requester must still hold automations.write', async () => {
+    const result = await revalidateApprovedIntentForRelease(flowIntent(), { boundArgumentDigest: digest });
+    expect(result.ok).toBe(true);
+    expect(getToolTier).not.toHaveBeenCalled();
+    expect(checkToolPermission).not.toHaveBeenCalled();
+    expect(checkPermissionRequirements).toHaveBeenCalledWith(
+      expect.objectContaining({ user: { id: 'user-1' } }),
+      [{ resource: 'automations', action: 'write' }],
+    );
+    expect(loadTenantToolBindingState).not.toHaveBeenCalled();
+  });
+
+  it('refuses rbac_denied when the requester lost automations.write', async () => {
+    vi.mocked(checkPermissionRequirements).mockResolvedValueOnce('Missing permission: automations:write');
+    expect(await revalidateApprovedIntentForRelease(flowIntent(), { boundArgumentDigest: digest }))
+      .toMatchObject({ ok: false, errorCode: 'rbac_denied' });
+  });
+
+  it('a binding without a flowpub revision is flow_tool_changed', async () => {
+    expect(await revalidateApprovedIntentForRelease(flowIntent({ toolRevision: 'rev-1' }), { boundArgumentDigest: digest }))
+      .toMatchObject({ ok: false, errorCode: 'flow_tool_changed' });
+  });
+
+  it('a flow tool name without the binding is flow_tool_changed (never tier_escalated through the registry)', async () => {
+    expect(await revalidateApprovedIntentForRelease(flowIntent({ invokedFlowId: null, toolRevision: null }), { boundArgumentDigest: digest }))
+      .toMatchObject({ ok: false, errorCode: 'flow_tool_changed' });
+    expect(getToolTier).not.toHaveBeenCalled();
+  });
+});
+
 describe('revalidateApprovedIntentForRelease org-wide governance site ceiling', () => {
   const args = { userPrincipalName: 'victim@contoso.test' };
   const digest = computeArgumentDigest(canonicalizeArguments(args));
