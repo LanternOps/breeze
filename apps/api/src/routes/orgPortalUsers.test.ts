@@ -4,7 +4,8 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { INBOUND_CONTACT_LOCK_NAMESPACE } from '../services/inboundEmail/resolveOrg';
 
 const { valuesSpy, setSpy, executeSpy } = vi.hoisted(() => ({ valuesSpy: vi.fn(), setSpy: vi.fn(), executeSpy: vi.fn() }));
-const { authRef, selectResult, insertReturning, sendInvite, createContactMock, updateContactMock, auditMock } = vi.hoisted(() => ({
+const { authRef, selectResult, insertReturning, sendInvite, createContactMock, updateContactMock, addRolesMock, auditMock } = vi.hoisted(() => ({
+  addRolesMock: vi.fn(),
   createContactMock: vi.fn(),
   updateContactMock: vi.fn(),
   auditMock: vi.fn(),
@@ -71,6 +72,10 @@ vi.mock('../services/auditEvents', () => ({ writeRouteAudit: auditMock }));
 vi.mock('../services/contacts/crud', async () => {
   const actual = await vi.importActual<typeof import('../services/contacts/crud')>('../services/contacts/crud');
   return { ...actual, createContact: createContactMock, updateContact: updateContactMock };
+});
+vi.mock('../services/contacts/responsibilities', async () => {
+  const actual = await vi.importActual<typeof import('../services/contacts/responsibilities')>('../services/contacts/responsibilities');
+  return { ...actual, addLegacyDerivedContactRoles: addRolesMock };
 });
 vi.mock('../routes/portal/helpers', () => ({
   storePortalInviteToken: vi.fn(async () => 'raw-token'),
@@ -162,11 +167,9 @@ describe('POST /organizations/:id/portal-users/invite', () => {
 
     // A UNION, never a replace: the invite grants portal access, it does not
     // decide the person stopped being the billing contact.
-    expect(updateContactMock).toHaveBeenCalledTimes(1);
-    const [, contactId, orgId, patch] = updateContactMock.mock.calls[0]!;
-    expect(contactId).toBe('ct-1');
-    expect(orgId).toBe(ORG_ID);
-    expect((patch as { roles: string[] }).roles.slice().sort()).toEqual(['billing', 'portal']);
+    expect(updateContactMock).not.toHaveBeenCalled();
+    expect(addRolesMock).toHaveBeenCalledTimes(1);
+    expect(addRolesMock).toHaveBeenCalledWith(expect.anything(), { contactId: 'ct-1', orgId: ORG_ID, roles: ['portal'] });
   });
 
   it("does not re-write the contact when it ALREADY has the 'portal' role", async () => {
@@ -180,6 +183,7 @@ describe('POST /organizations/:id/portal-users/invite', () => {
     await invite({ email: 'known@acme.example' });
 
     expect(updateContactMock).not.toHaveBeenCalled();
+    expect(addRolesMock).not.toHaveBeenCalled();
   });
 
   it('serialises on the SAME advisory lock inbound email takes for (org, address)', async () => {

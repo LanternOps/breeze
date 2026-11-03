@@ -5,6 +5,7 @@ vi.mock('../../db', () => ({ db: {} }));
 vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWithExecutor: vi.fn().mockResolvedValue(undefined) }));
 const responsibilityMocks = vi.hoisted(() => ({
   syncLegacyContactRoles: vi.fn().mockResolvedValue(undefined),
+  assertLegacyRolesWritable: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('./responsibilities', () => responsibilityMocks);
 
@@ -524,8 +525,10 @@ describe('updateContact', () => {
       [{ ...PRIMARY_ROW, siteId: SITE }], // getContact
       [], [],                             // parent pre-locks: org, then site
       [{ ...PRIMARY_ROW, siteId: SITE }], // the target, re-read under them
+      [{ id: CONTACT }],                  // heldBillingBefore: it holds billing @ Organization
       [{ id: CONTACT }],                  // org-scope demotion: the demoted contact holds billing @ Organization
       [], [],                             // vacated site scope: no primary left
+      [{ id: CONTACT }],                  // holdsBillingAfter
       [moved],                            // billing re-projection: it now feeds the org
     ]);
     await updateContact(exec, CONTACT, ORG, { siteId: null }, ACTOR);
@@ -596,6 +599,32 @@ describe('parent-first locking around a primary re-projection', () => {
     await updateContact(exec, CONTACT, ORG, patch as never, ACTOR);
     expect(lockReads(calls).map((l) => l.table)).toEqual([organizations, contacts]);
     expect(lockReads(calls)[0]!.seq).toBeLessThan(calls.updates.find((u) => u.table === contacts)!.seq);
+    expect(calls.selects.some((c) => c.table === contactRoles)).toBe(true);
+    expect(calls.updates.filter((u) => u.table === organizations)).toEqual([]);
+  });
+
+  it('Phase 3: a siteId-only patch of a contact holding billing @ Organization takes the org lock and re-projects billing_contact', async () => {
+    // Un-pinning changes the recipient ORDER (an org-level primary ranks first),
+    // so the pin alone is enough to move organizations.billing_contact.
+    const row = { ...PLAIN_ORG_ROW, siteId: SITE };
+    const billing = { name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100' };
+    const { exec, calls } = makeExec([
+      [row], [], [row],
+      [{ id: CONTACT }], // canonical before: holds billing @ Organization
+      [{ id: CONTACT }], // canonical after
+      [billing],         // projection
+    ]);
+    await updateContact(exec, CONTACT, ORG, { siteId: null }, ACTOR);
+    expect(lockReads(calls).map((l) => l.table)).toEqual([organizations, contacts]);
+    expect(lockReads(calls)[0]!.seq).toBeLessThan(calls.updates.find((u) => u.table === contacts)!.seq);
+    expect(orgBlobWrites(calls)).toEqual([billing]);
+  });
+
+  it('Phase 3: a siteId-only patch of a contact NOT holding billing @ Organization locks the org but performs NO organizations update', async () => {
+    const row = { ...PLAIN_ORG_ROW, siteId: SITE };
+    const { exec, calls } = makeExec([[row], [], [row]]);
+    await updateContact(exec, CONTACT, ORG, { siteId: null }, ACTOR);
+    expect(lockReads(calls).map((l) => l.table)).toEqual([organizations, contacts]);
     expect(calls.selects.some((c) => c.table === contactRoles)).toBe(true);
     expect(calls.updates.filter((u) => u.table === organizations)).toEqual([]);
   });
@@ -875,9 +904,16 @@ describe('updateContact writes only what the patch names', () => {
       Object.assign(new Error('cannot represent'), { code: 'legacy-write-cannot-represent-scoped-responsibilities' }),
     );
     const stored = { ...PLAIN_ORG_ROW, siteId: null };
-    const { exec } = makeExec([[stored], [], [stored]], { updateReturns: [[{ ...stored, roles: ['admin'] }]] });
-    await expect(updateContact(exec, CONTACT, ORG, { roles: ['admin'] }, ACTOR))
+    // The refusal now comes from the read-only pre-check, BEFORE any write.
+    responsibilityMocks.assertLegacyRolesWritable.mockRejectedValueOnce(
+      Object.assign(new Error('cannot represent'), { code: 'legacy-write-cannot-represent-scoped-responsibilities' }),
+    );
+    const { exec, calls } = makeExec([[stored], [], [stored]], { updateReturns: [[{ ...stored, roles: ['admin'] }]] });
+    await expect(updateContact(exec, CONTACT, ORG, { roles: ['admin'], isPrimary: true, name: 'New' }, ACTOR))
       .rejects.toMatchObject({ code: 'legacy-write-cannot-represent-scoped-responsibilities' });
+    expect(calls.updates).toEqual([]);
+    expect(calls.inserts).toEqual([]);
+    expect(responsibilityMocks.syncLegacyContactRoles).not.toHaveBeenCalled();
   });
 
   it('still writes an explicit null, which is a real clear', async () => {
