@@ -1350,13 +1350,6 @@
           "updated": "Mise à jour"
         },
         "searchPlaceholder": "Rechercher des tickets",
-        "status": {
-          "closed": "Fermé",
-          "inProgress": "En cours",
-          "open": "Ouvrir",
-          "resolved": "Résolu",
-          "waiting": "En attente"
-        },
         "ticketCount": "{{filtered}} de {{total}} tickets",
         "title": "Billets d’alerte",
         "unlinked": "Non lié"
