@@ -258,10 +258,24 @@ export interface EvaluationResult {
     serviceName?: string;
     /** #7966 — from the first leaf carrying a processName, for {{processName}}. */
     processName?: string;
+    /** From the event_log leaf: matching events in the window, for {{count}}. */
+    count?: number;
+    /** From the event_log leaf, for {{category}}. */
+    category?: string;
+    /** From the event_log leaf, for {{windowMinutes}}. */
+    windowMinutes?: number;
+    /** From the event_log leaf: its description, not event text, for {{message}}. */
+    message?: string;
     deviceId: string;
     evaluatedAt: string;
   };
 }
+
+/** Values a handler supplies for its own template tokens. */
+export type ConditionTemplateValues = Pick<
+  EvaluationResult['context'],
+  'count' | 'category' | 'windowMinutes' | 'message'
+>;
 
 // Result from a single condition handler
 export interface ConditionResult {
@@ -269,6 +283,8 @@ export interface ConditionResult {
   passed: boolean;
   description: string;
   actualValue?: number;
+  /** Copied onto EvaluationResult.context; see pickLeafTemplateValues. */
+  templateValues?: ConditionTemplateValues;
   /**
    * #5290 — false when the handler could not observe the device at all (no
    * samples in the window, no inventory row, agent never reported). ABSENT
