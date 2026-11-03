@@ -97,6 +97,30 @@ function cursors(alert: typeof alerts.$inferSelect): EvidenceCursor[] {
   return Object.values((alert.context as { lifecycle: { cursor: Record<string, EvidenceCursor> } }).lifecycle.cursor);
 }
 
+describe('event-log alert message', () => {
+  it('stores the real count, category and window with no template tokens', async () => {
+    const f = await fixture();
+    const { ruleId } = await attachMonitor(f);
+    await system(() => db.insert(deviceEventLogs).values(
+      [1, 2, 3].map(recordId => ({
+        ...f, timestamp: new Date(Date.now() - recordId * 60_000), level: 'info' as const, category: 'application' as const,
+        source: 'On Battery', message: 'On Battery DEVICE-TEXT', eventId: randomUUID(), details: { logName: 'Application', recordId },
+      })),
+    ));
+    await cleanupRedis();
+
+    await system(() => evaluateDeviceAlerts(f.deviceId));
+
+    const [alert] = await system(() => db.select().from(alerts).where(and(
+      eq(alerts.ruleId, ruleId), eq(alerts.deviceId, f.deviceId),
+    )));
+    expect(alert?.message).toBe('3 matching application events on rearm-test within 60 minutes');
+    // Event text is endpoint-controlled: {{message}} is the handler description.
+    expect(alert?.context).toMatchObject({ message: 'application/info events >= 1 in 60min (found 3)' });
+    expect(JSON.stringify(alert)).not.toContain('DEVICE-TEXT');
+  });
+});
+
 describe('event-log alert re-arm lifecycle', () => {
   it('anchors two outages, freezes recovery, and never reopens on consumed or delayed evidence', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });

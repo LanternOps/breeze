@@ -228,7 +228,7 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
   skipped: number;
   /** #6353 — orgs handed to the device-independent network_check sweep. */
   networkCheckOrgsQueued: number;
-  /** #10859 — alert jobs still pending when this tick started (0 = keeping up). */
+  /** #10859 — due alert jobs with no free worker when this tick started (0 = keeping up). */
   pendingFromPreviousTick?: number;
   durationMs: number;
 }> {
@@ -288,8 +288,8 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
 
   // #10859 — sweep jobs are keyed by device, so a device whose previous
   // evaluation is still waiting, delayed or running is silently skipped by
-  // BullMQ this tick. Make that visible: anything still pending when a new
-  // tick starts means the worker is not keeping up with the fleet.
+  // BullMQ this tick. Make that visible: a job still waiting for a worker when
+  // a new tick starts means the worker is not keeping up with the fleet.
   const pendingFromPreviousTick = await countPendingAlertJobs(queue);
   if (pendingFromPreviousTick > 0) {
     console.warn(
@@ -402,14 +402,19 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
 }
 
 /**
- * Waiting + delayed + active jobs on the alert queue, minus the evaluate-all
- * job that is running this count. Best-effort: a Redis error reads as 0 and
- * never fails the sweep.
+ * Jobs that are due but have no free worker: the only state more concurrency
+ * would drain. Not `delayed`: that always holds the next `repeat:` placeholder
+ * per scheduler, plus staggered jobs whose slot has not come up. A worker's
+ * fetch promotes every due delayed job to `waiting` (up to 1000 a call), and
+ * this code runs just after such a fetch, so overdue jobs are already counted
+ * here. Not `active`: those already have a worker, and include this
+ * evaluate-all plus auto-resolve, which fires on the same minute every other
+ * tick. Best-effort: a Redis error reads as 0 and never fails the sweep.
  */
 async function countPendingAlertJobs(queue: Queue): Promise<number> {
   try {
-    const counts = await queue.getJobCounts('waiting', 'delayed', 'active');
-    return (counts.waiting ?? 0) + (counts.delayed ?? 0) + Math.max(0, (counts.active ?? 0) - 1);
+    const counts = await queue.getJobCounts('waiting');
+    return counts.waiting ?? 0;
   } catch (error) {
     console.warn('[AlertWorker] Could not read alert queue backlog:', error);
     return 0;
