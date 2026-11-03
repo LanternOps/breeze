@@ -62,7 +62,7 @@ const EXPECTED_WORKER_NAMES = [
   'webhookDeliveryRetention',
   // #10019/#10020 — DNS events/aggregations retention + background integration delete.
   'dnsSecurityRetention',
-  'oauthCleanup', 'authBrowserTransitionCleanup', 'userAvatarDraftCleanup', 'stripeAccountCacheRefresh',
+  'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup',
   // Ticket migration windows (#8313) — the per-minute window sweep.

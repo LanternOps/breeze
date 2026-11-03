@@ -123,7 +123,7 @@ export function __resetAvatarBlobCacheForTests(): void {
  * Cache: shared across components for the lifetime of the page; revoked when
  * the last consumer unmounts.
  */
-export function useAvatarBlobUrl(avatarUrl: string | null | undefined, onError?: () => void): string | null {
+export function useAvatarBlobUrl(avatarUrl: string | null | undefined): string | null {
   const [resolved, setResolved] = useState<string | null>(() => {
     if (!avatarUrl) return null;
     if (isInternalAvatarUrl(avatarUrl)) {
@@ -152,7 +152,6 @@ export function useAvatarBlobUrl(avatarUrl: string | null | undefined, onError?:
     void acquire(avatarUrl).then((objectUrl) => {
       if (!cancelled) {
         setResolved(objectUrl);
-        if (!objectUrl) onError?.();
       }
     });
 
@@ -160,7 +159,7 @@ export function useAvatarBlobUrl(avatarUrl: string | null | undefined, onError?:
       cancelled = true;
       release(avatarUrl);
     };
-  }, [avatarUrl, onError]);
+  }, [avatarUrl]);
 
   return resolved;
 }

@@ -98,7 +98,6 @@ describe('ProfilePage — first passkey enrollment surfaces its recovery codes (
     createPasskeyCredentialMock.mockReset();
     commitReissuedSessionIfCurrentMock.mockReturnValue(true);
     sessionStorage.clear();
-    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ avatarDraft: null }));
     globalThis.URL.createObjectURL = vi.fn(() => 'blob:fake');
     globalThis.URL.revokeObjectURL = vi.fn();
   });

@@ -114,7 +114,6 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // #10019/#10020. Plain Redis-required consumer, no feature flag.
   consumers('dnsSecurityRetention'),
   consumers('oauthCleanup'),
-  consumers('userAvatarDraftCleanup'),
   consumers('stripeAccountCacheRefresh'),
   consumers('exchangeRateSync'),
   { kind: 'non_consumer', initializer: 'oauthRevocationRetryWorker' },

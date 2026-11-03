@@ -112,7 +112,6 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
     Object.assign(sharedAuthUser, { mfaEnabled: true, mfaMethod: 'totp' });
     getPasskeyCredentialMock.mockResolvedValue(credential);
     sessionStorage.clear();
-    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ avatarDraft: null }));
     globalThis.URL.createObjectURL = vi.fn(() => 'blob:fake');
     globalThis.URL.revokeObjectURL = vi.fn();
   });

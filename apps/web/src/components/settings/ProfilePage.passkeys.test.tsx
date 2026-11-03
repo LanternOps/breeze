@@ -76,7 +76,6 @@ describe('ProfilePage passkey management', () => {
     // #4055 records the originating card here; a value bleeding between tests
     // would silently reroute the one after it.
     sessionStorage.clear();
-    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ avatarDraft: null }));
     globalThis.URL.createObjectURL = vi.fn(() => 'blob:fake');
     globalThis.URL.revokeObjectURL = vi.fn();
   });
@@ -135,7 +134,7 @@ describe('ProfilePage passkey management', () => {
 
     await screen.findByText('Passkey added');
 
-    expect(fetchWithAuthMock.mock.calls[2]).toEqual([
+    expect(fetchWithAuthMock.mock.calls[1]).toEqual([
       '/auth/passkeys/register/options',
       expect.objectContaining({
         method: 'POST',
@@ -143,7 +142,7 @@ describe('ProfilePage passkey management', () => {
       }),
     ]);
     expect(createPasskeyCredentialMock).toHaveBeenCalledWith(registrationOptions);
-    expect(fetchWithAuthMock.mock.calls[3]).toEqual([
+    expect(fetchWithAuthMock.mock.calls[2]).toEqual([
       '/auth/passkeys/register/verify',
       expect.objectContaining({
         method: 'POST',
@@ -225,14 +224,14 @@ describe('ProfilePage passkey management', () => {
 
     await screen.findByText('Passkey deleted');
 
-    expect(fetchWithAuthMock.mock.calls[2]).toEqual([
+    expect(fetchWithAuthMock.mock.calls[1]).toEqual([
       '/auth/mfa/step-up',
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({ method: 'totp', code: '123456', operation: 'delete_passkey', passkeyId }),
       }),
     ]);
-    expect(fetchWithAuthMock.mock.calls[3]).toEqual([
+    expect(fetchWithAuthMock.mock.calls[2]).toEqual([
       `/auth/passkeys/${passkeyId}`,
       expect.objectContaining({
         method: 'DELETE',
@@ -276,14 +275,14 @@ describe('ProfilePage passkey management', () => {
     await screen.findByText('Passkey deleted');
 
     expect(getPasskeyCredentialMock).toHaveBeenCalledWith({ challenge: 'step-up-challenge' });
-    expect(fetchWithAuthMock.mock.calls[3]).toEqual([
+    expect(fetchWithAuthMock.mock.calls[2]).toEqual([
       '/auth/mfa/step-up',
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({ method: 'passkey', credential: assertion, operation: 'delete_passkey', passkeyId }),
       }),
     ]);
-    expect(fetchWithAuthMock.mock.calls[4]).toEqual([
+    expect(fetchWithAuthMock.mock.calls[3]).toEqual([
       `/auth/passkeys/${passkeyId}`,
       expect.objectContaining({
         method: 'DELETE',
@@ -437,7 +436,7 @@ describe('ProfilePage passkey management', () => {
 
     await screen.findByText('Passkey deleted');
     expect(getPasskeyCredentialMock).toHaveBeenCalledWith({ challenge: 'step-up-challenge' });
-    expect(fetchWithAuthMock.mock.calls[3]).toEqual([
+    expect(fetchWithAuthMock.mock.calls[2]).toEqual([
       '/auth/mfa/step-up',
       expect.objectContaining({
         method: 'POST',
