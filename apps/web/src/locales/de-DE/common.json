@@ -1350,13 +1350,6 @@
           "updated": "Aktualisiert"
         },
         "searchPlaceholder": "Tickets suchen",
-        "status": {
-          "closed": "Geschlossen",
-          "inProgress": "In Bearbeitung",
-          "open": "Offen",
-          "resolved": "Gelöst",
-          "waiting": "Wartend"
-        },
         "ticketCount": "{{filtered}} von {{total}} Tickets",
         "title": "Alarmtickets",
         "unlinked": "Nicht verknüpft"

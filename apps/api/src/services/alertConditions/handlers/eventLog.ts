@@ -115,11 +115,21 @@ export const eventLogHandler: ConditionHandler = {
       await readNewest();
     }
     const passed = thresholdMet && someRowAfter;
+    const description = `${cond.category}/${cond.level} events >= ${cond.countThreshold} in ${cond.windowMinutes}min (found ${matchCount})${thresholdMet && !someRowAfter ? ' (no new evidence since last episode)' : ''}`;
 
     return {
       passed,
-      description: `${cond.category}/${cond.level} events >= ${cond.countThreshold} in ${cond.windowMinutes}min (found ${matchCount})${thresholdMet && !someRowAfter ? ' (no new evidence since last episode)' : ''}`,
+      description,
       actualValue: matchCount,
+      // {{message}} is the description, never the event's own text: that is
+      // endpoint-controlled and alert copy reaches email, Slack, PSA tickets
+      // and AI context.
+      templateValues: {
+        count: matchCount,
+        category: cond.category,
+        windowMinutes: cond.windowMinutes,
+        message: description,
+      },
       ...(evidenceWatermark ? { evidenceWatermark } : {}),
     };
   },

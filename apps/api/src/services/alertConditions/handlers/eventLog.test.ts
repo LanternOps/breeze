@@ -156,6 +156,37 @@ describe('eventLogHandler.evaluate', () => {
     expect(await eventLogHandler.evaluate(condition, 'device-1')).not.toHaveProperty('evidenceWatermark');
   });
 
+  // Event text is endpoint-controlled and alert copy reaches email, Slack, PSA
+  // tickets and AI context, so it must not be read for or placed in the template.
+  it('uses the description as the template message and never reads event text', async () => {
+    queueReads([{ count: 7 }], [row({ message: 'DEVICE-TEXT' })]);
+    const result = await eventLogHandler.evaluate(condition, 'device-1');
+    expect(result.templateValues).toEqual({
+      count: 7, category: 'application', windowMinutes: 60, message: result.description,
+    });
+    expect(JSON.stringify(result)).not.toContain('DEVICE-TEXT');
+    expect(vi.mocked(db.select).mock.calls[1]![0]).not.toHaveProperty('message');
+  });
+
+  it('uses the description as the template message under a cursor', async () => {
+    queueReads([{ count: 7 }], [
+      row({ timestamp: new Date('2026-10-30T11:50:00Z'), message: 'DEVICE-TEXT' }),
+    ]);
+    const result = await eventLogHandler.evaluate(condition, 'device-1', { evidenceAfter: cursor });
+    expect(result.passed).toBe(true);
+    expect(result.templateValues?.message).toBe(result.description);
+    expect(JSON.stringify(result)).not.toContain('DEVICE-TEXT');
+    expect(vi.mocked(db.select).mock.calls[1]![0]).not.toHaveProperty('message');
+  });
+
+  it('uses the description as the template message when no row was read', async () => {
+    queueReads([{ count: 2 }]);
+    const result = await eventLogHandler.evaluate(condition, 'device-1');
+    expect(result.templateValues).toEqual({
+      count: 2, category: 'application', windowMinutes: 60, message: result.description,
+    });
+  });
+
   it('honors resolve-side ties and prefers a cursor over the legacy flag', async () => {
     queueReads([{ count: 5 }], [row()]);
     expect((await eventLogHandler.evaluate(condition, 'device-1', {

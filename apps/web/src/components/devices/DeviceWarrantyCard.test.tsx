@@ -411,3 +411,33 @@ describe('DeviceWarrantyCard — compact empty state (#9029)', () => {
     );
   });
 });
+
+describe('DeviceWarrantyCard — date-only warranty dates', () => {
+  const originalTz = process.env.TZ;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // A bare YYYY-MM-DD parsed as UTC renders the previous day west of UTC;
+    // pin a western zone so the assertion cannot pass by accident of the host TZ.
+    process.env.TZ = 'America/Denver';
+  });
+
+  afterEach(() => {
+    if (originalTz === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTz;
+  });
+
+  it('shows warrantyEndDate 2027-12-08 as Dec 8, not Dec 7, west of UTC (matches the device list)', async () => {
+    fetchWithAuthMock.mockImplementation(async () =>
+      jsonResponse(warrantyPayload({ status: 'active', warrantyStartDate: '2024-12-08', warrantyEndDate: '2027-12-08' })),
+    );
+
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+
+    // Expected is built from local calendar parts, independent of the code under test.
+    const fmt = (y: number, m: number, d: number) =>
+      new Date(y, m - 1, d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    expect((await screen.findAllByText(new RegExp(fmt(2027, 12, 8)))).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(fmt(2024, 12, 8)).length).toBeGreaterThan(0);
+  });
+});
