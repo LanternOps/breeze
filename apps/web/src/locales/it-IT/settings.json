@@ -5501,7 +5501,7 @@
     "recoveryCode": "Codice di recupero",
     "useRecoveryCode": "Non puoi usare la passkey? Usa un codice di recupero",
     "usePasskeyVerification": "Usa invece la verifica con passkey",
-    "nameMustBeAtLeast2Characters": "Il nome deve contenere almeno 2 caratteri",
+    "nameIsRequired": "Il nome è obbligatorio.",
     "nameMustBeAtMost255Characters": "Il nome non può superare i 255 caratteri",
     "loadingProfile": "Caricamento profilo...",
     "profileSettings": "Impostazioni profilo",

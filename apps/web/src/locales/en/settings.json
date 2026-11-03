@@ -5504,7 +5504,7 @@
     "factorProofLabel": "Current MFA code or recovery code",
     "passkeyRecoveryCodeHint": "Enter an unused recovery code.",
     "recoveryCode": "Recovery code",
-    "nameMustBeAtLeast2Characters": "Name must be at least 2 characters",
+    "nameIsRequired": "Name is required.",
     "nameMustBeAtMost255Characters": "Name must be at most 255 characters",
     "loadingProfile": "Loading profile...",
     "profileSettings": "Profile settings",

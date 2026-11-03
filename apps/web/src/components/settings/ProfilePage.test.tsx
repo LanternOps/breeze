@@ -148,8 +148,8 @@ describe('ProfilePage avatar settings', () => {
   });
 
   it.each([
-    { name: '  ', message: 'Name must be at least 2 characters', change: 'replace' },
-    { name: '  ', message: 'Name must be at least 2 characters', change: 'remove' },
+    { name: '  ', message: 'Name is required.', change: 'replace' },
+    { name: '  ', message: 'Name is required.', change: 'remove' },
     { name: 'A'.repeat(256), message: 'Name must be at most 255 characters', change: 'replace' },
     { name: 'A'.repeat(256), message: 'Name must be at most 255 characters', change: 'remove' },
   ] as const)('keeps a staged $change pending when the name is invalid', async ({ name, message, change }) => {
@@ -175,6 +175,28 @@ describe('ProfilePage avatar settings', () => {
     expect(screen.getByRole('button', { name: 'Undo' })).toBeTruthy();
     expect(showToastMock).not.toHaveBeenCalled();
     expect(updateUserMock).not.toHaveBeenCalled();
+  });
+
+  it('saves a staged avatar removal for a valid one-character name', async () => {
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (String(url) === '/users/me/avatar' && init?.method === 'DELETE') return makeJsonResponse({ avatarUrl: null });
+      if (String(url) === '/users/me' && init?.method === 'PATCH') return makeJsonResponse({ id: 'user-1', name: 'A', email: 'casey@example.com' });
+      return makeJsonResponse({ name: 'Casey Admin', email: 'casey@example.com' });
+    });
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', avatarUrl: '/current/avatar', mfaEnabled: false }} />);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'A' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await screen.findByText('Picture removal pending');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await screen.findByText('Profile updated successfully');
+    const avatarDeleteIndex = fetchWithAuthMock.mock.calls.findIndex(([url, init]) => String(url) === '/users/me/avatar' && init?.method === 'DELETE');
+    const profileUpdateIndex = fetchWithAuthMock.mock.calls.findIndex(([url, init]) => String(url) === '/users/me' && init?.method === 'PATCH');
+    expect(avatarDeleteIndex).toBeGreaterThan(-1);
+    expect(avatarDeleteIndex).toBeLessThan(profileUpdateIndex);
+    expect(fetchWithAuthMock.mock.calls[profileUpdateIndex]?.[1]).toMatchObject({ body: JSON.stringify({ name: 'A' }) });
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
   });
 
   it('reports that the picture saved when the name update fails and retries only the name', async () => {

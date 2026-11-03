@@ -45,7 +45,7 @@ const SSO_REAUTH_MANAGE_DEAD_GRANT_CODES = new Set(['sso_reauth_required', 'sso_
 
 const createProfileSchema = (t: TFunction) => z.object({
   name: z.string().trim()
-    .min(2, t('profilePage.nameMustBeAtLeast2Characters'))
+    .min(1, t('profilePage.nameIsRequired'))
     .max(255, t('profilePage.nameMustBeAtMost255Characters')),
 });
 
