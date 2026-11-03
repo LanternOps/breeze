@@ -189,3 +189,8 @@ func downloadAndVerify(url, destDir string) error {
 	)
 	return nil
 }
+
+// openH264StagesForHelpers reports whether this process stages the codec for
+// other processes to load. On Windows each process resolves its own copy
+// under the ProgramData trust checks above, so there is nothing to retry.
+func openH264StagesForHelpers() bool { return false }

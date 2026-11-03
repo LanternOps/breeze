@@ -69,10 +69,12 @@ var (
 
 // Shared is the process-wide cache. The file in the agent data dir is
 // written by both the agent and watchdog processes (last-writer-wins atomic
-// replace); each process reads it only at startup.
+// replace); each process reads it only at startup. A macOS user-session
+// helper cannot reach that root-only dir and keeps its own copy in its
+// per-user state dir (config.ProcessDataDir, #10870).
 func Shared() *Cache {
 	sharedOnce.Do(func() {
-		shared = New(filepath.Join(config.GetDataDir(), "dns-cache.json"))
+		shared = New(filepath.Join(config.ProcessDataDir(), "dns-cache.json"))
 	})
 	return shared
 }

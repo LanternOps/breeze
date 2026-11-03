@@ -103,6 +103,7 @@
     "noRejectionsOrDenialsFound": "Nessuna azione negata, bloccata o non riuscita trovata.",
     "rejected": "Negato",
     "rejectionsAndDenials": "Negati e bloccati",
+    "stopped": "Interrotto",
     "search": "Cerca...",
     "session": "Sessione",
     "status": "Stato",
@@ -1869,10 +1870,20 @@
       "loadFailed": "Impossibile caricare gli eventi"
     },
     "loading": "Caricamento…",
-    "eventCount_one": "{{shown}} di {{total}} evento (100 più recenti)",
-    "eventCount_other": "{{shown}} di {{total}} eventi (100 più recenti)",
-    "blockedEventCount_one": "{{shown}} di {{total}} evento bloccato (100 più recenti)",
-    "blockedEventCount_other": "{{shown}} di {{total}} eventi bloccati (100 più recenti)",
+    "eventCount_one": "{{shown}} di {{total}} evento",
+    "eventCount_other": "{{shown}} di {{total}} eventi",
+    "blockedEventCount_one": "{{shown}} di {{total}} evento bloccato",
+    "blockedEventCount_other": "{{shown}} di {{total}} eventi bloccati",
+    "eventCountCapped": "{{shown}} di oltre {{total}} eventi",
+    "blockedEventCountCapped": "{{shown}} di oltre {{total}} eventi bloccati",
+    "loadMore": "Carica altri",
+    "window": {
+      "label": "Intervallo di tempo",
+      "last24h": "Ultime 24 ore",
+      "last7d": "Ultimi 7 giorni",
+      "last30d": "Ultimi 30 giorni",
+      "last90d": "Ultimi 90 giorni"
+    },
     "showAll": "Mostra tutto (non solo bloccati)",
     "actions": {
       "refresh": "Aggiorna",
@@ -2410,6 +2421,7 @@
       "platformNotSelected": "Piattaforma non selezionata",
       "varMissing": "Variabile di distribuzione mancante",
       "varSecret": "La variabile di distribuzione è contrassegnata come segreta",
+      "installerMissing": "Programma di installazione non caricato",
       "vendorUnavailable": "Fornitore non disponibile",
       "installFailed": "Installazione non riuscita",
       "installNotArmed": "Installazione non abilitata",
@@ -2417,6 +2429,10 @@
       "awaitingVendorReport": "In attesa del report del fornitore",
       "awaitingEvaluation": "In attesa di valutazione",
       "vendorOrgMismatch": "Il fornitore segnala un'altra organizzazione"
+    },
+    "setupLink": {
+      "installerMissing": "Carica il programma di installazione",
+      "default": "Apri configurazione"
     }
   },
   "sweeps": {

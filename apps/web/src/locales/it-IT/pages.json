@@ -85,6 +85,7 @@
     "logs": "Registri",
     "monitoring": "Rete",
     "oauthConsent": "Autorizza accesso",
+    "oauthError": "Connessione dell’app non riuscita",
     "onedrive": "OneDrive",
     "organizations": "Organizzazioni",
     "organizationsDetail": "Organizzazione",
@@ -210,6 +211,33 @@
     "referenceIdLabel": "ID di riferimento:",
     "dashboardLink": "Vai alla dashboard",
     "signInLink": "Accedi"
+  },
+  "oauthErrorPage": {
+    "invalidClient": {
+      "heading": "Questa app non può connettersi",
+      "body": "Breeze non riconosce l’app che ti ha mandato qui, oppure l’app non è autorizzata a connettersi a questo server Breeze. Verifica che l’app sia configurata con l’indirizzo di questo server, quindi riprova."
+    },
+    "invalidRedirectUri": {
+      "heading": "L’indirizzo di ritorno di questa app non è registrato",
+      "body": "L’app ha chiesto a Breeze di rimandarti a un indirizzo che non ha mai registrato, quindi Breeze si è fermato qui per proteggere il tuo account. Lo sviluppatore dell’app o il tuo amministratore deve correggere l’URL di reindirizzamento dell’app."
+    },
+    "sessionExpired": {
+      "heading": "Questo accesso è scaduto",
+      "body": "La connessione ha richiesto troppo tempo oppure è stata avviata in un altro browser. Torna all’app e connettiti di nuovo."
+    },
+    "invalidRequest": {
+      "heading": "L’app ha inviato una richiesta che Breeze non può accettare",
+      "body": "La richiesta di connessione dell’app era incompleta o chiedeva qualcosa che questo server non supporta. Torna all’app e riprova. Se il problema persiste, contatta lo sviluppatore dell’app."
+    },
+    "serverError": {
+      "heading": "Breeze non è riuscito a completare la connessione",
+      "body": "Si è verificato un errore da parte nostra. Attendi qualche minuto, poi torna all’app e riprova."
+    },
+    "generic": {
+      "heading": "Impossibile completare questa connessione",
+      "body": "Torna all’app e avvia di nuovo la connessione. Se il problema persiste, contatta il tuo amministratore Breeze."
+    },
+    "nextStep": "Non è stato concesso alcun accesso. Puoi chiudere questa pagina."
   },
   "settingsIndex": {
     "heading": "Impostazioni",

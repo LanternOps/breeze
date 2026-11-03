@@ -1840,7 +1840,11 @@
       "deviceCount": "DeviceCount",
       "allowed2": "autorisé",
       "blocked2": "bloqué",
-      "summary": "Affichage {{range}} de {{total}}"
+      "summary": "Affichage {{range}} de {{total}}",
+      "policyWouldNotApply": "« {{policy}} » ne s'appliquerait à aucun appareil de cette organisation : rien n'a été modifié. Chaque appareil suit une seule stratégie logicielle, et {{winners}} l'emporte sur tous les appareils. Modifiez ou supprimez l'attribution de {{configPolicy}} dans Stratégies de configuration, puis réessayez.",
+      "policyWouldNotApplySameMode": "« {{policy}} » ne s'appliquerait à aucun appareil de cette organisation : rien n'a été modifié. Chaque appareil suit une seule stratégie logicielle, et {{winners}} l'emporte sur tous les appareils. Ajoutez plutôt le titre à {{winner}} dans Stratégies logicielles.",
+      "theWinningConfigPolicy": "la stratégie de configuration qui l'emporte",
+      "nowOverridesPolicies": "« {{policy}} » prévaut désormais sur {{names}} sur les appareils de cette organisation."
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "Impossible de récupérer l’inventaire logiciel",
@@ -1937,7 +1941,7 @@
       "windows": "Windows",
       "macOS": "macOS",
       "linux": "Linux",
-      "noFileSelectedMsiExeDmgDeb": "Aucun fichier sélectionné (.msi, .exe, .dmg, .deb, .pkg)",
+      "noFileSelectedMsiExeDmgDeb": "Aucun fichier sélectionné (.msi, .exe, .dmg, .deb, .pkg, .zip)",
       "saving": "Enregistrement...",
       "uploadSave": "Téléverser et enregistrer",
       "saveVersion": "Enregistrer la version",
@@ -1952,8 +1956,8 @@
       "failedToUpdateVersion": "Échec de la mise à jour de la version",
       "replaceFileAddNewVersion": "Pour remplacer le fichier d'installation, ajoutez plutôt une nouvelle version.",
       "inactiveStoredScripts": "Les scripts d’installation enregistrés ne sont pas actifs ; recréez la version pour les activer.",
-      "addZipFromAddPackage": "Ajoutez les packages zip depuis Ajouter le package.",
-      "builtinVersionsReadOnly": "Géré par Breeze. Les versions des packages intégrés ne peuvent être ni ajoutées ni modifiées ici."
+      "builtinVersionsReadOnly": "Géré par Breeze. Les versions des packages intégrés ne peuvent être ni ajoutées ni modifiées ici.",
+      "installScriptsReadOnlyOnEdit": "Les scripts d’installation d’une version existante ne peuvent pas être modifiés et fixent son système d’exploitation cible. Pour les changer, ajoutez une nouvelle version : elle reprend ces scripts."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Insérer une variable de temps de déploiement",
@@ -2011,6 +2015,18 @@
       "uninstallCommandCopied": "Commande de désinstallation copiée",
       "breezeDoesNotUninstall": "Breeze ne désinstalle pas ces clients. Exécutez la commande sur l’appareil pour en supprimer un.",
       "copyFailed": "Échec de la copie. Sélectionnez la commande et copiez-la manuellement."
+    },
+    "policyCoverage": {
+      "appliesTo_one": "S'applique à {{count}} appareil",
+      "appliesTo_other": "S'applique à {{count}} appareils",
+      "appliesToNone": "S'applique à 0 appareil",
+      "notAssigned": "Attribuée par aucune stratégie de configuration",
+      "overriddenBy": "Remplacée par {{names}}",
+      "overriddenHint": "Chaque appareil suit une seule stratégie logicielle. Sur les appareils auxquels cette stratégie est attribuée, {{names}} l'emporte.",
+      "partlyOverriddenHint": "Chaque appareil suit une seule stratégie logicielle. {{names}} l'emporte sur les autres appareils attribués.",
+      "anotherPolicy": "une autre stratégie logicielle",
+      "partnerWide": "{{name}} (tout le partenaire)",
+      "unavailable": "Couverture indisponible"
     }
   }
 }

@@ -526,6 +526,18 @@ const COMMAND_STYLE_HANDLED_KEYS = new Set([
   'status', 'exitCode', 'durationMs', 'error', 'stdout', 'stdoutChars', 'stderr', 'stderrChars', 'data',
 ]);
 
+/**
+ * A `stdoutChars`/`stderrChars` already on the payload: set by an earlier
+ * pass of `compactCommandStylePayload` over the same result (#10411), so it
+ * counts the text before that pass truncated it — re-counting the truncated
+ * string would understate what the tool returned.
+ */
+function priorCharCount(value: unknown, textChars = 0): number | undefined {
+  // Never smaller than the text in hand: a count below it cannot describe that
+  // text's original, so a payload-supplied value cannot understate the output.
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= textChars ? value : undefined;
+}
+
 function compactCommandStylePayload(
   payload: Record<string, unknown>,
   stats: CompactStats,
@@ -583,8 +595,23 @@ function compactCommandStylePayload(
       output.stdoutChars = payload.stdout.length;
     } else {
       output.stdout = truncateText(redactAiToolOutputText(payload.stdout), config.maxStdoutChars, stats);
-      output.stdoutChars = payload.stdout.length;
+      output.stdoutChars = priorCharCount(payload.stdoutChars, payload.stdout.length) ?? payload.stdout.length;
     }
+  } else if (payload.stdout !== undefined && payload.stdout !== null) {
+    // #10411: a structured stdout that an EARLIER pass of this function
+    // already parsed into an object. The chat handler compacts a result for
+    // the model and postToolUse compacts that same string again before
+    // persisting the tool_result row; skipping a non-string stdout here (it
+    // is a handled key, so the passthrough loop below skips it too) left the
+    // transcript with {status, exitCode, commandId} while the model had read
+    // the output. Keep it, bounded and redacted exactly as on the first pass.
+    const redactedStdout = redactToolOutputFields(payload.stdout, redactAiToolOutputText);
+    output.stdout = compactValue(redactedStdout, stats, {
+      ...config,
+      maxArrayItems: Math.min(config.maxArrayItems, 50),
+    });
+    const priorChars = priorCharCount(payload.stdoutChars);
+    if (priorChars !== undefined) output.stdoutChars = priorChars;
   }
 
   if (typeof payload.stderr === 'string') {
@@ -597,7 +624,7 @@ function compactCommandStylePayload(
         stats,
       );
     }
-    output.stderrChars = payload.stderr.length;
+    output.stderrChars = priorCharCount(payload.stderrChars, payload.stderr.length) ?? payload.stderr.length;
   }
 
   if (payload.data !== undefined) {
@@ -1043,6 +1070,11 @@ function asCaptureEnvelope(value: unknown): { artifact: Record<string, unknown>;
  * external vendor feed, or portal/email submission.
  */
 export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
+  // W15: vendor/person text never becomes instructions (including provisioned field values).
+  get_pax8_status: new Set(['commitmentTerm', 'billingTerm', 'catalogSku', 'name', 'pax8CompanyName', 'mappedOrgName', 'lastSyncError', 'error']),
+  search_pax8_products: new Set(['commitmentTerm', 'billingTerm', 'catalogSku', 'productName', 'vendorName', 'catalogName', 'catalogDescription', 'label', 'description', 'possibleValues', 'error']),
+  manage_pax8_subscriptions: new Set(['commitmentTerm', 'billingTerm', 'catalogSku', 'pax8CompanyName', 'mappedOrgName', 'productName', 'vendorName', 'error']),
+  manage_pax8_orders: new Set(['commitmentTerm', 'billingTerm', 'catalogSku', 'name', 'productName', 'error', 'provisioningDetails']),
   // Windows/syslog event text: writable by any local unprivileged process.
   search_logs: new Set(['message']),
   get_log_trends: new Set(['source']),
@@ -1136,6 +1168,13 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   manage_device_software: new Set(['name', 'version']),
   manage_software_inventory: new Set(['name', 'vendor', 'version', 'versions', 'hostname', 'osVersion', 'softwareName']),
   manage_fleet_findings: new Set(['title']),
+  // #10383: get_fleet_findings returns the same cached finding title (a log-correlation
+  // finding's title echoes the matched rule name or event pattern).
+  get_fleet_findings: new Set(['title']),
+  // #10383: generate_report device_inventory data returns the device-reported osVersion
+  // (fenced as for manage_software_inventory). hostname/agentVersion stay verbatim, per the
+  // hostname rule and query_agent_versions.
+  generate_report: new Set(['osVersion']),
   manage_custom_fields: new Set(['name', 'fieldKey', 'values', 'previous', 'defaultValue', 'options']),
   // Full-control W13 (#6783, W13-D11): audit messages / resource names / errors, agent health reasons, process names,
   // posture product names and versions, hostnames, link-group and manual-asset names, notes and locations, and
@@ -1167,10 +1206,15 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.
-  manage_alerts: new Set(['title', 'message']),
+  // #10408: `orgName` (multi-org callers) is a tenant-set name read into a
+  // session that spans other tenants — fenced as data, never instructions.
+  manage_alerts: new Set(['title', 'message', 'orgName']),
+  // #10383: manage_alert_rules get_rule returns the rule's recentAlerts[].title, the same
+  // device-derived alert title manage_alerts fences.
+  manage_alert_rules: new Set(['title']),
   // A device's own hostname/display name are self-reported at enrollment,
   // not admin-assigned.
-  query_devices: new Set(['hostname', 'displayName']),
+  query_devices: new Set(['hostname', 'displayName', 'orgName']),
   get_device_details: new Set(['hostname', 'displayName']),
   // get_device_context's CURRENT result is plain text (device memory —
   // issues/quirks/follow-ups), never a JSON `hostname`/`displayName` field,

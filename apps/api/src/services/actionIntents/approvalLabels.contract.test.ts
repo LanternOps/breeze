@@ -53,3 +53,13 @@ describe('approval card labels (#9657)', () => {
     expect(buildApprovalDescription('some_unmapped_tool', 'do_thing', {})).toBe('Some unmapped tool: do thing');
   });
 });
+
+
+describe('W15 Pax8 approval consequences', () => {
+  it('explains the billing link, unlink refusal, partner sync and vendor dry run', () => {
+    expect(buildApprovalDescription('manage_pax8_subscriptions', 'link', {})).toContain('decides which contract line later Pax8 orders bill');
+    expect(buildApprovalDescription('manage_pax8_subscriptions', 'unlink', {})).toContain('staged changes on this subscription will be refused');
+    expect(buildApprovalDescription('manage_pax8_subscriptions', 'sync', {})).toContain('every organization');
+    expect(buildApprovalDescription('manage_pax8_orders', 'preflight', {})).toContain('sends the staged order content to Pax8');
+  });
+});

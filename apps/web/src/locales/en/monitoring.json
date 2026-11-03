@@ -77,7 +77,8 @@
       "recurrenceThreshold": "Escalate after",
       "recurrenceWindowDays": "episodes within (days)",
       "pauseResponses": "Pause automatic responses until a person resets",
-      "aiAgent": "AI agent (enables AI triage responses)"
+      "aiAgent": "AI agent (enables AI triage responses)",
+      "psaBoard": "PSA board for alert tickets"
     },
     "deliveryModes": {
       "inherit": "Use routing rules",
@@ -170,7 +171,11 @@
       "failed": "Could not load assets",
       "orgRequired": "Select organization ownership to bind an asset.",
       "pingName": "Ping {{label}}"
-    }
+    },
+    "psaBoardDefault": "Use the connection’s default board",
+    "psaBoardHelp": "Alert tickets for this monitor are created on this board instead of the connection’s default.",
+    "psaBoardReadOnly": "Alert tickets go to PSA board #{{id}}",
+    "psaBoardUnavailable": "Could not load PSA boards, so the board override is unavailable right now."
   },
   "kinds": {
     "composite": "Composite (all or any of several)",

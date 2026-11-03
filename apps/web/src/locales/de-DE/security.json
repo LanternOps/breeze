@@ -103,6 +103,7 @@
     "noRejectionsOrDenialsFound": "Keine abgelehnten, blockierten oder fehlgeschlagenen Aktionen gefunden.",
     "rejected": "Abgelehnt",
     "rejectionsAndDenials": "Abgelehnt und blockiert",
+    "stopped": "Gestoppt",
     "search": "Suchen...",
     "session": "Sitzung",
     "status": "Status",
@@ -1869,10 +1870,20 @@
       "loadFailed": "Ereignisse konnten nicht geladen werden"
     },
     "loading": "Laden…",
-    "eventCount_one": "{{shown}} von {{total}} Ereignis (letzte 100)",
-    "eventCount_other": "{{shown}} von {{total}} Ereignissen (die letzten 100)",
-    "blockedEventCount_one": "{{shown}} von {{total}} blockiertem Ereignis (letzte 100)",
-    "blockedEventCount_other": "{{shown}} von {{total}} blockierten Ereignissen (die letzten 100)",
+    "eventCount_one": "{{shown}} von {{total}} Ereignis",
+    "eventCount_other": "{{shown}} von {{total}} Ereignissen",
+    "blockedEventCount_one": "{{shown}} von {{total}} blockiertem Ereignis",
+    "blockedEventCount_other": "{{shown}} von {{total}} blockierten Ereignissen",
+    "eventCountCapped": "{{shown}} von über {{total}} Ereignissen",
+    "blockedEventCountCapped": "{{shown}} von über {{total}} blockierten Ereignissen",
+    "loadMore": "Mehr laden",
+    "window": {
+      "label": "Zeitraum",
+      "last24h": "Letzte 24 Stunden",
+      "last7d": "Letzte 7 Tage",
+      "last30d": "Letzte 30 Tage",
+      "last90d": "Letzte 90 Tage"
+    },
     "showAll": "Alle anzeigen (nicht nur blockiert)",
     "actions": {
       "refresh": "Aktualisieren",
@@ -2410,6 +2421,7 @@
       "platformNotSelected": "Plattform nicht ausgewählt",
       "varMissing": "Bereitstellungsvariable fehlt",
       "varSecret": "Bereitstellungsvariable ist als geheim markiert",
+      "installerMissing": "Installationsprogramm nicht hochgeladen",
       "vendorUnavailable": "Hersteller nicht verfügbar",
       "installFailed": "Installation fehlgeschlagen",
       "installNotArmed": "Installation nicht freigegeben",
@@ -2417,6 +2429,10 @@
       "awaitingVendorReport": "Warten auf Herstellerbericht",
       "awaitingEvaluation": "Warten auf Auswertung",
       "vendorOrgMismatch": "Hersteller meldet eine andere Organisation"
+    },
+    "setupLink": {
+      "installerMissing": "Installationsprogramm hochladen",
+      "default": "Einrichtung öffnen"
     }
   },
   "sweeps": {

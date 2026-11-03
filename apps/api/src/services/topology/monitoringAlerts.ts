@@ -55,6 +55,7 @@ export async function openTopologyPolicyAlert(input: {
   const sourceKey = topologyPolicyAlertSourceKey({ scope: input.scope, policyId: input.policy.id, contextKey: input.contextKey, family: input.family });
   const recipe = input.policy.definition.recipeId.replace(/_/g, ' ');
   const [created] = await db.insert(alerts).values({
+    ownerKind: 'topology_site',
     ruleId: null,
     deviceId: input.originDeviceId,
     orgId: input.scope.orgId,

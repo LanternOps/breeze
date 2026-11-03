@@ -171,8 +171,10 @@ function fireAndForget(label: string, work: () => Promise<unknown>): void {
   })();
 }
 
-/** A portal answer ends the emailed link too: revoke its jti post-commit so a
- *  reload 401s exactly as after a public answer. The durable status already
+/** A portal answer ends the emailed link too: arm its jti marker post-commit
+ *  so the link can no longer answer, exactly as after a public answer (it
+ *  still opens read-only as signed/declined — agreementsPublic.ts, #10199).
+ *  The durable status already
  *  refuses a second answer; a lost marker only costs a DB read, but it is
  *  security-relevant, so it is captured. */
 async function revokeLinkPostCommit(revoke: AgreementResponseRevoke | null): Promise<void> {
@@ -214,7 +216,6 @@ portalAgreementRoutes.get('/agreements', async (c) => {
     .select({
       id: agreementRequests.id,
       status: agreementRequests.status,
-      label: agreementRequests.label,
       templateVersionId: agreementRequests.templateVersionId,
       sentAt: agreementRequests.sentAt,
       expiresAt: agreementRequests.expiresAt,
@@ -234,7 +235,9 @@ portalAgreementRoutes.get('/agreements', async (c) => {
     const template = labels.get(r.templateVersionId);
     return {
       id: r.id,
-      name: r.label?.trim() || template?.templateName || 'Agreement',
+      // The template name, never the request label: the label is staff-internal
+      // (the Send dialog says so) and never reaches the customer (#10294).
+      name: template?.templateName || 'Agreement',
       templateName: template?.templateName ?? null,
       status: r.status as 'sent' | 'viewed',
       sentAt: r.sentAt ? r.sentAt.toISOString() : null,
@@ -285,13 +288,15 @@ portalAgreementRoutes.get('/agreements/:id', zValidator('param', idParam), async
   }
 
   let signedAgreementId: string | null = null;
+  let signedTemplateName: string | null = null;
   if (row.status === 'signed') {
     const [doc] = await db
-      .select({ id: contractDocuments.id })
+      .select({ id: contractDocuments.id, templateNameSnapshot: contractDocuments.templateNameSnapshot })
       .from(contractDocuments)
       .where(and(eq(contractDocuments.agreementRequestId, row.id), eq(contractDocuments.orgId, orgId)))
       .limit(1);
     signedAgreementId = doc?.id ?? null;
+    signedTemplateName = doc?.templateNameSnapshot?.trim() || null;
     if (!doc) {
       // Signed and frozen in one transaction, so a signed request with no
       // signed agreement is an integrity fault: the customer has nothing to
@@ -305,7 +310,9 @@ portalAgreementRoutes.get('/agreements/:id', zValidator('param', idParam), async
   const presentation = toPublicAgreementPresentation({
     request: row,
     status,
-    template: { name: renderData.templateName, versionNumber: renderData.versionNumber, sourceType: renderData.sourceType },
+    // Once signed, the name frozen with the signed agreement (its certificate
+    // says the same); a later template rename never reaches it (#10294).
+    template: { name: signedTemplateName ?? renderData.templateName, versionNumber: renderData.versionNumber, sourceType: renderData.sourceType },
     html,
     fileUrl: renderData.sourceType === 'uploaded' ? `/portal/agreements/${row.id}/file` : null,
     partnerName: brand.partnerName,

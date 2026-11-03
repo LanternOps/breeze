@@ -24,6 +24,7 @@ import { finalizeOrphanedDeviceScans } from './securityScanOrphanFinalize';
 const NOW = new Date('2026-10-28T12:00:00.000Z');
 const isUndelivered = (o: RecordedOp) => o.kind === 'execute' && whereText(o).includes('executed_at is null');
 const isStale = (o: RecordedOp) => o.kind === 'execute' && whereText(o).includes('coalesce(');
+const isQueueExpired = (o: RecordedOp) => o.kind === 'execute' && whereText(o).includes('queue_expires_at');
 
 const ops = () => h.recording!.ops;
 const undeliveredStmt = () => ops().find(isUndelivered)!;
@@ -46,11 +47,25 @@ afterEach(() => {
 });
 
 describe('finalizeOrphanedDeviceScans (#10057)', () => {
-  it('runs the undelivered rule, then the clock, as two statements', async () => {
+  it('runs the undelivered rule, the clock, then the Scan now queue expiry, as three statements', async () => {
     await finalizeOrphanedDeviceScans(NOW);
-    expect(ops()).toHaveLength(2);
+    expect(ops()).toHaveLength(3);
     expect(isUndelivered(ops()[0]!)).toBe(true);
     expect(isStale(ops()[1]!)).toBe(true);
+    expect(isQueueExpired(ops()[2]!)).toBe(true);
+  });
+
+  it('queue expiry (#10057 gap 2): an undispatched Scan now past queue_expires_at → expired', async () => {
+    await finalizeOrphanedDeviceScans(NOW);
+    const stmt = ops().find(isQueueExpired)!;
+    const text = whereText(stmt);
+    expect(text).toContain(`set status = 'expired'`);
+    expect(text).toContain('sweep_id is null');
+    expect(text).toContain(`status = 'queued'`);
+    // Only a row the claim never dispatched: a dispatched one waits on its command.
+    expect(text).toContain('command_id is null');
+    expect(text).toContain('queue_expires_at <=');
+    expect(whereParams(stmt)).toContain(NOW.toISOString());
   });
 
   it('undelivered: a non-sweep scan whose command terminalized before delivery → expired', async () => {
@@ -103,10 +118,11 @@ describe('finalizeOrphanedDeviceScans (#10057)', () => {
       const o = op as RecordedOp;
       if (isUndelivered(o)) return [{ id: 's1' }];
       if (isStale(o)) return [{ id: 's2' }, { id: 's3' }];
+      if (isQueueExpired(o)) return [{ id: 's4' }];
       return [];
     };
-    expect(await finalizeOrphanedDeviceScans(NOW)).toEqual({ expired: 1, failed: 2 });
+    expect(await finalizeOrphanedDeviceScans(NOW)).toEqual({ expired: 2, failed: 2 });
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0]![1]).toMatchObject({ expired: ['s1'], failed: ['s2', 's3'] });
+    expect(warn.mock.calls[0]![1]).toMatchObject({ expired: ['s1', 's4'], failed: ['s2', 's3'] });
   });
 });

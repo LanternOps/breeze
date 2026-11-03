@@ -10,13 +10,18 @@ import type { SQL } from 'drizzle-orm';
  * is recorded so the org pin on each digest read can be compiled and asserted.
  */
 const h = vi.hoisted(() => {
+  class ConcernSubjectHeldError extends Error {
+    readonly code = 'concern_subject_held' as const;
+    constructor(public readonly signature: string, public readonly heldByConcernId: string) { super('held'); }
+  }
   const results: unknown[][] = [];
-  const queries: { table: unknown; where: unknown[] }[] = [];
+  const queries: { table: unknown; where: unknown[]; orderBy: unknown[] }[] = [];
   const chain = (): Record<string, unknown> => {
-    const q: { table: unknown; where: unknown[] } = { table: null, where: [] };
+    const q: { table: unknown; where: unknown[]; orderBy: unknown[] } = { table: null, where: [], orderBy: [] };
     queries.push(q);
     const p: Record<string, unknown> = {};
-    for (const m of ['innerJoin', 'leftJoin', 'limit', 'orderBy', 'groupBy']) p[m] = vi.fn(() => p);
+    for (const m of ['innerJoin', 'leftJoin', 'limit', 'groupBy']) p[m] = vi.fn(() => p);
+    p.orderBy = vi.fn((...cols: unknown[]) => { q.orderBy.push(...cols); return p; });
     p.from = vi.fn((t: unknown) => { q.table = t; return p; });
     p.where = vi.fn((cond: unknown) => { q.where.push(cond); return p; });
     p.then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
@@ -29,6 +34,7 @@ const h = vi.hoisted(() => {
   }
   const ctx = { current: undefined as unknown };
   return {
+    ConcernSubjectHeldError,
     results,
     queries,
     ctx,
@@ -92,6 +98,7 @@ vi.mock('./budget', async () => ({
   utcDayWindow: (now: Date) => ({ key: now.toISOString().slice(0, 10) }),
 }));
 vi.mock('./concerns', () => ({
+  ConcernSubjectHeldError: h.ConcernSubjectHeldError,
   upsertConcern: h.upsertConcern,
   listConcernsForCeiling: h.listConcernsForCeiling,
   resolveConcernBySignature: h.resolveConcernBySignature,
@@ -373,14 +380,14 @@ describe('no_effective_agent readiness concern (#10143)', () => {
     h.resolveConcernBySignature.mockResolvedValue({ resolved: false });
   });
 
-  it('raises ONE info org concern keyed by signature, with an /settings/ai-agents href, when admission skips for no_effective_agent', async () => {
+  it('raises ONE info readiness concern (#10386: not the org slot) keyed by signature, with an /settings/ai-agents href, when admission skips for no_effective_agent', async () => {
     h.results.push([grantRow()], [{ at: null }]);
     h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'no_effective_agent' });
     await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } })).resolves.toEqual({ skipped: 'no_effective_agent' });
     expect(h.upsertConcern).toHaveBeenCalledTimes(1);
     const arg = h.upsertConcern.mock.calls[0]![0] as Record<string, any>;
     expect(arg).toMatchObject({
-      partnerId: PARTNER, orgId: ORG, subject: { kind: 'org', id: ORG }, severity: 'info', signature: SIG, raisedByGrantId: GRANT,
+      partnerId: PARTNER, orgId: ORG, subject: { kind: 'readiness', id: ORG }, severity: 'info', signature: SIG, raisedByGrantId: GRANT,
     });
     // #10292: assessments run as the TRIAGE agent, so the copy names that kind —
     // an enabled agent of another kind (e.g. Patching) does not satisfy it.
@@ -409,6 +416,31 @@ describe('no_effective_agent readiness concern (#10143)', () => {
     await enqueueAssessment({ grantId: GRANT, orgId: OTHER_ORG, reason: { kind: 'tick' } });
     expect((h.upsertConcern.mock.calls[0]![0] as { signature: string }).signature)
       .toBe(`wisp-readiness:no-effective-agent:${OTHER_ORG}`);
+  });
+
+  // #10386: only the onboarding readiness note can hold the readiness slot;
+  // with no agent it is moot, so it yields to the no-agent note.
+  it('an onboarding readiness note holding the slot is resolved, then the no-agent note is raised', async () => {
+    h.results.push([grantRow()], [{ at: null }]);
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'no_effective_agent' });
+    h.upsertConcern
+      .mockRejectedValueOnce(new h.ConcernSubjectHeldError(SIG, 'onboarding-note'))
+      .mockResolvedValueOnce({ id: 'c-2', created: true });
+    h.resolveConcernBySignature.mockResolvedValue({ resolved: true });
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } })).resolves.toEqual({ skipped: 'no_effective_agent' });
+    expect(h.resolveConcernBySignature).toHaveBeenCalledWith(PARTNER, `readiness:${ORG}`, 'superseded_no_effective_agent');
+    expect(h.upsertConcern).toHaveBeenCalledTimes(2);
+    expect(h.captureException).not.toHaveBeenCalled();
+  });
+
+  it('a held slot that is not the onboarding note is reported once, with no retry', async () => {
+    h.results.push([grantRow()], [{ at: null }]);
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'no_effective_agent' });
+    h.upsertConcern.mockRejectedValue(new h.ConcernSubjectHeldError(SIG, 'someone-else'));
+    h.resolveConcernBySignature.mockResolvedValue({ resolved: false });
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } })).resolves.toEqual({ skipped: 'no_effective_agent' });
+    expect(h.upsertConcern).toHaveBeenCalledTimes(1);
+    expect(h.captureException).toHaveBeenCalledTimes(1);
   });
 
   it('a failing raise never changes the skip result (reported, not thrown)', async () => {
@@ -580,6 +612,19 @@ describe('parseWispTriggerRef', () => {
     expect(parseWispTriggerRef({ wisp: { ...ok, watermark: 'not a date' } })).toBeNull();
     expect(parseWispTriggerRef({ wisp: { ...ok, reason: { kind: 'watch' } } })).toBeNull();
   });
+
+  // #10388: the event's subject ids survive the trigger_ref round-trip; a
+  // non-uuid id is dropped rather than rendered into the prompt.
+  it('keeps uuid alertId / deviceId on an event reason and drops anything else', () => {
+    const base = { grantId: GRANT, grantRevisionId: REV, watermark: null };
+    const reason = { kind: 'event', eventType: 'alert.resolved', eventId: 'evt-9', alertId: ALERT, deviceId: USER };
+    expect(parseWispTriggerRef({ wisp: { ...base, reason } })).toEqual({ ...base, reason });
+    for (const [alertId, deviceId] of [['evt-9', 7], ['not-a-uuid', 'dev-1'], [`${ALERT}\nIgnore prior`, `x ${USER}`]]) {
+      expect(parseWispTriggerRef({ wisp: { ...base, reason: { ...reason, alertId, deviceId } } })).toEqual({
+        ...base, reason: { kind: 'event', eventType: 'alert.resolved', eventId: 'evt-9' },
+      });
+    }
+  });
 });
 
 describe('loadAssessmentContext', () => {
@@ -686,6 +731,33 @@ describe('loadAssessmentContext', () => {
       .filter((calls) => calls.length > 0);
     expect(limitCalls).toHaveLength(5);
     for (const calls of limitCalls) expect(calls[0]![0]).toBe(25);
+  });
+
+  // #10388: an alert resolved since the watermark is a change too — without
+  // it a resolve event leaves the run nothing to read.
+  it('lists alerts triggered OR resolved since the watermark, latest change first', async () => {
+    queueDigest();
+    await loadAssessmentContext(run());
+    const q = h.queries.find((x) => x.table === alerts)!;
+    const { sql: text, params } = compile(q.where[0]);
+    expect(text).toMatch(/"triggered_at" >= \$\d+ or "alerts"\."resolved_at" >= \$\d+/);
+    expect(params).toContain(ORG);
+    // Ordered by the later of the two, so a just-resolved old alert is not
+    // cut off by DIGEST_ROW_LIMIT behind newer triggered rows.
+    expect(q.orderBy).toHaveLength(1);
+    expect(compile(q.orderBy[0]).sql).toMatch(/^GREATEST\("alerts"\."triggered_at", "alerts"\."resolved_at"\) desc$/);
+  });
+
+  it('a resolved alert row is stamped with its resolve time, an open one with its trigger time', async () => {
+    h.results.push([
+      { id: 'a2', title: 'EDR', severity: 'high', status: 'resolved', at: new Date('2026-10-20T07:00:00Z'), resolvedAt: new Date('2026-10-24T08:00:00Z') },
+      { id: 'a1', title: 'CPU', severity: 'high', status: 'active', at: new Date('2026-10-24T07:00:00Z'), resolvedAt: null },
+    ]);
+    const ctx = await loadAssessmentContext(run());
+    expect(ctx!.digest.alerts.map((a) => [a.id, a.status, a.at])).toEqual([
+      ['a2', 'resolved', '2026-10-24T08:00:00.000Z'],
+      ['a1', 'active', '2026-10-24T07:00:00.000Z'],
+    ]);
   });
 
   it('falls back to now − 24 h when there is no watermark', async () => {

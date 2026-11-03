@@ -171,6 +171,9 @@ partnerAlertRoutes.get('/alerts', requirePartnerApiScope('alerts:read'), async (
 
     const rows = orgIds.length === 0 ? [] : await db.select({
       id: alerts.id,
+      ownerKind: alerts.ownerKind,
+      ownerRef: alerts.ownerRef,
+      topologySiteId: alerts.topologySiteId,
       orgId: alerts.orgId,
       // devices joined on id AND org: an alert whose device_id points at a
       // device in another org (alerts has no composite device/org FK) must
@@ -215,6 +218,7 @@ partnerAlertRoutes.get('/alerts', requirePartnerApiScope('alerts:read'), async (
     const blocked: PartnerExportBlockedRecord[] = [];
     for (const row of pageRows) {
       const withoutRevision = {
+        owner: { kind: row.ownerKind ?? 'device', ref: row.ownerKind === 'backup_workload' ? row.ownerRef : row.ownerKind === 'topology_site' ? row.topologySiteId : row.deviceId ?? null },
         id: row.id,
         orgId: row.orgId,
         deviceId: row.deviceId ?? null,

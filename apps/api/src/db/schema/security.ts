@@ -192,9 +192,27 @@ export const securityScans = pgTable('security_scans', {
   dispatchedRuleSets: jsonb('dispatched_rule_sets'),
   // device_commands.id of the dispatch; no FK. Finalize looks commands up by
   // this id, never by payload (payloads are erased on terminalization).
-  commandId: uuid('command_id')
+  commandId: uuid('command_id'),
+  // #10057 gap 2 — a caller-initiated "Scan now" waits for the dispatch claim
+  // (jobs/securityScanClaim.ts) like every other origin, so what its direct
+  // dispatch used to carry in memory lives on the row until the claim:
+  //   paths: custom-scan targets (NULL unless scan_type = 'custom');
+  //   aiOrigin: the AI caller, re-checked against the remote-tools policy at
+  //     dispatch and carried onto the command;
+  //   callerMfaSatisfied: NULL = no caller (scheduled / sweep), so the
+  //     policy's STORED quarantine authority applies; true/false = a Scan now
+  //     running under the caller's authority, with or without MFA;
+  //   queueExpiresAt: an undispatched queued row past this is expired (by the
+  //     claim, and by the pump's orphan finalizer).
+  paths: text('paths').array(),
+  aiOrigin: jsonb('ai_origin'),
+  callerMfaSatisfied: boolean('caller_mfa_satisfied'),
+  queueExpiresAt: timestamp('queue_expires_at')
 }, (table) => ({
   deviceStartedIdx: index('security_scans_device_started_idx').on(table.deviceId, table.startedAt),
+  queueExpiryIdx: index('security_scans_queue_expiry_idx')
+    .on(table.queueExpiresAt)
+    .where(sql`${table.status} = 'queued' AND ${table.queueExpiresAt} IS NOT NULL`),
   statusIdx: index('security_scans_status_idx').on(table.status),
   sweepStatusIdx: index('security_scans_sweep_status_idx')
     .on(table.sweepId, table.status)

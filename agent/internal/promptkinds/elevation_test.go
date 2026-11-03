@@ -175,6 +175,73 @@ func TestSendRequestFencesTheFirstQuestionThenWaitsOnAssist(t *testing.T) {
 	}
 }
 
+// #10734: the domain acts on Send request from AnswerApplied, after the host
+// fenced the first question; a waiting card placed from there stays put.
+func TestWaitingCardPlacedFromAnswerAppliedIsNotFenced(t *testing.T) {
+	h, dir := elevationHost(t, elevAssist, elevSystem)
+	calls := &elevationCalls{}
+	hooks := calls.hooks()
+	var e *Elevation
+	var fencedFirst bool
+	var updateErr error
+	hooks.AnswerApplied = func(actionID string, _ ipc.HelperRole) {
+		c := closesIn(dir.take("system-1"))
+		fencedFirst = len(c) == 1 && c[0].Reason == ipc.PromptCloseFenced
+		patch, err := e.WaitingPatch(false)
+		if err == nil {
+			err = h.Update(e.ID(), patch)
+		}
+		updateErr = err
+	}
+	e = NewElevation(elevationParams(true), hooks)
+	showElevation(t, h, e)
+	first := showsIn(dir.take("system-1"))[0]
+	if res := act(t, h, "system-1", first, ActionSendRequest); res.Result != ipc.PromptActionAccepted {
+		t.Fatalf("send_request = %s", res.Result)
+	}
+	if !fencedFirst || updateErr != nil {
+		t.Fatalf("AnswerApplied ran before the fence was sent (fenced=%v) or its Update failed: %v", fencedFirst, updateErr)
+	}
+	msgs := dir.take("assist-1")
+	if c := closesIn(msgs); len(c) != 0 {
+		t.Fatalf("the waiting card was fenced after AnswerApplied placed it: %+v", c)
+	}
+	w := lastShowOf(t, msgs)
+	if w.State != ipc.PromptStateWaiting || !strings.Contains(w.Copy.StateDetail, "You can close the Windows prompt") {
+		t.Fatalf("waiting card = %s %q, want the unproven-dismiss copy kept", w.State, w.Copy.StateDetail)
+	}
+	if res := act(t, h, "assist-1", w, ActionCancelRequest); res.Result != ipc.PromptActionAccepted {
+		t.Fatalf("cancel_request on the waiting card = %s", res.Result)
+	}
+}
+
+func TestFirstAnswerNotRecordedWhenItsPatchCannotRender(t *testing.T) {
+	h, dir := elevationHost(t, elevAssist, elevSystem)
+	calls := &elevationCalls{}
+	applied := 0
+	hooks := calls.hooks()
+	hooks.AnswerApplied = func(string, ipc.HelperRole) { applied++ }
+	e := NewElevation(elevationParams(true), hooks)
+	showElevation(t, h, e)
+	first := showsIn(dir.take("system-1"))[0]
+	orig := elevationRender
+	t.Cleanup(func() { elevationRender = orig })
+	elevationRender = func(promptcatalog.Locale, string, string, map[string]string) (string, error) {
+		return "", errElevationAction
+	}
+	res := act(t, h, "system-1", first, ActionSendRequest)
+	elevationRender = orig
+	if res.Result != ipc.PromptActionRejectedInvalid {
+		t.Fatalf("send_request with a failing render = %s", res.Result)
+	}
+	if len(calls.answered) != 0 || applied != 0 {
+		t.Fatalf("answered = %v applied = %d: a refused answer must not reach the domain", calls.answered, applied)
+	}
+	if res := act(t, h, "system-1", first, ActionSendRequest); res.Result != ipc.PromptActionAccepted || len(calls.answered) != 1 || applied != 1 {
+		t.Fatalf("retry = %s answered = %v applied = %d", res.Result, calls.answered, applied)
+	}
+}
+
 func TestUnprovenDismissCopy(t *testing.T) {
 	e := NewElevation(elevationParams(true), ElevationHooks{})
 	p, err := e.WaitingPatch(false)

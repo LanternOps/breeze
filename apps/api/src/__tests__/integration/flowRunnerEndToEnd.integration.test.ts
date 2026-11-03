@@ -539,8 +539,11 @@ describe('event trigger through the real event-dispatch queue (enforce mode)', (
     });
     const causing = await seedEnabledFlowRun({ orgId: org.id, partnerId: partner.id, delegatorUserId: delegator.id, stepId: 'look', tool: 'list_devices', pin });
 
+    const site = await createSite({ orgId: org.id });
+    if (!site) throw new Error('Missing event device site');
+    const device = await createDevice({ orgId: org.id, siteId: site.id });
     const eventId = await withFlowExecutionContext({ runId: causing.runId, chainDepth: 1 }, () =>
-      publishEvent('alert.resolved', org.id, { alertId: randomUUID() }, 'flow-it'));
+      publishEvent('alert.resolved', org.id, { alertId: randomUUID(), deviceId: device.id }, 'flow-it'));
 
     const q = getEventDispatchQueue();
     const routeJob = await q.getJob(`event-route-${eventId}`);

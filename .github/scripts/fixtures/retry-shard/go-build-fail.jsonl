@@ -1,0 +1,14 @@
+{"ImportPath":"github.com/breeze-rmm/agent/broken [github.com/breeze-rmm/agent/broken.test]","Action":"build-output","Output":"# github.com/breeze-rmm/agent/broken [github.com/breeze-rmm/agent/broken.test]\n"}
+{"ImportPath":"github.com/breeze-rmm/agent/broken [github.com/breeze-rmm/agent/broken.test]","Action":"build-output","Output":"broken/b.go:3:23: cannot use \"x\" (untyped string constant) as int value in return statement\n"}
+{"ImportPath":"github.com/breeze-rmm/agent/broken [github.com/breeze-rmm/agent/broken.test]","Action":"build-fail"}
+{"Time":"2026-10-30T08:01:17.918972-06:00","Action":"start","Package":"github.com/breeze-rmm/agent/broken"}
+{"Time":"2026-10-30T08:01:17.919022-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/broken","Output":"FAIL\tgithub.com/breeze-rmm/agent/broken [build failed]\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:17.919031-06:00","Action":"fail","Package":"github.com/breeze-rmm/agent/broken","Elapsed":0,"FailedBuild":"github.com/breeze-rmm/agent/broken [github.com/breeze-rmm/agent/broken.test]"}
+{"Time":"2026-10-30T08:01:18.162627-06:00","Action":"start","Package":"github.com/breeze-rmm/agent/okpkg"}
+{"Time":"2026-10-30T08:01:18.41741-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/okpkg","Test":"TestOK"}
+{"Time":"2026-10-30T08:01:18.417568-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/okpkg","Test":"TestOK","Output":"=== RUN   TestOK\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:18.417688-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/okpkg","Test":"TestOK","Output":"--- PASS: TestOK (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:18.417698-06:00","Action":"pass","Package":"github.com/breeze-rmm/agent/okpkg","Test":"TestOK","Elapsed":0}
+{"Time":"2026-10-30T08:01:18.417709-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/okpkg","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:18.418238-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/okpkg","Output":"ok  \tgithub.com/breeze-rmm/agent/okpkg\t0.255s\n"}
+{"Time":"2026-10-30T08:01:18.420993-06:00","Action":"pass","Package":"github.com/breeze-rmm/agent/okpkg","Elapsed":0.258}

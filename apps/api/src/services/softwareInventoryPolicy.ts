@@ -23,6 +23,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { RouteAuditInput } from './auditEvents';
 import { recordSoftwarePolicyAudit } from './softwarePolicyService';
 import { bumpApprovalGeneration } from './approvalGeneration';
+import { checkDefaultListPlacement, type SoftwarePolicyCompetitor } from './softwarePolicyCoverage';
 
 export * from './softwareInventoryReads';
 
@@ -197,10 +198,27 @@ type InventoryListWriteParams = InventoryPolicyWriteParams & {
 
 type DefaultListRules = { software: Array<{ name: string; vendor?: string }>; allowUnknown?: boolean };
 
+/**
+ * The approve / deny success answer. `overrides` (only when non-empty) names
+ * the software policies a newly created org default now wins devices from —
+ * e.g. a partner-wide policy (#9635), so the caller can say so.
+ */
+function listWriteSuccess(created: boolean, policyId: string, overrides: SoftwarePolicyCompetitor[]): InventoryPolicyResult {
+  const body: Record<string, unknown> = { success: true, policyId };
+  if (overrides.length > 0) body.overrides = overrides;
+  return { status: created ? 201 : 200, body };
+}
+
 /** POST /approve — add the title to the org's "Default Allowlist" (find or create). */
 export async function approveInventorySoftware(params: InventoryListWriteParams): Promise<InventoryPolicyResult> {
   const { orgId, softwareName, vendor, actorUserId, audit } = params;
   const actor = params.actor ?? 'user';
+
+  // #9635: refuse rather than feed a list that would govern no device.
+  const placement = await checkDefaultListPlacement({
+    orgId, mode: 'allowlist', policyName: 'Default Allowlist', configPolicyName: 'Default Allowlist Config',
+  });
+  if (!placement.ok) return { status: 409, body: placement.body };
 
   // Find or create "Default Allowlist" policy. The row is locked FOR UPDATE
   // while its rules JSON is read-modified-written, so two concurrent
@@ -318,15 +336,19 @@ export async function approveInventorySoftware(params: InventoryListWriteParams)
     return { status: 503, body: { error: 'The allowlist entry was saved but could not be linked to the organization; retry the same request', policyId: policy.id } };
   }
 
-  return created
-    ? { status: 201, body: { success: true, policyId: policy.id } }
-    : { status: 200, body: { success: true, policyId: policy.id } };
+  return listWriteSuccess(created, policy.id, placement.overrides);
 }
 
 /** POST /deny — add the title to the org's "Default Blocklist" (find or create). */
 export async function denyInventorySoftware(params: InventoryListWriteParams): Promise<InventoryPolicyResult> {
   const { orgId, softwareName, vendor, actorUserId, audit } = params;
   const actor = params.actor ?? 'user';
+
+  // #9635: refuse rather than feed a list that would govern no device.
+  const placement = await checkDefaultListPlacement({
+    orgId, mode: 'blocklist', policyName: 'Default Blocklist', configPolicyName: 'Default Blocklist Config',
+  });
+  if (!placement.ok) return { status: 409, body: placement.body };
 
   // Find or create "Default Blocklist" policy, locked FOR UPDATE across the
   // rules read-modify-write (see approveInventorySoftware).
@@ -440,9 +462,7 @@ export async function denyInventorySoftware(params: InventoryListWriteParams): P
     return { status: 503, body: { error: 'The blocklist entry was saved but could not be linked to the organization; retry the same request', policyId: policy.id } };
   }
 
-  return created
-    ? { status: 201, body: { success: true, policyId: policy.id } }
-    : { status: 200, body: { success: true, policyId: policy.id } };
+  return listWriteSuccess(created, policy.id, placement.overrides);
 }
 
 /** POST /clear — remove the title from the org's Default Allowlist and Default Blocklist. */

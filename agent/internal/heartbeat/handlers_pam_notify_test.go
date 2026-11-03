@@ -52,7 +52,7 @@ func TestPamRequestNotifyDeniedWithReason(t *testing.T) {
 	}
 	want := pamNotifyCall{
 		Title:      "Request denied",
-		Body:       "mmc.exe was denied by Contoso IT.\nReason: Use the self-service portal.\nCall us if it is urgent.",
+		Body:       "Contoso IT denied the request for mmc.exe.\nReason: Use the self-service portal. Call us if it is urgent.",
 		WinSession: "5",
 	}
 	if calls := rec.Calls(); len(calls) != 1 || calls[0] != want {
@@ -86,7 +86,7 @@ func TestPamRequestNotifyDeniedNoReason(t *testing.T) {
 			if result.Status != "completed" {
 				t.Fatalf("result = %+v", result)
 			}
-			want := pamNotifyCall{Title: "Request denied", Body: "mmc.exe was denied by Contoso IT.", WinSession: "5"}
+			want := pamNotifyCall{Title: "Request denied", Body: "Contoso IT denied the request for mmc.exe.", WinSession: "5"}
 			if calls := rec.Calls(); len(calls) != 1 || calls[0] != want {
 				t.Fatalf("notices = %+v, want [%+v]", calls, want)
 			}
@@ -105,7 +105,7 @@ func TestPamRequestNotifyExpired(t *testing.T) {
 	}
 	want := pamNotifyCall{
 		Title:      "Request expired",
-		Body:       "Your request for mmc.exe expired before Contoso IT responded. Try again or contact Contoso IT.",
+		Body:       "Your request for mmc.exe expired before Contoso IT answered.",
 		WinSession: "5",
 	}
 	if calls := rec.Calls(); len(calls) != 1 || calls[0] != want {
@@ -117,7 +117,7 @@ func TestPamRequestNotifyExpired(t *testing.T) {
 }
 
 // The support name and program come from the tracker, so a tracked request
-// with no support name says IT.
+// with no support name uses the generic "your IT support team" sentence.
 func TestPamRequestNotifyUsesTrackerNamesWithITFallback(t *testing.T) {
 	h := &Heartbeat{}
 	rec := recordPamNotices(h)
@@ -131,7 +131,7 @@ func TestPamRequestNotifyUsesTrackerNamesWithITFallback(t *testing.T) {
 	}
 	want := pamNotifyCall{
 		Title:      "Request expired",
-		Body:       "Your request for setup.exe expired before IT responded. Try again or contact IT.",
+		Body:       "Your request for setup.exe expired before your IT support team answered.",
 		WinSession: "3",
 	}
 	if calls := rec.Calls(); len(calls) != 1 || calls[0] != want {

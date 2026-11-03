@@ -58,6 +58,8 @@ import {
   configFeatureInlineSettingsSchema,
   duplicateComplianceItemNameMessage,
   duplicateComplianceItemNames,
+  overlongComplianceItemNameMessage,
+  overlongComplianceItemNames,
   deviceLifecycleInlineSettingsSchema,
   eventLogInlineSettingsSchema,
   hardwareMonitoringInlineSettingsSchema,
@@ -67,6 +69,7 @@ import {
   onedriveHelperInlineSettingsSchema,
   remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
   systemProtectionInlineSettingsSchema,
+  containmentInlineSettingsSchema,
   timeSyncInlineSettingsSchema,
   workloadInventoryInlineSettingsSchema,
   warrantyInlineSettingsSchema,
@@ -1209,6 +1212,7 @@ async function decomposeInlineSettings(
     case 'vulnerability':
     case 'device_lifecycle':
     case 'system_protection':
+    case 'containment':
     case 'security_agents':
       // Pure JSONB — no normalized table needed
       break;
@@ -1232,8 +1236,9 @@ async function decomposeInlineSettings(
  *
  * Mirrors exactly the `case` arms of decomposeInlineSettings that call `.parse`
  * — the others build their rows defensively from `unknown` and cannot throw —
- * plus one rule decompose cannot enforce by itself: compliance rule set names
- * are unique within the link (DuplicateComplianceItemNameError).
+ * plus the compliance rule set name rules decompose cannot enforce by itself:
+ * names are unique within the link (DuplicateComplianceItemNameError) and fit
+ * the 200-character state columns (ComplianceItemNameTooLongError).
  */
 function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settings: unknown): void {
   // Same early-out as decomposeInlineSettings: nothing to decompose, nothing to check.
@@ -1264,7 +1269,7 @@ function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settin
       monitorsInlineSettingsSchema.parse(settings);
       break;
     case 'compliance':
-      assertUniqueComplianceItemNames(settings);
+      assertValidComplianceItemNames(settings);
       break;
     default:
       break;
@@ -1329,6 +1334,7 @@ async function deleteNormalizedRows(
     case 'vulnerability':
     case 'device_lifecycle':
     case 'system_protection':
+    case 'containment':
     case 'security_agents':
       // Pure JSONB — no normalized table to delete
       break;
@@ -1635,6 +1641,7 @@ async function assembleInlineSettings(
     case 'vulnerability':
     case 'device_lifecycle':
     case 'system_protection':
+    case 'containment':
     case 'security_agents':
       // Pure JSONB — settings stored directly on feature link
       return null;
@@ -1740,14 +1747,30 @@ export class DuplicateComplianceItemNameError extends Error {
   }
 }
 
-function assertUniqueComplianceItemNames(settings: unknown): void {
+/**
+ * A compliance rule set name longer than the 200-character config_item_name
+ * columns it is copied into (compliance state, alerts, automation runs). The
+ * HTTP routes refuse this with a 400 (COMPLIANCE_RULE_SET_NAME_TOO_LONG); this
+ * is the backstop for every other caller.
+ */
+export class ComplianceItemNameTooLongError extends Error {
+  readonly code = 'COMPLIANCE_RULE_SET_NAME_TOO_LONG' as const;
+
+  constructor(readonly names: string[]) {
+    super(overlongComplianceItemNameMessage(names[0] ?? ''));
+    this.name = 'ComplianceItemNameTooLongError';
+  }
+}
+
+function assertValidComplianceItemNames(settings: unknown): void {
   if (!settings || typeof settings !== 'object') return;
   const items = (settings as { items?: unknown }).items;
   if (!Array.isArray(items)) return;
-  const names = duplicateComplianceItemNames(
-    items.filter((item): item is { name?: unknown } => !!item && typeof item === 'object'),
-  );
+  const objects = items.filter((item): item is { name?: unknown } => !!item && typeof item === 'object');
+  const names = duplicateComplianceItemNames(objects);
   if (names.length > 0) throw new DuplicateComplianceItemNameError(names);
+  const overlong = overlongComplianceItemNames(objects);
+  if (overlong.length > 0) throw new ComplianceItemNameTooLongError(overlong);
 }
 
 /**
@@ -1906,6 +1929,11 @@ export async function addFeatureLink(
     inlineSettings = systemProtectionInlineSettingsSchema.parse(inlineSettings);
   }
 
+  if (featureType === 'containment') {
+    if (featurePolicyId) throw new Error('containment is inline-only; featurePolicyId must not be set');
+    inlineSettings = containmentInlineSettingsSchema.parse(inlineSettings);
+  }
+
   // #5511 W02: warranty gains an hpCmsl block whose consent only the server may
   // write. There is no stored row yet on this path, so `stored` is null and an
   // enable always stamps fresh.
@@ -1924,7 +1952,7 @@ export async function addFeatureLink(
     inlineSettings = remoteAccessInlineSettingsSchema.parse(inlineSettings);
   }
 
-  if (featureType === 'compliance') assertUniqueComplianceItemNames(inlineSettings);
+  if (featureType === 'compliance') assertValidComplianceItemNames(inlineSettings);
 
   // #6960: service-level backstop for the route/AI checks (arming authorization,
   // NULL featurePolicyId, strict settings, enableable vendors). A link without
@@ -2075,6 +2103,13 @@ export async function updateFeatureLink(
 
     if (existing.featureType === 'system_protection' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
       updates.inlineSettings = systemProtectionInlineSettingsSchema.parse(updates.inlineSettings);
+    }
+
+    if (existing.featureType === 'containment') {
+      if (updates.featurePolicyId) throw new Error('containment is inline-only; featurePolicyId must not be set');
+      if (updates.inlineSettings !== undefined) {
+        updates.inlineSettings = containmentInlineSettingsSchema.parse(updates.inlineSettings);
+      }
     }
 
     // #6960: same backstop as addFeatureLink, on whichever fields are sent.
@@ -3171,6 +3206,8 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   // the generated software policy is owned on the config policy's own axis and
   // found via software_policies.managed_by_link_id.
   'security_agents',
+  // #10100: partner-wide inline settings; featurePolicyId is always refused below.
+  'containment',
 ]);
 
 /**
@@ -3421,7 +3458,8 @@ export async function validateFeaturePolicyExists(
     featureType === 'device_lifecycle' ||
     featureType === 'monitors' ||
     featureType === 'warranty' ||
-    featureType === 'system_protection'
+    featureType === 'system_protection' ||
+    featureType === 'containment'
   ) {
     // These have no policy table — they require inlineSettings.
     //

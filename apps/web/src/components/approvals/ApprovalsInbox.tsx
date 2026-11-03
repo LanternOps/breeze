@@ -23,10 +23,12 @@ import {
 } from '@/lib/intentApprovals';
 import { loginPathWithNext } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
+import { usePermissions } from '@/lib/permissions';
 import { useHashState } from '@/lib/useHashState';
 import { ActionError, runAction } from '@/lib/runAction';
 import { formatRelativeTime } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { useAiAgentsPolicyDecideGate } from '../../stores/featuresStore';
 import ScriptProposalApprovalCard from '../ai/ScriptProposalApprovalCard';
 import RecentApprovals from './RecentApprovals';
 import { ApproverAssuranceNotice } from './ApproverAssuranceNotice';
@@ -149,8 +151,10 @@ async function fetchOrgGraduation(orgId: string): Promise<OrgGraduationInfo> {
         const res = await fetchWithAuth(
           `/ai/agents/graduation?orgId=${encodeURIComponent(orgId)}&kind=${encodeURIComponent(kind)}`,
         );
-        // Most orgs run fewer than three kinds — a 404 here just means this
-        // kind has no active agent, not a failure.
+        // Most orgs run fewer than all acting kinds — a 404 here just means
+        // this kind has no active agent, not a failure. (Only reached while
+        // policy-decide is on: the caller skips this whole fan-out while the
+        // flag is dark — #9939.)
         if (!res.ok) return;
         const body = (await res.json()) as Partial<AiAgentGraduationDto> | null;
         if (!body || !Array.isArray(body.rows)) return;
@@ -348,6 +352,16 @@ export default function ApprovalsInbox() {
   // the "already requested" ref only ever grow.
   const graduationQueueRef = useRef<string[]>([]);
   const graduationWorkerActiveRef = useRef(false);
+  // #9939: the prefetch is only worth making when the affordance can render.
+  // While policy-decide is dark (the default) `alwaysAllowTargetFor` returns
+  // null for every card whatever the graduation read says, and without
+  // `ai_agents:read` the route 403s — either way every request would be wasted
+  // (on the flag-dark sweep stack, one 404 per acting kind per org per load).
+  // `loaded` is checked too, so the read waits for /config instead of racing it.
+  const policyDecideGate = useAiAgentsPolicyDecideGate();
+  const { can } = usePermissions();
+  const graduationReadable =
+    policyDecideGate.loaded && policyDecideGate.enabled && can('ai_agents', 'read');
   const [alwaysAllowTarget, setAlwaysAllowTarget] = useState<{
     approval: PendingApproval;
     opKey: string;
@@ -623,6 +637,10 @@ export default function ApprovalsInbox() {
   // are enqueued (not fetched inline) so the concurrent fan-out stays capped
   // regardless of how many distinct orgs appear in one render.
   useEffect(() => {
+    // Not marking anything requested here is deliberate: if the gate opens
+    // later (/config lands, permissions load), this effect re-runs and the
+    // orgs already on screen are picked up then.
+    if (!graduationReadable) return;
     const newOrgIds: string[] = [];
     for (const approval of approvals) {
       if (
@@ -637,7 +655,7 @@ export default function ApprovalsInbox() {
     if (newOrgIds.length === 0) return;
     graduationQueueRef.current.push(...newOrgIds);
     drainGraduationQueue();
-  }, [approvals, drainGraduationQueue]);
+  }, [approvals, drainGraduationQueue, graduationReadable]);
 
   // Polling fallback: the WS layer can die permanently and silently
   // (useEventStream stops retrying after 5 ticket failures), and approvals
@@ -651,11 +669,19 @@ export default function ApprovalsInbox() {
 
   // Refetch on WS reconnect: anything that arrived during the outage produced
   // no nudge, so a fresh connection means our snapshot may be stale.
+  //
+  // Only a RE-connect counts (#9939). `connected` starts false and flips true
+  // once the stream first comes up, moments after the mount load above has
+  // already fetched the list — treating that first edge as a reconnect
+  // fetched `/approvals/pending` twice on every page load. The sub-second gap
+  // between the mount read and the first connect is covered by the 30s poll.
   const wasConnectedRef = useRef(connected);
+  const hasConnectedRef = useRef(connected);
   useEffect(() => {
-    if (connected && !wasConnectedRef.current) {
+    if (connected && !wasConnectedRef.current && hasConnectedRef.current) {
       void loadApprovals({ silent: true });
     }
+    if (connected) hasConnectedRef.current = true;
     wasConnectedRef.current = connected;
   }, [connected, loadApprovals]);
 

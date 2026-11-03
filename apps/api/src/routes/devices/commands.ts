@@ -34,6 +34,7 @@ import { cancelledCommandError } from '../../services/commandCancelMessage';
 import { applyAutomationActionTerminal } from '../../services/automationActionResults';
 import { SERVER_TIMEOUT_RESULT_STATUS } from '../../services/commandResultAcceptance';
 import { captureException } from '../../services/sentry';
+import { isNetworkIsolationCommand, USE_NETWORK_ISOLATION_ROUTES } from '../../services/networkIsolation/bypass';
 
 export const commandsRoutes = new Hono();
 
@@ -46,12 +47,27 @@ const LISTABLE_COMMAND_STATUSES = ['pending', 'sent', 'completed', 'failed', 'ca
 type ListableCommandStatus = (typeof LISTABLE_COMMAND_STATUSES)[number];
 const COMMAND_WAKE_ON_LAN = 'wake_on_lan';
 
+// Run before schema validation too: release_containment is deliberately absent from the
+// generic schemas, but must receive the same actionable refusal as isolation starts.
+const refuseIsolationCommand: MiddlewareHandler = async (c, next) => {
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return next(); }
+  if (body && typeof body === 'object' && !Array.isArray(body)) {
+    const { type, payload } = body as Record<string, unknown>;
+    if (typeof type === 'string' && isNetworkIsolationCommand(type, payload)) {
+      return c.json({ error: USE_NETWORK_ISOLATION_ROUTES }, 400);
+    }
+  }
+  return next();
+};
+
 // POST /devices/bulk/commands - Queue a command for multiple devices
 commandsRoutes.post(
   '/bulk/commands',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
+  refuseIsolationCommand,
   zValidator('json', bulkCommandSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -478,6 +494,7 @@ commandsRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
+  refuseIsolationCommand,
   zValidator('json', createCommandSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -1043,6 +1060,11 @@ commandsRoutes.post(
         .limit(1);
 
       if (!existing) return { kind: 'not_found' } as const;
+      if (existing.type === 'execute_containment') {
+        const { findEpisodeByCommand } = await import('../../services/networkIsolation/episodeStore');
+        if (await findEpisodeByCommand(tx, commandId)) return { kind: 'isolation_owned' } as const;
+      }
+
       if (existing.status !== 'pending') {
         return { kind: 'not_pending' as const, status: existing.status };
       }
@@ -1067,6 +1089,9 @@ commandsRoutes.post(
 
     if (outcome.kind === 'not_found') {
       return c.json({ error: 'Command not found' }, 404);
+    }
+    if (outcome.kind === 'isolation_owned') {
+      return c.json({ error: 'Use Release to release this network isolation' }, 409);
     }
     if (outcome.kind === 'not_pending') {
       return c.json({ error: 'Command is not pending', status: outcome.status }, 409);

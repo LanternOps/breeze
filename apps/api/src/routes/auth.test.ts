@@ -279,12 +279,13 @@ vi.mock('../services/mfaStepUpGrant', () => ({
 
 // mfa.ts's POST /mfa/step-up passkey branch calls verifyStepUpPasskeyAssertion
 // (exported from ./auth/passkeys). Keep the REAL module (passkeyRoutes is
-// mounted for real under authRoutes) and only override that one helper.
+// mounted for real under authRoutes) and override factor verification and eligibility.
 vi.mock('./auth/passkeys', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./auth/passkeys')>();
   return {
     ...actual,
     verifyStepUpPasskeyAssertion: vi.fn(),
+    checkPasskeyRemovalEligibility: vi.fn(),
   };
 });
 
@@ -494,7 +495,7 @@ import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
 import * as mfaPolicyModule from '../services/mfaPolicy';
 import { enforceIpAllowlist } from '../services/ipAllowlist';
 import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, forceRebootResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest } from '../services/mfaStepUpGrant';
-import { verifyStepUpPasskeyAssertion } from './auth/passkeys';
+import { checkPasskeyRemovalEligibility, verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { getTwilioService } from '../services/twilio';
 import { authMiddleware } from '../middleware/auth';
 
@@ -4960,6 +4961,7 @@ describe('auth routes', () => {
 			vi.mocked(consumeMFAToken).mockReset().mockResolvedValue(false);
 			vi.mocked(mintStepUpGrant).mockReset().mockResolvedValue(null);
 			vi.mocked(verifyStepUpPasskeyAssertion).mockReset().mockResolvedValue(false);
+			vi.mocked(checkPasskeyRemovalEligibility).mockReset().mockResolvedValue({ factorState: { passkeyCount: 2, hasTotp: false, hasSms: false, currentMfaMethod: 'passkey', mfaRequired: false, allowedMethods: { totp: true, sms: true, passkey: true } } });
 			vi.mocked(getUserEpochs).mockReset().mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
 			policySpy = vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValue({
 				required: false,
@@ -5027,6 +5029,88 @@ describe('auth routes', () => {
 			});
 			expect(res.status).toBe(200);
 			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'delete_passkey',
+				resourceDigest: 'sha256:passkey-credential-row',
+			}));
+		});
+
+    it('keeps a recovery code unspent when the requested deletion is ineligible', async () => {
+      vi.mocked(checkPasskeyRemovalEligibility).mockImplementationOnce(async (c) => ({
+        error: c.json({ code: 'last_mfa_factor_required' }, 403),
+      }));
+      const res = await app.request('/auth/mfa/step-up', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'recovery', code: 'ABCD-1234', operation: 'delete_passkey', passkeyId: '10000000-0000-4000-8000-000000000009' }),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'last_mfa_factor_required' });
+      expect(consumeRecoveryCode).not.toHaveBeenCalled();
+      expect(mintStepUpGrant).not.toHaveBeenCalled();
+    });
+
+		it('allows a one-time recovery code only to mint a passkey deletion grant', async () => {
+			vi.mocked(consumeRecoveryCode).mockResolvedValueOnce({ hash: 'recovery-hash' });
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-passkey-delete');
+			const passkeyId = '10000000-0000-4000-8000-000000000009';
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'recovery', code: 'ABCD-1234', operation: 'delete_passkey', passkeyId }),
+			});
+			expect(res.status).toBe(200);
+			expect(consumeRecoveryCode).toHaveBeenCalledWith(expect.anything(), 'user-123', 'ABCD-1234');
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'delete_passkey',
+				resourceDigest: 'sha256:passkey-credential-row',
+			}));
+			const [mintOrder] = vi.mocked(mintStepUpGrant).mock.invocationCallOrder;
+			const [consumeOrder] = vi.mocked(consumeRecoveryCode).mock.invocationCallOrder;
+			expect(mintOrder).toBeDefined();
+			expect(consumeOrder).toBeDefined();
+			expect(mintOrder!).toBeLessThan(consumeOrder!);
+		});
+
+		it('does not consume a recovery code when the deletion grant cannot be stored', async () => {
+			const passkeyId = '10000000-0000-4000-8000-000000000009';
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'recovery', code: 'ABCD-1234', operation: 'delete_passkey', passkeyId }),
+			});
+			expect(res.status).toBe(503);
+			expect(consumeRecoveryCode).not.toHaveBeenCalled();
+		});
+
+		it('rejects recovery-code step-up for operations other than passkey deletion', async () => {
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'recovery', code: 'ABCD-1234', operation: 'add_factor' }),
+			});
+			expect(res.status).toBe(400);
+			expect(consumeRecoveryCode).not.toHaveBeenCalled();
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
+		});
+
+		it('cleans up the grant when a recovery code is spent or invalid', async () => {
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-passkey-delete');
+			vi.mocked(consumeRecoveryCode).mockRejectedValueOnce(new RecoveryCodeInvalidError());
+			vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(true);
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					method: 'recovery',
+					code: 'ABCD-1234',
+					operation: 'delete_passkey',
+					passkeyId: '10000000-0000-4000-8000-000000000009',
+				}),
+			});
+			expect(res.status).toBe(400);
+			expect(await res.json()).toMatchObject({ code: 'mfa_proof_invalid' });
+			expect(mintStepUpGrant).toHaveBeenCalledTimes(1);
+			expect(consumeStepUpGrant).toHaveBeenCalledWith('grant-passkey-delete', expect.objectContaining({
 				operation: 'delete_passkey',
 				resourceDigest: 'sha256:passkey-credential-row',
 			}));

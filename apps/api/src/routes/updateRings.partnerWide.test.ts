@@ -60,6 +60,9 @@ vi.mock('./updateRingLinkedPolicies', () => ({
   getRingLinkedPolicies: vi.fn().mockResolvedValue([]),
   linkedPolicyPayload: (l: unknown[]) => ({ linkedPolicies: l, linkedPolicyCount: l.length }),
 }));
+vi.mock('../services/updateRingQueuedWork', () => ({
+  cancelQueuedRingPatchWork: vi.fn().mockResolvedValue({ cancelledJobIds: [], cancelledInstallCount: 0 }),
+}));
 vi.mock('./updateRingsHelpers', () => ({
   resolveRingDeviceCounts: vi.fn().mockResolvedValue(new Map()),
   resolveRingDeviceIds: vi.fn().mockResolvedValue([]),
@@ -210,7 +213,13 @@ describe('update rings partner-wide capability gate', () => {
     const res = await deleteRequest(makeApp());
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ success: true, linkedPolicies: [], linkedPolicyCount: 0 });
+    expect(await res.json()).toEqual({
+      success: true,
+      linkedPolicies: [],
+      linkedPolicyCount: 0,
+      cancelledPatchJobCount: 0,
+      cancelledDeviceInstallCount: 0,
+    });
     expect(dbUpdateMock).toHaveBeenCalledOnce();
   });
 

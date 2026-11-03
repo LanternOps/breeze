@@ -1,10 +1,14 @@
 package heartbeat
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -148,6 +152,70 @@ func TestSendRecoveryKeysCollectFailureIsRateLimited(t *testing.T) {
 	}
 	if got := rec.puts(); len(got) != 0 {
 		t.Fatalf("unexpected escrow puts: %v", got)
+	}
+}
+
+// #10902: a host without BitLocker (Server without the feature, Windows
+// Home) is a permanent condition, not a failed read. It must not WARN, and it
+// waits out the full interval instead of the shortened error retry.
+func TestSendRecoveryKeysBitLockerUnavailableIsQuiet(t *testing.T) {
+	h, rec, _ := newRecoveryKeyTestHeartbeat(t)
+	var logs bytes.Buffer
+	prevLog := log
+	log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	t.Cleanup(func() { log = prevLog })
+
+	attempts := 0
+	collectRecoveryKeys = func() ([]security.RecoveryKey, error) {
+		attempts++
+		return nil, fmt.Errorf("collect: %w", security.ErrBitLockerUnavailable)
+	}
+	h.sendRecoveryKeys()
+	if strings.Contains(logs.String(), "level=WARN") || strings.Contains(logs.String(), "level=ERROR") {
+		t.Fatalf("unavailable BitLocker logged above debug: %q", logs.String())
+	}
+
+	h.mu.Lock()
+	h.lastRecoveryKeysCollect = h.lastRecoveryKeysCollect.Add(-recoveryKeyErrorRetry)
+	h.mu.Unlock()
+	h.sendRecoveryKeys()
+	if attempts != 1 {
+		t.Fatalf("collections after %s = %d, want 1 (unavailable is not a retryable error)", recoveryKeyErrorRetry, attempts)
+	}
+
+	h.mu.Lock()
+	h.lastRecoveryKeysCollect = time.Now().Add(-recoveryKeyCollectInterval)
+	h.mu.Unlock()
+	h.sendRecoveryKeys()
+	if attempts != 2 {
+		t.Fatalf("collections after full interval = %d, want 2", attempts)
+	}
+	if got := rec.puts(); len(got) != 0 {
+		t.Fatalf("unexpected escrow puts: %v", got)
+	}
+}
+
+// Technician commands re-detect BitLocker availability so a feature installed
+// after the agent cached "unavailable" is seen at once (#10902).
+func TestEncryptionCommandsRedetectBitLocker(t *testing.T) {
+	h, _, _ := newRecoveryKeyTestHeartbeat(t)
+	redetects := 0
+	prevRedetect, prevRotate := redetectBitLocker, rotateBitLockerKey
+	redetectBitLocker = func() { redetects++ }
+	rotateBitLockerKey = func(string) (security.RecoveryKey, error) {
+		return security.RecoveryKey{}, errors.New("stub: rotation failed")
+	}
+	t.Cleanup(func() { redetectBitLocker, rotateBitLockerKey = prevRedetect, prevRotate })
+
+	_ = handleEncryptionCollectKeys(h, Command{ID: "c1", Type: tools.CmdEncryptionCollectKeys})
+	if redetects != 1 {
+		t.Fatalf("redetects after collect command = %d, want 1", redetects)
+	}
+	if runtime.GOOS == "windows" {
+		_ = handleEncryptionRotateKey(h, Command{ID: "r1", Type: tools.CmdEncryptionRotateKey})
+		if redetects != 2 {
+			t.Fatalf("redetects after rotate command = %d, want 2", redetects)
+		}
 	}
 }
 

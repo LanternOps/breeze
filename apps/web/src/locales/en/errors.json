@@ -33,5 +33,6 @@
   "NO_UPDATES_PROVIDED": "No changes were provided",
   "PARTNER_GROUP_TARGET_UNSUPPORTED": "Partner-wide device groups can only be targeted by partner configuration policies",
   "PARTNER_GROUP_READ_ONLY": "This partner-wide device group can't be changed here",
-  "PARTNER_GROUP_FILTER_UNSUPPORTED": "Partner-wide device groups cannot be used in group filters, and their filters cannot reference groups or organizations"
+  "PARTNER_GROUP_FILTER_UNSUPPORTED": "Partner-wide device groups cannot be used in group filters, and their filters cannot reference groups or organizations",
+  "SCAN_ALREADY_QUEUED": "A scan is already queued for this device."
 }

@@ -24,6 +24,7 @@ import {
 import type { WispCeilingSnapshot } from '../../db/schema/wisp';
 import type { GrantCeiling } from '../../services/wisp/grantAuthority';
 import {
+  ConcernSubjectHeldError,
   dismissConcern,
   getConcernForCeiling,
   listConcernsForCeiling,
@@ -226,14 +227,37 @@ describe('upsertConcern', () => {
     expect(await concernRows(f.partner)).toHaveLength(1);
   });
 
-  it('a signature upsert whose SUBJECT collides with a live concern returns created:false (no throw)', async () => {
+  // #10386: a signed insert blocked on the SUBJECT index by a different
+  // concern is not that concern — its id is never handed back.
+  it('a signature upsert whose SUBJECT is held by a different live concern throws ConcernSubjectHeldError', async () => {
     const f = await seed();
-    const chatRaised = await upsertConcern(input(f, f.orgA, { subject: { kind: 'org', id: f.orgA } }));
-    const readiness = await upsertConcern(input(f, f.orgA, {
+    const chatRaised = await upsertConcern(input(f, f.orgA, { subject: { kind: 'org', id: f.orgA }, severity: 'high' }));
+    const thrown = await upsertConcern(input(f, f.orgA, {
       subject: { kind: 'org', id: f.orgA }, signature: `readiness:${f.orgA}`, severity: 'info',
-    }));
-    expect(readiness).toEqual({ id: chatRaised.id, created: false });
-    expect(await concernRows(f.partner)).toHaveLength(1);
+    })).catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(ConcernSubjectHeldError);
+    expect(thrown).toMatchObject({ heldByConcernId: chatRaised.id });
+    const rows = await concernRows(f.partner);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: chatRaised.id, severity: 'high' });
+  });
+
+  it('a readiness note and an org-level concern on the same org coexist, in either order (#10386)', async () => {
+    const f = await seed();
+    const readinessNote = (orgId: string) => input(f, orgId, {
+      subject: { kind: 'readiness', id: orgId }, signature: `readiness:${orgId}`, severity: 'info',
+    });
+    const orgConcern = (orgId: string) => input(f, orgId, { subject: { kind: 'org', id: orgId }, severity: 'high' });
+
+    const a1 = await upsertConcern(orgConcern(f.orgA));
+    const a2 = await upsertConcern(readinessNote(f.orgA));
+    const b1 = await upsertConcern(readinessNote(f.orgB));
+    const b2 = await upsertConcern(orgConcern(f.orgB));
+    for (const r of [a1, a2, b1, b2]) expect(r.created).toBe(true);
+    // A re-raise of either lands on its own row.
+    expect(await upsertConcern(readinessNote(f.orgA))).toEqual({ id: a2.id, created: false });
+    expect(await upsertConcern(orgConcern(f.orgB))).toEqual({ id: b2.id, created: false });
+    expect(await concernRows(f.partner)).toHaveLength(4);
   });
 
   it('updateConcern replaces evidence (no merge) and leaves status alone; unknown id is a no-op', async () => {

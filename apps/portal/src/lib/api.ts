@@ -138,12 +138,14 @@ export function buildPortalApiUrl(path: string): string {
 export function buildServerForwardHeaders(request: Request): Headers {
   const headers = new Headers();
   const cookie = request.headers.get('cookie');
-  const host = request.headers.get('host');
   const forwardedHost = request.headers.get('x-forwarded-host');
   const forwardedProto = request.headers.get('x-forwarded-proto');
 
   if (cookie) headers.set('cookie', cookie);
-  if (host) headers.set('host', host);
+  // No Host (#9700): undici drops a caller-set Host, so the API always sees the
+  // INTERNAL_API_URL host, which its FORCE_HTTPS internal-service exemption
+  // keys on. The forwarded headers below are ignored by the API unless the
+  // caller is a trusted proxy (it is not).
   if (forwardedHost) headers.set('x-forwarded-host', forwardedHost);
   if (forwardedProto) headers.set('x-forwarded-proto', forwardedProto);
 
@@ -429,7 +431,9 @@ export interface TicketDetails extends TicketSummary {
  */
 export interface PortalMergedTicket {
   merged: true;
-  mergedInto: { id: string; internalNumber: string | null } | null;
+  // ticketNumber is always present from a current API; optional so a payload
+  // from an older API (which sent internalNumber instead) still type-checks.
+  mergedInto: { id: string; ticketNumber?: string } | null;
   mergedAt: string | null;
   survivorDeleted: boolean;
 }
@@ -780,7 +784,6 @@ export interface PublicAgreementDetail {
   request: {
     id: string;
     status: 'sent' | 'viewed' | 'signed' | 'declined';
-    label: string | null;
     coverMessage: string | null;
     expiresAt: string;            // ISO instant
     effectiveDate: string | null; // YYYY-MM-DD
@@ -792,6 +795,10 @@ export interface PublicAgreementDetail {
   html: string | null;
   /** API-relative path '/agreements/public/<token>/file' (uploaded templates). */
   fileUrl: string | null;
+  /** API-relative path '/agreements/public/<token>/signed-copy' when THIS link
+   *  signed the agreement and its certified copy exists (#10695); null otherwise.
+   *  Absent on portal payloads, which download by signedAgreementId instead. */
+  signedCopyUrl?: string | null;
   parties: { partnerName: string; orgName: string | null };
   branding: {
     partnerName: string;

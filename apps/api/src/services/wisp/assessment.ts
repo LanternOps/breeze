@@ -47,7 +47,7 @@ import { sanitizeSweepText } from '../aiAgents/runnerPrompt';
 import { hasEntitlement } from '../entitlements';
 import { captureException } from '../sentry';
 import { chargeableUnderGrant, notifyBudgetExhaustedOnce, utcDayWindow } from './budget';
-import { listConcernsForCeiling, resolveConcernBySignature, upsertConcern } from './concerns';
+import { ConcernSubjectHeldError, listConcernsForCeiling, resolveConcernBySignature, upsertConcern } from './concerns';
 import { deliverInApp } from './deliver';
 import {
   CeilingViolationError,
@@ -278,19 +278,34 @@ const NO_AGENT_SUMMARY =
   + 'and switched on here (other agent kinds don\'t count). Create one, or check its status and mode, under Settings → AI Agents.';
 const NO_AGENT_HREF = '/settings/ai-agents';
 
-/** Upsert (keyed by signature, so once per org however many ticks skip). Best effort: never changes the skip. */
+/**
+ * Upsert (keyed by signature, so once per org however many ticks skip). Best
+ * effort: never changes the skip. Subject `readiness`, not `org` (#10386).
+ * The slot can only be held by the onboarding readiness note (system-only
+ * kind); with no agent that inventory is moot, so it yields once.
+ */
 async function raiseNoAgentReadiness(grantId: string, partnerId: string, orgId: string): Promise<void> {
+  const raise = () => upsertConcern({
+    partnerId,
+    orgId,
+    subject: { kind: 'readiness', id: orgId },
+    summary: NO_AGENT_SUMMARY,
+    severity: 'info',
+    evidence: { href: NO_AGENT_HREF, reason: 'no_effective_agent' },
+    signature: noAgentSignature(orgId),
+    raisedByGrantId: grantId,
+  });
   try {
-    await upsertConcern({
-      partnerId,
-      orgId,
-      subject: { kind: 'org', id: orgId },
-      summary: NO_AGENT_SUMMARY,
-      severity: 'info',
-      evidence: { href: NO_AGENT_HREF, reason: 'no_effective_agent' },
-      signature: noAgentSignature(orgId),
-      raisedByGrantId: grantId,
-    });
+    try {
+      await raise();
+    } catch (err) {
+      if (!(err instanceof ConcernSubjectHeldError)) throw err;
+      // Retry only when the onboarding note (`readiness:<org>`, written by
+      // assessmentFinalizer.applyReadiness) was the holder and is now closed.
+      const { resolved } = await resolveConcernBySignature(partnerId, `readiness:${orgId}`, 'superseded_no_effective_agent');
+      if (!resolved) throw err;
+      await raise();
+    }
   } catch (err) {
     captureException(err, undefined, { wisp_op: 'raise_no_agent_readiness' }, { fingerprint: ['wisp-readiness', 'raise'] });
   }
@@ -403,13 +418,24 @@ function isNonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (v: unknown): v is string => typeof v === 'string' && UUID_RE.test(v);
+
 function parseReason(v: unknown): AssessmentReason | null {
   if (typeof v !== 'object' || v === null) return null;
   const r = v as Record<string, unknown>;
   switch (r.kind) {
     case 'event':
+      // #10388: the subject ids are rendered into the prompt, so anything but
+      // a uuid is dropped rather than carried.
       return isNonEmptyString(r.eventType) && isNonEmptyString(r.eventId)
-        ? { kind: 'event', eventType: r.eventType, eventId: r.eventId }
+        ? {
+          kind: 'event',
+          eventType: r.eventType,
+          eventId: r.eventId,
+          ...(isUuid(r.alertId) ? { alertId: r.alertId } : {}),
+          ...(isUuid(r.deviceId) ? { deviceId: r.deviceId } : {}),
+        }
         : null;
     case 'tick':
       return { kind: 'tick' };
@@ -491,10 +517,16 @@ async function loadDigest(
     ceilingAllows(ceiling, orgId, DIGEST_SECTION_PERMISSION[section]);
   return sys(async () => {
     const alertRows = !may('alerts') ? [] : firstLook ? await loadOpenAlertRows(orgId) : await db
-      .select({ id: alerts.id, title: alerts.title, severity: alerts.severity, status: alerts.status, at: alerts.triggeredAt })
+      .select({
+        id: alerts.id, title: alerts.title, severity: alerts.severity, status: alerts.status,
+        at: alerts.triggeredAt, resolvedAt: alerts.resolvedAt,
+      })
       .from(alerts)
-      .where(and(eq(alerts.orgId, orgId), gte(alerts.triggeredAt, since)))
-      .orderBy(desc(alerts.triggeredAt))
+      // #10388: an alert resolved since the watermark is a change too (a
+      // resolve event must leave the run something to read), ordered by
+      // whichever of the two happened last.
+      .where(and(eq(alerts.orgId, orgId), or(gte(alerts.triggeredAt, since), gte(alerts.resolvedAt, since))))
+      .orderBy(desc(sql`GREATEST(${alerts.triggeredAt}, ${alerts.resolvedAt})`))
       .limit(DIGEST_ROW_LIMIT);
     const ticketRows = !may('tickets') ? [] : await db
       .select({ id: tickets.id, number: tickets.ticketNumber, title: tickets.subject, status: tickets.status, updatedAt: tickets.updatedAt })
@@ -522,7 +554,9 @@ async function loadDigest(
         title: sanitizeSweepText(r.title, 160),
         severity: sanitizeSweepText(String(r.severity), 20),
         status: sanitizeSweepText(String(r.status), 30),
-        at: toIso(r.at),
+        // The row's latest change, matching the ORDER BY: a resolved alert
+        // shows when it was resolved, not when it first fired.
+        at: toIso(r.resolvedAt && r.resolvedAt > r.at ? r.resolvedAt : r.at),
       })),
       tickets: ticketRows.map((r) => ({
         id: r.id,
@@ -566,7 +600,10 @@ const OPEN_ALERT_STATUSES = ['active', 'acknowledged'] as const;
  */
 function loadOpenAlertRows(orgId: string) {
   return db
-    .select({ id: alerts.id, title: alerts.title, severity: alerts.severity, status: alerts.status, at: alerts.triggeredAt })
+    .select({
+      id: alerts.id, title: alerts.title, severity: alerts.severity, status: alerts.status,
+      at: alerts.triggeredAt, resolvedAt: alerts.resolvedAt,
+    })
     .from(alerts)
     .where(and(eq(alerts.orgId, orgId), inArray(alerts.status, [...OPEN_ALERT_STATUSES])))
     .orderBy(asc(alerts.severity), desc(alerts.triggeredAt))

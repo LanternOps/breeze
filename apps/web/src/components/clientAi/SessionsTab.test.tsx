@@ -128,6 +128,38 @@ describe('SessionsTab', () => {
     expect(screen.getByText('B2:B4')).toBeInTheDocument();
   });
 
+  it('shows a platform-refused tool call as stopped, never as applied (#10411)', async () => {
+    mockApi();
+    const refusedExec = {
+      ...DETAIL.toolExecutions[0],
+      id: 't-refused',
+      status: 'refused',
+      approvedAt: null,
+      errorMessage: 'Rate limit exceeded for write_range',
+    };
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === `/client-ai/admin/sessions/${SESSION_ID}`) {
+        return makeJsonResponse({ ...DETAIL, toolExecutions: [refusedExec] });
+      }
+      if (url.startsWith('/client-ai/admin/sessions?')) {
+        return makeJsonResponse({ data: [LIST_ROW], pagination: { total: 1, limit: 50, offset: 0 } });
+      }
+      return makeJsonResponse({ data: [{ orgId: ORG_ID, orgName: 'Contoso Accounting' }] });
+    });
+    render(<SessionsTab />);
+    await waitFor(() =>
+      expect(screen.getByTestId(`ai-office-session-row-${SESSION_ID}`)).toBeInTheDocument()
+    );
+    fireEvent.click(screen.getByTestId(`ai-office-session-row-${SESSION_ID}`));
+    await waitFor(() => expect(screen.getByTestId('ai-office-tool-exec-t-refused')).toBeInTheDocument());
+
+    const card = screen.getByTestId('ai-office-tool-exec-t-refused');
+    expect(card.textContent).toMatch(/stopped/i);
+    expect(card.textContent).not.toMatch(/refused/i);
+    expect(card.textContent).not.toMatch(/applied/i);
+  });
+
   it('flags a session with a reason (exact POST payload)', async () => {
     mockApi();
     render(<SessionsTab />);

@@ -107,6 +107,7 @@ import { registerMonitorTools } from './aiToolsMonitors';
 import { registerAlertTools } from './aiToolsAlerts';
 import { registerFixMemoryTools } from './aiToolsFixMemory';
 import { registerTenantVariableTools } from './aiToolsTenantVariables';
+import { registerPax8Tools } from './aiToolsPax8';
 
 // ===========================================================================
 // Part 1 — registered columns whose name is specific enough to mask by name
@@ -645,5 +646,22 @@ describe('stored secrets under generic column names — tool results never show 
       redactAiToolOutputText
     );
     expect(JSON.stringify(rows)).not.toContain(SENTINEL);
+  });
+});
+
+
+describe('W15 Pax8 integration projection', () => {
+  it('returns credential-presence booleans without any encrypted column or access token', async () => {
+    const tools = new Map<string, AiTool>(); registerPax8Tools(tools);
+    const secretFields = encryptedColumnRegistry.filter(spec => spec.table === 'pax8_integrations').map(spec => camel(spec.column));
+    expect(secretFields.length).toBeGreaterThan(2);
+    dbQueue.responses = [[{ id: ROW_ID, name: 'Example integration', hasClientId: true, hasClientSecret: true,
+      hasWebhookSecret: false, ...Object.fromEntries(secretFields.map(field => [field, SENTINEL])), accessToken: SENTINEL }]];
+    const auth = { ...unrestrictedAuth(), scope: 'partner', partnerId: PARTNER, partnerOrgAccess: 'all' } as AuthContext;
+    const raw = await tools.get('get_pax8_status')!.handler({}, auth);
+    expect(JSON.parse(raw).data).toMatchObject({ id: ROW_ID, hasClientId: true, hasClientSecret: true });
+    expect(raw).not.toContain(SENTINEL);
+    for (const field of secretFields) expect(raw).not.toContain(field);
+    expect(raw).not.toContain('accessToken');
   });
 });

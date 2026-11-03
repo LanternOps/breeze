@@ -87,6 +87,48 @@ describe('PatchJobDetail', () => {
     expect(await screen.findByText('MSI 1603: install failed, insufficient disk space')).toBeInTheDocument();
   });
 
+  it('explains a device skipped because its update ring was deleted (#8909)', async () => {
+    const skipped = (id: string, errorMessage: string) => ({
+      id,
+      deviceId: `device-${id}`,
+      deviceHostname: `HOST-${id}`,
+      patchId: null,
+      patchTitle: null,
+      status: 'skipped',
+      startedAt: '2026-09-01T10:01:00.000Z',
+      completedAt: '2026-09-01T10:01:00.000Z',
+      rebootRequired: false,
+      rebootedAt: null,
+      errorMessage,
+    });
+    fetchMock.mockResolvedValue(makeJsonResponse({
+      data: {
+        ...JOB_DETAIL,
+        status: 'cancelled',
+        results: [
+          skipped('a', 'ring_deleted'),
+          skipped('b', 'ring_disabled'),
+          skipped('c', 'ring_unavailable'),
+          skipped('d', 'no_approved_patches'),
+        ],
+      },
+    }));
+
+    render(<PatchJobDetail jobId="job-1" onClose={vi.fn()} />);
+
+    expect(await screen.findByTestId('patch-job-result-skip-reason-a')).toHaveTextContent(
+      'Cancelled before dispatch: the update ring was deleted.',
+    );
+    expect(screen.getByTestId('patch-job-result-skip-reason-b')).toHaveTextContent(
+      'Cancelled before dispatch: the update ring was disabled.',
+    );
+    expect(screen.getByTestId('patch-job-result-skip-reason-c')).toHaveTextContent(
+      'Skipped: the update ring was deleted or disabled before this device was dispatched.',
+    );
+    // Other skip codes keep their existing (silent) rendering.
+    expect(screen.queryByTestId('patch-job-result-skip-reason-d')).not.toBeInTheDocument();
+  });
+
   it('shows an empty-results message when the job has no per-device results', async () => {
     fetchMock.mockResolvedValue(makeJsonResponse({ data: { ...JOB_DETAIL, results: [] } }));
 

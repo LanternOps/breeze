@@ -1183,6 +1183,8 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           </div>
         ) : (
           <button
+            data-testid={`nav-section-toggle-${section.id}`}
+            aria-expanded={expanded}
             onClick={() => toggleSection(section.id)}
             className="flex items-center justify-between w-full px-2 py-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
             style={{ fontSize: '12px' }}

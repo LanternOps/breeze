@@ -1,3 +1,5 @@
+vi.mock('../../services/networkIsolation/episodeStore', () => ({ findUnresolvedEpisode: vi.fn(async () => null) }));
+vi.mock('../../services/networkIsolation/reconcile', () => ({ buildContainmentHeartbeatBlock: vi.fn(async () => ({ networkIsolation: null })), reconcileContainmentReport: vi.fn(async (_tx, _device, _report, _now, context) => { context.row = null; }), noteIsolationReportDropped: vi.fn(), storedContainmentHeartbeatBlock: vi.fn((row) => ({ networkIsolation: row ? { isolationId: row.id, generation: row.generation, desired: row.desiredState, allow: row.allowSnapshot } : null })) }));
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { Hono } from 'hono';
 
@@ -5461,8 +5463,8 @@ describe('POST /agents/:id/heartbeat — shared post-commit policy context (#805
       .toHaveBeenCalledWith('device-1', 'org-1', expect.objectContaining({ policySet: set }));
     // No onedrive link in the set → no OneDrive DB phase at all.
     expect(helpers.loadOnedriveHelperConfigPlan).not.toHaveBeenCalled();
-    // hierarchy/set savepoint + the policy probe's and the UniFi collector
-    // probe's (#7970) cache-miss savepoints; the helper resolves in memory.
+    // Hierarchy/set + two policy probe savepoints. #4618's negative containment
+    // lookup adds no savepoint, and the absent episode needs no block build.
     expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(3);
   });
 
@@ -8055,7 +8057,8 @@ describe('POST /agents/:id/heartbeat — device-remove uninstall drain (#3986)',
     // ...and the response carries NOTHING the Go agent would act on. Asserted
     // as an exact key set, not key-by-key: a future field added to the normal
     // response must not be able to leak in unnoticed.
-    expect(Object.keys(body)).toEqual(['commands']);
+    expect(Object.keys(body)).toEqual(['commands', 'containment']);
+    expect(body.containment).toEqual({ networkIsolation: null });
   });
 
   it('claims with the derived self_uninstall allowlist and nothing wider', async () => {
@@ -8126,7 +8129,7 @@ describe('POST /agents/:id/heartbeat — device-remove uninstall drain (#3986)',
     const resp = await drainBeat();
 
     expect(resp.status).toBe(200);
-    expect(await resp.json()).toEqual({ commands: [] });
+    expect(await resp.json()).toEqual({ commands: [], containment: { networkIsolation: null } });
   });
 
   it('a TENANT drain still gets the full heartbeat (the minimal branch is device-scoped only)', async () => {
@@ -9037,8 +9040,8 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
   // delegations (so it can verify the signed `rebind` directive) and, while
   // the device is the source of an open reattach intent, the directive.
   const PARKED_ALLOWED_KEYS: Record<'agent' | 'watchdog', string[]> = {
-    agent: ['commands', 'renewCert', 'rotateToken', 'confirmTokenRotation', 'manifestTrustKeys', 'manifestKeyDelegations', 'rebind'],
-    watchdog: ['commands', 'renewCert', 'rotateToken', 'confirmTokenRotation'],
+    agent: ['commands', 'containment', 'renewCert', 'rotateToken', 'confirmTokenRotation', 'manifestTrustKeys', 'manifestKeyDelegations', 'rebind'],
+    watchdog: ['commands', 'containment', 'renewCert', 'rotateToken', 'confirmTokenRotation'],
   };
   const TRUST_KEYS = ['manifestTrustKeys', 'manifestKeyDelegations'];
   const FORBIDDEN_KEYS = [
@@ -9245,7 +9248,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     const resp = await parkedBeat('agent');
 
     const body = (await resp.json()) as Record<string, unknown>;
-    expect(body).toEqual({ commands: [], renewCert: true, rotateToken: true, ...PARKED_TRUST });
+    expect(body).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, rotateToken: true, ...PARKED_TRUST });
   });
 
   it('agent: a superseded-token caller is not asked to rotate (request flags reach the shared helper)', async () => {
@@ -9255,7 +9258,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       body: JSON.stringify(richHeartbeatBody),
     });
 
-    expect(await resp.json()).toEqual({ commands: [], renewCert: true, ...PARKED_TRUST });
+    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, ...PARKED_TRUST });
   });
 
   it('agent (#8318 §6.2): records the declared rebind capability and returns the signed directive', async () => {
@@ -9304,7 +9307,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       body: JSON.stringify(richHeartbeatBody),
     });
 
-    expect(await resp.json()).toEqual({ commands: [], renewCert: true, confirmTokenRotation: true, ...PARKED_TRUST });
+    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, confirmTokenRotation: true, ...PARKED_TRUST });
     // Promotion was attempted for exactly the staged hash the caller presented.
     expect(promotePendingAgentCredentialsMock).toHaveBeenCalledWith(expect.objectContaining({
       agent: expect.objectContaining({ deviceId: 'device-1' }),
@@ -9343,7 +9346,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     const resp = await parkedBeat('watchdog');
 
     const body = (await resp.json()) as Record<string, unknown>;
-    expect(body).toEqual({ commands: [] });
+    expect(body).toEqual({ commands: [], containment: { networkIsolation: null } });
     expect(setSpy).toHaveBeenCalledTimes(1);
     const written = setSpy.mock.calls[0]![0] as Record<string, unknown>;
     expect(Object.keys(written).sort()).toEqual(['watchdogLastSeen', 'watchdogStatus', 'watchdogVersion']);
@@ -9448,5 +9451,113 @@ describe('POST /agents/:id/heartbeat — UniFi collector presence hint (#7970)',
     const config = await beatConfig();
     expect(config).not.toHaveProperty('unifi_collectors_assigned');
     expect(captureException).toHaveBeenCalled();
+  });
+});
+
+
+describe('heartbeat agent update isolation version floor', () => {
+  const episode = { id: 'isolation-1', deviceId: 'device-1', state: 'verified', desiredState: 'isolated' };
+  const deviceRow = {
+    id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows', architecture: 'amd64',
+    agentVersion: '0.65.10', watchdogVersion: null, lastSeenAt: new Date(Date.now() - 20 * 60_000),
+    mainAgentSilentSince: null,
+  };
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })) });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    const helpers = await import('./helpers');
+    vi.mocked(helpers.compareAgentVersions).mockReturnValue(1);
+    vi.mocked(helpers.agentAcceptsServedEdition).mockReturnValue(true);
+    vi.mocked(helpers.getOrgAgentUpdateConfig).mockResolvedValue({ settings: { policy: 'auto', maintenanceWindow: null }, pins: { agent: null, watchdog: null } });
+    vi.mocked(helpers.resolvePinnedUpgradeTarget).mockResolvedValue('0.66.0');
+    const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
+    vi.mocked(findUnresolvedEpisode).mockResolvedValue(episode as never);
+    const { reconcileContainmentReport } = await import('../../services/networkIsolation/reconcile');
+    vi.mocked(reconcileContainmentReport).mockImplementation(async (_tx, _device, _report, _at, context) => { context!.row = episode as never; });
+  });
+  afterEach(async () => {
+    const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
+    vi.mocked(findUnresolvedEpisode).mockResolvedValue(null);
+    const { reconcileContainmentReport } = await import('../../services/networkIsolation/reconcile');
+    vi.mocked(reconcileContainmentReport).mockImplementation(async (_tx, _device, _report, _at, context) => { context!.row = null; });
+  });
+  async function post(role: 'agent' | 'watchdog') {
+    return (role === 'watchdog' ? buildWatchdogApp() : buildApp()).request('/agents/device-1/heartbeat', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, role, watchdogState: 'FAILOVER' }),
+    });
+  }
+  it.each(['agent', 'watchdog'] as const)('withholds an unsafe %s target while an episode is unresolved', async (role) => {
+    const response = await post(role);
+    expect(response.status).toBe(200);
+    expect((await response.json()).upgradeTo).toBeFalsy();
+    const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
+    expect(findUnresolvedEpisode).toHaveBeenCalledTimes(role === 'watchdog' ? 1 : 0);
+  });
+  it.each(['agent', 'watchdog'] as const)('allows a supported %s target while an episode is unresolved', async (role) => {
+    const { resolvePinnedUpgradeTarget } = await import('./helpers');
+    vi.mocked(resolvePinnedUpgradeTarget).mockResolvedValue('999.0.0');
+    const response = await post(role);
+    expect(response.status).toBe(200);
+    expect((await response.json()).upgradeTo).toBe('999.0.0');
+    const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
+    expect(findUnresolvedEpisode).not.toHaveBeenCalled();
+  });
+  it('allows an ordinary target once the episode has resolved', async () => {
+    const { reconcileContainmentReport } = await import('../../services/networkIsolation/reconcile');
+    vi.mocked(reconcileContainmentReport).mockImplementation(async (_tx, _device, _report, _at, context) => { context!.row = { ...episode, state: 'released' } as never; });
+    const response = await post('agent');
+    expect((await response.json()).upgradeTo).toBe('0.66.0');
+  });
+  it.each(['release_requested', 'released_locally', 'self_released'])('keeps the floor during %s', async (state) => {
+    const { reconcileContainmentReport } = await import('../../services/networkIsolation/reconcile');
+    vi.mocked(reconcileContainmentReport).mockImplementation(async (_tx, _device, _report, _at, context) => { context!.row = { ...episode, state } as never; });
+    const response = await post('agent');
+    expect((await response.json()).upgradeTo).toBeFalsy();
+  });
+  it('fails the heartbeat when reconciliation lookup fails outside a savepoint', async () => {
+    const { reconcileContainmentReport } = await import('../../services/networkIsolation/reconcile');
+    vi.mocked(reconcileContainmentReport).mockRejectedValueOnce(new Error('isolation lookup unavailable'));
+    const response = await post('agent');
+    expect(response.status).toBeGreaterThanOrEqual(500);
+  });
+  it('withholds an unsafe normal upgrade when reconciliation did not establish episode state', async () => {
+    const { reconcileContainmentReport, buildContainmentHeartbeatBlock } = await import('../../services/networkIsolation/reconcile');
+    vi.mocked(reconcileContainmentReport).mockResolvedValueOnce(undefined);
+    vi.mocked(buildContainmentHeartbeatBlock).mockResolvedValueOnce({ networkIsolation: null });
+    const response = await post('agent');
+    expect(response.status).toBe(200);
+    expect((await response.json()).upgradeTo).toBeFalsy();
+  });
+  it('does not launch an MSI edition migration while isolation is unresolved', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockReturnValueOnce(false);
+    const { maybeDispatchEditionMigration } = await import('../../services/agentEditionAutoMigrate');
+    const response = await post('agent');
+    expect(response.status).toBe(200);
+    expect(maybeDispatchEditionMigration).not.toHaveBeenCalled();
+  });
+  it('never queries episodes on a watchdog heartbeat with no upgrade candidate', async () => {
+    const { compareAgentVersions } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(0);
+    await post('watchdog');
+    const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
+    expect(findUnresolvedEpisode).not.toHaveBeenCalled();
+  });
+  it('withholds watchdog recovery on an episode lookup failure', async () => {
+    const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
+    const failure = new Error('episode lookup unavailable');
+    vi.mocked(findUnresolvedEpisode).mockRejectedValueOnce(failure);
+    const response = await post('watchdog');
+    expect(response.status).toBe(200);
+    expect((await response.json()).upgradeTo).toBeFalsy();
+    const { captureException } = await import('../../services/sentry');
+    expect(captureException).toHaveBeenCalledWith(failure, undefined, {
+      phase: 'isolation_watchdog_upgrade_lookup', deviceId: 'device-1', orgId: 'org-1',
+    });
   });
 });

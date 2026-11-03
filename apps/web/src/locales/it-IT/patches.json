@@ -485,6 +485,11 @@
     "rebootRequired": "Richiesto",
     "rebootDone": "Completato",
     "rebootNotRequired": "—",
+    "skipReasons": {
+      "ring_deleted": "Annullato prima dell’invio: l’anello di aggiornamento è stato eliminato.",
+      "ring_disabled": "Annullato prima dell’invio: l’anello di aggiornamento è stato disattivato.",
+      "ring_unavailable": "Saltato: l’anello di aggiornamento è stato eliminato o disattivato prima dell’invio a questo dispositivo."
+    },
     "errors": {
       "load": "Impossibile caricare il job di patch"
     }
@@ -644,7 +649,11 @@
     "noMatches": "Nessuna corrispondenza.",
     "orEnterAPackageIDManually": "Oppure inserisci manualmente un ID pacchetto",
     "removeRuleFor": "Rimuovi regola per {{application}}",
-    "scopeNote": "Queste regole si applicano a ogni dispositivo il cui criterio di configurazione è collegato a questo anello."
+    "scopeNote": "Queste regole si applicano a ogni dispositivo il cui criterio di configurazione è collegato a questo anello.",
+    "linuxPackage": "Pacchetto Linux",
+    "appPackage": "Pacchetto app",
+    "manualRuleType": "Tipo di regola",
+    "linuxPinHint": "Inserisci la versione completa dall’elenco delle patch, inclusa l’eventuale epoch (es. 5:24.0.7-1)."
   },
   "patchDetails": {
     "unknown": "Sconosciuto",
