@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -154,6 +155,30 @@ func resolveBranding(current *Branding, d *BrandingDecision) (*Branding, error) 
 	}
 }
 
+// maxHelperConfigBytes caps a helper_config.yaml read. The directory is owned
+// by the logged-in user while the Agent runs as root, so the file is untrusted.
+// Worst case with branding is ~3 KiB of text (limits above, 4 bytes per code
+// point) plus a few small keys; 64 KiB leaves wide headroom.
+const maxHelperConfigBytes = 64 * 1024
+
+// readHelperConfig reads path without following a final symlink and refuses
+// anything over maxHelperConfigBytes. Errors never include file content.
+func readHelperConfig(path string) ([]byte, error) {
+	f, err := openNoFollow(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxHelperConfigBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxHelperConfigBytes {
+		return nil, fmt.Errorf("larger than %d bytes", maxHelperConfigBytes)
+	}
+	return data, nil
+}
+
 func brandingEqual(a, b *Branding) bool {
 	if a == nil || b == nil {
 		return a == b
@@ -166,7 +191,7 @@ func brandingEqual(a, b *Branding) bool {
 // YAML or an invalid section is (nil, err) so callers can keep the last known
 // branding instead of treating a transient failure as "no branding".
 func readBranding(path string) (*Branding, error) {
-	data, err := os.ReadFile(path)
+	data, err := readHelperConfig(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -209,7 +234,7 @@ func ClearBranding(baseDir string) error {
 }
 
 func stripBranding(path string) error {
-	data, err := os.ReadFile(path)
+	data, err := readHelperConfig(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil

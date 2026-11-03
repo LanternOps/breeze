@@ -710,6 +710,8 @@ func settingsToConfig(s *Settings) *Config {
 // it is corrected by the next set/cleared decision for the new scope.
 func (m *Manager) sessionConfig(state *sessionState, base *Config, d *BrandingDecision) *Config {
 	cfg := *base
+	// Perf note: this reads each session's helper_config.yaml on every
+	// heartbeat. Cheap today (small, size-capped file); revisit at 10k agents.
 	current, readErr := readBranding(state.configPath)
 	if readErr != nil {
 		current = nil

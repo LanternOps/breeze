@@ -357,3 +357,69 @@ func TestClearBrandingLeavesNoTempFiles(t *testing.T) {
 		t.Fatalf("mode = %v, want 0600", info.Mode().Perm())
 	}
 }
+
+func TestReadHelperConfigRefusesSymlinkWithoutLeak(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink refusal is POSIX-only; creating symlinks needs a privilege on Windows")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "secret.yaml")
+	if err := os.WriteFile(target, []byte("TOPSECRETCONTENT: [unclosed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "helper_config.yaml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	if _, err := readBranding(link); err == nil {
+		t.Fatal("readBranding followed a symlink")
+	} else if strings.Contains(err.Error(), "TOPSECRETCONTENT") {
+		t.Fatalf("error leaks target content: %v", err)
+	}
+	err := stripBranding(link)
+	if err == nil {
+		t.Fatal("stripBranding followed a symlink")
+	}
+	if strings.Contains(err.Error(), "TOPSECRETCONTENT") {
+		t.Fatalf("error leaks target content: %v", err)
+	}
+	if fi, lerr := os.Lstat(link); lerr != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("symlink was replaced")
+	}
+}
+
+func TestReadHelperConfigRefusesOversize(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "helper_config.yaml")
+	big := "pad: " + strings.Repeat("A", maxHelperConfigBytes+10) + "\n"
+	if err := os.WriteFile(path, []byte(big), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, fn := range map[string]func() error{
+		"readBranding":  func() error { _, err := readBranding(path); return err },
+		"stripBranding": func() error { return stripBranding(path) },
+	} {
+		err := fn()
+		if err == nil {
+			t.Fatalf("%s accepted oversize file", name)
+		}
+		if strings.Contains(err.Error(), "AAAA") {
+			t.Fatalf("%s error leaks content", name)
+		}
+	}
+}
+
+func TestReadHelperConfigAtLimitStillReads(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "helper_config.yaml")
+	content := "pad: " + strings.Repeat("A", maxHelperConfigBytes-6) + "\n"
+	if len(content) != maxHelperConfigBytes {
+		t.Fatalf("setup: %d", len(content))
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := readBranding(path); err != nil || b != nil {
+		t.Fatalf("got %v, %v", b, err)
+	}
+}
