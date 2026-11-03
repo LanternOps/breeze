@@ -6,7 +6,7 @@ const {
   dbMock, rows, insertedAlerts, captureExceptionMock, resolveMonitorsForDeviceMock,
   evaluateConditionsMock, recordMonitorEvaluationMock, detachMonitorFromDeviceMock,
   linkEpisodeAlertMock, fireEscalationLatchMock, isCooldownActiveMock, isFlappingMock,
-  readClosedCursorsMock, advanceOpenRuleCursorsMock,
+  readClosedCursorsMock, advanceOpenRuleCursorsMock, scheduleStagedAlertDispatchMock,
 } = vi.hoisted(() => {
   const rows = new Map<unknown, unknown[]>();
   const insertedAlerts: Record<string, unknown>[] = [];
@@ -20,6 +20,7 @@ const {
     recordMonitorEvaluationMock: vi.fn(), detachMonitorFromDeviceMock: vi.fn(), linkEpisodeAlertMock: vi.fn(),
     fireEscalationLatchMock: vi.fn(), isCooldownActiveMock: vi.fn(), isFlappingMock: vi.fn(),
     readClosedCursorsMock: vi.fn(), advanceOpenRuleCursorsMock: vi.fn(),
+    scheduleStagedAlertDispatchMock: vi.fn(),
   };
 });
 
@@ -118,6 +119,10 @@ vi.mock('./eventBus', () => ({ publishEvent: vi.fn(() => Promise.resolve()) }));
 vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('./deviceSiteResolver', () => ({ resolveDeviceSiteId: vi.fn(() => Promise.resolve('site-1')) }));
 vi.mock('../jobs/alertCorrelation', () => ({ enqueueAlertCorrelation: vi.fn(() => Promise.resolve('job-1')) }));
+// #10926 — create stages `alert.triggered` on the row and hands the id to the
+// outbox; the after-commit publish and its follow-ups are covered by
+// alertPublishAfterCommit.integration.test.ts.
+vi.mock('./subjectAlertOutbox', () => ({ scheduleStagedAlertDispatch: scheduleStagedAlertDispatchMock }));
 
 import { alerts, alertRules, alertTemplates, devices, organizations, monitorDefinitions, monitorDeviceState } from '../db/schema';
 import { createAlert, evaluateDeviceAlerts } from './alertService';
@@ -305,6 +310,11 @@ describe('alert evidence re-arm sweep', () => {
     await createAlert({ ruleId: 'rule-1', deviceId: DEVICE_ID, orgId: 'org-1', severity: 'high',
       title: 'Breach', message: 'Event', context: { custom: 'kept', lifecycle: { retained: true } }, lifecycle });
     expect(insertedAlerts[0]).toMatchObject({ context: { custom: 'kept', lifecycle: { retained: true, ...lifecycle } } });
+    // The staged outbox envelope rides in the same context as the cursor.
+    expect(insertedAlerts[0]).toMatchObject({
+      context: { _subjectDispatch: { eventType: 'alert.triggered', retryOnPublishFailure: true } },
+    });
+    expect(scheduleStagedAlertDispatchMock).toHaveBeenCalledExactlyOnceWith('alert-1');
   });
 
   it('cursor read failure skips evidence rules but still evaluates state rules', async () => {
