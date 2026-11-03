@@ -387,7 +387,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           avatarUrl = avatar.avatarUrl;
         }
         setUser((prev) => prev ? { ...prev, avatarUrl: avatarUrl ?? undefined } : prev);
-        updateAuthUser({ avatarUrl });
+        updateAuthUser({ avatarUrl: avatarUrl ?? undefined });
         setAvatarChange(null);
       }
 
@@ -401,7 +401,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           id: z.string(),
           name: z.string(),
           email: z.string(),
-          avatarUrl: z.string().nullable().optional(),
+          avatarUrl: z.string().nullable().optional().transform((value) => value ?? undefined),
           mfaEnabled: z.boolean().optional(),
           mfaMethod: z.enum(['totp', 'sms', 'passkey']).nullable().optional(),
         }).passthrough().parse(data),
@@ -411,6 +411,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setUser(prev => (prev ? {
         ...prev,
         ...updatedUser,
+        avatarUrl: updatedUser.avatarUrl ?? undefined,
         ...(updatedUser.mfaEnabled === false ? { mfaMethod: null } : {}),
       } : updatedUser));
       updateAuthUser({ name: updatedUser.name, avatarUrl: updatedUser.avatarUrl ?? undefined });
