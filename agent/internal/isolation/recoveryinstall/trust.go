@@ -63,20 +63,30 @@ type ManifestEnvelope struct {
 // the same trust decision the updater makes before it applies a download.
 type AssetDigestFunc func(env ManifestEnvelope, version, asset string) (string, error)
 
-// TrustPolicy decides whether a recovery executable may run as SYSTEM.
+// ManifestTrust configures Path B. The zero value disables it.
 //
-// Path A (CodeSignature) is always tried first. Path B (manifest hash) is
-// consulted only when SelfHostEdition is true and ManifestDigest is set. That
-// is a self-host build, whose public agent-family executables ship without
-// Authenticode (platformTrust "none"). A hosted or signed edition leaves
-// SelfHostEdition false and keeps Path A only.
-type TrustPolicy struct {
-	CodeSignature   func(path string) error
+// SelfHostEdition must be true only for a self-host build (the updater's
+// !hostpolicy.Enforced()), whose public agent-family executables ship without
+// Authenticode (platformTrust "none"). A hosted or signed edition leaves it
+// false and keeps Path A only, even if a digest verifier is supplied.
+type ManifestTrust struct {
 	SelfHostEdition bool
 	ManifestDigest  AssetDigestFunc
 	// AssetName is the release asset whose manifest entry pins the executable,
 	// e.g. breeze-isolation-recovery-windows-amd64.exe (see ReleaseAssetName).
 	AssetName string
+}
+
+func (m ManifestTrust) enabled() bool {
+	return m.SelfHostEdition && m.ManifestDigest != nil && m.AssetName != ""
+}
+
+// TrustPolicy decides whether a recovery executable may run as SYSTEM.
+// Path A (CodeSignature) is always tried first; Path B only when ManifestTrust
+// is enabled.
+type TrustPolicy struct {
+	CodeSignature func(path string) error
+	ManifestTrust
 }
 
 // ReleaseAssetName is the recovery executable's release asset name for a
@@ -103,7 +113,7 @@ func (p TrustPolicy) Verify(path string) (TrustPath, error) {
 	if sigErr == nil {
 		return TrustCodeSignature, nil
 	}
-	if !p.SelfHostEdition || p.ManifestDigest == nil || p.AssetName == "" {
+	if !p.enabled() {
 		return "", fmt.Errorf("%w: code signature: %w", ErrUntrusted, sigErr)
 	}
 	if err := p.verifyManifestHash(path); err != nil {

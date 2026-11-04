@@ -87,13 +87,13 @@ func TestTrustPolicyVerify(t *testing.T) {
 	}{
 		{
 			name:   "A: signed exe on hosted edition",
-			policy: func(string) TrustPolicy { return TrustPolicy{CodeSignature: signed, AssetName: testAsset} },
+			policy: func(string) TrustPolicy { return TrustPolicy{CodeSignature: signed} },
 			want:   TrustCodeSignature,
 		},
 		{
 			name: "A wins on self-host when the exe is signed",
 			policy: func(sha string) TrustPolicy {
-				return TrustPolicy{CodeSignature: signed, SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: sha}), AssetName: testAsset}
+				return TrustPolicy{CodeSignature: signed, ManifestTrust: ManifestTrust{SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: sha}), AssetName: testAsset}}
 			},
 			envelope: signedEnvelope(version),
 			want:     TrustCodeSignature,
@@ -101,7 +101,7 @@ func TestTrustPolicyVerify(t *testing.T) {
 		{
 			name: "B: unsigned exe, matching signed-manifest hash, self-host edition",
 			policy: func(sha string) TrustPolicy {
-				return TrustPolicy{CodeSignature: unsigned, SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: sha}), AssetName: testAsset}
+				return TrustPolicy{CodeSignature: unsigned, ManifestTrust: ManifestTrust{SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: sha}), AssetName: testAsset}}
 			},
 			envelope: signedEnvelope(version),
 			want:     TrustManifestHash,
@@ -109,7 +109,7 @@ func TestTrustPolicyVerify(t *testing.T) {
 		{
 			name: "B: digest compare ignores hex case",
 			policy: func(sha string) TrustPolicy {
-				return TrustPolicy{CodeSignature: unsigned, SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: strings.ToUpper(sha)}), AssetName: testAsset}
+				return TrustPolicy{CodeSignature: unsigned, ManifestTrust: ManifestTrust{SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: strings.ToUpper(sha)}), AssetName: testAsset}}
 			},
 			envelope: signedEnvelope(version),
 			want:     TrustManifestHash,
@@ -117,7 +117,7 @@ func TestTrustPolicyVerify(t *testing.T) {
 		{
 			name: "hosted edition never consults the manifest",
 			policy: func(sha string) TrustPolicy {
-				return TrustPolicy{CodeSignature: unsigned, SelfHostEdition: false, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: sha}), AssetName: testAsset}
+				return TrustPolicy{CodeSignature: unsigned, ManifestTrust: ManifestTrust{SelfHostEdition: false, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: sha}), AssetName: testAsset}}
 			},
 			envelope: signedEnvelope(version),
 			untrust:  true,
@@ -125,20 +125,22 @@ func TestTrustPolicyVerify(t *testing.T) {
 		{
 			name: "self-host without a manifest verifier",
 			policy: func(string) TrustPolicy {
-				return TrustPolicy{CodeSignature: unsigned, SelfHostEdition: true, AssetName: testAsset}
+				return TrustPolicy{CodeSignature: unsigned, ManifestTrust: ManifestTrust{SelfHostEdition: true, AssetName: testAsset}}
 			},
 			envelope: signedEnvelope(version),
 			untrust:  true,
 		},
 		{
-			name:    "no code-signature verifier at all",
-			policy:  func(string) TrustPolicy { return TrustPolicy{AssetName: testAsset} },
+			name: "no code-signature verifier at all",
+			policy: func(string) TrustPolicy {
+				return TrustPolicy{ManifestTrust: ManifestTrust{SelfHostEdition: true, AssetName: testAsset, ManifestDigest: fakeManifestDigest(version, nil)}}
+			},
 			untrust: true,
 		},
 		{
 			name: "hash mismatch",
 			policy: func(string) TrustPolicy {
-				return TrustPolicy{CodeSignature: unsigned, SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: strings.Repeat("ab", 32)}), AssetName: testAsset}
+				return TrustPolicy{CodeSignature: unsigned, ManifestTrust: ManifestTrust{SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: strings.Repeat("ab", 32)}), AssetName: testAsset}}
 			},
 			envelope: signedEnvelope(version),
 			untrust:  true,
@@ -146,7 +148,7 @@ func TestTrustPolicyVerify(t *testing.T) {
 		{
 			name: "manifest for another release",
 			policy: func(sha string) TrustPolicy {
-				return TrustPolicy{CodeSignature: unsigned, SelfHostEdition: true, ManifestDigest: fakeManifestDigest("1.2.4", map[string]string{testAsset: sha}), AssetName: testAsset}
+				return TrustPolicy{CodeSignature: unsigned, ManifestTrust: ManifestTrust{SelfHostEdition: true, ManifestDigest: fakeManifestDigest("1.2.4", map[string]string{testAsset: sha}), AssetName: testAsset}}
 			},
 			envelope: signedEnvelope("1.2.4"),
 			untrust:  true,
@@ -154,7 +156,7 @@ func TestTrustPolicyVerify(t *testing.T) {
 		{
 			name: "exe placed under another version directory than its manifest",
 			policy: func(sha string) TrustPolicy {
-				return TrustPolicy{CodeSignature: unsigned, SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: sha}), AssetName: testAsset}
+				return TrustPolicy{CodeSignature: unsigned, ManifestTrust: ManifestTrust{SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: sha}), AssetName: testAsset}}
 			},
 			envelope: signedEnvelope(version),
 			dirVer:   "1.2.4",
@@ -163,7 +165,7 @@ func TestTrustPolicyVerify(t *testing.T) {
 		{
 			name: "unsigned manifest",
 			policy: func(sha string) TrustPolicy {
-				return TrustPolicy{CodeSignature: unsigned, SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: sha}), AssetName: testAsset}
+				return TrustPolicy{CodeSignature: unsigned, ManifestTrust: ManifestTrust{SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: sha}), AssetName: testAsset}}
 			},
 			envelope: &ManifestEnvelope{Manifest: "manifest:" + version, Signature: "forged"},
 			untrust:  true,
@@ -171,14 +173,14 @@ func TestTrustPolicyVerify(t *testing.T) {
 		{
 			name: "missing manifest envelope",
 			policy: func(sha string) TrustPolicy {
-				return TrustPolicy{CodeSignature: unsigned, SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: sha}), AssetName: testAsset}
+				return TrustPolicy{CodeSignature: unsigned, ManifestTrust: ManifestTrust{SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: sha}), AssetName: testAsset}}
 			},
 			untrust: true,
 		},
 		{
 			name: "missing recovery entry in the manifest",
 			policy: func(sha string) TrustPolicy {
-				return TrustPolicy{CodeSignature: unsigned, SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{"breeze-agent-windows-amd64.exe": sha}), AssetName: testAsset}
+				return TrustPolicy{CodeSignature: unsigned, ManifestTrust: ManifestTrust{SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{"breeze-agent-windows-amd64.exe": sha}), AssetName: testAsset}}
 			},
 			envelope: signedEnvelope(version),
 			untrust:  true,
@@ -186,7 +188,7 @@ func TestTrustPolicyVerify(t *testing.T) {
 		{
 			name: "malformed digest from the verifier",
 			policy: func(string) TrustPolicy {
-				return TrustPolicy{CodeSignature: unsigned, SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: "not-hex"}), AssetName: testAsset}
+				return TrustPolicy{CodeSignature: unsigned, ManifestTrust: ManifestTrust{SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: "not-hex"}), AssetName: testAsset}}
 			},
 			envelope: signedEnvelope(version),
 			untrust:  true,
@@ -194,7 +196,7 @@ func TestTrustPolicyVerify(t *testing.T) {
 		{
 			name: "tampered exe after install (hash drift)",
 			policy: func(sha string) TrustPolicy {
-				return TrustPolicy{CodeSignature: unsigned, SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: sha}), AssetName: testAsset}
+				return TrustPolicy{CodeSignature: unsigned, ManifestTrust: ManifestTrust{SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: sha}), AssetName: testAsset}}
 			},
 			envelope: signedEnvelope(version),
 			mutate: func(t *testing.T, f trustFixture) {
@@ -207,7 +209,7 @@ func TestTrustPolicyVerify(t *testing.T) {
 		{
 			name: "corrupt manifest envelope",
 			policy: func(sha string) TrustPolicy {
-				return TrustPolicy{CodeSignature: unsigned, SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: sha}), AssetName: testAsset}
+				return TrustPolicy{CodeSignature: unsigned, ManifestTrust: ManifestTrust{SelfHostEdition: true, ManifestDigest: fakeManifestDigest(version, map[string]string{testAsset: sha}), AssetName: testAsset}}
 			},
 			envelope: signedEnvelope(version),
 			mutate: func(t *testing.T, f trustFixture) {
@@ -253,8 +255,11 @@ func TestTrustPolicyVerify(t *testing.T) {
 func TestTrustPolicyManifestHashRequiresVersionedLayout(t *testing.T) {
 	exe := []byte("unsigned")
 	policy := TrustPolicy{
-		CodeSignature: func(string) error { return errUnsigned }, SelfHostEdition: true, AssetName: testAsset,
-		ManifestDigest: func(ManifestEnvelope, string, string) (string, error) { return shaHex(exe), nil },
+		CodeSignature: func(string) error { return errUnsigned },
+		ManifestTrust: ManifestTrust{
+			SelfHostEdition: true, AssetName: testAsset,
+			ManifestDigest: func(ManifestEnvelope, string, string) (string, error) { return shaHex(exe), nil },
+		},
 	}
 	for _, rel := range []string{
 		filepath.Join("Breeze", "breeze-isolation-recovery.exe"),

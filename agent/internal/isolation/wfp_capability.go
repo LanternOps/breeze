@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/isolation/recoveryinstall"
 )
 
 // A heartbeat reads only this cache. Startup and the pre-apply boundary refresh
@@ -16,20 +18,29 @@ const readinessMaxAge = 5 * time.Minute
 // ticks, and the previous result stays readable while a probe runs.
 const readinessRefreshAge = readinessMaxAge / 2
 
-func wfpCapability(engineErr, recoveryErr error, schedulerReady bool, _ string, activated bool) Capability {
+func wfpCapability(in readinessInputs, activated bool) Capability {
 	c := Capability{Mechanism: "wfp"}
 	switch {
 	case !activated:
 		c.UnsupportedReason = "not_activated"
-	case engineErr != nil:
+	case in.engineErr != nil:
 		c.UnsupportedReason = "bfe_unavailable"
-	case recoveryErr != nil:
+	case errors.Is(in.recoveryErr, recoveryinstall.ErrUntrusted):
+		c.UnsupportedReason = reasonRecoveryUntrusted
+	case in.recoveryErr != nil:
 		c.UnsupportedReason = "recovery_unavailable"
-	case !schedulerReady:
+	case in.schedulerUntrusted:
+		c.UnsupportedReason = reasonRecoveryUntrusted
+	case !in.schedulerReady:
 		c.UnsupportedReason = "scheduler_unavailable"
 	default:
 		c.Version = 1
 		c.Ready = true
+		// Mechanism is a closed enum server-side, so the trust path rides in
+		// the free-text detail. Authenticode keeps the empty detail it had.
+		if in.recoveryTrust == recoveryinstall.TrustManifestHash {
+			c.UnsupportedReason = readyDetailManifestHash
+		}
 	}
 	return c
 }
@@ -39,17 +50,20 @@ type readinessInputs struct {
 	engineErr, recoveryErr error
 	schedulerReady         bool
 	schedulerReason        string
+	// schedulerUntrusted: the scheduler refused the journal's recovery
+	// executable on trust, not on task state.
+	schedulerUntrusted bool
+	// recoveryTrust is the path that accepted the executable the tasks run.
+	recoveryTrust recoveryinstall.TrustPath
 }
 
 type readinessCache struct {
-	refreshMu              sync.Mutex
-	mu                     sync.Mutex
-	now                    func() time.Time
-	probe                  func(context.Context) readinessInputs
-	checkedAt              time.Time
-	engineErr, recoveryErr error
-	schedulerReady         bool
-	schedulerReason        string
+	refreshMu sync.Mutex
+	mu        sync.Mutex
+	now       func() time.Time
+	probe     func(context.Context) readinessInputs
+	checkedAt time.Time
+	in        readinessInputs
 }
 
 func (c *readinessCache) clock() time.Time {
@@ -72,7 +86,7 @@ func (c *readinessCache) refresh(ctx context.Context, force bool) {
 	in := probe(ctx)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.engineErr, c.recoveryErr, c.schedulerReady, c.schedulerReason = in.engineErr, in.recoveryErr, in.schedulerReady, in.schedulerReason
+	c.in = in
 	c.checkedAt = c.clock()
 }
 
@@ -81,9 +95,9 @@ func (c *readinessCache) capability(activated bool) Capability {
 	defer c.mu.Unlock()
 	elapsed := c.clock().Sub(c.checkedAt)
 	if c.checkedAt.IsZero() || elapsed < 0 || elapsed >= readinessMaxAge {
-		return wfpCapability(nil, errors.New("readiness needs refresh"), false, "", activated)
+		return wfpCapability(readinessInputs{recoveryErr: errors.New("readiness needs refresh")}, activated)
 	}
-	return wfpCapability(c.engineErr, c.recoveryErr, c.schedulerReady, c.schedulerReason, activated)
+	return wfpCapability(c.in, activated)
 }
 
 // ConfigureRecoveryReadiness initializes the Windows-only dependencies at agent
