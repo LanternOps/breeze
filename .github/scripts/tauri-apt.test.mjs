@@ -34,6 +34,9 @@ for arg in "$@"; do
   esac
 done
 printf '%s status=%s archives=%s\n' "$phase" "$status" "$archives" >> "$PHASES"
+if [ -n "\${RECORD_STATE:-}" ] && [ "$phase" = update ]; then
+  ls "$archives" "$lists" > "$(dirname "$APT_SCRIPT")/seen-archives"
+fi
 code=$(awk -v p="$phase" '$1 == p { print $2; exit }' "$APT_SCRIPT" 2>/dev/null)
 code=\${code:-0}
 if [ "$phase" = simulate ] && [ "$code" = 0 ]; then cat "$SIM_OUTPUT" 2>/dev/null; fi
@@ -76,10 +79,11 @@ function harness(fn, { apt = '', sim = '', env = {} } = {}) {
     writeFileSync(files.dpkg, '');
     writeFileSync(files.aptScript, apt);
     writeFileSync(files.sim, sim);
-    const run = (...args) => spawnSync('bash', [SCRIPT, ...args], {
+    const run = (args, extraEnv = {}) => spawnSync('bash', [SCRIPT, ...args], {
       encoding: 'utf8',
       env: {
         ...process.env,
+        ...extraEnv,
         PATH: `${bin}:${process.env.PATH}`,
         CALLS: files.calls,
         PHASES: files.phases,
@@ -92,7 +96,7 @@ function harness(fn, { apt = '', sim = '', env = {} } = {}) {
     });
     const phases = () => readFileSync(files.phases, 'utf8').trim().split('\n').filter(Boolean);
     const phaseNames = () => phases().map((l) => l.split(' ')[0]);
-    return fn({ root, files, run, phases, phaseNames });
+    return fn({ root, files, run: (...args) => run(args), runEnv: run, phases, phaseNames });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -106,6 +110,11 @@ function seedCache(cache) {
 }
 
 const output = (r) => r.stdout + r.stderr;
+function spawnSyncWithTmp(runEnv, root, cache) {
+  const tmp = path.join(root, 'tmp');
+  mkdirSync(tmp);
+  return runEnv(['ensure', cache], { TMPDIR: tmp });
+}
 
 test('cached, usable cache: installs through apt offline, never the mirror and never dpkg -i', () => harness(({ files, run, phaseNames }) => {
   seedCache(files.cache);
@@ -160,6 +169,75 @@ test('cached calls use only the fixed Ubuntu sources, never weaken verification,
     for (const pkg of ['libwebkit2gtk-4.1-dev', 'libappindicator3-dev', 'librsvg2-dev', 'patchelf']) assert.ok(c.includes(pkg), `${pkg} missing: ${c}`);
   }
 }));
+
+test('ensure, usable cache: no mirror traffic at all', () => harness(({ files, run, phaseNames }) => {
+  seedCache(files.cache);
+  const r = run('ensure', files.cache);
+  assert.equal(r.status, 0, output(r));
+  assert.deepEqual(phaseNames(), ['probe', 'cached-install']);
+}));
+
+test('ensure, closure does not fit this image: takes the network path, reusing the restored debs and indexes', () => harness(({ files, run, phases, phaseNames }) => {
+  seedCache(files.cache);
+  // Records what the network path was handed when apt ran.
+  const r = run('ensure', files.cache);
+  assert.equal(r.status, 0, output(r));
+  assert.deepEqual(phaseNames(), ['probe', 'update', 'install']);
+  assert.match(output(r), /::warning::/);
+  const seen = readFileSync(path.join(files.cache, '..', 'seen-archives'), 'utf8');
+  assert.match(seen, /a_1_amd64\.deb/, 'only the delta should need the wire');
+  assert.match(seen, /ubuntu_Packages/, 'apt-get update should start from the restored indexes');
+  assert.notEqual(phases().at(-1).match(/archives=(\S+)/)[1], path.join(files.cache, 'archives'), 'runner.temp may not be traversable by the _apt sandbox user');
+}, { apt: 'probe 100\n', env: { RECORD_STATE: '1' } }));
+
+test('ensure, install failed after the probe passed: fails the step with no network attempt', () => harness(({ files, run, phaseNames }) => {
+  seedCache(files.cache);
+  const r = run('ensure', files.cache);
+  assert.equal(r.status, 1, output(r));
+  assert.deepEqual(phaseNames(), ['probe', 'cached-install']);
+  assert.match(output(r), /::error::.*cache closure incomplete.*reseed/);
+}, { apt: 'cached-install 100\n' }));
+
+test('ensure, no cache: goes straight to one network attempt', () => harness(({ files, run, phaseNames }) => {
+  const r = run('ensure', files.cache);
+  assert.equal(r.status, 0, output(r));
+  assert.deepEqual(phaseNames(), ['update', 'install']);
+}));
+
+for (const [phase, expected] of [['update', ['update']], ['install', ['update', 'install']]]) {
+  test(`ensure, network ${phase} fails: single attempt, labelled error naming the phase`, () => harness(({ files, run, phaseNames }) => {
+    const r = run('ensure', files.cache);
+    assert.equal(r.status, 1, output(r));
+    assert.deepEqual(phaseNames(), expected);
+    assert.match(output(r), new RegExp(`::error::.*apt-get ${phase}`));
+    assert.match(output(r), /#9847/);
+    assert.doesNotMatch(output(r), /deadline/, 'an apt refusal must not be reported as a deadline');
+  }, { apt: `${phase} 100\n` }));
+}
+
+for (const code of [124, 137]) {
+  test(`ensure, phase deadline (exit ${code}): reported as a deadline rather than an apt error`, () => harness(({ files, run }) => {
+    const r = run('ensure', files.cache);
+    assert.equal(r.status, 1, output(r));
+    assert.match(output(r), /::error::.*apt-get update.*deadline/);
+  }, { apt: `update ${code}\n` }));
+}
+
+test('ensure, network path: fixed sources, verification intact, temporary state removed on both exits', () => {
+  for (const apt of ['', 'install 100\n']) {
+    harness(({ root, files, runEnv }) => {
+      const r = spawnSyncWithTmp(runEnv, root, files.cache);
+      const calls = readFileSync(files.calls, 'utf8').trim().split('\n');
+      assert.equal(calls.length, 2, output(r));
+      for (const c of calls) {
+        assert.match(c, /Dir::Etc::sourcelist=\S+/, c);
+        assert.match(c, /Dir::Etc::sourceparts=-/, c);
+        assert.doesNotMatch(c, /allow-unauthenticated|trusted=yes|AllowInsecure|Check-Valid-Until=false/, c);
+      }
+      assert.deepEqual(readdirSync(path.join(root, 'tmp')), [], 'temporary apt state must be cleaned');
+    }, { apt });
+  }
+});
 
 test('plan: resolves against an EMPTY dpkg status, so the closure ignores what the image preinstalls', () => harness(({ files, run, phases, phaseNames }) => {
   const r = run('plan', files.work);

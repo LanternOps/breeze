@@ -37,7 +37,7 @@
 # exceptions carve out files the allowlisted directories contain that a
 # HEAVY job (not lint/check-migrations/security-audit) actually consumes:
 # ci.yml itself; this classifier; prepare-ci-apt-sources.mjs (used by
-# rust-check and guided-setup-smoke); tauri-apt.sh (used by rust-check);
+# guided-setup-smoke); tauri-apt.sh (used by rust-check);
 # check-agent-binary-signatures.sh (used
 # by build-agent); verify-release-images.sh (copied and run by
 # scripts/smoke-guided-setup.sh inside guided-setup-smoke — an INDIRECT

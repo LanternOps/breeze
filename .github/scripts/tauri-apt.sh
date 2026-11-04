@@ -19,6 +19,7 @@
 #   probe CACHE             does CACHE fit this runner? Offline, changes nothing
 #   cached CACHE            install from CACHE; exit 3 when it cannot be used and
 #                           nothing was touched, exit 1 when the install itself failed
+#   ensure CACHE            what rust-check runs: cached, then the network if unusable
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -35,6 +36,12 @@ as_root() {
 # third-party repository on the image can neither slow nor change the resolution.
 # Index file names derive from this URI, so the seed and every job must agree on
 # it, which is why it lives here. arm64 exists only for local container tests.
+#
+# The Azure mirror, deliberately: hosted runners are in Azure and it serves them
+# at 16 MB/s, while the public archive has crawled at KB/s from them (#9847). It
+# has had bad days too (#1605); TAURI_APT_MIRROR is the switch for one of those.
+# The 26.04 image resolves its mirror through /etc/apt/apt-mirrors.txt, so the
+# `azure.archive -> archive` sed this replaced had already stopped changing anything.
 write_sources() {
   local dir=$1 codename mirror
   codename=${TAURI_APT_CODENAME:-$(. /etc/os-release && echo "${VERSION_CODENAME}")}
@@ -165,6 +172,53 @@ cmd_cached() {
   echo "Tauri system dependencies installed from cache (no mirror access)."
 }
 
+# One attempt, bounded per phase so a stall fails with a real message instead of
+# burning the job's budget (#3730). A second attempt could not finish inside the
+# step: re-run to land on a fresh runner. Starts from whatever was restored, so
+# `apt-get update` fetches deltas and the install fetches only what moved on since
+# the seed. Copied out of runner.temp, which the _apt sandbox user may not traverse.
+NETWORK_WORK=""
+cleanup_network() {
+  if [ -n "${NETWORK_WORK}" ]; then as_root rm -rf -- "${NETWORK_WORK}"; fi
+}
+
+network_failed() {
+  local phase=$1 rc=$2 why="exited ${rc}"
+  if [ "${rc}" = 124 ] || [ "${rc}" = 137 ]; then why="hit its phase deadline"; fi
+  echo "::error::Failed to install Tauri system dependencies: apt-get ${phase} ${why}; re-run to land on a fresh runner (#9847)."
+  return 1
+}
+
+cmd_network() {
+  local cache=$1 rc=0
+  NETWORK_WORK=$(mktemp -d)
+  trap cleanup_network EXIT
+  new_work_dir "${NETWORK_WORK}"
+  if [ -d "${cache}/lists" ]; then
+    find "${cache}/lists" -maxdepth 1 -type f -exec cp {} "${NETWORK_WORK}/lists/" \;
+  fi
+  if [ -d "${cache}/archives" ]; then
+    find "${cache}/archives" -maxdepth 1 -name '*.deb' -exec cp {} "${NETWORK_WORK}/archives/" \;
+  fi
+  apt_options "${NETWORK_WORK}" "${NETWORK_WORK}/lists" "${NETWORK_WORK}/archives"
+  as_root timeout --kill-after=30s 2m apt-get update "${APT_OPTS[@]}" || rc=$?
+  if [ "${rc}" != 0 ]; then network_failed update "${rc}"; return 1; fi
+  as_root env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s 5m apt-get install -y \
+    --no-install-recommends --no-remove "${APT_OPTS[@]}" "${TAURI_PKGS[@]}" || rc=$?
+  if [ "${rc}" != 0 ]; then network_failed install "${rc}"; return 1; fi
+  echo "Tauri system dependencies installed from the network."
+}
+
+cmd_ensure() {
+  local cache=$1 rc=0
+  cmd_cached "${cache}" || rc=$?
+  case "${rc}" in
+    0) return 0 ;;
+    3) cmd_network "${cache}" ;;
+    *) return "${rc}" ;;
+  esac
+}
+
 main() {
   local cmd=${1:-}
   shift || true
@@ -173,8 +227,9 @@ main() {
     fetch) cmd_fetch "$@" ;;
     probe) cmd_probe "$@" ;;
     cached) cmd_cached "$@" ;;
+    ensure) cmd_ensure "$@" ;;
     *)
-      echo "Usage: tauri-apt.sh plan WORK | fetch WORK CACHE | probe CACHE | cached CACHE" >&2
+      echo "Usage: tauri-apt.sh plan WORK | fetch WORK CACHE | probe CACHE | cached CACHE | ensure CACHE" >&2
       exit 2
       ;;
   esac

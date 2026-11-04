@@ -86,9 +86,9 @@ test('classifier: app output — the CI-plumbing allowlist is app=false, everyth
     // Explicit exceptions carved OUT of the allowlist → app=true
     [['.github/workflows/ci.yml'], 'app=true'],
     [['.github/scripts/classify-pr-paths.sh'], 'app=true'],
-    // prepare-ci-apt-sources.mjs is consumed by rust-check and
-    // guided-setup-smoke (both HEAVY jobs, not lint/check-migrations/
-    // security-audit), so it must not fast-track past the app gate.
+    // prepare-ci-apt-sources.mjs is consumed by guided-setup-smoke (a HEAVY
+    // job, not lint/check-migrations/security-audit), so it must not fast-track
+    // past the app gate.
     [['.github/scripts/prepare-ci-apt-sources.mjs'], 'app=true'],
     // tauri-apt.sh installs rust-check's system dependencies.
     [['.github/scripts/tauri-apt.sh'], 'app=true'],
