@@ -41,7 +41,7 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
       { file: 'internal/agentapp/service_cmd_windows.go', contains: ['windowsServiceName = "BreezeAgent"'] },
       { file: 'internal/collectors/command_limits.go', contains: ['cmd := exec.CommandContext(ctx, name, args...)'] },
       { file: 'internal/collectors/hardware.go', contains: ['cpuInfo, err := cpu.Info()'] },
-      { file: 'internal/collectors/classify_windows.go', contains: ['exec.Command("wmic", "systemenclosure"'] },
+      { file: 'internal/collectors/hostname_windows.go', contains: ['wmicGet([]string{"computersystem"}, "Name")'] },
     ],
   },
   {
@@ -74,7 +74,7 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
     ],
   },
   {
-    text: 'Every 15 min and at startup: inventory. Collectors run in parallel, so several powershell.exe can overlap (each up to 30 s): Get-ScheduledTask, Win32_UserAccount, Win32_Service, Get-Service (VPN check), the hardware batch (Get-WmiSafe on Win32_BIOS, Win32_BaseBoard, Win32_ComputerSystem, Win32_VideoController; SilentlyContinue; no storage-pool query) and wmic systemenclosure. Hardware upload: startup and every 24 h.',
+    text: 'Every 15 min and at startup: inventory. Collectors run in parallel, so several powershell.exe can overlap (each up to 30 s): Get-ScheduledTask, Win32_UserAccount, Win32_Service, Get-Service (VPN check) and the hardware batch (Get-WmiSafe on Win32_BIOS, Win32_BaseBoard, Win32_ComputerSystem, Win32_VideoController; SilentlyContinue; no storage-pool query). Hardware upload: startup and every 24 h.',
     anchors: [
       { file: 'internal/heartbeat/heartbeat.go', contains: ['now.Sub(h.lastInventoryUpdate) > 15*time.Minute', 'dueForRun(now, h.lastHardwareUpdate, 24*time.Hour)', 'h.sendNetworkInventory,'] },
       { file: 'internal/collectors/change_tracker.go', contains: ['hwCollector.CollectHardware()'] },
