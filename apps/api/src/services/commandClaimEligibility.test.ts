@@ -648,7 +648,9 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     expect(r.cancelled).toEqual([{ id: 'other', reason: 'requester_inactive' }]);
   });
 
-  it.each([...TEARDOWN_CLAIM_EXEMPT_TYPES])(
+  // release_containment is also bound to its episode at delivery (#10919), so its
+  // exemption is proven with a bound row in commandClaimEligibility.release.test.ts.
+  it.each([...TEARDOWN_CLAIM_EXEMPT_TYPES].filter((type) => type !== 'release_containment'))(
     '%s survives inactive requester + org drift + erased submitter org + lifecycle + trust denial',
     async (type) => {
       const { TrustDeniedError } = await import('./partnerTrust.commands');

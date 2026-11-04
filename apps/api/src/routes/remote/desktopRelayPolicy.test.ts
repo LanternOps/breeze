@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { RESOLVED_TERMINAL_STATES } from '@breeze/shared';
 
 const { findEpisode, iceServers, transaction, tx } = vi.hoisted(() => {
   const tx = { marker: 'request-context transaction' };
@@ -21,26 +22,34 @@ describe('resolveDesktopIcePlan', () => {
     findEpisode.mockResolvedValue(null);
     iceServers.mockImplementation((_scope, opts) => opts?.relayOnly ? turn : legacy);
   });
-  it.each(['applied', 'verified'])('requires TURN for %s episodes', async (state) => {
+  // Every state outside the resolved-terminal set, plus a state this build has
+  // never heard of: the policy must not need to know a state to fail closed.
+  const UNRESOLVED = ['requested', 'dispatched', 'applying', 'applied', 'verified', 'release_requested', 'released_locally', 'self_released', 'future_state_from_a_newer_api'];
+  it.each(UNRESOLVED)('requires TURN for %s episodes', async (state) => {
     findEpisode.mockResolvedValue({ state, remoteRelay: true });
     expect(await resolveDesktopIcePlan('device', scope)).toEqual({ ok: true, relayOnly: true, iceServers: turn });
     expect(findEpisode).toHaveBeenCalledWith(tx, 'device');
     expect(iceServers).toHaveBeenCalledWith(scope, { relayOnly: true });
   });
-  it.each([null, 'applying', 'release_requested', 'released_locally', 'self_released', 'failed'])('preserves legacy ICE for %s', async (state) => {
-    findEpisode.mockResolvedValue(state ? { state, remoteRelay: false } : null);
-    expect(await resolveDesktopIcePlan('device', scope)).toEqual({ ok: true, relayOnly: false, iceServers: legacy });
-    expect(iceServers).toHaveBeenCalledWith(scope);
-  });
-  it.each(['applied', 'verified'])('refuses %s without relay permission before minting credentials', async (state) => {
+  it.each(UNRESOLVED)('refuses %s without relay permission before minting credentials', async (state) => {
     findEpisode.mockResolvedValue({ state, remoteRelay: false });
     expect(await resolveDesktopIcePlan('device', scope)).toEqual({ ok: false, code: 'isolation_relay_not_permitted', error: 'Remote desktop over WebRTC is unavailable: this device was isolated without permitting the TURN relay' });
     expect(iceServers).not.toHaveBeenCalled();
   });
-  it('refuses active isolation without TURN', async () => {
-    findEpisode.mockResolvedValue({ state: 'applied', remoteRelay: true });
+  it.each(UNRESOLVED)('refuses %s when no TURN relay is configured', async (state) => {
+    findEpisode.mockResolvedValue({ state, remoteRelay: true });
     iceServers.mockReturnValue([]);
     expect(await resolveDesktopIcePlan('device', scope)).toEqual({ ok: false, code: 'isolation_relay_unavailable', error: 'Remote desktop needs the TURN relay while this device is isolated' });
+  });
+  it('keeps the legacy plan when the device has no episode', async () => {
+    findEpisode.mockResolvedValue(null);
+    expect(await resolveDesktopIcePlan('device', scope)).toEqual({ ok: true, relayOnly: false, iceServers: legacy });
+    expect(iceServers).toHaveBeenCalledWith(scope);
+  });
+  it.each([...RESOLVED_TERMINAL_STATES])('keeps the legacy plan for a resolved %s episode', async (state) => {
+    findEpisode.mockResolvedValue({ state, remoteRelay: false });
+    expect(await resolveDesktopIcePlan('device', scope)).toEqual({ ok: true, relayOnly: false, iceServers: legacy });
+    expect(iceServers).toHaveBeenCalledWith(scope);
   });
   it('propagates database failures without minting ICE credentials', async () => {
     findEpisode.mockRejectedValue(new Error('database unavailable'));
