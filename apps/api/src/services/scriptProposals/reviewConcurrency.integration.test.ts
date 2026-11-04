@@ -89,7 +89,7 @@ describe('script-review per-org concurrency slot (real Redis)', () => {
     const orgId = randomUUID();
     await tryAcquireOrgReviewSlot(orgId);
     const ttl = await redis().ttl(keyFor(orgId));
-    expect(ttl).toBeGreaterThan(60); // above SCRIPT_REVIEW_TIMEOUT_MS (60 s)
+    expect(ttl).toBeGreaterThan(120); // above SCRIPT_REVIEW_TIMEOUT_MS (120 s)
     expect(ttl).toBeLessThanOrEqual(90);
   });
 

@@ -37,7 +37,11 @@ import { transitionProposal } from './proposals';
 import { resolveEffectiveScriptPolicy, type EffectiveScriptPolicy } from './policy';
 import type { ScriptReviewJobData } from './reviewQueue';
 
-export const SCRIPT_REVIEW_TIMEOUT_MS = 60_000;
+// 120 s: the 8k output cap below means a thinking-heavy review can legitimately
+// run ~4x longer than the 2k-era 60 s budget (prod: ~20 s per 2k tokens).
+// scriptReviewWorker's lockDuration and reviewConcurrency's key TTL both sit
+// above this on purpose.
+export const SCRIPT_REVIEW_TIMEOUT_MS = 120_000;
 // #10971: the reviewer runs with adaptive thinking, and thinking tokens count
 // against `max_tokens`. At 2_000 the verdict JSON was cut off on every
 // non-trivial script (4/4 failures on US prod, 2026-11-04). 8k leaves room
