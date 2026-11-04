@@ -128,12 +128,26 @@ Approved actions execute immediately. Rejected actions are logged and the AI is 
 
 If what the request refers to changes while it waits — the script is edited, the quote or invoice is revised, the organization's state moves on — the approved action does **not** run against the drifted content. It fails with a content-changed error instead, and the AI has to raise a fresh request.
 
+#### Approval mode
+
+The **approval mode** decides how a chat asks before running gated actions. It applies whether or not any AI spending cap is set.
+
+| Mode | Behavior |
+|---|---|
+| **Per step** (default) | Each gated action waits for its own approval. |
+| **Action plan** | The AI proposes a multi-step plan and you approve the whole plan once. |
+| **Auto approve** | Tier 2 actions run without a prompt and are audit-logged; Tier 3 still asks. The chat shows a **Pause AI** button that drops back to per-step. |
+| **Hybrid plan** | Like action plan, plus live screenshots between steps and a persistent **Stop** button. |
+
+- **Partner default:** **Settings → Partner → AI Approvals**.
+- **Organization:** **Settings → Organization → AI**, in the **AI approval mode** card. A partner-set mode overrides the organization's and locks the field.
+
 #### Approval timeout
 
 A chat turn that is waiting on an approval is held open, so the wait is bounded. The **approval timeout** is how long the chat waits for someone to approve a gated action before it gives up:
 
 - **Default:** 5 minutes. **Range:** 5 to 60 minutes.
-- **Partner default:** **Settings → Partner → AI Approval Timeout**. Applies to every organization that has not set its own value.
+- **Partner default:** **Settings → Partner → AI Approvals**. Applies to every organization that has not set its own value.
 - **Organization override:** **Settings → Organization → AI**. Choose a value to override the partner default, or **Inherit** to follow it. The organization's value always wins. The selector shows the inherited value and where it comes from.
 - A change applies from the next chat message. It does not change a wait that is already in progress.
 
@@ -207,7 +221,7 @@ A self-hosted or smaller model usually retries and re-plans more than Claude doe
 Every per-tool limit becomes `ceil(limit × multiplier)`. At a multiplier of 3, for example, `run_script` allows 15 requests per 5 minutes instead of 5. The window stays the same. The multiplier applies to the built-in assistant and to the [MCP Server](/features/mcp-server/#per-tool-rate-limits).
 
 - The multiplier can only raise a limit. It never lowers or removes one. The API rejects a value outside 1–10, and a stored value that is out of range is treated as 1.
-- You set it in the same two places as the other budget fields (see [Configuring thresholds](#configuring-thresholds)): **Org settings → AI** for one organisation, or the **AI Budgets** tab of Partner Settings for every organisation under the partner. A partner value overrides the organisation value and locks the field.
+- You set it in the same two places as the other budget fields (see [Configuring thresholds](#configuring-thresholds)): **Org settings → AI** for one organisation, or the **AI Budgets & Limits** tab of Partner Settings for every organisation under the partner. A partner value overrides the organisation value and locks the field.
 - The organisation of the current call selects the multiplier: the chat session's organisation, or the MCP API key's organisation. A partner-scoped MCP caller that has no organisation uses the partner's value. Because the counter is shared across organisations, a user who works in two organisations with different multipliers is checked against the limit of the organisation they are working in now.
 - **AI Risk → Rate Limits** shows the limits that are in effect for the selected organisation, with the multiplier applied, and shows the default next to each limit that was raised.
 
@@ -393,9 +407,9 @@ Alerts are delivered to active users with the `billing:manage` permission, wheth
 The threshold ladder is configured in two places:
 
 - **Organisation**: **Org settings → AI** (v0.114.0+; previously on the AI Usage page). The **AI Usage** page itself is now usage-only, and shows a read-only **Effective budget** panel with each field's value and where it came from (Set by partner, Set by organization, or Default).
-- **Partner**: the **AI Budgets** tab of Partner Settings, which can set a value that applies across every organisation under the partner.
+- **Partner**: the **AI Budgets & Limits** tab of Partner Settings, which can set a value that applies across every organisation under the partner.
 
-A partner-set value locks the corresponding field in **Org settings → AI**: the field is grayed out and shows a **Managed by partner** note, so the org can see the value but can't edit or submit it. If every field is locked, the org's Save button is disabled entirely. A partner-scoped user with permission to manage partner-wide policies also sees a **View partner-wide budgets** link from the locked field straight to the Partner Settings AI Budgets tab.
+A partner-set value locks the corresponding field in **Org settings → AI**: the field is grayed out and shows a **Managed by partner** note, so the org can see the value but can't edit or submit it. If every field is locked, the org's Save button is disabled entirely. A partner-scoped user with permission to manage partner-wide policies also sees a **View partner-wide budgets** link from the locked field straight to the Partner Settings AI Budgets & Limits tab.
 
 Either field takes two kinds of input: leave it empty to inherit (the org inherits the partner value, or the 50/80/95 default when the partner sets nothing), or type an explicit ladder of up to five whole percentages, such as `60, 90`. Turning pre-cap warnings off entirely requires storing an empty list, which the UI cannot produce; do that through `PUT /ai/budget` with `"alertThresholdPercents": []`. The 100% cap-reached alert still fires regardless.
 

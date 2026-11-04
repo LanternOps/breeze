@@ -114,7 +114,7 @@ describe('PartnerSettingsPage header status and validity (W2 Task 18)', () => {
     await openTab(user, /^company$/i);
     expect(saveButton().disabled).toBe(true);
     expect(status().getAttribute('data-state')).toBe('invalid');
-    expect(status().textContent).toBe('Fix 1 field in AI Budgets to save.');
+    expect(status().textContent).toBe('Fix 1 field in AI Budgets & Limits to save.');
     await openTab(user, /^ai budgets/i);
     expect((screen.getByTestId('partner-ai-budget-thresholds-input') as HTMLInputElement).value).toBe('50,abc');
     expect(screen.getByTestId('partner-ai-budget-thresholds-error')).toBeTruthy();

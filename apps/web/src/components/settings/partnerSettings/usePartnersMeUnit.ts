@@ -275,7 +275,7 @@ export function partnersMeValidity(
     company: tabValidity(website !== '' && !isHttpUrl(website) ? [PARTNERS_ME_FIELD_IDS.website] : []),
     defaults: tabValidity(typeof mw === 'string' && mw.trim() !== '' && !isValidMaintenanceWindow(mw) ? [PARTNERS_ME_FIELD_IDS.maintenanceWindow] : []),
     // The box only renders while budgets are enabled; a hidden box cannot block Save.
-    aiBudgets: tabValidity(state.aiBudgets.enabled && raw !== null && !parseThresholds(raw).ok ? [PARTNERS_ME_FIELD_IDS.aiBudgetThresholds] : []),
+    aiBudgets: tabValidity(raw !== null && !parseThresholds(raw).ok ? [PARTNERS_ME_FIELD_IDS.aiBudgetThresholds] : []),
     // Bounds shared with the API (#10081); in form order so the status link opens the first one.
     security: tabValidity(SECURITY_LIMIT_KEYS.filter(key => invalidLimits.has(key)).map(key => SECURITY_LIMIT_FIELD_IDS[key])),
   };
@@ -285,7 +285,7 @@ export function partnersMeValidity(
 export function tabSnapshots(state: PartnersMeState): Record<PartnersMeTab, string> {
   const raw = state.aiBudgetsThresholdsRaw;
   // Unparseable threshold text is an edit even though `aiBudgets` is unchanged.
-  const thresholdsDraft = state.aiBudgets.enabled && raw !== null && !parseThresholds(raw).ok ? raw : undefined;
+  const thresholdsDraft = raw !== null && !parseThresholds(raw).ok ? raw : undefined;
   return {
     company: JSON.stringify({ n: state.companyName, a: state.address, c: state.contact, s: state.emailSignature }),
     regional: JSON.stringify([state.timezone, state.dateFormat, state.timeFormat, state.language]),

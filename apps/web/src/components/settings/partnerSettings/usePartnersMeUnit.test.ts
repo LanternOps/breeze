@@ -56,9 +56,12 @@ describe('partners/me unit', () => {
     expect(buildPartnersMePayload(edited)).toEqual(buildPartnersMePayload(base));
   });
 
-  it('a threshold box hidden by disabled budgets never blocks Save', () => {
+  // The threshold box is no longer hidden behind `enabled` (that flag is the
+  // AI on/off switch, not "budget enforcement"), so unparseable text always
+  // blocks Save — including when AI is switched off.
+  it('an unparseable threshold box blocks Save whatever `enabled` is', () => {
     const state = { ...fixtureState(), aiBudgets: { enabled: false }, aiBudgetsThresholdsRaw: 'abc' };
-    expect(partnersMeValidity(state).aiBudgets?.isValid).toBe(true);
+    expect(partnersMeValidity(state).aiBudgets?.isValid).toBe(false);
   });
 
   it('flags security limits outside the shared server bounds, first field in form order (#10081)', () => {
