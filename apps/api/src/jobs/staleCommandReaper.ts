@@ -1,7 +1,7 @@
 import { RESTORE_POINT_PAYLOAD_KEY, SOFTWARE_INSTALL_SERVER_TIMEOUT_MS } from '@breeze/shared';
 import { REMOTE_SESSION_ACTIVE_MAX_AGE_MS } from '../services/remoteSessionStaleness';
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, lt, sql, inArray, isNotNull, isNull, or } from 'drizzle-orm';
+import { and, eq, lt, lte, sql, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { db, hasDbAccessContext, withDbTransaction } from '../db';
 import {
@@ -38,7 +38,7 @@ import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/ba
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { terminalIntentSet } from '../services/remoteDesktopTerminalIntent';
 import { backupHelperSupportsQueue } from '../services/backupHelperCapabilities';
-import { BACKUP_MISSED_ERROR } from './backupCatchUp';
+import { catchUpExpiryReason } from './backupCatchUp';
 import { queueBackupStopCommand, CommandTypes } from '../services/commandQueue';
 import { envInt } from '../utils/envInt';
 
@@ -1744,8 +1744,19 @@ export async function reapStaleBackupJobs(): Promise<number> {
       const failedAt = new Date();
       const expired = await db
         .update(backupJobs)
-        .set({ status: 'failed', completedAt: failedAt, updatedAt: failedAt, errorLog: BACKUP_MISSED_ERROR })
-        .where(and(eq(backupJobs.id, job.id), eq(backupJobs.status, 'pending')))
+        .set({
+          status: 'failed',
+          completedAt: failedAt,
+          updatedAt: failedAt,
+          errorLog: catchUpExpiryReason(job.deviceLastSeenAt, job.createdAt),
+        })
+        .where(and(
+          eq(backupJobs.id, job.id),
+          eq(backupJobs.status, 'pending'),
+          // Still waiting and still lapsed: never a row a catch-up claimed.
+          isNotNull(backupJobs.catchUpUntil),
+          lte(backupJobs.catchUpUntil, new Date(now)),
+        ))
         .returning({ id: backupJobs.id });
       if (expired.length > 0) reaped++;
       continue;

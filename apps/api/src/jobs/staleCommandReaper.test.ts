@@ -891,11 +891,7 @@ describe('reapStaleBackupJobs', () => {
     it('settles a lapsed one with the Missed reason, unmarked, and sends the device no stop', async () => {
       selectMock
         .mockReturnValueOnce(selectChain([]))
-        .mockReturnValueOnce(selectChain([deferredRow(new Date(Date.now() - 60_000), {
-          deviceStatus: 'online',
-          deviceLastSeenAt: minutesAgo(1),
-          deviceBackupVersion: '0.200.0',
-        })]));
+        .mockReturnValueOnce(selectChain([deferredRow(new Date(Date.now() - 60_000))]));
       const setMock = wireSet();
 
       const reaped = await reapStaleBackupJobs();
@@ -903,6 +899,25 @@ describe('reapStaleBackupJobs', () => {
       expect(reaped).toBe(1);
       expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', errorLog: MISSED }));
       // Nothing was ever sent: no stop, and no reaper marker for a late result.
+      expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
+    });
+
+    it('does not call it Missed when the device was seen after the schedule', async () => {
+      selectMock
+        .mockReturnValueOnce(selectChain([]))
+        .mockReturnValueOnce(selectChain([deferredRow(new Date(Date.now() - 60_000), {
+          deviceStatus: 'online',
+          deviceLastSeenAt: minutesAgo(1),
+          deviceBackupVersion: '0.200.0',
+        })]));
+      const setMock = wireSet();
+
+      await reapStaleBackupJobs();
+
+      expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'failed',
+        errorLog: expect.stringMatching(/^Catch-up did not start:/),
+      }));
       expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
     });
 

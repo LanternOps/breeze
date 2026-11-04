@@ -3291,7 +3291,9 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
           if (deviceInfo?.hasBackupCatchUp) {
             void dispatchBackupCatchUpJobs(deviceInfo.id).catch((err) => {
               console.error(`[AgentWs] Failed to dispatch backup catch-ups for device ${deviceInfo.id}:`, err);
-              captureException(err instanceof Error ? err : new Error(String(err)));
+              captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+                backup_dispatch_issue: 'catch-up-connect-failed',
+              });
             });
           }
           if (deviceInfo) {

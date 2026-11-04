@@ -46,6 +46,13 @@ vi.mock('./backupRetention', () => ({
 const captureExceptionMock = vi.fn();
 vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
 
+// #11013: a catch-up dispatch re-resolves the device's backup policy.
+const resolveBackupConfigForDeviceMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/featureConfigResolver', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/featureConfigResolver')>()),
+  resolveBackupConfigForDevice: resolveBackupConfigForDeviceMock,
+}));
+
 const applyBackupCommandResultToJobMock = vi.fn(async () => ({
   applied: true,
   snapshotDbId: null,
@@ -918,9 +925,20 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
       status: 'pending',
       catchUpUntil: new Date(Date.now() + 3_600_000),
       featureLinkId: 'link-1',
-      settingsId: 'settings-1',
-      schedule: { frequency: 'daily', time: '05:00' },
+      configId: 'config-1',
+      deviceId: 'device-1',
       ...overrides,
+    });
+    const currentPolicy = (overrides: Record<string, unknown> = {}) => ({
+      settings: { schedule: { frequency: 'daily', time: '05:00' } },
+      featureLinkId: 'link-1',
+      configId: 'config-1',
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      resolveBackupConfigForDeviceMock.mockReset();
+      resolveBackupConfigForDeviceMock.mockResolvedValue(currentPolicy());
     });
 
     describe('a scheduled dispatch that finds the device offline', () => {
@@ -936,6 +954,15 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
         expect(updateLog).toEqual([
           expect.objectContaining({ payload: expect.objectContaining({ catchUpUntil: new Date(catchUpUntil) }) }),
         ]);
+      });
+
+      it('stamps the config generation it was queued against, so an edit while waiting still fails closed', async () => {
+        agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(false);
+        configRow = { ...CONFIG_ROW, approvalGeneration: 7 };
+
+        await __testOnly.processDispatchBackup({ ...DATA, configGeneration: 7, catchUpUntil: hoursFromNow(20) } as any);
+
+        expect(updateLog[0]?.payload.catchUpConfigGeneration).toBe(7);
       });
 
       it('defers the same way when the device has no agent id at all', async () => {
@@ -1038,7 +1065,10 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
       });
 
       it('honours the toggle being switched off while the job waited', async () => {
-        catchUpJobRows = [pendingCatchUpRow({ schedule: { frequency: 'daily', time: '05:00', runMissedBackupsOnConnect: false } })];
+        catchUpJobRows = [pendingCatchUpRow()];
+        resolveBackupConfigForDeviceMock.mockResolvedValue(currentPolicy({
+          settings: { schedule: { frequency: 'daily', time: '05:00', runMissedBackupsOnConnect: false } },
+        }));
 
         const result = await __testOnly.processDispatchBackup(CATCH_UP as any);
 
@@ -1049,10 +1079,14 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
       });
 
       it.each([
-        ['the link was removed', pendingCatchUpRow({ featureLinkId: null, settingsId: null, schedule: null })],
-        ['the settings row is gone', pendingCatchUpRow({ settingsId: null, schedule: null })],
-      ])('never runs a job whose policy no longer applies: %s', async (_label, row) => {
-        catchUpJobRows = [row];
+        ['the link was removed', { featureLinkId: null }, currentPolicy()],
+        ['no policy covers the device any more (deactivated, unassigned)', {}, null],
+        ['another policy now wins for the device', {}, currentPolicy({ featureLinkId: 'link-2' })],
+        ['the policy now points at another destination', {}, currentPolicy({ configId: 'config-2' })],
+        ['the settings row is gone', {}, currentPolicy({ settings: null })],
+      ])('never runs a job whose policy no longer applies: %s', async (_label, rowOverrides, policy) => {
+        catchUpJobRows = [pendingCatchUpRow(rowOverrides)];
+        resolveBackupConfigForDeviceMock.mockResolvedValue(policy);
 
         await __testOnly.processDispatchBackup(CATCH_UP as any);
 
@@ -1245,6 +1279,34 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
       expect(result).toEqual({ dispatched: false });
       expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
       expect(enqueueCapabilityWaitMock).toHaveBeenCalledTimes(1);
+      expect(updateLog.some((u) => u.payload.status === 'failed')).toBe(false);
+    });
+
+    it('leaves a catch-up waiting for the sweep, not a second queue, when issuing a session fails transiently (#11013)', async () => {
+      configRow = S3_CONFIG_ROW;
+      helperProtocols = CAPABLE_HELPER;
+      catchUpJobRows = [{
+        status: 'pending',
+        catchUpUntil: new Date(Date.now() + 3_600_000),
+        featureLinkId: 'link-1',
+        configId: 'config-1',
+        deviceId: 'device-1',
+      }];
+      resolveBackupConfigForDeviceMock.mockResolvedValue({
+        settings: { schedule: { frequency: 'daily', time: '05:00' } },
+        featureLinkId: 'link-1',
+        configId: 'config-1',
+      });
+      writeDeliveryMock.broker.mockResolvedValueOnce({ mode: 'retry', reason: 'mint_failed' } as never);
+
+      const result = await __testOnly.processDispatchBackup({
+        ...DATA, catchUpDispatch: true, catchUpUntil: new Date(Date.now() + 3_600_000).toISOString(),
+      } as any);
+
+      expect(result).toEqual({ dispatched: false });
+      expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+      // A queued wait beside the sweep could dispatch the job twice.
+      expect(enqueueCapabilityWaitMock).not.toHaveBeenCalled();
       expect(updateLog.some((u) => u.payload.status === 'failed')).toBe(false);
     });
 

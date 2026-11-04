@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { selectRows, enqueueMock, isConnectedMock } = vi.hoisted(() => ({
+const { selectRows, enqueueMock, isConnectedMock, captureExceptionMock } = vi.hoisted(() => ({
   selectRows: { value: [] as unknown[] },
   enqueueMock: vi.fn(),
   isConnectedMock: vi.fn(),
+  captureExceptionMock: vi.fn(),
 }));
 
 function chain(rows: unknown[]) {
@@ -20,9 +21,13 @@ vi.mock('../db', () => ({
 }));
 vi.mock('./backupEnqueue', () => ({ enqueueBackupCatchUpDispatch: enqueueMock }));
 vi.mock('../services/agentCommandRelay', () => ({ isAgentConnectedAnywhere: isConnectedMock }));
+vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
 
 const {
+  BACKUP_CATCH_UP_NOT_STARTED_ERROR,
   BACKUP_CATCH_UP_WINDOW_MS,
+  BACKUP_MISSED_ERROR,
+  catchUpExpiryReason,
   computeBackupCatchUpUntil,
   dispatchBackupCatchUpJobs,
   dispatchCatchUpsForConnectedDevices,
@@ -35,6 +40,7 @@ const JOB = {
   orgId: 'org-1',
   deviceId: 'device-1',
   catchUpUntil: new Date('2026-11-05T01:00:00.000Z'),
+  configGeneration: 3,
 };
 
 describe('computeBackupCatchUpUntil', () => {
@@ -65,6 +71,19 @@ describe('computeBackupCatchUpUntil', () => {
     // 07:00 in UTC+2 is 05:00 UTC, so today's has passed and tomorrow's is past the 20 h cap.
     expect(computeBackupCatchUpUntil({ frequency: 'daily', time: '07:00' }, scheduledAt, 'Africa/Johannesburg'))
       .toBe(new Date(scheduledAt.getTime() + BACKUP_CATCH_UP_WINDOW_MS).toISOString());
+  });
+});
+
+describe('catchUpExpiryReason', () => {
+  const createdAt = new Date('2026-11-04T05:00:00.000Z');
+
+  it('is Missed when the device was not seen after the schedule', () => {
+    expect(catchUpExpiryReason(new Date('2026-11-04T04:00:00.000Z'), createdAt)).toBe(BACKUP_MISSED_ERROR);
+    expect(catchUpExpiryReason(null, createdAt)).toBe(BACKUP_MISSED_ERROR);
+  });
+
+  it('is not Missed when the device came back and the catch-up still never started', () => {
+    expect(catchUpExpiryReason(new Date('2026-11-04T09:00:00.000Z'), createdAt)).toBe(BACKUP_CATCH_UP_NOT_STARTED_ERROR);
   });
 });
 
@@ -108,7 +127,11 @@ describe('dispatchBackupCatchUpJobs', () => {
     await expect(dispatchBackupCatchUpJobs('device-1')).resolves.toBe(1);
 
     expect(enqueueMock).toHaveBeenCalledTimes(2);
-    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('job-1'));
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('job-1'), expect.any(Error));
+    // A failure that repeats every tick for 20 h must be visible, not log-only.
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.any(Error), undefined, { backup_dispatch_issue: 'catch-up-enqueue-failed' },
+    );
     errorSpy.mockRestore();
   });
 });

@@ -10,11 +10,17 @@
 -- (routes/agentWs.ts onOpen), so the lookup must stay cheap across a 10k-device
 -- fleet. Only deferred rows are in it, which is a tiny share of backup_jobs.
 --
--- backup_jobs is an existing org-cascade table: the new column is classified in
--- CORE_TENANT_EXPORT_POLICY and needs no RLS or cascade registration.
+-- backup_jobs is an existing org-cascade table: the new columns are classified
+-- in CORE_TENANT_EXPORT_POLICY and need no RLS or cascade registration.
 
 ALTER TABLE backup_jobs
   ADD COLUMN IF NOT EXISTS catch_up_until timestamptz;
+
+-- The backup_configs.approval_generation the waiting job was queued against.
+-- The catch-up dispatch carries it, so a config edited while the job waited
+-- fails it closed (site-ceiling gate contract §3) rather than running the edit.
+ALTER TABLE backup_jobs
+  ADD COLUMN IF NOT EXISTS catch_up_config_generation integer;
 
 CREATE INDEX IF NOT EXISTS backup_jobs_catch_up_device_idx
   ON backup_jobs (device_id)

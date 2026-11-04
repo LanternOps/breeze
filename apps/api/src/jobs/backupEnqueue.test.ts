@@ -57,6 +57,7 @@ describe('backup enqueue helpers', () => {
       orgId: '33333333-3333-4333-8333-333333333333',
       deviceId: '44444444-4444-4444-8444-444444444444',
       catchUpUntil: new Date('2026-11-05T01:00:00.000Z'),
+      configGeneration: 7,
     };
 
     it('carries the window on a scheduled dispatch', async () => {
@@ -77,8 +78,11 @@ describe('backup enqueue helpers', () => {
         jobId: ROW.jobId,
         catchUpDispatch: true,
         catchUpUntil: ROW.catchUpUntil.toISOString(),
-        configGeneration: 4,
+        // The generation stamped when the job started waiting, never a fresh
+        // read: that would bless an edit made while it waited (contract §3).
+        configGeneration: 7,
       });
+      expect(dbSelectMock).not.toHaveBeenCalled();
       // A second connect while this one is queued dedupes on the id; a retained
       // finished job would silently swallow the connect after a later flap.
       expect(options).toMatchObject({

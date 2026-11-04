@@ -408,7 +408,6 @@ describe('missed-schedule catch-up (#11013)', () => {
     selectionSpecs: null,
     resolvedTimezone: 'UTC',
   });
-  const MISSED = 'Missed: device was offline for the whole catch-up window';
 
   it('gives a scheduled job a window of 20 h from the schedule', async () => {
     primeOrgLookup();
@@ -439,8 +438,10 @@ describe('missed-schedule catch-up (#11013)', () => {
 
     await __testOnly.processCheckSchedules();
 
+    // The text is chosen in SQL (device seen since or not); the integration
+    // suite pins it.
     expect(updateSetMock).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'failed', errorLog: MISSED, completedAt: expect.any(Date) }),
+      expect.objectContaining({ status: 'failed', completedAt: expect.any(Date), errorLog: expect.anything() }),
     );
   });
 
@@ -451,6 +452,6 @@ describe('missed-schedule catch-up (#11013)', () => {
 
     await __testOnly.processCheckSchedules();
 
-    expect(updateSetMock).not.toHaveBeenCalledWith(expect.objectContaining({ errorLog: MISSED }));
+    expect(updateSetMock).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
   });
 });

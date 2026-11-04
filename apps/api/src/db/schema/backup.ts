@@ -324,6 +324,9 @@ export const backupJobs = pgTable(
     // run on the next agent connect. Set only while the job waits; see
     // jobs/backupCatchUp.ts for its lifecycle.
     catchUpUntil: timestamp('catch_up_until', { withTimezone: true }),
+    // #11013: backup_configs.approval_generation the waiting job was queued
+    // against (site-ceiling gate contract §3). NULL for a job queued without one.
+    catchUpConfigGeneration: integer('catch_up_config_generation'),
     totalFiles: integer('total_files'),
     // Incremental-backup dedup stats: files/bytes referenced from a prior
     // snapshot instead of re-transferred this run. NULL = agent didn't report

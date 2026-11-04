@@ -1725,7 +1725,9 @@ describe('WS lifecycle status writes — terminal-status guard (#2230)', () => {
       const ws = wsMock();
 
       await createAgentWsHandlers('agent-123', agent).onOpen({}, ws as any);
-      await vi.waitFor(() => expect(captureException).toHaveBeenCalledWith(failure));
+      await vi.waitFor(() => expect(captureException).toHaveBeenCalledWith(
+        failure, undefined, { backup_dispatch_issue: 'catch-up-connect-failed' },
+      ));
 
       expect(ws.close).not.toHaveBeenCalled();
       errorSpy.mockRestore();

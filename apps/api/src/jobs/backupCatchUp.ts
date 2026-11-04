@@ -16,10 +16,11 @@
  *           "backup broke"
  */
 
-import { and, asc, eq, gt, isNotNull, notInArray, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, gt, isNotNull, lt, sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { backupJobs, devices } from '../db/schema';
 import { isAgentConnectedAnywhere } from '../services/agentCommandRelay';
+import { captureException } from '../services/sentry';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 import { getNextRun } from '../routes/backup/helpers';
 import type { BackupPolicySchedule } from '../routes/backup/types';
@@ -36,6 +37,15 @@ export const BACKUP_CATCH_UP_WINDOW_MS = 20 * 60 * 60 * 1000;
 
 /** The terminal reason of a job whose device never came back in time. */
 export const BACKUP_MISSED_ERROR = 'Missed: device was offline for the whole catch-up window';
+
+/**
+ * The terminal reason of a job whose device DID come back but whose catch-up
+ * never started (an enqueue that kept failing, a helper that never reported).
+ * Kept apart from BACKUP_MISSED_ERROR: reporting reads that one as "the device
+ * was off", and this is a backup that broke.
+ */
+export const BACKUP_CATCH_UP_NOT_STARTED_ERROR =
+  'Catch-up did not start: the device came online during the catch-up window, but the backup could not be dispatched';
 
 /** Devices checked per check-schedules tick by the safety net. */
 const CONNECTED_CATCH_UP_SWEEP_LIMIT = 200;
@@ -59,6 +69,26 @@ export function computeBackupCatchUpUntil(
   const nextRun = getNextRun(schedule as BackupPolicySchedule, fallbackTimezone);
   const nextRunMs = nextRun ? Date.parse(nextRun) : Number.NaN;
   return new Date(Number.isFinite(nextRunMs) ? Math.min(capMs, nextRunMs) : capMs).toISOString();
+}
+
+/**
+ * Why a job that waited for its device ends unrun: the device was seen after
+ * the job was scheduled, or it was not. The JS form is for the reaper, which
+ * already holds both values.
+ */
+export function catchUpExpiryReason(deviceLastSeenAt: Date | null | undefined, jobCreatedAt: Date): string {
+  return deviceLastSeenAt && deviceLastSeenAt.getTime() > jobCreatedAt.getTime()
+    ? BACKUP_CATCH_UP_NOT_STARTED_ERROR
+    : BACKUP_MISSED_ERROR;
+}
+
+/** The same decision, in SQL, for an UPDATE of `backup_jobs`. */
+function catchUpExpiryReasonSql(): SQL<string> {
+  return sql<string>`CASE WHEN EXISTS (
+      SELECT 1 FROM devices
+      WHERE devices.id = backup_jobs.device_id
+        AND devices.last_seen_at > backup_jobs.created_at
+    ) THEN ${BACKUP_CATCH_UP_NOT_STARTED_ERROR}::text ELSE ${BACKUP_MISSED_ERROR}::text END`;
 }
 
 /**
@@ -88,6 +118,7 @@ const deferredJobColumns = {
   orgId: backupJobs.orgId,
   deviceId: backupJobs.deviceId,
   catchUpUntil: backupJobs.catchUpUntil,
+  configGeneration: backupJobs.catchUpConfigGeneration,
 };
 
 const insideCatchUpWindow = () => and(
@@ -102,11 +133,12 @@ type DeferredJob = {
   orgId: string;
   deviceId: string;
   catchUpUntil: Date | null;
+  configGeneration: number | null;
 };
 
 /**
- * Queue a catch-up dispatch for each row. A failure is logged and the row stays
- * deferred, so the next check-schedules tick retries it.
+ * Queue a catch-up dispatch for each row. A failure is reported and the row
+ * stays deferred, so the next check-schedules tick retries it.
  */
 async function enqueueDeferredJobs(jobs: DeferredJob[]): Promise<number> {
   let enqueued = 0;
@@ -114,19 +146,22 @@ async function enqueueDeferredJobs(jobs: DeferredJob[]): Promise<number> {
     if (!job.catchUpUntil) continue;
     const catchUpUntil = job.catchUpUntil;
     try {
-      // Reads the config's approval generation, so it needs a context of its
-      // own, closed before the next row.
-      await runWithSystemDbAccess(() => enqueueBackupCatchUpDispatch({
+      // enqueueBackupCatchUpDispatch makes no DB read: the config generation it
+      // carries is the one stamped on the row when the job started waiting.
+      await enqueueBackupCatchUpDispatch({
         jobId: job.jobId,
         configId: job.configId,
         orgId: job.orgId,
         deviceId: job.deviceId,
         catchUpUntil,
-      }));
+        configGeneration: job.configGeneration ?? undefined,
+      });
       enqueued++;
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[BackupCatchUp] Failed to queue catch-up dispatch for job ${job.jobId}: ${message}`);
+      console.error(`[BackupCatchUp] Failed to queue catch-up dispatch for job ${job.jobId} (device ${job.deviceId}):`, err);
+      // The ids stay in the console line: the Sentry scrubber keeps only
+      // allow-listed tags (services/sentry.ts).
+      captureException(err, undefined, { backup_dispatch_issue: 'catch-up-enqueue-failed' });
     }
   }
   return enqueued;
@@ -165,6 +200,11 @@ export async function dispatchCatchUpsForConnectedDevices(): Promise<number> {
     ))
     .orderBy(asc(backupJobs.catchUpUntil))
     .limit(CONNECTED_CATCH_UP_SWEEP_LIMIT));
+  if (rows.length >= CONNECTED_CATCH_UP_SWEEP_LIMIT) {
+    // Ordered by the window's end, so the rows left out are the ones with the
+    // most time left; still worth knowing when it happens.
+    console.warn(`[BackupCatchUp] Catch-up sweep hit its limit of ${CONNECTED_CATCH_UP_SWEEP_LIMIT} rows; the rest wait for the next tick`);
+  }
 
   // Redis I/O: no DB context open here (#1105).
   const connected = new Map<string, boolean>();
@@ -184,22 +224,25 @@ export async function dispatchCatchUpsForConnectedDevices(): Promise<number> {
 /**
  * The scheduler created the next job for this link and device, so catch-ups of
  * the earlier occurrences are over, whether or not their window has lapsed.
- * Runs in the caller's context.
+ * Only jobs created before `occurrenceStart` (the start of the new occurrence's
+ * dedupe window) count as earlier: a job of THIS occurrence, created on an
+ * earlier tick for another profile selection, is still current. Runs in the
+ * caller's context.
  */
 export async function expireSupersededBackupCatchUps(params: {
   deviceId: string;
   featureLinkId: string;
-  newJobIds: string[];
+  occurrenceStart: Date;
 }): Promise<void> {
   const now = new Date();
   await db
     .update(backupJobs)
-    .set({ status: 'failed', completedAt: now, updatedAt: now, errorLog: BACKUP_MISSED_ERROR })
+    .set({ status: 'failed', completedAt: now, updatedAt: now, errorLog: catchUpExpiryReasonSql() })
     .where(and(
       eq(backupJobs.deviceId, params.deviceId),
       eq(backupJobs.featureLinkId, params.featureLinkId),
       eq(backupJobs.status, 'pending'),
       isNotNull(backupJobs.catchUpUntil),
-      notInArray(backupJobs.id, params.newJobIds),
+      lt(backupJobs.createdAt, params.occurrenceStart),
     ));
 }

@@ -106,9 +106,12 @@ export async function createManualBackupJobIfIdle(
             : sql`${backupJobs.backupMode} IS NULL`,
           inArray(backupJobs.status, ACTIVE_BACKUP_JOB_STATUSES),
           // #11013: a scheduled job waiting for its device to come back is not
-          // work in progress. Answering "already running" with it would leave
-          // the request with nothing dispatched.
-          isNull(backupJobs.catchUpUntil)
+          // work in progress, so it does not answer a manual run, which would
+          // otherwise leave the request with nothing dispatched. Only when the
+          // helper queues: an older helper would run the manual job and the
+          // catch-up side by side, the very overlap this guard exists to stop,
+          // so for it the waiting job still counts and runs on the next connect.
+          ...(helperQueues ? [isNull(backupJobs.catchUpUntil)] : [])
         )
       )
       .limit(1);

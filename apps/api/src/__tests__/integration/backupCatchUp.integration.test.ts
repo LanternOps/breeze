@@ -20,7 +20,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 type Frame = { id: string; type: string; payload: Record<string, unknown> };
 
 const relay = vi.hoisted(() => ({ connected: false, frames: [] as Frame[] }));
-const queued = vi.hoisted(() => ({ jobs: [] as Array<{ jobId: string; catchUpUntil: Date }> }));
+const queued = vi.hoisted(() => ({ jobs: [] as Array<{ jobId: string; catchUpUntil: Date; configGeneration?: number }> }));
 
 vi.mock('../../services/agentCommandRelay', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/agentCommandRelay')>()),
@@ -38,7 +38,7 @@ vi.mock('../../services/agentWorkExpectation', async (importOriginal) => ({
 
 vi.mock('../../jobs/backupEnqueue', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../jobs/backupEnqueue')>()),
-  enqueueBackupCatchUpDispatch: vi.fn(async (row: { jobId: string; catchUpUntil: Date }) => {
+  enqueueBackupCatchUpDispatch: vi.fn(async (row: { jobId: string; catchUpUntil: Date; configGeneration?: number }) => {
     queued.jobs.push(row);
     return `backup-dispatch-${row.jobId}-catch-up`;
   }),
@@ -48,12 +48,15 @@ import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   backupConfigs,
   backupJobs,
+  configPolicyAssignments,
   configPolicyBackupSettings,
   configPolicyFeatureLinks,
   configurationPolicies,
   devices,
 } from '../../db/schema';
+import { isAgentConnectedAnywhere } from '../../services/agentCommandRelay';
 import {
+  BACKUP_CATCH_UP_NOT_STARTED_ERROR,
   BACKUP_MISSED_ERROR,
   deviceHasBackupCatchUp,
   dispatchBackupCatchUpJobs,
@@ -78,6 +81,7 @@ type Seeded = {
   agentId: string;
   configId: string;
   featureLinkId: string;
+  policyId: string;
 };
 
 async function seedDevice(schedule: Record<string, unknown> = { frequency: 'daily', time: '05:00' }): Promise<Seeded> {
@@ -126,8 +130,22 @@ async function seedDevice(schedule: Record<string, unknown> = { frequency: 'dail
     schedule,
     backupMode: 'file',
     targets: { paths: ['C:\\Data'] },
+    destinationConfigId: config!.id,
   });
-  return { orgId: org.id, deviceId: device!.id, agentId, configId: config!.id, featureLinkId: link!.id };
+  // A real assignment: a catch-up re-resolves the device's winning backup link.
+  await db.insert(configPolicyAssignments).values({
+    configPolicyId: policy!.id,
+    level: 'device',
+    targetId: device!.id,
+  });
+  return {
+    orgId: org.id,
+    deviceId: device!.id,
+    agentId,
+    configId: config!.id,
+    featureLinkId: link!.id,
+    policyId: policy!.id,
+  };
 }
 
 async function seedJob(t: Seeded, values: Partial<typeof backupJobs.$inferInsert> = {}): Promise<string> {
@@ -164,6 +182,7 @@ describe('missed-schedule backup catch-up', () => {
     relay.connected = false;
     relay.frames.length = 0;
     queued.jobs.length = 0;
+    vi.mocked(isAgentConnectedAnywhere).mockImplementation(async () => relay.connected);
   });
 
   it('ships the partial index the connect hook relies on', async () => {
@@ -186,6 +205,31 @@ describe('missed-schedule backup catch-up', () => {
     expect(row.status).toBe('pending');
     expect(row.catchUpUntil?.toISOString()).toBe(until.toISOString());
     expect(row.errorLog).toBeNull();
+    expect(relay.frames).toEqual([]);
+  });
+
+  it('carries the config generation the job was queued against through the wait (contract §3)', async () => {
+    const t = await seedDevice();
+    const jobId = await seedJob(t);
+
+    await __testOnly.processDispatchBackup(
+      dispatchData(t, jobId, { configGeneration: 1, catchUpUntil: fromNow(HOUR).toISOString() }),
+    );
+    expect((await jobRow(jobId)).catchUpConfigGeneration).toBe(1);
+
+    await dispatchBackupCatchUpJobs(t.deviceId);
+    expect(queued.jobs).toEqual([expect.objectContaining({ jobId, configGeneration: 1 })]);
+
+    // The destination is edited while the job waits: the catch-up fails closed.
+    await getTestDb().update(backupConfigs).set({ approvalGeneration: 2 }).where(eq(backupConfigs.id, t.configId));
+    relay.connected = true;
+    await __testOnly.processDispatchBackup(dispatchData(t, jobId, {
+      configGeneration: 1, catchUpDispatch: true, catchUpUntil: fromNow(HOUR).toISOString(),
+    }));
+
+    const row = await jobRow(jobId);
+    expect(row.status).toBe('failed');
+    expect(row.errorLog).toBe('backup_config_changed');
     expect(relay.frames).toEqual([]);
   });
 
@@ -256,6 +300,38 @@ describe('missed-schedule backup catch-up', () => {
     expect(relay.frames).toEqual([]);
   });
 
+  it('a catch-up dispatch whose window closed on the way leaves the row to the reaper', async () => {
+    const t = await seedDevice();
+    const jobId = await seedJob(t, { catchUpUntil: fromNow(-60_000) });
+    relay.connected = true;
+
+    await __testOnly.processDispatchBackup(
+      dispatchData(t, jobId, { catchUpDispatch: true, catchUpUntil: fromNow(-60_000).toISOString() }),
+    );
+
+    // Neither sent nor claimed: the reaper settles it, and cannot race a send.
+    expect(relay.frames).toEqual([]);
+    const row = await jobRow(jobId);
+    expect(row.status).toBe('pending');
+    expect(row.catchUpUntil).not.toBeNull();
+  });
+
+  it('a catch-up dispatch fails the job when its policy was deactivated meanwhile', async () => {
+    const t = await seedDevice();
+    const jobId = await seedJob(t, { catchUpUntil: fromNow(HOUR) });
+    relay.connected = true;
+    await getTestDb().update(configurationPolicies).set({ status: 'inactive' }).where(eq(configurationPolicies.id, t.policyId));
+
+    await __testOnly.processDispatchBackup(
+      dispatchData(t, jobId, { catchUpDispatch: true, catchUpUntil: fromNow(HOUR).toISOString() }),
+    );
+
+    const row = await jobRow(jobId);
+    expect(row.status).toBe('failed');
+    expect(row.errorLog).toMatch(/^Catch-up cancelled:/);
+    expect(relay.frames).toEqual([]);
+  });
+
   it('a catch-up dispatch fails the job when the toggle was turned off meanwhile', async () => {
     const t = await seedDevice({ frequency: 'daily', time: '05:00', runMissedBackupsOnConnect: false });
     const jobId = await seedJob(t, { catchUpUntil: fromNow(HOUR) });
@@ -292,42 +368,56 @@ describe('missed-schedule backup catch-up', () => {
     const offlineAgent = await seedDevice();
     const statusOffline = await seedDevice();
     const onlineJob = await seedJob(online, { catchUpUntil: fromNow(HOUR) });
-    await seedJob(offlineAgent, { catchUpUntil: fromNow(HOUR) });
-    await seedJob(statusOffline, { catchUpUntil: fromNow(HOUR) });
+    const agentGoneJob = await seedJob(offlineAgent, { catchUpUntil: fromNow(HOUR) });
+    const statusOfflineJob = await seedJob(statusOffline, { catchUpUntil: fromNow(HOUR) });
     await getTestDb().update(devices).set({ status: 'offline' }).where(eq(devices.id, statusOffline.deviceId));
-    const relayModule = await import('../../services/agentCommandRelay');
-    vi.mocked(relayModule.isAgentConnectedAnywhere)
-      .mockImplementation(async (agentId: string) => agentId === online.agentId);
+    // statusOffline's agent would answer "connected": only the status filter keeps it out.
+    vi.mocked(isAgentConnectedAnywhere)
+      .mockImplementation(async (agentId: string) => agentId === online.agentId || agentId === statusOffline.agentId);
 
     await dispatchCatchUpsForConnectedDevices();
 
-    const dispatched = queued.jobs.map((j) => j.jobId);
-    expect(dispatched).toContain(onlineJob);
-    expect(dispatched).toHaveLength(new Set(dispatched).size);
-    vi.mocked(relayModule.isAgentConnectedAnywhere).mockImplementation(async () => relay.connected);
+    const ours = new Set([onlineJob, agentGoneJob, statusOfflineJob]);
+    expect(queued.jobs.map((j) => j.jobId).filter((id) => ours.has(id))).toEqual([onlineJob]);
   });
 
   it('the scheduler expiry settles only the older catch-ups of that link and device', async () => {
     const t = await seedDevice();
     const other = await seedDevice();
-    const older = await seedJob(t, { catchUpUntil: fromNow(HOUR) });
+    const occurrenceStart = fromNow(-5 * 60_000);
+    const older = await seedJob(t, { catchUpUntil: fromNow(HOUR), createdAt: fromNow(-HOUR) });
+    // Same occurrence, another profile selection, created on an earlier tick.
+    const sameOccurrence = await seedJob(t, { catchUpUntil: fromNow(HOUR), createdAt: fromNow(-60_000) });
     const fresh = await seedJob(t);
-    const notWaiting = await seedJob(t);
-    const othersJob = await seedJob(other, { catchUpUntil: fromNow(HOUR) });
+    const othersJob = await seedJob(other, { catchUpUntil: fromNow(HOUR), createdAt: fromNow(-HOUR) });
 
     await inSystemContext(() => expireSupersededBackupCatchUps({
       deviceId: t.deviceId,
       featureLinkId: t.featureLinkId,
-      newJobIds: [fresh],
+      occurrenceStart,
     }));
 
     const expired = await jobRow(older);
     expect(expired.status).toBe('failed');
     expect(expired.errorLog).toBe(BACKUP_MISSED_ERROR);
     expect(expired.completedAt).toBeInstanceOf(Date);
+    expect((await jobRow(sameOccurrence)).status).toBe('pending');
     expect((await jobRow(fresh)).status).toBe('pending');
-    expect((await jobRow(notWaiting)).status).toBe('pending');
     expect((await jobRow(othersJob)).status).toBe('pending');
+  });
+
+  it('the scheduler expiry does not call it Missed when the device came back', async () => {
+    const t = await seedDevice();
+    const older = await seedJob(t, { catchUpUntil: fromNow(HOUR), createdAt: fromNow(-HOUR) });
+    await getTestDb().update(devices).set({ lastSeenAt: fromNow(-60_000) }).where(eq(devices.id, t.deviceId));
+
+    await inSystemContext(() => expireSupersededBackupCatchUps({
+      deviceId: t.deviceId,
+      featureLinkId: t.featureLinkId,
+      occurrenceStart: fromNow(-5 * 60_000),
+    }));
+
+    expect((await jobRow(older)).errorLog).toBe(BACKUP_CATCH_UP_NOT_STARTED_ERROR);
   });
 
   describe('the stale reaper', () => {
@@ -388,5 +478,21 @@ describe('missed-schedule backup catch-up', () => {
     expect(result?.created).toBe(true);
     expect(result?.job.id).not.toBe(waiting);
     expect(result?.job.type).toBe('manual');
+  });
+
+  it('a manual run on an older helper still counts the waiting job, so the two never run side by side', async () => {
+    const t = await seedDevice();
+    const waiting = await seedJob(t, { catchUpUntil: fromNow(HOUR), backupMode: null, modeTargets: null });
+
+    const result = await inSystemContext(() => createManualBackupJobIfIdle({
+      orgId: t.orgId,
+      configId: t.configId,
+      featureLinkId: t.featureLinkId,
+      deviceId: t.deviceId,
+      helperQueues: false,
+    }));
+
+    expect(result?.created).toBe(false);
+    expect(result?.job.id).toBe(waiting);
   });
 });

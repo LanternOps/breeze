@@ -311,20 +311,19 @@ export async function enqueueBackupCatchUpDispatch(row: {
   orgId: string;
   deviceId: string;
   catchUpUntil: Date;
+  /** The generation stamped on the row when the job started waiting. */
+  configGeneration?: number;
 }): Promise<string> {
   const queue = getBackupQueue();
-  const [configRow] = await db
-    .select({ approvalGeneration: backupConfigs.approvalGeneration })
-    .from(backupConfigs)
-    .where(eq(backupConfigs.id, row.configId))
-    .limit(1);
+  // NOT re-read from backup_configs: a fresh read would bless an edit made
+  // while the job waited, which site-ceiling gate contract §3 must fail closed.
   const payload = backupQueueJobDataSchema.parse(withQueueMeta({
     type: 'dispatch-backup' as const,
     jobId: row.jobId,
     configId: row.configId,
     orgId: row.orgId,
     deviceId: row.deviceId,
-    configGeneration: configRow?.approvalGeneration,
+    configGeneration: row.configGeneration,
     catchUpUntil: row.catchUpUntil.toISOString(),
     catchUpDispatch: true as const,
   }, SYSTEM_DISPATCH_META));

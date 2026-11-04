@@ -192,12 +192,12 @@ describe('backup jobs routes', () => {
       createdAt: new Date('2026-11-04T05:00:00Z'),
       updatedAt: new Date('2026-11-04T05:00:00Z'),
     });
-    const wireCancel = (current: Record<string, unknown>) => {
+    const wireCancel = (current: Record<string, unknown>, settled: Record<string, unknown> = {}) => {
       selectMock.mockReturnValueOnce(makeSelectChain([current]));
       updateMock.mockReturnValue({
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([{ ...current, status: 'cancelled' }]),
+            returning: vi.fn().mockResolvedValue([{ ...current, status: 'cancelled', ...settled }]),
           }),
         }),
       } as any);
@@ -212,6 +212,16 @@ describe('backup jobs routes', () => {
 
       expect(res.status).toBe(200);
       expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
+    });
+
+    it('queues the stop when a catch-up claimed the job between the read and the cancel', async () => {
+      // `current` still shows the window; the row the cancel settled does not.
+      wireCancel(pendingJob(new Date(Date.now() + 3_600_000)), { catchUpUntil: null });
+
+      const res = await app.request(`/jobs/${JOB_ID}/cancel`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-1', expect.objectContaining({ jobId: JOB_ID }));
     });
 
     it('still queues a stop for an ordinary pending job whose dispatch had already left the queue', async () => {

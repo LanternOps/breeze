@@ -27,7 +27,7 @@ import {
 import { recoveryTokens } from '../db/schema/recoveryTokens';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { eq, ne, and, or, desc, gt, gte, sql, isNotNull, isNull, lt, inArray } from 'drizzle-orm';
-import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
+import { resolveAllBackupAssignedDevices, resolveBackupConfigForDevice } from '../services/featureConfigResolver';
 import { getBullMQConnection } from '../services/redis';
 import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
 import type { AgentCommand } from '../routes/agentWs';
@@ -322,7 +322,7 @@ async function createDueScheduledBackupJobs(
     const catchUpUntil = isBackupCatchUpEnabled(schedule)
       ? computeBackupCatchUpUntil(schedule, now, entry.resolvedTimezone)
       : undefined;
-    const newJobIds: string[] = [];
+    let createdAny = false;
     for (const spec of specs) {
       const result = await createScheduledBackupJobIfAbsent({
         orgId,
@@ -339,7 +339,7 @@ async function createDueScheduledBackupJobs(
       });
 
       if (result?.created) {
-        newJobIds.push(result.job.id);
+        createdAny = true;
         due.push({
           jobId: result.job.id,
           configId: result.job.configId,
@@ -348,11 +348,13 @@ async function createDueScheduledBackupJobs(
         });
       }
     }
-    if (newJobIds.length > 0 && entry.featureLinkId) {
+    if (createdAny && entry.featureLinkId) {
       await expireSupersededBackupCatchUps({
         deviceId: entry.deviceId,
         featureLinkId: entry.featureLinkId,
-        newJobIds,
+        // Matches the dedupe window createScheduledBackupJobIfAbsent uses, so
+        // a job of this same occurrence is never counted as an earlier one.
+        occurrenceStart: new Date(now.getTime() - SCHEDULE_LOOKBACK_MINUTES * 60_000),
       });
     }
   }
@@ -433,6 +435,7 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
   } catch (err) {
     // Next tick retries; the schedules above already went out.
     console.error('[BackupWorker] Failed to sweep deferred backup catch-ups:', err);
+    captureException(err, undefined, { backup_dispatch_issue: 'catch-up-sweep-failed' });
   }
 
   return { enqueued };
@@ -951,7 +954,14 @@ async function deferUntilAgentConnectsOrFail(data: DispatchBackupJobData): Promi
   }
   const waiting = await db
     .update(backupJobs)
-    .set({ catchUpUntil, updatedAt: new Date() })
+    .set({
+      catchUpUntil,
+      // Site-ceiling gate contract §3: the generation this job was queued
+      // against travels with it, so an edit made while it waits still fails it
+      // closed (`backup_config_changed`) instead of running the new config.
+      catchUpConfigGeneration: data.configGeneration ?? null,
+      updatedAt: new Date(),
+    })
     .where(and(eq(backupJobs.id, data.jobId), eq(backupJobs.status, 'pending')))
     .returning({ id: backupJobs.id });
   return waiting.length > 0;
@@ -968,20 +978,24 @@ async function catchUpStillApplies(jobId: string): Promise<boolean> {
       status: backupJobs.status,
       catchUpUntil: backupJobs.catchUpUntil,
       featureLinkId: backupJobs.featureLinkId,
-      settingsId: configPolicyBackupSettings.id,
-      schedule: configPolicyBackupSettings.schedule,
+      configId: backupJobs.configId,
+      deviceId: backupJobs.deviceId,
     })
     .from(backupJobs)
-    .leftJoin(configPolicyBackupSettings, eq(configPolicyBackupSettings.featureLinkId, backupJobs.featureLinkId))
     .where(eq(backupJobs.id, jobId))
     .limit(1);
 
   if (!job || job.status !== 'pending' || !job.catchUpUntil) return false;
-  if (!job.featureLinkId || !job.settingsId) {
+  // The device's effective backup policy NOW: the policy may have been
+  // deactivated, unassigned, outranked by another one or pointed at another
+  // destination while the job waited. Only the same link and destination the
+  // scheduler chose may still run.
+  const current = job.featureLinkId ? await resolveBackupConfigForDevice(job.deviceId) : null;
+  if (!current?.settings || current.featureLinkId !== job.featureLinkId || current.configId !== job.configId) {
     await markJobFailed(jobId, 'Catch-up cancelled: the backup policy no longer applies to this device.');
     return false;
   }
-  if (!isBackupCatchUpEnabled(job.schedule)) {
+  if (!isBackupCatchUpEnabled(current.settings.schedule)) {
     await markJobFailed(jobId, 'Catch-up cancelled: running missed backups was turned off on the backup policy.');
     return false;
   }
@@ -1541,6 +1555,9 @@ async function prepareBackupDispatchTargets(
         eq(backupJobs.id, data.jobId),
         eq(backupJobs.status, 'pending'),
         isNotNull(backupJobs.catchUpUntil),
+        // Past the window the row is the reaper's to settle; a claim then could
+        // send a backup the reaper is failing at the same moment.
+        gt(backupJobs.catchUpUntil, now),
       ))
       .returning({ id: backupJobs.id });
     if (claimed.length === 0) {
@@ -1939,7 +1956,11 @@ async function processDispatchBackup(
   // retried by the check-schedules sweep instead: a queued wait alongside that
   // sweep could dispatch it twice.
   if (precheck.helperProtocolsUnreported) {
-    return data.catchUpDispatch ? { dispatched: false } : holdForHelperReport(data);
+    if (data.catchUpDispatch) {
+      console.log(`[BackupWorker] Job ${data.jobId} waits for device ${data.deviceId} to report its backup helper; the catch-up sweep tries again`);
+      return { dispatched: false };
+    }
+    return holdForHelperReport(data);
   }
 
   // Phase 3 — resolve targets, build every command payload and record its
