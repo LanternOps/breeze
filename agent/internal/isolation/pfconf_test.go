@@ -209,7 +209,7 @@ func (f *fakePF) Pfctl(stdin string, args ...string) (string, string, error) {
 		f.anchorExists, f.anchorRules = true, stdin
 		f.anchors = uniqueSorted(append(f.anchors, "com.breeze"))
 		return "", "", nil
-	case call == anchorFlag+"-F all":
+	case call == anchorFlag+"-F rules":
 		f.anchorRules = ""
 		return "", "rules cleared\nnat cleared\n0 tables deleted.\n", nil
 	case call == anchorFlag+"-sr", call == anchorFlag+"-vsr":
@@ -354,16 +354,6 @@ func TestLiveRulesNotDeclared(t *testing.T) {
 	got := liveRulesNotDeclared("block drop in all\nblock drop out on en0 all\n", declared)
 	if len(got) != 1 || got[0] != "block drop out on en0 all" {
 		t.Fatalf("got %v", got)
-	}
-}
-
-func TestParseRouteInterface(t *testing.T) {
-	const out = "   route to: default\ndestination: default\n       mask: default\n    gateway: 192.0.2.1\n  interface: en7\n      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,GLOBAL>\n"
-	if got := parseRouteInterface(out); got != "en7" {
-		t.Fatalf("got %q", got)
-	}
-	if got := parseRouteInterface("route: writing to routing socket: not in table\n"); got != "" {
-		t.Fatalf("got %q", got)
 	}
 }
 
@@ -531,12 +521,16 @@ func TestAttachOnceFailures(t *testing.T) {
 
 func TestParentHookPresentNeedsTheExactAnchor(t *testing.T) {
 	for rules, want := range map[string]bool{
-		`anchor "com.breeze/isolation" all`:   true,
-		`anchor "com.breeze/isolation"`:       true,
-		`anchor "com.breeze/isolation2" all`:  false,
-		`nat-anchor "com.breeze/isolation"`:   false,
-		`# anchor "com.breeze/isolation" all`: false,
-		`anchor "com.apple/*" all`:            false,
+		`anchor "com.breeze/isolation" all`:  true,
+		`anchor "com.breeze/isolation"`:      true,
+		`anchor "com.breeze/isolation2" all`: false,
+		// A qualified anchor enforces on only part of the traffic: not attached.
+		`anchor "com.breeze/isolation" in all`:       false,
+		`anchor "com.breeze/isolation" on en0 all`:   false,
+		`anchor "com.breeze/isolation" out inet all`: false,
+		`nat-anchor "com.breeze/isolation"`:          false,
+		`# anchor "com.breeze/isolation" all`:        false,
+		`anchor "com.apple/*" all`:                   false,
 	} {
 		f := newFakePF(t)
 		f.rules = []string{rules}

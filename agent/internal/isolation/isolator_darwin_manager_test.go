@@ -4,6 +4,7 @@ package isolation
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"strings"
@@ -151,6 +152,87 @@ func TestDarwinManagerAdminDisablingPfIsReapplied(t *testing.T) {
 	if !f.enabled || len(f.tokens) != 1 {
 		t.Fatalf("enabled %v tokens %v", f.enabled, f.tokens)
 	}
+}
+
+// The wave's central promise: the shipped switch stops an isolate before it
+// reaches pf at all.
+func TestDarwinManagerShippedSwitchRefusesBeforeTouchingPf(t *testing.T) {
+	f := newFakePF(t)
+	m, clock := fakeDarwinManager(t, f)
+	m.deps.Isolator.(*darwinIsolator).activated = false
+	out := m.isolate(context.Background(), testDarwinIsolate(clock))
+	if !out.Failed() || out.Result == nil || out.Result.FailureCode != FailUnsupportedPlatform || !strings.Contains(out.Error, "not_activated") {
+		t.Fatalf("outcome %+v result %+v", out, out.Result)
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("a not-activated agent ran pfctl: %v", f.calls)
+	}
+}
+
+// Past the enable, rules are enforcing. A failure there must leave the Mac as it
+// found it: anchor empty, our reference gone, pf back off.
+func TestDarwinManagerFailureAfterEnableLeavesTheMacClean(t *testing.T) {
+	for _, call := range []string{"-ss", "-k 192.0.2.10 -k 203.0.113.66"} {
+		t.Run(call, func(t *testing.T) {
+			f := newFakePF(t)
+			f.states = []string{"ALL tcp 192.0.2.10:54004 -> 203.0.113.66:4444       ESTABLISHED:ESTABLISHED"}
+			f.fail[call] = errors.New("boom")
+			m, clock := fakeDarwinManager(t, f)
+			out := m.isolate(context.Background(), testDarwinIsolate(clock))
+			if !out.Failed() || out.Result == nil || out.Result.FailureCode != FailApplyError || !out.Result.Rollback {
+				t.Fatalf("outcome %+v result %+v", out, out.Result)
+			}
+			if f.anchorRules != "" || len(f.tokens) != 0 || f.enabled {
+				t.Fatalf("not clean: rules %q tokens %v enabled %v", f.anchorRules, f.tokens, f.enabled)
+			}
+		})
+	}
+}
+
+// Uninstall on a Mac that was never isolated must succeed without a journal,
+// even when pf cannot be read; with a journal it must not claim absence.
+func TestDarwinManagerReleaseAllAgainstRealIsolator(t *testing.T) {
+	const anchorRead = "-a " + pfAnchorPath + " -sr"
+	unreachable := errors.New("permission denied")
+	t.Run("never isolated", func(t *testing.T) {
+		f := newFakePF(t)
+		m, _ := fakeDarwinManager(t, f)
+		if err := m.ReleaseAll(context.Background(), ReleaseUninstall); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("never isolated, pf unreadable", func(t *testing.T) {
+		f := newFakePF(t)
+		f.fail[anchorRead], f.fail["-sA"] = unreachable, unreachable
+		m, _ := fakeDarwinManager(t, f)
+		if err := m.ReleaseAll(context.Background(), ReleaseUninstall); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("a journal, pf unreadable", func(t *testing.T) {
+		f := newFakePF(t)
+		f.fail[anchorRead], f.fail["-sA"] = unreachable, unreachable
+		m, _ := fakeDarwinManager(t, f)
+		if err := journal.Save(m.path(), journal.New()); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.ReleaseAll(context.Background(), ReleaseUninstall); err == nil {
+			t.Fatal("confirmed absence it could not observe")
+		}
+	})
+	t.Run("isolated: released and confirmed", func(t *testing.T) {
+		f := newFakePF(t)
+		m, clock := fakeDarwinManager(t, f)
+		if out := m.isolate(context.Background(), testDarwinIsolate(clock)); out.Failed() {
+			t.Fatalf("isolate: %+v", out)
+		}
+		if err := m.ReleaseAll(context.Background(), ReleaseUninstall); err != nil {
+			t.Fatal(err)
+		}
+		if f.anchorRules != "" || len(f.tokens) != 0 {
+			t.Fatalf("rules %q tokens %v", f.anchorRules, f.tokens)
+		}
+	})
 }
 
 func journalHasEvent(t *testing.T, m *Manager, typ string) bool {

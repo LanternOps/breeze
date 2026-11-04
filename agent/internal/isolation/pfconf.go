@@ -11,9 +11,10 @@ import (
 // macOS attaches isolation to pf through an anchor (spec OD13 a′): the anchor
 // has to be referenced from the main ruleset, and the only way to add that
 // reference is a main-ruleset load, which destroys whatever other services or
-// admins put there. So: validate first, load at most once, and from then on
-// only ever touch our own anchor. Refusing costs coverage on an incompatible
-// Mac; that is the trade the spec chose over breaking its Internet Sharing.
+// admins put there. So: validate first, load only when the reference is missing,
+// and otherwise only ever touch our own anchor. Refusing costs coverage on an
+// incompatible Mac; that is the trade the spec chose over breaking its Internet
+// Sharing.
 //
 // This file is pure so the decisions run on every CI runner. pfconf_darwin.go
 // supplies the real commands.
@@ -50,8 +51,9 @@ type PFRunner interface {
 	Pfctl(stdin string, args ...string) (stdout, stderr string, err error)
 	// ReadPFConf returns the contents of /etc/pf.conf.
 	ReadPFConf() (string, error)
-	// EgressInterfaces names the interfaces carrying the default routes; empty
-	// when the Mac has none.
+	// EgressInterfaces names every interface traffic could leave through: up,
+	// not loopback, with an address. Not only the default route's: a second
+	// NIC reaches its own network whatever the default route says.
 	EgressInterfaces() ([]string, error)
 }
 
@@ -172,11 +174,11 @@ func AttachOnce(r PFRunner) error {
 
 // pfAttachText is /etc/pf.conf with our anchor point inserted ahead of its first
 // filter rule, so ahead of `anchor "com.apple/*"`. Apple's sub-anchors change at
-// run time (AirDrop inserts quick passes on awdl0) and are evaluated in order: a
-// quick pass in one of them would decide a packet before our drop ever ran. Going
-// first, our quick rules decide every packet while isolated, and an empty anchor
-// decides nothing, so the rest of the ruleset behaves as before. Translation and
-// normalization rules come before any filter rule, so pf's ordering still holds.
+// run time and are evaluated in order, so a quick pass in one of them would decide
+// a packet before our drop ever ran. Going first, our quick rules decide every
+// packet while isolated, and an empty anchor matches nothing, so the rest of the
+// ruleset behaves as before. Translation and normalization rules come before any
+// filter rule, so pf's required ordering holds. Lab leg L3 confirms pf accepts it.
 func pfAttachText(conf string) string {
 	var lines []string
 	if trimmed := strings.TrimRight(conf, "\n"); trimmed != "" {
@@ -236,9 +238,14 @@ func pfHookIn(lines []string) bool {
 	return slices.ContainsFunc(lines, pfLineIsHook)
 }
 
+// pfLineIsHook matches only an unqualified reference. `anchor "x" in on en0`
+// evaluates the anchor for part of the traffic, which is not attached.
 func pfLineIsHook(line string) bool {
 	fields := strings.Fields(line)
-	return len(fields) >= 2 && fields[0] == "anchor" && strings.Trim(fields[1], `"`) == pfAnchorPath
+	if len(fields) < 2 || fields[0] != "anchor" || strings.Trim(fields[1], `"`) != pfAnchorPath {
+		return false
+	}
+	return len(fields) == 2 || (len(fields) == 3 && fields[2] == "all")
 }
 
 // pfBypassRule returns the first rule that lets traffic past our anchor: a
@@ -393,16 +400,6 @@ func liveRulesNotDeclared(live, declared string) []string {
 		}
 	}
 	return lost
-}
-
-// parseRouteInterface reads `route -n get`.
-func parseRouteInterface(stdout string) string {
-	for _, line := range strings.Split(stdout, "\n") {
-		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "interface:"); ok {
-			return strings.TrimSpace(rest)
-		}
-	}
-	return ""
 }
 
 func uniqueSorted(names []string) []string {

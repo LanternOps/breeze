@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -14,7 +15,6 @@ import (
 
 const (
 	pfctlBinary = "/sbin/pfctl"
-	routeBinary = "/sbin/route"
 	// pfCommandTimeout bounds one pfctl call. An apply must finish well inside
 	// the provisional window, and a hung pfctl must not hold the machine lock.
 	pfCommandTimeout = 30 * time.Second
@@ -48,24 +48,23 @@ func (execPFRunner) ReadPFConf() (string, error) {
 	return string(b), err
 }
 
-// EgressInterfaces asks the routing table. `route get` exits non-zero when a
-// family has no default route, which is an answer and not a failure, so only a
-// context failure or a missing binary is reported.
-func (r execPFRunner) EgressInterfaces() ([]string, error) {
-	if _, err := os.Stat(routeBinary); err != nil {
-		return nil, err
+// EgressInterfaces lists the live interfaces traffic could leave through.
+func (execPFRunner) EgressInterfaces() ([]string, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("list the network interfaces: %w", err)
 	}
 	var names []string
-	for _, args := range [][]string{{"-n", "get", "default"}, {"-n", "get", "-inet6", "default"}} {
-		stdout, _, err := r.run("", routeBinary, args...)
-		if ctxErr := r.ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
-		}
-		if err != nil {
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
-		if name := parseRouteInterface(stdout); name != "" {
-			names = append(names, name)
+		addrs, err := iface.Addrs()
+		if err != nil {
+			return nil, fmt.Errorf("read the addresses of %s: %w", iface.Name, err)
+		}
+		if len(addrs) > 0 {
+			names = append(names, iface.Name)
 		}
 	}
 	return uniqueSorted(names), nil

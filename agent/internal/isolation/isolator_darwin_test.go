@@ -227,6 +227,21 @@ func TestDarwinSecondApplyReusesReferenceAndOnlyTouchesTheAnchor(t *testing.T) {
 	}
 }
 
+// pf can be off while the kernel still lists our token. Keeping that reference
+// would leave rules loaded that do nothing, reported as a successful apply.
+func TestDarwinApplyReenablesPfWhenItsTokenIsStillListed(t *testing.T) {
+	f, i, _ := appliedDarwin(t)
+	old := firstToken(f)
+	f.enabled = false
+	if _, err := i.Apply(context.Background(), testDarwinSpec()); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := i.tokens.load()
+	if !f.enabled || token == old || !f.tokens[token] {
+		t.Fatalf("enabled %v token %q (was %q) kernel %v", f.enabled, token, old, f.tokens)
+	}
+}
+
 // After a reboot, or an admin disabling pf, the journalled token no longer
 // exists. Apply must take a new one, or pf stays off with rules that do nothing.
 func TestDarwinApplyReplacesAStaleToken(t *testing.T) {
@@ -241,6 +256,44 @@ func TestDarwinApplyReplacesAStaleToken(t *testing.T) {
 	token, _ := i.tokens.load()
 	if token == "999" || !f.tokens[token] || !f.enabled {
 		t.Fatalf("token %q, kernel %v, enabled %v", token, f.tokens, f.enabled)
+	}
+}
+
+// A corrupt token file must not make isolation impossible forever: the token
+// in it can never be released, so a new reference replaces it.
+func TestDarwinApplySurvivesACorruptTokenFile(t *testing.T) {
+	f := newFakePF(t)
+	i := newTestDarwinIsolator(t, f)
+	if err := os.MkdirAll(filepath.Dir(i.tokens.path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(i.tokens.path, []byte("not a number"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := i.Apply(context.Background(), testDarwinSpec()); err != nil {
+		t.Fatal(err)
+	}
+	token, err := i.tokens.load()
+	if err != nil || !f.tokens[token] {
+		t.Fatalf("token %q err %v kernel %v", token, err, f.tokens)
+	}
+}
+
+// If the token cannot be journalled, nothing could ever release that reference,
+// so it goes straight back rather than leaking.
+func TestDarwinApplyGivesBackAReferenceItCannotJournal(t *testing.T) {
+	f := newFakePF(t)
+	i := newTestDarwinIsolator(t, f)
+	blocker := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	i.tokens.path = filepath.Join(blocker, "token") // its parent is a file
+	if _, err := i.Apply(context.Background(), testDarwinSpec()); err == nil || !strings.Contains(err.Error(), "journal") {
+		t.Fatalf("got %v", err)
+	}
+	if len(f.tokens) != 0 {
+		t.Fatalf("leaked a pf reference: %v", f.tokens)
 	}
 }
 
@@ -378,6 +431,22 @@ func TestDarwinApplyKillsOnlyUnpermittedStates(t *testing.T) {
 	}
 }
 
+// IPsec and GRE have no ports. A VPN must not make a Mac impossible to isolate,
+// and its tunnel to an unpermitted peer must still be cut.
+func TestDarwinApplyHandlesPortlessStates(t *testing.T) {
+	f := newFakePF(t)
+	f.states = []string{
+		"ALL esp 192.0.2.10 -> 203.0.113.80       MULTIPLE:MULTIPLE",
+		"ALL gre 2001:db8::10 <- 2001:db8::80       MULTIPLE:MULTIPLE",
+	}
+	if _, err := newTestDarwinIsolator(t, f).Apply(context.Background(), testDarwinSpec()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.killed) != 2 || f.killed[0] != [2]string{"192.0.2.10", "203.0.113.80"} || f.killed[1] != [2]string{"2001:db8::80", "2001:db8::10"} {
+		t.Fatalf("killed %v", f.killed)
+	}
+}
+
 func TestDarwinApplyFailsWhenStatesCannotBeJudgedOrKilled(t *testing.T) {
 	t.Run("unparseable state", func(t *testing.T) {
 		f := newFakePF(t)
@@ -449,6 +518,37 @@ func TestDarwinVerify(t *testing.T) {
 			t.Fatal("an empty anchor verified")
 		}
 	})
+	// Nothing was reloaded and the anchor still holds its rules, but traffic now
+	// never reaches them. The negative probe only sees the control plane's path.
+	t.Run("a set skip added later is drift", func(t *testing.T) {
+		f, i, _ := appliedDarwin(t)
+		f.interfaces = "all\nen\nen0 (skip)\nlo\nlo0\n"
+		_, err := i.Verify(context.Background(), testDarwinSpec())
+		var incompatible ErrIncompatible
+		if !errors.As(err, &incompatible) || !strings.Contains(incompatible.Reason, "en0") {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("a quick pass added ahead of the hook is drift", func(t *testing.T) {
+		f, i, _ := appliedDarwin(t)
+		f.rules = append([]string{"pass out quick all flags S/SA keep state"}, f.rules...)
+		_, err := i.Verify(context.Background(), testDarwinSpec())
+		var incompatible ErrIncompatible
+		if !errors.As(err, &incompatible) || !strings.Contains(incompatible.Reason, "quick pass") {
+			t.Fatalf("got %v", err)
+		}
+	})
+	// Once attached no load happens, so Internet Sharing starting later is not
+	// a reason to report drift: its anchors are not at risk.
+	t.Run("a service anchor added later is not drift", func(t *testing.T) {
+		f, i, digest := appliedDarwin(t)
+		f.anchors = append(f.anchors, pfInternetSharingAnchor)
+		f.rules = append(f.rules, `anchor "`+pfInternetSharingAnchor+`" all`)
+		got, err := i.Verify(context.Background(), testDarwinSpec())
+		if err != nil || got != digest {
+			t.Fatalf("got %q err %v", got, err)
+		}
+	})
 	t.Run("pfctl failure is reported", func(t *testing.T) {
 		f, i, _ := appliedDarwin(t)
 		sentinel := errors.New("boom")
@@ -506,7 +606,7 @@ func TestDarwinReleaseFlushesThenReleasesOurReferenceOnly(t *testing.T) {
 	if err := i.Release(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	flush, release := indexOfCall(f, "-a "+pfAnchorPath+" -F all"), indexOfCall(f, "-X "+token)
+	flush, release := indexOfCall(f, "-a "+pfAnchorPath+" -F rules"), indexOfCall(f, "-X "+token)
 	if flush < 0 || release < flush {
 		t.Fatalf("want flush, then -X:\n%v", f.calls)
 	}
@@ -545,7 +645,7 @@ func TestDarwinReleaseEdgeCases(t *testing.T) {
 	t.Run("flush failure keeps the token and fails", func(t *testing.T) {
 		f, i, _ := appliedDarwin(t)
 		sentinel := errors.New("boom")
-		f.fail["-a "+pfAnchorPath+" -F all"] = sentinel
+		f.fail["-a "+pfAnchorPath+" -F rules"] = sentinel
 		if err := i.Release(context.Background()); !errors.Is(err, sentinel) {
 			t.Fatalf("got %v", err)
 		}
@@ -597,6 +697,63 @@ func TestDarwinReleaseEdgeCases(t *testing.T) {
 		f.fail["-sA"] = sentinel
 		if err := i.Release(context.Background()); !errors.Is(err, sentinel) {
 			t.Fatalf("got %v", err)
+		}
+	})
+	// The first attempt flushed, then failed to give back the reference. The
+	// retry finds an empty anchor and must still release it.
+	t.Run("a retry after the flush still releases the reference", func(t *testing.T) {
+		f, i, _ := appliedDarwin(t)
+		token := firstToken(f)
+		f.fail["-X "+token] = errors.New("busy")
+		if err := i.Release(context.Background()); err == nil {
+			t.Fatal("the reference is still held")
+		}
+		delete(f.fail, "-X "+token)
+		flushes := f.count("-a " + pfAnchorPath + " -F rules")
+		if err := i.Release(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if f.tokens[token] {
+			t.Fatal("retry left the reference held")
+		}
+		if got := f.count("-a " + pfAnchorPath + " -F rules"); got != flushes {
+			t.Fatal("flushed an empty anchor again")
+		}
+	})
+	// A crash between -E and journalling the token: rules, but no token. Flush;
+	// there is nothing we may release, and pf staying on with an empty anchor is safe.
+	t.Run("rules with no journalled token", func(t *testing.T) {
+		f, i, _ := appliedDarwin(t)
+		if err := i.tokens.clear(); err != nil {
+			t.Fatal(err)
+		}
+		if err := i.Release(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if f.anchorRules != "" {
+			t.Fatal("rules remain")
+		}
+		for _, call := range f.calls {
+			if strings.HasPrefix(call, "-X") {
+				t.Fatalf("released a reference it does not know: %q", call)
+			}
+		}
+	})
+	t.Run("a corrupt token file is forgotten without releasing anything", func(t *testing.T) {
+		f, i, _ := appliedDarwin(t)
+		if err := os.WriteFile(i.tokens.path, []byte("garbage"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := i.Release(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(i.tokens.path); !os.IsNotExist(err) {
+			t.Fatalf("token file kept: %v", err)
+		}
+		for _, call := range f.calls {
+			if strings.HasPrefix(call, "-X") {
+				t.Fatalf("released from a corrupt file: %q", call)
+			}
 		}
 	})
 }

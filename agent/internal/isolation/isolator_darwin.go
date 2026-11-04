@@ -32,8 +32,9 @@ const (
 const darwinIsolationActivated = false
 
 // darwinIsolator is the pf mechanism (spec §3.5, OD13 a′). Rules only ever go in
-// our own anchor; the main ruleset is loaded at most once, by AttachOnce; and pf
-// is never turned off, only our own enable reference is released.
+// our own anchor; the main ruleset is loaded only by AttachOnce, and only when our
+// reference to the anchor is missing; and pf is never disabled outright, only our
+// own enable reference is released.
 //
 // Calls that change anything arrive under the manager's machine lock.
 type darwinIsolator struct {
@@ -80,7 +81,13 @@ func readDarwinBaseline(ctx context.Context) (pfBaseline, error) {
 	if err != nil {
 		return pfBaseline{}, fmt.Errorf("read the DNS configuration: %w", err)
 	}
-	return parseScutilDNS(stdout), nil
+	baseline := parseScutilDNS(stdout)
+	// An empty list is valid, but after a format change it would silently look
+	// like policy: no off-host DNS while isolated.
+	if len(baseline.Resolvers)+len(baseline.Scoped) == 0 && strings.Contains(stdout, "nameserver[") {
+		log.Warn("scutil lists nameservers, but none could be permitted; off-host DNS will be blocked while isolated")
+	}
+	return baseline, nil
 }
 
 // Capability reads only the readiness cache: heartbeats never run pfctl, the
@@ -169,13 +176,15 @@ func (i *darwinIsolator) Apply(ctx context.Context, spec ResolvedSpec) (Digest, 
 	return pfRulesDigest(rules), nil
 }
 
-// holdEnableReference takes our pf reference unless we still hold one. A refresh
-// must not pile references up. A journalled token the kernel no longer lists
-// (the Mac rebooted, or an admin turned pf off) is stale, so a new one replaces it.
+// holdEnableReference leaves pf enabled and holding one reference of ours. A
+// refresh must not pile references up, so a live one is kept. A journalled token
+// the kernel no longer lists (the Mac rebooted), a token still listed while pf is
+// off (an admin disabled it), or an unreadable token file all take a new one.
 func (i *darwinIsolator) holdEnableReference(r PFRunner) error {
 	token, err := i.tokens.load()
 	if err != nil {
-		return fmt.Errorf("read the pf reference token: %w", err)
+		log.Warn("the pf reference token is unreadable; taking a new reference", "error", err.Error())
+		token = ""
 	}
 	if token != "" {
 		held, err := pfReferenceHeld(r, token)
@@ -183,7 +192,13 @@ func (i *darwinIsolator) holdEnableReference(r PFRunner) error {
 			return err
 		}
 		if held {
-			return nil
+			enabled, err := pfEnabled(r)
+			if err != nil {
+				return err
+			}
+			if enabled {
+				return nil
+			}
 		}
 	}
 	stdout, stderr, err := r.Pfctl("", "-E")
@@ -195,7 +210,12 @@ func (i *darwinIsolator) holdEnableReference(r PFRunner) error {
 		return errors.New("pfctl -E did not report a reference token")
 	}
 	if err := i.tokens.save(m[1]); err != nil {
-		return fmt.Errorf("journal the pf reference token: %w", err)
+		// Unjournalled, nothing could ever release this reference.
+		saveErr := fmt.Errorf("journal the pf reference token: %w", err)
+		if _, _, releaseErr := r.Pfctl("", "-X", m[1]); releaseErr != nil {
+			return errors.Join(saveErr, releaseErr)
+		}
+		return saveErr
 	}
 	return nil
 }
@@ -254,11 +274,13 @@ func pfRulesDigest(rules string) Digest {
 	return Digest(hex.EncodeToString(sum[:]))
 }
 
-// Verify reads the engine back and changes nothing. A detached parent hook or pf
-// turned off is an error, which sends the manager down its drift path: a refresh
-// re-attaches through AttachOnce (so only onto a compatible ruleset), re-runs the
-// probes, and journals drift_reapplied. If the ruleset has become incompatible
-// the refresh fails, and its reason reaches the server as LastError.
+// Verify reads the engine back and changes nothing. A detached parent hook, pf
+// turned off, or a `set skip` or quick pass added since the apply is an error,
+// which sends the manager down its drift path: a refresh re-attaches through
+// AttachOnce (so only onto a compatible ruleset), re-runs the probes, and journals
+// drift_reapplied. If the ruleset has become incompatible the refresh fails, and
+// its reason reaches the server as LastError. The negative probe cannot see these
+// by itself: it only tests the path to the control plane.
 func (i *darwinIsolator) Verify(ctx context.Context, _ ResolvedSpec) (Digest, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -271,13 +293,21 @@ func (i *darwinIsolator) Verify(ctx context.Context, _ ResolvedSpec) (Digest, er
 	if err := checkPFDropRule(rules); err != nil {
 		return "", err
 	}
-	present, err := ParentHookPresent(r)
+	live, err := readPFLive(r)
 	if err != nil {
 		return "", err
 	}
-	if !present {
+	if !pfHookIn(pfLogicalLines(live.Rules)) {
 		log.Warn("the pf main ruleset no longer references the isolation anchor; isolation is not being enforced")
 		return "", errors.New("the pf parent hook is missing: the main ruleset was reloaded")
+	}
+	egress, err := r.EgressInterfaces()
+	if err != nil {
+		return "", fmt.Errorf("find the egress interfaces: %w", err)
+	}
+	if err := CheckCompatible(live.Rules+"\n"+live.Interfaces, nil, egress); err != nil {
+		log.Warn("the pf configuration changed; isolation may be bypassed", "error", err.Error())
+		return "", err
 	}
 	enabled, err := pfEnabled(r)
 	if err != nil {
@@ -314,9 +344,11 @@ func (i *darwinIsolator) enforcing(ctx context.Context) (bool, error) {
 	return pfEnabled(r)
 }
 
-// Release flushes our anchor, then gives back our own pf reference. The parent
-// hook stays: an empty anchor is harmless, and removing it would take the very
-// main-ruleset load this design exists to avoid. Success means absence observed.
+// Release flushes our anchor, then gives back our own pf reference. It flushes
+// only filter rules, which is all the anchor ever holds: any wider flush risks
+// clearing state that belongs to the rest of the Mac. The parent hook stays: an
+// empty anchor is harmless, and removing it would take the very main-ruleset load
+// this design exists to avoid. Success means absence observed.
 func (i *darwinIsolator) Release(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -327,7 +359,7 @@ func (i *darwinIsolator) Release(ctx context.Context) error {
 		return fmt.Errorf("inspect the isolation anchor: %w", err)
 	}
 	if owned {
-		if _, _, err := r.Pfctl("", "-a", pfAnchorPath, "-F", "all"); err != nil {
+		if _, _, err := r.Pfctl("", "-a", pfAnchorPath, "-F", "rules"); err != nil {
 			return fmt.Errorf("flush the isolation anchor: %w", err)
 		}
 	}

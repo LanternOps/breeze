@@ -241,7 +241,8 @@ type pfState struct {
 
 // parsePFState reads a `pfctl -ss` line. `->` is a state created outbound and
 // `<-` inbound, with the local side printed first either way; a translated
-// source adds `(addr:port)` before the arrow. IPv6 prints as addr[port].
+// source adds `(addr:port)` before the arrow. IPv6 prints as addr[port]. This is
+// the format pfctl(8) is expected to print: lab leg L3 confirms it.
 func parsePFState(line string) (pfState, error) {
 	fields := strings.Fields(line)
 	arrow := slices.IndexFunc(fields, func(f string) bool { return f == "->" || f == "<-" })
@@ -261,6 +262,10 @@ func parsePFState(line string) (pfState, error) {
 }
 
 func parsePFEndpoint(s string) (netip.AddrPort, error) {
+	// A protocol with no ports (ESP, GRE) prints the bare address.
+	if addr, err := netip.ParseAddr(s); err == nil {
+		return netip.AddrPortFrom(addr.Unmap(), 0), nil
+	}
 	host, port := "", ""
 	if open := strings.IndexByte(s, '['); open > 0 && strings.HasSuffix(s, "]") {
 		host, port = s[:open], s[open+1:len(s)-1]
