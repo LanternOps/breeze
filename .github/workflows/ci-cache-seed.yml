@@ -238,8 +238,8 @@ jobs:
     # Same label as rust-check in ci.yml (the policy test pins it), so a closure is
     # never saved under an ImageOS the job does not run on.
     runs-on: ubuntu-26.04
-    # Only the first seed of a package list needs this: it downloads the whole
-    # closure through a mirror that throttles sustained downloads. See `fetch`.
+    # Only a slow runner on the first seed of a package list needs this: it can
+    # download the whole closure at tens of kB/s. See `fetch`.
     timeout-minutes: 90
     permissions:
       contents: read
@@ -283,7 +283,8 @@ jobs:
           TAURI_DEBS_DIR: ${{ steps.cache.outputs.dir }}
         run: bash .github/scripts/tauri-apt.sh fetch "${TAURI_APT_WORK}" "${TAURI_DEBS_DIR}"
 
-      # Keys are immutable: do not save a closure apt cannot use offline.
+      # Keys are immutable: do not save a closure this runner cannot plan from
+      # offline. `fetch` has already checked every .deb against its index hash.
       - name: Verify the closure installs without the network
         if: steps.cache.outputs.cache-hit != 'true'
         env:
@@ -305,6 +306,7 @@ jobs:
       - name: Prune superseded Tauri apt closures
         if: steps.cache.outputs.cache-hit != 'true'
         continue-on-error: true
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           CLOSURE_PREFIX: tauri-apt-${{ steps.image.outputs.id }}-${{ hashFiles('.github/tauri-apt-packages.txt') }}-
@@ -312,7 +314,8 @@ jobs:
           gh cache list --repo "${GITHUB_REPOSITORY}" --ref "${GITHUB_REF}" --key "${CLOSURE_PREFIX}" \
             --sort created_at --order desc --limit 50 --json key --jq '.[2:][].key' \
             | while IFS= read -r key; do
-                gh cache delete "${key}" --repo "${GITHUB_REPOSITORY}" --ref "${GITHUB_REF}"
+                gh cache delete "${key}" --repo "${GITHUB_REPOSITORY}" --ref "${GITHUB_REF}" \
+                  || echo "::warning::could not delete cache ${key}"
               done
 
   # Buildkit layer caches (type=gha) are scoped like every other cache, so PR

@@ -319,7 +319,27 @@ test('the Tauri seed job outlasts every download attempt the script can make', (
   const jobMinutes = Number(seedJob.match(/^ {4}timeout-minutes:\s*(\d+)\s*$/m)?.[1]);
   const script = read(new URL('./tauri-apt.sh', import.meta.url));
   const attempts = Number(script.match(/attempts=(\d+)/)?.[1]);
-  const perAttempt = Number(script.match(/timeout --kill-after=30s (\d+)m apt-get install -y --download-only/)?.[1]);
+  const perAttempt = [...script.matchAll(/timeout --kill-after=30s (\d+)m apt-get install -y --download-only/g)]
+    .reduce((sum, m) => sum + Number(m[1]), 0);
   assert.ok(attempts && perAttempt, 'could not read the fetch budget from tauri-apt.sh');
-  assert.ok(jobMinutes > attempts * perAttempt, `job ${jobMinutes}m vs ${attempts} x ${perAttempt}m of downloads`);
+  // Each download can run 30s past its deadline; plan, restore, probe and save get the slack.
+  const worst = attempts * (perAttempt + 1) + 10;
+  assert.ok(jobMinutes > worst, `job ${jobMinutes}m vs ${worst}m worst case`);
+});
+
+// rust-check's step comment promises a labelled failure inside the step, not GitHub's
+// generic timeout. Worst path: a closure that does not fit, then one network attempt.
+test('the Tauri install phases fit inside rust-check\'s step timeout', () => {
+  const step = ciSteps.find((s) => /name: Install Tauri system dependencies/.test(s));
+  const stepMinutes = Number(step.match(/^\s+timeout-minutes:\s*(\d+)\s*$/m)?.[1]);
+  const script = read(new URL('./tauri-apt.sh', import.meta.url));
+  const seconds = (re) => {
+    const m = script.match(re);
+    assert.ok(m, `no bound matching ${re}`);
+    return Number(m[1]) * (m[2] === 'm' ? 60 : 1) + Number(m[3]) * (m[4] === 'm' ? 60 : 1);
+  };
+  const bound = (text) => new RegExp(`timeout --kill-after=(\\d+)(s) (\\d+)(m|s) apt-get ${text}`);
+  const parts = [bound('install -y --download-only --no-download'), bound('update --error-on=any "\\$\\{APT_OPTS'), /timeout --kill-after=(\d+)(s) (\d+)(m) apt-get install -y \\\n\s+--no-install-recommends --no-remove "\$\{APT_OPTS\[@\]\}" "\$\{TAURI_PKGS/];
+  const total = parts.reduce((sum, re) => sum + seconds(re), 0);
+  assert.ok(total < stepMinutes * 60, `${total}s of phases vs a ${stepMinutes}m step`);
 });

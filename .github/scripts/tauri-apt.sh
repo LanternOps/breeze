@@ -14,6 +14,12 @@
 # The apt indexes those debs came from are cached with them, so a job can ask apt
 # (not dpkg) for a plan offline: apt installs only what that image lacks.
 #
+# The seed adds its own image's plan to that, because a job's plan can reach past
+# the Tauri set: upgrading libbrotli1 for libbrotli-dev also upgrades the
+# preinstalled `brotli`, pinned to the same version. An image OLDER than the seed's
+# can still need one of those. That is `cached` exiting 3 and naming the package,
+# and `ensure` then fetching just that delta, not a failure.
+#
 #   plan WORK               apt-get update, resolve; prints the closure id
 #   fetch WORK CACHE        download the planned closure and publish it to CACHE
 #   probe CACHE             does CACHE fit this runner? Offline, changes nothing
@@ -26,22 +32,30 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 PACKAGE_LIST="${SCRIPT_DIR}/../tauri-apt-packages.txt"
 # Part of the closure id: bump when the on-disk layout of CACHE changes.
 CACHE_LAYOUT=1
-TAURI_PKGS=($(grep -Ev '^(#|[[:space:]]*$)' "${PACKAGE_LIST}"))
+TAURI_PKGS=($(grep -Ev '^(#|[[:space:]]*$)' "${PACKAGE_LIST}" || true))
+if [ "${#TAURI_PKGS[@]}" = 0 ]; then
+  echo "::error::no packages in ${PACKAGE_LIST}" >&2
+  exit 1
+fi
+
+temp_dir() {
+  mktemp -d "${TMPDIR:-/tmp}/tauri-apt.XXXXXX"
+}
 
 as_root() {
   if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi
 }
 
-# Fixed sources, independent of the runner image: the Ubuntu archive only, so a
-# third-party repository on the image can neither slow nor change the resolution.
+# Fixed sources, independent of the runner image: one mirror of the Ubuntu archive,
+# so a third-party repository on the image can neither slow nor change the resolution.
 # Index file names derive from this URI, so the seed and every job must agree on
 # it, which is why it lives here. arm64 exists only for local container tests.
 #
 # The Azure mirror is what these jobs were already using: the 26.04 image resolves
 # its mirror through /etc/apt/apt-mirrors.txt, so the `azure.archive -> archive` sed
-# this replaced had stopped changing anything. It serves indexes at ~20 MB/s but
-# throttles sustained .deb downloads to tens of kB/s after a burst of tens of MB
-# (seed run 41925110607), which is why a job must not depend on downloading the
+# this replaced had stopped changing anything. Speed varies by runner: the same 210
+# MB closure came at ~70 kB/s after a burst on one (run 41925110607) and 22 MB/s on
+# the next (run 41929601931), which is why a job must not depend on downloading the
 # closure. TAURI_APT_MIRROR is the switch for a day it misbehaves (#1605).
 write_sources() {
   local dir=$1 codename mirror
@@ -86,17 +100,22 @@ new_work_dir() {
   write_sources "${dir}"
 }
 
+# `file size SHA256:hash` per package apt would fetch, nothing downloaded.
+list_uris() {
+  apt-get install -y --print-uris --no-install-recommends --no-remove "${APT_OPTS[@]}" \
+    -o "Acquire::ForceHash=SHA256" "$@" "${TAURI_PKGS[@]}" | awk "/^'/{print \$2, \$3, \$4}"
+}
+
 cmd_plan() {
   local work=$1
   new_work_dir "${work}"
   : > "${work}/empty-status"
   apt_options "${work}" "${work}/lists" "${work}/archives"
-  as_root timeout --kill-after=30s 3m apt-get update "${APT_OPTS[@]}" >&2
-  # `'URI' file size hash` per package, nothing downloaded. The hash makes the id
-  # change on any rebuild, and the file names let `fetch` reuse a restored closure.
-  apt-get install -y --print-uris --no-install-recommends --no-remove "${APT_OPTS[@]}" \
-    -o "Dir::State::status=${work}/empty-status" "${TAURI_PKGS[@]}" \
-    | awk "/^'/{print \$2, \$3, \$4}" | LC_ALL=C sort > "${work}/plan.txt"
+  # Without --error-on=any a suite that fails to fetch is a warning, and the closure
+  # would resolve against what is left and be saved under an immutable key.
+  as_root timeout --kill-after=30s 3m apt-get update --error-on=any "${APT_OPTS[@]}" >&2
+  { list_uris -o "Dir::State::status=${work}/empty-status"; list_uris; } \
+    | LC_ALL=C sort -u > "${work}/plan.txt"
   if [ ! -s "${work}/plan.txt" ]; then
     echo "::error::apt resolved no packages for the Tauri closure" >&2
     exit 1
@@ -105,36 +124,56 @@ cmd_plan() {
   { echo "layout=${CACHE_LAYOUT}"; cat "${work}/plan.txt"; } | sha256sum | cut -c1-16
 }
 
-# The first seed pays for the whole closure through the mirror's throttle (~50m
-# for 210 MB), so give it attempts that resume: apt keeps what it finished. Later
-# seeds start from the restored closure, and apt verifies each reused file against
-# the index hash, so only what the archive changed crosses the wire.
+# apt accepts a file already in its archives directory on size alone, so a reused
+# .deb is only as good as this check: the hash comes from the signed indexes.
+deb_matches() {
+  local file=$1 hash=$2
+  [ -f "${file}" ] && [ "${hash%%:*}" = SHA256 ] \
+    && [ "$(sha256sum "${file}" | cut -d' ' -f1)" = "${hash#*:}" ]
+}
+
+# Keys are immutable, so only ever publish a whole, verified closure. A partial
+# restore of the previous closure may be sitting in CACHE: replace it.
+publish_closure() {
+  local work=$1 cache=$2 name hash file
+  rm -rf "${cache}"
+  mkdir -p "${cache}/archives" "${cache}/lists"
+  while read -r name _ hash; do
+    if ! deb_matches "${work}/archives/${name}" "${hash}" || ! cp "${work}/archives/${name}" "${cache}/archives/"; then
+      echo "::warning::${name} is missing or does not match its index hash"
+      rm -rf "${cache}"
+      return 1
+    fi
+  done < "${work}/plan.txt"
+  for file in "${work}"/lists/*; do
+    if [ -f "${file}" ] && [ "${file##*/}" != lock ]; then
+      cp "${file}" "${cache}/lists/" || { rm -rf "${cache}"; return 1; }
+    fi
+  done
+  as_root chown -R "$(id -u):$(id -g)" "${cache}"
+}
+
+# A slow runner pays for the whole closure through the mirror's throttle (~50m for
+# 210 MB at the worst seen), so attempts resume: apt keeps what it finished. Later
+# seeds start from the restored closure and fetch only what the archive changed.
 cmd_fetch() {
-  local work=$1 cache=$2 expected count attempt attempts=4 name
+  local work=$1 cache=$2 expected attempt attempts=3 name hash
   apt_options "${work}" "${work}/lists" "${work}/archives"
   expected=$(wc -l < "${work}/plan.txt" | tr -d ' ')
   if [ -d "${cache}/archives" ]; then
-    while read -r name _; do
-      if [ -f "${cache}/archives/${name}" ]; then cp "${cache}/archives/${name}" "${work}/archives/"; fi
+    while read -r name _ hash; do
+      if deb_matches "${cache}/archives/${name}" "${hash}"; then cp "${cache}/archives/${name}" "${work}/archives/"; fi
     done < "${work}/plan.txt"
     echo "Reusing $(find "${work}/archives" -maxdepth 1 -name '*.deb' | wc -l | tr -d ' ') of ${expected} debs from the restored closure."
   fi
   for attempt in $(seq 1 "${attempts}"); do
     if as_root timeout --kill-after=30s 20m apt-get install -y --download-only --no-install-recommends --no-remove \
-      "${APT_OPTS[@]}" -o "Dir::State::status=${work}/empty-status" "${TAURI_PKGS[@]}"; then
-      count=$(find "${work}/archives" -maxdepth 1 -name '*.deb' | wc -l | tr -d ' ')
-      if [ "${count}" = "${expected}" ]; then
-        # Cache keys are immutable, so only ever publish a whole closure. A partial
-        # restore of the previous closure may be sitting in CACHE: replace it.
-        rm -rf "${cache}"
-        mkdir -p "${cache}/archives" "${cache}/lists"
-        find "${work}/archives" -maxdepth 1 -name '*.deb' -exec cp {} "${cache}/archives/" \;
-        find "${work}/lists" -maxdepth 1 -type f ! -name lock -exec cp {} "${cache}/lists/" \;
-        as_root chown -R "$(id -u):$(id -g)" "${cache}"
-        echo "Seeded ${count} .deb files."
-        return 0
-      fi
-      echo "::warning::downloaded ${count} of ${expected} planned packages"
+        "${APT_OPTS[@]}" -o "Dir::State::status=${work}/empty-status" "${TAURI_PKGS[@]}" \
+      && as_root timeout --kill-after=30s 5m apt-get install -y --download-only --no-install-recommends --no-remove \
+        "${APT_OPTS[@]}" "${TAURI_PKGS[@]}" \
+      && publish_closure "${work}" "${cache}"; then
+      echo "Seeded ${expected} .deb files."
+      return 0
     fi
     echo "::warning::apt download failed (attempt ${attempt}/${attempts}); retrying"
     sleep $((attempt * ${TAURI_APT_SEED_BACKOFF:-20}))
@@ -144,15 +183,22 @@ cmd_fetch() {
 }
 
 # Offline, with no effect on the system: a resolver refusal or a missing .deb
-# surfaces here, before dpkg has touched anything.
+# surfaces here, before dpkg has touched anything. It does not read the debs (see
+# deb_matches): `fetch` is what proves those. The seed saves CACHE right after this
+# as the runner user, so what root and _apt leave behind must not stay in it.
 cmd_probe() {
   local cache=$1 sources rc=0
-  sources=$(mktemp -d)
+  sources=$(temp_dir)
   write_sources "${sources}"
   apt_options "${sources}" "${cache}/lists" "${cache}/archives"
   as_root timeout --kill-after=15s 60s apt-get install -y --download-only --no-download \
     --no-install-recommends --no-remove "${APT_OPTS[@]}" "${TAURI_PKGS[@]}" || rc=$?
+  if [ "${rc}" != 0 ]; then
+    PROBE_MISSING=$(list_uris 2>/dev/null | cut -d' ' -f1 | head -10 | tr '\n' ' ' || true)
+  fi
   rm -rf -- "${sources}"
+  as_root rm -rf -- "${cache}/archives/partial" "${cache}/archives/lock" "${cache}/lists/partial" "${cache}/lists/lock"
+  as_root chown -R "$(id -u):$(id -g)" "${cache}"
   return "${rc}"
 }
 
@@ -168,16 +214,21 @@ cmd_cached() {
     echo "No Tauri apt closure restored."
     return 3
   fi
-  if ! cmd_probe "${cache}"; then
-    echo "::warning::the cached Tauri apt closure does not fit this runner image; nothing was changed"
+  cmd_probe "${cache}" || rc=$?
+  if [ "${rc}" != 0 ]; then
+    echo "::warning::the cached Tauri apt closure does not fit this runner image (exit ${rc}, nothing changed; needs: ${PROBE_MISSING:-unresolvable}); trying the network"
     return 3
   fi
-  sources=$(mktemp -d)
+  sources=$(temp_dir)
   write_sources "${sources}"
   apt_options "${sources}" "${cache}/lists" "${cache}/archives"
   as_root env DEBIAN_FRONTEND=noninteractive timeout --kill-after=15s 4m apt-get install -y --no-download \
     --no-install-recommends --no-remove "${APT_OPTS[@]}" "${TAURI_PKGS[@]}" || rc=$?
   rm -rf -- "${sources}"
+  if [ "${rc}" = 124 ] || [ "${rc}" = 137 ]; then
+    echo "::error::apt-get install from the cached closure hit its phase deadline; re-run to land on a fresh runner (#9847)."
+    return 1
+  fi
   if [ "${rc}" != 0 ]; then
     echo "::error::cache closure incomplete: apt-get install exited ${rc} after planning from the cache; reseed with: gh workflow run \"CI cache seed\" --ref main (#9847)"
     return 1
@@ -205,7 +256,7 @@ network_failed() {
 
 cmd_network() {
   local cache=$1 rc=0
-  NETWORK_WORK=$(mktemp -d)
+  NETWORK_WORK=$(temp_dir)
   trap cleanup_network EXIT
   new_work_dir "${NETWORK_WORK}"
   if [ -d "${cache}/lists" ]; then
@@ -215,7 +266,7 @@ cmd_network() {
     find "${cache}/archives" -maxdepth 1 -name '*.deb' -exec cp {} "${NETWORK_WORK}/archives/" \;
   fi
   apt_options "${NETWORK_WORK}" "${NETWORK_WORK}/lists" "${NETWORK_WORK}/archives"
-  as_root timeout --kill-after=30s 2m apt-get update "${APT_OPTS[@]}" || rc=$?
+  as_root timeout --kill-after=30s 2m apt-get update --error-on=any "${APT_OPTS[@]}" || rc=$?
   if [ "${rc}" != 0 ]; then network_failed update "${rc}"; return 1; fi
   as_root env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s 5m apt-get install -y \
     --no-install-recommends --no-remove "${APT_OPTS[@]}" "${TAURI_PKGS[@]}" || rc=$?
