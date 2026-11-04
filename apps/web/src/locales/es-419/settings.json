@@ -1867,16 +1867,21 @@
   },
   "orgBrandingEditor": {
     "title": "Marca",
-    "description": "Personalice la experiencia del portal para {{organization}}.",
+    "description": "Logotipo, colores y CSS personalizado para el portal de clientes y los documentos de {{organization}}.",
     "save": "Guardar marca",
     "saved": "Configuración de marca guardada.",
+    "saveError": "No se pudo guardar la marca.",
     "managedByPartner": "Gestionado por socio",
     "logo": {
       "title": "Logo",
       "previewAlt": "Vista previa del logotipo de la organización",
       "uploadNew": "Suba un nuevo logotipo",
-      "recommendation": "SVG o PNG, recomendado 512x512",
-      "selected": "Seleccionado: {{name}}"
+      "selected": "Seleccionado: {{name}}",
+      "help": "Se muestra en el portal de clientes de esta organización y en sus cotizaciones, facturas e informes. Déjelo vacío para usar el logotipo del socio.",
+      "inheritedSource": "Logotipo del socio",
+      "remove": "Eliminar",
+      "loadError": "No se pudo cargar el logotipo guardado. La carga está deshabilitada hasta que se cargue.",
+      "legacyNotice": "Este logotipo se guardó anteriormente, pero nunca se mostró a los clientes. Guarde para empezar a usarlo o elimínelo."
     },
     "colors": {
       "primary": "color primario",
@@ -1884,42 +1889,16 @@
       "primaryInheritedSource": "Color de marca del socio",
       "primaryHelp": "Color de acento en las cotizaciones, facturas y otros documentos para clientes de esta organización. Déjelo en blanco para usar el color de marca del socio.",
       "primaryInvalid": "Ingrese un color hexadecimal, como #2563eb.",
-      "primaryLoadError": "No se pudo cargar el color primario guardado. La edición está deshabilitada hasta que se cargue."
-    },
-    "theme": {
-      "title": "Tema",
-      "description": "El sistema respeta las preferencias del usuario OS cuando esté disponible.",
-      "options": {
-        "light": "Claro",
-        "dark": "Oscuro",
-        "system": "Sistema"
-      }
-    },
-    "subdomain": {
-      "title": "Subdominio del portal",
-      "previewUrl": "Vista previa disponible URL: {{url}}"
+      "primaryLoadError": "No se pudo cargar el color primario guardado. La edición está deshabilitada hasta que se cargue.",
+      "secondaryInheritedSource": "Color secundario del socio",
+      "secondaryHelp": "Color de los encabezados en los PDF de cotizaciones de esta organización, si es lo bastante oscuro para leerse, y color de acento en sus PDF de informes. Déjelo en blanco para usar el color secundario del socio.",
+      "secondaryLoadError": "No se pudo cargar el color secundario guardado. La edición está deshabilitada hasta que se cargue."
     },
     "customCss": {
       "title": "Personalizado CSS (avanzado)",
       "description": "Utilice estilos personalizados para ajustar el espaciado, la tipografía o el diseño.",
-      "saveError": "No se pudo guardar el CSS personalizado.",
       "loadError": "No se pudo cargar el CSS personalizado guardado actualmente. La edición está deshabilitada hasta que esto se cargue.",
       "saveBlockedByLoadError": "El CSS personalizado no se guardó: no se pudo verificar el valor actual. Vuelva a cargar la página e inténtelo de nuevo."
-    },
-    "preview": {
-      "action": "Vista previa",
-      "title": "Vista previa del portal",
-      "description": "Borrador en vivo basado en aportes actuales de marca",
-      "close": "Cerrar vista previa",
-      "logoAlt": "Vista previa del logotipo",
-      "portalName": "Portal {{organization}}",
-      "welcome": "Bienvenido de nuevo",
-      "body": "Esta vista previa refleja el borrador actual de la marca del portal, incluidos los colores y las opciones de logotipo.",
-      "openTicket": "Abrir ticket de soporte",
-      "viewDevices": "Ver lista de dispositivos",
-      "urlLabel": "Vista previa URL",
-      "cssPayload": "Carga útil CSS personalizada",
-      "noCustomCss": "/* Sin CSS personalizado */"
     }
   },
   "orgDefaultsEditor": {
@@ -6342,7 +6321,7 @@
       "extensionsDescription": "Secciones de extensiones de terceros",
       "portalBranding": "Portal y marca",
       "branding": "Marca",
-      "brandingDescription": "Tema del portal y elementos visuales",
+      "brandingDescription": "Logotipo, colores y CSS personalizado",
       "portal": "Portal del cliente",
       "portalDescription": "Funciones y soporte",
       "securityAccess": "Seguridad y acceso",

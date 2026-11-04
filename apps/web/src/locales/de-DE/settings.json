@@ -1867,16 +1867,21 @@
   },
   "orgBrandingEditor": {
     "title": "Branding",
-    "description": "Passen Sie das Portalerlebnis für {{organization}} an.",
+    "description": "Logo, Farben und benutzerdefiniertes CSS für das Kundenportal und die Dokumente von {{organization}}.",
     "save": "Branding speichern",
     "saved": "Branding-Einstellungen gespeichert.",
+    "saveError": "Das Branding konnte nicht gespeichert werden.",
     "managedByPartner": "Verwaltet durch Partner",
     "logo": {
       "title": "Logo",
       "previewAlt": "Vorschau des Organisationslogos",
       "uploadNew": "Laden Sie ein neues Logo hoch",
-      "recommendation": "SVG oder PNG, empfohlen 512x512",
-      "selected": "Ausgewählt: {{name}}"
+      "selected": "Ausgewählt: {{name}}",
+      "help": "Wird im Kundenportal dieser Organisation sowie auf ihren Angeboten, Rechnungen und Berichten angezeigt. Leer lassen, um das Logo des Partners zu verwenden.",
+      "inheritedSource": "Logo des Partners",
+      "remove": "Entfernen",
+      "loadError": "Das gespeicherte Logo konnte nicht geladen werden. Das Hochladen ist deaktiviert, bis es geladen ist.",
+      "legacyNotice": "Dieses Logo wurde früher gespeichert, Kunden aber nie angezeigt. Speichern Sie, um es zu verwenden, oder entfernen Sie es."
     },
     "colors": {
       "primary": "Primärfarbe",
@@ -1884,42 +1889,16 @@
       "primaryInheritedSource": "Markenfarbe des Partners",
       "primaryHelp": "Akzentfarbe auf Angeboten, Rechnungen und anderen Kundendokumenten dieser Organisation. Leer lassen, um die Markenfarbe des Partners zu verwenden.",
       "primaryInvalid": "Geben Sie eine Hex-Farbe wie #2563eb ein.",
-      "primaryLoadError": "Die gespeicherte Primärfarbe konnte nicht geladen werden. Die Bearbeitung ist deaktiviert, bis sie geladen ist."
-    },
-    "theme": {
-      "title": "Thema",
-      "description": "Das System respektiert die Betriebssystempräferenzen des Benutzers, sofern verfügbar.",
-      "options": {
-        "light": "Licht",
-        "dark": "Dunkel",
-        "system": "System"
-      }
-    },
-    "subdomain": {
-      "title": "Portal-Subdomain",
-      "previewUrl": "Verfügbare Vorschau URL: {{url}}"
+      "primaryLoadError": "Die gespeicherte Primärfarbe konnte nicht geladen werden. Die Bearbeitung ist deaktiviert, bis sie geladen ist.",
+      "secondaryInheritedSource": "Sekundärfarbe des Partners",
+      "secondaryHelp": "Überschriftenfarbe in den Angebots-PDFs dieser Organisation, sofern dunkel genug zum Lesen, und Akzentfarbe in ihren Berichts-PDFs. Leer lassen, um die Sekundärfarbe des Partners zu verwenden.",
+      "secondaryLoadError": "Die gespeicherte Sekundärfarbe konnte nicht geladen werden. Die Bearbeitung ist deaktiviert, bis sie geladen ist."
     },
     "customCss": {
       "title": "Benutzerdefiniertes CSS (erweitert)",
       "description": "Verwenden Sie benutzerdefinierte Stile, um Abstände, Typografie oder Layout zu optimieren.",
-      "saveError": "Benutzerdefiniertes CSS konnte nicht gespeichert werden.",
       "loadError": "Das aktuell gespeicherte benutzerdefinierte CSS konnte nicht geladen werden. Die Bearbeitung ist deaktiviert, bis dies geladen ist.",
       "saveBlockedByLoadError": "Benutzerdefiniertes CSS wurde nicht gespeichert: Der aktuelle Wert konnte nicht überprüft werden. Laden Sie die Seite neu und versuchen Sie es erneut."
-    },
-    "preview": {
-      "action": "Vorschau",
-      "title": "Portalvorschau",
-      "description": "Live-Entwurf basierend auf aktuellen Branding-Inputs",
-      "close": "Vorschau schließen",
-      "logoAlt": "Vorschau-Logo",
-      "portalName": "{{organization}} Portal",
-      "welcome": "Willkommen zurück",
-      "body": "Diese Vorschau spiegelt Ihren aktuellen Portal-Branding-Entwurf wider, einschließlich Farben und Logo-Auswahl.",
-      "openTicket": "Support-Ticket öffnen",
-      "viewDevices": "Geräteliste anzeigen",
-      "urlLabel": "Vorschau URL",
-      "cssPayload": "Benutzerdefinierter CSS-Payload",
-      "noCustomCss": "/* Kein benutzerdefiniertes CSS */"
     }
   },
   "orgDefaultsEditor": {
@@ -6342,7 +6321,7 @@
       "extensionsDescription": "Abschnitte von Drittanbieter-Erweiterungen",
       "portalBranding": "Portal & Branding",
       "branding": "Branding",
-      "brandingDescription": "Portalthema und Visuals",
+      "brandingDescription": "Logo, Farben und benutzerdefiniertes CSS",
       "portal": "Kundenportal",
       "portalDescription": "Funktionen und Support",
       "securityAccess": "Sicherheit und Zugang",

@@ -1867,16 +1867,21 @@
   },
   "orgBrandingEditor": {
     "title": "Markalama",
-    "description": "{{organization}} için portal deneyimini özelleştirin.",
+    "description": "{{organization}} müşteri portalı ve belgeleri için logo, renkler ve özel CSS.",
     "save": "Marka bilinci oluşturmayı koruyun",
     "saved": "Markalama ayarları kaydedildi.",
+    "saveError": "Marka ayarları kaydedilemedi.",
     "managedByPartner": "İş ortağı tarafından yönetiliyor",
     "logo": {
       "title": "Logosu",
       "previewAlt": "Kuruluş logosu önizlemesi",
       "uploadNew": "Yeni bir logo yükleyin",
-      "recommendation": "SVG veya PNG, önerilen 512x512",
-      "selected": "Seçilen: {{name}}"
+      "selected": "Seçilen: {{name}}",
+      "help": "Bu kuruluşun müşteri portalında ve tekliflerinde, faturalarında ve raporlarında gösterilir. İş ortağının logosunu kullanmak için boş bırakın.",
+      "inheritedSource": "İş ortağı logosu",
+      "remove": "Kaldır",
+      "loadError": "Kaydedilen logo yüklenemedi. Yüklenene kadar logo yükleme devre dışı.",
+      "legacyNotice": "Bu logo daha önce kaydedildi ancak müşterilere hiç gösterilmedi. Kullanmaya başlamak için kaydedin veya kaldırın."
     },
     "colors": {
       "primary": "Ana renk",
@@ -1884,42 +1889,16 @@
       "primaryInheritedSource": "İş ortağı marka rengi",
       "primaryHelp": "Bu kuruluşun tekliflerinde, faturalarında ve diğer müşteri belgelerinde kullanılan vurgu rengi. İş ortağının marka rengini kullanmak için boş bırakın.",
       "primaryInvalid": "#2563eb gibi bir onaltılık renk girin.",
-      "primaryLoadError": "Kaydedilen ana renk yüklenemedi. Yüklenene kadar düzenleme devre dışı."
-    },
-    "theme": {
-      "title": "Tema",
-      "description": "Sistem, mümkün olduğunda kullanıcının işletim sistemi tercihine saygı duyar.",
-      "options": {
-        "light": "Işık",
-        "dark": "Karanlık",
-        "system": "Sistem"
-      }
-    },
-    "subdomain": {
-      "title": "Portal alt alanı",
-      "previewUrl": "Mevcut önizleme URL'si: {{url}}"
+      "primaryLoadError": "Kaydedilen ana renk yüklenemedi. Yüklenene kadar düzenleme devre dışı.",
+      "secondaryInheritedSource": "İş ortağı ikincil rengi",
+      "secondaryHelp": "Bu kuruluşun teklif PDF'lerinde, okunacak kadar koyuysa başlık rengi; rapor PDF'lerinde vurgu rengi. İş ortağının ikincil rengini kullanmak için boş bırakın.",
+      "secondaryLoadError": "Kaydedilen ikincil renk yüklenemedi. Yüklenene kadar düzenleme devre dışı."
     },
     "customCss": {
       "title": "Özel CSS (gelişmiş)",
       "description": "Aralığa, tipografiye veya düzene ince ayar yapmak için özel stiller kullanın.",
-      "saveError": "Özel CSS kaydedilemedi.",
       "loadError": "Şu anda kayıtlı özel CSS yüklenemedi. Bu yüklenene kadar düzenleme devre dışı.",
       "saveBlockedByLoadError": "Özel CSS kaydedilmedi: mevcut değer doğrulanamadı. Sayfayı yeniden yükleyip tekrar deneyin."
-    },
-    "preview": {
-      "action": "Önizleme",
-      "title": "Portal önizlemesi",
-      "description": "Mevcut markalama girdilerine dayalı canlı taslak",
-      "close": "Önizlemeyi kapat",
-      "logoAlt": "Logoyu önizleyin",
-      "portalName": "{{organization}} Portalı",
-      "welcome": "Tekrar hoş geldiniz",
-      "body": "Bu önizleme, renkler ve logo seçenekleri de dahil olmak üzere mevcut portal markalama taslağınızı yansıtır.",
-      "openTicket": "Destek bildirimini aç",
-      "viewDevices": "Cihaz listesini görüntüle",
-      "urlLabel": "Önizleme URL'si",
-      "cssPayload": "Özel CSS verisi",
-      "noCustomCss": "/* Özel CSS yok */"
     }
   },
   "orgDefaultsEditor": {
@@ -6395,7 +6374,7 @@
       "extensionsDescription": "Üçüncü taraf uzantı bölümleri",
       "portalBranding": "Portal ve Markalama",
       "branding": "Markalama",
-      "brandingDescription": "Portal teması ve görselleri",
+      "brandingDescription": "Logo, renkler ve özel CSS",
       "portal": "Müşteri Portalı",
       "portalDescription": "Özellikler ve destek",
       "securityAccess": "Güvenlik ve Erişim",

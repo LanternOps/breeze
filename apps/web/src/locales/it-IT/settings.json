@@ -1867,16 +1867,21 @@
   },
   "orgBrandingEditor": {
     "title": "Branding",
-    "description": "Personalizza l'esperienza del portale per {{organization}}.",
+    "description": "Logo, colori e CSS personalizzato per il portale clienti e i documenti di {{organization}}.",
     "save": "Salva branding",
     "saved": "Impostazioni di branding salvate.",
+    "saveError": "Impossibile salvare il branding.",
     "managedByPartner": "Gestito dal partner",
     "logo": {
       "title": "Logo",
       "previewAlt": "Anteprima logo organizzazione",
       "uploadNew": "Carica un nuovo logo",
-      "recommendation": "SVG o PNG, consigliato 512x512",
-      "selected": "Selezionato: {{name}}"
+      "selected": "Selezionato: {{name}}",
+      "help": "Viene mostrato nel portale clienti di questa organizzazione e su preventivi, fatture e report. Lascia vuoto per usare il logo del partner.",
+      "inheritedSource": "Logo del partner",
+      "remove": "Rimuovi",
+      "loadError": "Impossibile caricare il logo salvato. Il caricamento è disabilitato finché non viene caricato.",
+      "legacyNotice": "Questo logo è stato salvato in precedenza, ma non è mai stato mostrato ai clienti. Salva per iniziare a usarlo oppure rimuovilo."
     },
     "colors": {
       "primary": "Colore primario",
@@ -1884,42 +1889,16 @@
       "primaryInheritedSource": "Colore del brand del partner",
       "primaryHelp": "Colore di accento su preventivi, fatture e altri documenti per i clienti di questa organizzazione. Lascia vuoto per usare il colore del brand del partner.",
       "primaryInvalid": "Inserisci un colore esadecimale, ad esempio #2563eb.",
-      "primaryLoadError": "Impossibile caricare il colore primario salvato. La modifica è disabilitata finché non viene caricato."
-    },
-    "theme": {
-      "title": "Tema",
-      "description": "Sistema rispetta la preferenza del sistema operativo dell'utente quando disponibile.",
-      "options": {
-        "light": "Chiaro",
-        "dark": "Scuro",
-        "system": "Sistema"
-      }
-    },
-    "subdomain": {
-      "title": "Sottodominio portale",
-      "previewUrl": "URL di anteprima disponibile: {{url}}"
+      "primaryLoadError": "Impossibile caricare il colore primario salvato. La modifica è disabilitata finché non viene caricato.",
+      "secondaryInheritedSource": "Colore secondario del partner",
+      "secondaryHelp": "Colore dei titoli nei PDF dei preventivi di questa organizzazione, se abbastanza scuro da essere leggibile, e colore di accento nei PDF dei report. Lascia vuoto per usare il colore secondario del partner.",
+      "secondaryLoadError": "Impossibile caricare il colore secondario salvato. La modifica è disabilitata finché non viene caricato."
     },
     "customCss": {
       "title": "CSS personalizzato (avanzato)",
       "description": "Usa stili personalizzati per rifinire spaziatura, tipografia o layout.",
-      "saveError": "Impossibile salvare il CSS personalizzato.",
       "loadError": "Impossibile caricare il CSS personalizzato attualmente salvato. La modifica è disabilitata finché non viene caricato.",
       "saveBlockedByLoadError": "Il CSS personalizzato non è stato salvato: impossibile verificare il valore attuale. Ricarica la pagina e riprova."
-    },
-    "preview": {
-      "action": "Anteprima",
-      "title": "Anteprima portale",
-      "description": "Bozza in tempo reale basata sugli input di branding attuali",
-      "close": "Chiudi anteprima",
-      "logoAlt": "Logo anteprima",
-      "portalName": "Portale {{organization}}",
-      "welcome": "Bentornato",
-      "body": "Questa anteprima riflette la bozza attuale del branding del portale, inclusi colori e scelte del logo.",
-      "openTicket": "Apri ticket di assistenza",
-      "viewDevices": "Visualizza elenco dispositivi",
-      "urlLabel": "URL anteprima",
-      "cssPayload": "Payload CSS personalizzato",
-      "noCustomCss": "/* Nessun CSS personalizzato */"
     }
   },
   "orgDefaultsEditor": {
@@ -6390,7 +6369,7 @@
       "extensionsDescription": "Sezioni estensioni di terze parti",
       "portalBranding": "Portale e branding",
       "branding": "Branding",
-      "brandingDescription": "Tema e elementi visivi del portale",
+      "brandingDescription": "Logo, colori e CSS personalizzato",
       "portal": "Portale clienti",
       "portalDescription": "Funzionalità e assistenza",
       "securityAccess": "Sicurezza e accesso",

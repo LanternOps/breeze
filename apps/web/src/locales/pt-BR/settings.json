@@ -1867,16 +1867,21 @@
   },
   "orgBrandingEditor": {
     "title": "Identidade visual",
-    "description": "Personalize a experiência do portal para {{organization}}.",
+    "description": "Logotipo, cores e CSS personalizado para o portal do cliente e os documentos de {{organization}}.",
     "save": "Salvar identidade visual",
     "saved": "Configurações de identidade visual salvas.",
+    "saveError": "Falha ao salvar a identidade visual.",
     "managedByPartner": "Gerenciado pelo parceiro",
     "logo": {
       "title": "Logotipo",
       "previewAlt": "Prévia do logotipo da organização",
       "uploadNew": "Enviar um novo logotipo",
-      "recommendation": "SVG ou PNG, recomendado 512x512",
-      "selected": "Selecionado: {{name}}"
+      "selected": "Selecionado: {{name}}",
+      "help": "Exibido no portal do cliente desta organização e nos seus orçamentos, faturas e relatórios. Deixe vazio para usar o logotipo do parceiro.",
+      "inheritedSource": "Logotipo do parceiro",
+      "remove": "Remover",
+      "loadError": "Não foi possível carregar o logotipo salvo. O envio fica desativado até que ele seja carregado.",
+      "legacyNotice": "Este logotipo foi salvo anteriormente, mas nunca foi mostrado aos clientes. Salve para começar a usá-lo ou remova-o."
     },
     "colors": {
       "primary": "Cor primária",
@@ -1884,42 +1889,16 @@
       "primaryInheritedSource": "Cor da marca do parceiro",
       "primaryHelp": "Cor de destaque nos orçamentos, faturas e outros documentos para clientes desta organização. Deixe em branco para usar a cor da marca do parceiro.",
       "primaryInvalid": "Insira uma cor hexadecimal, como #2563eb.",
-      "primaryLoadError": "Não foi possível carregar a cor primária salva. A edição fica desativada até que ela seja carregada."
-    },
-    "theme": {
-      "title": "Tema",
-      "description": "O modo Sistema respeita a preferência do sistema operacional do usuário quando disponível.",
-      "options": {
-        "light": "Claro",
-        "dark": "Escuro",
-        "system": "Sistema"
-      }
-    },
-    "subdomain": {
-      "title": "Subdomínio do portal",
-      "previewUrl": "URL de prévia disponível: {{url}}"
+      "primaryLoadError": "Não foi possível carregar a cor primária salva. A edição fica desativada até que ela seja carregada.",
+      "secondaryInheritedSource": "Cor secundária do parceiro",
+      "secondaryHelp": "Cor dos títulos nos PDFs de orçamento desta organização, quando escura o bastante para leitura, e cor de destaque nos PDFs de relatório. Deixe em branco para usar a cor secundária do parceiro.",
+      "secondaryLoadError": "Não foi possível carregar a cor secundária salva. A edição fica desativada até que ela seja carregada."
     },
     "customCss": {
       "title": "CSS personalizado (avançado)",
       "description": "Use estilos personalizados para ajustar espaçamento, tipografia ou layout.",
-      "saveError": "Falha ao salvar o CSS personalizado.",
       "loadError": "Não foi possível carregar o CSS personalizado salvo atualmente. A edição está desativada até que isso seja carregado.",
       "saveBlockedByLoadError": "O CSS personalizado não foi salvo: não foi possível verificar o valor atual. Recarregue a página e tente novamente."
-    },
-    "preview": {
-      "action": "Visualizar",
-      "title": "Prévia do portal",
-      "description": "Rascunho ao vivo baseado nas configurações atuais de identidade visual",
-      "close": "Fechar prévia",
-      "logoAlt": "Prévia do logotipo",
-      "portalName": "Portal de {{organization}}",
-      "welcome": "Bem-vindo de volta",
-      "body": "Esta prévia reflete o rascunho atual da identidade visual do portal, incluindo as cores e o logotipo escolhidos.",
-      "openTicket": "Abrir chamado de suporte",
-      "viewDevices": "Ver lista de dispositivos",
-      "urlLabel": "URL de prévia",
-      "cssPayload": "Conteúdo do CSS personalizado",
-      "noCustomCss": "/* Nenhum CSS personalizado */"
     }
   },
   "orgDefaultsEditor": {
@@ -6395,7 +6374,7 @@
       "extensionsDescription": "Seções de extensões de terceiros",
       "portalBranding": "Portal e identidade visual",
       "branding": "Identidade visual",
-      "brandingDescription": "Tema e recursos visuais do portal",
+      "brandingDescription": "Logotipo, cores e CSS personalizado",
       "portal": "Portal do Cliente",
       "portalDescription": "Recursos e suporte",
       "securityAccess": "Segurança e acesso",
