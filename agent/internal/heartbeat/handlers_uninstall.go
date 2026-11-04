@@ -219,14 +219,14 @@ const darwinUninstallIsolationLog = "/Library/Logs/Breeze/uninstall-isolation-re
 // still-running agent cannot resurrect files (logs, sockets, state) under a
 // freshly-deleted directory.
 func buildDarwinUninstallScript(opts darwinUninstallScriptOptions) string {
-	abortLog := func(detail string) string {
-		return fmt.Sprintf("  { date; echo 'self-uninstall aborted: isolation release could not be confirmed; %s'; } >> %s 2>/dev/null", detail, shQuote(darwinUninstallIsolationLog))
+	abortLog := func(reason string) string {
+		return fmt.Sprintf("  { date; echo 'self-uninstall aborted: %s'; } >> %s 2>/dev/null", reason, shQuote(darwinUninstallIsolationLog))
 	}
 	lines := []string{
 		macosuninstall.Functions,
 		macosuninstall.IsolationFunctions,
 		"if ! breeze_release_isolation; then",
-		abortLog("agent daemon re-enabled"),
+		abortLog("isolation release could not be confirmed; agent daemon re-enabled"),
 		fmt.Sprintf("  launchctl enable system/%s", shQuote(opts.Label)),
 		"  exit 1",
 		"fi",
@@ -236,7 +236,7 @@ func buildDarwinUninstallScript(opts darwinUninstallScriptOptions) string {
 		"breeze_stop_helpers || exit 1",
 		fmt.Sprintf("breeze_bootout system/%s || exit 1", shQuote(opts.Label)),
 		"if ! breeze_release_isolation || ! breeze_remove_isolation; then",
-		abortLog("agent daemon loaded again"),
+		abortLog("after the agent stopped, the isolation release could not be confirmed or its recovery jobs could not be removed; agent daemon loaded again"),
 		fmt.Sprintf("  breeze_restart_agent %s %s", shQuote(opts.Label), shQuote(opts.PlistPath)),
 		"  exit 1",
 		"fi",
