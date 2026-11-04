@@ -400,7 +400,7 @@ var serviceStartCmd = &cobra.Command{
 		}
 
 		// Reload systemd so any updated unit file on disk is recognized before enabling.
-		procspawn.Command("systemctl", "daemon-reload").Run() //nolint:errcheck — best-effort
+		_ = procspawn.Command("systemctl", "daemon-reload").Run() // best-effort
 
 		// Enable the service for auto-start on reboot before starting it.
 		if out, err := procspawn.Command("systemctl", "enable", linuxServiceName).CombinedOutput(); err != nil {

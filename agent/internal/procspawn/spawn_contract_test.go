@@ -183,7 +183,7 @@ func checkFile(path string) ([]violation, error) {
 			// `var run = exec.Command`) would spawn outside procspawn later.
 			pkg, name, ok := selector(node)
 			call, isCall := parent.(*ast.CallExpr)
-			if ok && spawners[spawnAPI{pkg, name}] && !(isCall && call.Fun == ast.Expr(node)) && !isExempt(node.Pos()) {
+			if ok && spawners[spawnAPI{pkg, name}] && (!isCall || call.Fun != ast.Expr(node)) && !isExempt(node.Pos()) {
 				out = append(out, violation{fset.Position(node.Pos()), fmt.Sprintf("%s.%s used as a function value escapes procspawn", pkg, name)})
 			}
 		case *ast.CompositeLit:
