@@ -281,6 +281,10 @@ describe('wisp_check_ins constraints', () => {
 });
 
 describe('wisp_check_ins through the org registries', () => {
+  // Behavioural smoke test only: the org FK is ON DELETE CASCADE, so this would
+  // pass without the CORE_ORG_CASCADE_DELETE_ORDER entry. That registration is
+  // enforced by tenantCascade.integration.test.ts ("every org_id-columned public
+  // table is in getOrgCascadeDeleteOrder()").
   it("org erasure deletes the org's check-ins and leaves partner-level ones", async () => {
     const f = await seed();
     const a1 = await insertCheckIn(f, f.orgA1);
