@@ -678,6 +678,14 @@ func pkgAssetName() string {
 // .pkg being added) — so the caller falls back to verified-binary replacement
 // rather than installing bytes never bound to the signed trust root.
 func pkgAssetChecksum(verifiedManifest []byte, version string) (string, error) {
+	return releaseAssetChecksum(verifiedManifest, version, pkgAssetName())
+}
+
+// releaseAssetChecksum returns the SHA-256 that an already-verified release
+// artifact manifest lists for asset name at release version. It fails closed
+// on a different release, a missing entry, a disallowed edition, or a
+// malformed checksum.
+func releaseAssetChecksum(verifiedManifest []byte, version, name string) (string, error) {
 	var manifest releaseArtifactManifest
 	if err := json.Unmarshal(verifiedManifest, &manifest); err != nil {
 		return "", fmt.Errorf("invalid release artifact manifest JSON: %w", err)
@@ -688,7 +696,6 @@ func pkgAssetChecksum(verifiedManifest []byte, version string) (string, error) {
 	if !releaseTagMatchesVersion(manifest.Release, version) {
 		return "", fmt.Errorf("release artifact manifest version mismatch: expected %s, got %s", version, manifest.Release)
 	}
-	name := pkgAssetName()
 	for i := range manifest.Assets {
 		if manifest.Assets[i].Name != name {
 			continue
