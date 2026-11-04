@@ -1592,7 +1592,10 @@ async function failBackupJobForTimedOutCommand(
  *
  * Two clocks (#2798): liveness = lastKeepaliveAt (any agent signal; falls
  * back to lastProgressAt for rows written before the column existed), and
- * progress = lastProgressAt (bytes or files actually advanced).
+ * progress = lastProgressAt (bytes or files actually advanced, or — #11014 —
+ * the agent's verified counters: files/bytes it finished checking during a
+ * resume or dedupe pass, which can run for hours before the first upload;
+ * see applyBackupProgress).
  *
  * A `running` job is reaped when ANY of:
  *  A (silent):   liveness is set and stale past BACKUP_STALL_TIMEOUT_MS
@@ -1674,7 +1677,7 @@ export async function reapStaleBackupJobs(): Promise<number> {
     } else if (deviceOffline && now - livenessRef.getTime() > BACKUP_OFFLINE_GRACE_MS) {
       errorMsg = 'Device went offline during backup';
     } else if (liveness && now - transferRef.getTime() > noTransferWindowMs) {
-      errorMsg = `Backup stalled: no data transferred for ${formatWindow(now - transferRef.getTime())} while the agent was still responding (limit ${formatWindow(noTransferWindowMs)})`;
+      errorMsg = `Backup stalled: no data transferred or verified for ${formatWindow(now - transferRef.getTime())} while the agent was still responding (limit ${formatWindow(noTransferWindowMs)})`;
     } else if (!liveness && now - livenessRef.getTime() > BACKUP_ABSOLUTE_TIMEOUT_MS) {
       // No progress signal ever (legacy agent) OR a zombie with no started_at —
       // reap on the absolute cap against progressRef (started_at ?? createdAt).
