@@ -15,9 +15,15 @@ import {
   monitorDeliveryModeSchema,
   monitorConditionSchemas,
   monitorResponsesSchema,
+  alertCooldownMinutesSchema,
+  rearmModeSchema,
+  rearmDelayMinutesSchema,
+  isValidRearmPair,
+  REARM_PAIR_MESSAGE,
   MONITOR_KINDS,
   type MonitorKind,
   type MonitorDeliveryMode,
+  type RearmMode,
 } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -40,6 +46,7 @@ import { RestartResponseFields } from './MonitorAuthoringFields';
 import DeployMonitorDialog from './DeployMonitorDialog';
 import MonitorDevicesTable from './MonitorDevicesTable';
 import MonitorActivityTab from './MonitorActivityTab';
+import MonitorLifecycleFields from './MonitorLifecycleFields';
 import { defaultConditionFor } from './monitorKindFields';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import Breadcrumbs from '../layout/Breadcrumbs';
@@ -75,8 +82,11 @@ export interface MonitorFormValues {
   enabled: boolean;
   condition: Record<string, unknown>;
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
-  cooldownMinutes: number;
-  autoResolve: boolean;
+  // Lifecycle overrides: null = inherit the org/partner default.
+  cooldownMinutes: number | null;
+  autoResolve: boolean | null;
+  rearmMode: RearmMode | null;
+  rearmDelayMinutes: number | null;
   responses: Array<Record<string, unknown>>;
   deliveryMode: MonitorDeliveryMode;
   deliveryChannelIds: string[];
@@ -118,8 +128,10 @@ const monitorFormSchema = z
     enabled: z.boolean(),
     condition: z.record(z.string(), z.unknown()),
     severity: monitorSeveritySchema,
-    cooldownMinutes: z.number().int().min(0).max(1440),
-    autoResolve: z.boolean(),
+    cooldownMinutes: alertCooldownMinutesSchema.nullable(),
+    autoResolve: z.boolean().nullable(),
+    rearmMode: rearmModeSchema.nullable(),
+    rearmDelayMinutes: rearmDelayMinutesSchema.nullable(),
     responses: z.array(z.record(z.string(), z.unknown())),
     deliveryMode: monitorDeliveryModeSchema,
     deliveryChannelIds: z.array(z.string()),
@@ -141,6 +153,7 @@ const monitorFormSchema = z
     if (!condition.success) ctx.addIssue({ code: 'custom', path: ['condition'], message: 'Invalid condition' });
     const responses = monitorResponsesSchema.safeParse(value.responses);
     if (!responses.success) ctx.addIssue({ code: 'custom', path: ['responses'], message: 'Invalid responses' });
+    if (!isValidRearmPair(value)) ctx.addIssue({ code: 'custom', path: ['rearmDelayMinutes'], message: REARM_PAIR_MESSAGE });
     // D1: a `restart_service` response carries no service name of its own — it
     // compiles to `auto_restart: true` on the delivered watch, which only ever
     // targets the service named on the monitor's own `service`-kind condition
@@ -169,8 +182,10 @@ const DEFAULT_VALUES: MonitorFormValues = {
   enabled: true,
   condition: defaultConditionFor('cpu'),
   severity: 'high',
-  cooldownMinutes: 5,
-  autoResolve: false,
+  cooldownMinutes: null,
+  autoResolve: null,
+  rearmMode: null,
+  rearmDelayMinutes: null,
   responses: [],
   deliveryMode: 'inherit',
   deliveryChannelIds: [],
@@ -463,8 +478,10 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         enabled: monitor.enabled ?? true,
         condition: monitor.condition ?? defaultConditionFor(monitor.kind),
         severity: monitor.severity ?? 'high',
-        cooldownMinutes: monitor.cooldownMinutes ?? 5,
-        autoResolve: monitor.autoResolve ?? false,
+        cooldownMinutes: monitor.cooldownMinutes ?? null,
+        autoResolve: monitor.autoResolve ?? null,
+        rearmMode: monitor.rearmMode ?? null,
+        rearmDelayMinutes: monitor.rearmDelayMinutes ?? null,
         responses: monitor.responses ?? [],
         deliveryMode: monitor.deliveryMode ?? 'inherit',
         deliveryChannelIds: monitor.deliveryChannelIds ?? [],
@@ -580,6 +597,8 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         severity: values.severity,
         cooldownMinutes: values.cooldownMinutes,
         autoResolve: values.autoResolve,
+        rearmMode: values.rearmMode,
+        rearmDelayMinutes: values.rearmMode === 'after_delay' ? values.rearmDelayMinutes : null,
         responses: values.responses,
         deliveryMode: values.deliveryMode,
         deliveryChannelIds: values.deliveryMode === 'channels' ? values.deliveryChannelIds : [],
@@ -948,44 +967,29 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
           </section>
 
           <section className="space-y-3">
-            <h2 className="text-sm font-semibold">{t('monitoring:editor.sections.noise')}</h2>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-2">
-                <label className="text-xs font-medium text-muted-foreground" htmlFor="monitor-editor-severity">
-                  {t('monitoring:editor.fields.severity')}
-                </label>
-                <select
-                  id="monitor-editor-severity"
-                  data-testid="monitor-editor-severity"
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                  {...register('severity')}
-                >
-                  {['critical', 'high', 'medium', 'low', 'info'].map((sev) => (
-                    <option key={sev} value={sev}>
-                      {t(/* i18n-dynamic */ `monitoring:severities.${sev}`)}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="space-y-2">
-                <label className="text-xs font-medium text-muted-foreground" htmlFor="monitor-editor-cooldown">
-                  {t('monitoring:editor.fields.cooldownMinutes')}
-                </label>
-                <input
-                  id="monitor-editor-cooldown"
-                  data-testid="monitor-editor-cooldown"
-                  type="number"
-                  min={0}
-                  max={1440}
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                  {...register('cooldownMinutes', { valueAsNumber: true })}
-                />
-              </div>
+            <h2 className="text-sm font-semibold">{t('monitoring:editor.sections.lifecycle')}</h2>
+            <div className="space-y-2 sm:w-1/2 sm:pr-1.5">
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="monitor-editor-severity">
+                {t('monitoring:editor.fields.severity')}
+              </label>
+              <select
+                id="monitor-editor-severity"
+                data-testid="monitor-editor-severity"
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                {...register('severity')}
+              >
+                {['critical', 'high', 'medium', 'low', 'info'].map((sev) => (
+                  <option key={sev} value={sev}>
+                    {t(/* i18n-dynamic */ `monitoring:severities.${sev}`)}
+                  </option>
+                ))}
+              </select>
             </div>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" data-testid="monitor-editor-auto-resolve" {...register('autoResolve')} />
-              {t('monitoring:editor.fields.autoResolve')}
-            </label>
+            <MonitorLifecycleFields
+              orgId={isPartnerOwned ? null : ownerOrgId}
+              ready={!loading}
+              showPartnerWideHint={hydrated && isPartnerOwned}
+            />
           </section>
 
           <section className="space-y-3">
