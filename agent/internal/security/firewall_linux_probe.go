@@ -99,6 +99,8 @@ func firewallRulesetFromCommand(timeout time.Duration, name string, args ...stri
 
 	var out, errOut bytes.Buffer
 	cmd := exec.CommandContext(ctx, name, args...)
+	// The permission checks in readFirewallRuleset match English error text.
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	cmd.Stdout = &out
 	cmd.Stderr = &errOut
 	err := cmd.Run()
@@ -264,28 +266,44 @@ func probeLinuxFirewall(tools *firewallToolAvailability) (bool, error) {
 		}
 	}
 
+	// nft and iptables-legacy hold separate rulesets: legacy rules are not in
+	// `nft list ruleset`, which prints nothing on a legacy-only host. So a
+	// filtering answer from either one is enough for enabled, but disabled
+	// needs every ruleset that could hold rules to have been read.
 	nftOutput, nftRead := readFirewallRuleset(tools, "nft", "list", "ruleset")
-	if nftRead == rulesetAnswered {
-		return nftRulesetFiltersInput(nftOutput), nil
+	if nftRead == rulesetAnswered && nftRulesetFiltersInput(nftOutput) {
+		return true, nil
 	}
-	iptablesOutput, iptablesRead := readFirewallRuleset(tools, "iptables", "-S", "INPUT")
-	if iptablesRead == rulesetAnswered {
-		return iptablesFiltersInput(iptablesOutput), nil
+	iptablesEnabled, iptablesOutput, iptablesRead := readIptablesInput(tools)
+	if iptablesRead == rulesetAnswered && iptablesEnabled {
+		return true, nil
+	}
+	switch {
+	case nftRead == rulesetAnswered:
+		// An iptables failure here is ignored. iptables-nft fails on a table
+		// written natively with nft ("table `filter' is incompatible"), and nft
+		// has just read that table.
+		return false, nil
+	case nftRead == rulesetAbsent && (iptablesRead == rulesetAnswered || iptablesRead == rulesetNoFilterTable):
+		return false, nil
 	}
 	if nftRead != rulesetAbsent || iptablesRead != rulesetAbsent {
 		anyTool = true
 	}
 
+	// Below here no ruleset read can stand as disabled on its own: either a
+	// tool could not read its ruleset, or there was nothing to read.
 	switch {
 	case nftRead == rulesetFailed:
 		return false, fmt.Errorf("unable to determine firewall status: nft: %s", truncateForLog(nftOutput, 200))
 	case iptablesRead == rulesetFailed:
 		return false, fmt.Errorf("unable to determine firewall status: iptables: %s", truncateForLog(iptablesOutput, 200))
 	case nftRead == rulesetDenied || iptablesRead == rulesetDenied:
-		// Checked before the two "disabled" answers below: with a ruleset we
-		// could not read, neither of them is known to be true.
+		// Checked before the "disabled" answers below: with a ruleset we could
+		// not read, none of them is known to be true.
 		return false, &FirewallUnsupportedError{Reason: FirewallUnsupportedPermission}
-	case iptablesRead == rulesetNoFilterTable || firewalldInactive:
+	case firewalldInactive:
+		// Reached only when neither nft nor iptables is installed.
 		return false, nil
 	case !anyTool:
 		return false, &FirewallUnsupportedError{Reason: FirewallUnsupportedNoTool}
@@ -474,28 +492,94 @@ func nftBraceDelta(line string) int {
 	return delta
 }
 
-// iptablesFiltersInput reports whether `iptables -S INPUT` shows a DROP or
-// REJECT policy or rule. It sees only the INPUT chain: a drop reached through a
-// jump to a user chain is not visible here and reads as false. The output is
-// the same for iptables-legacy and iptables-nft, which may add a "# Warning"
-// line.
+// readIptablesInput reads `iptables -S INPUT`. That shows only the INPUT chain,
+// so when INPUT jumps elsewhere and shows no drop itself, the whole filter
+// table is read with `iptables -S` and the jumps are followed. Most hosts need
+// only the first spawn.
+func readIptablesInput(tools *firewallToolAvailability) (enabled bool, output string, read rulesetRead) {
+	output, read = readFirewallRuleset(tools, "iptables", "-S", "INPUT")
+	if read != rulesetAnswered {
+		return false, output, read
+	}
+	chains := parseIptablesRules(output)
+	if iptablesChainDrops(chains, "INPUT", map[string]bool{}) {
+		return true, output, read
+	}
+	if input := chains["INPUT"]; input == nil || len(input.next) == 0 {
+		return false, output, read
+	}
+	output, read = readFirewallRuleset(tools, "iptables", "-S")
+	if read != rulesetAnswered {
+		return false, output, read
+	}
+	return iptablesFiltersInput(output), output, read
+}
+
+// iptablesFiltersInput reports whether `iptables -S` output drops or rejects
+// on input: a DROP policy on INPUT, or a DROP or REJECT rule in INPUT or in a
+// chain it jumps to. Output for one chain (`-S INPUT`) works too. The format
+// is the same for iptables-legacy and iptables-nft.
 func iptablesFiltersInput(output string) bool {
+	return iptablesChainDrops(parseIptablesRules(output), "INPUT", map[string]bool{})
+}
+
+type iptablesChain struct {
+	drops bool
+	next  []string
+}
+
+func parseIptablesRules(output string) map[string]*iptablesChain {
+	chains := map[string]*iptablesChain{}
+	chain := func(name string) *iptablesChain {
+		if chains[name] == nil {
+			chains[name] = &iptablesChain{}
+		}
+		return chains[name]
+	}
 	for _, line := range strings.Split(output, "\n") {
 		fields := firewallFields(line, "")
-		if len(fields) < 3 || fields[1] != "INPUT" {
+		if len(fields) < 2 {
 			continue
 		}
 		switch fields[0] {
+		case "-N":
+			chain(fields[1])
 		case "-P":
-			if isIptablesDropTarget(fields[2]) {
-				return true
+			if len(fields) >= 3 && isIptablesDropTarget(fields[2]) {
+				chain(fields[1]).drops = true
 			}
 		case "-A":
+			c := chain(fields[1])
 			for i := 2; i+1 < len(fields); i++ {
-				if fields[i] == "-j" && isIptablesDropTarget(fields[i+1]) {
-					return true
+				if fields[i] != "-j" && fields[i] != "-g" {
+					continue
+				}
+				switch target := fields[i+1]; {
+				case isIptablesDropTarget(target):
+					c.drops = true
+				case target != "ACCEPT" && target != "RETURN":
+					c.next = append(c.next, target)
 				}
 			}
+		}
+	}
+	return chains
+}
+
+// iptablesChainDrops follows jumps through chains present in the output. A
+// target that is not a chain (LOG, MARK and other extensions) is skipped.
+func iptablesChainDrops(chains map[string]*iptablesChain, name string, seen map[string]bool) bool {
+	c := chains[name]
+	if c == nil || seen[name] {
+		return false
+	}
+	seen[name] = true
+	if c.drops {
+		return true
+	}
+	for _, next := range c.next {
+		if iptablesChainDrops(chains, next, seen) {
+			return true
 		}
 	}
 	return false

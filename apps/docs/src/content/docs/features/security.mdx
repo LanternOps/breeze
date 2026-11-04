@@ -67,7 +67,7 @@ The agent reports a `SecurityStatus` payload on each heartbeat. The payload incl
     - **Password policy**: `pwpolicy -getglobalpolicy` parses min chars, complexity, lockout, and history
   </TabItem>
   <TabItem label="Linux">
-    - **Firewall**: Checks `ufw status`, then `firewall-cmd --state` and `systemctl is-active firewalld`, then reads `nft list ruleset`, then `iptables -S INPUT`. A ruleset counts as enabled when it has a drop policy or a drop or reject rule on input. `iptables -S INPUT` shows only the INPUT chain, so a drop reached through a jump to a user chain is not seen
+    - **Firewall**: Checks `ufw status`, then `firewall-cmd --state` and `systemctl is-active firewalld`, then reads the kernel ruleset with `nft list ruleset` and `iptables -S INPUT`. The full `iptables -S` is read only when INPUT jumps to other chains. A ruleset counts as enabled when it has a drop policy on input, or a drop or reject rule on input or in a chain input jumps to. Both rulesets are read, because iptables-legacy rules do not appear in `nft list ruleset`
     - **Encryption**: `lsblk -J` walks the block device tree looking for `crypt` type entries (LUKS)
     - **Local admins**: `getent group sudo` or `getent group wheel` enumerates privileged group members
     - **Password policy**: Parses `/etc/login.defs` for min length and max age, checks PAM modules for complexity, and reads `/etc/security/faillock.conf` for lockout threshold

@@ -39,8 +39,13 @@ func stubLinuxFirewall(t *testing.T, present []string, outs map[string]fakeFwOut
 	origExec, origRuleset, origTools := linuxFirewallExec, linuxFirewallRulesetExec, linuxFirewallTools
 	spawn := func(name string, args []string) fakeFwOut {
 		tool := filepath.Base(name)
-		f.calls = append(f.calls, strings.Join(append([]string{tool}, args...), " "))
-		out, ok := f.outs[tool]
+		call := strings.Join(append([]string{tool}, args...), " ")
+		f.calls = append(f.calls, call)
+		// A key naming the whole call ("iptables -S") wins over the tool name.
+		out, ok := f.outs[call]
+		if !ok {
+			out, ok = f.outs[tool]
+		}
 		if !ok {
 			t.Fatalf("unexpected spawn of %s", tool)
 		}
@@ -262,6 +267,42 @@ table ip filter {
 	iptablesPolicyOnly = `-P INPUT ACCEPT`
 	iptablesUserChain  = `-P INPUT ACCEPT
 -A INPUT -j f2b-sshd`
+	// Captured from iptables-legacy 1.8.9 with a fail2ban-style chain: the
+	// drop is only in a chain INPUT jumps to.
+	iptablesJumpInput = `-P INPUT ACCEPT
+-A INPUT -p tcp -m tcp --dport 22 -j f2b-sshd
+-A INPUT -j ACCEPTONLY
+-A INPUT -j LOG`
+	iptablesJumpFull = `-P INPUT ACCEPT
+-P FORWARD ACCEPT
+-P OUTPUT ACCEPT
+-N ACCEPTONLY
+-N f2b-sshd
+-A INPUT -p tcp -m tcp --dport 22 -j f2b-sshd
+-A INPUT -j ACCEPTONLY
+-A INPUT -j LOG
+-A FORWARD -j DROP
+-A ACCEPTONLY -j ACCEPT
+-A f2b-sshd -s 203.0.113.9/32 -j REJECT --reject-with icmp-port-unreachable
+-A f2b-sshd -j RETURN`
+	// The same host with no REJECT in the jumped-to chains; FORWARD still drops.
+	iptablesJumpFullAcceptOnly = `-P INPUT ACCEPT
+-P FORWARD DROP
+-P OUTPUT ACCEPT
+-N ACCEPTONLY
+-N f2b-sshd
+-A INPUT -p tcp -m tcp --dport 22 -j f2b-sshd
+-A INPUT -j ACCEPTONLY
+-A INPUT -j LOG
+-A FORWARD -j DROP
+-A ACCEPTONLY -j ACCEPT
+-A f2b-sshd -j RETURN`
+	iptablesJumpCycle = `-P INPUT ACCEPT
+-N A
+-N B
+-A INPUT -j A
+-A A -j B
+-A B -g A`
 	iptablesDropInComment = `-P INPUT ACCEPT
 -A INPUT -p tcp -m tcp --dport 22 -m comment --comment "then -j DROP the rest" -j ACCEPT`
 
@@ -360,7 +401,53 @@ func TestGetFirewallStatusLinux(t *testing.T) {
 		{name: "nft policy accept with explicit drop rule", present: []string{"nft"}, outs: map[string]fakeFwOut{"nft": {out: nftAcceptPolicyDropRule, zero: true}}, want: enabled},
 		{name: "nft policy accept with reject rule", present: []string{"nft"}, outs: map[string]fakeFwOut{"nft": {out: nftAcceptPolicyRejectRule, zero: true}}, want: enabled},
 		{name: "nft accept only", present: []string{"nft"}, outs: map[string]fakeFwOut{"nft": {out: nftAcceptOnly, zero: true}}, want: disabled},
-		{name: "nft empty ruleset", present: []string{"nft", "iptables"}, outs: map[string]fakeFwOut{"nft": {out: "", zero: true}}, want: disabled, wantCalls: []string{"nft list ruleset"}},
+		{name: "nft empty ruleset", present: []string{"nft"}, outs: map[string]fakeFwOut{"nft": {out: "", zero: true}}, want: disabled, wantCalls: []string{"nft list ruleset"}},
+		{
+			// iptables-legacy rules are not in `nft list ruleset`, which prints
+			// nothing on a legacy-only host (captured in the lab).
+			name:      "nft empty, iptables-legacy drops",
+			present:   []string{"nft", "iptables"},
+			outs:      map[string]fakeFwOut{"nft": {out: "", zero: true}, "iptables": {out: iptablesLegacyDropPolicy, zero: true}},
+			want:      enabled,
+			wantCalls: []string{"nft list ruleset", "iptables -S INPUT"},
+		},
+		{name: "nft accept only, iptables-legacy drops", present: []string{"nft", "iptables"}, outs: map[string]fakeFwOut{"nft": {out: nftAcceptOnly, zero: true}, "iptables": {out: iptablesLegacyRejectRule, zero: true}}, want: enabled},
+		{name: "nft empty, iptables accept only", present: []string{"nft", "iptables"}, outs: map[string]fakeFwOut{"nft": {out: "", zero: true}, "iptables": {out: iptablesAcceptOnly, zero: true}}, want: disabled},
+		{
+			name:    "nft answers, iptables-nft refuses a native nft table",
+			present: []string{"nft", "iptables"},
+			outs: map[string]fakeFwOut{
+				"nft":      {out: nftAcceptOnly, zero: true},
+				"iptables": {out: "iptables v1.8.9 (nf_tables): table `filter' is incompatible, use 'nft' tool.", zero: false},
+			},
+			want: disabled,
+		},
+		{name: "nft answers, iptables not permitted", present: []string{"nft", "iptables"}, outs: map[string]fakeFwOut{"nft": {out: nftAcceptOnly, zero: true}, "iptables": {out: iptablesPermissionDenied, zero: false}}, want: disabled},
+		{
+			name:    "nft timed out, iptables accept only is unknown",
+			present: []string{"nft", "iptables"},
+			outs:    map[string]fakeFwOut{"nft": {timeout: true}, "iptables": {out: iptablesAcceptOnly, zero: true}},
+			want:    unknown,
+		},
+		{
+			name:    "nft failed, iptables accept only is unknown",
+			present: []string{"nft", "iptables"},
+			outs:    map[string]fakeFwOut{"nft": {out: "Error: Could not process rule: Protocol not supported", zero: false}, "iptables": {out: iptablesAcceptOnly, zero: true}},
+			want:    unknown,
+		},
+		{
+			name:    "nft not permitted, iptables accept only is not disabled",
+			present: []string{"nft", "iptables"},
+			outs:    map[string]fakeFwOut{"nft": {out: nftPermissionDenied, zero: false}, "iptables": {out: iptablesAcceptOnly, zero: true}},
+			want:    want{unsupported: FirewallUnsupportedPermission},
+		},
+		{
+			name:      "firewalld inactive, nft empty: disabled from the ruleset",
+			present:   []string{"firewall-cmd", "systemctl", "nft"},
+			outs:      map[string]fakeFwOut{"firewall-cmd": {out: "not running", zero: false}, "systemctl": {out: "inactive", zero: false}, "nft": {out: "", zero: true}},
+			want:      disabled,
+			wantCalls: []string{"firewall-cmd --state", "systemctl is-active firewalld", "nft list ruleset"},
+		},
 		{name: "nft drops only on output and forward", present: []string{"nft"}, outs: map[string]fakeFwOut{"nft": {out: nftOutputDropOnly, zero: true}}, want: disabled},
 		{name: "nft input jumps to a chain that drops", present: []string{"nft"}, outs: map[string]fakeFwOut{"nft": {out: nftJumpToDrop, zero: true}}, want: enabled},
 		{name: "nft drop in an unreachable chain only", present: []string{"nft"}, outs: map[string]fakeFwOut{"nft": {out: nftUnreachableDropOnly, zero: true}}, want: disabled},
@@ -385,7 +472,51 @@ func TestGetFirewallStatusLinux(t *testing.T) {
 		{name: "iptables nft-backed with warning line, accept only", present: []string{"iptables"}, outs: map[string]fakeFwOut{"iptables": {out: iptablesNftBackedAcceptOnly, zero: true}}, want: disabled},
 		{name: "iptables policy ACCEPT, accept rules only", present: []string{"iptables"}, outs: map[string]fakeFwOut{"iptables": {out: iptablesAcceptOnly, zero: true}}, want: disabled},
 		{name: "iptables policy ACCEPT, no rules", present: []string{"iptables"}, outs: map[string]fakeFwOut{"iptables": {out: iptablesPolicyOnly, zero: true}}, want: disabled},
-		{name: "iptables jump to a user chain is not read as a drop", present: []string{"iptables"}, outs: map[string]fakeFwOut{"iptables": {out: iptablesUserChain, zero: true}}, want: disabled, wantCalls: []string{"iptables -S INPUT"}},
+		{
+			name:      "iptables INPUT jumps to a chain that rejects",
+			present:   []string{"iptables"},
+			outs:      map[string]fakeFwOut{"iptables -S INPUT": {out: iptablesJumpInput, zero: true}, "iptables -S": {out: iptablesJumpFull, zero: true}},
+			want:      enabled,
+			wantCalls: []string{"iptables -S INPUT", "iptables -S"},
+		},
+		{
+			name:    "iptables jumped-to chains accept, FORWARD drops",
+			present: []string{"iptables"},
+			outs:    map[string]fakeFwOut{"iptables -S INPUT": {out: iptablesJumpInput, zero: true}, "iptables -S": {out: iptablesJumpFullAcceptOnly, zero: true}},
+			want:    disabled,
+		},
+		{
+			name:    "iptables INPUT goto a chain that drops",
+			present: []string{"iptables"},
+			outs:    map[string]fakeFwOut{"iptables -S INPUT": {out: "-P INPUT ACCEPT\n-A INPUT -g IN_zone", zero: true}, "iptables -S": {out: "-P INPUT ACCEPT\n-N IN_zone\n-A INPUT -g IN_zone\n-A IN_zone -j DROP", zero: true}},
+			want:    enabled,
+		},
+		{
+			name:    "iptables jump cycle terminates",
+			present: []string{"iptables"},
+			outs:    map[string]fakeFwOut{"iptables -S INPUT": {out: "-P INPUT ACCEPT\n-A INPUT -j A", zero: true}, "iptables -S": {out: iptablesJumpCycle, zero: true}},
+			want:    disabled,
+		},
+		{
+			name:    "iptables full listing fails after a jump: unknown",
+			present: []string{"iptables"},
+			outs:    map[string]fakeFwOut{"iptables -S INPUT": {out: iptablesUserChain, zero: true}, "iptables -S": {out: "iptables: unexpected failure", zero: false}},
+			want:    unknown,
+		},
+		{
+			name:      "iptables INPUT with no jumps needs one spawn",
+			present:   []string{"iptables"},
+			outs:      map[string]fakeFwOut{"iptables -S INPUT": {out: iptablesAcceptOnly, zero: true}},
+			want:      disabled,
+			wantCalls: []string{"iptables -S INPUT"},
+		},
+		{
+			name:      "iptables INPUT drops itself: no full listing",
+			present:   []string{"iptables"},
+			outs:      map[string]fakeFwOut{"iptables -S INPUT": {out: "-P INPUT ACCEPT\n-A INPUT -j f2b-sshd\n-A INPUT -j DROP", zero: true}},
+			want:      enabled,
+			wantCalls: []string{"iptables -S INPUT"},
+		},
 		{name: "iptables -j DROP only inside a comment", present: []string{"iptables"}, outs: map[string]fakeFwOut{"iptables": {out: iptablesDropInComment, zero: true}}, want: disabled},
 		{name: "iptables-legacy with no filter table", present: []string{"iptables"}, outs: map[string]fakeFwOut{"iptables": {out: iptablesLegacyNoTable, zero: false}}, want: disabled},
 		{
@@ -670,6 +801,11 @@ func TestFirewallRulesetFromCommandKeepsStreamsApart(t *testing.T) {
 	stdout, stderr, zeroExit, ok := firewallRulesetFromCommand(5*time.Second, "sh", "-c", "echo ruleset; echo warning >&2")
 	if stdout != "ruleset\n" || stderr != "warning\n" || !zeroExit || !ok {
 		t.Fatalf("stdout=%q stderr=%q zeroExit=%v ok=%v", stdout, stderr, zeroExit, ok)
+	}
+
+	t.Setenv("LC_ALL", "de_DE.UTF-8")
+	if stdout, _, _, _ := firewallRulesetFromCommand(5*time.Second, "sh", "-c", "echo $LC_ALL"); stdout != "C\n" {
+		t.Fatalf("ruleset tools must run with LC_ALL=C, got %q", stdout)
 	}
 
 	_, stderr, zeroExit, ok = firewallRulesetFromCommand(5*time.Second, "sh", "-c", "echo denied >&2; exit 1")
