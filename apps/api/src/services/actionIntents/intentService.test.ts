@@ -365,7 +365,7 @@ import {
 import type { GuardrailCheck } from '../aiGuardrails';
 import { buildActionLabel } from './actionLabel';
 import { db, withDbAccessContext } from '../../db';
-import { computeEffectDigestOutcome } from './effectDigest';
+import { computeEffectDigestOutcome, EffectDigestUnresolvableError } from './effectDigest';
 import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 import { CallerVerificationRequiredError, CallerVerificationValidationError } from '../callerVerification/errors';
 
@@ -2197,6 +2197,77 @@ describe('createActionIntent — supervised/four_eyes scope', () => {
     expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
       expect.objectContaining({ details: expect.objectContaining({ soleOperator: true }) }),
     );
+  });
+
+  // Network-isolation W13 (#10101, ai.mdx "Approving your own request when you
+  // are the only approver"): the AI release of a containment is four-eyes, and
+  // a sole operator keeps the WebAuthn self-approval fallback — one
+  // requester-owned row carrying the pinned episode digest. (Real
+  // selfApprovalPolicy and pinnedEffectPolicy; the decide-time assurance gate is
+  // tool-agnostic.)
+  describe('release_containment (W13 #10101)', () => {
+    const releaseInput = {
+      deviceId: '11111111-1111-4111-8111-111111111111',
+      isolationId: '33333333-3333-4333-8333-333333333333',
+      reason: 'Incident contained and cleaned',
+    };
+    const fourEyes = {
+      tier: 3, allowed: true, requiresApproval: true,
+      description: 'Release network isolation', approvalScope: 'four_eyes',
+    } as const;
+
+    it('a sole operator gets one requester-owned row carrying the pinned episode digest', async () => {
+      guardrailMock.checkGuardrails.mockReturnValue(fourEyes);
+      effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({ kind: 'pinned', digest: 'f'.repeat(64) });
+      intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID]);
+      dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-release-solo', actionName: 'release_containment' }));
+      dbState.insertApprovalRequestsResults.push([{ id: 'approval-release-solo' }]);
+
+      const snapshot = await createActionIntent(makeAuth(), baseInput({
+        toolName: 'release_containment', input: releaseInput, idempotencyKey: 'key-release-solo',
+      }));
+
+      expect(snapshot.status).toBe('pending_approval');
+      expect(snapshot.requesterApprovalRequestId).toBe('approval-release-solo');
+      expect(snapshot.fanOutUserIds).toEqual([REQUESTER_ID]);
+      expect(dbState.insertedActionIntentValues[0]).toMatchObject({
+        actionName: 'release_containment', approvalScope: 'four_eyes', effectDigest: 'f'.repeat(64),
+      });
+      expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ details: expect.objectContaining({ soleOperator: true }) }),
+      );
+    });
+
+    it('with another eligible approver, the requester cannot self-approve: the row goes to the second person', async () => {
+      guardrailMock.checkGuardrails.mockReturnValue(fourEyes);
+      effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({ kind: 'pinned', digest: 'f'.repeat(64) });
+      intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID, APPROVER_1]);
+      dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-release-pair', actionName: 'release_containment' }));
+      dbState.insertApprovalRequestsResults.push([{ id: 'approval-release-pair' }]);
+
+      const snapshot = await createActionIntent(makeAuth(), baseInput({
+        toolName: 'release_containment', input: releaseInput, idempotencyKey: 'key-release-pair',
+      }));
+
+      expect(snapshot.requesterApprovalRequestId).toBeNull();
+      const inserted = dbState.insertedApprovalRequestsValues[0] as Array<{ userId: string }>;
+      expect(inserted.map((r) => r.userId)).toEqual([APPROVER_1]);
+    });
+
+    it.each(['missing_arg', 'target_absent'] as const)(
+      'refuses to create the approval when the episode cannot be pinned (%s)', async (reason) => {
+        guardrailMock.checkGuardrails.mockReturnValue(fourEyes);
+        effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({ kind: 'unresolved', reason });
+        // Everything else would succeed: the refusal is the mandatory pin alone.
+        intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+        dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: `intent-release-${reason}`, actionName: 'release_containment' }));
+        dbState.insertApprovalRequestsResults.push([{ id: `approval-release-${reason}` }]);
+
+        await expect(createActionIntent(makeAuth(), baseInput({
+          toolName: 'release_containment', input: releaseInput, idempotencyKey: `key-release-${reason}`,
+        }))).rejects.toBeInstanceOf(EffectDigestUnresolvableError);
+        expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+      });
   });
 
   it('persists approvalScope and classificationVersion on the inserted row', async () => {

@@ -1265,6 +1265,46 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
   });
 });
 
+// Network-isolation W13 (#10101, spec §2 / OD15): lifting a containment is a
+// four-eyes human decision. An agent principal is denied outright — not even a
+// proposal — whatever its allowlist or mode says. The release service also
+// stamps the caller's user id on the queued command, which an agent id is not.
+describe('release_containment never reaches an agent principal (W13 #10101)', () => {
+  beforeEach(() => {
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const input = {
+    deviceId: 'dev-1',
+    isolationId: '33333333-3333-4333-8333-333333333333',
+    reason: 'Incident contained and cleaned',
+  };
+
+  it('is a registered Tier-3 four-eyes tool (so this suite is not vacuous)', () => {
+    expect(TOOL_TIERS.release_containment).toBe(3);
+    expect(resolveApprovalScope('release_containment', input)).toBe('four_eyes');
+  });
+
+  it.each(['act', 'shadow'] as const)('%s mode, explicitly allowlisted: deny — never allow, act or propose', (mode) => {
+    for (const toolAllowlist of [['release_containment'], ['release_containment', 'execute_containment']]) {
+      const check = checkAgentGuardrails('release_containment', input, policyWith({ mode, toolAllowlist }));
+      expect(check.disposition).toBe('deny');
+      expect(check.allowed).toBe(false);
+      expect(check.reason).toMatch(/human-only and is never available to agents/);
+    }
+  });
+
+  it('is never offered to an agent in the catalog', () => {
+    expect(isNeverAgentTool('release_containment')).toBe(true);
+    expect(aiTools.has('release_containment')).toBe(true);
+    expect(listAgentReachableTools()).not.toContain('release_containment');
+  });
+});
+
 
 // W5 PR C (#5220): flow tools are never Tier-1 listed statically — no
 // TOOL_TIERS entry, so checkAgentGuardrails denies a flow__ name unless the

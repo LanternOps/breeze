@@ -1496,6 +1496,34 @@ describe('network isolation bypass refusal', () => {
     expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
   });
 
+  // W13 (#10101): the AI tool is now REGISTERED (Tier 3, four-eyes). Registration
+  // must not open an MCP path: drive the gate with the real registry tier and
+  // the real tool input, under every intents/unattended combination.
+  it.each([
+    [false, false], [false, true], [true, false], [true, true],
+  ] as const)('the registered release_containment stays refused (intents=%s unattended=%s)', async (intents, unattended) => {
+    const actual = await vi.importActual<typeof import('../services/aiTools')>('../services/aiTools');
+    const realTier = actual.getToolTier('release_containment');
+    expect(realTier).toBe(3);
+    mocks.getToolTier.mockImplementation((name: string) => (name === 'release_containment' ? realTier : undefined));
+    vi.stubEnv('MCP_TIER3_INTENTS_ENABLED', String(intents));
+    vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', unattended ? principal : '');
+    const releaseArgs = {
+      deviceId: isolationArgs.deviceId,
+      isolationId: '33333333-3333-4333-8333-333333333333',
+      reason: 'Incident contained and cleaned',
+    };
+    expect(__isMcpApprovalRequiredForTests('release_containment', realTier!, {
+      unattendedPrincipal: true, toolInput: releaseArgs,
+    })).toBe(true);
+    const body = await (await callTool('release_containment', releaseArgs)).json();
+    expect(body.result.isError).toBe(true);
+    expect(JSON.parse(body.result.content[0].text)).toMatchObject({ code: 'MCP_APPROVAL_REQUIRED' });
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+    expect(mocks.ledgerBegin).not.toHaveBeenCalled();
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+  });
+
   it('refuses release_containment by name before it is registered', async () => {
     mocks.getToolTier.mockReturnValue(undefined);
     const body = await (await callTool('release_containment', {})).json();
