@@ -1129,6 +1129,8 @@
       "sensitive_data_finding": "Fund sensibler Daten",
       "sensitive_data_policy": "Richtlinie für sensible Daten",
       "sensitive_data_scan": "Scan nach sensiblen Daten",
+      "service_catalog": "Servicekatalog",
+      "service_catalog_item": "Servicekatalog-Eintrag",
       "service_principal": "Dienstprinzipal",
       "site": "Standort",
       "sla_definition": "SLA-Definition",

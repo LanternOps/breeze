@@ -1,5 +1,3 @@
-//go:build windows
-
 package security
 
 import (
@@ -7,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -21,22 +20,45 @@ type wscProductRaw struct {
 	InstanceGUID             string `json:"instanceGuid"`
 }
 
-// GetWindowsSecurityCenterProducts returns AV providers from root/SecurityCenter2.
-func GetWindowsSecurityCenterProducts() ([]AVProduct, error) {
+// wscQueryPS lists the AV products registered with Windows Security Center.
+const wscQueryPS = "Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct | Select-Object displayName,productState,pathToSignedProductExe,pathToSignedReportingExe,timestamp,instanceGuid | ConvertTo-Json -Compress"
+
+// runWSCQuery runs the Security Center query. It is the only spawn path for
+// it, so tests can count spawns.
+var runWSCQuery = func() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	command := "Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct | Select-Object displayName,productState,pathToSignedProductExe,pathToSignedReportingExe,timestamp,instanceGuid | ConvertTo-Json -Compress"
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", command)
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", wscQueryPS)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
-		return nil, fmt.Errorf("wsc query timed out")
+		return "", fmt.Errorf("wsc query timed out")
 	}
 	if err != nil {
-		return nil, fmt.Errorf("wsc query failed: %w", err)
+		return "", fmt.Errorf("wsc query failed: %w", err)
+	}
+	return string(output), nil
+}
+
+// GetWindowsSecurityCenterProducts returns AV providers from root/SecurityCenter2.
+// It returns ErrNotSupported off Windows and on Windows Server, where the
+// root/SecurityCenter2 namespace does not exist (#10907); the status collector
+// then relies on the Defender probe alone.
+func GetWindowsSecurityCenterProducts() ([]AVProduct, error) {
+	return getWindowsSecurityCenterProductsFor(runtime.GOOS)
+}
+
+func getWindowsSecurityCenterProductsFor(goos string) ([]AVProduct, error) {
+	if goos != "windows" || hostIsWindowsServer() {
+		return nil, ErrNotSupported
 	}
 
-	payload := strings.TrimSpace(string(output))
+	output, err := runWSCQuery()
+	if err != nil {
+		return nil, err
+	}
+
+	payload := strings.TrimSpace(output)
 	if payload == "" || payload == "null" {
 		return nil, nil
 	}
