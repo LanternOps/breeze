@@ -1050,15 +1050,8 @@ func runBackupRunCommand(ctx context.Context, req backupipc.BackupCommandRequest
 	// mgr here may be the ephemeral payload-built manager resolved above
 	// (not the long-lived agent.yaml manager), so the progress fn is set
 	// on it directly, right before the run that actually uses it.
-	mgr.SetProgressFn(func(filesDone, filesTotal int, bytesDone, bytesTotal int64, snapshotID string) {
-		sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{
-			CommandID: req.CommandID, Phase: "uploading",
-			Current: bytesDone, Total: bytesTotal,
-			FilesDone: filesDone, FilesTotal: filesTotal,
-			// Forwarded so the server records backup_jobs.snapshot_id
-			// mid-run (#3006). Empty on pre-snapshot keepalives.
-			SnapshotID: snapshotID,
-		})
+	mgr.SetProgressFn(func(p backup.RunProgress) {
+		sendBackupRunProgress(conn, req.CommandID, backupRunProgressFrame(req.CommandID, p))
 	})
 	result := marshalBackupRunResult(mgr.RunBackupContext(ctx, excludes))
 	// Auto-sync to vault after successful backup (async — don't block command response)
@@ -1066,6 +1059,21 @@ func runBackupRunCommand(ctx context.Context, req backupipc.BackupCommandRequest
 		go autoSyncToVault(result.Stdout, vaultState, conn, mgr.GetProvider())
 	}
 	return result
+}
+
+// backupRunProgressFrame is the wire frame for one backup_run progress report.
+func backupRunProgressFrame(commandID string, p backup.RunProgress) backupipc.BackupProgress {
+	return backupipc.BackupProgress{
+		CommandID: commandID, Phase: "uploading",
+		Current: p.BytesDone, Total: p.BytesTotal,
+		FilesDone: p.FilesDone, FilesTotal: p.FilesTotal,
+		// The resume/dedupe check counters (#11014): the server counts their
+		// movement as progress, so a long check pass is not reaped as wedged.
+		VerifiedFiles: p.VerifiedFiles, VerifiedBytes: p.VerifiedBytes,
+		// Forwarded so the server records backup_jobs.snapshot_id mid-run
+		// (#3006). Empty on pre-snapshot keepalives.
+		SnapshotID: p.SnapshotID,
+	}
 }
 
 // --- helpers ---
