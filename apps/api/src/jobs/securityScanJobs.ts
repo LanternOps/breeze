@@ -19,7 +19,7 @@ import { securityScanCron, type SecurityScanSettings } from '@breeze/shared';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 import { parsePositiveIntEnv } from '../services/securityScanSweepConfig';
 import { claimAndDispatchScan, type ClaimOutcome, type DispatchScanJobData } from './securityScanClaim';
-import { pumpSweeps, type SweepDispatchJob } from './securityScanSweepPump';
+import { pumpSweeps, type PumpDispatchJob } from './securityScanSweepPump';
 import { captureException } from '../services/sentry';
 
 // #6263 W05: the payload builder moved next to the claim, its only queued caller.
@@ -111,8 +111,11 @@ export async function enqueueSweepPump(): Promise<void> {
   );
 }
 
-/** #6263 W05 — the pump's admissions, each on the stable per-scan job id. */
-export async function enqueueSweepDispatches(jobs: readonly SweepDispatchJob[]): Promise<void> {
+/**
+ * #6263 W05 — the pump's admissions (sweep scans, and since #10057 gap 2 the
+ * waiting Scan now rows it re-admits), each on the stable per-scan job id.
+ */
+export async function enqueueSweepDispatches(jobs: readonly PumpDispatchJob[]): Promise<void> {
   // One failing add must not starve the rest of the batch: the rows stay
   // queued and the next tick re-admits whatever did not make it.
   let failed = 0;

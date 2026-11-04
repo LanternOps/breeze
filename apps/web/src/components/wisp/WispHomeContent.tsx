@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Brain, MessagesSquare, Sparkles } from 'lucide-react';
 import { LIVE_CONCERN_STATUSES, type CurrentActivity, type WispHomePayload, type WispThreadLink } from '@breeze/shared';
@@ -227,10 +227,10 @@ export default function WispHomeContent() {
     await load(false);
   };
 
-  const onLinksChange = (next: WispThreadLink[]) => {
+  const onLinksChange = (next: SetStateAction<WispThreadLink[]>) => {
     // Same as onWispChange: a poll already in flight read the links before this change.
     loadToken.current++;
-    setView((v) => (v.kind === 'ready' ? { ...v, links: next } : v));
+    setView((v) => (v.kind === 'ready' ? { ...v, links: typeof next === 'function' ? next(v.links) : next } : v));
   };
 
   const scopeLabel = wisp.scopeOrgId === null ? t('wisp.header.scopeAll') : (orgName ?? '');

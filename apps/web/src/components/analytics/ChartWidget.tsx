@@ -19,6 +19,7 @@ import {
 import { minHeightPxClass } from '@/lib/utils';
 import { formatNumber } from '@/lib/utils';
 import { formatPercent } from '@/lib/i18n/format';
+import { parseDateOnly } from '@/lib/dateOnly';
 
 type ChartType = 'line' | 'bar' | 'area' | 'pie';
 
@@ -55,11 +56,15 @@ const defaultColors = [
 
 const axisTick = { fontSize: 10, fill: 'hsl(var(--muted-foreground))' };
 
-/** ISO timestamps render as short localized dates; anything else passes through. */
+/**
+ * ISO timestamps render as short localized dates; anything else passes through.
+ * A bare `YYYY-MM-DD` (a day bucket, #10077) is a calendar date, not a UTC
+ * instant, so it is parsed as a local date and never shifts a day west of UTC.
+ */
 export const formatAxisLabel = (value: unknown): string => {
   const raw = String(value ?? '');
   if (!/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw;
-  const parsed = new Date(raw);
+  const parsed = parseDateOnly(raw);
   if (Number.isNaN(parsed.getTime())) return raw;
   return parsed.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 };

@@ -305,3 +305,47 @@ it('has no legacy policy cooldown import or branch', () => {
   expect(readFileSync(new URL('./alerts.ts', import.meta.url), 'utf8'))
     .not.toMatch(/markConfigPolicyRuleCooldown|else if \(alert\.configPolicyId\)/);
 });
+
+// Device-less ownership must not interrupt a successful resolve after its CAS.
+it.each(['backup_workload', 'topology_site'])('resolves a %s alert while skipping device cooldown', async (ownerKind) => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const row = { ...alertRow, ownerKind, ownerRef: 'workload-1', deviceId: null, ruleId: 'rule-1' };
+    getAlertWithOrgCheck.mockResolvedValue(row);
+    updateReturns.push([{ ...row, status: 'resolved' }]);
+    const res = await resolveRequest();
+    expect(res.status).toBe(200);
+    expect(setCooldown).not.toHaveBeenCalled();
+    expect(publishEvent).toHaveBeenCalledExactlyOnceWith('alert.resolved', row.orgId,
+      expect.objectContaining({ alertId: row.id, deviceId: null }),
+      expect.any(String), { userId: 'user-1' });
+    expect(emitAlertStateFeedback).toHaveBeenCalledTimes(1);
+    expect(writeRouteAudit).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({
+      action: 'alert.resolve', orgId: row.orgId, resourceId: row.id,
+    }));
+    expect(warn).toHaveBeenCalledWith(expect.any(String), {
+      alertId: row.id, orgId: row.orgId, ownerKind, reason: 'alert_has_no_device',
+    });
+    expect(error).not.toHaveBeenCalled();
+  } finally {
+    warn.mockRestore();
+    error.mockRestore();
+  }
+});
+
+it('finishes resolution and audit when the device cooldown write fails', async () => {
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const row = { ...alertRow, ruleId: 'rule-1' };
+    getAlertWithOrgCheck.mockResolvedValue(row);
+    selectRows.push([{ id: 'rule-1', templateId: 'template-1' }], [{ cooldownMinutes: 15 }]);
+    updateReturns.push([{ ...row, status: 'resolved' }]);
+    setCooldown.mockRejectedValueOnce(new Error('cooldown unavailable'));
+    expect((await resolveRequest()).status).toBe(200);
+    expect(publishEvent).toHaveBeenCalledTimes(1);
+    expect(emitAlertStateFeedback).toHaveBeenCalledTimes(1);
+    expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('cooldown'), expect.any(Error));
+  } finally { error.mockRestore(); }
+});

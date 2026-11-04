@@ -87,6 +87,20 @@ export interface StartWorkersHooks {
  */
 export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
+    name: 'psaTicketingWorker', placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/psaTicketingWorker');
+      return { init: m.initializePsaTicketingWorker, shutdown: m.shutdownPsaTicketingWorker };
+    },
+  },
+  {
+    name: 'psaTicketingReconciler', placement: 'global', runsWithoutRedis: true,
+    load: async () => {
+      const m = await import('../jobs/psaTicketingReconciler');
+      return { init: m.initializePsaTicketingReconciler, startWithoutRedis: m.initializePsaTicketingReconciler, shutdown: m.shutdownPsaTicketingReconciler };
+    },
+  },
+  {
     name: 'topologyReconcileWorker', placement: 'global',
     load: async () => {
       const m = await import('../jobs/topologyReconcileWorker');
@@ -1396,6 +1410,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/pamJobs');
       return { init: m.initializePamJobs, shutdown: m.shutdownPamJobs };
+    },
+  },
+  {
+    name: 'networkIsolationSweeper',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/networkIsolationSweeper');
+      return { init: m.initializeNetworkIsolationSweeper, shutdown: m.shutdownNetworkIsolationSweeper };
     },
   },
   {

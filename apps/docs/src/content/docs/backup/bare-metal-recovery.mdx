@@ -257,6 +257,7 @@ breeze-backup rebuild \
   --snapshot <snapshot-id> \
   --target disk:/dev/sdb        # or image:/path/to/disk.img with --image-size 40G
   --provider-config provider.json \
+  [--key-prefix <prefix>] \
   [--identity original|new] [--marker-file marker.json] \
   [--dry-run] [--result-json result.json]
 ```
@@ -266,6 +267,7 @@ breeze-backup rebuild \
 | `--snapshot` | The `system_image` snapshot to rebuild from (must carry a layout manifest). |
 | `--target` | `disk:/dev/…` for a real block device, `image:/path.img` for a raw image file (created sparse; `--image-size` is required when the file does not exist yet), or `vhdx:<path>` for a VHDX disk image. A mounted disk, or the one backing the running system, is refused. On a **live Windows host**, only `vhdx:` is supported — `disk:` needs a WinPE-booted environment, which doesn't ship until the Windows recovery media (W07). |
 | `--provider-config` | JSON file with the backup destination credentials, as used by the recovery bundle. |
+| `--key-prefix` | S3 `--provider-config` only: the key prefix the snapshot was stored under (its objects are at `<prefix>/snapshots/<snapshot-id>/`). Leave it out for a snapshot at the bucket root. `providerConfig.prefix` in the file is not applied. See [Key prefix](/backup/storage/#key-prefix). Refused with `--token`, which reads through Breeze and knows the snapshot's location. |
 | `--identity` | `original` (default) keeps the machine ID, hostname and agent enrollment and writes a recovery marker; `new` clears the machine ID, appends `-restored` to the hostname and strips the agent's device identity so it re-enrolls as a new device. |
 | `--dry-run` | Run the preflight only — fetch and verify the layout, plan the partitions, check the target — and print the plan without writing anything. |
 | `--state-dir` | Where the resumable state file lives (default `/var/lib/breeze/rebuild`). |

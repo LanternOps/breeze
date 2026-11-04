@@ -23,6 +23,7 @@ import type {
   EdrDetectionDto,
   EdrDetectionStatus,
   EdrSeverity,
+  EdrStatusIntegrationSummary,
   EdrStatusProviderSummary,
   EdrStatusSummary,
   EdrSyncStatus,
@@ -37,7 +38,9 @@ import {
   edrEndpoints,
   edrTenants,
   huntressAgents,
+  huntressIntegrations,
   s1Agents,
+  s1Integrations,
 } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import type { UserPermissions } from '../permissions';
@@ -255,6 +258,12 @@ export interface CoverageDetectionAgg {
   openDetections: number;
 }
 
+/** A legacy integration's agents in scope, grouped by org (#10394). */
+export interface LegacyIntegrationCoverage {
+  orgIds: string[];
+  agents: number;
+}
+
 export interface CoverageInput {
   /** True for partner/system scope (tenant + connection state readable). */
   syncHealthVisible: boolean;
@@ -262,8 +271,25 @@ export interface CoverageInput {
   tenants: CoverageTenant[];
   endpoints: CoverageEndpointAgg[];
   detections: CoverageDetectionAgg[];
-  legacy: { sentinelOne: boolean; huntress: boolean };
+  legacy: { sentinelOne: LegacyIntegrationCoverage; huntress: LegacyIntegrationCoverage };
   now: Date;
+}
+
+const LEGACY_INTEGRATIONS = [
+  { key: 'sentinelOne', integration: 'sentinelone', name: 'SentinelOne' },
+  { key: 'huntress', integration: 'huntress', name: 'Huntress' },
+] as const;
+
+/**
+ * Coverage note when no EDR provider covers the scope but a legacy
+ * integration does (#10394). Fixed Breeze text: integration names only.
+ */
+function legacyOnlyNote(where: string, notFrom: string, names: string[]): string {
+  const which = names.length === 1
+    ? `the ${names[0]} integration`
+    : `the ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} integrations`;
+  return `EDR coverage for ${where} comes from ${which}, not ${notFrom}; its alerts are not in the EDR provider `
+    + 'detection list, so an empty detection list is not evidence of no threats.';
 }
 
 /**
@@ -274,6 +300,18 @@ export function buildEdrStatusSummary(input: CoverageInput): EdrStatusSummary {
   const notes: string[] = [];
   let partial = false;
   const providers: EdrStatusProviderSummary[] = [];
+
+  // Legacy integrations (Huntress, SentinelOne) are EDR coverage too: they
+  // count toward orgsWithEdr and suppress the "no EDR at all" note (#10394).
+  const integrations: EdrStatusIntegrationSummary[] = [];
+  const legacyOrgs = new Set<string>();
+  for (const l of LEGACY_INTEGRATIONS) {
+    const cov = input.legacy[l.key];
+    if (cov.orgIds.length === 0) continue;
+    for (const id of cov.orgIds) legacyOrgs.add(id);
+    integrations.push({ integration: l.integration, label: `${l.name} (integration)`, orgs: new Set(cov.orgIds).size, agents: cov.agents });
+  }
+  const legacyNames = LEGACY_INTEGRATIONS.filter((l) => input.legacy[l.key].orgIds.length > 0).map((l) => l.name);
 
   const endpointsByKey = new Map<string, { endpoints: number; linked: number; unhealthy: number }>();
   const orgsWithEndpoints = new Set<string>();
@@ -330,7 +368,9 @@ export function buildEdrStatusSummary(input: CoverageInput): EdrStatusSummary {
     }
     if (input.connections.length === 0) {
       partial = true;
-      notes.push('No active EDR provider connection covers this scope; an empty detection list is not evidence of no threats.');
+      notes.push(legacyNames.length > 0
+        ? legacyOnlyNote('this scope', 'an EDR provider connection', legacyNames)
+        : 'No active EDR provider connection covers this scope; an empty detection list is not evidence of no threats.');
     }
     if (reauth > 0) { partial = true; notes.push(`${reauth} EDR connection(s) need re-authentication; their detections are not being synced.`); }
     if (errored > 0) { partial = true; notes.push(`${errored} EDR connection(s) are in an error state.`); }
@@ -340,7 +380,7 @@ export function buildEdrStatusSummary(input: CoverageInput): EdrStatusSummary {
     if (pending > 0) { partial = true; notes.push(`${pending} mapped EDR tenant(s) have not completed a first detection sync yet (pending).`); }
     if (noMapped > 0) { partial = true; notes.push(`${noMapped} EDR connection(s) have no vendor tenant mapped to an organization in this scope.`); }
     if (unmapped > 0) { partial = true; notes.push(`${unmapped} EDR vendor tenant(s) are not mapped to an organization; their detections are not synced.`); }
-    return finish(orgsWithTenants.size);
+    return finish(orgsWithTenants);
   }
 
   // Organization scope: org-visible tables only.
@@ -364,22 +404,25 @@ export function buildEdrStatusSummary(input: CoverageInput): EdrStatusSummary {
   }
   if (orgsWithEndpoints.size === 0) {
     partial = true;
-    notes.push('No EDR provider endpoints are visible for this organization; an empty detection list is not evidence of no threats.');
+    notes.push(legacyNames.length > 0
+      ? legacyOnlyNote('this organization', 'EDR provider endpoints', legacyNames)
+      : 'No EDR provider endpoints are visible for this organization; an empty detection list is not evidence of no threats.');
   }
   // Sync health is hidden from this caller, so completeness cannot be
   // confirmed: an organization-scope result is always partial.
   partial = true;
   notes.push(SYNC_HEALTH_PARTNER_ONLY_NOTE);
-  return finish(orgsWithEndpoints.size);
+  return finish(orgsWithEndpoints);
 
-  function finish(orgsWithEdr: number): EdrStatusSummary {
-    if (input.legacy.sentinelOne) {
+  function finish(providerOrgs: ReadonlySet<string>): EdrStatusSummary {
+    if (input.legacy.sentinelOne.orgIds.length > 0) {
       notes.push('SentinelOne data for this scope comes from the SentinelOne integration; use get_s1_threats for it.');
     }
-    if (input.legacy.huntress) {
+    if (input.legacy.huntress.orgIds.length > 0) {
       notes.push('Huntress data for this scope comes from the Huntress integration; use get_huntress_incidents for it.');
     }
-    return { providers, coverage: { orgsWithEdr, partial, notes } };
+    const orgsWithEdr = new Set([...providerOrgs, ...legacyOrgs]).size;
+    return { providers, integrations, coverage: { orgsWithEdr, partial, notes } };
   }
 }
 
@@ -407,6 +450,45 @@ export function selectStatusConnections<C extends { id: string }>(
   return [...connections];
 }
 
+function toLegacyCoverage(rows: ReadonlyArray<{ orgId: string; agents: number }>): LegacyIntegrationCoverage {
+  return { orgIds: rows.map((r) => r.orgId), agents: rows.reduce((n, r) => n + Number(r.agents), 0) };
+}
+
+/**
+ * Legacy integration agents in the caller's scope, one row per org (#10394).
+ * Same org and site rules as `edr_endpoints`: a site-restricted caller counts
+ * agents linked to an allowed device, plus never-linked ones. Partner/system
+ * callers count only agents of an active integration (agent rows outlive a
+ * disabled integration). Org tokens cannot read the partner-axis integration
+ * row under RLS, so they count agent rows only, like the rest of the org-scope
+ * read. Exported for the DB-less SQL tests.
+ */
+export function buildLegacyAgentCoverageQuery(
+  scope: EdrReadScope,
+  q: { orgId?: string },
+  integration: EdrStatusIntegrationSummary['integration'],
+) {
+  const table = integration === 'huntress' ? huntressAgents : s1Agents;
+  const conds: SQL[] = [];
+  const org = edrOrgCondition(scope.auth, q.orgId, table.orgId);
+  if (org) conds.push(org);
+  if (isSiteRestricted(scope)) {
+    const ids = scope.allowedDeviceIds ?? [];
+    conds.push(ids.length > 0
+      ? (or(isNull(table.deviceId), inArray(table.deviceId, ids)) as SQL)
+      : isNull(table.deviceId));
+  }
+  if (scope.auth.scope === 'partner' || scope.auth.scope === 'system') {
+    const integrations = integration === 'huntress' ? huntressIntegrations : s1Integrations;
+    conds.push(sql`exists (select 1 from ${integrations} i where i.id = ${table.integrationId} and i.is_active)`);
+  }
+  return db
+    .select({ orgId: table.orgId, agents: sql<number>`count(*)::int` })
+    .from(table)
+    .where(conds.length > 0 ? and(...conds) : undefined)
+    .groupBy(table.orgId);
+}
+
 export async function getEdrStatus(scope: EdrReadScope, q: { orgId?: string }): Promise<EdrStatusSummary> {
   const auth = scope.auth;
   const syncHealthVisible = auth.scope === 'partner' || auth.scope === 'system';
@@ -422,10 +504,7 @@ export async function getEdrStatus(scope: EdrReadScope, q: { orgId?: string }): 
   }
   const detectionConds = buildDetectionConditions(scope, { orgId: q.orgId, status: 'open', limit: 1, offset: 0 });
 
-  const legacyOrgS1 = edrOrgCondition(auth, q.orgId, s1Agents.orgId);
-  const legacyOrgHuntress = edrOrgCondition(auth, q.orgId, huntressAgents.orgId);
-
-  const [endpointRows, detectionRows, s1Row, huntressRow] = await Promise.all([
+  const [endpointRows, detectionRows, s1Rows, huntressRows] = await Promise.all([
     db.select({
       provider: edrEndpoints.provider,
       connectionId: edrEndpoints.connectionId,
@@ -445,8 +524,8 @@ export async function getEdrStatus(scope: EdrReadScope, q: { orgId?: string }): 
       .from(edrDetections)
       .where(and(...detectionConds))
       .groupBy(edrDetections.provider, edrDetections.connectionId),
-    db.select({ id: s1Agents.id }).from(s1Agents).where(legacyOrgS1).limit(1),
-    db.select({ id: huntressAgents.id }).from(huntressAgents).where(legacyOrgHuntress).limit(1),
+    buildLegacyAgentCoverageQuery(scope, q, 'sentinelone'),
+    buildLegacyAgentCoverageQuery(scope, q, 'huntress'),
   ]);
 
   let connections: CoverageConnection[] = [];
@@ -511,7 +590,7 @@ export async function getEdrStatus(scope: EdrReadScope, q: { orgId?: string }): 
     tenants,
     endpoints: endpointRows.map((r) => ({ ...r, endpoints: Number(r.endpoints), linkedEndpoints: Number(r.linkedEndpoints), unhealthyEndpoints: Number(r.unhealthyEndpoints) })),
     detections: detectionRows.map((r) => ({ ...r, openDetections: Number(r.openDetections) })),
-    legacy: { sentinelOne: s1Row.length > 0, huntress: huntressRow.length > 0 },
+    legacy: { sentinelOne: toLegacyCoverage(s1Rows), huntress: toLegacyCoverage(huntressRows) },
     now: new Date(),
   });
 }

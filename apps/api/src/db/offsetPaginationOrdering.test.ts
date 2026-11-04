@@ -107,6 +107,12 @@ const ALLOWED_WITHOUT_LITERAL_ID: ReadonlyArray<{
       'the offset is applied in a separate statement (`cursorMode ? rowsQuery : rowsQuery.offset(offset)`); the ordering is resolveSearchOrder(), which ends every branch in asc/desc(deviceEventLogs.id)',
   },
   {
+    file: 'services/dnsSecurityEventsPage.ts',
+    orderByContains: 'pageQuery.offset(opts.offset)',
+    reason:
+      'legacy offset paging is applied in a separate statement (`!opts.cursor && opts.offset ? pageQuery.offset(opts.offset) : pageQuery`); pageQuery orders by desc(dnsSecurityEvents.timestamp), desc(dnsSecurityEvents.id) — the same key the keyset cursor uses',
+  },
+  {
     file: 'services/reliabilityScoring.ts',
     orderByContains: 'deviceReliability.deviceId',
     reason: 'device_reliability has no id column; device_id is its primary key',

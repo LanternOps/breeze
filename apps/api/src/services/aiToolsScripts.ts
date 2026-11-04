@@ -30,7 +30,7 @@ import {
   scriptExecutions,
   executionStatusEnum,
 } from '../db/schema';
-import { eq, and, desc, sql, ilike, inArray, isNull, or, SQL } from 'drizzle-orm';
+import { eq, and, desc, gte, sql, ilike, inArray, isNull, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { isAutomationPrincipal } from '../middleware/principalKind';
 import { escapeLike } from '../utils/sql';
@@ -1390,39 +1390,71 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
   registerTool({
     tier: 1,
     domain: 'scripts',
-    searchHint: 'script run history, status, exit codes, stdout, stderr and timing',
+    searchHint: 'script run history per script or per device; did it run, status, exit codes, stdout, stderr and timing',
+    // #10417: deviceId routes through the central verifyDeviceAccess gate
+    // (helper lock, exact-device membership, org, site) before the handler runs.
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_script_execution_history',
-      description: 'Get past execution results for a script. Shows status, exit codes, stdout/stderr, and timing information.',
+      description: 'Past script runs, newest first: for one script (scriptId), on one device (deviceId: every script run there), or both. Shows script name, status, exit code, stdout/stderr and timing.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          scriptId: { type: 'string', description: 'UUID of the script to get execution history for' },
+          scriptId: { type: 'string', description: 'Script UUID; omit with deviceId to list every script run on that device' },
+          deviceId: { type: 'string', description: 'Device UUID: runs on this device only' },
+          since: { type: 'string', description: 'ISO 8601 time: only runs created at or after it' },
           limit: { type: 'number', description: 'Max results to return (default 10, max 50)' },
         },
-        required: ['scriptId'],
       },
     },
     handler: async (input, auth) => {
-      // Verify the script belongs to the user's org before returning execution
-      // data. Partner-wide/system scripts have org_id NULL — same guard as
-      // run_script, or the history of the repo's default ownership shape would
-      // read as "Script not found".
-      const scriptConditions: SQL[] = [eq(scripts.id, input.scriptId as string), isNull(scripts.deletedAt)];
-      const orgCondition = auth.orgCondition(scripts.orgId);
-      if (orgCondition) scriptConditions.push(or(isNull(scripts.orgId), orgCondition)!);
+      // A supplied-but-malformed id is refused, never dropped: dropping a bad
+      // scriptId next to a deviceId would silently widen to every script.
+      for (const key of ['scriptId', 'deviceId'] as const) {
+        if (input[key] !== undefined && (typeof input[key] !== 'string' || input[key] === '')) {
+          return JSON.stringify({ error: `${key} must be a non-empty UUID string`, code: 'VALIDATION_ERROR' });
+        }
+      }
+      const scriptId = input.scriptId as string | undefined;
+      const deviceId = input.deviceId as string | undefined;
+      if (!scriptId && !deviceId) {
+        return JSON.stringify({ error: 'Provide scriptId or deviceId', code: 'VALIDATION_ERROR' });
+      }
+      let since: Date | undefined;
+      if (input.since !== undefined && input.since !== null && input.since !== '') {
+        since = new Date(String(input.since));
+        if (Number.isNaN(since.getTime())) {
+          return JSON.stringify({ error: 'since must be an ISO 8601 time', code: 'VALIDATION_ERROR' });
+        }
+      }
 
-      const [script] = await db
-        .select({ id: scripts.id })
-        .from(scripts)
-        .where(and(...scriptConditions))
-        .limit(1);
+      if (scriptId) {
+        // Verify the script belongs to the user's org before returning execution
+        // data. Partner-wide/system scripts have org_id NULL — same guard as
+        // run_script, or the history of the repo's default ownership shape would
+        // read as "Script not found".
+        const scriptConditions: SQL[] = [eq(scripts.id, scriptId), isNull(scripts.deletedAt)];
+        const orgCondition = auth.orgCondition(scripts.orgId);
+        if (orgCondition) scriptConditions.push(or(isNull(scripts.orgId), orgCondition)!);
 
-      if (!script) return JSON.stringify({ error: 'Script not found' });
+        const [script] = await db
+          .select({ id: scripts.id })
+          .from(scripts)
+          .where(and(...scriptConditions))
+          .limit(1);
+
+        if (!script) return JSON.stringify({ error: 'Script not found' });
+      }
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 10), 50);
 
-      const executionConditions: SQL[] = [eq(scriptExecutions.scriptId, input.scriptId as string)];
+      // Tenancy rides the execution's own denormalised org_id (NOT NULL for
+      // every source kind) and the device's CURRENT site, exactly as for the
+      // scriptId path; the deviceId predicate only narrows further.
+      const executionConditions: SQL[] = [];
+      if (scriptId) executionConditions.push(eq(scriptExecutions.scriptId, scriptId));
+      if (deviceId) executionConditions.push(eq(scriptExecutions.deviceId, deviceId));
+      if (since) executionConditions.push(gte(scriptExecutions.createdAt, since));
       const executionOrgCondition = auth.orgCondition(scriptExecutions.orgId);
       if (executionOrgCondition) executionConditions.push(executionOrgCondition);
       if (auth.allowedDeviceIds !== undefined) {
@@ -1435,20 +1467,32 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const results = await db
         .select({
           id: scriptExecutions.id,
+          scriptId: scriptExecutions.scriptId,
+          // Technician-authored library name; NULL for a proposal-backed run
+          // (no library script) or a script the caller's RLS does not show.
+          scriptName: scripts.name,
+          sourceKind: scriptExecutions.sourceKind,
+          triggerType: scriptExecutions.triggerType,
+          deviceId: scriptExecutions.deviceId,
           status: scriptExecutions.status,
           exitCode: scriptExecutions.exitCode,
           stdout: sql<string | null>`left(${scriptExecutions.stdout}, 16385)`,
           stderr: sql<string | null>`left(${scriptExecutions.stderr}, 8193)`,
+          errorMessage: scriptExecutions.errorMessage,
           createdAt: scriptExecutions.createdAt,
+          startedAt: scriptExecutions.startedAt,
           completedAt: scriptExecutions.completedAt,
         })
         .from(scriptExecutions)
         .innerJoin(devices, eq(devices.id, scriptExecutions.deviceId))
+        .leftJoin(scripts, eq(scripts.id, scriptExecutions.scriptId))
         .where(and(...executionConditions))
         .orderBy(desc(scriptExecutions.createdAt))
-        .limit(limit);
+        // One extra row tells the model more runs exist (narrow with since).
+        .limit(limit + 1);
 
-      const executions = results.map((execution) => ({
+      const hasMore = results.length > limit;
+      const executions = results.slice(0, limit).map((execution) => ({
         ...execution,
         ...(execution.stdout && execution.stdout.length > 16_384
           ? { stdout: execution.stdout.slice(0, 16_384), stdoutTruncated: true }
@@ -1457,7 +1501,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           ? { stderr: execution.stderr.slice(0, 8_192), stderrTruncated: true }
           : {}),
       }));
-      return JSON.stringify({ executions, count: executions.length });
+      return JSON.stringify({ executions, count: executions.length, hasMore });
     },
   });
 

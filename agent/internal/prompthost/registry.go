@@ -132,6 +132,15 @@ type ActionOutcome struct {
 	Patch *Patch
 	// Close, when set, closes the prompt with this reason after the patch.
 	Close *ipc.PromptCloseReason
+	// After, when set, runs once the accepted action has been applied (Patch,
+	// then Close) and sent to the renderers, outside the host's state lock
+	// but still serialized with every other action, so it must not wait on
+	// another action. It also runs when the prompt was closed meanwhile or
+	// the patch was refused. A domain that goes on to Update the prompt
+	// (the elevation flow's waiting card) is woken from here, never from
+	// inside OnAction: an Update made there lands before the action's own
+	// patch, which then overwrites it (#10734).
+	After func()
 }
 
 // Prompt is one prompt the domain asks the host to show.

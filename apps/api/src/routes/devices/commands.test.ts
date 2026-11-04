@@ -1,3 +1,5 @@
+const isolationOwner = vi.hoisted(() => vi.fn(async () => null as unknown));
+vi.mock('../../services/networkIsolation/episodeStore', () => ({ findEpisodeByCommand: isolationOwner }));
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { Hono } from 'hono';
@@ -244,6 +246,31 @@ describe('device commands routes', () => {
     );
     app = new Hono();
     app.route('/devices', commandsRoutes);
+  });
+
+  describe('network isolation route ownership', () => {
+    const deviceId = '11111111-1111-4111-8111-111111111111';
+    it.each([
+      ['single', 'execute_containment'], ['bulk', 'execute_containment'],
+      ['single', 'release_containment'], ['bulk', 'release_containment'],
+    ])('rejects %s %s before dispatch', async (kind, type) => {
+      const response = await app.request(kind === 'bulk' ? '/devices/bulk/commands' : `/devices/${deviceId}/commands`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, payload: { actionType: 'network_isolation' }, ...(kind === 'bulk' ? { deviceIds: [deviceId] } : {}) }),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: 'use_network_isolation_routes' });
+      expect(dispatchDeviceCommandMock).not.toHaveBeenCalled();
+    });
+    it('preserves process_kill admission', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({ id: deviceId, orgId: 'org-123', status: 'online' } as never);
+      const payload = { actionType: 'process_kill', parameters: { pid: 1234 } };
+      const response = await app.request(`/devices/${deviceId}/commands`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'execute_containment', payload }),
+      });
+      expect(response.status).toBe(201);
+      expect(dispatchDeviceCommandMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'execute_containment', payload }));
+    });
   });
 
   describe('time management command admission', () => {
@@ -2047,6 +2074,15 @@ describe('device commands routes', () => {
           result: expect.objectContaining({ reason: 'user_cancelled' }),
         }),
       );
+    });
+
+    it('cancel: refuses episode-owned isolation and directs the operator to Release', async () => {
+      rigCancelTransaction({ existing: { id: COMMAND_ID, type: 'execute_containment', payload: { actionType: 'network_isolation' }, status: 'pending' }, updated: { id: COMMAND_ID } });
+      isolationOwner.mockResolvedValueOnce({ id: 'episode' });
+      const res = await app.request(`/devices/${DEVICE_ID}/commands/${COMMAND_ID}/cancel`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Use Release to release this network isolation' });
+      expect(cancelDeviceCommands).not.toHaveBeenCalled();
     });
 
     it('cancel: 409s when the command is not pending', async () => {

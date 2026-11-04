@@ -27,7 +27,7 @@
  * All tenants are synthetic.
  */
 import './setup';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHmac, randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
@@ -121,6 +121,10 @@ afterAll(() => {
 });
 beforeEach(() => {
   queueAdds.length = 0;
+});
+// A test that pins `Date` (the DST fall-back case) must hand the real clock back whether it passes or fails.
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 const system = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn));
@@ -300,6 +304,8 @@ describe('the cutover, end to end (real Postgres + Redis, #5221 B7)', () => {
     const seed = Number(process.env.CUTOVER_SEED ?? 5221);
     const rnd = prng(seed);
     const t = await tenant();
+    // #10725 W1: automation admission refuses device-less alert events, so the cutover events name the tenant's device.
+    const onDevice = { severity: 'high', deviceId: t.deviceId };
     const row = await job(t, {});
     const c = await converted(t, row);
 
@@ -326,10 +332,10 @@ describe('the cutover, end to end (real Postgres + Redis, #5221 B7)', () => {
     const phaseA = shuffle(preCommit, rnd);
     const racingSwitch = phaseA.slice(-15); // delivered while the switch transaction runs
     const beforeSwitch = shuffle([...phaseA.slice(0, -15), ...futureEarly], rnd);
-    await inChunks(beforeSwitch, 10, (e) => deliverBoth(breezeEvent(t.orgId, e.id, e.at!), rnd));
+    await inChunks(beforeSwitch, 10, (e) => deliverBoth(breezeEvent(t.orgId, e.id, e.at!, onDevice), rnd));
     const [switchAt] = await Promise.all([
       c.doSwitch(),
-      ...racingSwitch.map((e) => deliverBoth(breezeEvent(t.orgId, e.id, e.at!), rnd)),
+      ...racingSwitch.map((e) => deliverBoth(breezeEvent(t.orgId, e.id, e.at!, onDevice), rnd)),
     ]);
     const S = switchAt.getTime();
     for (const e of preCommit) expect(e.at!.getTime()).toBeLessThan(S);
@@ -347,7 +353,7 @@ describe('the cutover, end to end (real Postgres + Redis, #5221 B7)', () => {
       sequence.splice(pos, 0, r);
     }
     expect(sequence).toHaveLength(postCommit.length + futureLate.length + 30);
-    await inChunks(sequence, 12, (e) => deliverBoth(breezeEvent(t.orgId, e.id, e.at!), rnd));
+    await inChunks(sequence, 12, (e) => deliverBoth(breezeEvent(t.orgId, e.id, e.at!, onDevice), rnd));
 
     // Exactly 300 admissions, each by exactly one engine.
     const { byEvent, legacy, flow } = await admissionsByEvent(row.id, c.flowId);
@@ -380,12 +386,14 @@ describe('the cutover, end to end (real Postgres + Redis, #5221 B7)', () => {
   runDb('a revert hands later events back once', async () => {
     const rnd = prng(17);
     const t = await tenant();
+    // #10725 W1: automation admission refuses device-less alert events, so the cutover events name the tenant's device.
+    const onDevice = { severity: 'high', deviceId: t.deviceId };
     const row = await job(t, {});
     const c = await converted(t, row);
     const S = (await c.doSwitch()).getTime();
 
     const before = Array.from({ length: 10 }, (_, i) => ({ id: randomUUID(), at: new Date(S + 1_000 + i * 1_000) }));
-    await inChunks(before, 5, (e) => deliverBoth(breezeEvent(t.orgId, e.id, e.at), rnd));
+    await inChunks(before, 5, (e) => deliverBoth(breezeEvent(t.orgId, e.id, e.at, onDevice), rnd));
     expect((await admissionsByEvent(row.id, c.flowId)).flow).toBe(10);
 
     await c.doRevert();
@@ -394,7 +402,7 @@ describe('the cutover, end to end (real Postgres + Redis, #5221 B7)', () => {
     // redeliveries of what the flow already admitted are duplicates on both sides.
     const after = Array.from({ length: 10 }, (_, i) => ({ id: randomUUID(), at: new Date(S + 60_000 + i * 1_000) }));
     const deliveries = shuffle([...after, ...after.slice(0, 4), ...before], rnd);
-    await inChunks(deliveries, 6, (e) => deliverBoth(breezeEvent(t.orgId, e.id, e.at), rnd));
+    await inChunks(deliveries, 6, (e) => deliverBoth(breezeEvent(t.orgId, e.id, e.at, onDevice), rnd));
 
     const { byEvent, legacy, flow } = await admissionsByEvent(row.id, c.flowId);
     expect({ legacy, flow }).toEqual({ legacy: 10, flow: 10 });
@@ -443,6 +451,12 @@ describe('the cutover, end to end (real Postgres + Redis, #5221 B7)', () => {
   }, 60_000);
 
   runDb('a schedule across a switch, a revert and a DST fall-back fires each occurrence once, twice in the repeated hour', async () => {
+    // The scenario is anchored to the 2026-11-01 America/New_York fall-back, so the switch has to
+    // happen BEFORE that date whatever the real clock says: pin `Date` (switch_at is `new Date()` in
+    // the switch service; the flow tick and legacy admission take their instants as arguments).
+    // Only `Date` is faked — timers stay real so Postgres/Redis I/O is untouched (the #10848 pattern).
+    // Restored by the file-level afterEach.
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-30T12:00:00Z') });
     const t = await tenant();
     // 01:30 New York: on 2026-11-01 that wall time happens twice (EDT 05:30Z, then EST 06:30Z).
     const trigger = { type: 'schedule' as const, cronExpression: '30 1 * * *', timezone: 'America/New_York' };

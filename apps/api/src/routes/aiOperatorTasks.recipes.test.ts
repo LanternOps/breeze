@@ -351,6 +351,15 @@ describe('POST /tasks — identity_offboarding', () => {
     expect(await res.json()).toMatchObject({ code: 'OPERATOR_DUPLICATE_LIVE_TASK', taskId: 'task-live' });
   });
 
+  it('8b. account_reserved (#9981) → 409 naming the task that holds the account, with the reason', async () => {
+    h.selectQueue = [[{ id: CONTACT, name: 'Dana', email: null }]];
+    const detail = 'the Microsoft 365 account dana@customer.example is reserved by task task-holder: that task is running.';
+    h.admitTask.mockResolvedValue({ ok: false, refusal: 'account_reserved', detail, existingTaskId: 'task-holder' });
+    const res = await post('/tasks', body());
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: detail, code: 'OPERATOR_ACCOUNT_RESERVED', taskId: 'task-holder' });
+  });
+
   it('9. a contact not visible in the org is a 404 that does not say whether it exists elsewhere', async () => {
     h.selectQueue = [[]];
     const res = await post('/tasks', body());

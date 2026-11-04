@@ -354,7 +354,7 @@
     "currentSite": "Current site",
     "newSite": "New site",
     "loadingSites": "Loading sites...",
-    "thisOrganizationOnlyHasOneSite": "This organization only has one site. Add more sites from Settings → Organizations to enable moves.",
+    "thisOrganizationOnlyHasOneSite": "This organization only has one site. Add more on the organization's Sites tab (Organizations → open the organization → Sites) to enable moves.",
     "current": "(current)",
     "cancel": "Cancel",
     "moving": "Moving...",
@@ -376,23 +376,6 @@
     "moveDevices_other": "Move {{count}} devices",
     "bulkPolicyNote": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to these devices. Breeze will not move them back automatically.",
     "failedToMoveDevices": "Couldn't move the devices. Try again."
-  },
-  "createGroupModal": {
-    "failedToCreateGroup": "Failed to create group",
-    "newDeviceGroup": "New Device Group",
-    "name": "Name",
-    "eGProductionServers": "e.g. Production Servers",
-    "type": "Type",
-    "static": "Static",
-    "dynamic": "Dynamic",
-    "manuallyAddAndRemoveDevicesAfter": "Manually add and remove devices after creation.",
-    "devicesAreAutoAssignedBasedOn": "Devices are auto-assigned based on filter rules.",
-    "filterRules": "Filter Rules",
-    "cancel": "Cancel",
-    "creating": "Creating...",
-    "createGroup": "Create Group",
-    "created": "Device group created",
-    "missingGroupId": "Group created but server response was missing the group ID. Please refresh the page."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} removed hidden",
@@ -1763,6 +1746,11 @@
     "on": "on",
     "multiBootMachinesTuckExpectedOffline": "Multi-boot machines: tuck expected-offline boot profiles beneath their online sibling as thin strips. Off = flat list.",
     "collapseLinkedInactiveProfiles": "Collapse linked inactive profiles",
+    "exportCsv": "Export CSV",
+    "exportCsvSelected": "Export CSV ({{count}} selected)",
+    "exportingCsv": "Exporting…",
+    "exportCsvFailed": "Couldn't export the device list. Try again.",
+    "exportCsvAttentionPartial": "Exported, but open alerts and tickets could not be loaded for some devices — those cells say \"unavailable\".",
     "columns": "Columns",
     "visibleInOrder": "Visible (in order)",
     "moveUp": "Move up",
@@ -1895,7 +1883,10 @@
     "moveToSite": "Move to site",
     "moveSelectedToSite": "Move to site",
     "moveSiteMixedOrgs": "Selected devices belong to more than one organization",
-    "moveSiteOverCap": "Select at most {{count}} devices to move at once"
+    "moveSiteOverCap": "Select at most {{count}} devices to move at once",
+    "addToGroup": "Add to group…",
+    "removeFromGroup": "Remove from group…",
+    "groupMembershipOverCap": "Select at most {{count}} devices to change group membership at once"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Failed to fetch device logs",
@@ -2408,7 +2399,9 @@
       "completed": "Completed",
       "failed": "Failed",
       "queued": "Queued",
-      "running": "Running"
+      "running": "Running",
+      "cancelled": "Cancelled",
+      "expired": "Expired"
     },
     "scanType": "{{type}} scan",
     "scanTypes": {
@@ -2430,7 +2423,13 @@
       "quarantined": "Quarantined",
       "removed": "Removed"
     },
-    "threatsFound": "Threats found: {{count}}"
+    "threatsFound": "Threats found: {{count}}",
+    "waitingForSlot": "Waiting for a free scan slot. Expires {{date}}.",
+    "cancelScan": "Cancel scan",
+    "scanCancelled": "Scan cancelled",
+    "cancelScanFailed": "Could not cancel the scan",
+    "scanAlreadyRunning": "The scan is already running on the device and cannot be cancelled.",
+    "scanAlreadyQueued": "A scan is already queued for this device."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Add a tag...",
@@ -2892,7 +2891,10 @@
         "version": "Software Version",
         "vendor": "Software Vendor"
       },
-      "logShippingFailing": "Log Shipping Failing"
+      "logShippingFailing": "Log Shipping Failing",
+      "networkIsolation": {
+        "active": "Isolated"
+      }
     }
   },
   "filterChipBar": {
@@ -2964,7 +2966,10 @@
         "version": "Software Version",
         "vendor": "Software Vendor"
       },
-      "logShippingFailing": "Log Shipping Failing"
+      "logShippingFailing": "Log Shipping Failing",
+      "networkIsolation": {
+        "active": "Isolated"
+      }
     }
   },
   "filterHelpPopover": {
@@ -3055,7 +3060,10 @@
         "version": "Software Version",
         "vendor": "Software Vendor"
       },
-      "logShippingFailing": "Log Shipping Failing"
+      "logShippingFailing": "Log Shipping Failing",
+      "networkIsolation": {
+        "active": "Isolated"
+      }
     }
   },
   "filterValueEditor": {
@@ -4702,6 +4710,48 @@
       "mfaRequired": "Multi-factor authentication is required to change the physical placement."
     }
   },
+  "assetCircuitCard": {
+    "title": "WAN and circuit",
+    "loadFailed": "Couldn't load WAN and circuit information.",
+    "empty": "No circuit is recorded or visible to you for this asset.",
+    "provider": "Provider",
+    "cid": "Circuit ID",
+    "bandwidth": "Bandwidth",
+    "serviceType": "Service type",
+    "administrativeStatus": "Administrative status",
+    "sitesServed": "Sites served by this circuit",
+    "terminationSite": "Termination site: {{site}} (from {{asset}} / {{iface}})",
+    "terminationSiteBare": "Termination site: {{site}}",
+    "terminationUnassigned": "Termination not assigned",
+    "terminationNeedsReassociation": "Termination needs reassociation",
+    "interfaces": "Interfaces",
+    "noInterfaces": "No interfaces recorded.",
+    "wanBadge": "WAN",
+    "retiredBadge": "Retired",
+    "markWan": "Mark as WAN",
+    "unmarkWan": "Clear WAN",
+    "truncated": "Only some interfaces are shown.",
+    "unmarkConfirm": {
+      "title": "Clear WAN role?",
+      "message": "{{name}} will no longer be treated as a WAN interface."
+    },
+    "status": {
+      "active": "Active",
+      "planned": "Planned",
+      "suspended": "Suspended",
+      "disconnected": "Disconnected"
+    },
+    "toasts": {
+      "marked": "Interface marked as WAN",
+      "unmarked": "WAN role cleared",
+      "failed": "Couldn't update the WAN role",
+      "mfaRequired": "Multi-factor authentication is required to change the WAN role.",
+      "hasTermination": "This interface has an active circuit termination. Move or remove the termination first.",
+      "retired": "This interface is retired and can no longer be changed.",
+      "notFound": "Interface not found. The list was reloaded.",
+      "permissionDenied": "You don't have permission to change topology."
+    }
+  },
   "partnerGroups": {
     "ownerScope": "Group owner",
     "organization": "This organization",
@@ -4724,5 +4774,100 @@
     "membersError": "Failed to load group members.",
     "retry": "Retry",
     "emptyMembers": "No devices in this group."
+  },
+  "bulkGroupMembership": {
+    "titleAdd": "Add to group",
+    "titleRemove": "Remove from group",
+    "selectionSummary": "Selected devices: {{n}} · Organization: {{org}}",
+    "groupLabel": "Static group",
+    "selectGroup": "Select a group",
+    "loadingGroups": "Loading groups…",
+    "noGroups": "No static group in this organization can take this selection.",
+    "scopeHint": "Only static groups of this organization are listed. A site group is listed only when every selected device is at that site. Dynamic groups are not listed: their rules decide who is a member.",
+    "cancel": "Cancel",
+    "saving": "Saving…",
+    "submitAdd": "Add devices",
+    "submitRemove": "Remove devices",
+    "failedToLoadGroups": "Could not load the groups of this organization. Close the dialog and try again.",
+    "failedToUpdate": "Failed to update group membership",
+    "addResult": "{{group}}: {{added}} added, {{skipped}} already in the group",
+    "removeResult": "{{group}}: {{removed}} removed, {{notMember}} were not in the group",
+    "removeResultForbidden": "{{group}}: {{removed}} removed, {{notMember}} were not in the group. Not removed (no access to the device's site): {{devices}}",
+    "andMore": "{{names}} and {{n}} more"
+  },
+  "networkIsolation": {
+    "heading": "Network isolation",
+    "isolate": "Isolate from network…",
+    "release": "Release isolation…",
+    "release_queued": "Release (queued until the device reconnects)",
+    "startTitle": "Isolate from network",
+    "releaseTitle": "Release network isolation",
+    "startDescription": "Block network traffic except the Breeze management plane.",
+    "releaseDescription": "Request removal of Breeze isolation rules. An offline device receives the release when it reconnects.",
+    "serverWarning": "This is a server OS. Isolation can interrupt services for other devices.",
+    "reason": "Reason",
+    "ttlHours": "Duration (hours)",
+    "incidentId": "Existing incident ID (optional)",
+    "incidentTitle": "New incident title",
+    "remoteRelay": "Keep remote desktop reachable through the relay",
+    "startSuccess": "Network isolation requested",
+    "releaseSuccess": "Isolation release requested",
+    "mutationError": "Could not update network isolation. Try again.",
+    "loadError": "Could not load network isolation. Try again.",
+    "unavailable": "Network isolation eligibility is unavailable.",
+    "extend": "Extend isolation",
+    "extendTitle": "Extend network isolation",
+    "extendSuccess": "Isolation expiry extended",
+    "isolatedExpires": "Isolated · expires in {{hours}} h",
+    "acknowledge": "Acknowledge local release",
+    "acknowledgeSuccess": "Local release acknowledged",
+    "acknowledgeError": "Could not acknowledge the local release",
+    "showCode": "Show break-glass codes",
+    "hideCode": "Hide break-glass codes",
+    "codeCurrent": "Current code",
+    "codeNext": "Next-hour code",
+    "codeValidUntil": "Current code valid until {{date}}",
+    "codeError": "Could not load the break-glass codes. Try again.",
+    "incidentHeading": "Network isolation",
+    "retry": "Retry isolation status",
+    "filterLabel": "Isolated",
+    "states": {
+      "requested": "Isolation requested",
+      "dispatched": "Isolation dispatched",
+      "applying": "Applying isolation",
+      "applied": "Verifying isolation",
+      "verified": "Isolation verified",
+      "release_requested": "Release requested",
+      "released": "Isolation released",
+      "expired": "Isolation expired",
+      "failed": "Isolation failed",
+      "released_locally": "Released locally · acknowledgement needed",
+      "self_released": "Self-released · acknowledgement needed",
+      "uninstalled": "Agent uninstalled"
+    },
+    "refusal": {
+      "feature_disabled": "New network isolations are disabled.",
+      "partner_not_enabled": "Network isolation is not enabled for this partner.",
+      "agent_below_gate": "Update to an agent version that supports network isolation.",
+      "agent_not_ready": "The agent is not ready to enforce network isolation.",
+      "device_lifecycle": "This device’s lifecycle status prevents a new isolation.",
+      "unsupported_platform": "This platform does not support network isolation.",
+      "trust_restricted": "The partner’s trust status prevents new isolations.",
+      "isolation_already_active": "This device already has an active isolation episode.",
+      "isolation_unacknowledged": "Acknowledge the previous local release before starting another isolation.",
+      "incident_mismatch": "Choose an open incident belonging to this device’s organization.",
+      "site_forbidden": "You do not have access to this device’s site.",
+      "device_not_found": "This device could not be found.",
+      "isolation_not_found": "This isolation episode could not be found.",
+      "relay_unavailable": "A remote desktop relay is not available. Disable the relay option or configure TURN.",
+      "invalid_allowlist": "The server’s isolation allowlist is invalid. Contact your administrator.",
+      "isolation_conflict": "The isolation episode changed. Refresh its status and try again.",
+      "isolation_secret_unavailable": "Recovery codes are temporarily unavailable. Contact your administrator.",
+      "approval_mismatch": "The approval does not match this isolation request.",
+      "device_offline": "The device is offline. Refresh its status before starting isolation.",
+      "device_decommissioned": "A decommissioned device cannot start a new isolation.",
+      "device_pending_assignment": "Assign this device to an organization before starting isolation.",
+      "backup_helper_update_required": "Update the backup helper before starting isolation."
+    }
   }
 }

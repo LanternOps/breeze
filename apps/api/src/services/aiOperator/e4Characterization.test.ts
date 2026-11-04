@@ -39,7 +39,9 @@ const h = vi.hoisted(() => ({
   inserts: [] as Array<Record<string, unknown>>,
 }));
 
-vi.mock('./effectProbes', () => ({ probeEffect: h.probeEffect }));
+// Complete mock (#10174): effectDispatch also imports isStructurallyUnobservable;
+// a missing export throws the moment a test reaches the unobservable carve-out.
+vi.mock('./effectProbes', () => ({ probeEffect: h.probeEffect, isStructurallyUnobservable: () => false }));
 vi.mock('./planApproval', async (orig) => ({
   ...(await orig<typeof import('./planApproval')>()),
   readPlanApprovalAtRevision: h.readPlanApprovalAtRevision,

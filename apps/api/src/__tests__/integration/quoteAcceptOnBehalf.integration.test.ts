@@ -264,6 +264,27 @@ describe('accept on behalf — draft straight to issued invoice', () => {
     expect(q!.status).toBe('draft'); // untouched by the rejected attempt
   });
 
+  // #9963: accepting an item-less draft on behalf used to claim it and convert
+  // it into a $0 draft invoice. Refused before anything is written.
+  runDb('refuses an item-less draft (422 QUOTE_EMPTY): stays a draft, no invoice, no acceptance', async () => {
+    const { partner, org, actorUser } = await seed();
+    const ctx = ctxFor(org.id, partner.id);
+    const actor = actorFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+
+    await expect(withSystemDbAccessContext(() => acceptQuote({
+      quoteId: created.id, signerName: 'Dana Buyer',
+      origin: 'on_behalf', method: 'verbal', reference: 'call', actorUserId: actorUser.id,
+    }))).rejects.toMatchObject({ status: 422, code: 'QUOTE_EMPTY' });
+
+    const [q] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, created.id)));
+    expect(q!.status).toBe('draft');
+    expect(q!.convertedInvoiceId).toBeNull();
+    const acceptances = await withSystemDbAccessContext(() =>
+      db.select().from(quoteAcceptances).where(eq(quoteAcceptances.quoteId, created.id)));
+    expect(acceptances).toHaveLength(0);
+  });
+
   runDb('rejects an on-behalf acceptance row with no reference at the database, not only at the API', async () => {
     const { partner, org } = await seed();
     const ctx = ctxFor(org.id, partner.id);

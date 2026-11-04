@@ -1946,7 +1946,7 @@ describe('site-axis scoping — alert-link routes gate on the ALERT device', () 
     );
   });
 
-  it('deviceless alerts stay linkable for restricted users (no device lookup)', async () => {
+  it('deviceless alerts are not linkable for restricted users (no device lookup)', async () => {
     dbSelectMock
       .mockResolvedValueOnce([{ ...STUB_TICKET, orgId: 'org-1', deviceId: null }]) // ticket fetch
       .mockResolvedValueOnce([{ deviceId: null }]);                                // alert row (deviceless)
@@ -1956,7 +1956,8 @@ describe('site-axis scoping — alert-link routes gate on the ALERT device', () 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ alertId: ALERT_ID })
     });
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(404);
+    expect(serviceMocks.linkAlertToTicket).not.toHaveBeenCalled();
   });
 
   it('a nonexistent alert row 404s before the service call', async () => {

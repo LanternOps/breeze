@@ -152,6 +152,19 @@ describe('ComplianceDashboard — security agent coverage strip', () => {
     expect(window.location.hash).toContain('coverage=gap');
   });
 
+  it('installer_missing (#9247): the reason cell links to the package Versions tab; other rows get no link', async () => {
+    const s1 = row({
+      id: 's1', deviceName: 'Device-S1', vendor: 'sentinelone', state: 'not_applicable', reasonCode: 'installer_missing',
+      setupPath: '/software#versions=cat-s1',
+    });
+    route(() => Promise.resolve(json({ ...coverage, data: [s1, coverage.data[0]], pagination: { limit: 200, offset: 0, total: 2 } })));
+    render(<ComplianceDashboard />);
+    const rows = await screen.findAllByTestId('coverage-row');
+    expect(rows[0]).toHaveTextContent('Installer not uploaded');
+    expect(within(rows[0]!).getByTestId('security-agent-coverage-setup-link')).toHaveAttribute('href', '/software#versions=cat-s1');
+    expect(within(rows[1]!).queryByTestId('security-agent-coverage-setup-link')).toBeNull();
+  });
+
   it('renders no strip when the org has no coverage rows', async () => {
     route(() => Promise.resolve(json({ summary: [], data: [], pagination: { limit: 200, offset: 0, total: 0 } })));
     render(<ComplianceDashboard />);

@@ -151,6 +151,23 @@
       <FindRelatedProducts Before="LaunchConditions" />
       <AppSearch Before="LaunchConditions" />
     </InstallUISequence>
+    <!-- Release must be confirmed before deleting the agent or its recovery
+         state; a failure fails (and rolls back) the uninstall (Return="check").
+         Nested MSI upgrade removal never runs this action. A never-isolated
+         device has no isolation journal, so the agent is not run at all (this
+         also covers a binary raw-swapped to a build predating release-all).
+         Once a journal exists, a crashing, blocked or outdated binary fails the
+         uninstall rather than removing the agent while Breeze-owned filters
+         may remain. -->
+    <SetProperty Id="IsolationReleaseOnUninstall" Value="&quot;[System64Folder]cmd.exe&quot; /c (if not exist &quot;[ProgramDataBreezeDataDir]isolation.json&quot; if not exist &quot;[ProgramDataBreezeDataDir]isolation.json.corrupt&quot; exit /b 0) &amp; &quot;[#filBreezeAgentExe]&quot; containment release-all --reason uninstall" Before="IsolationReleaseOnUninstall" Sequence="execute" />
+    <CustomAction
+      Id="IsolationReleaseOnUninstall"
+      BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+      DllEntry="WixQuietExec"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+
     <InstallExecuteSequence>
       <FindRelatedProducts Before="LaunchConditions" />
       <AppSearch Before="LaunchConditions" />
@@ -852,7 +869,10 @@
            cmpCleanConfigOnUninstall component above), which is this CA's
            own credential source. Never fires on an upgrade's nested
            old-product removal. -->
-      <Custom Action="UninstallNotify" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="IsolationReleaseOnUninstall" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <!-- After the isolation release: a release failure rolls the uninstall
+           back, and the server must not have been told "uninstalled". -->
+      <Custom Action="UninstallNotify" After="IsolationReleaseOnUninstall" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
 
     <Feature Id="MainFeature" Title="Breeze Agent" Level="1">

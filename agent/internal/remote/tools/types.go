@@ -275,6 +275,7 @@ const (
 	// Incident response
 	CmdCollectEvidence    = "collect_evidence"
 	CmdExecuteContainment = "execute_containment"
+	CmdReleaseContainment = "release_containment"
 
 	// TCP tunnel relay (VNC + network proxy)
 	CmdTunnelOpen  = "tunnel_open"

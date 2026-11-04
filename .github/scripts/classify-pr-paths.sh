@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Reads changed-file paths on stdin (one per line) and prints thirteen lines in
+# Reads changed-file paths on stdin (one per line) and prints fifteen lines in
 # GITHUB_OUTPUT form: `code`, `docs`, `agent`, `app`, the six area flags
 # `api`, `web`, `portal`, `addins`, `m365`, `rust`, `topology_browser`,
-# `agent_code`, then `integration` — each `true|false`. One optional argument:
+# `agent_code`, `integration`, `path_readers` (booleans), then `reader_tests`
+# (sorted space-separated test paths; empty with path_readers=true means all).
+# One optional argument:
 # `--pull-request` (path-gates `integration`; see below).
 #
-# `agent_code=true` means "agent code (or the CI that tests it) changed": any
-# agent/** path, `.github/workflows/ci.yml`, or this classifier. It is NOT the
-# same as `agent` (the QEMU recovery-media gate, which only fires for a pinned
-# subset of agent/). ci-success uses it to decide whether a `Test Agent
-# (Windows)` failure may be waived while #6943 (Go runtime crash) is open: a PR
-# that cannot have affected the agent must not be dequeued by that flake.
+# `agent_code=true` is the agent area: agent/**, shared packages, CI/tooling,
+# global infrastructure inputs, unknown paths, and files Go tests read in apps/.
+# Node-install root manifests set the app areas only. `agent` remains the
+# separate QEMU recovery-media dependency gate.
 #
 # A documentation path is docs/**, apps/docs/**, or a *.md / *.mdx file
 # anywhere — the exact set `ci.yml` used to `paths-ignore` and `docs-ci.yml`
@@ -55,7 +55,7 @@
 #   - shared/global inputs (packages/**, the root manifests and lockfile,
 #     patches/**, root tsconfig*, ci.yml, .github/scripts/**, docker/**,
 #     root docker-compose* / Dockerfile*, scripts/**, ee/**) set EVERY area;
-#   - a code path that matches no area rule (agent/**, e2e-tests/**, a new
+#   - a code path that matches no area rule (e2e-tests/**, a new
 #     top-level dir or app, ...) sets EVERY area;
 #   - an area whose tests READ another area's files is also set when those
 #     files change (see the cross-area block below). test-api carries the
@@ -83,7 +83,7 @@
 # Every path it matches also falls outside the tooling allowlist, so it implies
 # `app=true` as well.
 #
-# `integration` (#5936, printed LAST) gates the 16-shard real-Postgres
+# `integration` (#5936) gates the 16-shard real-Postgres
 # `integration-test` job. It is path-gated ONLY when the caller passes
 # `--pull-request` — ci.yml does that on the `pull_request` branch and nowhere
 # else, so the merge queue (the real gate) and every other event run the full
@@ -142,6 +142,54 @@ qemu_gate_hit() {
   return 1
 }
 
+# Protected integration floor, independent of the PR exclusion rules.
+INTEGRATION_FLOOR_FILE="$(dirname "${BASH_SOURCE[0]}")/integration-floor-paths.txt"
+floor_entries=()
+if [[ -r "${INTEGRATION_FLOOR_FILE}" ]]; then
+  while IFS= read -r line; do
+    line="${line%%#*}"; line="${line//[[:space:]]/}"
+    [[ -n "${line}" ]] && floor_entries+=("${line}")
+  done < "${INTEGRATION_FLOOR_FILE}"
+fi
+if [[ ${#floor_entries[@]} -eq 0 ]]; then
+  echo "classify-pr-paths: integration-floor-paths.txt missing or empty beside the classifier; integration runs for every code change (fail-closed)" >&2
+fi
+# floor_hit PATH — true when PATH is one of the pinned files or lies under
+# one of the pinned directories. A pinned directory ends with '/', so
+# 'apps/api/src/db/' cannot match 'apps/api/src/db-extra/x.ts'.
+floor_hit() {
+  local p="$1" e
+  [[ ${#floor_entries[@]} -eq 0 ]] && return 0
+  for e in "${floor_entries[@]}"; do
+    if [[ "${e}" == */ ]]; then
+      [[ "${p}" == "${e}"* ]] && return 0
+    else
+      [[ "${p}" == "${e}" ]] && return 0
+    fi
+  done
+  return 1
+}
+
+# Docs-only changes can affect tests which read documentation by path.
+READER_MAP_FILE="$(dirname "${BASH_SOURCE[0]}")/path-reader-map.txt"
+reader_files=()
+reader_patterns=()
+reader_hits=()
+readers_unknown=false
+if [[ -r "${READER_MAP_FILE}" ]]; then
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line%%#*}"
+    read -r reader pattern <<< "${line}"
+    [[ -z "${reader}" ]] && continue
+    reader_files+=("${reader}")
+    reader_patterns+=("${pattern}")
+  done < "${READER_MAP_FILE}"
+fi
+if [[ ${#reader_files[@]} -eq 0 ]]; then
+  echo "classify-pr-paths: path-reader-map.txt missing or empty beside the classifier; path_readers=true with no reader list (fail-closed: the runner runs every mapped test)" >&2
+  readers_unknown=true
+fi
+
 code=false
 docs=false
 agent=false
@@ -162,23 +210,38 @@ all_areas() {
 while IFS= read -r path; do
   [[ -z "${path}" ]] && continue
   seen=true
+  for ((i=0; i<${#reader_files[@]}; i++)); do
+    # Deliberately unquoted: these are Bash globs, including slash-matching *.
+    if [[ "${path}" == ${reader_patterns[$i]} ]]; then
+      reader_hits+=("${reader_files[$i]}")
+    fi
+  done
   case "${path}" in
+    apps/docs/package.json) docs=true; code=true ;;
     docs/*|apps/docs/*|*.md|*.mdx) docs=true; continue ;;
     *) code=true ;;
   esac
   # Area (first match wins). In a case pattern `*` also matches '/', so the
   # root-only globals below are anchored by their leading literal.
   case "${path}" in
-    packages/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|.node-version|.nvmrc|patches/*|tsconfig*.json) all_areas ;;
-    .github/workflows/ci.yml|.github/scripts/*|docker/*|docker-compose*|Dockerfile*|scripts/*|ee/*) all_areas ;;
+    packages/*) all_areas; agent_code=true ;;
+    package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|.node-version|.nvmrc|patches/*|tsconfig*.json) all_areas ;;
+    .github/workflows/ci.yml|.github/scripts/*|docker/*|docker-compose*|Dockerfile*|scripts/*|ee/*) all_areas; agent_code=true ;;
     apps/api/*) api=true ;;
     apps/web/*) web=true ;;
     apps/portal/*) portal=true ;;
     apps/excel-addin/*|apps/word-addin/*|apps/powerpoint-addin/*|apps/outlook-addin/*) addins=true ;;
     apps/m365-graph-read-executor/*|apps/m365-graph-actions-executor/*|apps/m365-communications-executor/*) m365=true ;;
     apps/viewer/*|apps/helper/*|Cargo.*|rust-toolchain*) rust=true ;;
-    apps/mobile/*) : ;;
-    *) all_areas ;;
+    apps/mobile/*|apps/docs/*) : ;;
+    # agent/** is the agent area AND sets api: ~30 test-api contract suites read
+    # agent sources/fixtures by path (backupAgentContract, schemas.commandResult,
+    # agentWs.rejectionFrame, cisBenchmarkSafeguards, yaraRuleSets, releaseTrustChain,
+    # aiAgentDiagnosisPrompt reads the whole agent/ tree, ...). The cross-area scan
+    # in ci-area-gating.test.mjs (which walks agent/**/*.go too) proves the other
+    # five areas read nothing under agent/.
+    agent/*) api=true; agent_code=true ;;
+    *) all_areas; agent_code=true ;;
   esac
   # Cross-area reads: the READING area must also run when these change.
   case "${path}" in
@@ -199,9 +262,15 @@ while IFS= read -r path; do
     .github/workflows/ci.yml|.github/scripts/classify-pr-paths.sh|.github/scripts/qemu-gate-paths.txt) agent=true ;;
     agent/*) qemu_gate_hit "${path}" && agent=true ;;
   esac
-  # agent_code (#6943 waiver gate): agent/**, ci.yml and this classifier.
+  # Go readers: wire/limits_test.go, websocket/server_error_frame_test.go,
+  # macosuninstall/script_test.go and tools/agentsim/sim/budget_contract_test.go.
+  # Kept separate from the app-area cases: uninstall.sh must still set both web
+  # and api as well as the agent area.
   case "${path}" in
-    agent/*|.github/workflows/ci.yml|.github/scripts/classify-pr-paths.sh) agent_code=true ;;
+    apps/api/src/routes/agents/schemas.ts|\
+    apps/api/src/routes/agentWs.ts|\
+    apps/web/public/scripts/uninstall.sh|\
+    apps/api/src/__tests__/integration/agentHotPathQueryBudget.integration.test.ts) agent_code=true ;;
   esac
   case "${path}" in
     .github/workflows/ci.yml) app=true ;;
@@ -243,6 +312,7 @@ while IFS= read -r path; do
     integration=true
   else
     case "${path}" in
+      apps/*/package.json|packages/*/package.json|ee/*/package.json|package.json|pnpm-workspace.yaml|pnpm-lock.yaml|.npmrc|*/.npmrc|.nvmrc|*/.nvmrc|.node-version|*/.node-version|patches/*) integration=true ;;
       agent/*|\
       apps/web/*|apps/portal/*|apps/viewer/*|apps/helper/*|apps/mobile/*|\
       apps/excel-addin/*|apps/word-addin/*|apps/powerpoint-addin/*|apps/outlook-addin/*|\
@@ -250,8 +320,19 @@ while IFS= read -r path; do
       Cargo.*|rust-toolchain*) : ;;
       *) integration=true ;;
     esac
+    floor_hit "${path}" && integration=true
   fi
 done
+
+# Indexed arrays plus sort -u keep set semantics on macOS Bash 3.2 too.
+path_readers=false
+reader_tests=
+if [[ "${readers_unknown}" == "true" ]]; then
+  path_readers=true
+elif [[ ${#reader_hits[@]} -gt 0 ]]; then
+  path_readers=true
+  reader_tests=$(printf '%s\n' "${reader_hits[@]}" | LC_ALL=C sort -u | paste -sd ' ' -)
+fi
 
 if [[ "${seen}" != "true" ]]; then
   echo "classify-pr-paths: no changed files listed; treating as a code+docs+agent+app+topology_browser+integration change in every area (fail-closed)" >&2
@@ -263,6 +344,8 @@ if [[ "${seen}" != "true" ]]; then
   topology_browser=true
   agent_code=true
   integration=true
+  path_readers=true
+  reader_tests=
 fi
 
 echo "code=${code}"
@@ -278,3 +361,5 @@ echo "rust=${rust}"
 echo "topology_browser=${topology_browser}"
 echo "agent_code=${agent_code}"
 echo "integration=${integration}"
+echo "path_readers=${path_readers}"
+echo "reader_tests=${reader_tests}"

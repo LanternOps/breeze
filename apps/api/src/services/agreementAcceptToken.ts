@@ -133,8 +133,11 @@ export async function verifyAgreementAcceptToken(token: string): Promise<Agreeme
   }
 }
 
-/** Hot-path kill for a jti (void, accept, decline — always post-commit). The
- *  marker lives at least as long as the token could still verify. Redis down
+/** Hot-path marker for a jti (void, accept, decline — always post-commit):
+ *  the link can no longer ANSWER. The public view still opens an answered
+ *  request read-only (agreementsPublic.ts resolveAgreementLink `purpose`,
+ *  #10199). The marker lives at least as long as the token could still
+ *  verify. Redis down
  *  → logged and skipped: the DB columns remain the durable authority. */
 export async function revokeAgreementAcceptJti(jti: string, tokenExpiresAt: Date | null): Promise<void> {
   const redis = getRedis();

@@ -43,6 +43,7 @@ import {
   type PatchDeviceTerminal,
 } from '../services/patchJobFinalizer';
 import { captureException } from '../services/sentry';
+import { RING_UNAVAILABLE_SKIP_REASON } from '../services/updateRingQueuedWork';
 import {
   buildRestorePointRequest,
   discardRestorePointRequest,
@@ -1281,16 +1282,41 @@ async function prepareDeviceExecution(
   // If we have a ringId, load deferralDays and partnerId from the ring.
   // partnerId is threaded into ringConfig so the evaluator can guard against
   // cross-partner ring links (a config policy featurePolicyId is unconstrained).
+  //
+  // #8909: the ring must still be live at DISPATCH time, not just when the job
+  // was created. A deleted ring is soft-deleted (`enabled = false`), so the
+  // row survives and only the flag says it is gone; a missing row fails closed
+  // the same way. The read takes FOR SHARE and this whole function runs in one
+  // transaction that also creates the device command, so:
+  //  - a delete/disable that committed first is seen here (the locking read
+  //    returns the latest committed row), and the device is skipped;
+  //  - a delete/disable still uncommitted makes this read WAIT for it, then
+  //    see the disabled row — instead of reading the stale enabled version;
+  //  - a delete/disable that arrives after this read waits on the share lock
+  //    until this dispatch commits, and its sweep
+  //    (services/updateRingQueuedWork.ts) then sees the committed command and
+  //    cancels it if it was only queued, never delivered.
   if (ringConfig.ringId) {
     const [ring] = await db
-      .select({ deferralDays: patchPolicies.deferralDays, partnerId: patchPolicies.partnerId })
+      .select({
+        deferralDays: patchPolicies.deferralDays,
+        partnerId: patchPolicies.partnerId,
+        enabled: patchPolicies.enabled,
+      })
       .from(patchPolicies)
       .where(and(eq(patchPolicies.id, ringConfig.ringId), eq(patchPolicies.kind, 'ring')))
-      .limit(1);
-    if (ring) {
-      ringConfig.deferralDays = ring.deferralDays;
-      ringConfig.ringPartnerId = ring.partnerId;
+      .limit(1)
+      .for('share');
+    if (!ring || ring.enabled !== true) {
+      console.warn(
+        `[PatchJobExecutor] Skipping device ${deviceId} of job ${patchJobId}: update ring ${ringConfig.ringId} `
+        + `is ${ring ? 'deleted or disabled' : 'missing'} (#8909)`
+      );
+      await markDeviceSkipped(patchJobId, deviceId, RING_UNAVAILABLE_SKIP_REASON);
+      return { kind: 'skipped', skipped: true, reason: 'Update ring deleted or disabled' };
     }
+    ringConfig.deferralDays = ring.deferralDays;
+    ringConfig.ringPartnerId = ring.partnerId;
   }
 
   // 1. Resolve approved patches

@@ -507,6 +507,17 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     }
   },
 
+  // W15: one real Pax8 order, with local destination / billing inputs pinned. Vendor rates are
+  // live assertions at release; this resolver deliberately loads the ordering graph only on demand.
+  'manage_pax8_orders:submit': async (args, database) => {
+    const orderId = typeof args.orderId === 'string' ? args.orderId : null;
+    if (!orderId) return MISSING_ARG;
+    if (!UUID_RE.test(orderId)) return TARGET_ABSENT;
+    const { pax8OrderDigestMaterial, serializePax8OrderMaterial } = await import('./pax8OrderDigest');
+    const pinned = await pax8OrderDigestMaterial(database, orderId);
+    return pinned ? material(serializePax8OrderMaterial(pinned)) : TARGET_ABSENT;
+  },
+
   // manage_accounting_sync push / push_bulk (full-control W14 PR B, #6784; four-eyes, QW1, PR B quorum QB4/QB5):
   // every input of what lands in the books — the invoice and its lines, the destination connection and payload
   // settings, the invoice / customer / item mapping rows, and the customer's and items' payload inputs

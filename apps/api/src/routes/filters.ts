@@ -122,11 +122,16 @@ filterRoutes.post(
     // per-device objects). Used by the device list/grid so an advanced filter
     // matching >100 devices doesn't silently hide rows (the preview cap is a
     // UI nicety for the filter builder footer, not a result-set bound).
-    idsOnly: z.boolean().optional()
+    idsOnly: z.boolean().optional(),
+    // Leave out removed (decommissioned) devices. The dynamic-group builder
+    // sets it so its preview matches what membership evaluation will
+    // materialize (#9933); the device list, whose "show removed" view needs
+    // them, leaves it unset.
+    excludeDecommissioned: z.boolean().optional()
   })),
   async (c) => {
     const auth = c.get('auth');
-    const { conditions, limit, idsOnly } = c.req.valid('json');
+    const { conditions, limit, idsOnly, excludeDecommissioned } = c.req.valid('json');
 
     // Validate field/operator names (and regex length) up front so an unknown
     // field or over-long `matches` pattern returns a clean 400 instead of a 500
@@ -168,7 +173,7 @@ filterRoutes.post(
           evaluatingOrgId = orgId;
           const result = await evaluateFilter(
             conditions as unknown as FilterConditionGroup,
-            { orgId, allowedSiteIds: auth.allowedSiteIds }
+            { orgId, allowedSiteIds: auth.allowedSiteIds, excludeDecommissioned }
           );
           deviceIds.push(...result.deviceIds);
         }
@@ -208,7 +213,7 @@ filterRoutes.post(
         evaluatingOrgId = orgId;
         const preview = await evaluateFilterWithPreview(
           conditions as unknown as FilterConditionGroup,
-          { orgId, previewLimit: limit, allowedSiteIds: auth.allowedSiteIds }
+          { orgId, previewLimit: limit, allowedSiteIds: auth.allowedSiteIds, excludeDecommissioned }
         );
         totalCount += preview.totalCount;
         allDevices.push(...preview.devices);

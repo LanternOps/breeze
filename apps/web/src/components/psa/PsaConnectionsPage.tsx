@@ -6,6 +6,8 @@ import PsaConnectionForm, {
 } from './PsaConnectionForm';
 import PsaTicketList, { type PsaTicket } from './PsaTicketList';
 import PsaCompanyImport from './PsaCompanyImport';
+import PsaAlertTicketingCard from './PsaAlertTicketingCard';
+import { alertTicketingSchemaFor, psaProviderIdSchema } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import { useOrgStore } from '../../stores/orgStore';
@@ -418,7 +420,17 @@ export default function PsaConnectionsPage({ embedded = false }: PsaConnectionsP
         isLockedPartnerWide={isLockedPartnerWide}
       />
 
-      <PsaTicketList tickets={tickets} />
+      {isPartnerScope && connections
+        .filter(c => {
+          if (c.ownerScope !== 'partner') return false;
+          const provider = psaProviderIdSchema.safeParse(c.provider);
+          return provider.success && alertTicketingSchemaFor(provider.data) !== null;
+        })
+        .map(c => (
+          <PsaAlertTicketingCard key={c.id} connectionId={c.id} connectionName={c.name} />
+        ))}
+
+      <PsaTicketList tickets={tickets} connections={connections} />
 
       {(modalMode === 'add' || modalMode === 'edit') && (
         // PsaConnectionForm draws its own card, so the dialog panel stays

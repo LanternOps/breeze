@@ -1840,7 +1840,11 @@
       "deviceCount": "deviceCount",
       "allowed2": "allowed",
       "blocked2": "blocked",
-      "summary": "Showing {{range}} of {{total}}"
+      "summary": "Showing {{range}} of {{total}}",
+      "policyWouldNotApply": "\"{{policy}}\" would apply to no devices in this organization, so nothing was changed. Each device follows one software policy, and {{winners}} wins on every device. Change or remove the assignment of {{configPolicy}} in Configuration Policies, then try again.",
+      "policyWouldNotApplySameMode": "\"{{policy}}\" would apply to no devices in this organization, so nothing was changed. Each device follows one software policy, and {{winners}} wins on every device. Add the title to {{winner}} in Software Policies instead.",
+      "theWinningConfigPolicy": "the winning configuration policy",
+      "nowOverridesPolicies": "\"{{policy}}\" now takes precedence over {{names}} on this organization's devices."
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "Failed to fetch software inventory",
@@ -1937,7 +1941,7 @@
       "windows": "Windows",
       "macOS": "macOS",
       "linux": "Linux",
-      "noFileSelectedMsiExeDmgDeb": "No file selected (.msi, .exe, .dmg, .deb, .pkg)",
+      "noFileSelectedMsiExeDmgDeb": "No file selected (.msi, .exe, .dmg, .deb, .pkg, .zip)",
       "saving": "Saving...",
       "uploadSave": "Upload & Save",
       "saveVersion": "Save Version",
@@ -1952,8 +1956,8 @@
       "failedToUpdateVersion": "Failed to update version",
       "replaceFileAddNewVersion": "To replace the installer file, add a new version instead.",
       "inactiveStoredScripts": "Stored install scripts are not active; re-create the version to activate them.",
-      "addZipFromAddPackage": "Add zip packages from Add Package.",
-      "builtinVersionsReadOnly": "Managed by Breeze. Versions of built-in packages cannot be added or changed here."
+      "builtinVersionsReadOnly": "Managed by Breeze. Versions of built-in packages cannot be added or changed here.",
+      "installScriptsReadOnlyOnEdit": "Install scripts can't be changed on an existing version, and they fix its target OS. To change them, add a new version: it starts with these scripts."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Insert a deploy-time variable",
@@ -2011,6 +2015,18 @@
       "uninstallCommandCopied": "Uninstall command copied",
       "breezeDoesNotUninstall": "Breeze does not uninstall these clients. Run the command on the device to remove one.",
       "copyFailed": "Copy failed. Select the command and copy it manually."
+    },
+    "policyCoverage": {
+      "appliesTo_one": "Applies to {{count}} device",
+      "appliesTo_other": "Applies to {{count}} devices",
+      "appliesToNone": "Applies to 0 devices",
+      "notAssigned": "Not assigned through any configuration policy",
+      "overriddenBy": "Overridden by {{names}}",
+      "overriddenHint": "Each device follows one software policy. On the devices this policy is assigned to, {{names}} wins.",
+      "partlyOverriddenHint": "Each device follows one software policy. {{names}} wins on the other assigned devices.",
+      "anotherPolicy": "another software policy",
+      "partnerWide": "partner-wide {{name}}",
+      "unavailable": "Coverage unavailable"
     }
   }
 }

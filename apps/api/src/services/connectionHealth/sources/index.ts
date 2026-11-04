@@ -12,6 +12,7 @@ import { pax8Source } from './pax8';
 import { sentinelOneSource } from './sentinelOne';
 import { ticketMailboxSource } from './ticketMailbox';
 import { unifiSource } from './unifi';
+import { psaTicketingSource } from './psaTicketing';
 import { webhookSource } from './webhook';
 
 /**
@@ -33,12 +34,12 @@ export const HEALTH_SOURCES: readonly HealthSource[] = [
   m365SyncSource,
   ticketMailboxSource,
   webhookSource,
+  psaTicketingSource,
   googleWorkspaceSource,
 ];
 
 /** Connection tables deliberately without a health source, and why. */
 export const SOURCE_COVERAGE_EXEMPTIONS: Readonly<Record<string, string>> = {
-  psa_connections: 'No worker writes its sync status or error columns today (dormant).',
   partner_ai_connections: 'AI gateway connection; failures surface in AI chat, and it has no scheduled check.',
   td_synnex_ec_express_integrations: 'Catalog price feed with a manual connection test only; no scheduled sync to go stale.',
   td_synnex_digital_bridge_integrations: 'Catalog price feed synced on demand only; no schedule to go stale.',

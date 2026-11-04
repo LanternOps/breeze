@@ -2,20 +2,20 @@ import { describe, expect, it } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { alertSiteScopeByDeviceIds, alertSiteScopeCondition, alertTopologySiteGate } from './helpers';
 
-describe('alert site predicate preserves the deviceless policy', () => {
+describe('alert site predicate fails closed for org-level alerts', () => {
   const dialect = new PgDialect();
   it('leaves unrestricted organization and partner fleet reads unfiltered', () => {
     expect(alertSiteScopeCondition(undefined)).toBeUndefined();
   });
-  it('admits only deviceless, non-topology alerts when no sites are allowed', () => {
+  it('admits no alerts when no sites are allowed', () => {
     const query = dialect.sqlToQuery(alertSiteScopeCondition([])!);
-    expect(query.sql).toBe('("alerts"."topology_site_id" is null and "alerts"."device_id" is null)');
+    expect(query.sql).toBe('false');
     expect(query.params).toEqual([]);
   });
-  it('admits deviceless alerts alongside current allowed device sites, and topology alerts by their OWNING site (M3-D6)', () => {
+  it('admits device and topology alerts only at their owning allowed sites', () => {
     const site = '4e63ffb4-d8bf-451a-a0d1-26c0cf363583';
     const query = dialect.sqlToQuery(alertSiteScopeCondition([site])!);
-    expect(query.sql).toBe('(("alerts"."topology_site_id" is not null and "alerts"."topology_site_id" in ($1)) or ("alerts"."topology_site_id" is null and ("alerts"."device_id" is null or "devices"."site_id" in ($2))))');
+    expect(query.sql).toBe('(("alerts"."topology_site_id" is not null and "alerts"."topology_site_id" in ($1)) or ("alerts"."topology_site_id" is null and "alerts"."device_id" is not null and "devices"."site_id" in ($2)))');
     expect(query.params).toEqual([site, site]);
   });
 });

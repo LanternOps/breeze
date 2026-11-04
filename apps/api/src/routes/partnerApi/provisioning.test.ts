@@ -300,6 +300,14 @@ describe('POST /organizations', () => {
     expect(insertedValues[0]).toMatchObject({ partnerId: PARTNER_ID, currencyCode: 'CAD', name: 'Acme', slug: 'acme' });
   });
 
+  it('refuses a reserved brand name (#10325)', async () => {
+    primeSuccess();
+    const res = await post('/organizations', 'organizations:write', { name: 'Microsoft Support', slug: 'ms' });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/reserved/i);
+    expect(mocks.insert).not.toHaveBeenCalled();
+  });
+
   it('ignores a body-supplied partnerId — the principal partner wins', async () => {
     primeSuccess();
     const res = await post('/organizations', 'organizations:write', {

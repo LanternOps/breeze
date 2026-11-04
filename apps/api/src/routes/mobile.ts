@@ -1,7 +1,8 @@
+import { isDeviceOwned } from '../services/alertOwner';
 import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { scriptParametersSchema } from '@breeze/shared';
+import { DEFAULT_ALERT_COOLDOWN_MINUTES, scriptParametersSchema } from '@breeze/shared';
 import { and, asc, desc, eq, gte, ilike, inArray, like, ne, or, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db } from '../db';
@@ -180,7 +181,7 @@ async function loadDeviceDetailsV1Fields(deviceIds: string[], allowedSiteIds?: s
       .where(and(inArray(alerts.deviceId, deviceIds), inArray(alerts.status, OPEN_ALERT_STATUSES), alertTopologySiteGate(allowedSiteIds)))
       .groupBy(alerts.deviceId);
     for (const row of alertCountRows) {
-      openAlertCountByDevice.set(row.deviceId, Number(row.count));
+      if (isDeviceOwned(row)) openAlertCountByDevice.set(row.deviceId, Number(row.count));
     }
   } catch (error) {
     console.error('[MobileRoutes] Failed to load open alert counts for device list:', error);
@@ -386,8 +387,8 @@ async function getOrgIdsForAuth(
 //  - org axis (RLS-backed) via ensureOrgAccess.
 //  - site axis (app-layer ONLY — RLS does NOT enforce it): a site-restricted
 //    org user (`perms.allowedSiteIds` set) must not read/act on an alert whose
-//    device lives in a site outside their allowlist. Deviceless (org-wide)
-//    alerts stay visible; out-of-site alerts return null so the handler surfaces
+//    device lives in a site outside their allowlist. Org-level and out-of-site
+//    alerts return null so the handler surfaces
 //    a 404 (no oracle distinguishing "absent" from "forbidden"). Unrestricted
 //    callers (partner/system scope, or org users with no site restriction —
 //    `allowedSiteIds` undefined) are unaffected.
@@ -417,8 +418,8 @@ async function getAlertWithOrgCheck(
   if (perms?.allowedSiteIds && alert.topologySiteId) {
     return canAccessSite(perms, alert.topologySiteId) ? alert : null;
   }
-  // Deviceless alerts are org-wide and not site-bound, so they pass.
-  if (perms?.allowedSiteIds && alert.deviceId) {
+  if (perms?.allowedSiteIds !== undefined) {
+    if (!alert.deviceId) return null;
     const [device] = await db
       .select({ siteId: devices.siteId })
       .from(devices)
@@ -1250,8 +1251,14 @@ mobileRoutes.post(
       return c.json({ error: ALERT_CAS_LOST_MESSAGE }, 409);
     }
 
+    // Cooldowns are keyed by device; a skip must preserve the resolve fan-out.
+    if (alert.ruleId && !isDeviceOwned(alert)) {
+      console.warn('[MobileRoutes] Skipping device cooldown on resolve', {
+        alertId: alert.id, orgId: alert.orgId, ownerKind: alert.ownerKind, reason: 'alert_has_no_device',
+      });
+    }
     try {
-      if (alert.ruleId) {
+      if (alert.ruleId && isDeviceOwned(alert)) {
         const [rule] = await db
           .select()
           .from(alertRules)
@@ -1267,7 +1274,7 @@ mobileRoutes.post(
 
           const overrides = (rule.overrideSettings as Record<string, unknown> | null) ?? null;
           const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-            template?.cooldownMinutes ?? 15;
+            template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
           await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes, alert.subjectKey ?? undefined);
         }
       }

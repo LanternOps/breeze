@@ -374,6 +374,18 @@ describe('bearerTokenAuthMiddleware', () => {
     );
   });
 
+  // #9758: an MCP Tier-3 intent filed by this request records the epoch the
+  // token was verified at, so release can refuse after a bump.
+  it('carries the verified live auth epoch onto the OAuth apiKey context', async () => {
+    dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 6, grantActive: true }];
+    const token = await mintToken({ sub: userId, partner_id: partnerId, org_id: orgId, auth_epoch: 6, jti: 'epoch-ctx-jti' });
+    const c = createContext({ Authorization: `Bearer ${token}` });
+
+    await bearerTokenAuthMiddleware(c, vi.fn());
+
+    expect((c.get('apiKey') as { oauthAuthEpoch?: unknown }).oauthAuthEpoch).toBe(6);
+  });
+
   it.each([
     ['missing', [], 4, 'user_missing'],
     ['inactive', [{ id: userId, status: 'disabled', authEpoch: 4 }], 4, 'user_inactive'],
@@ -613,6 +625,7 @@ describe('bearerTokenAuthMiddleware', () => {
       keyPrefix: 'oauth',
       scopes: ['mcp:read', 'mcp:write', 'ai:read', 'ai:write'],
       rateLimit: 1000,
+      oauthAuthEpoch: 1,
       createdBy: userId,
     });
     expect(c.get('apiKeyOrgId')).toBe(orgId);
@@ -940,6 +953,7 @@ describe('bearerTokenAuthMiddleware', () => {
       keyPrefix: 'oauth',
       scopes: ['mcp:read', 'ai:read'],
       rateLimit: 1000,
+      oauthAuthEpoch: 1,
       createdBy: userId,
     });
     expect(c.get('apiKeyOrgId')).toBeUndefined();

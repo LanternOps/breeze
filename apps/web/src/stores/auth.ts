@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { launchPurchaseSelectionSchema, type LaunchPurchaseSelection } from '@breeze/shared';
+import { signupIntentSchema, type SignupIntent } from '@breeze/shared';
 import { persist } from 'zustand/middleware';
 import {
   startAuthentication,
@@ -106,6 +106,10 @@ export interface Tokens {
   expiresInSeconds: number;
 }
 
+export type MfaAccountState =
+  | { mfaEnabled: true; mfaMethod: MfaPrimaryMethod }
+  | { mfaEnabled: false; mfaMethod: null };
+
 /**
  * Why the app bounced the user to /login. Rendered as `?reason=<code>` by
  * handleSessionExpired() and turned into copy by LoginPage.
@@ -148,6 +152,7 @@ interface AuthState {
   updateUser: (user: Partial<User>) => void;
   commitMfaEnrollmentIfCurrent: (generation: number, method: MfaPrimaryMethod, tokens?: Tokens) => boolean;
   commitMfaDisableIfCurrent: (generation: number, tokens?: Tokens) => boolean;
+  commitMfaStateIfCurrent: (generation: number, mfa: MfaAccountState, tokens?: Tokens) => boolean;
   commitReissuedSessionIfCurrent: (generation: number, tokens: Tokens) => boolean;
   setAuthThrottledUntil: (until: number | null) => void;
 }
@@ -305,6 +310,23 @@ export const useAuthStore = create<AuthState>()(
           return {
             ...(tokens ? { tokens } : {}),
             user: { ...state.user, mfaEnabled: false, mfaMethod: null },
+          };
+        });
+        return committed;
+      },
+
+      commitMfaStateIfCurrent: (generation, mfa, tokens) => {
+        let committed = false;
+        set((state) => {
+          if (
+            state.sessionGeneration !== generation
+            || !state.isAuthenticated
+            || !state.user
+          ) return state;
+          committed = true;
+          return {
+            ...(tokens ? { tokens } : {}),
+            user: { ...state.user, ...mfa },
           };
         });
         return committed;
@@ -1862,7 +1884,7 @@ export async function apiRegisterPartner(
   email: string,
   password: string,
   name: string,
-  purchaseSelection?: LaunchPurchaseSelection
+  signupIntent?: SignupIntent
 ): Promise<
   | { success: true; message: string }
   | { success: false; error: string; action?: { url: string; label: string } }
@@ -1872,7 +1894,7 @@ export async function apiRegisterPartner(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ companyName, email, password, name, acceptTerms: true, ...(purchaseSelection ? { purchaseSelection } : {}) })
+      body: JSON.stringify({ companyName, email, password, name, acceptTerms: true, ...(signupIntent ? { signupIntent } : {}) })
     });
 
     const data = await response.json();
@@ -2192,7 +2214,7 @@ export async function apiVerifyEmail(token: string): Promise<{
   user?: User;
   tokens?: Tokens;
   status?: 'sign_in';
-  purchaseSelection?: LaunchPurchaseSelection;
+  signupIntent?: SignupIntent;
   redirectUrl?: string;
 }> {
   try {
@@ -2211,8 +2233,8 @@ export async function apiVerifyEmail(token: string): Promise<{
     // Registration-completion path bounced to sign-in (address already taken).
     // 200 body but `verified: false` — surface the status, not success.
     if (data.verified === false && data.status === 'sign_in') {
-      const selected = launchPurchaseSelectionSchema.safeParse(data.purchaseSelection);
-      return { success: false, error: 'already_registered', status: 'sign_in', ...(selected.success ? { purchaseSelection: selected.data } : {}) };
+      const selected = signupIntentSchema.safeParse(data.signupIntent);
+      return { success: false, error: 'already_registered', status: 'sign_in', ...(selected.success ? { signupIntent: selected.data } : {}) };
     }
 
     return {

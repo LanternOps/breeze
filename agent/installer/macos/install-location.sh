@@ -212,3 +212,80 @@ bootstrap_system_daemon() {
     } >&2
     return 1
 }
+
+# Desktop-helper LaunchAgents (#10868). Unlike the daemons above, a helper
+# that will not load must not fail the install: the caller warns and carries
+# on, and for the per-user helper the agent's post-update revival
+# (kickstartDarwinDesktopHelpers) bootstraps one it finds unloaded.
+# launchctl's own stderr is always printed, never discarded: it is the only
+# record of why a helper is missing.
+
+# load_launch_agent <domain> <label> <plist>: bootstrap a LaunchAgent into
+# <domain> (gui/<uid>, or loginwindow when nobody is logged in). A label that
+# is already loaded (the agent's post-update revival loaded it first, or an
+# old instance never left) answers bootstrap with EIO 5; kickstart -k then
+# succeeds and restarts it onto the binary just installed, and a successful
+# kickstart -k is itself proof the label is loaded. EIO 5 on a label
+# kickstart cannot find is launchd still settling, so the bootstrap is
+# retried once after a short wait.
+#
+# Not for the loginwindow domain while a user is logged in: there every
+# launchctl operation (print, bootstrap, kickstart) answers exit 1
+# "Operation not permitted", even as root (lab mini, macOS 15.8.1).
+load_launch_agent() {
+    local domain="$1" label="$2" plist="$3" out="" rc=0 kout="" krc=0 attempt=1
+    while :; do
+        rc=0
+        out=$(launchctl bootstrap "$domain" "$plist" 2>&1) || rc=$?
+        if [ "$rc" -eq 0 ]; then
+            echo "Loaded $label into $domain"
+            return 0
+        fi
+        echo "launchctl bootstrap $domain $plist exited $rc: $out"
+        krc=0
+        kout=$(launchctl kickstart -k "$domain/$label" 2>&1) || krc=$?
+        if [ "$krc" -eq 0 ]; then
+            echo "$domain/$label was already loaded; restarted it onto the installed binary"
+            return 0
+        fi
+        echo "launchctl kickstart -k $domain/$label exited $krc: $kout"
+        if [ "$rc" -ne 5 ] || [ "$attempt" -ge 2 ]; then
+            break
+        fi
+        attempt=2
+        sleep 1
+    done
+    {
+        echo "Warning: could not load $label into $domain: $out"
+        echo "  Remote desktop for this session stays unavailable until it is loaded at the next login, or, in Terminal:"
+        echo "  sudo launchctl bootstrap $domain $plist"
+    } >&2
+    return 1
+}
+
+# reload_launch_agent <domain> <label> <plist>: boot out the running instance
+# so the installed binary and plist take effect, then load it again.
+# `launchctl bootout` returns before launchd has finished tearing the old
+# instance down, and a bootstrap issued in that window fails with
+# "Bootstrap failed: 5: Input/output error" (the lab mini, #10868), so wait
+# (bounded, short polls) for the label to leave before bootstrapping. An
+# idle helper took 2.4-2.9 s to leave on the lab mini; launchd gives a slow
+# exit (a helper mid-session) up to 20 s, so the wait allows 15 s. Used for
+# gui/<uid> domains, where `launchctl print` reports the label.
+reload_launch_agent() {
+    local domain="$1" label="$2" plist="$3" out="" rc=0 polls=0
+    out=$(launchctl bootout "$domain/$label" 2>&1) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        # Expected on a first install, where nothing was loaded.
+        echo "launchctl bootout $domain/$label exited $rc: $out"
+    fi
+    while launchctl print "$domain/$label" >/dev/null 2>&1; do
+        if [ "$polls" -ge 30 ]; then
+            echo "Warning: $domain/$label is still loaded 15s after bootout; loading anyway" >&2
+            break
+        fi
+        polls=$((polls + 1))
+        sleep 0.5
+    done
+    load_launch_agent "$domain" "$label" "$plist"
+}

@@ -10,7 +10,11 @@ import type { AuthContext } from '../../middleware/auth';
 import type { Context } from 'hono';
 import { deviceIdParamSchema, scanRequestSchema, listScansQuerySchema } from './schemas';
 import { getPagination, paginate, parseDateRange, matchDateRange } from './helpers';
-import { startDeviceScan } from '../../services/securityScanStart';
+import { z } from 'zod';
+import { cancelDeviceScan, startDeviceScan } from '../../services/securityScanStart';
+import { writeRouteAudit } from '../../services/auditEvents';
+
+const scanIdParamSchema = z.object({ scanId: z.string().uuid() });
 
 /**
  * Site-scope gate: partner-scope users restricted via `allowedSiteIds` must
@@ -60,9 +64,45 @@ scansRoutes.post(
       paths: payload.paths,
       mfaSatisfied: hasSatisfiedMfa(auth),
     });
-    if (!result.ok) return c.json({ error: result.error }, result.status);
+    if (!result.ok) {
+      if (result.status === 409) {
+        return c.json({ error: result.error, code: 'SCAN_ALREADY_QUEUED', scanId: result.scanId }, 409);
+      }
+      return c.json({ error: result.error }, result.status);
+    }
 
+    // #10057 gap 2: `queued` means waiting for a free scan slot (the dispatch
+    // caps); it goes `running` when the claim dispatches it, or `expired` at
+    // `queueExpiresAt`. POST /scans/:scanId/cancel withdraws it.
     return c.json({ data: { ...result.scan, threatsFound: 0 } }, 202);
+  }
+);
+
+// #10057 gap 2 — cancel a scheduled or manual scan that the agent has not
+// started: still waiting for a slot, or dispatched but undelivered. Same
+// permission as starting one. The service owns its transaction (a
+// self-managed-context route) and applies the site gate itself.
+scansRoutes.post(
+  '/scans/:scanId/cancel',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'execute'),
+  zValidator('param', scanIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { scanId } = c.req.valid('param');
+    const result = await cancelDeviceScan(auth, scanId);
+    if (!result.ok) {
+      if (result.status === 409) return c.json({ error: result.error, code: result.code }, 409);
+      return c.json({ error: result.error }, result.status);
+    }
+    writeRouteAudit(c, {
+      orgId: result.orgId,
+      action: 'security.scan.cancel',
+      resourceType: 'security_scan',
+      resourceId: scanId,
+      details: { scanId },
+    });
+    return c.json({ data: result.scan });
   }
 );
 
@@ -128,7 +168,13 @@ scansRoutes.get(
       startedAt: scan.startedAt?.toISOString() ?? null,
       finishedAt: scan.completedAt?.toISOString() ?? null,
       threatsFound: scan.threatsFound ?? 0,
-      durationSeconds: scan.duration ?? null
+      durationSeconds: scan.duration ?? null,
+      // The sweep this scan belongs to, and the rule-set errors it reported
+      // (e.g. `rule_set_changed` when a pinned set was republished) (#10049).
+      sweepId: scan.sweepId ?? null,
+      ruleSetErrors: Array.isArray(scan.ruleSetErrors) ? scan.ruleSetErrors : null,
+      // #10057 gap 2: set on a Scan now; while `queued` it is waiting for a slot.
+      queueExpiresAt: scan.queueExpiresAt?.toISOString() ?? null
     }));
 
     return c.json(paginate(mapped, page, limit));
