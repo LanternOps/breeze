@@ -140,6 +140,19 @@ function setOrgAuth() {
   };
 }
 
+/** System-scope caller: canAccessOrg is always true and orgCondition adds nothing. */
+function setSystemAuth() {
+  authState.auth = {
+    scope: 'system',
+    orgId: null,
+    partnerId: null,
+    accessibleOrgIds: null,
+    canAccessOrg: () => true,
+    orgCondition: () => undefined,
+    user: { id: 'user-3', email: 'admin@example.test' }
+  };
+}
+
 /** Render a drizzle SQL tree over the mocked string columns. */
 function render(node: unknown): string {
   if (node === null || node === undefined) return '';
@@ -304,6 +317,31 @@ describe('DNS Security reads honour the selected org (#10931)', () => {
       setOrgAuth();
       const res = await app.request(`/dns-security${withOrg(path, ORG_A)}`);
       expect(res.status).toBe(200);
+    });
+
+    it('rejects a malformed orgId with 400 before querying', async () => {
+      setPartnerAuth();
+      const res = await app.request(`/dns-security${withOrg(path, 'not-a-uuid')}`);
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('narrows a system-scope caller to the selected org', async () => {
+      setSystemAuth();
+      const res = await app.request(`/dns-security${withOrg(path, ORG_B)}`);
+      expect(res.status).toBe(200);
+      const scoped = orgWheres(columns);
+      for (const col of columns) {
+        expect(scoped.some((w) => w.includes(col)), `no query filtered on ${col}`).toBe(true);
+      }
+      for (const w of scoped) expect(w).toMatch(new RegExp(`\\.org_id = ${ORG_B}`));
+    });
+
+    it('leaves a system-scope caller unfiltered by org when no orgId is sent', async () => {
+      setSystemAuth();
+      const res = await app.request(`/dns-security${path}`);
+      expect(res.status).toBe(200);
+      expect(wheres.some((w) => w.includes('.org_id'))).toBe(false);
     });
 
     it('keeps the full reach when no orgId is sent (All organizations)', async () => {

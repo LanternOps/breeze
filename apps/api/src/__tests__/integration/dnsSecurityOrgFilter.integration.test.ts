@@ -61,10 +61,10 @@ function get(token: Token, path: string) {
  * One integration, one policy, `count` blocked events and one aggregation row
  * of `count * 10` blocked queries, all tagged with `tag`.
  */
-async function seedOrgDns(orgId: string, tag: string, count: number) {
+async function seedOrgDns(orgId: string, tag: string, count: number, config: Record<string, unknown> = {}) {
   const database = getTestDb() as any;
   const [integration] = await database.insert(dnsFilterIntegrations).values({
-    orgId, provider: 'umbrella', name: `${tag}-integration`, config: {},
+    orgId, provider: 'umbrella', name: `${tag}-integration`, config,
   }).returning();
   await database.insert(dnsPolicies).values({
     orgId, integrationId: integration.id, name: `${tag}-policy`, type: 'blocklist',
@@ -99,7 +99,9 @@ async function seed() {
   const foreignPartner = await createPartner();
   const orgForeign = await createOrganization({ partnerId: foreignPartner.id });
 
-  await seedOrgDns(orgA.id, `a-${u}`, 1);
+  // Only org A's integration stores allowed traffic (#10054), so /stats'
+  // allowedTraffic coverage shows which integrations a read looked at.
+  await seedOrgDns(orgA.id, `a-${u}`, 1, { storeAllowedTraffic: true });
   await seedOrgDns(orgB.id, `b-${u}`, 2);
   await seedOrgDns(orgForeign.id, `x-${u}`, 4);
 
@@ -199,6 +201,21 @@ describe('DNS Security reads honour the selected org (#10931)', () => {
     expect(await total(s.orgA)).toBe(10);
     expect(await total(s.orgB)).toBe(20);
     expect(await total(null)).toBe(30);
+  });
+
+  it.each([
+    { name: 'raw', path: () => '/stats' },
+    { name: 'aggregated', path: () => `/stats?${aggWindow()}` },
+  ])('GET /stats ($name) reports allowed-traffic coverage for the selected org only', async ({ path }) => {
+    const s = await seed();
+    const coverage = async (orgId: string | null) => {
+      const res = await get(s.tech, withOrg(path(), orgId));
+      expect(res.status).toBe(200);
+      return (await res.json()).allowedTraffic;
+    };
+    expect(await coverage(s.orgA)).toBe('all');
+    expect(await coverage(s.orgB)).toBe('none');
+    expect(await coverage(null)).toBe('some');
   });
 
   it.each([
