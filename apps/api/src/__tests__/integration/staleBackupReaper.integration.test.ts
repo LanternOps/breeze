@@ -210,8 +210,9 @@ runDb('a resume pass whose verified counters keep moving is spared past 24 h; on
       verifiedSize: 400 * GiB, verifiedFiles: 180_000,
     };
     const [moving] = await db.insert(backupJobs).values(base).returning({ id: backupJobs.id });
+    const [filesOnly] = await db.insert(backupJobs).values(base).returning({ id: backupJobs.id });
     const [frozen] = await db.insert(backupJobs).values(base).returning({ id: backupJobs.id });
-    return { moving: moving!.id, frozen: frozen!.id };
+    return { moving: moving!.id, filesOnly: filesOnly!.id, frozen: frozen!.id };
   });
 
   const report = (jobId: string, verifiedBytes: number, verifiedFiles: number) =>
@@ -224,6 +225,9 @@ runDb('a resume pass whose verified counters keep moving is spared past 24 h; on
       },
     }));
   expect(await report(ids.moving, 401 * GiB, 180_400)).toEqual({ applied: true });
+  // Many small files: the count moves even when the byte total barely does.
+  // Either counter alone is progress.
+  expect(await report(ids.filesOnly, 400 * GiB, 180_050)).toEqual({ applied: true });
   // The keepalive re-sends unchanged counters: liveness, not progress.
   expect(await report(ids.frozen, 400 * GiB, 180_000)).toEqual({ applied: true });
 
@@ -235,6 +239,9 @@ runDb('a resume pass whose verified counters keep moving is spared past 24 h; on
     expect(movingRow!.verifiedSize).toBe(401 * GiB);
     expect(movingRow!.verifiedFiles).toBe(180_400);
     expect(movingRow!.lastProgressAt!.getTime()).toBeGreaterThan(Date.now() - 5 * 60 * 1000);
+
+    const [filesOnlyRow] = await db.select().from(backupJobs).where(eq(backupJobs.id, ids.filesOnly));
+    expect(filesOnlyRow!.status).toBe('running');
 
     const [frozenRow] = await db.select().from(backupJobs).where(eq(backupJobs.id, ids.frozen));
     expect(frozenRow!.status).toBe('failed');

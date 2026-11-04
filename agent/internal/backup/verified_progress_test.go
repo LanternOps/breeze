@@ -3,7 +3,10 @@ package backup
 import (
 	"context"
 	"errors"
+	"fmt"
+	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,9 +18,29 @@ import (
 // writer gets (createSnapshotWithProgress's UploadPlanner branch).
 type plannerMockProvider struct {
 	*mockProvider
+	prepared atomic.Int32
 }
 
-func (p *plannerMockProvider) PrepareUploads([]providers.PlannedUpload) {}
+func (p *plannerMockProvider) PrepareUploads([]providers.PlannedUpload) { p.prepared.Add(1) }
+
+// digestingMockProvider answers stored-object readbacks from a table.
+type storedDigestAnswer struct {
+	digest providers.UploadDigest
+	err    error
+}
+
+type digestingMockProvider struct {
+	*mockProvider
+	digests map[string]storedDigestAnswer
+}
+
+func (p *digestingMockProvider) StoredObjectDigest(_ context.Context, remotePath string) (providers.UploadDigest, error) {
+	a, ok := p.digests[remotePath]
+	if !ok {
+		return providers.UploadDigest{}, fmt.Errorf("%s: %w", remotePath, providers.ErrObjectNotFound)
+	}
+	return a.digest, a.err
+}
 
 // #11014: the checks a run makes before it uploads anything (the resume pass
 // re-reads every journaled file; the dedupe pre-pass hashes a file whose
@@ -84,7 +107,7 @@ func TestCreateSnapshotWithProgress_VerifiedCounters(t *testing.T) {
 					{sourcePath: createTempFile(t, dir, "a.txt", "aaa"), snapshotPath: "p/a.txt", size: 3, modTime: oldMod},
 					{sourcePath: createTempFile(t, dir, "b.txt", "bbbb"), snapshotPath: "p/b.txt", size: 4, modTime: oldMod},
 				}
-				return &plannerMockProvider{newMockProvider()}, files, nil, nil
+				return &plannerMockProvider{mockProvider: newMockProvider()}, files, nil, nil
 			},
 			wantFilesDone: 2,
 			wantBytesDone: 7,
@@ -103,12 +126,122 @@ func TestCreateSnapshotWithProgress_VerifiedCounters(t *testing.T) {
 					{sourcePath: touched, snapshotPath: "p/touched.txt", size: 10, modTime: newMod},
 					{sourcePath: still, snapshotPath: "p/still.txt", size: 9, modTime: oldMod},
 				}
-				return &plannerMockProvider{newMockProvider()}, files, nil, prev
+				return &plannerMockProvider{mockProvider: newMockProvider()}, files, nil, prev
 			},
 			wantVerifiedFiles: 1,
 			wantVerifiedBytes: 10,
 			wantFilesDone:     2,
 			wantBytesDone:     19,
+		},
+		{
+			// No planner: the decision is made at admission in the file pass.
+			name: "dedupe without a planner: a file it had to hash counts once",
+			build: func(t *testing.T) (providers.BackupProvider, []backupFile, *snapshotJournal, *Snapshot) {
+				dir := t.TempDir()
+				touched := createTempFile(t, dir, "touched.txt", "same-bytes")
+				prev := &Snapshot{ID: "prev-snap", Files: []SnapshotFile{
+					{SourcePath: touched, BackupPath: "snapshots/prev-snap/files/touched.txt.gz", Size: 10, ModTime: oldMod, Checksum: digestBytes([]byte("same-bytes")).SHA256},
+				}}
+				files := []backupFile{{sourcePath: touched, snapshotPath: "p/touched.txt", size: 10, modTime: newMod}}
+				return newMockProvider(), files, nil, prev
+			},
+			wantVerifiedFiles: 1,
+			wantVerifiedBytes: 10,
+			wantFilesDone:     1,
+			wantBytesDone:     10,
+		},
+		{
+			// A read that fails is not a completed check: counting it would
+			// show steady progress while every remaining file is re-uploaded.
+			name: "resume: an unreadable journaled source is not counted",
+			build: func(t *testing.T) (providers.BackupProvider, []backupFile, *snapshotJournal, *Snapshot) {
+				dir := t.TempDir()
+				journal, _, err := openSnapshotJournal(t.TempDir(), "verified-unreadable", journalMaxAge)
+				if err != nil {
+					t.Fatalf("openSnapshotJournal: %v", err)
+				}
+				good := createTempFile(t, dir, "good.txt", "hello")
+				gone := filepath.Join(dir, "gone.txt") // journaled, then deleted
+				for _, e := range []SnapshotFile{
+					{SourcePath: good, BackupPath: "k/good", Size: 5, ModTime: oldMod, Checksum: digestBytes([]byte("hello")).SHA256},
+					{SourcePath: gone, BackupPath: "k/gone", Size: 4, ModTime: oldMod, Checksum: digestBytes([]byte("gone")).SHA256},
+				} {
+					if err := journal.Record(e); err != nil {
+						t.Fatal(err)
+					}
+				}
+				files := []backupFile{
+					{sourcePath: good, snapshotPath: "p/good.txt", size: 5, modTime: oldMod},
+					{sourcePath: gone, snapshotPath: "p/gone.txt", size: 4, modTime: oldMod},
+				}
+				return newMockProvider(), files, journal, nil
+			},
+			wantVerifiedFiles: 1,
+			wantVerifiedBytes: 5,
+			wantFilesDone:     1, // gone.txt fails its upload and is skipped
+			wantBytesDone:     5,
+		},
+		{
+			// A snapshot continued from another job also reads each stored
+			// object back (ContinueRun → VerifyStoredEntries).
+			name: "continued snapshot: stored readbacks count, matched or not; a failed readback does not",
+			build: func(t *testing.T) (providers.BackupProvider, []backupFile, *snapshotJournal, *Snapshot) {
+				dir := t.TempDir()
+				journal, _, err := openSnapshotJournal(t.TempDir(), "verified-continued", journalMaxAge)
+				if err != nil {
+					t.Fatalf("openSnapshotJournal: %v", err)
+				}
+				key := func(name string) string { return "snapshots/" + journal.snapshotID + "/files/" + name + ".gz" }
+				p := &digestingMockProvider{mockProvider: newMockProvider(), digests: map[string]storedDigestAnswer{}}
+				var files []backupFile
+				for _, f := range []struct {
+					name, content string
+					answer        storedDigestAnswer
+				}{
+					{"intact", "aaaaa", storedDigestAnswer{digest: digestBytes([]byte("aaaaa"))}},
+					{"overwritten", "bbbbbb", storedDigestAnswer{digest: digestBytes([]byte("other!"))}},
+					{"unreachable", "ccccccc", storedDigestAnswer{err: errors.New("read session lost")}},
+				} {
+					src := createTempFile(t, dir, f.name, f.content)
+					size := int64(len(f.content))
+					if err := journal.Record(SnapshotFile{SourcePath: src, BackupPath: key(f.name), Size: size, ModTime: oldMod, Checksum: digestBytes([]byte(f.content)).SHA256}); err != nil {
+						t.Fatal(err)
+					}
+					p.digests[key(f.name)] = f.answer
+					files = append(files, backupFile{sourcePath: src, snapshotPath: "p/" + f.name, size: size, modTime: oldMod})
+				}
+				if err := journal.ContinueRun("a-later-job", "", false); err != nil {
+					t.Fatal(err)
+				}
+				return p, files, journal, nil
+			},
+			wantVerifiedFiles: 2,
+			wantVerifiedBytes: 11,
+			wantFilesDone:     3,
+			wantBytesDone:     18,
+		},
+		{
+			name: "a file the resume pass already checked is not counted again by the dedupe pre-pass",
+			build: func(t *testing.T) (providers.BackupProvider, []backupFile, *snapshotJournal, *Snapshot) {
+				dir := t.TempDir()
+				journal, _, err := openSnapshotJournal(t.TempDir(), "verified-once", journalMaxAge)
+				if err != nil {
+					t.Fatalf("openSnapshotJournal: %v", err)
+				}
+				src := createTempFile(t, dir, "edited.txt", "after")
+				if err := journal.Record(SnapshotFile{SourcePath: src, BackupPath: "k/edited", Size: 5, ModTime: newMod, Checksum: digestBytes([]byte("befor")).SHA256}); err != nil {
+					t.Fatal(err)
+				}
+				prev := &Snapshot{ID: "prev-snap", Files: []SnapshotFile{
+					{SourcePath: src, BackupPath: "snapshots/prev-snap/files/edited.txt.gz", Size: 5, ModTime: oldMod, Checksum: digestBytes([]byte("befor")).SHA256},
+				}}
+				files := []backupFile{{sourcePath: src, snapshotPath: "p/edited.txt", size: 5, modTime: newMod}}
+				return &plannerMockProvider{mockProvider: newMockProvider()}, files, journal, prev
+			},
+			wantVerifiedFiles: 1,
+			wantVerifiedBytes: 5,
+			wantFilesDone:     1,
+			wantBytesDone:     5,
 		},
 	}
 
@@ -200,5 +333,48 @@ func TestCreateSnapshotWithProgress_StopDuringResumePass(t *testing.T) {
 	defer mu.Unlock()
 	if maxVerified != 1 {
 		t.Fatalf("the pass checked %d files after the stop at 1; it must stop between files", maxVerified)
+	}
+}
+
+// The dedupe pre-pass a brokered writer gets can hash for hours too: a stop
+// ends it between files, and the partial plan is never handed to the writer.
+func TestCreateSnapshotWithProgress_StopDuringDedupePrePass(t *testing.T) {
+	restore := setProgressThrottleForTest(0)
+	defer restore()
+
+	oldMod := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	newMod := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	prev := &Snapshot{ID: "prev-snap"}
+	var files []backupFile
+	for _, name := range []string{"one.txt", "two.txt", "three.txt"} {
+		src := createTempFile(t, dir, name, name)
+		prev.Files = append(prev.Files, SnapshotFile{SourcePath: src, BackupPath: "snapshots/prev-snap/files/" + name + ".gz", Size: int64(len(name)), ModTime: oldMod, Checksum: digestBytes([]byte(name)).SHA256})
+		files = append(files, backupFile{sourcePath: src, snapshotPath: "p/" + name, size: int64(len(name)), modTime: newMod})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	provider := &plannerMockProvider{mockProvider: newMockProvider()}
+	var mu sync.Mutex
+	maxVerified := 0
+	_, err := createSnapshotWithProgress(ctx, provider, files, func(p RunProgress) {
+		mu.Lock()
+		defer mu.Unlock()
+		maxVerified = max(maxVerified, p.VerifiedFiles)
+		if p.VerifiedFiles == 1 {
+			cancel()
+		}
+	}, nil, prev, nil)
+	if !errors.Is(err, errBackupStopped) {
+		t.Fatalf("err = %v, want errBackupStopped", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if maxVerified != 1 {
+		t.Fatalf("the pre-pass hashed %d files after the stop at 1; it must stop between files", maxVerified)
+	}
+	if n := provider.prepared.Load(); n != 0 {
+		t.Fatalf("PrepareUploads called %d times with a partial plan", n)
 	}
 }

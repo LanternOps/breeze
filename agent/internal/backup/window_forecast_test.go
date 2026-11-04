@@ -14,17 +14,26 @@ func TestWindowForecast(t *testing.T) {
 	start := time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC)
 
 	cases := []struct {
-		name     string
-		hasLimit bool
-		left     time.Duration // session time left at the check
-		planned  int64
-		uploaded int64
-		elapsed  time.Duration
-		wantWarn bool
+		name      string
+		hasLimit  bool
+		left      time.Duration // session time left at the check
+		planned   int64
+		uploaded  int64 // bytes moved so far
+		failed    int64 // planned bytes that failed and will not be sent
+		elapsed   time.Duration
+		noJournal bool
+		wantWarn  bool
+		wantNext  string
 	}{
 		// 2.4 TB at ~30 MB/s needs ~22 h; 20 h left → warn.
 		{name: "multi-TB selection outruns the window", hasLimit: true, left: 20 * time.Hour,
-			planned: 2400 * GiB, uploaded: 27 * GiB, elapsed: 15 * time.Minute, wantWarn: true},
+			planned: 2400 * GiB, uploaded: 27 * GiB, elapsed: 15 * time.Minute, wantWarn: true, wantNext: "resume from this run's checkpoint"},
+		{name: "without a checkpoint journal the next run starts over", hasLimit: true, left: 20 * time.Hour, noJournal: true,
+			planned: 2400 * GiB, uploaded: 27 * GiB, elapsed: 15 * time.Minute, wantWarn: true, wantNext: "starts this selection again"},
+		// 2.4 TB planned but 2.3 TB of it failed (e.g. locked files): what is
+		// left fits, so no warning.
+		{name: "failed files shrink what is left", hasLimit: true, left: 20 * time.Hour,
+			planned: 2400 * GiB, uploaded: 27 * GiB, failed: 2300 * GiB, elapsed: 15 * time.Minute},
 		{name: "fits comfortably", hasLimit: true, left: 20 * time.Hour,
 			planned: 100 * GiB, uploaded: 27 * GiB, elapsed: 15 * time.Minute},
 		// Too little observed to trust a rate.
@@ -41,25 +50,25 @@ func TestWindowForecast(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			now := start
-			f := &windowForecast{now: func() time.Time { return now }}
+			f := &windowForecast{now: func() time.Time { return now }, resumable: !c.noJournal}
 			if c.hasLimit {
 				f.timeLeft = func() time.Duration { return c.left }
 			}
 			f.begin(c.planned)
 			now = start.Add(c.elapsed)
-			msg := f.check(c.uploaded)
+			msg := f.check(c.uploaded, c.failed)
 			if c.wantWarn != (msg != "") {
 				t.Fatalf("check() = %q, want warning=%v", msg, c.wantWarn)
 			}
 			if !c.wantWarn {
 				return
 			}
-			if !strings.Contains(msg, "storage session") || !strings.Contains(msg, "resume") {
-				t.Fatalf("warning should name the window it will not fit: %q", msg)
+			if !strings.Contains(msg, "storage session") || !strings.Contains(msg, c.wantNext) {
+				t.Fatalf("warning should name the window it will not fit and say %q: %q", c.wantNext, msg)
 			}
 			// One warning per run.
 			now = now.Add(time.Hour)
-			if again := f.check(c.uploaded * 4); again != "" {
+			if again := f.check(c.uploaded*4, c.failed); again != "" {
 				t.Fatalf("second check warned again: %q", again)
 			}
 		})

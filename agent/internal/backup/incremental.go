@@ -270,9 +270,10 @@ func decideFile(f backupFile, prev map[string]SnapshotFile) (referenceDecision, 
 	return decision, entry
 }
 
-// decideFileHashed is decideFile, also reporting whether the decision had to
-// read and hash the file (the size-equal, ModTime-differs row). The snapshot
-// loop counts those reads as verified progress (#11014).
+// decideFileHashed is decideFile, also reporting whether the decision read
+// and hashed the file (the size-equal, ModTime-differs row) — false when that
+// read failed. The snapshot loop counts those reads as verified progress
+// (#11014).
 func decideFileHashed(f backupFile, prev map[string]SnapshotFile) (referenceDecision, SnapshotFile, bool) {
 	if f.kind != "" {
 		// Content-less entries (symlinks/directories) are rebuilt from the
@@ -290,7 +291,10 @@ func decideFileHashed(f backupFile, prev map[string]SnapshotFile) (referenceDeci
 		return decideReference, referenceEntry(f, entry), false
 	}
 	sum, err := sha256File(f.sourcePath)
-	if err != nil || sum != entry.Checksum {
+	if err != nil {
+		return decideUpload, SnapshotFile{}, false
+	}
+	if sum != entry.Checksum {
 		return decideUpload, SnapshotFile{}, true
 	}
 	return decideReference, referenceEntry(f, entry), true

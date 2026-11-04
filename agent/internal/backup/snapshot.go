@@ -66,22 +66,34 @@ func plannedOrDecide(planned []plannedDecision, i int, file backupFile, prevInde
 	return decideFileHashed(file, prevIndex)
 }
 
-func checksumMatches(path, want string) bool {
+// checksumMatches reports whether the file at path hashes to want. err is set
+// when the file could not be read, in which case match is false.
+func checksumMatches(path, want string) (match bool, err error) {
 	got, err := sha256File(path)
-	return err == nil && got == want
+	if err != nil {
+		return false, err
+	}
+	return got == want, nil
 }
 
 // storedEntryMatches reports whether a journaled entry's object, stored under
 // this snapshot's own prefix, still holds exactly the recorded bytes. Only a
 // literal entry (never a reference into another snapshot) with a recorded
 // digest can match, and only through a provider that can read the stored
-// object back.
-func storedEntryMatches(ctx context.Context, digester providers.StoredObjectDigester, canVerify bool, entry SnapshotFile, snapshotID string) bool {
+// object back. err is set when the object could not be read back for a
+// reason other than its absence (a missing object is an answer: no match).
+func storedEntryMatches(ctx context.Context, digester providers.StoredObjectDigester, canVerify bool, entry SnapshotFile, snapshotID string) (match bool, err error) {
 	if !canVerify || entry.Checksum == "" || isReferenceEntry(entry, snapshotID) {
-		return false
+		return false, nil
 	}
 	stored, err := digester.StoredObjectDigest(ctx, entry.BackupPath)
-	return err == nil && stored.SHA256 == entry.Checksum && stored.Size == entry.Size
+	if errors.Is(err, providers.ErrObjectNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return stored.SHA256 == entry.Checksum && stored.Size == entry.Size, nil
 }
 
 const (
@@ -552,8 +564,10 @@ func setProgressThrottleForTest(d time.Duration) (restore func()) {
 // each COMPLETED file, so a single file whose upload (or 30s retry backoff)
 // takes longer than the server's stale-progress reaper window would look
 // dead server-side and get killed mid-upload — then resume from byte 0 next
-// run and get killed again, never completing. The keepalive keeps
-// last_progress_at fresh with unchanged counters instead.
+// run and get killed again, never completing. The keepalive re-sends the
+// counters, which keeps the job's liveness (last_keepalive_at) fresh; since
+// #2798 the server advances last_progress_at only when a counter (bytes,
+// files, or the #11014 verified counters) has actually grown.
 var progressKeepaliveInterval = 30 * time.Second
 
 // setProgressKeepaliveIntervalForTest overrides progressKeepaliveInterval so
@@ -758,9 +772,11 @@ func withLayout(manifest *layout.Manifest) createSnapshotOption {
 //   - Each walked file matching a journal entry on (sourcePath, size,
 //     modTime) is treated as already uploaded — skipped, but still carried
 //     into this run's manifest — with filesDone/bytesDone pre-seeded from
-//     the matched set before the loop starts, so the very first progress
-//     emission reflects the resume instead of a slow trickle of
-//     skip-iterations.
+//     the matched set before the loop starts, so the first emission that
+//     reports done work reflects the whole resume instead of a slow
+//     trickle of skip-iterations. Building the set re-reads each match
+//     (see the resume pass); emissions during it report verified progress
+//     only.
 //   - Every freshly uploaded file is appended to the journal as it lands.
 //   - On a full success (manifest uploaded), the journal is completed
 //     (closed + removed) — the checkpoint is no longer needed. On every
@@ -1004,7 +1020,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// is in flight, the loop emits nothing — but the server-side stale reaper
 	// treats a silent running job as dead and cancels it. Re-emit the current
 	// counters every progressKeepaliveInterval so a long in-flight upload
-	// keeps the job's last_progress_at fresh. The same goroutine also emits
+	// keeps the job's liveness fresh. The same goroutine also emits
 	// (throttled) when inFlight signals that the current file's upload has
 	// read further, so provider read paths never block on onProgress. The
 	// goroutine is joined on
@@ -1081,8 +1097,14 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// Resume matching: build the full matched set up front (rather than
 	// deciding file-by-file inside the loop below) so filesDone/bytesDone
 	// can be pre-seeded with the resumed totals and reported in one jump
-	// before any real upload work happens.
+	// before any real upload work happens. Building it re-reads every
+	// journaled file (and, for a continued snapshot, every stored object):
+	// on a large resume that is hours of work, reported as it goes through
+	// the verified counters and stoppable between files (#11014).
 	resumedFiles := make(map[string]SnapshotFile)
+	// resumeChecked holds every file the resume pass examined, so a later
+	// dedupe hash of the same file is not counted as verified a second time.
+	resumeChecked := make(map[string]struct{})
 	// keyClaims holds the folded form of every object key this snapshot has
 	// assigned so far (#5582 — see objectkey_casefold.go). Resumed entries'
 	// keys are claimed up front, before any new upload picks a key: their
@@ -1108,7 +1130,9 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			providers.PrepareDownloads(unwrapProvider(provider), keys)
 		}
 		// resumable decides whether a journaled entry can be reused as is.
-		resumable := func(file backupFile, entry SnapshotFile) bool {
+		// checked is false when a read the decision needed failed: the entry
+		// is not reused, and the check did not complete.
+		resumable := func(file backupFile, entry SnapshotFile) (reuse, checked bool) {
 			// Size and modification time can match a file whose content
 			// changed. Reuse the entry only when the source still hashes to
 			// the recorded digest (the digest of the uploaded source bytes —
@@ -1117,12 +1141,24 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			// it again; a mismatch or read error uploads the file afresh and
 			// the recorded digest is never replaced by anything but a new
 			// upload's.
-			if entry.Checksum == "" || !checksumMatches(file.sourcePath, entry.Checksum) {
+			if entry.Checksum == "" {
+				return false, true
+			}
+			match, err := checksumMatches(file.sourcePath, entry.Checksum)
+			if err != nil {
+				log.Warn("could not read journaled file to check it; uploading it again",
+					"path", file.sourcePath,
+					"snapshotId", snapshot.ID,
+					"error", err.Error(),
+				)
+				return false, false
+			}
+			if !match {
 				log.Info("journaled file changed since it was uploaded; uploading it again",
 					"path", file.sourcePath,
 					"snapshotId", snapshot.ID,
 				)
-				return false
+				return false, true
 			}
 			if tainted[entry.BackupPath] {
 				// A pre-#5582 journal stored this file and a case twin at
@@ -1133,17 +1169,31 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 					"backupPath", entry.BackupPath,
 					"snapshotId", snapshot.ID,
 				)
-				return false
+				return false, true
 			}
-			if verifyStored && !storedEntryMatches(ctx, digester, canVerifyStored, entry, snapshot.ID) {
-				log.Info("journaled object from an earlier job does not match its record; uploading it again",
-					"path", file.sourcePath,
-					"backupPath", entry.BackupPath,
-					"snapshotId", snapshot.ID,
-				)
-				return false
+			if verifyStored {
+				match, err := storedEntryMatches(ctx, digester, canVerifyStored, entry, snapshot.ID)
+				if err != nil {
+					if ctx.Err() == nil {
+						log.Warn("could not read back a journaled object from an earlier job; uploading it again",
+							"path", file.sourcePath,
+							"backupPath", entry.BackupPath,
+							"snapshotId", snapshot.ID,
+							"error", err.Error(),
+						)
+					}
+					return false, false
+				}
+				if !match {
+					log.Info("journaled object from an earlier job does not match its record; uploading it again",
+						"path", file.sourcePath,
+						"backupPath", entry.BackupPath,
+						"snapshotId", snapshot.ID,
+					)
+					return false, true
+				}
 			}
-			return true
+			return true, true
 		}
 		for _, file := range files {
 			entry, ok := journal.Lookup(journalLookupKey(file), file.size, file.modTime)
@@ -1159,10 +1209,15 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			if ctx.Err() != nil {
 				return nil, errBackupStopped
 			}
-			ok = resumable(file, entry)
-			// Counted whether or not it matched: the read is the work (#11014).
-			markVerified(file.size)
-			if !ok {
+			reuse, checked := resumable(file, entry)
+			resumeChecked[journalLookupKey(file)] = struct{}{}
+			// A completed check counts whether or not it matched: the read is
+			// the work (#11014). A failed read does not, so a broken read path
+			// cannot pass for steady progress while everything is re-uploaded.
+			if checked {
+				markVerified(file.size)
+			}
+			if !reuse {
 				continue
 			}
 			resumedFiles[journalLookupKey(file)] = entry
@@ -1181,17 +1236,31 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		}
 	}
 
+	// markDedupeHashed counts a dedupe decision that read and hashed file,
+	// unless the resume pass above already counted that file.
+	markDedupeHashed := func(file backupFile, hashed bool) {
+		if !hashed {
+			return
+		}
+		if _, done := resumeChecked[journalLookupKey(file)]; done {
+			return
+		}
+		markVerified(file.size)
+	}
+
 	// Register the snapshot ID with the server BEFORE the first byte is
-	// uploaded (#3006). Every later emission carries it too, but this forced
-	// one guarantees it is sent even if the run dies during the very first
-	// file — and it is the only emission not subject to the throttle window,
-	// so the server learns the ID immediately rather than up to
-	// progressThrottle later.
+	// uploaded (#3006). Every later emission carries it too (the resume
+	// pass's throttled verified-progress emissions included), but this
+	// forced one guarantees it is sent before the first upload even when
+	// nothing was emitted yet — and it is the only emission not subject to
+	// the throttle window, so the server learns the ID immediately rather
+	// than up to progressThrottle later.
 	//
-	// Placed AFTER the resume pre-seed on purpose: emitting first would report
-	// filesDone/bytesDone as 0 on a resumed run and then jump up, and progress
-	// that appears to go backwards is precisely what the counters are not
-	// allowed to do (see startRunKeepalive in backup.go).
+	// Placed AFTER the resume pre-seed on purpose: the done counters jump
+	// straight from 0 to the resumed totals and never report a partial
+	// resume. Emissions during the resume pass carry only verified progress,
+	// with filesDone/bytesDone still 0 (#11014); no counter ever goes
+	// backwards (see startRunKeepalive in backup.go).
 	emitProgress(true)
 
 	// A provider that authorizes uploads in batches (a brokered writer)
@@ -1219,9 +1288,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 				continue
 			}
 			decision, refEntry, hashed := decideFileHashed(file, prevIndex)
-			if hashed {
-				markVerified(file.size)
-			}
+			markDedupeHashed(file, hashed)
 			plannedDecisions[i] = plannedDecision{decided: true, decision: decision, ref: refEntry}
 			if decision == decideReference {
 				continue
@@ -1234,9 +1301,11 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			planner.PrepareUploads(entries)
 		}
 	}
-	forecast := newWindowForecast(provider)
+	forecast := newWindowForecast(provider, journal != nil)
 	forecast.begin(plannedBytes)
-	var uploadedBytes int64
+	// uploadedBytes/failedBytes: source bytes of files this pass uploaded or
+	// gave up on, for the forecast.
+	var uploadedBytes, failedBytes int64
 
 	// The upload pool's state (#8381; the loop below documents the split
 	// between the workers and this goroutine). workerCtx is cancelled only
@@ -1415,9 +1484,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			} else if entry, ok := resumedFiles[journalLookupKey(file)]; ok {
 				s.kind, s.entry = slotResumed, entry
 			} else if decision, refEntry, hashed := plannedOrDecide(plannedDecisions, i, file, prevIndex); decision == decideReference {
-				if hashed {
-					markVerified(file.size)
-				}
+				markDedupeHashed(file, hashed)
 				s.kind, s.entry = slotReference, refEntry
 			} else {
 				charge := max(file.size, 0)
@@ -1426,9 +1493,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 					// so it is counted when it is admitted, not here.
 					break
 				}
-				if hashed {
-					markVerified(file.size)
-				}
+				markDedupeHashed(file, hashed)
 				naturalKey := ensureGzipExtension(path.Join(prefix, snapshotFilesDir, file.snapshotPath))
 				backupPath := keyClaims.assign(prefix, file.snapshotPath, naturalKey)
 				if backupPath != naturalKey {
@@ -1559,6 +1624,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			inFlight.release(s.progress)
 			errs = append(errs, fmt.Errorf("failed to upload %s: %w", file.sourcePath, out.err))
 			failedSources = append(failedSources, file.sourcePath)
+			failedBytes += max(file.size, 0)
 			if out.reconcileFailed {
 				log.Warn("re-upload of a file that changed during its upload failed, skipping file",
 					"path", file.sourcePath,
@@ -1601,7 +1667,10 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		markUploaded(file.size, s.progress)
 		emitProgress(false)
 		uploadedBytes += max(file.size, 0)
-		if warning := forecast.check(uploadedBytes); warning != "" {
+		// Bytes the other uploads in flight have already read count as moved:
+		// with several workers on large files, completed files alone would
+		// understate the rate.
+		if warning := forecast.check(uploadedBytes+inFlight.load(), failedBytes); warning != "" {
 			log.Warn("backup selection is unlikely to finish within its storage session",
 				"snapshotId", snapshot.ID,
 				"warning", warning,

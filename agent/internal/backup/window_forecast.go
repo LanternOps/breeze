@@ -25,6 +25,9 @@ func setWindowForecastMinElapsedForTest(d time.Duration) (restore func()) {
 // and finishes over later runs. That is expected behaviour, not a failure,
 // but the job should say so instead of looking broken.
 //
+// It is checked when an upload completes, so a run made of a few very large
+// files is first judged when the first of them lands.
+//
 // Not safe for concurrent use; the snapshot file pass drives it from one
 // goroutine.
 type windowForecast struct {
@@ -32,6 +35,9 @@ type windowForecast struct {
 	// means the destination has no session deadline (no forecast).
 	timeLeft func() time.Duration
 	now      func() time.Time
+	// resumable: the run keeps a checkpoint journal, so a later run picks up
+	// where this one stops.
+	resumable bool
 
 	planned int64
 	start   time.Time
@@ -40,8 +46,8 @@ type windowForecast struct {
 
 // newWindowForecast builds the forecast for provider: active only for a
 // writer whose uploads are authorized by a storage session with a deadline.
-func newWindowForecast(provider providers.BackupProvider) *windowForecast {
-	f := &windowForecast{now: time.Now}
+func newWindowForecast(provider providers.BackupProvider, resumable bool) *windowForecast {
+	f := &windowForecast{now: time.Now, resumable: resumable}
 	if w, ok := unwrapProvider(provider).(providers.SessionWindow); ok {
 		f.timeLeft = w.TimeUntilDeadline
 	}
@@ -55,30 +61,36 @@ func (f *windowForecast) begin(planned int64) {
 	f.start = f.now()
 }
 
-// check returns the warning the first time uploaded (bytes this run has
-// uploaded so far) projects past the session deadline, and "" otherwise.
-func (f *windowForecast) check(uploaded int64) string {
-	if f.warned || f.timeLeft == nil || f.planned <= 0 || uploaded <= 0 {
+// check returns the warning the first time the rest of the plan projects past
+// the session deadline, and "" otherwise. moved is the bytes this run has
+// sent so far (completed uploads plus what the uploads in flight have read);
+// failed is the planned bytes of files that failed and will not be sent.
+func (f *windowForecast) check(moved, failed int64) string {
+	if f.warned || f.timeLeft == nil || f.planned <= 0 || moved <= 0 {
 		return ""
 	}
 	elapsed := f.now().Sub(f.start)
 	if elapsed < windowForecastMinElapsed {
 		return ""
 	}
-	remaining := f.planned - uploaded
+	remaining := f.planned - moved - failed
 	if remaining <= 0 {
 		return ""
 	}
-	rate := float64(uploaded) / elapsed.Seconds() // bytes per second
+	rate := float64(moved) / elapsed.Seconds() // bytes per second
 	need := time.Duration(float64(remaining) / rate * float64(time.Second))
 	left := f.timeLeft()
 	if need <= left {
 		return ""
 	}
 	f.warned = true
+	next := "the next run starts this selection again"
+	if f.resumable {
+		next = "the next run will resume from this run's checkpoint"
+	}
 	return fmt.Sprintf(
-		"selection is unlikely to finish in this run: %s still to upload at the observed %s/s needs about %s, but the storage session ends in %s; the next run will resume from this run's checkpoint",
-		formatByteSize(remaining), formatByteSize(int64(rate)), roundForecast(need), roundForecast(max(left, 0)))
+		"selection is unlikely to finish in this run: %s still to upload at the observed %s/s needs about %s, but the storage session ends in %s; %s",
+		formatByteSize(remaining), formatByteSize(int64(rate)), roundForecast(need), roundForecast(max(left, 0)), next)
 }
 
 func roundForecast(d time.Duration) string {

@@ -69,7 +69,7 @@ A backup is also stopped and marked failed if the device moves to another organi
 
 **Cause:** One backup run is limited to 24 hours, and transfer time alone can use all of it: 2.4 TB over a 30 MB/s uplink needs about 22 hours. On a destination that uses a storage session, the agent compares its observed upload rate with the time left once it has been uploading for 15 minutes, and adds the warning if the rest will not fit. A run that resumes an interrupted snapshot first re-reads every file the earlier run uploaded (and, when a new job continues the snapshot, reads the stored copy back too) to confirm it is still good. That check reports its own progress rather than transferred bytes, and it counts against the same 24 hours.
 
-**Fix:** The warning is not a failure. Let the next run continue: it picks up from the checkpoint journal as long as it starts within 7 days. If runs keep ending before they get through the selection, split it into smaller selections or schedule the largest folders separately, so that each one can finish inside a single run.
+**Fix:** The warning is not a failure. Let the next run continue: it picks up from the checkpoint journal, which is kept for 7 days from when the first of these runs started. A selection that needs more than 7 days of runs in total starts over. If runs keep ending before they get through the selection, split it into smaller selections or schedule the largest folders separately, so that each one can finish inside a single run.
 
 ---
 

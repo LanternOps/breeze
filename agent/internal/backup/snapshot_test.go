@@ -1179,11 +1179,12 @@ func TestCreateSnapshotWithProgress_ResumeAfterInterruption(t *testing.T) {
 	}
 }
 
-// #3006: on a RESUMED run the forced snapshot-registration emission must
-// report the pre-seeded resume counters, not zeros. Emitting before the resume
-// seed would make progress appear to go backwards to 0 and then jump — exactly
-// what the counters are not allowed to do (a server-side reaper reads them as
-// liveness), and sticky if the resumed run dies right after registering.
+// #3006: on a RESUMED run the done counters jump straight to the pre-seeded
+// resume totals — the forced snapshot-registration emission (the first one
+// reporting done work) carries them, never a partial or zero value after the
+// seed. Since #11014 the resume pass emits verified-only progress (done
+// counters still 0) before it; every emission carries the snapshot ID, and no
+// counter ever goes backwards.
 func TestSnapshotRegistrationEmissionReportsResumedCounters(t *testing.T) {
 	restore := setProgressThrottleForTest(0)
 	defer restore()

@@ -114,7 +114,9 @@ const BACKUP_ABSOLUTE_TIMEOUT_MS = BACKUP_JOB_ABSOLUTE_TIMEOUT_MS; // legacy age
 const BACKUP_PENDING_TIMEOUT_MS = 60 * 60 * 1000;    // dispatch enqueued but never flipped/failed
 
 // #2798 no-transfer rule: the agent is alive (keepalive fresh) but neither
-// bytes nor files have advanced. Helpers before v0.118.0 report counters only
+// bytes nor files have advanced — nor, since #11014, the verified counters a
+// resume or dedupe check pass reports (applyBackupProgress folds all of them
+// into last_progress_at). Helpers before v0.118.0 report counters only
 // when a whole FILE completes, so a single large file legitimately shows zero
 // advance for its entire upload. The window is therefore sized from the bytes
 // still to go, not a flat timer: the file in flight is at most
@@ -135,8 +137,8 @@ export const BACKUP_NO_TRANSFER_MAX_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const BACKUP_NO_TRANSFER_FLOOR_RATE_BYTES_PER_SEC = 512 * 1024; // ~4 Mbit/s
 
 /**
- * How long a live backup may go without any byte/file advance before the
- * reaper treats it as wedged. See BACKUP_NO_TRANSFER_MIN_WINDOW_MS.
+ * How long a live backup may go without any byte/file/verified advance before
+ * the reaper treats it as wedged. See BACKUP_NO_TRANSFER_MIN_WINDOW_MS.
  */
 export function backupNoTransferWindowMs(
   totalSize: number | null | undefined,
