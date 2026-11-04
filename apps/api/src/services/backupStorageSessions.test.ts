@@ -1135,6 +1135,18 @@ describe('a write session queued behind another backup (#11012)', () => {
     expect(await auth(desc, lapsedAgain)).toMatchObject({ ok: false, status: 410 });
   });
 
+  it('only a renew re-arms the lease: a different first call spends the exemption and the next call is refused', async () => {
+    // The helper renews any lease with under a third left before each call
+    // (storagesession ensureLease), so its first call here is always a renew.
+    const state = makeState();
+    const { desc, stored } = await mintWriteSession(state);
+    const deps = makeDeps(state, { now: () => afterLongWait(stored) });
+    expect(await auth(desc, deps)).toMatchObject({ ok: true });
+    // Any charged write call raises call_count (backupStorageWriteSessions consume()).
+    expect(await deps.store.consumeBudget(desc.sessionId, { calls: 1, objects: 0 }, afterLongWait(stored))).toMatchObject({ kind: 'granted' });
+    expect(await auth(desc, deps)).toMatchObject({ ok: false, status: 410, error: 'Storage session has expired' });
+  });
+
   it.each([
     ['has made a call', { callCount: 1 }],
     ['has a recorded use', { lastUsedAt: NOW }],

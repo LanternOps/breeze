@@ -1000,11 +1000,13 @@ export async function authenticateStorageSession(
  * a third left before using the session), which grants a lease from now; from
  * then on the lease lapses as for any running session.
  *
- * Revocation and the deadline still end it (checked before this), and every
- * write call re-checks that its backup job is still pending or running and
- * that its snapshot id reservation is still its own
- * (backupStorageWriteSessions.ensureWriteSessionLive). Read sessions are
- * delivered to a command that is already running and are never exempt.
+ * Revocation and the deadline still end it (checked before this); ending the
+ * job revokes it (trigger); and every write call re-checks
+ * (ensureWriteSessionLive, in backupStorageWriteSessions.ts) that its backup
+ * job is still pending or running and that the snapshot id reservation is
+ * still reserved for that job at the session's write generation. Read
+ * sessions are delivered to a command that is already running and are never
+ * exempt.
  *
  * Every charged call raises call_count and stamps last_used_at; a resume or
  * an issued URL leaves its own mark too. Any of them counts as used.
