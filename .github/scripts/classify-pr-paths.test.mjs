@@ -58,7 +58,7 @@ test('classifier: any non-docs path reports code=true; docs=true only when a doc
     [['README.md', 'apps/web/src/App.tsx'], 'code=true\ndocs=true\nagent=false\napp=true\napi=true\nweb=true\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true\npath_readers=true\nreader_tests=apps/api/src/db/bootstrapDocs.test.ts'],
     [['docs/guide.md', '.github/workflows/ci.yml'], 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true\npath_readers=false\nreader_tests='],
     [['apps/mobile/docs.md.bak'], 'code=true\ndocs=false\nagent=false\napp=true\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true\npath_readers=false\nreader_tests='],
-    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=false\nagent_code=true\nintegration=true\npath_readers=false\nreader_tests='],
+    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=false\ntopology_browser=false\nagent_code=true\nintegration=true\npath_readers=false\nreader_tests='],
   ]) {
     const run = classify(paths);
     assert.equal(run.status, 0, run.stderr);

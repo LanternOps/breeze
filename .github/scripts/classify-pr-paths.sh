@@ -55,7 +55,9 @@
 # A wrong area gate SILENTLY skips a whole area's tests, so they fail OPEN:
 #   - shared/global inputs (packages/**, the root manifests and lockfile,
 #     patches/**, root tsconfig*, ci.yml, .github/scripts/**, docker/**,
-#     root docker-compose* / Dockerfile*, scripts/**, ee/**) set EVERY area;
+#     root docker-compose* / Dockerfile*, scripts/**, ee/**) set EVERY area,
+#     except that packages/shared/** only sets `rust` for files the Rust
+#     sources read (see the case below);
 #   - a code path that matches no area rule (e2e-tests/**, a new
 #     top-level dir or app, ...) sets EVERY area;
 #   - an area whose tests READ another area's files is also set when those
@@ -205,8 +207,11 @@ topology_browser=false
 agent_code=false
 integration=false
 seen=false
+all_areas_except_rust() {
+  api=true; web=true; portal=true; addins=true; m365=true
+}
 all_areas() {
-  api=true; web=true; portal=true; addins=true; m365=true; rust=true
+  all_areas_except_rust; rust=true
 }
 while IFS= read -r path; do
   [[ -z "${path}" ]] && continue
@@ -225,6 +230,15 @@ while IFS= read -r path; do
   # Area (first match wins). In a case pattern `*` also matches '/', so the
   # root-only globals below are anchored by their leading literal.
   case "${path}" in
+    # rust-check runs cargo and no JS build, so packages/shared reaches it only
+    # through the files the Rust sources embed or read in tests (ci-area-gating
+    # re-derives this list from them). test-viewer, which does use its TypeScript,
+    # is not area-gated. This applies in the merge queue too: both events classify.
+    packages/shared/src/fixtures/prompt-catalog/*|\
+    packages/shared/src/fixtures/prompt-host/*|\
+    packages/shared/src/promptCatalog/catalog/*|\
+    packages/shared/src/promptHost/kinds.ts) all_areas; agent_code=true ;;
+    packages/shared/*) all_areas_except_rust; agent_code=true ;;
     packages/*) all_areas; agent_code=true ;;
     package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|.node-version|.nvmrc|patches/*|tsconfig*.json) all_areas ;;
     .github/workflows/ci.yml|.github/scripts/*|docker/*|docker-compose*|Dockerfile*|scripts/*|ee/*) all_areas; agent_code=true ;;
