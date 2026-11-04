@@ -1835,8 +1835,13 @@ export class StreamingSessionManager {
               && roundTrips.workCalls.size > session.workTurnLimit
             ) {
               session.workTurnLimitStopped = true;
-              // As in interrupt(): an approval wait would otherwise block it (#3089).
+              // As in interrupt(): an approval wait would otherwise block it
+              // (#3089). Settling only acts on a wait already in flight; the
+              // over-limit call's preToolUse may be past its stop check and not
+              // yet waiting, so spend the cycle's wait budget too: its wait then
+              // returns at once (the hook refuses any later call outright).
               settleApprovalWaits(session);
+              session.approvalWaitDeadline = Date.now();
               void Promise.resolve().then(() => session.query.interrupt()).catch(() => undefined);
             }
             if (apiUsage) {
@@ -2141,6 +2146,7 @@ export class StreamingSessionManager {
       // A work-limit stop whose query ended without a `result` still says why.
       if (session.workTurnLimitStopped && !workTurnLimitReported) {
         session.eventBus.publish(TURN_LIMIT_ERROR);
+        session.eventBus.publish({ type: 'done' });
       }
       // A turn that ended without a `result` (teardown, crash) discards any
       // unvalidated topology output and releases its lease.

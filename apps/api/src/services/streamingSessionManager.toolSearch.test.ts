@@ -440,6 +440,18 @@ describe('turn budget (#10400)', () => {
       expect(errorsOf(session)).toEqual([expect.objectContaining({ code: 'turn_limit_reached' })]);
     });
 
+    it('spends the cycle approval-wait budget at the stop, so the over-limit call cannot block on an approval', async () => {
+      const before = Date.now();
+      mockSdkQuery([...realRoundTrips(6), { ...RESULT_MSG, subtype: 'error_during_execution', num_turns: 6, errors: [] }]);
+      const session = await start('sess-approval');
+      await session.processorPromise;
+      // No wait was in flight when the stop landed (the call's preToolUse had
+      // not begun one), so settling alone would leave its budget untouched.
+      expect(session.approvalWaitDeadline).not.toBeNull();
+      expect(session.approvalWaitDeadline!).toBeGreaterThanOrEqual(before);
+      expect(session.approvalWaitDeadline!).toBeLessThanOrEqual(Date.now());
+    });
+
     it('does not stop a turn that spends exactly its remaining work turns', async () => {
       mockSdkQuery([...realRoundTrips(5), assistant('msg_end', [{ type: 'text', text: 'Done.' }]), { ...RESULT_MSG, num_turns: 6 }]);
       const session = await start('sess-exact');
