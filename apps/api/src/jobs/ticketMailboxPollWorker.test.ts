@@ -48,6 +48,7 @@ vi.mock('../services/ticketMailbox/connectionService', () => ({
   recordPollAttempt: vi.fn(async () => true),
   releasePollAttempt: vi.fn(async () => true),
   setConnectedMailboxStatus: vi.fn(async () => {}),
+  seedDeltaFloor: vi.fn(async () => null),
 }));
 vi.mock('../services/ticketMailbox/mailboxToken', () => ({ getMailboxToken: vi.fn(async () => 'tok') }));
 vi.mock('../services/ticketMailbox/graphMailClient', async (importOriginal) => ({
@@ -55,6 +56,7 @@ vi.mock('../services/ticketMailbox/graphMailClient', async (importOriginal) => (
   classifyGraphPollError: (await importOriginal<typeof import('../services/ticketMailbox/graphMailClient')>()).classifyGraphPollError,
   GraphSweepBudgetError: (await importOriginal<typeof import('../services/ticketMailbox/graphMailClient')>()).GraphSweepBudgetError,
   GRAPH_POLL_SWEEP_BUDGET_MS: (await importOriginal<typeof import('../services/ticketMailbox/graphMailClient')>()).GRAPH_POLL_SWEEP_BUDGET_MS,
+  isDeltaCursorExpired: (await importOriginal<typeof import('../services/ticketMailbox/graphMailClient')>()).isDeltaCursorExpired,
   listInboxDelta: vi.fn(),
   markRead: vi.fn(async () => {}),
 }));
@@ -76,6 +78,7 @@ import {
   recordPollAttempt,
   releasePollAttempt,
   setConnectedMailboxStatus,
+  seedDeltaFloor,
 } from '../services/ticketMailbox/connectionService';
 import { getMailboxToken } from '../services/ticketMailbox/mailboxToken';
 import { GraphSweepBudgetError, listInboxDelta, markRead } from '../services/ticketMailbox/graphMailClient';
@@ -91,10 +94,15 @@ import {
   shutdownTicketMailboxPollWorker,
 } from './ticketMailboxPollWorker';
 
+// A mailbox that was already polling before connect baselines existed (#10863):
+// it has a cursor and no floor. The suite's default, because that behaviour is unchanged.
+const STORED_CURSOR = 'https://graph.microsoft.com/delta-stored';
+
 const conn = (over: Partial<any> = {}) => ({
   id: 'c1', partnerId: 'p1', tenantId: '11111111-1111-1111-1111-111111111111',
   consentAttemptId: '22222222-2222-4222-8222-222222222222',
-  mailboxAddress: 'support@a.com', status: 'connected', deltaLink: null, ...over,
+  mailboxAddress: 'support@a.com', status: 'connected', deltaLink: STORED_CURSOR,
+  eligibleAfter: null, baselineCompletedAt: null, ...over,
 });
 
 describe('runMailboxSweep', () => {
@@ -131,7 +139,7 @@ describe('runMailboxSweep', () => {
     expect(markRead).toHaveBeenCalledTimes(2);
     expect(updateDeltaCursor).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'c1', consentAttemptId: conn().consentAttemptId }),
-      null, 'delta-new', expect.any(Date), expect.anything(),
+      STORED_CURSOR, 'delta-new', expect.any(Date), expect.anything(),
     );
     const enqueueOrder = vi.mocked(enqueueInboundEmail).mock.invocationCallOrder[0]!;
     const cursorOrder = vi.mocked(updateDeltaCursor).mock.invocationCallOrder[0]!;
@@ -161,7 +169,7 @@ describe('runMailboxSweep', () => {
     );
     expect(updateDeltaCursor).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'good', consentAttemptId: conn().consentAttemptId }),
-      null, 'd', expect.any(Date), expect.anything(),
+      STORED_CURSOR, 'd', expect.any(Date), expect.anything(),
     );
   });
 
@@ -172,7 +180,7 @@ describe('runMailboxSweep', () => {
     await runMailboxSweep();
     expect(resetDeltaCursor).toHaveBeenCalledWith(expect.objectContaining({
       id: 'c1', consentAttemptId: conn().consentAttemptId,
-    }), null);
+    }), STORED_CURSOR);
     expect(setConnectedMailboxStatus).not.toHaveBeenCalled();
     expect(updateDeltaCursor).not.toHaveBeenCalled();
   });
@@ -247,7 +255,7 @@ describe('runMailboxSweep', () => {
     await runMailboxSweep();
     expect(enqueueInboundEmail).toHaveBeenCalledTimes(2);
     expect(updateDeltaCursor).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'c1' }), null, 'https://graph.microsoft.com/next-7', expect.any(Date), expect.any(Date),
+      expect.objectContaining({ id: 'c1' }), STORED_CURSOR, 'https://graph.microsoft.com/next-7', expect.any(Date), expect.any(Date),
     );
     expect(recordTransientPollFailure).not.toHaveBeenCalled();
   });
@@ -279,8 +287,326 @@ describe('runMailboxSweep', () => {
     }
     expect(enqueueInboundEmail).toHaveBeenCalledTimes(2);
     expect(markRead).not.toHaveBeenCalled();
-    expect(updateDeltaCursor).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), null, 'delta-new', expect.any(Date), expect.any(Date));
+    expect(updateDeltaCursor).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), STORED_CURSOR, 'delta-new', expect.any(Date), expect.any(Date));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('left messages unread'), { id: 'c1', count: 2, limit: 'pass_deadline' });
+  });
+
+  // #10863: connecting an existing mailbox must not import its backlog. The floor
+  // (eligibleAfter) decides what is new; the baseline columns only count what it
+  // left behind, for the card's note.
+  describe('connect baseline (#10863)', () => {
+    const FLOOR = new Date('2026-11-01T12:00:00.500Z');
+    const backlog = (id: string, receivedDateTime = '2026-10-01T09:00:00Z') => ({ id, receivedDateTime });
+    const fresh = (id: string, receivedDateTime = '2026-11-01T12:05:00Z') => ({ id, receivedDateTime });
+    /** A mailbox just connected: a floor, no cursor, baseline still open. */
+    const connecting = (over: Partial<any> = {}) => conn({
+      deltaLink: null, eligibleAfter: FLOOR, baselineCompletedAt: null, ...over,
+    });
+    /** A mailbox whose baseline finished: a floor and a real deltaLink. */
+    const baselined = (over: Partial<any> = {}) => conn({
+      deltaLink: STORED_CURSOR, eligibleAfter: FLOOR, baselineCompletedAt: new Date('2026-11-01T12:10:00Z'), ...over,
+    });
+    const enqueuedIds = () => vi.mocked(enqueueInboundEmail).mock.calls.map(([email]) => email.providerMessageId);
+    const markedIds = () => vi.mocked(markRead).mock.calls.map((call) => call[2]);
+
+    it('first poll of a backlog enqueues nothing, marks nothing read and stores the deltaLink', async () => {
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([connecting()] as any);
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({
+        messages: [backlog('old-1'), backlog('old-2'), backlog('old-3')], deltaLink: 'delta-baseline',
+      } as any);
+
+      await runMailboxSweep();
+
+      expect(enqueueInboundEmail).not.toHaveBeenCalled();
+      expect(markRead).not.toHaveBeenCalled();
+      expect(updateDeltaCursor).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'c1' }), null, 'delta-baseline', expect.any(Date), expect.anything(),
+        { skipped: 3, completed: true },
+      );
+    });
+
+    it('the poll after the baseline enqueues only what is new, including when Graph re-reports touched backlog', async () => {
+      // A technician reading or flagging an old message makes delta report it again.
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([baselined()] as any);
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({
+        messages: [backlog('old-touched'), fresh('new-1')], deltaLink: 'delta-2',
+      } as any);
+
+      await runMailboxSweep();
+
+      expect(vi.mocked(listInboxDelta).mock.calls[0]![2]).toBe(STORED_CURSOR);
+      expect(enqueuedIds()).toEqual(['new-1']);
+      expect(markedIds()).toEqual(['new-1']);
+      // The baseline is closed, so nothing here touches the count on the card.
+      expect(updateDeltaCursor).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'c1' }), STORED_CURSOR, 'delta-2', expect.any(Date), expect.anything(),
+      );
+    });
+
+    it('a baseline spanning several sweeps stays a baseline: it resumes, counts each part, and only then closes', async () => {
+      vi.mocked(listConnectedMailboxes).mockResolvedValueOnce([connecting()] as any);
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({
+        messages: [backlog('old-1'), backlog('old-2')], deltaLink: null,
+        resumeLink: 'https://graph.microsoft.com/next-2', resumeReason: 'page_cap',
+      } as any);
+      await runMailboxSweep();
+
+      expect(enqueueInboundEmail).not.toHaveBeenCalled();
+      expect(updateDeltaCursor).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: 'c1' }), null, 'https://graph.microsoft.com/next-2', expect.any(Date), expect.anything(),
+        { skipped: 2, completed: false },
+      );
+
+      // Next sweep reads the stored resumeLink. It is not a finished deltaLink, and
+      // the backlog on the remaining pages must still not be imported.
+      vi.mocked(listConnectedMailboxes).mockResolvedValueOnce([connecting({ deltaLink: 'https://graph.microsoft.com/next-2' })] as any);
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({
+        messages: [backlog('old-3')], deltaLink: 'delta-baseline',
+      } as any);
+      await runMailboxSweep();
+
+      expect(vi.mocked(listInboxDelta).mock.calls[1]![2]).toBe('https://graph.microsoft.com/next-2');
+      expect(enqueueInboundEmail).not.toHaveBeenCalled();
+      expect(markRead).not.toHaveBeenCalled();
+      expect(updateDeltaCursor).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: 'c1' }), 'https://graph.microsoft.com/next-2', 'delta-baseline', expect.any(Date), expect.anything(),
+        { skipped: 1, completed: true },
+      );
+    });
+
+    it('mail received while the baseline is being walked is imported, not swallowed by it', async () => {
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([connecting()] as any);
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({
+        messages: [backlog('old-1'), fresh('during-walk'), backlog('old-2')], deltaLink: 'delta-baseline',
+      } as any);
+
+      await runMailboxSweep();
+
+      expect(enqueuedIds()).toEqual(['during-walk']);
+      expect(markedIds()).toEqual(['during-walk']);
+      expect(updateDeltaCursor).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'c1' }), null, 'delta-baseline', expect.any(Date), expect.anything(),
+        { skipped: 2, completed: true },
+      );
+    });
+
+    it('compares at whole seconds: Graph drops the milliseconds the floor carries', async () => {
+      // Floor is 12:00:00.500. A message that really arrived at 12:00:00.700 is
+      // reported as 12:00:00Z and must not read as older than the floor.
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([connecting()] as any);
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({
+        messages: [backlog('second-before', '2026-11-01T11:59:59Z'), fresh('floor-second', '2026-11-01T12:00:00Z')],
+        deltaLink: 'delta-baseline',
+      } as any);
+
+      await runMailboxSweep();
+
+      expect(enqueuedIds()).toEqual(['floor-second']);
+    });
+
+    it.each([
+      ['a read that fails transiently', 503, 'transient'],
+      ['a read cut off by the pass deadline', undefined, 'budget'],
+    ])('a baseline that stops on %s imports nothing and writes no cursor; the retry is still floored', async (_label, status, kind) => {
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([connecting()] as any);
+      vi.mocked(listInboxDelta).mockImplementationOnce(async () => {
+        if (kind === 'budget') throw new GraphSweepBudgetError('spent');
+        const e: any = new Error('Graph delta 503'); e.status = status; throw e;
+      });
+
+      await runMailboxSweep();
+
+      expect(enqueueInboundEmail).not.toHaveBeenCalled();
+      expect(updateDeltaCursor).not.toHaveBeenCalled();
+      expect(resetDeltaCursor).not.toHaveBeenCalled();
+      expect(setConnectedMailboxStatus).not.toHaveBeenCalled();
+      expect(recordTransientPollFailure).toHaveBeenCalledTimes(1);
+
+      // The row is unchanged, so the next sweep is the same floored first poll, not
+      // a fallback to a full import.
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({
+        messages: [backlog('old-1'), backlog('old-2')], deltaLink: 'delta-baseline',
+      } as any);
+      await runMailboxSweep();
+
+      expect(enqueueInboundEmail).not.toHaveBeenCalled();
+      expect(markRead).not.toHaveBeenCalled();
+      expect(updateDeltaCursor).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'c1' }), null, 'delta-baseline', expect.any(Date), expect.anything(),
+        { skipped: 2, completed: true },
+      );
+    });
+
+    it('a stored resumeLink that then fails midway keeps its place and still imports no backlog', async () => {
+      const resume = 'https://graph.microsoft.com/next-5';
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([connecting({ deltaLink: resume })] as any);
+      vi.mocked(listInboxDelta).mockImplementationOnce(async () => { const e: any = new Error('Graph delta 503'); e.status = 503; throw e; });
+
+      await runMailboxSweep();
+
+      expect(updateDeltaCursor).not.toHaveBeenCalled();
+      expect(resetDeltaCursor).not.toHaveBeenCalled();
+
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({ messages: [backlog('old-9')], deltaLink: 'delta-baseline' } as any);
+      await runMailboxSweep();
+
+      expect(vi.mocked(listInboxDelta).mock.calls[1]![2]).toBe(resume);
+      expect(enqueueInboundEmail).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['410 Gone', 410, undefined],
+      ['Graph syncStateNotFound on a 400', 400, 'syncStateNotFound'],
+    ])('an expired cursor (%s) re-baselines: cleared, then the re-walk imports no backlog', async (_label, status, graphCode) => {
+      vi.mocked(listConnectedMailboxes).mockResolvedValueOnce([baselined()] as any);
+      vi.mocked(listInboxDelta).mockImplementationOnce(async () => {
+        const e: any = new Error(`Graph delta ${status}`); e.status = status; e.graphCode = graphCode; throw e;
+      });
+
+      await runMailboxSweep();
+
+      expect(resetDeltaCursor).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), STORED_CURSOR);
+      expect(setConnectedMailboxStatus).not.toHaveBeenCalled();
+      expect(enqueueInboundEmail).not.toHaveBeenCalled();
+
+      // The next sweep has no cursor but keeps its floor, so the whole inbox coming
+      // back from the fresh delta imports only mail newer than connect.
+      vi.mocked(listConnectedMailboxes).mockResolvedValueOnce([baselined({ deltaLink: null })] as any);
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({
+        messages: [backlog('old-1'), backlog('old-2'), fresh('gap-mail')], deltaLink: 'delta-again',
+      } as any);
+      await runMailboxSweep();
+
+      expect(vi.mocked(listInboxDelta).mock.calls[1]![2]).toBeNull();
+      expect(enqueuedIds()).toEqual(['gap-mail']);
+      expect(seedDeltaFloor).not.toHaveBeenCalled();
+    });
+
+    it('a 4xx that is not an expired cursor still stops the mailbox', async () => {
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([baselined()] as any);
+      vi.mocked(listInboxDelta).mockImplementationOnce(async () => {
+        const e: any = new Error('Graph delta 400'); e.status = 400; e.graphCode = 'BadRequest'; throw e;
+      });
+
+      await runMailboxSweep();
+
+      expect(resetDeltaCursor).not.toHaveBeenCalled();
+      expect(setConnectedMailboxStatus).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), 'error', expect.any(String));
+    });
+
+    it('an existing connection with a deltaLink and no floor is unchanged: old mail still flows', async () => {
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([conn()] as any);
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({
+        messages: [backlog('old-looking'), { id: 'no-date' }], deltaLink: 'delta-new',
+      } as any);
+
+      await runMailboxSweep();
+
+      expect(seedDeltaFloor).not.toHaveBeenCalled();
+      expect(enqueuedIds()).toEqual(['old-looking', 'no-date']);
+      expect(markedIds()).toEqual(['old-looking', 'no-date']);
+      expect(updateDeltaCursor).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'c1' }), STORED_CURSOR, 'delta-new', expect.any(Date), expect.anything(),
+      );
+    });
+
+    it('a row with neither cursor nor floor gets a floor before Graph is read, then walks under it', async () => {
+      const seeded = new Date('2026-11-02T08:00:00Z');
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([conn({ deltaLink: null })] as any);
+      vi.mocked(seedDeltaFloor).mockResolvedValueOnce({ eligibleAfter: seeded, baselineCompletedAt: null });
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({
+        messages: [backlog('old-1', '2026-11-02T07:59:00Z'), fresh('new-1', '2026-11-02T08:00:01Z')], deltaLink: 'delta-baseline',
+      } as any);
+
+      await runMailboxSweep();
+
+      expect(vi.mocked(seedDeltaFloor).mock.invocationCallOrder[0]!)
+        .toBeLessThan(vi.mocked(listInboxDelta).mock.invocationCallOrder[0]!);
+      expect(enqueuedIds()).toEqual(['new-1']);
+      expect(updateDeltaCursor).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'c1' }), null, 'delta-baseline', expect.any(Date), expect.anything(),
+        { skipped: 1, completed: true },
+      );
+    });
+
+    it('a row seeded as already baselined walks under its floor but does not count', async () => {
+      // A mailbox that polled before this fix and lost its cursor: the note on the
+      // card describes a connect, and this is not one.
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([conn({ deltaLink: null })] as any);
+      vi.mocked(seedDeltaFloor).mockResolvedValueOnce({
+        eligibleAfter: new Date('2026-11-02T08:00:00Z'), baselineCompletedAt: new Date('2026-11-02T08:30:00Z'),
+      });
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({
+        messages: [backlog('old-1', '2026-11-02T07:59:00Z')], deltaLink: 'delta-baseline',
+      } as any);
+
+      await runMailboxSweep();
+
+      expect(enqueueInboundEmail).not.toHaveBeenCalled();
+      expect(updateDeltaCursor).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'c1' }), null, 'delta-baseline', expect.any(Date), expect.anything(),
+      );
+    });
+
+    it('never reads Graph with neither cursor nor floor when the floor write lands on no row', async () => {
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([conn({ deltaLink: null })] as any);
+      vi.mocked(seedDeltaFloor).mockResolvedValueOnce(null);
+
+      await runMailboxSweep();
+
+      expect(getMailboxToken).not.toHaveBeenCalled();
+      expect(listInboxDelta).not.toHaveBeenCalled();
+      expect(enqueueInboundEmail).not.toHaveBeenCalled();
+      expect(updateDeltaCursor).not.toHaveBeenCalled();
+    });
+
+    it('never reads Graph with neither cursor nor floor when the floor write fails', async () => {
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([conn({ deltaLink: null })] as any);
+      vi.mocked(seedDeltaFloor).mockRejectedValueOnce(new Error('db down'));
+
+      await runMailboxSweep();
+
+      expect(listInboxDelta).not.toHaveBeenCalled();
+      expect(enqueueInboundEmail).not.toHaveBeenCalled();
+      expect(captureException).toHaveBeenCalled();
+    });
+
+    it('fails closed on a floored row: no usable receivedDateTime is not imported; a delta removal is not a message', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([connecting()] as any);
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({
+        messages: [
+          { id: 'no-date' },
+          { id: 'bad-date', receivedDateTime: 'not-a-date' },
+          { id: 'gone', '@removed': { reason: 'deleted' } },
+          fresh('new-1'),
+        ],
+        deltaLink: 'delta-baseline',
+      } as any);
+
+      await runMailboxSweep();
+      const warned = warn.mock.calls.find(([line]) => String(line).includes('no usable receivedDateTime'));
+      warn.mockRestore();
+
+      expect(enqueuedIds()).toEqual(['new-1']);
+      expect(warned?.[1]).toEqual({ id: 'c1', count: 2 });
+      // The removal is left out of "messages already in this inbox".
+      expect(updateDeltaCursor).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'c1' }), null, 'delta-baseline', expect.any(Date), expect.anything(),
+        { skipped: 2, completed: true },
+      );
+    });
+
+    it('a stale generation mid-baseline writes no cursor and no count', async () => {
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([connecting()] as any);
+      vi.mocked(isConnectedMailboxSnapshotCurrent).mockResolvedValueOnce(false);
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({ messages: [backlog('old-1')], deltaLink: 'delta-baseline' } as any);
+
+      await runMailboxSweep();
+
+      expect(enqueueInboundEmail).not.toHaveBeenCalled();
+      expect(updateDeltaCursor).not.toHaveBeenCalled();
+    });
   });
 
   // #8308 follow-up: one deadline for the whole Microsoft 365 pass, mailboxes in

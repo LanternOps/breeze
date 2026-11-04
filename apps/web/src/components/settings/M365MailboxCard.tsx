@@ -26,6 +26,12 @@ interface MailboxConnectionDTO {
   transientPollFailureCount: number;
   /** Pending row whose consent attempt can no longer complete (#6936). */
   consentExpired: boolean;
+  /**
+   * The first poll after a connect leaves mail already in the inbox alone (#10863).
+   * Null when there is nothing to say: a mailbox from before that existed, or an
+   * older API.
+   */
+  connectBaseline: { skippedCount: number; complete: boolean } | null;
 }
 
 /** Fixed reason codes the consent callback may redirect back with (#6936). */
@@ -80,7 +86,16 @@ function parseMailboxConnection(value: unknown): MailboxConnectionDTO | null {
     verificationError,
     transientPollFailureCount: parseTransientPollFailures(value.transientPollFailures),
     consentExpired,
+    connectBaseline: parseConnectBaseline(value.connectBaseline),
   };
+}
+
+function parseConnectBaseline(value: unknown): MailboxConnectionDTO['connectBaseline'] {
+  if (!isRecord(value)) return null;
+  const { skippedCount, completedAt } = value;
+  if (typeof skippedCount !== 'number' || !Number.isInteger(skippedCount) || skippedCount < 0) return null;
+  if (!isNullableString(completedAt)) return null;
+  return { skippedCount, complete: completedAt !== null };
 }
 
 /** Show the "polls keep failing" note from this many failed sweeps in a row
@@ -296,6 +311,16 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
               {c.status === 'connected' && c.transientPollFailureCount >= TRANSIENT_FAILURE_NOTICE_THRESHOLD ? (
                 <p className="text-xs text-destructive" data-testid="m365-poll-failing">
                   {t('m365Mailbox.pollFailing', { failures: c.transientPollFailureCount })}
+                </p>
+              ) : null}
+              {c.status === 'connected' && c.connectBaseline && !c.connectBaseline.complete ? (
+                <p className="text-xs text-muted-foreground" data-testid="m365-baseline-running">
+                  {t('m365Mailbox.baselineRunning')}
+                </p>
+              ) : null}
+              {c.status === 'connected' && c.connectBaseline?.complete && c.connectBaseline.skippedCount > 0 ? (
+                <p className="text-xs text-muted-foreground" data-testid="m365-baseline-note">
+                  {t('m365Mailbox.baselineSkipped', { count: c.connectBaseline.skippedCount })}
                 </p>
               ) : null}
               {c.status === 'error' && c.verificationError ? (
