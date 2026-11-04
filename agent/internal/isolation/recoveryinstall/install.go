@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -63,7 +64,7 @@ func (i *Installer) EnsureRecovery(ctx context.Context, wantVersion string) (str
 	if i.Fetch == nil || i.VerifySignature == nil || i.SupportedSchema == nil || i.SelfTest == nil || i.Tasks == nil || i.Repoint == nil || !filepath.IsAbs(i.InstallDir) || !filepath.IsAbs(i.DataDir) {
 		return "", errors.New("incomplete recovery installer dependencies")
 	}
-	path := filepath.Join(i.InstallDir, "isolation-recovery", wantVersion, "breeze-isolation-recovery.exe")
+	path := filepath.Join(i.InstallDir, "isolation-recovery", wantVersion, recoveryExecutableName())
 	if err := i.stage(ctx, wantVersion, path); err != nil {
 		return "", err
 	}
@@ -109,6 +110,14 @@ func (i *Installer) EnsureRecovery(ctx context.Context, wantVersion string) (str
 		return "", err
 	}
 	return path, nil
+}
+
+// recoveryExecutableName is the installed file name: only Windows has a suffix.
+func recoveryExecutableName() string {
+	if runtime.GOOS == "windows" {
+		return "breeze-isolation-recovery.exe"
+	}
+	return "breeze-isolation-recovery"
 }
 
 func unresolved(j *journal.Journal) bool {

@@ -200,21 +200,46 @@ type darwinUninstallScriptOptions struct {
 	DelaySeconds    int
 }
 
+// darwinUninstallIsolationLog records a teardown aborted by an unconfirmed
+// isolation release: by then the command result has already been sent.
+const darwinUninstallIsolationLog = "/Library/Logs/Breeze/uninstall-isolation-release-error.txt"
+
 // buildDarwinUninstallScript renders the detached teardown script for macOS.
-// Phase 1 already neutralized the watchdog in-process; the script re-asserts
-// it (bootout + pkill) BEFORE stopping the agent daemon as a backstop, so a
-// watchdog that survived phase 1 cannot respawn the agent mid-teardown.
-// Config removal happens here — after the agent process is dead — so the
+// It first re-confirms that network isolation is released (the handler did so
+// in-process, but the device can be isolated again before this runs); if that
+// fails it undoes phase 1's disable of the agent daemon and stops, so the
+// device keeps its agent and its recovery jobs. The watchdog phase 1 removed
+// is not restored here (ensureMissingWatchdog handles a missing one). Phase 1
+// already neutralized the watchdog in-process; the script re-asserts it (bootout + pkill) BEFORE
+// stopping the agent daemon as a backstop, so a watchdog that survived phase 1
+// cannot respawn the agent mid-teardown. The release is confirmed again once
+// the agent has stopped, because until then it could isolate the device again,
+// and only then do the recovery jobs go; if that fails the agent is loaded
+// again. Config removal happens here — after the agent process is dead — so the
 // still-running agent cannot resurrect files (logs, sockets, state) under a
 // freshly-deleted directory.
 func buildDarwinUninstallScript(opts darwinUninstallScriptOptions) string {
+	abortLog := func(reason string) string {
+		return fmt.Sprintf("  { date; echo 'self-uninstall aborted: %s'; } >> %s 2>/dev/null", reason, shQuote(darwinUninstallIsolationLog))
+	}
 	lines := []string{
 		macosuninstall.Functions,
+		macosuninstall.IsolationFunctions,
+		"if ! breeze_release_isolation; then",
+		abortLog("isolation release could not be confirmed; agent daemon re-enabled"),
+		fmt.Sprintf("  launchctl enable system/%s", shQuote(opts.Label)),
+		"  exit 1",
+		"fi",
 		fmt.Sprintf("sleep %d", opts.DelaySeconds),
 		fmt.Sprintf("breeze_bootout system/%s || exit 1", shQuote(opts.WatchdogLabel)),
 		fmt.Sprintf("pkill -x %s", shQuote(opts.WatchdogProcess)),
 		"breeze_stop_helpers || exit 1",
 		fmt.Sprintf("breeze_bootout system/%s || exit 1", shQuote(opts.Label)),
+		"if ! breeze_release_isolation || ! breeze_remove_isolation; then",
+		abortLog("after the agent stopped, the isolation release could not be confirmed or its recovery jobs could not be removed; agent daemon loaded again"),
+		fmt.Sprintf("  breeze_restart_agent %s %s", shQuote(opts.Label), shQuote(opts.PlistPath)),
+		"  exit 1",
+		"fi",
 		fmt.Sprintf("rm -f %s || exit 1", shQuote(opts.PlistPath)),
 		fmt.Sprintf("rm -f %s || exit 1", shQuote(opts.BinaryPath)),
 		"breeze_remove_auxiliary || exit 1",
