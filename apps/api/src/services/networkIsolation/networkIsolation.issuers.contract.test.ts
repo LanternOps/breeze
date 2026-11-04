@@ -28,7 +28,8 @@ const RAW_DISPATCH = new RegExp(`\\b(?:${DISPATCHERS})\\s*\\(`);
 
 describe('every aiDispatch entry point refuses a raw isolation command before dispatch', () => {
   const source = read('services/aiDispatch.ts');
-  const starts = [...source.matchAll(/^export async function (\w+)/gm)];
+  // Any export starts a new body, so a later non-async dispatcher cannot hide in its neighbour's.
+  const starts = [...source.matchAll(/^export (?:async )?(?:function|const|class) (\w+)/gm)];
   const bodies = starts.map((m, i) => ({
     name: m[1]!,
     body: source.slice(m.index!, i + 1 < starts.length ? starts[i + 1]!.index : source.length),

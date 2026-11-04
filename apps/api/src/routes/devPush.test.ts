@@ -530,6 +530,13 @@ describe('devPush routes', () => {
       expect((await pushAs('agent')).status).toBe(200);
       expect(mockSendCommandToAgent).toHaveBeenCalledTimes(1);
     });
+    it('re-checks just before the send and drops the staged binary', async () => {
+      findUnresolvedIsolations.mockResolvedValueOnce([]).mockResolvedValueOnce([{ isolationId: 'episode', deviceId: DEVICE_ID }]);
+      const res = await pushAs('agent');
+      expect(res.status).toBe(409);
+      expect(findUnresolvedIsolations).toHaveBeenCalledTimes(2);
+      expect(mockSendCommandToAgent).not.toHaveBeenCalled();
+    });
     it('fails closed when the isolation read fails', async () => {
       findUnresolvedIsolations.mockRejectedValueOnce(new Error('database unavailable'));
       expect((await pushAs('agent')).status).toBe(500);

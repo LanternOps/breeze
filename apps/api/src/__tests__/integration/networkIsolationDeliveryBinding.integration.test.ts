@@ -21,7 +21,7 @@ vi.mock('../../services/partnerTrust.commands', async (original) => ({
   createDeviceExecuteBatchGate: () => async () => undefined,
 }));
 import { queueCommand } from '../../services/commandQueue';
-import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
+import { claimPendingCommandForDelivery, claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { releaseNetworkIsolation, startNetworkIsolation } from '../../services/networkIsolation/service';
 afterAll(() => closeDb());
 afterEach(() => { vi.unstubAllEnvs(); dispatch.mockReset(); });
@@ -102,6 +102,18 @@ describe('isolation delivery binding', () => {
     expect(refused!.status).toBe('cancelled');
     expect(refused!.result).toMatchObject({ reason: 'network-isolation-version-floor' });
     await getTestDb().delete(agentVersions).where(inArray(agentVersions.checksum, [old, current]));
+  });
+
+  it('applies the same binding on the socket-push claim leg', async () => {
+    const { device, auth, rows } = await fixture();
+    const started = await startNetworkIsolation(auth, device.id, { createIncident: { title: 'Containment investigation', severity: 'p2' }, reason: 'Investigation' }, { requestedByKind: 'system' });
+    if ('error' in started) throw new Error(`start refused: ${started.error}`);
+    const forged = await queueCommand(device.id, 'release_containment', { isolationId: started.episode.id, generation: 1, reason: 'forged' });
+    expect(await claimPendingCommandForDelivery(forged.id)).toEqual({ status: 'cancelled', id: forged.id, reason: 'isolation_episode_mismatch' });
+    expect(await claimPendingCommandForDelivery(started.commandId)).toMatchObject({ status: 'claimed', id: started.commandId });
+    const byId = new Map((await rows([forged.id, started.commandId])).map((r) => [r.id, r.status]));
+    expect(byId.get(forged.id)).toBe('cancelled');
+    expect(byId.get(started.commandId)).toBe('sent');
   });
 
   it('cancels a forged release of an episode that is still meant to be isolated', async () => {

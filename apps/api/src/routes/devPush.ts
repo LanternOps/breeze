@@ -345,6 +345,13 @@ devPushRoutes.post('/push', bodyLimit({ maxSize: 150 * 1024 * 1024, onError: (c)
   }
   const downloadUrl = `${downloadBaseUrl}/api/v1/dev/push/download/${downloadToken}`;
 
+  // Re-checked just before the send: an isolation started while the binary was
+  // uploading must still stop it. The window left is the send itself.
+  if (component === 'agent' && (await findUnresolvedIsolations(db, { deviceId: device.id })).length > 0) {
+    cleanupDownload(downloadToken);
+    return c.json({ error: 'Release network isolation first', code: 'isolation_unresolved' }, 409);
+  }
+
   // Send dev_update command to agent via WebSocket
   const commandId = `dev-push-${downloadToken}`;
   const command: AgentCommand = {

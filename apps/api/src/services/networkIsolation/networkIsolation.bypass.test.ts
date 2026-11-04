@@ -130,7 +130,29 @@ describe('network isolation command bypasses', () => {
       await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { version: '1.0.0', downloadUrl: URL, checksum: NEW.toUpperCase() }));
       expect(chain.from).toHaveBeenNthCalledWith(2, agentVersions);
       const query = new PgDialect().sqlToQuery(chain.where.mock.calls[1]![0]);
-      expect(query.params).toEqual(expect.arrayContaining([NEW, 'agent']));
+      expect(query.params).toEqual([NEW, 'agent']);
+      expect(query.sql).toMatch(/lower\(.*"checksum"\) = \$1 and .*"component" = \$2/);
+    });
+    it('refuses when more release records share the checksum than it will judge', async () => {
+      const { tx, chain } = sequence([episode], Array.from({ length: 21 }, () => ({ version: '999.0.0' })));
+      expect(await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { downloadUrl: URL, checksum: NEW })))
+        .toBe('network-isolation-version-floor');
+      expect(chain.limit).toHaveBeenNthCalledWith(2, 21);
+    });
+    it('treats the queue-stamped timeoutSeconds as version-only', async () => {
+      const { tx } = sequence();
+      expect(await revalidateCommandForDelivery(tx as never, upgrade('update', { version: '999.0.0', timeoutSeconds: 300 }))).toBeNull();
+      expect(tx.select).not.toHaveBeenCalled();
+    });
+    it.each([undefined, ''])('treats dev_update component %j as the agent when the payload names a download', async (component) => {
+      const { tx } = sequence([episode], [{ version: '1.0.0' }]);
+      expect(await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { version: '999.0.0', downloadUrl: URL, checksum: OLD, component })))
+        .toBe('network-isolation-version-floor');
+    });
+    it.each([{ targetVersion: '1.0.0' }, {}, { targetVersion: 999 }])('refuses a rollback directive %j that cannot prove the floor', async (directive) => {
+      const { tx } = sequence([episode]);
+      expect(await revalidateCommandForDelivery(tx as never, upgrade('agent_rollback_v1', { ...directive, directiveSignature: 'sig' })))
+        .toBe('network-isolation-version-floor');
     });
     it('refuses when any release record sharing the checksum is below the floor', async () => {
       const { tx } = sequence([episode], [{ version: '999.0.0' }, { version: '1.0.0' }]);

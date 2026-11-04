@@ -1,4 +1,4 @@
-import { and, eq, notInArray } from 'drizzle-orm';
+import { and, eq, notInArray, sql } from 'drizzle-orm';
 import { RESOLVED_TERMINAL_STATES, isResolvedTerminalIsolationState } from '@breeze/shared';
 import type { db } from '../../db';
 import { agentVersions, deviceNetworkIsolations } from '../../db/schema';
@@ -14,9 +14,10 @@ export const NETWORK_ISOLATION_VERSION_FLOOR = 'network-isolation-version-floor'
  * Fields of an `update` / `update_agent` / `dev_update` payload that cannot choose the binary.
  * Anything else (`downloadUrl`, `checksum`, a URL under any other name, a nested object) may,
  * so its version label proves nothing. An allowlist on purpose: a field added later is treated as
- * choosing the binary until someone says otherwise here.
+ * choosing the binary until someone says otherwise here. `timeoutSeconds` is stamped onto every
+ * agent-role payload by `queueCommand` (the helper-IPC budget).
  */
-const VERSION_ONLY_FIELDS: ReadonlySet<string> = new Set(['version', 'component', 'reason', 'preserveAutoUpdate']);
+const VERSION_ONLY_FIELDS: ReadonlySet<string> = new Set(['version', 'component', 'reason', 'preserveAutoUpdate', 'timeoutSeconds']);
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const MAX_RELEASES_PER_CHECKSUM = 20;
@@ -63,10 +64,12 @@ export async function isolationUpgradeFloorRefusal(
   if (!await hasUnresolvedEpisode(reader, row.deviceId)) return null;
   const checksum = typeof payload.checksum === 'string' ? payload.checksum.trim().toLowerCase() : '';
   if (!SHA256_HEX.test(checksum)) return NETWORK_ISOLATION_VERSION_FLOOR;
+  // Stored checksums are not normalised, so compare case-insensitively. One row past the cap is
+  // read so an unjudged remainder refuses instead of being skipped.
   const releases = await reader.select({ version: agentVersions.version })
     .from(agentVersions)
-    .where(and(eq(agentVersions.checksum, checksum), eq(agentVersions.component, 'agent')))
-    .limit(MAX_RELEASES_PER_CHECKSUM);
-  if (releases.length === 0) return NETWORK_ISOLATION_VERSION_FLOOR;
+    .where(and(eq(sql`lower(${agentVersions.checksum})`, checksum), eq(agentVersions.component, 'agent')))
+    .limit(MAX_RELEASES_PER_CHECKSUM + 1);
+  if (releases.length === 0 || releases.length > MAX_RELEASES_PER_CHECKSUM) return NETWORK_ISOLATION_VERSION_FLOOR;
   return releases.every((release) => atFloor(release.version)) ? null : NETWORK_ISOLATION_VERSION_FLOOR;
 }
