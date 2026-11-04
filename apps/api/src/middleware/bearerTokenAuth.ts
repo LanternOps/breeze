@@ -404,10 +404,13 @@ function unauthorized(c: Context, opts: { message: string }): HTTPException {
   return new HTTPException(401, opts);
 }
 
+// Verified against jose 6.x: only the JWKS fetch/parse paths throw these; no token
+// content can trigger them. Re-check on a jose major bump.
 const JWKS_UNAVAILABLE_CODES: ReadonlySet<string> = new Set([
   'ERR_JOSE_GENERIC',
   'ERR_JWKS_TIMEOUT',
   'ERR_JWKS_INVALID',
+  'ERR_JWKS_MULTIPLE_MATCHING_KEYS',
 ]);
 
 export async function bearerTokenAuthMiddleware(c: Context, next: Next) {

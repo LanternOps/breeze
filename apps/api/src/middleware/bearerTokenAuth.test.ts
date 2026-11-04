@@ -354,6 +354,7 @@ describe('bearerTokenAuthMiddleware', () => {
     ['non-200 JWKS response', () => new errors.JOSEError('Expected 200 OK from the JSON Web Key Set HTTP response')],
     ['JWKS fetch timeout', () => new errors.JWKSTimeout()],
     ['malformed JWKS document', () => new errors.JWKSInvalid('JSON Web Key Set malformed')],
+    ['duplicate keys in JWKS', () => new errors.JWKSMultipleMatchingKeys()],
     ['unparseable JWKS body', () => new errors.JOSEError('Failed to parse the JSON Web Key Set HTTP response as JSON')],
   ])('returns 503 (not 401) when the JWKS endpoint is unavailable: %s', async (_name, makeErr) => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -365,6 +366,7 @@ describe('bearerTokenAuthMiddleware', () => {
       status: 503,
       message: 'oauth verification temporarily unavailable',
     });
+    expect(errorSpy).toHaveBeenCalled();
     errorSpy.mockRestore();
   });
 
