@@ -500,12 +500,16 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   let outputTokens = 0;
   // One provider call, on `first` and whatever it fails over to. A failure is
   // resolved into the failure row here, so callers only see a usable response.
-  const callReviewer = async (first: FailoverHop): Promise<
+  // `retryOf` is set on the parse retry: its failure row still says why a retry
+  // was needed, and keeps the unparseable text that caused it.
+  const callReviewer = async (first: FailoverHop, retryOf?: { reason: string; rawText: string | undefined }): Promise<
     | { ok: true; outcome: Awaited<ReturnType<typeof createMessage>>; served: FailoverHop }
     | { ok: false; row: ScriptProposalReviewRow }
   > => {
     // The hop in flight (failure handling settles THIS hop, never another's).
     let current = first;
+    const failureReason = (reason: string) => (retryOf ? `${retryOf.reason}; the one retry failed: ${reason}` : reason);
+    const rawTextOnFailure = retryOf?.rawText !== undefined ? { rawText: retryOf.rawText } : {};
     try {
       // W09 (#7607): a pre-output 429/529/5xx/key/quota failure fails over along
       // the script_reviewer assignment's fallback list; each hop is admitted,
@@ -535,17 +539,23 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
         settleFailedHop: settleZeroUsageHop({ orgId: job.orgId, userId: null, sessionId: null, agentRunId: null, sourceRef }),
         isPreOutput: isPreOutputMessagesFailure,
       });
+      // Billing and the verdict both read this, and a throw past here would leave
+      // the proposal `proposed` with this hop's reservation open. Nothing usable
+      // came back, so it settles at zero and fails closed like any other failure.
+      if (!(outcome.message as Partial<typeof outcome.message> | undefined)?.usage) {
+        throw new Error('The provider returned no usable response');
+      }
       return { ok: true, outcome, served };
     } catch (error) {
       if (error instanceof FailoverExhaustedError) {
         // Every hop runWithFailover tried is already settled on its own reservation.
         return { ok: false, row: await failReview(
           job,
-          error.stop === 'admission_denied' && error.admissionMessage
+          failureReason(error.stop === 'admission_denied' && error.admissionMessage
             ? `Reviewer model call failed and its backup model was not admitted: ${error.admissionMessage}`
-            : `Reviewer model call failed on every configured model: ${errorMessage(dispatchCause(error.lastError))}`,
+            : `Reviewer model call failed on every configured model: ${errorMessage(dispatchCause(error.lastError))}`),
           'failed',
-          { reservationId: error.lastHop.reservationId, model: error.lastHop.binding.wireModel, inputTokens, outputTokens },
+          { reservationId: error.lastHop.reservationId, model: error.lastHop.binding.wireModel, inputTokens, outputTokens, ...rawTextOnFailure },
         ) };
       }
       const cause = dispatchCause(error);
@@ -555,9 +565,9 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
       await settleOn(current, attemptsOf(error), true);
       return { ok: false, row: await failReview(
         job,
-        `Reviewer model call ${timedOut ? 'timed out' : 'failed'}: ${errorMessage(cause)}`,
+        failureReason(`Reviewer model call ${timedOut ? 'timed out' : 'failed'}: ${errorMessage(cause)}`),
         timedOut ? 'timeout' : 'failed',
-        { reservationId: current.reservationId, model: current.binding.wireModel, inputTokens, outputTokens },
+        { reservationId: current.reservationId, model: current.binding.wireModel, inputTokens, outputTokens, ...rawTextOnFailure },
       ) };
     }
   };
@@ -621,7 +631,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
       retrySkipped = retry.skipped;
       break;
     }
-    const retried = await callReviewer(retry.hop);
+    const retried = await callReviewer(retry.hop, { reason: interpreted.reason, rawText });
     if (!retried.ok) return retried.row;
     ({ outcome, served } = retried);
   }

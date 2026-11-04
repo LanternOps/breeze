@@ -849,7 +849,56 @@ describe('runScriptReview — summary clamp and parse retry (#10954)', () => {
     expect(settledCalls().map((c) => c.reservationId)).toEqual([RESERVATION_ID, RETRY_RESERVATION_ID]);
     expect(settledCalls()[1]).toMatchObject({ usage: [] });
     expect(shared.insertValues.at(-1)).toMatchObject({ inputTokens: 300, outputTokens: 40, budgetReservationId: RETRY_RESERVATION_ID });
-    expect((shared.insertValues.at(-1) as { summary: string }).summary).toMatch(/Reviewer model call failed/);
+    // Both facts: why a retry was needed, and what happened to it.
+    expect((shared.insertValues.at(-1) as { summary: string }).summary)
+      .toBe('Reviewer returned no parseable JSON verdict; the one retry failed: Reviewer model call failed: connection reset');
+    expect(shared.transitionProposalMock).toHaveBeenCalledWith(expect.anything(), PROPOSAL_ID, ['proposed'], 'review_failed', expect.anything());
+  });
+
+  // CI, PR #10985: a call that answers with nothing threw out of runScriptReview
+  // while reading its usage, leaving the proposal `proposed` and a reservation open.
+  it('a retry that answers with nothing fails closed with the parse reason, and both attempts are settled', async () => {
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row', reviewerKind: 'model', status: 'failed' }]);
+    shared.messagesCreateMock.mockResolvedValueOnce(unparseable(300, 40)).mockResolvedValueOnce(undefined);
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(settledCalls().map((c) => c.reservationId)).toEqual([RESERVATION_ID, RETRY_RESERVATION_ID]);
+    expect(settledCalls()[1]).toMatchObject({ usage: [] });
+    expect(shared.insertValues.at(-1)).toMatchObject({ status: 'failed', inputTokens: 300, outputTokens: 40, budgetReservationId: RETRY_RESERVATION_ID });
+    expect((shared.insertValues.at(-1) as { summary: string }).summary).toMatch(/^Reviewer returned no parseable JSON verdict; the one retry failed: /);
+    expect(shared.transitionProposalMock).toHaveBeenCalledWith(expect.anything(), PROPOSAL_ID, ['proposed'], 'review_failed', expect.anything());
+  });
+
+  it('a response with no usage on the retry fails closed the same way', async () => {
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row', reviewerKind: 'model', status: 'failed' }]);
+    shared.messagesCreateMock
+      .mockResolvedValueOnce(unparseable(300, 40))
+      .mockResolvedValueOnce({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(VALID_VERDICT) }] });
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(settledCalls().map((c) => c.reservationId)).toEqual([RESERVATION_ID, RETRY_RESERVATION_ID]);
+  });
+
+  it('a first call that answers with nothing fails closed too: no retry, its reservation settled', async () => {
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row', reviewerKind: 'model', status: 'failed' }]);
+    shared.messagesCreateMock.mockResolvedValueOnce(undefined);
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(shared.messagesCreateMock).toHaveBeenCalledTimes(1);
+    expectSettledAtZero();
+    expect((shared.insertValues.at(-1) as { summary: string }).summary).toMatch(/^Reviewer model call failed: /);
   });
 
   it('a refusal on the retry fails with the refusal, and both attempts are settled', async () => {
