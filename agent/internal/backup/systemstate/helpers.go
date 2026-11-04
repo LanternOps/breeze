@@ -8,8 +8,9 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // modeFromInfo converts info's os.FileMode into the traditional POSIX
@@ -357,7 +358,7 @@ func copyTree(srcRoot, dstRoot string) error {
 // exec.Command call in collectRegistryHives) purely so tests can substitute a
 // fake.
 var runRegSave = func(hive, outPath string) ([]byte, error) {
-	return exec.Command("reg", "save", `HKLM\`+hive, outPath, "/y").CombinedOutput()
+	return procspawn.Command("reg", "save", `HKLM\`+hive, outPath, "/y").CombinedOutput()
 }
 
 // registrySaveError reports that one or more registry hives failed to save.

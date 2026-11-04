@@ -173,8 +173,8 @@ func TestContainmentWireCapabilitiesAndAbsentReport(t *testing.T) {
 	// A build with a real isolator names its mechanism even at capability 0
 	// (not activated); elsewhere the empty mechanism is omitted.
 	switch mechanism, ok := fields["networkIsolationMechanism"]; runtime.GOOS {
-	case "windows", "darwin":
-		if want := map[string]string{"windows": "wfp", "darwin": "pf"}[runtime.GOOS]; mechanism != want {
+	case "windows", "darwin", "linux":
+		if want := map[string]string{"windows": "wfp", "darwin": "pf", "linux": "nft"}[runtime.GOOS]; mechanism != want {
 			t.Fatalf("mechanism %v, want %s", mechanism, want)
 		}
 		if fields["networkIsolationUnsupportedReason"] != "not_activated" {

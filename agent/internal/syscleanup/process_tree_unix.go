@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // unixProcessTree puts the cleaner in its own process group. A descendant that
@@ -20,6 +22,7 @@ func newProcessTree() processTree { return unixProcessTree{} }
 func (unixProcessTree) prepare(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
+		procspawn.Prepare(cmd)
 	}
 	cmd.SysProcAttr.Setpgid = true
 }

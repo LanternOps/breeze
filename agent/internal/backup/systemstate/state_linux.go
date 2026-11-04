@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // LinuxCollector gathers Linux system state: /etc/ tree, boot config,
@@ -131,7 +133,7 @@ func (c *LinuxCollector) collectPackages(stagingDir string) ([]Artifact, error) 
 	// Try dpkg first (Debian/Ubuntu).
 	if _, err := exec.LookPath("dpkg"); err == nil {
 		outPath := filepath.Join(dir, "dpkg.txt")
-		cmd := exec.Command("dpkg", "--get-selections")
+		cmd := procspawn.Command("dpkg", "--get-selections")
 		data, err := cmd.Output()
 		if err == nil {
 			if wErr := os.WriteFile(outPath, data, 0o600); wErr == nil {
@@ -143,7 +145,7 @@ func (c *LinuxCollector) collectPackages(stagingDir string) ([]Artifact, error) 
 	// Try rpm (RHEL/CentOS/Fedora).
 	if _, err := exec.LookPath("rpm"); err == nil {
 		outPath := filepath.Join(dir, "rpm.txt")
-		cmd := exec.Command("rpm", "-qa")
+		cmd := procspawn.Command("rpm", "-qa")
 		data, err := cmd.Output()
 		if err == nil {
 			if wErr := os.WriteFile(outPath, data, 0o600); wErr == nil {
@@ -166,7 +168,7 @@ func (c *LinuxCollector) collectServices(stagingDir string) ([]Artifact, error) 
 	}
 
 	outPath := filepath.Join(dir, "systemd.txt")
-	cmd := exec.Command("systemctl", "list-unit-files", "--type=service")
+	cmd := procspawn.Command("systemctl", "list-unit-files", "--type=service")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("systemctl list-unit-files: %w", err)
@@ -193,7 +195,7 @@ func (c *LinuxCollector) collectFirewall(stagingDir string) ([]Artifact, error) 
 	}
 
 	outPath := filepath.Join(dir, "iptables.rules")
-	cmd := exec.Command("iptables-save")
+	cmd := procspawn.Command("iptables-save")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("iptables-save: %w", err)
@@ -254,7 +256,7 @@ func linuxVersion() string {
 		}
 	}
 	// Fallback to kernel version.
-	out, err := exec.Command("uname", "-r").Output()
+	out, err := procspawn.Command("uname", "-r").Output()
 	if err != nil {
 		return "linux"
 	}

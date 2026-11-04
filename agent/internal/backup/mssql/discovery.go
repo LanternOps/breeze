@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 
 	"golang.org/x/sys/windows/registry"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // DiscoverInstances finds SQL Server instances on the local machine using
@@ -137,7 +138,7 @@ func discoverFromRegistry() ([]SQLInstance, error) {
 
 // discoverFromServices looks for SQL Server Windows services.
 func discoverFromServices() ([]SQLInstance, error) {
-	out, err := exec.Command("sc", "query", "type=", "service", "state=", "all").CombinedOutput()
+	out, err := procspawn.Command("sc", "query", "type=", "service", "state=", "all").CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("sc query: %w", err)
 	}
@@ -163,7 +164,7 @@ func discoverFromServices() ([]SQLInstance, error) {
 
 		status := "unknown"
 		// Check if the service is running
-		checkOut, checkErr := exec.Command("sc", "query", svcName).CombinedOutput()
+		checkOut, checkErr := procspawn.Command("sc", "query", svcName).CombinedOutput()
 		if checkErr == nil {
 			checkStr := string(checkOut)
 			if strings.Contains(checkStr, "RUNNING") {

@@ -5,9 +5,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 const (
@@ -22,7 +23,7 @@ func runHelperCommand(name string, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), helperCommandTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	err := cmd.Run()
 	if ctx.Err() != nil {
 		return fmt.Errorf("%s timed out: %w", name, ctx.Err())
@@ -34,7 +35,7 @@ func outputHelperCommand(name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), helperCommandTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	out, err := cmd.Output()
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("%s timed out: %w", name, ctx.Err())
