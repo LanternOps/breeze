@@ -151,6 +151,11 @@ func localAdminSummaryFromNet() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// An empty Administrators group is far likelier to be output this parser
+	// misread than real, and reporting it would tell the API there are no admins.
+	if len(members) == 0 {
+		return nil, errors.New("net localgroup listed no members of the Administrators group")
+	}
 	accounts := make([]map[string]any, 0, len(members))
 	for _, member := range members {
 		// net prints a member whose SID does not resolve as the SID itself.

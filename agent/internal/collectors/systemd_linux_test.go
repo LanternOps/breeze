@@ -31,6 +31,11 @@ func TestSystemdBooted(t *testing.T) {
 	if systemdBooted(file) {
 		t.Fatal("regular file should not count as booted")
 	}
+	// Only a definite absence closes the gate for the life of the process. A
+	// stat that fails some other way (ENOTDIR here) leaves collection running.
+	if !systemdBooted(filepath.Join(file, "child")) {
+		t.Fatal("a stat error other than not-exist should not count as absent")
+	}
 }
 
 func TestQueryJournalWithoutSystemdDoesNotSpawn(t *testing.T) {

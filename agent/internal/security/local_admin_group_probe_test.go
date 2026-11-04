@@ -219,6 +219,18 @@ func TestLocalAdminFallbackFailureIsAnError(t *testing.T) {
 	}
 }
 
+func TestLocalAdminFallbackWithNoMembersIsAnError(t *testing.T) {
+	// A successful read with no members would tell the API this host has no
+	// administrators. The cmdlet path errors on empty output too.
+	fake := installFakeLocalAdminShell(t)
+	fake.cmdletOut, fake.cmdletErr = orphanedSIDFailure, errors.New("exit status 1")
+	fake.netOut = "Members\r\n-------------------\r\nThe command completed successfully.\r\n"
+
+	if summary, err := collectLocalAdminSummaryWindows(); err == nil {
+		t.Fatalf("want an error for zero members, got %#v", summary)
+	}
+}
+
 func TestParseNetLocalGroupMembers(t *testing.T) {
 	tests := []struct {
 		name    string

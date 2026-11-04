@@ -3,6 +3,8 @@
 package collectors
 
 import (
+	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"sync"
@@ -19,7 +21,13 @@ var hostHasSystemd = sync.OnceValue(func() bool {
 	return false
 })
 
+// systemdBooted treats only a definite absence as "no systemd". The answer is
+// cached for process life and an empty service list replaces the last snapshot,
+// so a stat that fails any other way must leave collection running.
 func systemdBooted(runDir string) bool {
 	info, err := os.Stat(runDir)
-	return err == nil && info.IsDir()
+	if err != nil {
+		return !errors.Is(err, fs.ErrNotExist)
+	}
+	return info.IsDir()
 }
