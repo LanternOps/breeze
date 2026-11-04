@@ -5,7 +5,13 @@
 // `runScriptReview` (DB/model/budget) is covered in runScriptReview.test.ts.
 import { describe, expect, it } from 'vitest';
 import type { ScriptReviewVerdict } from '@breeze/shared';
-import { applyReviewFloors, buildReviewerPrompt, type DeviceFacts } from './reviewer';
+import {
+  SCRIPT_REVIEW_MAX_OUTPUT_TOKENS,
+  applyReviewFloors,
+  buildReviewerPrompt,
+  interpretReviewerResponse,
+  type DeviceFacts,
+} from './reviewer';
 
 function verdict(overrides: Partial<ScriptReviewVerdict> = {}): ScriptReviewVerdict {
   return {
@@ -232,5 +238,68 @@ describe('buildReviewerPrompt', () => {
     expect(user).toContain('(no target devices supplied)');
     expect(user).toContain('(none provided)');
     expect(user).toContain('medium');
+  });
+});
+
+// #10971 — the reviewer runs with adaptive thinking, and thinking tokens count
+// against `max_tokens`. At 2000 the verdict JSON was cut off and reported as
+// "no parseable JSON verdict" (4/4 failures on US prod, 2026-11-04).
+describe('interpretReviewerResponse', () => {
+  const verdictJson = JSON.stringify({
+    summary: 'ok', goalMatch: 'yes', riskTier: 'low', blastRadius: [], reversible: true,
+    verificationAdequate: true, findings: [], recommendedAction: 'approve',
+  });
+
+  it('names an output-budget exhaustion as such, never as a parse failure', () => {
+    const r = interpretReviewerResponse({ stopReason: 'max_tokens', text: '{"summary": "The script bl' });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/output budget/i);
+    expect(r.reason).not.toMatch(/parseable/i);
+  });
+
+  it('still accepts a complete verdict that happened to stop on max_tokens', () => {
+    const r = interpretReviewerResponse({ stopReason: 'max_tokens', text: verdictJson });
+    expect(r.ok).toBe(true);
+  });
+
+  it('reports a missing or unparseable verdict on a normal stop', () => {
+    const r = interpretReviewerResponse({ stopReason: 'end_turn', text: 'not json' });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toBe('Reviewer returned no parseable JSON verdict');
+  });
+
+  it('reports a malformed verdict with the schema issues', () => {
+    const r = interpretReviewerResponse({ stopReason: 'end_turn', text: '{"summary": "x"}' });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/^Malformed reviewer verdict: /);
+  });
+
+  it('parses a fenced verdict', () => {
+    const r = interpretReviewerResponse({ stopReason: 'end_turn', text: '```json\n' + verdictJson + '\n```' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.verdict.recommendedAction).toBe('approve');
+  });
+});
+
+describe('SCRIPT_REVIEW_MAX_OUTPUT_TOKENS', () => {
+  it('leaves room for adaptive thinking plus a ~2k-token verdict (#10971)', () => {
+    expect(SCRIPT_REVIEW_MAX_OUTPUT_TOKENS).toBeGreaterThanOrEqual(8_000);
+  });
+});
+
+// #10972 — the reviewer kept returning `changes` whose only finding was "this
+// exceeds the org's unattended ceiling, so a human should approve". The
+// ceiling is enforced by policy after the review; it is not a script defect.
+describe('reviewer prompt: supervision is not a script defect', () => {
+  it('tells the model the ceiling is advisory and that needing approval is not grounds for changes/reject', () => {
+    const { system } = buildReviewerPrompt({ proposal: fakeProposal(), scan: fakeScan(), devices: [], ceiling: 'low' });
+    const lower = system.toLowerCase();
+    expect(lower).toContain('advisory');
+    expect(lower).toContain('decided by policy');
+    expect(lower).toMatch(/do not (return|use) ["'`]?changes/);
   });
 });
