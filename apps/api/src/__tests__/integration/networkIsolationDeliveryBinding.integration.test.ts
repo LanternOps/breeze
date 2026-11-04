@@ -8,8 +8,9 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { closeDb, db, withDbAccessContext } from '../../db';
-import { devices, deviceCommands, deviceNetworkIsolations } from '../../db/schema';
+import { agentVersions, devices, deviceCommands, deviceNetworkIsolations } from '../../db/schema';
 import { createDevice, createOrganization, createPartner, createSite, deviceAgentId } from './db-utils';
+import { getTestDb } from './setup';
 import { orgContext } from './topology-fixtures';
 import type { AuthContext } from '../../middleware/auth';
 const dispatch = vi.hoisted(() => vi.fn());
@@ -80,6 +81,27 @@ describe('isolation delivery binding', () => {
     expect(afterSecond.get(released.commandId!)!.status).toBe('sent');
     expect(afterSecond.get(forgedRelease.id)!.status).toBe('cancelled');
     expect(afterSecond.get(forgedRelease.id)!.result).toMatchObject({ reason: 'isolation_episode_mismatch' });
+  });
+
+  it('judges a dev_update download by the release record its checksum names, not its version label', async () => {
+    const { device, auth, claim, rows } = await fixture();
+    const old = randomUUID().replace(/-/g, '').repeat(2);
+    const current = randomUUID().replace(/-/g, '').repeat(2);
+    await getTestDb().insert(agentVersions).values([
+      { version: '1.0.0', platform: 'windows', architecture: 'amd64', downloadUrl: 'https://updates.example.test/old.bin', checksum: old, component: 'agent' },
+      { version: '999.0.0', platform: 'windows', architecture: 'amd64', downloadUrl: 'https://updates.example.test/new.bin', checksum: current, component: 'agent' },
+    ]);
+    const started = await startNetworkIsolation(auth, device.id, { createIncident: { title: 'Containment investigation', severity: 'p2' }, reason: 'Investigation' }, { requestedByKind: 'system' });
+    if ('error' in started) throw new Error(`start refused: ${started.error}`);
+    const lying = await queueCommand(device.id, 'dev_update', { version: '999.0.0', downloadUrl: 'https://updates.example.test/old.bin', checksum: old });
+    const honest = await queueCommand(device.id, 'dev_update', { version: '1.0.0', downloadUrl: 'https://updates.example.test/new.bin', checksum: current });
+    const claimed = (await claim()).map((c) => c.id);
+    expect(claimed).toContain(honest.id);
+    expect(claimed).not.toContain(lying.id);
+    const [refused] = await rows([lying.id]);
+    expect(refused!.status).toBe('cancelled');
+    expect(refused!.result).toMatchObject({ reason: 'network-isolation-version-floor' });
+    await getTestDb().delete(agentVersions).where(inArray(agentVersions.checksum, [old, current]));
   });
 
   it('cancels a forged release of an episode that is still meant to be isolated', async () => {

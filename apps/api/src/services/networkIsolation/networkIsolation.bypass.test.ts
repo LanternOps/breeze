@@ -7,7 +7,7 @@ vi.mock('../partnerTrust.commands', () => ({
 }));
 vi.mock('../sentry', () => ({ captureException: vi.fn(), captureMessage: mocks.captureMessage }));
 import { partitionClaimable, revalidateCommandForDelivery } from '../commandClaimEligibility';
-import { deviceNetworkIsolations } from '../../db/schema';
+import { agentVersions, deviceNetworkIsolations } from '../../db/schema';
 const device = { id: '11111111-1111-4111-8111-111111111111', orgId: '22222222-2222-4222-8222-222222222222', status: 'online', orgType: 'customer', installIncarnation: 1 };
 const isolationId = '33333333-3333-4333-8333-333333333333';
 const episode = { id: isolationId, deviceId: device.id, state: 'verified', desiredState: 'isolated', generation: 2, commandId: 'command', releaseCommandId: null as string | null };
@@ -101,6 +101,80 @@ describe('network isolation command bypasses', () => {
     expect(await revalidateCommandForDelivery(tx as never, { ...row({}), type: 'dev_update', payload: { version: '1.0.0', component: 'desktop-helper' } })).toBeNull();
     expect(tx.select).not.toHaveBeenCalled();
   });
+  describe('upgrade floor follows the binary the payload selects, not its version label (#10919)', () => {
+    const OLD = 'a'.repeat(64);
+    const NEW = 'b'.repeat(64);
+    const URL = 'https://updates.example.test/agent.bin';
+    // One mocked result per select, in order: the episode read, then the release-record read.
+    function sequence(...batches: unknown[][]) {
+      const chain = { from: vi.fn(), where: vi.fn(), limit: vi.fn() };
+      chain.from.mockReturnValue(chain); chain.where.mockReturnValue(chain);
+      for (const batch of batches) chain.limit.mockResolvedValueOnce(batch);
+      chain.limit.mockResolvedValue([]);
+      const tx = { select: vi.fn(() => chain), transaction: async (fn: (sp: unknown) => unknown) => fn(tx) };
+      return { tx, chain };
+    }
+    const upgrade = (type: string, payload: unknown) => ({ ...row({}), type, payload });
+
+    it('refuses a download whose release record is below the floor, whatever version it claims', async () => {
+      const { tx } = sequence([episode], [{ version: '1.0.0' }]);
+      expect(await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { version: '999.0.0', downloadUrl: URL, checksum: OLD })))
+        .toBe('network-isolation-version-floor');
+    });
+    it('delivers a download whose release record is at the floor, whatever version it claims', async () => {
+      const { tx } = sequence([episode], [{ version: '999.0.0' }]);
+      expect(await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { version: '1.0.0', downloadUrl: URL, checksum: NEW }))).toBeNull();
+    });
+    it('reads the release record by the payload checksum, for the agent component only', async () => {
+      const { tx, chain } = sequence([episode], [{ version: '999.0.0' }]);
+      await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { version: '1.0.0', downloadUrl: URL, checksum: NEW.toUpperCase() }));
+      expect(chain.from).toHaveBeenNthCalledWith(2, agentVersions);
+      const query = new PgDialect().sqlToQuery(chain.where.mock.calls[1]![0]);
+      expect(query.params).toEqual(expect.arrayContaining([NEW, 'agent']));
+    });
+    it('refuses when any release record sharing the checksum is below the floor', async () => {
+      const { tx } = sequence([episode], [{ version: '999.0.0' }, { version: '1.0.0' }]);
+      expect(await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { downloadUrl: URL, checksum: NEW })))
+        .toBe('network-isolation-version-floor');
+    });
+    it.each<[string, Record<string, unknown>]>([
+      ['an unknown checksum', { version: '999.0.0', downloadUrl: URL, checksum: OLD }],
+      ['no checksum', { version: '999.0.0', downloadUrl: URL }],
+      ['a malformed checksum', { version: '999.0.0', downloadUrl: URL, checksum: 'not-a-digest' }],
+    ])('refuses a download with %s while isolation is unresolved', async (_name, payload) => {
+      const { tx } = sequence([episode], []);
+      expect(await revalidateCommandForDelivery(tx as never, upgrade('dev_update', payload))).toBe('network-isolation-version-floor');
+    });
+    it.each(['update', 'update_agent', 'dev_update'])('refuses %s carrying any field that could choose the binary', async (type) => {
+      for (const extra of [{ url: URL }, { downloadUrl: URL }, { manifestUrl: URL }, { source: { href: URL } }]) {
+        const { tx } = sequence([episode], []);
+        expect(await revalidateCommandForDelivery(tx as never, upgrade(type, { version: '999.0.0', ...extra }))).toBe('network-isolation-version-floor');
+      }
+    });
+    it('reads no release record when the device has no unresolved episode', async () => {
+      const { tx } = sequence([]);
+      expect(await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { version: '1.0.0', downloadUrl: URL, checksum: OLD }))).toBeNull();
+      expect(tx.select).toHaveBeenCalledTimes(1);
+    });
+    it('still delivers a version-only upgrade at the floor without any read', async () => {
+      const { tx } = sequence();
+      for (const payload of [{ version: '999.0.0' }, { version: '999.0.0', component: 'agent', reason: 'recovery', preserveAutoUpdate: true }]) {
+        expect(await revalidateCommandForDelivery(tx as never, upgrade('update_agent', payload))).toBeNull();
+      }
+      expect(tx.select).not.toHaveBeenCalled();
+    });
+    it('leaves a helper-component download alone', async () => {
+      const { tx } = sequence([episode]);
+      expect(await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { version: '1.0.0', downloadUrl: URL, checksum: OLD, component: 'user-helper' }))).toBeNull();
+      expect(tx.select).not.toHaveBeenCalled();
+    });
+    it('keeps the signed rollback directive on its signed targetVersion', async () => {
+      const { tx } = sequence();
+      const directive = { targetVersion: '999.0.0', artifacts: [{ url: URL, sha256: OLD }], directiveSignature: 'sig' };
+      expect(await revalidateCommandForDelivery(tx as never, upgrade('agent_rollback_v1', directive))).toBeNull();
+    });
+  });
+
   describe('delivery is bound to the episode the service issued (#10919)', () => {
     const release = (payload: unknown = { isolationId, generation: 2, reason: 'Operator release' }) =>
       ({ ...row({}), id: 'release-command', type: 'release_containment', payload });

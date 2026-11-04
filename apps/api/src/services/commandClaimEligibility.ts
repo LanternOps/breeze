@@ -1,10 +1,9 @@
-import { and, eq, notInArray, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { db } from '../db';
-import { deviceCommands, deviceNetworkIsolations } from '../db/schema';
-import { isResolvedTerminalIsolationState, RESOLVED_TERMINAL_STATES } from '@breeze/shared';
-import { isolationAgentUpgradeGate } from '../routes/agents/agentUpdatePolicy';
+import { deviceCommands } from '../db/schema';
 import { isNetworkIsolationCommand } from './networkIsolation/bypass';
 import { isolationDeliveryRefusal } from './networkIsolation/deliveryBinding';
+import { isolationUpgradeFloorRefusal } from './networkIsolation/upgradeFloor';
 import {
   propagateCancelledDeviceCommands,
   type DeviceCommandCancelSubject,
@@ -311,18 +310,9 @@ export async function revalidateCommandForDelivery(
     if (refusal) return refusal;
   }
   if (updatesAgentBinary(row)) {
-    const payload = row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
-      ? row.payload as Record<string, unknown> : {};
-    const target = row.type === 'agent_rollback_v1' ? payload.targetVersion : payload.version;
-    const version = typeof target === 'string' ? target : '';
-    // A safe target needs no episode lookup. Missing/implicit targets cannot prove
-    // the floor, so they are withheld only while isolation is unresolved.
-    if (!isolationAgentUpgradeGate(version, true).allow) {
-      const [episode] = await reader.select({ state: deviceNetworkIsolations.state })
-        .from(deviceNetworkIsolations).where(and(eq(deviceNetworkIsolations.deviceId, row.deviceId),
-          notInArray(deviceNetworkIsolations.state, [...RESOLVED_TERMINAL_STATES]))).limit(1);
-      if (episode && !isResolvedTerminalIsolationState(episode.state)) return 'network-isolation-version-floor';
-    }
+    // Judged by the binary the payload selects, not its version label (#10919).
+    const refusal = await isolationUpgradeFloorRefusal(reader, row);
+    if (refusal) return refusal;
   }
   const revalidate = commandRevalidations[row.type];
   if (!revalidate) {
