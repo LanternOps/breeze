@@ -43,6 +43,42 @@
       "description": "Associa i monitor integrati a una policy."
     }
   },
+  "lifecycle": {
+    "autoResolveOn": "Attivo",
+    "autoResolveOff": "Disattivo",
+    "rearmLabel": "Riarmo",
+    "rearmNewEvidence": "Nuove evidenze",
+    "rearmAfterDelay": "Dopo N minuti",
+    "rearmAfterMinutes_one": "Dopo {{count}} minuto",
+    "rearmAfterMinutes_other": "Dopo {{count}} minuti",
+    "rearmDelayLabel": "Riarma dopo (minuti)",
+    "rearmHelp": "Nuove evidenze: solo un evento che l’avviso chiuso non ha ancora visto lo riapre. Dopo N minuti: anche gli eventi più vecchi possono riaprirlo una volta trascorsi N minuti dalla chiusura.",
+    "inheritOption": "Eredita ({{value}}, {{source}})",
+    "inheritOptionPlain": "Eredita",
+    "sources": {
+      "org": "Predefinito dell’organizzazione",
+      "partner": "Predefinito del partner",
+      "builtin": "Predefinito integrato"
+    },
+    "errors": {
+      "cooldown": "Inserisci un numero intero da 0 a 1440.",
+      "cooldownOrInherit": "Inserisci un numero intero da 0 a 1440 oppure lascia vuoto il campo per ereditarlo.",
+      "rearmDelay": "Inserisci un numero intero di minuti da 1 a 1440."
+    }
+  },
+  "lifecycleDefaults": {
+    "title": "Valori predefiniti del ciclo di vita",
+    "descriptionPartner": "Il predefinito per i monitor di ogni organizzazione. Un’organizzazione può sovrascriverlo, e l’impostazione propria di un monitor prevale su entrambi.",
+    "descriptionOrg": "Sovrascrive il predefinito del partner per questa organizzazione. Lascia vuoto un campo per ereditarlo. L’impostazione propria di un monitor prevale su questo valore.",
+    "readOnly": "Non hai l’autorizzazione per modificare il predefinito del partner.",
+    "saved": "Valori predefiniti del ciclo di vita salvati",
+    "overrideCount_one": "{{count}} monitor lo sovrascrive",
+    "overrideCount_other": "{{count}} monitor lo sovrascrivono",
+    "errors": {
+      "load": "Impossibile caricare i valori predefiniti del ciclo di vita.",
+      "save": "Impossibile salvare i valori predefiniti del ciclo di vita."
+    }
+  },
   "editor": {
     "attachedToPolicy": "Monitor creato e collegato alla policy",
     "titleNew": "Nuovo monitor",
@@ -53,11 +89,22 @@
     },
     "sections": {
       "watch": "Cosa monitorare",
-      "noise": "Gravità e rumore",
+      "lifecycle": "Ciclo di vita dell’avviso",
       "respond": "Rispondi",
       "notify": "Notifica",
       "escalate": "Escalation verso una persona",
       "deployed": "Distribuito su"
+    },
+    "lifecycle": {
+      "overrides": {
+        "org": "Questo monitor sovrascrive il predefinito dell’organizzazione ({{value}})",
+        "partner": "Questo monitor sovrascrive il predefinito del partner ({{value}})",
+        "builtin": "Questo monitor sovrascrive il predefinito integrato ({{value}})",
+        "unknown": "Questo monitor sovrascrive il predefinito ereditato."
+      },
+      "partnerWideHint": "Un’organizzazione con un proprio predefinito usa quello al posto del valore ereditato mostrato qui.",
+      "inheritedUnavailable": "Impossibile caricare i valori ereditati. Puoi comunque salvare.",
+      "windowWarning": "La finestra degli eventi ({{window}} min) è più breve del cooldown ({{cooldown}} min). Un nuovo evento durante il cooldown può uscire dalla finestra prima che l’avviso venga riaperto."
     },
     "tabs": {
       "settings": "Impostazioni",
