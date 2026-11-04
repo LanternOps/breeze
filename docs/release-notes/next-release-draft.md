@@ -14,7 +14,11 @@ Last release: **v0.126.0** (2026-11-03).
 
 ## Release to-do (pre-cut gates — see `/release` Step 0.2)
 
+- **Next full release (v0.127.0): restore three compose passthroughs.** They were taken back out so v0.126.1 could ship server-only. Re-add `ALERT_WORKER_CONCURRENCY`, `ALERT_WORKER_STAGGER_WINDOW_MS` and `AGENT_CONNECTIONS_MAX_PER_DEVICE` as `${VAR:-}` to the `x-api-env` block of `docker-compose.yml` and `deploy/docker-compose.prod.yml`, and delete `SERVER_ONLY_0_126_1_UNMAPPED` from `apps/api/src/config/envReadComposeCoverage.baseline.ts`.
+
 ## Self-Hosting / Upgrade Notes (fold into the release body)
+
+- **Alert notifications that were silently skipped start sending (#10926, #10944).** Rule, monitor and sourced alerts (patch job, maintenance reboot, policy and config compliance, backup, EDR, warranty, network monitor, script exit code and others) often lost their in-app notification, channel sends and escalations, because the notification job read the alert before its row was committed. After this upgrade those deliveries happen: in-app, email, **SMS**, Slack, Teams, PagerDuty, Pushover, webhooks, and **escalations**. Review notification routing, monitor delivery settings and escalation policies before or right after upgrading — SMS costs money and on-call staff will start getting paged for alerts that were quiet before. A row read too early now logs `PROCESS_ALERT_ROW_NOT_FOUND` instead of returning silently. No migration and no new env vars.
 
 ## Features / API
 

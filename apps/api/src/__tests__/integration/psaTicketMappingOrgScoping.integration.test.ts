@@ -453,7 +453,7 @@ describe('W08 PSA ledger follows alert/device lifecycle', () => {
     expect(await mappingRows(mappingId)).toEqual([]);
   });
 
-  it('legacy publish compensation deletes an alert even when a subscriber admitted its mapping', async () => {
+  it('a failed sourced-alert publish keeps the alert and the mapping a subscriber already admitted (#10926)', async () => {
     const client = await createIntegrationTestClient(buildApp(), { scope: 'partner' });
     const connectionId = await seedPartnerConnection(client.env.partner.id);
     const deviceId = await seedDevice(client.env.organization.id, 'mapping-rollback-device');
@@ -465,17 +465,24 @@ describe('W08 PSA ledger follows alert/device lifecycle', () => {
       throw new Error('Fixture publication failure after admission');
     });
     try {
+      // The publish now runs from the outbox after COMMIT. A failure keeps
+      // the row (and so the mapping) and retries it, instead of deleting it.
       const result = await withDbAccessContext(SYSTEM_CTX, () => createSourcedAlert({
         deviceId, orgId: client.env.organization.id, severity: 'high',
         title: 'Mapped rollback alert', message: 'Fixture message',
         context: { source: 'network_monitor' }, publisher: 'monitor-worker',
       }));
-      expect(result).toBeNull();
+      expect(result).toEqual(expect.any(String));
+      await vi.waitFor(async () => {
+        const [row] = await withDbAccessContext(SYSTEM_CTX, () =>
+          db.select({ context: alerts.context }).from(alerts).where(eq(alerts.id, result!)));
+        expect((row?.context as { _subjectDispatch?: { failedAttempts?: number } })?._subjectDispatch?.failedAttempts).toBe(1);
+      }, { timeout: 5_000 });
       expect(publish).toHaveBeenCalledTimes(1);
-      expect(publishedAlertId).toBeTruthy();
+      expect(publishedAlertId).toBe(result);
       expect(mappingId).toBeTruthy();
-      expect(await alertRows(publishedAlertId!)).toEqual([]);
-      expect(await mappingRows(mappingId!)).toEqual([]);
+      expect(await alertRows(result!)).toHaveLength(1);
+      expect(await mappingRows(mappingId!)).toHaveLength(1);
     } finally {
       publish.mockRestore();
     }

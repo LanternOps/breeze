@@ -11,6 +11,7 @@ const m = vi.hoisted(() => ({
   link: vi.fn(),
   cooldown: vi.fn(),
   transition: vi.fn(),
+  schedule: vi.fn(),
 }));
 
 vi.mock('../db', () => ({ db: m, withDbTransaction: async (fn: () => Promise<unknown>) => fn() }));
@@ -18,6 +19,8 @@ vi.mock('./eventBus', () => ({ publishEvent: m.publish }));
 vi.mock('./deviceSiteResolver', () => ({ resolveDeviceSiteId: async () => null }));
 vi.mock('../jobs/alertCorrelation', () => ({ enqueueAlertCorrelation: vi.fn().mockResolvedValue('correlation-job') }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+// #10926 — a legacy create stages its envelope and hands the id to the outbox.
+vi.mock('./subjectAlertOutbox', () => ({ scheduleStagedAlertDispatch: m.schedule }));
 vi.mock('./monitors/episodeService', () => ({
   linkEpisodeAlert: m.link,
   recordMonitorEvaluation: vi.fn(),
@@ -41,6 +44,16 @@ const params = {
   message: 'Slot 3',
 };
 
+/** The `_subjectDispatch` envelope a legacy `createAlert` wrote into its INSERT's context param. */
+function stagedLegacyEnvelope() {
+  const query = new PgDialect().sqlToQuery(m.execute.mock.calls[0]![0]);
+  const context = query.params.find(param => typeof param === 'string' && param.includes('_subjectDispatch'));
+  expect(context, 'the INSERT context param carries the outbox envelope').toBeDefined();
+  return JSON.parse(context as string)._subjectDispatch as {
+    eventType: string; payload: Record<string, unknown>; retryOnPublishFailure: boolean;
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   const results = [[{ id: params.ruleId, templateId: 'template', overrideSettings: null }], [{ cooldownMinutes: 5 }], []];
@@ -62,6 +75,9 @@ it.each([true, false])('stages subject ownership %s without external effects', a
   expect(await createAlert({ ...params, subjectKey: 'disk:3', episodeId: 'episode' })).toBe('alert');
   expect(m.staged.context._subjectDispatch.payload).toMatchObject({ subjectKey: 'disk:3', responsesOwner: owner });
   expect(m.publish).not.toHaveBeenCalled();
+  // The subject path stages via UPDATE and is drained by the worker; it is not
+  // the legacy after-commit hand-off.
+  expect(m.schedule).not.toHaveBeenCalled();
   expect(m.cooldown).not.toHaveBeenCalled();
   expect(m.transition).not.toHaveBeenCalled();
   const query = new PgDialect().sqlToQuery(m.execute.mock.calls[0]![0]);
@@ -73,13 +89,21 @@ it('treats a losing insert as dedupe without publishing or burning cooldown', as
   m.execute.mockResolvedValue([]);
   expect(await createAlert({ ...params, subjectKey: 'disk:3' })).toBeNull();
   expect(m.publish).not.toHaveBeenCalled();
+  expect(m.schedule).not.toHaveBeenCalled();
   expect(m.cooldown).not.toHaveBeenCalled();
   expect(m.transition).not.toHaveBeenCalled();
 });
 
 it('legacy identity is NULL and owns responses', async () => {
   await createAlert(params);
-  expect(m.publish.mock.calls[0]![2]).toMatchObject({ subjectKey: null, responsesOwner: true });
+  // Staged for the outbox, never published inline (#10926).
+  expect(m.publish).not.toHaveBeenCalled();
+  expect(stagedLegacyEnvelope()).toMatchObject({
+    eventType: 'alert.triggered',
+    retryOnPublishFailure: true,
+    payload: { subjectKey: null, responsesOwner: true },
+  });
+  expect(m.schedule).toHaveBeenCalledExactlyOnceWith('alert');
 });
 
 it('subject claim failure aborts before staging or publication', async () => {
@@ -95,7 +119,12 @@ it('NULL-subject creation never requires a prepublication episode claim', async 
   expect(await createAlert({ ...params, episodeId: 'episode' })).toBe('alert');
   expect(m.link).not.toHaveBeenCalled();
   expect(m.delete).not.toHaveBeenCalled();
-  expect(m.publish.mock.calls[0]![2]).toMatchObject({ subjectKey: null, responsesOwner: true });
+  expect(m.publish).not.toHaveBeenCalled();
+  expect(stagedLegacyEnvelope()).toMatchObject({
+    eventType: 'alert.triggered',
+    payload: { subjectKey: null, responsesOwner: true },
+  });
+  expect(m.schedule).toHaveBeenCalledExactlyOnceWith('alert');
 });
 
 it('never invokes device-level auto-resolve for a subject', async () => {
