@@ -53,7 +53,7 @@ The agent reports a `SecurityStatus` payload on each heartbeat. The payload incl
     - **AV detection**: Windows Security Center (`root/SecurityCenter2`) via CIM, with fallback to `Get-MpComputerStatus` for Windows Server
     - **Firewall**: `Get-NetFirewallProfile` queries all three profiles (Domain, Private, Public)
     - **Encryption**: `Get-BitLockerVolume` reads BitLocker protection status and encryption percentage per volume
-    - **Local admins**: `Get-LocalGroupMember -Group 'Administrators'` enumerates the local Administrators group
+    - **Local admins**: `Get-LocalGroupMember -SID S-1-5-32-544` enumerates the local Administrators group under any display language. If the cmdlet fails, for example on a member whose SID no longer resolves, the agent reads `net localgroup` for 24 hours before it tries the cmdlet again
     - **Password policy**: `secedit /export /areas SECURITYPOLICY` reads min length, complexity, max and min age, lockout threshold, and history count from the local security policy. If the export fails, `NetUserModalsGet` (what `net accounts` uses) supplies everything except complexity, which then shows as Unknown. A max age of 0 means passwords never expire, which fails the 90-day check
   </TabItem>
   <TabItem label="macOS">

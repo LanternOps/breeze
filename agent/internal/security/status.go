@@ -782,54 +782,6 @@ func collectEncryptionDetails() (map[string]any, error) {
 	}
 }
 
-func collectLocalAdminSummaryWindows() (map[string]any, error) {
-	output, err := runCommand(
-		10*time.Second,
-		"powershell",
-		"-NoProfile",
-		"-NonInteractive",
-		"-Command",
-		"Get-LocalGroupMember -Group 'Administrators' | Select-Object Name,ObjectClass,SID,PrincipalSource | ConvertTo-Json -Compress",
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	parsed, err := parseJSONValue(output)
-	if err != nil {
-		return nil, err
-	}
-
-	members := toObjectSlice(parsed)
-	accounts := make([]map[string]any, 0, len(members))
-	for _, member := range members {
-		username, _ := stringFromAny(member["Name"])
-		if username == "" {
-			continue
-		}
-		sid, _ := stringFromAny(member["SID"])
-		isBuiltIn := strings.HasSuffix(strings.TrimSpace(sid), "-500") ||
-			strings.EqualFold(username, "Administrator")
-		entry := map[string]any{
-			"username":   username,
-			"isBuiltIn":  isBuiltIn,
-			"enabled":    true,
-			"objectType": member["ObjectClass"],
-		}
-		if isBuiltIn {
-			entry["defaultAccount"] = true
-		}
-		accounts = append(accounts, entry)
-	}
-
-	return map[string]any{
-		"source":            "windows_local_group",
-		"adminCount":        len(accounts),
-		"localAccountCount": len(accounts),
-		"accounts":          accounts,
-	}, nil
-}
-
 func collectLocalAdminSummaryDarwin() (map[string]any, error) {
 	output, err := runCommand(6*time.Second, "dscl", ".", "-read", "/Groups/admin", "GroupMembership")
 	if err != nil {
