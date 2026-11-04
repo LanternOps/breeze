@@ -1,6 +1,6 @@
 /**
  * Wisp check-in timers W01 (#10992, feature #10991) — `wisp_check_ins`
- * against real Postgres (migrations/2027-01-20-110000-wisp-check-ins.sql).
+ * against real Postgres (migrations/2027-01-20-130000-wisp-check-ins.sql).
  *
  * `rls-coverage.integration.test.ts` proves the table is REGISTERED
  * (DUAL_AXIS_TENANT_TABLES). This file is the functional proof of the

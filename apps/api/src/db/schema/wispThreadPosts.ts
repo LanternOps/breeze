@@ -25,7 +25,7 @@ export type WispThreadPostKind = WispTimelinePostKind;
  * Wisp companion W02a (#10212) — proactive Wisp output (morning brief, concern
  * nudges, digest, and since #10992 fired check-ins) kept on the thread as
  * durable posts (migrations/2027-01-06-140000-wisp-thread-posts.sql; the kind
- * CHECK is widened by 2027-01-20-110000-wisp-check-ins.sql). Written by
+ * CHECK is widened by 2027-01-20-130000-wisp-check-ins.sql). Written by
  * `notifyUser` whatever the recipient's channels; read by the thread timeline.
  *
  * Tenancy: partner-anchored / org-optional (the `wisp_thread_links` shape):

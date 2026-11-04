@@ -35,7 +35,7 @@ tasks: 14
 
 - Each wave is one PR, merged in order W1 → W5, each branched from fresh `origin/main` after the previous merge. Do not stack PRs. A stacked PR runs no CI.
 - W1 is full rigor (migration, RLS, cascade): the Integration Tests job must be green, including `tenantCascade`, `orgMergeRegistry`, `tenant-export-policy`, `tenantExportErasureRoundtrip` and `rls-coverage`.
-- **Migration name:** `apps/api/migrations/2027-01-20-110000-wisp-check-ins.sql` (shipped in W1). Planned as `2027-01-19-130000-…`; renamed before the W1 push because `2027-01-20-100000-ticket-import-framework.sql` had landed. Never edit or rename a shipped migration.
+- **Migration name:** `apps/api/migrations/2027-01-20-130000-wisp-check-ins.sql` (shipped in W1). Planned as `2027-01-19-130000-…`; renamed before the W1 push because `2027-01-20-100000-ticket-import-framework.sql` had landed. Never edit or rename a shipped migration.
 - Migration: idempotent, no inner `BEGIN;`/`COMMIT;`, `SELECT set_config('breeze.scope', 'system', true);` first, RLS enabled and forced with policy in the same file, then `pnpm db:check-drift`.
 - Limits (spec §1): due time 1 minute to 7 days after scheduling; instruction 1–1000 characters (code points); at most 5 `scheduled` rows per thread; consumption takes at most 5 `fired` rows per turn, oldest first.
 - Status lifecycle: `scheduled → fired → consumed`; `scheduled | fired → cancelled`. Nothing else.
@@ -97,7 +97,7 @@ Branch `feature/<parent#>-wisp-check-ins/wave-<sub#>`. Full rigor.
 ### Task 2: Migration and Drizzle schema
 
 **Files:**
-- Create: `apps/api/migrations/2027-01-20-110000-wisp-check-ins.sql`
+- Create: `apps/api/migrations/2027-01-20-130000-wisp-check-ins.sql`
 - Create: `apps/api/src/db/schema/wispCheckIns.ts` (export from `schema/index.ts`)
 - Modify: `apps/api/src/db/schema/wispThreadPosts.ts:84` (`kindChk` adds `'check_in'`)
 

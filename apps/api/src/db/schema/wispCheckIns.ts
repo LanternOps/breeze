@@ -8,7 +8,7 @@ import { wispThreads } from './wispThreads';
 
 /**
  * Wisp check-in timers W01 (#10992, feature #10991) — a follow-up Wisp
- * scheduled on its own thread (migrations/2027-01-20-110000-wisp-check-ins.sql).
+ * scheduled on its own thread (migrations/2027-01-20-130000-wisp-check-ins.sql).
  * A delayed `check-in` job on wisp-wake fires it; the grantor's next turn in
  * the thread gets the instruction prepended and the row becomes `consumed`.
  * Lifecycle: scheduled → fired → consumed; scheduled | fired → cancelled.
