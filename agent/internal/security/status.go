@@ -40,6 +40,9 @@ type AVProduct struct {
 // failed, so the API stores "unknown" instead of a fabricated false that fires
 // the antivirus not_protected/realtime_disabled checks (#7965). A genuine false
 // is still sent.
+//
+// FirewallStatus is "enabled", "disabled" or "unsupported", and is omitted when
+// the read failed. FirewallStatusReason says why a host is unsupported (#10909).
 type SecurityStatus struct {
 	DeviceID                       string      `json:"deviceId"`
 	DeviceName                     string      `json:"deviceName"`
@@ -54,6 +57,8 @@ type SecurityStatus struct {
 	RealTimeProtection             *bool       `json:"realTimeProtection,omitempty"`
 	ThreatCount                    int         `json:"threatCount"`
 	FirewallEnabled                *bool       `json:"firewallEnabled,omitempty"`
+	FirewallStatus                 string      `json:"firewallStatus,omitempty"`
+	FirewallStatusReason           string      `json:"firewallStatusReason,omitempty"`
 	EncryptionStatus               string      `json:"encryptionStatus"`
 	EncryptionDetails              any         `json:"encryptionDetails,omitempty"`
 	LocalAdminSummary              any         `json:"localAdminSummary,omitempty"`
@@ -1179,10 +1184,9 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 	status.RealTimeProtection = avRealTimeProtectionState(realTime, avCollected, avFailed)
 
 	firewallEnabled, fwErr := GetFirewallStatus()
-	if fwErr != nil {
-		errs = append(errs, fwErr)
+	if err := applyFirewallPosture(&status, firewallEnabled, fwErr); err != nil {
+		errs = append(errs, err)
 	}
-	status.FirewallEnabled = firewallState(firewallEnabled, fwErr)
 
 	encryptionEnabled, encDetails, encErr := collectEncryptionPosture()
 	if err := applyEncryptionPosture(&status, encryptionEnabled, encDetails, encErr); err != nil {
@@ -1348,44 +1352,6 @@ func interpretFirewallState(tool, state string) (enabled bool, known bool) {
 		}
 	}
 	return false, false
-}
-
-func getFirewallStatusLinux() (bool, error) {
-	if hasCommand("ufw") {
-		output, err := runCommand(5*time.Second, "ufw", "status")
-		if err == nil {
-			if enabled, known := interpretFirewallState("ufw", output); known {
-				return enabled, nil
-			}
-		}
-	}
-
-	// firewall-cmd / systemctl probe a different daemon (firewalld) than ufw.
-	// On a host where ufw is the ACTIVE firewall but firewalld is installed
-	// + masked (a common Ubuntu/Debian shape), `firewall-cmd --state` exits
-	// non-zero and prints "not running" or a D-Bus failure on stdout. The
-	// previous version trusted that text regardless of exit code, which
-	// silently reported the host as firewall=disabled — strictly worse than
-	// the WARN it replaced because FirewallEnabled feeds security posture
-	// (status.go's posture computation). We now only trust a recognized state
-	// when the tool ALSO exited 0; non-zero exit → unknown → fall through.
-	if hasCommand("firewall-cmd") {
-		if stdout, zeroExit, ok := firewallStatusFromCommand(5*time.Second, "firewall-cmd", "--state"); ok && zeroExit {
-			if enabled, known := interpretFirewallState("firewall-cmd", stdout); known {
-				return enabled, nil
-			}
-		}
-	}
-
-	if hasCommand("systemctl") {
-		if stdout, zeroExit, ok := firewallStatusFromCommand(5*time.Second, "systemctl", "is-active", "firewalld"); ok && zeroExit {
-			if enabled, known := interpretFirewallState("systemctl", stdout); known {
-				return enabled, nil
-			}
-		}
-	}
-
-	return false, fmt.Errorf("unable to determine firewall status")
 }
 
 // collectEncryptionPosture returns the headline encryption state and the
