@@ -408,6 +408,17 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // blocks (see withAuthDbAccessContext in middleware/auth.ts) and runs the HTTP call
   // between them.
   { method: 'POST', pattern: /^\/api\/v1\/psa\/connections\/[^/]+\/test\/?$/ },
+  // Ticket import sources and runs (#8313 W4, spec 2026-10-19 §5.6–§5.7).
+  // Create, edit and preflight call the module's connect (and catalog)
+  // against a TENANT-CONTROLLED base URL through safeFetch, which refuses to
+  // run inside a held DB context; each handler reads and writes in short
+  // withAuthDbAccessContext blocks around the call. Starting a run commits
+  // the run row before enqueueing its first slice, or the worker could take
+  // the job before the row is visible.
+  { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/?$/ },
+  { method: 'PATCH', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/preflight\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/runs\/?$/ },
   // PSA company import (#3246), both halves.
   //
   // PREVIEW walks the PSA's own pagination — up to PSA_COMPANY_LIST_CAP/100

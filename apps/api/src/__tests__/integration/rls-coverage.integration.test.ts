@@ -142,6 +142,10 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // migration_window_orgs (#8313): partner-axis (PARTNER_TENANT_TABLES); its
   // org_id names an org the window may import into, not the row's tenant.
   'migration_window_orgs',
+  // ticket_import_org_maps (#8313 W4): partner-axis (PARTNER_TENANT_TABLES);
+  // its org_id is the Breeze org a source org imports into, not the row's
+  // tenant.
+  'ticket_import_org_maps',
   'oauth_authorization_codes',
   'oauth_grants',
   'oauth_refresh_tokens',
@@ -375,6 +379,19 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // migrationWindowsRls.integration.test.ts.
   ['migration_windows', 'partner_id'],
   ['migration_window_orgs', 'partner_id'],
+  // Ticket import framework (#8313 W4, 2027-01-20-100000): a connected
+  // source, its org and category maps, its runs, its ticket ledger and the run
+  // report's issue rows. Partner-axis, no org owner: an import spans orgs and
+  // is a partner-admin action. Policy: breeze_current_scope()='system' OR
+  // breeze_has_partner_access(partner_id). ticket_import_org_maps also carries
+  // a non-tenancy org_id and is in ORG_AXIS_POLICY_EXCLUDED_TABLES. Functional
+  // forge: ticketImportRls.integration.test.ts.
+  ['ticket_import_sources', 'partner_id'],
+  ['ticket_import_org_maps', 'partner_id'],
+  ['ticket_import_category_maps', 'partner_id'],
+  ['ticket_import_runs', 'partner_id'],
+  ['ticket_import_items', 'partner_id'],
+  ['ticket_import_run_issues', 'partner_id'],
   // Stripe payments (2026-06-15): one connected Stripe account per partner
   // (RLS shape 3, flat breeze_has_partner_access(partner_id)). The sibling
   // invoice_stripe_payments table carries a direct org_id column and is

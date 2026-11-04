@@ -294,7 +294,7 @@ const EXPECTED_NAMES = [
   'm365SyncRetention', 'filesystemCleanupRunRetention',
   'serviceProcessCheckRetention', 'changeLogRetention', 'restorePointAttemptRetention', 'webhookDeliveryRetention', 'dnsSecurityRetention', 'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
-  'quoteSendWorker', 'enrollmentKeyCleanup', 'migrationWindowSweep', 'partnerApiIdempotencyRetention', 'quickSupportReaper', 'wispGrantReconciler', 'softwareUploadSessionCleanup',
+  'quoteSendWorker', 'enrollmentKeyCleanup', 'migrationWindowSweep', 'ticketImportWorker', 'partnerApiIdempotencyRetention', 'quickSupportReaper', 'wispGrantReconciler', 'softwareUploadSessionCleanup',
   'softwareRemediationRequestCleanup', 'auditRetention', 'pamEvidenceRetention', 'auditChainVerify', 'auditChainAnchor',
   'tenantErasure', 'orgMerge', 'deviceBulkPurge', 'removedDevicePurge', 'parkedDeviceExpiry', 'parkedDevicePurge', 'deviceReattachIntentSweep', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
   // Helper-uploaded screenshot retention (per-device storage quota).

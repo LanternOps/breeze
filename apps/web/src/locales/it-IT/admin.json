@@ -1150,6 +1150,8 @@
       "ticket_customer_email_domain": "Dominio cliente del ticket",
       "ticket_email_inbound": "Email ticket in entrata",
       "ticket_form": "Modulo ticket",
+      "ticket_import_run": "Esecuzione importazione ticket",
+      "ticket_import_source": "Origine importazione ticket",
       "ticket_mailbox_connection": "Casella di posta ticket",
       "ticket_priority_settings": "Impostazioni priorità ticket",
       "ticket_response_template": "Modello di risposta ticket",
