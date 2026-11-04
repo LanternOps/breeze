@@ -83,6 +83,7 @@ const sessionColumns = () => ({
   deadline: backupStorageSessions.deadline,
   revokedAt: backupStorageSessions.revokedAt,
   callCount: backupStorageSessions.callCount,
+  lastUsedAt: backupStorageSessions.lastUsedAt,
   resolvedObjectCount: backupStorageSessions.resolvedObjectCount,
   rateCallsAvailable: backupStorageSessions.rateCallsAvailable,
   rateObjectsAvailable: backupStorageSessions.rateObjectsAvailable,
