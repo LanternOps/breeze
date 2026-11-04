@@ -45,13 +45,22 @@ func TestDarwinUninstallScriptAbortsAndRestoresTheAgentWhenReleaseFails(t *testi
 	if _, err := os.Stat("/usr/bin/true"); err != nil {
 		t.Skip("POSIX fixture")
 	}
-	root := t.TempDir()
+	// No symlink in the root (macOS's /var is one): the release step refuses to
+	// run a binary below one.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	calls := filepath.Join(root, "calls")
 	for _, name := range []string{"launchctl", "pkill", "pkgutil", "rm", "rmdir", "ps", "sleep"} {
 		body := "#!/bin/sh\nprintf '%s %s\\n' \"${0##*/}\" \"$*\" >> \"$FIXTURE_CALLS\"\n"
 		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o700); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// The test cannot chown: report every path as root's, as an installed agent's is.
+	if err := os.WriteFile(filepath.Join(root, "ls"), []byte("#!/bin/sh\necho \"drwxr-xr-x  2 0  0  64 Jan  1 00:00 $2\"\n"), 0o700); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.MkdirAll(root+darwinIsolationDataDir, 0o700); err != nil {
 		t.Fatal(err)

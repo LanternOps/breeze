@@ -1,6 +1,24 @@
 # Network-isolation teardown (#10099). Embedded in Go for the agent's own
 # uninstall paths. Sourced after functions.sh, whose breeze_bootout it uses.
 # BEGIN BREEZE MACOS ISOLATION FUNCTIONS
+# _breeze_root_safe <path>: this runs as root, so it only executes what nobody
+# but root could have put there. The file and every directory above it must be
+# real (no symlink), owned by uid 0, and not writable by group or others. A
+# Homebrew-owned /usr/local/bin fails this, as the agent's own rule says (#7211).
+_breeze_root_safe() {
+  _breeze_p="$1"
+  while :; do
+    [ -L "$_breeze_p" ] && return 1
+    _breeze_l="$(ls -ldn "$_breeze_p" 2>/dev/null)" || return 1
+    [ "$(printf '%s\n' "$_breeze_l" | awk '{print $3}')" = 0 ] || return 1
+    case "$(printf '%s\n' "$_breeze_l" | awk '{print $1}')" in
+      ?????w* | ????????w*) return 1 ;;
+    esac
+    [ "$_breeze_p" = / ] && return 0
+    _breeze_p="$(dirname "$_breeze_p")"
+  done
+}
+
 # breeze_release_isolation confirms that no Breeze-owned pf rules remain, and
 # must succeed before any Breeze daemon stops: once the agent and the recovery
 # jobs are gone, nothing would ever release them. No journal means this Mac
@@ -12,14 +30,14 @@ breeze_release_isolation() {
     return 0
   fi
   for _breeze_bin in /Library/Breeze/bin/breeze-agent /usr/local/bin/breeze-agent; do
-    if [ -x "$_breeze_bin" ] && "$_breeze_bin" containment release-all --reason uninstall; then
+    if [ -x "$_breeze_bin" ] && _breeze_root_safe "$_breeze_bin" && "$_breeze_bin" containment release-all --reason uninstall; then
       return 0
     fi
   done
   # A broken or half-upgraded agent: the separately installed recovery binary
   # can release on its own.
   for _breeze_bin in /Library/Breeze/isolation-recovery/*/breeze-isolation-recovery; do
-    if [ -x "$_breeze_bin" ] && "$_breeze_bin" release-all --data-dir "$_breeze_data" --reason uninstall; then
+    if [ -x "$_breeze_bin" ] && _breeze_root_safe "$_breeze_bin" && "$_breeze_bin" release-all --data-dir "$_breeze_data" --reason uninstall; then
       return 0
     fi
   done

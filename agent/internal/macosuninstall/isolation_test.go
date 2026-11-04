@@ -12,6 +12,18 @@ import (
 
 const isolationDataDir = "/Library/Application Support/Breeze/data"
 
+// rootOwnedLs answers `ls -ldn <path>` as if root installed everything (the
+// test cannot chown), except paths containing $FIXTURE_UNSAFE, which a
+// non-root user owns, like a Homebrew /usr/local/bin.
+const rootOwnedLs = `#!/bin/sh
+p="$2"
+uid=0
+if [ -n "$FIXTURE_UNSAFE" ]; then
+  case "$p" in *"$FIXTURE_UNSAFE"*) uid=501 ;; esac
+fi
+echo "drwxr-xr-x  2 $uid  0  64 Jan  1 00:00 $p"
+`
+
 // isolationFixture rewrites the isolation paths into a temporary root and puts a
 // fake agent and recovery binary there, so the release step runs end to end
 // without touching this host. Every other command is the shared teardown shim.
@@ -20,12 +32,20 @@ func isolationFixture(t *testing.T, journal bool, agentExit, recoveryExit string
 	if _, err := os.Stat("/usr/bin/python3"); err != nil {
 		t.Skip("python3 not available")
 	}
-	root = t.TempDir()
+	// No symlink in the root: the script refuses to run anything below one
+	// (macOS's /var is a symlink to /private/var).
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	bin := filepath.Join(root, "bin")
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	writeTeardownShims(t, bin)
+	if err := os.WriteFile(filepath.Join(bin, "ls"), []byte(rootOwnedLs), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if journal {
 		if err := os.MkdirAll(root+isolationDataDir, 0o700); err != nil {
 			t.Fatal(err)
@@ -80,7 +100,9 @@ func TestScriptReleasesIsolationBeforeAnyBreezeDaemonStops(t *testing.T) {
 		name            string
 		journal         bool
 		agent, recovery string
+		unsafe          string
 		wantFirst       string
+		wantNot         string
 		wantFail        bool
 	}{
 		{name: "never isolated: nothing to release", journal: false, agent: "0"},
@@ -89,14 +111,22 @@ func TestScriptReleasesIsolationBeforeAnyBreezeDaemonStops(t *testing.T) {
 		{name: "no agent at all: the recovery binary releases", journal: true, recovery: "0", wantFirst: "recovery release-all"},
 		{name: "nothing can confirm the release", journal: true, agent: "1", recovery: "1", wantFail: true},
 		{name: "no tool at all", journal: true, wantFail: true},
+		// This runs as root: an agent binary someone other than root could
+		// have written is never executed, whatever it is called.
+		{name: "an agent in a non-root directory is not run", journal: true, agent: "0", recovery: "0", unsafe: "/Library/Breeze/bin", wantFirst: "recovery release-all", wantNot: "agent containment"},
+		{name: "nothing root-safe to run", journal: true, agent: "0", recovery: "0", unsafe: "/Library/Breeze/", wantFail: true, wantNot: "release-all"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("FIXTURE_UNSAFE", tc.unsafe)
 			script, root := isolationFixture(t, tc.journal, tc.agent, tc.recovery)
 			log, out, err := runIsolationScript(t, script, root)
 			if (err != nil) != tc.wantFail {
 				t.Fatalf("err=%v\n%s\n%s", err, log, out)
 			}
 			firstBootout := strings.Index(log, "launchctl bootout")
+			if tc.wantNot != "" && strings.Contains(log, tc.wantNot) {
+				t.Fatalf("ran %q:\n%s", tc.wantNot, log)
+			}
 			if tc.wantFail {
 				if firstBootout >= 0 || strings.Contains(log, "rm ") {
 					t.Fatalf("an unconfirmed release must stop the uninstall before anything is removed:\n%s", log)
