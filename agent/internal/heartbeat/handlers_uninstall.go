@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/isolation"
 	"github.com/breeze-rmm/agent/internal/macosuninstall"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/psscript"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/securefs"
@@ -261,15 +261,15 @@ func prepareSelfUninstallDarwin(removeConfig bool) error {
 
 	// Watchdog FIRST — it must be gone before anything stops the agent, or it
 	// may respawn/reinstall the agent mid-teardown.
-	if err := exec.Command("launchctl", "bootout", "system/"+watchdogLabel).Run(); err != nil {
+	if err := procspawn.Command("launchctl", "bootout", "system/"+watchdogLabel).Run(); err != nil {
 		log.Warn("launchctl bootout watchdog failed, trying legacy unload", "error", err.Error())
-		_ = exec.Command("launchctl", "unload", watchdogPlistDst).Run()
+		_ = procspawn.Command("launchctl", "unload", watchdogPlistDst).Run()
 	}
 
 	// Disable our own daemon (safe while running) so that if the detached
 	// helper never runs — blocked, reboot inside the window — the host comes
 	// back with the agent NOT auto-starting into permanent 401s (#2796).
-	if err := exec.Command("launchctl", "disable", "system/"+label).Run(); err != nil {
+	if err := procspawn.Command("launchctl", "disable", "system/"+label).Run(); err != nil {
 		log.Warn("launchctl disable agent failed", "error", err.Error())
 	}
 
@@ -349,15 +349,15 @@ func prepareSelfUninstallLinux(removeConfig bool) error {
 	)
 
 	// Watchdog FIRST (see prepareSelfUninstallDarwin).
-	if err := exec.Command("systemctl", "stop", watchdogService).Run(); err != nil {
+	if err := procspawn.Command("systemctl", "stop", watchdogService).Run(); err != nil {
 		log.Warn("systemctl stop watchdog failed", "error", err.Error())
 	}
-	if err := exec.Command("systemctl", "disable", watchdogService).Run(); err != nil {
+	if err := procspawn.Command("systemctl", "disable", watchdogService).Run(); err != nil {
 		log.Warn("systemctl disable watchdog failed", "error", err.Error())
 	}
 	// Disabling (not stopping!) our own service is safe while running and
 	// prevents an auto-start if the host reboots mid-teardown.
-	if err := exec.Command("systemctl", "disable", serviceName).Run(); err != nil {
+	if err := procspawn.Command("systemctl", "disable", serviceName).Run(); err != nil {
 		log.Warn("systemctl disable agent failed", "error", err.Error())
 	}
 
@@ -501,10 +501,10 @@ func prepareSelfUninstallWindows(removeConfig bool) error {
 	// stops the agent service. sc.exe delete on a STOP_PENDING service marks it
 	// delete-pending, which completes when it stops; the helper re-asserts both
 	// steps anyway.
-	if err := exec.Command("sc.exe", "stop", watchdogServiceName).Run(); err != nil {
+	if err := procspawn.Command("sc.exe", "stop", watchdogServiceName).Run(); err != nil {
 		log.Warn("sc.exe stop watchdog failed", "error", err.Error())
 	}
-	if err := exec.Command("sc.exe", "delete", watchdogServiceName).Run(); err != nil {
+	if err := procspawn.Command("sc.exe", "delete", watchdogServiceName).Run(); err != nil {
 		log.Warn("sc.exe delete watchdog failed", "error", err.Error())
 	}
 
@@ -515,10 +515,10 @@ func prepareSelfUninstallWindows(removeConfig bool) error {
 	// and restarted, and the host doesn't reboot back into permanent 401
 	// hammering (#2796). Worst case degrades to "stopped + disabled, binary
 	// on disk" instead of "alive and stranded".
-	if err := exec.Command("sc.exe", "config", serviceName, "start=", "disabled").Run(); err != nil {
+	if err := procspawn.Command("sc.exe", "config", serviceName, "start=", "disabled").Run(); err != nil {
 		log.Warn("sc.exe config start=disabled failed", "error", err.Error())
 	}
-	if err := exec.Command("sc.exe", "failure", serviceName, "reset=", "0", "actions=", "").Run(); err != nil {
+	if err := procspawn.Command("sc.exe", "failure", serviceName, "reset=", "0", "actions=", "").Run(); err != nil {
 		log.Warn("sc.exe failure reset failed", "error", err.Error())
 	}
 
