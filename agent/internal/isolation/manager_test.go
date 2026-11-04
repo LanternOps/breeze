@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -718,6 +719,12 @@ func TestManagerStartupRearmsAndReverifies(t *testing.T) {
 }
 
 func TestManagerReportsUnsupportedReasonViaCapability(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		// macOS has a real pf isolator: Apply below would run pfctl, and as root
+		// it could load the main ruleset. isolator_darwin_*_test.go cover it
+		// against fakePF, including the capability-0 tripwire.
+		t.Skip("never run pf from a unit test")
+	}
 	iso := NewPlatformIsolator()
 	c := iso.Capability()
 	if c.Version != 0 || c.Ready || c.UnsupportedReason == "" {

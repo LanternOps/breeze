@@ -1,0 +1,14 @@
+### pfctl -sn
+nat-anchor "com.apple/*" all
+rdr-anchor "com.apple/*" all
+### pfctl -sr
+scrub-anchor "com.apple/*" all fragment reassemble
+anchor "com.apple/*" all
+### pfctl -sA
+  com.apple
+### pfctl -sI -v
+all
+en
+en0 (skip)
+lo
+lo0 (skip)
