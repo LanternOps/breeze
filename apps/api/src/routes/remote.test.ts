@@ -20,6 +20,19 @@ const mockAuthState = vi.hoisted(() => ({
 
 vi.mock('../services', () => ({}));
 
+// Existing route cases exercise the non-isolated ICE plan (relay-only has its
+// own suites: remote/sessions.relayOnly.test.ts, desktopWs.relayOnly.test.ts).
+vi.mock('./remote/desktopRelayPolicy', async () => {
+  const { getIceServers } = await import('./remote/helpers');
+  return {
+    resolveDesktopIcePlan: async (_deviceId: string, scope: import('./remote/helpers').TurnCredentialScope) => ({
+      ok: true,
+      relayOnly: false,
+      iceServers: getIceServers(scope),
+    }),
+  };
+});
+
 vi.mock('../services/permissions', () => ({
   canAccessSite: (permissions: { allowedSiteIds?: string[] }, siteId: string) => !permissions.allowedSiteIds || permissions.allowedSiteIds.includes(siteId),
   PERMISSIONS: {

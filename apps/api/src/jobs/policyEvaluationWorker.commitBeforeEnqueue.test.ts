@@ -106,7 +106,7 @@ beforeEach(() => {
   });
   scanConfigMock.mockImplementation(async () => {
     events.push({ event: 'run_created', depth: txState.depth, open: txState.open });
-    return { rulesScanned: 1, devicesEvaluated: 1, results: [], afterCommit: afterCommitMock };
+    return { rulesScanned: 1, devicesEvaluated: 1, devicesFailed: 1, ruleSetsFailed: 2, results: [], afterCommit: afterCommitMock };
   });
   createPolicyEvaluationWorker();
 });
@@ -132,7 +132,7 @@ describe('policy evaluation enqueues remediation runs only after they commit (#7
   it('scan-config-policy-compliance: evaluates deferred inside the transaction, enqueues after it commits', async () => {
     const result = await captured.processor!(CONFIG_SCAN_JOB);
 
-    expect(result).toEqual({ rulesScanned: 1, devicesEvaluated: 1 });
+    expect(result).toEqual({ rulesScanned: 1, devicesEvaluated: 1, devicesFailed: 1, ruleSetsFailed: 2 });
     expect(scanConfigMock).toHaveBeenCalledWith(expect.objectContaining({ deferEnqueue: true }));
     const created = events.find((e) => e.event === 'run_created');
     const enqueued = events.find((e) => e.event === 'enqueue');
@@ -155,7 +155,7 @@ describe('policy evaluation enqueues remediation runs only after they commit (#7
   it('config scan: a missing-table error is still swallowed as before', async () => {
     scanConfigMock.mockRejectedValueOnce(Object.assign(new Error('relation missing'), { cause: { code: '42P01' } }));
 
-    await expect(captured.processor!(CONFIG_SCAN_JOB)).resolves.toEqual({ rulesScanned: 0, devicesEvaluated: 0 });
+    await expect(captured.processor!(CONFIG_SCAN_JOB)).resolves.toEqual({ rulesScanned: 0, devicesEvaluated: 0, devicesFailed: 0, ruleSetsFailed: 0 });
     expect(afterCommitMock).not.toHaveBeenCalled();
   });
 });

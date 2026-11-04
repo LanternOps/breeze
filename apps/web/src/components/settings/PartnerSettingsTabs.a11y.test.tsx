@@ -102,6 +102,8 @@ describe('partner settings page: heading ladder and nesting on every panel (#978
     vi.mocked(fetchWithAuth).mockReset();
     vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
       if (url === '/orgs/partners/me') return json(PARTNER);
+      // The page probes sending domains only when /config reports the feature on (#9949).
+      if (url === '/config') return json({ features: { sendingDomains: true } });
       if (url === '/partner/sending-domains') {
         return json({ capability: { supported: true, provider: 'fake', verifiesByDns: true, eligible: true, maxDomains: 3 }, domains: [], identities: [] });
       }

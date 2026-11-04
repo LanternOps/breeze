@@ -69,9 +69,11 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     // The device actions wait up to 60 s for the agent, so they must not hold
     // the per-call transaction across it (#7918; `AiTool.selfManagedDbContext`).
-    // `vulnerabilities` only reads the DB and keeps it. `scan` queues through
-    // startDeviceScan and does not wait (#6268), so it keeps the context too.
-    selfManagedDbContext: ['status', 'quarantine', 'remove', 'restore'],
+    // `vulnerabilities` only reads the DB and keeps it. `scan` does not wait,
+    // but startDeviceScan opens and COMMITS its own caller-scoped transaction
+    // before enqueueing the claim job (#10057 gap 2), so it must not run
+    // inside a held per-call one either.
+    selfManagedDbContext: ['scan', 'status', 'quarantine', 'remove', 'restore'],
     definition: {
       name: 'security_scan',
       description: 'Run security scans on a device, manage detected threats (quarantine, remove, restore), or query vulnerability data. Actions: scan, status, quarantine, remove, restore, vulnerabilities.',
@@ -158,12 +160,13 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
         // tracked security_scans row with its dispatched rule-set refs and
         // command id, the device's AI remote-tools policy, and aiOrigin on the
         // command. It queues and returns; it does not wait on the agent.
-        const started = await inToolDbPhase(auth, () => startDeviceScan(auth, {
+        // Its own caller-scoped transaction (#10057 gap 2), so no inToolDbPhase.
+        const started = await startDeviceScan(auth, {
           deviceId,
           scanType: 'quick',
           mfaSatisfied: false,
           aiOrigin: requireAiOrigin(auth, 'security_scan'),
-        }));
+        });
         if (!started.ok) return JSON.stringify({ error: started.error, status: started.status });
         return JSON.stringify({
           scanId: started.scan.id,

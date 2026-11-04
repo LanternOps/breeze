@@ -471,6 +471,29 @@ describe('DeliverableTemplatesPage item portal visibility (#9315)', () => {
     await waitFor(() => expect(postedBody()).toEqual(expect.objectContaining({ cadence: 'one_time', portalVisible: false })));
   });
 
+  // #9960: the set's item list says which items the customer will see, so an
+  // admin does not have to open every item (or apply the set) to find out.
+  it('badges each item in the set list as shown in or hidden from the portal', async () => {
+    const item = (id: string, name: string, cadence: 'monthly' | 'one_time', portalVisible: boolean) => ({
+      id, setId: 'set-1', name, description: null, cadence,
+      leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve' as const,
+      instructions: null, checklistTemplateId: null, sortOrder: 0, autoEvidenceReportType: null, portalVisible,
+    });
+    fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      const method = opts?.method ?? 'GET';
+      if (String(url).startsWith('/deliverable-templates') && method === 'GET') {
+        return jsonResponse({
+          data: [setFrom({ items: [item('item-a', 'Monthly report', 'monthly', true), item('item-b', 'Kickoff', 'one_time', false)] })],
+        });
+      }
+      if (String(url).startsWith('/ticket-checklist-templates') && method === 'GET') return jsonResponse({ data: [] });
+      return jsonResponse({ error: 'unexpected' }, 500);
+    });
+    render(<DeliverableTemplatesPage />);
+    expect(await screen.findByTestId('deliverable-template-item-portal-item-a')).toHaveTextContent('Shown in portal');
+    expect(screen.getByTestId('deliverable-template-item-portal-item-b')).toHaveTextContent('Hidden from portal');
+  });
+
   it('editing an existing item keeps its stored value through a cadence change and PATCHes it', async () => {
     fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
       const method = opts?.method ?? 'GET';

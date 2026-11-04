@@ -31,6 +31,16 @@ describe('toDeviceListRow', () => {
     expect(row.tags).toEqual(['vip']);
   });
 
+  it('carries the hardware serial number through', () => {
+    const row = toDeviceListRow({ ...RAW, hardware: { serialNumber: 'TEST-SERIAL-01' } });
+    expect(row.hardware?.serialNumber).toBe('TEST-SERIAL-01');
+  });
+
+  it.each([undefined, null, 42, false, {}])('ignores invalid hardware serial number %j', serialNumber => {
+    const row = toDeviceListRow({ ...RAW, hardware: { serialNumber } });
+    expect(row.hardware?.serialNumber).toBeUndefined();
+  });
+
   it('prefers nested metrics and clamps to 0–100', () => {
     expect(toDeviceListRow({ ...RAW, metrics: { cpuPercent: 250 }, cpuPercent: 5 }).cpuPercent).toBe(100);
   });
@@ -42,5 +52,18 @@ describe('toDeviceListRow', () => {
 
   it('falls back to the Unknown label when hostname is missing', () => {
     expect(toDeviceListRow({ ...RAW, hostname: undefined }).hostname).toBe('Unknown');
+  });
+
+  // #9863 — Warranty column.
+  it('carries the warranty end date and a known status through', () => {
+    const row = toDeviceListRow({ ...RAW, warrantyEndDate: '2026-12-31', warrantyStatus: 'subscription_active' });
+    expect(row.warrantyEndDate).toBe('2026-12-31');
+    expect(row.warrantyStatus).toBe('subscription_active');
+  });
+
+  it('nulls missing or unrecognised warranty values', () => {
+    expect(toDeviceListRow(RAW)).toMatchObject({ warrantyEndDate: null, warrantyStatus: null });
+    expect(toDeviceListRow({ ...RAW, warrantyEndDate: 42, warrantyStatus: 'bogus' }))
+      .toMatchObject({ warrantyEndDate: null, warrantyStatus: null });
   });
 });

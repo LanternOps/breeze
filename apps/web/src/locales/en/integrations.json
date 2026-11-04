@@ -582,6 +582,7 @@
     "cove": "Cove Data Protection",
     "nameLabel": "Connection name",
     "namePlaceholder": "Main Cove account",
+    "namePlaceholderDropsuite": "Main NinjaOne SaaS Backup account",
     "partnerNameLabel": "Cove partner name",
     "usernameLabel": "API user login name",
     "passwordLabel": "API user token",

@@ -420,6 +420,7 @@
     "emptyRingSeverityNotice": "Este anillo aún no tiene dispositivos. La severidad informada por los dispositivos aparece cuando se asignan dispositivos, así que hasta entonces la mayoría de los parches figuran como Sin calificar.",
     "shiftedNotice": "Se muestran {{shown}} de {{total}} parches: el catálogo cambió mientras se cargaba. Vuelve a cargar para ver el resto.",
     "ringDelete": {
+      "messageNone": "Ninguna política usa este anillo. Sus reglas de aprobación y su configuración de programación se eliminarán y no se podrán restaurar.",
       "title": "¿Eliminar {{name}}?",
       "messageOne": "1 política dejará de aplicar parches programados hasta que elijas otro anillo.",
       "messageMany": "{{count}} políticas dejarán de aplicar parches programados hasta que elijas otro anillo.",
@@ -484,6 +485,11 @@
     "rebootRequired": "Requerido",
     "rebootDone": "Completado",
     "rebootNotRequired": "—",
+    "skipReasons": {
+      "ring_deleted": "Cancelado antes del envío: se eliminó el anillo de actualización.",
+      "ring_disabled": "Cancelado antes del envío: se deshabilitó el anillo de actualización.",
+      "ring_unavailable": "Omitido: el anillo de actualización se eliminó o deshabilitó antes de enviar a este dispositivo."
+    },
     "errors": {
       "load": "No se pudo cargar el trabajo de parche"
     }
@@ -643,7 +649,11 @@
     "noMatches": "Sin coincidencias.",
     "orEnterAPackageIDManually": "O ingrese un paquete ID manualmente",
     "removeRuleFor": "Eliminar regla para {{application}}",
-    "scopeNote": "Estas reglas se aplican a todos los dispositivos cuya directiva de configuración vincula este anillo."
+    "scopeNote": "Estas reglas se aplican a todos los dispositivos cuya directiva de configuración vincula este anillo.",
+    "linuxPackage": "Paquete de Linux",
+    "appPackage": "Paquete de app",
+    "manualRuleType": "Tipo de regla",
+    "linuxPinHint": "Ingresa la versión completa de la lista de parches, incluida la época si la hay (p. ej., 5:24.0.7-1)."
   },
   "patchDetails": {
     "unknown": "Desconocido",

@@ -157,6 +157,13 @@
   object-fit: cover;
   object-position: center;
 }
+/* The partner's logo/wordmark over the artwork, on a translucent white pill
+   (the PDF cover's pill: quotePdf.ts renderCoverPage). Offsets are classes. */
+.doc-cover-brand {
+  position: absolute;
+  border-radius: 0.375rem;
+  background-color: rgb(255 255 255 / 0.85);
+}
 .doc-cover-band {
   position: absolute;
   left: 0;

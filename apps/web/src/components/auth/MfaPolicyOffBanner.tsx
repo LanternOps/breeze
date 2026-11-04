@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/stores/auth';
 import { getPartnersMe, invalidatePartnersMe } from '@/lib/api/partnersMe';
 import { useJwtClaims } from '@/lib/authScope';
+import { hasPermission } from '@/lib/permissions';
 
 // Spec: docs/superpowers/specs/2026-09-18-mfa-required-default-new-partners-design.md (D4)
 //
@@ -19,6 +20,7 @@ import { useJwtClaims } from '@/lib/authScope';
 // Gates, all client-side UX only (the server is the authority):
 //   - partner scope (org-scoped users can't change it and GET /orgs/partners/me 403s them)
 //   - canManagePartnerWide (org_access 'selected' members can't PATCH the setting)
+//   - organizations:write (the PATCH's permission; read-only roles can't save it)
 //   - GET /orgs/partners/me → settings.security.requireMfa !== true
 
 export const PARTNER_SETTINGS_SAVED_EVENT = 'breeze:partner-settings-saved';
@@ -102,8 +104,12 @@ export default function MfaPolicyOffBanner({ placement = 'layout' }: MfaPolicyOf
   // treat as capable (the server enforces regardless) — same reading as the
   // owner-scope pickers.
   const canManage = user?.canManagePartnerWide !== false;
+  // PATCH /orgs/partners/me also requires organizations:write. A Partner Viewer
+  // has full partner access but only organizations:read, so the CTA would lead
+  // to a form it cannot save (#10295). Permissions not loaded yet → hidden.
+  const canWritePartner = hasPermission(user?.permissions, 'organizations', 'write');
   const isPartnerScope = claimsState.status === 'resolved' && claimsState.claims.scope === 'partner';
-  const eligible = Boolean(user) && isPartnerScope && canManage;
+  const eligible = Boolean(user) && isPartnerScope && canManage && canWritePartner;
 
   const check = useCallback(async (isCurrent: () => boolean) => {
     try {

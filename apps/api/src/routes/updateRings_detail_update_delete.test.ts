@@ -19,6 +19,11 @@ vi.mock('./updateRingLinkedPolicies', () => ({
 }));
 import { writeRouteAudit } from '../services/auditEvents';
 
+const { cancelQueuedMock } = vi.hoisted(() => ({ cancelQueuedMock: vi.fn() }));
+vi.mock('../services/updateRingQueuedWork', () => ({
+  cancelQueuedRingPatchWork: cancelQueuedMock,
+}));
+
 vi.mock('./updateRingsHelpers', () => ({
   resolveRingDeviceCounts: vi.fn().mockResolvedValue(new Map()),
   resolveRingDeviceIds: vi.fn().mockResolvedValue([]),
@@ -152,6 +157,7 @@ describe('updateRings routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     linkedMock.mockResolvedValue([]);
+    cancelQueuedMock.mockResolvedValue({ cancelledJobIds: [], cancelledInstallCount: 0 });
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         user: { id: 'user-123', email: 'partner@example.com', name: 'Partner User' },
@@ -943,6 +949,80 @@ describe('updateRings routes', () => {
       ringSelect({ id: RING_ID, partnerId: PARTNER_ID_2 });
       expect((await app.request(`/update-rings/${RING_ID}/linked-policies`)).status).toBe(403);
       expect(linkedMock).not.toHaveBeenCalled();
+    });
+
+    describe('queued patch work (#8909 item 2)', () => {
+      const CANCELLED = { cancelledJobIds: ['job-1', 'job-2'], cancelledInstallCount: 3 };
+
+      it('DELETE cancels queued work AFTER disabling the ring, and reports + audits it', async () => {
+        linkedMock.mockResolvedValue([]);
+        cancelQueuedMock.mockResolvedValue(CANCELLED);
+        ringSelect({ id: RING_ID, partnerId: PARTNER_ID, name: 'Test Ring' });
+        updateOk();
+        const res = await app.request(`/update-rings/${RING_ID}`, { method: 'DELETE', headers: { Authorization: 'Bearer token' } });
+        expect(res.status).toBe(200);
+        expect(cancelQueuedMock).toHaveBeenCalledWith(RING_ID, 'ring_deleted');
+        // The sweep must run after the ring row is written: it is the write's
+        // row lock that waits out in-flight dispatches.
+        expect(vi.mocked(db.update).mock.invocationCallOrder[0]!)
+          .toBeLessThan(cancelQueuedMock.mock.invocationCallOrder[0]!);
+        const body = await res.json();
+        expect(body.cancelledPatchJobCount).toBe(2);
+        expect(body.cancelledDeviceInstallCount).toBe(3);
+        expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          action: 'update_ring.delete',
+          details: expect.objectContaining({
+            cancelledPatchJobCount: 2,
+            cancelledPatchJobIds: ['job-1', 'job-2'],
+            cancelledDeviceInstallCount: 3,
+            cancelReason: 'ring_deleted',
+          }),
+        }));
+      });
+
+      it('PATCH enabled:false cancels with ring_disabled and audits it', async () => {
+        linkedMock.mockResolvedValue([]);
+        cancelQueuedMock.mockResolvedValue(CANCELLED);
+        ringSelect({ id: RING_ID, partnerId: PARTNER_ID, autoApprove: {}, enabled: true });
+        updateOk(makeRing({ enabled: false }));
+        const res = await app.request(`/update-rings/${RING_ID}`, {
+          method: 'PATCH', headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: false }),
+        });
+        expect(res.status).toBe(200);
+        expect(cancelQueuedMock).toHaveBeenCalledWith(RING_ID, 'ring_disabled');
+        expect(vi.mocked(db.update).mock.invocationCallOrder[0]!)
+          .toBeLessThan(cancelQueuedMock.mock.invocationCallOrder[0]!);
+        const body = await res.json();
+        expect(body.cancelledPatchJobCount).toBe(2);
+        expect(body.cancelledDeviceInstallCount).toBe(3);
+        expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          action: 'update_ring.update',
+          details: expect.objectContaining({ cancelledPatchJobIds: ['job-1', 'job-2'], cancelReason: 'ring_disabled' }),
+        }));
+      });
+
+      it('PATCH that does not disable the ring cancels nothing', async () => {
+        ringSelect({ id: RING_ID, partnerId: PARTNER_ID, autoApprove: {}, enabled: true });
+        updateOk(makeRing({ name: 'x' }));
+        const res = await app.request(`/update-rings/${RING_ID}`, {
+          method: 'PATCH', headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'x', enabled: true }),
+        });
+        expect(res.status).toBe(200);
+        expect(cancelQueuedMock).not.toHaveBeenCalled();
+        expect((await res.json()).cancelledPatchJobCount).toBeUndefined();
+      });
+
+      it('a failing sweep fails the request (the transaction rolls the disable back) and writes no audit', async () => {
+        linkedMock.mockResolvedValue([]);
+        cancelQueuedMock.mockRejectedValue(new Error('sweep failed'));
+        ringSelect({ id: RING_ID, partnerId: PARTNER_ID, name: 'Test Ring' });
+        updateOk();
+        const res = await app.request(`/update-rings/${RING_ID}`, { method: 'DELETE', headers: { Authorization: 'Bearer token' } });
+        expect(res.status).toBe(500);
+        expect(writeRouteAudit).not.toHaveBeenCalled();
+      });
     });
   });
 

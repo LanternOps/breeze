@@ -77,7 +77,8 @@
       "recurrenceThreshold": "Şu kadar sonra yükselt",
       "recurrenceWindowDays": "olay, şu gün içinde (gün)",
       "pauseResponses": "Bir kişi sıfırlayana kadar otomatik yanıtları duraklat",
-      "aiAgent": "Yapay zeka aracısı (yapay zeka triyaj yanıtlarını etkinleştirir)"
+      "aiAgent": "Yapay zeka aracısı (yapay zeka triyaj yanıtlarını etkinleştirir)",
+      "psaBoard": "Uyarı ticket’ları için PSA panosu"
     },
     "deliveryModes": {
       "inherit": "Yönlendirme kurallarını kullan",
@@ -170,7 +171,11 @@
       "failed": "Varlıklar yüklenemedi",
       "orgRequired": "Varlık bağlamak için kuruluş sahipliğini seçin.",
       "pingName": "{{label}} için ping"
-    }
+    },
+    "psaBoardDefault": "Bağlantının varsayılan panosunu kullan",
+    "psaBoardHelp": "Bu monitörün uyarı ticket’ları, bağlantının varsayılan panosu yerine bu panoda oluşturulur.",
+    "psaBoardReadOnly": "Uyarı ticket’ları PSA panosu #{{id}} içine gider",
+    "psaBoardUnavailable": "PSA panoları yüklenemedi, bu nedenle pano geçersiz kılma şu anda kullanılamıyor."
   },
   "kinds": {
     "composite": "Bileşik (birkaç koşulun tümü veya herhangi biri)",

@@ -29,7 +29,11 @@ vi.mock('../../lib/useCallerVerificationEnabled', () => ({
   useCallerVerificationEnabled: () => flag.loaded && flag.enabled,
 }));
 vi.mock('../../stores/featuresStore', () => ({
-  useFeaturesStore: (sel: (s: { loaded: boolean }) => unknown) => sel({ loaded: flag.loaded }),
+  useFeaturesStore: Object.assign(
+    (sel: (s: { loaded: boolean }) => unknown) => sel({ loaded: flag.loaded }),
+    // The partners/me unit reads the sending-domains flag imperatively (#9949).
+    { getState: () => ({ load: async () => {}, configOk: true, features: { sendingDomains: false } }) },
+  ),
 }));
 
 const PARTNER = {

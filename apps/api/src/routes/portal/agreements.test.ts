@@ -81,7 +81,7 @@ function app(authMethod: 'bearer' | 'cookie' = 'bearer') {
   a.use('*', async (c, next) => {
     c.set('portalAuth', {
       user: { id: 'pu-1', orgId: ORG, email: SESSION_EMAIL, name: 'Dana', contactId: null, receiveNotifications: true, status: 'active' },
-      token: 't', authMethod, partnerId: PARTNER, timezone: 'UTC',
+      token: 't', authMethod, partnerId: PARTNER, timezone: 'America/Denver',
     });
     await next();
   });
@@ -154,10 +154,27 @@ describe('GET /agreements', () => {
     h.rows.set(contractTemplateVersions, [{ versionId: VERSION, versionNumber: 2, templateName: 'BAA' }]);
     const res = await app().request('/agreements');
     expect(res.status).toBe(200);
-    expect((await res.json()).data).toEqual([
+    const body = await res.json();
+    // #10291: the zone every surface formats `expiresAt` in (org → partner → UTC),
+    // so the SSR list and the hydrated detail agree on the calendar day.
+    expect(body.timezone).toBe('America/Denver');
+    expect(body.data).toEqual([
       { id: REQ, name: 'BAA', templateName: 'BAA', status: 'sent', sentAt: '2026-10-20T10:00:00.000Z', expiresAt: FUTURE.toISOString(), canSign: true },
-      { id: 'r-2', name: 'DPA 2026', templateName: 'BAA', status: 'viewed', sentAt: null, expiresAt: FUTURE.toISOString(), canSign: false },
+      { id: 'r-2', name: 'BAA', templateName: 'BAA', status: 'viewed', sentAt: null, expiresAt: FUTURE.toISOString(), canSign: false },
     ]);
+  });
+
+  it('#10294: the staff-internal label never reaches the portal payload — the customer sees the template name', async () => {
+    h.rows.set(agreementRequests, [
+      { id: REQ, status: 'sent', label: 'Portal sign 10-26', templateVersionId: VERSION, sentAt: null, expiresAt: FUTURE },
+    ]);
+    h.rows.set(contractTemplateVersions, [{ versionId: VERSION, versionNumber: 1, templateName: 'QA Master Services Agreement' }]);
+    const res = await app().request('/agreements');
+    const raw = await res.text();
+    expect(raw).not.toContain('Portal sign 10-26');
+    const [item] = JSON.parse(raw).data;
+    expect(item.name).toBe('QA Master Services Agreement');
+    expect(item).not.toHaveProperty('label');
   });
 
   it('matches recipients on the NORMALIZED session email', async () => {
@@ -211,10 +228,14 @@ describe('GET /agreements/:id', () => {
     expect(res.status).toBe(200);
     const { data } = await res.json();
     expect(data.canSign).toBe(true);
-    expect(data.request).toMatchObject({ id: REQ, status: 'viewed', label: 'HIPAA BAA', coverMessage: 'Please sign' });
+    expect(data.request).toMatchObject({ id: REQ, status: 'viewed', coverMessage: 'Please sign' });
+    // #10294: the label is staff-internal; the customer sees the template name.
+    expect(data.request).not.toHaveProperty('label');
+    expect(JSON.stringify(data)).not.toContain('HIPAA BAA');
     expect(data.html).toContain('Acme Dental');
     expect(data.parties).toEqual({ partnerName: 'Best MSP', orgName: 'Acme Dental' });
     expect(data.signedAgreementId).toBeNull();
+    expect(data.timezone).toBe('America/Denver'); // #10291
     expect(m.markViewed).toHaveBeenCalledWith(REQ, ORG, expect.any(Date));
   });
 
@@ -259,6 +280,16 @@ describe('GET /agreements/:id', () => {
     expect(data.request).toMatchObject({ status: 'signed', signedAt: '2026-10-21T09:00:00.000Z' });
     expect(data.signedAgreementId).toBe(DOC);
     expect(m.markViewed).not.toHaveBeenCalled();
+  });
+
+  it('#10294: a signed request names the template as it was at signing, not the renamed live template', async () => {
+    h.rows.set(agreementRequests, [request({ status: 'signed', signedAt: new Date('2026-10-21T09:00:00Z'), expiresAt: PAST })]);
+    h.rows.set(agreementRequestRecipients, [{ requestId: REQ }]);
+    h.rows.set(contractDocuments, [{ id: DOC, templateNameSnapshot: 'Business Associate Agreement' }]);
+    m.renderData.mockResolvedValue(authoredRender({ templateName: 'BAA (renamed)' }));
+    const { data } = await (await app().request(`/agreements/${REQ}`)).json();
+    expect(data.template.name).toBe('Business Associate Agreement');
+    expect(JSON.stringify(data)).not.toContain('renamed');
   });
 
   it('a signed request with no signed-agreement row is captured as an integrity fault (page still renders)', async () => {

@@ -1,0 +1,48 @@
+{"Time":"2026-10-30T08:01:10.916656-06:00","Action":"start","Package":"github.com/breeze-rmm/agent/sessionbroker"}
+{"Time":"2026-10-30T08:01:10.917727-06:00","Action":"start","Package":"github.com/breeze-rmm/agent/okpkg"}
+{"Time":"2026-10-30T08:01:11.286777-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_Passes"}
+{"Time":"2026-10-30T08:01:11.286929-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_Passes","Output":"=== RUN   TestSessionManager_Passes\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.287032-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_Passes","Output":"--- PASS: TestSessionManager_Passes (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.287047-06:00","Action":"pass","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_Passes","Elapsed":0}
+{"Time":"2026-10-30T08:01:11.287059-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_AddRemoteICECandidateAfterAnswer"}
+{"Time":"2026-10-30T08:01:11.287066-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_AddRemoteICECandidateAfterAnswer","Output":"=== RUN   TestSessionManager_AddRemoteICECandidateAfterAnswer\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.287081-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_AddRemoteICECandidateAfterAnswer","Output":"    sb_test.go:8: timed out waiting for ICE candidate\n"}
+{"Time":"2026-10-30T08:01:11.287099-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_AddRemoteICECandidateAfterAnswer","Output":"--- FAIL: TestSessionManager_AddRemoteICECandidateAfterAnswer (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.287105-06:00","Action":"fail","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_AddRemoteICECandidateAfterAnswer","Elapsed":0}
+{"Time":"2026-10-30T08:01:11.287113-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_Subtests"}
+{"Time":"2026-10-30T08:01:11.287117-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_Subtests","Output":"=== RUN   TestSessionManager_Subtests\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.287133-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_Subtests/passes"}
+{"Time":"2026-10-30T08:01:11.287139-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_Subtests/passes","Output":"=== RUN   TestSessionManager_Subtests/passes\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.287146-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_Subtests/fails"}
+{"Time":"2026-10-30T08:01:11.287153-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_Subtests/fails","Output":"=== RUN   TestSessionManager_Subtests/fails\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.28716-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_Subtests/fails","Output":"    sb_test.go:13: boom\n"}
+{"Time":"2026-10-30T08:01:11.287174-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_Subtests","Output":"--- FAIL: TestSessionManager_Subtests (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.287185-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_Subtests/passes","Output":"    --- PASS: TestSessionManager_Subtests/passes (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.28719-06:00","Action":"pass","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_Subtests/passes","Elapsed":0}
+{"Time":"2026-10-30T08:01:11.287225-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_Subtests/fails","Output":"    --- FAIL: TestSessionManager_Subtests/fails (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.287228-06:00","Action":"fail","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_Subtests/fails","Elapsed":0}
+{"Time":"2026-10-30T08:01:11.287232-06:00","Action":"fail","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_Subtests","Elapsed":0}
+{"Time":"2026-10-30T08:01:11.287234-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_AllSubtestsPass"}
+{"Time":"2026-10-30T08:01:11.287238-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_AllSubtestsPass","Output":"=== RUN   TestSessionManager_AllSubtestsPass\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.287242-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_AllSubtestsPass/a"}
+{"Time":"2026-10-30T08:01:11.287246-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_AllSubtestsPass/a","Output":"=== RUN   TestSessionManager_AllSubtestsPass/a\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.28725-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_AllSubtestsPass/b"}
+{"Time":"2026-10-30T08:01:11.287253-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_AllSubtestsPass/b","Output":"=== RUN   TestSessionManager_AllSubtestsPass/b\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.287257-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_AllSubtestsPass","Output":"--- PASS: TestSessionManager_AllSubtestsPass (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.28726-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_AllSubtestsPass/a","Output":"    --- PASS: TestSessionManager_AllSubtestsPass/a (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.287264-06:00","Action":"pass","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_AllSubtestsPass/a","Elapsed":0}
+{"Time":"2026-10-30T08:01:11.287267-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_AllSubtestsPass/b","Output":"    --- PASS: TestSessionManager_AllSubtestsPass/b (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.287271-06:00","Action":"pass","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_AllSubtestsPass/b","Elapsed":0}
+{"Time":"2026-10-30T08:01:11.287274-06:00","Action":"pass","Package":"github.com/breeze-rmm/agent/sessionbroker","Test":"TestSessionManager_AllSubtestsPass","Elapsed":0}
+{"Time":"2026-10-30T08:01:11.28728-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.287427-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Output":"coverage: [no statements]\n"}
+{"Time":"2026-10-30T08:01:11.288082-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/sessionbroker","Output":"FAIL\tgithub.com/breeze-rmm/agent/sessionbroker\t0.371s\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.288106-06:00","Action":"fail","Package":"github.com/breeze-rmm/agent/sessionbroker","Elapsed":0.371}
+{"Time":"2026-10-30T08:01:11.357523-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/okpkg","Test":"TestOK"}
+{"Time":"2026-10-30T08:01:11.357564-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/okpkg","Test":"TestOK","Output":"=== RUN   TestOK\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.35761-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/okpkg","Test":"TestOK","Output":"--- PASS: TestOK (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.35763-06:00","Action":"pass","Package":"github.com/breeze-rmm/agent/okpkg","Test":"TestOK","Elapsed":0}
+{"Time":"2026-10-30T08:01:11.357636-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/okpkg","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:01:11.358107-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/okpkg","Output":"coverage: [no statements]\n"}
+{"Time":"2026-10-30T08:01:11.358733-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/okpkg","Output":"ok  \tgithub.com/breeze-rmm/agent/okpkg\t0.441s\tcoverage: [no statements]\n"}
+{"Time":"2026-10-30T08:01:11.361226-06:00","Action":"pass","Package":"github.com/breeze-rmm/agent/okpkg","Elapsed":0.444}

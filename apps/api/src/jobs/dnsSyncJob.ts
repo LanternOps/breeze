@@ -25,6 +25,7 @@ import {
   type DnsEventSliceTruncation,
   type DnsEventSliceWalkEnd
 } from '../services/dnsProviders';
+import { isStoredDnsAction } from '../services/dnsProviders/syncScope';
 import { getBullMQConnection } from '../services/redis';
 import { bullmqJobId, isReusableState } from '../services/bullmqUtils';
 import { decryptForColumn } from '../services/secretCrypto';
@@ -514,6 +515,10 @@ async function persistDnsEventSync(params: {
     if (!domain) return [];
 
     const action = normalizeAction(event.action);
+    // #10054 — allowed queries are stored only when the integration opted in.
+    // Every provider reports an action per event (Cloudflare per sampled
+    // group), so this is safe to apply before insert for all of them.
+    if (!isStoredDnsAction(action, config)) return [];
     const category = normalizeThreatCategory(event.category);
 
     if (categoriesFilter.size > 0) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { encodePatchesHash, mergePatchesHash, parsePatchesHash } from './patchesHash';
+import { encodePatchesHash, mergePatchesHash, orgAgnosticPatchesHash, parsePatchesHash } from './patchesHash';
 
 describe('parsePatchesHash', () => {
   it('reads the compliance status with or without the tab token', () => {
@@ -52,5 +52,40 @@ describe('mergePatchesHash', () => {
   it('removes status for all', () => {
     expect(mergePatchesHash('#compliance&status=failed', { status: 'all' })).toBe('#compliance');
     expect(mergePatchesHash('#status=failed', { status: 'all' })).toBe('');
+  });
+});
+
+// #10083: what the Patches page keeps across a header org switch — the tab and
+// the compliance status filter, never a patch id or a key it does not own.
+describe('orgAgnosticPatchesHash', () => {
+  it.each([
+    ['#compliance&status=critical', 'compliance&status=critical'],
+    ['status=critical', 'compliance&status=critical'],
+    ['#compliance', 'compliance'],
+    ['#rings', 'rings'],
+    ['#jobs', 'jobs'],
+    ['#patches', 'patches'],
+  ])('keeps %s as %s', (hash, kept) => {
+    expect(orgAgnosticPatchesHash(hash)).toBe(kept);
+  });
+
+  it('drops the patch id a details drawer selected', () => {
+    expect(orgAgnosticPatchesHash('#patches/3f0c2b7e-1111-4111-8111-111111111111')).toBe('patches');
+  });
+
+  it('drops keys it does not own and a status it does not know', () => {
+    expect(orgAgnosticPatchesHash('#compliance&status=failed&device=dev-1')).toBe('compliance&status=failed');
+    expect(orgAgnosticPatchesHash('#compliance&status=bogus')).toBe('compliance');
+  });
+
+  it('keeps the status only on the compliance tab, where it is a filter', () => {
+    expect(orgAgnosticPatchesHash('#patches/abc-123&status=failed')).toBe('patches');
+    expect(orgAgnosticPatchesHash('#rings&status=failed')).toBe('rings');
+  });
+
+  it('keeps nothing for an empty or unrecognised hash', () => {
+    expect(orgAgnosticPatchesHash('')).toBeNull();
+    expect(orgAgnosticPatchesHash('#')).toBeNull();
+    expect(orgAgnosticPatchesHash('#dev-1')).toBeNull();
   });
 });

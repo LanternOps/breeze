@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   WORKLOAD_COLLECTIONS,
   WORKLOAD_DETECTIONS,
+  WORKLOAD_IMAGE_PROVENANCES,
   WORKLOAD_INVENTORY_DEFAULT_INTERVAL_MINUTES,
   WORKLOAD_INVENTORY_MAX_INTERVAL_MINUTES,
   WORKLOAD_INVENTORY_MIN_INTERVAL_MINUTES,
@@ -56,6 +57,13 @@ export const workloadReportItemSchema = z
     memoryMb: nullableInt(100_000_000),
     startedAt: nullableTimestamp,
     runtimeCreatedAt: nullableTimestamp,
+    // #9067. Optional on the wire: agents that predate it never send the key
+    // (they would be rejected by a server that predates it, too), and the
+    // agent sends it only to servers that advertise accepts_image_provenance.
+    imageProvenance: z
+      .enum(WORKLOAD_IMAGE_PROVENANCES)
+      .nullish()
+      .transform((value) => value ?? null),
   })
   .strict();
 export type WorkloadReportItem = z.infer<typeof workloadReportItemSchema>;

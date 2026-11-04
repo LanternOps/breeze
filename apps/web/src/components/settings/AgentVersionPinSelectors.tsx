@@ -8,13 +8,20 @@ import '@/lib/i18n';
  * defaults tab and the org defaults editor so both render identical controls.
  *
  * A pin value is a registered version string or the 'latest' sentinel (= no pin
- * → track the globally promoted latest). The empty select option maps to
- * 'latest'.
+ * → track the globally promoted latest).
  *
- * Semantics: INHERIT-WITH-OVERRIDE. A partner pin is an inherited default; an
- * org may set its own pin (including 'latest') to override it. The selector
- * always edits the CURRENT level's own value; the caption + empty-option label
- * explain the effective source (global latest / partner default / this level).
+ * Semantics: INHERIT-WITH-OVERRIDE, keyed on PRESENCE
+ * (`resolveInheritedAgentVersionPins` in @breeze/shared). A partner pin is an
+ * inherited default. An org with no key for a component inherits it; an org
+ * that stores its own value, including 'latest', overrides it. So the org view
+ * offers two distinct options (issue #10584):
+ *   - '' (empty)  → "Inherit partner default": REMOVES the org's key.
+ *   - 'latest'    → "Always latest promoted, ignore partner pin": saves 'latest'.
+ * The partner view has nothing to inherit from, so its empty option saves the
+ * 'latest' sentinel and 'latest' is displayed as that empty option.
+ *
+ * The selector always edits the CURRENT level's own value; the caption + option
+ * labels explain the effective source (global latest / partner default / this level).
  */
 
 export type PinnableVersions = {
@@ -44,6 +51,9 @@ type Props = {
 
 const COMPONENTS = ['agent', 'watchdog'] as const;
 
+/** Select value of the org view's explicit "latest, ignore partner pin" option. */
+const LATEST_OVERRIDE = 'latest';
+
 /** '' | 'latest' | undefined → no pin. Otherwise the concrete version. */
 function normalize(raw: string | undefined): string | null {
   if (!raw) return null;
@@ -64,8 +74,14 @@ export default function AgentVersionPinSelectors({
   const { t } = useTranslation('settings');
   const idPrefix = useId();
   const setPin = (key: 'agent' | 'watchdog', raw: string) => {
-    // Empty select → 'latest' sentinel so the saved object is explicit (and, for
-    // an org, deliberately overrides an inherited partner pin back to latest).
+    if (raw === '' && context === 'organization') {
+      // Inherit: drop the org's own key so the partner default applies again.
+      // Storing 'latest' here would override the partner pin (#10584).
+      const { [key]: _removed, ...rest } = value;
+      onChange(rest);
+      return;
+    }
+    // Partner: the empty option is the explicit 'latest' sentinel.
     onChange({ ...value, [key]: raw === '' ? 'latest' : raw });
   };
 
@@ -85,21 +101,39 @@ export default function AgentVersionPinSelectors({
         {COMPONENTS.map((key) => {
           const options = pinnable?.components?.[key]?.versions ?? [];
           const promoted = pinnable?.components?.[key]?.promoted?.[0];
+          const isOrg = context === 'organization';
           const ownVal = normalize(value[key]);
-          const inheritedVal = context === 'organization' ? normalize(inheritedPins?.[key]) : null;
-          const selectValue = value[key] ?? '';
+          // The org stores its own value for this component (presence, as the
+          // resolver keys on). A set-but-normalizes-to-null value ('latest') is
+          // an explicit "track latest, ignore the partner pin" override.
+          const hasOwn = value[key] !== undefined;
+          const ownLatest = isOrg && hasOwn && ownVal == null;
+          const inheritedVal = isOrg ? normalize(inheritedPins?.[key]) : null;
+          // 'latest' is a sentinel, never a version: show it as its own option
+          // (org) or as the empty option (partner), not as an unregistered pin.
+          const selectValue = ownVal ?? (ownLatest ? LATEST_OVERRIDE : '');
 
-          // Empty-option label: for an org that hasn't set its own pin, the empty
-          // state means "inherit the partner default", so surface that value.
-          const emptyLabel =
-            inheritedVal != null
+          const latestLabel = promoted
+            ? t('agentVersionPins.latestVersion', { version: promoted })
+            : t('agentVersionPins.latest');
+          // Empty-option label. Org: "inherit the partner default", surfacing the
+          // inherited value (or global latest when the partner has no pin).
+          // Partner: the global latest it resolves to.
+          const emptyLabel = isOrg
+            ? inheritedVal != null
               ? t('agentVersionPins.inheritDefault', { version: inheritedVal })
-              : promoted
-                ? t('agentVersionPins.latestVersion', { version: promoted })
-                : t('agentVersionPins.latest');
+              : t('agentVersionPins.inheritDefaultLatest')
+            : latestLabel;
+          const latestOverrideLabel = promoted
+            ? t('agentVersionPins.latestOverrideVersion', { version: promoted })
+            : t('agentVersionPins.latestOverride');
 
           let caption: string;
-          if (ownVal) {
+          if (ownLatest) {
+            caption = inheritedVal
+              ? t('agentVersionPins.overridesDefault', { version: inheritedVal })
+              : t('agentVersionPins.latestOrganization');
+          } else if (ownVal) {
             if (context === 'partner') {
               caption = t('agentVersionPins.pinnedAll');
             } else {
@@ -128,6 +162,7 @@ export default function AgentVersionPinSelectors({
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm"
               >
                 <option value="">{emptyLabel}</option>
+                {isOrg && <option value={LATEST_OVERRIDE}>{latestOverrideLabel}</option>}
                 {options.map((v) => (
                   <option key={v} value={v}>
                     {v}
@@ -135,7 +170,7 @@ export default function AgentVersionPinSelectors({
                 ))}
                 {/* Preserve a stored pin whose build is no longer registered so a
                     save doesn't silently drop it. */}
-                {selectValue && !options.includes(selectValue) && (
+                {ownVal && !options.includes(ownVal) && (
                   <option value={selectValue}>{t('agentVersionPins.unregistered', { version: selectValue })}</option>
                 )}
               </select>

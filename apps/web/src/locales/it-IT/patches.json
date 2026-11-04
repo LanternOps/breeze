@@ -420,6 +420,7 @@
     "emptyRingSeverityNotice": "Nessun dispositivo in questo anello. La gravità segnalata dai dispositivi compare dopo l’assegnazione dei dispositivi, quindi fino ad allora la maggior parte delle patch risulta Non valutata.",
     "shiftedNotice": "Vengono mostrate {{shown}} patch su {{total}}: il catalogo è cambiato durante il caricamento. Ricarica per vedere il resto.",
     "ringDelete": {
+      "messageNone": "Nessun criterio usa questo anello. Le sue regole di approvazione e le impostazioni di pianificazione verranno eliminate e non potranno essere ripristinate.",
       "title": "Eliminare {{name}}?",
       "messageOne": "1 criterio smetterà di applicare le patch pianificate finché non sceglierai un altro anello.",
       "messageMany": "{{count}} criteri smetteranno di applicare le patch pianificate finché non sceglierai un altro anello.",
@@ -484,6 +485,11 @@
     "rebootRequired": "Richiesto",
     "rebootDone": "Completato",
     "rebootNotRequired": "—",
+    "skipReasons": {
+      "ring_deleted": "Annullato prima dell’invio: l’anello di aggiornamento è stato eliminato.",
+      "ring_disabled": "Annullato prima dell’invio: l’anello di aggiornamento è stato disattivato.",
+      "ring_unavailable": "Saltato: l’anello di aggiornamento è stato eliminato o disattivato prima dell’invio a questo dispositivo."
+    },
     "errors": {
       "load": "Impossibile caricare il job di patch"
     }
@@ -643,7 +649,11 @@
     "noMatches": "Nessuna corrispondenza.",
     "orEnterAPackageIDManually": "Oppure inserisci manualmente un ID pacchetto",
     "removeRuleFor": "Rimuovi regola per {{application}}",
-    "scopeNote": "Queste regole si applicano a ogni dispositivo il cui criterio di configurazione è collegato a questo anello."
+    "scopeNote": "Queste regole si applicano a ogni dispositivo il cui criterio di configurazione è collegato a questo anello.",
+    "linuxPackage": "Pacchetto Linux",
+    "appPackage": "Pacchetto app",
+    "manualRuleType": "Tipo di regola",
+    "linuxPinHint": "Inserisci la versione completa dall’elenco delle patch, inclusa l’eventuale epoch (es. 5:24.0.7-1)."
   },
   "patchDetails": {
     "unknown": "Sconosciuto",

@@ -734,16 +734,9 @@ export default function TimesheetPage() {
                                 </span>
                               )}
                             </span>
-                            {/* Rate in its stamped currency only — a rate without a currency
-                                cannot exist server-side, and guessing USD would relabel money. */}
-                            <span
-                              className="text-sm tabular-nums text-muted-foreground"
-                              data-testid={`timesheet-rate-${entry.id}`}
-                            >
-                              {entry.hourlyRate != null && entry.currencyCode != null
-                                ? formatMoney(entry.hourlyRate, entry.currencyCode)
-                                : t('tickets:ticketTimeBilling.noAmount')}
-                            </span>
+                            {/* No separate rate figure (#9957): the outcome above already reads
+                                "€100.00/h" in the stamped currency and the labour line repeats it
+                                in "h × rate = amount"; a bare rate after the amount read as money. */}
                             <button
                               type="button"
                               onClick={() => startEdit(entry)}

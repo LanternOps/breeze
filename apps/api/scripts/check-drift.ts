@@ -33,16 +33,27 @@
 //   - missing IF EXISTS / IF NOT EXISTS guards (non-idempotent migrations)
 //   - migration files that are skipped by the runner's filename regex
 //
+// Namespaced `<extension>/<file>` ledger rows are checked for their file in
+// the built-in's migrations directory; only a row whose file is gone fails
+// (strict by default, #2424 / #10357).
+//
+// CI runs this in the `check-migrations` job, right after that job migrates an
+// empty Postgres (#10357). Exit codes: 0 clean, 1 drift, 2 no DB / crash.
+//
 // Usage.
 //   pnpm test:docker:up
 //   DATABASE_URL=postgresql://breeze_test:breeze_test@localhost:5433/breeze_test \
 //     pnpm db:check-drift
 
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
-import { partitionLedgerRows, planMigrations } from '../src/db/autoMigrate';
+import {
+  classifyExtensionLedgerRows,
+  partitionLedgerRows,
+  planMigrations,
+} from '../src/db/autoMigrate';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectDir = resolvePath(scriptDir, '..');
@@ -58,6 +69,34 @@ if (!process.env.DATABASE_URL) {
   );
   console.error('  DATABASE_URL=... pnpm db:check-drift');
   process.exit(2);
+}
+
+/**
+ * Resolve `<extension>/<file>` to the built-in's migrations directory exactly
+ * as the boot path does (builtinExtensions.ts: `resolveBuiltinRoot(packageDir)`
+ * + `manifest.migrationsDir`). Imported lazily: the registry pulls in the
+ * built-in modules, which a DB with no extension rows (CI) never needs.
+ * An unknown extension name, or a built-in whose manifest cannot be read, has
+ * no file on disk.
+ */
+async function builtinExtensionFileExists(): Promise<
+  (extension: string, filename: string) => boolean
+> {
+  const { BUILTINS, resolveBuiltinRoot } = await import('../src/extensions/builtinRegistry');
+  return (extension, filename) => {
+    const builtin = BUILTINS.find((candidate) => candidate.name === extension);
+    if (!builtin) return false;
+    let migrationsDir: string;
+    try {
+      migrationsDir = builtin.manifest.migrationsDir;
+    } catch (err) {
+      console.warn(
+        `[check-drift] WARN: built-in "${extension}" manifest unreadable: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return false;
+    }
+    return existsSync(join(resolveBuiltinRoot(builtin.packageDir), migrationsDir, filename));
+  };
 }
 
 async function main() {
@@ -88,13 +127,25 @@ async function main() {
     }
 
     const expected = planMigrations(onDisk).map((migration) => migration.ledgerName);
-    const { verify: ledgerVerifiable, skip: absentExtensionRows } = partitionLedgerRows(
+    const { verify: ledgerVerifiable, skip: extensionRows } = partitionLedgerRows(
       ledger.map((row) => row.filename),
     );
+    // #10357: a namespaced row is only "absent" when its file is really gone.
+    // Rows for a built-in whose migrations are still on disk are fine.
+    const { present: presentExtensionRows, absent: absentExtensionRows } =
+      classifyExtensionLedgerRows(
+        extensionRows,
+        extensionRows.length > 0 ? await builtinExtensionFileExists() : () => false,
+      );
 
+    if (presentExtensionRows.length > 0) {
+      console.log(
+        `[check-drift] ${presentExtensionRows.length} extension ledger row(s) have their migration file on disk`,
+      );
+    }
     for (const row of absentExtensionRows) {
       console.warn(
-        `[check-drift] WARN: ledger row "${row}" belongs to an extension not present on disk`,
+        `[check-drift] WARN: ledger row "${row}" has no migration file on disk (extension removed, or its migration was deleted)`,
       );
     }
     // Strict by default (#2424): an absent-extension ledger row usually means

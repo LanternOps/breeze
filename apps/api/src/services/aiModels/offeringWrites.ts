@@ -15,8 +15,8 @@
  * All gates reuse W03's rule table via checkEnableEligibility, and every DB
  * failure goes through toRegistryWriteError.
  */
-import { and, eq, isNull, or, sql } from 'drizzle-orm';
-import { CONFIGURABLE_AI_SURFACES, type AiSurface, type OfferingDetailsPatch, type OfferingOptions } from '@breeze/shared';
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { isConfigurableAiSurface, type AiSurface, type OfferingDetailsPatch, type OfferingOptions } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiAgents, aiModelAssignments, partnerAiConnections, partnerAiModels } from '../../db/schema';
 import { isHosted } from '../../config/env';
@@ -79,9 +79,9 @@ export async function listOfferingDefaultUses(partnerId: string, offeringId: str
       eq(aiModelAssignments.offeringPartnerId, partnerId),
       eq(aiModelAssignments.defaultOfferingId, offeringId),
     ));
-  // Platform-only surfaces (patch_test) are not partner-manageable: never block on them (#9455).
+  // Platform-only surfaces (patch_test) are not partner-manageable: never block on them (#9455, #9496).
   return rows
-    .filter((r) => (CONFIGURABLE_AI_SURFACES as readonly string[]).includes(r.surface))
+    .filter((r) => isConfigurableAiSurface(r.surface))
     .map((r) => ({
       surface: r.surface as AiSurface,
       level: r.orgId === null ? 'partner' as const : 'org' as const,
@@ -412,6 +412,11 @@ export async function removeOffering(input: { partnerId: string; offeringId: str
     if (current.connectionId) await assertNotEnvManagedConnection(input.partnerId, current.connectionId);
 
     const id = input.offeringId;
+    const referencesOffering = or(
+      eq(aiModelAssignments.defaultOfferingId, id),
+      sql`${id}::uuid = ANY(${aiModelAssignments.fallbackOfferingIds})`,
+      sql`${id}::uuid = ANY(${aiModelAssignments.permittedOfferingIds})`,
+    );
     const assignments = await db
       .select({
         surface: aiModelAssignments.surface,
@@ -421,16 +426,13 @@ export async function removeOffering(input: { partnerId: string; offeringId: str
         permittedOfferingIds: aiModelAssignments.permittedOfferingIds,
       })
       .from(aiModelAssignments)
-      .where(and(
-        eq(aiModelAssignments.offeringPartnerId, input.partnerId),
-        or(
-          eq(aiModelAssignments.defaultOfferingId, id),
-          sql`${id}::uuid = ANY(${aiModelAssignments.fallbackOfferingIds})`,
-          sql`${id}::uuid = ANY(${aiModelAssignments.permittedOfferingIds})`,
-        ),
-      ));
+      .where(and(eq(aiModelAssignments.offeringPartnerId, input.partnerId), referencesOffering));
     const inUse: OfferingReference[] = [];
+    const inertSurfaces = new Set<string>();
     for (const a of assignments) {
+      // Platform-only surfaces (patch_test): the resolver never reads the row and
+      // no UI row manages it, so it must not block the removal (#9496).
+      if (!isConfigurableAiSurface(a.surface)) { inertSurfaces.add(a.surface); continue; }
       const via = a.defaultOfferingId === id ? 'default'
         : a.fallbackOfferingIds?.includes(id) ? 'fallback' : 'permitted';
       inUse.push({ surface: a.surface as AiSurface, level: a.orgId === null ? 'partner' : 'org', orgId: a.orgId, via });
@@ -455,6 +457,18 @@ export async function removeOffering(input: { partnerId: string; offeringId: str
         'offering_in_use', 409,
         { inUse, refusalFallbackFor: fallbackFor.map((r) => r.id), agentKinds: agents.map((r) => r.kind) },
       );
+    }
+    if (inertSurfaces.size > 0) {
+      // The default FK has no cascade, and a fallback/permitted id would dangle:
+      // drop those inert rows in this same locked transaction (#9496).
+      await db
+        .delete(aiModelAssignments)
+        .where(and(
+          eq(aiModelAssignments.offeringPartnerId, input.partnerId),
+          inArray(aiModelAssignments.surface, [...inertSurfaces] as AiSurface[]),
+          referencesOffering,
+        ))
+        .returning({ id: aiModelAssignments.id });
     }
     const [deleted] = await db
       .delete(partnerAiModels)

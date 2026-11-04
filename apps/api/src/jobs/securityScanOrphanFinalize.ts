@@ -27,7 +27,10 @@
  * that a policy-less agent scanned with no deadline, and a scan dispatched into
  * the freed slot could overlap one still running (#10057).
  *
- * Both are provisional in the same way as the sweep finalize: a late agent
+ *   3. (#10057 gap 2) A Scan now still waiting for a slot (`queued`, no
+ *      command) past its `queue_expires_at` → `expired`.
+ *
+ * Rules 1 and 2 are provisional in the same way as the sweep finalize: a late agent
  * result still lands, because the result handler (routes/agents/helpers.ts
  * `handleSecurityCommandResult`) overwrites the scan status.
  *
@@ -76,11 +79,24 @@ export async function finalizeOrphanedDeviceScans(now: Date): Promise<OrphanFina
     RETURNING s.id
   `)) as unknown as Array<{ id: string }>;
 
-  if (undelivered.length + stale.length > 0) {
+  // #10057 gap 2: a Scan now that waited for a slot past its queue expiry and
+  // was never dispatched. The claim expires it too when its job runs; this
+  // covers a row whose job was lost.
+  const queueExpired = (await db.execute(sql`
+    UPDATE security_scans SET status = 'expired', completed_at = ${now.toISOString()}
+     WHERE sweep_id IS NULL
+       AND status = 'queued'
+       AND command_id IS NULL
+       AND queue_expires_at <= ${now.toISOString()}
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+
+  const expired = [...undelivered, ...queueExpired];
+  if (expired.length + stale.length > 0) {
     console.warn('[securityScanOrphanFinalize] finalized scheduled/manual scan(s) the agent will not answer', {
-      expired: undelivered.slice(0, 20).map((r) => r.id),
+      expired: expired.slice(0, 20).map((r) => r.id),
       failed: stale.slice(0, 20).map((r) => r.id),
     });
   }
-  return { expired: undelivered.length, failed: stale.length };
+  return { expired: expired.length, failed: stale.length };
 }

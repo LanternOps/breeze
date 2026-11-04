@@ -420,6 +420,7 @@
     "emptyRingSeverityNotice": "No devices in this ring yet. Device-reported severity appears once devices are assigned, so most patches read Unrated until then.",
     "shiftedNotice": "Showing {{shown}} of {{total}} patches — the catalog changed while it was loading. Reload to see the rest.",
     "ringDelete": {
+      "messageNone": "No policies use this ring. Its approval rules and schedule settings will be deleted and cannot be restored.",
       "title": "Delete {{name}}?",
       "messageOne": "1 policy will stop scheduled patching until you pick another ring.",
       "messageMany": "{{count}} policies will stop scheduled patching until you pick another ring.",
@@ -484,6 +485,11 @@
     "rebootRequired": "Required",
     "rebootDone": "Completed",
     "rebootNotRequired": "—",
+    "skipReasons": {
+      "ring_deleted": "Cancelled before dispatch: the update ring was deleted.",
+      "ring_disabled": "Cancelled before dispatch: the update ring was disabled.",
+      "ring_unavailable": "Skipped: the update ring was deleted or disabled before this device was dispatched."
+    },
     "errors": {
       "load": "Failed to load patch job"
     }
@@ -643,7 +649,11 @@
     "noMatches": "No matches.",
     "orEnterAPackageIDManually": "Or enter a package ID manually",
     "removeRuleFor": "Remove rule for {{application}}",
-    "scopeNote": "These rules apply to every device whose configuration policy links this ring."
+    "scopeNote": "These rules apply to every device whose configuration policy links this ring.",
+    "linuxPackage": "Linux package",
+    "appPackage": "App package",
+    "manualRuleType": "Rule type",
+    "linuxPinHint": "Enter the full version from the patch list, including any epoch (e.g. 5:24.0.7-1)."
   },
   "patchDetails": {
     "unknown": "Unknown",

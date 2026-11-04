@@ -13,7 +13,17 @@ vi.mock('../db', () => ({
   withDbAccessContext: vi.fn(async (_c: unknown, fn: () => Promise<unknown>) => fn()),
 }));
 vi.mock('./aiTools', () => ({ verifyDeviceAccess: vi.fn(async () => ({ device: { id: 'dev-1' } })) }));
-vi.mock('./aiToolDbContext', () => ({ inToolDbPhase: vi.fn((_auth: unknown, fn: () => Promise<unknown>) => fn()) }));
+const phase = vi.hoisted(() => ({ open: false }));
+vi.mock('./aiToolDbContext', () => ({
+  inToolDbPhase: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => {
+    phase.open = true;
+    try {
+      return await fn();
+    } finally {
+      phase.open = false;
+    }
+  }),
+}));
 vi.mock('./securityPosture', () => ({
   getLatestSecurityPostureForDevice: vi.fn(),
   listLatestSecurityPosture: vi.fn(),
@@ -32,7 +42,6 @@ vi.mock('./sensitiveDataKeys', () => ({ resolveSensitiveDataKeySelection: vi.fn(
 vi.mock('./securityScanStart', () => ({ startDeviceScan: vi.fn() }));
 
 import { aiExecuteCommand } from './aiDispatch';
-import { inToolDbPhase } from './aiToolDbContext';
 import { startDeviceScan } from './securityScanStart';
 import { registerSecurityTools } from './aiToolsSecurity';
 import type { AiTool } from './aiTools';
@@ -52,15 +61,23 @@ beforeEach(() => { vi.clearAllMocks(); });
 
 describe('security_scan scan → startDeviceScan (#6268)', () => {
   it('creates a security_scans row through startDeviceScan with aiOrigin and returns its id', async () => {
-    vi.mocked(startDeviceScan).mockResolvedValue({
-      ok: true,
-      scan: { id: 'scan-1', deviceId: DEVICE, deviceName: 'WS-01', orgId: 'org-1', scanType: 'quick', status: 'queued', startedAt: '2026-10-24T00:00:00.000Z' },
+    let calledInPhase: boolean | undefined;
+    vi.mocked(startDeviceScan).mockImplementation(async () => {
+      calledInPhase = phase.open;
+      return {
+        ok: true,
+        scan: {
+          id: 'scan-1', deviceId: DEVICE, deviceName: 'WS-01', orgId: 'org-1', scanType: 'quick', status: 'queued',
+          startedAt: '2026-10-24T00:00:00.000Z', queueExpiresAt: '2026-10-25T00:00:00.000Z',
+        },
+      };
     });
     const out = JSON.parse(await tool().handler({ action: 'scan', deviceId: DEVICE }, auth));
     expect(out).toEqual({ scanId: 'scan-1', status: 'queued', deviceName: 'WS-01', scanType: 'quick' });
     expect(startDeviceScan).toHaveBeenCalledWith(auth, { deviceId: DEVICE, scanType: 'quick', mfaSatisfied: false, aiOrigin });
-    // In the caller's DB context (joined when held, opened when not), never a raw command.
-    expect(inToolDbPhase).toHaveBeenCalled();
+    // #10057 gap 2: startDeviceScan owns its caller-scoped transaction (the row
+    // must commit before its claim job is enqueued), so the handler opens none.
+    expect(calledInPhase).toBe(false);
     expect(aiExecuteCommand).not.toHaveBeenCalled();
   });
 
@@ -71,8 +88,8 @@ describe('security_scan scan → startDeviceScan (#6268)', () => {
     expect(aiExecuteCommand).not.toHaveBeenCalled();
   });
 
-  it('is no longer a self-managed (device-waiting) action; the others still are', () => {
-    expect(tool().selfManagedDbContext).toEqual(['status', 'quarantine', 'remove', 'restore']);
+  it('scan is self-managed again (#10057 gap 2: the service commits its own row), without waiting on the device', () => {
+    expect(tool().selfManagedDbContext).toEqual(['scan', 'status', 'quarantine', 'remove', 'restore']);
   });
 
   it('status still dispatches through aiExecuteCommand', async () => {

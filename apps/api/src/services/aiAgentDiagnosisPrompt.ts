@@ -108,12 +108,12 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
     ],
   },
   {
-    text: 'Hardware health (server can change the defaults): RAID tier about 10 min, disk tier about 1 h (Get-PhysicalDisk, Get-StorageReliabilityCounter). Detection is cached 1 h; the Storage Spaces probe is itself a powershell Get-StoragePool, and no pools (ObjectNotFound) means zero pools, not a failure. A source failing 3 times in a row is skipped 6 h, and each later failure re-blocks it 6 h.',
+    text: 'Hardware health (server can change the defaults): RAID tier about 10 min, disk tier about 1 h (Get-PhysicalDisk, 60 s; Get-StorageReliabilityCounter run separately, 45 s; slow counters only add a warning). Detection is cached 1 h; the Storage Spaces probe is itself a powershell Get-StoragePool, and no pools (ObjectNotFound) means zero pools, not a failure. A source failing 3 times in a row is skipped 6 h, and each later failure re-blocks it 6 h.',
     anchors: [
       { file: 'internal/collectors/hwhealth/detect.go', contains: ['now.Sub(d.checked) >= time.Hour'] },
       { file: 'internal/heartbeat/heartbeat.go', contains: ['hwhealth.Config{Enabled: true, PollInterval: 10 * time.Minute, DiskHealthInterval: time.Hour}'] },
       { file: 'internal/heartbeat/hardware_health.go', contains: ['offset := int64(hash.Sum64()%20001) - 10000'] },
-      { file: 'internal/collectors/hwhealth/winpd_windows.go', contains: ['Get-PhysicalDisk', 'Get-StorageReliabilityCounter'] },
+      { file: 'internal/collectors/hwhealth/winpd.go', contains: ['winPDInventoryTimeout = 60 * time.Second', 'winPDCountersTimeout  = 45 * time.Second', 'foreach($d in @(Get-PhysicalDisk))', 'Get-StorageReliabilityCounter -ErrorAction Stop', 'fails the source only when Get-PhysicalDisk itself fails'] },
       { file: 'internal/collectors/hwhealth/storagespaces_windows.go', contains: ['Get-StoragePool -IsPrimordial $false', "-ne 'ObjectNotFound'"] },
       { file: 'internal/collectors/hwhealth/breaker.go', contains: ['if b.failures >= 3 {', 'b.retryAt = now.Add(6 * time.Hour)'] },
     ],

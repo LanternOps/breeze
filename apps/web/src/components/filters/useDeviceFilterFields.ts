@@ -4,8 +4,8 @@
 // engine synthesises `custom.<key>` fields at evaluation time; a builder given
 // only FILTER_FIELDS / DEFAULT_FILTER_FIELDS cannot offer them.
 //
-// Used by DeviceFilterBar and the device-group rule builders (CreateGroupModal,
-// DeviceGroupsPage). DeviceTargetSelector, ScriptExecutionModal and
+// Used by DeviceFilterBar and the device-group rule builder (DeviceGroupsPage).
+// DeviceTargetSelector, ScriptExecutionModal and
 // ReportBuilder still pass DEFAULT_FILTER_FIELDS.
 //
 // Definitions come from the shared custom field definitions store: consumers

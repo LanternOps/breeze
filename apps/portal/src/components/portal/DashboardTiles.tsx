@@ -336,7 +336,7 @@ export function DashboardTiles({
     <div>
       <PageHeader title="Dashboard" lede={accountHeadline(dashboard)} />
 
-      <AgreementsAwaitingSignature agreements={agreements} />
+      <AgreementsAwaitingSignature agreements={agreements} timezone={dashboard.timezone} />
 
       <AwaitingYou awaitingYou={awaitingYou} agreementsToSign={agreements.filter((a) => a.canSign).length} />
 

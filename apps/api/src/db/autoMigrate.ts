@@ -61,6 +61,44 @@ export function partitionLedgerRows(
   return { verify, skip };
 }
 
+// One `<extension>/<file>` segment: no separators, no `..`, ends in `.sql`.
+const EXTENSION_LEDGER_ROW_PATTERN = /^([A-Za-z0-9][A-Za-z0-9_-]*)\/([^/\\]+\.sql)$/;
+
+/**
+ * Split namespaced extension ledger rows (the `skip` half of
+ * {@link partitionLedgerRows}) into rows whose migration file is still on disk
+ * and rows whose file is genuinely gone (#10357).
+ *
+ * `scripts/check-drift.ts` used to report every `<extension>/<file>` row as
+ * "belongs to an extension not present on disk" and exit 1 under strict mode,
+ * even when the extension's migrations directory was right there — so it
+ * failed on every dev DB with the workspace extension. `extensionFileExists`
+ * maps a row to its file the way the extension migrator does
+ * (`ledgerName = \`${name}/${file.filename}\``). A row that does not parse as
+ * exactly one `<extension>/<file>.sql` pair, or tries to escape its directory,
+ * is never probed and counts as absent.
+ */
+export function classifyExtensionLedgerRows(
+  extensionRows: string[],
+  extensionFileExists: (extension: string, filename: string) => boolean,
+): { present: string[]; absent: string[] } {
+  const present: string[] = [];
+  const absent: string[] = [];
+
+  for (const row of extensionRows) {
+    const match = EXTENSION_LEDGER_ROW_PATTERN.exec(row);
+    const filename = match?.[2];
+    if (!match || !filename || filename.startsWith('..')) {
+      absent.push(row);
+      continue;
+    }
+    if (extensionFileExists(match[1]!, filename)) present.push(row);
+    else absent.push(row);
+  }
+
+  return { present, absent };
+}
+
 /**
  * Compute a SHA-256 hex hash of SQL content for checksum tracking.
  */

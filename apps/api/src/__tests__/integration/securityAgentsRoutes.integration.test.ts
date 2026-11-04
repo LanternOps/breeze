@@ -20,10 +20,14 @@ import {
   configPolicyFeatureLinks,
   configurationPolicies,
   softwarePolicies,
+  s1Integrations,
+  s1OrgMappings,
   softwarePolicyAudit,
   softwareVersions,
 } from '../../db/schema';
+import { encryptSecret } from '../../services/secretCrypto';
 import { repairManagedSoftwarePolicies } from '../../services/securityAgents/managedPolicyGenerator';
+import { loadManagedRuleApplicability } from '../../services/securityAgents/managedRuleApplicability';
 import { withSystemDbAccessContext } from '../../db';
 import { createAccessToken } from '../../services/jwt';
 import { ensureBuiltinPackage } from '../../services/builtinDeploymentPackages';
@@ -475,9 +479,9 @@ describe('SentinelOne: the partner-uploaded MSI gate through the real route (#69
     });
   });
 
-  it('with the MSI uploaded the rule is generated and armed; removing the MSI makes the sweep drop it (fail closed)', async () => {
+  it('with the MSI uploaded the rule is generated and armed; removing the MSI keeps the rule but makes every device installer_missing (#9247)', async () => {
     const app = buildApp();
-    const { partnerId, token, configPolicyId } = await seed(RW_EXECUTE);
+    const { orgId, partnerId, token, configPolicyId } = await seed(RW_EXECUTE);
     const { catalogId } = await ensureBuiltinPackage({ provider: 'sentinelone', partnerId });
     const versionId = await uploadS1Msi(catalogId);
 
@@ -490,24 +494,47 @@ describe('SentinelOne: the partner-uploaded MSI gate through the real route (#69
     expect(policy).toMatchObject({ isActive: true, enforceMode: true, remediationOptions: { autoInstall: true, autoUninstall: false } });
     expect(policy!.rules.software).toEqual([expect.objectContaining({ name: 'Sentinel Agent*', catalogId })]);
 
-    // The partner removes the MSI (no latest version left): the next sweep
-    // deactivates the generated policy rather than arming an install with no binary.
+    // Map the org to an S1 site with a token, so the org itself is ready and
+    // only the installer can block (the org's own blocker reads first).
+    const [integration] = await (getTestDb() as any).insert(s1Integrations).values({
+      partnerId,
+      name: 'SentinelOne (test)',
+      apiTokenEncrypted: encryptSecret('<s1-api-token>', { aad: 's1_integrations.api_token_encrypted' })!,
+      managementUrl: 'https://<s1-mgmt-url>.example.invalid',
+      isActive: true,
+      lastSyncAt: new Date(),
+    }).returning({ id: s1Integrations.id });
+    await (getTestDb() as any).insert(s1OrgMappings).values({
+      integrationId: integration.id, partnerId, orgId, s1SiteId: `site-${orgId.slice(0, 8)}`,
+      registrationToken: encryptSecret('<site-token>', { aad: 's1_org_mappings.registration_token' })!,
+    });
+    const device = { deviceId: randomUUID(), orgId, osType: 'windows' };
+    const readiness = () => withSystemDbAccessContext(async () => (await loadManagedRuleApplicability(
+      { id: policy!.id, managedByLinkId: link.id, rules: policy!.rules },
+      [device],
+    )).evaluateDevice(device.deviceId));
+
+    // The partner removes the MSI (no latest version left). The sweep KEEPS
+    // the rule (no deactivation, no generation bump); the readiness preflight
+    // the compliance pass and the remediation worker both run is what stops
+    // the install, and its reason becomes the device's coverage row.
     await (getTestDb() as any).update(softwareVersions).set({ isLatest: false }).where(eq(softwareVersions.id, versionId));
     // The compliance worker runs the sweep inside its system context.
     const repair = await withSystemDbAccessContext(() => repairManagedSoftwarePolicies());
     expect(repair.failed).toBe(0);
     const [afterSweep] = await generatedFor(link.id);
-    expect(afterSweep).toMatchObject({ id: policy!.id, isActive: false });
-    expect(afterSweep!.rules.software).toEqual([]);
-    expect(afterSweep!.approvalGeneration).toBeGreaterThan(policy!.approvalGeneration);
+    expect(afterSweep).toMatchObject({ id: policy!.id, isActive: true, approvalGeneration: policy!.approvalGeneration });
+    expect(afterSweep!.rules.software).toEqual([expect.objectContaining({ name: 'Sentinel Agent*', catalogId })]);
+    expect(await readiness()).toEqual([
+      { catalogId, vendor: 'sentinelone', result: { ok: false, reason: 'installer_missing' } },
+    ]);
 
-    // Re-uploading the MSI re-arms it on the next sweep.
+    // Re-uploading the MSI clears it: the mapped org is ready again.
     await (getTestDb() as any).update(softwareVersions).set({ isLatest: true }).where(eq(softwareVersions.id, versionId));
     await withSystemDbAccessContext(() => repairManagedSoftwarePolicies());
-    const [rearmed] = await generatedFor(link.id);
-    expect(rearmed).toMatchObject({ id: policy!.id, isActive: true });
-    expect(rearmed!.rules.software).toEqual([expect.objectContaining({ name: 'Sentinel Agent*', catalogId })]);
-    expect(rearmed!.approvalGeneration).toBeGreaterThan(afterSweep!.approvalGeneration);
+    const [afterReupload] = await generatedFor(link.id);
+    expect(afterReupload).toMatchObject({ id: policy!.id, isActive: true, approvalGeneration: policy!.approvalGeneration });
+    expect(await readiness()).toEqual([{ catalogId, vendor: 'sentinelone', result: { ok: true } }]);
   });
 
   it("a partner-wide link is refused when the PARTNER's package has no MSI, and armed once it has one", async () => {

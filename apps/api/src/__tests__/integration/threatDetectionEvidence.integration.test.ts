@@ -23,7 +23,7 @@ import './setup';
 import { getTestDb } from './setup';
 
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
@@ -52,7 +52,13 @@ vi.mock('../../services/eventBus', async (importOriginal) => {
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const MANAGED_TYPE = 'threat_detection_review' as const;
 const DUE = '2026-10-31';
-const AS_OF = new Date('2026-10-31T05:18:00Z');
+// Every fixture in this file is pinned to October 2026, and the auto-evidence
+// path stamps `generatedAt` from the wall clock (`new Date()` in
+// deliverableAutoEvidence.ts), which also drives the 48h stale-sync check in
+// threatDetectionReport.ts. Pin `Date` to the due day so the suite reads the
+// same way on 2026-10-31 as it does years later; timers stay real so pg/redis
+// are untouched.
+const AS_OF = new Date(`${DUE}T05:18:00Z`);
 const system = <T>(fn: () => Promise<T>, label = 'threatDetectionEvidence.integration') =>
   runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
 
@@ -145,6 +151,9 @@ function summaryOfRun(row: { result: unknown }): ThreatDetectionSummary {
 }
 
 describe('threat detection review evidence on real Postgres (#5784 W02)', () => {
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'], now: AS_OF }); });
+  afterEach(() => { vi.useRealTimers(); });
+
   runDb('1. a partner-wide template produces one artifact per org, against that org’s own definition', async () => {
     const t = await seedTenant();
     const integrationId = await seedIntegration(t.partnerId, new Date('2026-10-31T05:00:00Z'));
@@ -240,7 +249,9 @@ describe('threat detection review evidence on real Postgres (#5784 W02)', () => 
 
     expect(summary.coverage?.periodStart).toBe(occ!.periodStart);
     expect(summary.coverage?.periodEnd).toBe(occ!.periodEnd);
-    // Generation happens ON the due day, so it precedes the end of the period.
+    // Generation happens ON the due day (the pinned clock), so it precedes the
+    // end of the period — and it is the clock, not the period, that produced it.
+    expect(summary.coverage?.generatedAt).toBe(AS_OF.toISOString());
     expect(Date.parse(summary.coverage!.generatedAt!))
       .toBeLessThan(Date.parse(`${occ!.periodEnd}T23:59:59.999Z`));
     // Only the in-period incident is counted, and the earliest held row is

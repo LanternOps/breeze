@@ -13,7 +13,18 @@ const live = (c: Pick<Concern, 'status'>) => c.status === 'open' || c.status ===
  * re-implemented — listed grant-wide like the thread page. Approvals open in
  * the existing approval surface from each row; nothing here decides one.
  */
-export default function WispNeedsYou({ grantId, threadId, initial }: { grantId: string; threadId: string; initial: Concern[] }) {
+export default function WispNeedsYou({
+  grantId,
+  threadId,
+  initial,
+  refreshKey = 0,
+}: {
+  grantId: string;
+  threadId: string;
+  initial: Concern[];
+  /** Bumped by the host to reload the concerns (the rail's activity key). */
+  refreshKey?: number;
+}) {
   const { t } = useTranslation('ai');
   const [concerns, setConcerns] = useState<Concern[]>(initial);
   const waiting = concerns.filter(live);
@@ -39,7 +50,7 @@ export default function WispNeedsYou({ grantId, threadId, initial }: { grantId: 
           )}
         </div>
       </div>
-      <WispConcernsPanel key={grantId} grantId={grantId} threadId={threadId} crossOrg title="" onLoaded={setConcerns} />
+      <WispConcernsPanel key={grantId} grantId={grantId} threadId={threadId} crossOrg title="" onLoaded={setConcerns} refreshKey={refreshKey} />
     </section>
   );
 }

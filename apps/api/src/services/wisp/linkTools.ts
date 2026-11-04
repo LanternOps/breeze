@@ -106,6 +106,8 @@ function toolView(link: WispThreadLink) {
     label: sanitizeUntrustedToolText(link.label),
     status: link.status === null ? null : sanitizeUntrustedToolText(link.status),
     href: link.href,
+    source: link.source,
+    lastTouchedAt: link.lastTouchedAt,
   };
 }
 
@@ -119,14 +121,14 @@ const linkEntityHandler = grantTool(linkEntitySchema, async (input, ceiling, aut
     id: input.id,
     ...(input.orgId !== undefined ? { orgId: input.orgId } : {}),
   };
-  const link = await addLink({ auth, ceiling }, thread.id, ref, { addedByGrantId: ceiling.grantId });
+  const link = await addLink({ auth, ceiling }, thread.id, ref, { source: 'wisp_pin', addedByGrantId: ceiling.grantId });
   return fenced({ linked: true, link: toolView(link) });
 });
 
 const listLinksHandler = grantTool(listLinksInputSchema, async (input, ceiling, auth) => {
   const thread = await getOrCreateThread(ceiling.grantId);
-  // listLinks re-resolves every row (newest first) and already caps at the
-  // per-thread limit; `limit` only trims the page the model reads.
+  // listLinks re-resolves every row, pins first then recent autos. Keep all
+  // bounded rows for an accurate held-back count; `limit` trims the model page.
   const rows = await listLinks({ auth, ceiling }, thread.id);
   const page = rows.slice(0, input.limit ?? WISP_THREAD_LINK_LIMIT);
   const held = rows.length - page.length;
@@ -154,7 +156,7 @@ export function registerWispLinkTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'objects linked to the Wisp thread: pinned tickets, devices, quotes, customers',
     definition: {
       name: 'list_links',
-      description: 'List the Breeze objects linked to this Wisp thread that you can still see, newest first: kind, id, org, current label, status and page link. Call the object\'s own read tool for detail.',
+      description: 'List the Breeze objects linked to this Wisp thread that you can still see, pins first then recent autos: kind, id, org, current label, status and page link. Call the object\'s own read tool for detail.',
       input_schema: inputSchemaFor(listLinksShape),
     },
     handler: listLinksHandler,

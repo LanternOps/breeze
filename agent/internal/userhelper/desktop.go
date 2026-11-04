@@ -48,6 +48,11 @@ func (h *helperDesktopManager) startSession(req *ipc.DesktopStartRequest) (*ipc.
 	var iceServers []desktop.ICEServerConfig
 	if len(req.ICEServers) > 0 {
 		if err := json.Unmarshal(req.ICEServers, &iceServers); err != nil {
+			// Relay-only has no safe default: falling back would surface as a
+			// misleading "no TURN server" error, so name the real cause.
+			if req.RelayOnly {
+				return nil, fmt.Errorf("relay-only desktop session: invalid iceServers payload: %w", err)
+			}
 			log.Warn("failed to parse ICE servers from IPC, using defaults", "error", err)
 		}
 	}

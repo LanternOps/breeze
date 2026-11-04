@@ -1,6 +1,6 @@
 name: Tauri apt cache
 description: >
-  Restore (and, on a miss, save at job end) the cached .deb set for the Tauri
+  Restore (never save; the seed workflow on main saves) the cached .deb set for the Tauri
   system dependencies. The single place the cache key is computed, shared by
   the CI rust-check job (restore) and the seeding workflow (seed). See #9753.
 outputs:
@@ -28,7 +28,7 @@ runs:
 
     - name: Cache Tauri apt packages
       id: cache
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/tauri-debs
         key: tauri-apt-${{ steps.image.outputs.id }}-${{ hashFiles('.github/tauri-apt-packages.txt') }}

@@ -171,6 +171,9 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
               : t('quotes.actions.acceptOnBehalf.errorContractVariablesUnresolvedGeneric');
           }
           if (code === 'DEPOSIT_INVALID') return t('quotes.actions.acceptOnBehalf.errorDepositInvalid');
+          // #9963: an item-less quote (the button is disabled for one, so this
+          // is the race where its last item went away in another tab).
+          if (code === 'QUOTE_EMPTY') return t('quotes.actions.acceptOnBehalf.errorQuoteEmpty');
           return undefined;
         },
         // `invoiceNumber` is the number the ACCEPT allocated. Never

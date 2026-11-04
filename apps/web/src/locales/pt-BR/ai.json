@@ -179,7 +179,8 @@
     "input": "Entrada:",
     "error": "Erro:",
     "output": "Saída:",
-    "outputExpired": "Saída expirada conforme a política de retenção"
+    "outputExpired": "Saída expirada conforme a política de retenção",
+    "unknownTool": "Ferramenta desconhecida · não executada"
   },
   "aiForOfficePage": {
     "title": "Breeze AI for Office",
@@ -350,6 +351,7 @@
       "pending": "pendente",
       "approved": "aprovado",
       "rejected": "negado",
+      "stopped": "interrompido",
       "completed": "concluído",
       "failed": "com falha"
     },
@@ -392,6 +394,7 @@
     "requestedAt": "solicitado em {{time}}",
     "approvedAt": "aprovado em {{time}}",
     "rejectedAt": "negado em {{time}}",
+    "stoppedAt": "interrompido em {{time}}",
     "appliedAt": "aplicado em {{time}}",
     "flagDialog": {
       "title": "Sinalizar sessão",
@@ -605,6 +608,7 @@
   },
   "wisp": {
     "title": "Wisp",
+    "turnLimitRolled": "Esta conversa atingiu o limite de turnos, então o Wisp abriu uma nova sessão neste tópico. Envie sua mensagem novamente.",
     "locked": {
       "why": "O Wisp está disponível nos planos Pro e superiores.",
       "server": "O Wisp é executado no Breeze Cloud. Ele não está disponível neste servidor."
@@ -644,7 +648,7 @@
       },
       "refresh": "Renovar permissão",
       "revoke": "Desativar o Wisp",
-      "revokeConfirm": "Desativar o Wisp para este escopo? As conversas abertas continuam legíveis.",
+      "revokeConfirm": "Desativar o Wisp para este escopo? O Wisp deixa de trabalhar para você e as conversas dele são encerradas. O histórico, os alertas e a atividade delas deixam de ser exibidos.",
       "widening": "Você pode fazer mais do que esta permissão autoriza; renove-a para o Wisp acompanhar.",
       "refreshKeepsTerms": "Esta conversa mantém os termos anteriores da permissão. Inicie uma nova conversa para usar a permissão renovada.",
       "startNewConversation": "Iniciar uma nova conversa",
@@ -787,7 +791,14 @@
       "addedByWisp": "Adicionado pelo Wisp",
       "added": "Vinculado ao Wisp",
       "addFailed": "Não foi possível vincular esse item.",
-      "count": "{{count}} de {{max}} vinculados"
+      "count": "{{count}} de {{max}} vinculados",
+      "groupPinned": "Fixados",
+      "groupConcerns": "Preocupações em aberto",
+      "groupRecent": "Recentes",
+      "pin": "Fixar",
+      "dismiss": "Dispensar",
+      "more": "Mais",
+      "neighbours": "Itens relacionados"
     },
     "picker": {
       "title": "Vincular um item ao Wisp",
@@ -811,11 +822,6 @@
       "loadFailed": "Não foi possível carregar esta lista.",
       "alreadyLinked": "Já vinculado",
       "close": "Fechar"
-    },
-    "linkButton": {
-      "link": "Vincular ao Wisp",
-      "linked": "Vinculado no Wisp",
-      "linking": "Vinculando…"
     },
     "sidebar": {
       "openHome": "Abrir no Wisp",
@@ -864,11 +870,19 @@
       "workersTitle": "Executores",
       "workersEmpty": "Nenhum especialista em execução.",
       "allRuns": "Todas as execuções",
-      "details": "Detalhes"
+      "details": "Detalhes",
+      "ended": "Esta permissão terminou, então seus alertas, executores e atividades não são mais exibidos."
     },
     "composer": {
       "placeholder": "Mensagem para o Wisp",
       "link": "Vincular um item"
+    },
+    "talk": {
+      "openFailed": "Não foi possível abrir o chat: {{message}}",
+      "button": "Falar com Wisp",
+      "buttonPlain": "Perguntar à IA sobre isso",
+      "draft": "Sobre {{label}}: ",
+      "switchFocus": "O Wisp está focado em {{from}}. Mudar para {{to}}?"
     }
   },
   "wispConcerns": {
@@ -909,7 +923,8 @@
       "quote": "Orçamento",
       "invoice": "Fatura",
       "contract": "Contrato",
-      "site": "Local"
+      "site": "Local",
+      "readiness": "Prontidão"
     },
     "reviewApproval": "Revisar aprovação",
     "openLink": "Abrir",

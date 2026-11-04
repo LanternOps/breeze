@@ -142,6 +142,27 @@ describe('listActivity — ceiling filter', () => {
     expect(render(h.wheres.user_notifications![0]).sql).toContain(`->> 'grantId'`);
   });
 
+  // #10104: the thread page of a PAUSED grant reads its history through an
+  // allowPaused ceiling (status 'paused'). The belt must still filter by org
+  // — and must not drop every org-bearing item just because the ceiling is
+  // paused (assertWithinCeiling refuses any non-active ceiling by design).
+  it('a PAUSED ceiling reads the same items an active one does, still org-filtered (#10104)', async () => {
+    const rows = () => {
+      h.rows.ai_agent_runs = [runRow(1, O1, t(1)), runRow(2, O2, t(2))];
+      h.rows.wisp_concerns = [concernRow(3, O1, t(3)), concernRow(4, O2, t(4)), concernRow(11, null, t(11))];
+      h.rows.action_intents = [intentRow(5, O1, t(5)), intentRow(6, O2, t(6))];
+      h.rows.ai_memory_blocks = [memoryRow(7, 'org', O1, t(7)), memoryRow(8, 'org', O2, t(8))];
+      h.rows.user_notifications = [notifRow(9, O1, t(9)), notifRow(10, O2, t(10))];
+    };
+    rows();
+    const paused = await listActivity(ceiling({ status: 'paused' }));
+    expect(paused.items.map((i) => i.id).sort()).toEqual([uid(1), uid(3), uid(5), uid(7), uid(9)]);
+
+    rows();
+    const pausedWide = await listActivity(ceiling({ status: 'paused', partnerWide: true }));
+    expect(pausedWide.items.map((i) => i.id).sort()).toEqual([uid(1), uid(11), uid(3), uid(5), uid(7), uid(9)].sort());
+  });
+
   it('builds each item field by field with the right kind, href and cost', async () => {
     h.rows.ai_agent_runs = [runRow(1, O1, t(1))];
     h.rows.wisp_concerns = [concernRow(2, O1, t(2), { summary: 'x'.repeat(300) })];

@@ -2307,22 +2307,24 @@ describe('fetchAndApplyPreferences locale wiring', () => {
 
 describe('apiRegisterPartner recovery action', () => {
   it.each([
-    [{ catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'annual' }, true],
-    [{ catalogVersion: 'launch-2026-10', capacity: 150, billingPeriod: 'annual' }, false],
-    [{ catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'annual', redirect: '//evil.test' }, false],
-  ])('validates purchase preference from sign-in recovery responses', async (purchaseSelection, accepted) => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({ verified: false, status: 'sign_in', purchaseSelection })));
+    [{ intent: 'wisp' }, true],
+    [{ intent: 'wisp', offer: 'founding' }, true],
+    [{ intent: 'x' }, false],
+    [{ intent: 'cloud', redirect: '//evil.test' }, false],
+  ])('validates signup intent from sign-in recovery responses', async (signupIntent, accepted) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({ verified: false, status: 'sign_in', signupIntent })));
     const result = await apiVerifyEmail('token');
     expect(result.status).toBe('sign_in');
-    if (accepted) expect(result.purchaseSelection).toEqual(purchaseSelection);
-    else expect(result).not.toHaveProperty('purchaseSelection');
+    if (accepted) expect(result.signupIntent).toEqual(signupIntent);
+    else expect(result).not.toHaveProperty('signupIntent');
   });
-  it('sends optional approved purchase intent to the registration API', async () => {
+  it('sends the signup intent to the registration API and no purchaseSelection', async () => {
     const doFetch = vi.fn().mockResolvedValue(makeResponse({ success: true, message: 'Check email' }));
     vi.stubGlobal('fetch', doFetch);
-    const purchaseSelection = { catalogVersion: 'launch-2026-10' as const, capacity: 250, billingPeriod: 'annual' as const };
-    await apiRegisterPartner('Acme', 'jane@acme.test', 'pw', 'Jane', purchaseSelection);
-    expect(JSON.parse(doFetch.mock.calls[0]![1].body)).toEqual({ companyName: 'Acme', email: 'jane@acme.test', password: 'pw', name: 'Jane', acceptTerms: true, purchaseSelection });
+    await apiRegisterPartner('Acme', 'jane@acme.test', 'pw', 'Jane', { intent: 'wisp' });
+    const body = JSON.parse(doFetch.mock.calls[0]![1].body);
+    expect(body).toEqual({ companyName: 'Acme', email: 'jane@acme.test', password: 'pw', name: 'Jane', acceptTerms: true, signupIntent: { intent: 'wisp' } });
+    expect(body).not.toHaveProperty('purchaseSelection');
   });
   beforeEach(() => {
     vi.clearAllMocks();
@@ -2515,6 +2517,47 @@ describe('MFA enrollment session adoption', () => {
     expect(useAuthStore.getState().commitMfaDisableIfCurrent(generation, tokens)).toBe(true);
     expect(useAuthStore.getState().user).toMatchObject({ mfaEnabled: false, mfaMethod: null });
     expect(useAuthStore.getState().tokens).toEqual(tokens);
+  });
+
+  it('commits the server MFA state and replacement tokens atomically', () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true, mfaMethod: 'totp' }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const tokens = { accessToken: 'replacement', expiresInSeconds: 900 };
+
+    expect(useAuthStore.getState().commitMfaStateIfCurrent(
+      generation,
+      { mfaEnabled: true, mfaMethod: 'totp' },
+      tokens,
+    )).toBe(true);
+    expect(useAuthStore.getState().user).toMatchObject({ mfaEnabled: true, mfaMethod: 'totp' });
+    expect(useAuthStore.getState().tokens).toEqual(tokens);
+  });
+
+  it('commits factor state without changing tokens when session installation failed', () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true, mfaMethod: 'passkey' }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+
+    expect(useAuthStore.getState().commitMfaStateIfCurrent(
+      generation,
+      { mfaEnabled: false, mfaMethod: null },
+    )).toBe(true);
+    expect(useAuthStore.getState().user).toMatchObject({ mfaEnabled: false, mfaMethod: null });
+    expect(useAuthStore.getState().tokens).toEqual(baseTokens);
+  });
+
+  it('does not commit factor state or tokens from a prior session', () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: false }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const newerTokens = { accessToken: 'new-login', expiresInSeconds: 900 };
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: false }, newerTokens);
+
+    expect(useAuthStore.getState().commitMfaStateIfCurrent(
+      generation,
+      { mfaEnabled: true, mfaMethod: 'passkey' },
+      { accessToken: 'stale', expiresInSeconds: 900 },
+    )).toBe(false);
+    expect(useAuthStore.getState().tokens).toEqual(newerTokens);
+    expect(useAuthStore.getState().user).toMatchObject({ mfaEnabled: false });
   });
 
   it('records the factor change without replacement tokens when the issuing session cannot be installed', () => {
