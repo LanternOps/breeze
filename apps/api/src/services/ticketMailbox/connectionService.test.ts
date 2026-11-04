@@ -433,6 +433,10 @@ describe('ticket mailbox connection service', () => {
       baselineSkippedCount: expect.anything(),
       updatedAt: expect.any(Date),
     });
+    // The walk restarts, so an open baseline's count restarts; a finished one stays.
+    expect(new PgDialect().sqlToQuery(dbMocks.updatedValues[1]!.baselineSkippedCount as SQL).sql.replace(/\s+/g, ' ')).toBe(
+      'CASE WHEN "ticket_mailbox_connections"."baseline_completed_at" IS NULL THEN 0 ELSE "ticket_mailbox_connections"."baseline_skipped_count" END',
+    );
   });
 
   // #10863. The real SQL runs in ticketMailboxCursor.rls.integration.test.ts; these
@@ -482,7 +486,10 @@ describe('ticket mailbox connection service', () => {
       const floor = rendered(conflict.eligibleAfter).sql;
       expect(floor).toContain(`"ticket_mailbox_connections"."provider" = 'm365'`);
       expect(floor).toContain(`"ticket_mailbox_connections"."status" <> 'disabled'`);
-      expect(floor).toContain('THEN "ticket_mailbox_connections"."eligible_after" END');
+      // Kept as is, or, for a row from before the floor, taken from its last poll.
+      expect(floor.replace(/\s+/g, ' ')).toContain(
+        `THEN COALESCE("ticket_mailbox_connections"."eligible_after", ("ticket_mailbox_connections"."last_polled_at" - interval '5 minutes')) END`,
+      );
     });
 
     it('a completed baseline round adds its count and closes; an unfinished one only adds', async () => {
@@ -516,7 +523,9 @@ describe('ticket mailbox connection service', () => {
       await expect(seedDeltaFloor(snapshot, at)).resolves.toEqual({ eligibleAfter: at, baselineCompletedAt: null });
 
       const set = dbMocks.updatedValues[0]!;
-      expect(rendered(set.eligibleAfter).sql).toBe('COALESCE("ticket_mailbox_connections"."last_polled_at", $1::timestamptz)');
+      expect(rendered(set.eligibleAfter).sql).toBe(
+        `COALESCE(("ticket_mailbox_connections"."last_polled_at" - interval '5 minutes'), $1::timestamptz)`,
+      );
       expect(rendered(set.baselineCompletedAt).sql).toContain('"ticket_mailbox_connections"."last_polled_at" IS NOT NULL');
       const where = dbMocks.updateWheres[0] as { conditions: unknown[] };
       expect(where.conditions).toEqual(expect.arrayContaining([

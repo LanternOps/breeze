@@ -56,7 +56,8 @@ export const ticketMailboxConnections = pgTable('ticket_mailbox_connections', {
   historyId: text('history_id'),
   // Eligibility floor (connect time), both providers. Mail received before this
   // instant is never ingested, whichever path surfaces it. NULL on a Microsoft 365
-  // row only for one that was already polling before the floor existed (#10863).
+  // row until its tenant is bound (bindVerifiedTenant stamps it), and on a row from
+  // before the floor existed until the poll sweep seeds one (#10863).
   eligibleAfter: timestamp('eligible_after', { withTimezone: true }),
   // Microsoft 365 only (#10863): the first delta round after a connect walks the
   // whole inbox and leaves what predates the floor alone. These record how many

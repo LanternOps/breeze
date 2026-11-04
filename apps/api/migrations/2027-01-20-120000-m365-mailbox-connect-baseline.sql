@@ -12,8 +12,9 @@ ALTER TABLE ticket_mailbox_connections
 ALTER TABLE ticket_mailbox_connections
   ADD COLUMN IF NOT EXISTS baseline_completed_at timestamptz;
 
--- Same name as before; only m365 changes: it may now carry eligible_after, and the
--- baseline state is Microsoft-only. Drop-and-recreate for idempotency.
+-- Same name as before. The m365 branch may now carry eligible_after; the gmail
+-- branch now also refuses the Microsoft-only baseline columns. Drop-and-recreate
+-- for idempotency.
 ALTER TABLE ticket_mailbox_connections
   DROP CONSTRAINT IF EXISTS ticket_mailbox_connections_provider_fields_consistent;
 

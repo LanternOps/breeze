@@ -69,8 +69,8 @@ export interface MailboxConnectionListItem {
   gmailHandling: GmailHandlingSettings | null;
   /** Microsoft 365 rows with a connect floor (#10863): how many messages already
    * in the inbox the first delta round left alone so far, and when it finished
-   * (null while it runs). Null for gmail rows and for a mailbox that was already
-   * polling before the floor existed. */
+   * (null while it runs). Null for gmail rows and for any m365 row with no floor
+   * (not yet bound, or from before the floor existed). */
   connectBaseline: { skippedCount: number; completedAt: Date | null } | null;
 }
 
@@ -96,7 +96,8 @@ type ConnectedMailbox = MailboxConnectionSnapshot & Pick<
   'mailboxAddress' | 'deltaLink'
 > & {
   /** Connect floor: mail received before this is not imported (#10863). Null only
-   * on a row that was already polling before the floor existed. */
+   * on a connected row from before the floor existed; with no cursor either, the
+   * sweep seeds one (seedDeltaFloor) before its first read. */
   eligibleAfter: Date | null;
   /** When the first delta round after connect finished; null while it runs. */
   baselineCompletedAt: Date | null;
@@ -290,6 +291,15 @@ export async function getMailboxConnection(id: string, partnerId: string): Promi
 /** See createPendingConnection. Reads the row as it was before the conflict update. */
 const reconsentKeepsBaseline = sql`(${ticketMailboxConnections.provider} = 'm365' AND ${ticketMailboxConnections.status} <> 'disabled')`;
 
+/**
+ * A floor for a mailbox that was polling before floors existed (#10863): its last
+ * poll, less a margin. last_polled_at is written after the round's enqueue loop, so
+ * mail that arrived while that round ran sorts just before it; the margin re-offers
+ * that mail, and durable dedup absorbs what was already ingested. NULL when the
+ * row never polled.
+ */
+const floorFromLastPoll = sql`(${ticketMailboxConnections.lastPolledAt} - interval '5 minutes')`;
+
 export async function createPendingConnection(input: {
   partnerId: string; mailboxAddress: string; displayName: string | null; createdBy: string | null;
 }): Promise<MailboxConnection> {
@@ -307,7 +317,8 @@ export async function createPendingConnection(input: {
     set: {
       // This is the Microsoft connect path. If the existing row for this
       // (partner, mailbox) is a Gmail connection, converting it to M365 must be
-      // CLEAN: set provider and clear every Gmail-specific field, or we would
+      // CLEAN: set provider and clear every Gmail-specific field (the floor, which
+      // both providers use, is decided separately below), or we would
       // leave a mixed row (provider='gmail' + a Microsoft tenant) that the M365
       // selector picks up but the consumer's provider-equality check rejects.
       provider: 'm365',
@@ -318,11 +329,18 @@ export async function createPendingConnection(input: {
       // attempt) keeps its floor and finished baseline, so the cursor cleared below
       // re-walks under the same floor: mail that arrived during an outage is still
       // imported and the backlog still is not (#10863). Durable dedup absorbs what
-      // was already ingested. A deliberate disconnect, or a Gmail row whose floor
-      // is about another provider, starts over: bindVerifiedTenant stamps a new
-      // floor, so mail received while disconnected stays out.
-      eligibleAfter: sql`CASE WHEN ${reconsentKeepsBaseline} THEN ${ticketMailboxConnections.eligibleAfter} END`,
-      baselineCompletedAt: sql`CASE WHEN ${reconsentKeepsBaseline} THEN ${ticketMailboxConnections.baselineCompletedAt} END`,
+      // was already ingested. A row from before the floor existed takes one from
+      // its last poll, as seedDeltaFloor does, and counts as already baselined;
+      // last_polled_at is cleared below, so this is the only point it can be read.
+      // A deliberate disconnect, or a Gmail row whose floor is about another
+      // provider, starts over: bindVerifiedTenant stamps a new floor, so mail
+      // received while disconnected stays out.
+      eligibleAfter: sql`CASE WHEN ${reconsentKeepsBaseline}
+        THEN COALESCE(${ticketMailboxConnections.eligibleAfter}, ${floorFromLastPoll}) END`,
+      baselineCompletedAt: sql`CASE WHEN ${reconsentKeepsBaseline}
+        THEN COALESCE(${ticketMailboxConnections.baselineCompletedAt},
+          CASE WHEN ${ticketMailboxConnections.eligibleAfter} IS NULL AND ${ticketMailboxConnections.lastPolledAt} IS NOT NULL
+            THEN now() END) END`,
       baselineSkippedCount: sql`CASE WHEN ${reconsentKeepsBaseline} THEN ${baselineCountAfterCursorCleared} ELSE 0 END`,
       // Gmail-only "mark handled" setting; the CHECK refuses it on an m365 row.
       gmailHandledLabel: null,
@@ -849,8 +867,8 @@ export async function resetDeltaCursor(
  * connection, so this only meets a row from before the floor existed: one that
  * lost its cursor to an expired token, or had not polled yet.
  *
- * A row that has polled uses its last poll, so mail that arrived since then is
- * still imported and the rest is not imported again. It is marked as already
+ * A row that has polled uses its last poll (floorFromLastPoll), so mail that
+ * arrived since then is still imported and the rest is not imported again. It is marked as already
  * baselined, because the card's note describes a connect and this is not one. A
  * row that never polled is effectively a new connection: its floor is now and its
  * baseline counts.
@@ -867,7 +885,7 @@ export async function seedDeltaFloor(
     const at = now.toISOString();
     const rows = await db.update(ticketMailboxConnections)
       .set({
-        eligibleAfter: sql`COALESCE(${ticketMailboxConnections.lastPolledAt}, ${at}::timestamptz)`,
+        eligibleAfter: sql`COALESCE(${floorFromLastPoll}, ${at}::timestamptz)`,
         baselineCompletedAt: sql`CASE WHEN ${ticketMailboxConnections.lastPolledAt} IS NOT NULL THEN ${at}::timestamptz END`,
         updatedAt: now,
       })

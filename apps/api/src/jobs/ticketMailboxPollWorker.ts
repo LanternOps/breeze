@@ -127,7 +127,13 @@ async function sweepOne(
   let baselineCompletedAt = c.baselineCompletedAt;
   if (c.deltaLink === null && floor === null) {
     const seeded = await seedDeltaFloor(c, new Date());
-    if (!seeded) return;
+    if (!seeded) {
+      // Benign when it is a race (another sweep seeded it, or the generation
+      // changed); the next sweep re-reads the row. Logged so a row that keeps
+      // missing is visible rather than reading healthy and never polling.
+      console.info('[mailboxPoll] connect floor not seeded; skipped this sweep', { id: c.id });
+      return;
+    }
     floor = seeded.eligibleAfter;
     baselineCompletedAt = seeded.baselineCompletedAt;
   }
@@ -152,9 +158,17 @@ async function sweepOne(
     page = await listInboxDelta(token, c.mailboxAddress, c.deltaLink, { deadlineAt });
   } catch (err) {
     const status = (err as { status?: number }).status;
-    if (isDeltaCursorExpired(err)) {
-      await resetDeltaCursor(c, c.deltaLink);
-      console.warn('[mailboxPoll] delta token expired; cursor reset', { id: c.id, status });
+    // Only a stored cursor can expire. The same answer to a fresh delta request has
+    // nothing to clear, and treating it as expired would retry it every sweep with
+    // nothing recorded, so it is classified like any other refusal below.
+    if (c.deltaLink !== null && isDeltaCursorExpired(err)) {
+      const reset = await resetDeltaCursor(c, c.deltaLink);
+      console.warn('[mailboxPoll] delta token expired; cursor cleared for a re-walk', {
+        id: c.id,
+        status,
+        graphCode: (err as { graphCode?: string }).graphCode,
+        reset,
+      });
       return;
     }
 
@@ -202,7 +216,7 @@ async function sweepOne(
   let lastMessageAt: Date | null = null;
   let markReadSkipped = 0;
   let beforeFloor = 0;
-  let noUsableTime = 0;
+  const noUsableTime: string[] = [];
   try {
     // The token from the delta read is reused: getMailboxToken only returns a
     // token with more than five minutes left, which outlasts the sweep budget,
@@ -219,11 +233,16 @@ async function sweepOne(
         // already in the inbox stays exactly as it was (#10863). Mail newer than
         // the floor falls through, including what arrived during the baseline walk.
         const received = msg.receivedDateTime ? Date.parse(msg.receivedDateTime) : Number.NaN;
-        // No usable time cannot be shown to be new, so it is not imported (NaN fails
-        // the comparison below): that loses one message to a log line, where the
-        // other direction creates tickets and autoresponses for old mail.
-        if (Number.isNaN(received)) noUsableTime += 1;
-        if (!(received >= floorMs)) {
+        // No usable time cannot be shown to be new, so it is not imported: that
+        // costs one message, named in the log and reported below, where the other
+        // direction creates tickets and autoresponses for old mail. Graph always
+        // returns receivedDateTime for a message, so this is not expected to happen.
+        // Nor is it shown to be old, so it stays out of the baseline count.
+        if (Number.isNaN(received)) {
+          noUsableTime.push(msg.id);
+          continue;
+        }
+        if (received < floorMs) {
           beforeFloor += 1;
           continue;
         }
@@ -270,8 +289,14 @@ async function sweepOne(
   if (markReadSkipped > 0) {
     console.warn('[mailboxPoll] sweep budget spent; left messages unread', { id: c.id, count: markReadSkipped, limit: 'pass_deadline' });
   }
-  if (noUsableTime > 0) {
-    console.warn('[mailboxPoll] messages with no usable receivedDateTime were not imported', { id: c.id, count: noUsableTime });
+  if (noUsableTime.length > 0) {
+    // Graph message ids are opaque; they let the message be found in the mailbox.
+    console.warn('[mailboxPoll] messages with no usable receivedDateTime were not imported', {
+      id: c.id,
+      count: noUsableTime.length,
+      messageIds: noUsableTime.slice(0, NO_USABLE_TIME_IDS_LOGGED),
+    });
+    captureException(new Error('[mailboxPoll] Graph returned messages with no usable receivedDateTime; they were not imported'));
   }
 
   // A round that did not finish this sweep stores its resumeLink, so the next
@@ -286,17 +311,24 @@ async function sweepOne(
   }
   if (cursor) {
     const polledAt = new Date();
-    if (baselineOpen) {
-      // The stored resumeLink plus the open baseline is the "not finished" state: a
-      // later sweep resumes, and only a real deltaLink closes the baseline.
-      const completed = page.deltaLink !== null;
-      await updateDeltaCursor(c, c.deltaLink, cursor, polledAt, lastMessageAt ?? polledAt, { skipped: beforeFloor, completed });
-      if (completed) console.info('[mailboxPoll] connect baseline finished', { id: c.id });
-    } else {
-      await updateDeltaCursor(c, c.deltaLink, cursor, polledAt, lastMessageAt ?? polledAt);
+    // The stored resumeLink plus the open baseline is the "not finished" state: a
+    // later sweep resumes, and only a real deltaLink closes the baseline.
+    const completed = page.deltaLink !== null;
+    const written = baselineOpen
+      ? await updateDeltaCursor(c, c.deltaLink, cursor, polledAt, lastMessageAt ?? polledAt, { skipped: beforeFloor, completed })
+      : await updateDeltaCursor(c, c.deltaLink, cursor, polledAt, lastMessageAt ?? polledAt);
+    if (!written) {
+      // An overlapping sweep advanced the cursor first, or the generation changed;
+      // the next sweep re-reads it. Nothing from this round was counted.
+      console.info('[mailboxPoll] cursor write lost to another sweep or a lifecycle change', { id: c.id });
+    } else if (baselineOpen && completed) {
+      console.info('[mailboxPoll] connect baseline finished', { id: c.id, skipped: beforeFloor });
     }
   }
 }
+
+/** Most Graph message ids one sweep logs for messages it could not date. */
+const NO_USABLE_TIME_IDS_LOGGED = 20;
 
 /** Exported for tests. Reads connections in system context, processes each independently. */
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));

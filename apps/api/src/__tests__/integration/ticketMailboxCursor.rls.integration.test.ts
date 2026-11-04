@@ -196,11 +196,54 @@ describe('ticket_mailbox_connections worker writes persist under FORCE RLS (no r
       const now = new Date();
       const seeded = await seedDeltaFloor(snapshot, now);
 
-      expect(seeded!.eligibleAfter.getTime()).toBe(lastPolledAt.getTime());
+      // Five minutes before the last poll: mail the last round read but had not
+      // committed yet is re-offered, and dedup absorbs what was ingested.
+      const expectedFloor = lastPolledAt.getTime() - 5 * 60_000;
+      expect(seeded!.eligibleAfter.getTime()).toBe(expectedFloor);
       expect(seeded!.baselineCompletedAt!.getTime()).toBe(now.getTime());
       const row = await readBaseline(snapshot.id);
-      expect(row.eligibleAfter!.getTime()).toBe(lastPolledAt.getTime());
+      expect(row.eligibleAfter!.getTime()).toBe(expectedFloor);
       expect(row.completedAt).not.toBeNull();
+    });
+
+    runDb('re-consenting a mailbox from before the floor picks up from its last poll, not from the reconnect', async () => {
+      const { updateDeltaCursor } = await import('../../services/ticketMailbox/connectionService');
+      const snapshot = await seedConnectedMailbox(randomUUID());
+      const lastPolledAt = new Date('2026-10-30T08:00:00.000Z');
+      await updateDeltaCursor(snapshot, null, 'delta-legacy', lastPolledAt, null);
+      await setRow(snapshot.id, { status: 'reauth_required' });
+      const mailboxAddress = (await withSystemDbAccessContext(async () => db.select({ m: ticketMailboxConnections.mailboxAddress })
+        .from(ticketMailboxConnections).where(eq(ticketMailboxConnections.id, snapshot.id))))[0]!.m;
+
+      await reconnect(snapshot.partnerId, mailboxAddress, snapshot.tenantId);
+
+      const row = await readBaseline(snapshot.id);
+      expect(row).toMatchObject({ status: 'connected', deltaLink: null, skipped: 0 });
+      expect(row.eligibleAfter!.getTime()).toBe(lastPolledAt.getTime() - 5 * 60_000);
+      // Not a connect, so the card says nothing about mail "already in this inbox".
+      expect(row.completedAt).not.toBeNull();
+    });
+
+    runDb('a gmail address re-connected through Microsoft starts a fresh floor and baseline', async () => {
+      const { createPendingConnection, bindVerifiedTenant } = await import('../../services/ticketMailbox/connectionService');
+      const partner = await withSystemDbAccessContext(() => createPartner());
+      const mailboxAddress = `support-${randomUUID()}@a.com`;
+      await withSystemDbAccessContext(() => getTestDb().execute(sql`
+        INSERT INTO ticket_mailbox_connections (partner_id, provider, mailbox_address, status, eligible_after)
+        VALUES (${partner.id}, 'gmail', ${mailboxAddress}, 'reauth_required', '2026-01-01T00:00:00Z')
+      `));
+
+      const before = Date.now();
+      const pending = await withSystemDbAccessContext(() => createPendingConnection({
+        partnerId: partner.id, mailboxAddress, displayName: null, createdBy: null,
+      }));
+      await withSystemDbAccessContext(() => bindVerifiedTenant(pending.id, partner.id, pending.consentAttemptId, randomUUID(), {
+        microsoftOid: randomUUID(), breezeUserId: null,
+      }));
+
+      const row = await readBaseline(pending.id);
+      expect(row).toMatchObject({ status: 'connected', skipped: 0, completedAt: null });
+      expect(row.eligibleAfter!.getTime()).toBeGreaterThanOrEqual(before - 1000);
     });
 
     runDb('a row with no cursor or floor that never polled seeds from now, with its baseline open', async () => {

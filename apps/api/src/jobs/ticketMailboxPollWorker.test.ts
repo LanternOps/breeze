@@ -549,10 +549,15 @@ describe('runMailboxSweep', () => {
     });
 
     it('never reads Graph with neither cursor nor floor when the floor write lands on no row', async () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
       vi.mocked(listConnectedMailboxes).mockResolvedValue([conn({ deltaLink: null })] as any);
       vi.mocked(seedDeltaFloor).mockResolvedValueOnce(null);
 
       await runMailboxSweep();
+      const said = info.mock.calls.find(([line]) => String(line).includes('connect floor not seeded'));
+      info.mockRestore();
+
+      expect(said?.[1]).toEqual({ id: 'c1' });
 
       expect(getMailboxToken).not.toHaveBeenCalled();
       expect(listInboxDelta).not.toHaveBeenCalled();
@@ -589,12 +594,116 @@ describe('runMailboxSweep', () => {
       warn.mockRestore();
 
       expect(enqueuedIds()).toEqual(['new-1']);
-      expect(warned?.[1]).toEqual({ id: 'c1', count: 2 });
-      // The removal is left out of "messages already in this inbox".
+      // Named, so the message can be found in the mailbox, and reported, because a
+      // message Graph sends without its time is not expected.
+      expect(warned?.[1]).toEqual({ id: 'c1', count: 2, messageIds: ['no-date', 'bad-date'] });
+      expect(captureException).toHaveBeenCalledWith(expect.objectContaining({
+        message: expect.stringContaining('no usable receivedDateTime'),
+      }));
+      // Neither these nor the removal are "messages already in this inbox": nothing
+      // shows they are old.
+      expect(updateDeltaCursor).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'c1' }), null, 'delta-baseline', expect.any(Date), expect.anything(),
+        { skipped: 0, completed: true },
+      );
+    });
+
+    it('caps the message ids it logs', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([baselined()] as any);
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({
+        messages: Array.from({ length: 30 }, (_, i) => ({ id: `nd-${i}` })),
+        deltaLink: 'delta-2',
+      } as any);
+
+      await runMailboxSweep();
+      const warned = warn.mock.calls.find(([line]) => String(line).includes('no usable receivedDateTime'));
+      warn.mockRestore();
+
+      expect((warned?.[1] as { count: number; messageIds: string[] }).count).toBe(30);
+      expect((warned?.[1] as { count: number; messageIds: string[] }).messageIds).toHaveLength(20);
+      expect(enqueueInboundEmail).not.toHaveBeenCalled();
+    });
+
+    it('an expired resumeLink mid-baseline is cleared, and the re-walk is still a floored, counted baseline', async () => {
+      const resume = 'https://graph.microsoft.com/next-4';
+      vi.mocked(listConnectedMailboxes).mockResolvedValueOnce([connecting({ deltaLink: resume })] as any);
+      vi.mocked(listInboxDelta).mockImplementationOnce(async () => { const e: any = new Error('Graph delta 410'); e.status = 410; throw e; });
+
+      await runMailboxSweep();
+
+      expect(resetDeltaCursor).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), resume);
+      expect(enqueueInboundEmail).not.toHaveBeenCalled();
+
+      vi.mocked(listConnectedMailboxes).mockResolvedValueOnce([connecting()] as any);
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({
+        messages: [backlog('old-1'), backlog('old-2'), fresh('new-1')], deltaLink: 'delta-baseline',
+      } as any);
+      await runMailboxSweep();
+
+      expect(vi.mocked(listInboxDelta).mock.calls[1]![2]).toBeNull();
+      expect(enqueuedIds()).toEqual(['new-1']);
       expect(updateDeltaCursor).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'c1' }), null, 'delta-baseline', expect.any(Date), expect.anything(),
         { skipped: 2, completed: true },
       );
+    });
+
+    it.each([
+      ['410 Gone', 410, undefined],
+      ['syncStateNotFound', 400, 'syncStateNotFound'],
+    ])('a %s with no stored cursor has nothing to clear, so it stops the mailbox instead of looping', async (_label, status, graphCode) => {
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([connecting()] as any);
+      vi.mocked(listInboxDelta).mockImplementationOnce(async () => {
+        const e: any = new Error(`Graph delta ${status}`); e.status = status; e.graphCode = graphCode; throw e;
+      });
+
+      await runMailboxSweep();
+
+      expect(resetDeltaCursor).not.toHaveBeenCalled();
+      expect(setConnectedMailboxStatus).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), 'error', expect.any(String));
+    });
+
+    it('an enqueue that fails mid-baseline writes no cursor and no count', async () => {
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([connecting()] as any);
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({
+        messages: [backlog('old-1'), fresh('new-1'), backlog('old-2')], deltaLink: 'delta-baseline',
+      } as any);
+      vi.mocked(enqueueInboundEmail).mockRejectedValueOnce(new Error('redis down'));
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await runMailboxSweep();
+      error.mockRestore();
+
+      expect(markRead).not.toHaveBeenCalled();
+      expect(updateDeltaCursor).not.toHaveBeenCalled();
+    });
+
+    it('says when a cursor write lost to another sweep, and does not claim the baseline finished', async () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([connecting()] as any);
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({ messages: [backlog('old-1')], deltaLink: 'delta-baseline' } as any);
+      vi.mocked(updateDeltaCursor).mockResolvedValueOnce(false);
+
+      await runMailboxSweep();
+      const lines = info.mock.calls.map(([line]) => String(line));
+      info.mockRestore();
+
+      expect(lines.some((line) => line.includes('cursor write lost'))).toBe(true);
+      expect(lines.some((line) => line.includes('connect baseline finished'))).toBe(false);
+    });
+
+    it('says the baseline finished when its closing write lands', async () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      vi.mocked(listConnectedMailboxes).mockResolvedValue([connecting()] as any);
+      vi.mocked(listInboxDelta).mockResolvedValueOnce({ messages: [backlog('old-1')], deltaLink: 'delta-baseline' } as any);
+      vi.mocked(updateDeltaCursor).mockResolvedValueOnce(true);
+
+      await runMailboxSweep();
+      const finished = info.mock.calls.find(([line]) => String(line).includes('connect baseline finished'));
+      info.mockRestore();
+
+      expect(finished?.[1]).toEqual({ id: 'c1', skipped: 1 });
     });
 
     it('a stale generation mid-baseline writes no cursor and no count', async () => {

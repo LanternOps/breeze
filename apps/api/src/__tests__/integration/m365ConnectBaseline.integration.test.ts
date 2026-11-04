@@ -222,7 +222,7 @@ describe('Microsoft 365 connect baseline (#10863)', () => {
 
     graph.listInboxDelta.mockResolvedValueOnce({
       messages: [
-        message('imported-long-ago', '2026-10-30T07:59:00Z'),
+        message('imported-long-ago', '2026-10-30T07:50:00Z'),
         message('since-last-poll', '2026-10-30T08:01:00Z'),
       ],
       deltaLink: 'https://graph.microsoft.com/delta-new',
@@ -231,7 +231,7 @@ describe('Microsoft 365 connect baseline (#10863)', () => {
 
     expect(enqueuedSubjects()).toEqual(['since-last-poll']);
     const row = await readRow(id);
-    expect(row.eligibleAfter!.getTime()).toBe(lastPolledAt.getTime());
+    expect(row.eligibleAfter!.getTime()).toBe(lastPolledAt.getTime() - 5 * 60_000);
     expect(row.deltaLink).toBe('https://graph.microsoft.com/delta-new');
     // This was not a connect, so the card says nothing about "already in this inbox".
     const [listed] = await withSystemDbAccessContext(() => listMailboxConnections(partnerId));
