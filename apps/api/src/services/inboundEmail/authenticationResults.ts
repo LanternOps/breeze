@@ -50,6 +50,32 @@ export function mechanism(authResults: string | undefined, name: string): string
   return undefined;
 }
 
+export interface AuthClause {
+  method: string;
+  result: string;
+  /** Lowercased property values such as `header.from`; null when one appears twice
+   * with different values, so a conflicting pair can never satisfy a comparison. */
+  props: Map<string, string | null>;
+}
+
+/** Every `method=result` clause with its properties, comments stripped first. */
+export function parseAuthClauses(authResults: string | undefined): AuthClause[] {
+  if (!authResults) return [];
+  const clauses: AuthClause[] = [];
+  for (const clause of stripComments(authResults).split(';').slice(1)) {
+    const head = /^\s*([A-Za-z][\w-]*)\s*=\s*(\w+)/.exec(clause);
+    if (!head?.[1] || !head[2]) continue;
+    const props = new Map<string, string | null>();
+    for (const m of clause.slice(head[0].length).matchAll(/([A-Za-z][\w.-]*)\s*=\s*("[^"]*"|[^\s;]+)/g)) {
+      const name = m[1]!.toLowerCase();
+      const value = m[2]!.replace(/^"|"$/g, '').toLowerCase();
+      props.set(name, props.has(name) && props.get(name) !== value ? null : value);
+    }
+    clauses.push({ method: head[1].toLowerCase(), result: head[2], props });
+  }
+  return clauses;
+}
+
 /** Always returns a full SenderAuth (fail-closed). verified iff DMARC passed. */
 export function buildSenderAuth(authResults: string | undefined): SenderAuth {
   const spf = normalizeVerdict(mechanism(authResults, 'spf'));

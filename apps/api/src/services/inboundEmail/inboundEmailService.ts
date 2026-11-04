@@ -404,7 +404,8 @@ export async function processInboundEmail(
     // authenticated. We rely on the verdicts the provider already computed at its MX
     // boundary (aligned SPF+DKIM, or DMARC pass). On a Microsoft 365 mailbox, mail the
     // tenant's own Exchange stamped as intra-tenant also counts (senderAuth.source
-    // 'exchange-internal', normalizeGraphMessage, #8299). When NOT verified, route the
+    // 'exchange-internal', normalizeGraphMessage, #8299), as does the verdict of a
+    // connection's trusted ARC sealer ('trusted-arc-sealer', #10862). When NOT verified, route the
     // message to the EXISTING quarantine/review path instead of auto-acting — mail is
     // never dropped.
     if (!n.senderAuth?.verified) {
@@ -424,8 +425,9 @@ export async function processInboundEmail(
           }
         );
       }
-      const reason = gap
-        ? `unverified sender (SPF/DKIM/DMARC): ${gap}`
+      const reasonDetail = gap ?? n.senderAuthConsulted;
+      const reason = reasonDetail
+        ? `unverified sender (SPF/DKIM/DMARC): ${reasonDetail}`
         : 'unverified sender (SPF/DKIM/DMARC)';
       // Default: route to the review queue. If the partner opted into dropping
       // unverified mail, silently ignore it instead (audit row only, no review

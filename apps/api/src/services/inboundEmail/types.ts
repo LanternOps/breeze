@@ -34,10 +34,14 @@ export interface SenderAuth {
    * received mail that the tenant's own Exchange stamped as sent from inside the
    * tenant (normalizeGraphMessage, #8299). That proves the message originated
    * inside the tenant, not that the From address is the real sender: a tenant user
-   * or connector allowed to send as another address passes too. Absent: `verified`
-   * is the DMARC result.
+   * or connector allowed to send as another address passes too.
+   * 'exchange-online': the DMARC verdict came from Exchange Online's own stamp on
+   * external mail, for the message's From domain (#10862).
+   * 'trusted-arc-sealer': the verdict came from a gateway the connection lists as a
+   * trusted ARC sealer, whose seal verified and whose verdict is for the From domain
+   * (#10862). Absent: `verified` is the DMARC result of a provider stamp.
    */
-  source?: 'exchange-internal';
+  source?: 'exchange-internal' | 'exchange-online' | 'trusted-arc-sealer';
 }
 
 // Why a message ended up WITHOUT a usable provider sender-auth verdict, as opposed to a
@@ -110,6 +114,11 @@ export interface NormalizedInboundEmail {
   // obtained (vs a genuine DMARC fail) — observability for the silent-quarantine failure
   // modes. Absent on a normal pass/fail. See SenderAuthDiagnostic.
   senderAuthDiagnostic?: SenderAuthDiagnostic;
+  // Which sender-auth source was read and what it said, for the quarantine reason on
+  // a Microsoft 365 mailbox (#10862). Ordinary unverified mail, so unlike the
+  // diagnostic above it raises no alert. Fixed text plus a sealer from the
+  // connection's own list: never a value taken from the message.
+  senderAuthConsulted?: string;
   /**
    * Provider-reported attachments. Across the queue this is METADATA ONLY
    * (Mailgun emits [] today; M365 emits [] and sets `hasAttachments`). The
