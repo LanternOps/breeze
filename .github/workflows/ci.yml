@@ -3583,6 +3583,21 @@ jobs:
             fi
             echo "::warning::cached .deb install failed; falling back to the network install"
             sudo timeout --kill-after=15s 30s dpkg --configure -a || true
+            # The closure is seeded on one image patch level and restored on
+            # all of them (the key omits ImageVersion, see the action). When a
+            # -dev package pins a runtime library version the current image
+            # does not carry (libbrotli-dev = libbrotli1 1.2.0-3ubuntu0.1 on an
+            # image shipping 1.2.0-3build1, 2026-11-04), dpkg leaves it
+            # unpacked-but-unconfigured. apt then resolves the network install
+            # against that stale pin and fails "Unmet dependencies", so drop
+            # everything the failed install left behind before falling back.
+            HALF_INSTALLED=$(dpkg-query -W -f='${binary:Package} ${db:Status-Abbrev}\n' 2>/dev/null \
+              | awk 'substr($2, 2, 1) !~ /[inc]/ { print $1 }')
+            if [ -n "$HALF_INSTALLED" ]; then
+              echo "removing half-installed packages left by the cached install: $HALF_INSTALLED"
+              # shellcheck disable=SC2086
+              sudo timeout --kill-after=15s 60s dpkg --remove --force-depends --force-remove-reinstreq $HALF_INSTALLED || true
+            fi
           fi
           # Network path. Download into a private archives dir so the .debs can
           # be copied into the cache dir once the install succeeds.
@@ -3643,7 +3658,7 @@ jobs:
             fi
             exit 0
           fi
-          echo "::error::Failed to install Tauri system dependencies (apt error or phase deadline); re-run to land on a fresh runner (#9847)."
+          echo "::error::Failed to install Tauri system dependencies (apt error or phase deadline); re-run to land on a fresh runner (#9847, #11030)."
           exit 1
 
       - name: Setup Rust
