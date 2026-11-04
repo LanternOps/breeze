@@ -278,6 +278,25 @@ curl -X PATCH https://breeze.example.com/api/v1/orgs/partners/me \
   }'
 ```
 
+### How partner settings reach organizations
+
+On **Settings → Partner**, each setting that affects organizations has a badge beside its label that says how your value applies. A legend under the tab heading explains them.
+
+| Badge | What it means |
+|---|---|
+| **Locks orgs** | While it is set, every organization uses your value. An organization's own value is ignored. |
+| **Locks orgs when enabled** | While enabled, every organization uses your value. While disabled, organizations use their own. |
+| **Org can override** | Your value is the default. An organization that sets its own value uses that instead. |
+| **Org can override, up to …** | Your value is the default, and an organization's own value cannot go above your ceiling. |
+| **Partner-wide** | Organizations have no setting of their own. Your value applies to all of them. |
+
+Under each badged setting, a line summarizes what your organizations resolve to, for example "Default for 12 orgs · 2 override". To see which organizations are behind a count:
+
+1. Select the count. A panel lists the organizations, with each one's own value and whether it is **In effect** or **Not in effect**.
+2. Select an organization to open the matching tab of its own settings and change its value there. The list itself is read-only.
+
+On very wide screens the list opens in a column beside the settings, and shows a summary for the tab until you pick a count. While you are editing, the line describes the saved value, not your unsaved draft. The breakdown needs full partner organization access; users who can reach only selected organizations see "Org breakdown requires full partner access" instead.
+
 ### Service Management mode
 
 Not every MSP runs its service desk in Breeze. **Service Management mode** is a

@@ -109,6 +109,7 @@ export function toDeviceListRow(raw: ApiDeviceRow): DeviceListRow {
       cpuCores: typeof hardware.cpuCores === 'number' ? hardware.cpuCores : undefined,
       ramTotalMb: typeof hardware.ramTotalMb === 'number' ? hardware.ramTotalMb : undefined,
       diskTotalGb: typeof hardware.diskTotalGb === 'number' ? hardware.diskTotalGb : undefined,
+      serialNumber: typeof hardware.serialNumber === 'string' ? hardware.serialNumber : undefined,
     } : undefined,
     // Reliability column (#1720): score is null until the reliability
     // worker has computed one for the device; the column renders a dash

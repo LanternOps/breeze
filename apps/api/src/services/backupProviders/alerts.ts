@@ -439,8 +439,9 @@ export async function evaluateProviderAlerts(
       if (alertId) {
         raised += 1;
       } else {
-        // The insert produced no row or the publish rolled it back, so nothing
-        // was announced. For a workload, a null can also mean another open alert
+        // The insert produced no row, so nothing will be announced (a failed
+        // publish no longer returns null: the outbox keeps the row and retries,
+        // #10926). For a workload, a null can also mean another open alert
         // holds the owner slot unseen by this pass, which is a bug worth a report. The row still sits in the `raised` phase, and the next
         // sync's dedupe finds no open alert and retries — which is why the
         // hysteresis state is NOT rolled back here.

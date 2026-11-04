@@ -122,6 +122,15 @@ POST /api/v1/orgs/partners
 
 Returns the created partner object with a `201` status.
 
+### Reserved Names
+
+The partner name heads every prompt Breeze shows to end users on their devices, such as consent, elevation and restart prompts. To stop those prompts looking like they come from the operating system vendor, a partner or organisation name made up only of a reserved brand and generic words is refused with a `400` when it is created or renamed. Examples include "Microsoft", "Windows Security", "Apple Help Desk" and "Microsoft 365 Support".
+
+- The reserved brands are Microsoft, Windows, Apple, macOS, iCloud, Google and Azure. Run-together, letter-spaced, accented and trademark-symbol variants ("MicrosoftSupport", "M i c r o s o f t", "Microsoft™") are refused too.
+- A name that includes your own company name is accepted, for example "Contoso IT Support".
+- The check applies when creating or updating a partner, when updating your own partner settings, and when creating or updating an organisation, including through the Partner API.
+- If a partner already has such a name, devices ignore it and show **Your IT support team** in prompts instead.
+
 ### Soft Deletes for Partners
 
 When a partner is deleted via `DELETE /partners/:id`, the record is not removed from the database. Instead, the `deletedAt` timestamp is set. All list and detail queries filter out records where `deletedAt` is not null. This preserves referential integrity and allows potential restoration.
@@ -270,6 +279,16 @@ Which tabs appear depends on the partner's
 [Service Management mode](/reference/partner-management/#service-management-mode):
 `off` hides both Tickets and Billing, and `external` hides Billing while keeping
 Tickets.
+
+### Organisation Default Settings
+
+The **Default settings** card on the organisation's settings (**General** tab) holds its default policies, auto-enrollment, agent update policy and maintenance window. Each of these four shows where its value comes from:
+
+- **Inherited default** -- the organisation has no value of its own and uses the default.
+- **Set for this organization** -- the organisation has its own value. A **Reset to default** action appears next to it; click it and then **Save defaults** to drop the override so the field inherits again.
+- **Managed by partner** -- the partner has locked the field. It can't be edited or reset here.
+
+Saving writes only the fields you changed or reset. Fields you didn't touch keep inheriting, or keep the value already stored, so editing one default no longer turns every displayed default into an organisation override.
 
 ### Soft Deletes for Organisations
 
@@ -566,6 +585,7 @@ These endpoints allow partner-scoped users to view and update their own partner 
 | `GET` | `/orgs/organizations` | `partner`, `system` | List organisations with pagination. Supports `partnerId`, `page`, and `limit` query params. |
 | `POST` | `/orgs/organizations` | `partner`, `system` | Create a new organisation. Partner-scoped users do not need to specify `partnerId`. |
 | `GET` | `/orgs/organizations/:id` | `partner`, `system` | Get an organisation by ID. Partner-scoped users can only access their own organisations. |
+| `GET` | `/orgs/organizations/:id/effective-settings` | `organization`, `partner`, `system` | The organisation's settings after partner settings are applied. See [Effective settings](#effective-settings) below. |
 | `PATCH` | `/orgs/organizations/:id` | `partner`, `system` | Update an organisation. The `partnerId` cannot be changed. Returns `400` if no fields provided. |
 | `DELETE` | `/orgs/organizations/:id` | `partner`, `system` | Soft-delete an organisation. Sets `deletedAt`. Returns `{ success: true }`. |
 | `PATCH` | `/orgs/organizations/order` | `partner` | Set the partner's preferred organisation display order. Requires **full partner org access** (`orgAccess: 'all'`, or system scope) — a `partner`-scoped user with a restricted `orgAccess` gets `403`. Body `{ "orderedIds": ["<org-uuid>", ...] }`; unknown or deleted IDs are dropped, omitted orgs are appended in registration order. Persisted to partner settings and reflected by the list endpoints. Returns the sanitised `{ organizationOrder }`. |
@@ -573,6 +593,17 @@ These endpoints allow partner-scoped users to view and update their own partner 
 <Aside type="note">
   There are two list endpoints for organisations. `GET /orgs/` is the simpler variant used by organisation-scoped users to retrieve their own organisation. `GET /orgs/organizations` is the paginated variant for partner and system users.
 </Aside>
+
+### Effective settings
+
+`GET /orgs/organizations/:id/effective-settings` returns:
+
+| Field | Description |
+|---|---|
+| `effective` | Settings by category, with partner-set values merged over the organisation's own. Secret values are masked. For a field listed in `partnerDefaults`, this is the partner's value, which applies only when the organisation has none of its own. |
+| `locked` | Dot paths (for example `security.requireMfa`) of partner-set fields whose partner value is in force over the organisation's. A field that locks only while enabled, such as the partner's event log forwarding destination, is listed only while it is enabled with an endpoint. |
+| `partnerDefaults` | Dot paths (for example `defaults.agentVersionPins`) of partner-set fields the organisation may override. The partner value is only a default. Never overlaps `locked`. |
+| `aiApprovalTimeout` | The interactive AI approval timeout and where it comes from. |
 
 ### Site Endpoints
 
@@ -764,6 +795,10 @@ A partner-scoped user is missing their `partnerId` in the authentication context
 ### "partnerId is required for system scope" (400)
 
 System-scoped users must explicitly provide `partnerId` when creating an organisation because they are not implicitly associated with any partner.
+
+### "This name is reserved" (400)
+
+The partner or organisation name is only a reserved brand name, such as "Microsoft Support". Include your own company name. See [Reserved Names](#reserved-names).
 
 ### "No updates provided" (400)
 

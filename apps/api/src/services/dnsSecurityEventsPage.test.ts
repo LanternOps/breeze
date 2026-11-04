@@ -69,6 +69,15 @@ describe('resolveDnsEventsWindow', () => {
     });
   });
 
+  it('accepts the web "Last 90 days" preset: start computed client-side is slightly older than 90 days by the time the server checks (#10469)', () => {
+    // Request latency and client clock skew both push `now - start` past
+    // exactly 90 days; a preset the UI offers must not be refused for that.
+    for (const lateByMs of [1, 2_000, 30 * 60_000]) {
+      const start = new Date(NOW.getTime() - 90 * DAY_MS - lateByMs);
+      expect(resolveDnsEventsWindow(start, null, NOW)).toEqual({ ok: true, start, end: null });
+    }
+  });
+
   it('rejects an explicit range wider than 90 days', () => {
     const end = new Date('2026-10-01T00:00:00.000Z');
     const start = new Date(end.getTime() - 91 * DAY_MS);
