@@ -157,7 +157,7 @@ func AttachOnce(r PFRunner) error {
 	if lost := liveRulesNotDeclared(live.Rules, declared); len(lost) > 0 {
 		return ErrIncompatible{Reason: fmt.Sprintf("attaching would destroy a live rule %s does not restore: %s", pfConfPath, lost[0])}
 	}
-	if _, _, err := r.Pfctl(strings.TrimRight(conf, "\n")+"\n"+pfHookLine+"\n", "-f", "-"); err != nil {
+	if _, _, err := r.Pfctl(pfAttachText(conf), "-f", "-"); err != nil {
 		return fmt.Errorf("load the pf main ruleset: %w", err)
 	}
 	present, err := ParentHookPresent(r)
@@ -168,6 +168,35 @@ func AttachOnce(r PFRunner) error {
 		return errors.New("the pf main ruleset loaded, but the isolation anchor is not attached")
 	}
 	return nil
+}
+
+// pfAttachText is /etc/pf.conf with our anchor point inserted ahead of its first
+// filter rule, so ahead of `anchor "com.apple/*"`. Apple's sub-anchors change at
+// run time (AirDrop inserts quick passes on awdl0) and are evaluated in order: a
+// quick pass in one of them would decide a packet before our drop ever ran. Going
+// first, our quick rules decide every packet while isolated, and an empty anchor
+// decides nothing, so the rest of the ruleset behaves as before. Translation and
+// normalization rules come before any filter rule, so pf's ordering still holds.
+func pfAttachText(conf string) string {
+	var lines []string
+	if trimmed := strings.TrimRight(conf, "\n"); trimmed != "" {
+		lines = strings.Split(trimmed, "\n")
+	}
+	continued := false
+	for n, raw := range lines {
+		starts := !continued
+		continued = strings.HasSuffix(strings.TrimRight(raw, " \t"), `\`)
+		logical := pfLogicalLines(raw)
+		if !starts || len(logical) == 0 {
+			continue
+		}
+		switch strings.Fields(logical[0])[0] {
+		case "anchor", "pass", "block", "antispoof":
+			out := append(append(slices.Clone(lines[:n]), pfHookLine), lines[n:]...)
+			return strings.Join(out, "\n") + "\n"
+		}
+	}
+	return strings.Join(append(lines, pfHookLine), "\n") + "\n"
 }
 
 // ParentHookPresent reports whether the main ruleset references our anchor. Any

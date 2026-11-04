@@ -367,35 +367,48 @@ func TestParseRouteInterface(t *testing.T) {
 	}
 }
 
-func TestAttachOnceLoadsStockRulesetOnceWithOurAnchorLast(t *testing.T) {
+func TestAttachOnceLoadsStockRulesetOnceWithOurAnchorFirst(t *testing.T) {
 	f := newFakePF(t)
-	var loaded string
-	f.onCall = func(call string) {
-		if call == "-f -" {
-			loaded = "seen"
-		}
-	}
 	if err := AttachOnce(f); err != nil {
 		t.Fatal(err)
 	}
-	if loaded == "" || f.count("-f -") != 1 {
-		t.Fatalf("main ruleset loads = %d\n%v", f.count("-f -"), f.calls)
+	if got := f.count("-f -"); got != 1 {
+		t.Fatalf("main ruleset loads = %d\n%v", got, f.calls)
 	}
 	present, err := ParentHookPresent(f)
 	if err != nil || !present {
 		t.Fatalf("hook present=%v err=%v", present, err)
 	}
-	if last := f.rules[len(f.rules)-1]; last != `anchor "com.breeze/isolation" all` {
-		t.Fatalf("our anchor must come after Apple's: %v", f.rules)
+	// Ahead of Apple's filter anchor, whose run-time sub-anchors could
+	// otherwise pass a packet quick before our drop is evaluated.
+	want := []string{`scrub-anchor "com.apple/*" all fragment reassemble`, `anchor "com.breeze/isolation" all`, `anchor "com.apple/*" all`}
+	if strings.Join(f.rules, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("filter order: %v", f.rules)
 	}
-	// Apple's anchor points, and its load line, must survive the load.
-	for _, want := range []string{"com.apple"} {
-		found := false
-		for _, a := range f.anchors {
-			found = found || a == want
-		}
-		if !found {
-			t.Fatalf("load dropped %s: %v", want, f.anchors)
+	if strings.Join(f.anchors, ",") != "com.apple,com.breeze" {
+		t.Fatalf("load dropped an anchor: %v", f.anchors)
+	}
+}
+
+func TestPFAttachText(t *testing.T) {
+	stock := pfFixture(t, "stock-sequoia.conf")
+	got := pfAttachText(stock)
+	if want := strings.Replace(stock, "anchor \"com.apple/*\"\nload", pfHookLine+"\nanchor \"com.apple/*\"\nload", 1); got != want {
+		t.Fatalf("got:\n%s", got)
+	}
+	// Every original line survives, in order: nothing is rewritten.
+	if strings.Replace(got, pfHookLine+"\n", "", 1) != stock {
+		t.Fatal("the load text is not the file plus one line")
+	}
+	for _, tc := range []struct{ conf, want string }{
+		{"", pfHookLine + "\n"},
+		{"set skip on lo0\n", "set skip on lo0\n" + pfHookLine + "\n"},
+		{"# anchor \"x\"\nblock drop all\n", "# anchor \"x\"\n" + pfHookLine + "\nblock drop all\n"},
+		{"nat on en0 \\\n  pass from any to any\npass all\n", "nat on en0 \\\n  pass from any to any\n" + pfHookLine + "\npass all\n"},
+		{"rdr-anchor \"r\"\nanchor \"a\"\n", "rdr-anchor \"r\"\n" + pfHookLine + "\nanchor \"a\"\n"},
+	} {
+		if got := pfAttachText(tc.conf); got != tc.want {
+			t.Errorf("pfAttachText(%q) = %q, want %q", tc.conf, got, tc.want)
 		}
 	}
 }
