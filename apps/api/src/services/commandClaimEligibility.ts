@@ -4,6 +4,7 @@ import { deviceCommands, deviceNetworkIsolations } from '../db/schema';
 import { isResolvedTerminalIsolationState, RESOLVED_TERMINAL_STATES } from '@breeze/shared';
 import { isolationAgentUpgradeGate } from '../routes/agents/agentUpdatePolicy';
 import { isNetworkIsolationCommand } from './networkIsolation/bypass';
+import { isolationDeliveryRefusal } from './networkIsolation/deliveryBinding';
 import {
   propagateCancelledDeviceCommands,
   type DeviceCommandCancelSubject,
@@ -291,7 +292,7 @@ function updatesAgentBinary(row: CommandRevalidationRow): boolean {
 }
 
 function needsIsolationRevalidation(row: CommandRevalidationRow): boolean {
-  return updatesAgentBinary(row) || (row.type === 'execute_containment' && isNetworkIsolationCommand(row.type, row.payload));
+  return updatesAgentBinary(row) || isNetworkIsolationCommand(row.type, row.payload);
 }
 
 /**
@@ -304,18 +305,10 @@ export async function revalidateCommandForDelivery(
 ): Promise<ClaimCancelReason | null> {
   // Built in rather than side-effect registered: HTTP and WebSocket delivery must
   // always re-derive the episode authority, including for legacy queued commands.
-  if (row.type === 'execute_containment' && isNetworkIsolationCommand(row.type, row.payload)) {
-    const payload = row.payload as Record<string, unknown>;
-    const parameters = payload.parameters;
-    if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return 'isolation_episode_mismatch';
-    const { isolationId, generation } = parameters as Record<string, unknown>;
-    if (typeof isolationId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(isolationId) ||
-      typeof generation !== 'number' || !Number.isSafeInteger(generation) || generation < 1) return 'isolation_episode_mismatch';
-    const [episode] = await reader.select({ id: deviceNetworkIsolations.id, deviceId: deviceNetworkIsolations.deviceId,
-      generation: deviceNetworkIsolations.generation, state: deviceNetworkIsolations.state, desiredState: deviceNetworkIsolations.desiredState,
-    }).from(deviceNetworkIsolations).where(and(eq(deviceNetworkIsolations.id, isolationId), eq(deviceNetworkIsolations.deviceId, row.deviceId))).limit(1);
-    if (!episode || episode.id !== isolationId || episode.deviceId !== row.deviceId || episode.generation !== generation ||
-      isResolvedTerminalIsolationState(episode.state) || episode.desiredState !== 'isolated') return 'isolation_episode_mismatch';
+  // Both isolate and release are bound to the row the service issued (#10919).
+  if (isNetworkIsolationCommand(row.type, row.payload)) {
+    const refusal = await isolationDeliveryRefusal(reader, row);
+    if (refusal) return refusal;
   }
   if (updatesAgentBinary(row)) {
     const payload = row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)

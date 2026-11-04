@@ -1,16 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-const mocks = vi.hoisted(() => ({ propagate: vi.fn() }));
+const mocks = vi.hoisted(() => ({ propagate: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('../commandCancelPropagation', () => ({ propagateCancelledDeviceCommands: mocks.propagate }));
 vi.mock('../partnerTrust.commands', () => ({
   createDeviceExecuteBatchGate: () => async () => {}, TrustDeniedError: class extends Error {},
 }));
-vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../sentry', () => ({ captureException: vi.fn(), captureMessage: mocks.captureMessage }));
 import { partitionClaimable, revalidateCommandForDelivery } from '../commandClaimEligibility';
 import { deviceNetworkIsolations } from '../../db/schema';
 const device = { id: '11111111-1111-4111-8111-111111111111', orgId: '22222222-2222-4222-8222-222222222222', status: 'online', orgType: 'customer', installIncarnation: 1 };
 const isolationId = '33333333-3333-4333-8333-333333333333';
-const episode = { id: isolationId, deviceId: device.id, state: 'verified', desiredState: 'isolated', generation: 2 };
+const episode = { id: isolationId, deviceId: device.id, state: 'verified', desiredState: 'isolated', generation: 2, commandId: 'command', releaseCommandId: null as string | null };
 function reader(rows: unknown[]) {
   const chain = { from: vi.fn(), where: vi.fn(), limit: vi.fn(async () => rows) };
   chain.from.mockReturnValue(chain); chain.where.mockReturnValue(chain);
@@ -101,9 +101,97 @@ describe('network isolation command bypasses', () => {
     expect(await revalidateCommandForDelivery(tx as never, { ...row({}), type: 'dev_update', payload: { version: '1.0.0', component: 'desktop-helper' } })).toBeNull();
     expect(tx.select).not.toHaveBeenCalled();
   });
-  it('preserves release delivery without consulting the start binding', async () => {
-    const { tx } = reader([]);
-    expect(await revalidateCommandForDelivery(tx as never, { ...row({}), type: 'release_containment' })).toBeNull();
-    expect(tx.select).not.toHaveBeenCalled();
+  describe('delivery is bound to the episode the service issued (#10919)', () => {
+    const release = (payload: unknown = { isolationId, generation: 2, reason: 'Operator release' }) =>
+      ({ ...row({}), id: 'release-command', type: 'release_containment', payload });
+    const refusal = (commandId: string, commandType: string, reason: string) => [
+      expect.stringContaining('not the episode'),
+      expect.objectContaining({
+        eventCode: 'network_isolation_command_unbound', level: 'error',
+        tags: expect.objectContaining({ deviceId: device.id, commandId, commandType, reason }),
+      }),
+    ];
+
+    it('delivers the isolate command the episode row names', async () => {
+      const { tx } = reader([episode]);
+      expect(await revalidateCommandForDelivery(tx as never, row({ isolationId, generation: 2 }))).toBeNull();
+      expect(mocks.captureMessage).not.toHaveBeenCalled();
+    });
+    it('refuses a forged isolate naming a real episode and its generation, and raises a Sentry event', async () => {
+      const { tx } = reader([{ ...episode, commandId: 'the-real-command' }]);
+      const result = await partitionClaimable(tx as never, device, [row({ isolationId, generation: 2, allow: [{ scope: 'any' }] })]);
+      expect(result.cancelled).toEqual([{ id: 'command', reason: 'isolation_episode_mismatch' }]);
+      expect(result.claimable).toEqual([]);
+      expect(mocks.captureMessage).toHaveBeenCalledTimes(1);
+      expect(mocks.captureMessage.mock.calls[0]).toEqual(refusal('command', 'execute_containment', 'not_episode_command'));
+    });
+    it('refuses an isolate when the episode names no command at all', async () => {
+      const { tx } = reader([{ ...episode, commandId: null }]);
+      expect(await revalidateCommandForDelivery(tx as never, row({ isolationId, generation: 2 }))).toBe('isolation_episode_mismatch');
+      expect(mocks.captureMessage).toHaveBeenCalledTimes(1);
+    });
+    it.each<[string, unknown, unknown[], string]>([
+      ['legacy payload', undefined, [], 'no_binding'],
+      ['malformed id', { isolationId: 'forged', generation: 2 }, [], 'no_binding'],
+      ['unknown episode', { isolationId: '44444444-4444-4444-8444-444444444444', generation: 2 }, [], 'no_episode'],
+    ])('reports an isolate with %s', async (_name, parameters, episodes, reason) => {
+      const { tx } = reader(episodes);
+      expect(await revalidateCommandForDelivery(tx as never, row(parameters))).toBe('isolation_episode_mismatch');
+      expect(mocks.captureMessage.mock.calls[0]).toEqual(refusal('command', 'execute_containment', reason));
+    });
+    it.each<[string, Record<string, unknown>, unknown]>([
+      ['stale generation', {}, { isolationId, generation: 1 }],
+      ['resolved episode', { state: 'released' }, { isolationId, generation: 2 }],
+      ['release requested', { desiredState: 'released' }, { isolationId, generation: 2 }],
+    ])("cancels the episode's own isolate quietly on %s: ordinary lifecycle, not a forgery", async (_name, patch, parameters) => {
+      const { tx } = reader([{ ...episode, ...patch }]);
+      expect(await revalidateCommandForDelivery(tx as never, row(parameters))).toBe('isolation_episode_mismatch');
+      expect(mocks.captureMessage).not.toHaveBeenCalled();
+    });
+
+    it('delivers the release command the episode row names, on a resolved tombstone too', async () => {
+      for (const state of ['release_requested', 'released', 'expired']) {
+        const { tx } = reader([{ ...episode, state, desiredState: 'released', releaseCommandId: 'release-command' }]);
+        expect(await revalidateCommandForDelivery(tx as never, release())).toBeNull();
+      }
+      expect(mocks.captureMessage).not.toHaveBeenCalled();
+    });
+    it('refuses a forged release of an episode still meant to be isolated', async () => {
+      const { tx } = reader([episode]);
+      const result = await partitionClaimable(tx as never, device, [release()]);
+      expect(result.cancelled).toEqual([{ id: 'release-command', reason: 'isolation_episode_mismatch' }]);
+      expect(result.claimable).toEqual([]);
+      expect(mocks.captureMessage.mock.calls[0]).toEqual(refusal('release-command', 'release_containment', 'not_episode_command'));
+    });
+    it('cancels a superseded release quietly: a re-release replaced it and the newest one is delivered', async () => {
+      const { tx } = reader([{ ...episode, desiredState: 'released', state: 'release_requested', releaseCommandId: 'newer-release' }]);
+      expect(await revalidateCommandForDelivery(tx as never, release())).toBe('isolation_episode_mismatch');
+      expect(mocks.captureMessage).not.toHaveBeenCalled();
+    });
+    it.each<[string, unknown, unknown[], string]>([
+      ['no payload', undefined, [], 'no_binding'],
+      ['malformed id', { isolationId: 'episode', generation: 2 }, [], 'no_binding'],
+      ['unknown episode', { isolationId, generation: 2 }, [], 'no_episode'],
+    ])('reports a release with %s', async (_name, payload, episodes, reason) => {
+      const { tx } = reader(episodes);
+      const candidate = { ...release(), payload };
+      expect(await revalidateCommandForDelivery(tx as never, candidate)).toBe('isolation_episode_mismatch');
+      expect(mocks.captureMessage.mock.calls[0]).toEqual(refusal('release-command', 'release_containment', reason));
+    });
+    it('scopes the episode read to the claiming device', async () => {
+      const { tx, chain } = reader([]);
+      await revalidateCommandForDelivery(tx as never, release());
+      const query = new PgDialect().sqlToQuery(chain.where.mock.calls[0]![0]);
+      expect(query.params).toEqual(expect.arrayContaining([isolationId, device.id]));
+    });
+    it('holds rather than delivers when the binding read fails, for release too', async () => {
+      for (const candidate of [release(), row({ isolationId, generation: 2 })]) {
+        const { tx, chain } = reader([]);
+        chain.limit.mockRejectedValueOnce(new Error('database unavailable'));
+        const result = await partitionClaimable(tx as never, device, [candidate]);
+        expect(result.held).toEqual([{ id: candidate.id, reason: 'eligibility_check_failed' }]);
+        expect(result.claimable).toEqual([]);
+      }
+    });
   });
 });
