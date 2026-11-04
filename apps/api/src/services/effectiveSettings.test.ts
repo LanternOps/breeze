@@ -419,6 +419,17 @@ describe('aiBudgets.enabled partner lock (#9666)', () => {
     expect((effective.aiBudgets as Record<string, unknown>).enabled).toBe(false);
     expect(locked).toContain('aiBudgets.enabled');
   });
+
+  it('an explicit partner enabled:true wins over an org that turned AI off, and locks', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({ aiBudgets: { enabled: true } }),
+      mockOrgBudgetRow({ enabled: false }),
+    );
+    const { effective, locked } = await getEffectiveOrgSettings('org1');
+    expect((effective.aiBudgets as Record<string, unknown>).enabled).toBe(true);
+    expect(locked).toContain('aiBudgets.enabled');
+  });
 });
 
 describe('getEffectiveAiBudget toolRateLimitMultiplier (#6476)', () => {

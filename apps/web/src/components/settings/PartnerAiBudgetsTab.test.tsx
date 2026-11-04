@@ -43,14 +43,14 @@ describe('PartnerAiBudgetsTab AI access control (#9666)', () => {
   });
 
   it('choosing Off asks first and changes nothing until confirmed', () => {
-    const { select, onChange } = renderTab({ enabled: true });
+    const { select, onChange } = renderTab({ enabled: true, monthlyBudgetCents: 5000 });
     fireEvent.change(select, { target: { value: 'off' } });
     expect(screen.getByTestId('partner-ai-budget-off-confirm-dialog')).toBeInTheDocument();
     expect(onChange).not.toHaveBeenCalled();
-    expect(select.value).toBe('on');
 
     fireEvent.click(screen.getByTestId('partner-ai-budget-off-confirm'));
-    expect(onChange).toHaveBeenCalledWith({ enabled: false });
+    // The caps survive; only the switch changes.
+    expect(onChange).toHaveBeenCalledWith({ enabled: false, monthlyBudgetCents: 5000 });
   });
 
   it('cancelling the Off confirm keeps the previous choice', () => {

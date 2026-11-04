@@ -267,8 +267,8 @@
     "aiAccess": "IA per tutte le organizzazioni",
     "aiAccessOptions": {
       "notSet": "Non impostato, decide ogni organizzazione",
-      "on": "Attiva per ogni organizzazione",
-      "off": "Disattiva per ogni organizzazione"
+      "on": "Attivata per ogni organizzazione",
+      "off": "Disattivata per ogni organizzazione"
     },
     "aiAccessHelp": "Questo è l'interruttore IA dei tuoi clienti, non un'impostazione di budget. Se impostato, sostituisce l'interruttore IA di ogni organizzazione. I campi di budget qui sotto si applicano in ogni caso.",
     "offWarning": "L'IA è disattivata per ogni organizzazione di questo partner. Chat, helper, componenti aggiuntivi di Office, agenti IA e arricchimento vengono rifiutati finché non modifichi questa impostazione.",
