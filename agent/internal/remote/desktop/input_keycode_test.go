@@ -128,17 +128,58 @@ func TestWinKeyInputFromCode(t *testing.T) {
 	}
 }
 
-// TestWinKeyInputCodeOutsideTableUsesKey: letters, digits and symbols are
-// deliberately not in the scancode table. A scancode is a physical position,
-// so KeyA on an AZERTY remote would type "q"; the VK path keeps today's
-// layout behaviour. Lock keys and Pause stay on the VK path as well (Pause is
-// an E1 sequence, and lock keys are driven by state sync).
+// TestWinKeyInputPrintableKeysFromCode (#3920): the main typing block is
+// injected by scancode when the viewer sends a code, i.e. in Physical keys
+// mode. The key-name path maps punctuation names to US-layout VK_OEM_* codes,
+// which sit on different keys under French/Belgian AZERTY, Spanish or German
+// layouts (the ' key typed ² on French, - typed ç on Spanish). A scancode is
+// what the remote layout resolves itself, so a same-layout session types
+// exactly what the operator pressed.
+func TestWinKeyInputPrintableKeysFromCode(t *testing.T) {
+	cases := map[string]uint16{
+		"Backquote": 0x29,
+		"Digit1":    0x02, "Digit2": 0x03, "Digit3": 0x04, "Digit4": 0x05, "Digit5": 0x06,
+		"Digit6": 0x07, "Digit7": 0x08, "Digit8": 0x09, "Digit9": 0x0A, "Digit0": 0x0B,
+		"Minus": 0x0C, "Equal": 0x0D,
+		"KeyQ": 0x10, "KeyW": 0x11, "KeyE": 0x12, "KeyR": 0x13, "KeyT": 0x14,
+		"KeyY": 0x15, "KeyU": 0x16, "KeyI": 0x17, "KeyO": 0x18, "KeyP": 0x19,
+		"BracketLeft": 0x1A, "BracketRight": 0x1B,
+		"KeyA": 0x1E, "KeyS": 0x1F, "KeyD": 0x20, "KeyF": 0x21, "KeyG": 0x22,
+		"KeyH": 0x23, "KeyJ": 0x24, "KeyK": 0x25, "KeyL": 0x26,
+		"Semicolon": 0x27, "Quote": 0x28, "Backslash": 0x2B,
+		"KeyZ": 0x2C, "KeyX": 0x2D, "KeyC": 0x2E, "KeyV": 0x2F, "KeyB": 0x30,
+		"KeyN": 0x31, "KeyM": 0x32, "Comma": 0x33, "Period": 0x34, "Slash": 0x35,
+	}
+	for code, scan := range cases {
+		for _, up := range []bool{false, true} {
+			// key is the layout-produced name; it must be ignored once code wins.
+			got, ok := winKeyInputFor(code, "q", up, fakeScan)
+			if !ok {
+				t.Fatalf("%s: not mapped", code)
+			}
+			flags := uint32(winKeyeventfScancode)
+			if up {
+				flags |= winKeyeventfKeyUp
+			}
+			want := winKeyInput{VK: 0, Scan: scan, Flags: flags}
+			if got != want {
+				t.Fatalf("%s up=%v: got %+v, want %+v", code, up, got, want)
+			}
+		}
+	}
+}
+
+// TestWinKeyInputCodeOutsideTableUsesKey: keys whose VK is layout-independent
+// (Enter, F-row, Space, editing keys) stay on the key-name path, as do lock
+// keys and Pause (Pause is an E1 sequence, and lock keys are driven by state
+// sync). An unknown code falls back to the name, never an error.
 func TestWinKeyInputCodeOutsideTableUsesKey(t *testing.T) {
 	cases := []struct{ code, key string }{
-		{"KeyA", "a"},
-		{"Digit1", "1"},
-		{"Minus", "-"},
 		{"Enter", "enter"},
+		{"Space", "space"},
+		{"Backspace", "backspace"},
+		{"Tab", "tab"},
+		{"Escape", "escape"},
 		{"F5", "f5"},
 		{"CapsLock", "capslock"},
 		{"NumLock", "numlock"},
