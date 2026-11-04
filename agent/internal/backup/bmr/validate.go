@@ -5,11 +5,12 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // goos defaults to runtime.GOOS; tests override it to exercise a specific
@@ -23,7 +24,7 @@ var goos = runtime.GOOS
 // of shelling out to a real systemctl/sc binary that may not exist (or may
 // behave unpredictably) on the test host.
 var runServiceProbeCommand = func(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
+	return procspawn.Command(name, args...).CombinedOutput()
 }
 
 // windowsCriticalServices is the fixed set of Windows service names a BMR

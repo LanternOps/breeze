@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // This file holds the sqlcmd invocation plumbing shared by backup.go,
@@ -20,7 +22,7 @@ type commandRunner func(name string, args ...string) ([]byte, error)
 
 // execCommandRunner is the production commandRunner.
 func execCommandRunner(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
+	return procspawn.Command(name, args...).CombinedOutput()
 }
 
 // sqlcmdRunner is the exec seam used by runSqlcmd. Tests replace it.

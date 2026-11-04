@@ -11,3 +11,6 @@ import (
 // cannot scope them by process at all.
 func prepare(*exec.Cmd)        {}
 func prepareAttr(*os.ProcAttr) {}
+
+// EnableInAgentCgroup does nothing off Linux.
+func EnableInAgentCgroup() error { return nil }
