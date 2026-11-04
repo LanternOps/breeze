@@ -502,7 +502,14 @@ See [Backup & Recovery](/backup/overview/) for configuration details.
 
 The AI can create and manage security incidents, execute containment actions, release a network isolation, and collect forensic evidence. These tools are available in AI chat and to AI agents, except `release_containment`, which AI agents can never call or propose.
 
-Network isolation is Windows-only until Linux and macOS support ship. The AI can ask to lift an isolation with `release_containment`. That is a **four-eyes** action: a second person approves it, or, if you are the only eligible approver, you approve it yourself with a Touch ID / Windows Hello verification. The approval is bound to the isolation as it was when the request was made. If the isolation is extended, released by someone else, or its device moves to another organization before the approval runs, the release is refused and nothing is sent to the device; ask the AI again. The console release control works as before and needs no second approver. The MCP server never isolates or releases a device, even for a principal allowed to run Tier 3 tools unattended. See [Network isolation](/features/network-isolation/) for reachability, expiry, and the break-glass runbook.
+Network isolation is Windows-only until Linux and macOS support ship. See [Network isolation](/features/network-isolation/) for reachability, expiry, and the break-glass runbook.
+
+The AI can ask to lift an isolation with `release_containment`:
+
+- It is a **four-eyes** action. A second person approves it. If you are the only eligible approver, you approve it yourself with a Touch ID / Windows Hello verification.
+- The approval covers one isolation, as it stood when the AI asked. If the isolation is extended, released by someone else, or its device moves to another organization before the approval runs, the release is refused and nothing is sent to the device. Ask the AI again.
+- The console release control works as before and needs no second approver.
+- The MCP server never isolates or releases a device, even for a principal allowed to run Tier 3 tools unattended.
 
 | Tool | Tier | Description |
 |------|------|-------------|

@@ -20,6 +20,7 @@ vi.mock('./dispatchDeviceCommand', () => ({ dispatchDeviceCommand: vi.fn() }));
 vi.mock('./eventBus', () => ({ publishEvent: vi.fn(async () => undefined) }));
 vi.mock('../routes/remote/screenAccessConsentGate', () => ({ checkScreenAccessConsentGate: vi.fn(async () => ({ ok: true })) }));
 vi.mock('./aiTools', () => ({ resolveWritableToolOrgId: vi.fn(() => ORG_ID), verifyDeviceAccess: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
@@ -28,6 +29,7 @@ import { aiQueueCommandForExecution } from './aiDispatch';
 import { dispatchDeviceCommand } from './dispatchDeviceCommand';
 import { registerIncidentTools } from './aiToolsIncident';
 import { releaseNetworkIsolation, startNetworkIsolation } from './networkIsolation/service';
+import { captureException } from './sentry';
 import type { ToolExecutionContext } from './toolExecutionContext';
 
 const ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -174,12 +176,33 @@ describe('release_containment routes through the isolation service only (W13 #10
       expectNothingQueued();
     });
 
-  it('sanitizes a thrown service error into a tool error', async () => {
-    vi.mocked(releaseNetworkIsolation).mockRejectedValue(new Error('connection reset by peer at 192.0.2.10'));
+  it('sanitizes a thrown service error into a tool error and reports it', async () => {
+    const fault = new Error('connection reset by peer at 192.0.2.10');
+    vi.mocked(releaseNetworkIsolation).mockRejectedValue(fault);
     const out = await run(input, releasedContext);
     expect(typeof out.error).toBe('string');
     expect(out.error).toMatch(/^Failed to release network isolation/);
     expect(out).not.toHaveProperty('success');
+    expect(captureException).toHaveBeenCalledWith(fault, undefined, expect.objectContaining({ phase: 'release_containment' }));
+  });
+
+  it('says so when the device had already confirmed the release (idempotent answer, nothing queued)', async () => {
+    vi.mocked(releaseNetworkIsolation).mockResolvedValue({
+      episode: { id: ISOLATION_ID, state: 'released', desiredState: 'released', generation: 4, releaseKind: 'console', releaseConfirmedAt: new Date() },
+      commandId: 'earlier-release-command',
+    } as never);
+    const out = await run(input, releasedContext);
+    expect(out).toMatchObject({ success: true, alreadyReleased: true });
+    expect(out.note).toMatch(/already confirmed/);
+  });
+
+  it('a fresh release is not reported as already released', async () => {
+    vi.mocked(releaseNetworkIsolation).mockResolvedValue({
+      episode: { id: ISOLATION_ID, state: 'release_requested', desiredState: 'released', generation: 4, releaseKind: 'ai', releaseConfirmedAt: null },
+      commandId: 'release-command-1',
+    } as never);
+    const out = await run(input, releasedContext);
+    expect(out).not.toHaveProperty('alreadyReleased');
   });
 });
 

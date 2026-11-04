@@ -899,22 +899,23 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     }));
   },
 
-  // release_containment (Tier 3, FOUR_EYES) — network-isolation W13 (#10101,
-  // spec §3.8 "Approval binding"). Pins the episode's binding
-  // `{orgId, deviceId, isolationId, generation}` and nothing else: an extend
-  // (every extend is a new generation), a release by someone else (also a new
-  // generation) or an org move between approval and release is
-  // `content_changed`, while agent progress at the same generation (applied →
-  // verified, a journal tick) leaves the approval valid. The secret, expiry and
-  // reason are deliberately absent — the reason is pinned by the argument
-  // digest. MANDATORY (pinnedEffectPolicy.ts): creation refuses an unpinnable
-  // episode and release refuses a missing digest. The matching release-time
-  // recompute hands the handler the same binding (`verifiedIsolationRelease`),
-  // which `releaseNetworkIsolation` re-checks under the episode lock, closing
-  // the window between this read and the release.
+  // release_containment (Tier 3, four-eyes) — network-isolation W13 (#10101,
+  // spec §3.8 "Approval binding"). It pins the episode's binding
+  // `{orgId, deviceId, isolationId, generation}` and nothing else.
+  // - An extend or a release by someone else makes a new generation, and an
+  //   org move changes orgId. Either one before release is `content_changed`.
+  // - Agent progress at the same generation (applied → verified, a journal
+  //   tick) leaves the approval valid.
+  // - The secret, expiry and reason are not pinned. The argument digest
+  //   already pins the reason.
+  // The pin is required (pinnedEffectPolicy.ts): creation refuses an episode
+  // it cannot pin, and release refuses a missing digest. On a match the
+  // release path hands the handler this binding (`verifiedIsolationRelease`).
+  // `releaseNetworkIsolation` re-checks it under the episode lock, which
+  // closes the window between this read and the release.
   //
-  // Read under the release paths' system context, so the predicate names the
-  // device as well as the id, and the row is re-checked here: a fake or
+  // The release paths read under a system context, so the query names the
+  // device as well as the id, and the row is checked again here. A wrong or
   // RLS-blind read can never pin another device's episode.
   release_containment: async (args, database) => {
     if (typeof args.isolationId !== 'string' || typeof args.deviceId !== 'string') return MISSING_ARG;

@@ -487,9 +487,10 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // GET /devices/:id/monitors (#6371 W05c2): the same per-device monitor state
   // is agent-reachable per monitor via get_monitor_activity's deviceId filter.
   'devices/monitors.ts': { tools: ['list_monitors', 'get_monitor_activity', 'reset_monitor_escalation'] },
-  // W13 (#10101): start is execute_containment:network_isolation and release is the four-eyes
-  // release_containment, both through the isolation service. Extend, acknowledge and the
-  // break-glass code stay human-only, and the external MCP denies both tools by name.
+  // W13 (#10101): start is execute_containment with actionType network_isolation, and release
+  // is the four-eyes release_containment, both through the isolation service. Extend, acknowledge
+  // and the break-glass code stay human-only. The external MCP refuses release_containment by
+  // name and execute_containment when actionType is network_isolation.
   'devices/networkIsolation.ts': { tools: ['execute_containment', 'release_containment'] },
   'agents/isolationVerify.ts': { exempt: 'agent_transport' },
   'devices/forceReboot.ts': { exempt: 'human_only_force_reboot', note: 'Force reboot now: closes running apps; step-up bound to one device.' },

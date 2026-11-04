@@ -891,7 +891,8 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   // lifting an isolation reverses a mitigation on a device under incident
   // response — the same class as s1_threat_action rollback and
   // edr_endpoint_action unisolate. Isolating (execute_containment) stays
-  // supervised. Keeps the sole-operator WebAuthn fallback (selfApprovalPolicy).
+  // supervised. The sole-operator WebAuthn fallback still applies, because the
+  // tool is not on selfApprovalPolicy's forbidden list.
   'release_containment',
   // PAM elevation request. Classified four_eyes out of caution (not named in
   // spec §3.2). Full-control W04 (#6758) re-read the handler: it always

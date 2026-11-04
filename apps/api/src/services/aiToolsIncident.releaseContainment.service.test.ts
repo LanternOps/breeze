@@ -147,6 +147,18 @@ describe('AI release_containment through the real isolation service (W13 #10101)
     expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
   });
 
+  it('works with NETWORK_ISOLATION_ENABLED off: the flag only ever blocks start (ai.mdx)', async () => {
+    vi.stubEnv('NETWORK_ISOLATION_ENABLED', 'false');
+    try {
+      const context = await releasePathContext(await approve());
+      const out = JSON.parse(await releaseTool().handler(args, auth, context as ToolExecutionContext));
+      expect(out).toMatchObject({ success: true });
+      expect(h.dispatch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('an approval for generation N fails closed once an extend made it N+1 (release-path recompute)', async () => {
     const approved = await approve();
     h.row = episode({ generation: 4 }); // extended after approval

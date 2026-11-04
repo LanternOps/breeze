@@ -1265,10 +1265,9 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
   });
 });
 
-// Network-isolation W13 (#10101, spec §2 / OD15): lifting a containment is a
-// four-eyes human decision. An agent principal is denied outright — not even a
-// proposal — whatever its allowlist or mode says. The release service also
-// stamps the caller's user id on the queued command, which an agent id is not.
+// Network-isolation W13 (#10101, spec §2): lifting a containment is a four-eyes
+// human decision. An agent principal is denied outright — not even a proposal —
+// whatever its allowlist or mode says.
 describe('release_containment never reaches an agent principal (W13 #10101)', () => {
   beforeEach(() => {
     vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');

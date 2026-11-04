@@ -460,14 +460,20 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
         if ('error' in result) return JSON.stringify(result);
         // Scalars only: the model has no use for the episode's allowlist
         // snapshot or the agent's last report.
-        const { id, state, desiredState, generation, releaseKind } = result.episode;
+        const { id, state, desiredState, generation, releaseKind, releaseConfirmedAt } = result.episode;
+        // The service answers an already-confirmed release without queuing anything.
+        const alreadyReleased = Boolean(releaseConfirmedAt);
         return JSON.stringify({
           success: true,
           commandId: result.commandId,
           episode: { id, state, desiredState, generation, releaseKind },
-          note: 'The device lifts its rules when it receives the command or its next heartbeat; the episode reads released once the device confirms.',
+          ...(alreadyReleased
+            ? { alreadyReleased: true, note: 'The device had already confirmed this release; nothing new was sent.' }
+            : { note: 'The device lifts its rules when it receives the command or its next heartbeat; the episode reads released once the device confirms.' }),
         });
       } catch (error) {
+        // A failed un-contain is operationally important: report it, then answer generically.
+        captureException(error, undefined, { phase: 'release_containment', deviceId: input.deviceId, isolationId: input.isolationId });
         return JSON.stringify({ error: `Failed to release network isolation: ${sanitizeThrownToolError('incident', error)}` });
       }
     },
