@@ -1,3 +1,10 @@
+---
+title: System Health: native platform-admin health tab
+issue: pending (track:spec issue to be filed and referenced here before merge)
+discussion: LanternOps/breeze discussion #10764
+status: draft (for maintainer review; not approved for implementation)
+---
+
 # System Health: native platform-admin health tab (design)
 
 **Date:** 2026-10-30 · **Status:** draft for maintainer review (not approved for implementation) · **Origin:** [Discussion #10764](https://github.com/LanternOps/breeze/discussions/10764), [Todd's direction](https://github.com/LanternOps/breeze/discussions/10764#discussioncomment-19302403) · **Prior art:** [System page #6768](https://github.com/LanternOps/breeze/issues/6768), `docs/superpowers/specs/platform-ci/2026-09-23-system-connections-page-design.md`
@@ -307,12 +314,39 @@ The two-wave split is a **suggestion**; it requires maintainer approval. Do not 
 
 ## 12. Decisions requested from maintainer before implementation
 
-1. **Coverage and terminology:** Is a process-scoped readiness card plus separate shared background-processing sections preferred over a single misleading deployment-wide status badge?
-2. **Queue inventory:** Which existing queues are worthwhile for the first read-only registry, and which already have defensible health thresholds?
-3. **Job inventory:** Are connection-health reconciler/digest/per-kind heartbeats sufficient for W01, or should one or two other existing authoritative heartbeat sources be included?
-4. **Degraded vs unavailable:** Should required consumer failures map to `unavailable` for that process while queue/job impairments remain `degraded` or `unknown` depending on evidence?
-5. **Read budget/polling:** Which existing API caching and admin-web refresh patterns should set the concrete bounds?
-6. **Delivery:** Is the proposed two-wave API-then-web split reasonable, or would a single implementation PR be preferable?
+Each decision carries the options considered and a recommendation, so approval can be a yes/no. The recommendations rest on code verified on `main` at the time of writing; where a fact could not be established, it is said so.
+
+**1. Coverage and terminology.**
+- *Option A:* a process-scoped readiness card plus separate shared background-processing sections (D8).
+- *Option B:* a single deployment-wide status badge.
+- **Recommendation: A.** Readiness is evaluated per API process, so B would present one replica's state as the fleet's. This is the behaviour already stated in §5.4.
+
+**2. Queue inventory (first read-only registry).**
+- *Option A:* the queues whose jobs are already surfaced elsewhere in System: `getConnectionHealthQueue`, `getConnectionHealthDigestQueue`.
+- *Option B:* A plus the high-traffic queues `getAlertQueue` and `getEventDispatchQueue` (the latter already counts its own categories in `eventDispatchWorker.ts`).
+- *Option C:* every queue that has a `get*Queue` getter. Rejected: there are dozens, with no uniform semantics (D9).
+- **Recommendation: B, counts only.** Show `waiting`, `prioritized`, `delayed` and `active` with `status: 'unknown'` for degradation. No established per-queue threshold was found, and D10 rules out a global one. A threshold is added to a queue only when its owning domain defines one.
+
+**3. Job inventory.**
+- *Option A:* the connection-health reconciler, digest and per-kind heartbeats read by `readConnectionHealthJobStatus()`.
+- *Option B:* A plus further jobs with new heartbeat writers.
+- **Recommendation: A for W01.** It is the only authoritative Redis heartbeat source identified, and §5.3 already forbids a second heartbeat framework. Any further job needs its own writer, tests and justification in a separate change.
+
+**4. Degraded vs unavailable.**
+- *Option A:* a failed required consumer maps to `unavailable` for that process; queue and job impairments map to `degraded` or `unknown` depending on evidence.
+- *Option B:* any impairment maps to `degraded`.
+- **Recommendation: A.** It matches D7: only evidence of failure produces a failure state, and stale or missing evidence stays `unknown`.
+
+**5. Read budget and polling.**
+- *Option A:* reuse the cached readiness evaluator for the process card (default TTL `DEFAULT_READINESS_CACHE_TTL_MS = 5_000`, `config/readinessConfig.ts`); read queue counts and heartbeats per request, bounded by the registry from item 2; the web tab refreshes manually, as the Connections tab does with its Refresh button, plus a 30-second background poll that pauses while the tab is hidden.
+- *Option B:* manual refresh only.
+- *Option C:* a shorter poll with a server-side cache for queue counts.
+- **Recommendation: A.** The 30-second interval is a proposal, not an existing constant: no polling interval was found in `components/admin/system`, so the maintainer may prefer B to stay consistent with Connections.
+
+**6. Delivery.**
+- *Option A:* two waves, API then web (§10).
+- *Option B:* one implementation PR.
+- **Recommendation: A.** The API contract can be reviewed and tested without the UI.
 
 ## 13. Explicit product decision: no Customer Portal exposure
 
