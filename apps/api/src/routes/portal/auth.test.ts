@@ -255,3 +255,60 @@ describe('POST /auth/login — organization name in the user payload', () => {
     expect(await res.json()).toEqual({ orgName: 'Default Organization' });
   });
 });
+
+// #10934: a portal user in a churned/archived org used to get a 200 at login,
+// then a 403 on the very next request and a silent bounce back to /login.
+// The refusal belongs at login, but only AFTER the password verifies, so the
+// distinct message can never be used to learn whether an email exists.
+describe('POST /auth/login — unavailable organization (#10934)', () => {
+  const login = (password = 'pw') => {
+    const app = new Hono();
+    app.route('/', authRoutes);
+    return app.request('/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'cust@acme.example', password, orgId: ORG_ID }),
+    });
+  };
+
+  beforeEach(() => {
+    portalUserRow.current = { ...portalUserRow.current, passwordHash: 'stored-hash', orgName: 'Acme' };
+  });
+
+  it('refuses a churned/archived org with a clear message and code, and issues no session', async () => {
+    activeOrgResult.current = null; // getActiveOrgTenant: churned, archived, deleted or partner inactive
+    const res = await login();
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.code).toBe('PORTAL_ORG_UNAVAILABLE');
+    expect(body.error).toMatch(/no longer active/i);
+    expect(res.headers.get('set-cookie')).toBeNull();
+    expect(portalSessions.size).toBe(0);
+  });
+
+  it('still signs in an active org', async () => {
+    const res = await login();
+    expect(res.status).toBe(200);
+    expect((await res.json()).accessToken).toBeTruthy();
+  });
+
+  it('does not reveal the org state on a wrong password', async () => {
+    activeOrgResult.current = null;
+    const { verifyPassword } = await import('../../services/password');
+    vi.mocked(verifyPassword).mockResolvedValueOnce(false);
+    const res = await login('wrong');
+
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe('Invalid email or password');
+  });
+
+  it('does not reveal the org state for an unknown email', async () => {
+    activeOrgResult.current = null;
+    portalUserRow.current = null;
+    const res = await login();
+
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe('Invalid email or password');
+  });
+});
