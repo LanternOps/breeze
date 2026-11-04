@@ -313,6 +313,16 @@ describe('re-arm modes', () => {
     expect(evaluateConditionsMock).toHaveBeenLastCalledWith(EVENT_CONDITION, DEVICE_ID, { side: 'trigger' });
   });
 
+  it('an after_delay re-open past the delay still respects an active cooldown', async () => {
+    setMonitor({ rearmMode: 'after_delay', rearmDelayMinutes: 30, cooldownMinutes: 60 });
+    closed(event(0));
+    isCooldownActiveMock.mockResolvedValue(true);
+    vi.setSystemTime(minutesAfterClose(31));
+    expect(await evaluateDeviceAlerts(DEVICE_ID)).toEqual([]);
+    expect(insertedAlerts).toHaveLength(0);
+    expect(isCooldownActiveMock).toHaveBeenCalled();
+  });
+
   it('after_delay still fires immediately on new evidence', async () => {
     setMonitor({ rearmMode: 'after_delay', rearmDelayMinutes: 30 });
     closed(event(0));

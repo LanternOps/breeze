@@ -15,6 +15,7 @@
  */
 import { and, eq, inArray } from 'drizzle-orm';
 import {
+  BUILTIN_ALERT_LIFECYCLE,
   createMonitorDefinitionSchema,
   monitorsInlineSettingsSchema,
   type FleetDesignRule,
@@ -144,6 +145,15 @@ export async function snapshotFleetMonitors(
     const source = row as unknown as Record<string, unknown>;
     const picked: Record<string, unknown> = {};
     for (const field of SNAPSHOT_FIELDS) if (field in source) picked[field] = source[field];
+    // Alert lifecycle W2 (#10765): the migration nulled the old column defaults
+    // (cooldown 5, auto-resolve off) to "inherit". Compare NULL as that default
+    // so snapshots stored before W2 still match and the backfill is not read as
+    // a technician's edit; the re-arm pair joins only once someone sets it.
+    if (picked.cooldownMinutes === null) picked.cooldownMinutes = BUILTIN_ALERT_LIFECYCLE.cooldownMinutes;
+    if (picked.autoResolve === null) picked.autoResolve = BUILTIN_ALERT_LIFECYCLE.autoResolve;
+    for (const field of ['rearmMode', 'rearmDelayMinutes'] as const) {
+      if (source[field] !== null && source[field] !== undefined) picked[field] = source[field];
+    }
     return [row.id, JSON.parse(JSON.stringify(picked))];
   }));
 }

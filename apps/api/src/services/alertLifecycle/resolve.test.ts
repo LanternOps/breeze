@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { monitorDefinitions, organizations, partners } from '../../db/schema';
 
-const { tableRows, selectFrom, partnerAxisReads } = vi.hoisted(() => ({
+const { tableRows, selectFrom, partnerAxisReads, captureException } = vi.hoisted(() => ({
   tableRows: new Map<unknown, Array<Record<string, unknown>>>(),
   selectFrom: vi.fn(),
   partnerAxisReads: vi.fn(),
+  captureException: vi.fn(),
 }));
+
+vi.mock('../sentry', () => ({ captureException }));
 
 // A `db.select(...).from(table).where(eq(table.id, id)).limit(1)` fake: rows
 // are keyed by table and filtered on the id the `eq` names.
@@ -36,7 +39,7 @@ vi.mock('../../db/partnerAxisRead', () => ({
   },
 }));
 
-import { createLifecycleLoader, legacyLifecycleValues, loadAlertLifecycle } from './resolve';
+import { createLifecycleLoader, legacyLifecycleValues, loadAlertLifecycle, readLifecycleSnapshot } from './resolve';
 
 const PARTNER = 'p0000000-0000-4000-8000-000000000000';
 const ORG_A = 'a0000000-0000-4000-8000-000000000000';
@@ -71,6 +74,7 @@ beforeEach(() => {
   tableRows.clear();
   selectFrom.mockClear();
   partnerAxisReads.mockClear();
+  captureException.mockClear();
   tableRows.set(partners, [partnerRow()]);
   tableRows.set(organizations, [orgRow(ORG_A, { alertCooldownMinutes: 30 }), orgRow(ORG_B)]);
 });
@@ -92,6 +96,18 @@ describe('loadAlertLifecycle', () => {
     expect(forA.autoResolve).toBe(true);
     expect(forA.sources.autoResolve).toBe('partner');
     expect(forB).toMatchObject({ rearmMode: 'after_delay', rearmDelayMinutes: 60 });
+  });
+
+  it("reads the device org's own partner, not any other partner row", async () => {
+    const OTHER_PARTNER = 'q0000000-0000-4000-8000-000000000000';
+    tableRows.set(partners, [
+      partnerRow({ alertCooldownMinutes: 10 }),
+      { ...partnerRow({ alertCooldownMinutes: 77 }), id: OTHER_PARTNER },
+    ]);
+    tableRows.set(organizations, [orgRow(ORG_B, { partnerId: OTHER_PARTNER })]);
+    // The monitor is owned by PARTNER; the device's org belongs to OTHER_PARTNER.
+    const resolved = await loadAlertLifecycle({ rule: managedRule, template, monitor: monitorRow(), deviceOrgId: ORG_B });
+    expect(resolved.cooldownMinutes).toBe(77);
   });
 
   it('a monitor override beats the org override', async () => {
@@ -139,6 +155,36 @@ describe('loadAlertLifecycle', () => {
     expect(resolved.sources.cooldownMinutes).toBe('org');
   });
 
+  it('reports an invisible device org once per sweep, not once per rule', async () => {
+    tableRows.set(organizations, []);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const load = createLifecycleLoader();
+      for (let i = 0; i < 3; i++) {
+        const resolved = await load({ rule: managedRule, template, monitor: monitorRow(), deviceOrgId: ORG_A });
+        expect(resolved.sources.cooldownMinutes).toBe('builtin');
+      }
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(captureException).toHaveBeenCalledTimes(1);
+      expect(captureException.mock.calls[0]![2]).toMatchObject({ errorId: 'alert-lifecycle-org-not-visible', deviceOrgId: ORG_A });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("reports an org whose partner row is missing instead of silently using the built-in", async () => {
+    tableRows.set(partners, []);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const resolved = await loadAlertLifecycle({ rule: managedRule, template, monitor: monitorRow(), deviceOrgId: ORG_B });
+      expect(resolved.sources.autoResolve).toBe('builtin');
+      expect(captureException).toHaveBeenCalledTimes(1);
+      expect(captureException.mock.calls[0]![2]).toMatchObject({ errorId: 'alert-lifecycle-partner-missing', partnerId: PARTNER });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('legacy rule uses template/override values', async () => {
     const resolved = await loadAlertLifecycle({
       rule: { managedByMonitorId: null, overrideSettings: { cooldownMinutes: 15 } },
@@ -164,5 +210,50 @@ describe('legacyLifecycleValues', () => {
   it('ignores an override of the wrong type instead of trusting the cast', () => {
     expect(legacyLifecycleValues({ overrideSettings: { cooldownMinutes: '30', autoResolve: 'yes' } }, { autoResolve: true, cooldownMinutes: 9 }))
       .toEqual({ autoResolve: true, cooldownMinutes: 9 });
+  });
+
+  it('ignores a negative or fractional override cooldown', () => {
+    for (const bad of [-5, 2.5]) {
+      expect(legacyLifecycleValues({ overrideSettings: { cooldownMinutes: bad } }, { autoResolve: true, cooldownMinutes: 9 }).cooldownMinutes)
+        .toBe(9);
+    }
+  });
+});
+
+describe('readLifecycleSnapshot', () => {
+  const sources = { autoResolve: 'partner', rearmMode: 'org', rearmDelayMinutes: 'org', cooldownMinutes: 'monitor' };
+  const snapshot = (lifecycle: Record<string, unknown>) => ({
+    lifecycle: { autoResolve: true, rearmMode: 'new_evidence', rearmDelayMinutes: null, cooldownMinutes: 5, sources, ...lifecycle },
+  });
+
+  it('reads a valid snapshot, keeping the cursor out of the values', () => {
+    expect(readLifecycleSnapshot({ lifecycle: { ...snapshot({}).lifecycle, cursor: { root: {} } } })).toEqual({
+      autoResolve: true, rearmMode: 'new_evidence', rearmDelayMinutes: null, cooldownMinutes: 5, sources,
+    });
+    expect(readLifecycleSnapshot(snapshot({ rearmMode: 'after_delay', rearmDelayMinutes: 30 }))?.rearmDelayMinutes).toBe(30);
+    // A legacy template's cooldown is not capped at 1440.
+    expect(readLifecycleSnapshot(snapshot({ cooldownMinutes: 2880 }))?.cooldownMinutes).toBe(2880);
+  });
+
+  it('a W1 context (cursor only) or no context has no snapshot', () => {
+    expect(readLifecycleSnapshot({ lifecycle: { cursor: { root: {} } } })).toBeNull();
+    expect(readLifecycleSnapshot(null)).toBeNull();
+    expect(readLifecycleSnapshot({})).toBeNull();
+  });
+
+  it('rejects a snapshot that breaks the re-arm pair, the ranges or the source vocabulary', () => {
+    const bad: Array<Record<string, unknown>> = [
+      { rearmMode: 'after_delay', rearmDelayMinutes: null },
+      { rearmMode: 'after_delay' , rearmDelayMinutes: undefined },
+      { rearmMode: 'new_evidence', rearmDelayMinutes: 30 },
+      { rearmMode: 'after_delay', rearmDelayMinutes: 0 },
+      { rearmMode: 'after_delay', rearmDelayMinutes: 1.5 },
+      { rearmMode: 'after_delay', rearmDelayMinutes: 1441 },
+      { cooldownMinutes: 2.5 },
+      { cooldownMinutes: -1 },
+      { sources: { ...sources, cooldownMinutes: 'elsewhere' } },
+      { sources: { autoResolve: 'partner' } },
+    ];
+    for (const lifecycle of bad) expect(readLifecycleSnapshot(snapshot(lifecycle)), JSON.stringify(lifecycle)).toBeNull();
   });
 });

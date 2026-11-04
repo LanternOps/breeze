@@ -13,8 +13,12 @@
  */
 import {
   resolveAlertLifecycle,
+  ALERT_LIFECYCLE_FIELDS,
   BUILTIN_ALERT_LIFECYCLE,
+  isValidRearmPair,
   REARM_MODES,
+  type AlertLifecycleSources,
+  type LifecycleSource,
   type PartialLifecycle,
   type RearmMode,
   type ResolvedAlertLifecycle,
@@ -22,6 +26,7 @@ import {
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
+import { captureException } from '../sentry';
 import { alertRules, alertTemplates, monitorDefinitions, organizations, partners } from '../../db/schema';
 
 type AlertRuleRow = typeof alertRules.$inferSelect;
@@ -47,6 +52,8 @@ export interface LoadAlertLifecycleArgs {
 
 export type AlertLifecycleLoader = (args: LoadAlertLifecycleArgs) => Promise<ResolvedAlertLifecycle>;
 
+const LIFECYCLE_SOURCES: readonly LifecycleSource[] = ['monitor', 'org', 'partner', 'builtin', 'legacy'];
+
 const asRearmMode = (value: unknown): RearmMode | null =>
   (REARM_MODES as readonly unknown[]).includes(value) ? value as RearmMode : null;
 
@@ -65,7 +72,7 @@ export function legacyLifecycleValues(
   return {
     autoResolve: (typeof overrideAutoResolve === 'boolean' ? overrideAutoResolve : null)
       ?? template?.autoResolve ?? BUILTIN_ALERT_LIFECYCLE.autoResolve,
-    cooldownMinutes: (typeof overrideCooldown === 'number' && Number.isFinite(overrideCooldown) ? overrideCooldown : null)
+    cooldownMinutes: (Number.isInteger(overrideCooldown) && (overrideCooldown as number) >= 0 ? overrideCooldown as number : null)
       ?? template?.cooldownMinutes ?? BUILTIN_ALERT_LIFECYCLE.cooldownMinutes,
   };
 }
@@ -142,7 +149,14 @@ export async function readPartnerLifecycleDefaults(partnerId: string): Promise<P
     .from(partners)
     .where(eq(partners.id, partnerId))
     .limit(1));
-  if (!row) return null;
+  if (!row) {
+    // partners.id is the org's FK target, so this is a deleted or unreadable
+    // partner: every inherited value would silently read as the built-in.
+    const error = new Error(`[AlertLifecycle] Partner ${partnerId} not readable; lifecycle defaults fall back to built-in`);
+    console.warn(error.message);
+    captureException(error, undefined, { errorId: 'alert-lifecycle-partner-missing', partnerId });
+    return null;
+  }
   return {
     autoResolve: row.alertAutoResolve,
     rearmMode: asRearmMode(row.alertRearmMode),
@@ -176,10 +190,16 @@ export function createLifecycleLoader(): AlertLifecycleLoader {
       return resolveAlertLifecycle({ legacy: legacyLifecycleValues(rule, template) });
     }
     const def = monitor !== undefined ? monitor : await memo(monitors, monitorId, () => readMonitor(monitorId));
-    const org = await memo(orgs, deviceOrgId, () => readOrgLifecycleOverride(deviceOrgId));
-    if (!org) {
-      console.warn('[AlertLifecycle] Device org not visible; org/partner defaults skipped', { deviceOrgId, monitorId });
-    }
+    const org = await memo(orgs, deviceOrgId, async () => {
+      const row = await readOrgLifecycleOverride(deviceOrgId);
+      if (!row) {
+        // Reported once per sweep (memoized), not once per rule.
+        const error = new Error('[AlertLifecycle] Device org not visible; org/partner lifecycle defaults skipped');
+        console.warn(error.message, { deviceOrgId, monitorId });
+        captureException(error, undefined, { errorId: 'alert-lifecycle-org-not-visible', deviceOrgId });
+      }
+      return row;
+    });
     const partnerId = org?.partnerId ?? null;
     const partner = partnerId
       ? await memo(partnerDefaults, partnerId, () => readPartnerLifecycleDefaults(partnerId))
@@ -227,17 +247,22 @@ export function readLifecycleSnapshot(context: unknown): ResolvedAlertLifecycle 
   if (lifecycle === null || typeof lifecycle !== 'object') return null;
   const { autoResolve, rearmMode, rearmDelayMinutes, cooldownMinutes, sources } = lifecycle as Record<string, unknown>;
   if (typeof autoResolve !== 'boolean') return null;
-  if (typeof cooldownMinutes !== 'number' || !Number.isFinite(cooldownMinutes) || cooldownMinutes < 0) return null;
+  // No upper bound: a legacy template's cooldown is not capped at 1440.
+  if (!Number.isInteger(cooldownMinutes) || (cooldownMinutes as number) < 0) return null;
   const mode = asRearmMode(rearmMode);
   if (!mode) return null;
-  if (rearmDelayMinutes !== null && typeof rearmDelayMinutes !== 'number') return null;
+  const delayInRange = rearmDelayMinutes === null
+    || (Number.isInteger(rearmDelayMinutes) && (rearmDelayMinutes as number) >= 1 && (rearmDelayMinutes as number) <= 1440);
+  if (!delayInRange || !isValidRearmPair({ rearmMode: mode, rearmDelayMinutes: rearmDelayMinutes as number | null })) return null;
   if (sources === null || typeof sources !== 'object') return null;
+  const sourceMap = sources as Record<string, unknown>;
+  if (!ALERT_LIFECYCLE_FIELDS.every((field) => (LIFECYCLE_SOURCES as readonly unknown[]).includes(sourceMap[field]))) return null;
   return {
     autoResolve,
     rearmMode: mode,
     rearmDelayMinutes: rearmDelayMinutes as number | null,
-    cooldownMinutes,
-    sources: sources as ResolvedAlertLifecycle['sources'],
+    cooldownMinutes: cooldownMinutes as number,
+    sources: Object.fromEntries(ALERT_LIFECYCLE_FIELDS.map((field) => [field, sourceMap[field]])) as AlertLifecycleSources,
   };
 }
 

@@ -81,6 +81,11 @@ describe('fingerprint / signature / previewHash', () => {
     expect(monitorSignature({ ...base })).toBe(monitorSignature({ ...base }));
     expect(monitorSignature({ ...base, severity: 'low' })).not.toBe(monitorSignature(base));
   });
+  it('an inheriting (null) cooldown or auto-resolve is never equivalent to an explicit value (#10765)', () => {
+    const base = { enabled: true, kind: 'cpu', condition: { operator: 'gt', value: 80 }, severity: 'high', cooldownMinutes: 5, autoResolve: false, deliveryMode: 'inherit', deliveryChannelIds: [], escalationPolicyId: null, responses: [] } satisfies Omit<ProposedMonitor, 'role' | 'name'>;
+    expect(monitorSignature({ ...base, cooldownMinutes: null })).not.toBe(monitorSignature(base));
+    expect(monitorSignature({ ...base, autoResolve: null })).not.toBe(monitorSignature(base));
+  });
   it('hashes action payload and order before conversion, and refuses overflow', () => {
     const r = mapInlineRule(rule() as never); if (!r.ok) throw new Error('Invalid fixture');
     const items: ConversionPreviewItem[] = [

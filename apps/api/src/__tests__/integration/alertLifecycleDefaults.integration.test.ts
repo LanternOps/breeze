@@ -149,6 +149,10 @@ describe('alert lifecycle defaults under real RLS', () => {
     await insertMonitor({ orgId, partnerId: null }, null);
     await insertMonitor({ orgId: null, partnerId }, 30);
     await insertMonitor({ orgId: other.id, partnerId: null }, 7); // a sibling org: not this org's count
+    // Another partner's monitors never count, at either level.
+    const foreign = await tenant();
+    await insertMonitor({ orgId: foreign.orgId, partnerId: null }, 9);
+    await insertMonitor({ orgId: null, partnerId: foreign.partnerId }, 9);
 
     asOrg(partnerId, orgId);
     const body = await (await get()).json();

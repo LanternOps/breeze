@@ -16,10 +16,12 @@ import { describe, expect, it } from 'vitest';
 const SRC = join(__dirname, '..', '..');
 
 /** Reading the lifecycle fields off a rule override, template or monitor row. */
+const ROW_NAMES = '(?:overrides|overrideSettings|template|tpl|tmpl|monitor|def|definition|existing)';
 const READ_PATTERNS: RegExp[] = [
-  /\b(?:overrides|overrideSettings)\??\.(?:cooldownMinutes|autoResolve)\b/,
-  /\b(?:template|monitor|def|definition|existing)\??\.(?:cooldownMinutes|autoResolve)\b/,
+  new RegExp(`\\b${ROW_NAMES}\\??\\.(?:cooldownMinutes|autoResolve)\\b`),
   /\b(?:cooldownMinutes|autoResolve)\s+as\s+(?:number|boolean)\b/,
+  // const { cooldownMinutes } = template / monitor / overrides
+  new RegExp(`\\{[^}]*\\b(?:cooldownMinutes|autoResolve)\\b[^}]*\\}\\s*=\\s*(?:await\\s+)?${ROW_NAMES}\\b`),
 ];
 
 /** Whole paths (relative to apps/api/src, `/`-separated) that are not runtime readers. */
@@ -40,6 +42,8 @@ const ALLOWED: Record<string, string> = {
     'persists the authored monitor override on create/update (omitted keeps the stored value)',
   'services/monitors/builtInMonitors.ts':
     'seeds the built-in monitors with their authored cooldown',
+  'db/seed.ts':
+    'dev seed: writes alert template rows from fixture values',
 };
 
 function walk(dir: string): string[] {
@@ -86,6 +90,8 @@ describe('alert lifecycle single reader', () => {
       'const autoResolve = (overrides?.autoResolve as boolean) ?? template.autoResolve;',
       'effectiveCooldownMinutes: monitor.cooldownMinutes,',
       'cooldownMinutes: def.cooldownMinutes,',
+      'const { cooldownMinutes, autoResolve } = template;',
+      'const cooldown = tpl?.cooldownMinutes;',
     ];
     for (const shape of shapes) expect(offendingLines(shape), shape).toHaveLength(1);
     // A resolved value or an unrelated field is not a row read.
