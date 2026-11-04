@@ -222,6 +222,24 @@ describe('PUT /alerts/lifecycle-defaults', () => {
     expect(h.updates).toHaveLength(0);
   });
 
+  it('a site-restricted org user cannot change the org-wide setting', async () => {
+    h.auth = { ...h.auth, allowedSiteIds: ['44444444-4444-4444-8444-444444444444'] };
+    const res = await put(orgBody);
+    expect(res.status).toBe(403);
+    expect(h.updates).toHaveLength(0);
+    expect(h.audit).not.toHaveBeenCalled();
+    // Reading what it inherits is still allowed.
+    expect((await get()).status).toBe(200);
+  });
+
+  it('an exact-device-ceiling caller cannot change either level', async () => {
+    asPartnerUser('all');
+    h.auth = { ...h.auth, allowedDeviceIds: ['55555555-5555-4555-8555-555555555555'] };
+    expect((await put(partnerBody)).status).toBe(403);
+    expect((await put(orgBody)).status).toBe(403);
+    expect(h.updates).toHaveLength(0);
+  });
+
   it('a selected-access partner user may write an org it can reach, not the partner default', async () => {
     asPartnerUser('selected', [ORG]);
     expect((await put(orgBody)).status).toBe(200);

@@ -16,6 +16,7 @@ import { requireMfa, requirePermission, requireScope, type AuthContext } from '.
 import { readOrgLifecycleOverride, readPartnerLifecycleDefaults } from '../../services/alertLifecycle/resolve';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import { PERMISSIONS } from '../../services/permissions';
 
 /**
@@ -29,6 +30,8 @@ import { PERMISSIONS } from '../../services/permissions';
  * - partner write: ALERTS_WRITE + canManagePartnerWidePolicies (full partner org
  *   access or system scope), because the value reaches every org.
  * - org write: ALERTS_WRITE + access to that org.
+ * - both writes: no site or exact-device ceiling (canMutateOrgWideGovernance),
+ *   like every other org-wide alerting write (channels, routing rules).
  */
 const AUDIT_ACTION = 'alert.lifecycle_defaults.update';
 
@@ -135,6 +138,9 @@ lifecycleDefaultsRoutes.put(
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
+    // Either level reaches every device in the org (or partner): a caller
+    // narrowed to some sites or devices has nothing it may change here.
+    if (!canMutateOrgWideGovernance(auth)) return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
     const values = {
       autoResolve: body.autoResolve,
       rearmMode: body.rearmMode,
