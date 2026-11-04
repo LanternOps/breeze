@@ -6,6 +6,7 @@ import {
   listConnectedMailboxes,
   updateDeltaCursor,
   resetDeltaCursor,
+  seedDeltaFloor,
   recordTransientPollFailure,
   recordPollAttempt,
   releasePollAttempt,
@@ -23,6 +24,7 @@ import { getMailboxToken } from '../services/ticketMailbox/mailboxToken';
 import {
   classifyGraphPollError,
   GraphSweepBudgetError,
+  isDeltaCursorExpired,
   listInboxDelta,
   markRead,
 } from '../services/ticketMailbox/graphMailClient';
@@ -118,6 +120,30 @@ async function sweepOne(
 ): Promise<void> {
   if (!c.tenantId) return;
 
+  // A fresh delta returns the whole inbox, so a row with neither a cursor nor a
+  // floor must get a floor before Graph is read, or that read is the import #10863
+  // is about. A failed write throws to the per-mailbox handler, with no Graph read.
+  let floor = c.eligibleAfter;
+  let baselineCompletedAt = c.baselineCompletedAt;
+  if (c.deltaLink === null && floor === null) {
+    const seeded = await seedDeltaFloor(c, new Date());
+    if (!seeded) {
+      // Benign when it is a race (another sweep seeded it, or the generation
+      // changed); the next sweep re-reads the row. Logged so a row that keeps
+      // missing is visible rather than reading healthy and never polling.
+      console.info('[mailboxPoll] connect floor not seeded; skipped this sweep', { id: c.id });
+      return;
+    }
+    floor = seeded.eligibleAfter;
+    baselineCompletedAt = seeded.baselineCompletedAt;
+  }
+  // No floor from here on means a row that already has a cursor from before the
+  // floor existed: it polls exactly as it did (#10863).
+  const baselineOpen = floor !== null && baselineCompletedAt === null;
+  // Graph reports receivedDateTime in whole seconds while the floor has
+  // milliseconds, so compare at the second: mail from the floor's own second is new.
+  const floorMs = floor ? Math.floor(floor.getTime() / 1000) * 1000 : null;
+
   // The pass deadline bounds this mailbox's Graph calls in this sweep (#8308),
   // shared by the delta read and the mark-read calls. It is never later than
   // GRAPH_POLL_SWEEP_BUDGET_MS from now, because the pass budget is shorter.
@@ -132,9 +158,17 @@ async function sweepOne(
     page = await listInboxDelta(token, c.mailboxAddress, c.deltaLink, { deadlineAt });
   } catch (err) {
     const status = (err as { status?: number }).status;
-    if (status === 410) {
-      await resetDeltaCursor(c, c.deltaLink);
-      console.warn('[mailboxPoll] delta token gone (410); cursor reset', { id: c.id });
+    // Only a stored cursor can expire. The same answer to a fresh delta request has
+    // nothing to clear, and treating it as expired would retry it every sweep with
+    // nothing recorded, so it is classified like any other refusal below.
+    if (c.deltaLink !== null && isDeltaCursorExpired(err)) {
+      const reset = await resetDeltaCursor(c, c.deltaLink);
+      console.warn('[mailboxPoll] delta token expired; cursor cleared for a re-walk', {
+        id: c.id,
+        status,
+        graphCode: (err as { graphCode?: string }).graphCode,
+        reset,
+      });
       return;
     }
 
@@ -181,6 +215,8 @@ async function sweepOne(
 
   let lastMessageAt: Date | null = null;
   let markReadSkipped = 0;
+  let beforeFloor = 0;
+  const noUsableTime: string[] = [];
   try {
     // The token from the delta read is reused: getMailboxToken only returns a
     // token with more than five minutes left, which outlasts the sweep budget,
@@ -189,6 +225,28 @@ async function sweepOne(
     // immediately before producing any external side effects.
     if (!await isConnectedMailboxSnapshotCurrent(c)) return;
     for (const msg of page.messages) {
+      if (floorMs !== null) {
+        // A removal carries only an id; there is nothing to import or to count.
+        if (msg['@removed']) continue;
+        // On every round, not only the first: delta reports old mail again when
+        // someone reads, flags or moves it. No enqueue and no mark-read, so mail
+        // already in the inbox stays exactly as it was (#10863). Mail newer than
+        // the floor falls through, including what arrived during the baseline walk.
+        const received = msg.receivedDateTime ? Date.parse(msg.receivedDateTime) : Number.NaN;
+        // No usable time cannot be shown to be new, so it is not imported: that
+        // costs one message, named in the log and reported below, where the other
+        // direction creates tickets and autoresponses for old mail. Graph always
+        // returns receivedDateTime for a message, so this is not expected to happen.
+        // Nor is it shown to be old, so it stays out of the baseline count.
+        if (Number.isNaN(received)) {
+          noUsableTime.push(msg.id);
+          continue;
+        }
+        if (received < floorMs) {
+          beforeFloor += 1;
+          continue;
+        }
+      }
       const normalized = normalizeGraphMessage(msg, c.partnerId, c.mailboxAddress);
       await enqueueInboundEmail(normalized, {
         provider: 'm365',
@@ -231,6 +289,15 @@ async function sweepOne(
   if (markReadSkipped > 0) {
     console.warn('[mailboxPoll] sweep budget spent; left messages unread', { id: c.id, count: markReadSkipped, limit: 'pass_deadline' });
   }
+  if (noUsableTime.length > 0) {
+    // Graph message ids are opaque; they let the message be found in the mailbox.
+    console.warn('[mailboxPoll] messages with no usable receivedDateTime were not imported', {
+      id: c.id,
+      count: noUsableTime.length,
+      messageIds: noUsableTime.slice(0, NO_USABLE_TIME_IDS_LOGGED),
+    });
+    captureException(new Error('[mailboxPoll] Graph returned messages with no usable receivedDateTime; they were not imported'));
+  }
 
   // A round that did not finish this sweep stores its resumeLink, so the next
   // sweep continues it instead of starting over (#8400).
@@ -244,9 +311,24 @@ async function sweepOne(
   }
   if (cursor) {
     const polledAt = new Date();
-    await updateDeltaCursor(c, c.deltaLink, cursor, polledAt, lastMessageAt ?? polledAt);
+    // The stored resumeLink plus the open baseline is the "not finished" state: a
+    // later sweep resumes, and only a real deltaLink closes the baseline.
+    const completed = page.deltaLink !== null;
+    const written = baselineOpen
+      ? await updateDeltaCursor(c, c.deltaLink, cursor, polledAt, lastMessageAt ?? polledAt, { skipped: beforeFloor, completed })
+      : await updateDeltaCursor(c, c.deltaLink, cursor, polledAt, lastMessageAt ?? polledAt);
+    if (!written) {
+      // An overlapping sweep advanced the cursor first, or the generation changed;
+      // the next sweep re-reads it. Nothing from this round was counted.
+      console.info('[mailboxPoll] cursor write lost to another sweep or a lifecycle change', { id: c.id });
+    } else if (baselineOpen && completed) {
+      console.info('[mailboxPoll] connect baseline finished', { id: c.id, skipped: beforeFloor });
+    }
   }
 }
+
+/** Most Graph message ids one sweep logs for messages it could not date. */
+const NO_USABLE_TIME_IDS_LOGGED = 20;
 
 /** Exported for tests. Reads connections in system context, processes each independently. */
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
