@@ -1,0 +1,17 @@
+[Unit]
+Description=Breeze network isolation boot hook
+Documentation=https://github.com/breeze-rmm/breeze
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target
+Before=shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/breeze/isolation-recovery/1.2.3/breeze-isolation-recovery boot-apply --data-dir /var/lib/breeze
+TimeoutStartSec=90
+
+[Install]
+WantedBy=sysinit.target

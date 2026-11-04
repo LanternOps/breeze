@@ -308,24 +308,41 @@ type linuxUninstallScriptOptions struct {
 	WatchdogProcess string // watchdog process name for the pkill re-assert
 	UnitPath        string
 	BinaryPath      string
-	ConfigDir       string // empty = skip config removal regardless of RemoveConfig
-	RemoveConfig    bool
-	DelaySeconds    int
+	// IsolationUnits and RecoveryDir are the network-isolation boot hook, poll
+	// timer and recovery binaries; they go only after a confirmed release.
+	IsolationUnits []string
+	RecoveryDir    string
+	ConfigDir      string // empty = skip config removal regardless of RemoveConfig
+	RemoveConfig   bool
+	DelaySeconds   int
 }
 
 // buildLinuxUninstallScript renders the detached teardown script for Linux.
+// Isolation is released first: if that cannot be confirmed the script re-enables
+// the service phase 1 disabled and stops, because removing the agent or the
+// recovery timers would leave the host cut off with nothing left to undo it.
 // The watchdog re-assert (stop + pkill) comes BEFORE the agent stop so a
 // watchdog that survived phase 1 cannot respawn the agent mid-teardown, and
 // config removal comes after the agent is dead (see the darwin builder).
 func buildLinuxUninstallScript(opts linuxUninstallScriptOptions) string {
 	lines := []string{
+		fmt.Sprintf("%s containment release-all --reason uninstall || { echo 'self-uninstall aborted: isolation release could not be confirmed' >&2; systemctl enable %s; exit 1; }",
+			shQuote(opts.BinaryPath), shQuote(opts.ServiceName)),
 		fmt.Sprintf("sleep %d", opts.DelaySeconds),
 		fmt.Sprintf("systemctl stop %s", shQuote(opts.WatchdogService)),
 		fmt.Sprintf("pkill -x %s", shQuote(opts.WatchdogProcess)),
 		fmt.Sprintf("systemctl stop %s", shQuote(opts.ServiceName)),
 		fmt.Sprintf("rm -f %s", shQuote(opts.UnitPath)),
+	}
+	for _, unit := range opts.IsolationUnits {
+		lines = append(lines, fmt.Sprintf("rm -f %s", shQuote(unit)))
+	}
+	lines = append(lines,
 		"systemctl daemon-reload",
 		fmt.Sprintf("rm -f %s", shQuote(opts.BinaryPath)),
+	)
+	if opts.RecoveryDir != "" {
+		lines = append(lines, fmt.Sprintf("rm -rf %s", shQuote(opts.RecoveryDir)))
 	}
 	if opts.RemoveConfig && opts.ConfigDir != "" {
 		lines = append(lines, fmt.Sprintf("rm -rf %s", shQuote(opts.ConfigDir)))
@@ -385,9 +402,15 @@ func prepareSelfUninstallLinux(removeConfig bool) error {
 		WatchdogProcess: "breeze-watchdog",
 		UnitPath:        unitDst,
 		BinaryPath:      binaryPath,
-		ConfigDir:       configDir,
-		RemoveConfig:    removeConfig,
-		DelaySeconds:    uninstallHelperDelaySeconds,
+		IsolationUnits: []string{
+			"/etc/systemd/system/breeze-isolation.service",
+			"/etc/systemd/system/breeze-isolation-poll.service",
+			"/etc/systemd/system/breeze-isolation-poll.timer",
+		},
+		RecoveryDir:  "/usr/local/lib/breeze/isolation-recovery",
+		ConfigDir:    configDir,
+		RemoveConfig: removeConfig,
+		DelaySeconds: uninstallHelperDelaySeconds,
 	})
 	if err := startDetachedProcess("systemd-run", "--quiet", "--collect", "--", "/bin/sh", "-c", script); err != nil {
 		return fmt.Errorf("spawn detached teardown helper (systemd-run transient unit): %w", err)

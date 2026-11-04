@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -19,6 +20,14 @@ import (
 )
 
 var ErrUnavailable = errors.New("recovery distribution is not available")
+
+// RecoveryExecutableName is the installed recovery binary's file name.
+var RecoveryExecutableName = func() string {
+	if runtime.GOOS == "windows" {
+		return "breeze-isolation-recovery.exe"
+	}
+	return "breeze-isolation-recovery"
+}()
 var versionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?(?:\+[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$`)
 
 // Task identifies a recovery task to create or update. Repoint must change and read back
@@ -63,7 +72,7 @@ func (i *Installer) EnsureRecovery(ctx context.Context, wantVersion string) (str
 	if i.Fetch == nil || i.VerifySignature == nil || i.SupportedSchema == nil || i.SelfTest == nil || i.Tasks == nil || i.Repoint == nil || !filepath.IsAbs(i.InstallDir) || !filepath.IsAbs(i.DataDir) {
 		return "", errors.New("incomplete recovery installer dependencies")
 	}
-	path := filepath.Join(i.InstallDir, "isolation-recovery", wantVersion, "breeze-isolation-recovery.exe")
+	path := filepath.Join(i.InstallDir, "isolation-recovery", wantVersion, RecoveryExecutableName)
 	if err := i.stage(ctx, wantVersion, path); err != nil {
 		return "", err
 	}
@@ -170,7 +179,7 @@ func (i *Installer) stage(ctx context.Context, version, path string) error {
 	}
 	// Files inherit the protected service directory ACL, then are explicitly
 	// hardened before any untrusted downloaded content is executed.
-	tmp, err := os.CreateTemp(dir, ".recovery-*.exe")
+	tmp, err := os.CreateTemp(dir, ".recovery-*"+filepath.Ext(RecoveryExecutableName))
 	if err != nil {
 		return err
 	}

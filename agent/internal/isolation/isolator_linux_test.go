@@ -166,14 +166,16 @@ func TestLinuxApplyIsOneCheckedAtomicBatch(t *testing.T) {
 	}
 }
 
-func TestLinuxApplyFlushesUnmarkedFlows(t *testing.T) {
+// The whole table, not only mark 0: a flow marked under an earlier allowlist
+// would otherwise keep matching the established rule after its permit is gone.
+func TestLinuxApplyFlushesEveryFlow(t *testing.T) {
 	f := &fakeNft{}
 	i := newTestLinuxIsolator(f)
 	spec, _, _ := nftFixture()
 	if _, err := i.Apply(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.conntrack) != 1 || f.conntrack[0] != "-D --mark 0" {
+	if len(f.conntrack) != 1 || f.conntrack[0] != "-F" {
 		t.Fatalf("conntrack calls = %v", f.conntrack)
 	}
 	if notes := i.TakeApplyNotes(); len(notes) != 0 {

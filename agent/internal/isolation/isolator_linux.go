@@ -153,7 +153,7 @@ func (i *linuxIsolator) Apply(ctx context.Context, spec ResolvedSpec) (Digest, e
 	if err := i.load(ctx, buildNftRuleset(spec, layout, baseline)); err != nil {
 		return "", err
 	}
-	i.flushUnmarkedFlows(ctx)
+	i.flushFlows(ctx)
 	data, err := i.listTable(ctx)
 	if err != nil {
 		return "", fmt.Errorf("read back nft isolation: %w", err)
@@ -187,17 +187,23 @@ func (i *linuxIsolator) load(ctx context.Context, ruleset string) error {
 	return nil
 }
 
-// flushUnmarkedFlows tears down existing flows so an open connection cannot
+// flushFlows tears down every existing flow so an open connection cannot
 // outlive the apply; it also clears conntrack-offloaded flows a forward chain
-// never sees. The rules are already enforcing, so a failure is reported but is
-// not an apply failure: the drop rules still stop unmarked flows' packets.
-func (i *linuxIsolator) flushUnmarkedFlows(ctx context.Context) {
+// never sees. All of them, not just unmarked ones: the mark outlives its
+// permit, so a flow marked under an earlier generation's or episode's allowlist
+// would otherwise keep matching the established rule. Flows that still qualify
+// re-mark themselves on their next outbound packet through the permit, which
+// has no `ct state new` clause.
+//
+// The rules are already enforcing, so a failure is reported but is not an
+// apply failure: the drop rules still stop unmarked flows' packets.
+func (i *linuxIsolator) flushFlows(ctx context.Context) {
 	if _, err := i.lookPath("conntrack"); err != nil {
 		log.Warn("conntrack is not installed; existing flows are dropped by the rules but not flushed")
 		i.note("conntrack_unavailable")
 		return
 	}
-	if _, err := i.conntrack(ctx, "-D", "--mark", "0"); err != nil {
+	if _, err := i.conntrack(ctx, "-F"); err != nil {
 		log.Warn("conntrack flush failed", "error", err)
 		i.note("conntrack_flush_failed")
 	}
@@ -404,10 +410,4 @@ func stripNftVolatile(value any) any {
 	default:
 		return value
 	}
-}
-
-// NewPlatformScheduler is replaced by the systemd scheduler in Task 4.
-func NewPlatformScheduler(dataDir string) RecoveryScheduler {
-	_ = dataDir
-	return unsupportedScheduler{}
 }

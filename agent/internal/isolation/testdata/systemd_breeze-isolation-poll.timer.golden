@@ -1,0 +1,11 @@
+[Unit]
+Description=Breeze network isolation expiry check timer
+Documentation=https://github.com/breeze-rmm/breeze
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=15min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
