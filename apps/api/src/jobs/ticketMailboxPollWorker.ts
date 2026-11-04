@@ -29,6 +29,7 @@ import {
   markRead,
 } from '../services/ticketMailbox/graphMailClient';
 import { normalizeGraphMessage } from '../services/ticketMailbox/normalizeGraphMessage';
+import { evaluateTrustedArc } from '../services/ticketMailbox/arcSeal';
 import {
   getStartHistoryId,
   listInboxChanges,
@@ -247,7 +248,8 @@ async function sweepOne(
           continue;
         }
       }
-      const normalized = normalizeGraphMessage(msg, c.partnerId, c.mailboxAddress);
+      const arc = await evaluateTrustedArc(msg.internetMessageHeaders, c.trustedArcSealers, msg.receivedDateTime);
+      const normalized = normalizeGraphMessage(msg, c.partnerId, c.mailboxAddress, { arc });
       await enqueueInboundEmail(normalized, {
         provider: 'm365',
         connectionId: c.id,

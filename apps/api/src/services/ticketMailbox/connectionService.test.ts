@@ -678,19 +678,19 @@ describe('ticket mailbox connection service', () => {
       lastPolledAt: fullRow.lastPolledAt,
       lastMessageAt: fullRow.lastMessageAt,
     };
-    dbMocks.selectResults.push([{ ...publicRow, lastError: null, consentSessionLive: false }]);
+    dbMocks.selectResults.push([{ ...publicRow, lastError: null, consentSessionLive: false, trustedArcSealers: [] }]);
 
     const result = await listMailboxConnections(PARTNER_ID);
 
-    expect(result).toEqual([{ ...publicRow, verificationError: null, transientPollFailures: null, consentExpired: false, gmailHandling: null, connectBaseline: null }]);
+    expect(result).toEqual([{ ...publicRow, verificationError: null, transientPollFailures: null, consentExpired: false, trustedArcSealers: [], gmailHandling: null, connectBaseline: null }]);
     expect(Object.keys(result[0]!)).toEqual([
-      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'verificationError', 'transientPollFailures', 'consentExpired', 'gmailHandling', 'connectBaseline',
+      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'verificationError', 'transientPollFailures', 'consentExpired', 'trustedArcSealers', 'gmailHandling', 'connectBaseline',
     ]);
     expect(Object.keys(dbMocks.selectedFields[0] ?? {})).toEqual([
       'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'lastError',
       'consecutiveTransientFailures', 'lastTransientFailureAt',
       'gmailHandledLabel', 'gmailArchiveOnHandle', 'gmailHandledError', 'gmailHandledErrorAt',
-      'eligibleAfter', 'baselineSkippedCount', 'baselineCompletedAt', 'consentSessionLive',
+      'eligibleAfter', 'baselineSkippedCount', 'baselineCompletedAt', 'trustedArcSealers', 'consentSessionLive',
     ]);
   });
 
@@ -828,7 +828,7 @@ describe('ticket mailbox connection service', () => {
     ]);
     expect(Object.keys(dbMocks.selectedFields[0] ?? {})).toEqual([
       'id', 'partnerId', 'tenantId', 'mailboxAddress', 'deltaLink',
-      'consentAttemptId', 'eligibleAfter', 'baselineCompletedAt',
+      'consentAttemptId', 'eligibleAfter', 'baselineCompletedAt', 'trustedArcSealers',
     ]);
     // #8308: oldest attempt first, never-attempted first of all, id as tie-breaker.
     expect(dbMocks.selectOrders).toHaveLength(1);
