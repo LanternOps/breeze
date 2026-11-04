@@ -991,6 +991,9 @@ func validateSpec(s *Spec, now time.Time) error {
 			return fmt.Errorf("allow[%d]: %w", i, err)
 		}
 	}
+	if !s.PolicyRevision.Valid() {
+		s.PolicyRevision = ""
+	}
 	return nil
 }
 
@@ -1292,6 +1295,8 @@ func (o *op) isolateLocked(spec Spec) {
 		RemoteRelay:      spec.RemoteRelay,
 		Allow:            append([]AllowEntry(nil), spec.Allow...),
 		BreakGlassSecret: append([]byte(nil), spec.BreakGlassSecret...),
+		PolicyRevision:   string(spec.PolicyRevision),
+		PolicyGeneration: spec.Generation,
 	}
 	if len(spec.BreakGlassSecret) == 0 {
 		o.newEpisode.BreakGlassSecret = nil
