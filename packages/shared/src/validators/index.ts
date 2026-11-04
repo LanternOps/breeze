@@ -1263,6 +1263,9 @@ export {
 // carries no initialisation-order hazard.
 export * from './monitors';
 
+// Alert lifecycle defaults (partner → org → monitor; spec 2026-10-29-alert-rearm-lifecycle §6).
+export * from './alertLifecycle';
+
 // Tool sources (BYO MCP/OpenAPI, spec 2026-09-07)
 export * from './toolSources';
 
