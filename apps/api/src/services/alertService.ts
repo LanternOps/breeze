@@ -33,8 +33,8 @@ import { isCooldownActive, setCooldown, recordStateTransition, isFlapping } from
 import { publishEvent } from './eventBus';
 import { alertOwnerKey, isDeviceOwned } from './alertOwner';
 import { resolveDeviceSiteId } from './deviceSiteResolver';
-import { enqueueAlertCorrelation } from '../jobs/alertCorrelation';
 import { captureException } from './sentry';
+import { scheduleStagedAlertDispatch } from './subjectAlertOutbox';
 import { resolveMonitorsForDevice } from './monitors/monitorResolver';
 import { applyOverrides, getMonitorKindSpec } from './monitors/kinds';
 import {
@@ -97,10 +97,12 @@ export interface CreateAlertParams {
 }
 
 /**
- * W03 — the transactional outbox envelope staged on a subject alert's own row.
- * `alerts.context._subjectDispatch` (or `_subjectResolutionDispatch` for a
- * recovery) IS the outbox: no separate table, no in-memory callback list. Task
- * 10's drain reads it back only after the writing transaction has committed.
+ * The transactional outbox envelope staged on an alert's own row (W03 for
+ * subject alerts; every `createAlert` / `createSourcedAlert` alert since
+ * #10926). `alerts.context._subjectDispatch` (or `_subjectResolutionDispatch`
+ * for a subject recovery) IS the outbox: no separate table, no in-memory
+ * callback list. `subjectAlertOutbox.ts` reads it back only after the writing
+ * transaction has committed.
  */
 export interface SubjectAlertDispatch {
   eventId: string;
@@ -109,6 +111,14 @@ export interface SubjectAlertDispatch {
   siteId: string | null | undefined;
   cooldownMinutes: number;
   payload: Record<string, unknown>;
+  /** Fixed at staging so a republished event keeps its original time. */
+  occurredAt?: string;
+  /**
+   * #10926 — on a failed publish keep the row and retry later, instead of the
+   * W03 subject compensation (delete the row and let the next sweep re-raise).
+   */
+  retryOnPublishFailure?: boolean;
+  failedAttempts?: number;
   leaseToken?: string;
   leaseUntil?: string;
 }
@@ -131,72 +141,36 @@ export interface RuleWithTemplate {
 }
 
 /**
- * Publish `alert.triggered` for an already-inserted alert row, rolling the row
- * back if the publish fails.
+ * #10926 — the `alert.triggered` outbox envelope for a legacy or sourced alert.
+ * The creator writes it in the SAME insert as the row, then calls
+ * `scheduleStagedAlertDispatch`; the event goes out only after the outermost
+ * transaction commits (`subjectAlertOutbox.ts`).
  *
- * A committed `active` alert that was never published is worse than no alert at
- * all: every creator dedupes on open alerts, so the unpublished row makes them
- * skip re-creating it forever — the silent, inbox-only alert #5241 exists to
- * eliminate. Deleting it lets the next evaluation retry the whole
- * create + publish.
- *
- * @returns true when the event was published; false when the row was rolled
- *          back (the caller must not burn a cooldown or enqueue follow-up work).
+ * Publishing inline, as these paths used to, ran the `notification-dispatcher`
+ * subscriber before COMMIT: `process-alert` read the row on another connection,
+ * found nothing and returned without sending, so rule, monitor and sourced
+ * alerts never notified anyone. The envelope is durable, so a crash after
+ * COMMIT or a failed publish is retried by the next drain instead of leaving an
+ * active alert that is never announced (the row every creator's dedupe would
+ * skip forever, #5241 / #5325).
  */
-async function publishAlertTriggeredOrRollback(opts: {
+function stagedTriggerDispatch(opts: {
   alertId: string;
-  orgId: string;
-  deviceId: string | null;
-  /** Producing subsystem, used for the Sentry tag and log lines. */
-  source: string;
   payload: Record<string, unknown>;
   publisher: string;
   siteId: string | null | undefined;
-  ownerKind?: string;
-  ownerRef?: string | null;
-}): Promise<boolean> {
-  const { alertId, orgId, deviceId, source, payload, publisher, siteId } = opts;
-
-  try {
-    await publishEvent('alert.triggered', orgId, payload, publisher, { siteId });
-    return true;
-  } catch (error) {
-    captureException(error, undefined, {
-      errorId: 'alert-triggered-publish-failed',
-      alertId,
-      alertSource: source,
-      orgId,
-      ...(deviceId === null ? {} : { deviceId }),
-      ...(opts.ownerKind ? { ownerKind: opts.ownerKind, ownerRef: opts.ownerRef ?? 'null' } : {}),
-    });
-    console.error(
-      `[AlertService] Failed to publish alert.triggered for ${source} alert ${alertId}; rolling the alert row back:`,
-      error
-    );
-    try {
-      await db.delete(alerts).where(eq(alerts.id, alertId));
-    } catch (deleteError) {
-      // Now the row IS stranded — unpublished and undeletable. Nothing else
-      // will notice it, so report it under its own errorId. Note that
-      // `captureException` is a no-op when Sentry is not initialised (the
-      // common self-hosted shape), so on those deployments the console.error
-      // below is the only durable trace — operators who want to be paged on
-      // this need a log-based alert on it.
-      captureException(deleteError, undefined, {
-        errorId: 'alert-triggered-orphan-rollback-failed',
-        alertId,
-        alertSource: source,
-        orgId,
-        ...(deviceId === null ? {} : { deviceId }),
-        ...(opts.ownerKind ? { ownerKind: opts.ownerKind, ownerRef: opts.ownerRef ?? 'null' } : {}),
-      });
-      console.error(
-        `[AlertService] Could not roll back unpublished alert ${alertId}; it is stranded active with no notification:`,
-        deleteError
-      );
-    }
-    return false;
-  }
+  cooldownMinutes: number;
+}): SubjectAlertDispatch {
+  return {
+    eventId: opts.alertId,
+    eventType: 'alert.triggered',
+    publisher: opts.publisher,
+    siteId: opts.siteId,
+    cooldownMinutes: opts.cooldownMinutes,
+    payload: opts.payload,
+    occurredAt: new Date().toISOString(),
+    retryOnPublishFailure: true,
+  };
 }
 
 async function monitorEventFields(monitorId: string | null | undefined, kind?: MonitorKind | null): Promise<{ monitorId: string | null; kind: MonitorKind | null }> {
@@ -311,13 +285,17 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
     ? { ...context, lifecycle: { ...(context?.lifecycle as Record<string, unknown> | undefined), cursor: lifecycle.cursor } }
     : context;
 
-  const insert = async (): Promise<{ id: string } | undefined> => {
+  // Allocated here so the legacy path can stage its outbox envelope (which
+  // names the alert) in the same INSERT as the row.
+  const alertId = randomUUID();
+  const insert = async (dispatch?: SubjectAlertDispatch): Promise<{ id: string } | undefined> => {
+    const rowContext = dispatch ? { ...insertContext, _subjectDispatch: dispatch } : insertContext;
     const [row] = await db.execute<{ id: string }>(sql`
       INSERT INTO alerts (owner_kind, rule_id, device_id, org_id, severity, title, message, context,
-        monitor_id, episode_id, requires_human, subject_key, status, triggered_at)
+        monitor_id, episode_id, requires_human, subject_key, status, triggered_at, id)
       VALUES ('device', ${ruleId}, ${deviceId}, ${orgId}, ${severity}, ${title}, ${message},
-        ${JSON.stringify(insertContext ?? {})}::jsonb, ${monitorFields.monitorId}, ${episodeId ?? null},
-        ${requiresHuman ?? false}, ${subjectKey ?? null}, 'active', now())
+        ${JSON.stringify(rowContext ?? {})}::jsonb, ${monitorFields.monitorId}, ${episodeId ?? null},
+        ${requiresHuman ?? false}, ${subjectKey ?? null}, 'active', now(), ${alertId})
       ON CONFLICT (rule_id, device_id, COALESCE(subject_key, ''))
         WHERE rule_id IS NOT NULL AND status IN ('active', 'acknowledged', 'suppressed')
       DO NOTHING RETURNING id`);
@@ -351,24 +329,19 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
     });
   }
 
-  const newAlert = await insert();
-  if (!newAlert) {
-    console.error('[AlertService] Failed to create alert');
-    return null;
-  }
-
-  // Publish event — attach the device's site so site-restricted users see it.
-  // The cooldown and the correlation job are deliberately set only AFTER a
-  // successful publish: on a rollback the next evaluation must be free to retry
-  // the whole create + publish, and nothing may point at the deleted row.
+  // #10926 — stage `alert.triggered` in the same INSERT and announce it only
+  // after the caller's outermost transaction commits. The site rides on the
+  // event so site-restricted users see it. The flap transition, cooldown and
+  // correlation job run in the outbox after a successful publish: between
+  // COMMIT and that publish the open row itself dedupes a re-evaluation.
   const siteId = await resolveDeviceSiteId(deviceId);
-  const published = await publishAlertTriggeredOrRollback({
-    alertId: newAlert.id,
-    orgId,
-    deviceId,
-    source: 'alert_rule',
+  const newAlert = await insert(stagedTriggerDispatch({
+    alertId,
+    publisher: 'alert-service',
+    siteId,
+    cooldownMinutes,
     payload: {
-      alertId: newAlert.id,
+      alertId,
       ruleId,
       deviceId,
       severity,
@@ -379,22 +352,15 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
       responsesOwner: true,
       owner: null, ownerKey: `device:${deviceId}`,
     },
-    publisher: 'alert-service',
-    siteId
-  });
-
-  if (!published) {
+  }));
+  if (!newAlert) {
+    console.error('[AlertService] Failed to create alert');
     return null;
   }
+  // `newAlert.id` is the `alertId` written above, read back from RETURNING.
+  scheduleStagedAlertDispatch(newAlert.id);
 
-  await recordStateTransition(ruleId, deviceId, 'triggered');
-
-  // Set cooldown
-  await setCooldown(ruleId, deviceId, cooldownMinutes, undefined);
-
-  enqueueAlertCorrelationForDevice(orgId, deviceId);
-
-  console.log(`[AlertService] Created alert ${newAlert.id} for rule=${ruleId} device=${deviceId}`);
+  console.log(`[AlertService] Created alert ${newAlert.id} for rule=${ruleId} device=${deviceId}; alert.triggered follows the commit`);
 
   return newAlert.id;
 }
@@ -463,9 +429,16 @@ export type CreateSourcedAlertParams = (
  * flap-suppression stay with the caller, whose keys are source-specific
  * (a monitor rule id, a warranty end date, …) rather than an `alertRules` id.
  *
- * @returns the new alert id, or null if the insert produced no row or the
- *          publish failed and the row was rolled back — in either case nothing
- *          was published and the caller should not burn its cooldown.
+ * #10926 — `alert.triggered` is staged in the same INSERT and published only
+ * after the caller's outermost transaction commits (see
+ * {@link stagedTriggerDispatch}). The returned id is usable at once inside
+ * that transaction (episode links, escalation pointers, notified stamps); a
+ * failed publish is retried with the row kept, never rolled back.
+ *
+ * @returns the new alert id, or null if the insert produced no row (an open
+ *          workload alert already exists, or the insert was refused), in
+ *          which case nothing will be published and the caller should not
+ *          burn its cooldown.
  */
 export async function createSourcedAlert(params: CreateSourcedAlertParams): Promise<string | null> {
   const { deviceId, orgId, severity, title, message, context, publisher, eventPayload, triggeredAt } = params;
@@ -476,9 +449,35 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
   const ownerKey = alertOwnerKey({
     ownerKind, ownerRef, deviceId, topologySiteId: null, topologySourceKey: null,
   });
+  const alertId = randomUUID();
+  // Attach the device's site so site-restricted users see it, same as createAlert.
+  const siteId = deviceId === null ? null
+    : params.siteId !== undefined ? params.siteId : await resolveDeviceSiteId(deviceId);
+  const dispatch = stagedTriggerDispatch({
+    alertId,
+    publisher,
+    siteId,
+    // A sourced alert's cooldown belongs to its caller; the outbox sets none.
+    cooldownMinutes: 0,
+    payload: {
+      alertId,
+      ruleId: null,
+      severity,
+      title,
+      message,
+      // Persisted source and owner identity override caller-supplied fields.
+      ...eventPayload,
+      ...monitorFields,
+      source: context.source,
+      deviceId,
+      owner: params.owner ?? null,
+      ownerKey,
+    },
+  });
   const insert = db
     .insert(alerts)
     .values({
+      id: alertId,
       ruleId: null,
       ownerKind,
       ownerRef,
@@ -488,7 +487,7 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
       severity,
       title,
       message,
-      context,
+      context: { ...context, _subjectDispatch: dispatch },
       monitorId: params.monitorId ?? null,
       episodeId: params.episodeId ?? null,
       requiresHuman: params.requiresHuman ?? false,
@@ -511,8 +510,7 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
     throw error;
   }
 
-  const alertId = newAlert?.id;
-  if (!alertId) {
+  if (!newAlert) {
     // The partial unique index arbitrates concurrent writes for an org owner.
     if (params.owner) {
       console.info('[AlertService] Deduplicated open sourced alert', { orgId, ownerKind, ownerRef });
@@ -526,43 +524,12 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
     return null;
   }
 
-  // Attach the device's site so site-restricted users see it, same as createAlert.
-  const siteId = deviceId === null ? null
-    : params.siteId !== undefined ? params.siteId : await resolveDeviceSiteId(deviceId);
-  const published = await publishAlertTriggeredOrRollback({
-    alertId,
-    orgId,
-    deviceId,
-    source: context.source,
-    ownerKind,
-    ownerRef,
-    payload: {
-      alertId,
-      ruleId: null,
-      severity,
-      title,
-      message,
-      // Persisted source and owner identity override caller-supplied fields.
-      ...eventPayload,
-      ...monitorFields,
-      source: context.source,
-      deviceId,
-      owner: params.owner ?? null,
-      ownerKey,
-    },
-    publisher,
-    siteId
-  });
+  // Published after COMMIT; the outbox then enqueues device correlation (a
+  // workload owner has no device to correlate). `newAlert.id` is the
+  // `alertId` written above, read back from RETURNING.
+  scheduleStagedAlertDispatch(newAlert.id);
 
-  if (!published) {
-    return null;
-  }
-
-  // Only correlate an alert that actually published — a rolled-back row must
-  // not leave a correlation job pointing at a deleted alert.
-  if (deviceId !== null) enqueueAlertCorrelationForDevice(orgId, deviceId);
-
-  return alertId;
+  return newAlert.id;
 }
 
 async function anchoredTriggerOpts(ruleId: string, deviceId: string, triggerConditions: unknown) {
@@ -1811,15 +1778,6 @@ export async function checkAllAutoResolve(orgId?: string): Promise<number> {
   }
 
   return resolvedCount;
-}
-
-function enqueueAlertCorrelationForDevice(orgId: string, deviceId: string): void {
-  void enqueueAlertCorrelation({ orgId, deviceId }).catch((error) => {
-    console.error(
-      `[AlertService] Failed to enqueue alert correlation for org=${orgId} device=${deviceId}:`,
-      error
-    );
-  });
 }
 
 /**

@@ -2,8 +2,11 @@
  * EDR provider framework — Phase 4 notifier (#8166 W02, spec §4.4, D10).
  *
  * Runs AFTER a sync's Phase 3 transaction commits, over PERSISTED rows, never
- * inside the sync transaction: `createSourcedAlert` and `publishEvent` publish
- * immediately. The sync job wraps every entry point here in its own try/catch —
+ * inside the sync transaction. `publishEvent` publishes immediately;
+ * `createSourcedAlert` stages `alert.triggered` and its alert outbox publishes
+ * it once the short context around the create commits (#10926), so the
+ * `edr.detection_*` event can reach subscribers first. The sync job wraps
+ * every entry point here in its own try/catch —
  * an alert-path outage must never fail the sync or mark the connection errored.
  *
  * Detections (`evaluateEdrAlerts`): a row publishes when `notified_severity`
