@@ -59,7 +59,7 @@ The agent reports a `SecurityStatus` payload on each heartbeat. The payload incl
   <TabItem label="macOS">
     - **AV detection**: CylancePROTECT / Aurora Endpoint Defense via its app bundle (`/Applications/Cylance/CylanceUI.app`) and launch daemon (`com.cylance.agent_service`), then Microsoft Defender for Endpoint via `mdatp health --output json`, with app bundle fallback. Cylance is attributed first; Defender takes the provider only when nothing else was found or when it is the only product with real-time protection on
     - **Gatekeeper**: `spctl --status` checks Gatekeeper enforcement state
-    - **Firewall**: `socketfilterfw --getglobalstate` or `defaults read com.apple.alf globalstate`
+    - **Firewall**: `socketfilterfw --getglobalstate`. Before macOS 15, `defaults read com.apple.alf globalstate` runs first
     - **Encryption**: `fdesetup status` detects FileVault state
     - **Local admins**: `dscl . -read /Groups/admin GroupMembership` lists admin group members
     - **Password policy**: `pwpolicy -getglobalpolicy` parses min chars, complexity, lockout, and history
@@ -696,7 +696,7 @@ The agent failed to query the encryption subsystem. Check:
 ### Firewall status not detected
 
 - **Windows**: The agent queries `Get-NetFirewallProfile`. If all three profiles (Domain, Private, Public) return `False`, the firewall is reported as disabled.
-- **macOS**: The agent checks `socketfilterfw --getglobalstate` first, then falls back to reading `com.apple.alf` preferences.
+- **macOS**: On macOS 15 and later the agent checks `socketfilterfw --getglobalstate`. On earlier versions it reads `com.apple.alf` preferences first, then falls back to `socketfilterfw`.
 - **Linux**: The agent checks `ufw`, `firewall-cmd`, and `systemctl is-active firewalld` in order. If none are available, firewall status cannot be determined.
 
 ### Posture score is 0 or not available
