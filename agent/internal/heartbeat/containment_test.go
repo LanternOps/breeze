@@ -170,16 +170,15 @@ func TestContainmentWireCapabilitiesAndAbsentReport(t *testing.T) {
 	if fields["networkIsolationVersion"] != float64(0) || fields["networkIsolationReady"] != false {
 		t.Fatal("unsupported capabilities must be explicit")
 	}
-	// An OS whose isolator ships (inert) names its mechanism at capability 0;
-	// elsewhere the empty mechanism is omitted.
+	// A build with a real isolator names its mechanism even at capability 0
+	// (not activated); elsewhere the empty mechanism is omitted.
 	switch mechanism, ok := fields["networkIsolationMechanism"]; runtime.GOOS {
-	case "windows":
-		if mechanism != "wfp" {
-			t.Fatalf("mechanism = %v, want wfp", mechanism)
+	case "windows", "darwin", "linux":
+		if want := map[string]string{"windows": "wfp", "darwin": "pf", "linux": "nft"}[runtime.GOOS]; mechanism != want {
+			t.Fatalf("mechanism %v, want %s", mechanism, want)
 		}
-	case "linux":
-		if mechanism != "nft" || fields["networkIsolationUnsupportedReason"] != "not_activated" {
-			t.Fatalf("mechanism = %v reason = %v, want nft / not_activated", mechanism, fields["networkIsolationUnsupportedReason"])
+		if fields["networkIsolationUnsupportedReason"] != "not_activated" {
+			t.Fatalf("a shipped capability-0 build must say why: %v", fields["networkIsolationUnsupportedReason"])
 		}
 	default:
 		if ok {

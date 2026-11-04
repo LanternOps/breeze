@@ -142,6 +142,12 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // tool, which the deterministic coordinator admits after the run — so a
   // specialist can never launch a specialist (depth one).
   'launch_specialist',
+  // Network-isolation W13 (#10101, spec §2): lifting a containment from a
+  // device under incident response is a human decision, approved four-eyes
+  // from a chat session; an operator agent never proposes one (the
+  // send_endpoint_message precedent above). MCP is denied separately, by name
+  // (services/networkIsolation/bypass.ts).
+  'release_containment',
 ]);
 
 /**

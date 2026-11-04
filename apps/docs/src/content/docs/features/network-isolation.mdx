@@ -33,7 +33,7 @@ Remote desktop uses **TURN relay only**, with no direct/STUN fallback. A self-ho
 | --- | --- | --- |
 | Windows (first release) | Windows Filtering Platform (WFP), with a dedicated Breeze provider and sublayer | Breeze application identity **and** destination/port; persistent and boot-time filters protect restart |
 | Linux (planned; not active in any release) | Dedicated nftables table (`inet breeze_isolation`) with input, output, and forward chains | The agent's own cgroup **and** destination/port; child processes are placed in a separate cgroup before they start |
-| macOS (planned) | Dedicated pf anchor attached to a compatible ruleset | Destination/port only; pf cannot identify the process |
+| macOS (planned, not activated) | Dedicated pf anchor `com.breeze/isolation`, attached only to a compatible ruleset; Breeze releases only its own pf enable reference | Destination/port only; pf cannot identify the process |
 
 Breeze removes only its own isolation rules on release. Other firewall or EDR isolation can still block connectivity after Breeze isolation is released. A failed management reachability or enforcement probe causes rollback; a separate recovery component enforces expiry even if the main agent fails. Recovery still depends on working storage, OS scheduling, and firewall facilities. Powered-off devices run overdue recovery at boot or resume.
 
@@ -73,6 +73,18 @@ Linux isolation is **not available in any release**. Linux agents advertise capa
 **Uninstall.** Self-uninstall and `uninstall.sh` release Breeze-owned rules first. If release cannot be confirmed, nothing is removed, and self-uninstall re-enables and restarts the agent service. The units and recovery binaries are removed only after a confirmed release, or when `nft` shows no Breeze rules installed. A failed `nft` query never counts as "no rules". A never-isolated device uninstalls normally.
 
 **Limits specific to Linux.** Isolation filters at the IP layer. Traffic a Linux bridge switches at layer 2 between a guest and a physical interface (bridged VMs or containers) does not pass the forward chain and needs separate network controls; routed and NAT container traffic is dropped. Hardware-offloaded flows are also a documented limitation.
+
+### macOS (planned)
+
+macOS support is implemented but **disabled in this release**: agents report capability 0 with the reason `not_activated`, and no signed recovery executable is distributed, so readiness also fails closed. The design below applies once it is activated.
+
+- **pf anchor.** Breeze rules live only in the anchor `com.breeze/isolation`. The main ruleset must reference that anchor, and the only way to add the reference is to reload the main ruleset from `/etc/pf.conf`. Breeze does that only when the reference is missing, with its anchor ahead of Apple's, and otherwise changes only its own anchor. Breeze does not disable pf: it takes, and later releases, only its own pf enable reference, so pf stays on while anything else holds one.
+- **Incompatible configurations are refused, not overwritten.** The apply fails with `mechanism_unavailable` and the console shows why when Internet Sharing is on (the reload would destroy its anchors), when another anchor or rule is live that `/etc/pf.conf` would not restore, when `set skip` covers a network interface that is up, or when a `quick pass` or `rdr pass` rule would let traffic bypass the Breeze anchor. A refused apply changes nothing.
+- **Re-verification.** Every 5 minutes, the agent checks that the anchor holds its rules, that the main ruleset still references it, that pf is enabled, and that no `set skip` or `quick pass` has appeared since. Anything that reloads the main ruleset silently detaches the anchor. The agent re-attaches it while the ruleset is still compatible, and otherwise reports the drift and its reason.
+- **No per-process scope.** pf cannot match a process, so every permit is destination and port only and applies to every process on the Mac. See the shared-address risk below.
+- **Recovery.** A separate root LaunchDaemon, `com.breeze.isolation`, runs the versioned `breeze-isolation-recovery` executable from `/Library/Breeze/isolation-recovery/<version>/` at boot and every 15 minutes. It releases an expired episode and, because pf keeps no rules across a reboot, installs a still-valid one again. While an apply is provisional, `com.breeze.isolation.rollback` checks every 15 seconds and rolls the apply back once its deadline has passed; `com.breeze.isolation.expire` runs once at the expiry time. Versions are installed side by side and never overwritten in place.
+- **Boot window.** launchd starts the LaunchDaemon with no ordering against the network, so an exposure window exists after each boot. Its length has not been measured yet; the macOS lab test does that before activation.
+- **Uninstall releases first.** The agent's self-uninstall and `breeze-agent service uninstall` release isolation before stopping any Breeze daemon, falling back to the recovery executable, and stop with the agent still installed if the release cannot be confirmed. They confirm the release again once the agent has stopped, then remove the recovery LaunchDaemons and executables; if that second check fails, the agent is loaded again and recovery stays in place. The downloadable `uninstall.sh` does not perform this release.
 
 Residual risks remain:
 

@@ -16,8 +16,8 @@ import (
 )
 
 func TestRecoveryExecutableHasNoExeSuffixOnLinux(t *testing.T) {
-	if RecoveryExecutableName != "breeze-isolation-recovery" {
-		t.Fatalf("RecoveryExecutableName = %q", RecoveryExecutableName)
+	if got := recoveryExecutableName(); got != "breeze-isolation-recovery" {
+		t.Fatalf("recoveryExecutableName() = %q", got)
 	}
 }
 
