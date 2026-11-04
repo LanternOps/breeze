@@ -154,17 +154,40 @@ func TestClearBrandingContinuesPastFIFOSession(t *testing.T) {
 	}
 }
 
-func TestReadStatusRefusesSymlink(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(t.TempDir(), "elsewhere.yaml")
-	if err := os.WriteFile(target, []byte("pid: 7\n"), 0o600); err != nil {
-		t.Fatal(err)
+// The target is valid YAML for every reader, so only the refused open can
+// produce the error, not a parse failure after following the link.
+func TestUntrustedReadsRefuseSymlink(t *testing.T) {
+	const content = "pid: 7\nbranding:\n  scope_id: s\n  display_name: X\n"
+	tests := []struct {
+		name string
+		file string
+		call func(config string) error
+	}{
+		{"ReadStatus", "helper_status.yaml", func(config string) error { _, err := ReadStatus(config); return err }},
+		{"readBranding", "helper_config.yaml", func(config string) error { _, err := readBranding(config); return err }},
+		{"stripBranding", "helper_config.yaml", stripBranding},
 	}
-	if err := os.Symlink(target, filepath.Join(dir, "helper_status.yaml")); err != nil {
-		t.Fatal(err)
-	}
-	s, err := ReadStatus(filepath.Join(dir, "helper_config.yaml"))
-	if !errors.Is(err, syscall.ELOOP) {
-		t.Fatalf("followed or wrong error: %+v, %v", s, err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			target := filepath.Join(t.TempDir(), "elsewhere.yaml")
+			if err := os.WriteFile(target, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, filepath.Join(dir, tc.file)); err != nil {
+				t.Fatal(err)
+			}
+			err := tc.call(filepath.Join(dir, "helper_config.yaml"))
+			if !errors.Is(err, syscall.ELOOP) {
+				t.Fatalf("followed or wrong error: %v", err)
+			}
+			data, rerr := os.ReadFile(target)
+			if rerr != nil {
+				t.Fatal(rerr)
+			}
+			if string(data) != content {
+				t.Fatalf("target changed: %s", data)
+			}
+		})
 	}
 }

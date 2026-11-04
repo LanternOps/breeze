@@ -18,10 +18,11 @@ const maxUntrustedFileBytes = 64 * 1024
 var errNotRegularFile = errors.New("not a regular file")
 
 // readUntrustedFile reads a file a session user can replace. The Manager calls
-// it with its mutex held, so it must not block on what the user puts there: the
-// open does not wait on a FIFO, a final symlink is refused, the type is checked
-// on the opened descriptor (a check before the open could be raced), and the
-// read is capped. Errors never include file content.
+// it with its mutex held and enrollment clears branding through it, so it must
+// not block on what the user puts there: the open does not wait on a FIFO, a
+// final symlink is refused, the type is checked on the opened descriptor (a
+// check before the open could be raced), and the read is capped. Errors never
+// include file content.
 func readUntrustedFile(path string) ([]byte, error) {
 	f, err := openUntrustedFile(path)
 	if err != nil {
