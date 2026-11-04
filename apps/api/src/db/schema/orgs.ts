@@ -319,7 +319,7 @@ export const organizations = pgTable('organizations', {
   aiExternalProcessing: boolean('ai_external_processing').notNull().default(false),
   // Alert re-arm lifecycle W2 (#10765): org OVERRIDE of the partner's alert
   // lifecycle default. Each NULL = inherit `partners.alert_*`; no defaults, no
-  // backfill. CHECKs (migration 2027-01-20-110000): mode in
+  // backfill. CHECKs (migration 2027-01-20-130000): mode in
   // ('new_evidence','after_delay'), delay 1–1440 set iff mode = 'after_delay',
   // cooldown 0–1440. Read ONLY via services/alertLifecycle/resolve.ts.
   alertAutoResolve: boolean('alert_auto_resolve'),

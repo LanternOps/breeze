@@ -31,6 +31,7 @@ const WRITERS: Record<string, Classification> = {
   'src/routes/agents/mtls.ts': { kind: 'invalidates', via: 'invalidateOrgHelperSettingsCache' },
   'src/routes/auth/verifyEmail.ts': { kind: 'no-agent-settings', reason: 'partners emailVerifiedAt/status, settings.statusMessage/statusAction* only' },
   'src/routes/internal/synthetic.ts': { kind: 'no-agent-settings', reason: 'partners Stripe payment-method columns only' },
+  'src/routes/alerts/lifecycleDefaults.ts': { kind: 'no-agent-settings', reason: 'alert_* lifecycle columns only (#10765); the agent caches read none of them' },
   'src/routes/connectionHealthSettings.ts': { kind: 'no-agent-settings', reason: 'settings.connectionHealth.customerAdminsNotified only (path-level jsonb_set)' },
   'src/routes/flowLimits.ts': { kind: 'no-agent-settings', reason: 'settings.flows.<limit> only (path-level jsonb_set; Tool Catalog W05 #5220)' },
   'src/routes/orgs.ts': { kind: 'invalidates', via: 'invalidateAgentOrgSettingsCaches' },

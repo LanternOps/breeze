@@ -80,7 +80,7 @@ export function monitorLifecycleOverride(monitor: LifecycleMonitor): PartialLife
   };
 }
 
-interface OrgLifecycleRow {
+export interface OrgLifecycleRow {
   partnerId: string | null;
   values: PartialLifecycle;
 }
@@ -100,7 +100,7 @@ async function readMonitor(monitorId: string): Promise<LifecycleMonitor | null> 
 }
 
 /** The org override, read in the caller's own RLS context (the caller can see its own org). */
-async function readOrg(orgId: string): Promise<OrgLifecycleRow | null> {
+export async function readOrgLifecycleOverride(orgId: string): Promise<OrgLifecycleRow | null> {
   const [row] = await db
     .select({
       partnerId: organizations.partnerId,
@@ -176,7 +176,7 @@ export function createLifecycleLoader(): AlertLifecycleLoader {
       return resolveAlertLifecycle({ legacy: legacyLifecycleValues(rule, template) });
     }
     const def = monitor !== undefined ? monitor : await memo(monitors, monitorId, () => readMonitor(monitorId));
-    const org = await memo(orgs, deviceOrgId, () => readOrg(deviceOrgId));
+    const org = await memo(orgs, deviceOrgId, () => readOrgLifecycleOverride(deviceOrgId));
     if (!org) {
       console.warn('[AlertLifecycle] Device org not visible; org/partner defaults skipped', { deviceOrgId, monitorId });
     }
