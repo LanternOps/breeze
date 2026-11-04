@@ -349,12 +349,15 @@ async function createDueScheduledBackupJobs(
       }
     }
     if (createdAny && entry.featureLinkId) {
+      // Matches the dedupe window createScheduledBackupJobIfAbsent uses, floored
+      // to the minute like it, so a job of this same occurrence is never counted
+      // as an earlier one.
+      const occurrenceStart = new Date(now.getTime() - SCHEDULE_LOOKBACK_MINUTES * 60_000);
+      occurrenceStart.setSeconds(0, 0);
       await expireSupersededBackupCatchUps({
         deviceId: entry.deviceId,
         featureLinkId: entry.featureLinkId,
-        // Matches the dedupe window createScheduledBackupJobIfAbsent uses, so
-        // a job of this same occurrence is never counted as an earlier one.
-        occurrenceStart: new Date(now.getTime() - SCHEDULE_LOOKBACK_MINUTES * 60_000),
+        occurrenceStart,
       });
     }
   }
