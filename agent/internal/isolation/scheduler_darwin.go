@@ -64,6 +64,11 @@ type darwinScheduler struct {
 
 var _ RecoveryScheduler = (*darwinScheduler)(nil)
 
+// NewPlatformScheduler supplies the macOS recovery LaunchDaemons. The recovery
+// path is read afresh from the journal on every call, so a rotation of the
+// recovery artifact also rotates the jobs.
+func NewPlatformScheduler(dataDir string) RecoveryScheduler { return newDarwinScheduler(dataDir) }
+
 func newDarwinScheduler(dataDir string) *darwinScheduler {
 	return &darwinScheduler{
 		dataDir:         dataDir,

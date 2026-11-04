@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/atomicrename"
+	"github.com/breeze-rmm/agent/internal/isolation/recoveryinstall"
 )
 
 const (
@@ -27,23 +28,49 @@ const (
 	pfTokenFile = "isolation-pf-token"
 )
 
+// TODO(#10099-activation): flip to true only in the activation PR, after L3 passes. Todd gate.
+const darwinIsolationActivated = false
+
 // darwinIsolator is the pf mechanism (spec §3.5, OD13 a′). Rules only ever go in
 // our own anchor; the main ruleset is loaded at most once, by AttachOnce; and pf
 // is never turned off, only our own enable reference is released.
 //
 // Calls that change anything arrive under the manager's machine lock.
 type darwinIsolator struct {
-	runner   func(context.Context) PFRunner
-	baseline func(context.Context) (pfBaseline, error)
-	tokens   pfTokenStore
+	// activated is darwinIsolationActivated; a field only so tests can force
+	// the activated wiring. Production never changes it.
+	activated    bool
+	readiness    readinessCache
+	pfctlPresent func() error
+	runner       func(context.Context) PFRunner
+	baseline     func(context.Context) (pfBaseline, error)
+	tokens       pfTokenStore
 }
+
+// NewPlatformIsolator provides real pf inspection and release even while the
+// capability stays 0: a build that cannot isolate must still be able to remove
+// rules an earlier capable build installed.
+func NewPlatformIsolator() Isolator { return newDarwinIsolator(DarwinDataDir) }
 
 func newDarwinIsolator(dataDir string) *darwinIsolator {
 	return &darwinIsolator{
-		runner:   func(ctx context.Context) PFRunner { return execPFRunner{ctx: ctx} },
-		baseline: readDarwinBaseline,
-		tokens:   pfTokenStore{path: filepath.Join(dataDir, pfTokenFile)},
+		activated:    darwinIsolationActivated,
+		pfctlPresent: pfctlInstalled,
+		runner:       func(ctx context.Context) PFRunner { return execPFRunner{ctx: ctx} },
+		baseline:     readDarwinBaseline,
+		tokens:       pfTokenStore{path: filepath.Join(dataDir, pfTokenFile)},
 	}
+}
+
+func pfctlInstalled() error {
+	info, err := os.Stat(pfctlBinary)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("%s is not an executable file", pfctlBinary)
+	}
+	return nil
 }
 
 // readDarwinBaseline asks the system resolver what it is configured to use. A
@@ -56,9 +83,55 @@ func readDarwinBaseline(ctx context.Context) (pfBaseline, error) {
 	return parseScutilDNS(stdout), nil
 }
 
-// Capability reports what this build can do. Task 4 fills in readiness.
+// Capability reads only the readiness cache: heartbeats never run pfctl, the
+// installer, or launchd. Version 1 needs pfctl installed, the recovery binary
+// installed and verified, and its launchd jobs loadable (plan W3 Task 4).
+//
+// Whether this Mac's pf configuration is compatible is deliberately not part of
+// it: that is decided at apply time, against the ruleset as it is then, and a
+// refusal reports mechanism_unavailable with its reason.
 func (i *darwinIsolator) Capability() Capability {
-	return Capability{Mechanism: "pf", UnsupportedReason: "not_activated"}
+	c := i.readiness.capability(i.activated)
+	c.Mechanism = "pf"
+	// The shared cache names an unusable engine in Windows terms.
+	if c.UnsupportedReason == "bfe_unavailable" {
+		c.UnsupportedReason = "pfctl_missing"
+	}
+	return c
+}
+
+func (i *darwinIsolator) configureRecoveryReadiness(scheduler RecoveryScheduler, wantVersion string) {
+	i.configureReadiness(func(ctx context.Context) (string, error) { return recoveryinstall.EnsureRecovery(ctx, wantVersion) }, scheduler.Ready)
+}
+
+func (i *darwinIsolator) configureReadiness(ensure func(context.Context) (string, error), scheduler func() (bool, string)) {
+	i.readiness.mu.Lock()
+	defer i.readiness.mu.Unlock()
+	i.readiness.probe = func(ctx context.Context) readinessInputs {
+		if err := ctx.Err(); err != nil {
+			return readinessInputs{engineErr: err, recoveryErr: err, schedulerReason: "cancelled"}
+		}
+		engineErr := i.pfctlPresent()
+		_, recoveryErr := ensure(ctx)
+		ready, reason := scheduler()
+		return readinessInputs{engineErr: engineErr, recoveryErr: recoveryErr, schedulerReady: ready, schedulerReason: reason}
+	}
+	i.readiness.checkedAt = time.Time{}
+}
+
+// While not activated, readiness is never probed: the result would be masked
+// by not_activated anyway, and a shipped capability-0 agent must not run the
+// installer or query launchd on a timer.
+func (i *darwinIsolator) RefreshReadiness(ctx context.Context) {
+	if i.activated {
+		i.readiness.refresh(ctx, true)
+	}
+}
+
+func (i *darwinIsolator) refreshCachedReadiness(ctx context.Context) {
+	if i.activated {
+		i.readiness.refresh(ctx, false)
+	}
 }
 
 // Apply installs the rule set: refuse or attach, load the anchor atomically
