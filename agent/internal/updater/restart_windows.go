@@ -226,7 +226,11 @@ func buildRestartScript(opts restartScriptOptions) string {
 		// Failure path: log structured diagnostics. ${env:TEMP} always exists
 		// on Windows (unlike C:\ProgramData\Breeze, which may not exist yet
 		// on a fresh install — see #609 / HardenProgramDataAcl sequencing).
-		"  $stamp = [int][double]::Parse((Get-Date -UFormat %s))",
+		// Culture-invariant stamp. `[double]::Parse((Get-Date -UFormat %s))`
+		// throws on hosts whose number format rejects "." (PowerShell 5.1
+		// emits a fractional value), which aborted this catch block before
+		// the log and the Start-Service below (#9751).
+		"  $stamp = [DateTime]::UtcNow.Ticks",
 		"  $logPath = Join-Path $env:TEMP (\"breeze-update-failure-$stamp.log\")",
 		"  $op = if ($_.InvocationInfo) { $_.InvocationInfo.Line } else { '<unknown>' }",
 		"  $msg = @(",

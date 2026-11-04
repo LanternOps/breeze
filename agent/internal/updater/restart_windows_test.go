@@ -167,6 +167,30 @@ func TestBuildRestartScript_FailureLogUsesTemp(t *testing.T) {
 	}
 }
 
+// TestBuildRestartScript_FailureLogStampIsCultureInvariant guards the catch
+// block's log-name stamp (#9751). Windows PowerShell 5.1 renders
+// `Get-Date -UFormat %s` with a fractional part, and [double]::Parse uses the
+// host culture, so a culture whose separators reject "." throws INSIDE the
+// catch block. The failure log is never written and the closing Start-Service
+// never runs, which leaves the agent service stopped. The heartbeat reads that
+// log to report why a swap failed, so it must always be written.
+func TestBuildRestartScript_FailureLogStampIsCultureInvariant(t *testing.T) {
+	got := buildRestartScript(restartScriptOptions{
+		Agent: BinaryPair{
+			Temp:   `C:\tmp\agent.exe`,
+			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+		},
+	})
+	for _, banned := range []string{"[double]::Parse", "-UFormat"} {
+		if strings.Contains(got, banned) {
+			t.Fatalf("failure-log stamp must not use culture-sensitive %q; script was:\n%s", banned, got)
+		}
+	}
+	if !strings.Contains(got, "[DateTime]::UtcNow.Ticks") {
+		t.Fatalf("expected the culture-invariant [DateTime]::UtcNow.Ticks stamp; script was:\n%s", got)
+	}
+}
+
 // TestBuildRestartScript_CleanupOutsideTryCatch asserts the Remove-Item
 // cleanup lines run regardless of swap success/failure — they must live
 // AFTER the closing `}` of the catch block, not inside try or catch.

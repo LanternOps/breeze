@@ -986,6 +986,18 @@ type Heartbeat struct {
 	// download paths. See artifact_backoff.go. Issue #7516.
 	artifactBackoff updater.TargetBackoff
 
+	// Persisted per-version latch for a self-update that restarted on the
+	// previous binary (the swap did not take). Survives the restart that
+	// every Windows attempt costs. See update_outcome.go. Issue #9751.
+	// updateHelperLogDir is where the Windows helper's failure logs are read
+	// from; "" means os.TempDir(). Both are test seams.
+	updateLatch        *updater.FailureLatch
+	updateLatchOnce    sync.Once
+	updateHelperLogDir string
+	// Episode state for upgrades deferred by an in-progress backup job, so a
+	// deferral that persists is logged above Info (update_outcome.go, #9751).
+	upgradeBackupDeferral backupDeferralState
+
 	// Path to the agent state file, set by main after startup.
 	statePath                   string
 	pamLifetimeManager          pamlifetime.Manager
@@ -2226,25 +2238,6 @@ func (h *Heartbeat) SCMSessionCh() chan<- sessionbroker.SCMSessionEvent {
 	return h.scmSessionCh
 }
 
-// checkUpdateMarker looks for the transient .update-restart file written
-// by the updater before restart. If found, deletes it and returns true
-// so the caller can skip the startup jitter and heartbeat immediately.
-func checkUpdateMarker() bool {
-	markerPath := filepath.Join(config.ConfigDir(), ".update-restart")
-	_, err := os.Stat(markerPath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Warn("failed to check update marker", "path", markerPath, "error", err.Error())
-		}
-		return false
-	}
-	if removeErr := os.Remove(markerPath); removeErr != nil {
-		log.Warn("failed to remove update marker", "path", markerPath, "error", removeErr.Error())
-	}
-	log.Info("update marker found, skipping startup jitter for immediate heartbeat")
-	return true
-}
-
 func bootstrapThenListen(bootstrap func() error, listen func()) error {
 	if bootstrap != nil {
 		if err := bootstrap(); err != nil {
@@ -2358,8 +2351,13 @@ func (h *Heartbeat) Start() {
 	// after mass restart of agents. Skip jitter if restarting after self-update
 	// so the new version is reported immediately.
 	interval := time.Duration(h.config.HeartbeatIntervalSeconds) * time.Second
-	if checkUpdateMarker() {
-		log.Info("post-update restart: sending immediate heartbeat (jitter skipped)")
+	marker, restartedForUpdate := consumeUpdateMarker()
+	// Before the first heartbeat: that heartbeat re-offers the target, and a
+	// version whose swap did not take must already be latched by then (#9751).
+	h.reconcileUpdateOutcome(marker)
+	if restartedForUpdate {
+		log.Info("post-update restart: sending immediate heartbeat (jitter skipped)",
+			"markerVersion", marker.Version, "runningVersion", h.agentVersion)
 		// On macOS, the agent self-update recreates the IPC socket. The
 		// desktop helpers lose their connection and may be waiting on
 		// backoff. Kickstart them so remote desktop recovers immediately.
@@ -8874,6 +8872,13 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	if h.upgradeDeferredByArtifactBackoff(targetVersion) {
 		return
 	}
+	// #9751: an earlier attempt at this version restarted on the previous
+	// binary (on Windows, the detached swap helper failed). That outcome is
+	// only visible after the restart, so in-memory backoffs never see it;
+	// this latch is persisted and doubles per failure up to a daily retry.
+	if h.upgradeDeferredByFailureLatch(targetVersion) {
+		return
+	}
 
 	log.Info("upgrade requested", "targetVersion", targetVersion)
 
@@ -8948,9 +8953,12 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	// backup job says nothing about whether the artifact itself is fetchable.
 	if backupPair != nil && !h.backupHelperIdle() {
 		removeStagedUpgradeTemps(userHelperPair, backupPair)
-		log.Info("agent upgrade deferred: backup job in progress; retrying next cycle", "targetVersion", targetVersion)
+		// Was a bare Info line every heartbeat, invisible at the default warn
+		// shipping level while the attempt count climbed (#9751).
+		h.noteUpgradeDeferredByBackup(targetVersion, time.Now())
 		return
 	}
+	h.clearUpgradeBackupDeferral()
 
 	u := updater.New(updaterCfg)
 	if err := u.UpdateToWithOptions(targetVersion, updater.UpdateOptions{UserHelper: userHelperPair, Backup: backupPair}); err != nil {
