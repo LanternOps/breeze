@@ -11,11 +11,21 @@ import _ "embed"
 //go:embed functions.sh
 var Functions string
 
+// IsolationFunctions releases network isolation and removes its recovery jobs.
+// It is separate from Functions because Functions is also copied verbatim into
+// the distributed download uninstall script, which this file is not (yet).
+//
+//go:embed isolation.sh
+var IsolationFunctions string
+
 // Script preserves configuration, matching the service CLI's existing policy.
+// Isolation is released first: nothing below runs unless that is confirmed.
 func Script() string {
-	return Functions + `
+	return Functions + IsolationFunctions + `
+breeze_release_isolation || exit 1
 breeze_stop_watchdog || exit 1
 breeze_stop_helpers || exit 1
+breeze_remove_isolation || exit 1
 breeze_bootout system/com.breeze.agent || exit 1
 rm -f /Library/LaunchDaemons/com.breeze.agent.plist /usr/local/bin/breeze-agent /Library/Breeze/bin/breeze-agent || exit 1
 breeze_remove_auxiliary || exit 1

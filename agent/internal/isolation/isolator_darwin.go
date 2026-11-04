@@ -19,8 +19,13 @@ import (
 	"github.com/breeze-rmm/agent/internal/atomicrename"
 )
 
-// pfTokenFile holds the token of our pf enable reference, beside the journal.
-const pfTokenFile = "isolation-pf-token"
+const (
+	// DarwinDataDir is the agent data directory on macOS. It mirrors
+	// config.GetDataDir, which this package may not import (deps_test.go).
+	DarwinDataDir = "/Library/Application Support/Breeze/data"
+	// pfTokenFile holds the token of our pf enable reference, beside the journal.
+	pfTokenFile = "isolation-pf-token"
+)
 
 // darwinIsolator is the pf mechanism (spec §3.5, OD13 a′). Rules only ever go in
 // our own anchor; the main ruleset is loaded at most once, by AttachOnce; and pf
