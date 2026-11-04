@@ -154,17 +154,11 @@ type OrgDetails = {
   type?: string;
   maxDevices?: number;
   settings?: {
-    branding?: {
-      logoUrl?: string;
-      secondaryColor?: string;
-      theme?: 'light' | 'dark' | 'system';
-      // customCss (#5952) and primaryColor (#9962) deliberately absent — they
-      // live in portal_branding, loaded/saved by OrgBrandingEditor via
-      // /orgs/organizations/:id/portal-settings, not here. A legacy stored
-      // branding.primaryColor is dropped on the next Branding save, which
-      // replaces the whole category.
-      portalSubdomain?: string;
-    };
+    // #9673: retired. Nothing reads it; the Branding tab lives in portal_branding
+    // (OrgBrandingEditor, /orgs/organizations/:id/portal-settings). Only the
+    // legacy logo is still looked at, to offer it to the org, and the next
+    // Branding save clears the whole category (handleBrandingSaved).
+    branding?: { logoUrl?: string } & Record<string, unknown>;
     defaults?: {
       policyDefaults?: Record<string, string>;
       deviceGroup?: string;
@@ -498,6 +492,18 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
     }
   }, [effectiveOrgId, orgDetails, isArchived, fetchOrgDetails, t]);
 
+  // #9673: the editor has already saved through portal-settings. Clearing the
+  // retired blob is the only org write left, and handleSaveSettings also carries
+  // the archived-org guard, so an org with nothing to clear only needs it there.
+  const handleBrandingSaved = useCallback(async () => {
+    const legacy = orgDetails?.settings?.branding;
+    if (isArchived || (legacy && Object.keys(legacy).length > 0)) {
+      return handleSaveSettings('branding', {});
+    }
+    setSaveState({ hasUnsavedChanges: false, lastSavedAt: formatTime(new Date()) });
+    return true;
+  }, [orgDetails, isArchived, handleSaveSettings]);
+
   const handleSaveName = useCallback(async () => {
     if (!effectiveOrgId) return;
     if (isArchived) {
@@ -643,9 +649,9 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           <OrgBrandingEditor
             organizationName={displayOrg.name}
             orgId={effectiveOrgId}
-            branding={orgDetails?.settings?.branding}
+            legacyLogoUrl={orgDetails?.settings?.branding?.logoUrl}
             onDirty={handleDirty}
-            onSave={(data) => handleSaveSettings('branding', data)}
+            onSave={handleBrandingSaved}
             locked={locked}
           />
         );
