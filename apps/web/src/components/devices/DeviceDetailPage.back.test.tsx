@@ -37,8 +37,8 @@ vi.mock('./ScriptPickerModal', () => ({ default: () => null }));
 
 const DEVICE_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 
-// #9259: Back must only pop history when the previous entry is in-app.
-describe('DeviceDetailPage Back (#9259)', () => {
+// #9259 / #10959: the Devices crumb never pops history.
+describe('DeviceDetailPage Devices crumb (#9259, #10959)', () => {
   const setReferrer = (value: string) =>
     Object.defineProperty(document, 'referrer', { value, configurable: true });
 
@@ -58,23 +58,19 @@ describe('DeviceDetailPage Back (#9259)', () => {
     delete (document as { referrer?: string }).referrer;
   });
 
-  it('pops history when the referrer is same-origin', async () => {
-    setReferrer(`${window.location.origin}/devices?status=online`);
+  // #10959: the crumb must always go to the list, never history.back()
+  // (which landed on Dashboard / another tab of the same device).
+  it.each([
+    ['same-origin referrer', `${window.location.origin}/devices?status=online`, null],
+    ['in-app soft navigation, empty referrer', '', { index: 1 }],
+  ])('crumb goes to the Devices route, not history.back (%s)', async (_n, ref, state) => {
+    setReferrer(ref);
+    window.history.replaceState(state, '', '/devices/x');
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => {});
     render(<DeviceDetailPage deviceId={DEVICE_ID} />);
     fireEvent.click(await screen.findByRole('link', { name: 'Devices' }));
-    expect(back).toHaveBeenCalledTimes(1);
-    expect(navigateTo).not.toHaveBeenCalled();
-  });
-
-  it('pops history after an in-app soft navigation even with an empty referrer', async () => {
-    setReferrer('');
-    window.history.replaceState({ index: 1 }, '', '/devices/x');
-    const back = vi.spyOn(window.history, 'back').mockImplementation(() => {});
-    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
-    fireEvent.click(await screen.findByRole('link', { name: 'Devices' }));
-    expect(back).toHaveBeenCalledTimes(1);
-    expect(navigateTo).not.toHaveBeenCalled();
+    expect(back).not.toHaveBeenCalled();
+    expect(navigateTo).toHaveBeenCalledWith('/devices');
   });
 
   it.each(['','https://example.com/somewhere', 'not a url'])(
