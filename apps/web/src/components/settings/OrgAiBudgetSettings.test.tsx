@@ -359,3 +359,42 @@ describe('OrgAiBudgetSettings — per-tool rate-limit multiplier (#6476)', () =>
     expect(input.getAttribute('aria-invalid')).toBeNull();
   });
 });
+
+describe('OrgAiBudgetSettings — approval mode has its own card, not the budget card', () => {
+  it('the budget card has no approval-mode control', async () => {
+    mockEffective({ ...DEFAULT_BUDGET });
+    const { findByTestId, queryByTestId } = renderTab();
+
+    await findByTestId('org-ai-budget-monthly');
+    expect(queryByTestId('org-ai-budget-approval-mode')).toBeNull();
+    expect(queryByTestId('org-ai-approval-mode')).toBeNull();
+  });
+
+  it('the approvals section renders only the approval mode and saves only it', async () => {
+    mockEffective({ ...DEFAULT_BUDGET });
+    const { container, ...q } = render(<OrgAiBudgetSettings orgId="org-1" section="approvals" />);
+    const scoped = within(container);
+
+    const select = (await scoped.findByTestId('org-ai-approval-mode')) as HTMLSelectElement;
+    expect(scoped.queryByTestId('org-ai-budget-monthly')).toBeNull();
+    expect(scoped.queryByTestId('org-ai-budget-enabled')).toBeNull();
+    void q;
+
+    fireEvent.change(select, { target: { value: 'auto_approve' } });
+    fireEvent.click(scoped.getByTestId('org-ai-approval-mode-save'));
+
+    await waitFor(() => expect(budgetPut().body).toEqual({ approvalMode: 'auto_approve' }));
+  });
+
+  it('a partner-locked approval mode links to the partner AI approvals tab', async () => {
+    mockEffective({ ...DEFAULT_BUDGET, approvalMode: 'action_plan' }, ['aiBudgets.approvalMode']);
+    const { container } = render(<OrgAiBudgetSettings orgId="org-1" section="approvals" />);
+    const scoped = within(container);
+
+    const select = (await scoped.findByTestId('org-ai-approval-mode')) as HTMLSelectElement;
+    expect(select.disabled).toBe(true);
+    const note = scoped.getByTestId('org-ai-budget-locked-approvalMode');
+    expect(within(note).getByRole('link').getAttribute('href')).toBe('/settings/partner#ai-approvals');
+    expect((scoped.getByTestId('org-ai-approval-mode-save') as HTMLButtonElement).disabled).toBe(true);
+  });
+});

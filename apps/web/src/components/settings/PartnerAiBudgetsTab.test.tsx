@@ -77,3 +77,11 @@ describe('PartnerAiBudgetsTab AI access control (#9666)', () => {
     expect(document.getElementById('partner-ai-budget-monthly-budget')).not.toBeNull();
   });
 });
+
+describe('PartnerAiBudgetsTab approval mode', () => {
+  it('has no approval-mode control (it lives on the AI Approvals tab)', () => {
+    renderTab({});
+    expect(document.getElementById('partner-ai-budget-approval-mode')).toBeNull();
+    expect(screen.queryByTestId('partner-ai-approvals-mode')).toBeNull();
+  });
+});

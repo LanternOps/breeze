@@ -1005,7 +1005,7 @@ describe('PartnerSettingsPage AI Budgets tab', () => {
     await screen.findByText('Partner Settings');
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+    await user.click(screen.getByRole('link', { name: /^ai budgets & limits$/i }));
 
     const input = await screen.findByTestId('partner-ai-budget-thresholds-input');
     expect((input as HTMLInputElement).value).toBe('50, 80');
@@ -1030,7 +1030,7 @@ describe('PartnerSettingsPage AI Budgets tab', () => {
     await screen.findByText('Partner Settings');
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+    await user.click(screen.getByRole('link', { name: /^ai budgets & limits$/i }));
 
     const select = await screen.findByTestId('partner-ai-budget-enabled');
     await user.selectOptions(select, '');
@@ -1047,7 +1047,7 @@ describe('PartnerSettingsPage AI Budgets tab', () => {
     await screen.findByText('Partner Settings');
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+    await user.click(screen.getByRole('link', { name: /^ai budgets & limits$/i }));
 
     const select = await screen.findByTestId('partner-ai-budget-enabled');
     await user.selectOptions(select, 'off');
@@ -1064,7 +1064,7 @@ describe('PartnerSettingsPage AI Budgets tab', () => {
     await screen.findByText('Partner Settings');
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+    await user.click(screen.getByRole('link', { name: /^ai budgets & limits$/i }));
 
     const select = await screen.findByTestId('partner-ai-budget-enabled');
     await user.selectOptions(select, 'off');
@@ -1082,7 +1082,7 @@ describe('PartnerSettingsPage AI Budgets tab', () => {
     await screen.findByText('Partner Settings');
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+    await user.click(screen.getByRole('link', { name: /^ai budgets & limits$/i }));
 
     // Commit a real edit first, so the tab is dirty and the Save button is
     // enabled for a reason other than the one under test.
