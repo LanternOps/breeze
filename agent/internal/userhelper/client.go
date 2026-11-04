@@ -26,6 +26,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
 	"github.com/breeze-rmm/agent/internal/procoutput"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/remote/clipboard"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -784,7 +785,7 @@ func (c *Client) handleLaunchProcess(env *ipc.Envelope) {
 		}
 	}
 
-	cmd := osexec.Command(req.BinaryPath, req.Args...)
+	cmd := procspawn.Command(req.BinaryPath, req.Args...)
 	cmd.Dir = filepath.Dir(req.BinaryPath)
 	hideWindow(cmd)
 	if err := cmd.Start(); err != nil {
@@ -1065,7 +1066,7 @@ func (c *Client) executeProcess(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 	}
 
 	timeoutSec := getIntOrDefault(payload, "timeoutSeconds", 300)
-	proc := osexec.Command(name, args...)
+	proc := procspawn.Command(name, args...)
 	proc.Env = procoutput.ApplyEnv(os.Environ())
 
 	var stdout, stderr bytes.Buffer

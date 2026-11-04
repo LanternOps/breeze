@@ -5,8 +5,9 @@ package userhelper
 import (
 	"bytes"
 	"context"
-	"os/exec"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // showNativePromptOS draws a native prompt with osascript (no cgo, as the
@@ -14,7 +15,7 @@ import (
 // in prompt_native.go.
 func showNativePromptOS(ctx context.Context, m nativePromptModel, presented func()) nativeOutcome {
 	var out bytes.Buffer
-	cmd := exec.CommandContext(ctx, "osascript", "-e", nativePromptOsascript(m, time.Now()))
+	cmd := procspawn.CommandContext(ctx, "osascript", "-e", nativePromptOsascript(m, time.Now()))
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	if err := cmd.Start(); err != nil {
