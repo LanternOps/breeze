@@ -25,6 +25,8 @@ export function legacyLifecycleModule(actual: ResolveModule): ResolveModule {
     createLifecycleLoader: () => load,
     lifecycleForAlert: async (alert, loaded) => {
       if (!alert.ruleId) return null;
+      const snapshot = actual.readLifecycleSnapshot(alert.context);
+      if (snapshot) return snapshot;
       let rule = loaded?.rule;
       let template = loaded?.template;
       if (!rule) {

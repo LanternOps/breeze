@@ -66,6 +66,7 @@ export async function evaluateSubjectAlerts({ rule, template, device, monitor, l
       severity, title: interpolateAlertTemplate(template.titleTemplate, context), message: interpolateAlertTemplate(template.messageTemplate, context),
       context, monitorId: rule.managedByMonitorId, kind: monitor?.kind, allocateSubjectEpisode: allocateEpisode,
       resolvedLifecycle: lifecycle,
+      monitorCompiledHash: monitor?.compiledHash ?? null,
     });
     if (id) evidence.createdAlertIds.push(id);
   }

@@ -196,17 +196,81 @@ export function createLifecycleLoader(): AlertLifecycleLoader {
 export const loadAlertLifecycle: AlertLifecycleLoader = (args) => createLifecycleLoader()(args);
 
 /**
+ * What `createAlert` writes to `alerts.context.lifecycle` beside the evidence
+ * cursor (settings rule 6): the episode keeps the lifecycle it opened with, so
+ * a later settings change affects the next episode, not an open one.
+ * `monitorCompiledHash` records which monitor definition opened it; the
+ * recovery condition itself is evaluated as currently defined (OD11).
+ */
+export function lifecycleSnapshot(
+  lifecycle: ResolvedAlertLifecycle,
+  monitorCompiledHash: string | null,
+): ResolvedAlertLifecycle & { monitorCompiledHash: string | null } {
+  return {
+    autoResolve: lifecycle.autoResolve,
+    rearmMode: lifecycle.rearmMode,
+    rearmDelayMinutes: lifecycle.rearmDelayMinutes,
+    cooldownMinutes: lifecycle.cooldownMinutes,
+    sources: lifecycle.sources,
+    monitorCompiledHash,
+  };
+}
+
+/**
+ * The snapshot on an alert's context, or null when it has none (opened before
+ * W2, or a W1 context holding only the cursor) or the stored shape is not
+ * usable, in which case the caller resolves the current settings instead.
+ */
+export function readLifecycleSnapshot(context: unknown): ResolvedAlertLifecycle | null {
+  if (context === null || typeof context !== 'object') return null;
+  const lifecycle = (context as { lifecycle?: unknown }).lifecycle;
+  if (lifecycle === null || typeof lifecycle !== 'object') return null;
+  const { autoResolve, rearmMode, rearmDelayMinutes, cooldownMinutes, sources } = lifecycle as Record<string, unknown>;
+  if (typeof autoResolve !== 'boolean') return null;
+  if (typeof cooldownMinutes !== 'number' || !Number.isFinite(cooldownMinutes) || cooldownMinutes < 0) return null;
+  const mode = asRearmMode(rearmMode);
+  if (!mode) return null;
+  if (rearmDelayMinutes !== null && typeof rearmDelayMinutes !== 'number') return null;
+  if (sources === null || typeof sources !== 'object') return null;
+  return {
+    autoResolve,
+    rearmMode: mode,
+    rearmDelayMinutes: rearmDelayMinutes as number | null,
+    cooldownMinutes,
+    sources: sources as ResolvedAlertLifecycle['sources'],
+  };
+}
+
+/**
+ * `after_delay`: consumed evidence may re-open once this many minutes have
+ * passed since the close (the cursor is then dropped from the evaluation, so
+ * the rolling window alone decides, as before W1). `new_evidence` never does.
+ */
+export function rearmDelayElapsed(
+  closedAt: Date,
+  lifecycle: Pick<ResolvedAlertLifecycle, 'rearmMode' | 'rearmDelayMinutes'>,
+  now: number = Date.now(),
+): boolean {
+  return lifecycle.rearmMode === 'after_delay'
+    && lifecycle.rearmDelayMinutes !== null
+    && now - closedAt.getTime() >= lifecycle.rearmDelayMinutes * 60_000;
+}
+
+/**
  * The lifecycle governing an EXISTING alert, for the paths that act on one
- * (close-time cooldown, auto-resolve). `alerts.org_id` is always the device's
- * org (createAlert stamps `device.orgId`). Pass `loaded` when the caller
- * already read the rule/template. Null when the alert has no rule or the rule
- * is gone — a rule-less alert has no lifecycle settings.
+ * (close-time cooldown, auto-resolve): its snapshot, else the current
+ * resolution. `alerts.org_id` is always the device's org (createAlert stamps
+ * `device.orgId`). Pass `loaded` when the caller already read the
+ * rule/template. Null when the alert has no rule or the rule is gone with no
+ * snapshot — a rule-less alert has no lifecycle settings.
  */
 export async function lifecycleForAlert(
-  alert: { ruleId: string | null; orgId: string },
+  alert: { ruleId: string | null; orgId: string; context?: unknown },
   loaded?: { rule: AlertRuleRow; template: AlertTemplateRow | null | undefined },
 ): Promise<ResolvedAlertLifecycle | null> {
   if (!alert.ruleId) return null;
+  const snapshot = readLifecycleSnapshot(alert.context);
+  if (snapshot) return snapshot;
   let rule = loaded?.rule;
   let template = loaded?.template;
   if (!rule) {

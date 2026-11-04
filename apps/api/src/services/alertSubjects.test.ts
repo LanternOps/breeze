@@ -57,6 +57,14 @@ it('creates two subjects; acknowledging one never blocks its sibling', async () 
   expect(m.create).toHaveBeenLastCalledWith(expect.objectContaining({ orgId: 'device-org', subjectKey: 'b', allocateSubjectEpisode: expect.any(Function) }));
 });
 
+it('hands the resolved lifecycle to createAlert: no second resolution per subject', async () => {
+  await evaluateSubjectAlerts(input({ a: 'breaching' }));
+  expect(m.create).toHaveBeenCalledWith(expect.objectContaining({
+    resolvedLifecycle: expect.objectContaining({ cooldownMinutes: 60 }),
+    context: expect.objectContaining({ cooldownMinutes: 60 }),
+  }));
+});
+
 it.each(['active', 'acknowledged', 'suppressed'])('recovers only its own %s alert', async status => {
   m.open = [{ id: 'a', subjectKey: 'a', status }, { id: 'b', subjectKey: 'b', status: 'active' }];
   expect(await evaluateSubjectAlerts(input({ a: 'recovered', b: 'unknown' }))).toBe('breach');

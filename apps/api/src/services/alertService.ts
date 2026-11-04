@@ -53,7 +53,9 @@ import {
   mergeCursors, freezeRecoveryCursor, resolveSideCursors, contextWithCursorSql,
   type LeafCursors, type ClosedCursorEntry,
 } from './alertLifecycle/cursor';
-import { createLifecycleLoader, lifecycleForAlert, loadAlertLifecycle } from './alertLifecycle/resolve';
+import {
+  createLifecycleLoader, lifecycleForAlert, lifecycleSnapshot, loadAlertLifecycle, rearmDelayElapsed,
+} from './alertLifecycle/resolve';
 
 // Types for alert creation
 export interface CreateAlertParams {
@@ -70,6 +72,8 @@ export interface CreateAlertParams {
    * sweep does, once per device). Omitted: createAlert resolves it itself.
    */
   resolvedLifecycle?: ResolvedAlertLifecycle;
+  /** Recorded in the snapshot: which monitor definition opened this episode (OD11). */
+  monitorCompiledHash?: string | null;
   /**
    * #5289 — set when the firing rule was COMPILED from a monitor definition,
    * so the alert can link back to the monitor a technician actually authored
@@ -294,9 +298,16 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
 
   const monitorFields = await monitorEventFields(monitorId ?? rule.managedByMonitorId, params.kind);
 
-  const insertContext = subjectKey === undefined && lifecycle
-    ? { ...context, lifecycle: { ...(context?.lifecycle as Record<string, unknown> | undefined), cursor: lifecycle.cursor } }
-    : context;
+  // Settings rule 6: the episode keeps the lifecycle it opened with. A subject
+  // alert has no evidence cursor, only the snapshot.
+  const insertContext = {
+    ...context,
+    lifecycle: {
+      ...(context?.lifecycle as Record<string, unknown> | undefined),
+      ...lifecycleSnapshot(effectiveLifecycle, params.monitorCompiledHash ?? null),
+      ...(subjectKey === undefined && lifecycle ? { cursor: lifecycle.cursor } : {}),
+    },
+  };
 
   // Allocated here so the legacy path can stage its outbox envelope (which
   // names the alert) in the same INSERT as the row.
@@ -307,7 +318,7 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
       INSERT INTO alerts (owner_kind, rule_id, device_id, org_id, severity, title, message, context,
         monitor_id, episode_id, requires_human, subject_key, status, triggered_at, id)
       VALUES ('device', ${ruleId}, ${deviceId}, ${orgId}, ${severity}, ${title}, ${message},
-        ${JSON.stringify(rowContext ?? {})}::jsonb, ${monitorFields.monitorId}, ${episodeId ?? null},
+        ${JSON.stringify(rowContext)}::jsonb, ${monitorFields.monitorId}, ${episodeId ?? null},
         ${requiresHuman ?? false}, ${subjectKey ?? null}, 'active', now(), ${alertId})
       ON CONFLICT (rule_id, device_id, COALESCE(subject_key, ''))
         WHERE rule_id IS NOT NULL AND status IN ('active', 'acknowledged', 'suppressed')
@@ -336,7 +347,7 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
         },
       };
       await db.update(alerts)
-        .set({ episodeId: subjectEpisodeId, context: { ...context, _subjectDispatch: pending } })
+        .set({ episodeId: subjectEpisodeId, context: { ...insertContext, _subjectDispatch: pending } })
         .where(eq(alerts.id, newAlert.id));
       return newAlert.id;
     });
@@ -545,16 +556,34 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
   return newAlert.id;
 }
 
-async function anchoredTriggerOpts(ruleId: string, deviceId: string, triggerConditions: unknown) {
-  const paths = evidenceLeafPaths(triggerConditions);
-  if (paths.length === 0) return { paths, opts: undefined };
-  const entry = (await readClosedCursors(deviceId, [ruleId])).get(ruleId);
-  const opts: EvaluateOptions = {
+/**
+ * The trigger's evaluation options against the most recently closed episode.
+ * `after_delay` drops the cursor (and the legacy ingestion fence) once the delay
+ * has passed since that close, so consumed evidence may re-open; the rolling
+ * window alone then decides, as it did before W1.
+ */
+function triggerEvaluateOptions(
+  entry: ClosedCursorEntry | undefined,
+  lifecycle: Pick<ResolvedAlertLifecycle, 'rearmMode' | 'rearmDelayMinutes'>,
+): EvaluateOptions {
+  if (entry && rearmDelayElapsed(entry.closedAt, lifecycle)) return { side: 'trigger' };
+  return {
     side: 'trigger',
     cursors: entry?.cursors ?? undefined,
     legacyIngestedBefore: entry?.closedAt, // per-leaf fallback when the closed cursor lacks that leaf
   };
-  return { paths, opts };
+}
+
+async function anchoredTriggerOpts(
+  ruleId: string,
+  deviceId: string,
+  triggerConditions: unknown,
+  lifecycle: Pick<ResolvedAlertLifecycle, 'rearmMode' | 'rearmDelayMinutes'>,
+) {
+  const paths = evidenceLeafPaths(triggerConditions);
+  if (paths.length === 0) return { paths, opts: undefined };
+  const entry = (await readClosedCursors(deviceId, [ruleId])).get(ruleId);
+  return { paths, opts: triggerEvaluateOptions(entry, lifecycle) };
 }
 
 /**
@@ -631,7 +660,7 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
 
   if (!autoResolveConditions) {
     // If no specific auto-resolve conditions, use inverse of trigger conditions
-    const { paths, opts } = await anchoredTriggerOpts(rule.id, alert.deviceId, triggerConditions);
+    const { paths, opts } = await anchoredTriggerOpts(rule.id, alert.deviceId, triggerConditions, lifecycle);
     const result = paths.length
       ? await evaluateConditions(triggerConditions, alert.deviceId, opts)
       : await evaluateConditions(triggerConditions, alert.deviceId);
@@ -647,7 +676,7 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
     let current = await readOpenCursors(alert.id);
     let triggerPaths: string[];
     try {
-      const { paths, opts } = await anchoredTriggerOpts(rule.id, alert.deviceId, triggerConditions);
+      const { paths, opts } = await anchoredTriggerOpts(rule.id, alert.deviceId, triggerConditions, lifecycle);
       triggerPaths = paths;
       if (paths.length) {
         const trigger = await evaluateConditions(triggerConditions, alert.deviceId, opts);
@@ -1515,14 +1544,11 @@ async function evaluateRuleForDevice(input: {
   const { rule, template, effectiveConditions, effectiveSeverity, effectiveCooldownMinutes, lifecycle, monitor } = applicable;
   const isEvidenceRule = closedCursor !== undefined;
 
-  // Evaluate conditions
-  const entry = closedCursor?.entry;
+  // Evaluate conditions. The re-arm gate decides whether the NEXT episode may
+  // open, so it reads the current lifecycle, not the closed alert's snapshot:
+  // "a later settings change affects the next episode".
   const result = isEvidenceRule
-    ? await evaluateConditions(effectiveConditions, deviceId, {
-      side: 'trigger',
-      cursors: entry?.cursors ?? undefined,
-      legacyIngestedBefore: entry?.closedAt, // per-leaf fallback when the closed cursor lacks that leaf
-    })
+    ? await evaluateConditions(effectiveConditions, deviceId, triggerEvaluateOptions(closedCursor?.entry, lifecycle))
     : await evaluateConditions(effectiveConditions, deviceId);
 
   // W03 Task 10 — a hardware/RAID leaf reports per-COMPONENT evidence
@@ -1675,6 +1701,7 @@ async function evaluateRuleForDevice(input: {
     kind: monitor?.kind ?? null,
     episodeId,
     resolvedLifecycle: lifecycle,
+    monitorCompiledHash: monitor?.compiledHash ?? null,
     ...(isEvidenceRule ? { lifecycle: { cursor: result.evidenceWatermarks } } : {}),
     context: {
       ...result.context,
