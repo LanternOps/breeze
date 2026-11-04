@@ -64,6 +64,7 @@ vi.hoisted(() => {
  *   no state change — writes nothing despite the method.
  */
 const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
+  'POST /api/v1/agents/:id/isolation/:isolationId/verify': 'device credential: agentAuthMiddleware and requireAgentRole; episode device/org checked under row lock',
   // routes/accounting/connectionSetupRoutes.ts
   'POST /api/v1/accounting/:provider/tenants/select': 'equivalent check: guard chain: requireAccountingManage (accounting:manage) + partner authority + MFA',
   'POST /api/v1/accounting/:provider/tenants/cancel': 'equivalent check: guard chain: requireAccountingManage (accounting:manage) + partner authority + MFA',
@@ -359,6 +360,7 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   // routes/quotesPublic.ts
   'POST /api/v1/quotes/public/:token/accept': 'public: Signed public quote link token; single-use claims checked in resolve()',
   'POST /api/v1/quotes/public/:token/decline': 'public: Signed public quote link token; single-use claims checked in resolve()',
+  'POST /api/v1/quotes/public/:token/pay': 'public: Signed public quote link token; spent only by the accepting jti (durable row record); mints Checkout for the quote\'s own converted invoice under its org',
   // routes/sso.ts
   'POST /api/v1/sso/link/start/:providerId': 'own account: Starts linking caller\'s own SSO identity; MFA required',
   'POST /api/v1/sso/reauth/start': 'own account: Caller\'s own IdP re-authentication start',

@@ -6,7 +6,7 @@
  * and step predicates (the caller passes its own run id); the ids are re-read
  * in the run org before anything uses them.
  */
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../../db';
 import { flowRunSteps } from '../../../db/schema';
 
@@ -40,4 +40,40 @@ export async function loadFleetStepOutput(runId: string, stepId: string): Promis
   const failed = idList(o.failedDeviceIds);
   if (!dispatched || !succeeded || !failed) return null;
   return { dispatchedDeviceIds: dispatched, succeededDeviceIds: succeeded, failedDeviceIds: failed };
+}
+
+/**
+ * #10705 — why each of `deviceIds` failed on a `run_script_on_targets` step of
+ * this run: the error its per-device claim row recorded (the row the dispatch
+ * wrote in the same transaction — `scriptFleetDispatch.ts`). A device with no
+ * row (refused before dispatch) or no recorded error is absent from the map.
+ */
+export async function loadFleetDeviceFailureReasons(
+  runId: string,
+  stepId: string,
+  deviceIds: readonly string[],
+): Promise<Map<string, string>> {
+  const reasons = new Map<string, string>();
+  if (deviceIds.length === 0) return reasons;
+  const deviceIdOf = sql<string>`${flowRunSteps.renderedInput}->>'deviceId'`;
+  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(
+    () => db
+      .select({ deviceId: deviceIdOf, error: flowRunSteps.error, outputError: sql<string | null>`${flowRunSteps.output}->>'error'` })
+      .from(flowRunSteps)
+      .where(and(
+        eq(flowRunSteps.runId, runId),
+        eq(flowRunSteps.stepId, stepId),
+        eq(flowRunSteps.tool, 'run_script_on_targets'),
+        isNotNull(flowRunSteps.itemIndex),
+        // Device claim rows are written once, at attempt 1 (findDeviceStepRow).
+        eq(flowRunSteps.attempt, 1),
+        inArray(deviceIdOf, [...deviceIds]),
+      )),
+    'flows.builtins.loadFleetDeviceFailureReasons',
+  ));
+  for (const row of rows) {
+    const reason = row.error || row.outputError;
+    if (row.deviceId && reason) reasons.set(row.deviceId, reason);
+  }
+  return reasons;
 }

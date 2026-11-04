@@ -72,6 +72,42 @@ describe('CreateScanModal device targets (#9683)', () => {
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   });
 
+  // #10380: the class chips are hidden once a policy is picked, but their
+  // default ['credential'] was still posted and overrode the policy's classes.
+  it("sends a picked policy without detection classes, so the policy's classes apply", async () => {
+    fetchMock.mockImplementation(async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === 'POST') return res({ data: { scans: [{ id: 's1', deviceId: 'dev-1', orgId: 'o' }] } });
+      return res({ data: [{ id: 'pol-1', name: 'PII policy', detectionClasses: ['pii', 'pci'], isActive: true }] });
+    });
+    const onCreated = vi.fn();
+    render(<CreateScanModal onClose={() => {}} onCreated={onCreated} />);
+
+    await screen.findByRole('option', { name: 'PII policy' });
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'pol-1' } });
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Alpha PC/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create Scan' }));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    const post = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')!;
+    const body = JSON.parse(String(post[1]?.body));
+    expect(body.policyId).toBe('pol-1');
+    expect(body).not.toHaveProperty('detectionClasses');
+  });
+
+  it('sends the picked detection classes when no policy is chosen', async () => {
+    const onCreated = vi.fn();
+    render(<CreateScanModal onClose={() => {}} onCreated={onCreated} />);
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Alpha PC/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create Scan' }));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    const post = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')!;
+    const body = JSON.parse(String(post[1]?.body));
+    expect(body).not.toHaveProperty('policyId');
+    expect(body.detectionClasses).toEqual(['credential']);
+  });
+
   it('blocks submit with no device selected', async () => {
     render(<CreateScanModal onClose={() => {}} onCreated={() => {}} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Create Scan' }));

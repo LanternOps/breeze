@@ -182,6 +182,7 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   assign_security_training: { limit: 10, windowSeconds: 300 },
   // Registration-debt payoff: rate limits for newly-permissioned tools.
   execute_containment: { limit: 5, windowSeconds: 600 },       // mirrors s1_isolate_device
+  release_containment: { limit: 5, windowSeconds: 600 },       // W13 (#10101): same budget as isolating
   collect_evidence: { limit: 10, windowSeconds: 300 },          // mirrors take_screenshot-class dispatch
   remediate_software_violation: { limit: 10, windowSeconds: 600 }, // mirrors apply_cis_remediation
   // Full-control W04 (#6758, quorum QW11): spec wiring checklist item 3 — the
@@ -268,6 +269,14 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   manage_billing_settings: { limit: 20, windowSeconds: 300 },
   manage_contract_templates: { limit: 20, windowSeconds: 300 },
   manage_contract_documents: { limit: 20, windowSeconds: 300 },
+  // W14 PR B (#6784): tight limits on the tools that bill (generate_invoice) and push to the books.
+  manage_contracts: { limit: 30, windowSeconds: 300 },
+  manage_accounting_sync: { limit: 10, windowSeconds: 300 },
+  // W15 PR A (#6785, W15-D11): per tool, so reads and writes share one counter.
+  get_pax8_status: { limit: 30, windowSeconds: 300 },
+  search_pax8_products: { limit: 30, windowSeconds: 300 },
+  manage_pax8_orders: { limit: 30, windowSeconds: 300 },
+  manage_pax8_subscriptions: { limit: 10, windowSeconds: 300 },
 };
 
 /**

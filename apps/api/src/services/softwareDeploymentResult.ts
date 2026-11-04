@@ -1,6 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { deploymentResults } from '../db/schema';
+import { stripAnsi } from '@breeze/shared';
 import { redactSecretsFromOutput } from './secretRedaction';
 import { applyAutomationActionTerminal } from './automationActionResults';
 
@@ -66,6 +67,14 @@ function normalizeInstallError(error: string | null | undefined): string | null 
   return error;
 }
 
+/**
+ * Persisted form of agent-captured text: ANSI/VT escapes stripped (vendor
+ * CLIs such as ctrld colour their logs, #10307), then secrets redacted.
+ */
+function storedInstallText(text: string): string {
+  return redactSecretsFromOutput(stripAnsi(text));
+}
+
 export async function applySoftwareInstallResult(input: SoftwareInstallResultInput): Promise<string | null> {
   const attemptNumber = input.attemptNumber ?? 0;
   const drStatus =
@@ -83,6 +92,14 @@ export async function applySoftwareInstallResult(input: SoftwareInstallResultInp
       ? new Date(completedAt.getTime() - input.durationMs)
       : completedAt;
 
+  const storedOutput = input.stdout != null ? storedInstallText(input.stdout) : null;
+  const storedError =
+    input.error != null
+      ? storedInstallText(normalizeInstallError(input.error) as string)
+      : input.stderr != null
+        ? storedInstallText(input.stderr)
+        : null;
+
   const query = db
     .update(deploymentResults)
     .set({
@@ -92,13 +109,8 @@ export async function applySoftwareInstallResult(input: SoftwareInstallResultInp
       exitCode: input.exitCode ?? null,
       // Defense-in-depth: redact PEM private-key blocks from persisted
       // software-install output/errors (mirrors buildStoredCommandResult).
-      output: input.stdout != null ? redactSecretsFromOutput(input.stdout) : null,
-      errorMessage:
-        input.error != null
-          ? redactSecretsFromOutput(normalizeInstallError(input.error) as string)
-          : input.stderr != null
-            ? redactSecretsFromOutput(input.stderr)
-            : null,
+      output: storedOutput,
+      errorMessage: storedError,
     })
     .where(
       and(
@@ -135,12 +147,8 @@ export async function applySoftwareInstallResult(input: SoftwareInstallResultInp
     source: 'deployment_result',
     deploymentResultId: effectiveId,
     terminalStatus: drStatus === 'completed' ? 'succeeded' : 'failed',
-    output: input.stdout != null ? redactSecretsFromOutput(input.stdout) : null,
-    error: input.error != null
-      ? redactSecretsFromOutput(normalizeInstallError(input.error) as string)
-      : input.stderr != null
-        ? redactSecretsFromOutput(input.stderr)
-        : null,
+    output: storedOutput,
+    error: storedError,
     completedAt,
   });
   return effectiveId;

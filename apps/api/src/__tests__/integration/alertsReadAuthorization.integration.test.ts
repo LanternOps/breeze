@@ -1,3 +1,4 @@
+import { isDeviceOwned } from '../../services/alertOwner';
 import './setup';
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
@@ -141,7 +142,9 @@ describe('alert read authorization with real JWT, custom roles and breeze_app', 
   it('moving a device out of an allowed site changes list, summary and detail together', async () => {
     const f = await fixture('organization', true, 'one');
     expect((await (await f.client.get('/alerts/summary')).json()).total).toBe(2);
-    await getTestDb().update(devices).set({ siteId: f.siteB.id }).where(eq(devices.id, f.alertRows[0]!.deviceId));
+    const movedAlert = f.alertRows[0];
+    if (!movedAlert || !isDeviceOwned(movedAlert)) throw new Error('alert_has_no_device');
+    await getTestDb().update(devices).set({ siteId: f.siteB.id }).where(eq(devices.id, movedAlert.deviceId));
     expect((await (await f.client.get('/alerts/summary')).json()).total).toBe(0);
     expect((await (await f.client.get('/alerts')).json()).pagination.total).toBe(0);
     expect((await f.client.get(`/alerts/${f.alertRows[0]!.id}`)).status).toBe(404);

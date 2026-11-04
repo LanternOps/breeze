@@ -32,6 +32,7 @@ exports[`agentToolCatalog contract > pins the unreachable set so a reachability 
   "manage_topology_templates",
   "operator_plan",
   "query_c2c_jobs",
+  "release_containment",
   "request_diagnostic_access",
   "retract_memory",
   "revoke_diagnostic_access",

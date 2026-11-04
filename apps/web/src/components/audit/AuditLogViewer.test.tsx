@@ -9,9 +9,12 @@ import { showToast } from '../shared/Toast';
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
-// Stand-in for the filter panel: one button applies a known filter set.
+// Stand-in for the filter panel: one button applies a known filter set, and it
+// echoes the filters it was opened with (#9941).
 vi.mock('./AuditFilters', () => ({
-  default: ({ onApply }: { onApply: (f: unknown) => void }) => (
+  default: ({ onApply, initialFilters }: { onApply: (f: unknown) => void; initialFilters?: unknown }) => (
+    <>
+    <pre data-testid="mock-initial-filters">{JSON.stringify(initialFilters ?? null)}</pre>
     <button
       type="button"
       onClick={() =>
@@ -27,6 +30,7 @@ vi.mock('./AuditFilters', () => ({
     >
       apply-test-filters
     </button>
+    </>
   ),
 }));
 
@@ -105,6 +109,28 @@ describe('AuditLogViewer', () => {
         expect.objectContaining({ type: 'error', message: 'Export exploded' })
       )
     );
+  });
+
+  it('reopens the filter panel seeded with the applied filters (#9941)', async () => {
+    render(<AuditLogViewer />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const filtersToggle = () => screen.getByRole('button', { name: /filters/i });
+
+    fireEvent.click(filtersToggle());
+    expect(JSON.parse(screen.getByTestId('mock-initial-filters').textContent!)).toBeNull();
+
+    fireEvent.click(screen.getByText('apply-test-filters'));
+    // Apply closes (unmounts) the panel; reopening must hand it what was applied.
+    await waitFor(() => expect(screen.queryByTestId('mock-initial-filters')).toBeNull());
+    fireEvent.click(filtersToggle());
+    expect(JSON.parse(screen.getByTestId('mock-initial-filters').textContent!)).toEqual({
+      datePreset: '7d',
+      userId: '11111111-1111-4111-8111-111111111111',
+      userEmail: 'dana@example.com',
+      actions: ['login'],
+      resources: ['device'],
+      search: 'abc',
+    });
   });
 
   it('sends the viewer filters the export API accepts (userId) on the export request', async () => {

@@ -9,7 +9,8 @@ vi.mock('../../lib/permissions', () => ({
 }));
 
 const fetchMock = vi.hoisted(() => vi.fn());
-vi.mock('../../stores/auth', () => ({
+vi.mock('../../stores/auth', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../stores/auth')>()),
   fetchWithAuth: fetchMock.mockImplementation((url: string) => {
     const data = String(url).endsWith('/deliveries')
       ? [

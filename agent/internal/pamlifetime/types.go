@@ -45,6 +45,24 @@ type ApplyCommand struct {
 	ExpiresAt              time.Time `json:"expiresAt"`
 	ServerTime             time.Time `json:"serverTime"`
 	MaxRemainingLifetimeMS int64     `json:"maxRemainingLifetimeMs"`
+	// DecidedBy (#10190 W07) is display-only: who approved, as the server's
+	// technician_identity_level allows (never an email). It is not part of
+	// the bound digest. Sent only to agents that report
+	// pamUserNotifyProtocolVersion >= 2 (this payload is decoded strictly).
+	DecidedBy *DecidedBy `json:"decidedBy,omitempty"`
+}
+
+// DecidedBy names who decided an elevation request, for the end user.
+type DecidedBy struct {
+	TechnicianName *string `json:"technicianName"`
+}
+
+// Technician is the name, or "" when none was sent.
+func (d *DecidedBy) Technician() string {
+	if d == nil || d.TechnicianName == nil {
+		return ""
+	}
+	return *d.TechnicianName
 }
 
 type CleanupCommand struct {

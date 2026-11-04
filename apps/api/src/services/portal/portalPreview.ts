@@ -1,5 +1,5 @@
 import { eq, sql, type SQL } from 'drizzle-orm';
-import { PERMISSION_GRANTS } from '@breeze/shared';
+import { PERMISSION_GRANTS, type DashboardTileKey } from '@breeze/shared';
 import { db } from '../../db';
 import { portalBranding } from '../../db/schema';
 import {
@@ -10,7 +10,7 @@ import {
   type PortalSectionKey,
 } from '../../routes/portal/featureFlags';
 import { portalDashboardTicketScope } from '../../routes/portal/ticketReadAccess';
-import { backupOverview } from './backupReadModel';
+import { backupOverview, backupSaasWorkloads } from './backupReadModel';
 import { dashboardForOrg } from './dashboard';
 import { documentsForOrg } from './documentsReadModel';
 import { listPortalRuns } from './reportsSelfService';
@@ -91,7 +91,7 @@ export type StaffCan = (resource: string, action: string) => boolean;
  * dashboard stays) when the caller lacks any. securityScore / devicesProtected /
  * patchesApplied / actionItems are device data, covered by the row's devices:read.
  */
-const DASHBOARD_TILE_PERMISSIONS: Record<string, readonly StaffGrant[]> = {
+const DASHBOARD_TILE_PERMISSIONS: Partial<Record<DashboardTileKey, readonly StaffGrant[]>> = {
   backup: [PERMISSION_GRANTS.BACKUP_READ],
   support: [PERMISSION_GRANTS.TICKETS_READ],
   service: [PERMISSION_GRANTS.CONTRACTS_READ],
@@ -100,8 +100,9 @@ const DASHBOARD_TILE_PERMISSIONS: Record<string, readonly StaffGrant[]> = {
 
 /** Keys covered by the dashboard row's devices:read. ALLOWLIST: any dashboard key
  *  not here and not in DASHBOARD_TILE_PERMISSIONS is dropped, so a future tile
- *  added to DashboardDto fails closed instead of leaking to devices:read holders. */
-const DASHBOARD_DEVICE_KEYS = ['asOf', 'timezone', 'securityScore', 'devicesProtected', 'patchesApplied', 'actionItems'] as const;
+ *  added to DashboardDto fails closed instead of leaking to devices:read holders.
+ *  Both lists are typed to DashboardTileKey, the key set the staff panel labels (#9952). */
+const DASHBOARD_DEVICE_KEYS = ['asOf', 'timezone', 'securityScore', 'devicesProtected', 'patchesApplied', 'actionItems'] as const satisfies readonly (DashboardTileKey | 'asOf' | 'timezone')[];
 
 const RUNNERS: Partial<Record<PortalSectionKey, Runner>> = {
   dashboard: async ({ orgId, timezone, now, portalUser, can }) => {
@@ -116,6 +117,7 @@ const RUNNERS: Partial<Record<PortalSectionKey, Runner>> = {
     const notes: string[] = [];
     const missing = new Set<string>();
     for (const [tile, perms] of Object.entries(DASHBOARD_TILE_PERMISSIONS)) {
+      if (!perms) continue;
       const lacking = perms.filter((p) => !can(p.resource, p.action));
       if (lacking.length > 0) {
         lacking.forEach((p) => missing.add(`${p.resource}:${p.action}`));
@@ -136,9 +138,13 @@ const RUNNERS: Partial<Record<PortalSectionKey, Runner>> = {
   security: async ({ orgId, timezone, now }) => ({
     data: await securityOverview(orgId, { days: 30, timezone, now }),
   }),
-  backups: async ({ orgId, timezone, now }) => ({
-    data: await backupOverview(orgId, { timezone, now }),
-  }),
+  backups: async ({ orgId, timezone, now }) => {
+    const [overview, saasWorkloads] = await Promise.all([
+      backupOverview(orgId, { timezone, now }),
+      backupSaasWorkloads(orgId, { now }),
+    ]);
+    return { data: { ...overview, saasWorkloads } };
+  },
   reports: async ({ orgId, timezone }) => ({
     data: await listPortalRuns(orgId, timezone, { page: 1, limit: 20 }),
   }),

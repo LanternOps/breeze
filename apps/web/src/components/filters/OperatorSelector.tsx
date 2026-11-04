@@ -12,6 +12,8 @@ interface OperatorSelectorProps {
 const OPERATOR_LABELS: Record<FilterOperator, string> = {
   // Comparison
   equals: 'equals',
+  below: 'below',
+  atLeast: 'at least',
   notEquals: 'does not equal',
   greaterThan: 'greater than',
   greaterThanOrEquals: 'greater than or equals',

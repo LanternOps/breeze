@@ -78,7 +78,8 @@ describe('PamPage', () => {
   it('subscribes to elevation events on mount', () => {
     render(<PamPage />);
     expect(subscribeMock).toHaveBeenCalledWith(
-      expect.arrayContaining(['elevation.requested', 'elevation.approved', 'elevation.revoked']),
+      // #8971: a device-side withdraw must live-refresh the lists too.
+      expect.arrayContaining(['elevation.requested', 'elevation.approved', 'elevation.revoked', 'elevation.withdrawn']),
     );
   });
 

@@ -51,14 +51,38 @@ const (
 	ReasonUserDenied  Reason = "user_denied"
 	ReasonUserTimeout Reason = "user_timeout"
 	ReasonDialogError Reason = "dialog_error"
+	// ReasonUserCancelled (#10190 W07): the person cancelled a request they
+	// had sent to IT (Cancel request on the elevation waiting card). It is
+	// persisted as ReasonUserDenied plus Entry.WithdrawReason, so a build
+	// that predates it still loads the file (it fences every remote apply on
+	// a reason it does not know).
+	ReasonUserCancelled Reason = "user_cancelled"
 )
 
 func (r Reason) valid() bool {
 	switch r {
-	case ReasonUserDenied, ReasonUserTimeout, ReasonDialogError:
+	case ReasonUserDenied, ReasonUserTimeout, ReasonDialogError, ReasonUserCancelled:
 		return true
 	}
 	return false
+}
+
+// persisted splits a reason into what the file stores in reason (one every
+// build of the store knows) and the withdrawReason the server is sent.
+func (r Reason) persisted() (stored, withdraw Reason) {
+	if r == ReasonUserCancelled {
+		return ReasonUserDenied, ReasonUserCancelled
+	}
+	return r, ""
+}
+
+// ServerReason is the reason the withdraw sends: WithdrawReason when this
+// build knows it, else Reason.
+func (e Entry) ServerReason() Reason {
+	if e.WithdrawReason != "" && e.WithdrawReason.valid() {
+		return e.WithdrawReason
+	}
+	return e.Reason
 }
 
 // State of an entry. An approved request has no entry.
@@ -161,14 +185,17 @@ type Entry struct {
 	RequestID string `json:"requestId"`
 	State     State  `json:"state"`
 	// ServerStatus is the server's ingest answer: "pending" or "auto_approved".
-	ServerStatus  string    `json:"serverStatus"`
-	Reason        Reason    `json:"reason,omitempty"`
-	CreatedAt     time.Time `json:"createdAt"`
-	DeclinedAt    time.Time `json:"declinedAt,omitempty"`
-	AckedAt       time.Time `json:"ackedAt,omitempty"`
-	AckOutcome    string    `json:"ackOutcome,omitempty"`
-	Attempts      int       `json:"attempts"`
-	NextAttemptAt time.Time `json:"nextAttemptAt,omitempty"`
+	ServerStatus string `json:"serverStatus"`
+	Reason       Reason `json:"reason,omitempty"`
+	// WithdrawReason, when set, is the reason the server is sent in place
+	// of Reason (ServerReason). Additive: older builds ignore it.
+	WithdrawReason Reason    `json:"withdrawReason,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	DeclinedAt     time.Time `json:"declinedAt,omitempty"`
+	AckedAt        time.Time `json:"ackedAt,omitempty"`
+	AckOutcome     string    `json:"ackOutcome,omitempty"`
+	Attempts       int       `json:"attempts"`
+	NextAttemptAt  time.Time `json:"nextAttemptAt,omitempty"`
 }
 
 type wireFile struct {
@@ -432,12 +459,13 @@ func (s *Store) Decline(requestID string, reason Reason) error {
 		return nil
 	case ok:
 		e.State = StateDeclined
-		e.Reason = reason
+		e.Reason, e.WithdrawReason = reason.persisted()
 		e.DeclinedAt = now
 		settleIfAutoApproved(e)
 	default:
 		s.makeRoomLocked()
-		e = &Entry{RequestID: requestID, State: StateDeclined, Reason: reason, CreatedAt: now, DeclinedAt: now}
+		stored, withdraw := reason.persisted()
+		e = &Entry{RequestID: requestID, State: StateDeclined, Reason: stored, WithdrawReason: withdraw, CreatedAt: now, DeclinedAt: now}
 		settleIfAutoApproved(e)
 		s.entries[requestID] = e
 	}
@@ -467,7 +495,7 @@ func (s *Store) DeclineIfAwaiting(requestID string, reason Reason) (bool, error)
 		return false, nil
 	}
 	e.State = StateDeclined
-	e.Reason = reason
+	e.Reason, e.WithdrawReason = reason.persisted()
 	e.DeclinedAt = s.now()
 	settleIfAutoApproved(e)
 	s.wakeLocked(requestID)

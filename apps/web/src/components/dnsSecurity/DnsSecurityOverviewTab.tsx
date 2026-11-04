@@ -6,14 +6,25 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { formatNumber } from '@/lib/i18n/format';
 
+/**
+ * #10054 — whether the integrations in scope store allowed DNS queries. Sync
+ * stores blocked + redirected events by default; allowed traffic is a
+ * per-integration opt-in, so an allowed count can be partial or absent.
+ */
+type AllowedTrafficCoverage = 'all' | 'some' | 'none';
+
 interface DnsStats {
-  total: number;
+  total: number | null;
   blocked: number;
-  allowed: number;
+  /** null when no integration in scope stores allowed traffic. */
+  allowed: number | null;
   redirected: number;
-  /** Optional aggregations the API may include; render only when present. */
-  topCategories?: Array<{ category: string; count: number }>;
-  topDomains?: Array<{ domain: string; count: number }>;
+  allowedTraffic: AllowedTrafficCoverage;
+}
+
+/** null stays null (not stored); a missing field counts as 0. */
+function nullableCount(value: unknown): number | null {
+  return value === null ? null : Number(value ?? 0);
 }
 
 interface TopBlockedEntry {
@@ -44,15 +55,17 @@ export default function DnsSecurityOverviewTab() {
       }
 
       if (statsRes.ok) {
+        // GET /dns-security/stats answers `{ summary: {...}, allowedTraffic }`.
         const body = await statsRes.json();
-        const data = body.data ?? body;
+        const summary = body.summary ?? {};
+        const allowedTraffic: AllowedTrafficCoverage =
+          body.allowedTraffic === 'none' || body.allowedTraffic === 'some' ? body.allowedTraffic : 'all';
         setStats({
-          total: Number(data.total ?? 0),
-          blocked: Number(data.blocked ?? 0),
-          allowed: Number(data.allowed ?? 0),
-          redirected: Number(data.redirected ?? 0),
-          topCategories: data.topCategories,
-          topDomains: data.topDomains,
+          total: nullableCount(summary.totalQueries),
+          blocked: Number(summary.blockedQueries ?? 0),
+          allowed: allowedTraffic === 'none' ? null : nullableCount(summary.allowedQueries),
+          redirected: Number(summary.redirectedQueries ?? 0),
+          allowedTraffic,
         });
       }
       if (topRes.ok) {
@@ -88,7 +101,8 @@ export default function DnsSecurityOverviewTab() {
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           label={t('dnsSecurityDnsSecurityOverviewTab.stats.totalQueries')}
-          value={stats?.total ?? 0}
+          value={stats ? stats.total : 0}
+          notStoredLabel={t('dnsSecurityDnsSecurityOverviewTab.stats.notStored')}
           icon={<Activity className="h-4 w-4" />}
           loading={loading}
         />
@@ -101,7 +115,9 @@ export default function DnsSecurityOverviewTab() {
         />
         <StatCard
           label={t('dnsSecurityDnsSecurityOverviewTab.stats.allowed')}
-          value={stats?.allowed ?? 0}
+          value={stats ? stats.allowed : 0}
+          valueTestId="dns-overview-allowed-value"
+          notStoredLabel={t('dnsSecurityDnsSecurityOverviewTab.stats.notStored')}
           icon={<ShieldCheck className="h-4 w-4" />}
           tone="success"
           loading={loading}
@@ -114,6 +130,17 @@ export default function DnsSecurityOverviewTab() {
           loading={loading}
         />
       </div>
+
+      {stats && stats.allowedTraffic !== 'all' && (
+        <p
+          data-testid="dns-overview-allowed-traffic-note"
+          className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+        >
+          {stats.allowedTraffic === 'none'
+            ? t('dnsSecurityDnsSecurityOverviewTab.allowedTraffic.none')
+            : t('dnsSecurityDnsSecurityOverviewTab.allowedTraffic.some')}
+        </p>
+      )}
 
       <div className="rounded-lg border bg-card p-4">
         <h3 className="mb-3 text-sm font-semibold">{t('dnsSecurityDnsSecurityOverviewTab.topBlocked.title')}</h3>
@@ -156,12 +183,17 @@ function StatCard({
   icon,
   tone,
   loading,
+  valueTestId,
+  notStoredLabel,
 }: {
   label: string;
-  value: number;
+  /** null = not stored (see #10054), rendered as `notStoredLabel`, never as 0. */
+  value: number | null;
   icon: React.ReactNode;
   tone?: 'destructive' | 'success' | 'warning';
   loading: boolean;
+  valueTestId?: string;
+  notStoredLabel?: string;
 }) {
   const toneClass =
     tone === 'destructive'
@@ -177,8 +209,14 @@ function StatCard({
         {icon}
         {label}
       </div>
-      <div className={`mt-1 text-2xl font-semibold tabular-nums ${toneClass}`}>
-        {loading ? <span className="text-muted-foreground">—</span> : formatNumber(value)}
+      <div data-testid={valueTestId} className={`mt-1 text-2xl font-semibold tabular-nums ${toneClass}`}>
+        {loading ? (
+          <span className="text-muted-foreground">—</span>
+        ) : value === null ? (
+          <span className="text-base font-medium text-muted-foreground">{notStoredLabel}</span>
+        ) : (
+          formatNumber(value)
+        )}
       </div>
     </div>
   );

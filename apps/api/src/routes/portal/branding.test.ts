@@ -42,6 +42,14 @@ vi.mock('../../db', () => {
 const { capabilitiesMock } = vi.hoisted(() => ({ capabilitiesMock: vi.fn(async () => ({ canEditTrustPage: false })) }));
 vi.mock('./featureFlags', () => ({ resolvePortalCapabilities: capabilitiesMock }));
 
+// #9674: the partner's Custom CSS read is its own system-scope query (tested in
+// portalCustomCss.test.ts); here only how /branding layers it with the org's.
+const { partnerCssMock } = vi.hoisted(() => ({ partnerCssMock: vi.fn(async (): Promise<string | null> => null) }));
+vi.mock('./portalCustomCss', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./portalCustomCss')>()),
+  loadPartnerPortalCustomCss: partnerCssMock,
+}));
+
 import { brandingRoutes } from './branding';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
@@ -62,6 +70,12 @@ function buildAuthenticatedApp() {
 }
 
 const authenticatedApp = buildAuthenticatedApp();
+
+// A partner CSS value set by one test must never leak into the next.
+beforeEach(() => {
+  partnerCssMock.mockReset();
+  partnerCssMock.mockResolvedValue(null);
+});
 
 describe('GET /branding (authenticated)', () => {
   beforeEach(() => {
@@ -207,6 +221,60 @@ describe('GET /branding (authenticated)', () => {
   });
 });
 
+describe('GET /branding partner Custom CSS (#9674)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.rows = [];
+  });
+
+  it("serves the partner's CSS ahead of the org's, so the org's rules win the cascade", async () => {
+    partnerCssMock.mockResolvedValue('.portal-card { color: red; }');
+    dbState.rows = [{ customCss: '.portal-card { color: blue; }' }];
+
+    const response = await authenticatedApp.request('/branding');
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).branding.customCss).toBe(
+      '.portal-card { color: red; }\n\n.portal-card { color: blue; }',
+    );
+    expect(partnerCssMock).toHaveBeenCalledWith(ORG_ID);
+  });
+
+  it("serves the org's CSS unchanged when the partner has none", async () => {
+    dbState.rows = [{ customCss: '.portal-card { color: blue; }' }];
+
+    const response = await authenticatedApp.request('/branding');
+
+    expect((await response.json()).branding.customCss).toBe('.portal-card { color: blue; }');
+  });
+
+  it("serves the partner's CSS to an org that has never saved portal settings", async () => {
+    partnerCssMock.mockResolvedValue('.portal-card { color: red; }');
+    dbState.rows = [];
+
+    const response = await authenticatedApp.request('/branding');
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    // Only the CSS: no row means no visibility flags, so every gated surface
+    // still fails closed exactly as on the 404 default path.
+    expect(body).toEqual({ branding: { customCss: '.portal-card { color: red; }' } });
+    expect(response.headers.get('Cache-Control')).toContain('private');
+  });
+
+  it('is part of the ETag, so a partner CSS change is not answered 304', async () => {
+    dbState.rows = [{ customCss: null }];
+    partnerCssMock.mockResolvedValue('.a { color: red; }');
+    const etagBefore = (await authenticatedApp.request('/branding')).headers.get('etag');
+    partnerCssMock.mockResolvedValue('.a { color: green; }');
+
+    const res = await authenticatedApp.request('/branding', { headers: { 'if-none-match': etagBefore ?? '' } });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).branding.customCss).toBe('.a { color: green; }');
+  });
+});
+
 describe('GET /branding canEditTrustPage (Trust Center W3d)', () => {
   afterEach(() => { capabilitiesMock.mockImplementation(async () => ({ canEditTrustPage: false })); });
   beforeEach(() => {
@@ -340,6 +408,26 @@ describe('GET /branding/:domain (public)', () => {
     const body = await response.json();
     expect(body.branding.chromeAccent).toBe('teal');
     expect(Object.keys(dbState.selected ?? {})).toContain('chromeAccent');
+  });
+
+  it("layers the partner's CSS ahead of the org's on the public domain lookup (#9674)", async () => {
+    partnerCssMock.mockResolvedValue('.portal-card { color: red; }');
+    dbState.rows = [{
+      orgId: ORG_ID,
+      customDomain: 'portal.example.test',
+      domainVerified: true,
+      customCss: '.portal-card { color: blue; }',
+    }];
+
+    const publicApp = new Hono();
+    publicApp.route('/', brandingRoutes);
+    const response = await publicApp.request('/branding/portal.example.test');
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).branding.customCss).toBe(
+      '.portal-card { color: red; }\n\n.portal-card { color: blue; }',
+    );
+    expect(partnerCssMock).toHaveBeenCalledWith(ORG_ID);
   });
 
   it('returns 404 when the domain is unverified or unknown', async () => {

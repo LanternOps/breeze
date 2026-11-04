@@ -31,16 +31,28 @@ function system<T>(fn: () => Promise<T>, label: string): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
 }
 
-export async function findOwnedScriptIds(owner: ToolOwnerRef, ids: Iterable<string>): Promise<Set<string>> {
+/**
+ * Where a script read runs. The default is a fresh system context (the owner
+ * predicate is explicit). Tool Catalog W06 (#5221) Task B3: the conversion
+ * switch creates generated scripts in its own, still uncommitted, transaction
+ * and passes that transaction here, so enable can see them. The owner
+ * predicate is the same on both paths; RLS on a caller's transaction can only
+ * hide more rows, never fewer (a hidden script reads as not owned).
+ */
+export type ScriptReadExecutor = Pick<typeof db, 'select'>;
+
+export async function findOwnedScriptIds(
+  owner: ToolOwnerRef,
+  ids: Iterable<string>,
+  opts: { executor?: ScriptReadExecutor } = {},
+): Promise<Set<string>> {
   const wanted = uuidsOnly(ids);
   if (wanted.length === 0) return new Set();
-  const rows = await system(
-    async () => db
-      .select({ id: scripts.id })
-      .from(scripts)
-      .where(and(inArray(scripts.id, wanted), isNull(scripts.deletedAt), scriptOwnershipCondition(asReferenceOwner(owner)))),
-    'flowValidator.scripts',
-  );
+  const read = (executor: ScriptReadExecutor) => executor
+    .select({ id: scripts.id })
+    .from(scripts)
+    .where(and(inArray(scripts.id, wanted), isNull(scripts.deletedAt), scriptOwnershipCondition(asReferenceOwner(owner))));
+  const rows = opts.executor ? await read(opts.executor) : await system(async () => read(db), 'flowValidator.scripts');
   return new Set(rows.map((r) => r.id));
 }
 

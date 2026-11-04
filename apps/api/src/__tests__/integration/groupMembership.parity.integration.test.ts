@@ -98,7 +98,7 @@ describe('groupIncludesDevice parity with resolveEffectiveGroupMembers (real DB)
     await member(gSiteBound.id, f.srvB.id, f.orgId, true);
 
     for (const g of [gStatic, gDynamic, gNullFilter, gSiteBound]) {
-      const { matched, pinned } = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g));
+      const { matched, pinned } = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g, f.orgId));
       const union = new Set([...matched, ...pinned]);
       for (const d of f.local) {
         const actual = await withSystemDbAccessContext(() => groupIncludesDevice(g, d));
@@ -106,7 +106,7 @@ describe('groupIncludesDevice parity with resolveEffectiveGroupMembers (real DB)
       }
     }
 
-    const { matched } = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(gStatic));
+    const { matched } = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(gStatic, f.orgId));
     // Deliberate divergence: the whole-group resolver includes real membership
     // rows, while billing eligibility refuses ephemeral devices up front.
     expect(matched.has(f.ephemeralDev.id)).toBe(true);
@@ -117,7 +117,7 @@ describe('groupIncludesDevice parity with resolveEffectiveGroupMembers (real DB)
     const f = await seed();
     const g = await group(f.orgId, { type: 'dynamic', filterConditions: { nope: true } });
     await member(g.id, f.wsA.id, f.orgId, true);
-    await expect(withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g)))
+    await expect(withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g, f.orgId)))
       .rejects.toMatchObject({ name: 'GroupEvaluationError', groupId: g.id, reason: 'invalid_filter' });
     for (const d of f.local) {
       await expect(withSystemDbAccessContext(() => groupIncludesDevice(g, d)))
@@ -138,7 +138,7 @@ describe('groupIncludesDevice parity with resolveEffectiveGroupMembers (real DB)
       VALUES (${f.otherOrgDev.id}::uuid, ${g.id}::uuid, ${f.orgB}::uuid)
     `)).then(() => null, (err: Error) => err);
     expect(forged, 'the forged membership must be rejected (#3182)').toBeInstanceOf(Error);
-    expect(JSON.stringify(forged)).toContain('device_group_memberships_group_org_fk');
+    expect(JSON.stringify(forged)).toContain('device_group_memberships_group_owner_check');
 
     expect(await withSystemDbAccessContext(() => groupIncludesDevice(g, f.otherOrgDev))).toBe(false);
   });

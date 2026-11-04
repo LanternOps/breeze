@@ -732,6 +732,8 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
         { id: REQ_ID, deviceId: 'dev-1' },
         'denied',
         'Use the approved version\nfrom the portal',
+        // #10190 W07: the decider's name resolver, for decidedBy.technicianName.
+        expect.any(Function),
       );
     });
 
@@ -739,7 +741,7 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
       rigTransaction({ row: activeRow, casWins: true });
       await respond({ decision: 'deny' });
       expect(notifyMocks.enqueuePamRequestNotify).toHaveBeenCalledWith(
-        expect.anything(), { id: REQ_ID, deviceId: 'dev-1' }, 'denied', undefined,
+        expect.anything(), { id: REQ_ID, deviceId: 'dev-1' }, 'denied', undefined, expect.any(Function),
       );
     });
 

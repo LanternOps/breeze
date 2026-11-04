@@ -130,7 +130,10 @@ export default function WispThreadPage({ threadId }: { threadId: string }) {
   }, [load]);
 
   // A check starting or finishing is when new activity appears: refresh the timeline then, not every poll.
-  const liveKey = view.kind === 'ready' ? (view.current?.startedAt ?? 'idle') : null;
+  // So is a grant status change (#10104): Resume, or a poll that finds the
+  // grant paused / resumed elsewhere, re-runs the concerns and activity reads,
+  // so a pane that failed under the old status does not stay failed.
+  const liveKey = view.kind === 'ready' ? `${view.wisp.status}|${view.current?.startedAt ?? 'idle'}` : null;
   const lastLiveKey = useRef<string | null>(null);
   useEffect(() => {
     if (liveKey === null) return;

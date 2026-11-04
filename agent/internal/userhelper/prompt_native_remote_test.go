@@ -34,10 +34,15 @@ func TestNativeAdvertisesTheRemoteKinds(t *testing.T) {
 			t.Fatalf("%s consent=%v advertises %v, want %v", tc.goos, tc.consent, got, tc.want)
 		}
 	}
-	for _, role := range []ipc.HelperRole{ipc.HelperRoleSystem, ipc.HelperRoleAssist, ipc.HelperRoleWatchdog} {
+	for _, role := range []ipc.HelperRole{ipc.HelperRoleAssist, ipc.HelperRoleWatchdog} {
 		if got := nativePromptKindsFor(role, "windows", true); len(got) != 0 {
 			t.Fatalf("role %s advertises %v", role, got)
 		}
+	}
+	// W07: the SYSTEM helper advertises only elevation.request@1 (Windows),
+	// never a remote kind.
+	if got := nativePromptKindsFor(ipc.HelperRoleSystem, "windows", true); !reflect.DeepEqual(got, []string{"elevation.request@1"}) {
+		t.Fatalf("SYSTEM advertises %v", got)
 	}
 }
 

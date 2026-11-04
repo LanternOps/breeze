@@ -281,6 +281,38 @@ describe('parseImportedTicket — the whole ticket is checked before anything is
     expect(parseImportedTicket(ticket({ requester: { name: 'Maya' } }), NOW).requester).toEqual({ name: 'Maya' });
   });
 
+  // #8313 W1 (spec 2026-10-19 §5.3 item 1): a comment's files.
+  describe('attachments', () => {
+    const withFiles = (files: unknown[]) => ticket({
+      comments: [{ sourceId: 'a1', createdAt: at(5), isPublic: true, author: { kind: 'staff', name: 'Tess' }, content: 'Hi', attachments: files as never }],
+    });
+
+    it('accepts files with or without a declared size, any name and no count cap', () => {
+      const files = Array.from({ length: 12 }, (_, i) => ({ sourceId: `f${i}`, filename: i ? `scan ${i}.png` : '', inline: i % 2 === 0, ...(i % 3 ? { declaredBytes: i * 100 } : {}) }));
+      expect(parseImportedTicket(withFiles(files), NOW).comments[0]!.attachments).toHaveLength(12);
+    });
+
+    it.each([
+      ['a missing source id', { filename: 'a.png', inline: false }],
+      ['a negative declared size', { sourceId: 'f1', filename: 'a.png', declaredBytes: -1, inline: false }],
+      ['a fractional declared size', { sourceId: 'f1', filename: 'a.png', declaredBytes: 1.5, inline: false }],
+      ['no inline flag', { sourceId: 'f1', filename: 'a.png' }],
+      ['an unknown key (a declared type is never taken)', { sourceId: 'f1', filename: 'a.png', inline: false, contentType: 'image/png' }],
+    ])('refuses %s', (_label, bad) => {
+      expect(() => parseImportedTicket(withFiles([bad]), NOW)).toThrow(expect.objectContaining({ code: 'MIGRATION_IMPORT_INVALID', status: 400 }));
+    });
+
+    it('refuses an attachment source id used twice in the ticket (it is the resume key)', () => {
+      const t = ticket({
+        comments: [
+          { sourceId: 'a1', createdAt: at(5), isPublic: true, author: { kind: 'staff', name: 'Tess' }, content: 'Hi', attachments: [{ sourceId: 'f1', filename: 'a.png', inline: false }] },
+          { sourceId: 'a2', createdAt: at(6), isPublic: true, author: { kind: 'staff', name: 'Tess' }, content: 'Hi', attachments: [{ sourceId: 'f1', filename: 'a.png', inline: false }] },
+        ],
+      });
+      expect(() => parseImportedTicket(t, NOW)).toThrow(expect.objectContaining({ code: 'MIGRATION_IMPORT_INVALID', details: { sourceId: 'f1' } }));
+    });
+  });
+
   it.each([
     ['a time in the future', { updatedAt: new Date('2026-10-15T00:00:00.000Z') }, 'updatedAt'],
     ['a resolved time before the creation', { resolvedAt: at(-1) }, 'resolvedAt'],

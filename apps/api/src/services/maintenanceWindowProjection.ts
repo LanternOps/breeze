@@ -48,6 +48,7 @@ import {
   maintenanceNextOccurrenceStart,
   maintenanceOccurrenceStart,
   maintenanceWallClock,
+  parseRecurringWindowAnchor,
   resolveMaintenanceConfigForDevice,
 } from './featureConfigResolver';
 import { dateFromSqlValue } from './portal/sqlTimestamp';
@@ -64,6 +65,11 @@ export interface NextMaintenanceWindow {
 }
 
 type MaintenanceSettingsRow = typeof configPolicyMaintenanceSettings.$inferSelect;
+/** The fields the projector reads: a stored row, or settings assembled from one. */
+type ProjectableMaintenanceSettings = Pick<
+  MaintenanceSettingsRow,
+  'id' | 'recurrence' | 'windowStart' | 'timezone' | 'durationHours' | 'rebootIfPending'
+>;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -111,7 +117,7 @@ export function wallClockToInstant(wall: Date, timezone: string | null | undefin
  * row yields at or after `from`, or null when none starts within the horizon.
  */
 export function projectNextConfigPolicyWindow(
-  settings: MaintenanceSettingsRow,
+  settings: ProjectableMaintenanceSettings,
   from: Date,
   horizonDays: number = MAINTENANCE_WINDOW_HORIZON_DAYS,
 ): NextMaintenanceWindow | null {
@@ -141,6 +147,140 @@ export function projectNextConfigPolicyWindow(
     startsAt,
     endsAt,
     rebootIfPending: settings.rebootIfPending,
+  };
+}
+
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
+/** Far enough that every recurring window, and a `once` window up to a year out, has a next window. */
+const DESCRIBE_HORIZON_DAYS = 366;
+
+export interface MaintenanceScheduleDescription {
+  recurrence: string;
+  /** "Sunday" (weekly), "day 1 of each month", "every day", or the `once` date. null = never opens. */
+  opensOn: string | null;
+  /** HH:MM wall-clock start in `timezone`. null = never opens. */
+  startTime: string | null;
+  /** Where `startTime` came from. A blank or unparseable recurring windowStart runs at midnight. */
+  startTimeSource: 'windowStart' | 'default_midnight' | 'invalid_windowStart_fell_back_to_midnight' | null;
+  durationHours: number;
+  timezone: string;
+  /** Set when the stored zone is not a valid IANA name; the evaluator then runs the window in UTC. */
+  invalidTimezone?: string;
+  /** The open (or next) occurrence as UTC instants. null when none is ahead. */
+  nextWindow: { startsAt: string; endsAt: string } | null;
+  summary: string;
+}
+
+function isValidTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * #10397: the schedule a maintenance settings blob actually runs on, for the
+ * AI tools. The stored settings cannot answer "which day" (there is no day
+ * field, see #9574), and a blank `windowStart` reads as "never opens" when it
+ * means midnight. Every value here is read back from the evaluator's own
+ * arithmetic (`maintenanceOccurrenceStart`, `projectNextConfigPolicyWindow`)
+ * rather than restating its rules, so the description cannot disagree with
+ * what `isInMaintenanceWindow` suppresses.
+ *
+ * Returns null for anything that is not a maintenance settings shape, so a
+ * malformed legacy blob never fails the read that carries it.
+ */
+export function describeMaintenanceSchedule(
+  settings: unknown,
+  now: Date = new Date(),
+): MaintenanceScheduleDescription | null {
+  if (!settings || typeof settings !== 'object') return null;
+  const s = settings as Record<string, unknown>;
+  if (typeof s.recurrence !== 'string') return null;
+  // The write schema caps this at 72; the bound here only keeps a corrupt
+  // legacy value from overflowing Date arithmetic.
+  if (typeof s.durationHours !== 'number' || !(s.durationHours > 0 && s.durationHours <= 24 * 366)) return null;
+
+  const storedZone = typeof s.timezone === 'string' && s.timezone !== '' ? s.timezone : 'UTC';
+  // `maintenanceWallClock` falls back to UTC for a zone Intl rejects, so the
+  // window really runs in UTC; say so instead of echoing the bad name.
+  const zoneValid = isValidTimeZone(storedZone);
+  const row: ProjectableMaintenanceSettings = {
+    id: 'effective',
+    recurrence: s.recurrence as MaintenanceSettingsRow['recurrence'],
+    windowStart: typeof s.windowStart === 'string' ? s.windowStart : null,
+    timezone: zoneValid ? storedZone : 'UTC',
+    durationHours: s.durationHours,
+    rebootIfPending: s.rebootIfPending === true,
+  };
+  const base = {
+    recurrence: row.recurrence,
+    durationHours: row.durationHours,
+    timezone: row.timezone,
+    ...(zoneValid ? {} : { invalidTimezone: storedZone }),
+  };
+
+  const occurrence = maintenanceOccurrenceStart(row, maintenanceWallClock(now, row.timezone));
+  if (occurrence === null) {
+    return {
+      ...base,
+      opensOn: null,
+      startTime: null,
+      startTimeSource: null,
+      nextWindow: null,
+      summary: row.recurrence === 'once'
+        ? "Never opens: a 'once' window has no valid windowStart"
+        : `Never opens: unknown recurrence "${row.recurrence}"`,
+    };
+  }
+
+  // The occurrence is a wall-clock Date whose UTC fields carry the digits.
+  const startTime = occurrence.toISOString().slice(11, 16);
+  let opensOn: string;
+  let lead: string;
+  switch (row.recurrence) {
+    case 'weekly':
+      opensOn = WEEKDAY_NAMES[occurrence.getUTCDay()]!;
+      lead = `Every ${opensOn}`;
+      break;
+    case 'monthly':
+      opensOn = `day ${occurrence.getUTCDate()} of each month`;
+      lead = `Day ${occurrence.getUTCDate()} of each month`;
+      break;
+    case 'daily':
+      opensOn = 'every day';
+      lead = 'Every day';
+      break;
+    default: // once: maintenanceOccurrenceStart returns null for any unknown recurrence
+      opensOn = occurrence.toISOString().slice(0, 10);
+      lead = `Once on ${opensOn}`;
+  }
+
+  let startTimeSource: MaintenanceScheduleDescription['startTimeSource'] = 'windowStart';
+  if (row.recurrence !== 'once') {
+    if ((row.windowStart ?? '').trim() === '') startTimeSource = 'default_midnight';
+    else if (parseRecurringWindowAnchor(row.windowStart) === 'invalid') {
+      startTimeSource = 'invalid_windowStart_fell_back_to_midnight';
+    }
+  }
+
+  const next = projectNextConfigPolicyWindow(row, now, DESCRIBE_HORIZON_DAYS);
+  // Only a `once` window can run out of occurrences; say why there is no next one.
+  let tail = '';
+  if (next === null && row.recurrence === 'once') {
+    const ended = new Date(occurrence.getTime() + row.durationHours * 60 * 60 * 1000);
+    tail = ended <= maintenanceWallClock(now, row.timezone) ? ' (already over)' : ' (more than a year away)';
+  }
+  const zoneNote = zoneValid ? row.timezone : `UTC; stored timezone "${storedZone}" is invalid`;
+  return {
+    ...base,
+    opensOn,
+    startTime,
+    startTimeSource,
+    nextWindow: next ? { startsAt: next.startsAt.toISOString(), endsAt: next.endsAt.toISOString() } : null,
+    summary: `${lead} at ${startTime} for ${row.durationHours}h (${zoneNote})${tail}`,
   };
 }
 

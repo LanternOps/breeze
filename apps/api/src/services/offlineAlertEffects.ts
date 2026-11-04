@@ -181,6 +181,7 @@ export async function admitOfflineAlertRule(effect: OfflineEffect): Promise<stri
       const title = interpolateTemplate(rule.titleTemplate, context);
       const message = interpolateTemplate(rule.messageTemplate, context);
       const [inserted] = await db.insert(alerts).values({
+        ownerKind: 'device',
         id: alertId, ruleId: rule.ruleId,
         ...(rule.monitorId ? { monitorId: rule.monitorId } : {}),
         configPolicyId: null, configItemName: null,

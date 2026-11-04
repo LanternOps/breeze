@@ -383,6 +383,7 @@ async function createInTransaction(
       orgName: targets.orgNames.get(p.orgId) ?? null,
       ruleSets,
       scanType: request.scanType,
+      paths: request.scanType === 'custom' && targets.paths ? [...targets.paths] : null,
       state: 'active',
       targeted: p.remaining.length,
       skipped: p.skipped,
@@ -553,6 +554,7 @@ const emptyProgress = (): SweepProgress => ({
   cancelled: 0,
   expired: 0,
   degraded: 0,
+  ruleSetChanged: 0,
   threatsFound: 0,
 });
 
@@ -573,6 +575,9 @@ const progressFields = () => ({
   // A child that finished but not as a full YARA scan: the agent fell back to
   // the legacy matcher, or reported rule-set fetch/compile errors.
   degraded: sql<number>`count(*) FILTER (WHERE ${securityScans.status} IN ('completed', 'timed_out') AND (coalesce(${securityScans.engine}, 'legacy') <> 'yara' OR (CASE WHEN jsonb_typeof(${securityScans.ruleSetErrors}) = 'array' THEN jsonb_array_length(${securityScans.ruleSetErrors}) ELSE 0 END) > 0))::int`,
+  // A child the claim failed because a pinned rule set was republished after
+  // the sweep was approved (securityScanClaim → yaraScanRefs 'rule_set_changed').
+  ruleSetChanged: sql<number>`count(*) FILTER (WHERE ${securityScans.status} = 'failed' AND ${securityScans.ruleSetErrors} @> '[{"code":"rule_set_changed"}]'::jsonb)::int`,
   threatsFound: sql<number>`coalesce(sum(${securityScans.threatsFound}), 0)::int`,
   total: sql<number>`count(*)::int`,
 });
@@ -585,6 +590,7 @@ const summaryFields = () => ({
   createdBy: securityScanSweeps.createdBy,
   ruleSetPins: securityScanSweeps.ruleSetPins,
   scanType: securityScanSweeps.scanType,
+  paths: securityScanSweeps.paths,
   targetedCount: securityScanSweeps.targetedCount,
   skipped: securityScanSweeps.skipped,
   origin: securityScanSweeps.origin,
@@ -603,6 +609,7 @@ type SummaryRow = {
   createdBy: string | null;
   ruleSetPins: unknown;
   scanType: string;
+  paths: string[] | null;
   targetedCount: number;
   skipped: unknown;
   origin: string;
@@ -745,6 +752,7 @@ async function loadSummaries(
           cancelled: Number(p.cancelled),
           expired: Number(p.expired),
           degraded: Number(p.degraded),
+          ruleSetChanged: Number(p.ruleSetChanged),
           threatsFound: Number(p.threatsFound),
         }
       : emptyProgress();
@@ -755,6 +763,7 @@ async function loadSummaries(
       orgName: row.orgName ?? null,
       ruleSets: parsePins(row.ruleSetPins).map((pin) => ({ id: pin.id, name: nameById.get(pin.id) ?? null, version: pin.version })),
       scanType: row.scanType as SecuritySweepScanType,
+      paths: row.scanType === 'custom' && Array.isArray(row.paths) ? [...row.paths] : null,
       state: row.state as SecuritySweepState,
       targeted: restrictedOrgs.has(row.orgId) ? Number(p?.total ?? 0) : row.targetedCount,
       // A restricted caller sees only its slice; the stored org-wide skip

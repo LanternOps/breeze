@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./deviceDeletion', () => ({ deleteDeviceCascade: vi.fn(async () => undefined) }));
+vi.mock('../jobs/deviceGroupJobs', () => ({ requestDeviceGroupReevaluationAfterCommit: vi.fn() }));
 vi.mock('./deviceLinkGroups', () => ({
   dissolveLinkGroupIfBelowMinimum: vi.fn(async () => true),
   LinkGroupSiteAccessError: class LinkGroupSiteAccessError extends Error {
@@ -50,6 +51,7 @@ import {
   DEVICE_LIFECYCLE_LOCK_TIMEOUT_MS,
 } from './deviceLifecycle';
 import { deleteDeviceCascade } from './deviceDeletion';
+import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJobs';
 import { dissolveLinkGroupIfBelowMinimum } from './deviceLinkGroups';
 import { releaseDeviceRemoveReason } from './deviceUninstallDrain';
 import { findPolicyBackupLegalHoldInContext } from './erasureBackupLegalHold';
@@ -159,7 +161,7 @@ beforeEach(() => {
     alreadyDispatched: 0,
   });
   vi.mocked(dissolveLinkGroupIfBelowMinimum).mockResolvedValue(true);
-  vi.mocked(deleteDeviceCascade).mockResolvedValue({ removedTopologyAlerts: 0 });
+  vi.mocked(deleteDeviceCascade).mockResolvedValue({ detachedTopologyAlerts: 0 });
   vi.mocked(findPolicyBackupLegalHoldInContext).mockResolvedValue(null);
   vi.mocked(deviceTakesLicensedSlot).mockResolvedValue(true);
   vi.mocked(admitPartnerDeviceCapacity).mockResolvedValue({
@@ -252,6 +254,29 @@ describe('restoreRemovedDevice', () => {
     const r = await restoreRemovedDevice(tx, DEV, AUTHORIZED);
     expect(r.uninstallAlreadyDispatched).toBe(true);
     expect(r.device).toMatchObject({ id: DEV, status: 'offline' });
+  });
+
+  // #9933: dynamic groups leave out removed devices, so a restored device has
+  // to be re-evaluated against every dynamic group in its org to come back.
+  it("re-evaluates the org's dynamic groups once the restore commits", async () => {
+    const { tx } = makeTx({ lockRow: REMOVED_ROW });
+    await restoreRemovedDevice(tx, DEV, AUTHORIZED);
+    expect(requestDeviceGroupReevaluationAfterCommit).toHaveBeenCalledTimes(1);
+    expect(requestDeviceGroupReevaluationAfterCommit).toHaveBeenCalledWith({
+      deviceId: DEV,
+      orgId: ORG,
+      eventType: 'device.created',
+      reason: 'device_restored',
+    });
+  });
+
+  it('requests no re-evaluation when the restore is refused', async () => {
+    const { tx } = makeTx({
+      lockRow: { ...REMOVED_ROW, status: 'online' },
+      targetRow: { ...REMOVED_ROW, partner_id: PARTNER },
+    });
+    await expect(restoreRemovedDevice(tx, DEV, AUTHORIZED)).rejects.toMatchObject({ code: 'NOT_REMOVED' });
+    expect(requestDeviceGroupReevaluationAfterCommit).not.toHaveBeenCalled();
   });
 });
 
@@ -479,6 +504,7 @@ describe('purgeRemovedDevice', () => {
   });
 
   it('cascades and dissolves the link group when eligible', async () => {
+    vi.mocked(deleteDeviceCascade).mockResolvedValueOnce({ detachedTopologyAlerts: 2 });
     const { tx, calls } = makeTx({
       lockRow: { id: DEV, status: 'decommissioned', link_group_id: 'lg-1' },
     });
@@ -486,6 +512,8 @@ describe('purgeRemovedDevice', () => {
     expect(deleteDeviceCascade).toHaveBeenCalledWith(tx, DEV);
     expect(dissolveLinkGroupIfBelowMinimum).toHaveBeenCalledWith(tx, 'lg-1', undefined);
     expect(r.linkGroupDissolved).toBe(true);
+    expect(r.detachedTopologyAlerts).toBe(2);
+    expect(r).not.toHaveProperty('removedTopologyAlerts');
     expect(calls.filter((c) => c !== 'tighten-lock-timeout')[0]).toBe('lock');
   });
 

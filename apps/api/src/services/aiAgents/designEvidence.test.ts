@@ -219,7 +219,7 @@ describe('loadDesignEvidence (loader failure isolation)', () => {
 
   beforeEach(() => {
     failOn = [];
-    rowsFor = [{ match: 'FROM organizations', rows: HEADER_ROWS }];
+    rowsFor = [{ match: 'SELECT o.name AS org_name', rows: HEADER_ROWS }];
     vi.clearAllMocks();
   });
 
@@ -235,6 +235,15 @@ describe('loadDesignEvidence (loader failure isolation)', () => {
     } as never);
     const evidence = await loadDesignEvidence(ORG, { siteId: null });
     expect(evidence.health.reliabilityWorst).toEqual([{ deviceId: uuid(1), score: 60, trend: 'stable', provisional: true }]);
+  });
+
+  it('includes partner-owned group names while keeping memberships pinned to the device org', async () => {
+    await loadDesignEvidence(ORG, { siteId: null });
+    const queries = vi.mocked(db.execute).mock.calls.map(([statement]) => sqlText(statement).replace(/\s+/g, ' '));
+    const deviceQuery = queries.find((query) => query.includes('AS group_names'));
+    expect(deviceQuery).toContain('g.org_id IS NULL AND g.partner_id = ( SELECT o.partner_id FROM organizations o WHERE o.id =');
+    expect(deviceQuery).toContain('WHERE m.device_id = d.id AND m.org_id =');
+    expect(deviceQuery).toContain('g.org_id =');
   });
 
   it('excludes retired legacy watches and rules from configuration evidence', async () => {

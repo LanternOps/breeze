@@ -16,6 +16,47 @@ const RISK_CLASS: Record<string, string> = {
   critical: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200',
 };
 
+const VERIFICATION_KEY_BY_OUTCOME: Record<string, string> = {
+  pending: 'ai:scriptProposal.verificationPending',
+  verified: 'ai:scriptProposal.verified',
+  verification_failed: 'ai:scriptProposal.verificationFailed',
+  unknown: 'ai:scriptProposal.verificationUnknown',
+};
+
+/** Statuses a proposal only reaches once it has been dispatched to a device. */
+const RAN_STATUSES = new Set(['executed', 'verified', 'verification_failed', 'promoted']);
+
+/** The pre-run line for a proposal that has not run, by lifecycle status.
+ *  Anything not listed (rejected, expired, superseded, ...) can no longer run. */
+const NOT_RUN_KEY_BY_STATUS: Record<string, string> = {
+  proposed: 'ai:scriptProposal.notRunAwaitingReview',
+  reviewed: 'ai:scriptProposal.notRunReviewed',
+  approved: 'ai:scriptProposal.notRunApproved',
+};
+
+const REVIEW_VERDICT_KEY: Record<string, string> = {
+  approve: 'ai:scriptProposal.reviewVerdictApprove',
+  changes: 'ai:scriptProposal.reviewVerdictChanges',
+  reject: 'ai:scriptProposal.reviewVerdictReject',
+};
+
+/**
+ * The run/verification line (#10399). The detail read reports outcome
+ * `pending` for EVERY proposal that has not verified — including one that
+ * never ran — so `pending` with no run and a pre-run status reads as "not run
+ * yet", not "Verification pending" (a post-run state).
+ */
+function runStateLine(
+  status: string,
+  executionCount: number,
+  outcome: string,
+): { outcome: string; key: string } {
+  if (outcome === 'pending' && executionCount === 0 && !RAN_STATUSES.has(status)) {
+    return { outcome: 'not_run', key: NOT_RUN_KEY_BY_STATUS[status] ?? 'ai:scriptProposal.notRun' };
+  }
+  return { outcome, key: VERIFICATION_KEY_BY_OUTCOME[outcome] ?? 'ai:scriptProposal.verificationUnknown' };
+}
+
 export interface ScriptProposalApprovalCardProps {
   proposalId: string;
   /** Called with the acknowledged STRICT descriptions. The PARENT owns the
@@ -183,12 +224,9 @@ export default function ScriptProposalApprovalCard({
   }
 
   const tier = data.review?.riskTier ?? data.proposal.riskTier ?? 'medium';
-  const verificationKeyByOutcome: Record<string, string> = {
-    pending: 'ai:scriptProposal.verificationPending',
-    verified: 'ai:scriptProposal.verified',
-    verification_failed: 'ai:scriptProposal.verificationFailed',
-    unknown: 'ai:scriptProposal.verificationUnknown',
-  };
+  const runState = runStateLine(data.proposal.status, data.executions.length, data.verification.outcome);
+  const verdict = data.review?.recommendedAction ?? null;
+  const verdictKey = verdict ? REVIEW_VERDICT_KEY[verdict] : undefined;
 
   return (
     <section data-testid="script-proposal-card" className="rounded-lg border border-border p-4">
@@ -199,6 +237,13 @@ export default function ScriptProposalApprovalCard({
       >
         {t(/* i18n-dynamic */ `approvals:risk.${tier}`)}
       </div>
+      {verdict && verdictKey && (
+        // #10399: the reviewer's recommendation in words. Without it a
+        // "changes" verdict was visible only by inference from the findings.
+        <p data-testid="script-proposal-review-verdict" data-verdict={verdict} className="mt-2 text-sm font-medium">
+          {t(/* i18n-dynamic */ verdictKey)}
+        </p>
+      )}
       {data.review?.summary && (
         <p data-testid="script-proposal-summary" className="mt-2 text-sm">
           {data.review.summary}
@@ -337,13 +382,11 @@ export default function ScriptProposalApprovalCard({
         {t('ai:scriptProposal.expiresIn', { duration: formatRemaining(data.proposal.expiresAt) })}
       </p>
 
-      {/* Verification state — makes the reason Save-to-library is absent
-          visible instead of mysterious. */}
-      <p data-testid="script-proposal-verification-state" data-outcome={data.verification.outcome} className="mt-1 text-xs text-muted-foreground">
-        {t(
-          /* i18n-dynamic */ verificationKeyByOutcome[data.verification.outcome] ??
-            'ai:scriptProposal.verificationUnknown',
-        )}
+      {/* Run / verification state — makes the reason Save-to-library is
+          absent visible instead of mysterious, and says plainly when the
+          proposal has not run at all (#10399). */}
+      <p data-testid="script-proposal-verification-state" data-outcome={runState.outcome} className="mt-1 text-xs text-muted-foreground">
+        {t(/* i18n-dynamic */ runState.key)}
       </p>
 
       {!readOnly && data.viewer.canDecide && (

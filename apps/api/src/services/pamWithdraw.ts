@@ -30,7 +30,7 @@
 import { and, eq } from 'drizzle-orm';
 
 import { db } from '../db';
-import { elevationAudit, elevationRequests, type PamWithdrawReason } from '../db/schema';
+import { elevationAudit, elevationRequests, type PamPromptRenderer, type PamWithdrawReason } from '../db/schema';
 
 export type WithdrawOutcome =
   | { kind: 'withdrawn'; withdrawnAt: Date; replay: boolean }
@@ -44,6 +44,8 @@ export async function withdrawElevationRequest(input: {
   reason: PamWithdrawReason;
   /** When the agent recorded the decline; informative only (audit). */
   agentDeclinedAt: Date | null;
+  /** #10190 W07: which renderer carried the decline (audit only; null = not reported). */
+  renderer?: PamPromptRenderer | null;
 }): Promise<WithdrawOutcome> {
   return db.transaction(async (tx) => {
     const [row] = await tx
@@ -105,6 +107,7 @@ export async function withdrawElevationRequest(input: {
       details: {
         cause: input.reason,
         agent_declined_at: input.agentDeclinedAt ? input.agentDeclinedAt.toISOString() : null,
+        renderer: input.renderer ?? null,
       },
       occurredAt: now,
     });

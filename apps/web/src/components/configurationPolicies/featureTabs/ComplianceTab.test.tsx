@@ -91,4 +91,15 @@ describe('ComplianceTab', () => {
     expect(names).toHaveLength(2);
     expect(new Set(names).size).toBe(2);
   });
+
+  // The name is copied into 200-character compliance state, alert and
+  // automation-run columns; the API refuses anything longer.
+  it('caps the rule set name input at 200 characters', () => {
+    render(<ComplianceTab {...baseProps} />);
+
+    fireEvent.click(screen.getAllByRole('button', { name: /Add Compliance Rule/i })[0]!);
+
+    const input = screen.getByDisplayValue(/Compliance Rule Set/) as HTMLInputElement;
+    expect(input.maxLength).toBe(200);
+  });
 });

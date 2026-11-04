@@ -30,7 +30,10 @@ vi.mock('../../db/schema', () => ({
   },
   scripts: {
     id: 'id',
-    name: 'name'
+    name: 'name',
+    isSystem: 'scripts.isSystem',
+    orgId: 'scripts.orgId',
+    partnerId: 'scripts.partnerId'
   }
 }));
 
@@ -196,6 +199,32 @@ describe('device scripts routes', () => {
     // the production query changed is to inspect what it was called with.
     const selectArg = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown>;
     expect(selectArg.parameters).toBe('parameters');
+  });
+
+  it('projects the script ownership so the tab can tell a catalog script from its imported copy (#9935)', async () => {
+    vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+      id: 'device-1',
+      orgId: 'org-123',
+      hostname: 'host-1'
+    } as never);
+
+    const limit = vi.fn().mockResolvedValue([]);
+    const orderBy = vi.fn().mockReturnValue({ limit });
+    const where = vi.fn().mockReturnValue({ orderBy });
+    const leftJoin = vi.fn().mockReturnValue({ where });
+    const from = vi.fn().mockReturnValue({ leftJoin });
+    vi.mocked(db.select).mockReturnValueOnce({ from } as never);
+
+    const res = await app.request('/devices/device-1/scripts', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+    expect(res.status).toBe(200);
+
+    const selectArg = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(selectArg.scriptIsSystem).toBe('scripts.isSystem');
+    expect(selectArg.scriptOrgId).toBe('scripts.orgId');
+    expect(selectArg.scriptPartnerId).toBe('scripts.partnerId');
   });
 
   it('returns 404 when the device is not accessible', async () => {

@@ -11,6 +11,12 @@ export interface VocabularyRule {
   pattern: RegExp;
   /** When set, the rule only scans these namespaces (file names without .json). */
   namespaces?: string[];
+  /**
+   * When set, the rule only scans keys starting with one of these
+   * `namespace:dotted.path` prefixes. Use it when only part of a namespace is
+   * an AI surface (e.g. `security:aiRisk` inside `security`).
+   */
+  keyPrefixes?: string[];
 }
 
 export interface VocabularyViolation {
@@ -34,6 +40,7 @@ export function scanEnglishCatalogue(
       if (allow.has(key)) return;
       for (const rule of rules) {
         if (rule.namespaces && !rule.namespaces.includes(namespace)) continue;
+        if (rule.keyPrefixes && !rule.keyPrefixes.some((prefix) => key.startsWith(prefix))) continue;
         if (rule.pattern.test(node)) violations.push({ key, value: node, rule: rule.name });
       }
       return;

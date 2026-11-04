@@ -33,11 +33,11 @@ const WORKER_NAME = 'scriptReviewWorker';
 // any single org exceeding its cap.
 const WORKER_CONCURRENCY = 10;
 
-// A review can legitimately take up to SCRIPT_REVIEW_TIMEOUT_MS (60 s) plus
+// A review can legitimately take up to SCRIPT_REVIEW_TIMEOUT_MS (120 s) plus
 // DB round-trips. BullMQ's default lock (30 s) would otherwise expire mid-job
 // and the job would be reassigned to another worker while still running —
 // same class of fix as maintenanceRebootWorker.ts's lockDuration: 120_000.
-const LOCK_DURATION_MS = 90_000;
+const LOCK_DURATION_MS = 150_000;
 
 const CONCURRENCY_RETRY_DELAY_MS = 5_000;
 

@@ -1464,7 +1464,11 @@ func (b *Broker) BroadcastNotification(title, body, urgency string) {
 // of its own. A reply arriving after the wait has given up is dropped as
 // unsolicited at WARN again — the noise #9266 removed — so this is generous:
 // it costs one parked goroutine per helper per broadcast, and broadcasts are
-// rare (the reboot-warning ladder). A var only so tests can shorten it.
+// rare (the reboot-warning ladder). Session.SendNotification uses the same
+// bound for single-session notices (#10224): a notice that asks for the
+// fallback dialog is answered only when that dialog closes (60 s each, and the
+// helper queues them), so the generous wait covers it too. A var only so tests
+// can shorten it.
 var broadcastNotifyResultTimeout = 5 * time.Minute
 
 // awaitBroadcastNotifyResult consumes the reply a broadcast notification is
@@ -1952,6 +1956,42 @@ func (b *Broker) RequestPamApproval(session *Session, id string, req ipc.PamRequ
 	var result ipc.PamDialogResult
 	if err := json.Unmarshal(resp.Payload, &result); err != nil {
 		return denyDismiss, fmt.Errorf("decode PAM dialog result: %w", err)
+	}
+	return result, nil
+}
+
+// ErrPamDialogCloseUnsupported is returned, before anything is sent, when the
+// helper did not advertise pam_close_dialog.
+var ErrPamDialogCloseUnsupported = errors.New("PAM helper does not support closing its elevation dialog")
+
+// ClosePamDialog asks the SYSTEM PAM helper to take down its own elevation
+// dialog for dialogID (the envelope id of the pam_request_dialog) and waits
+// for it to report the window gone (#10370). id is this command's own IPC id
+// and must differ from dialogID.
+func (b *Broker) ClosePamDialog(session *Session, id, dialogID string, timeout time.Duration) (ipc.PamCloseDialogResult, error) {
+	var zero ipc.PamCloseDialogResult
+	if session == nil {
+		return zero, fmt.Errorf("nil PAM helper session")
+	}
+	if session.HelperRole != ipc.HelperRoleSystem || !session.HasScope(ipc.ScopePam) {
+		return zero, fmt.Errorf("closing the PAM dialog requires a SYSTEM helper with %q scope", ipc.ScopePam)
+	}
+	if !session.SupportsPamDialogClose {
+		return zero, ErrPamDialogCloseUnsupported
+	}
+	if dialogID == "" || id == dialogID {
+		return zero, fmt.Errorf("PAM dialog close needs a dialog id and its own command id")
+	}
+	resp, err := b.SendCommandAndWait(session, id, ipc.TypePamCloseDialog, ipc.PamCloseDialog{DialogID: dialogID}, timeout)
+	if err != nil {
+		return zero, err
+	}
+	if resp.Error != "" {
+		return zero, fmt.Errorf("PAM dialog close helper error: %s", resp.Error)
+	}
+	var result ipc.PamCloseDialogResult
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return zero, fmt.Errorf("decode PAM dialog close result: %w", err)
 	}
 	return result, nil
 }
@@ -2988,6 +3028,7 @@ func consentProtocolFromAuth(role ipc.HelperRole, authReq ipc.AuthRequest) int {
 func applyAuthAdvertisements(session *Session, role ipc.HelperRole, authReq ipc.AuthRequest) {
 	session.ConsentProtocolVersion = consentProtocolFromAuth(role, authReq)
 	session.SupportsTargetedPamDismiss = targetedPamDismissFromAuth(role, authReq)
+	session.SupportsPamDialogClose = pamDialogCloseFromAuth(role, authReq)
 	applyPromptGrant(session, promptGrantFromAuth(role, authReq))
 	session.uiLocale = uiLocaleFromAuth(authReq)
 }
@@ -2996,6 +3037,12 @@ func applyAuthAdvertisements(session *Session, role ipc.HelperRole, authReq ipc.
 // targeted consent dismissal. Only SYSTEM helpers dismiss consent.exe at all.
 func targetedPamDismissFromAuth(role ipc.HelperRole, authReq ipc.AuthRequest) bool {
 	return role == ipc.HelperRoleSystem && authReq.SupportsTargetedPamDismiss
+}
+
+// pamDialogCloseFromAuth reports whether the agent may send this helper
+// pam_close_dialog (#10370). Only SYSTEM helpers show the PAM dialog.
+func pamDialogCloseFromAuth(role ipc.HelperRole, authReq ipc.AuthRequest) bool {
+	return role == ipc.HelperRoleSystem && authReq.SupportsPamDialogClose
 }
 
 func (b *Broker) isDesktopHelperPeerPath(peerPath string) bool {
@@ -3376,6 +3423,7 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 				"accessibility", sanitized.Accessibility,
 				"fullDiskAccess", sanitized.FullDiskAccess,
 				"remoteDesktop", boolPtrString(sanitized.RemoteDesktop),
+				"denialVerdict", sanitized.DenialVerdict,
 			)
 			b.forwardTCCStatus(s, *sanitized)
 		}

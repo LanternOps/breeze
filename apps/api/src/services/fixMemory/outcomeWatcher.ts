@@ -8,7 +8,7 @@
  *   awaiting_recovery ─still active at deadline─► failed ("ran, didn't fix")
  *      │             ─human/cleanup/expiry/dismiss─► inconclusive
  *      │ objective condition clear (resolution_reason = condition_cleared,
- *      ▼       resolved_by IS NULL, after the script started — else dispatch)
+ *      ▼       no user or principal resolver, after script start — else dispatch)
  *   holding ─same signature recurs on the device─► recurred
  *      │    ─telemetry gap / device offline────► inconclusive
  *      ▼
@@ -80,7 +80,7 @@ export function readingFromAlert(a: AlertRecoveryReading | null): RecoveryReadin
   // evidence either way about the fix, so never 'still_active' (→ failed at 24h).
   if (a.status === 'suppressed') return { kind: 'cleared_other', reason: 'alert_suppressed' };
   if (a.status !== 'resolved') return { kind: 'still_active' };
-  if (a.resolvedBy) return { kind: 'cleared_other', reason: 'human_resolved' };
+  if (a.resolvedBy || a.resolvedByPrincipalId) return { kind: 'cleared_other', reason: 'human_resolved' };
   if (a.resolutionReason === 'condition_cleared' && a.resolvedAt) return { kind: 'recovered', at: a.resolvedAt };
   return { kind: 'cleared_other', reason: `resolved_${a.resolutionReason ?? 'unspecified'}` };
 }
@@ -447,6 +447,7 @@ export async function handleFixOutcomeEvent(event: BreezeEvent): Promise<void> {
       ? {
         status: 'resolved', resolvedAt,
         resolvedBy: typeof p.resolvedBy === 'string' ? p.resolvedBy : null,
+        resolvedByPrincipalId: typeof p.resolvedByPrincipalId === 'string' ? p.resolvedByPrincipalId : null,
         resolutionReason: typeof p.resolutionReason === 'string' ? p.resolutionReason : null,
       }
       : undefined;

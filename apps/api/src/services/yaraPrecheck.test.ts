@@ -8,6 +8,9 @@ vi.mock('node:child_process', () => ({ spawn: (...args: unknown[]) => spawnMock(
 import {
   precheckYaraBundle,
   yaracVersion,
+  yaracAvailable,
+  YARAC_UNAVAILABLE_RECHECK_MS,
+  YARAC_PROBE_TIMEOUT_MS,
   __resetYaracForTests,
   YARAC_TIMEOUT_MS,
   YARAC_MAX_STDOUT_BYTES,
@@ -206,6 +209,70 @@ describe('yaracVersion', () => {
     await expect(yaracVersion()).resolves.toBeNull();
     respond(0, '{"engine":"e","policy":2,"format":1}');
     await expect(yaracVersion()).resolves.toEqual({ engine: 'e', policy: 2 });
+  });
+});
+
+describe('yaracAvailable (#10306)', () => {
+  function enoent(): void {
+    spawnMock.mockImplementationOnce(() => {
+      const child = fakeChild();
+      setImmediate(() => child.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })));
+      return child;
+    });
+  }
+
+  it('is true when `breeze-yarac version` runs', async () => {
+    respond(0, '{"engine":"e","policy":1,"format":1}');
+    await expect(yaracAvailable()).resolves.toBe(true);
+  });
+
+  it('is false when the binary is missing, and caches that answer for a short while', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    enoent();
+    await expect(yaracAvailable()).resolves.toBe(false);
+    // A list page of stale sets must not spawn a child per request.
+    await expect(yaracAvailable()).resolves.toBe(false);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+
+    // Once the window passes it probes again (an operator may have installed the binary).
+    vi.setSystemTime(Date.now() + YARAC_UNAVAILABLE_RECHECK_MS + 1);
+    respond(0, '{"engine":"e","policy":1,"format":1}');
+    await expect(yaracAvailable()).resolves.toBe(true);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('concurrent callers share one probe (no stampede when the binary is missing)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    enoent();
+    await expect(Promise.all([yaracAvailable(), yaracAvailable(), yaracAvailable()])).resolves.toEqual([false, false, false]);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('not runnable'), expect.objectContaining({ reason: 'ENOENT' }));
+  });
+
+  it('does not queue behind in-flight validates, and uses a short timeout', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Two validates that never finish hold both concurrency slots.
+    spawnMock.mockImplementationOnce(() => fakeChild());
+    spawnMock.mockImplementationOnce(() => fakeChild());
+    void precheckYaraBundle(BUNDLE);
+    void precheckYaraBundle(BUNDLE);
+    await vi.advanceTimersByTimeAsync(0);
+    // The probe spawns at once and gives up after YARAC_PROBE_TIMEOUT_MS, long before the validate timeout.
+    spawnMock.mockImplementationOnce(() => fakeChild());
+    const probe = yaracAvailable();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(spawnMock).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(YARAC_PROBE_TIMEOUT_MS);
+    await expect(probe).resolves.toBe(false);
+    expect(YARAC_PROBE_TIMEOUT_MS).toBeLessThan(YARAC_TIMEOUT_MS);
+  });
+
+  it('reuses a memoized successful version probe without spawning', async () => {
+    respond(0, '{"engine":"e","policy":1,"format":1}');
+    await yaracVersion();
+    await expect(yaracAvailable()).resolves.toBe(true);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -137,9 +137,15 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
 // lifecycle filtering only, and tenant-wide revocation uses system DB context
 // after app-layer authorization.
 const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
+  // Event org for erasure/merge/export; read authority is the parent webhook's owner.
+  'webhook_deliveries',
   // migration_window_orgs (#8313): partner-axis (PARTNER_TENANT_TABLES); its
   // org_id names an org the window may import into, not the row's tenant.
   'migration_window_orgs',
+  // ticket_import_org_maps (#8313 W4): partner-axis (PARTNER_TENANT_TABLES);
+  // its org_id is the Breeze org a source org imports into, not the row's
+  // tenant.
+  'ticket_import_org_maps',
   'oauth_authorization_codes',
   'oauth_grants',
   'oauth_refresh_tokens',
@@ -373,6 +379,19 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // migrationWindowsRls.integration.test.ts.
   ['migration_windows', 'partner_id'],
   ['migration_window_orgs', 'partner_id'],
+  // Ticket import framework (#8313 W4, 2027-01-20-100000): a connected
+  // source, its org and category maps, its runs, its ticket ledger and the run
+  // report's issue rows. Partner-axis, no org owner: an import spans orgs and
+  // is a partner-admin action. Policy: breeze_current_scope()='system' OR
+  // breeze_has_partner_access(partner_id). ticket_import_org_maps also carries
+  // a non-tenancy org_id and is in ORG_AXIS_POLICY_EXCLUDED_TABLES. Functional
+  // forge: ticketImportRls.integration.test.ts.
+  ['ticket_import_sources', 'partner_id'],
+  ['ticket_import_org_maps', 'partner_id'],
+  ['ticket_import_category_maps', 'partner_id'],
+  ['ticket_import_runs', 'partner_id'],
+  ['ticket_import_items', 'partner_id'],
+  ['ticket_import_run_issues', 'partner_id'],
   // Stripe payments (2026-06-15): one connected Stripe account per partner
   // (RLS shape 3, flat breeze_has_partner_access(partner_id)). The sibling
   // invoice_stripe_payments table carries a direct org_id column and is
@@ -563,6 +582,14 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
 // is the canonical case: a user row is visible if the caller has access
 // to the user's partner OR the user's org OR is the user themselves.
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
+  // webhooks_one_owner_chk, 2027-01-13-100000-webhooks-partner-ownership.sql:
+  // no partner-wide SELECT branch per OD1. Functional proof: webhooksPartnerRls.
+  'webhooks',
+  // #10521 W1: device_groups_one_owner_chk in 2027-01-12-200000; the
+  // device_groups_partner_wide_select branch ships in the same file and is
+  // load-bearing on the agent-auth config path. Functional proof:
+  // deviceGroupsPartnerRls.integration.test.ts.
+  'device_groups',
   'service_catalogs',
   'service_catalog_items',
   'billing_payment_settings',
@@ -1035,7 +1062,17 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // read, so reports must never carry one. Its partner branch is proven
 // functionally by reportsPartnerRls.integration.test.ts instead. The same
 // holds for its runs, `report_runs` (#4247, reportRunsOwnerRls).
+//
+// `webhooks` (#10531) also has an XOR CHECK but carries partner-private
+// cross-org plumbing: URL, secret, headers and cross-org delivery history.
+// OD1 forbids org sessions reading partner webhooks; the SELECT branch would
+// violate that boundary. Functional proof: webhooksPartnerRls.integration.test.ts.
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
+  // #10521 W1: device_groups_one_owner_chk in 2027-01-12-200000; the
+  // device_groups_partner_wide_select branch ships in the same file and is
+  // load-bearing on the agent-auth config path. Functional proof:
+  // deviceGroupsPartnerRls.integration.test.ts.
+  'device_groups',
   'billing_payment_settings',
   'caller_verification_policies',
   // fix_memory_one_owner_chk, 2026-11-03-100000 (AI Suggested Fixes W1); its

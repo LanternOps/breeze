@@ -30,6 +30,7 @@ export const EVENT_SUBSCRIBER_IDS = [
   'flow-event-trigger',
   'notification-dispatcher',
   'policy-alert-bridge',
+  'psa-alert-ticketing',
   'webhook-delivery',
   // Wisp W05b Task 9 (#9917) — wakes the assessment engine: one debounced
   // assessment request per active grant covering the event's org.

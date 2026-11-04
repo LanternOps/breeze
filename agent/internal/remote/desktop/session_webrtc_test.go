@@ -1,8 +1,12 @@
 package desktop
 
 import (
+	"reflect"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/pion/webrtc/v4"
 )
 
 func TestDefaultSessionPolicy(t *testing.T) {
@@ -208,5 +212,94 @@ func TestControlTrafficDoesNotResetIdleWatchdog(t *testing.T) {
 
 	if !idlePolicyStops(s) {
 		t.Fatal("control-channel traffic must not reset the idle watchdog")
+	}
+}
+
+func TestBuildICEConfigurationRelayOnly(t *testing.T) {
+	input := []ICEServerConfig{
+		{URLs: "stun:relay.example.test:3478"},
+		{URLs: []string{"stun:relay.example.test:3478", "turn:relay.example.test:3478", "turns:relay.example.test:5349", "https://relay.example.test"}, Username: "user", Credential: "secret"},
+		{URLs: []interface{}{"stun:relay.example.test:3478", "turn:relay.example.test:3478", 123}},
+	}
+	got, err := buildICEConfiguration(input, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := webrtc.Configuration{
+		ICETransportPolicy: webrtc.ICETransportPolicyRelay,
+		ICEServers: []webrtc.ICEServer{
+			{URLs: []string{"turn:relay.example.test:3478", "turns:relay.example.test:5349"}, Username: "user", Credential: "secret", CredentialType: webrtc.ICECredentialTypePassword},
+			{URLs: []string{"turn:relay.example.test:3478"}},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("configuration = %#v, want %#v", got, want)
+	}
+	if urls := input[1].URLs.([]string); urls[0] != "stun:relay.example.test:3478" {
+		t.Fatalf("input mutated: %v", urls)
+	}
+}
+
+func TestBuildICEConfigurationRelayOnlyRequiresTURN(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		servers []ICEServerConfig
+	}{
+		{"nil", nil}, {"empty", []ICEServerConfig{}},
+		{"stun", []ICEServerConfig{{URLs: "stun:relay.example.test:3478"}}},
+		{"empty URLs", []ICEServerConfig{{URLs: []string{}}}},
+		{"other scheme", []ICEServerConfig{{URLs: "https://relay.example.test"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := buildICEConfiguration(tc.servers, true)
+			if err == nil || err.Error() != "remote desktop needs the TURN relay while this device is isolated: no TURN server in the session offer" {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestBuildICEConfigurationNonRelayUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		servers []ICEServerConfig
+	}{
+		{"nil defaults", nil}, {"empty defaults", []ICEServerConfig{}},
+		{"configured", []ICEServerConfig{{URLs: []string{"stun:relay.example.test:3478", "turn:relay.example.test:3478"}, Username: "user", Credential: "secret"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := buildICEConfiguration(tc.servers, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := webrtc.Configuration{ICEServers: parseICEServers(tc.servers)}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("configuration = %#v, want %#v", got, want)
+			}
+			if len(tc.servers) == 0 && got.ICEServers[0].URLs[0] != "stun:stun.l.google.com:19302" {
+				t.Fatal("default STUN changed")
+			}
+		})
+	}
+}
+
+func TestResolveSessionPolicyFromIPCRelayOnly(t *testing.T) {
+	for _, relayOnly := range []bool{false, true} {
+		got := ResolveSessionPolicyFromIPC(ipc.DesktopStartRequest{RelayOnly: relayOnly})
+		if got.RelayOnly != relayOnly {
+			t.Fatalf("RelayOnly = %v, want %v", got.RelayOnly, relayOnly)
+		}
+	}
+}
+
+func TestStartSessionRelayOnlyRefusalKeepsExistingSession(t *testing.T) {
+	existing := &Session{}
+	m := &SessionManager{sessions: map[string]*Session{"live": existing}}
+	_, err := m.StartSession("next", "offer", nil, 0, SessionPolicy{RelayOnly: true})
+	if err == nil {
+		t.Fatal("relay-only start without TURN must fail")
+	}
+	if got := m.sessions["live"]; got != existing {
+		t.Fatal("a refused relay-only start must not tear down the live session")
 	}
 }

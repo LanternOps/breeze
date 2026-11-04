@@ -1,47 +1,75 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { SECURITY_SCAN_SETTINGS_DEFAULTS, type SecurityScanSettings } from '@breeze/shared';
-import { tableOf } from '../testUtils/recordingDb';
+import { tableOf, whereText } from '../testUtils/recordingDb';
 
 /**
- * startDeviceScan (#6263 W05-11): the single-device "Scan now" lifted out of
- * POST /security/scan/:deviceId so the route and the AI `security_scan scan`
- * action share it. Ported route cases plus the W05 additions.
+ * startDeviceScan (#6263 W05-11, #10057 gap 2): the single-device "Scan now"
+ * shared by POST /security/scan/:deviceId and the AI `security_scan scan`
+ * action. It no longer dispatches: it writes a queued row carrying everything
+ * the dispatch claim needs (jobs/securityScanClaim.ts), commits, and enqueues
+ * the claim job. Policy settings, rule sets and the quarantine decision are
+ * resolved at the claim (covered in securityScanClaim.test.ts).
  */
 
 const h = vi.hoisted(() => ({
   device: null as Record<string, unknown> | null,
-  queueCommand: vi.fn(),
-  settings: vi.fn(),
-  plan: vi.fn(),
+  existingQueued: [] as Array<Record<string, unknown>>,
+  scanSelects: [] as Array<Array<Record<string, unknown>>>,
+  updateReturns: [] as Array<Array<Record<string, unknown>>>,
+  cancelCommands: vi.fn(),
+  events: [] as string[],
+  enqueue: vi.fn(),
   perms: vi.fn(),
   aiPolicy: vi.fn(),
+  queueCommand: vi.fn(),
   recording: null as null | ReturnType<typeof import('../testUtils/recordingDb').createRecordingDb>,
 }));
 
 vi.mock('../db', async () => {
-  const { createRecordingDb } = await import('../testUtils/recordingDb');
-  h.recording = createRecordingDb((op) => (op.kind === 'select' ? (h.device ? [h.device] : []) : []));
+  const { createRecordingDb, tableOf: tbl } = await import('../testUtils/recordingDb');
+  h.recording = createRecordingDb((op) => {
+    if (op.kind === 'select' && tbl(op) === 'security_scans') return h.scanSelects.shift() ?? h.existingQueued;
+    if (op.kind === 'update') return h.updateReturns.shift() ?? [];
+    if (op.kind === 'select') return h.device ? [h.device] : [];
+    if (op.kind === 'insert') h.events.push('db:insert');
+    return [];
+  });
   return { db: h.recording.db };
 });
+vi.mock('../middleware/auth', () => ({
+  withAuthDbAccessContext: async (_auth: unknown, fn: () => Promise<unknown>) => {
+    h.events.push('context:open');
+    try {
+      return await fn();
+    } finally {
+      h.events.push('context:commit');
+    }
+  },
+}));
+vi.mock('../jobs/securityScanJobs', () => ({
+  enqueueSecurityScan: (...a: unknown[]) => {
+    h.events.push('enqueue');
+    return h.enqueue(...a);
+  },
+}));
 vi.mock('./commandQueue', () => ({
   CommandTypes: { SECURITY_SCAN: 'security_scan' },
   queueCommand: (...a: unknown[]) => h.queueCommand(...a),
 }));
-vi.mock('./featureConfigResolver', () => ({ resolveSecurityScanSettingsForDevice: (...a: unknown[]) => h.settings(...a) }));
-vi.mock('./yaraScanRefs', () => ({ planYaraScan: (...a: unknown[]) => h.plan(...a) }));
 vi.mock('./permissions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./permissions')>()),
   getUserPermissions: (...a: unknown[]) => h.perms(...a),
 }));
 vi.mock('./aiRemoteToolsPolicy', () => ({ checkAiRemoteToolsPolicy: (...a: unknown[]) => h.aiPolicy(...a) }));
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./commandCancelPropagation', () => ({ cancelDeviceCommands: (...a: unknown[]) => h.cancelCommands(...a) }));
 
 import type { AuthContext } from '../middleware/auth';
-import { startDeviceScan } from './securityScanStart';
+import { cancelDeviceScan, startDeviceScan } from './securityScanStart';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
 const SITE_ID = '33333333-3333-4333-8333-333333333333';
-const REF = { id: '44444444-4444-4444-8444-444444444444', version: 2, sha256: 'e'.repeat(64), url: '/api/v1/agents/a/yara/rule-sets/x/2' };
+const QUEUED_ID = '55555555-5555-4555-8555-555555555555';
 
 const auth = {
   principal: { kind: 'user_session' },
@@ -55,40 +83,32 @@ const auth = {
   token: null,
 } as unknown as AuthContext;
 
-const policy = (over: Partial<SecurityScanSettings> = {}): SecurityScanSettings => ({
-  ...SECURITY_SCAN_SETTINGS_DEFAULTS,
-  exclusions: ['C:\\Backups'],
-  maxFileSizeMb: 64,
-  scanTimeoutMinutes: 45,
-  autoQuarantine: true,
-  ...over,
-});
-
 const scanInserts = () => h.recording!.ops.filter((o) => o.kind === 'insert' && tableOf(o) === 'security_scans');
 const insertedRow = () => (scanInserts()[0]!.chain.find(([m]) => m === 'values')![1][0]) as Record<string, unknown>;
-const queued = () => h.queueCommand.mock.calls[0]!;
 
 beforeEach(() => {
   h.recording!.ops.length = 0;
+  h.events.length = 0;
+  h.existingQueued = [];
   h.device = { id: DEVICE_ID, hostname: 'test-host', orgId: ORG_ID, siteId: SITE_ID, agentVersion: '0.124.0' };
-  h.queueCommand.mockReset().mockImplementation(async (_d: string, _t: string, _p: unknown, _u: string, opts: { commandId: string }) => ({
-    id: opts.commandId,
-    status: 'pending',
-  }));
-  h.settings.mockReset().mockResolvedValue(policy());
-  h.plan.mockReset().mockResolvedValue({ ruleSets: [REF], engine: 'yara', ruleSetErrors: null });
+  h.enqueue.mockReset().mockResolvedValue('job-1');
   h.perms.mockReset().mockResolvedValue({ permissions: [], allowedSiteIds: undefined });
   h.aiPolicy.mockReset().mockResolvedValue({ allowed: true });
+  h.queueCommand.mockReset();
+  h.scanSelects = [];
+  h.updateReturns = [];
+  h.cancelCommands.mockReset().mockResolvedValue([]);
+  delete process.env.SECURITY_SCAN_MANUAL_QUEUE_TTL_MINUTES;
 });
 
 describe('startDeviceScan', () => {
-  it('404 for a device the caller cannot see; nothing written', async () => {
+  it('404 for a device the caller cannot see; nothing written or enqueued', async () => {
     h.device = null;
     expect(await startDeviceScan(auth, { deviceId: DEVICE_ID, scanType: 'quick', mfaSatisfied: true })).toEqual({
       ok: false, status: 404, error: 'Device not found',
     });
     expect(scanInserts()).toEqual([]);
-    expect(h.queueCommand).not.toHaveBeenCalled();
+    expect(h.enqueue).not.toHaveBeenCalled();
   });
 
   it('403 outside the caller site allowlist', async () => {
@@ -96,64 +116,76 @@ describe('startDeviceScan', () => {
     expect(await startDeviceScan(auth, { deviceId: DEVICE_ID, scanType: 'quick', mfaSatisfied: true })).toEqual({
       ok: false, status: 403, error: 'Access to this site denied',
     });
+    expect(scanInserts()).toEqual([]);
+    expect(h.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('never dispatches a command directly: the claim applies the concurrency caps (#10057 gap 2)', async () => {
+    const result = await startDeviceScan(auth, { deviceId: DEVICE_ID, scanType: 'quick', mfaSatisfied: true });
+    expect(result.ok).toBe(true);
     expect(h.queueCommand).not.toHaveBeenCalled();
+    expect(insertedRow()).toMatchObject({ status: 'queued', commandId: null, deviceId: DEVICE_ID, orgId: ORG_ID, initiatedBy: 'user-1' });
   });
 
-  it("attaches the device's resolved policy settings; with MFA keeps auto-quarantine", async () => {
-    const result = await startDeviceScan(auth, { deviceId: DEVICE_ID, scanType: 'full', mfaSatisfied: true });
-    expect(result).toMatchObject({ ok: true, scan: { deviceId: DEVICE_ID, deviceName: 'test-host', orgId: ORG_ID, scanType: 'full', status: 'queued' } });
-    const [deviceId, type, payload, userId] = queued();
-    expect([deviceId, type, userId]).toEqual([DEVICE_ID, 'security_scan', 'user-1']);
-    expect(payload).toMatchObject({
-      scanType: 'full', exclusions: ['C:\\Backups'], maxFileSizeMb: 64, timeoutMinutes: 45, autoQuarantine: true, triggerDefender: true,
-    });
-    expect(insertedRow().autoQuarantineSuppressedReason).toBeNull();
-  });
-
-  it('without MFA: dispatches detect-only and records manual_no_mfa', async () => {
-    await startDeviceScan(auth, { deviceId: DEVICE_ID, scanType: 'quick', mfaSatisfied: false });
-    expect(queued()[2]).toMatchObject({ autoQuarantine: false });
-    expect(insertedRow().autoQuarantineSuppressedReason).toBe('manual_no_mfa');
-  });
-
-  it('omits the settings keys entirely when no policy governs the device', async () => {
-    h.settings.mockResolvedValue(null);
-    h.plan.mockResolvedValue({ ruleSets: [], engine: 'legacy', ruleSetErrors: null });
-    await startDeviceScan(auth, { deviceId: DEVICE_ID, scanType: 'custom', paths: ['/srv'], mfaSatisfied: true });
-    expect(queued()[2]).toEqual({ scanRecordId: insertedRow().id, scanType: 'custom', paths: ['/srv'], triggerDefender: true });
-  });
-
-  it('sends the resolved refs and records engine + errors on the scan row', async () => {
-    const errors = [{ id: 'x', code: 'disabled' }];
-    h.plan.mockResolvedValue({ ruleSets: [REF], engine: 'yara', ruleSetErrors: errors });
-    await startDeviceScan(auth, { deviceId: DEVICE_ID, scanType: 'quick', mfaSatisfied: true });
-    expect(h.plan).toHaveBeenCalledWith({ deviceId: DEVICE_ID, agentVersion: '0.124.0', ruleSetIds: [] });
-    expect(queued()[2]).toMatchObject({ ruleSets: [REF] });
-    expect(insertedRow()).toMatchObject({ engine: 'yara', ruleSetErrors: errors, status: 'queued', initiatedBy: 'user-1' });
-  });
-
-  it('dispatched_rule_sets and command_id stamped', async () => {
-    await startDeviceScan(auth, { deviceId: DEVICE_ID, scanType: 'quick', mfaSatisfied: true });
+  it('stores the dispatch inputs on the row: paths, caller MFA, queue expiry (24 h default)', async () => {
+    const before = Date.now();
+    const result = await startDeviceScan(auth, { deviceId: DEVICE_ID, scanType: 'custom', paths: ['/srv'], mfaSatisfied: false });
     const row = insertedRow();
-    expect(row.dispatchedRuleSets).toEqual([{ id: REF.id, version: 2, sha256: REF.sha256 }]);
-    expect(row.commandId).toMatch(/^[0-9a-f-]{36}$/);
-    expect(queued()[4]).toMatchObject({ commandId: row.commandId });
-    // The scan row exists before the command row can answer for it.
-    const insertIdx = h.recording!.ops.indexOf(scanInserts()[0]!);
-    expect(insertIdx).toBeGreaterThan(-1);
+    expect(row).toMatchObject({ scanType: 'custom', paths: ['/srv'], callerMfaSatisfied: false, aiOrigin: null });
+    const expiresMs = (row.queueExpiresAt as Date).getTime();
+    expect(expiresMs - before).toBeGreaterThanOrEqual(24 * 3_600_000 - 1000);
+    expect(expiresMs - before).toBeLessThanOrEqual(24 * 3_600_000 + 1000);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.scan).toMatchObject({ status: 'queued', queueExpiresAt: (row.queueExpiresAt as Date).toISOString() });
   });
 
-  it('a legacy scan records no dispatched refs', async () => {
-    h.plan.mockResolvedValue({ ruleSets: [], engine: 'legacy', ruleSetErrors: null });
+  it('honours SECURITY_SCAN_MANUAL_QUEUE_TTL_MINUTES', async () => {
+    process.env.SECURITY_SCAN_MANUAL_QUEUE_TTL_MINUTES = '30';
+    const before = Date.now();
     await startDeviceScan(auth, { deviceId: DEVICE_ID, scanType: 'quick', mfaSatisfied: true });
-    expect(insertedRow().dispatchedRuleSets).toBeNull();
+    const ms = (insertedRow().queueExpiresAt as Date).getTime() - before;
+    expect(ms).toBeGreaterThanOrEqual(30 * 60_000 - 1000);
+    expect(ms).toBeLessThanOrEqual(30 * 60_000 + 1000);
   });
 
-  it('aiOrigin → remote-tools policy checked and aiOrigin on the command', async () => {
+  it('a non-custom scan stores no paths', async () => {
+    await startDeviceScan(auth, { deviceId: DEVICE_ID, scanType: 'quick', paths: ['/srv'], mfaSatisfied: true });
+    expect(insertedRow().paths).toBeNull();
+  });
+
+  it('enqueues the claim job only after the write context has committed', async () => {
+    const result = await startDeviceScan(auth, { deviceId: DEVICE_ID, scanType: 'quick', mfaSatisfied: true });
+    if (!result.ok) throw new Error('expected ok');
+    expect(h.events).toEqual(['context:open', 'db:insert', 'context:commit', 'enqueue']);
+    expect(h.enqueue).toHaveBeenCalledWith(result.scan.id);
+  });
+
+  it('an enqueue failure still returns the queued scan (the pump re-admits it)', async () => {
+    h.enqueue.mockRejectedValue(new Error('redis down'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await startDeviceScan(auth, { deviceId: DEVICE_ID, scanType: 'quick', mfaSatisfied: true });
+    expect(result.ok).toBe(true);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('409 with the existing scan id when this device already has an undispatched Scan now queued; nothing written', async () => {
+    h.existingQueued = [{ id: QUEUED_ID }];
+    const result = await startDeviceScan(auth, { deviceId: DEVICE_ID, scanType: 'quick', mfaSatisfied: true });
+    expect(result).toEqual({ ok: false, status: 409, error: 'A scan is already queued for this device', scanId: QUEUED_ID });
+    expect(scanInserts()).toEqual([]);
+    expect(h.enqueue).not.toHaveBeenCalled();
+    const dup = h.recording!.ops.find((o) => o.kind === 'select' && tableOf(o) === 'security_scans')!;
+    const text = whereText(dup);
+    expect(text).toContain('command_id');
+    expect(text).toContain('caller_mfa_satisfied');
+  });
+
+  it('aiOrigin → remote-tools policy checked at request time and aiOrigin stored on the row', async () => {
     const aiOrigin = { kind: 'chat', sessionId: 's-1' } as never;
     await startDeviceScan(auth, { deviceId: DEVICE_ID, scanType: 'quick', mfaSatisfied: false, aiOrigin });
     expect(h.aiPolicy).toHaveBeenCalledWith(DEVICE_ID, 'security_scan');
-    expect(queued()[4]).toMatchObject({ aiOrigin });
+    expect(insertedRow()).toMatchObject({ aiOrigin });
   });
 
   it('aiOrigin and policy deny → 403, no row', async () => {
@@ -163,7 +195,7 @@ describe('startDeviceScan', () => {
     });
     expect(result).toEqual({ ok: false, status: 403, error: 'REMOTE_TOOLS_DISABLED_BY_POLICY: disabled' });
     expect(scanInserts()).toEqual([]);
-    expect(h.queueCommand).not.toHaveBeenCalled();
+    expect(h.enqueue).not.toHaveBeenCalled();
   });
 
   it('a human scan never consults the AI policy', async () => {
@@ -172,3 +204,72 @@ describe('startDeviceScan', () => {
   });
 });
 
+/**
+ * cancelDeviceScan (#10057 gap 2): a Scan now that is still waiting for a slot
+ * is cancelled outright; one dispatched but not yet delivered is cancelled
+ * through its command (the propagation hook flips the scan row); one the
+ * agent already has cannot be stopped.
+ */
+describe('cancelDeviceScan', () => {
+  const SCAN_ID = '66666666-6666-4666-8666-666666666666';
+  const COMMAND_ID = '77777777-7777-4777-8777-777777777777';
+  const scan = (over: Record<string, unknown> = {}) => ({
+    id: SCAN_ID, deviceId: DEVICE_ID, orgId: ORG_ID, siteId: SITE_ID, sweepId: null, status: 'queued', commandId: null, ...over,
+  });
+  const scanUpdates = () => h.recording!.ops.filter((o) => o.kind === 'update' && tableOf(o) === 'security_scans');
+
+  it('404 for a scan the caller cannot see', async () => {
+    h.scanSelects = [[]];
+    expect(await cancelDeviceScan(auth, SCAN_ID)).toEqual({ ok: false, status: 404, error: 'Scan not found' });
+    expect(scanUpdates()).toEqual([]);
+  });
+
+  it('403 outside the caller site allowlist; nothing changed', async () => {
+    h.scanSelects = [[scan()]];
+    h.perms.mockResolvedValue({ permissions: [], allowedSiteIds: ['other-site'] });
+    expect(await cancelDeviceScan(auth, SCAN_ID)).toEqual({ ok: false, status: 403, error: 'Access to this site denied' });
+    expect(scanUpdates()).toEqual([]);
+  });
+
+  it('a sweep scan is refused (cancel the sweep instead)', async () => {
+    h.scanSelects = [[scan({ sweepId: 'sweep-1' })]];
+    expect(await cancelDeviceScan(auth, SCAN_ID)).toMatchObject({ ok: false, status: 409, code: 'SWEEP_SCAN' });
+    expect(scanUpdates()).toEqual([]);
+  });
+
+  it('an undispatched queued scan is cancelled by a CAS on queued + no command, inside the write context', async () => {
+    h.scanSelects = [[scan()]];
+    h.updateReturns = [[{ id: SCAN_ID }]];
+    expect(await cancelDeviceScan(auth, SCAN_ID)).toEqual({ ok: true, scan: { id: SCAN_ID, status: 'cancelled' }, orgId: ORG_ID });
+    const [update] = scanUpdates();
+    expect(update!.chain.find(([m]) => m === 'set')![1][0]).toMatchObject({ status: 'cancelled' });
+    const text = whereText(update!);
+    expect(text).toContain('"status" = $');
+    expect(text).toContain('"command_id" is null');
+    expect(h.cancelCommands).not.toHaveBeenCalled();
+    expect(h.events[0]).toBe('context:open');
+  });
+
+  it('lost the CAS to the claim: cancels the still-pending command; the propagation hook flips the scan', async () => {
+    h.scanSelects = [[scan()], [{ status: 'running', commandId: COMMAND_ID }]];
+    h.updateReturns = [[]];
+    h.cancelCommands.mockResolvedValue([{ id: COMMAND_ID, type: 'security_scan', payload: null }]);
+    expect(await cancelDeviceScan(auth, SCAN_ID)).toEqual({ ok: true, scan: { id: SCAN_ID, status: 'cancelled' }, orgId: ORG_ID });
+    const call = h.cancelCommands.mock.calls[0]![0] as { where: unknown; result: Record<string, unknown> };
+    expect(call.result).toMatchObject({ status: 'cancelled', reason: 'user_cancelled', cancelledBy: 'user-1' });
+  });
+
+  it('409 SCAN_RUNNING when the agent already has the command', async () => {
+    h.scanSelects = [[scan({ status: 'running', commandId: COMMAND_ID })], [{ status: 'running', commandId: COMMAND_ID }]];
+    h.updateReturns = [[]];
+    h.cancelCommands.mockResolvedValue([]);
+    expect(await cancelDeviceScan(auth, SCAN_ID)).toMatchObject({ ok: false, status: 409, code: 'SCAN_RUNNING' });
+  });
+
+  it('409 SCAN_FINISHED for a terminal scan; no command touched', async () => {
+    h.scanSelects = [[scan({ status: 'completed', commandId: COMMAND_ID })], [{ status: 'completed', commandId: COMMAND_ID }]];
+    h.updateReturns = [[]];
+    expect(await cancelDeviceScan(auth, SCAN_ID)).toMatchObject({ ok: false, status: 409, code: 'SCAN_FINISHED' });
+    expect(h.cancelCommands).not.toHaveBeenCalled();
+  });
+});

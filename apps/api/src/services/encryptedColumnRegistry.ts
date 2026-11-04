@@ -108,6 +108,7 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'td_synnex_sftp_integrations', column: 'credentials', kind: 'json', description: 'TD SYNNEX nightly SFTP P&A password (credentials.password)' },
   { table: 'device_recovery_keys', column: 'encrypted_key', kind: 'text', description: 'escrowed BitLocker/FileVault recovery key (#2021)' },
   { table: 'tenant_variables', column: 'value', kind: 'text', aadBinding: 'row', description: 'tenant variable value (#3409) — AAD bound to the row id' },
+  { table: 'device_network_isolations', column: 'break_glass_secret_enc', kind: 'text', aadBinding: 'row', description: 'per-episode network-isolation break-glass secret (#10089) — AAD bound to the episode id, so a secret swapped onto another episode never decrypts' },
   { table: 'invoices', column: 'public_link_token_ct', kind: 'text', aadBinding: 'row', description: 'public invoice-link bearer token (row-bound: swapping ciphertext between invoices would move a live credential across tenants)' },
   { table: 'tool_sources', column: 'auth_config_encrypted', kind: 'text', aadBinding: 'row', description: 'external tool source credential JSON (#5216, spec 2026-09-07 §5.2) — AAD bound to the row id' },
   { table: 'backup_storage_credential_history', column: 'sealed_previous_secret', kind: 'text', aadBinding: 'row', description: 'replaced S3 backup destination connection settings (endpoint, bucket, key pair), kept only to check the old key is disabled — AAD bound to the row id' },
@@ -117,6 +118,7 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'edr_connections', column: 'credentials_encrypted', kind: 'text', aadBinding: 'row', description: 'EDR vendor console credential JSON (#8164 W01) — AAD bound to the row id' },
   { table: 'edr_connections', column: 'webhook_secret_encrypted', kind: 'text', aadBinding: 'row', description: 'EDR push/webhook shared secret Breeze generates (#8164 W03) — AAD bound to the row id' },
   { table: 'edr_tenants', column: 'installer_secret_encrypted', kind: 'text', aadBinding: 'row', description: 'per-vendor-tenant installer token / link (#8164 W06) — AAD bound to the row id' },
+  { table: 'ticket_import_sources', column: 'credentials_encrypted', kind: 'text', aadBinding: 'row', description: 'ticket import source credential JSON (#8313 W4, spec 2026-10-19 §5.6) — AAD bound to the row id, so a blob pasted into another partner\'s source does not decrypt' },
   { table: 'trust_signing_keys', column: 'private_key_enc', kind: 'text', description: 'Trust attestation ES256 private JWK (W3b)' },
   // Sealed/opened by the column type itself (db/schema/backup.ts); listed here
   // so key rotation re-seals it.

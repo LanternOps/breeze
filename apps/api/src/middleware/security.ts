@@ -1,5 +1,11 @@
 import type { Context, MiddlewareHandler, Next } from 'hono';
-import { canonicalHttpsRedirect, effectiveRequestScheme, isCanonicalRequestHost } from '../services/requestTransport';
+import {
+  canonicalHttpsRedirect,
+  effectiveRequestScheme,
+  isCanonicalRequestHost,
+  isInternalServiceRequest,
+  parseInternalServiceConfig,
+} from '../services/requestTransport';
 import {
   getImmediatePeerIpOrUndefined,
   hasTrustGatedForwardedHeaders,
@@ -128,6 +134,10 @@ interface SecurityMiddlewareOptions {
   cspConnectHosts?: string;
   /** Override PUBLIC_API_URL for testing. Defaults to process.env.PUBLIC_API_URL */
   publicApiUrl?: string;
+  /** Override INTERNAL_SERVICE_CIDRS (#9700) for testing. Defaults to process.env.INTERNAL_SERVICE_CIDRS */
+  internalServiceCidrs?: string;
+  /** Override INTERNAL_API_HOSTS (#9700) for testing. Defaults to process.env.INTERNAL_API_HOSTS, then `api:3001` */
+  internalApiHosts?: string;
   /**
    * Path prefix for which this middleware's own response headers
    * (Content-Security-Policy, Report-To, Permissions-Policy) are skipped —
@@ -145,8 +155,8 @@ interface SecurityMiddlewareOptions {
   skipHeadersWhen?: (c: Context) => boolean;
   /**
    * Paths whose CSP says `frame-ancestors 'self'` instead of `'none'`; every other directive is unchanged. index.ts
-   * passes `isSameOriginFramePath` (middleware/sameOriginFrame.ts): the two inline public PDF routes the portal
-   * embeds in an iframe (#10192).
+   * passes `isSameOriginFramePath` (middleware/sameOriginFrame.ts): the inline PDF routes the portal embeds in an
+   * iframe (#10192, #10290).
    */
   sameOriginFrameWhen?: (path: string) => boolean;
 }
@@ -189,6 +199,12 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
   const isForceHttps = normalized === 'true' || normalized === '1';
   const publicApiUrlRaw = options?.publicApiUrl ?? process.env.PUBLIC_API_URL;
   const skipHeadersPathPrefix = options?.skipHeadersPathPrefix;
+  // #9700: the plain-HTTP in-cluster hop (portal/web SSR -> http://api:3001).
+  // Socket-peer gated; see isInternalServiceRequest for the trust argument.
+  const internalService = parseInternalServiceConfig(
+    options?.internalServiceCidrs ?? process.env.INTERNAL_SERVICE_CIDRS,
+    options?.internalApiHosts ?? process.env.INTERNAL_API_HOSTS,
+  );
   // Parsed once at middleware setup, not per-request. When FORCE_HTTPS is true
   // but PUBLIC_API_URL is missing/unparsable, the redirect/reject logic below
   // is skipped entirely (config/validate.ts refuses production boot in that
@@ -250,7 +266,7 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
 
     // --- HTTP -> HTTPS redirect ---
     if (isForceHttps && publicApiUrl && !HEALTH_CHECK_PATHS.has(path)) {
-      if (effectiveRequestScheme(c) === 'http') {
+      if (effectiveRequestScheme(c) === 'http' && !isInternalServiceRequest(c, internalService)) {
         const canonicalHost = isCanonicalRequestHost(c, publicApiUrl);
         // Warn before returning either way: the 400 branch is the same
         // misconfiguration seen through a non-canonical Host, and it is just as

@@ -13,7 +13,7 @@ import { Section } from './primitives';
 import {
   formatAbsolute,
   formatCollectionSummary,
-  formatReachability,
+  formatLastPoll,
   reachabilitySourceKey,
   type ReachabilityTone,
   type TFn,
@@ -25,12 +25,6 @@ const TONE_TEXT: Record<ReachabilityTone, string> = {
   success: 'text-success',
   destructive: 'text-destructive',
   muted: 'text-muted-foreground',
-};
-
-const TONE_DOT: Record<ReachabilityTone, string> = {
-  success: 'bg-success',
-  destructive: 'bg-destructive',
-  muted: 'bg-muted-foreground',
 };
 
 export type DetailLine = { key: string; label: string; value: string; title: string };
@@ -119,25 +113,23 @@ export function ReachabilityCard({
 }: ReachabilityCardProps) {
   const { t } = useTranslation('devices');
   const tf = t as unknown as TFn;
-  const headline = formatReachability(reachability, tf, timezone);
   const lines = detailLines(reachability, tf, timezone);
   const collectionSummary = formatCollectionSummary(collection, tf);
   const snmpFailing = reachability?.detail.snmp?.state === 'failing';
+  // The SNMP line already states the poller's status and age ("Polling ·
+  // 3 min ago", "No agent in site"). Only when there is no SNMP line — a
+  // paused poller contributes none — does the collection status say anything new.
+  const collectionStatus = collection && !reachability?.detail.snmp
+    ? formatLastPoll(collection, tf, timezone)
+    : null;
 
   return (
     <Section
       title={t('networkDeviceDetailPage.sections.reachability')}
       testId="network-detail-reachability-card"
     >
-      <p
-        className={`flex items-center gap-2 text-sm font-medium ${TONE_TEXT[headline.tone]}`}
-        data-testid="network-detail-reach-headline"
-        title={headline.title || undefined}
-      >
-        <span aria-hidden="true" className={`h-2.5 w-2.5 shrink-0 rounded-full ${TONE_DOT[headline.tone]}`} />
-        {headline.label}
-      </p>
-
+      {/* No headline: the header badge already states the verdict. This card
+          is the breakdown behind it — one line per source, each with its age. */}
       {lines.length === 0 ? (
         <EmptyState
           variant="plain"
@@ -147,7 +139,7 @@ export function ReachabilityCard({
           description={t('networkDeviceDetailPage.reachability.detail.emptyDescription')}
         />
       ) : (
-        <dl className="mt-3 space-y-2 border-t pt-3 text-sm">
+        <dl className="space-y-2 text-sm">
           {lines.map((line) => (
             <div key={line.key} className="flex items-baseline justify-between gap-3" data-testid={`network-detail-reach-${line.key}`}>
               <dt className="shrink-0 text-muted-foreground">{line.label}</dt>
@@ -168,6 +160,15 @@ export function ReachabilityCard({
           <p className="text-xs font-medium text-muted-foreground">
             {t('networkDeviceDetailPage.sections.collection')}
           </p>
+          {collectionStatus && (
+            <p
+              className={`mt-1 font-medium ${TONE_TEXT[collectionStatus.tone]}`}
+              data-testid="network-detail-collection-status"
+              title={collectionStatus.title || undefined}
+            >
+              {collectionStatus.label}
+            </p>
+          )}
           <p className="mt-1" data-testid="network-detail-collection-summary">{collectionSummary}</p>
           <button
             type="button"

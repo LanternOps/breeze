@@ -25,6 +25,8 @@ import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { replaceUrl, seedRouterHistoryState } from '../../lib/replaceUrl';
 import SecurityAgentCoverageStateBadge from "../security/SecurityAgentCoverageStateBadge";
+import SecurityAgentCoverageSetupLink from "../security/SecurityAgentCoverageSetupLink";
+import SoftwarePolicyCoverageBadge from "./SoftwarePolicyCoverageBadge";
 import {
   COVERAGE_STATES,
   coverageReasonLabel,
@@ -387,6 +389,11 @@ export default function ComplianceDashboard({
       name = params.get("name") ?? "";
       prefillVendor = params.get("vendor") ?? "";
       mode = parsePolicyMode(params.get("mode"));
+      for (const key of ["prefill", "name", "vendor", "mode"]) params.delete(key);
+      const search = params.toString();
+      replaceUrl(
+        window.location.pathname + (search ? `?${search}` : "") + window.location.hash,
+      );
     }
     if (name) {
       setSelectedPolicy({
@@ -401,9 +408,6 @@ export default function ComplianceDashboard({
       });
       setPrefillNonce((n) => n + 1);
       setModalMode("create");
-      // Clean up the URL
-      if (typeof window !== "undefined")
-        replaceUrl(window.location.pathname);
     }
   }, [prefill]);
   const handleCreate = () => {
@@ -780,7 +784,10 @@ export default function ComplianceDashboard({
                         <SecurityAgentCoverageStateBadge state={row.state} />
                       </td>
                       <td className="px-4 py-2 text-muted-foreground">
-                        {coverageReasonLabel(tSecurity, row.reasonCode)}
+                        <span className="flex flex-wrap items-center gap-2">
+                          <span>{coverageReasonLabel(tSecurity, row.reasonCode)}</span>
+                          <SecurityAgentCoverageSetupLink row={row} />
+                        </span>
                       </td>
                     </tr>
                   ))}
@@ -817,6 +824,7 @@ export default function ComplianceDashboard({
                   <td className="px-4 py-3 font-medium">
                     <div className="flex flex-wrap items-center gap-2">
                       <span>{policy.name}</span>
+                      <SoftwarePolicyCoverageBadge policyId={policy.id} />
                       {policy.enforceMode && policy.remediationOptions?.autoInstall && (
                         <span
                           data-testid="policy-autoinstall-badge"

@@ -1677,3 +1677,33 @@ describe('addFeatureLink — maintenance inlineSettings service-layer validation
     expect(normalizedRowValues.windowStart).toBeNull();
   });
 });
+
+describe('containment service write backstops', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it.each([
+    ['reference', 'other-policy', { version: 1 }, /featurePolicyId/],
+    ['invalid settings', null, { version: 1, defaultTtlHours: 0 }, /defaultTtlHours/],
+    ['missing version', null, {}, /version/],
+    ['null settings', null, null, /object/],
+  ])('add refuses %s before a transaction', async (_name, featurePolicyId, inlineSettings, error) => {
+    vi.mocked(db.transaction).mockResolvedValue({ id: 'unexpected' });
+    await expect(addFeatureLink('policy-1', 'containment', featurePolicyId as string | null, inlineSettings))
+      .rejects.toThrow(error as RegExp);
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['reference', { featurePolicyId: 'other-policy' }, /featurePolicyId/],
+    ['invalid settings', { inlineSettings: { version: 1, defaultTtlHours: 0 } }, /defaultTtlHours/],
+    ['null settings', { inlineSettings: null }, /object/],
+  ])('update refuses %s before writing', async (_name, updates, error) => {
+    const tx = {
+      select: vi.fn(() => selectLimitRows([{ id: 'link-1', featureType: 'containment', inlineSettings: { version: 1 } }])),
+      update: vi.fn(() => ({ set: () => ({ where: () => ({ returning: async () => [{ id: 'link-1' }] }) }) })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    await expect(updateFeatureLink('link-1', updates, 'policy-1')).rejects.toThrow(error);
+    expect(tx.update).not.toHaveBeenCalled();
+  });
+});

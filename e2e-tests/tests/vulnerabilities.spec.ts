@@ -25,6 +25,12 @@ test.describe('Vulnerabilities', () => {
   test('per-device tab accept-risk drops a finding out of the open list', async ({ authedPage }) => {
     await authedPage.goto(`/devices/${WINDOWS_DEVICE_ID}#vulnerabilities`);
 
+    // Findings are grouped by software and each group starts collapsed, so
+    // expand the group holding the seeded finding before asserting on rows.
+    const toggle = authedPage.locator('[data-testid^="vuln-group-toggle-"]').first();
+    await expect(toggle).toBeVisible({ timeout: 15_000 });
+    await toggle.click();
+
     const rows = authedPage.locator(rowSelector);
     await expect(rows.first()).toBeVisible({ timeout: 15_000 });
     const before = await rows.count();

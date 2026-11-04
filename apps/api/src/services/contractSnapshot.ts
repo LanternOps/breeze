@@ -62,7 +62,7 @@ export async function buildOrgDeviceSnapshot(
   if (wanted.length > 0) {
     const rows = await db.select({
       id: deviceGroups.id, orgId: deviceGroups.orgId, name: deviceGroups.name, type: deviceGroups.type,
-      siteId: deviceGroups.siteId, filterConditions: deviceGroups.filterConditions,
+      partnerId: deviceGroups.partnerId, siteId: deviceGroups.siteId, filterConditions: deviceGroups.filterConditions,
     }).from(deviceGroups).where(and(inArray(deviceGroups.id, wanted), eq(deviceGroups.orgId, orgId)));
     for (const g of rows) {
       groupNames.set(g.id, g.name);

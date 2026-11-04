@@ -1,3 +1,4 @@
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../services/deviceGroupOwnership';
 import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
@@ -2197,6 +2198,8 @@ aiAgentsRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
+    const partnerGroupIds = await findPartnerOwnedGroupIds(body.triggers?.deviceGroupIds ?? []);
+    if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
     let owner: { orgId: string | null; partnerId: string | null };
 
     if (body.ownerScope === 'partner') {
@@ -2236,6 +2239,8 @@ aiAgentsRoutes.patch(
     const id = uuidParam(c, 'id');
     if (!id) return c.json({ error: 'Agent not found' }, 404);
     try {
+      const partnerGroupIds = await findPartnerOwnedGroupIds(body.triggers?.deviceGroupIds ?? []);
+      if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
       const row = await updateAgent(auth, id, body);
       return c.json({ data: mapRow(row), ...(await flowToolSaveWarnings(row)) });
     } catch (err) {

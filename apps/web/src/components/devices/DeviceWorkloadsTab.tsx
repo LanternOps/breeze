@@ -69,7 +69,8 @@ const STATE_BADGE: Record<WorkloadState, string> = {
 
 /**
  * Image status badge (spec §9.1). The unknown-class statuses (pending,
- * private, unsupported_registry, error) all read "Not checked" and are never
+ * private, unsupported_registry, error, provenance_unknown) all read "Not
+ * checked" and are never
  * styled as healthy; the specific reason is in the tooltip.
  */
 type ImageStatusKey = 'behind' | 'current' | 'pinned' | 'local' | 'not_found' | 'not_checked';

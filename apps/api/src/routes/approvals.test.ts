@@ -1951,6 +1951,8 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
       expect(pamNotifyMocks.enqueuePamRequestNotify).toHaveBeenCalledTimes(1);
       expect(pamNotifyMocks.enqueuePamRequestNotify).toHaveBeenCalledWith(
         mainTx, { id: 'elev-1', deviceId: 'dev-1' }, 'denied', 'Not on the list',
+        // #10190 W07: the approver's name resolver, for decidedBy.technicianName.
+        expect.any(Function),
       );
     });
 

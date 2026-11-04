@@ -102,6 +102,7 @@ export function projectMonitorForCaller<T extends MonitorDefinitionRow>(row: T, 
     deliveryChannelIds: [],
     escalationPolicyId: null,
     aiAgentId: null,
+    psaBoardId: null,
   };
 }
 
@@ -118,6 +119,19 @@ function assertCanWrite(auth: AuthContext, owner: MonitorOwner): void {
   if (!owner.orgId) throw new MonitorOwnershipError('Organization context required');
   if (!auth.canAccessOrg(owner.orgId)) {
     throw new MonitorOwnershipError('Access to this organization denied');
+  }
+}
+
+/**
+ * `psa_board_id` names a board in the PARTNER's bound PSA (#10528), so it is
+ * partner-level config even on an org-owned monitor: only a caller who can
+ * manage partner-wide config may change it. "Unchanged" is always allowed, so
+ * an org user can still edit the rest of a monitor that carries a board.
+ */
+function assertCanSetPsaBoard(auth: AuthContext, next: number | null | undefined, current: number | null): void {
+  if (next === undefined || next === current) return;
+  if (!canManagePartnerWidePolicies(auth)) {
+    throw new MonitorOwnershipError(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
   }
 }
 
@@ -346,6 +360,7 @@ export async function createMonitorDefinition(
   executor: DbExecutor = db,
 ): Promise<MonitorDefinitionRow> {
   const owner = resolveOwnerForCreate(input, auth);
+  assertCanSetPsaBoard(auth, input.psaBoardId, null);
   await assertEscalationPolicyCompatible(input.escalationPolicyId ?? null, owner, executor);
   const shape = validateDefinitionShape({
     kind: input.kind,
@@ -394,6 +409,7 @@ async function createValidatedMonitorInTx(
         recurrenceActions: shape.recurrenceActions as unknown as Array<Record<string, unknown>>,
         pauseResponsesOnEscalation: input.pauseResponsesOnEscalation,
         aiAgentId: input.aiAgentId ?? null,
+        psaBoardId: input.psaBoardId ?? null,
         createdBy: auth.scope === 'system' ? null : auth.user.id,
       })
       .returning();
@@ -419,6 +435,7 @@ export async function updateMonitorDefinition(
   const existing = await getMonitorDefinition(id, auth, executor);
   if (!existing) throw new MonitorNotFoundError(id);
   assertCanWrite(auth, { orgId: existing.orgId, partnerId: existing.partnerId });
+  assertCanSetPsaBoard(auth, input.psaBoardId, existing.psaBoardId ?? null);
 
   // The MERGED definition is what gets validated: a PATCH that changes only the
   // kind must still be checked against the stored condition, and vice versa.
@@ -495,6 +512,7 @@ export async function updateMonitorDefinition(
             ? input.pauseResponsesOnEscalation
             : existing.pauseResponsesOnEscalation,
         aiAgentId: merged.aiAgentId ?? null,
+        psaBoardId: input.psaBoardId !== undefined ? input.psaBoardId : (existing.psaBoardId ?? null),
         updatedAt: new Date(),
       })
       .where(eq(monitorDefinitions.id, id))

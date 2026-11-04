@@ -1,0 +1,51 @@
+[
+  {
+    "pagination": {
+      "current_page": 1,
+      "per_page": 1,
+      "next_link": null,
+      "prev_link": null
+    },
+    "result_set": []
+  },
+  {
+    "pagination": {
+      "current_page": 1,
+      "per_page": 1,
+      "next_link": "/api/users?page=2&per_page=1",
+      "prev_link": null
+    },
+    "result_set": [
+      {
+        "id": "10001-14",
+        "email": "admin@contoso.example",
+        "authentication_token": "11111111-1111-4111-8111-111111111111",
+        "organization_id": 501,
+        "plan_id": "100-14",
+        "reseller_token": "99999999-9999-4999-8999-999999999999",
+        "notification_email": [
+          "admin@contoso.example"
+        ],
+        "external_id": "breeze-org:00000000-0000-4000-8000-0000000000aa",
+        "is_business": true,
+        "admin": true,
+        "customer_deactivated": false,
+        "seats_used": 12,
+        "seats_available": 12,
+        "storage_used": 0,
+        "storage_available": 0,
+        "archive": false,
+        "backup_summary": null,
+        "login_disabled": false,
+        "flg_suspended": false,
+        "organization_name": "Contoso Dental",
+        "auto_license": false,
+        "deactivated_seats": 0,
+        "active_seats": 12,
+        "required_seats": 12,
+        "paid_shared_mailboxes": 0,
+        "free_shared_mailboxes": 0
+      }
+    ]
+  }
+]

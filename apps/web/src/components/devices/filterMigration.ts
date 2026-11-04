@@ -83,6 +83,7 @@ function formatFilterValue(value: unknown, names?: ReadonlyMap<string, string>):
   if (Array.isArray(value)) return value.map(item => formatFilterValue(item, names)).filter(Boolean).join(', ');
   if (typeof value === 'object') {
     const record = value as Record<string, unknown>;
+    if ('name' in record && 'version' in record) return `${record.name} ${record.version}`.trim();
     if ('amount' in record && 'unit' in record) return `${record.amount} ${record.unit}`;
     if ('from' in record && 'to' in record) return `${formatFilterValue(record.from)} - ${formatFilterValue(record.to)}`;
     return '';

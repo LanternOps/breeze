@@ -46,6 +46,7 @@ const STATUS_OPTIONS: Array<ElevationStatus | ''> = [
   'denied',
   'expired',
   'revoked',
+  'withdrawn',
 ];
 const FLOW_OPTIONS: Array<ElevationFlowType | ''> = ['', 'uac_intercept', 'tech_jit_admin', 'ai_tool_action'];
 
@@ -78,6 +79,10 @@ export function buildAuditCsv(rows: ElevationRequest[]): string {
     'decisionSource',
     'matchedPolicyName',
     'pamRuleName',
+    // #8971: cause of a device-side withdraw (appended, so existing column
+    // positions are unchanged for consumers of earlier exports).
+    'withdrawnAt',
+    'withdrawnReason',
   ];
   const lines = [csvRow(header)];
   for (const r of rows) {
@@ -108,6 +113,8 @@ export function buildAuditCsv(rows: ElevationRequest[]): string {
         r.decisionSource ?? '',
         r.matchedPolicyName ?? '',
         r.pamRuleName ?? '',
+        r.withdrawnAt ?? '',
+        r.withdrawnReason ?? '',
       ]),
     );
   }

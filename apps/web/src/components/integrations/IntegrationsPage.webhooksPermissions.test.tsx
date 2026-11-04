@@ -82,6 +82,13 @@ beforeEach(() => {
 });
 
 describe("IntegrationsPage webhooks:read gate", () => {
+  it("keeps the Webhooks panel selected for an ownership-filter deep link", () => {
+    state.permissions = [{ resource: "webhooks", action: "read" }];
+    window.history.replaceState({}, "", "/integrations#webhooks?ownerScope=partner");
+    render(<IntegrationsPage />);
+    expect(screen.getByTestId("stub-webhooks")).toBeTruthy();
+  });
+
   it("hides the Webhooks entry and leaves a Webhooks default for the first visible entry without webhooks:read", () => {
     state.permissions = [{ resource: "organizations", action: "read" }];
 

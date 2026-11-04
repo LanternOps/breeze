@@ -33,6 +33,8 @@ export interface ClassifiedRequest {
 export const AGENT_ROUTE_ADMISSION_CLASSES: Readonly<Record<string, RouteClass>> = Object.freeze({
   // protected
   'POST /:id/heartbeat': 'protected',
+  // #4618: the in-progress isolation probe must reach the control plane under load.
+  'POST /:id/isolation/:isolationId/verify': 'protected',
   'GET /:id/commands': 'protected',
   'POST /:id/commands/:commandId/result': 'protected',
   'POST /:id/commands/:commandId/pam-observations': 'protected',

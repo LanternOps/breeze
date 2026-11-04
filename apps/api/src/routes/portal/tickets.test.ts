@@ -1867,6 +1867,79 @@ describe('portal ticketType is read-only (#8596)', () => {
   });
 });
 
+// ── Merged tombstone names the survivor by its portal number (#10072) ────────
+// `internal_number` (T-YYYY-NNNN) is the staff-side reference; every other
+// portal surface shows the requester-facing `ticket_number`. The survivor
+// select's mock returns exactly the projection's own keys (as Postgres would),
+// so a projection that still asked for internalNumber would carry it out.
+describe('GET /tickets/:id — merged tombstone (#10072)', () => {
+  const SURVIVOR_ID = '9a9a9a9a-1111-4222-8333-444455556666';
+  const SURVIVOR_DB_ROW: Record<string, unknown> = {
+    id: SURVIVOR_ID,
+    ticketNumber: 'HD0XTUGGVV',
+    internalNumber: 'T-2026-0009',
+    subject: 'Printer offline',
+    deletedAt: null,
+  };
+
+  function mockMergedDetail(survivorRow: Record<string, unknown>) {
+    let callCount = 0;
+    dbSelectMock.mockImplementation((projection: Record<string, unknown>) => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          from: vi.fn(() => ({
+            leftJoin: vi.fn(() => ({
+              where: vi.fn(() => ({
+                limit: vi.fn(() => Promise.resolve([{
+                  ...TICKET_ROW,
+                  statusName: 'Closed',
+                  mergedIntoTicketId: SURVIVOR_ID,
+                  mergedAt: new Date('2026-10-20T12:00:00Z'),
+                }])),
+              })),
+            })),
+          })),
+        };
+      }
+      const row = Object.fromEntries(Object.keys(projection).map((k) => [k, survivorRow[k]]));
+      return { from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([row])) })) })) };
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns the survivor\'s portal ticketNumber, never its internal staff number', async () => {
+    mockMergedDetail(SURVIVOR_DB_ROW);
+    const res = await buildApp().request(`/tickets/${TICKET_ID}`, { headers: { Authorization: 'Bearer portal-token' } });
+
+    expect(res.status).toBe(200);
+    const survivorProjection = dbSelectMock.mock.calls[1]![0] as Record<string, unknown>;
+    expect(survivorProjection).toHaveProperty('ticketNumber');
+    expect(survivorProjection).not.toHaveProperty('internalNumber');
+    const body = await res.json();
+    expect(body).toEqual({
+      merged: true,
+      mergedInto: { id: SURVIVOR_ID, ticketNumber: 'HD0XTUGGVV' },
+      mergedAt: '2026-10-20T12:00:00.000Z',
+    });
+    expect(JSON.stringify(body)).not.toContain('T-2026-0009');
+  });
+
+  it('sends nothing of a soft-deleted survivor, its numbers included', async () => {
+    mockMergedDetail({ ...SURVIVOR_DB_ROW, deletedAt: new Date() });
+    const res = await buildApp().request(`/tickets/${TICKET_ID}`, { headers: { Authorization: 'Bearer portal-token' } });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({ merged: true, mergedInto: null, survivorDeleted: true });
+    expect(JSON.stringify(body)).not.toContain('HD0XTUGGVV');
+    expect(JSON.stringify(body)).not.toContain('T-2026-0009');
+  });
+});
+
 // ── Ticket links never reach the portal (#8596, plan Open Decision 7) ────────
 // A link names ANOTHER ticket (number, subject) that may be internal or owned
 // by a different requester. Until a counterpart-visibility predicate exists,

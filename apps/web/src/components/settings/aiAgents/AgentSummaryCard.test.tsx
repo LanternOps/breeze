@@ -5,8 +5,8 @@ import AgentSummaryCard from './AgentSummaryCard';
 
 /**
  * Every tool name here is deliberately fake (`fake_tool_*`) so the assertions
- * exercise the component's own label-formatting fallback (`sentenceCase`,
- * mirroring CapabilityPicker's) rather than depending on the real
+ * exercise the shared label fallback in catalogLabels.ts (`formatToolName` for
+ * a tool, `sentenceCase` for an action) rather than depending on the real
  * `aiAgentsPage.catalog.tools/actions` translations staying stable.
  */
 const baseOperations: AgentPreviewDto['operations'] = [
@@ -83,9 +83,9 @@ describe('AgentSummaryCard', () => {
     });
     render(<AgentSummaryCard preview={preview} name="Act bot" orgName="Acme" />);
     const row = screen.getByTestId('agent-summary-row-executesUnattended');
-    expect(row.textContent).toContain('Fake tool i');
+    expect(row.textContent).toContain('Fake Tool I');
     expect(row.textContent).toContain('Restart');
-    expect(row.textContent).toContain('Fake tool j');
+    expect(row.textContent).toContain('Fake Tool J');
     expect(row.textContent).toContain('Cleanup');
     expect(row.textContent).not.toContain('Nothing.');
     // At least one unattended op is preauthorized -> the pre-authorized note appends.
@@ -232,7 +232,7 @@ describe('AgentSummaryCard', () => {
     render(<AgentSummaryCard preview={preview} name="Bot" orgName="Acme" />);
     const row = screen.getByTestId('agent-summary-row-executesUnattended');
     expect(row).toHaveTextContent('Nothing yet');
-    expect(screen.getByTestId('agent-summary-script-gate')).toHaveTextContent('Fake run script');
+    expect(screen.getByTestId('agent-summary-script-gate')).toHaveTextContent('Fake Run Script');
     expect(screen.getByTestId('agent-summary-script-gate').textContent).toMatch(/script is authorized/i);
   });
 

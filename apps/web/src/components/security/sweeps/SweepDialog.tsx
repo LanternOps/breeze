@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { Loader2, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
@@ -56,6 +56,13 @@ export const sweepGroupHref = (groupId: string) => `/security/scans${sweepsHash(
 
 export default function SweepDialog({ prefill, onClose }: { prefill: SweepDialogPrefill; onClose: () => void }) {
   const { t } = useTranslation("security");
+  const idBase = useId();
+  const ids = {
+    pathsHelp: `${idBase}-paths-help`,
+    pathsError: `${idBase}-paths-error`,
+    ttlHelp: `${idBase}-ttl-help`,
+    ttlError: `${idBase}-ttl-error`,
+  };
   const organizations = useOrgStore((s) => s.organizations);
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const fetchOrganizations = useOrgStore((s) => s.fetchOrganizations);
@@ -145,12 +152,31 @@ export default function SweepDialog({ prefill, onClose }: { prefill: SweepDialog
         .filter(Boolean),
     [pathsText],
   );
-  const pathsValid =
-    scanType !== "custom" ||
-    (paths.length >= 1 && paths.length <= SECURITY_SWEEP_MAX_PATHS && paths.every((p) => p.length <= SECURITY_SCAN_PATH_MAX_CHARS));
+  // Over-limit input says what is wrong, not just greys out Next (#10080).
+  const pathsError = useMemo(() => {
+    if (scanType !== "custom") return null;
+    if (paths.length > SECURITY_SWEEP_MAX_PATHS) {
+      return t("sweeps.dialog.type.pathsTooMany", {
+        paths: paths.length,
+        max: SECURITY_SWEEP_MAX_PATHS,
+        remove: paths.length - SECURITY_SWEEP_MAX_PATHS,
+      });
+    }
+    // Line numbers count blank lines too, so they match what the user sees in the box.
+    const longLine = pathsText.split("\n").findIndex((line) => line.trim().length > SECURITY_SCAN_PATH_MAX_CHARS);
+    if (longLine >= 0) {
+      return t("sweeps.dialog.type.pathTooLong", { line: longLine + 1, chars: SECURITY_SCAN_PATH_MAX_CHARS });
+    }
+    return null;
+  }, [scanType, paths, pathsText, t]);
+  // An empty list is not an error to shout about; Next just stays disabled until a path is entered.
+  const pathsValid = scanType !== "custom" || (paths.length >= 1 && pathsError === null);
 
   const ttlNumber = Number(ttl);
   const ttlValid = Number.isInteger(ttlNumber) && ttlNumber >= 1 && ttlNumber <= SECURITY_SWEEP_TTL_HOURS_MAX;
+
+  const deviceCount = (count: number) => t("sweeps.dialog.counts.devices", { count });
+  const orgCount = (count: number) => t("sweeps.dialog.counts.orgs", { count });
 
   const request = (): SweepRequest | null => {
     if (!scope) return null;
@@ -425,45 +451,79 @@ export default function SweepDialog({ prefill, onClose }: { prefill: SweepDialog
                 </select>
               </label>
               {scanType === "custom" && (
-                <label className="block text-sm">
-                  <span className="text-xs uppercase text-muted-foreground">{t("sweeps.dialog.type.paths")}</span>
-                  <textarea
-                    data-testid="sweep-dialog-paths"
-                    value={pathsText}
-                    onChange={(e) => setPathsText(e.target.value)}
-                    rows={4}
-                    className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-mono text-sm"
-                  />
-                  <span className={`mt-1 block text-xs ${pathsValid ? "text-muted-foreground" : "text-destructive"}`}>
+                <div className="text-sm">
+                  <label className="block">
+                    <span className="text-xs uppercase text-muted-foreground">{t("sweeps.dialog.type.paths")}</span>
+                    <textarea
+                      data-testid="sweep-dialog-paths"
+                      value={pathsText}
+                      onChange={(e) => setPathsText(e.target.value)}
+                      rows={4}
+                      aria-invalid={pathsError !== null}
+                      aria-describedby={pathsError ? `${ids.pathsHelp} ${ids.pathsError}` : ids.pathsHelp}
+                      className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-mono text-sm aria-[invalid=true]:border-destructive"
+                    />
+                  </label>
+                  <span id={ids.pathsHelp} className="mt-1 block text-xs text-muted-foreground">
                     {t("sweeps.dialog.type.pathsHelp", { max: SECURITY_SWEEP_MAX_PATHS, chars: SECURITY_SCAN_PATH_MAX_CHARS })}
                   </span>
-                </label>
+                  {pathsError ? (
+                    <span
+                      id={ids.pathsError}
+                      data-testid="sweep-dialog-paths-error"
+                      role="alert"
+                      className="mt-1 block text-xs text-destructive"
+                    >
+                      {pathsError}
+                    </span>
+                  ) : (
+                    paths.length > 0 && (
+                      <span data-testid="sweep-dialog-paths-count" className="mt-1 block text-xs text-muted-foreground">
+                        {t("sweeps.dialog.type.pathsCount", { paths: paths.length, max: SECURITY_SWEEP_MAX_PATHS })}
+                      </span>
+                    )
+                  )}
+                </div>
               )}
             </div>
           )}
 
           {step === "duration" && (
-            <label className="block text-sm">
-              <span className="text-xs uppercase text-muted-foreground">{t("sweeps.dialog.duration.label")}</span>
-              <input
-                type="number"
-                data-testid="sweep-dialog-ttl"
-                min={1}
-                max={SECURITY_SWEEP_TTL_HOURS_MAX}
-                step={1}
-                value={ttl}
-                onChange={(e) => setTtl(e.target.value)}
-                onBlur={() => {
-                  const n = Math.round(Number(ttl));
-                  if (Number.isFinite(n)) setTtl(String(Math.min(SECURITY_SWEEP_TTL_HOURS_MAX, Math.max(1, n))));
-                  else setTtl(String(SECURITY_SWEEP_TTL_HOURS_DEFAULT));
-                }}
-                className="mt-1 h-10 w-32 rounded-md border bg-background px-3 text-sm"
-              />
-              <span className={`mt-1 block text-xs ${ttlValid ? "text-muted-foreground" : "text-destructive"}`}>
+            <div className="text-sm">
+              <label className="block">
+                <span className="text-xs uppercase text-muted-foreground">{t("sweeps.dialog.duration.label")}</span>
+                <input
+                  type="number"
+                  data-testid="sweep-dialog-ttl"
+                  min={1}
+                  max={SECURITY_SWEEP_TTL_HOURS_MAX}
+                  step={1}
+                  value={ttl}
+                  onChange={(e) => setTtl(e.target.value)}
+                  onBlur={() => {
+                    const n = Math.round(Number(ttl));
+                    if (Number.isFinite(n)) setTtl(String(Math.min(SECURITY_SWEEP_TTL_HOURS_MAX, Math.max(1, n))));
+                    else setTtl(String(SECURITY_SWEEP_TTL_HOURS_DEFAULT));
+                  }}
+                  aria-invalid={!ttlValid}
+                  aria-describedby={ttlValid ? ids.ttlHelp : `${ids.ttlHelp} ${ids.ttlError}`}
+                  className="mt-1 block h-10 w-32 rounded-md border bg-background px-3 text-sm aria-[invalid=true]:border-destructive"
+                />
+              </label>
+              <span id={ids.ttlHelp} className="mt-1 block text-xs text-muted-foreground">
                 {t("sweeps.dialog.duration.help", { max: SECURITY_SWEEP_TTL_HOURS_MAX })}
               </span>
-            </label>
+              {!ttlValid && (
+                <span
+                  id={ids.ttlError}
+                  data-testid="sweep-dialog-ttl-error"
+                  role="alert"
+                  className="mt-1 block text-xs text-destructive"
+                >
+                  {t("sweeps.dialog.duration.invalid", { max: SECURITY_SWEEP_TTL_HOURS_MAX })}
+                </span>
+              )}
+            </div>
           )}
 
           {step === "preview" && preview && (
@@ -478,12 +538,15 @@ export default function SweepDialog({ prefill, onClose }: { prefill: SweepDialog
                 </p>
               )}
               <p data-testid="sweep-dialog-preview-targeted" className="text-sm font-medium">
-                {t("sweeps.dialog.preview.targeted", { devices: preview.targeted, orgs: preview.byOrg.length })}
+                {t("sweeps.dialog.preview.targeted", {
+                  devices: deviceCount(preview.targeted),
+                  orgs: orgCount(preview.byOrg.length),
+                })}
               </p>
               <ul className="space-y-1 text-sm">
                 {preview.byOrg.map((o) => (
                   <li key={o.orgId} data-testid={`sweep-dialog-preview-org-${o.orgId}`}>
-                    {t("sweeps.dialog.preview.org", { org: o.orgName ?? o.orgId, devices: o.targeted })}
+                    {t("sweeps.dialog.preview.org", { org: o.orgName ?? o.orgId, devices: deviceCount(o.targeted) })}
                   </li>
                 ))}
               </ul>
@@ -503,8 +566,9 @@ export default function SweepDialog({ prefill, onClose }: { prefill: SweepDialog
                   <ul className="space-y-1 text-sm">
                     {SECURITY_SWEEP_SKIP_REASONS.filter((reason) => (preview.skipped[reason] ?? 0) > 0).map((reason) => (
                       <li key={reason} data-testid={`sweep-dialog-preview-skipped-${reason}`}>
-                        <span className="font-medium">{preview.skipped[reason]}</span>{" "}
-                        {t(/* i18n-dynamic */ `sweeps.skipReasons.${reason}`)}
+                        <span className="font-medium">
+                          {t(/* i18n-dynamic */ `sweeps.skipReasons.${reason}`, { count: preview.skipped[reason] ?? 0 })}
+                        </span>
                         <span className="block text-xs text-muted-foreground">
                           {t(/* i18n-dynamic */ `sweeps.skipExplain.${reason}`)}
                         </span>
@@ -518,7 +582,11 @@ export default function SweepDialog({ prefill, onClose }: { prefill: SweepDialog
 
           {step === "confirm" && preview && (
             <p data-testid="sweep-dialog-confirm-summary" className="text-sm">
-              {t("sweeps.dialog.confirmSummary", { targeted: preview.targeted, orgs: preview.byOrg.length })}
+              {t("sweeps.dialog.confirmSummary", {
+                count: preview.targeted,
+                devices: deviceCount(preview.targeted),
+                orgs: orgCount(preview.byOrg.length),
+              })}
             </p>
           )}
 
@@ -593,7 +661,7 @@ export default function SweepDialog({ prefill, onClose }: { prefill: SweepDialog
                 className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
               >
                 {busy && <Loader2 className="h-4 w-4 animate-spin" />}
-                {t("sweeps.dialog.confirm", { targeted: preview?.targeted ?? 0 })}
+                {t("sweeps.dialog.confirm", { count: preview?.targeted ?? 0 })}
               </button>
             )}
           </div>

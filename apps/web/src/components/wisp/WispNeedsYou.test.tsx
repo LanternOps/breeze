@@ -35,6 +35,11 @@ describe('WispNeedsYou (W08 Task 9)', () => {
     expect(screen.queryByTestId('wisp-needs-you-approvals')).toBeNull();
   });
 
+  it('passes refreshKey through so the host can reload the concerns (#10104)', () => {
+    render(<WispNeedsYou grantId="g-1" threadId="th-1" initial={[]} refreshKey={4} />);
+    expect(h.panelProps).toMatchObject({ refreshKey: 4 });
+  });
+
   it('shows no count chip when nothing is waiting', () => {
     render(<WispNeedsYou grantId="g-1" threadId="th-1" initial={[]} />);
     expect(screen.queryByTestId('wisp-needs-you-count')).toBeNull();

@@ -3726,6 +3726,14 @@ export async function createAutomationRunRecord(options: {
    * the configured target set.
    */
   targetDiagnostics?: AutomationTargetDiagnostics;
+  /**
+   * #5221 B2 — runs inside the run's transaction, after the insert and the
+   * `run_count` bump, for a NEWLY minted run only (a reused run's admission
+   * already ran it). A throw rolls the run back with whatever the hook wrote
+   * (the occurrence claim) and is rethrown to the caller. Omitted by every
+   * caller whose automation has no conversion, so their path is unchanged.
+   */
+  onCreated?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], run: AutomationRunRow) => Promise<void>;
 }): Promise<{ run: AutomationRunRow; targetDeviceIds: string[]; reused: boolean }> {
   const normalized = normalizeAutomationInput({
     trigger: options.automation.trigger,
@@ -3816,6 +3824,7 @@ export async function createAutomationRunRecord(options: {
         updatedAt: new Date(),
       })
       .where(eq(automations.id, options.automation.id));
+    if (options.onCreated) await options.onCreated(tx, created);
     return { run: created, reused: false };
   });
 

@@ -382,7 +382,7 @@ export function convertAutomation(row: AutomationRow, ctx: ConversionContext): C
           steps.push(step({
             id: `a${i}_failnotice_${n}`, tool: 'notify', when,
             forEach: { items: `steps.${failedId}.output.devices`, as: 'item', maxItems: FLEET_MAX_TARGETS, concurrency: 1 },
-            input: { channelId, title: `${name} action failed`, message: `Automation ${name} action ${i + 1} failed on {{item.hostname}}`, severity: 'warning' },
+            input: { channelId, title: `${name} action failed`, message: `Automation ${name} action ${i + 1} failed on {{item.hostname}}: {{item.failureReason}}`, severity: 'warning' },
           }));
         });
         if (activeCount * failureChannels.length > FLOW_RUN_LIMITS.notifyPerRunMax) {

@@ -258,6 +258,37 @@ describe('assessPreApprovals', () => {
       expect(r.bindings.a0).toMatchObject({ lane: 'fleet', kind: 'fleet_v1', publicationId: PUB, maxTargets: 40, scriptId: SCRIPT, effectiveRunAs: 'system' });
     });
 
+    // W6 (#5221) Task B3: the switch's generated scripts exist only in its own transaction.
+    it('a scriptReadExecutor reads ownership and the script through that executor, and binds the same digest', async () => {
+      const executorRows: unknown[][] = [[scriptRow()]];
+      const executor = {
+        select: vi.fn(() => {
+          const proxy: unknown = new Proxy(() => {}, {
+            get(_t, prop) {
+              if (prop === 'then') return (res: (v: unknown) => void) => Promise.resolve(executorRows.shift() ?? []).then(res);
+              return () => proxy;
+            },
+          });
+          return proxy;
+        }),
+      };
+      const d = doc([fleetStep('a0', { target: { type: 'groups', groupIds: [GROUP] } })]);
+      const viaExecutor = await assessPreApprovals(d, [fleetPin('a0')], OWNER, ['a0'], {
+        publicationId: PUB, fleetMaxTargets: { a0: 40 }, scriptReadExecutor: executor as never,
+      });
+      expect(viaExecutor.eligibility.a0).toEqual({ eligible: true });
+      expect(vi.mocked(findOwnedScriptIds)).toHaveBeenCalledWith(OWNER, [SCRIPT], { executor });
+      expect(executor.select).toHaveBeenCalled();
+      expect(selectQueue).toHaveLength(0);
+
+      // The default path (system context, the global db) binds byte-identical material.
+      vi.mocked(findOwnedScriptIds).mockClear();
+      selectQueue.push([scriptRow()]);
+      const viaSystem = await assessPreApprovals(d, [fleetPin('a0')], OWNER, ['a0'], { publicationId: PUB, fleetMaxTargets: { a0: 40 } });
+      expect(vi.mocked(findOwnedScriptIds)).toHaveBeenCalledWith(OWNER, [SCRIPT]);
+      expect(viaExecutor.bindings.a0).toEqual(viaSystem.bindings.a0);
+    });
+
     it('a requested fleet step without maxTargets is max_targets_invalid', async () => {
       selectQueue.push([scriptRow()]);
       const r = await assessPreApprovals(doc([fleetStep('a0', { conditions: [] })]), [fleetPin('a0')], OWNER, ['a0'], { publicationId: PUB });

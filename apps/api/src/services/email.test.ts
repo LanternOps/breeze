@@ -73,6 +73,18 @@ describe('email service', () => {
     process.env = originalEnv;
   });
 
+  it.each([true, false])('renders the alert subject in email (workload=%s)', async (workload) => {
+    process.env.RESEND_API_KEY = 're_test_123';
+    process.env.EMAIL_FROM = 'noreply@example.com';
+    const { getEmailService } = await import('./email');
+    await getEmailService()!.sendAlertNotification({ to: 'ops@example.com', alertName: 'Alert', severity: 'high', summary: 'Failed', subjectName: workload ? 'Microsoft 365 mail backup · Example customer' : 'Server-1', ownerKind: workload ? 'backup_workload' : 'device', deviceName: workload ? undefined : 'Server-1' });
+    const sent = resendSendMock.mock.calls[0]?.[0];
+    const line = workload ? 'Subject: Microsoft 365 mail backup · Example customer' : 'Device: Server-1';
+    expect(sent.text).toContain(line);
+    expect(sent.html).toContain(line);
+    expect(sent.html).not.toContain('Device: undefined');
+  });
+
   it('uses Resend in auto mode when resend config is present', async () => {
     process.env.RESEND_API_KEY = 're_test_123';
     process.env.EMAIL_FROM = 'noreply@example.com';

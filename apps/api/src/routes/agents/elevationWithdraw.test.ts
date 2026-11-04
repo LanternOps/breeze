@@ -79,6 +79,7 @@ describe('POST /agents/:id/elevation-requests/:requestId/withdraw (#8971)', () =
       requestId: REQUEST,
       reason: 'user_denied',
       agentDeclinedAt: new Date('2027-01-10T10:00:00.000Z'),
+      renderer: null,
     });
     expect(mocks.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       orgId: ORG,
@@ -87,7 +88,7 @@ describe('POST /agents/:id/elevation-requests/:requestId/withdraw (#8971)', () =
       action: 'pam.elevation_request.withdrawn',
       resourceType: 'elevation_request',
       resourceId: REQUEST,
-      details: { reason: 'user_denied', agent_declined_at: '2027-01-10T10:00:00.000Z' },
+      details: { reason: 'user_denied', agent_declined_at: '2027-01-10T10:00:00.000Z', renderer: null },
     }));
 
     // Nothing runs while the request transaction (and the row lock) is open.
@@ -105,6 +106,32 @@ describe('POST /agents/:id/elevation-requests/:requestId/withdraw (#8971)', () =
       status: 'withdrawn',
       reason: 'user_denied',
     }, 'pam-withdraw');
+  });
+
+  it('withdraw accepts user_cancelled (#10190 W07: Cancel request on the waiting card)', async () => {
+    const res = await post(buildApp(), { reason: 'user_cancelled', renderer: 'assist' });
+
+    expect(res.status).toBe(200);
+    expect(mocks.withdraw).toHaveBeenCalledWith(expect.objectContaining({ reason: 'user_cancelled', renderer: 'assist' }));
+    await runDeferred();
+    expect(mocks.publishEvent).toHaveBeenCalledWith('elevation.withdrawn', ORG, expect.objectContaining({ reason: 'user_cancelled' }), 'pam-withdraw');
+  });
+
+  it.each(['assist', 'native', 'headless'] as const)('renderer %s is recorded in the audit details', async (renderer) => {
+    const res = await post(buildApp(), { ...validBody, renderer });
+
+    expect(res.status).toBe(200);
+    expect(mocks.withdraw).toHaveBeenCalledWith(expect.objectContaining({ renderer }));
+    expect(mocks.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: { reason: 'user_denied', agent_declined_at: '2027-01-10T10:00:00.000Z', renderer },
+    }));
+  });
+
+  it('an unknown renderer is dropped, never a 400 (a 400 is final for the agent)', async () => {
+    const res = await post(buildApp(), { ...validBody, renderer: 'hologram' });
+
+    expect(res.status).toBe(200);
+    expect(mocks.withdraw).toHaveBeenCalledWith(expect.objectContaining({ renderer: null }));
   });
 
   it('declinedAt is optional', async () => {

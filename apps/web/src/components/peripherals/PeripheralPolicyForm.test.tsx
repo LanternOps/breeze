@@ -164,6 +164,37 @@ describe('PeripheralPolicyForm — edit keeps targeting (#9620)', () => {
   });
 });
 
+/**
+ * Wall-clock `YYYY-MM-DDTHH:mm` of a UTC instant in the zone this process is
+ * actually running in, via Intl (an oracle independent of the component's
+ * Date getters).
+ *
+ * The expiry tests pin `process.env.TZ` to a non-UTC zone so they discriminate
+ * "local" from "UTC". Observed (#9943): in vitest's default `forks` pool the
+ * runtime pin takes effect, but in the `threads` / `vmThreads` pools it is
+ * silently ignored and the host zone wins. Expectations therefore come from the
+ * zone in effect, never from the zone we asked for. When that zone sits at UTC
+ * for these dates, local == UTC and the tests cannot tell them apart, so they
+ * skip visibly instead of passing vacuously.
+ */
+function wallClockInEffectiveZone(iso: string): string {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    })
+      .formatToParts(new Date(iso))
+      .map((p) => [p.type, p.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
 // #9621: labels pair with their controls, and the exception expiry is edited in
 // the browser's local time (it is stored as a UTC ISO string).
 describe('PeripheralPolicyForm — accessible labels and local expiry (#9621)', () => {
@@ -205,14 +236,23 @@ describe('PeripheralPolicyForm — accessible labels and local expiry (#9621)', 
     expect(screen.getByLabelText(/Expires/)).toBe(screen.getByTestId('peripheral-policy-exception-expires-0'));
   });
 
-  it('shows an existing expiry in local time, not UTC', () => {
-    process.env.TZ = 'America/New_York'; // UTC-5 on 2026-03-01
+  /** True when the zone in effect is at UTC+0 for the instant, so local and UTC are indistinguishable. */
+  const localEqualsUtc = (iso: string) => wallClockInEffectiveZone(iso) === iso.slice(0, 16);
+
+  it('shows an existing expiry in local time, not UTC', (ctx) => {
+    process.env.TZ = 'America/New_York'; // UTC-5 on 2026-03-01 (best effort; see wallClockInEffectiveZone)
+    if (localEqualsUtc('2026-03-01T03:30:00.000Z')) ctx.skip('effective zone is UTC+0; TZ pin did not apply (threads pool)');
     render(<PeripheralPolicyForm policy={policyWithExpiry} onClose={() => {}} />);
-    expect((screen.getByTestId('peripheral-policy-exception-expires-0') as HTMLInputElement).value).toBe('2026-02-28T22:30');
+    const expected = wallClockInEffectiveZone('2026-03-01T03:30:00.000Z');
+    if (Intl.DateTimeFormat().resolvedOptions().timeZone === 'America/New_York') {
+      expect(expected).toBe('2026-02-28T22:30'); // the pin took effect: oracle sanity check
+    }
+    expect((screen.getByTestId('peripheral-policy-exception-expires-0') as HTMLInputElement).value).toBe(expected);
   });
 
-  it('saves a typed local time as the matching UTC instant', async () => {
+  it('saves a typed local time as the matching UTC instant', async (ctx) => {
     process.env.TZ = 'America/New_York';
+    if (localEqualsUtc('2026-03-02T09:00:00.000Z')) ctx.skip('effective zone is UTC+0; TZ pin did not apply (threads pool)');
     fetchWithAuthMock.mockResolvedValueOnce(okResponse());
     render(<PeripheralPolicyForm policy={policyWithExpiry} onClose={() => {}} />);
     fireEvent.change(screen.getByTestId('peripheral-policy-exception-expires-0'), { target: { value: '2026-03-02T09:00' } });
@@ -220,7 +260,13 @@ describe('PeripheralPolicyForm — accessible labels and local expiry (#9621)', 
 
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
     const exceptions = postedBody().exceptions as Array<{ expiresAt: string }>;
-    expect(exceptions[0]!.expiresAt).toBe('2026-03-02T14:00:00.000Z');
+    const posted = exceptions[0]!.expiresAt;
+    expect(posted).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    // The posted UTC instant reads back as the typed wall-clock time in the local zone.
+    expect(wallClockInEffectiveZone(posted)).toBe('2026-03-02T09:00');
+    if (Intl.DateTimeFormat().resolvedOptions().timeZone === 'America/New_York') {
+      expect(posted).toBe('2026-03-02T14:00:00.000Z');
+    }
   });
 });
 

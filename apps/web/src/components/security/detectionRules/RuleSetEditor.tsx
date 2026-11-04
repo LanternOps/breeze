@@ -40,6 +40,9 @@ import {
 
 export type EditorTab = "rules" | "import" | "test";
 
+/** The page renders one editor at a time, so a fixed id is unique. */
+const SWEEP_DISABLED_REASON_ID = "rule-set-sweep-now-disabled-reason";
+
 /** Standard caller catch (CLAUDE.md): 401 → auth redirect; ActionError → already toasted. */
 function handleMutationError(err: unknown, fallback: string): void {
   if (err instanceof ActionError && err.status === 401) return;
@@ -303,12 +306,22 @@ export default function RuleSetEditor({
                 type="button"
                 data-testid="rule-set-sweep-now"
                 disabled={sweepDisabledReason !== null}
-                title={sweepDisabledReason ?? undefined}
+                aria-describedby={sweepDisabledReason ? SWEEP_DISABLED_REASON_ID : undefined}
                 onClick={() => setSweeping(true)}
                 className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {t("sweeps.sweepNow")}
               </button>
+              {/* Visible, not a hover-only title: keyboard and touch users never see a disabled button's tooltip. */}
+              {sweepDisabledReason && (
+                <p
+                  id={SWEEP_DISABLED_REASON_ID}
+                  data-testid="rule-set-sweep-now-disabled-reason"
+                  className="mt-1 text-xs text-muted-foreground"
+                >
+                  {sweepDisabledReason}
+                </p>
+              )}
             </div>
           </div>
           {!readOnly && (

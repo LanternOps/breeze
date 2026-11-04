@@ -30,5 +30,9 @@
   "tool_source_unavailable": "La source de cet outil n'est pas disponible pour le moment",
   "ai_not_configured": "L'IA n'est pas configurée sur ce serveur. Un administrateur doit ajouter une clé de fournisseur de modèles.",
   "ACCESS_REVIEW_SELF_DECISION": "Vous ne pouvez pas statuer sur votre propre accès : un autre administrateur doit examiner cet élément",
-  "NO_UPDATES_PROVIDED": "Aucune modification n'a été fournie"
+  "NO_UPDATES_PROVIDED": "Aucune modification n'a été fournie",
+  "PARTNER_GROUP_TARGET_UNSUPPORTED": "Les groupes d’appareils à l’échelle du partenaire peuvent uniquement être ciblés par les politiques de configuration du partenaire",
+  "PARTNER_GROUP_READ_ONLY": "Ce groupe d’appareils à l’échelle du partenaire ne peut pas être modifié ici",
+  "PARTNER_GROUP_FILTER_UNSUPPORTED": "Les groupes d’appareils à l’échelle du partenaire ne peuvent pas être utilisés dans les filtres de groupes, et leurs filtres ne peuvent pas référencer des groupes ou des organisations",
+  "SCAN_ALREADY_QUEUED": "Une analyse est déjà en file d'attente pour cet appareil."
 }

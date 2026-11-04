@@ -22,6 +22,11 @@ vi.mock('drizzle-orm', async (importOriginal) => {
   return { ...actual, and: mk('and'), eq: mk('eq'), ne: mk('ne'), inArray: mk('inArray') };
 });
 
+vi.mock('./deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./deviceGroupOwnership')>(),
+  findPartnerOwnedGroupIds: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock('../db', () => {
   const select = () => ({
     from: (table: unknown) => {
@@ -37,7 +42,7 @@ vi.mock('../db', () => {
       return chain;
     },
   });
-  return { db: { select } };
+  return { db: { select, insert: vi.fn(), update: vi.fn() } };
 });
 
 function getTableNameSafe(table: unknown): string {
@@ -50,6 +55,8 @@ vi.mock('./permissions', async (importOriginal) => {
 });
 vi.mock('./unassignedPool/selectorPredicate', () => ({ notParkedDeviceCondition: () => NOT_PARKED }));
 
+import { db } from '../db';
+import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
 import { devices } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { computeSweepPreviewDigest, resolveSweepTargets } from './securityScanSweepTargets';
@@ -134,6 +141,8 @@ function devicesQuery() {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(findPartnerOwnedGroupIds).mockReset().mockResolvedValue([]);
   queries.length = 0;
   rowsByTable.clear();
   getUserPermissionsMock.mockReset();
@@ -142,6 +151,17 @@ beforeEach(() => {
 });
 
 describe('resolveSweepTargets', () => {
+  it('refuses partner-group scopes with 400 before resolving or persisting targets', async () => {
+    const groupId = '33333333-3333-4333-8333-333333333333';
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValueOnce([groupId]);
+    expect(await resolveSweepTargets(partnerAuth(), { ...base, scope: { kind: 'groups', groupIds: [groupId] } }))
+      .toEqual({ ok: false, status: 400, code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', detail: { groupIds: [groupId] } });
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([groupId]);
+    expect(queries).toEqual([]);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
   it('drops parked, ephemeral, decommissioned', async () => {
     queue('yara_rule_sets', [partnerSet()]);
     queue('devices', [dev(ORG_A)]);
@@ -222,7 +242,9 @@ describe('resolveSweepTargets', () => {
     expect(named).toMatchObject({ ok: false, status: 403, code: 'ORG_OUT_OF_SCOPE', detail: { orgIds: [ORG_B] } });
 
     // An org outside the caller's reach entirely is refused before any read.
-    queries.length = 0;
+    vi.clearAllMocks();
+  vi.mocked(findPartnerOwnedGroupIds).mockReset().mockResolvedValue([]);
+  queries.length = 0;
     const foreign = 'f0000000-0000-4000-8000-000000000001';
     const out = await resolveSweepTargets(partnerAuth(), { ...base, scope: { kind: 'orgs', orgIds: [foreign] } });
     expect(out).toMatchObject({ ok: false, code: 'ORG_OUT_OF_SCOPE', detail: { orgIds: [foreign] } });

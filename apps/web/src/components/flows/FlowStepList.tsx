@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import type { FlowDocumentV1, FlowStepSummary } from '@breeze/shared';
+import { FLOW_STEP_DEFAULTS, type FlowDocumentV1, type FlowStepSummary } from '@breeze/shared';
 import { useHashState } from '@/lib/useHashState';
 import { cn } from '@/lib/utils';
 
@@ -10,10 +10,64 @@ function parseStepHash(hash: string): string | null | undefined {
   return hash.startsWith(STEP_HASH_PREFIX) ? hash.slice(STEP_HASH_PREFIX.length) : undefined;
 }
 
-type BuiltinDisplayTool = 'notify' | 'http_request' | 'ai';
+type BuiltinDisplayTool =
+  | 'notify' | 'http_request' | 'ai'
+  // W06 (#5221): the legacy-conversion built-ins.
+  | 'run_script_on_targets' | 'resolve_targets' | 'create_alert';
+
+const BUILTIN_DISPLAY_TOOLS: ReadonlySet<string> = new Set<BuiltinDisplayTool>([
+  'notify', 'http_request', 'ai', 'run_script_on_targets', 'resolve_targets', 'create_alert',
+]);
 
 function isBuiltinDisplayTool(tool: string): tool is BuiltinDisplayTool {
-  return tool === 'notify' || tool === 'http_request' || tool === 'ai';
+  return BUILTIN_DISPLAY_TOOLS.has(tool);
+}
+
+type FleetSelector =
+  | { kind: 'target'; type: string }
+  | { kind: 'conditions' }
+  | { kind: 'triggerDevice' }
+  | { kind: 'devices'; count: number }
+  | { kind: 'fromStep'; stepId: string; set: string }
+  | { kind: 'unknown' };
+
+/** Which device set a fleet built-in reads (exactly one of target / conditions / deviceIds / fromStep). */
+function fleetSelector(data: Record<string, unknown>): FleetSelector {
+  const target = data.target as { type?: unknown } | undefined;
+  if (target && typeof target.type === 'string') return { kind: 'target', type: target.type };
+  if (data.conditions !== undefined) return { kind: 'conditions' };
+  if (Array.isArray(data.deviceIds)) {
+    return data.deviceIds.length === 1 && String(data.deviceIds[0]).includes('trigger.device')
+      ? { kind: 'triggerDevice' }
+      : { kind: 'devices', count: data.deviceIds.length };
+  }
+  const from = data.fromStep as { stepId?: unknown; set?: unknown } | undefined;
+  if (from && typeof from.stepId === 'string' && typeof from.set === 'string') {
+    return { kind: 'fromStep', stepId: from.stepId, set: from.set };
+  }
+  return { kind: 'unknown' };
+}
+
+function SelectorLine({ selector }: { selector: FleetSelector }) {
+  const { t } = useTranslation('flows');
+  switch (selector.kind) {
+    case 'target':
+      return <div>{t(/* i18n-dynamic */ `step.fleet.target.${['all', 'devices', 'groups', 'filter'].includes(selector.type) ? selector.type : 'other'}`)}</div>;
+    case 'conditions':
+      return <div>{t('step.fleet.conditions')}</div>;
+    case 'triggerDevice':
+      return <div>{t('step.fleet.triggerDevice')}</div>;
+    case 'devices':
+      return <div>{t('step.fleet.devices', { count: selector.count })}</div>;
+    case 'fromStep':
+      return (
+        <div>
+          {t(/* i18n-dynamic */ `step.fleet.fromStep.${['succeeded', 'dispatched', 'failed'].includes(selector.set) ? selector.set : 'dispatched'}`, { stepId: selector.stepId })}
+        </div>
+      );
+    default:
+      return null;
+  }
 }
 
 /** `https://host/path?q` -> `https://host`; anything not a parsable literal URL is shown raw. */
@@ -51,6 +105,19 @@ function BuiltinStepSummary({ stepId, tool, input }: { stepId: string; tool: Bui
           </div>
           <div className="text-muted-foreground">{t('step.http.anonymous')}</div>
         </>
+      )}
+      {tool === 'run_script_on_targets' && (
+        <>
+          <div className="font-mono">{t('step.fleet.script', { scriptId: String(data.scriptId ?? '') })}</div>
+          <SelectorLine selector={fleetSelector(data)} />
+          <div className="text-muted-foreground">
+            {data.whenOffline === 'skip' ? t('step.fleet.offlineSkip') : t('step.fleet.offlineQueue')}
+          </div>
+        </>
+      )}
+      {tool === 'resolve_targets' && <SelectorLine selector={fleetSelector(data)} />}
+      {tool === 'create_alert' && (
+        <div>{t('step.fleet.alert', { severity: String(data.severity ?? '') })}</div>
       )}
       {tool === 'ai' && (
         <>
@@ -122,7 +189,10 @@ export function FlowStepList({
               )}
               <span className="font-medium" data-testid={`flow-step-${step.id}-tool`}>{step.tool}</span>
               {summary && (
-                <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                <span
+                  data-testid={`flow-step-${step.id}-source`}
+                  className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+                >
                   {t(/* i18n-dynamic */ `step.source.${summary.source}`)}
                 </span>
               )}
@@ -165,11 +235,15 @@ export function FlowStepList({
                 )}
                 <div>
                   <dt className="text-muted-foreground">{t('step.onFailure')}</dt>
-                  <dd className="font-mono">{step.onFailure}</dd>
+                  <dd className="font-mono" data-testid={`flow-step-${step.id}-on-failure`}>
+                    {step.onFailure ?? FLOW_STEP_DEFAULTS.onFailure}
+                  </dd>
                 </div>
                 <div>
                   <dt className="text-muted-foreground">{t('step.timeout')}</dt>
-                  <dd className="font-mono">{step.timeoutSec}s</dd>
+                  <dd className="font-mono" data-testid={`flow-step-${step.id}-timeout`}>
+                    {step.timeoutSec ?? FLOW_STEP_DEFAULTS.timeoutSec}s
+                  </dd>
                 </div>
               </dl>
             )}

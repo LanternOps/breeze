@@ -823,7 +823,7 @@
     "approval": {
       "title": "Aprobación requerida",
       "approve": "Aprobar",
-      "reject": "Rechazar"
+      "reject": "Denegar"
     },
     "empty": {
       "title": "Breeze AI",
@@ -982,7 +982,8 @@
     },
     "confirm": {
       "title": "Confirmar ejecución",
-      "description": "Ejecute “{{name}}” en los dispositivos {{count}} como {{runAs}}. Los scripts se ponen en cola y comienzan a ejecutarse inmediatamente."
+      "description": "Ejecute “{{name}}” en los dispositivos {{count}} como {{runAs}}. Los scripts se ponen en cola y comienzan a ejecutarse inmediatamente.",
+      "descriptionOffline": "Ejecutar “{{name}}” en {{count}} dispositivo(s) como {{runAs}}. Los scripts se ponen en cola ahora: los dispositivos en línea comienzan de inmediato y {{offline}} dispositivo(s) sin conexión se ejecutan cuando vuelvan a estar en línea."
     },
     "selectedCount": "Dispositivo(s) {{count}} seleccionados",
     "executeBlocked": "Ejecutar no está disponible: un dispositivo seleccionado no puede ejecutar este script aquí (puede pertenecer a una organización distinta de la que se muestra, o ya no es accesible).",
@@ -1027,6 +1028,7 @@
       "submitting": "Enviando a {{count}} grupo(s)...",
       "warningsTitle": "Notas del servidor",
       "confirmDescription": "Ejecutar “{{name}}” en {{groups}} grupo(s) de dispositivos como {{runAs}}. Los scripts se ponen en cola y comienzan a ejecutarse de inmediato.",
+      "confirmDescriptionOffline": "Ejecutar “{{name}}” en {{groups}} grupo(s) de dispositivos como {{runAs}}. Los scripts se ponen en cola ahora: los dispositivos en línea comienzan de inmediato y {{offline}} dispositivo(s) sin conexión se ejecutan cuando vuelvan a estar en línea.",
       "confirmMembers": "Ahora mismo hay {{count}} dispositivo(s) único(s) en estos grupos; la pertenencia se vuelve a leer al confirmar.",
       "confirmMembersUnknown": "Aún no se conoce la cantidad de dispositivos; la pertenencia se lee al confirmar.",
       "errors": {

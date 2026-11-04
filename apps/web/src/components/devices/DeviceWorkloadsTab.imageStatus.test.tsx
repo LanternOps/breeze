@@ -56,13 +56,17 @@ describe('DeviceWorkloadsTab image status', () => {
     expect(label('pinned').textContent).toBe('Pinned');
     expect(label('local').textContent).toBe('Local build');
     expect(label('not_found').textContent).toBe('Tag not found');
-    for (const s of ['pending', 'private', 'unsupported_registry', 'error']) {
+    for (const s of ['pending', 'private', 'unsupported_registry', 'error', 'provenance_unknown']) {
       expect(label(s).textContent).toBe('Not checked');
       expect(label(s).className).not.toMatch(/success/);
     }
     expect(label('current').className).toMatch(/success/);
     expect(label('behind').className).toMatch(/warning/);
     expect(label('private').getAttribute('title')).toBe('Private registry — credentials required');
+    // #9067: Not checked (provenance unknown); the name never went to a registry.
+    expect(label('provenance_unknown').getAttribute('title')).toBe(
+      'Provenance unknown — the image name is not sent to any registry',
+    );
   });
 
   it('shows no badge for a VM row or a row without an upstream status', async () => {
@@ -81,12 +85,12 @@ describe('DeviceWorkloadsTab image status', () => {
     const section = await render9();
     const filter = screen.getByTestId('workloads-image-filter') as HTMLSelectElement;
     expect(filter.value).toBe('all');
-    expect(within(section).getAllByTestId('workloads-row')).toHaveLength(9);
+    expect(within(section).getAllByTestId('workloads-row')).toHaveLength(10);
 
     fireEvent.change(filter, { target: { value: 'not_checked' } });
     expect(window.location.hash).toBe('#workloads/not_checked');
     expect(within(section).getAllByTestId('workloads-row').map((r) => r.querySelector('td')!.textContent)).toEqual([
-      'img-pending', 'img-private', 'img-unsupported_registry', 'img-error',
+      'img-pending', 'img-private', 'img-unsupported_registry', 'img-error', 'img-provenance_unknown',
     ]);
 
     fireEvent.change(filter, { target: { value: 'behind' } });
@@ -95,7 +99,7 @@ describe('DeviceWorkloadsTab image status', () => {
 
     fireEvent.change(filter, { target: { value: 'all' } });
     expect(window.location.hash).toBe('#workloads');
-    expect(within(section).getAllByTestId('workloads-row')).toHaveLength(9);
+    expect(within(section).getAllByTestId('workloads-row')).toHaveLength(10);
   });
 
   it('adopts the filter from the hash on load and on hash change', async () => {

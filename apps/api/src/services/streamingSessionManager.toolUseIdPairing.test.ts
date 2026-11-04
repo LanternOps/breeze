@@ -104,6 +104,8 @@ vi.mock('./aiGuardrails', () => ({
 vi.mock('./scriptProposals', () => ({
   attachProposalToSession: vi.fn(async () => undefined),
   loadProposalGuardrailContext: vi.fn(async () => undefined),
+  loadProposalGuardrailContextInReach: vi.fn(async () => ({ context: undefined, proposalOrgId: null })),
+  resolveProposalOrgInReach: vi.fn(async () => null),
 }));
 vi.mock('./auditEvents', () => ({
   writeAuditEvent: vi.fn(),

@@ -178,7 +178,7 @@ export const backupProviderDevices = pgTable('backup_provider_devices', {
   accountType: varchar('account_type', { length: 20 })
     .notNull()
     .default('unknown')
-    .$type<'backup_manager' | 'm365' | 'unknown'>(),
+    .$type<'backup_manager' | 'm365' | 'gws' | 'unknown'>(),
   dataSources: text('data_sources').array().notNull().default(sql`'{}'::text[]`),
   status: externalBackupStatusEnum('status').notNull().default('unknown').$type<ExternalBackupStatus>(),
   vendorStatusCode: integer('vendor_status_code'),

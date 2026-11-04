@@ -108,7 +108,7 @@
       "cancelled": "İptal edildi",
       "completed": "Tamamlandı",
       "denied": "Reddedildi",
-      "refused": "Onay uygulanmadı",
+      "refused": "Onaylandı, sonra engellendi",
       "approved": "Onaylandı",
       "reported": "Bildirildi",
       "unknown": "Bilinmiyor"

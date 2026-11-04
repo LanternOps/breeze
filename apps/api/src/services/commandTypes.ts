@@ -176,7 +176,7 @@ export const CommandTypes = {
   // to IT that it was denied (with the technician's reason) or expired.
   // Fire-and-forget; no result handler. Partner-trust GATED like notify_user,
   // because the deny reason is technician free text. Claimable only by agents
-  // reporting pamUserNotifyProtocolVersion 1 (commandDispatch claim gate).
+  // reporting pamUserNotifyProtocolVersion 1 or 2 (commandDispatch claim gate).
   PAM_REQUEST_NOTIFY: 'pam_request_notify',
   // Endpoint messaging W02 (#8742): withdraw a message already on screen.
   // Carries no operator content (only the message id), so it is a lifecycle
@@ -239,6 +239,7 @@ export const CommandTypes = {
   // Incident response
   COLLECT_EVIDENCE: 'collect_evidence',
   EXECUTE_CONTAINMENT: 'execute_containment',
+  RELEASE_CONTAINMENT: 'release_containment',
 
   // Caller verification (#6354 W02): a short, interactive confirmation card
   // for the explicitly selected console user. Never queued (see LIVE).

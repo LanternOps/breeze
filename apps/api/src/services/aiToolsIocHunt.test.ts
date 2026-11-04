@@ -57,7 +57,7 @@ const call = (input: Record<string, unknown>, context?: Parameters<AiTool['handl
 
 const summary = {
   id: SWEEP, groupId: 'g-1', orgId: ORG, orgName: 'Acme', ruleSets: [{ id: SET_A, name: 'Advisory 7', version: 3 }],
-  scanType: 'quick', state: 'active', targeted: 4, skipped: {},
+  scanType: 'quick', paths: null, state: 'active', targeted: 4, skipped: {},
   progress: { queued: 1, running: 1, completed: 2, timedOut: 0, failed: 0, cancelled: 0, expired: 0, degraded: 1, threatsFound: 5 },
   origin: 'ai_chat', createdBy: { id: 'u-1', name: 'U' }, createdAt: '2026-10-24T00:00:00.000Z',
   expiresAt: '2026-10-25T00:00:00.000Z', completedAt: null,

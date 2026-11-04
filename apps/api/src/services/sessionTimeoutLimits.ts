@@ -1,19 +1,11 @@
-import { z } from 'zod';
+import { SESSION_TIMEOUT_MAX_MINUTES, sessionTimeoutMinutesSchema } from '@breeze/shared';
 
 /**
  * #6111 — ceiling for `settings.security.sessionTimeout` (minutes) at both the
- * partner and org level: 12 hours. Mirrors SESSION_TIMEOUT_MAX_MINUTES in the
- * web console (apps/web/src/lib/sessionTimeout.ts).
+ * partner and org level: 12 hours. Defined once in @breeze/shared
+ * (validators/securityLimits.ts), which the web console reads too (#10081).
  */
-export const SESSION_TIMEOUT_MAX_MINUTES = 720;
-
-export const sessionTimeoutMinutesSchema = z
-  .number()
-  .int()
-  .min(1)
-  .max(SESSION_TIMEOUT_MAX_MINUTES, {
-    message: `Session timeout cannot exceed ${SESSION_TIMEOUT_MAX_MINUTES} minutes (12 hours)`,
-  });
+export { SESSION_TIMEOUT_MAX_MINUTES, sessionTimeoutMinutesSchema };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === 'object' && !Array.isArray(v);

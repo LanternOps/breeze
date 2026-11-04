@@ -208,6 +208,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'list_org_contacts', description: 'List organization contacts', category: 'Integrations' },
       { name: 'list_sites', description: 'List organization sites', category: 'Integrations' },
       { name: 'get_site', description: 'Get site details', category: 'Integrations' },
+      { name: 'get_partner_settings_inheritance', description: 'Which organizations override a partner setting', category: 'Integrations' },
       { name: 'query_webhooks', description: 'List webhooks and delivery status', category: 'Integrations' },
       { name: 'query_psa_status', description: 'PSA connection status', category: 'Integrations' },
       { name: 'query_agent_versions', description: 'Agent versions and upgrade status', category: 'Integrations' },
@@ -283,11 +284,17 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_tenant_variables (list)', description: 'Tenant variables scripts receive as {{var.key}} (secret values are never shown)', category: 'Scripts & Automation' },
       { name: 'manage_support_sessions (list/get)', description: 'Quick Support sessions and whether their temporary client is online', category: 'Remote Access & Control' },
       // Full-control W14 (#6784): billing lifecycle reads (partner-scoped sessions for rates, settings and device billing).
+      { name: 'get_pax8_status', description: 'Pax8 integration health and company readiness (full partner access)', category: 'Billing' },
+      { name: 'search_pax8_products (search/provision_details/dependencies/pricing)', description: 'Mapped Pax8 products and live product requirements, commitments and vendor cost', category: 'Billing' },
+      { name: 'manage_pax8_subscriptions (list/drift)', description: 'Subscription seat counts and billing drift (full partner access)', category: 'Billing' },
+      { name: 'manage_pax8_orders (list/get/preview)', description: 'Pax8 draft orders and read-only live cost previews', category: 'Billing' },
       { name: 'manage_billing_profiles (list/get/list_work_types/get_org_profile)', description: 'Rate cards with their hourly rates per work type, work types, and the card an organization is billed by', category: 'Billing' },
       { name: 'manage_billing_settings (get_partner/get_org/currency_impact/reporting_totals)', description: 'Invoice defaults and an organization\'s tax, terms and billing contact; preview a currency change; approximate totals across currencies', category: 'Billing' },
       { name: 'manage_contract_templates (list/get/get_version/usage)', description: 'Agreement templates customers sign, their versions, and where each is used', category: 'Billing' },
       { name: 'manage_contract_documents (list)', description: 'Signed agreements and whether each is filed under a contract (no signer email)', category: 'Billing' },
       { name: 'get_device_billing', description: 'Which contract lines bill a device, or why it is not billable', category: 'Billing' },
+      // Full-control W14 PR B (#6784): accounting reads (partner-scoped; a search term is filtered in Breeze, never sent).
+      { name: 'manage_accounting_sync (status/owed_operations/customers/mappings/income_accounts/remote_candidates)', description: 'QuickBooks or Xero connection status, payment sync backlog, customers, customer and item mappings, and income accounts', category: 'Billing' },
       // Wisp memory (W03 #9909): offered only when Wisp is on, and only under a delegation grant.
       { name: 'recall', description: 'Recall Wisp memory inside the delegation grant', category: 'AI Governance' },
       // Wisp concerns (W05a #9911): offered only when Wisp is on, and only under a delegation grant.
@@ -369,7 +376,6 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_deployments (pause/resume)', description: 'Pause or resume deployments', category: 'Fleet Operations' },
       { name: 'manage_patches (approve/decline/defer)', description: 'Patch approval decisions', category: 'Fleet Operations' },
       { name: 'ioc_hunt (cancel_sweep)', description: 'Cancel an IOC sweep', category: 'Security & Compliance' },
-      { name: 'manage_groups (add_devices/remove_devices)', description: 'Manage group membership', category: 'Fleet Operations' },
       { name: 'manage_automations (enable/disable)', description: 'Toggle automation status', category: 'Fleet Operations' },
       { name: 'generate_report (create/update/delete/generate)', description: 'Report management', category: 'Fleet Operations' },
       // Ticketing (P2-4, #4191) — pre-existing gap, manage_tickets had zero
@@ -427,6 +433,9 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_billing_catalog (create_item)', description: 'Add a billing catalog item (inert until a quote, invoice, or contract uses it)', category: 'Billing' },
       // Full-control W14 (#6784): an organization-owned agreement template (a partner-wide one needs approval every time).
       { name: 'manage_contract_templates (create/update)', description: 'Create or rename an organization\'s agreement template (nothing is sent or signable until a version is published)', category: 'Billing' },
+      // Full-control W14 PR B (#6784): a read that runs without a prompt.
+      { name: 'manage_pax8_orders (create_draft/add_line/update_line/remove_line)', description: 'Stage or edit an order draft; nothing is purchased', category: 'Billing' },
+      { name: 'manage_contracts (preview_invoice)', description: 'What the next billing run of a contract would invoice: lines, totals, auto-issue and recipients (nothing is created)', category: 'Billing' },
       // Wisp memory (W03 #9909): remember writes an unconfirmed block.
       { name: 'remember', description: 'Propose a Wisp memory block (lands unconfirmed)', category: 'AI Governance' },
       // Wisp concerns and watches (W05a #9911): grant-bound, inside the delegation ceiling.
@@ -470,12 +479,15 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'security_scan (quarantine/remove/restore)', description: 'Threat management actions', category: 'Security & Compliance' },
       { name: 'ioc_hunt (sweep/import_iocs)', description: 'Run a detect-only IOC sweep in one organization (second approver above 25 devices) or import IOCs as detection rules', category: 'Security & Compliance' },
       { name: 'edr_endpoint_action (isolate/unisolate)', description: 'EDR network isolation or release through the linked vendor (release needs a second approver)', category: 'Security & Compliance' },
+      // Network-isolation W13 (#10101): four-eyes; isolating (execute_containment) stays supervised.
+      { name: 'release_containment', description: 'Lift a Breeze network isolation from a device (needs a second approver)', category: 'Security & Compliance' },
       { name: 'manage_software_policy (create/update/delete)', description: 'Software policy management', category: 'Security & Compliance' },
       { name: 'remediate_software_violation', description: 'Remediate software violations', category: 'Security & Compliance' },
       // Files, Disk & Registry
       { name: 'file_operations (read/write/delete/mkdir/rename)', description: 'Read or mutate files on device', category: 'Files, Disk & Registry' },
       { name: 'disk_cleanup (execute)', description: 'Execute disk cleanup', category: 'Files, Disk & Registry' },
       { name: 'system_cleanup (run)', description: 'Run OS-native cleaners (Windows Disk Cleanup/DISM, macOS snapshots/Homebrew, Linux caches/journal)', category: 'Files, Disk & Registry' },
+      { name: 'system_cleanup (cancel)', description: 'Cancel a running native cleanup run', category: 'Files, Disk & Registry' },
       { name: 'registry_operations (set_value/create_key/delete_key)', description: 'Modify Windows registry', category: 'Files, Disk & Registry' },
       // Network & DNS
       { name: 'network_discovery', description: 'Network discovery scan', category: 'Network & DNS' },
@@ -532,6 +544,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_deployments (create/start/cancel)', description: 'Create, start, or cancel deployments', category: 'Fleet Operations' },
       { name: 'manage_patches (install/rollback)', description: 'Install or rollback patches', category: 'Fleet Operations' },
       { name: 'manage_groups (create/update/delete)', description: 'Create, update, or delete device groups', category: 'Fleet Operations' },
+      // #10149: membership writes feed group-targeted policies and agent run scope.
+      { name: 'manage_groups (add_devices/remove_devices)', description: 'Add devices to or remove devices from a static group', category: 'Fleet Operations' },
       { name: 'manage_automations (run)', description: 'Run an automation on demand', category: 'Fleet Operations' },
       // Ticketing (P2-4, #4191)
       { name: 'manage_tickets (move_org)', description: 'Move a ticket to a different organization', category: 'Ticketing' },
@@ -540,10 +554,18 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_quotes (send/decline/create_pay_link)', description: 'Send a quote to the customer, record a decline, or create a payment link', category: 'Billing' },
       { name: 'manage_billing_catalog (update_item/archive_item/set_price/remove_price/set_org_price/remove_org_price/set_bundle_components)', description: 'Change catalog items, prices, organization price overrides, and bundles (contract renewals bill live prices)', category: 'Billing' },
       // Full-control W14 (#6784): what every organization (or one) is billed, and the legal documents customers sign.
+      { name: 'manage_pax8_subscriptions (sync/link/unlink)', description: 'Supervised: sync every organization or change which contract line later orders bill (full partner access)', category: 'Billing' },
+      { name: 'manage_pax8_orders (preflight)', description: 'Supervised: send staged order content to Pax8 for an isMock dry run', category: 'Billing' },
+      { name: 'manage_pax8_orders (submit)', description: 'Submit a billable Pax8 order at an estimated current rate; two people approve, changed inputs refuse, and cancellations are terminal (not offered to AI agents)', category: 'Billing' },
+      { name: 'manage_pax8_orders (reconcile)', description: 'Supervised: record Pax8 outcomes from vendor evidence and update billing quantities; conflicting billing edits are flagged for review', category: 'Billing' },
       { name: 'manage_billing_profiles (create/update/archive/set_rows/clone/create_work_type/update_work_type/set_org_profile/clear_org_profile)', description: 'Change rate cards and work types (every organization of the partner) or which card bills an organization', category: 'Billing' },
       { name: 'manage_billing_settings (update_partner/update_org)', description: 'Change invoice defaults, customer-facing invoice text, or an organization\'s tax, terms and billing contact', category: 'Billing' },
       { name: 'manage_contract_templates (create_version/publish/archive)', description: 'Add a draft version, publish it for signature, or archive an organization\'s agreement template (not offered to AI agents)', category: 'Billing' },
       { name: 'manage_contract_documents (link)', description: 'File a signed agreement under its contract; cannot be undone (not offered to AI agents)', category: 'Billing' },
+      // Full-control W14 PR B (#6784): generate and push need a second approver; mapping changes overwrite the provider's record.
+      { name: 'manage_contracts (generate_invoice)', description: 'Generate a contract\'s due invoice and, when the contract auto-issues, issue and email it; two people approve, and a changed total refuses (not offered to AI agents)', category: 'Billing' },
+      { name: 'manage_accounting_sync (link_mapping/unlink_mapping/sync_mapping)', description: 'Link, unlink or re-sync a customer or item with QuickBooks or Xero; linking and syncing overwrite the provider\'s record (not offered to AI agents)', category: 'Billing' },
+      { name: 'manage_accounting_sync (push/push_bulk)', description: 'Push invoices (up to 10) into QuickBooks or Xero; two people approve, and they stay in the books (not offered to AI agents)', category: 'Billing' },
       { name: 'manage_ticket_routing_rules (create/update/reorder/delete)', description: 'Create, change, reorder or delete ticket routing rules', category: 'Ticketing' },
       // Full-control W06 (#6776): PSA configuration. Partner-wide configuration, customer-visible forms,
       // terminal inbox actions and the permanent attachment delete need approval; the four hard deletes
@@ -714,6 +736,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Tier 2 without a screenshot; a screenshot (or unreadable evidenceTypes) needs approval (tier 3 supervised)
   { toolName: 'collect_evidence', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'execute_containment', tier: 3, permission: 'devices.execute + alerts.write', category: 'Security & Compliance' },
+  { toolName: 'release_containment', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 's1_isolate_device', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 's1_threat_action', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'sync_huntress_data', tier: 2, permission: 'organizations.write', category: 'Security & Compliance' },
@@ -830,10 +853,16 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'browse_device_event_log', tier: 1, permission: 'devices.execute', category: 'Services & Processes' },
   { toolName: 'manage_tenant_variables', tier: 1, permission: 'variables.read / variables.manage', category: 'Scripts & Automation' },
   { toolName: 'manage_support_sessions', tier: 1, permission: 'remote.access', category: 'Remote Access & Control' },
+  { toolName: 'get_pax8_status', tier: 1, permission: 'billing.manage', category: 'Billing' },
+  { toolName: 'search_pax8_products', tier: 1, permission: 'billing.manage', category: 'Billing' },
+  { toolName: 'manage_pax8_subscriptions', tier: 1, permission: 'billing.manage', category: 'Billing' },
+  { toolName: 'manage_pax8_orders', tier: 1, permission: 'billing.manage', category: 'Billing' },
   { toolName: 'manage_billing_profiles', tier: 1, permission: 'billing_profiles.read / billing_profiles.write', category: 'Billing' },
   { toolName: 'manage_billing_settings', tier: 1, permission: 'organizations.read / invoices.read / invoices.write', category: 'Billing' },
   { toolName: 'manage_contract_templates', tier: 1, permission: 'agreements.read / agreements.write', category: 'Billing' },
   { toolName: 'manage_contract_documents', tier: 1, permission: 'agreements.read / agreements.write', category: 'Billing' },
+  { toolName: 'manage_contracts', tier: 2, permission: 'contracts.read / contracts.write / contracts.manage', category: 'Billing' },
+  { toolName: 'manage_accounting_sync', tier: 1, permission: 'accounting.read / accounting.manage (+ organizations.write + catalog.write, or invoices.write)', category: 'Billing' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────
@@ -953,6 +982,10 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   browse_device_event_log: 'devices.execute',
   manage_tenant_variables: { list: 'variables.read', create: 'variables.manage', update: 'variables.manage', delete: 'variables.manage' },
   manage_support_sessions: 'remote.access',
+  get_pax8_status: 'billing.manage',
+  search_pax8_products: 'billing.manage',
+  manage_pax8_subscriptions: 'billing.manage',
+  manage_pax8_orders: 'billing.manage',
   manage_billing_profiles: {
     list: 'billing_profiles.read', get: 'billing_profiles.read', list_work_types: 'billing_profiles.read', get_org_profile: 'billing_profiles.read',
     create: 'billing_profiles.write', update: 'billing_profiles.write', archive: 'billing_profiles.write', set_rows: 'billing_profiles.write',
@@ -969,6 +1002,14 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   },
   manage_contract_documents: { list: 'agreements.read', link: 'agreements.write' },
   get_device_billing: 'devices.read + contracts.read',
+  manage_accounting_sync: {
+    status: 'accounting.read', owed_operations: 'accounting.read', customers: 'accounting.read', mappings: 'accounting.read',
+    income_accounts: 'accounting.read', remote_candidates: 'accounting.read',
+    link_mapping: 'accounting.manage + organizations.write + catalog.write',
+    unlink_mapping: 'accounting.manage + organizations.write + catalog.write',
+    sync_mapping: 'accounting.manage + organizations.write + catalog.write',
+    push: 'accounting.manage + invoices.write', push_bulk: 'accounting.manage + invoices.write',
+  },
   analyze_fleet_metrics: 'devices.read',
   // Stored data needs read; the live-read input flag needs execute.
   analyze_boot_performance: { stored: 'devices.read', triggerCollection: 'devices.execute' },
@@ -1016,6 +1057,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   ioc_hunt: { list_rule_sets: 'devices.read', preview_sweep: 'devices.read', list_sweeps: 'devices.read', sweep_status: 'devices.read', sweep: 'devices.execute', cancel_sweep: 'devices.execute', import_iocs: 'devices.write' },
   get_security_posture: 'devices.read',
   get_trust_page_status: 'organizations.read',
+  get_partner_settings_inheritance: 'organizations.read',
   // Tool Catalog W03 (#5218)
   draft_flow: 'automations.write',
   validate_flow: 'automations.read',
@@ -1032,7 +1074,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   test_ticket_routing_rule: 'tickets.read',
   // Files & disk
   disk_cleanup: { preview: 'devices.read', execute: 'devices.execute' },
-  system_cleanup: { list: 'devices.execute', run: 'devices.execute', status: 'devices.read' },
+  system_cleanup: { list: 'devices.execute', run: 'devices.execute', cancel: 'devices.execute', status: 'devices.read' },
   file_operations: { list: 'devices.read', read: 'devices.read', write: 'devices.execute', delete: 'devices.execute', mkdir: 'devices.execute', rename: 'devices.execute' },
   // Registry
   registry_operations: { read_key: 'devices.execute', get_value: 'devices.execute', set_value: 'devices.execute', create_key: 'devices.execute', delete_key: 'devices.execute' },

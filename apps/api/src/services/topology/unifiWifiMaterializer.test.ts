@@ -76,12 +76,54 @@ describe('buildUnifiWifiRows (real-evidence fixture)', () => {
     expect(offline.uptimeSeconds).toBeNull();
     expect(offline.uplinkRxRateBps).toBe(1724576); // positive rate on an OFFLINE AP is carried as reported
     expect(offline.radioStatistics).toEqual([{ frequencyGHz: 2.4, txRetriesPct: null }, { frequencyGHz: 5, txRetriesPct: null }]);
-    const sw = rows.get('sw-1')!;
-    expect(sw.cpuPct).toBe(0);
-    expect(sw.uplinkRxRateBps).toBe(0);
-    expect(sw.uplinkTxRateBps).toBe(0);
+    const sw = rows.get('sw-1')!; // not an AP: statistics are never written (asserted below)
+    expect(sw.cpuPct).toBeNull();
     expect(rows.get('ap-e7-online')!.uplinkRxRateBps).toBeNull();
     expect(rows.get('ap-u6lr-online')!.radioStatistics).toEqual([{ frequencyGHz: 2.4, txRetriesPct: 26 }, { frequencyGHz: 5, txRetriesPct: 0 }]);
+  });
+
+  it('writes no statistics for a device that is not positively Wi-Fi capable (false or null)', () => {
+    const resources = fixtureResources();
+    const stats = resourceOf(resources, 'statistics');
+    const swStat = (stats.rows as { deviceId: string }[]).find(r => r.deviceId === 'sw-1')!;
+    expect(swStat).toBeDefined(); // the fixture reports statistics for the switch...
+    stats.rows = [...(stats.rows as object[]), { ...swStat, rowKey: 'legacy-1', deviceId: 'legacy-1' }] as never; // ...and we add one for the unknown-capability device
+    const rows = byDevice(build(resources));
+    for (const id of ['sw-1', 'legacy-1']) {
+      const row = rows.get(id)!;
+      expect(row.statisticsObservedAt).toBeNull();
+      expect(row.uptimeSeconds).toBeNull();
+      expect(row.cpuPct).toBeNull();
+      expect(row.memPct).toBeNull();
+      expect(row.uplinkRxRateBps).toBeNull();
+      expect(row.uplinkTxRateBps).toBeNull();
+      expect(row.radioStatistics).toBeNull();
+      expect(row.lastHeartbeatAt).toBeNull();
+      expect(row.nextHeartbeatAt).toBeNull();
+    }
+    expect(rows.get('ap-u6lr-online')!.statisticsObservedAt).toEqual(capturedAt); // APs still write
+  });
+
+  it('confirms an AP from a non-empty device_details radios list even without a wifi feature/interface in the list', () => {
+    const resources = fixtureResources();
+    const list = resourceOf(resources, 'device_list');
+    const e7 = (list.rows as { deviceId: string; features: string[] | null; interfaces: string[] | null }[]).find(r => r.deviceId === 'ap-e7-online')!;
+    e7.features = null;
+    e7.interfaces = null;
+    const rows = byDevice(build(resources));
+    const row = rows.get('ap-e7-online')!;
+    expect(row.wifiCapable).toBeNull(); // the list itself stays unknown; radios only confirm for statistics/counts
+    expect(row.radioStatistics).not.toBeNull();
+    expect(row.statisticsObservedAt).toEqual(capturedAt);
+    expect(row.numClients).toBe(5);
+    expect(row.clientsObservedAt).toEqual(capturedAt);
+  });
+
+  it('keeps a non-AP without radios (switch) at null statistics and null count', () => {
+    const sw = byDevice(build(fixtureResources())).get('sw-1')!;
+    expect(sw.radioStatistics).toBeNull();
+    expect(sw.statisticsObservedAt).toBeNull();
+    expect(sw.numClients).toBeNull();
   });
 
   it('carries the radio overview, the raw controller state and the heartbeat metadata', () => {

@@ -527,8 +527,12 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
               value={draft.welcomeMessage ?? ''}
               onChange={(e) => update({ welcomeMessage: e.target.value })}
               className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+              aria-describedby="portal-welcome-help"
               data-testid="org-portal-welcome"
             />
+            <p id="portal-welcome-help" data-testid="org-portal-welcome-help" className="mt-1 text-xs text-muted-foreground">
+              {t('orgPortalSettingsEditor.support.welcomeMessageHelp')}
+            </p>
           </div>
           {/* #7510 (settings rules 3 + 4): this is the ORG level of the one
               document-footer chain (resolveDocumentFooter) — it overrides the

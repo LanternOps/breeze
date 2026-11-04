@@ -183,9 +183,10 @@ const COLD_TX = 7;
 // #8997: cold 50 -> 51 — the remote-access policy read now takes a SAVEPOINT on
 // a cache miss only (so a failed read cannot abort the org transaction); warm
 // and steady-state beats hit the cache and are unchanged.
-const COLD_STATEMENTS = 51;
-const CACHES_MISS_STATEMENTS = 21;
-const CONFIGURED_STEADY_STATEMENTS = 22;
+// #4618: each heartbeat adds exactly one indexed containment episode lookup, no savepoint.
+const COLD_STATEMENTS = 52;
+const CACHES_MISS_STATEMENTS = 22;
+const CONFIGURED_STEADY_STATEMENTS = 23;
 
 // Statement buckets (#8053 W1a-1). Each later lever asserts on its own bucket,
 // so a regression names itself instead of showing up as "statements 31 > 26".
@@ -501,7 +502,8 @@ const HOT_ROUTE_BUDGETS: Record<string, Budget> = {
   // #8142 W03 (2026-10-10): one policy-set read in one org-scoped post-commit
   // context. Was 4 tx / 31 statements. 19 -> 20: #8190's workload-inventory
   // policy read (bucket workloadInventoryPolicy) on a workload cache miss.
-  'POST /agents/:id/heartbeat': { transactions: 3, statements: 20 },
+  // #4618: 20 -> 21 for the single containment episode lookup.
+  'POST /agents/:id/heartbeat': { transactions: 3, statements: 21 },
   'GET /agents/:id/unifi-collectors': { transactions: 1, statements: 4 },
   'POST /agents/:id/process-sample': { transactions: 2, statements: 8 },
   'PUT /agents/:id/security/status': { transactions: 2, statements: 10 },
@@ -824,11 +826,13 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     // workload-inventory policy read (bucket workloadInventoryPolicy), which
     // runs on a workload settings-cache miss; warm is a Redis hit and stays 14.
     expect(steady.transactions).toBe(ROUTE_ONLY_STEADY_HEARTBEAT_TX);
-    expect(steady.statements).toBeLessThanOrEqual(15);
+    // #4618: 15 -> 16 for the containment episode lookup.
+    expect(steady.statements).toBeLessThanOrEqual(16);
     expect(steady.buckets.workloadInventoryPolicy).toBe(1);
     expect(warm.buckets.workloadInventoryPolicy).toBe(0);
     expect(warm.transactions).toBe(2);
-    expect(warm.statements).toBeLessThanOrEqual(14);
+    // #4618: 14 -> 15 for the containment episode lookup.
+    expect(warm.statements).toBeLessThanOrEqual(15);
     expect(cold.transactions).toBeLessThanOrEqual(COLD_TX);
     expect(cold.statements).toBeLessThanOrEqual(COLD_STATEMENTS);
     expect(cold.buckets.hierarchyLoad).toBe(1);
@@ -1006,7 +1010,8 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(steady.buckets.policySetLoad).toBe(1);
     expect(steady.buckets.perFeatureAssignmentRead).toBe(0);
     // 16 -> 17: #8190's workload-inventory policy read (workload cache miss).
-    expect(steady.statements).toBeLessThanOrEqual(17);
+    // #4618: 17 -> 18 for the containment episode lookup.
+    expect(steady.statements).toBeLessThanOrEqual(18);
   });
 
   // Both guards assert the same invariant from two directions: a REAL SQL error
@@ -1315,7 +1320,8 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(steady.buckets.monitoringSecondary).toBe(0);
     expect(steady.transactions).toBe(2);
     // 14 -> 15: #8190's workload-inventory policy read (workload cache miss).
-    expect(steady.statements).toBeLessThanOrEqual(15);
+    // #4618: 15 -> 16 for the containment episode lookup.
+    expect(steady.statements).toBeLessThanOrEqual(16);
   });
 
   runDb('cross-tenant assignments forged onto this device never reach its heartbeat (#8142)', async () => {

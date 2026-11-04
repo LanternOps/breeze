@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BackupOverviewDto } from '@breeze/shared';
 import { BackupOverview } from './BackupOverview';
 
@@ -44,6 +44,80 @@ const emptyOverview: BackupOverviewDto = {
 };
 
 describe('BackupOverview', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('renders SaaS workloads separately with health, relative backup time and item counts', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-02T12:00:00Z'));
+    render(<BackupOverview overview={{
+      ...configuredOverview,
+      saasWorkloads: [
+        { providerLabel: 'NinjaOne SaaS Backup (Dropsuite)', workload: 'm365_mail', accountType: 'm365', health: 'healthy', status: 'completed', lastSuccessAt: '2026-09-02T11:30:00Z', itemCount: 42 },
+        { providerLabel: null, workload: 'gws_drive', accountType: 'gws', health: 'critical', status: 'failed', lastSuccessAt: null, itemCount: null },
+      ],
+    }} />);
+
+    expect(screen.getByTestId('portal-backup-saas').textContent).toContain('Microsoft 365 / Google Workspace backup');
+    const rows = screen.getAllByTestId('portal-backup-saas-row');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].textContent).toContain('Microsoft 365 mail backup');
+    expect(rows[0].textContent).toContain('NinjaOne SaaS Backup (Dropsuite)');
+    expect(rows[0].textContent).toContain('Healthy');
+    expect(rows[0].textContent).toContain('30 minutes ago');
+    expect(rows[0].textContent).toContain('42');
+    expect(rows[1].textContent).toContain('Google Drive backup');
+    expect(rows[1].textContent).toContain('Critical');
+    expect(rows[1].textContent).toContain('No successful backup yet');
+    expect(rows[1].textContent).toContain('Not available');
+    expect(rows[1].textContent).not.toMatch(/Dropsuite|NinjaOne|dropsuite/);
+    expect(screen.getByTestId('portal-backup-overview-protected').textContent).toContain('3 of 4');
+  });
+
+  it('labels every supported SaaS workload and preserves zero item counts', () => {
+    const labels = [
+      ['m365_mail', 'Microsoft 365 mail backup'],
+      ['m365_onedrive', 'OneDrive backup'],
+      ['m365_sharepoint', 'SharePoint backup'],
+      ['m365_teams', 'Teams backup'],
+      ['gws_mail', 'Google Workspace mail backup'],
+      ['gws_drive', 'Google Drive backup'],
+      ['gws_shared_drive', 'Google shared drives backup'],
+      ['m365_exchange', 'Exchange backup'],
+    ];
+    render(<BackupOverview overview={{
+      ...configuredOverview,
+      saasWorkloads: labels.map(([workload]) => ({
+        providerLabel: null, workload,
+        accountType: workload.startsWith('gws') ? 'gws' : 'm365',
+        health: 'unknown', status: 'unknown', lastSuccessAt: null, itemCount: 0,
+      })),
+    }} />);
+
+    const rows = screen.getAllByTestId('portal-backup-saas-row');
+    labels.forEach(([, label], index) => {
+      expect(rows[index].textContent).toContain(label);
+    });
+    expect(screen.getAllByTestId('portal-backup-saas-items').every((cell) => cell.textContent?.endsWith('0'))).toBe(true);
+  });
+
+  it('does not claim no backup data when only SaaS workloads are present', () => {
+    render(<BackupOverview overview={{
+      ...emptyOverview,
+      saasWorkloads: [{ providerLabel: null, workload: 'm365_exchange', accountType: 'm365', health: 'healthy', status: 'completed', lastSuccessAt: '2026-09-02T11:00:00Z', itemCount: null }],
+    }} />);
+
+    expect(screen.getByTestId('portal-backup-saas')).not.toBeNull();
+    expect(screen.queryByTestId('portal-backup-overview-status')).toBeNull();
+    expect(screen.getByTestId('portal-backup-overview-protected').textContent).toContain('0 of 4');
+  });
+
+  it('hides the SaaS section for missing and empty arrays', () => {
+    const { rerender } = render(<BackupOverview overview={configuredOverview} />);
+    expect(screen.queryByTestId('portal-backup-saas')).toBeNull();
+    rerender(<BackupOverview overview={{ ...configuredOverview, saasWorkloads: [] }} />);
+    expect(screen.queryByTestId('portal-backup-saas')).toBeNull();
+  });
+
   it('renders configured backup health and breach counts in the reader’s words', () => {
     render(<BackupOverview overview={configuredOverview} hasBackupActivity />);
 

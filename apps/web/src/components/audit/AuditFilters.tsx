@@ -4,22 +4,16 @@ import { Calendar, Check, ChevronDown, Loader2, Search, User, X } from 'lucide-r
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { auditActionFilterOptions, auditPrefixLabel } from '@/lib/auditFormat';
-
-type DatePreset = 'today' | '7d' | '30d' | 'custom';
-
-type AuditFiltersState = {
-  datePreset: DatePreset;
-  startDate?: string;
-  endDate?: string;
-  userId?: string;
-  userEmail?: string;
-  actions: string[];
-  resources: string[];
-  search: string;
-};
+import type { ActiveFilters, DatePreset } from './auditFilterParams';
 
 type AuditFiltersProps = {
-  onApply?: (filters: AuditFiltersState) => void;
+  /**
+   * The filters currently applied to the trail. The viewer unmounts this panel
+   * on Apply, so it seeds its state from here on every open; without it the
+   * panel reopened showing the defaults while a custom range was active (#9941).
+   */
+  initialFilters?: ActiveFilters | null;
+  onApply?: (filters: ActiveFilters) => void;
   onClear?: () => void;
 };
 
@@ -47,23 +41,23 @@ const resourceOptions = [
   'ticket'
 ];
 
-export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
+export default function AuditFilters({ initialFilters, onApply, onClear }: AuditFiltersProps) {
   const { t } = useTranslation('admin');
-  const [datePreset, setDatePreset] = useState<DatePreset>('7d');
+  const [datePreset, setDatePreset] = useState<DatePreset>(initialFilters?.datePreset ?? '7d');
   const presetLabels: Record<DatePreset, string> = {
     today: t('audit.auditFilters.presets.today'),
     '7d': t('audit.auditFilters.presets.last7Days'),
     '30d': t('audit.auditFilters.presets.last30Days'),
     custom: t('audit.auditFilters.presets.custom')
   };
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd, setCustomEnd] = useState('');
+  const [customStart, setCustomStart] = useState(initialFilters?.startDate ?? '');
+  const [customEnd, setCustomEnd] = useState(initialFilters?.endDate ?? '');
   const [userSearch, setUserSearch] = useState('');
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const [selectedUserId, setSelectedUserId] = useState<string | undefined>();
-  const [selectedActions, setSelectedActions] = useState<string[]>([]);
-  const [selectedResources, setSelectedResources] = useState<string[]>([]);
-  const [detailsSearch, setDetailsSearch] = useState('');
+  const [selectedUserId, setSelectedUserId] = useState<string | undefined>(initialFilters?.userId);
+  const [selectedActions, setSelectedActions] = useState<string[]>(initialFilters?.actions ?? []);
+  const [selectedResources, setSelectedResources] = useState<string[]>(initialFilters?.resources ?? []);
+  const [detailsSearch, setDetailsSearch] = useState(initialFilters?.search ?? '');
   const [users, setUsers] = useState<UserOption[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
 
@@ -99,6 +93,12 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
   }, [userSearch, users]);
 
   const selectedUser = users.find(user => user.id === selectedUserId);
+  // The applied user's email, while the reopened panel's user is still the one
+  // that was applied. Covers the users list not having loaded (or failing), so
+  // an applied user filter is neither hidden nor dropped on re-apply (#9941).
+  const appliedUserEmail =
+    selectedUserId && selectedUserId === initialFilters?.userId ? initialFilters.userEmail : undefined;
+  const selectedUserLabel = selectedUser?.name || selectedUser?.email || appliedUserEmail;
 
   const toggleSelection = (value: string, list: string[], setter: (next: string[]) => void) => {
     if (list.includes(value)) {
@@ -114,7 +114,7 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
       startDate: datePreset === 'custom' ? customStart : undefined,
       endDate: datePreset === 'custom' ? customEnd : undefined,
       userId: selectedUserId,
-      userEmail: selectedUser?.email,
+      userEmail: selectedUser?.email ?? appliedUserEmail,
       actions: selectedActions,
       resources: selectedResources,
       search: detailsSearch
@@ -151,6 +151,8 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
               <button
                 key={preset}
                 type="button"
+                data-testid={`audit-date-preset-${preset}`}
+                aria-pressed={datePreset === preset}
                 onClick={() => setDatePreset(preset)}
                 className={cn(
                   'rounded-full border px-3 py-1 text-xs font-medium',
@@ -242,10 +244,13 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
               </div>
             )}
           </div>
-          {selectedUser && (
-            <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-sm">
+          {selectedUserLabel && (
+            <div
+              data-testid="audit-user-filter-chip"
+              className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-sm"
+            >
               <span className="text-muted-foreground">
-                {t('audit.auditFilters.filteringBy')} <span className="font-medium text-foreground">{selectedUser.name}</span>
+                {t('audit.auditFilters.filteringBy')} <span className="font-medium text-foreground">{selectedUserLabel}</span>
               </span>
               <button
                 type="button"
@@ -313,6 +318,7 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
           <Search className="h-4 w-4 text-muted-foreground" />
           <input
             type="text"
+            data-testid="audit-details-search"
             value={detailsSearch}
             onChange={event => setDetailsSearch(event.target.value)}
             placeholder={t('audit.auditFilters.searchDetailsPlaceholder')}

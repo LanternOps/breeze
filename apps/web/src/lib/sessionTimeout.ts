@@ -1,5 +1,6 @@
 /**
  * #6111 — ceiling for the Session Timeout setting (minutes): 12 hours.
- * Mirrors SESSION_TIMEOUT_MAX_MINUTES in apps/api/src/services/sessionTimeoutLimits.ts.
+ * Defined once in @breeze/shared (validators/securityLimits.ts), the same
+ * module the API write boundary uses (#10081).
  */
-export const SESSION_TIMEOUT_MAX_MINUTES = 720;
+export { SESSION_TIMEOUT_MAX_MINUTES } from '@breeze/shared';

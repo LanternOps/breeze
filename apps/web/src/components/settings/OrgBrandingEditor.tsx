@@ -10,15 +10,20 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { PORTAL_PRIMARY_COLOR_PATTERN } from '@breeze/shared';
+import InheritedField from '../shared/InheritedField';
 
-// customCss is intentionally NOT part of BrandingData: as of #5952 it is
-// persisted via portal_branding (orgPortalSettings.ts), not
-// organizations.settings.branding — this component loads/saves it through a
+// customCss and primaryColor are intentionally NOT part of BrandingData: they
+// are persisted via portal_branding (orgPortalSettings.ts), not
+// organizations.settings.branding — this component loads/saves them through a
 // dedicated PATCH /orgs/organizations/:id/portal-settings call so the two
-// writes (this section's other branding fields vs. customCss) stay decoupled.
+// writes (this section's other branding fields vs. portal_branding) stay
+// decoupled. customCss moved in #5952; primaryColor in #9962, because
+// portal_branding.primary_color is the org override every quote/invoice
+// renderer reads (resolveDocumentBrand), so a colour saved to the settings blob
+// never reached a customer document.
 type BrandingData = {
   logoUrl?: string;
-  primaryColor?: string;
   secondaryColor?: string;
   theme?: 'light' | 'dark' | 'system';
   portalSubdomain?: string;
@@ -35,9 +40,12 @@ type OrgBrandingEditorProps = {
   locked?: string[];
 };
 
+// The accent quote/invoice renderers use when neither the org nor the partner
+// has a colour (quotePdf/invoicePdf `hexToColor(..., '#2563eb')`).
+const DEFAULT_PRIMARY_COLOR = '#2563eb';
+
 const defaultBranding: BrandingData = {
   logoUrl: '',
-  primaryColor: '#2563eb',
   secondaryColor: '#14b8a6',
   theme: 'system',
   portalSubdomain: ''
@@ -67,28 +75,48 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
   const initialData = { ...defaultBranding, ...branding };
   const [logoPreview, setLogoPreview] = useState(initialData.logoUrl || '');
   const [logoName, setLogoName] = useState('');
-  const [primaryColor, setPrimaryColor] = useState(initialData.primaryColor || defaultBranding.primaryColor || '#2563eb');
   const [secondaryColor, setSecondaryColor] = useState(initialData.secondaryColor || defaultBranding.secondaryColor || '#14b8a6');
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(initialData.theme || 'system');
   const [customCss, setCustomCss] = useState('');
   const [savingCustomCss, setSavingCustomCss] = useState(false);
-  // Tracks whether the initial customCss GET failed (network error, non-2xx,
-  // or an unparsable body) — reviewed data-loss risk: without this, a failed
-  // load silently leaves `customCss` at the placeholder default, and Save
-  // would then overwrite the admin's real saved CSS with that placeholder
+  // Tracks whether the initial portal-settings GET failed (network error,
+  // non-2xx, or an unparsable body) — reviewed data-loss risk: without this, a
+  // failed load silently leaves `customCss` at the placeholder default, and
+  // Save would then overwrite the admin's real saved CSS with that placeholder
   // text, with a success toast telling them it worked. When true, Save skips
-  // the customCss PATCH entirely rather than write an unverified value.
+  // the portal-settings PATCH entirely rather than write an unverified value.
   const [customCssLoadFailed, setCustomCssLoadFailed] = useState(false);
+  // #9962: the org's own document accent (portal_branding.primary_color);
+  // '' = inherit the partner's Branding colour (partnerPrimaryColor).
+  const [primaryColor, setPrimaryColor] = useState('');
+  const [partnerPrimaryColor, setPartnerPrimaryColor] = useState<string | null>(null);
+  // Only a colour the admin actually edited is written: an untouched stored
+  // value is never re-sent, so a legacy value the strict schema would reject
+  // cannot block an unrelated Save.
+  const [primaryColorTouched, setPrimaryColorTouched] = useState(false);
+  // The colour field stays disabled until portal-settings has loaded, so a
+  // slow GET can never overwrite what the admin has already typed. Without an
+  // orgId (isolated tests) there is nothing to load.
+  const [primaryColorLoaded, setPrimaryColorLoaded] = useState(!orgId);
+  const primaryColorDisabled = customCssLoadFailed || !primaryColorLoaded;
   const [portalSubdomain, setPortalSubdomain] = useState(initialData.portalSubdomain || '');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
-  const resolvedPrimaryColor = sanitizeHexColor(primaryColor, defaultBranding.primaryColor || '#2563eb');
+  const trimmedPrimaryColor = primaryColor.trim();
+  const primaryColorInvalid = trimmedPrimaryColor !== '' && !PORTAL_PRIMARY_COLOR_PATTERN.test(trimmedPrimaryColor);
+  // What the org's documents print: its own colour, else the partner's, else
+  // the app default the renderers fall back to.
+  const resolvedPrimaryColor = sanitizeHexColor(
+    trimmedPrimaryColor,
+    sanitizeHexColor(partnerPrimaryColor ?? '', DEFAULT_PRIMARY_COLOR),
+  );
   const resolvedSecondaryColor = sanitizeHexColor(secondaryColor, defaultBranding.secondaryColor || '#14b8a6');
-  const primaryToken = resolveUiColorToken(resolvedPrimaryColor, defaultBranding.primaryColor || '#2563eb');
+  const primaryToken = resolveUiColorToken(resolvedPrimaryColor, DEFAULT_PRIMARY_COLOR);
   const secondaryToken = resolveUiColorToken(resolvedSecondaryColor, defaultBranding.secondaryColor || '#14b8a6');
 
-  // customCss lives in portal_branding (#5952), not organizations.settings —
-  // load its current persisted value independently of the `branding` prop.
+  // customCss (#5952) and primaryColor (#9962) live in portal_branding, not
+  // organizations.settings — load their persisted values independently of the
+  // `branding` prop.
   // A missing/null value leaves the textarea empty (the sample CSS is only a
   // placeholder, never a saved value). Any failure to load
   // (network error, non-2xx, unparsable body) is treated the same way and
@@ -113,6 +141,13 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
         const loaded = body?.data?.customCss;
         if (!cancelled && typeof loaded === 'string') {
           setCustomCss(loaded);
+        }
+        const loadedColor = body?.data?.primaryColor;
+        const inheritedColor = body?.data?.partnerPrimaryColor;
+        if (!cancelled) {
+          setPrimaryColor(typeof loadedColor === 'string' ? loadedColor : '');
+          setPartnerPrimaryColor(typeof inheritedColor === 'string' ? inheritedColor : null);
+          setPrimaryColorLoaded(true);
         }
       } catch (err) {
         console.warn('[OrgBrandingEditor] failed to load portal custom CSS', err);
@@ -163,7 +198,6 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
   const handleSave = async () => {
     const data: BrandingData = {
       logoUrl: logoPreview,
-      primaryColor: resolvedPrimaryColor,
       secondaryColor: resolvedSecondaryColor,
       theme,
       portalSubdomain
@@ -179,6 +213,13 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
       return;
     }
 
+    // An untouched value is not sent (see primaryColorTouched), so only an
+    // edited one can block the save.
+    if (primaryColorTouched && primaryColorInvalid) {
+      showToast({ message: t('orgBrandingEditor.colors.primaryInvalid'), type: 'error' });
+      return;
+    }
+
     setSavingCustomCss(true);
     try {
       // Validate/save CSS first, then await the remaining branding settings.
@@ -187,7 +228,10 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
         await runAction({
           request: () => fetchWithAuth(`/orgs/organizations/${orgId}/portal-settings`, {
             method: 'PATCH',
-            body: JSON.stringify({ customCss: customCss.trim() ? customCss : null })
+            body: JSON.stringify({
+              customCss: customCss.trim() ? customCss : null,
+              ...(primaryColorTouched ? { primaryColor: trimmedPrimaryColor || null } : {})
+            })
           }),
           errorFallback: t('orgBrandingEditor.customCss.saveError'),
           onUnauthorized: () => void navigateTo('/login', { replace: true })
@@ -285,36 +329,61 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">
+            {/* #9962 (settings rules 3 + 4): the ORG level of the one document
+                accent chain (resolveDocumentBrand) — it overrides the partner's
+                Branding colour on this org's quotes and invoices, and while
+                blank shows the inherited partner value and its source. Not
+                partner-locked: the `locked` list describes the retired
+                organizations.settings.branding.primaryColor key, which no
+                document ever read. */}
             <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <Palette className="h-4 w-4" />
                 {t('orgBrandingEditor.colors.primary')}
               </div>
-              <div className={`flex items-center gap-3 ${isLocked('primaryColor') ? 'opacity-60' : ''}`}>
+              <div className="flex items-start gap-3">
                 <input
                   type="color"
                   value={resolvedPrimaryColor}
-                  disabled={isLocked('primaryColor')}
+                  disabled={primaryColorDisabled}
+                  aria-label={t('orgBrandingEditor.colors.primary')}
+                  data-testid="branding-primary-color-picker"
                   onChange={event => {
                     setPrimaryColor(event.target.value);
+                    setPrimaryColorTouched(true);
                     markDirty();
                   }}
-                  className="h-10 w-12 cursor-pointer rounded-md border bg-background"
+                  className="mt-1 h-10 w-12 shrink-0 cursor-pointer rounded-md border bg-background disabled:opacity-60"
                 />
-                <input
-                  type="text"
-                  value={primaryColor}
-                  disabled={isLocked('primaryColor')}
-                  onChange={event => {
-                    setPrimaryColor(event.target.value);
-                    markDirty();
-                  }}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-                />
+                <div className="min-w-0 flex-1">
+                  <InheritedField
+                    id="org-branding-primary-color"
+                    label={t('orgBrandingEditor.colors.primary')}
+                    hideLabel
+                    value={primaryColor}
+                    onChange={(value) => {
+                      setPrimaryColor(value);
+                      setPrimaryColorTouched(true);
+                      markDirty();
+                    }}
+                    inheritedValue={partnerPrimaryColor}
+                    inheritedSource={t('orgBrandingEditor.colors.primaryInheritedSource')}
+                    disabled={primaryColorDisabled}
+                    ariaInvalid={primaryColorInvalid}
+                    ariaDescribedBy="org-branding-primary-color-help"
+                    data-testid="branding-primary-color"
+                  />
+                </div>
               </div>
-              {isLocked('primaryColor') && (
-                <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgBrandingEditor.managedByPartner')}</span>
+              {primaryColorInvalid && (
+                <p className="text-xs text-destructive">{t('orgBrandingEditor.colors.primaryInvalid')}</p>
               )}
+              {customCssLoadFailed && (
+                <p className="text-xs text-destructive italic">{t('orgBrandingEditor.colors.primaryLoadError')}</p>
+              )}
+              <p id="org-branding-primary-color-help" className="text-xs text-muted-foreground">
+                {t('orgBrandingEditor.colors.primaryHelp')}
+              </p>
             </div>
 
             <div className="space-y-2 rounded-lg border bg-muted/40 p-4">

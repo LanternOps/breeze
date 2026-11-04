@@ -11,7 +11,12 @@ const MIN_DAYS = 1;
 const MAX_DAYS = 365;
 
 /**
- * #10020 — edit an integration's `config.retentionDays`. Empty sends `null`,
+ * #10020 / #10054 — edit what Breeze stores for an integration: whether
+ * allowed queries are synced at all (`config.storeAllowedTraffic`, default
+ * off = blocked and redirected only) and how long events are kept
+ * (`config.retentionDays`). This modal is the one home of both settings.
+ *
+ * Retention: `config.retentionDays`. Empty sends `null`,
  * which clears the override so the deployment default applies
  * (DNS_SECURITY_RETENTION_DAYS_DEFAULT, 90 days). The nightly sweep in
  * apps/api/src/jobs/dnsSecurityRetention.ts applies it to events and daily
@@ -22,14 +27,16 @@ export default function EditDnsRetentionModal({
   onClose,
   onSaved,
 }: {
-  integration: { id: string; name: string; retentionDays: number | null };
+  integration: { id: string; name: string; retentionDays: number | null; storeAllowedTraffic: boolean };
   onClose: () => void;
   onSaved: () => void;
 }) {
   const { t } = useTranslation('security');
   const inputId = useId();
   const helpId = useId();
+  const allowedHelpId = useId();
   const [value, setValue] = useState(integration.retentionDays?.toString() ?? '');
+  const [storeAllowedTraffic, setStoreAllowedTraffic] = useState(integration.storeAllowedTraffic);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -53,7 +60,7 @@ export default function EditDnsRetentionModal({
       await runAction({
         request: () => fetchWithAuth(`/dns-security/integrations/${integration.id}`, {
           method: 'PATCH',
-          body: JSON.stringify({ retentionDays }),
+          body: JSON.stringify({ retentionDays, storeAllowedTraffic }),
         }),
         errorFallback: t('dnsSecurityEditDnsRetentionModal.messages.saveFailed', { name: integration.name }),
         successMessage: t('dnsSecurityEditDnsRetentionModal.messages.saved', { name: integration.name }),
@@ -87,6 +94,25 @@ export default function EditDnsRetentionModal({
       </p>
 
       <form onSubmit={handleSubmit} className="mt-4 space-y-4" noValidate>
+        <div>
+          <label className="flex items-start gap-2 text-sm font-medium">
+            <input
+              type="checkbox"
+              data-testid="dns-store-allowed-traffic"
+              checked={storeAllowedTraffic}
+              onChange={(e) => setStoreAllowedTraffic(e.target.checked)}
+              aria-describedby={allowedHelpId}
+              className="mt-0.5 h-4 w-4 rounded border"
+            />
+            {t('dnsSecurityEditDnsRetentionModal.storeAllowedTraffic.label')}
+          </label>
+          <p id={allowedHelpId} className="mt-1 text-xs text-muted-foreground">
+            {storeAllowedTraffic
+              ? t('dnsSecurityEditDnsRetentionModal.storeAllowedTraffic.helpOn')
+              : t('dnsSecurityEditDnsRetentionModal.storeAllowedTraffic.helpOff')}
+          </p>
+        </div>
+
         <div>
           <label htmlFor={inputId} className="mb-1 block text-sm font-medium">
             {t('dnsSecurityEditDnsRetentionModal.fieldLabel')}

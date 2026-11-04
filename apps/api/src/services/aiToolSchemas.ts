@@ -9,6 +9,12 @@ import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 
 import { fleetTimeFiltersSchema } from './timeSync/fleetFilters';
 import { z } from 'zod';
+import { partnerSettingsInheritanceInputSchema } from './aiToolSchemasPartnerSettingsInheritance';
+export {
+  PARTNER_SETTINGS_INHERITANCE_BUCKETS,
+  PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT,
+  partnerSettingsInheritanceInputSchema,
+} from './aiToolSchemasPartnerSettingsInheritance';
 import { isIP } from 'node:net';
 import { MEMORY_BLOCK_TYPES, MEMORY_CONFIDENCES, MEMORY_OWNER_KINDS } from '@breeze/shared';
 import {
@@ -63,6 +69,7 @@ import { securityPolicyToolSchemas } from './aiToolSchemasSecurityPolicy';
 import { softwareToolSchemas } from './aiToolSchemasSoftware';
 import { deviceOpsToolSchemas } from './aiToolSchemasDeviceOps';
 import { billingToolSchemas } from './aiToolSchemasBilling';
+import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -488,7 +495,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     siteId: uuid.optional(),
     search: z.string().max(200).optional(),
     tags: z.array(z.string().max(100)).max(20).optional(),
-    ...pageZodShape(25, 100),
+    ...pageZodShape(20, 100),
   }),
 
   get_device_details: z.object({
@@ -605,6 +612,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   ...deviceOpsToolSchemas,
   // Full-control W14 (#6784): billing lifecycle tools (PR A).
   ...billingToolSchemas,
+  ...pax8ToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),
@@ -713,10 +721,16 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'list_links',
       'link_ticket',
       'unlink_ticket',
+      // #8972 ticket merge: ticketId is the source, intoTicketId the survivor.
+      'merge_preview',
+      'merge',
       // W06 (#6776): assign/status/priority over up to 50 tickets of one org.
       'bulk_update',
     ]),
     ticketId: uuid.optional(),
+    // merge_preview / merge (#10161: was registry-only, so the chat SDK stripped it).
+    intoTicketId: uuid.optional(),
+    notifyRequester: z.boolean().optional(),
     ticketIds: z.array(uuid).min(1).max(50).optional(),
     // create: the type; list: one type or several (#8596).
     ticketType: z.union([ticketTypeSchema, z.array(ticketTypeSchema).min(1)]).optional(),
@@ -1076,12 +1090,20 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'pause',
       'resume',
       'cancel',
+      // Full-control W14 PR B (#6784).
+      'preview_invoice',
+      'generate_invoice',
     ]),
     contractId: uuid.optional(),
     lineId: uuid.optional(),
     input: z.record(z.string(), z.unknown()).optional(),
     line: z.record(z.string(), z.unknown()).optional(),
     patch: z.record(z.string(), z.unknown()).optional(),
+    // generate_invoice assertions, copied from preview_invoice's generateWith (W14 PR B).
+    periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    expectedTotal: z.string().regex(/^\d{1,12}(\.\d{1,2})?$/).optional(),
+    autoIssue: z.boolean().optional(),
+    expectedRecipients: z.array(z.string().max(320)).max(20).optional(),
   }),
 
   // Service deliverables W02 (#5573 spec §10). Payload objects stay open
@@ -1137,7 +1159,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
     severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
     deviceId: uuid.optional(),
-    ...keysetZodShape(15, 100),
+    ...keysetZodShape(12, 100),
     resolutionNote: z.string().max(1000).optional(),
     suppressDuration: z.number().int().min(0).max(720).optional(),
   }).refine(
@@ -1187,6 +1209,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
 
   get_huntress_incidents: z.object({
+    incidentId: uuid.optional(),
     orgId: uuid.optional(),
     integrationId: uuid.optional(),
     status: z.enum(['open', 'in_progress', 'resolved', 'dismissed']).optional(),
@@ -1195,6 +1218,17 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     search: z.string().max(200).optional(),
     includeResolved: z.boolean().optional(),
     limit: z.number().int().min(1).max(500).optional(),
+    offset: z.number().int().min(0).max(100000).optional(),
+  }),
+
+  get_huntress_agents: z.object({
+    orgId: uuid.optional(),
+    integrationId: uuid.optional(),
+    mapping: z.enum(['mapped', 'unmapped', 'all']).optional(),
+    offlineOnly: z.boolean().optional(),
+    deviceId: uuid.optional(),
+    search: z.string().max(200).optional(),
+    limit: z.number().int().min(1).max(200).optional(),
     offset: z.number().int().min(0).max(100000).optional(),
   }),
 
@@ -1687,7 +1721,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
    */
   system_cleanup: z.object({
     deviceId: uuid,
-    action: z.enum(['list', 'run', 'status']),
+    action: z.enum(['list', 'run', 'status', 'cancel']),
     actionIds: z
       .array(z.enum(SYSTEM_CLEANUP_ACTION_IDS))
       .min(1)
@@ -1701,7 +1735,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       })
       .strict()
       .optional(),
-    /** run's handle, for `status`. */
+    /** run's handle, for `status` and `cancel`. */
     cleanupRunId: uuid.optional(),
     /** A pending catalog request's id, for a `list` re-check. */
     commandId: uuid.optional(),
@@ -1931,6 +1965,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   // Agent log tools
   search_agent_logs: z.object({
+    orgId: uuid.optional(),
     deviceIds: z.array(uuid).max(50).optional(),
     level: z.enum(['debug', 'info', 'warn', 'error']).optional(),
     component: z.string().max(100).optional(),
@@ -1990,6 +2025,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   get_trust_page_status: z.object({
     orgId: uuid,
   }),
+
+  // #9763: partner settings inheritance read (the two inheritance routes' query schemas).
+  get_partner_settings_inheritance: partnerSettingsInheritanceInputSchema,
 
   // Tool Catalog W03 (#5218). `document` is an OPEN record on purpose: a
   // structurally broken or oversized document must reach the flow validator
@@ -2281,10 +2319,16 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     category: z.string().optional(),
     limit: z.number().int().min(1).max(50).optional(),
   }),
+  // #10417: scriptId OR deviceId — "did my push run on device X" has no script id.
   get_script_execution_history: z.object({
-    scriptId: uuid,
+    scriptId: uuid.optional(),
+    deviceId: uuid.optional(),
+    since: z.string().datetime({ offset: true }).optional(),
     limit: z.number().int().min(1).max(50).optional(),
-  }),
+  }).refine(
+    (data) => Boolean(data.scriptId || data.deviceId),
+    { message: 'Either scriptId or deviceId must be provided' }
+  ),
   get_script_execution: z.object({
     executionId: uuid,
     stdoutOffset: z.number().int().min(0).optional(),
@@ -2430,8 +2474,18 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     incidentId: uuid,
     deviceId: uuid,
     actionType: z.enum(['process_kill', 'network_isolation', 'account_disable', 'usb_block']),
+    ttlHours: z.number().int().min(1).max(720).optional(),
+    reason: z.string().trim().min(1).max(2000).optional(),
     parameters: z.record(z.string(), z.unknown()).optional(),
     approvalRef: z.string().max(128).optional(),
+  }),
+
+  // Network-isolation W13 (#10101): no generation, org or allowlist field — the
+  // approval binding comes from the pinned effect digest, never from the model.
+  release_containment: z.object({
+    deviceId: uuid,
+    isolationId: uuid,
+    reason: z.string().trim().min(1).max(2000),
   }),
 
   collect_evidence: z.object({

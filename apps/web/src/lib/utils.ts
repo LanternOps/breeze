@@ -1,6 +1,7 @@
 import { type ClassValue, clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { formatNumber as formatLocaleNumber } from './i18n/format';
+import { DISPLAY_ACRONYMS } from './displayAcronyms';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -50,8 +51,37 @@ export function friendlyFetchError(err: unknown): string {
   return msg;
 }
 
+/**
+ * Explicit names for tool and action keys that carry the retired "operator"
+ * noun (#10131 §6): the product calls these AI tasks, so humanizing the key
+ * would leak the old vocabulary (#10197).
+ */
+const KEY_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  operator_plan: 'AI Task Plan',
+  list_operator_tasks: 'List AI Tasks',
+  get_operator_task: 'Get AI Task',
+  operator_recipe: 'AI Task',
+};
+
+function humanizeKey(key: string): string {
+  return (
+    KEY_DISPLAY_NAMES[key] ??
+    key
+      .split('_')
+      .filter((word) => word.length > 0)
+      .map((word) => DISPLAY_ACRONYMS[word.toLowerCase()] ?? word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ')
+  );
+}
+
+/**
+ * `sync_edr_data` -> "Sync EDR Data"; `manage_dr_plan (create_plan/add_group)`
+ * -> "Manage DR Plan (Create Plan/Add Group)". Each snake_case key — the tool
+ * and every action in a trailing list — is humanized on its own: acronyms come
+ * from DISPLAY_ACRONYMS and keys in KEY_DISPLAY_NAMES use their explicit name.
+ */
 export function formatToolName(name: string): string {
-  return name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  return name.replace(/[A-Za-z0-9_]+/g, humanizeKey);
 }
 
 export function formatUptime(seconds: number | null | undefined): string {

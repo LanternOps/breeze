@@ -2,9 +2,10 @@ import { useState, useEffect, useRef } from 'react';
 import { ShieldCheck, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
-import { runAction, handleActionError } from '../../lib/runAction';
+import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
+import { parseDateOnly } from '@/lib/dateOnly';
 import { loginPathWithNext } from '../../lib/authScope';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
@@ -40,7 +41,9 @@ type DeviceWarrantyCardProps = {
   pollTimeoutMs?: number;
 };
 
-const statusConfig: Record<string, { label: string; color: string }> = {
+// Shared with the device list's Warranty column (#9863) so a status reads the
+// same in both places.
+export const WARRANTY_STATUS_BADGE: Record<string, { label: string; color: string }> = {
   active: { label: 'active', color: 'bg-success/15 text-success border-success/30' },
   expiring: { label: 'expiring', color: 'bg-warning/15 text-warning border-warning/30' },
   expired: { label: 'expired', color: 'bg-destructive/15 text-destructive border-destructive/30' },
@@ -52,18 +55,49 @@ const statusConfig: Record<string, { label: string; color: string }> = {
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '\u2014';
-  const d = new Date(dateStr);
+  // A bare YYYY-MM-DD is a calendar date: parseDateOnly keeps it on its own day
+  // west of UTC (new Date() would read it as UTC midnight and render the day before).
+  const d = parseDateOnly(dateStr);
   if (isNaN(d.getTime())) return dateStr;
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-function dataSourceLabel(source: string | null): string {
-  if (!source) return '';
-  switch (source) {
-    case 'agent_plist': return 'Agent (macOS plist)';
-    case 'provider': return 'Vendor API';
-    default: return source;
-  }
+// Stored `device_warranty.data_source` tokens → locale keys (#9862). The column
+// has no enum, so an unknown token still prints as stored rather than blank.
+const DATA_SOURCE_LABEL_KEYS: Record<string, string> = {
+  agent_cmsl: 'deviceWarrantyCard.sources.agentCmsl',
+  agent_plist: 'deviceWarrantyCard.sources.agentPlist',
+  import: 'deviceWarrantyCard.sources.import',
+  provider: 'deviceWarrantyCard.sources.provider',
+};
+
+// #9862 — a vendor hit whose end date is earlier than an imported row's does
+// not replace the import; the sync keeps the imported dates and records the
+// vendor's entitlements beside them. Say so, rather than plain "Imported".
+
+function vendorReportsEarlierEnd(warranty: Pick<WarrantyData, 'dataSource' | 'warrantyEndDate' | 'entitlements'>): boolean {
+  if (warranty.dataSource !== 'import' || !warranty.warrantyEndDate) return false;
+  const vendorEnds = (warranty.entitlements ?? [])
+    .map((e) => e.endDate)
+    .filter((d): d is string => typeof d === 'string' && d.length > 0);
+  if (vendorEnds.length === 0) return false;
+  // YYYY-MM-DD on both sides, so string order is date order.
+  const latestVendorEnd = vendorEnds.reduce((a, b) => (b > a ? b : a));
+  return latestVendorEnd.slice(0, 10) < warranty.warrantyEndDate.slice(0, 10);
+}
+
+// The refresh route's 409 `reason` (WARRANTY_REFRESH_NOT_AVAILABLE) → toast copy.
+// Both are expected outcomes, not failures, so they are warnings.
+const REFRESH_REFUSAL_TOAST_KEYS: Record<string, string> = {
+  agent_collected: 'deviceWarrantyCard.toasts.agentCollected',
+  no_vendor_lookup: 'deviceWarrantyCard.toasts.noVendorLookupKept',
+};
+
+function refreshRefusalReason(body: unknown): string | null {
+  if (!body || typeof body !== 'object') return null;
+  const { code, reason } = body as { code?: unknown; reason?: unknown };
+  if (code !== 'WARRANTY_REFRESH_NOT_AVAILABLE' || typeof reason !== 'string') return null;
+  return reason in REFRESH_REFUSAL_TOAST_KEYS ? reason : null;
 }
 
 function timeAgo(dateStr: string | null): string {
@@ -165,9 +199,17 @@ export default function DeviceWarrantyCard({
         errorFallback: t('deviceWarrantyCard.toasts.queueFailed'),
         successMessage: t('deviceWarrantyCard.toasts.refreshing'),
         onUnauthorized: UNAUTHORIZED,
+        // A refusal with a known reason is an expected outcome; the catch
+        // below shows it as a warning instead of an error toast.
+        suppressErrorToast: (status, _code, body) => status === 409 && refreshRefusalReason(body) !== null,
       });
     } catch (err) {
-      handleActionError(err, t('deviceWarrantyCard.toasts.queueFailed'));
+      const reason = err instanceof ActionError && err.status === 409 ? refreshRefusalReason(err.body) : null;
+      if (reason) {
+        showToast({ message: t(/* i18n-dynamic */ REFRESH_REFUSAL_TOAST_KEYS[reason]!), type: 'warning' });
+      } else {
+        handleActionError(err, t('deviceWarrantyCard.toasts.queueFailed'));
+      }
       if (mountedRef.current) setRefreshing(false);
       return;
     }
@@ -275,8 +317,11 @@ export default function DeviceWarrantyCard({
     return null;
   }
 
-  const cfg = statusConfig[warranty.status] ?? statusConfig.unknown;
-  const primaryEntitlement = warranty.entitlements?.[0];
+  const cfg = WARRANTY_STATUS_BADGE[warranty.status] ?? WARRANTY_STATUS_BADGE.unknown;
+  const vendorEarlier = vendorReportsEarlierEnd(warranty);
+  // The vendor's service level describes the vendor's (shorter) coverage, not
+  // the imported end date shown beside it, so it is not paired with it.
+  const primaryEntitlement = vendorEarlier ? undefined : warranty.entitlements?.[0];
   // For a renewing subscription the stored end date is the next renewal, not an expiry.
   const isSubscription = warranty.isSubscription || warranty.status === 'subscription_active';
   const endDateLabel = isSubscription ? t('deviceWarrantyCard.renews') : t('deviceWarrantyCard.expires');
@@ -376,7 +421,17 @@ export default function DeviceWarrantyCard({
       <div className="flex items-center gap-4 text-xs text-muted-foreground">
         <span>{t('deviceWarrantyCard.lastChecked', { time: timeAgo(warranty.lastSyncAt) })}</span>
         {warranty.dataSource && (
-          <span>{t('deviceWarrantyCard.source', { source: dataSourceLabel(warranty.dataSource) })}</span>
+          <span>
+            {t('deviceWarrantyCard.source', {
+              source: vendorEarlier
+                ? t('deviceWarrantyCard.sources.importVendorEarlier')
+                // Own-property check: data_source is agent-writable free text, and
+                // a token such as 'constructor' must not resolve up the prototype chain.
+                : Object.prototype.hasOwnProperty.call(DATA_SOURCE_LABEL_KEYS, warranty.dataSource)
+                  ? t(/* i18n-dynamic */ DATA_SOURCE_LABEL_KEYS[warranty.dataSource]!)
+                  : warranty.dataSource,
+            })}
+          </span>
         )}
         {/* Legacy: pre-v0.13.9 syncs stored "No configured provider..." as lastSyncError.
             Post-v0.13.9, lastSyncError is null for no-provider cases. Remove after re-sync cycle. */}

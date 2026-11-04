@@ -18,6 +18,7 @@ import { buildRunTrace } from './aiAgents/runTrace';
 import { runSiteScopeCondition } from './aiAgentRunSiteScope';
 import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { registerAiAgentGovernanceTools } from './aiToolsAiAgentGovernance';
+import { PAGE_RESUME_KEY } from './aiToolPageResume';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const RUN = '22222222-2222-4222-8222-222222222222';
@@ -100,6 +101,8 @@ describe('AI-agent reads', () => {
     const caller = auth();
     expect(JSON.parse(await tools.get('list_ai_agents')!.handler({ includeDisabled: true }, caller))).toEqual({
       agents: [safe], showing: 1, limit: 25, offset: 0, hasMore: false, nextCursor: null,
+      // #10385: compaction-only resume material; stripped before the model sees the result.
+      [PAGE_RESUME_KEY]: expect.objectContaining({ key: 'agents', mode: 'offset' }),
     });
     expect(listAgents).toHaveBeenCalledWith(caller, { includeDisabled: true, limit: 26, offset: 0 });
   });

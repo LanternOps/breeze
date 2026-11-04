@@ -21,7 +21,9 @@ const { probeEffect, checkPlanEffectMembershipSystem, createActionIntent, buildT
   dbState: { inserted: [] as Record<string, unknown>[] },
 }));
 
-vi.mock('./effectProbes', () => ({ probeEffect }));
+// Complete mock (#10174): effectDispatch also imports isStructurallyUnobservable;
+// a missing export throws the moment a test reaches the unobservable carve-out.
+vi.mock('./effectProbes', () => ({ probeEffect, isStructurallyUnobservable: () => false }));
 vi.mock('./planApproval', async (orig) => ({
   ...(await orig<typeof import('./planApproval')>()),
   checkPlanEffectMembershipSystem,

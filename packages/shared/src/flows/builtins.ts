@@ -78,8 +78,10 @@ export interface FlowFleetStepOutput {
    * `resolve_targets` only: each device with its hostname and display name (`name` =
    * display name, else hostname — the legacy `{{device}}` value). `run_script_on_targets`
    * carries the id sets and counts only, so its output stays small at 500 devices.
+   * Over an earlier step's `failed` set each device also carries `failureReason`
+   * (#10705) — the converted on-failure notice names it.
    */
-  devices?: { id: string; hostname: string; name: string }[];
+  devices?: { id: string; hostname: string; name: string; failureReason?: string }[];
   count: number;
   warnings: string[];
 }
@@ -151,16 +153,19 @@ export const FLOW_BUILTIN_STEPS = {
   resolve_targets: {
     maxTier: 1,
     tierFor: (_input: unknown) => 1,
-    description: 'Resolve a device target (all, devices, groups or filter), legacy conditions, or an earlier fleet step\'s device set to the run organization\'s devices.',
+    description: 'Resolve a device target (all, devices, groups or filter), legacy conditions, explicit device ids, or an earlier fleet step\'s device set to the run organization\'s devices.',
     inputSchema: z.object({
       target: deploymentTargetConfigSchema.optional(),
       conditions: legacyConditionsSchema.optional(),
+      // Explicit devices, as `run_script_on_targets` takes them: a converted event Job's
+      // triggering device (`{{trigger.device.id}}`) when its first action is not a device action.
+      deviceIds: z.array(z.string().min(1).max(256)).min(1).max(FLEET_STEP_MAX_DEVICES).optional(),
       // The devices of an earlier fleet step's set, with hostnames (per-device notices and alerts).
       fromStep: z.object({
         stepId: z.string().regex(FLEET_STEP_ID_RE),
         set: z.enum(['succeeded', 'dispatched', 'failed']),
       }).strict().optional(),
-    }).strict().superRefine(exactlyOne(['target', 'conditions', 'fromStep'])),
+    }).strict().superRefine(exactlyOne(['target', 'conditions', 'deviceIds', 'fromStep'])),
   },
   create_alert: {
     maxTier: 2,

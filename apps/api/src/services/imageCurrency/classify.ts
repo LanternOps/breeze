@@ -3,7 +3,7 @@
  * group of container rows needs (a fixed status, a registry lookup, or
  * nothing yet), and what a lookup result means for one local digest.
  */
-import type { WorkloadUpstreamStatus } from '@breeze/shared';
+import type { WorkloadImageProvenance, WorkloadUpstreamStatus } from '@breeze/shared';
 import {
   isIndexMediaType,
   registryRequestHost,
@@ -21,6 +21,8 @@ export interface DueImageGroup {
   pinned: boolean;
   /** No digest because the runtime's last snapshot was incomplete: digest-unknown, not local. */
   digestUnknown: boolean;
+  /** The agent's evidence for where the image came from (#9067); null = an agent that predates it. */
+  imageProvenance: WorkloadImageProvenance | null;
 }
 
 export interface LookupKey {
@@ -38,9 +40,19 @@ export type GroupDecision =
 
 export const lookupKeyString = (key: LookupKey): string => `${key.registry}/${key.path}:${key.tag}`;
 
-/** Order matters: pinned → local/unknown → unsupported → lookup. Never touches the network. */
+/**
+ * Order matters: pinned → provenance → local/unknown → unsupported → lookup.
+ * Never touches the network.
+ *
+ * Provenance (#9067): `unknown` means the agent could not tell a pulled image
+ * from a local build, so the name may be internal and is never sent to any
+ * registry; `local` is the agent's word that it was never pulled. A null
+ * provenance (an older agent) and `confirmed` keep the rules below unchanged.
+ */
 export function classifyGroup(group: DueImageGroup): GroupDecision {
   if (group.pinned) return { kind: 'status', status: 'pinned' };
+  if (group.imageProvenance === 'unknown') return { kind: 'status', status: 'provenance_unknown' };
+  if (group.imageProvenance === 'local' && group.imageDigest) return { kind: 'status', status: 'local' };
   if (!group.imageDigest) return group.digestUnknown ? { kind: 'skip' } : { kind: 'status', status: 'local' };
   // A repo digest but no repository/tag reference (e.g. the tag moved away and
   // nothing names the image any more): there is no upstream tag to compare.

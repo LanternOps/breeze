@@ -558,7 +558,6 @@
     "largeFolderSelectionTitle": "Selección grande",
     "selectFolder": "Seleccionar carpeta {{name}}",
     "confirmLargeFolderSelection": "Esta selección abarca unos {{formatted}} archivos y la restauración puede tardar. ¿Continuar?",
-    "unknownDevice": "Dispositivo desconocido",
     "kindVm": "Restaurar como VM",
     "kindInstantBoot": "Arranque instantáneo",
     "kindSelective": "Restauración selectiva",
@@ -1111,10 +1110,14 @@
       "hyperv": "Hyper-V",
       "vmware": "VMware",
       "bare_metal": "Bare metal",
+      "m365_mail": "Correo de Microsoft 365",
       "m365_sharepoint": "SharePoint",
       "m365_exchange": "Exchange",
       "m365_onedrive": "OneDrive",
       "m365_teams": "Teams",
+      "gws_mail": "Correo de Google Workspace",
+      "gws_drive": "Google Drive",
+      "gws_shared_drive": "Unidades compartidas de Google",
       "other": "Otros"
     },
     "noObservation": "Sin observación",
@@ -1133,7 +1136,12 @@
       "errorUnlink": "No se pudo desvincular el dispositivo del proveedor",
       "error": "No se pudo cargar el estado de la copia de seguridad externa",
       "alsoCheck": "Revise también las conexiones de copia de seguridad de terceros en Integraciones."
-    }
+    },
+    "saasAccountsSubtitle": "Microsoft 365 / Google Workspace",
+    "saas": "SaaS",
+    "saasAccounts": "{{value}} cuentas SaaS",
+    "workloadBackup": "Respaldo de {{workload}}",
+    "sourceProvider": "Proveedores de respaldo"
   },
   "restoreResultNotices": {
     "systemStateRequiresRebuildTitle": "El estado del sistema se aplica con una reconstrucción bare-metal",
@@ -1171,5 +1179,10 @@
     "checking": "Comprobando",
     "unverified": "Sin verificar",
     "failed": "Falló la comprobación de integridad"
+  },
+  "reparseSkipNotice": {
+    "summary_one": "Se omitió {{count}} punto de reanálisis: las uniones y los puntos de montaje no se siguen ni se restauran. Es lo esperado, no es un error.",
+    "summary_other": "Se omitieron {{count}} puntos de reanálisis: las uniones y los puntos de montaje no se siguen ni se restauran. Es lo esperado, no es un error.",
+    "showDetails": "Mostrar rutas omitidas"
   }
 }

@@ -7,8 +7,9 @@ import {
   tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks, devices,
   notificationChannels, ticketForms, ticketResponseTemplates,
   ticketChecklistTemplates, ticketChecklistTemplateItems,
-  softwareCatalog, softwareVersions, softwareInstallMethods,
+  softwareCatalog, softwareVersions, softwareInstallMethods, deviceNetworkIsolations,
 } from '../../db/schema';
+import type { ApprovalBinding } from '../networkIsolation/service';
 import {
   fingerprintSoftwareInstallMethodDependency, fingerprintSoftwareVersionDependency,
 } from '../softwareDependencyIdentity';
@@ -111,6 +112,8 @@ type ResolverResult =
       verified?: VerifiedRunScript;
       /** Topology M4-D3: the pinned diagnostic effect (digest attached by resolveEffectDigest). */
       verifiedTopologyDiagnostic?: Omit<VerifiedTopologyDiagnostic, 'effectDigest'>;
+      /** Network-isolation W13 (#10101): the episode binding `release_containment` pinned. */
+      verifiedIsolationRelease?: ApprovalBinding;
     }
   | { kind: 'missing_arg' }
   | { kind: 'target_absent' };
@@ -485,6 +488,69 @@ const EFFECT_DIGEST_RESOLVERS: Record<
   'manage_contracts:activate': async (args, database) => resolveContractUpdatedAt(args.contractId, database),
   'manage_contracts:cancel': async (args, database) => resolveContractUpdatedAt(args.contractId, database),
 
+  // manage_contracts:generate_invoice (full-control W14 PR B, #6784; four-eyes, quorum QW1/QW9, PR B quorum
+  // QB1-QB3). Pins the WHOLE computed invoice the next billing run would create: the period, the currency, every
+  // line's quantity / unit price / tax flag / total and its overage leg, subtotal / tax / total, auto-issue and the
+  // recipients the auto-issue email goes to (contractInvoicePreview.ts mirrors generateDueInvoice without writing).
+  // A device added, a catalog price or tax rate edited, the billing contact changed, auto-issue switched or the
+  // period billed in the meantime all change it, and the release refuses (content_changed). Mandatory per action
+  // (pinnedEffectPolicy.ts). Loaded on demand: the preview pulls the contract and catalog service graph, which this
+  // module (imported by the release worker) must not load eagerly. The preview reads through the ambient context,
+  // which every call site of this module runs system-scoped (the manage_patches:install caller obligation).
+  'manage_contracts:generate_invoice': async (args) => {
+    const contractId = typeof args.contractId === 'string' ? args.contractId : null;
+    if (!contractId) return MISSING_ARG;
+    if (!UUID_RE.test(contractId)) return TARGET_ABSENT;
+    const { previewDueInvoice, previewDigestMaterial, ContractInvoicePreviewNotFound } = await import('../contractInvoicePreview');
+    try {
+      return material(previewDigestMaterial(await previewDueInvoice(contractId)));
+    } catch (err) {
+      if (err instanceof ContractInvoicePreviewNotFound) return TARGET_ABSENT;
+      throw err;
+    }
+  },
+
+  // W15: one real Pax8 order, with local destination / billing inputs pinned. Vendor rates are
+  // live assertions at release; this resolver deliberately loads the ordering graph only on demand.
+  'manage_pax8_orders:submit': async (args, database) => {
+    const orderId = typeof args.orderId === 'string' ? args.orderId : null;
+    if (!orderId) return MISSING_ARG;
+    if (!UUID_RE.test(orderId)) return TARGET_ABSENT;
+    const { pax8OrderDigestMaterial, serializePax8OrderMaterial } = await import('./pax8OrderDigest');
+    const pinned = await pax8OrderDigestMaterial(database, orderId);
+    return pinned ? material(serializePax8OrderMaterial(pinned)) : TARGET_ABSENT;
+  },
+
+  // manage_accounting_sync push / push_bulk (full-control W14 PR B, #6784; four-eyes, QW1, PR B quorum QB4/QB5):
+  // every input of what lands in the books — the invoice and its lines, the destination connection and payload
+  // settings, the invoice / customer / item mapping rows, and the customer's and items' payload inputs
+  // (accountingPushDigest.ts). push_bulk pins each invoice in sorted id order; an unknown id pins as null. The
+  // handler pushes synchronously at release (never queued), so the pin binds the push that runs. Mandatory.
+  'manage_accounting_sync:push': async (args, database) => {
+    const invoiceId = typeof args.invoiceId === 'string' ? args.invoiceId : null;
+    const provider = typeof args.provider === 'string' ? args.provider : null;
+    if (!invoiceId || !provider) return MISSING_ARG;
+    if (!UUID_RE.test(invoiceId)) return TARGET_ABSENT;
+    const { accountingPushMaterial } = await import('./accountingPushDigest');
+    const pinned = await accountingPushMaterial(database, invoiceId, provider);
+    if (!pinned) return TARGET_ABSENT;
+    return material(canonicalJson({ v: 1, provider, push: pinned }));
+  },
+  'manage_accounting_sync:push_bulk': async (args, database) => {
+    const provider = typeof args.provider === 'string' ? args.provider : null;
+    const ids = Array.isArray(args.invoiceIds)
+      ? [...new Set(args.invoiceIds.filter((id): id is string => typeof id === 'string'))].sort()
+      : [];
+    if (!provider || ids.length === 0) return MISSING_ARG;
+    const { accountingPushMaterial } = await import('./accountingPushDigest');
+    const pushes: Array<[string, Record<string, unknown> | null]> = [];
+    for (const id of ids) {
+      pushes.push([id, UUID_RE.test(id) ? await accountingPushMaterial(database, id, provider) : null]);
+    }
+    if (pushes.every(([, m]) => m === null)) return TARGET_ABSENT;
+    return material(canonicalJson({ v: 1, provider, pushes }));
+  },
+
   // manage_ai_agents (P2-5, #4192) — registered under the WHOLE-TOOL key, not
   // `manage_ai_agents:authorize_supervised_key`. The tool is a member of BOTH
   // TIER3_FOUR_EYES_ACTIONS and the whole-tool TIER3_FOUR_EYES_TOOLS fail-safe,
@@ -832,6 +898,44 @@ const EFFECT_DIGEST_RESOLVERS: Record<
       iocDigest,
     }));
   },
+
+  // release_containment (Tier 3, four-eyes) — network-isolation W13 (#10101,
+  // spec §3.8 "Approval binding"). It pins the episode's binding
+  // `{orgId, deviceId, isolationId, generation}` and nothing else.
+  // - An extend or a release by someone else makes a new generation, and an
+  //   org move changes orgId. Either one before release is `content_changed`.
+  // - Agent progress at the same generation (applied → verified, a journal
+  //   tick) leaves the approval valid.
+  // - The secret, expiry and reason are not pinned. The argument digest
+  //   already pins the reason.
+  // The pin is required (pinnedEffectPolicy.ts): creation refuses an episode
+  // it cannot pin, and release refuses a missing digest. On a match the
+  // release path hands the handler this binding (`verifiedIsolationRelease`).
+  // `releaseNetworkIsolation` re-checks it under the episode lock, which
+  // closes the window between this read and the release.
+  //
+  // The release paths read under a system context, so the query names the
+  // device as well as the id, and the row is checked again here. A wrong or
+  // RLS-blind read can never pin another device's episode.
+  release_containment: async (args, database) => {
+    if (typeof args.isolationId !== 'string' || typeof args.deviceId !== 'string') return MISSING_ARG;
+    if (!UUID_RE.test(args.isolationId) || !UUID_RE.test(args.deviceId)) return TARGET_ABSENT;
+    const isolationId = args.isolationId.toLowerCase();
+    const deviceId = args.deviceId.toLowerCase();
+    const [row] = await database
+      .select({
+        id: deviceNetworkIsolations.id,
+        orgId: deviceNetworkIsolations.orgId,
+        deviceId: deviceNetworkIsolations.deviceId,
+        generation: deviceNetworkIsolations.generation,
+      })
+      .from(deviceNetworkIsolations)
+      .where(and(eq(deviceNetworkIsolations.id, isolationId), eq(deviceNetworkIsolations.deviceId, deviceId)))
+      .limit(1);
+    if (!row || row.id.toLowerCase() !== isolationId || row.deviceId.toLowerCase() !== deviceId) return TARGET_ABSENT;
+    const binding: ApprovalBinding = { orgId: row.orgId, deviceId: row.deviceId, isolationId: row.id, generation: row.generation };
+    return { kind: 'material', material: canonicalJson({ v: 1, ...binding }), verifiedIsolationRelease: binding };
+  },
 };
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -974,7 +1078,12 @@ async function resolveEffectDigest(
   toolName: string,
   args: Record<string, unknown>,
   database: Database,
-): Promise<{ outcome: EffectDigestOutcome; verified?: VerifiedRunScript; verifiedTopologyDiagnostic?: VerifiedTopologyDiagnostic }> {
+): Promise<{
+  outcome: EffectDigestOutcome;
+  verified?: VerifiedRunScript;
+  verifiedTopologyDiagnostic?: VerifiedTopologyDiagnostic;
+  verifiedIsolationRelease?: ApprovalBinding;
+}> {
   const action = typeof args.action === 'string' ? args.action : undefined;
   const key = effectDigestResolverKey(toolName, action);
   if (!key) return { outcome: { kind: 'not_applicable' } };
@@ -989,6 +1098,7 @@ async function resolveEffectDigest(
     ...(result.verifiedTopologyDiagnostic
       ? { verifiedTopologyDiagnostic: { ...result.verifiedTopologyDiagnostic, effectDigest: digest } }
       : {}),
+    ...(result.verifiedIsolationRelease ? { verifiedIsolationRelease: result.verifiedIsolationRelease } : {}),
   };
 }
 
@@ -1039,6 +1149,9 @@ export async function computeEffectDigestForRelease(
   if (resolved.verified) return { digest, context: { verifiedRunScript: resolved.verified } };
   if (resolved.verifiedTopologyDiagnostic) {
     return { digest, context: { verifiedTopologyDiagnostic: resolved.verifiedTopologyDiagnostic } };
+  }
+  if (resolved.verifiedIsolationRelease) {
+    return { digest, context: { verifiedIsolationRelease: resolved.verifiedIsolationRelease } };
   }
   return { digest };
 }

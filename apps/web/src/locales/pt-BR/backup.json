@@ -558,7 +558,6 @@
     "largeFolderSelectionTitle": "Seleção grande",
     "selectFolder": "Selecionar a pasta {{name}}",
     "confirmLargeFolderSelection": "Esta seleção abrange cerca de {{formatted}} arquivos e a restauração pode demorar. Continuar?",
-    "unknownDevice": "Dispositivo desconhecido",
     "kindVm": "Restaurar como VM",
     "kindInstantBoot": "Inicialização instantânea",
     "kindSelective": "Restauração seletiva",
@@ -1111,10 +1110,14 @@
       "hyperv": "Hyper-V",
       "vmware": "VMware",
       "bare_metal": "Bare metal",
+      "m365_mail": "E-mail do Microsoft 365",
       "m365_sharepoint": "SharePoint",
       "m365_exchange": "Exchange",
       "m365_onedrive": "OneDrive",
       "m365_teams": "Teams",
+      "gws_mail": "E-mail do Google Workspace",
+      "gws_drive": "Google Drive",
+      "gws_shared_drive": "Drives compartilhados do Google",
       "other": "Outros"
     },
     "noObservation": "Sem observação",
@@ -1133,7 +1136,12 @@
       "errorUnlink": "Não foi possível desvincular o dispositivo do provedor",
       "error": "Não foi possível carregar o status do backup externo",
       "alsoCheck": "Verifique também as conexões de backup de terceiros em Integrações."
-    }
+    },
+    "saasAccountsSubtitle": "Microsoft 365 / Google Workspace",
+    "saas": "SaaS",
+    "saasAccounts": "{{value}} contas SaaS",
+    "workloadBackup": "Backup de {{workload}}",
+    "sourceProvider": "Provedores de backup"
   },
   "restoreResultNotices": {
     "systemStateRequiresRebuildTitle": "O estado do sistema é aplicado por uma reconstrução bare-metal",
@@ -1171,5 +1179,10 @@
     "checking": "Verificando",
     "unverified": "Não verificado",
     "failed": "Falha na verificação de integridade"
+  },
+  "reparseSkipNotice": {
+    "summary_one": "{{count}} ponto de nova análise ignorado: junções e pontos de montagem não são seguidos nem restaurados. Isso é esperado, não é um erro.",
+    "summary_other": "{{count}} pontos de nova análise ignorados: junções e pontos de montagem não são seguidos nem restaurados. Isso é esperado, não é um erro.",
+    "showDetails": "Mostrar caminhos ignorados"
   }
 }

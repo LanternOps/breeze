@@ -200,6 +200,11 @@ describe.skipIf(!RUN)('pam_request_notify enqueue (real Postgres, breeze_app)', 
       submittedOrgId: s.orgId,
       payload: { requestId: elevationId, outcome: 'denied', reason: 'Use the portal copy\n\nThanks' },
     });
+    // #10190 W07: the approver's name, resolved in the deciding context at the
+    // device's technician_identity_level (no remote_access policy -> the
+    // name_email default), never the email.
+    expect(rows[0]!.payload).toMatchObject({ decidedBy: { technicianName: 'Test User' } });
+    expect(JSON.stringify(rows[0]!.payload)).not.toContain(s.approver.email);
     const deliverBy = rows[0]!.deliverBy!.getTime();
     expect(deliverBy).toBeGreaterThanOrEqual(before + 59 * 60_000);
     expect(deliverBy).toBeLessThanOrEqual(Date.now() + 61 * 60_000);
@@ -232,6 +237,8 @@ describe.skipIf(!RUN)('pam_request_notify enqueue (real Postgres, breeze_app)', 
       requestId: elevationId,
       outcome: 'denied',
       reason: 'The program could not be verified.',
+      // #10190 W07: the system refused it, no technician decided.
+      decidedBy: { technicianName: null },
     });
   });
 
@@ -278,7 +285,7 @@ describe.skipIf(!RUN)('pam_request_notify enqueue (real Postgres, breeze_app)', 
     expect(await elevationStatus(fresh.elevationId)).toBe('pending');
     const rows = await notices(capable);
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.payload).toEqual({ requestId: a.elevationId, outcome: 'expired' });
+    expect(rows[0]!.payload).toEqual({ requestId: a.elevationId, outcome: 'expired', decidedBy: { technicianName: null } });
     expect(await notices(incapable)).toHaveLength(0);
   });
 });

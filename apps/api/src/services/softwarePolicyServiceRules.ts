@@ -29,10 +29,12 @@
  * proves an install; a fresh absence outranks a telemetry gap).
  *
  * "No inventory" is read from the presence of the rule's own `missing`
- * violation, so this runs AFTER any upstream filter (#6960 managed
- * applicability): a `missing` that filter dropped as not-applicable is never
- * resurrected as `service_unverified`. A rule with neither a `missing`
- * violation nor an inventory match is left alone.
+ * violation. A rule with neither a `missing` violation nor an inventory match
+ * is left alone. Only catalog ids present in `serviceNamesByCatalogId`
+ * participate, so the caller narrows that map to the rules applicable to the
+ * device (#6960 managed applicability, #10126) and filters the result
+ * afterwards: a not-applicable rule's `missing` is never turned into a
+ * service violation here.
  *
  * Pure: no database, no clock (the caller passes `now`).
  */
@@ -119,11 +121,11 @@ function outcomeFor(obs: EffectiveObservation, inventoryMatched: boolean, constr
 
 export function applyServiceRules(input: {
   mode: 'allowlist' | 'blocklist' | 'audit';
-  /** From evaluateSoftwareInventory, after any upstream applicability filter. */
+  /** From evaluateSoftwareInventory. */
   violations: SoftwarePolicyViolation[];
   rules: ServiceRule[];
   inventoryMatchedRuleNames: Set<string>;
-  /** OS-filtered `service_running` names per catalog id. */
+  /** OS-filtered `service_running` names per catalog id, for the rules applicable to this device. */
   serviceNamesByCatalogId: Map<string, string[]>;
   /** ONE device's observations, keyed by serviceObservationKey(name). */
   observations: Map<string, ServiceObservation>;

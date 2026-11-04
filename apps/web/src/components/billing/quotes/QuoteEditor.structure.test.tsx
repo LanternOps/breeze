@@ -127,6 +127,35 @@ describe('QuoteEditor — rail Contents outline', () => {
     expect(document.activeElement).toBe(screen.getByTestId('quote-block-container-blk-2'));
   });
 
+  it('labels unnamed rich text, image and table blocks from their content or the heading above (#9867)', async () => {
+    const mk = (id: string, sortOrder: number, blockType: QuoteDetailData['blocks'][number]['blockType'], content: Record<string, unknown>): QuoteDetailData['blocks'][number] => ({
+      id, quoteId: 'q-1', orgId: 'org-1', blockType, content, sortOrder, createdAt: '2026-06-01T00:00:00Z',
+    });
+    const detail: QuoteDetailData = {
+      quote,
+      blocks: [
+        mk('b-img-top', 0, 'image', { imageId: '00000000-0000-4000-8000-000000000001' }),
+        mkHeading('b-h', 1, 'Our approach'),
+        mk('b-rt', 2, 'rich_text', { html: '<p>We migrate your <strong>mail</strong> first,</p><p>then every shared drive and the line-of-business apps.</p>' }),
+        mk('b-rt-empty', 3, 'rich_text', { html: '<p></p>' }),
+        mk('b-img', 4, 'image', { imageId: '00000000-0000-4000-8000-000000000002' }),
+        mk('b-img-cap', 5, 'image', { imageId: '00000000-0000-4000-8000-000000000003', caption: 'Network diagram' }),
+        mk('b-tbl', 6, 'table', { columns: [{ label: 'A' }], rows: [{ cells: ['1'] }] }),
+      ],
+      lines: [],
+    };
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    const label = (id: string) => screen.getByTestId(`quote-outline-item-${id}`).textContent;
+    expect(label('b-img-top')).toBe('Image');
+    expect(label('b-rt')).toBe('We migrate your mail first, then every…');
+    expect(label('b-rt-empty')).toBe('Rich text · Our approach');
+    expect(label('b-img')).toBe('Image · Our approach');
+    expect(label('b-img-cap')).toBe('Network diagram');
+    expect(label('b-tbl')).toBe('Table · Our approach');
+  });
+
   it('does not render with a single block', async () => {
     render(<QuoteEditor detail={onePanel} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());

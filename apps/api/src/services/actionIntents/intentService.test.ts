@@ -2199,6 +2199,77 @@ describe('createActionIntent — supervised/four_eyes scope', () => {
     );
   });
 
+  // Network-isolation W13 (#10101, ai.mdx "Approving your own request when you
+  // are the only approver"): the AI release of a containment is four-eyes, and
+  // a sole operator keeps the WebAuthn self-approval fallback — one
+  // requester-owned row carrying the pinned episode digest. (Real
+  // selfApprovalPolicy and pinnedEffectPolicy; the decide-time assurance gate is
+  // tool-agnostic.)
+  describe('release_containment (W13 #10101)', () => {
+    const releaseInput = {
+      deviceId: '11111111-1111-4111-8111-111111111111',
+      isolationId: '33333333-3333-4333-8333-333333333333',
+      reason: 'Incident contained and cleaned',
+    };
+    const fourEyes = {
+      tier: 3, allowed: true, requiresApproval: true,
+      description: 'Release network isolation', approvalScope: 'four_eyes',
+    } as const;
+
+    it('a sole operator gets one requester-owned row carrying the pinned episode digest', async () => {
+      guardrailMock.checkGuardrails.mockReturnValue(fourEyes);
+      effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({ kind: 'pinned', digest: 'f'.repeat(64) });
+      intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID]);
+      dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-release-solo', actionName: 'release_containment' }));
+      dbState.insertApprovalRequestsResults.push([{ id: 'approval-release-solo' }]);
+
+      const snapshot = await createActionIntent(makeAuth(), baseInput({
+        toolName: 'release_containment', input: releaseInput, idempotencyKey: 'key-release-solo',
+      }));
+
+      expect(snapshot.status).toBe('pending_approval');
+      expect(snapshot.requesterApprovalRequestId).toBe('approval-release-solo');
+      expect(snapshot.fanOutUserIds).toEqual([REQUESTER_ID]);
+      expect(dbState.insertedActionIntentValues[0]).toMatchObject({
+        actionName: 'release_containment', approvalScope: 'four_eyes', effectDigest: 'f'.repeat(64),
+      });
+      expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ details: expect.objectContaining({ soleOperator: true }) }),
+      );
+    });
+
+    it('with another eligible approver, the requester cannot self-approve: the row goes to the second person', async () => {
+      guardrailMock.checkGuardrails.mockReturnValue(fourEyes);
+      effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({ kind: 'pinned', digest: 'f'.repeat(64) });
+      intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID, APPROVER_1]);
+      dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-release-pair', actionName: 'release_containment' }));
+      dbState.insertApprovalRequestsResults.push([{ id: 'approval-release-pair' }]);
+
+      const snapshot = await createActionIntent(makeAuth(), baseInput({
+        toolName: 'release_containment', input: releaseInput, idempotencyKey: 'key-release-pair',
+      }));
+
+      expect(snapshot.requesterApprovalRequestId).toBeNull();
+      const inserted = dbState.insertedApprovalRequestsValues[0] as Array<{ userId: string }>;
+      expect(inserted.map((r) => r.userId)).toEqual([APPROVER_1]);
+    });
+
+    it.each(['missing_arg', 'target_absent'] as const)(
+      'refuses to create the approval when the episode cannot be pinned (%s)', async (reason) => {
+        guardrailMock.checkGuardrails.mockReturnValue(fourEyes);
+        effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({ kind: 'unresolved', reason });
+        // Everything else would succeed: the refusal is the mandatory pin alone.
+        intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+        dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: `intent-release-${reason}`, actionName: 'release_containment' }));
+        dbState.insertApprovalRequestsResults.push([{ id: `approval-release-${reason}` }]);
+
+        await expect(createActionIntent(makeAuth(), baseInput({
+          toolName: 'release_containment', input: releaseInput, idempotencyKey: `key-release-${reason}`,
+        }))).rejects.toMatchObject({ code: 'effect_digest_unresolvable' });
+        expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+      });
+  });
+
   it('persists approvalScope and classificationVersion on the inserted row', async () => {
     guardrailMock.checkGuardrails.mockReturnValue({
       tier: 3,
@@ -3006,6 +3077,16 @@ describe('buildImpactSummary (#5106)', () => {
       expected: 'Execute a system command on a device.',
     },
     {
+      name: 'Pax8 submit impact names the company, line outcomes, price, and terminal cancellation',
+      toolName: 'manage_pax8_orders',
+      input: { action: 'submit', expectedCompany: { name: 'Fixture Company', pax8CompanyId: 'company-1' },
+        expectedLines: [{ action: 'cancel', productName: 'Fixture Seats', pax8ProductId: 'product-1',
+          fromQuantity: '7.00', quantity: '0', unitCost: '8.00', currency: 'USD', billingTerm: 'Monthly',
+          commitmentTerm: 'Annual', cancellationFeeApplied: true }] },
+      guardrailDescription: 'Generic Pax8 management description.',
+      expected: "Place a real, billable Pax8 order that cannot be undone for Fixture Company (company-1): 0 new subscriptions, 0 quantity changes, 1 cancellations. Cost is estimated at Pax8's current rate, re-checked before sending. CANCEL (terminal) Fixture Seats [product-1]: 7.00 → 0, 8.00 USD per seat / Monthly, commitment Annual, cancellation fee applies",
+    },
+    {
       name: 'manage_invoices void gets plain-language impact (#9657)',
       toolName: 'manage_invoices',
       input: { action: 'void' },
@@ -3423,6 +3504,49 @@ describe('createActionIntent — mcp_api origin (B-W04)', () => {
     expect(chat!.correlationId).not.toBe(CORR);
     expect(mcp!.originPrincipalKind).toBe('api_key');
     expect(mcp!.originPrincipalId).toBe('key-A');
+  });
+
+  // #9758: an OAuth-originated MCP intent records the auth_epoch its filing
+  // call was verified at, so release can refuse after a password change.
+  it('stores originAuthEpoch on an oauth_grant mcp_api intent', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValue([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-oauth' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-oauth' }]);
+    await createActionIntent(
+      makeAuth({ principal: { kind: 'oauth_grant', grantId: 'grant-1' } }),
+      mcpInput({ originAuthEpoch: 5 }),
+    );
+    const [row] = dbState.insertedActionIntentValues;
+    expect(row!.originPrincipalKind).toBe('oauth_grant');
+    expect(row!.originAuthEpoch).toBe(5);
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['not an integer', 1.5],
+  ])('refuses an oauth_grant mcp_api intent whose auth epoch is %s, before insert', async (_label, epoch) => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValue([APPROVER_1]);
+    await expect(createActionIntent(
+      makeAuth({ principal: { kind: 'oauth_grant', grantId: 'grant-1' } }),
+      mcpInput({ originAuthEpoch: epoch }),
+    )).rejects.toMatchObject({ code: 'principal_not_supported' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('never stores originAuthEpoch on an api_key mcp_api intent or a chat intent', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValue([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-key' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-key' }]);
+    await createActionIntent(makeAuth({ principal: KEY_A }), mcpInput({ originAuthEpoch: 5 }));
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-chat-epoch' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-chat-epoch' }]);
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'chat-epoch', originAuthEpoch: 5 }));
+    const [key, chat] = dbState.insertedActionIntentValues;
+    expect(key!.originAuthEpoch).toBeNull();
+    expect(chat!.originAuthEpoch).toBeNull();
   });
 
   it('supervised mcp_api intent notifies its requester (headless: nobody watches a chat pane)', async () => {

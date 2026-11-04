@@ -19,6 +19,8 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock('../../db', () => ({
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
   db: {
     select: vi.fn((selection: Record<string, unknown>) => {
       state.selections.push(selection);
@@ -63,7 +65,7 @@ vi.mock('../backupHealthReadModel', () => ({
   getFirstPartyCoverageForDevices: health.getFirstPartyCoverageForDevices,
 }));
 
-import { backupDevicesPage, backupOverview, backupTile, dashboardBackupTile } from './backupReadModel';
+import { backupDevicesPage, backupOverview, backupSaasWorkloads, backupTile, dashboardBackupTile } from './backupReadModel';
 import { db } from '../../db';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
@@ -261,7 +263,7 @@ describe('backupTile', () => {
     await expect(backupTile(ORG_ID, NOW)).resolves.toMatchObject({ configured: 6, total: 11 });
 
     const providerQuery = compiledWheres().find(({ sql }) => sql.includes('"backup_provider_devices"."org_id"'));
-    expect(providerQuery?.params).toEqual([ORG_ID]);
+    expect(providerQuery?.params).toEqual([ORG_ID, 'm365', 'gws']);
     // The linked-device join is org-pinned too, so a stale cross-org link can
     // never count one org's device toward another org's coverage.
     const deviceJoin = state.joins
@@ -688,4 +690,60 @@ describe('dashboardBackupTile (#9351)', () => {
       status: 'not_configured', total: 10,
     });
   });
+});
+
+
+describe('SaaS workloads are separate from devices', () => {
+  it('filters SaaS rows before aggregating provider device counts', async () => {
+    rows(K.branding, [{ enableBackups: true }]);
+    await backupTile(ORG_ID, NOW);
+    const query = compiledWheres().find(({ sql }) => sql.includes('"backup_provider_devices"."org_id"'))!;
+    expect(query.sql).toContain('not in');
+    expect(query.params).toEqual([ORG_ID, 'm365', 'gws']);
+  });
+  it('excludes linked and unlinked SaaS rows from device pages and health', async () => {
+    health.providerRows = [providerRow({ accountType: 'm365', deviceId: 'd-1' }), providerRow({ accountType: 'gws', health: 'critical' })];
+    rows(K.pageCount, [{ count: 1 }]);
+    rows(K.pageRows, [pageRow()]);
+    const page = await backupDevicesPage(ORG_ID, { page: 1, limit: 25, timezone: 'UTC', now: NOW });
+    expect(page.pagination.total).toBe(1);
+    expect(page.data).toHaveLength(1);
+    expect(page.data[0]).toMatchObject({ configured: false, source: 'breeze' });
+    rows(K.ledgerIds, [{ id: 'd-1' }]);
+    const overview = await backupOverview(ORG_ID, { timezone: 'UTC', now: NOW });
+    expect(overview.byHealth).toEqual({ healthy: 0, warning: 0, critical: 0, unknown: 0 });
+  });
+  it('projects only safe SaaS fields with portal label permission and shared health rules', async () => {
+    rows('backup_provider_devices:accountType,connectionId,dataSources,errorsCount,lastSuccessAt,portalShowProviderName,provider,status,vendorRaw', [
+      { connectionId: 'connection-1', provider: 'cove', portalShowProviderName: false, accountType: 'm365', dataSources: ['m365_mail'], status: 'failed', lastSuccessAt: null, errorsCount: 1, vendorRaw: { itemCount: 5, failingItems: [{ name: 'private@example.com', error: 'private error' }] } },
+      { connectionId: 'connection-1', provider: 'cove', portalShowProviderName: true, accountType: 'gws', dataSources: ['gws_drive'], status: 'completed', lastSuccessAt: new Date('2026-08-01'), errorsCount: 0, vendorRaw: {} },
+    ]);
+    rows('backup_provider_connections:id,isActive,lastSyncAt,syncIntervalMinutes', [
+      { id: 'connection-1', isActive: true, lastSyncAt: NOW, syncIntervalMinutes: 60 },
+    ]);
+    const workloads = await backupSaasWorkloads(ORG_ID, { now: NOW });
+    expect(workloads).toEqual([
+      { providerLabel: null, workload: 'm365_mail', accountType: 'm365', health: 'critical', status: 'failed', lastSuccessAt: null, itemCount: 5 },
+      { providerLabel: 'Cove Data Protection', workload: 'gws_drive', accountType: 'gws', health: 'critical', status: 'completed', lastSuccessAt: '2026-08-01T00:00:00.000Z', itemCount: null },
+    ]);
+    expect(JSON.stringify(workloads)).not.toMatch(/private|failingItems|errorsCount|"provider":/);
+    expect(JSON.stringify(workloads[0])).not.toContain('cove');
+    expect(compiledWheres()[0]!.params).toEqual([ORG_ID, 'm365', 'gws']);
+  });
+  it.each([
+    ['inactive', false, NOW],
+    ['stale', true, new Date('2026-08-01')],
+    ['never synced', true, null],
+  ])('marks %s connection workloads unknown despite recent successful backups', async (_label, isActive, lastSyncAt) => {
+    rows('backup_provider_devices:accountType,connectionId,dataSources,errorsCount,lastSuccessAt,portalShowProviderName,provider,status,vendorRaw', [
+      { connectionId: 'connection-1', provider: 'dropsuite', portalShowProviderName: false, accountType: 'm365', dataSources: ['m365_mail'], status: 'completed', lastSuccessAt: NOW, errorsCount: 0, vendorRaw: {} },
+    ]);
+    rows('backup_provider_connections:id,isActive,lastSyncAt,syncIntervalMinutes', [
+      { id: 'connection-1', isActive, lastSyncAt, syncIntervalMinutes: 60 },
+    ]);
+    const workloads = await backupSaasWorkloads(ORG_ID, { now: NOW });
+    expect(workloads[0]?.health).toBe('unknown');
+    expect(JSON.stringify(workloads)).not.toMatch(/"provider":|dropsuite/);
+  });
+
 });

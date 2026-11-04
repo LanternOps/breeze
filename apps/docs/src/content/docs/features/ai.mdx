@@ -68,13 +68,13 @@ The assistant and background agents can author a script mid-conversation, have i
 |---|---|---|
 | **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `ioc_hunt` (list_rule_sets/preview_sweep/list_sweeps/sweep_status), `get_active_users`, `disk_cleanup` (preview), `system_cleanup` (status), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `get_service_monitoring_status`, `query_monitors`, `manage_monitors` (get/create/update/delete), `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `manage_software_policy` (list/get), `manage_browser_policy` (list), `list_playbooks`, `get_playbook_history`, `get_vulnerability_report`, `find_proven_fixes`, `get_device_vulnerabilities`, `search_documentation`, `propose_script`, `get_script_proposal` |
 | **Tier 2** | Auto-execute + audit logged | `manage_alerts` (acknowledge/resolve), `manage_services` (list), `ioc_hunt` (cancel_sweep), `manage_processes` (list), `manage_scheduled_tasks` (list), `system_cleanup` (list), `analyze_disk_usage` (refresh), `analyze_boot_performance` (triggerCollection), `set_device_context`, `resolve_device_context`, `apply_configuration_policy`, `remove_configuration_policy_assignment`, `manage_configuration_policy` (activate/deactivate), `create_incident`, `revoke_elevation`, `assign_security_training`, `acknowledge_network_device`, `registry_operations` (read_key/get_value), `file_operations` (list), `execute_command` (list_processes/file_list/event_logs_list) |
-| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `system_cleanup` (run), `network_discovery`, `security_scan` (quarantine/remove/restore), `ioc_hunt` (sweep/import_iocs), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_scheduled_tasks` (run/disable/enable), `registry_operations` (set_value/create_key/delete_key), `create_remote_session`, `request_elevation`, `trigger_agent_restart`, `trigger_agent_upgrade`, `configure_network_baseline`, `trigger_backup`, `restore_snapshot`, `execute_containment`, `collect_evidence`, `execute_playbook`, `remediate_vulnerability`, `manage_ai_agents` (authorize_supervised_key) |
+| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `system_cleanup` (run/cancel), `network_discovery`, `security_scan` (quarantine/remove/restore), `ioc_hunt` (sweep/import_iocs), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_scheduled_tasks` (run/disable/enable), `registry_operations` (set_value/create_key/delete_key), `create_remote_session`, `request_elevation`, `trigger_agent_restart`, `trigger_agent_upgrade`, `configure_network_baseline`, `trigger_backup`, `restore_snapshot`, `execute_containment`, `release_containment`, `collect_evidence`, `execute_playbook`, `remediate_vulnerability`, `manage_ai_agents` (authorize_supervised_key) |
 | **Tier 4** | Blocked — never executed | Cross-org operations |
 
 `manage_monitors` supports `get` only. Its retired `create`, `update`, and `delete` actions return guidance without approval or write permission. Author network checks with `manage_monitor_definitions` using kind `network_check`; retire unconverted checks through the conversion ledger to preserve history.
 
 <Aside>
-  Tier classification is action-level, not tool-level. For example, `disk_cleanup` is Tier 1 when previewing and Tier 3 when executing. `system_cleanup` follows the same split — reading a run's status is Tier 1, listing the OS-native cleaners a device offers asks the device live and is Tier 2, running them is Tier 3; `analyze_disk_usage` and `analyze_boot_performance` read stored data at Tier 1, and only a fresh scan (`refresh`) or collection (`triggerCollection`) from the device is Tier 2; `manage_alerts` is Tier 1 for list/get and Tier 2 for acknowledge/resolve. `execute_command` resolves per `commandType`: `list_processes`, `file_list`, and `event_logs_list` are Tier 2; `list_services` and `event_logs_query` stay Tier 3 despite being reads, because they can return unredacted credential- or PII-bearing content (service binary paths, raw event-log messages); mutating types and `file_read` are Tier 3 too. `collect_evidence` is Tier 2 when it collects logs, processes or connections, and Tier 3 as soon as the request includes a screenshot (it is listed under Tier 3 because the unqualified call is checked at the stricter level). The AI resolves the tier for each specific action at runtime. Within Tier 2, strictly read-only entries — the `execute_command` types above, `file_operations` (list), `manage_services` (list), `manage_processes` (list), `manage_scheduled_tasks` (list), `system_cleanup` (list), a fresh `analyze_disk_usage` or `analyze_boot_performance` read, and the single-purpose get/list/search catalog, contract, invoice, and quote tools — auto-execute (with the audit-trail entry) under **every** approval mode, including the default per-step mode. Tier-2 *mutations* still take a lightweight inline confirmation under per-step approval, and a paused session always confirms everything Tier 2 and above.
+  Tier classification is action-level, not tool-level. For example, `disk_cleanup` is Tier 1 when previewing and Tier 3 when executing. `system_cleanup` follows the same split — reading a run's status is Tier 1, listing the OS-native cleaners a device offers asks the device live and is Tier 2, running them or cancelling a running run is Tier 3; `analyze_disk_usage` and `analyze_boot_performance` read stored data at Tier 1, and only a fresh scan (`refresh`) or collection (`triggerCollection`) from the device is Tier 2; `manage_alerts` is Tier 1 for list/get and Tier 2 for acknowledge/resolve. `execute_command` resolves per `commandType`: `list_processes`, `file_list`, and `event_logs_list` are Tier 2; `list_services` and `event_logs_query` stay Tier 3 despite being reads, because they can return unredacted credential- or PII-bearing content (service binary paths, raw event-log messages); mutating types and `file_read` are Tier 3 too. `collect_evidence` is Tier 2 when it collects logs, processes or connections, and Tier 3 as soon as the request includes a screenshot (it is listed under Tier 3 because the unqualified call is checked at the stricter level). The AI resolves the tier for each specific action at runtime. Within Tier 2, strictly read-only entries — the `execute_command` types above, `file_operations` (list), `manage_services` (list), `manage_processes` (list), `manage_scheduled_tasks` (list), `system_cleanup` (list), a fresh `analyze_disk_usage` or `analyze_boot_performance` read, and the single-purpose get/list/search catalog, contract, invoice, and quote tools — auto-execute (with the audit-trail entry) under **every** approval mode, including the default per-step mode. Tier-2 *mutations* still take a lightweight inline confirmation under per-step approval, and a paused session always confirms everything Tier 2 and above.
 </Aside>
 
 <Aside type="note">
@@ -107,7 +107,7 @@ A small, fixed set of actions always requires a different user to approve:
 - **Identity and account control** (Microsoft 365 / Google Workspace) — password and 2FA resets, mail forwarding and delegates, mailbox permissions, disabling or offboarding users, device wipe
 - **Restores and rollbacks** — VM checkpoint delete/apply, restore-as-VM and DR plan runs, patch rollback, snapshot and database restores
 - **Computer control** and unattended remote session creation
-- **Releasing security containment** — un-isolating a device, rolling back threats. (Isolating or quarantining stays supervised — urgent protective containment should not wait on a colleague.)
+- **Releasing security containment** — lifting a Breeze network isolation (`release_containment`), un-isolating a device through an EDR, rolling back threats. (Isolating or quarantining stays supervised — urgent protective containment should not wait on a colleague.)
 - **AI agent governance** — granting an agent a pre-authorized action key, so its future runs may take that action unattended
 
 To decide a pending four-eyes request:
@@ -195,6 +195,7 @@ Many tools have a per-tool sliding window rate limit. Requests that exceed the l
 | `trigger_backup` | 5 requests | 10 min |
 | `restore_snapshot` | 3 requests | 10 min |
 | `execute_containment` | 5 requests | 10 min |
+| `release_containment` | 5 requests | 10 min |
 | `collect_evidence` | 10 requests | 5 min |
 | `execute_playbook` | 5 requests | 10 min |
 
@@ -499,12 +500,22 @@ See [Backup & Recovery](/backup/overview/) for configuration details.
 
 ## Incident Response AI Tools
 
-The AI can create and manage security incidents, execute containment actions, and collect forensic evidence. These tools are available in AI chat and to AI agents.
+The AI can create and manage security incidents, execute containment actions, release a network isolation, and collect forensic evidence. These tools are available in AI chat and to AI agents, except `release_containment`, which AI agents can never call or propose.
+
+Network isolation is Windows-only until Linux and macOS support ship. See [Network isolation](/features/network-isolation/) for reachability, expiry, and the break-glass runbook.
+
+The AI can ask to lift an isolation with `release_containment`:
+
+- It is a **four-eyes** action. A second person approves it. If you are the only eligible approver, you approve it yourself with a Touch ID / Windows Hello verification.
+- The approval covers one isolation, as it stood when the AI asked. If the isolation is extended, released by someone else, or its device moves to another organization before the approval runs, the release is refused and nothing is sent to the device. Ask the AI again.
+- The console release control works as before and needs no second approver.
+- The MCP server never isolates or releases a device, even for a principal allowed to run Tier 3 tools unattended.
 
 | Tool | Tier | Description |
 |------|------|-------------|
 | `create_incident` | 2 | Create a new security incident with classification and severity (needs `alerts.write`) |
-| `execute_containment` | 3 | Run a containment action on a device (process kill, network isolation, account disable, USB block). Needs both `devices.execute` and `alerts.write`, because it also records the action on the incident |
+| `execute_containment` | 3 | Isolate a supported device from the network through the isolation service (off by default behind `NETWORK_ISOLATION_ENABLED`), or kill a process. Account disable and USB block remain unimplemented. Needs both `devices.execute` and `alerts.write`, because it also records the action on the incident |
+| `release_containment` | 3 | Lift a device's network isolation through the isolation service. Four-eyes, needs `devices.execute`, and names the isolation episode to release. Works with `NETWORK_ISOLATION_ENABLED` off, like the console release |
 | `collect_evidence` | 3 | Collect forensic evidence from a device (logs, processes, connections). Evidence without a screenshot runs at Tier 2; a request that includes a screenshot needs approval |
 | `get_incident_timeline` | 1 | View the full timeline of an incident |
 | `generate_incident_report` | 1 | Generate a structured report with action and evidence summaries |
@@ -543,7 +554,7 @@ Read-only tools wired into chat and headless AI agents in #6755 (W01), covering 
 | `list_scripts` | 1 | List scripts in the library |
 | `get_script_details` | 1 | Script content, versions, and execution stats |
 | `list_script_templates` | 1 | List built-in script templates |
-| `get_script_execution_history` | 1 | Past execution results for a script |
+| `get_script_execution_history` | 1 | Past script runs for one script, one device (`deviceId`, every script run there), or both; optional `since` |
 | `list_device_restore_point_attempts` | 1 | A device's Windows System Restore checkpoint attempts — taken, skipped or failed before each patch run, script or install (v0.124.0+) |
 | `get_trust_page_status` | 1 | Whether an organization's public trust page exists and is published, its public path and freshness, controls met, current and expiring declarations, and pending document access requests; never edits the page (v0.124.0+) |
 
@@ -745,6 +756,15 @@ These tools read and change how your organizations are billed: rate cards and wo
 
 | Tool | Tier | Description |
 |------|------|-------------|
+| `get_pax8_status` | 1 | Pax8 integration health and company readiness. Full partner access required |
+| `search_pax8_products` (search/provision_details/dependencies/pricing) | 1 | Mapped products, provisioning requirements, commitments and live vendor cost |
+| `manage_pax8_subscriptions` (list/drift) | 1 | Subscription seat counts and differences from billed quantities. Full partner access required |
+| `manage_pax8_subscriptions` (sync/link/unlink) | 3 | Supervised: sync every organization's snapshots or link/unlink a subscription's billing contract line. A link decides which contract line later Pax8 orders bill; unlink means staged changes on the subscription will be refused |
+| `manage_pax8_orders` (list/get/preview) | 1 | Orders and read-only previews with live cost evidence, customer price and active commitment rules |
+| `manage_pax8_orders` (create_draft/add_line/update_line/remove_line) | 2 | Stage and edit order drafts; nothing is purchased |
+| `manage_pax8_orders` (preflight) | 3 | Supervised: send staged content to Pax8 for an isMock dry run. Nothing is purchased |
+| `manage_pax8_orders` (submit) | 3 | Four-eyes: two people approve a billable order estimated at Pax8's current rate. Changed inputs, prices or commitments refuse submission. Every CANCEL is terminal; its commitment term appears on the approval card. Not offered to AI agents |
+| `manage_pax8_orders` (reconcile) | 3 | Supervised: record an approved attempt from vendor evidence without sending another write. Ambiguous outcomes stay unknown; a concurrent billing edit is preserved and flagged as `billing_conflict` |
 | `manage_billing_profiles` (list/get/list_work_types/get_org_profile) | 1 | Rate cards with their hourly rates per work type, work types, and the card an organization is billed by |
 | `manage_billing_profiles` (create/update/archive/set_rows/clone/create_work_type/update_work_type) | 3 | Change rate cards or work types. They price every organization of the partner, so every change is approved and needs full partner access. The previous values come back with the result. Archiving a work type, and AI price-list edits after a card is created, are done in the web app |
 | `manage_billing_profiles` (set_org_profile/clear_org_profile) | 3 | Choose, or clear, the rate card one organization is billed by |
@@ -757,12 +777,21 @@ These tools read and change how your organizations are billed: rate cards and wo
 | `manage_contract_documents` (list) | 1 | Signed agreements and whether each is filed under a contract. Signer email addresses are not returned |
 | `manage_contract_documents` (link) | 3 | File a signed agreement under a contract of the same organization. It cannot be undone |
 | `get_device_billing` | 1 | Which active contract lines bill a device, or why it is not billable |
+| `manage_contracts` (preview_invoice) | 2 | What a contract's next billing run would invoice: the period, each line's quantity and price, subtotal, tax and total, whether it is issued and emailed automatically, and to whom. Nothing is created |
+| `manage_contracts` (generate_invoice) | 3 | Generate the contract's due invoice. It needs a second approver (four-eyes). The call repeats the preview's period, total, auto-issue setting and recipients, and the approval card shows them. If anything changed before release (a device added, a price, tax rate or billing contact edited, the period already billed) the release is refused and nothing is generated. When the contract issues automatically, the invoice is issued and emailed only if its total is still the approved one, and only to the approved recipients. Contracts with a block-of-hours line are generated in the web app |
+| `manage_accounting_sync` (status/owed_operations/customers/mappings/income_accounts/remote_candidates) | 1 | QuickBooks or Xero: connection status, payments waiting to sync, customers, customer and item mappings, income accounts, and records to link to. A `remote_candidates` search term is applied in Breeze and never sent to the provider |
+| `manage_accounting_sync` (link_mapping/unlink_mapping/sync_mapping) | 3 | Link a Breeze organization or catalog item to a QuickBooks or Xero record, unlink it, or re-send a linked one. Linking and syncing overwrite the provider's record with Breeze's details. Creating a new record in the provider is done in the web app |
+| `manage_accounting_sync` (push/push_bulk) | 3 | Push one invoice, or up to 10, into QuickBooks or Xero. It needs a second approver (four-eyes); the push also syncs the invoice's customer and items if they are not synced yet. If the invoice, its customer or items, or the connection change before release, the release is refused |
+
+Pax8 submission refusal codes (the `PAX8_SUBMIT_REFUSAL_CODES` contract): `PREVIEW_MISMATCH`, `PRICE_CHANGED`, `COMMITMENT_CHANGED`, `COST_UNKNOWN`, `COMMITMENT_AMBIGUOUS`, `TOO_MANY_LINES`, `NOT_PENDING`, `COMPANY_UNRESOLVED`, `TERM_UNKNOWN`, `QUANTITY_UNKNOWN`, `SUBSCRIPTION_NOT_FOUND`, `PRODUCT_UNKNOWN`, `CONTRACT_LINE_MISSING`, `CLAIM_LOST`, `INTEGRATION_UNAVAILABLE`, `BASELINE_NOT_CAPTURED`, `INTEGRATION_CHANGED`, `PREFLIGHT_FAILED`, `CONFLICT`. Claim refusals mean nothing was sent by that attempt; preview and approve again. Post-send persistence conflicts require inspection and reconciliation of unknown writes. A successful vendor write with `billingConflicts` requires a person to resolve billing without resubmitting it.
 
 The existing contract and invoice reads gained one view each: `get_contract` with `periodId` returns that billing period's outcome (devices billed, uncovered and flagged, overages), `list_contracts` with `view: currency_mismatches` lists contracts whose currency differs from their organization's, and `get_invoice` with `lineId` pages the devices one invoice line billed.
 
 Rate-card, work-type and settings writes need a session that has completed MFA. A session limited to some sites or devices cannot change an organization's rate card, billing settings or agreement templates, or file a signed agreement.
 
-AI agents can read these tools. Rate-card and settings writes become proposals that a person approves. Agents are never offered template writes or `manage_contract_documents` (link): agreement templates and signed agreements are the legal documents customers sign. Generating an invoice from a contract and pushing invoices to an accounting system are not available yet.
+AI agents can read these tools. Rate-card and settings writes become proposals that a person approves. Agents are never offered template writes or `manage_contract_documents` (link): agreement templates and signed agreements are the legal documents customers sign. Agents are never offered `generate_invoice` or any accounting write.
+
+The accounting tool needs a partner-scoped session with access to every organization, as the Integrations page does, and every write needs a session that has completed MFA. Connecting, disconnecting and configuring the accounting connection, importing customers as organizations and starting a payment reconcile stay in the web app.
 
 #### PSA configuration and ticket operations
 

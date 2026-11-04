@@ -25,7 +25,7 @@ import { listFlowEligibleCoreTools } from '../services/flows/catalog';
 // share one classification.
 //
 // The scan is the plan's inventory grep:
-//   rg -n "kind === 'ai_agent'|kind !== 'ai_agent'|isAiAgentPrincipal\(|case 'ai_agent'|'ai_agent'[,\]]" apps/api/src --glob '!*.test.ts'
+//   rg -n "kind === 'ai_agent'|kind !== 'ai_agent'|isAiAgentPrincipal\(|case 'ai_agent'|'ai_agent'( as const)?[,\]]" apps/api/src --glob '!*.test.ts'
 // plus `isAutomationPrincipal(` (so a converted site stays inventoried), minus
 // comment lines. String uses that are not a principal branch (audit actor
 // types, intent sources, ticket author kinds, AiInitiatorKind) are filtered
@@ -59,6 +59,9 @@ export const REVIEWED_AI_AGENT_SITES: Record<string, Classification> = {
   // human-only; neither an agent nor a flow is a person who can own the row.
   'services/aiToolsAuditBaselines.ts:if (isAutomationPrincipal(auth)) return automationRefusal(action);': 'automation',
   "services/aiToolsPamRules.ts:if (isAutomationPrincipal(auth)) return jsonError('PAM policy is changed by a person, not an automated run', 'AGENT_REFUSED');": 'automation',
+  // Pax8 submit needs a human requester and approval surface; agents and flows
+  // are both refused before preparing a submit intent.
+  "services/aiToolsPax8Orders.ts:if (isAutomationPrincipal(auth)) return jsonError('A person must request Pax8 order submission', 'AGENT_HUMAN_ONLY');": 'automation',
   'services/aiToolsTicketOpsShared.ts:return isAutomationPrincipal(auth);': 'automation',
   // Same upstream-approval-instead-of-MFA rule for delivery-rail writes.
   "services/aiToolsDelivery.ts:if (!isAutomationPrincipal(auth) && !hasSatisfiedMfa(auth)) fail(403, 'MFA required');": 'automation',
@@ -70,6 +73,9 @@ export const REVIEWED_AI_AGENT_SITES: Record<string, Classification> = {
   "services/topology/aiDiagnosticApproval.ts:if (isAutomationPrincipal(current.auth)) throw new TopologyOperationError('human_approval_required', 403);": 'automation',
   'services/topology/siteConfiguration.ts:if (isAutomationPrincipal(ctx.auth) || !hasSatisfiedMfa(ctx.auth))': 'automation',
   'routes/alerts/alerts.ts:if (isAutomationPrincipal(auth)) {': 'automation',
+  // #9528: the name-level org-list fallback for a partner caller without
+  // organizations:read is for people; a machine principal gets the strict gate.
+  "routes/orgs.ts:if (auth.scope !== 'partner' || isAutomationPrincipal(auth)) return requireOrgRead(c, next);": 'automation',
   'services/aiToolsCompliance.ts:if (isAutomationPrincipal(auth)) return EXECUTABLE_RULES_MANAGE_POLICY_DENIED_MESSAGE;': 'automation',
   'services/aiToolsRestoreAuthorization.ts:if (isAutomationPrincipal(auth)) return fallback;': 'automation',
   'services/securityScanSweepTargets.ts:if (isAutomationPrincipal(auth)) return Promise.resolve(null);': 'automation',
@@ -233,7 +239,7 @@ const OUT_OF_SCOPE_SITES: Record<string, string> = {
   "services/auditEvents.ts:case 'ai_agent': initiatedBy = 'ai'; break;": 'audit actorType switch',
   "services/aiOriginSummary.ts:} else if (kind === 'ai_agent' && row.aiAgentRunId) {": 'AiInitiatorKind, not the principal',
   "services/actionIntents/actorContext.ts:case 'ai_agent':": 'stored origin_principal_kind switch (its flow arm is Task A5)',
-  "services/aiToolsFilesystem.ts:actorType: requestedBy ? 'user' : 'ai_agent',": 'audit actorType value',
+  "services/aiToolsFilesystem.ts:actorType: requestedBy ? 'user' as const : 'ai_agent' as const,": 'audit actorType value',
   "services/ticketService.ts:case 'ai_agent': return actor.runId ? { agentRunId: actor.runId } : {};": 'TicketActor discriminant',
   "services/ticketService.ts:case 'ai_agent':": 'TicketActor discriminant',
   "services/ticketService.ts:case 'ai_agent': return 'ai_agent';": 'TicketActor discriminant',
@@ -248,7 +254,7 @@ const OUT_OF_SCOPE_SHAPES: ReadonlyArray<{ re: RegExp; why: string }> = [
   { re: /\baiOrigin\??\.kind\b/, why: 'AiInitiatorKind — who DECIDED a device mutation, not the principal' },
 ];
 
-const RAW_SITE = /kind === 'ai_agent'|kind !== 'ai_agent'|isAiAgentPrincipal\(|case 'ai_agent'|'ai_agent'[,\]]/;
+const RAW_SITE = /kind === 'ai_agent'|kind !== 'ai_agent'|isAiAgentPrincipal\(|case 'ai_agent'|'ai_agent'(?: as const)?[,\]]/;
 const AUTOMATION_CALL = /isAutomationPrincipal\(/;
 
 const API_SRC = path.resolve(__dirname, '..');

@@ -22,7 +22,14 @@ a non-bypassable backstop.
 Also runs `scripts/check-migration-naming.sh --staged` — blocks migration
 filenames the runner would silently skip, additions to the closed reserved
 date block, and a new migration that sorts before one already committed on
-this branch. See that script's header for the three rules it enforces.
+this branch. See that script's header for the rules it enforces.
+
+On a merge commit (or a cherry-pick from main) it judges only migrations this
+commit authors: a staged file that already exists on `origin/main` or on
+`MERGE_HEAD` is main's, not yours, and is skipped. It also fails loudly when a
+commit deletes or renames a migration that exists on `origin/main` — that
+file's ledger row is keyed on its filename (#10015). If the guard ever names a
+file that is on `origin/main`, the fix is never to rename that file.
 
 ## pre-push
 

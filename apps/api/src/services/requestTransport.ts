@@ -1,5 +1,6 @@
 import type { Context } from 'hono';
-import { trustsForwardedHeadersFrom } from './clientIp';
+import { getImmediatePeerIpOrUndefined, isTrustedProxySource, trustsForwardedHeadersFrom } from './clientIp';
+import { ipMatchesAny, isValidIpOrCidr } from './ipMatch';
 
 /**
  * Security remediation Wave 5, Task 8 (TRANSPORT-001) — make the effective
@@ -94,6 +95,150 @@ export function isCanonicalRequestHost(c: Context, publicApiUrl: URL): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * #9700 — the in-cluster service hop.
+ *
+ * Portal and web SSR reach the API over the private compose network at
+ * `INTERNAL_API_URL` (`http://api:3001`). That hop is plain HTTP by design and
+ * the caller is not a trusted proxy, so under FORCE_HTTPS it resolved to scheme
+ * `http` with a non-canonical Host and was rejected with
+ * FORCE_HTTPS_NON_CANONICAL_HOST. Trusting the portal as a proxy is NOT the
+ * fix: a trusted peer gains forwarded-IP, proto, host and agent-certificate
+ * header authority, which an app server must never have.
+ *
+ * A request is internal only when ALL of these hold:
+ *  1. Its TCP socket peer (never a forwarded header) is inside
+ *     `INTERNAL_SERVICE_CIDRS` — compose sets this to the fixed bridge subnet,
+ *     which nothing outside the Docker network can source traffic from (the
+ *     API publishes no host port).
+ *  2. That peer is NOT a trusted proxy. The bundled Caddy sits inside the same
+ *     subnet; requests it relays come from the internet, so a client that sends
+ *     `Host: api:3001` through Caddy must keep the normal FORCE_HTTPS handling.
+ *  3. The request carries no proxy-appended client-IP header
+ *     (X-Forwarded-For / X-Real-IP / CF-Connecting-IP). Defence in depth: if
+ *     TRUSTED_PROXY_CIDRS goes stale, relayed traffic still never qualifies.
+ *  4. The `Host` header names a configured internal API host (`INTERNAL_API_HOSTS`,
+ *     default `api:3001`), compared host+port, case-insensitively.
+ *
+ * Nothing is reflected and nothing is redirected for an internal request — the
+ * caller simply passes through — so the Host check here is a scoping filter,
+ * not the trust signal; the socket peer is.
+ *
+ * Empty `INTERNAL_SERVICE_CIDRS` disables the exemption (fail closed), as does
+ * a missing socket peer. Entries that are invalid or not wholly inside a
+ * private/local block (`isPrivateServiceRange`) are dropped here; config
+ * validation refuses them at boot as well.
+ */
+export interface InternalServiceConfig {
+  /** Normalized `host[:port]` values (lowercase, default ports stripped). */
+  hosts: ReadonlySet<string>;
+  cidrs: readonly string[];
+}
+
+export const DEFAULT_INTERNAL_API_HOSTS = 'api:3001';
+
+/** Normalized `host[:port]`, or null when the value is not a bare host[:port]. */
+export function normalizeInternalApiHost(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    // A throwaway http:// base so `api:80` and `api` compare equal while
+    // `api:3001` keeps its port; mirrors isCanonicalRequestHost's approach.
+    const parsed = new URL(`http://${trimmed}`);
+    if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+      return null;
+    }
+    return parsed.host;
+  } catch {
+    return null;
+  }
+}
+
+function splitCsv(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+/** True for a CIDR whose prefix length is 0 (matches every address). */
+export function isAllAddressesCidr(entry: string): boolean {
+  const slash = entry.indexOf('/');
+  return slash !== -1 && /^0+$/.test(entry.slice(slash + 1).trim());
+}
+
+// Private / local blocks an internal service range must sit WHOLLY inside.
+// Checking only the base address is not enough: 10.0.0.0/1 starts in 10/8 but
+// spans public space.
+const PRIVATE_SERVICE_BLOCKS: ReadonlyArray<readonly [string, number]> = [
+  ['10.0.0.0', 8],
+  ['172.16.0.0', 12],
+  ['192.168.0.0', 16],
+  ['127.0.0.0', 8],
+  ['169.254.0.0', 16],
+  ['100.64.0.0', 10],
+  ['fc00::', 7],
+  ['fe80::', 10],
+  ['::1', 128],
+];
+
+/**
+ * True when `entry` (an IP or CIDR) is valid, is not an all-addresses `/0`, and
+ * lies entirely inside one private/local block: its base address is in the
+ * block AND its prefix is at least as long as the block's.
+ */
+export function isPrivateServiceRange(entry: string): boolean {
+  const trimmed = entry.trim();
+  if (!isValidIpOrCidr(trimmed) || isAllAddressesCidr(trimmed)) return false;
+  const slash = trimmed.indexOf('/');
+  const network = slash === -1 ? trimmed : trimmed.slice(0, slash);
+  const isV6 = network.includes(':');
+  const prefix = slash === -1 ? (isV6 ? 128 : 32) : Number(trimmed.slice(slash + 1));
+  return PRIVATE_SERVICE_BLOCKS.some(([base, bits]) =>
+    base.includes(':') === isV6 && prefix >= bits && ipMatchesAny(network, [`${base}/${bits}`]));
+}
+
+export function parseInternalServiceConfig(
+  cidrsRaw: string | undefined,
+  hostsRaw: string | undefined,
+): InternalServiceConfig {
+  const cidrs = splitCsv(cidrsRaw).filter(isPrivateServiceRange);
+  const hostEntries = splitCsv(hostsRaw && hostsRaw.trim() ? hostsRaw : DEFAULT_INTERNAL_API_HOSTS);
+  const hosts = new Set<string>();
+  for (const entry of hostEntries) {
+    const normalized = normalizeInternalApiHost(entry);
+    if (normalized) hosts.add(normalized);
+  }
+  return { hosts, cidrs };
+}
+
+// ::ffff:a.b.c.d -> a.b.c.d so an IPv4 subnet entry matches a dual-stack peer.
+function peerCandidates(peer: string): string[] {
+  const match = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(peer);
+  return match?.[1] ? [peer, match[1]] : [peer];
+}
+
+const CLIENT_IP_HEADERS = ['x-forwarded-for', 'x-real-ip', 'cf-connecting-ip'] as const;
+
+export function isInternalServiceRequest(c: Context, config: InternalServiceConfig): boolean {
+  if (config.cidrs.length === 0 || config.hosts.size === 0) return false;
+
+  // A proxy appends the client's IP; the SSR callers never send one. Refusing
+  // proxy-shaped requests keeps relayed internet traffic out even if
+  // TRUSTED_PROXY_CIDRS goes stale and the proxy drops out of check 2.
+  if (CLIENT_IP_HEADERS.some((name) => c.req.header(name) !== undefined)) return false;
+
+  const peer = getImmediatePeerIpOrUndefined(c);
+  if (!peer) return false;
+  if (isTrustedProxySource(peer)) return false;
+  if (!peerCandidates(peer).some((ip) => ipMatchesAny(ip, [...config.cidrs]))) return false;
+
+  const hostHeader = c.req.header('host');
+  if (!hostHeader) return false;
+  const host = normalizeInternalApiHost(hostHeader);
+  return host !== null && config.hosts.has(host);
 }
 
 /**
