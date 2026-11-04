@@ -16,10 +16,11 @@ const template = {
 
 function input(statuses: Record<string, string>, autoResolve = true) {
   return {
-    rule: { ...rule, overrideSettings: { autoResolve } },
+    rule,
     template,
     device: { id: 'device', orgId: 'device-org', hostname: 'server' },
     monitor: { id: 'monitor', kind: 'hardware_health' },
+    lifecycle: { autoResolve, cooldownMinutes: 60, rearmMode: 'new_evidence', rearmDelayMinutes: null },
     evidence: {
       dataState: 'ok',
       subjects: Object.entries(statuses).map(([subjectKey, status]) => ({

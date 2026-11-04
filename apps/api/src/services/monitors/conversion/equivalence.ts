@@ -14,7 +14,7 @@ import { resolveMonitorsForDevice } from '../monitorResolver';
 import { applyOverrides, getMonitorKindSpec } from '../kinds';
 import { resolveLegacyBaseline, type DbExecutor, type LegacyBaseline } from './legacyBaseline';
 import { loadPolicySources, type PolicySources } from './loadSources';
-import { canonical, sha, mapInlineRule, mapWatch, mapAutomationResponses, mergeResponseProposals, monitorSignature } from './mapping';
+import { canonical, sha, mapInlineRule, mapWatch, mapAutomationResponses, mergeResponseProposals, monitorSignature, type MonitorSignatureInput } from './mapping';
 import type { ConversionPreviewItem, ConversionSourceTable, EquivalenceDelta, ProposedMonitor } from './types';
 import { ConversionError } from './convert';
 import { rehomePolicyWorkflow } from './workflows';
@@ -30,7 +30,7 @@ export interface EquivalenceProposal {
 }
 class PreviewRollback extends Error {}
 
-async function effectiveSignature(p: ProposedMonitor, input: Parameters<typeof resolveDelivery>[0], executor: DbExecutor,
+async function effectiveSignature(p: Omit<ProposedMonitor, 'cooldownMinutes' | 'autoResolve'> & MonitorSignatureInput, input: Parameters<typeof resolveDelivery>[0], executor: DbExecutor,
   legacy?: Parameters<typeof resolveLegacyDeliveryBaseline>[1]) {
   const resolved = legacy === undefined
     ? await resolveDelivery(input, executor)

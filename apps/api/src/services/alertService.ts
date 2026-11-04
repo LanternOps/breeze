@@ -8,9 +8,9 @@
  * - Interpolate template strings
  */
 
-import { DEFAULT_ALERT_COOLDOWN_MINUTES } from '@breeze/shared';
 import { randomUUID } from 'node:crypto';
-import type { MonitorKind, AlertResolutionReason } from '@breeze/shared';
+import { BUILTIN_ALERT_LIFECYCLE } from '@breeze/shared';
+import type { MonitorKind, AlertResolutionReason, ResolvedAlertLifecycle } from '@breeze/shared';
 import { db, withDbTransaction, withSystemDbAccessContext } from '../db';
 import {
   alerts,
@@ -53,6 +53,7 @@ import {
   mergeCursors, freezeRecoveryCursor, resolveSideCursors, contextWithCursorSql,
   type LeafCursors, type ClosedCursorEntry,
 } from './alertLifecycle/cursor';
+import { createLifecycleLoader, lifecycleForAlert, loadAlertLifecycle } from './alertLifecycle/resolve';
 
 // Types for alert creation
 export interface CreateAlertParams {
@@ -64,6 +65,11 @@ export interface CreateAlertParams {
   message: string;
   context?: Record<string, unknown>;
   lifecycle?: { cursor: LeafCursors };
+  /**
+   * The rule's effective lifecycle, when the caller already resolved it (the
+   * sweep does, once per device). Omitted: createAlert resolves it itself.
+   */
+  resolvedLifecycle?: ResolvedAlertLifecycle;
   /**
    * #5289 — set when the firing rule was COMPILED from a monitor definition,
    * so the alert can link back to the monitor a technician actually authored
@@ -129,7 +135,13 @@ export interface RuleWithTemplate {
   template: typeof alertTemplates.$inferSelect;
   effectiveConditions: unknown;
   effectiveSeverity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  /** `lifecycle.cooldownMinutes`, kept for the callers that only need the cooldown. */
   effectiveCooldownMinutes: number;
+  /**
+   * W2 (#10765) — the rule's effective lifecycle for THIS device: monitor →
+   * device org → partner for a managed rule, rule/template for a legacy one.
+   */
+  lifecycle: ResolvedAlertLifecycle;
   notificationChannelIds: string[];
   escalationPolicyId?: string;
   /**
@@ -229,10 +241,11 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
     .where(eq(alertTemplates.id, rule.templateId))
     .limit(1);
 
-  // Check override or template cooldown
-  const overrides = rule.overrideSettings as Record<string, unknown> | null;
-  const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-    template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
+  // The effective lifecycle (monitor → device org → partner, or the legacy
+  // rule/template values). The sweep resolves it once per device and passes it.
+  const effectiveLifecycle = params.resolvedLifecycle
+    ?? await loadAlertLifecycle({ rule, template: template ?? null, deviceOrgId: orgId });
+  const cooldownMinutes = effectiveLifecycle.cooldownMinutes;
 
   // Check cooldown
   const cooldownActive = await isCooldownActive(ruleId, deviceId, subjectKey);
@@ -603,12 +616,12 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
   }
 
   // Check if auto-resolve is enabled
-  const overrides = rule.overrideSettings as Record<string, unknown> | null;
-  const autoResolve = (overrides?.autoResolve as boolean) ?? template.autoResolve;
-
-  if (!autoResolve) {
+  const lifecycle = await lifecycleForAlert(alert, { rule, template });
+  if (!lifecycle?.autoResolve) {
     return false;
   }
+
+  const overrides = rule.overrideSettings as Record<string, unknown> | null;
 
   // Get auto-resolve conditions (inverse conditions)
   const autoResolveConditions = (overrides?.autoResolveConditions as unknown) ??
@@ -1001,18 +1014,12 @@ export async function resolveAlert(
   // manual resolution, checkAutoResolve, the config-policy sweep — keeps
   // today's synchronous behaviour unchanged; only Tasks 9 and 12 opt in.
   if (deferSubjectEffects && alert.subjectKey && isDeviceOwned(alert)) {
-    const [rule] = alert.ruleId
-      ? await db.select().from(alertRules).where(eq(alertRules.id, alert.ruleId)).limit(1)
-      : [];
-    const [template] = rule
-      ? await db.select().from(alertTemplates).where(eq(alertTemplates.id, rule.templateId)).limit(1)
-      : [];
-    const overrides = rule?.overrideSettings as Record<string, unknown> | null;
+    const lifecycle = await lifecycleForAlert(alert);
     const pending: SubjectAlertDispatch = {
       eventId: randomUUID(),
       eventType: 'alert.resolved',
       siteId: await resolveDeviceSiteId(alert.deviceId),
-      cooldownMinutes: (overrides?.cooldownMinutes as number) ?? template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES,
+      cooldownMinutes: lifecycle?.cooldownMinutes ?? BUILTIN_ALERT_LIFECYCLE.cooldownMinutes,
       payload: {
         alertId, ruleId: alert.ruleId, deviceId: alert.deviceId, subjectKey: alert.subjectKey, resolutionNote,
         resolvedAt: alert.resolvedAt!.toISOString(), resolvedBy: alert.resolvedBy,
@@ -1043,24 +1050,9 @@ export async function resolveAlert(
   // beyond the cooldown window before a new alert is created.
   // Retired policy alerts are history-only and need no cooldown.
   if (alert.ruleId && isDeviceOwned(alert)) {
-    // Legacy standalone alert rule
-    const [rule] = await db
-      .select()
-      .from(alertRules)
-      .where(eq(alertRules.id, alert.ruleId))
-      .limit(1);
-
-    if (rule) {
-      const [template] = await db
-        .select()
-        .from(alertTemplates)
-        .where(eq(alertTemplates.id, rule.templateId))
-        .limit(1);
-
-      const overrides = rule.overrideSettings as Record<string, unknown> | null;
-      const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-        template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
-      await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes, alert.subjectKey ?? undefined);
+    const lifecycle = await lifecycleForAlert(alert);
+    if (lifecycle) {
+      await setCooldown(alert.ruleId, alert.deviceId, lifecycle.cooldownMinutes, alert.subjectKey ?? undefined);
     }
   }
 
@@ -1221,6 +1213,9 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
 
   // Build rule-with-template objects
   const result: RuleWithTemplate[] = [];
+  // One loader per device evaluation: the org and partner rows are read once
+  // for all of this device's rules.
+  const loadLifecycle = createLifecycleLoader();
 
   for (const rule of rules) {
     const template = templateMap.get(rule.templateId);
@@ -1266,17 +1261,23 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
       }
     }
 
+    const monitor = rule.managedByMonitorId
+      ? monitorDefinitionsById.get(rule.managedByMonitorId) ?? null
+      : null;
+    // ALWAYS the device's org: a partner-wide monitor's compiled template is
+    // shared by every org, so its lifecycle cannot be resolved at compile time.
+    const lifecycle = await loadLifecycle({ rule, template, monitor, deviceOrgId: device.orgId });
+
     result.push({
       rule,
       template,
       effectiveConditions,
       effectiveSeverity,
-      effectiveCooldownMinutes: (overrides?.cooldownMinutes as number) ?? template.cooldownMinutes,
+      effectiveCooldownMinutes: lifecycle.cooldownMinutes,
+      lifecycle,
       notificationChannelIds: (overrides?.notificationChannelIds as string[]) ?? [],
       escalationPolicyId: overrides?.escalationPolicyId as string | undefined,
-      monitor: rule.managedByMonitorId
-        ? monitorDefinitionsById.get(rule.managedByMonitorId) ?? null
-        : null
+      monitor,
     });
   }
 
@@ -1511,7 +1512,7 @@ async function evaluateRuleForDevice(input: {
   closedCursor?: { entry: ClosedCursorEntry | undefined };
 }): Promise<string[]> {
   const { applicable, deviceId, device, suppressAlerts, evaluatedMonitorIds, closedCursor } = input;
-  const { rule, template, effectiveConditions, effectiveSeverity, effectiveCooldownMinutes, monitor } = applicable;
+  const { rule, template, effectiveConditions, effectiveSeverity, effectiveCooldownMinutes, lifecycle, monitor } = applicable;
   const isEvidenceRule = closedCursor !== undefined;
 
   // Evaluate conditions
@@ -1553,7 +1554,7 @@ async function evaluateRuleForDevice(input: {
             cooldownMinutes: effectiveCooldownMinutes,
           },
         },
-        template, device, monitor, evidence: {
+        template, device, monitor, lifecycle, evidence: {
           ...evidence,
           subjects: suppressAlerts
             ? evidence.subjects.filter(subject => subject.status !== 'breaching')
@@ -1673,6 +1674,7 @@ async function evaluateRuleForDevice(input: {
     monitorId: rule.managedByMonitorId ?? null,
     kind: monitor?.kind ?? null,
     episodeId,
+    resolvedLifecycle: lifecycle,
     ...(isEvidenceRule ? { lifecycle: { cursor: result.evidenceWatermarks } } : {}),
     context: {
       ...result.context,

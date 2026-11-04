@@ -1,4 +1,3 @@
-import { DEFAULT_ALERT_COOLDOWN_MINUTES } from '@breeze/shared';
 import { isDeviceOwned } from '../../services/alertOwner';
 import { Hono, type MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -11,7 +10,6 @@ import {
   alertCorrelationGroups,
   alertCorrelationMembers,
   alertRules,
-  alertTemplates,
   alerts,
   notificationChannels,
   alertNotifications,
@@ -23,6 +21,7 @@ import {
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { isAutomationPrincipal, isFlowPrincipal } from '../../middleware/principalKind';
 import { setCooldown } from '../../services/alertCooldown';
+import { lifecycleForAlert } from '../../services/alertLifecycle/resolve';
 import {
   ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE,
   ALERT_CAS_LOST_MESSAGE,
@@ -1043,23 +1042,9 @@ alertsRoutes.post(
     }
     try {
       if (alert.ruleId && isDeviceOwned(alert)) {
-        const [rule] = await db
-          .select()
-          .from(alertRules)
-          .where(eq(alertRules.id, alert.ruleId))
-          .limit(1);
-
-        if (rule) {
-          const [template] = await db
-            .select()
-            .from(alertTemplates)
-            .where(eq(alertTemplates.id, rule.templateId))
-            .limit(1);
-
-          const overrides = rule.overrideSettings as Record<string, unknown> | null;
-          const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-            template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
-          await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes, alert.subjectKey ?? undefined);
+        const lifecycle = await lifecycleForAlert(alert);
+        if (lifecycle) {
+          await setCooldown(alert.ruleId, alert.deviceId, lifecycle.cooldownMinutes, alert.subjectKey ?? undefined);
         }
       }
     } catch (error) {

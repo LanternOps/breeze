@@ -2,7 +2,7 @@ import { isDeviceOwned } from '../services/alertOwner';
 import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { DEFAULT_ALERT_COOLDOWN_MINUTES, scriptParametersSchema } from '@breeze/shared';
+import { scriptParametersSchema } from '@breeze/shared';
 import { and, asc, desc, eq, gte, ilike, inArray, like, ne, or, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db } from '../db';
@@ -28,6 +28,7 @@ import {
   buildAcknowledgeAlertCas,
   buildResolveAlertCas,
 } from '../services/alertService';
+import { lifecycleForAlert } from '../services/alertLifecycle/resolve';
 import { writeRouteAudit } from '../services/auditEvents';
 import { publishEvent } from '../services/eventBus';
 import { escapeLike } from '../utils/sql';
@@ -1259,23 +1260,9 @@ mobileRoutes.post(
     }
     try {
       if (alert.ruleId && isDeviceOwned(alert)) {
-        const [rule] = await db
-          .select()
-          .from(alertRules)
-          .where(eq(alertRules.id, alert.ruleId))
-          .limit(1);
-
-        if (rule) {
-          const [template] = await db
-            .select()
-            .from(alertTemplates)
-            .where(eq(alertTemplates.id, rule.templateId))
-            .limit(1);
-
-          const overrides = (rule.overrideSettings as Record<string, unknown> | null) ?? null;
-          const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-            template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
-          await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes, alert.subjectKey ?? undefined);
+        const lifecycle = await lifecycleForAlert(alert);
+        if (lifecycle) {
+          await setCooldown(alert.ruleId, alert.deviceId, lifecycle.cooldownMinutes, alert.subjectKey ?? undefined);
         }
       }
     } catch (error) {

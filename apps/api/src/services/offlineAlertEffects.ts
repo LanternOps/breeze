@@ -3,6 +3,7 @@ import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { alerts, alertRules, alertTemplates, devices, offlineTransitionEffects as effects, type OfflineEffect } from '../db/schema';
 import { alertRuleOwnershipConditionForOrg, getApplicableRules } from './alertService';
+import { createLifecycleLoader } from './alertLifecycle/resolve';
 import { interpolateTemplate } from './alertConditions';
 import { resolveMaintenanceConfigForDevice, isInMaintenanceWindow } from './featureConfigResolver';
 import { getRedisConnection } from './redis';
@@ -49,6 +50,7 @@ export async function expandOfflineAlertPlan(effect: OfflineEffect): Promise<str
         and(eq(alertRules.targetType, 'device'), eq(alertRules.targetId, device.id)),
       )));
     const plans: OfflineRulePlan[] = [];
+    const loadLifecycle = createLifecycleLoader();
     for (const { rule, template } of rules) {
       const overrides = rule.overrideSettings as Record<string, unknown> | null;
       const conditions = overrides?.conditions ?? template.conditions;
@@ -57,7 +59,7 @@ export async function expandOfflineAlertPlan(effect: OfflineEffect): Promise<str
         ruleId: rule.id, name: rule.name, templateId: template.id,
         conditions, severity: (overrides?.severity as OfflineRulePlan['severity']) ?? template.severity,
         titleTemplate: template.titleTemplate, messageTemplate: template.messageTemplate,
-        cooldownMinutes: (overrides?.cooldownMinutes as number) ?? template.cooldownMinutes,
+        cooldownMinutes: (await loadLifecycle({ rule, template, deviceOrgId: device.orgId })).cooldownMinutes,
       });
     }
     // Reuse effective monitor resolution, including disabled attachments,
