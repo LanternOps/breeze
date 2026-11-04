@@ -28,6 +28,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
 
 import { tool as sdkTool } from '@anthropic-ai/claude-agent-sdk';
 import {
+  __test__ as sdkToolsTest,
   buildBreezeSdkTools,
   createBreezeMcpServer,
   listChatSurfaceToolNames,
@@ -185,5 +186,70 @@ describe('Breeze tool template cache (#11004)', () => {
     const first = listChatSurfaceToolNames();
     first.push('not_a_real_tool');
     expect(listChatSurfaceToolNames()).not.toContain('not_a_real_tool');
+  });
+
+  it('bindBreezeSdkTools refuses a template entry whose handler is not late-bound (no shared closures)', () => {
+    const shared = { name: 'inline_tool', description: 'd', inputSchema: {}, handler: async () => ({ content: [] }) };
+    const b = binding('A');
+    expect(() => sdkToolsTest.bindBreezeSdkTools([shared as never], {
+      getAuth: b.getAuth as never, getActiveSession: undefined, onPreToolUse: b.onPreToolUse, onPostToolUse: b.onPostToolUse,
+    })).toThrow(/no late-bound handler/);
+  });
+
+  it('bindBreezeSdkTools returns new objects and never mutates the template; the placeholder refuses to run', () => {
+    const factory = vi.fn(() => async () => ({ content: [] }));
+    const template = Object.freeze({ name: 't', description: 'd', inputSchema: {}, handler: sdkToolsTest.lateBound(factory) });
+    expect(() => (template.handler as () => unknown)()).toThrow(/unbound template tool handler/);
+    const b = binding('A');
+    const bindingA = { getAuth: b.getAuth as never, getActiveSession: undefined, onPreToolUse: b.onPreToolUse, onPostToolUse: b.onPostToolUse };
+    const [bound] = sdkToolsTest.bindBreezeSdkTools([template as never], bindingA);
+    expect(bound).not.toBe(template);
+    expect(bound!.handler).not.toBe(template.handler);
+    expect(factory).toHaveBeenCalledWith(bindingA);
+    expect(bound!.inputSchema).toBe(template.inputSchema);
+  });
+
+  it('propose_action_plan reads ITS session through the binding', async () => {
+    const a = binding('A');
+    const noSession = buildBreezeSdkTools(a.getAuth as never, a.onPreToolUse, a.onPostToolUse, (() => undefined) as never);
+    const refused = await (byName(noSession, 'propose_action_plan').handler as CapturedTool['handler'])(
+      { title: 't', steps: [{ toolName: 'query_devices', input: {}, reasoning: 'r' }] }, {});
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0]!.text).toContain('No active session');
+
+    const getSessionB = vi.fn(() => ({ breezeSessionId: 'session-b' }));
+    const withSession = buildBreezeSdkTools(a.getAuth as never, a.onPreToolUse, a.onPostToolUse, getSessionB as never);
+    const unknown = await (byName(withSession, 'propose_action_plan').handler as CapturedTool['handler'])(
+      { title: 't', steps: [{ toolName: 'not_a_tool', input: {}, reasoning: 'r' }] }, {});
+    expect(getSessionB).toHaveBeenCalled();
+    expect(unknown.content[0]!.text).toContain('Unknown tool in plan');
+  });
+
+  it('an onlyTools server binds just its subset onto the shared template and leaves the full surface intact', () => {
+    const fullBefore = buildBreezeSdkTools((() => { throw new Error('unused'); }) as never).length;
+    const onlyTools = new Set(['query_devices', 'get_device_details']);
+    const a = binding('A');
+    const b = binding('B');
+    const serverA = createBreezeMcpServer(a.getAuth as never, a.onPreToolUse, a.onPostToolUse, undefined, [], { onlyTools }) as unknown as CapturedServer;
+    const serverB = createBreezeMcpServer(b.getAuth as never, b.onPreToolUse, b.onPostToolUse, undefined, [], { onlyTools }) as unknown as CapturedServer;
+    expect(serverA.tools.map((t) => t.name).sort()).toEqual([...onlyTools].sort());
+    const full = createBreezeMcpServer(a.getAuth as never) as unknown as CapturedServer;
+    for (const name of onlyTools) {
+      expect(byName(serverA.tools, name).handler).not.toBe(byName(serverB.tools, name).handler);
+      expect(byName(serverA.tools, name).inputSchema).toBe(byName(full.tools, name).inputSchema);
+    }
+    expect(buildBreezeSdkTools((() => { throw new Error('unused'); }) as never)).toHaveLength(fullBefore);
+    expect(() => createBreezeMcpServer(a.getAuth as never, undefined, undefined, undefined, [], { onlyTools: new Set(['no_such_tool']) }))
+      .toThrow(/onlyTools referenced unknown tool name/);
+  });
+
+  it('warmBreezeToolSurface reports the surface and is idempotent', () => {
+    const first = warmBreezeToolSurface();
+    const calls = toolSpy.mock.calls.length;
+    const second = warmBreezeToolSurface();
+    expect(first.tools).toBeGreaterThan(300);
+    expect(second.tools).toBe(first.tools);
+    expect(second.ms).toBeGreaterThanOrEqual(0);
+    expect(toolSpy.mock.calls.length).toBe(calls);
   });
 });

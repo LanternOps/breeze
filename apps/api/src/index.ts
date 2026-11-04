@@ -2279,12 +2279,15 @@ async function bootstrap(): Promise<void> {
   // #11004: build the static AI tool surface (~340 Zod tool declarations, their
   // registry metadata and one throwaway SDK MCP server) now, so the first AI
   // chat message after a restart does not pay for it on the request path. CPU
-  // only, no I/O. A failure only means the first session builds it instead.
+  // only, no I/O.
   try {
     const warmed = warmBreezeToolSurface();
     console.log(`[startup] AI tool surface warmed: ${warmed.tools} chat tools in ${warmed.ms}ms`);
   } catch (error) {
-    console.error('[startup] AI tool surface warm-up failed; the first AI session will build it:', error);
+    // The template is not cached on failure, so every AI session retries the
+    // same build — and a deterministic failure (e.g. a tool with no registry
+    // description) fails each one until it is fixed.
+    console.error('[startup] AI tool surface warm-up failed; AI chat sessions will retry the build and fail the same way until this is fixed:', error);
     captureException(error instanceof Error ? error : new Error(String(error)));
   }
 

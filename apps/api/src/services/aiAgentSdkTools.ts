@@ -1481,7 +1481,7 @@ const makeHandler = (
   onPostToolUse?: PostToolUseCallback,
 ) => makeToolHandler(toolName, getAuth, undefined, onPreToolUse, onPostToolUse);
 
-export const __test__ = { makeSessionAwareHandler, makeHandler, makeToolHandler };
+export const __test__ = { makeSessionAwareHandler, makeHandler, makeToolHandler, lateBound, bindBreezeSdkTools };
 
 // ============================================
 // Static tool template + per-session binding (#11004)
