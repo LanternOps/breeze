@@ -264,7 +264,17 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Ativar aplicação de orçamento de IA",
+    "aiAccess": "IA para todas as organizações",
+    "aiAccessOptions": {
+      "notSet": "Não definido, cada organização decide",
+      "on": "Ativada para todas as organizações",
+      "off": "Desativada para todas as organizações"
+    },
+    "aiAccessHelp": "Este é o botão de IA dos seus clientes, não uma configuração de orçamento. Quando definido, ele substitui o botão de IA de cada organização. Os campos de orçamento abaixo valem de qualquer forma.",
+    "offWarning": "A IA está desativada para todas as organizações deste parceiro. Chat, helper, suplementos do Office, agentes de IA e enriquecimento são recusados até você mudar isso.",
+    "offConfirmTitle": "Desativar a IA para todas as organizações?",
+    "offConfirmMessage": "Todas as organizações deste parceiro perdem a IA: chat, helper, suplementos do Office, agentes de IA e enriquecimento são recusados, e as organizações não podem reativá-la por conta própria. Nada muda até você salvar.",
+    "offConfirmAction": "Desativar IA",
     "monthlyBudget": "Orçamento mensal (US$)",
     "dailyBudget": "Orçamento diário (US$)",
     "approvalMode": "Modo de aprovação",

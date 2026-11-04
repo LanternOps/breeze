@@ -1021,6 +1021,27 @@ describe('PartnerSettingsPage AI Budgets tab', () => {
     expect(settings.aiBudgets).not.toHaveProperty('alertThresholdPercents');
   });
 
+  // #9666: "not set" must reach the API as an absent key. The partner PATCH
+  // replaces the stored aiBudgets block wholesale, so an omitted `enabled`
+  // unlocks every organization's own AI switch; `false` would turn AI off for
+  // all of them.
+  it('choosing "not set" for AI access drops enabled from the payload and keeps the caps', async () => {
+    render(<PartnerSettingsPage />);
+    await screen.findByText('Partner Settings');
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+
+    const select = await screen.findByTestId('partner-ai-budget-enabled');
+    await user.selectOptions(select, '');
+
+    await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+    const settings = patchedSettings();
+    expect(settings.aiBudgets).not.toHaveProperty('enabled');
+    expect(settings.aiBudgets.monthlyBudgetCents).toBe(5000);
+  });
+
   it('blocks Save while the ladder text does not parse', async () => {
     render(<PartnerSettingsPage />);
     await screen.findByText('Partner Settings');

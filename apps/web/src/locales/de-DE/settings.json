@@ -264,7 +264,17 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Aktivieren Sie die Durchsetzung von KI-Budgets",
+    "aiAccess": "KI für alle Organisationen",
+    "aiAccessOptions": {
+      "notSet": "Nicht festgelegt, jede Organisation entscheidet",
+      "on": "Für jede Organisation an",
+      "off": "Für jede Organisation aus"
+    },
+    "aiAccessHelp": "Dies ist der KI-Ein/Aus-Schalter für Ihre Kunden, keine Budgeteinstellung. Wenn er festgelegt ist, ersetzt er den eigenen KI-Schalter jeder Organisation. Die Budgetfelder unten gelten in jedem Fall.",
+    "offWarning": "KI ist für jede Organisation dieses Partners ausgeschaltet. Chat, Helper, Office-Add-ins, KI-Agenten und Anreicherung werden abgelehnt, bis Sie dies ändern.",
+    "offConfirmTitle": "KI für jede Organisation ausschalten?",
+    "offConfirmMessage": "Jede Organisation dieses Partners verliert die KI: Chat, Helper, Office-Add-ins, KI-Agenten und Anreicherung werden abgelehnt, und Organisationen können sie nicht selbst wieder einschalten. Erst beim Speichern ändert sich etwas.",
+    "offConfirmAction": "KI ausschalten",
     "monthlyBudget": "Monatsbudget ($)",
     "dailyBudget": "Tagesbudget ($)",
     "approvalMode": "Genehmigungsmodus",

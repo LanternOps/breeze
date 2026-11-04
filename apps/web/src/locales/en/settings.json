@@ -264,7 +264,17 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Enable AI budget enforcement",
+    "aiAccess": "AI for all organizations",
+    "aiAccessOptions": {
+      "notSet": "Not set, each organization decides",
+      "on": "On for every organization",
+      "off": "Off for every organization"
+    },
+    "aiAccessHelp": "This is the AI on/off switch for your clients, not a budget setting. When set, it replaces each organization's own AI switch. The budget fields below apply either way.",
+    "offWarning": "AI is off for every organization under this partner. Chat, the helper, Office add-ins, AI agents and enrichment are refused until you change this.",
+    "offConfirmTitle": "Turn off AI for every organization?",
+    "offConfirmMessage": "Every organization under this partner loses AI: chat, the helper, Office add-ins, AI agents and enrichment are refused, and organizations can't turn it back on themselves. Nothing changes until you save.",
+    "offConfirmAction": "Turn off AI",
     "monthlyBudget": "Monthly Budget ($)",
     "dailyBudget": "Daily Budget ($)",
     "approvalMode": "Approval Mode",
