@@ -241,6 +241,11 @@ func TestLinuxApplyLeavesTheHostUntouchedOnPreflightFailure(t *testing.T) {
 				return cgroup.Layout{AgentPath: `system.slice/x"; flush ruleset; "`, Level: 2}, nil
 			}
 		}, "cgroup path"},
+		{"systemd-escaped cgroup path", func(i *linuxIsolator, _ *fakeNft) {
+			i.layout = func() (cgroup.Layout, error) {
+				return cgroup.Layout{AgentPath: `system.slice/breeze\x2dagent.service/agent`, Level: 3}, nil
+			}
+		}, "cgroup path"},
 		{"baseline unreadable", func(i *linuxIsolator, _ *fakeNft) {
 			i.baseline = func() (Baseline, error) { return Baseline{}, errors.New("resolv.conf: permission denied") }
 		}, "baseline"},

@@ -5,6 +5,7 @@ package isolation
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,8 +51,12 @@ func TestLinuxShippedSwitchMasksAllFiveInputsPassing(t *testing.T) {
 type linuxReadinessFixture struct {
 	nftMissing bool
 	cgroupErr  error
-	recovery   error
-	schedOK    *bool
+	// noSocketCgroupv2 is a kernel older than 5.13: nft's dry run refuses
+	// `socket cgroupv2`.
+	noSocketCgroupv2 bool
+	recovery         error
+	schedOK          *bool
+	probes           *[]string
 }
 
 func activatedLinuxIsolator(t *testing.T, fx linuxReadinessFixture) *linuxIsolator {
@@ -69,6 +74,18 @@ func activatedLinuxIsolator(t *testing.T, fx linuxReadinessFixture) *linuxIsolat
 			return cgroup.Layout{}, fx.cgroupErr
 		}
 		return cgroup.Layout{AgentPath: "system.slice/breeze-agent.service/agent", ChildrenPath: "system.slice/breeze-agent.service/children", Level: 3, ChildrenFD: 9}, nil
+	}
+	i.nft = func(_ context.Context, stdin []byte, args ...string) ([]byte, error) {
+		if fx.probes != nil {
+			*fx.probes = append(*fx.probes, strings.Join(args, " ")+"\n"+string(stdin))
+		}
+		if len(args) > 0 && args[0] == "-c" && fx.noSocketCgroupv2 {
+			return nil, errors.New("Error: Could not process rule: Operation not supported")
+		}
+		if len(args) > 0 && args[0] != "-c" {
+			t.Errorf("readiness ran a non-dry-run nft command: %v", args)
+		}
+		return nil, nil
 	}
 	ok := true
 	if fx.schedOK != nil {
@@ -92,6 +109,7 @@ func TestLinuxCapabilityNamesEachFailedInput(t *testing.T) {
 		{"cgroup other", linuxReadinessFixture{cgroupErr: &cgroup.Error{Reason: cgroup.ReasonUnavailable, Detail: "x"}}, "cgroup_unavailable"},
 		{"cgroup untyped", linuxReadinessFixture{cgroupErr: failure}, "cgroup_unavailable"},
 		{"placement refused", linuxReadinessFixture{cgroupErr: &cgroup.Error{Reason: cgroup.ReasonSpawnUnavailable, Detail: "x"}}, "cgroup_spawn_unavailable"},
+		{"kernel without socket cgroupv2", linuxReadinessFixture{noSocketCgroupv2: true}, "nft_cgroupv2_unsupported"},
 		{"recovery missing", linuxReadinessFixture{recovery: failure}, "recovery_unavailable"},
 		{"scheduler not ready", linuxReadinessFixture{schedOK: &no}, "scheduler_unavailable"},
 	} {
@@ -221,5 +239,49 @@ func TestLinuxConfigureRecoveryReadinessFailsClosedOnAShippedAgent(t *testing.T)
 	got := i.Capability()
 	if got.Ready || got.UnsupportedReason != "recovery_unavailable" {
 		t.Fatalf("no recovery distribution yet, so readiness must fail closed: %+v", got)
+	}
+}
+
+// A 5.7-5.12 kernel passes the cgroup split and clone3 placement, but nft
+// cannot load `socket cgroupv2` (5.13). Readiness must say so instead of
+// advertising Ready and failing every apply.
+func TestLinuxReadinessDryRunsTheCgroupPermit(t *testing.T) {
+	var probes []string
+	i := activatedLinuxIsolator(t, linuxReadinessFixture{probes: &probes})
+	i.RefreshReadiness(context.Background())
+	if len(probes) != 1 || !strings.HasPrefix(probes[0], "-c -f -\n") {
+		t.Fatalf("probes = %q", probes)
+	}
+	if !strings.Contains(probes[0], `socket cgroupv2 level 3 "system.slice/breeze-agent.service/agent"`) {
+		t.Fatalf("the probe must use the real agent cgroup: %q", probes[0])
+	}
+	if strings.Contains(probes[0], "table inet breeze_isolation ") || strings.Contains(probes[0], "policy drop") {
+		t.Fatalf("the probe must not name our table or drop anything: %q", probes[0])
+	}
+	if got := i.Capability(); !got.Ready {
+		t.Fatalf("capability = %+v", got)
+	}
+}
+
+func TestLinuxReadinessCancelledIsNotNftMissing(t *testing.T) {
+	i := activatedLinuxIsolator(t, linuxReadinessFixture{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	i.RefreshReadiness(ctx)
+	if got := i.Capability(); got.Ready || got.UnsupportedReason != "readiness_cancelled" {
+		t.Fatalf("capability = %+v", got)
+	}
+}
+
+// Any engine error, typed or not, means not ready.
+func TestLinuxCapabilityRefusesAnUntypedEngineError(t *testing.T) {
+	i := activatedLinuxIsolator(t, linuxReadinessFixture{})
+	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	i.readiness.now = func() time.Time { return now }
+	i.readiness.checkedAt = now
+	i.readiness.engineErr = errors.New("some other failure")
+	i.readiness.schedulerReady = true
+	if got := i.Capability(); got.Ready || got.Version != 0 || got.UnsupportedReason == "" {
+		t.Fatalf("capability = %+v", got)
 	}
 }

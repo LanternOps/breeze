@@ -29,10 +29,12 @@ const linuxIsolationActivated = false
 // Readiness reasons reported in securityCapabilities.networkIsolationUnsupportedReason.
 // The cgroup reasons come from the cgroup package.
 const (
-	linuxReasonNotActivated = "not_activated"
-	linuxReasonNftMissing   = "nft_missing"
-	linuxReasonRecovery     = "recovery_unavailable"
-	linuxReasonScheduler    = "scheduler_unavailable"
+	linuxReasonNotActivated    = "not_activated"
+	linuxReasonNftMissing      = "nft_missing"
+	linuxReasonNoCgroupv2Match = "nft_cgroupv2_unsupported"
+	linuxReasonCancelled       = "readiness_cancelled"
+	linuxReasonRecovery        = "recovery_unavailable"
+	linuxReasonScheduler       = "scheduler_unavailable"
 )
 
 // linuxToolTimeout bounds one nft or conntrack run; a wedged netlink socket
@@ -43,9 +45,10 @@ const linuxToolTimeout = 30 * time.Second
 // systemd environment, and a distro may keep nft in sbin only.
 var linuxToolDirs = []string{"/usr/sbin", "/sbin", "/usr/bin", "/bin"}
 
-// nftCgroupPathPattern is what systemd puts in a cgroup path. The path goes
-// into an nft script, so anything else is refused rather than quoted.
-var nftCgroupPathPattern = regexp.MustCompile(`^[A-Za-z0-9_.@:\\/-]+$`)
+// nftCgroupPathPattern is what may go into an nft script as a cgroup path.
+// Anything else is refused rather than quoted, including the backslash of a
+// systemd-escaped unit name: how nft reads an escape is not ours to guess.
+var nftCgroupPathPattern = regexp.MustCompile(`^[A-Za-z0-9_.@:/-]+$`)
 
 // linuxIsolator is the nftables mechanism: one table, `inet breeze_isolation`,
 // that it creates, reads and deletes, and never anyone else's.
@@ -163,8 +166,11 @@ func (i *linuxIsolator) Capability() Capability {
 	switch {
 	case r.checkedAt.IsZero() || elapsed < 0 || elapsed >= readinessMaxAge:
 		c.UnsupportedReason = linuxReasonRecovery // no fresh proof of anything
-	case errors.As(r.engineErr, &engine):
-		c.UnsupportedReason = engine.reason
+	case r.engineErr != nil:
+		c.UnsupportedReason = cgroup.ReasonUnavailable
+		if errors.As(r.engineErr, &engine) {
+			c.UnsupportedReason = engine.reason
+		}
 	case r.recoveryErr != nil:
 		c.UnsupportedReason = linuxReasonRecovery
 	case !r.schedulerReady:
@@ -195,9 +201,9 @@ func (i *linuxIsolator) configureReadiness(ensure func(context.Context) (string,
 	defer i.readiness.mu.Unlock()
 	i.readiness.probe = func(ctx context.Context) readinessInputs {
 		if err := ctx.Err(); err != nil {
-			return readinessInputs{engineErr: &linuxEngineError{linuxReasonNftMissing, err}, recoveryErr: err, schedulerReason: "cancelled"}
+			return readinessInputs{engineErr: &linuxEngineError{linuxReasonCancelled, err}, recoveryErr: err, schedulerReason: "cancelled"}
 		}
-		engineErr := i.probeEngine()
+		engineErr := i.probeEngine(ctx)
 		_, recoveryErr := ensure(ctx)
 		ready, reason := scheduler()
 		return readinessInputs{engineErr: engineErr, recoveryErr: recoveryErr, schedulerReady: ready, schedulerReason: reason}
@@ -205,13 +211,39 @@ func (i *linuxIsolator) configureReadiness(ensure func(context.Context) (string,
 	i.readiness.checkedAt = time.Time{}
 }
 
-// probeEngine checks nft and establishes the cgroup split. The split happens
-// here, so only an activated agent ever moves itself or places a child.
-func (i *linuxIsolator) probeEngine() error {
+// probeEngine checks nft, establishes the cgroup split, and dry-runs the
+// process-scoped permit. The split happens here, so only an activated agent
+// ever moves itself or places a child.
+func (i *linuxIsolator) probeEngine(ctx context.Context) error {
 	if _, err := i.lookPath("nft"); err != nil {
 		return &linuxEngineError{linuxReasonNftMissing, err}
 	}
-	return i.ensureSplit()
+	if err := i.ensureSplit(); err != nil {
+		return err
+	}
+	layout, err := i.splitLayout()
+	if err != nil {
+		return &linuxEngineError{cgroup.ReasonUnavailable, err}
+	}
+	if !nftCgroupPathPattern.MatchString(layout.AgentPath) || layout.Level < 1 {
+		return &linuxEngineError{cgroup.ReasonUnavailable, fmt.Errorf("cgroup path %q cannot go in an nft rule", layout.AgentPath)}
+	}
+	// `socket cgroupv2` needs Linux 5.13, later than the cgroup split and
+	// clone3 placement (5.7). The kernel answers a dry run (-c commits
+	// nothing), so a 5.7-5.12 host reports this instead of advertising Ready
+	// and failing every apply.
+	if _, err := i.nft(ctx, []byte(nftCgroupv2Probe(layout)), "-c", "-f", "-"); err != nil {
+		return &linuxEngineError{linuxReasonNoCgroupv2Match, err}
+	}
+	return nil
+}
+
+// nftCgroupv2Probe is never committed: it only asks the kernel whether it can
+// match a socket on the agent's cgroup. Its own table name and an accept policy
+// keep it harmless even if a caller dropped -c.
+func nftCgroupv2Probe(layout cgroup.Layout) string {
+	return fmt.Sprintf("table %s %s_probe {\n\tchain output {\n\t\ttype filter hook output priority filter - 10; policy accept;\n\t\tsocket cgroupv2 level %d %q accept\n\t}\n}\n",
+		nftFamily, nftTable, layout.Level, layout.AgentPath)
 }
 
 func (i *linuxIsolator) ensureSplit() error {

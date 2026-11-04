@@ -53,7 +53,16 @@ Linux isolation is **not available in any release**. Linux agents advertise capa
 
 **Cgroup split and `Delegate=yes`.** The `breeze-agent` unit runs with `Delegate=yes`, which hands its cgroup subtree to the agent. The agent moves itself into `<unit>/agent`, and every child it starts (terminal, script, helper) is created directly in `<unit>/children`, so it never runs in the permitted cgroup. The firewall permit matches only sockets created in `<unit>/agent`. The `breeze-backup` helper stays in the agent's cgroup because it reaches the backup server, and places its own children in `<unit>/children`. `Delegate=yes` is not a sandbox directive: child processes keep the unrestricted environment remote scripts rely on. An install whose unit predates `Delegate=yes` reports `cgroup_not_delegated` and cannot be isolated until the agent is reinstalled.
 
-**Readiness.** A Linux agent names the first prerequisite it lacks: `nft_missing`, `cgroup_v1` (cgroup v1 and hybrid hosts are not supported), `cgroup_not_delegated`, `cgroup_spawn_unavailable` (the kernel or a seccomp policy cannot place a child at creation; requires Linux 5.7 or later), `recovery_unavailable`, or `scheduler_unavailable`.
+**Readiness.** Linux isolation requires **Linux 5.13 or later**: nftables can match a socket's cgroup only from 5.13, and child placement at creation needs 5.7. A Linux agent names the first prerequisite it lacks:
+
+- `nft_missing`
+- `cgroup_v1`: cgroup v1 and hybrid hosts are not supported.
+- `cgroup_not_delegated`
+- `cgroup_spawn_unavailable`: the kernel or a seccomp policy cannot place a child at creation.
+- `cgroup_unavailable`: any other failure to split the cgroup.
+- `nft_cgroupv2_unsupported`: the kernel cannot match a socket's cgroup.
+- `recovery_unavailable`
+- `scheduler_unavailable`
 
 **Systemd units and recovery.** The separate `breeze-isolation-recovery` binary lives in `/usr/local/lib/breeze/isolation-recovery/<version>/`; versions are installed side by side and are never overwritten. It runs from:
 
@@ -61,7 +70,7 @@ Linux isolation is **not available in any release**. Linux agents advertise capa
 - `breeze-isolation-poll.timer`, one minute after boot and every 15 minutes, as the expiry backstop.
 - Two one-shot `systemd-run` timers: the 90-second provisional rollback (`breeze-isolation-rollback-<attempt>`) and the expiry (`breeze-isolation-expire`).
 
-**Uninstall.** Self-uninstall and `uninstall.sh` release Breeze-owned rules first. If release cannot be confirmed, nothing is removed, and self-uninstall re-enables the agent service. The units and recovery binaries are removed only after a confirmed release. A never-isolated device uninstalls normally.
+**Uninstall.** Self-uninstall and `uninstall.sh` release Breeze-owned rules first. If release cannot be confirmed, nothing is removed, and self-uninstall re-enables and restarts the agent service. The units and recovery binaries are removed only after a confirmed release, or when `nft` shows no Breeze rules installed. A failed `nft` query never counts as "no rules". A never-isolated device uninstalls normally.
 
 **Limits specific to Linux.** Isolation filters at the IP layer. Traffic a Linux bridge switches at layer 2 between a guest and a physical interface (bridged VMs or containers) does not pass the forward chain and needs separate network controls; routed and NAT container traffic is dropped. Hardware-offloaded flows are also a documented limitation.
 

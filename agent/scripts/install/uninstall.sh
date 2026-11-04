@@ -6,6 +6,7 @@ AGENT_BINARY_TRUSTED="/Library/Breeze/bin/breeze-agent"
 WATCHDOG_BINARY="/usr/local/bin/breeze-watchdog"
 BACKUP_BINARY="/usr/local/bin/breeze-backup"
 ISOLATION_RECOVERY_ROOT="/usr/local/lib/breeze"
+ISOLATION_DATA_DIR="/var/lib/breeze"
 
 fatal() {
   echo "Error: $*" >&2
@@ -116,12 +117,26 @@ uninstall_macos() {
 # with nothing left to undo it. Returns non-zero when the release cannot be
 # confirmed. A host that was never isolated has no journal and no table.
 release_isolation_linux() {
-  local data_dir="/var/lib/breeze"
-  local table_present=0
-  if command -v nft >/dev/null 2>&1 && nft list table inet breeze_isolation >/dev/null 2>&1; then
-    table_present=1
+  local data_dir="$ISOLATION_DATA_DIR"
+  local journal=0 rules="absent" tables
+  if [[ -e "$data_dir/isolation.json" ]]; then
+    journal=1
   fi
-  if [[ ! -e "$data_dir/isolation.json" && "$table_present" -eq 0 ]]; then
+  # A failed listing is "unknown", never "absent": only a listing that ran and
+  # lacks our table proves the rules are gone.
+  if command -v nft >/dev/null 2>&1; then
+    if tables="$(nft list tables 2>/dev/null)"; then
+      # Not grep -q: it can SIGPIPE printf under pipefail.
+      if printf '%s\n' "$tables" | grep -Fx 'table inet breeze_isolation' >/dev/null; then
+        rules="present"
+      fi
+    else
+      rules="unknown"
+    fi
+  fi
+  # No journal: no build that isolates has run here, so nothing is ours to
+  # release, even when the engine cannot be asked (a kernel without nf_tables).
+  if [[ "$journal" -eq 0 && "$rules" != "present" ]]; then
     return 0
   fi
   if [[ -x "$AGENT_BINARY" ]] && "$AGENT_BINARY" containment release-all --reason uninstall; then
@@ -138,7 +153,7 @@ release_isolation_linux() {
   # Nothing could run. A journal alone is harmless once the rules are observably
   # gone (a half-removed install); rules still in place, or an engine that cannot
   # be asked, are not.
-  if [[ "$table_present" -eq 0 ]] && command -v nft >/dev/null 2>&1; then
+  if [[ "$rules" == "absent" ]] && command -v nft >/dev/null 2>&1; then
     warn "no agent or recovery binary to record the release; no isolation rules are installed"
     return 0
   fi

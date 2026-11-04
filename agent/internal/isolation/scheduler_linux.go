@@ -408,6 +408,11 @@ func (s *linuxScheduler) RemoveAll() error {
 			}
 		}
 	}
+	if len(failures) > 0 {
+		// A timer is still live: keep the boot hook and the poll as well, so
+		// recovery stays armed across a reboot until a later removal succeeds.
+		return errors.Join(failures...)
+	}
 	var enabled []string
 	for _, unit := range []string{linuxBootUnit, linuxPollTimer} {
 		if _, err := os.Lstat(filepath.Join(s.unitDir, unit)); err == nil {

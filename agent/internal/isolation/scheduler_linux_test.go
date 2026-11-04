@@ -486,9 +486,22 @@ func TestLinuxRemoveAllFailsWhileATimerStaysActive(t *testing.T) {
 	if err := s.ArmExpiry("id", 1, s.now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.EnsurePoll(); err != nil {
+		t.Fatal(err)
+	}
 	f.keepStop = true
 	if err := s.RemoveAll(); err == nil {
 		t.Fatal("recovery must stay armed (and say so) when a timer cannot be stopped")
+	}
+	// Recovery stays armed across a reboot too: the boot hook and the poll
+	// timer keep their unit files and enablement.
+	for _, name := range []string{linuxBootUnit, linuxPollService, linuxPollTimer} {
+		if _, err := os.Stat(filepath.Join(s.unitDir, name)); err != nil {
+			t.Errorf("%s removed although a timer is still active: %v", name, err)
+		}
+	}
+	if !f.enabled[linuxPollTimer] || !f.enabled[linuxBootUnit] {
+		t.Error("units disabled although a timer is still active")
 	}
 }
 

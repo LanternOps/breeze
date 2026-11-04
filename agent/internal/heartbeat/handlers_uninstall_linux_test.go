@@ -100,10 +100,20 @@ func TestLinuxUninstallScriptExecutionAbortsOnFailedRelease(t *testing.T) {
 			if torndown == tc.wantFailure {
 				t.Fatalf("teardown ran = %v with release exit %d:\n%s", torndown, tc.releaseExit, joined)
 			}
-			// Phase 1 disabled the service; a failed release must undo that or the
-			// host reboots into an unmanaged, possibly still isolated state.
+			// Phase 1 disabled the service, and the handler's shutdown goroutine
+			// will exit the agent cleanly (Restart=on-failure does not restart
+			// that). A failed release must re-enable AND restart it, after the
+			// result has had time to go out, or the host is left isolated with
+			// no agent running.
 			if enabled := strings.Contains(joined, "systemctl enable breeze-agent"); enabled != tc.wantFailure {
 				t.Fatalf("re-enable = %v:\n%s", enabled, joined)
+			}
+			restart := indexOfCall(calls, "systemctl restart breeze-agent")
+			if (restart >= 0) != tc.wantFailure {
+				t.Fatalf("restart = %v:\n%s", restart >= 0, joined)
+			}
+			if tc.wantFailure && (indexOfCall(calls, "sleep 5") < 0 || indexOfCall(calls, "sleep 5") > restart || indexOfCall(calls, "systemctl enable") > restart) {
+				t.Fatalf("abort must enable, wait for the result, then restart:\n%s", joined)
 			}
 			if tc.wantFailure && !strings.Contains(string(out), "isolation release could not be confirmed") {
 				t.Fatalf("no reason given: %s", out)
@@ -115,7 +125,24 @@ func TestLinuxUninstallScriptExecutionAbortsOnFailedRelease(t *testing.T) {
 // Both copies of uninstall.sh must run the same release, so they are executed,
 // not grepped: everything before the entrypoint is sourced, then the paths are
 // repointed at shims.
+// uninstallEnv describes the host the uninstall script sees.
+type uninstallEnv struct {
+	journal bool   // an isolation journal exists in the data directory
+	nftOut  string // `nft list tables` output
+	nftExit int
+}
+
 func runUninstallLinux(t *testing.T, script string, shims map[string]int, recoveryExit int) (string, []string, error) {
+	t.Helper()
+	env := uninstallEnv{nftExit: shims["nft"]}
+	if shims["nft"] == 0 {
+		env.nftOut = "table inet breeze_isolation"
+	}
+	delete(shims, "nft")
+	return runUninstallLinuxEnv(t, script, shims, recoveryExit, env)
+}
+
+func runUninstallLinuxEnv(t *testing.T, script string, shims map[string]int, recoveryExit int, env uninstallEnv) (string, []string, error) {
 	t.Helper()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
@@ -132,6 +159,19 @@ func runUninstallLinux(t *testing.T, script string, shims map[string]int, recove
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "calls.log")
 	writeShims(t, dir, logPath, shims)
+	nft := "#!/bin/sh\necho \"nft $*\" >> '" + logPath + "'\n[ -n \"$NFT_OUT\" ] && echo \"$NFT_OUT\"\nexit \"$NFT_EXIT\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "nft"), []byte(nft), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(dir, "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if env.journal {
+		if err := os.WriteFile(filepath.Join(dataDir, "isolation.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	root := filepath.Join(dir, "lib")
 	if recoveryExit >= 0 {
 		versionDir := filepath.Join(root, "isolation-recovery", "1.2.3")
@@ -145,9 +185,10 @@ func runUninstallLinux(t *testing.T, script string, shims map[string]int, recove
 	}
 	program := head + "\nAGENT_BINARY=" + shQuote(filepath.Join(dir, "agent")) +
 		"\nWATCHDOG_BINARY=/nonexistent/w\nBACKUP_BINARY=/nonexistent/b\nISOLATION_RECOVERY_ROOT=" + shQuote(root) +
+		"\nISOLATION_DATA_DIR=" + shQuote(dataDir) +
 		"\nuninstall_linux\n"
 	cmd := exec.Command(bash, "-c", program)
-	cmd.Env = []string{"PATH=" + dir + ":/usr/bin:/bin"}
+	cmd.Env = []string{"PATH=" + dir + ":/usr/bin:/bin", "NFT_OUT=" + env.nftOut, "NFT_EXIT=" + string(rune('0'+env.nftExit))}
 	out, runErr := cmd.CombinedOutput()
 	return string(out), readLog(t, logPath), runErr
 }
@@ -162,9 +203,6 @@ func indexOfCall(calls []string, prefix string) int {
 }
 
 func TestUninstallScriptsReleaseIsolationFirst(t *testing.T) {
-	if _, err := os.Stat("/var/lib/breeze/isolation.json"); err == nil {
-		t.Skip("this host has a real isolation journal; never run this next to an installed agent")
-	}
 	for _, script := range []string{"../../scripts/install/uninstall.sh", "../../../apps/web/public/scripts/uninstall.sh"} {
 		t.Run(filepath.Base(filepath.Dir(script))+"/"+filepath.Base(script), func(t *testing.T) {
 			teardown := func(calls []string) bool {
@@ -225,11 +263,45 @@ func TestUninstallScriptsReleaseIsolationFirst(t *testing.T) {
 				if err != nil {
 					t.Fatalf("%v: %s", err, out)
 				}
-				if !strings.HasPrefix(calls[indexOfCall(calls, "recovery ")], "recovery release-all --data-dir /var/lib/breeze --reason uninstall") {
+				if at := indexOfCall(calls, "recovery "); at < 0 || !strings.HasPrefix(calls[at], "recovery release-all --data-dir ") || !strings.HasSuffix(calls[at], "/data --reason uninstall") {
 					t.Fatalf("calls = %v", calls)
 				}
 				if !teardown(calls) {
 					t.Fatalf("no teardown after the recovery release: %v", calls)
+				}
+			})
+			// A failed listing is not an observed absence.
+			t.Run("journal present, nft errors, nothing can release", func(t *testing.T) {
+				out, calls, err := runUninstallLinuxEnv(t, script, map[string]int{"systemctl": 0, "rm": 0, "rmdir": 0, "agent": 1}, -1,
+					uninstallEnv{journal: true, nftExit: 1})
+				if err == nil {
+					t.Fatalf("an unreadable engine must not count as no rules: %s", out)
+				}
+				if teardown(calls) {
+					t.Fatalf("teardown ran: %v", calls)
+				}
+			})
+			t.Run("journal present, rules observably gone, nothing can release", func(t *testing.T) {
+				out, calls, err := runUninstallLinuxEnv(t, script, map[string]int{"systemctl": 0, "rm": 0, "rmdir": 0, "agent": 1}, -1,
+					uninstallEnv{journal: true, nftOut: "table ip filter"})
+				if err != nil {
+					t.Fatalf("a half-removed install with no rules must uninstall: %v %s", err, out)
+				}
+				if !teardown(calls) {
+					t.Fatalf("no teardown: %v", calls)
+				}
+			})
+			// No journal and an engine that cannot be asked: never isolated by
+			// any Breeze build that journals, so the uninstall must not be stuck
+			// (a host whose kernel lacks nf_tables cannot run `nft list`).
+			t.Run("no journal, nft errors", func(t *testing.T) {
+				out, calls, err := runUninstallLinuxEnv(t, script, map[string]int{"systemctl": 0, "rm": 0, "rmdir": 0, "agent": 1}, -1,
+					uninstallEnv{nftExit: 1})
+				if err != nil {
+					t.Fatalf("%v: %s", err, out)
+				}
+				if !teardown(calls) {
+					t.Fatalf("no teardown: %v", calls)
 				}
 			})
 			t.Run("agent and recovery both fail", func(t *testing.T) {

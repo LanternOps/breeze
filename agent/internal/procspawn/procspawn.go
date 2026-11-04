@@ -14,6 +14,11 @@
 //
 // Pitfall: assigning cmd.SysProcAttr after Command replaces the placement.
 // Call Prepare again after any such assignment (the contract test checks it).
+//
+// Placement is decided when the command is built, not when it starts. A
+// command built before placement is enabled and started after it runs where
+// the agent was when it was built: in the unit cgroup if built before the
+// agent moved, which carries no permit.
 package procspawn
 
 import (

@@ -114,3 +114,24 @@ func TestSpawnedChildLandsInChildrenCgroup(t *testing.T) {
 		t.Fatalf("child cgroup %q, want %q", strings.TrimSpace(string(out)), want)
 	}
 }
+
+func TestSiblingChildrenCgroup(t *testing.T) {
+	for _, tc := range []struct {
+		self, want string
+		ok         bool
+	}{
+		{"0::/system.slice/breeze-agent.service/agent\n", "system.slice/breeze-agent.service/children", true},
+		{"0::/custom.slice/breeze-agent.service/agent", "custom.slice/breeze-agent.service/children", true},
+		{"0::/system.slice/breeze-agent.service\n", "", false},
+		{"0::/user.slice/user-1000.slice/session-2.scope/agent\n", "", false},
+		{"0::/agent\n", "", false},
+		{"0::/x/agent\n", "", false},
+		{"12:pids:/system.slice/breeze-agent.service/agent\n0::/system.slice/breeze-agent.service/agent\n", "", false},
+		{"", "", false},
+	} {
+		got, ok := siblingChildrenCgroup(tc.self)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("siblingChildrenCgroup(%q) = %q, %v; want %q, %v", tc.self, got, ok, tc.want, tc.ok)
+		}
+	}
+}

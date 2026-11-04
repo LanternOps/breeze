@@ -1,12 +1,15 @@
 package procspawn
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/build/constraint"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -100,11 +103,16 @@ func TestEverySpawnIsPlacedOrExempt(t *testing.T) {
 }
 
 func checkFile(path string) ([]violation, error) {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, src, parser.ParseComments)
+	if err != nil {
+		return nil, err
+	}
+	var out []violation
 	imports := map[string]string{} // local name -> import path
 	for _, imp := range file.Imports {
 		p, _ := strconv.Unquote(imp.Path.Value)
@@ -112,17 +120,27 @@ func checkFile(path string) ([]violation, error) {
 		if imp.Name != nil {
 			name = imp.Name.Name
 		}
+		if name == "." {
+			for api := range spawners {
+				if api.pkg == p {
+					out = append(out, violation{fset.Position(imp.Pos()), "dot import of " + p + " hides its spawns from this contract"})
+					break
+				}
+			}
+			continue
+		}
 		imports[name] = p
 	}
-	exempt, badMarkers := exemptLines(fset, file)
-	var out []violation
+	exempt, standalone, badMarkers := exemptLines(fset, file, src)
 	for _, line := range badMarkers {
 		out = append(out, violation{fset.Position(file.Pos()), fmt.Sprintf("line %d: %s needs a reason", line, exemptMarker)})
 		out[len(out)-1].pos.Line = line
 	}
+	// A marker exempts its own line, or the next line when it stands alone:
+	// a marker trailing unrelated code does not reach past it.
 	isExempt := func(pos token.Pos) bool {
 		line := fset.Position(pos).Line
-		return exempt[line] || exempt[line-1]
+		return exempt[line] || standalone[line-1]
 	}
 	selector := func(expr ast.Expr) (string, string, bool) {
 		sel, ok := expr.(*ast.SelectorExpr)
@@ -186,6 +204,18 @@ func checkFile(path string) ([]violation, error) {
 			if ok && spawners[spawnAPI{pkg, name}] && (!isCall || call.Fun != ast.Expr(node)) && !isExempt(node.Pos()) {
 				out = append(out, violation{fset.Position(node.Pos()), fmt.Sprintf("%s.%s used as a function value escapes procspawn", pkg, name)})
 			}
+		case *ast.ValueSpec, *ast.Field:
+			// A value exec.Cmd (a variable or struct field) can be started
+			// without ever passing through Command or Prepare.
+			var typ ast.Expr
+			if spec, ok := node.(*ast.ValueSpec); ok {
+				typ = spec.Type
+			} else {
+				typ = node.(*ast.Field).Type
+			}
+			if pkg, name, ok := selector(typ); ok && pkg == "os/exec" && name == "Cmd" && !isExempt(typ.Pos()) {
+				out = append(out, violation{fset.Position(typ.Pos()), "a value exec.Cmd escapes procspawn; use *exec.Cmd from procspawn.Command"})
+			}
 		case *ast.CompositeLit:
 			if pkg, name, ok := selector(node.Type); ok && pkg == "os/exec" && name == "Cmd" && !isExempt(node.Pos()) && !wrapped() {
 				out = append(out, violation{fset.Position(node.Pos()), "exec.Cmd literal spawns outside procspawn (wrap it in procspawn.Prepare)"})
@@ -200,8 +230,11 @@ func checkFile(path string) ([]violation, error) {
 			if body == nil {
 				return
 			}
-			var assigns []token.Pos
-			var prepares []token.Pos
+			type site struct {
+				pos    token.Pos
+				target string // the command expression, e.g. "cmd" or "h.cmd"
+			}
+			var assigns, prepares []site
 			ast.Inspect(body, func(n ast.Node) bool {
 				if _, nested := n.(*ast.FuncLit); nested && n != ast.Node(body) {
 					return false // a closure is checked on its own
@@ -209,26 +242,37 @@ func checkFile(path string) ([]violation, error) {
 				switch node := n.(type) {
 				case *ast.AssignStmt:
 					for _, lhs := range node.Lhs {
+						// `x.SysProcAttr = ...` and `*x.SysProcAttr = ...` both
+						// replace the placement.
+						for {
+							if star, ok := lhs.(*ast.StarExpr); ok {
+								lhs = star.X
+							} else if paren, ok := lhs.(*ast.ParenExpr); ok {
+								lhs = paren.X
+							} else {
+								break
+							}
+						}
 						if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "SysProcAttr" {
-							assigns = append(assigns, node.Pos())
+							assigns = append(assigns, site{node.Pos(), types.ExprString(sel.X)})
 						}
 					}
 				case *ast.CallExpr:
-					if isPrepare(node) {
-						prepares = append(prepares, node.Pos())
+					if isPrepare(node) && len(node.Args) == 1 {
+						prepares = append(prepares, site{node.Pos(), types.ExprString(node.Args[0])})
 					}
 				}
 				return true
 			})
 			for _, a := range assigns {
-				ok := isExempt(a)
+				ok := isExempt(a.pos)
 				for _, p := range prepares {
-					if p > a {
+					if p.pos > a.pos && p.target == a.target {
 						ok = true
 					}
 				}
 				if !ok {
-					out = append(out, violation{fset.Position(a), "SysProcAttr assignment replaces the cgroup placement; call procspawn.Prepare after it"})
+					out = append(out, violation{fset.Position(a.pos), "SysProcAttr assignment replaces the cgroup placement; call procspawn.Prepare(" + a.target + ") after it"})
 				}
 			}
 		}
@@ -245,10 +289,12 @@ func checkFile(path string) ([]violation, error) {
 	return out, nil
 }
 
-// exemptLines returns the lines carrying a reasoned exempt marker, and the
-// lines whose marker has no reason.
-func exemptLines(fset *token.FileSet, file *ast.File) (map[int]bool, []int) {
+// exemptLines returns the lines carrying a reasoned exempt marker, the subset
+// where the marker is alone on its line, and the lines whose marker has no
+// reason.
+func exemptLines(fset *token.FileSet, file *ast.File, src []byte) (map[int]bool, map[int]bool, []int) {
 	lines := map[int]bool{}
+	standalone := map[int]bool{}
 	var bad []int
 	for _, group := range file.Comments {
 		for _, c := range group.List {
@@ -261,9 +307,14 @@ func exemptLines(fset *token.FileSet, file *ast.File) (map[int]bool, []int) {
 				continue
 			}
 			lines[line] = true
+			offset := fset.Position(c.Pos()).Offset
+			start := bytes.LastIndexByte(src[:offset], '\n') + 1
+			if len(bytes.TrimSpace(src[start:offset])) == 0 {
+				standalone[line] = true
+			}
 		}
 	}
-	return lines, bad
+	return lines, standalone, bad
 }
 
 var knownOS = map[string]bool{
@@ -407,6 +458,31 @@ func f() { _, _ = syscall.ForkExec("x", nil, nil) }`, 1},
 		{"syscall.Exec is not a spawn", "n.go", `package a
 import "syscall"
 func f() { _ = syscall.Exec("x", nil, nil) }`, 0},
+		{"zero-value exec.Cmd variable", "q.go", `package a
+import "os/exec"
+func f() { var c exec.Cmd; c.Path = "x"; _ = c.Start() }`, 1},
+		{"exec.Cmd struct field", "r.go", `package a
+import "os/exec"
+type runner struct{ cmd exec.Cmd }`, 1},
+		{"pointer to exec.Cmd is fine", "s.go", `package a
+import "os/exec"
+type runner struct{ cmd *exec.Cmd }
+func f(c *exec.Cmd) {}`, 0},
+		{"Prepare on another command", "t.go", `package a
+import ("syscall"; "github.com/breeze-rmm/agent/internal/procspawn")
+func f() { a := procspawn.Command("x"); b := procspawn.Command("y"); a.SysProcAttr = &syscall.SysProcAttr{}; procspawn.Prepare(b) }`, 1},
+		{"deref SysProcAttr clobber", "u.go", `package a
+import ("syscall"; "github.com/breeze-rmm/agent/internal/procspawn")
+func f() { c := procspawn.Command("x"); *c.SysProcAttr = syscall.SysProcAttr{} }`, 1},
+		{"dot import of os/exec", "v.go", `package a
+import . "os/exec"
+func f() { _ = Command("x") }`, 1},
+		{"trailing marker does not exempt the next line", "w.go", `package a
+import "os/exec"
+func f() {
+	_ = 1 //procspawn:exempt unrelated
+	_ = exec.Command("x")
+}`, 1},
 		{"function value seam", "p.go", `package a
 import "os/exec"
 var run = exec.Command`, 1},

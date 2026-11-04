@@ -318,16 +318,19 @@ type linuxUninstallScriptOptions struct {
 }
 
 // buildLinuxUninstallScript renders the detached teardown script for Linux.
-// Isolation is released first: if that cannot be confirmed the script re-enables
-// the service phase 1 disabled and stops, because removing the agent or the
-// recovery timers would leave the host cut off with nothing left to undo it.
+// Isolation is released first: if that cannot be confirmed the script stops,
+// because removing the agent or the recovery timers would leave the host cut
+// off with nothing left to undo it. It then re-enables the service phase 1
+// disabled and, once the command result has had time to go out, restarts it:
+// the handler's shutdown goroutine exits the agent cleanly, which
+// Restart=on-failure would not undo.
 // The watchdog re-assert (stop + pkill) comes BEFORE the agent stop so a
 // watchdog that survived phase 1 cannot respawn the agent mid-teardown, and
 // config removal comes after the agent is dead (see the darwin builder).
 func buildLinuxUninstallScript(opts linuxUninstallScriptOptions) string {
 	lines := []string{
-		fmt.Sprintf("%s containment release-all --reason uninstall || { echo 'self-uninstall aborted: isolation release could not be confirmed' >&2; systemctl enable %s; exit 1; }",
-			shQuote(opts.BinaryPath), shQuote(opts.ServiceName)),
+		fmt.Sprintf("%s containment release-all --reason uninstall || { echo 'self-uninstall aborted: isolation release could not be confirmed' >&2; systemctl enable %s; sleep %d; systemctl restart %s; exit 1; }",
+			shQuote(opts.BinaryPath), shQuote(opts.ServiceName), opts.DelaySeconds, shQuote(opts.ServiceName)),
 		fmt.Sprintf("sleep %d", opts.DelaySeconds),
 		fmt.Sprintf("systemctl stop %s", shQuote(opts.WatchdogService)),
 		fmt.Sprintf("pkill -x %s", shQuote(opts.WatchdogProcess)),

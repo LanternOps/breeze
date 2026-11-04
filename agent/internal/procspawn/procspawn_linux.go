@@ -60,11 +60,10 @@ func EnableInAgentCgroup() error {
 	if err != nil {
 		return err
 	}
-	self := strings.TrimSpace(string(data))
-	if !strings.HasPrefix(self, "0::/") || strings.Contains(self, "\n") || path.Base(self) != "agent" {
+	children, ok := siblingChildrenCgroup(string(data))
+	if !ok {
 		return nil
 	}
-	children := path.Join(path.Dir(strings.TrimPrefix(self, "0::")), "children")
 	fd, err := syscall.Open(path.Join("/sys/fs/cgroup", children), syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return fmt.Errorf("open children cgroup: %w", err)
@@ -74,6 +73,21 @@ func EnableInAgentCgroup() error {
 		return err
 	}
 	return nil
+}
+
+// siblingChildrenCgroup maps a /proc/self/cgroup of exactly
+// `0::/<...>/<name>.service/agent` (pure cgroup v2) to its `children` sibling.
+func siblingChildrenCgroup(content string) (string, bool) {
+	self := strings.TrimSpace(content)
+	if !strings.HasPrefix(self, "0::/") || strings.Contains(self, "\n") {
+		return "", false
+	}
+	self = strings.TrimPrefix(self, "0::/")
+	unit := path.Dir(self)
+	if path.Base(self) != "agent" || !strings.HasSuffix(path.Base(unit), ".service") {
+		return "", false
+	}
+	return path.Join(unit, "children"), true
 }
 
 // ChildrenCgroup returns the configured fd and whether placement is on.
