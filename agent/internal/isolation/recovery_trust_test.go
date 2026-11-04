@@ -232,3 +232,30 @@ func TestSchedulerReadinessAdaptsPlainSchedulers(t *testing.T) {
 		}
 	}
 }
+
+// Through the real cache: the Path B detail reaches Capability(), and a later
+// probe that is ready via Authenticode (or untrusted) replaces it rather than
+// leaving a stale "self_host_manifest_hash".
+func TestReadinessCacheCarriesTrustDetailAcrossRefreshes(t *testing.T) {
+	trust, schedErr := recoveryinstall.TrustManifestHash, error(nil)
+	cache := readinessCache{probe: func(context.Context) readinessInputs {
+		return readinessFromProbe(nil, nil, func() (recoveryinstall.TrustPath, error) { return trust, schedErr })
+	}}
+	steps := []struct {
+		trust recoveryinstall.TrustPath
+		err   error
+		want  Capability
+	}{
+		{recoveryinstall.TrustManifestHash, nil, Capability{Version: 1, Mechanism: "wfp", Ready: true, UnsupportedReason: "self_host_manifest_hash"}},
+		{recoveryinstall.TrustCodeSignature, nil, Capability{Version: 1, Mechanism: "wfp", Ready: true}},
+		{"", wrapUntrusted(errors.New("hash drift")), Capability{Mechanism: "wfp", UnsupportedReason: "recovery_untrusted"}},
+		{recoveryinstall.TrustManifestHash, nil, Capability{Version: 1, Mechanism: "wfp", Ready: true, UnsupportedReason: "self_host_manifest_hash"}},
+	}
+	for i, step := range steps {
+		trust, schedErr = step.trust, step.err
+		cache.refresh(context.Background(), true)
+		if got := cache.capability(true); got != step.want {
+			t.Fatalf("step %d: got %+v want %+v", i, got, step.want)
+		}
+	}
+}

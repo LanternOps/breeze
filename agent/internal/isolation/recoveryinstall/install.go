@@ -148,7 +148,9 @@ func regularFile(path string) error {
 }
 
 // RecoveryTrustEvent is the journal event recording which trust path accepted
-// the recovery executable the tasks point at. Detail is "<path> <version>".
+// the recovery executable the tasks point at. Detail is "<TrustPath> <version>",
+// e.g. "manifest_hash 1.2.3". Only the unpinned branch records it: a pinned
+// episode path keeps the event its install recorded.
 const RecoveryTrustEvent = "recovery_trust"
 
 // recordTrust appends a trust event only when the path or version changed

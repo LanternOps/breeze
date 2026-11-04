@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 )
 
 // TrustPath names how a recovery executable earned the right to run as SYSTEM
@@ -77,8 +79,11 @@ type ManifestTrust struct {
 	AssetName string
 }
 
+// enabled also consults hostpolicy directly. A hosted (allowlist-enforced)
+// build never takes Path B, even if its wiring passes SelfHostEdition by
+// mistake. This is the same edition signal the updater's editionAllowed uses.
 func (m ManifestTrust) enabled() bool {
-	return m.SelfHostEdition && m.ManifestDigest != nil && m.AssetName != ""
+	return m.SelfHostEdition && !hostpolicy.Enforced() && m.ManifestDigest != nil && m.AssetName != ""
 }
 
 // TrustPolicy decides whether a recovery executable may run as SYSTEM.

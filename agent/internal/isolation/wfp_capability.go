@@ -79,15 +79,40 @@ func (c *readinessCache) refresh(ctx context.Context, force bool) {
 	probe := c.probe
 	now := c.clock()
 	fresh := !c.checkedAt.IsZero() && now.Sub(c.checkedAt) >= 0 && now.Sub(c.checkedAt) < readinessRefreshAge
+	prev, probed := c.in, !c.checkedAt.IsZero()
 	c.mu.Unlock()
 	if probe == nil || (!force && fresh) {
 		return
 	}
 	in := probe(ctx)
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.in = in
 	c.checkedAt = c.clock()
+	c.mu.Unlock()
+	logReadinessChange(prev, in, probed)
+}
+
+// logReadinessChange records why readiness changed, once per change. The
+// heartbeat carries only the reason code, so the underlying error text (which
+// manifest check failed, which task read back wrong) lives only here.
+func logReadinessChange(prev, in readinessInputs, probed bool) {
+	was, now := wfpCapability(prev, true), wfpCapability(in, true)
+	if probed && was == now {
+		return
+	}
+	if now.Ready {
+		log.Info("isolation readiness: ready", "detail", now.UnsupportedReason, "recoveryTrust", string(in.recoveryTrust))
+		return
+	}
+	log.Warn("isolation readiness: not ready", "reason", now.UnsupportedReason,
+		"engineError", errString(in.engineErr), "recoveryError", errString(in.recoveryErr), "scheduler", in.schedulerReason)
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func (c *readinessCache) capability(activated bool) Capability {

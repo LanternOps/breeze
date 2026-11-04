@@ -9,7 +9,33 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 )
+
+// Defense in depth: a hosted (allowlist-enforced) build never takes Path B,
+// even if the wiring passes SelfHostEdition: true by mistake, and the digest
+// verifier is never even called.
+func TestTrustPolicyManifestHashRefusedOnHostedBuild(t *testing.T) {
+	restore := hostpolicy.SetAllowedHostsForTest("hosted.example")
+	defer restore()
+	exe := []byte("unsigned recovery executable 1.2.3")
+	f := newTrustFixture(t, "1.2.3", signedEnvelope("1.2.3"))
+	calls := 0
+	policy := TrustPolicy{
+		CodeSignature: func(string) error { return errUnsigned },
+		ManifestTrust: ManifestTrust{SelfHostEdition: true, AssetName: testAsset, ManifestDigest: func(ManifestEnvelope, string, string) (string, error) {
+			calls++
+			return shaHex(exe), nil
+		}},
+	}
+	if got, err := policy.Verify(f.path); !errors.Is(err, ErrUntrusted) || got != "" {
+		t.Fatalf("hosted build accepted Path B: %q %v", got, err)
+	}
+	if calls != 0 {
+		t.Fatalf("hosted build consulted the manifest %d times", calls)
+	}
+}
 
 const testAsset = "breeze-isolation-recovery-windows-amd64.exe"
 
