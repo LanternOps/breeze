@@ -6,9 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 type defenderStatusRaw struct {
@@ -28,7 +29,7 @@ func GetDefenderStatus() (DefenderStatus, error) {
 	defer cancel()
 
 	command := "Get-MpComputerStatus | Select-Object AMServiceEnabled,AntispywareEnabled,AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureVersion,AntivirusSignatureLastUpdated,QuickScanEndTime,FullScanEndTime | ConvertTo-Json -Compress"
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", command)
+	cmd := procspawn.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", command)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return DefenderStatus{}, fmt.Errorf("defender status timed out")
@@ -78,7 +79,7 @@ func TriggerDefenderScan(scanType string) error {
 	defer cancel()
 
 	command := fmt.Sprintf("Start-MpScan -ScanType %s", mode)
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", command)
+	cmd := procspawn.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", command)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to trigger defender scan: %w", err)
 	}

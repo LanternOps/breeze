@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 type wscProductRaw struct {
@@ -29,7 +30,7 @@ var runWSCQuery = func() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", wscQueryPS)
+	cmd := procspawn.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", wscQueryPS)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("wsc query timed out")

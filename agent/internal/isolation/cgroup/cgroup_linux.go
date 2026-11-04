@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -18,6 +17,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 const (
@@ -184,7 +185,7 @@ func unitDelegated(dir, unit string) (bool, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "systemctl", "show", "--property=Delegate", "--value", "--", unit).Output()
+	out, err := procspawn.CommandContext(ctx, "systemctl", "show", "--property=Delegate", "--value", "--", unit).Output()
 	if err != nil {
 		return false, fmt.Errorf("systemctl show %s: %w", unit, err)
 	}
