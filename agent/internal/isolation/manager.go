@@ -102,6 +102,10 @@ type Manager struct {
 	// the next Tick retries it. Guarded by opMu.
 	expiryUnarmed bool
 
+	// lastPolicyRejection is the newest rejection journalled by this process.
+	// Guarded by opMu.
+	lastPolicyRejection string
+
 	// Test seams.
 	beforeEffect func(Effect) error
 	onPersist    func(*journal.Journal)
@@ -227,6 +231,9 @@ type attemptCtx struct {
 	digest     Digest
 	serverTime time.Time
 	drift      bool
+	// policy is adopted when the attempt commits. Nil keeps the journalled one
+	// (a re-verify or drift refresh reinstalls the same allowlist).
+	policy *policyStamp
 }
 
 // op is one locked operation.
@@ -762,6 +769,9 @@ func (o *op) persist(next LocalState, ev Event, effects []Effect) error {
 		if a.kind == AttemptApply {
 			ep.AppliedAt = now
 		}
+		if a.policy != nil {
+			a.policy.adopt(j, now)
+		}
 	}
 	if terminalSeq > 0 && (next.Phase == journal.PhaseReleased || next.Phase == journal.PhaseRolledBack || (next.Phase == journal.PhaseNone && next.ReleaseKind == ReleaseSystem)) {
 		j.PendingReport = &journal.TerminalReceipt{
@@ -991,10 +1001,7 @@ func validateSpec(s *Spec, now time.Time) error {
 			return fmt.Errorf("allow[%d]: %w", i, err)
 		}
 	}
-	if !s.PolicyRevision.Valid() {
-		s.PolicyRevision = ""
-	}
-	return nil
+	return validatePolicyRevision(s)
 }
 
 func validateEntry(e *AllowEntry) error {
@@ -1220,6 +1227,12 @@ func (m *Manager) isolate(ctx context.Context, spec Spec) CommandOutcome {
 
 func (o *op) isolateLocked(spec Spec) {
 	o.report = nil
+	// A block that fails the policy rule is rejected whole, secret included.
+	if reason := o.policyRefusal(spec); reason != "" {
+		o.rejectPolicy(spec.IsolationID, spec.Generation, reason)
+		o.report = policyRefusalEffect(reason)
+		return
+	}
 	// A late secret for the episode already held (the heartbeat path).
 	if o.state.IsolationID == spec.IsolationID && o.j.Episode != nil && len(o.j.Episode.BreakGlassSecret) == 0 &&
 		len(spec.BreakGlassSecret) == breakGlassSecretBytes && activePhase(o.state.Phase) {
@@ -1256,11 +1269,22 @@ func (o *op) isolateLocked(spec Spec) {
 		if o.crashed || o.lockLost || o.report == nil || o.report.Refusal != "" {
 			return
 		}
-		if o.j.Episode != nil && !allowEqual(o.j.Episode.Allow, spec.Allow) {
+		if o.j.Episode == nil {
+			return
+		}
+		// Rules change only through a verified refresh, which keeps the episode
+		// and restores the last verified rules if it fails. The policy is adopted
+		// when that refresh commits; with no rule change, it is adopted now.
+		if !allowEqual(o.j.Episode.Allow, spec.Allow) {
 			saved := o.report
-			o.refresh(spec.Allow, false)
+			o.refreshTo(spec.Allow, false, stampOf(spec))
 			if o.report == nil || o.report.Refusal == "" {
 				o.report = saved
+			}
+		} else if ep := o.j.Episode; string(spec.PolicyRevision) != ep.PolicyRevision || spec.Generation > ep.PolicyGeneration {
+			stampOf(spec).adopt(o.j, o.now())
+			if err := o.save(); err != nil {
+				o.noteError("record the containment policy: " + err.Error())
 			}
 		}
 		return
@@ -1285,6 +1309,7 @@ func (o *op) isolateLocked(spec Spec) {
 		return
 	}
 	a.kind = AttemptApply
+	a.policy = stampOf(spec)
 	ev.AttemptID = a.id
 	o.attempt = a
 	o.newEpisode = &journal.EpisodeRecord{
@@ -1295,8 +1320,6 @@ func (o *op) isolateLocked(spec Spec) {
 		RemoteRelay:      spec.RemoteRelay,
 		Allow:            append([]AllowEntry(nil), spec.Allow...),
 		BreakGlassSecret: append([]byte(nil), spec.BreakGlassSecret...),
-		PolicyRevision:   string(spec.PolicyRevision),
-		PolicyGeneration: spec.Generation,
 	}
 	if len(spec.BreakGlassSecret) == 0 {
 		o.newEpisode.BreakGlassSecret = nil
@@ -1312,6 +1335,11 @@ func (o *op) refuse(failureCode, detail string) {
 // (and, when allow is given, a new allowlist). Failure restores the last
 // verified rules.
 func (o *op) refresh(allow []AllowEntry, drift bool) {
+	o.refreshTo(allow, drift, nil)
+}
+
+// refreshTo is refresh for a desired allowlist: policy is adopted on commit.
+func (o *op) refreshTo(allow []AllowEntry, drift bool, policy *policyStamp) {
 	ep := o.j.Episode
 	if ep == nil || o.state.Phase != journal.PhaseCommitted {
 		return
@@ -1324,7 +1352,7 @@ func (o *op) refresh(allow []AllowEntry, drift bool) {
 		o.noteError("refresh: " + err.Error())
 		return
 	}
-	a.kind, a.drift = AttemptRefresh, drift
+	a.kind, a.drift, a.policy = AttemptRefresh, drift, policy
 	o.attempt = a
 	o.run(Event{Kind: EvRefresh, AttemptID: a.id})
 }
@@ -1420,11 +1448,18 @@ func (m *Manager) Reconcile(ctx context.Context, desired *DesiredBlock) {
 		}
 		if snap := m.snapshot(); snap != nil && snap.Episode != nil && snap.Episode.IsolationID == spec.IsolationID {
 			ep := snap.Episode
-			if spec.Generation < ep.Generation || snap.Phase == journal.PhaseReleased || snap.Phase == journal.PhaseRolledBack {
-				return // older generation, or ended locally: nothing to do
+			if snap.Phase == journal.PhaseReleased || snap.Phase == journal.PhaseRolledBack {
+				return // ended locally: nothing to do
+			}
+			if spec.Generation < ep.Generation {
+				if policyBearing(spec) && string(spec.PolicyRevision) != ep.PolicyRevision {
+					m.NotePolicyRejected(ctx, spec.IsolationID, spec.Generation, PolicyRejectRevisionRegressed)
+				}
+				return // older generation: nothing to do
 			}
 			if snap.Phase == journal.PhaseCommitted && spec.Generation == ep.Generation &&
-				allowEqual(ep.Allow, spec.Allow) && (len(ep.BreakGlassSecret) > 0 || len(spec.BreakGlassSecret) == 0) {
+				allowEqual(ep.Allow, spec.Allow) && string(spec.PolicyRevision) == ep.PolicyRevision &&
+				(len(ep.BreakGlassSecret) > 0 || len(spec.BreakGlassSecret) == 0) {
 				return // already applied as desired
 			}
 		}

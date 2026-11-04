@@ -3,11 +3,13 @@ package isolation
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/isolation/journal"
+	"github.com/breeze-rmm/agent/internal/wire"
 )
 
 // Fixture revisions have the shape resolveContainmentPolicy emits (#10915).
@@ -98,6 +100,369 @@ func TestEpisodeJournalsPolicyRevision(t *testing.T) {
 		}
 		if strings.Contains(string(b), "policy") {
 			t.Fatalf("empty policy fields must be omitted: %s", b)
+		}
+	})
+}
+
+func policyExtra(cidr string) AllowEntry {
+	return AllowEntry{Kind: KindCIDR, CIDR: cidr, Proto: ProtoTCP, Ports: []uint16{8443}, Scope: ScopeAny}
+}
+
+// policyBlock is a desired block: the harness's management-plane permits, then
+// the policy's extras, as buildIsolationAllowlist orders them.
+func (h *harness) policyBlock(gen int, rev PolicyRevision, extras ...AllowEntry) *DesiredBlock {
+	block := h.desired(idA, gen, DesiredIsolated, 72*time.Hour, false)
+	block.NetworkIsolation.PolicyRevision = rev
+	block.NetworkIsolation.Allow = append(block.NetworkIsolation.Allow, extras...)
+	return block
+}
+
+// heldPolicy commits an episode at gen holding revA and one extra.
+func (h *harness) heldPolicy(gen int) AllowEntry {
+	h.t.Helper()
+	extra := policyExtra("203.0.113.0/24")
+	h.m.Reconcile(context.Background(), h.policyBlock(gen, revA, extra))
+	j := h.journal()
+	if j.Phase != journal.PhaseCommitted || j.Episode.PolicyRevision != revA || j.Episode.PolicyGeneration != gen {
+		h.t.Fatalf("held policy not committed: phase %s episode %+v", j.Phase, j.Episode)
+	}
+	if !h.installedHas(extra) {
+		h.t.Fatal("the policy entry was not installed")
+	}
+	h.log.reset()
+	return extra
+}
+
+func (h *harness) installedHas(want AllowEntry) bool {
+	_, spec, _ := h.iso.state()
+	for _, e := range spec.Entries {
+		if !e.Proxy && e.Kind == want.Kind && e.CIDR == want.CIDR && e.Scope == want.Scope {
+			return true
+		}
+	}
+	return false
+}
+
+func policyEvents(j *journal.Journal, typ string) []journal.Event {
+	var out []journal.Event
+	for _, e := range j.Events {
+		if e.Type == typ {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func TestManagerRefusesAnyScopeWithoutValidRevision(t *testing.T) {
+	for _, rev := range []PolicyRevision{"", malformedPolicyRevision, "  ", "a b"} {
+		h := newHarness(t)
+		h.m.Reconcile(context.Background(), h.policyBlock(1, rev, policyExtra("203.0.113.0/24")))
+		if h.m.Active() || h.iso.applies != 0 {
+			t.Fatalf("revision %q: scope:any accepted without a valid revision", rev)
+		}
+	}
+}
+
+func TestPolicyEntriesAcceptedWithRevision(t *testing.T) {
+	h := newHarness(t)
+	h.heldPolicy(1)
+	got := policyEvents(h.journal(), "policy_applied")
+	if len(got) != 1 || got[0].Detail != revA || got[0].IsolationID != idA || got[0].Generation != 1 {
+		t.Fatalf("policy_applied events %+v", got)
+	}
+	// The same assertion on the next heartbeat changes nothing.
+	applies := h.iso.applies
+	h.m.Reconcile(context.Background(), h.policyBlock(1, revA, policyExtra("203.0.113.0/24")))
+	if h.iso.applies != applies {
+		t.Fatal("an unchanged desired state re-applied the rules")
+	}
+}
+
+// The hazard behind #11034: a desired state that omits the policy's entries must
+// narrow the installed rules in place. It must not release, must not open a new
+// provisional episode, and must not repeat on the next heartbeat.
+func TestPolicyOmissionNarrowsWithoutReisolating(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		gen  int
+	}{{"new generation", 3}, {"same generation", 2}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			extra := h.heldPolicy(2)
+			applies := h.iso.applies
+
+			h.m.Reconcile(context.Background(), h.policyBlock(tc.gen, ""))
+
+			j := h.journal()
+			if h.installedHas(extra) {
+				t.Fatal("the removed policy entry is still installed")
+			}
+			if j.Phase != journal.PhaseCommitted || j.Episode.State != StateVerified || j.Episode.Generation != tc.gen {
+				t.Fatalf("episode left the committed state: phase %s %+v", j.Phase, j.Episode)
+			}
+			if j.Episode.PolicyRevision != "" || j.Episode.PolicyGeneration != tc.gen {
+				t.Fatalf("policy not cleared: %+v", j.Episode)
+			}
+			for _, e := range j.Episode.Allow {
+				if e.Scope == ScopeAny {
+					t.Fatalf("journal still holds %+v", e)
+				}
+			}
+			if calls := h.log.all(); containsStr(calls, "journal:provisional") || containsStr(calls, "journal:releasing") || containsStr(calls, "iso:Release") {
+				t.Fatalf("narrowing re-isolated: %v", calls)
+			}
+			if !containsStr(eventTypes(j), "refreshed") {
+				t.Fatalf("narrowing was not a verified refresh: %v", eventTypes(j))
+			}
+			removed := policyEvents(j, "policy_removed")
+			if len(removed) != 1 || removed[0].Detail != revA {
+				t.Fatalf("policy_removed events %+v", removed)
+			}
+			if h.iso.applies != applies+1 {
+				t.Fatalf("applies = %d, want exactly one more than %d", h.iso.applies, applies)
+			}
+
+			h.m.Reconcile(context.Background(), h.policyBlock(tc.gen, ""))
+			if h.iso.applies != applies+1 {
+				t.Fatal("the omission was re-applied on the next heartbeat")
+			}
+		})
+	}
+}
+
+// Narrowing must not become a way back up: the entries it removed return only
+// with a new generation.
+func TestPolicyWideningNeedsNewGenerationAfterNarrowing(t *testing.T) {
+	h := newHarness(t)
+	extra := h.heldPolicy(2)
+	h.m.Reconcile(context.Background(), h.policyBlock(2, ""))
+
+	h.m.Reconcile(context.Background(), h.policyBlock(2, revA, extra))
+	if h.installedHas(extra) {
+		t.Fatal("a stale block widened the rules at the generation that narrowed them")
+	}
+	if got := policyEvents(h.journal(), "policy_rejected"); len(got) != 1 || got[0].Detail != PolicyRejectGenerationNotAdvanced {
+		t.Fatalf("policy_rejected events %+v", got)
+	}
+
+	h.m.Reconcile(context.Background(), h.policyBlock(3, revA, extra))
+	if !h.installedHas(extra) {
+		t.Fatal("a new generation could not restore the policy")
+	}
+}
+
+func TestPolicyRevisionRules(t *testing.T) {
+	second := policyExtra("198.18.0.0/24")
+	first := policyExtra("203.0.113.0/24")
+	for _, tc := range []struct {
+		name   string
+		block  func(h *harness) *DesiredBlock
+		reason string // empty: accepted
+		rev    string
+		gen    int
+	}{
+		{"new generation, new revision", func(h *harness) *DesiredBlock { return h.policyBlock(3, revB, first, second) }, "", revB, 3},
+		{"new generation, same entries, new revision", func(h *harness) *DesiredBlock { return h.policyBlock(3, revB, first) }, "", revB, 3},
+		{"new generation, same revision", func(h *harness) *DesiredBlock { return h.policyBlock(3, revA, first) }, "", revA, 3},
+		{"same generation, different revision", func(h *harness) *DesiredBlock { return h.policyBlock(2, revB, first) }, PolicyRejectRevisionRegressed, revA, 2},
+		{"same generation, different revision, widening", func(h *harness) *DesiredBlock { return h.policyBlock(2, revB, first, second) }, PolicyRejectRevisionRegressed, revA, 2},
+		{"same generation, same revision, widening", func(h *harness) *DesiredBlock { return h.policyBlock(2, revA, first, second) }, PolicyRejectGenerationNotAdvanced, revA, 2},
+		{"same generation, same revision, changed entry", func(h *harness) *DesiredBlock { return h.policyBlock(2, revA, second) }, PolicyRejectGenerationNotAdvanced, revA, 2},
+		{"older generation, different revision", func(h *harness) *DesiredBlock { return h.policyBlock(1, revB, first) }, PolicyRejectRevisionRegressed, revA, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.heldPolicy(2)
+			before := h.journal().Episode
+			applies := h.iso.applies
+
+			h.m.Reconcile(context.Background(), tc.block(h))
+
+			j := h.journal()
+			rejected := policyEvents(j, "policy_rejected")
+			if j.Episode.PolicyRevision != tc.rev || j.Episode.Generation != tc.gen {
+				t.Fatalf("episode %+v, want revision %s generation %d", j.Episode, tc.rev, tc.gen)
+			}
+			if tc.reason == "" {
+				if len(rejected) != 0 {
+					t.Fatalf("unexpected rejection %+v", rejected)
+				}
+				return
+			}
+			if len(rejected) != 1 || rejected[0].Detail != tc.reason {
+				t.Fatalf("policy_rejected events %+v, want reason %s", rejected, tc.reason)
+			}
+			if h.iso.applies != applies || !allowEqual(j.Episode.Allow, before.Allow) || j.Phase != journal.PhaseCommitted {
+				t.Fatalf("a rejected block changed the rules: applies %d→%d allow %+v", applies, h.iso.applies, j.Episode.Allow)
+			}
+			// The server repeats itself every heartbeat; the journal must not fill up.
+			h.m.Reconcile(context.Background(), tc.block(h))
+			if got := policyEvents(h.journal(), "policy_rejected"); len(got) != 1 {
+				t.Fatalf("a repeated rejection journalled again: %+v", got)
+			}
+		})
+	}
+}
+
+// A rejected block is rejected whole: its secret is not stored either.
+func TestRejectedPolicyBlockStoresNoSecret(t *testing.T) {
+	h := newHarness(t)
+	h.heldPolicy(2)
+	block := h.policyBlock(2, revB, policyExtra("203.0.113.0/24"))
+	block.NetworkIsolation.BreakGlassSecret = h.secret
+	h.m.Reconcile(context.Background(), block)
+	if j := h.journal(); len(j.Episode.BreakGlassSecret) != 0 || j.SecretAckSeq != 0 {
+		t.Fatalf("a rejected block stored its secret: %+v", j.Episode)
+	}
+}
+
+// A generation that extends the episode but fails to install the rules must not
+// lock the policy out at that generation: the next heartbeat retries it.
+func TestFailedPolicyRefreshRetriesAtSameGeneration(t *testing.T) {
+	h := newHarness(t)
+	first := h.heldPolicy(2)
+	second := policyExtra("198.18.0.0/24")
+	h.iso.set(func(f *fakeIsolator) { f.failApplyN = f.applies + 1 })
+
+	h.m.Reconcile(context.Background(), h.policyBlock(3, revB, first, second))
+	j := h.journal()
+	if h.installedHas(second) || j.Episode.Generation != 3 || j.Episode.PolicyRevision != revA || j.Episode.PolicyGeneration != 2 {
+		t.Fatalf("after the failed refresh: %+v", j.Episode)
+	}
+
+	h.m.Reconcile(context.Background(), h.policyBlock(3, revB, first, second))
+	j = h.journal()
+	if !h.installedHas(second) || j.Episode.PolicyRevision != revB || j.Episode.PolicyGeneration != 3 {
+		t.Fatalf("the retry did not adopt the policy: %+v", j.Episode)
+	}
+	if got := policyEvents(j, "policy_rejected"); len(got) != 0 {
+		t.Fatalf("the retry was rejected: %+v", got)
+	}
+}
+
+// A revision change with identical entries moves no rules, but it still has to
+// be recorded and has to raise the bar for same-generation changes.
+func TestPolicyRevisionAdoptedWithoutApplyWhenEntriesMatch(t *testing.T) {
+	h := newHarness(t)
+	first := h.heldPolicy(2)
+	applies := h.iso.applies
+
+	h.m.Reconcile(context.Background(), h.policyBlock(3, revB, first))
+
+	j := h.journal()
+	if h.iso.applies != applies {
+		t.Fatal("identical entries re-applied the rules")
+	}
+	if j.Episode.PolicyRevision != revB || j.Episode.PolicyGeneration != 3 {
+		t.Fatalf("revision not adopted: %+v", j.Episode)
+	}
+	if got := policyEvents(j, "policy_applied"); len(got) != 2 || got[1].Detail != revB {
+		t.Fatalf("policy_applied events %+v", got)
+	}
+}
+
+// A journal with no policy fields (written before them, or rewritten by an older
+// recovery binary) can adopt what it already holds, but cannot widen.
+func TestLegacyJournalAdoptsHeldEntriesOnly(t *testing.T) {
+	stripPolicy := func(h *harness) {
+		h.t.Helper()
+		j := h.journal()
+		j.Episode.PolicyRevision, j.Episode.PolicyGeneration = "", 0
+		if err := journal.Save(journal.Path(h.dir), j); err != nil {
+			h.t.Fatal(err)
+		}
+		h.m = h.newManager()
+	}
+	h := newHarness(t)
+	first := h.heldPolicy(2)
+	stripPolicy(h)
+	applies := h.iso.applies
+
+	h.m.Reconcile(context.Background(), h.policyBlock(2, revA, first))
+	if j := h.journal(); j.Episode.PolicyRevision != revA || j.Episode.PolicyGeneration != 2 || h.iso.applies != applies {
+		t.Fatalf("held entries not adopted: %+v (applies %d→%d)", j.Episode, applies, h.iso.applies)
+	}
+
+	stripPolicy(h)
+	second := policyExtra("198.18.0.0/24")
+	h.m.Reconcile(context.Background(), h.policyBlock(2, revB, first, second))
+	if h.installedHas(second) {
+		t.Fatal("a journal with no policy fields allowed a same-generation widening")
+	}
+}
+
+// The command path shares the rule, and reports it as a refusal.
+func TestIsolateCommandCannotChangePolicyAtSameGeneration(t *testing.T) {
+	h := newHarness(t)
+	h.heldPolicy(2)
+	p := h.payload(idA, 2, 72*time.Hour)
+	p["parameters"].(map[string]any)["policyRevision"] = revB
+	out := h.m.HandleIsolate(context.Background(), p)
+	if !out.Failed() || out.ErrorCode != wire.ErrCodeIsolationInvalidSpec {
+		t.Fatalf("outcome %+v", out)
+	}
+	if got := policyEvents(h.journal(), "policy_rejected"); len(got) != 1 || got[0].Detail != PolicyRejectRevisionRegressed {
+		t.Fatalf("policy_rejected events %+v", got)
+	}
+}
+
+// A release never depends on the policy: a tombstone ends the episode whatever
+// revision the agent holds or the tombstone carries.
+func TestPolicyDoesNotGateRelease(t *testing.T) {
+	h := newHarness(t)
+	h.heldPolicy(2)
+	block := h.desired(idA, 2, DesiredReleased, time.Hour, false)
+	block.NetworkIsolation.PolicyRevision = malformedPolicyRevision
+	h.m.Reconcile(context.Background(), block)
+	if h.m.Active() || h.journal().Phase != journal.PhaseReleased {
+		t.Fatalf("the tombstone did not release: phase %s", h.journal().Phase)
+	}
+}
+
+func TestNotePolicyRejected(t *testing.T) {
+	ctx := context.Background()
+	t.Run("an inert agent with no journal writes none", func(t *testing.T) {
+		h := newHarness(t)
+		h.iso.set(func(f *fakeIsolator) { f.cap = Capability{Mechanism: "wfp", UnsupportedReason: "not_activated"} })
+		h.m.NotePolicyRejected(ctx, idA, 1, PolicyRejectRevisionMissing)
+		if _, err := journal.Load(journal.Path(h.dir)); err == nil {
+			t.Fatal("capability 0 created a journal")
+		}
+	})
+	t.Run("a capable agent reports it in the absent form", func(t *testing.T) {
+		h := newHarness(t)
+		h.m.NotePolicyRejected(ctx, idA, 4, PolicyRejectRevisionMissing)
+		r := h.m.Report()
+		if r == nil || r.IsolationID != "" || r.Phase != journal.PhaseNone || len(r.Events) != 1 {
+			t.Fatalf("report %+v", r)
+		}
+		if e := r.Events[0]; e.Type != "policy_rejected" || e.Detail != PolicyRejectRevisionMissing || e.IsolationID != idA || e.Generation != 4 {
+			t.Fatalf("event %+v", e)
+		}
+		if h.m.Active() {
+			t.Fatal("a rejection activated isolation")
+		}
+	})
+	t.Run("an unvalidated identity is not journalled", func(t *testing.T) {
+		// The server's report schema requires a UUID here; one bad value would
+		// cost the whole report.
+		h := newHarness(t)
+		h.m.NotePolicyRejected(ctx, "not-a-uuid", 4, PolicyRejectSpecInvalid)
+		h.m.NotePolicyRejected(ctx, idA, -1, PolicyRejectSpecInvalid)
+		evs := h.m.Report().Events
+		if len(evs) != 2 || evs[0].IsolationID != "" || evs[0].Generation != 0 || evs[1].IsolationID != idA || evs[1].Generation != 0 {
+			t.Fatalf("events %+v", evs)
+		}
+	})
+	t.Run("an unreadable journal is not overwritten", func(t *testing.T) {
+		// Replacing it would forget that rules may exist with no episode to explain them.
+		h := newHarness(t)
+		if err := os.WriteFile(journal.Path(h.dir), []byte("{not json"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		h.m.NotePolicyRejected(ctx, idA, 1, PolicyRejectRevisionMissing)
+		if b, err := os.ReadFile(journal.Path(h.dir)); err != nil || string(b) != "{not json" {
+			t.Fatalf("journal rewritten: %q err=%v", b, err)
 		}
 	})
 }
