@@ -154,7 +154,7 @@ type OrgDetails = {
   type?: string;
   maxDevices?: number;
   settings?: {
-    // #9673: retired. Nothing reads it; the Branding tab lives in portal_branding
+    // #9673: retired. Nothing reads the org-level blob; the Branding tab lives in portal_branding
     // (OrgBrandingEditor, /orgs/organizations/:id/portal-settings). Only the
     // legacy logo is still looked at, to offer it to the org, and the next
     // Branding save clears the whole category (handleBrandingSaved).
@@ -492,17 +492,17 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
     }
   }, [effectiveOrgId, orgDetails, isArchived, fetchOrgDetails, t]);
 
-  // #9673: the editor has already saved through portal-settings. Clearing the
-  // retired blob is the only org write left, and handleSaveSettings also carries
-  // the archived-org guard, so an org with nothing to clear only needs it there.
+  // #9673: the editor has already saved through portal-settings (an archived
+  // org never gets that far: saveBlockedMessage). Clearing the retired blob is
+  // the only org write left.
   const handleBrandingSaved = useCallback(async () => {
     const legacy = orgDetails?.settings?.branding;
-    if (isArchived || (legacy && Object.keys(legacy).length > 0)) {
+    if (legacy && Object.keys(legacy).length > 0) {
       return handleSaveSettings('branding', {});
     }
     setSaveState({ hasUnsavedChanges: false, lastSavedAt: formatTime(new Date()) });
     return true;
-  }, [orgDetails, isArchived, handleSaveSettings]);
+  }, [orgDetails, handleSaveSettings]);
 
   const handleSaveName = useCallback(async () => {
     if (!effectiveOrgId) return;
@@ -652,6 +652,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             legacyLogoUrl={orgDetails?.settings?.branding?.logoUrl}
             onDirty={handleDirty}
             onSave={handleBrandingSaved}
+            saveBlockedMessage={isArchived ? t('orgSettingsPage.archived.saveBlocked') : undefined}
             locked={locked}
           />
         );

@@ -54,7 +54,7 @@ async function getPortalBranding(orgId: string) {
     await next();
   });
   app.route('/', brandingRoutes);
-  return withDbAccessContext(portalOrgContext(orgId), () => app.request('/branding'));
+  return withDbAccessContext(portalOrgContext(orgId), async () => app.request('/branding'));
 }
 
 describe('GET /portal/branding logo and colour chain (#9673)', () => {

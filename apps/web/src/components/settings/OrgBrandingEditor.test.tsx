@@ -56,6 +56,18 @@ describe('OrgBrandingEditor', () => {
     expect(container.textContent).not.toMatch(/https:\/\/your-org\./);
   });
 
+  // An archived org must not be written to and then told the save failed.
+  it('saveBlockedMessage refuses Save before any write', async () => {
+    fetchMock.mockResolvedValue(makeJsonResponse({ data: { customCss: null } }));
+    const onSave = vi.fn();
+    render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} onSave={onSave} saveBlockedMessage="Archived." />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId('branding-save'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ message: 'Archived.', type: 'error' }));
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
   it('without an orgId, Save does not attempt a portal-settings call (no crash)', async () => {
     render(<OrgBrandingEditor organizationName="Acme Systems" />);
     fireEvent.click(screen.getByRole('button', { name: 'Save branding' }));

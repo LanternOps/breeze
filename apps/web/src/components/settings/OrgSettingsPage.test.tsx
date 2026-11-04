@@ -29,7 +29,7 @@ vi.mock('@/lib/navigation', () => ({
 
 // Stub the heavy child editors — they're unrelated to name editing, and several
 // pull in their own fetches/effects; stubbing keeps these tests focused and fast.
-type BrandingEditorProps = { onSave: () => unknown; legacyLogoUrl?: string };
+type BrandingEditorProps = { onSave: () => unknown; legacyLogoUrl?: string; saveBlockedMessage?: string };
 const brandingProps: BrandingEditorProps[] = [];
 vi.mock('./OrgBrandingEditor', () => ({ default: (props: BrandingEditorProps) => {
   brandingProps.push(props);
@@ -952,6 +952,13 @@ describe('OrgSettingsPage — archived organization (2026-08-28 pre-release swee
 
     const restoreLink = screen.getByTestId('org-archived-restore-link') as HTMLAnchorElement;
     expect(restoreLink.getAttribute('href')).toBe('/organizations#filter=archived');
+  });
+
+  it('blocks the Branding save before the editor writes anything (#9673)', async () => {
+    window.location.hash = '#branding';
+    render(<OrgSettingsPage orgId="org-1" />);
+    await screen.findByTestId('branding-editor');
+    expect(brandingProps.at(-1)!.saveBlockedMessage).toMatch(/archived/i);
   });
 
   it('disables the name and type Save controls so the page cannot 404 on save', async () => {

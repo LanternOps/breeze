@@ -36,6 +36,9 @@ type OrgBrandingEditorProps = {
    *  page could not finish the save, so no success is reported. */
   onSave?: () => boolean | void | Promise<boolean | void>;
   locked?: string[];
+  /** When set, Save is refused with this message before anything is written
+   *  (an archived org). */
+  saveBlockedMessage?: string;
 };
 
 // The accent quote/invoice renderers use when neither the org nor the partner
@@ -47,7 +50,7 @@ const DEFAULT_SECONDARY_COLOR = '#14b8a6';
 
 const CUSTOM_CSS_PLACEHOLDER = '/* Add custom portal styling here */\n.portal-header {\n  letter-spacing: 0.04em;\n}';
 
-export default function OrgBrandingEditor({ organizationName, orgId, legacyLogoUrl, onDirty, onSave, locked }: OrgBrandingEditorProps) {
+export default function OrgBrandingEditor({ organizationName, orgId, legacyLogoUrl, onDirty, onSave, locked, saveBlockedMessage }: OrgBrandingEditorProps) {
   const { t } = useTranslation('settings');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const isLocked = (field: string) => locked?.includes(`branding.${field}`) ?? false;
@@ -202,6 +205,11 @@ export default function OrgBrandingEditor({ organizationName, orgId, legacyLogoU
 
   const handleSave = async () => {
     setStatusMessage(null);
+
+    if (saveBlockedMessage) {
+      showToast({ message: saveBlockedMessage, type: 'error' });
+      return;
+    }
 
     if (customCssLoadFailed) {
       // The initial load never confirmed what's actually persisted, so

@@ -120,15 +120,16 @@ export const PORTAL_PRIMARY_COLOR_PATTERN = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
 /** Matches MAX_LOGO_BYTES in the web logo encoder and the partner Branding cap. */
 export const PORTAL_LOGO_MAX_LENGTH = 400_000;
 
-const PORTAL_LOGO_DATA_URI = /^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/;
+const PORTAL_LOGO_DATA_URI = /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/;
 const PORTAL_LOGO_HTTPS_URL = /^https:\/\/[^\s"'<>\\]+$/;
 
 /**
- * Whether a value may be stored as an org logo (#9673): an uploaded PNG/JPEG
- * data URI, the two formats every renderer can draw including the PDFs, or an
- * https URL so a customer's browser never loads it insecurely. The value goes
- * unchanged into `<img src>` on the portal and customer documents, so anything
- * else is refused at write.
+ * Whether a value may be stored as an org logo (#9673): an uploaded PNG data
+ * URI (the editor always encodes PNG, and PNG is the one format every renderer
+ * embeds, report PDFs included), or an https URL so a customer's browser never
+ * loads it insecurely (PDFs print the company name instead of a URL logo). The
+ * value goes unchanged into `<img src>` on the portal and customer documents, so
+ * anything else is refused at write.
  */
 export function isPortalLogoUrl(value: string): boolean {
   if (value.length > PORTAL_LOGO_MAX_LENGTH) return false;
@@ -209,7 +210,7 @@ export const updatePortalSettingsSchema = z.object({
     .optional(),
   logoUrl: z
     .string()
-    .refine(isPortalLogoUrl, 'Logo must be a PNG or JPEG image of at most 400 KB, or an https URL')
+    .refine(isPortalLogoUrl, 'Logo must be a PNG image of at most 400 KB, or an https URL')
     .nullable()
     .optional(),
   // #5952: canonical write path for portal_branding.custom_css. Rejected

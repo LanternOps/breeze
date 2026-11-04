@@ -44,15 +44,17 @@ vi.mock('./featureFlags', () => ({ resolvePortalCapabilities: capabilitiesMock }
 
 // #9674: the partner's Custom CSS read is its own system-scope query (tested in
 // portalCustomCss.test.ts); here only how /branding layers it with the org's.
-const { partnerCssMock, partnerSettingsMock } = vi.hoisted(() => ({
+const { partnerCssMock, partnerSettingsMock, partnerDegradedMock } = vi.hoisted(() => ({
   partnerCssMock: vi.fn(async (_orgId: string): Promise<string | null> => null),
   partnerSettingsMock: vi.fn((): unknown => null),
+  partnerDegradedMock: vi.fn((): boolean => false),
 }));
 vi.mock('./portalCustomCss', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./portalCustomCss')>()),
   loadPartnerPortalDefaults: async (orgId: string) => ({
     customCss: await partnerCssMock(orgId),
     settings: partnerSettingsMock(),
+    degraded: partnerDegradedMock(),
   }),
 }));
 
@@ -83,6 +85,8 @@ beforeEach(() => {
   partnerCssMock.mockResolvedValue(null);
   partnerSettingsMock.mockReset();
   partnerSettingsMock.mockReturnValue(null);
+  partnerDegradedMock.mockReset();
+  partnerDegradedMock.mockReturnValue(false);
 });
 
 describe('GET /branding (authenticated)', () => {
@@ -373,6 +377,22 @@ describe('GET /branding partner brand fallback (#9673)', () => {
     const second = await authenticatedApp.request('/branding', { headers: { 'If-None-Match': etag } });
 
     expect(second.status).toBe(200);
+  });
+
+  // A transient partner-lookup failure must not be pinned for an hour at a
+  // shared cache: the degraded answer is served but never cached.
+  it('never caches a public answer built without the partner defaults', async () => {
+    partnerDegradedMock.mockReturnValue(true);
+    dbState.rows = [{ orgId: ORG_ID, customDomain: 'portal.example.test', domainVerified: true, logoUrl: ORG_LOGO, primaryColor: null, secondaryColor: null }];
+
+    const publicApp = new Hono();
+    publicApp.route('/', brandingRoutes);
+    const response = await publicApp.request('/branding/portal.example.test');
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).branding.logoUrl).toBe(ORG_LOGO);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(response.headers.get('ETag')).toBeNull();
   });
 
   it('applies the same fallback on the public domain lookup', async () => {

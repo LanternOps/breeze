@@ -83,17 +83,24 @@ async function resolveBrandingByDomain(domain: string) {
     return null;
   }
 
-  return withPartnerDefaults(branding, await loadPartnerPortalDefaults(branding.orgId));
+  const partner = await loadPartnerPortalDefaults(branding.orgId);
+  return { branding: withPartnerDefaults(branding, partner), degraded: partner.degraded };
 }
 
 brandingRoutes.get('/branding/:domain', zValidator('param', brandingParamSchema), async (c) => {
   const { domain } = c.req.valid('param');
-  const branding = await resolveBrandingByDomain(domain);
-  if (!branding) {
+  const resolved = await resolveBrandingByDomain(domain);
+  if (!resolved) {
     return c.json({ error: 'Branding not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
-  const payload = { branding };
+  const payload = { branding: resolved.branding };
+  // Built without the partner's defaults (lookup failed): serve it, but never
+  // let a shared cache pin it for an hour.
+  if (resolved.degraded) {
+    c.header('Cache-Control', 'no-store');
+    return c.json(payload);
+  }
   applyPortalCacheHeaders(c, {
     scope: 'public',
     browserMaxAgeSeconds: 300,

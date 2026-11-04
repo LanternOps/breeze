@@ -85,8 +85,8 @@ describe('updatePortalSettingsSchema', () => {
     }
   });
 
-  it('accepts an uploaded PNG/JPEG data URI, an https URL and null as logoUrl', () => {
-    for (const good of ['data:image/png;base64,iVBORw0KGgo=', 'data:image/jpeg;base64,/9j/4AAQ', 'https://cdn.example.com/logo.png']) {
+  it('accepts an uploaded PNG data URI, an https URL and null as logoUrl', () => {
+    for (const good of ['data:image/png;base64,iVBORw0KGgo=', 'https://cdn.example.com/logo.png']) {
       expect(updatePortalSettingsSchema.parse({ logoUrl: good }), good).toEqual({ logoUrl: good });
     }
     expect(updatePortalSettingsSchema.parse({ logoUrl: null })).toEqual({ logoUrl: null });
@@ -99,6 +99,9 @@ describe('updatePortalSettingsSchema', () => {
       'http://cdn.example.com/logo.png',
       'blob:https://app.example.com/abc',
       'data:image/svg+xml;base64,PHN2Zz4=',
+      // Report PDFs embed only PNG; the editor always encodes PNG.
+      'data:image/jpeg;base64,/9j/4AAQ',
+      'data:image/webp;base64,UklGRg==',
       'data:text/html;base64,PGI+',
       'data:image/png;base64,not base64!',
       'https://cdn.example.com/a"onerror="x',

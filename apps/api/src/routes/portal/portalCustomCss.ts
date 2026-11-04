@@ -67,9 +67,12 @@ export type PartnerPortalDefaults = {
   /** The raw `partners.settings`, for resolveDocumentBrand / partnerDocumentBrand
    *  (#9673), which validate what they read. Null when the partner is unknown. */
   settings: unknown;
+  /** True when the lookup failed, so the answer lacks the partner's defaults
+   *  and must not be cached. */
+  degraded: boolean;
 };
 
-const NO_PARTNER_DEFAULTS: PartnerPortalDefaults = { customCss: null, settings: null };
+const NO_PARTNER_DEFAULTS: PartnerPortalDefaults = { customCss: null, settings: null, degraded: false };
 
 /**
  * What the partner that owns `orgId` contributes to its portal: Custom CSS and
@@ -95,7 +98,7 @@ export async function loadPartnerPortalDefaults(orgId: string): Promise<PartnerP
     // Partner defaults must not take the branding response (the org's own
     // values, visibility flags) down with them: degrade to the org's row alone.
     captureException(err, undefined, { area: 'portal-branding-partner-css' });
-    return NO_PARTNER_DEFAULTS;
+    return { ...NO_PARTNER_DEFAULTS, degraded: true };
   }
   if (!row) return NO_PARTNER_DEFAULTS;
   const { css, rejected } = readPartnerPortalCustomCss(row.settings);
@@ -104,5 +107,5 @@ export async function loadPartnerPortalDefaults(orgId: string): Promise<PartnerP
     // Never the CSS itself: the id is enough to find and fix the value.
     console.warn('[portal] partner Custom CSS fails the portal CSS rules; not applied', { partnerId: row.partnerId });
   }
-  return { customCss: css, settings: row.settings };
+  return { customCss: css, settings: row.settings, degraded: false };
 }

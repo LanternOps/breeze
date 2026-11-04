@@ -122,7 +122,7 @@ describe('loadPartnerPortalDefaults', () => {
     const settings = { branding: { customCss: '.p { color: red; }', logoUrl: 'https://x/p.png' } };
     dbState.rows = [{ partnerId: 'p-ok', settings }];
 
-    await expect(loadPartnerPortalDefaults(ORG_ID)).resolves.toEqual({ customCss: '.p { color: red; }', settings });
+    await expect(loadPartnerPortalDefaults(ORG_ID)).resolves.toEqual({ customCss: '.p { color: red; }', settings, degraded: false });
 
     expect(dbState.outsideContextCalls).toBe(1);
     expect(dbState.systemContextCalls).toBe(1);
@@ -133,7 +133,7 @@ describe('loadPartnerPortalDefaults', () => {
 
   it('returns no defaults when the org has no partner row', async () => {
     dbState.rows = [];
-    await expect(loadPartnerPortalDefaults(ORG_ID)).resolves.toEqual({ customCss: null, settings: null });
+    await expect(loadPartnerPortalDefaults(ORG_ID)).resolves.toEqual({ customCss: null, settings: null, degraded: false });
   });
 
   it('drops stored partner CSS that fails the safety rules, warning once per partner', async () => {
@@ -155,7 +155,7 @@ describe('loadPartnerPortalDefaults', () => {
   it('degrades to no defaults and reports when the lookup fails, so branding still renders', async () => {
     dbState.error = new Error('connection reset');
 
-    await expect(loadPartnerPortalDefaults(ORG_ID)).resolves.toEqual({ customCss: null, settings: null });
+    await expect(loadPartnerPortalDefaults(ORG_ID)).resolves.toEqual({ customCss: null, settings: null, degraded: true });
 
     expect(captureMock).toHaveBeenCalledWith(dbState.error, undefined, { area: 'portal-branding-partner-css' });
   });
