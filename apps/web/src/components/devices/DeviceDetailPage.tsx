@@ -405,7 +405,8 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
         switchingOrgRef.current = false;
       });
   };
-  // Back returns to wherever the tech came from (list filters, scroll, org);
+  // Used by the error-state Back buttons only; the Devices crumb no longer
+  // pops history (#10959). Back returns to wherever the tech came from (list filters, scroll, org);
   // a fresh tab / deep link has no history to pop, so fall to the org-aware
   // Devices crumb instead. history.length alone can't tell an in-app entry
   // from about:blank / another site (#9259), so only pop when the page was

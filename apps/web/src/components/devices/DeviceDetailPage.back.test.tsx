@@ -73,6 +73,15 @@ describe('DeviceDetailPage Devices crumb (#9259, #10959)', () => {
     expect(navigateTo).toHaveBeenCalledWith('/devices');
   });
 
+  it('crumb goes to the device org Devices tab when the working org differs', async () => {
+    useOrgStore.setState({ currentOrgId: 'org-other', allOrgs: false } as never);
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => {});
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    fireEvent.click(await screen.findByRole('link', { name: 'Devices' }));
+    expect(back).not.toHaveBeenCalled();
+    expect(navigateTo).toHaveBeenCalledWith('/organizations/org-42#devices');
+  });
+
   it.each(['','https://example.com/somewhere', 'not a url'])(
     'goes to the Devices route instead of leaving the app (referrer %j)',
     async (ref) => {
