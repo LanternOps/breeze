@@ -438,7 +438,13 @@ func (o *op) exec(e Effect) Event {
 		}
 		d, err := iso.Apply(o.ctx, a.spec)
 		if err != nil {
-			return o.attemptFailed(e.AttemptID, FailApplyError, "apply: "+err.Error())
+			code := FailApplyError
+			// The host cannot safely host the rules (pf compatibility, OD13):
+			// nothing was installed, and the console shows why.
+			if errors.As(err, new(ErrIncompatible)) {
+				code = FailMechanismUnavailable
+			}
+			return o.attemptFailed(e.AttemptID, code, "apply: "+err.Error())
 		}
 		a.digest = d
 	case EffRunProbes:

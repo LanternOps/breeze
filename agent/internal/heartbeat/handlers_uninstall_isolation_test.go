@@ -45,7 +45,9 @@ func TestUninstallReleasePrecedesPreparation(t *testing.T) {
 }
 
 func TestUninstallUnsupportedPlatformCleanJournal(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		// macOS has a real pf isolator now; its uninstall release is covered
+		// against fakes, and a unit test must never run pfctl.
 		t.Skip("unsupported platform contract")
 	}
 	oldPrepare, oldSchedule := prepareSelfUninstallFn, scheduleSelfUninstallShutdownFn

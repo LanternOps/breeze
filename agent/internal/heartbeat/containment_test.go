@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -169,8 +170,20 @@ func TestContainmentWireCapabilitiesAndAbsentReport(t *testing.T) {
 	if fields["networkIsolationVersion"] != float64(0) || fields["networkIsolationReady"] != false {
 		t.Fatal("unsupported capabilities must be explicit")
 	}
-	if _, ok := fields["networkIsolationMechanism"]; ok {
-		t.Fatal("empty mechanism must be omitted")
+	// A build with a real isolator names its mechanism even at capability 0
+	// (not activated); elsewhere the empty mechanism is omitted.
+	switch mechanism, ok := fields["networkIsolationMechanism"]; runtime.GOOS {
+	case "windows", "darwin":
+		if want := map[string]string{"windows": "wfp", "darwin": "pf"}[runtime.GOOS]; mechanism != want {
+			t.Fatalf("mechanism %v, want %s", mechanism, want)
+		}
+		if fields["networkIsolationUnsupportedReason"] != "not_activated" {
+			t.Fatalf("a shipped capability-0 build must say why: %v", fields["networkIsolationUnsupportedReason"])
+		}
+	default:
+		if ok {
+			t.Fatal("empty mechanism must be omitted")
+		}
 	}
 	h := &Heartbeat{containment: &containmentRuntime{manager: isolation.NewManager(isolation.ManagerDeps{DataDir: t.TempDir()})}}
 	b, err = json.Marshal(h.containmentReport())

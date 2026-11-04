@@ -68,7 +68,7 @@ The assistant and background agents can author a script mid-conversation, have i
 |---|---|---|
 | **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `ioc_hunt` (list_rule_sets/preview_sweep/list_sweeps/sweep_status), `get_active_users`, `disk_cleanup` (preview), `system_cleanup` (status), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `get_service_monitoring_status`, `query_monitors`, `manage_monitors` (get/create/update/delete), `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `manage_software_policy` (list/get), `manage_browser_policy` (list), `list_playbooks`, `get_playbook_history`, `get_vulnerability_report`, `find_proven_fixes`, `get_device_vulnerabilities`, `search_documentation`, `propose_script`, `get_script_proposal` |
 | **Tier 2** | Auto-execute + audit logged | `manage_alerts` (acknowledge/resolve), `manage_services` (list), `ioc_hunt` (cancel_sweep), `manage_processes` (list), `manage_scheduled_tasks` (list), `system_cleanup` (list), `analyze_disk_usage` (refresh), `analyze_boot_performance` (triggerCollection), `set_device_context`, `resolve_device_context`, `apply_configuration_policy`, `remove_configuration_policy_assignment`, `manage_configuration_policy` (activate/deactivate), `create_incident`, `revoke_elevation`, `assign_security_training`, `acknowledge_network_device`, `registry_operations` (read_key/get_value), `file_operations` (list), `execute_command` (list_processes/file_list/event_logs_list) |
-| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `system_cleanup` (run/cancel), `network_discovery`, `security_scan` (quarantine/remove/restore), `ioc_hunt` (sweep/import_iocs), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_scheduled_tasks` (run/disable/enable), `registry_operations` (set_value/create_key/delete_key), `create_remote_session`, `request_elevation`, `trigger_agent_restart`, `trigger_agent_upgrade`, `configure_network_baseline`, `trigger_backup`, `restore_snapshot`, `execute_containment`, `collect_evidence`, `execute_playbook`, `remediate_vulnerability`, `manage_ai_agents` (authorize_supervised_key) |
+| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `system_cleanup` (run/cancel), `network_discovery`, `security_scan` (quarantine/remove/restore), `ioc_hunt` (sweep/import_iocs), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_scheduled_tasks` (run/disable/enable), `registry_operations` (set_value/create_key/delete_key), `create_remote_session`, `request_elevation`, `trigger_agent_restart`, `trigger_agent_upgrade`, `configure_network_baseline`, `trigger_backup`, `restore_snapshot`, `execute_containment`, `release_containment`, `collect_evidence`, `execute_playbook`, `remediate_vulnerability`, `manage_ai_agents` (authorize_supervised_key) |
 | **Tier 4** | Blocked — never executed | Cross-org operations |
 
 `manage_monitors` supports `get` only. Its retired `create`, `update`, and `delete` actions return guidance without approval or write permission. Author network checks with `manage_monitor_definitions` using kind `network_check`; retire unconverted checks through the conversion ledger to preserve history.
@@ -107,7 +107,7 @@ A small, fixed set of actions always requires a different user to approve:
 - **Identity and account control** (Microsoft 365 / Google Workspace) — password and 2FA resets, mail forwarding and delegates, mailbox permissions, disabling or offboarding users, device wipe
 - **Restores and rollbacks** — VM checkpoint delete/apply, restore-as-VM and DR plan runs, patch rollback, snapshot and database restores
 - **Computer control** and unattended remote session creation
-- **Releasing security containment** — un-isolating a device, rolling back threats. (Isolating or quarantining stays supervised — urgent protective containment should not wait on a colleague.)
+- **Releasing security containment** — lifting a Breeze network isolation (`release_containment`), un-isolating a device through an EDR, rolling back threats. (Isolating or quarantining stays supervised — urgent protective containment should not wait on a colleague.)
 - **AI agent governance** — granting an agent a pre-authorized action key, so its future runs may take that action unattended
 
 To decide a pending four-eyes request:
@@ -195,6 +195,7 @@ Many tools have a per-tool sliding window rate limit. Requests that exceed the l
 | `trigger_backup` | 5 requests | 10 min |
 | `restore_snapshot` | 3 requests | 10 min |
 | `execute_containment` | 5 requests | 10 min |
+| `release_containment` | 5 requests | 10 min |
 | `collect_evidence` | 10 requests | 5 min |
 | `execute_playbook` | 5 requests | 10 min |
 
@@ -499,14 +500,22 @@ See [Backup & Recovery](/backup/overview/) for configuration details.
 
 ## Incident Response AI Tools
 
-The AI can create and manage security incidents, execute containment actions, and collect forensic evidence. These tools are available in AI chat and to AI agents.
+The AI can create and manage security incidents, execute containment actions, release a network isolation, and collect forensic evidence. These tools are available in AI chat and to AI agents, except `release_containment`, which AI agents can never call or propose.
 
-Network isolation is Windows-only until Linux and macOS support ship. `release_containment` is planned for a **later release**; use the console release control now. See [Network isolation](/features/network-isolation/) for reachability, expiry, and the break-glass runbook.
+Network isolation is Windows-only until Linux and macOS support ship. See [Network isolation](/features/network-isolation/) for reachability, expiry, and the break-glass runbook.
+
+The AI can ask to lift an isolation with `release_containment`:
+
+- It is a **four-eyes** action. A second person approves it. If you are the only eligible approver, you approve it yourself with a Touch ID / Windows Hello verification.
+- The approval covers one isolation, as it stood when the AI asked. If the isolation is extended, released by someone else, or its device moves to another organization before the approval runs, the release is refused and nothing is sent to the device. Ask the AI again.
+- The console release control works as before and needs no second approver.
+- The MCP server never isolates or releases a device, even for a principal allowed to run Tier 3 tools unattended.
 
 | Tool | Tier | Description |
 |------|------|-------------|
 | `create_incident` | 2 | Create a new security incident with classification and severity (needs `alerts.write`) |
 | `execute_containment` | 3 | Isolate a supported device from the network through the isolation service (off by default behind `NETWORK_ISOLATION_ENABLED`), or kill a process. Account disable and USB block remain unimplemented. Needs both `devices.execute` and `alerts.write`, because it also records the action on the incident |
+| `release_containment` | 3 | Lift a device's network isolation through the isolation service. Four-eyes, needs `devices.execute`, and names the isolation episode to release. Works with `NETWORK_ISOLATION_ENABLED` off, like the console release |
 | `collect_evidence` | 3 | Collect forensic evidence from a device (logs, processes, connections). Evidence without a screenshot runs at Tier 2; a request that includes a screenshot needs approval |
 | `get_incident_timeline` | 1 | View the full timeline of an incident |
 | `generate_incident_report` | 1 | Generate a structured report with action and evidence summaries |

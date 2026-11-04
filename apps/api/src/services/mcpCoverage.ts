@@ -159,7 +159,6 @@ export type McpExemptReason =
    * plain reboot stays reachable through the existing device-command tools.
    */
   | 'human_only_force_reboot'
-  | 'human_only_network_isolation'
   /**
    * The chat / script-builder session transport itself (sessions, messages,
    * interrupt, approve-plan). This is the plumbing the AI features run over,
@@ -489,7 +488,11 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // GET /devices/:id/monitors (#6371 W05c2): the same per-device monitor state
   // is agent-reachable per monitor via get_monitor_activity's deviceId filter.
   'devices/monitors.ts': { tools: ['list_monitors', 'get_monitor_activity', 'reset_monitor_escalation'] },
-  'devices/networkIsolation.ts': { exempt: 'human_only_network_isolation', note: 'Interactive session and MFA only in W1; AI release is W4b #10101. Unattended MCP stays denied.' },
+  // W13 (#10101): start is execute_containment with actionType network_isolation, and release
+  // is the four-eyes release_containment, both through the isolation service. Extend, acknowledge
+  // and the break-glass code stay human-only. The external MCP refuses release_containment by
+  // name and execute_containment when actionType is network_isolation.
+  'devices/networkIsolation.ts': { tools: ['execute_containment', 'release_containment'] },
   'agents/isolationVerify.ts': { exempt: 'agent_transport' },
   'devices/forceReboot.ts': { exempt: 'human_only_force_reboot', note: 'Force reboot now: closes running apps; step-up bound to one device.' },
   'devices/moveOrg.ts': { exempt: 'human_only_tenant_restructure', note: 'Cross-tenant device move -- rewrites which tenant owns the device.' },
@@ -776,6 +779,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // #8883 W5 (spec §5.7): reads and the dry run are tier 1; create/update/
   // reorder/delete are the tier-3 manage tool, partner-wide gate in the service.
   'tickets/routingRules.ts': { tools: ['list_ticket_routing_rules', 'test_ticket_routing_rule', 'manage_ticket_routing_rules'] },
+  'tickets/serviceCatalog.ts': { exempt: 'tool_in_later_wave', note: 'Service catalog management routes (#8325 wave A1); no MCP tool planned yet (#8325).' },
   'tickets/ticketResponseTemplates.ts': { tools: ['manage_ticket_response_templates'] }, // W06 (#6776)
   'tickets/tickets.ts': { tools: ['manage_tickets'] },
   'timeEntries/index.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },

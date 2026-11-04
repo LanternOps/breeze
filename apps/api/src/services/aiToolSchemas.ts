@@ -2480,6 +2480,14 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     approvalRef: z.string().max(128).optional(),
   }),
 
+  // Network-isolation W13 (#10101): no generation, org or allowlist field — the
+  // approval binding comes from the pinned effect digest, never from the model.
+  release_containment: z.object({
+    deviceId: uuid,
+    isolationId: uuid,
+    reason: z.string().trim().min(1).max(2000),
+  }),
+
   collect_evidence: z.object({
     incidentId: uuid,
     deviceId: uuid,

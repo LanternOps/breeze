@@ -79,6 +79,7 @@ const NO_DEVICE_TEXT: Readonly<Record<string, string>> = {
   create_incident: 'echoes technician/AI-supplied incident fields',
   execute_containment: 'queued-command status; device output lands in incident evidence (get_incident_timeline)',
   collect_evidence: 'queued-command status; device output lands in incident evidence (get_incident_timeline)',
+  release_containment: 'queued-command id and server-owned episode scalars only; the handler drops the agent-authored lastAgentReport',
   list_incidents: 'safe projection of technician/AI-authored incident fields',
   manage_browser_policy: 'technician-authored policy fields and Breeze status only',
   // aiToolsFleet.ts became a device-command file when manage_patches scan started

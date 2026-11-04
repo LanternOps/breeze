@@ -1129,6 +1129,8 @@
       "sensitive_data_finding": "Hassas veri bulgusu",
       "sensitive_data_policy": "Hassas veri ilkesi",
       "sensitive_data_scan": "Hassas veri taraması",
+      "service_catalog": "Hizmet kataloğu",
+      "service_catalog_item": "Hizmet kataloğu öğesi",
       "service_principal": "Hizmet sorumlusu",
       "site": "Site",
       "sla_definition": "SLA tanımı",
