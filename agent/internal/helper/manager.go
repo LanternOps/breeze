@@ -846,10 +846,14 @@ func (m *Manager) ensureRunningSession(state *sessionState) error {
 	}
 	var pid int
 	var err error
-	if m.helperSupportsConfigFlag() {
-		pid, err = m.spawnFunc(state.key, m.binaryPath, "--config", state.configPath)
-	} else {
+	// #10755: the helper reads a launch without --config as a person opening
+	// Assist and shows its window (or tells a running instance to). Every
+	// agent launch must stay hidden, so --config is dropped only for a helper
+	// known to predate it, never because the version could not be read.
+	if m.helperKnownToPredateConfigFlag() {
 		pid, err = m.spawnFunc(state.key, m.binaryPath)
+	} else {
+		pid, err = m.spawnFunc(state.key, m.binaryPath, "--config", state.configPath)
 	}
 	if err != nil {
 		return err
@@ -880,12 +884,26 @@ func (m *Manager) crashLoopRetryReasonLocked(state *sessionState) string {
 	return ""
 }
 
+// helperSupportsConfigFlag reports whether the installed helper is KNOWN to
+// read --config. False when the version is unknown: callers use it to also
+// write the shared legacy config, which is harmless for a current helper.
 func (m *Manager) helperSupportsConfigFlag() bool {
 	v := m.installedVersionLocked()
 	if v == "" {
 		return false
 	}
 	return semverAtLeast(v, minConfigFlagVersion)
+}
+
+// helperKnownToPredateConfigFlag reports whether the installed helper has a
+// readable version older than minConfigFlagVersion. An unknown version is not
+// "old": the spawn keeps --config so Assist starts hidden (#10755).
+func (m *Manager) helperKnownToPredateConfigFlag() bool {
+	v := m.installedVersionLocked()
+	if v == "" {
+		return false
+	}
+	return !semverAtLeast(v, minConfigFlagVersion)
 }
 
 func semverAtLeast(version string, target [3]int) bool {
