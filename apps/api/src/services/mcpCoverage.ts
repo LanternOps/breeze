@@ -313,6 +313,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'alertTemplates/rules.ts': { tools: ['manage_alert_rules'] },
   'alertTemplates/templates.ts': { tools: ['manage_alert_rules'] },
   'alerts/alerts.ts': { tools: ['manage_alerts'] },
+  'alerts/lifecycleDefaults.ts': { exempt: 'tool_in_later_wave', note: 'Alert lifecycle defaults (partner default / org override, #10765 W02). No MCP tool is scheduled in #10765 yet (same shape as connectionHealthSettings.ts); whether the AI may read or set them is an open decision on the W02 PR.' },
   'alerts/alertExternalTickets.ts': { tools: ['manage_alerts'] },
   'alerts/alertPsaTicket.ts': { exempt: 'vendor_console_admin', note: 'Manual alert -> PSA ticket admission (#10499 W2-C); a human decision to raise a ticket in the external PSA, like psaAlertTicketing.ts.' },
   'alerts/channels.ts': { tools: ['manage_notification_channels'] },
