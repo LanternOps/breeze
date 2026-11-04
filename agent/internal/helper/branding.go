@@ -162,13 +162,20 @@ func resolveBranding(current *Branding, d *BrandingDecision) (*Branding, error) 
 const maxHelperConfigBytes = 64 * 1024
 
 // readHelperConfig reads path without following a final symlink and refuses
-// anything over maxHelperConfigBytes. Errors never include file content.
+// non-regular files (FIFO, device) and anything over maxHelperConfigBytes. Errors never include file content.
 func readHelperConfig(path string) ([]byte, error) {
 	f, err := openNoFollow(path)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file")
+	}
 	data, err := io.ReadAll(io.LimitReader(f, maxHelperConfigBytes+1))
 	if err != nil {
 		return nil, err
