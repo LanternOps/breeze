@@ -46,8 +46,17 @@ breeze_release_isolation() {
   return 1
 }
 
+# breeze_restart_agent <label> <plist>: the release could not be confirmed after
+# the agent stopped. Bring it back, so the console can still release this Mac,
+# rather than leave it isolated with no agent.
+breeze_restart_agent() {
+  launchctl enable "system/$1" || echo "Warning: could not enable system/$1" >&2
+  launchctl bootstrap system "$2" || echo "Warning: could not load $2; run 'sudo launchctl bootstrap system $2'" >&2
+}
+
 # breeze_remove_isolation removes the recovery jobs and executables. Run only
-# after breeze_release_isolation succeeded.
+# after the agent has stopped and breeze_release_isolation succeeded: a running
+# agent can isolate the Mac again, and nothing else could then release it.
 breeze_remove_isolation() {
   for _breeze_label in com.breeze.isolation.rollback com.breeze.isolation.expire com.breeze.isolation; do
     breeze_bootout "system/$_breeze_label" || return 1

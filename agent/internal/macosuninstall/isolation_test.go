@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -149,13 +150,16 @@ func TestScriptReleasesIsolationBeforeAnyBreezeDaemonStops(t *testing.T) {
 	}
 }
 
-func TestScriptRemovesIsolationJobsBeforeTheAgent(t *testing.T) {
+// A running agent can isolate again at any moment, so its recovery jobs go only
+// once it has stopped, and before the binaries they might need.
+func TestScriptRemovesIsolationJobsOnceTheAgentHasStopped(t *testing.T) {
 	script, root := isolationFixture(t, false, "0", "")
 	log, out, err := runIsolationScript(t, script, root)
 	if err != nil {
 		t.Fatalf("%v\n%s\n%s", err, log, out)
 	}
 	agent := strings.Index(log, "launchctl bootout system/com.breeze.agent\n")
+	binaries := strings.Index(log, "rm -f /Library/LaunchDaemons/com.breeze.agent.plist")
 	for _, want := range []string{
 		"launchctl bootout system/com.breeze.isolation.rollback",
 		"launchctl bootout system/com.breeze.isolation.expire",
@@ -164,10 +168,59 @@ func TestScriptRemovesIsolationJobsBeforeTheAgent(t *testing.T) {
 		"rm -rf /Library/Breeze/isolation-recovery",
 	} {
 		i := strings.Index(log, want)
-		if i < 0 || agent < i {
-			t.Errorf("want %q before the agent stops:\n%s", want, log)
+		if i < agent || i > binaries {
+			t.Errorf("want %q after the agent stops and before the binaries go:\n%s", want, log)
 		}
 	}
+}
+
+// fakeAgentReleases replaces the fixture's agent with one whose release succeeds
+// for the first `succeed` calls, then fails.
+func fakeAgentReleases(t *testing.T, root string, succeed int) {
+	t.Helper()
+	body := "#!/bin/sh\necho \"agent $*\" >> \"$FIXTURE_ROOT/calls\"\nn=$(cat \"$FIXTURE_ROOT/agent-count\" 2>/dev/null || echo 0)\necho $((n + 1)) > \"$FIXTURE_ROOT/agent-count\"\n[ \"$n\" -lt " + strconv.Itoa(succeed) + " ]\n"
+	if err := os.WriteFile(root+"/Library/Breeze/bin/breeze-agent", []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The agent can isolate the Mac in the gap between the first release and its own
+// stop. So the release is confirmed again once it has stopped, and only then do
+// the recovery jobs go: an isolated Mac with neither would stay cut off.
+func TestScriptReleasesAgainOnceTheAgentHasStopped(t *testing.T) {
+	const release = "agent containment release-all --reason uninstall"
+	t.Run("confirmed: teardown continues", func(t *testing.T) {
+		script, root := isolationFixture(t, true, "0", "")
+		log, out, err := runIsolationScript(t, script, root)
+		if err != nil {
+			t.Fatalf("%v\n%s\n%s", err, log, out)
+		}
+		first := strings.Index(log, release)
+		agent := strings.Index(log, "launchctl bootout system/com.breeze.agent\n")
+		second := strings.LastIndex(log, release)
+		removal := strings.Index(log, "launchctl bootout system/com.breeze.isolation.rollback")
+		if first < 0 || agent < first || second < agent || removal < second {
+			t.Fatalf("want release, agent stop, release, job removal:\n%s", log)
+		}
+	})
+	t.Run("not confirmed: the agent comes back and recovery stays armed", func(t *testing.T) {
+		script, root := isolationFixture(t, true, "0", "")
+		fakeAgentReleases(t, root, 1)
+		log, out, err := runIsolationScript(t, script, root)
+		if err == nil {
+			t.Fatalf("teardown continued:\n%s\n%s", log, out)
+		}
+		agent := strings.Index(log, "launchctl bootout system/com.breeze.agent\n")
+		restart := strings.Index(log, "launchctl bootstrap system /Library/LaunchDaemons/com.breeze.agent.plist")
+		if agent < 0 || restart < agent {
+			t.Fatalf("the agent must be loaded again:\n%s", log)
+		}
+		for _, forbidden := range []string{"com.breeze.isolation", "rm "} {
+			if strings.Contains(log, forbidden) {
+				t.Errorf("ran %q with the release unconfirmed:\n%s", forbidden, log)
+			}
+		}
+	})
 }
 
 // The release step lives in the agent's own uninstall paths. The distributed
