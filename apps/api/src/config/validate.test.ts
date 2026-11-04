@@ -1338,6 +1338,36 @@ describe('validateConfig', () => {
     warnSpy.mockRestore();
   });
 
+  // #8313 W4: the ticket import worker's knobs.
+  it.each([
+    ['TICKET_IMPORT_SLICE_MS', '5min'],
+    ['TICKET_IMPORT_LEASE_MS', '-1'],
+    ['TICKET_IMPORT_MAX_TICKET_BYTES', '256MiB'],
+  ])('warns at boot when %s=%j is not a plain positive integer', (key, value) => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({ ...validEnv, [key]: value }, () => {
+      validateConfig();
+      expect(warnSpy.mock.calls.filter((args) => String(args[0]).includes(key))).toHaveLength(1);
+    });
+    warnSpy.mockRestore();
+  });
+
+  it('warns when the import lease cap is not below the worker concurrency, and not otherwise', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({ ...validEnv, TICKET_IMPORT_WORKER_CONCURRENCY: '3', TICKET_IMPORT_GLOBAL_CONCURRENCY: '3' }, () => {
+      validateConfig();
+      const lines = warnSpy.mock.calls.map((args) => String(args[0])).filter((line) => line.includes('TICKET_IMPORT_GLOBAL_CONCURRENCY'));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('2 applies');
+    });
+    warnSpy.mockClear();
+    withEnv({ ...validEnv, TICKET_IMPORT_WORKER_CONCURRENCY: '4', TICKET_IMPORT_GLOBAL_CONCURRENCY: '3' }, () => {
+      validateConfig();
+      expect(warnSpy.mock.calls.some((args) => String(args[0]).includes('TICKET_IMPORT_'))).toBe(false);
+    });
+    warnSpy.mockRestore();
+  });
+
   it('rejects short AGENT_ENROLLMENT_SECRET in production when configured', () => {
     withEnv({
       ...validEnv,

@@ -1324,6 +1324,11 @@ const REPOINT_TABLES: readonly string[] = [
   "ticket_email_links",
   "ticket_external_refs",
   "ticket_forms",
+  // ticket_import_org_maps (#8313 W4): a source org's target org. Plain
+  // repoint: its unique keys are (source_id, source_org_key) and the fallback's
+  // (source_id), neither of which contains org_id, so the survivor can never
+  // collide. Its composite org FK is DEFERRABLE INITIALLY IMMEDIATE.
+  "ticket_import_org_maps",
   // ticket_links (#7900 W02). Own org_id (shape 1); both legs live in the
   // loser org and both tickets repoint with it, so a plain repoint keeps every
   // link intact. Its unique keys are on ticket ids (globally unique), so no

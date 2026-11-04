@@ -1119,6 +1119,7 @@ export * from './scriptParameterDefinitions';
 export * from './tickets';
 export * from './alertExternalRefs';
 export * from './ticketForms';
+export * from './serviceCatalog';
 export * from './queryParams';
 export * from './timeEntries';
 export * from './portal';

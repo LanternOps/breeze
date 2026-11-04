@@ -985,6 +985,15 @@ These enable partners to connect a Microsoft 365 shared support mailbox so custo
 | `MIGRATION_WINDOW_DEFAULT_WRITES_PER_HOUR` | `6000` | Import writes per hour a new window gets when the admin sets none. Kept between 600 and the maximum below. |
 | `MIGRATION_WINDOW_MAX_WRITES_PER_HOUR` | `20000` | Most import writes per hour an admin can set. Kept between 600 and 100000. |
 | `TICKET_IMPORT_MAX_BYTES_PER_HOUR` | `2147483648` | Attachment bytes one window may download and store per hour (2 GiB). Never below 10 MiB, the size of one file. |
+| `TICKET_IMPORT_WORKER_CONCURRENCY` | `3` | Import slices one API process runs at once. |
+| `TICKET_IMPORT_GLOBAL_CONCURRENCY` | `2` | Import slices running at once across every process (one per partner). Always kept below the worker concurrency. |
+| `TICKET_IMPORT_LEASE_MS` | `60000` | Lifetime of a slice's lease; renewed every third of it. A crashed slice frees it within this time. |
+| `TICKET_IMPORT_SLICE_MS` | `300000` | Work one slice does (5 minutes) before it saves its place and hands over to the next. |
+| `TICKET_IMPORT_SOURCE_CONCURRENCY` | `2` | Requests in flight to one source at once. |
+| `TICKET_IMPORT_SOURCE_TIMEOUT_MS` | `30000` | Timeout of one request to a source. |
+| `TICKET_IMPORT_MAX_CLOCK_SKEW_MS` | `300000` | How far in the future a source time may be and still be clamped to now (5 minutes); beyond, the ticket fails. |
+| `TICKET_IMPORT_MAX_ISSUES_PER_RUN` | `50000` | Report rows one run keeps; the counters stay exact beyond it. |
+| `TICKET_IMPORT_MAX_TICKET_BYTES` | `268435456` | Converted content of one ticket (256 MiB); a larger ticket fails and is listed. |
 
 ## Customer Microsoft 365 Graph-read consent (optional)
 
