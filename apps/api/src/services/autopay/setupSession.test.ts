@@ -1,4 +1,13 @@
 import {beforeEach,describe,expect,it,vi} from 'vitest';
+// Partner billing master switch: tests flip billingSwitch.enabled to simulate billing_enabled=false.
+const billingSwitch = vi.hoisted(() => ({ enabled: true }));
+vi.mock('../billingEnabled', () => {
+  const assertOn = async (_id: unknown, make: (m: string, s: 404, c: 'BILLING_DISABLED') => Error) => {
+    if (!billingSwitch.enabled) throw make('Not found', 404, 'BILLING_DISABLED');
+  };
+  return { assertBillingEnabledForOrg: assertOn, assertBillingEnabledForPartner: assertOn };
+});
+beforeEach(() => { billingSwitch.enabled = true; });
 const mock=vi.hoisted(()=>({client:vi.fn(),create:vi.fn(),list:vi.fn(),customer:vi.fn(),retrieve:vi.fn(),updateCustomer:vi.fn(),gate:vi.fn(),ready:vi.fn(),disclosure:vi.fn(),held:false,depth:0,rows:[] as unknown[][],calls:[] as Array<{op:string,value:unknown}>}));
 vi.mock('../partnerStripe',()=>({getPartnerStripeClient:mock.client}));
 vi.mock('../../db',()=>{
@@ -87,6 +96,12 @@ describe('Stripe setup boundary',()=>{
 });
 
 describe('capture preparation',()=>{
+ it('billing off: answers 404 BILLING_DISABLED before any enrollment or provider work',async()=>{
+  billingSwitch.enabled=false;
+  mock.rows=[[org],[enrollment],[connection],[token],[attempt]];
+  await expect(capture()).rejects.toMatchObject({status:404,code:'BILLING_DISABLED',message:'Not found'});
+  expect(mock.client).not.toHaveBeenCalled();
+ });
  it('persists the authority and accepted disclosure before provider work',async()=>{
   mock.rows=[[org],[enrollment],[connection],[token],[attempt]];
   await expect(capture()).resolves.toEqual(attempt);

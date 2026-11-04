@@ -400,7 +400,8 @@ describe('cascadeDeleteOrg — end-to-end', () => {
     `)) as unknown as Array<{ id: string }>;
     await testDb.execute(sql`
       UPDATE partners
-      SET service_management_mode = 'external', service_management_psa_connection_id = ${conn!.id}
+      SET service_management_mode = 'external', service_management_psa_connection_id = ${conn!.id},
+          billing_enabled = false
       WHERE id = ${handles.partnerId}
     `);
 
@@ -410,10 +411,12 @@ describe('cascadeDeleteOrg — end-to-end', () => {
     expect(stats.tablesDeleted.partners).toBe(1); // un-wire count, no partner row removed
 
     const partnerRows = (await testDb.execute(sql`
-      SELECT service_management_mode AS mode, service_management_psa_connection_id AS conn
+      SELECT service_management_mode AS mode, service_management_psa_connection_id AS conn,
+             billing_enabled AS billing
       FROM partners WHERE id = ${handles.partnerId}
-    `)) as unknown as Array<{ mode: string; conn: string | null }>;
-    expect(partnerRows).toEqual([{ mode: 'native', conn: null }]);
+    `)) as unknown as Array<{ mode: string; conn: string | null; billing: boolean | null }>;
+    // The forced un-wire must not touch the billing master switch (spec §3.12).
+    expect(partnerRows).toEqual([{ mode: 'native', conn: null, billing: false }]);
   });
 
   it('erases an org with a populated webhook_deliveries row instead of aborting on FK violation', async () => {

@@ -10,6 +10,7 @@ import { getOrMintInvoiceLink, buildPublicInvoiceUrl, peekInvoiceLink } from '..
 import { loadAutopayBranding } from './customerBranding';
 import { assertNoHeldDbContextForStripe } from '../stripeSettle';
 import { InvoiceServiceError } from '../invoiceTypes';
+import { assertAutopayBillingEnabledForPartner } from './billingGate';
 import { formatPaymentMethod, type AutopayConfirmationRelease, type AutopayConfirmView } from '@breeze/shared';
 
 const unavailable = () => new InvoiceServiceError('Link unavailable', 404, 'INVALID_STATE');
@@ -100,6 +101,7 @@ async function cancelForOnSessionPayment(attemptId: string)
 export async function confirmInvoicePayment(token: string): Promise<{ url?: string; processing?: boolean; paid?: boolean; notNeeded?: boolean }> {
   assertNoHeldDbContextForStripe('confirmInvoicePayment');
   const binding = await withSystemDbAccessContext(() => resolveConfirmation(token));
+  await withSystemDbAccessContext(() => assertAutopayBillingEnabledForPartner(binding.invoice.partnerId));
   if (binding.attempt.state === 'canceled' || binding.fenced) return { notNeeded: true };
   const observed = await cancelForOnSessionPayment(binding.attempt.id);
   if (observed.state === 'processing') return { processing: true };
