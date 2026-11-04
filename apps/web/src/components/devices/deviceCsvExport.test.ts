@@ -75,6 +75,25 @@ describe('deviceCsvExport (#9726)', () => {
     ]);
   });
 
+  it('exports the warranty end date as a bare ISO date for agents, blank without a record or for non-agents (#10780)', () => {
+    const csv = build(
+      [
+        dev({ warrantyEndDate: '2027-12-08', warrantyStatus: 'active' }),
+        dev({ warrantyEndDate: null, warrantyStatus: null }),
+        dev({}),
+        dev({ deviceClass: 'manual', warrantyEndDate: '2027-12-08' }),
+      ],
+      ['warranty'],
+    );
+    expect(rows(csv)[0]).toBe(csvRow(['Device', 'Warranty Ends']));
+    expect(rows(csv).slice(1)).toEqual([
+      csvRow(['web-01', '2027-12-08']),
+      csvRow(['web-01', '']),
+      csvRow(['web-01', '']),
+      csvRow(['web-01', '']),
+    ]);
+  });
+
   it('reduces the server URL to its hostname and joins tags', () => {
     const csv = build(
       [dev({ agentServerUrl: 'https://api.example.test:8443/x' }), dev({ agentServerUrl: 'not a url', tags: [] })],

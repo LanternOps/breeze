@@ -92,7 +92,7 @@ import { coreRoutes } from './core';
 import { db } from '../../db';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { eq, type SQL } from 'drizzle-orm';
-import { deviceHardwareHealth, devices, deviceWarranty } from '../../db/schema';
+import { deviceHardware, deviceHardwareHealth, devices, deviceWarranty } from '../../db/schema';
 import { authMiddleware } from '../../middleware/auth';
 
 function rigDeviceListRows(
@@ -406,6 +406,16 @@ describe('GET /devices — response shape', () => {
     // (or predates this column).
     expect(Object.prototype.hasOwnProperty.call(row, 'lastLogAt')).toBe(true);
     expect(row.lastLogAt).toBeNull();
+  });
+
+  it.each(['TEST-SERIAL-01', null])('includes hardware serialNumber %s in list rows', async serialNumber => {
+    rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111', serialNumber }]);
+    const response = await app.request('/devices');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0]).toHaveProperty('hardware.serialNumber', serialNumber);
+    expect(vi.mocked(db.select).mock.calls[0]?.[0]).toMatchObject({
+      serialNumber: deviceHardware.serialNumber,
+    });
   });
 
   it.each(['ok', 'warning', 'critical', 'unknown'] as const)('projects the hardware %s rollup on list rows', async health => {

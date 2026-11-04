@@ -71,11 +71,21 @@ describe('one device-less alert through the consumer contract (real Postgres)', 
       context: { source: 'backup_provider' }, publisher: 'device-less-consumer-contract',
     }));
     if (!alertId) throw new Error('Sourced alert was not created');
-    const [stored] = await admin.select().from(alerts).where(eq(alerts.id, alertId));
-    if (!stored) throw new Error('Stored alert missing');
+    // #10926 — published by the alert outbox once the creating transaction
+    // commits; the outbox then acknowledges it, removing its envelope. Snapshot
+    // the row only after that, so later steps compare against a settled row.
+    const published = await vi.waitFor(() => {
+      const call = publish.mock.calls.find(([type]) => type === 'alert.triggered');
+      if (!call) throw new Error('Alert event missing');
+      return call;
+    }, { timeout: 5_000 });
+    const stored = await vi.waitFor(async () => {
+      const [row] = await admin.select().from(alerts).where(eq(alerts.id, alertId));
+      if (!row) throw new Error('Stored alert missing');
+      if ((row.context as Record<string, unknown> | null)?._subjectDispatch) throw new Error('Outbox not acknowledged yet');
+      return row;
+    }, { timeout: 5_000 });
     expect(stored).toMatchObject({ deviceId: null, ownerKind: 'backup_workload', orgId: org.id });
-    const published = publish.mock.calls.find(([type]) => type === 'alert.triggered');
-    if (!published) throw new Error('Alert event missing');
     const event: BreezeEvent = {
       id: randomUUID(), type: 'alert.triggered', orgId: org.id, source: 'device-less-consumer-contract',
       priority: 'normal', payload: z.record(z.string(), z.unknown()).parse(published[2]), metadata: { timestamp: new Date().toISOString() },

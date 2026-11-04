@@ -654,7 +654,7 @@ describe('alertWorker evaluate-all stagger (#10859)', () => {
       .toBe(evaluateDeviceStaggerDelayMs('device-000007', 50_000));
   });
 
-  it('warns when jobs from the previous tick are still pending — device-keyed ids would otherwise skip them silently', async () => {
+  it('warns when jobs are waiting for a worker — device-keyed ids would otherwise skip them silently', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     fleetState.fleet = buildFleet(5);
 
@@ -665,13 +665,27 @@ describe('alertWorker evaluate-all stagger (#10859)', () => {
 
     fleetState.chunkCalls = 0;
     getJobCountsMock.mockResolvedValueOnce({ waiting: 3, delayed: 40, active: 6 });
-    expect(await processEvaluateAll({ type: 'evaluate-all' })).toMatchObject({ pendingFromPreviousTick: 48 });
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('48 alert jobs still pending'));
+    expect(await processEvaluateAll({ type: 'evaluate-all' })).toMatchObject({ pendingFromPreviousTick: 3 });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('3 alert jobs still pending'));
 
     // A Redis error never fails the sweep.
     fleetState.chunkCalls = 0;
     getJobCountsMock.mockRejectedValueOnce(new Error('redis down'));
     expect(await processEvaluateAll({ type: 'evaluate-all' })).toMatchObject({ queued: 5, pendingFromPreviousTick: 0 });
+  });
+
+  it.each([
+    ['the two repeat: scheduler placeholders on an idle queue', { waiting: 0, delayed: 2, active: 1 }],
+    ['auto-resolve firing on the same minute as evaluate-all', { waiting: 0, delayed: 2, active: 2 }],
+    ['staggered jobs whose slot has not come up yet', { waiting: 0, delayed: 402, active: 1 }],
+    ['staggered jobs running inside the worker concurrency', { waiting: 0, delayed: 200, active: 7 }],
+  ])('does not report backlog for %s', async (_label, counts) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    fleetState.fleet = buildFleet(5);
+    getJobCountsMock.mockResolvedValueOnce(counts);
+
+    expect(await processEvaluateAll({ type: 'evaluate-all' })).toMatchObject({ pendingFromPreviousTick: 0 });
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('ALERT_WORKER_CONCURRENCY'));
   });
 
   it('enqueues with no delay when the window is 0', async () => {

@@ -187,6 +187,7 @@ vi.mock('./alertConditions', () => ({
     return h.evaluateConditionsMock(conditions, deviceId);
   },
   evaluateAutoResolveConditions: vi.fn(),
+  evidenceLeafPaths: vi.fn(() => []),
   interpolateTemplate: vi.fn((template: string) => template),
 }));
 

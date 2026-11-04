@@ -25,6 +25,13 @@ describe('policyBaselineDefaults', () => {
     expect(entry.inlineSettings).toEqual({ uacInterceptionEnabled: false });
   });
 
+  it('describes containment fixed defaults without claiming policy enforcement', () => {
+    expect(getPolicyBaselineDefaults().find(entry => entry.featureType === 'containment')).toEqual({
+      featureType: 'containment', label: 'Containment', applied: false, inlineSettings: null,
+      behavior: 'Not enforced — isolation uses the fixed defaults: 72 h TTL, remote relay on, no extra permits, no dead-man.',
+    });
+  });
+
   it('marks patch (and other unenforced features) as not applied', () => {
     const entry = getPolicyBaselineDefaults().find((e) => e.featureType === 'patch')!;
     expect(entry.applied).toBe(false);

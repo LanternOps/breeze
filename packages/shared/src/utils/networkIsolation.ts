@@ -14,6 +14,7 @@ import { semverCompare } from './semverCompare';
  * no real agent satisfies it, so nothing can isolate a device until W1g pins the release that ships
  * the capable Windows agent. The gate never blocks a release.
  */
+// TODO(#10095-activation): pin to the agent release carrying W1g after L1 passes. Todd gate.
 export const NETWORK_ISOLATION_MIN_AGENT_VERSION = '999.0.0';
 
 /** `securityCapabilities.networkIsolationVersion` levels. 0 = cannot isolate. */
