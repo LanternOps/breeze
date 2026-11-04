@@ -168,7 +168,7 @@ describe('runMailboxSweep', () => {
   });
 
   it('retries recent mail next sweep, without enqueueing it or moving the cursor, when the sealer key lookup fails (#10862)', async () => {
-    vi.mocked(evaluateTrustedArc).mockResolvedValueOnce({ status: 'dns-unavailable', sealer: 'gateway.example' });
+    vi.mocked(evaluateTrustedArc).mockResolvedValueOnce({ status: 'dns-unavailable', sealer: 'gateway.example', retryable: true });
     vi.mocked(listConnectedMailboxes).mockResolvedValue([{ ...conn(), trustedArcSealers: ['gateway.example'] }] as any);
     vi.mocked(listInboxDelta).mockResolvedValue({
       messages: [{ id: 'm1', receivedDateTime: new Date().toISOString() }],
@@ -184,10 +184,24 @@ describe('runMailboxSweep', () => {
   });
 
   it('lets mail older than the retry window through to quarantine when the sealer key lookup fails', async () => {
-    vi.mocked(evaluateTrustedArc).mockResolvedValueOnce({ status: 'dns-unavailable', sealer: 'gateway.example' });
+    vi.mocked(evaluateTrustedArc).mockResolvedValueOnce({ status: 'dns-unavailable', sealer: 'gateway.example', retryable: true });
     vi.mocked(listConnectedMailboxes).mockResolvedValue([{ ...conn(), trustedArcSealers: ['gateway.example'] }] as any);
     vi.mocked(listInboxDelta).mockResolvedValue({
       messages: [{ id: 'm1', receivedDateTime: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() }],
+      deltaLink: 'delta-new',
+    } as any);
+
+    await runMailboxSweep();
+
+    expect(enqueueInboundEmail).toHaveBeenCalledTimes(1);
+    expect(updateDeltaCursor).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not hold mail for a retry when the failing selector was never seen to resolve (sender-chosen)', async () => {
+    vi.mocked(evaluateTrustedArc).mockResolvedValueOnce({ status: 'dns-unavailable', sealer: 'gateway.example', retryable: false });
+    vi.mocked(listConnectedMailboxes).mockResolvedValue([{ ...conn(), trustedArcSealers: ['gateway.example'] }] as any);
+    vi.mocked(listInboxDelta).mockResolvedValue({
+      messages: [{ id: 'm1', receivedDateTime: new Date().toISOString() }],
       deltaLink: 'delta-new',
     } as any);
 

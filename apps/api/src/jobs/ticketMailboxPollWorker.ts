@@ -259,13 +259,17 @@ async function sweepOne(
         }
       }
       const arc = await evaluateTrustedArc(msg.internetMessageHeaders, c.trustedArcSealers, msg.receivedDateTime);
-      if (arc) arcCounts[arc.status] = (arcCounts[arc.status] ?? 0) + 1;
+      // Only results that name a sealer: a malformed chain on spam is not a fault.
+      if (arc && (arc.status === 'verified' || 'sealer' in arc && arc.sealer)) {
+        arcCounts[arc.status] = (arcCounts[arc.status] ?? 0) + 1;
+      }
       // The sealer's key could not be fetched. Quarantining would park genuine mail
       // for a DNS blip, so stop here, before this message or the cursor moves, and
       // retry next sweep (ingest dedups what this page already enqueued). Mail older
       // than the retry window is let through to quarantine, so a sealer whose DNS
-      // stays down cannot hold the mailbox (#10862).
-      if (arc?.status === 'dns-unavailable' && isWithinArcRetryWindow(msg.receivedDateTime)) {
+      // stays down cannot hold the mailbox, and only a selector that has returned a
+      // key before is retried, so a sender cannot hold it with a made-up one (#10862).
+      if (arc?.status === 'dns-unavailable' && arc.retryable && isWithinArcRetryWindow(msg.receivedDateTime)) {
         const failures = await recordTransientPollFailure(c, new Date());
         console.warn('[mailboxPoll] trusted ARC sealer key lookup failed; will retry next sweep', {
           id: c.id, sealer: arc.sealer, consecutiveFailures: failures,

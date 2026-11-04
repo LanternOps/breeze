@@ -217,10 +217,24 @@ describe('evaluateTrustedArc', () => {
   describe('DNS', () => {
     it('reports an outage as dns-unavailable, logs it, and does not query again for a minute', async () => {
       const down = dnsError('ETIMEOUT');
-      expect(await evalWith(seal(BASE), down)).toEqual({ status: 'dns-unavailable', sealer: 'avanan.net' });
-      expect(await evalWith(seal(BASE), down)).toEqual({ status: 'dns-unavailable', sealer: 'avanan.net' });
+      expect(await evalWith(seal(BASE), down)).toEqual({ status: 'dns-unavailable', sealer: 'avanan.net', retryable: false });
+      expect(await evalWith(seal(BASE), down)).toEqual({ status: 'dns-unavailable', sealer: 'avanan.net', retryable: false });
       expect(down.resolveTxt).toHaveBeenCalledTimes(1);
       expect(console.warn).toHaveBeenCalledWith('[arcSeal] key lookup failed', { hostname: 'sel._domainkey.avanan.net', code: 'ETIMEOUT' });
+    });
+
+    it('marks an outage retryable only for a selector that has returned a key before (the sender picks the selector)', async () => {
+      const realNow = Date.now();
+      await evalWith(seal(BASE), dnsOk());
+      // Two hours on, the cached key has expired and DNS is down.
+      const now = vi.spyOn(Date, 'now').mockReturnValue(realNow + 2 * 60 * 60 * 1000);
+      try {
+        expect(await evalWith(seal(BASE), dnsError('ESERVFAIL'))).toEqual({ status: 'dns-unavailable', sealer: 'avanan.net', retryable: true });
+        const madeUp = seal(BASE).map((h) => (h.name === 'ARC-Seal' ? { ...h, value: h.value.replace('s=sel', 's=junk') } : h));
+        expect(await evalWith(madeUp, dnsError('ESERVFAIL'))).toEqual({ status: 'dns-unavailable', sealer: 'avanan.net', retryable: false });
+      } finally {
+        now.mockRestore();
+      }
     });
 
     it.each(['ENOTFOUND', 'ENODATA'])('reads %s as "no key", not as an outage', async (code) => {
@@ -256,7 +270,7 @@ describe('evaluateTrustedArc', () => {
     expect((await evalWith(broken))?.status).toBe('verified');
     clearArcKeyCacheForTest();
     const throwing: ArcDeps = { resolveTxt: () => { throw new TypeError('boom'); } };
-    expect(await evalWith(seal(BASE), throwing)).toEqual({ status: 'dns-unavailable', sealer: 'avanan.net' });
+    expect(await evalWith(seal(BASE), throwing)).toMatchObject({ status: 'dns-unavailable', sealer: 'avanan.net' });
   });
 
   // Sealed by mailauth (an independent ARC implementation), not by this file's signer, so a

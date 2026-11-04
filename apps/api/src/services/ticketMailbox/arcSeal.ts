@@ -30,7 +30,10 @@ export type ArcEvaluation =
   | { status: 'verified'; sealer: string; instance: number; authResults: string }
   | { status: 'no-trusted-seal' }
   | { status: 'invalid'; sealer?: string; reason: ArcInvalidReason }
-  | { status: 'dns-unavailable'; sealer: string };
+  /** `retryable`: this selector has returned a key before, so the failure is DNS
+   * and not a selector the message made up. The sender picks the selector, so an
+   * unknown one must never hold mail back for a retry. */
+  | { status: 'dns-unavailable'; sealer: string; retryable: boolean };
 
 export interface ArcDeps {
   resolveTxt(hostname: string): Promise<string[][]>;
@@ -69,10 +72,14 @@ const defaultDeps: ArcDeps = { resolveTxt: (hostname) => resolver.resolveTxt(hos
 
 type CachedKey = { key: KeyObject | null | 'unavailable'; expiresAt: number };
 const keyCache = new Map<string, CachedKey>();
+/** Selectors that have returned a usable key in this process (bounded). */
+const knownSelectors = new Set<string>();
+const KNOWN_SELECTORS_MAX = 256;
 
 /** Test-only seam. */
 export function clearArcKeyCacheForTest(): void {
   keyCache.clear();
+  knownSelectors.clear();
 }
 
 /** Tag list parser. A repeated tag is malformed (null): it could read one way here
@@ -219,6 +226,7 @@ async function lookupKey(hostname: string, deps: ArcDeps, now: number): Promise<
     // More than one record at a selector is ambiguous, so it is not a usable key.
     key = records.length === 1 ? parseKeyRecord(records[0]!.join('')) : null;
     ttl = key ? KEY_CACHE_TTL_MS : NO_KEY_CACHE_TTL_MS;
+    if (key && knownSelectors.size < KNOWN_SELECTORS_MAX) knownSelectors.add(hostname);
     if (!key) console.warn('[arcSeal] no usable key at selector', { hostname, records: records.length });
   } catch (err) {
     const code = (err as NodeJS.ErrnoException | undefined)?.code;
@@ -318,17 +326,17 @@ async function evaluate(
   }
 
   const now = Date.now();
-  const sealKey = await lookupKey(`${selector.toLowerCase()}._domainkey.${sealer}`, deps, now);
-  if (sealKey === 'unavailable') return { status: 'dns-unavailable', sealer };
+  const sealHost = `${selector.toLowerCase()}._domainkey.${sealer}`;
+  const sealKey = await lookupKey(sealHost, deps, now);
+  if (sealKey === 'unavailable') return { status: 'dns-unavailable', sealer, retryable: knownSelectors.has(sealHost) };
   if (!sealKey) return { status: 'invalid', sealer, reason: 'key' };
   if (!verifies(sealSignedData(sets, k), sealKey, sealSignature)) {
     return { status: 'invalid', sealer, reason: 'signature' };
   }
 
-  const amsKey = amsSelector.toLowerCase() === selector.toLowerCase()
-    ? sealKey
-    : await lookupKey(`${amsSelector.toLowerCase()}._domainkey.${sealer}`, deps, now);
-  if (amsKey === 'unavailable') return { status: 'dns-unavailable', sealer };
+  const amsHost = `${amsSelector.toLowerCase()}._domainkey.${sealer}`;
+  const amsKey = amsHost === sealHost ? sealKey : await lookupKey(amsHost, deps, now);
+  if (amsKey === 'unavailable') return { status: 'dns-unavailable', sealer, retryable: knownSelectors.has(amsHost) };
   if (!amsKey) return { status: 'invalid', sealer, reason: 'key' };
   if (!verifies(messageSignatureSignedData(headers, set.signature, signedNames), amsKey, amsSignature)) {
     return { status: 'invalid', sealer, reason: 'message-signature' };

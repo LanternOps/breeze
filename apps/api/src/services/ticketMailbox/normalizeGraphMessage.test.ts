@@ -552,7 +552,7 @@ describe('normalizeGraphMessage', () => {
       });
 
       it('names a DNS outage and the no-trusted-seal case', () => {
-        expect(run([...external, eopFail], { status: 'dns-unavailable', sealer: 'avanan.net' }).senderAuthConsulted)
+        expect(run([...external, eopFail], { status: 'dns-unavailable', sealer: 'avanan.net', retryable: true }).senderAuthConsulted)
           .toBe('trusted ARC sealer avanan.net: key lookup failed; Exchange Online stamp: dmarc=fail');
         expect(run([...external, eopFail], { status: 'no-trusted-seal' }).senderAuthConsulted)
           .toBe('no seal from a trusted ARC sealer; Exchange Online stamp: dmarc=fail');
