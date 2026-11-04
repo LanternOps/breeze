@@ -1137,6 +1137,11 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // ceiling snapshot and factor proof live on wisp_grant_revisions, which has
   // no org_id and never enters an org export.
   "wisp_grants": tablePolicy("org_id", {"included":["id","partner_id","org_id","grantor_user_id","grantee","current_revision_id","status","paused_reason","paused_at","revoked_at","revoked_by_user_id","expires_at","budget_cents_per_day","floor_tick_minutes","last_floor_tick_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // Wisp check-in timers W01 (#10992). `context` is open jsonb (excludedOpen);
+  // `instruction` is the model-written follow-up text, plain customer data like
+  // a post body; job_id is a BullMQ id (`wisp-check-in-<uuid>`), not a secret.
+  // Partner-level rows (org_id NULL) never enter an org export.
+  "wisp_check_ins": tablePolicy("org_id", {"included":["id","partner_id","org_id","grant_id","thread_id","session_id","user_id","due_at","instruction","status","fired_at","consumed_at","cancelled_at","job_id","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["context"]}),
   // Wisp W05a (#9911). evidence / params are open jsonb (excludedOpen); the
   // recipient's free-text feedback note is a person's words (reviewedIncluded).
   // Partner-level rows (org_id NULL) never enter an org export.

@@ -1418,6 +1418,10 @@ const REPOINT_TABLES: readonly string[] = [
   // stays behind (leave-for-erasure): the survivor is outside that grant's
   // ceiling, so the wake path skips it, and erasing the loser shell deletes
   // the grant and, by ON DELETE CASCADE, those rows.
+  // Wisp check-in timers W01 (#10992). Partner-level check-ins (org_id NULL)
+  // never match the repoint, and the only unique key is the PK, so a repoint
+  // cannot collide. The thread and grant are partner-axis and stay put.
+  "wisp_check_ins",
   "wisp_concern_recipients",
   "wisp_concerns",
   // Wisp W08a (#9914). Partner-level links (org_id NULL) never match the
