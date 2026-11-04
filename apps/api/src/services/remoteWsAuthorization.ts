@@ -6,13 +6,12 @@ import {
   organizations,
   partners,
   partnerUsers,
-  permissions,
   remoteSessions,
-  rolePermissions,
   tunnelSessions,
   users,
 } from '../db/schema';
 import { checkRemoteAccess } from './remoteAccessPolicy';
+import { getLineagePermissionGrants, resolveRoleLineage } from './roleInheritance';
 import { checkVncConsentGate } from '../routes/remote/vncConsentGate';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import { evaluateCapabilityContinuationForState } from './partnerTrust';
@@ -370,9 +369,14 @@ async function resolveRemoteWsLiveAuthority(
       roleId = partnerMembership.roleId;
     } else return { denied: 'session_not_owned' as const };
 
-    const grants = await db.select({ resource: permissions.resource, action: permissions.action })
-      .from(rolePermissions).innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-      .where(eq(rolePermissions.roleId, roleId));
+    // #9600: the role's own grants plus its "Inherit From" ancestors', from
+    // the same walk getUserPermissions uses, so a member the HTTP
+    // requirePermission gate admits is not refused here. This runs in a
+    // system transaction, so every permitted ancestor is visible.
+    const lineage = await resolveRoleLineage(roleId);
+    const grants = await getLineagePermissionGrants(
+      lineage.length > 0 ? lineage.map((entry) => entry.id) : [roleId],
+    );
     if (!requiredPermissions.every((required) => hasPermission(grants, required))) return { denied: 'permission_denied' as const };
 
     const capability = consumed.sessionType === 'terminal' ? 'remoteTools'

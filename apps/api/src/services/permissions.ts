@@ -1,10 +1,11 @@
 import { db, getCurrentDbAccessContext, runAfterDbContextExit, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { roles, permissions, rolePermissions, partnerUsers, organizationUsers, users } from '../db/schema';
+import { partnerUsers, organizationUsers, users } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { PERMISSION_GRANTS } from '@breeze/shared';
 import { permissionGrantMatches } from './permissionMatching';
 import { normalizeSiteAllowlist } from './siteAllowlist';
+import { getLineagePermissionGrants, resolveRoleLineage } from './roleInheritance';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 /**
@@ -265,13 +266,19 @@ export async function getUserPermissions(
     scope: 'partner' | 'organization',
     extra: Pick<UserPermissions, 'orgAccess' | 'allowedOrgIds' | 'allowedSiteIds'>,
   ): Promise<UserPermissions> => {
-    const rolePerms = await db
-      .select({ resource: permissions.resource, action: permissions.action })
-      .from(rolePermissions)
-      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-      .where(eq(rolePermissions.roleId, roleId));
+    // #9600: a role grants its own rows plus its "Inherit From" ancestors'.
+    // resolveRoleLineage is cycle-safe, depth-bounded and refuses any ancestor
+    // outside the role's own scope and tenant (services/roleInheritance.ts).
+    // It runs inside runForAxis, under the same context that just read the
+    // membership, so it can see the member's role. A role that is not visible
+    // there resolves to no lineage; fall back to its own id, which reads the
+    // same rows this function read before inheritance was honoured.
+    const lineage = await resolveRoleLineage(roleId);
+    const rolePerms = await getLineagePermissionGrants(
+      lineage.length > 0 ? lineage.map((entry) => entry.id) : [roleId],
+    );
     return {
-      permissions: rolePerms.map(p => ({ resource: p.resource, action: p.action })),
+      permissions: rolePerms,
       partnerId: context.partnerId || null,
       orgId: context.orgId || null,
       roleId,

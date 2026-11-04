@@ -2,8 +2,9 @@
  * Role names that grant a permission, for the picker's "Requires <role>"
  * (AI model registry W05, #7603, spec §11). Explicit grants plus every
  * wildcard form the RBAC matcher honours (`permissionGrantMatches`: the
- * resource and the action may each be `*`). Roles are not inherited through
- * `parent_role_id` at permission-resolution time, so neither are they here.
+ * resource and the action may each be `*`). Lists roles that carry the grant
+ * directly; a role that only inherits it through `parent_role_id` (resolved
+ * at runtime since #9600) is not named. Names are a hint, capped at three.
  *
  * Tenancy: roles are partner / org rows and the picker runs under org tokens,
  * so this reads in a fresh system context with EXPLICIT filters — the

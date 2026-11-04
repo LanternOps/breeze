@@ -88,6 +88,11 @@ vi.mock('../db', () => ({
                 ? plainSelectOverride()
               : table === 'organizationUsers'
                 ? [{ roleId: 'role-1', siteIds: null }]
+              // #9600: the live-authority grant read walks the member role's
+              // lineage (services/roleInheritance). role-1 has no parent, so
+              // its grants are its own rolePermissions rows below.
+              : table === 'roles'
+                ? [{ id: 'role-1', name: 'Technician', scope: 'organization', partnerId: null, orgId: 'org-1', isSystem: false, parentRoleId: null }]
               : table === 'organizations'
                 ? [{ id: 'org-1', partnerId: 'partner-1', status: 'active', deletedAt: null }]
               : table === 'partners'
@@ -133,6 +138,7 @@ vi.mock('../db/schema', () => ({
   partnerUsers: 'partnerUsers',
   rolePermissions: 'rolePermissions',
   permissions: 'permissions',
+  roles: 'roles',
   organizations: 'organizations',
   partners: 'partners',
 }));

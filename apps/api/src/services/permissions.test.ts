@@ -52,6 +52,24 @@ vi.mock('../db/schema', () => ({
   }
 }));
 
+// #9600: the role-lineage walk lives in ./roleInheritance (own unit tests +
+// roleInheritance.integration.test.ts). Here every role is lineage-free by
+// default and the grant read goes through the same mocked db.select chain the
+// tests below already queue (select → from → innerJoin → where).
+const mockGrantReadRoleIds = vi.fn<(roleIds: string[]) => void>();
+const mockResolveRoleLineage = vi.fn(async (roleId: string) => [{ id: roleId, name: 'role' }]);
+vi.mock('./roleInheritance', async () => {
+  const { db: mockedDb } = await import('../db');
+  return {
+    resolveRoleLineage: (roleId: string) => mockResolveRoleLineage(roleId),
+    getLineagePermissionGrants: async (roleIds: string[]) => {
+      mockGrantReadRoleIds(roleIds);
+      const rows = await (mockedDb.select({} as never) as any).from({}).innerJoin({}, {}).where({});
+      return (rows as Array<{ resource: string; action: string }>).map((p) => ({ resource: p.resource, action: p.action }));
+    },
+  };
+});
+
 vi.mock('./redis', () => ({
   getRedis: vi.fn(() => null)
 }));
@@ -474,6 +492,60 @@ describe('permissions service', () => {
 
       await clearPermissionCache('user-123');
       expect(redis.incr).toHaveBeenCalledWith('permission-cache:user-version:user-123');
+    });
+  });
+
+  describe('getUserPermissions role inheritance (#9600)', () => {
+    it('reads the grants of the whole role lineage, not only the member\'s own role', async () => {
+      mockResolveRoleLineage.mockResolvedValueOnce([
+        { id: 'role-child', name: 'Child' },
+        { id: 'role-parent', name: 'Parent' },
+      ]);
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ roleId: 'role-child', siteIds: null }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ resource: 'devices', action: 'read' }])
+            })
+          })
+        } as any);
+
+      const perms = await getUserPermissions('user-inherit', { orgId: 'org-123' }, { bypassCache: true });
+
+      expect(mockResolveRoleLineage).toHaveBeenCalledWith('role-child');
+      expect(mockGrantReadRoleIds).toHaveBeenCalledWith(['role-child', 'role-parent']);
+      expect(perms?.roleId).toBe('role-child');
+      expect(perms?.permissions).toEqual([{ resource: 'devices', action: 'read' }]);
+    });
+
+    it('falls back to the member\'s own role when its row is not visible to the lineage walk', async () => {
+      mockResolveRoleLineage.mockResolvedValueOnce([]);
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ roleId: 'role-hidden', siteIds: null }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+
+      await getUserPermissions('user-hidden-role', { orgId: 'org-123' }, { bypassCache: true });
+
+      expect(mockGrantReadRoleIds).toHaveBeenCalledWith(['role-hidden']);
     });
   });
 
