@@ -1,9 +1,28 @@
 import { createHash } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { canonicalizeUnifiResource, physicalSourceSectionSchema, unifiResourceSchema, type UnifiResource, type UnifiResourceV2 } from '@breeze/shared';
 import vectors from '../../../../../packages/shared/src/testing/topology-unifi-v1.json';
 import v2Vectors from '../../../../../packages/shared/src/testing/topology-unifi-v2.json';
-import { normalizeUnifiResource, uniqueSiteMacMatch, unifiAdapterRejection, unifiNormalizedDigest, unifiWireDigestMatches } from './unifiAdapter';
+const mocks = vi.hoisted(() => {
+  const chain: Record<string, unknown> = {};
+  for (const m of ['select', 'from', 'where', 'update', 'set']) chain[m] = vi.fn(() => chain);
+  chain.limit = vi.fn(async () => []);
+  chain.then = (resolve: (v: unknown) => unknown) => resolve([]);
+  return {
+    db: Object.assign(chain, { transaction: vi.fn(async (fn: () => unknown) => fn()), execute: vi.fn(async () => []) }),
+    materialize: vi.fn(), captureException: vi.fn(), ingest: vi.fn(), authority: { producerEpoch: '', sourceIdentity: '' },
+  };
+});
+vi.mock('../../db', async (original) => ({ ...await original<object>(), assertInTransaction: vi.fn(), db: mocks.db }));
+vi.mock('./unifiWifiMaterializer', () => ({ materializeUnifiWifiCurrentState: mocks.materialize }));
+vi.mock('../sentry', () => ({ captureException: mocks.captureException }));
+vi.mock('./collectionIngest', () => ({ ingestTopologySourceReport: mocks.ingest }));
+vi.mock('./unifiInterfaceMetrics', () => ({ ingestUnifiInterfaceTelemetry: vi.fn() }));
+vi.mock('./collectionAuthority', async (original) => ({ ...await original<object>(), lockTopologyPhysicalIngest: vi.fn(),
+  resolveTopologyPhysicalProducer: vi.fn(async () => mocks.authority) }));
+vi.mock('./unifiAuthority', async (original) => ({ ...await original<object>(), ensureUnifiTopologyAuthority: vi.fn(),
+  currentUnifiCollectorTopology: vi.fn(async () => mocks.authority), resolveUnifiSourceScope: vi.fn(async () => ({ orgId: 'org-a', siteId: 'site-a' })) }));
+import { adaptUnifiTopology, normalizeUnifiResource, uniqueSiteMacMatch, unifiAdapterRejection, unifiNormalizedDigest, unifiWireDigestMatches } from './unifiAdapter';
 import { unifiAuthorityGeneration, unifiAuthorityKey, unifiCollectorRevision, unifiCollectorTopologyCredentials } from './unifiAuthority';
 
 const scope = { orgId: 'org-a', siteId: 'site-a' };
@@ -150,5 +169,31 @@ describe('UniFi topology v2 in the adapter', () => {
     expect(unifiNormalizedDigest(producer, section, 2)).toBe(unifiNormalizedDigest(producer, section, 2));
     expect(unifiNormalizedDigest(producer, section, 2)).not.toBe(unifiNormalizedDigest(producer, section, 1));
     expect(unifiNormalizedDigest(producer, section)).toBe(unifiNormalizedDigest(producer, section, 1));
+  });
+});
+
+describe('adaptUnifiTopology: Wi-Fi materializer failure', () => {
+  const v2 = v2Vectors.vectors[0]!;
+  const collector = { id: '8b0c0a58-2d6c-4b8f-9b43-6f0d3d7f0a11', integrationId: 'i', orgId: 'org-a', siteId: 'site-a', unifiHostId: 'host:1', collectorDeviceId: 'dev', controllerUrl: 'https://c', isEnabled: true, topologyGeneration: 0 };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.authority.producerEpoch = v2.report.producerEpoch;
+    mocks.authority.sourceIdentity = v2.sourceIdentity;
+    mocks.ingest.mockResolvedValue({ accepted: true, acceptedSequence: '1' });
+  });
+
+  it('keeps the structural receipt accepted and reports the error when the materializer rejects (spec 8.2)', async () => {
+    const boom = new Error('materializer exploded');
+    mocks.materialize.mockRejectedValue(boom);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const receipt = await adaptUnifiTopology('dev', collector, v2.report as never);
+    expect(mocks.materialize).toHaveBeenCalledTimes(1);
+    expect(receipt.accepted).toBe(true);
+    expect(receipt.resources).toHaveLength(v2.report.resources.length);
+    expect(receipt.resources.every(r => r.accepted)).toBe(true);
+    expect(mocks.captureException).toHaveBeenCalledWith(boom);
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('wifi current-state materialization failed'), 'materializer exploded');
+    consoleError.mockRestore();
   });
 });

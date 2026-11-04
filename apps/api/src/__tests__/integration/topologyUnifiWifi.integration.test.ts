@@ -94,6 +94,9 @@ const OVERVIEW = [{ frequencyGHz: 5, channel: 44, channelWidthMHz: 40, wlanStand
 describe('UniFi Wi-Fi current-state materializer', () => {
   it('materializes the typed Wi-Fi fields into the existing telemetry row and never touches the byte counters', async () => {
     const f = await fixture();
+    // Create the row and seed non-null legacy byte counters BEFORE the v2 poll, so "never touches" is not vacuous.
+    expect((await f.adapt(await f.report([f.resource('device_list', [apRow('ap-1')])], -60_000))).accepted).toBe(true);
+    await f.test.execute(sql`UPDATE unifi_device_telemetry SET tx_bytes=1234, rx_bytes=5678 WHERE collector_id=${f.collectorId}::uuid AND unifi_device_id='ap-1'`);
     const poll = await f.report([
       f.resource('device_list', [apRow('ap-1'), apRow('ap-2'), switchRow('sw-1')]),
       f.resource('client_list', [clientRow('c1', 'ap-1'), clientRow('c2', 'ap-1'), clientRow('c3', 'ap-1', 'WIRED'), clientRow('c4', 'sw-1')]),
@@ -110,8 +113,9 @@ describe('UniFi Wi-Fi current-state materializer', () => {
     expect(ap1.wifi_radio_overview).toEqual(OVERVIEW);
     expect(ap1.wifi_radio_statistics).toEqual([{ frequencyGHz: 5, txRetriesPct: 0 }]);
     // Rates are bits per second and never land in the byte counters.
-    expect(ap1.tx_bytes).toBeNull();
-    expect(ap1.rx_bytes).toBeNull();
+    expect(Number(ap1.tx_bytes)).toBe(1234);
+    expect(Number(ap1.rx_bytes)).toBe(5678);
+    expect(rows.get('ap-2')!.tx_bytes).toBeNull();
     // A measured zero client count for a capable AP, and no count at all for a switch (even with a client on it).
     expect(rows.get('ap-2')!.num_clients).toBe(0);
     expect(rows.get('ap-2')!.cpu_pct).toBeNull();
@@ -323,6 +327,51 @@ describe('legacy reconcile device- and family-scoped writer fence', () => {
     expect((await f.adapt({ ...(await f.report([], -30_000)), producerEpoch: 'wrong' })).accepted).toBe(false);
     await legacy(f);
     expect(Number((await rowsAfter(f)).cpu_pct)).toBe(9);
+  });
+
+  it('a v2 resource with a tampered digest or a malformed body is rejected and preserves verified values while unrelated legacy rows keep updating', async () => {
+    const f = await fixture();
+    await f.adapt(await f.report([f.resource('device_list', [apRow('ap-1')]), f.resource('statistics', [statRow('ap-1', { cpuUtilizationPct: 9 })])], -60_000));
+    const before = await rowsAfter(f);
+
+    // Content changed after it was digested.
+    const tampered = await f.report([f.resource('device_list', [apRow('ap-1')]), f.resource('statistics', [statRow('ap-1', { cpuUtilizationPct: 9 })])], -40_000);
+    (tampered.resources[1]!.rows[0] as unknown as { cpuUtilizationPct: number }).cpuUtilizationPct = 99;
+    const tamperedReceipt = await f.adapt(tampered);
+    expect(tamperedReceipt.resources.find(r => r.kind === 'statistics')).toMatchObject({ accepted: false, reason: 'content_digest_mismatch' });
+
+    // Malformed statistics body, digested as sent so the wire digest matches and only the body is wrong.
+    const malformed = await f.report([f.resource('device_list', [apRow('ap-1')]), f.resource('statistics', [statRow('ap-1', { cpuUtilizationPct: 'not-a-number' })])], -30_000);
+    let malformedAccepted: boolean | null = null;
+    try { malformedAccepted = (await f.adapt(malformed)).resources.find(r => r.kind === 'statistics')!.accepted; } catch { /* a thrown rejection also writes nothing */ }
+    expect(malformedAccepted).not.toBe(true);
+
+    await legacy(f, { devices: [{ unifiDeviceId: 'ap-1', unifiSiteId: 'default', mac: null, name: 'ap-1', cpuPct: 99, txBytes: 5, raw: {} },
+      { unifiDeviceId: 'sw-9', unifiSiteId: 'default', mac: null, name: 'sw-9', cpuPct: 4, numClients: 2, raw: {} }] });
+    const row = await rowsAfter(f);
+    expect(Number(row.cpu_pct)).toBe(9);
+    expect(row.wifi_statistics_observed_at).toEqual(before.wifi_statistics_observed_at);
+    // The unrelated legacy row (not v2-owned) is still written.
+    expect(Number((await rowsAfter(f, 'sw-9')).cpu_pct)).toBe(4);
+    expect((await rowsAfter(f, 'sw-9')).num_clients).toBe(2);
+  });
+
+  it('a controller site mapped to another org rejects its v2 companion, writes no Wi-Fi state, and legacy cpu/num_clients keep reconciling', async () => {
+    const f = await fixture();
+    const other = await createTopologyTenant();
+    await f.test.execute(sql`INSERT INTO unifi_site_mappings (integration_id, org_id, site_id, unifi_host_id, unifi_site_id)
+      VALUES (${f.integrationId}::uuid, ${f.scope.orgId}::uuid, ${f.scope.siteId}::uuid, 'host:1', 'spare')`);
+    await f.test.execute(sql`UPDATE unifi_site_mappings SET org_id=${other.orgId}::uuid, site_id=${other.siteId}::uuid
+      WHERE integration_id=${f.integrationId}::uuid AND unifi_site_id='default'`);
+    const receipt = await f.adapt(await f.report([f.resource('device_list', [apRow('ap-1')]), f.resource('statistics', [statRow('ap-1', { cpuUtilizationPct: 9 })])], -30_000));
+    expect(receipt.resources.every(r => !r.accepted && r.reason === 'controller_site_other_org')).toBe(true);
+    expect((await f.rows()).size).toBe(0);
+
+    await legacy(f, { devices: [{ unifiDeviceId: 'ap-1', unifiSiteId: 'default', mac: null, name: 'ap-1', cpuPct: 21, numClients: 5, raw: {} }] });
+    const row = await rowsAfter(f);
+    expect(Number(row.cpu_pct)).toBe(21);
+    expect(row.num_clients).toBe(5);
+    expect([row.wifi_capable, row.wifi_statistics_observed_at, row.wifi_clients_observed_at, row.device_inventory_observed_at]).toEqual([null, null, null, null]);
   });
 
   it('only the statistics family is fenced when no client count was ever materialized, and legacy keeps the other family', async () => {
