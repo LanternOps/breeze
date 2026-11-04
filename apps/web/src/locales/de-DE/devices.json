@@ -1485,6 +1485,7 @@
     "cancel": "Abbrechen",
     "editDisplayName": "Anzeigenamen bearbeiten",
     "serialNumber": "Seriennummer",
+    "productSku": "Produktnummer",
     "manufacturer": "Hersteller",
     "model": "Modell",
     "deviceRole": "Geräterolle",
@@ -1654,6 +1655,7 @@
       "ram": "RAM %",
       "lastSeen": "Zuletzt gesehen",
       "serial": "Seriennummer",
+      "productSku": "Produktnummer",
       "assetTag": "Asset-Tag",
       "location": "Standort",
       "source": "Quelle"
@@ -1671,6 +1673,7 @@
       "ram": "Nach RAM-Auslastung sortieren",
       "lastSeen": "Sortieren nach der zuletzt gesehenen Zeit",
       "serial": "Nach Seriennummer sortieren",
+      "productSku": "Nach Produktnummer sortieren",
       "assetTag": "Nach Asset-Tag sortieren",
       "location": "Nach Standort sortieren",
       "source": "Nach Quelle sortieren"

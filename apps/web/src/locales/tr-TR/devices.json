@@ -1485,6 +1485,7 @@
     "cancel": "İptal",
     "editDisplayName": "Görünen adı düzenle",
     "serialNumber": "Seri Numarası",
+    "productSku": "Ürün Numarası",
     "manufacturer": "Üretici",
     "model": "Modeli",
     "deviceRole": "Cihaz Rolü",
@@ -1654,6 +1655,7 @@
       "ram": "RAM %'si",
       "lastSeen": "Son Görülme",
       "serial": "Seri No",
+      "productSku": "Ürün Numarası",
       "assetTag": "Varlık Etiketi",
       "location": "Konum",
       "source": "Kaynak"
@@ -1671,6 +1673,7 @@
       "ram": "RAM kullanımına göre sırala",
       "lastSeen": "Son görülme zamanına göre sırala",
       "serial": "Seri numarasına göre sırala",
+      "productSku": "Ürün numarasına göre sırala",
       "assetTag": "Varlık etiketine göre sırala",
       "location": "Konuma göre sırala",
       "source": "Kaynağa göre sırala"

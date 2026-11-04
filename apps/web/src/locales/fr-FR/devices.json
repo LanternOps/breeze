@@ -1485,6 +1485,7 @@
     "cancel": "Annuler",
     "editDisplayName": "Modifier le nom d’affichage",
     "serialNumber": "Numéro de série",
+    "productSku": "Numéro de produit",
     "manufacturer": "Fabricant",
     "model": "Modèle",
     "deviceRole": "Rôle de l’appareil",
@@ -1654,6 +1655,7 @@
       "ram": "RAM %",
       "lastSeen": "Dernière apparition",
       "serial": "N° de série",
+      "productSku": "Numéro de produit",
       "assetTag": "Étiquette d'actif",
       "location": "Emplacement",
       "source": "Source"
@@ -1671,6 +1673,7 @@
       "ram": "Trier par RAM utilisation",
       "lastSeen": "Trier par dernière heure vue",
       "serial": "Trier par numéro de série",
+      "productSku": "Trier par numéro de produit",
       "assetTag": "Trier par étiquette d'actif",
       "location": "Trier par emplacement",
       "source": "Trier par source"

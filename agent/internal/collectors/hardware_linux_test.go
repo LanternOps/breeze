@@ -44,6 +44,32 @@ func TestCollectLinuxGPUModelLspciPresent(t *testing.T) {
 	}
 }
 
+func TestCollectLinuxProductSKU(t *testing.T) {
+	root := t.TempDir() + "/"
+	prev := dmiRoot
+	dmiRoot = root
+	t.Cleanup(func() { dmiRoot = prev })
+
+	if got := collectLinuxProductSKU(); got != "" {
+		t.Fatalf("missing file: got %q", got)
+	}
+
+	write := func(value string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, "product_sku"), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("5S3F8EA#ABB\n")
+	if got := collectLinuxProductSKU(); got != "5S3F8EA#ABB" {
+		t.Fatalf("got %q", got)
+	}
+	write("To Be Filled By O.E.M.\n")
+	if got := collectLinuxProductSKU(); got != "" {
+		t.Fatalf("placeholder: got %q", got)
+	}
+}
+
 func writePCIDevice(t *testing.T, root, name string, files map[string]string) {
 	t.Helper()
 	dir := filepath.Join(root, name)

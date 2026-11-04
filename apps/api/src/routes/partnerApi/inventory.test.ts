@@ -64,7 +64,7 @@ function inventoryRow(id = DEVICE_A) {
       memorySlotsTotal: 2, memoryMaxCapacityMb: 1048576, memorySoldered: false,
       memoryObservedAt: '2026-07-12T12:00:00.000Z',
       gpuModel: null, motherboardManufacturer: 'Dell', motherboardProduct: 'PowerEdge',
-      motherboardVersion: '2', biosVersion: '1.4.2', providerToken: 'never-export',
+      motherboardVersion: '2', biosVersion: '1.4.2', productSku: '5S3F8EA#ABB', providerToken: 'never-export',
     },
     disks: [{ id: '71111111-1111-4111-8111-111111111111', mountPoint: 'C:', device: 'Disk 0', fsType: 'NTFS', totalGb: 1000, usedGb: 900 }],
     diskCount: 1,
@@ -168,7 +168,7 @@ describe('partner reconstruction inventory exports', () => {
     const body = await (await request('/partner-api/device-inventory')).json();
     expect(body.data[0]).toMatchObject({
       subjectType: 'device', deviceId: DEVICE_A, orgId: ORG_ID, siteId: SITE_ID,
-      hardware: { processor: { model: 'Xeon Gold', cores: 16, threads: 32 }, memory: { totalMb: 65536 }, firmware: { biosVersion: '1.4.2' } },
+      hardware: { processor: { model: 'Xeon Gold', cores: 16, threads: 32 }, memory: { totalMb: 65536 }, firmware: { biosVersion: '1.4.2' }, system: { productSku: '5S3F8EA#ABB' } },
       disks: [{ mountPoint: 'C:', totalGb: 1000 }],
       addresses: [
         expect.objectContaining({ address: '10.0.0.10', assignment: 'static', reservationEligible: true }),

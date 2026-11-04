@@ -82,6 +82,7 @@ type HardwareState struct {
 	DiskTotalGB  uint64 `json:"diskTotalGb"`
 	BIOSVersion  string `json:"biosVersion"`
 	SerialNumber string `json:"serialNumber"`
+	ProductSKU   string `json:"productSku,omitempty"`
 	Motherboard  string `json:"motherboard"`
 }
 
@@ -548,6 +549,7 @@ func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {
 			DiskTotalGB:  hardware.DiskTotalGB,
 			BIOSVersion:  hardware.BIOSVersion,
 			SerialNumber: hardware.SerialNumber,
+			ProductSKU:   hardware.ProductSKU,
 			Motherboard:  strings.TrimSpace(hardware.MotherboardManufacturer + " " + hardware.MotherboardProduct),
 		}
 	}
@@ -1114,6 +1116,12 @@ func (c *ChangeTrackerCollector) diffHardware(current *Snapshot) []ChangeRecord 
 	}
 	if prev.SerialNumber != cur.SerialNumber {
 		emit("System Serial", prev.SerialNumber, cur.SerialNumber)
+	}
+	// Only a real value replacing a real value counts. An empty prev is a snapshot
+	// from an agent older than this field (a false change on every device after
+	// upgrade); an empty cur is a collection gap, not a board swap.
+	if prev.ProductSKU != "" && cur.ProductSKU != "" && prev.ProductSKU != cur.ProductSKU {
+		emit("Product Number", prev.ProductSKU, cur.ProductSKU)
 	}
 	if prev.Motherboard != cur.Motherboard {
 		emit("Motherboard", prev.Motherboard, cur.Motherboard)

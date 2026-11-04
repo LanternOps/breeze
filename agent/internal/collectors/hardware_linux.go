@@ -3,7 +3,9 @@
 package collectors
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -14,10 +16,13 @@ import (
 
 var dmiWarningOnce sync.Once
 
-// readDMI reads a value from /sys/class/dmi/id/.
+// dmiRoot is a var so tests can point it at a temp directory.
+var dmiRoot = "/sys/class/dmi/id/"
+
+// readDMI reads a value from dmiRoot.
 // Logs a warning once if DMI files are inaccessible (e.g. no root, containers).
 func readDMI(name string) string {
-	path := "/sys/class/dmi/id/" + name
+	path := dmiRoot + name
 	if statInfo, err := os.Stat(path); err == nil && statInfo.Size() > collectorFileReadLimit {
 		dmiWarningOnce.Do(func() {
 			slog.Warn("cannot read oversized DMI data", "path", path)
@@ -34,8 +39,19 @@ func readDMI(name string) string {
 	return truncateCollectorString(strings.TrimSpace(string(data)))
 }
 
+// collectLinuxProductSKU reads the system SKU. The attribute is missing on older
+// kernels and that is routine, so it must not spend readDMI's one-shot warning,
+// which exists to report that DMI as a whole is unreadable.
+func collectLinuxProductSKU() string {
+	if _, err := os.Stat(dmiRoot + "product_sku"); errors.Is(err, fs.ErrNotExist) {
+		return ""
+	}
+	return cleanProductSKU(readDMI("product_sku"))
+}
+
 func collectPlatformHardware(hw *HardwareInfo) {
 	hw.SerialNumber = readDMI("product_serial")
+	hw.ProductSKU = collectLinuxProductSKU()
 	hw.Manufacturer = readDMI("sys_vendor")
 	hw.Model = readDMI("product_name")
 	hw.MotherboardManufacturer = cleanHardwareIdentityValue(readDMI("board_vendor"))

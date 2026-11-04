@@ -379,6 +379,7 @@ export const agentEnrollSchema = z.object({
     cpuCores: z.number().optional(),
     ramTotalMb: z.number().optional(),
     serialNumber: z.string().optional(),
+    productSku: z.string().optional(),
     manufacturer: z.string().optional(),
     model: z.string().optional(),
     motherboardManufacturer: z.string().optional(),
