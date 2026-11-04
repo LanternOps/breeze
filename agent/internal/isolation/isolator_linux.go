@@ -1,0 +1,413 @@
+//go:build linux
+
+package isolation
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/breeze-rmm/agent/internal/isolation/cgroup"
+	"github.com/breeze-rmm/agent/internal/procspawn"
+)
+
+// linuxToolTimeout bounds one nft or conntrack run; a wedged netlink socket
+// must not hold the machine lock indefinitely.
+const linuxToolTimeout = 30 * time.Second
+
+// linuxToolDirs are searched after PATH: the recovery binary runs from a bare
+// systemd environment, and a distro may keep nft in sbin only.
+var linuxToolDirs = []string{"/usr/sbin", "/sbin", "/usr/bin", "/bin"}
+
+// nftCgroupPathPattern is what systemd puts in a cgroup path. The path goes
+// into an nft script, so anything else is refused rather than quoted.
+var nftCgroupPathPattern = regexp.MustCompile(`^[A-Za-z0-9_.@:\\/-]+$`)
+
+// linuxIsolator is the nftables mechanism: one table, `inet breeze_isolation`,
+// that it creates, reads and deletes, and never anyone else's.
+type linuxIsolator struct {
+	nft        func(ctx context.Context, stdin []byte, args ...string) ([]byte, error)
+	conntrack  func(ctx context.Context, args ...string) ([]byte, error)
+	lookPath   func(string) (string, error)
+	layout     func() (cgroup.Layout, error)
+	baseline   func() (Baseline, error)
+	executable func() (string, error)
+
+	mu    sync.Mutex
+	notes []string
+}
+
+// NewPlatformIsolator provides real nftables release and inspection even while
+// capability stays zero: a build must always be able to remove inherited rules.
+func NewPlatformIsolator() Isolator { return newLinuxIsolator() }
+
+func newLinuxIsolator() *linuxIsolator {
+	i := &linuxIsolator{
+		lookPath:   lookPathLinuxTool,
+		baseline:   readLinuxBaseline,
+		executable: os.Executable,
+		layout: func() (cgroup.Layout, error) {
+			return cgroup.Layout{}, errors.New("the agent's cgroup has not been split")
+		},
+	}
+	i.nft = func(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
+		return i.runTool(ctx, "nft", stdin, args...)
+	}
+	i.conntrack = func(ctx context.Context, args ...string) ([]byte, error) {
+		return i.runTool(ctx, "conntrack", nil, args...)
+	}
+	return i
+}
+
+func lookPathLinuxTool(name string) (string, error) {
+	if path, err := exec.LookPath(name); err == nil {
+		return path, nil
+	}
+	for _, dir := range linuxToolDirs {
+		path := dir + "/" + name
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("%s: %w", name, exec.ErrNotFound)
+}
+
+func (i *linuxIsolator) runTool(ctx context.Context, name string, stdin []byte, args ...string) ([]byte, error) {
+	path, err := i.lookPath(name)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, linuxToolTimeout)
+	defer cancel()
+	cmd := procspawn.CommandContext(ctx, path, args...)
+	// Errors are logged and journalled; keep them readable on any locale.
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
+// requireNft distinguishes "this host has no nft" from an nft failure: without
+// the tool nothing can be observed, and only an unsupported engine may let an
+// uninstall proceed on an idle journal (see Manager.ReleaseAll).
+func (i *linuxIsolator) requireNft() error {
+	if _, err := i.lookPath("nft"); err != nil {
+		return fmt.Errorf("%w: nft is not installed: %v", ErrUnsupported, err)
+	}
+	return nil
+}
+
+// Capability is reported through the readiness path (see Task 5).
+func (i *linuxIsolator) Capability() Capability {
+	return Capability{Mechanism: "nft", UnsupportedReason: "not_activated"}
+}
+
+// BinaryPaths reports the running agent for the upgrade handoff. The nft permit
+// is scoped by cgroup, so a swap at the same path needs no rule change.
+func (i *linuxIsolator) BinaryPaths() []string {
+	path, err := i.executable()
+	if err != nil {
+		log.Warn("cannot resolve the agent executable", "error", err)
+		return nil
+	}
+	return []string{path}
+}
+
+// Apply replaces the table in one nft transaction after a dry run, flushes the
+// flows no permit marked, and digests what the kernel actually installed.
+func (i *linuxIsolator) Apply(ctx context.Context, spec ResolvedSpec) (Digest, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := i.requireNft(); err != nil {
+		return "", err
+	}
+	layout, err := i.layout()
+	if err != nil {
+		return "", err
+	}
+	if !nftCgroupPathPattern.MatchString(layout.AgentPath) || layout.Level < 1 {
+		return "", fmt.Errorf("refusing unusable cgroup path %q at level %d", layout.AgentPath, layout.Level)
+	}
+	baseline, err := i.baseline()
+	if err != nil {
+		return "", fmt.Errorf("read Linux isolation baseline: %w", err)
+	}
+	if err := i.load(ctx, buildNftRuleset(spec, layout, baseline)); err != nil {
+		return "", err
+	}
+	i.flushUnmarkedFlows(ctx)
+	data, err := i.listTable(ctx)
+	if err != nil {
+		return "", fmt.Errorf("read back nft isolation: %w", err)
+	}
+	return digestNftListing(data)
+}
+
+// applyBootRules installs the pre-network rules from the recovery binary. The
+// agent's cgroup does not exist yet, so the layout is deliberately not read.
+func (i *linuxIsolator) applyBootRules(ctx context.Context, spec ResolvedSpec) error {
+	if err := i.requireNft(); err != nil {
+		return err
+	}
+	baseline, err := i.baseline()
+	if err != nil {
+		return fmt.Errorf("read Linux isolation baseline: %w", err)
+	}
+	return i.load(ctx, buildNftBootRuleset(spec, baseline))
+}
+
+func (i *linuxIsolator) load(ctx context.Context, ruleset string) error {
+	batch := []byte(nftBatch(ruleset))
+	// The dry run asks the kernel too, so a kernel without `socket cgroupv2`
+	// (added in 5.13) refuses here with the host untouched.
+	if _, err := i.nft(ctx, batch, "-c", "-f", "-"); err != nil {
+		return fmt.Errorf("nft refused the isolation rules: %w", err)
+	}
+	if _, err := i.nft(ctx, batch, "-f", "-"); err != nil {
+		return fmt.Errorf("load nft isolation rules: %w", err)
+	}
+	return nil
+}
+
+// flushUnmarkedFlows tears down existing flows so an open connection cannot
+// outlive the apply; it also clears conntrack-offloaded flows a forward chain
+// never sees. The rules are already enforcing, so a failure is reported but is
+// not an apply failure: the drop rules still stop unmarked flows' packets.
+func (i *linuxIsolator) flushUnmarkedFlows(ctx context.Context) {
+	if _, err := i.lookPath("conntrack"); err != nil {
+		log.Warn("conntrack is not installed; existing flows are dropped by the rules but not flushed")
+		i.note("conntrack_unavailable")
+		return
+	}
+	if _, err := i.conntrack(ctx, "-D", "--mark", "0"); err != nil {
+		log.Warn("conntrack flush failed", "error", err)
+		i.note("conntrack_flush_failed")
+	}
+}
+
+func (i *linuxIsolator) note(event string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.notes = append(i.notes, event)
+}
+
+// TakeApplyNotes hands the manager what to journal about the last Apply.
+func (i *linuxIsolator) TakeApplyNotes() []string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	notes := i.notes
+	i.notes = nil
+	return notes
+}
+
+func (i *linuxIsolator) listTable(ctx context.Context) ([]byte, error) {
+	return i.nft(ctx, nil, "-j", "list", "table", nftFamily, nftTable)
+}
+
+// Verify digests the installed table. A missing table is an error, which the
+// manager treats as drift and re-applies.
+func (i *linuxIsolator) Verify(ctx context.Context, _ ResolvedSpec) (Digest, error) {
+	if err := i.requireNft(); err != nil {
+		return "", err
+	}
+	data, err := i.listTable(ctx)
+	if err != nil {
+		return "", err
+	}
+	return digestNftListing(data)
+}
+
+// Release deletes our table and confirms it is gone.
+func (i *linuxIsolator) Release(ctx context.Context) error {
+	owned, err := i.Owned(ctx)
+	if err != nil {
+		return err
+	}
+	if owned {
+		if _, err := i.nft(ctx, nil, "delete", "table", nftFamily, nftTable); err != nil {
+			return fmt.Errorf("release nft isolation: %w", err)
+		}
+		if owned, err = i.Owned(ctx); err != nil {
+			return fmt.Errorf("confirm nft isolation release: %w", err)
+		}
+		if owned {
+			return errors.New("release left the nft isolation table installed")
+		}
+	}
+	return nil
+}
+
+// Owned lists tables rather than listing ours, so "absent" never depends on
+// matching a localized error string.
+func (i *linuxIsolator) Owned(ctx context.Context) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := i.requireNft(); err != nil {
+		return false, err
+	}
+	data, err := i.nft(ctx, nil, "-j", "list", "tables")
+	if err != nil {
+		return false, fmt.Errorf("list nft tables: %w", err)
+	}
+	items, err := parseNftListing(data)
+	if err != nil {
+		return false, err
+	}
+	for _, item := range items {
+		table, ok := item["table"].(map[string]any)
+		if ok && table["family"] == nftFamily && table["name"] == nftTable {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// Mark snapshots the drop counter before a negative probe.
+func (i *linuxIsolator) Mark(ctx context.Context) (Marker, error) {
+	packets, err := i.dropCount(ctx)
+	if err != nil {
+		return Marker{}, err
+	}
+	return Marker{Value: packets, At: time.Now()}, nil
+}
+
+// DropObserved reports whether our final drop rule fired since the marker.
+func (i *linuxIsolator) DropObserved(ctx context.Context, since Marker) (bool, error) {
+	packets, err := i.dropCount(ctx)
+	if err != nil {
+		return false, err
+	}
+	return packets > since.Value, nil
+}
+
+func (i *linuxIsolator) dropCount(ctx context.Context) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if err := i.requireNft(); err != nil {
+		return 0, err
+	}
+	data, err := i.nft(ctx, nil, "-j", "list", "counter", nftFamily, nftTable, nftCounter)
+	if err != nil {
+		return 0, fmt.Errorf("read the nft drop counter: %w", err)
+	}
+	items, err := parseNftListing(data)
+	if err != nil {
+		return 0, err
+	}
+	for _, item := range items {
+		counter, ok := item["counter"].(map[string]any)
+		if !ok || counter["name"] != nftCounter {
+			continue
+		}
+		number, ok := counter["packets"].(json.Number)
+		if !ok {
+			return 0, errors.New("the nft drop counter has no packet count")
+		}
+		packets, err := strconv.ParseUint(number.String(), 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse the nft drop counter: %w", err)
+		}
+		return packets, nil
+	}
+	return 0, errors.New("the nft drop counter is not installed")
+}
+
+func parseNftListing(data []byte) ([]map[string]any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var listing struct {
+		Nftables []map[string]any `json:"nftables"`
+	}
+	if err := decoder.Decode(&listing); err != nil {
+		return nil, fmt.Errorf("parse nft listing: %w", err)
+	}
+	return listing.Nftables, nil
+}
+
+// digestNftListing hashes the rule set the kernel reports, minus what changes
+// without the rules changing: rule handles (renumbered on every load) and
+// packet and byte counts. It also refuses a table that would not actually
+// isolate, so a readback mismatch fails the apply rather than passing a probe.
+func digestNftListing(data []byte) (Digest, error) {
+	items, err := parseNftListing(data)
+	if err != nil {
+		return "", err
+	}
+	kept := make([]any, 0, len(items))
+	chains := map[string]bool{}
+	for _, item := range items {
+		if _, meta := item["metainfo"]; meta {
+			continue
+		}
+		if chain, ok := item["chain"].(map[string]any); ok {
+			name, _ := chain["name"].(string)
+			if chain["hook"] == name && (name == "input" || name == "output" || name == "forward") {
+				if chain["policy"] != "drop" {
+					return "", fmt.Errorf("nft isolation chain %s has policy %v", name, chain["policy"])
+				}
+				chains[name] = true
+			}
+		}
+		kept = append(kept, stripNftVolatile(item))
+	}
+	for _, name := range []string{"input", "output", "forward"} {
+		if !chains[name] {
+			return "", fmt.Errorf("nft isolation has no %s base chain", name)
+		}
+	}
+	canonical, err := json.Marshal(kept)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize nft listing: %w", err)
+	}
+	sum := sha256.Sum256(canonical)
+	return Digest(hex.EncodeToString(sum[:])), nil
+}
+
+func stripNftVolatile(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			switch key {
+			case "handle", "packets", "bytes":
+				continue
+			}
+			out[key] = stripNftVolatile(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for n, item := range v {
+			out[n] = stripNftVolatile(item)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+// NewPlatformScheduler is replaced by the systemd scheduler in Task 4.
+func NewPlatformScheduler(dataDir string) RecoveryScheduler {
+	_ = dataDir
+	return unsupportedScheduler{}
+}

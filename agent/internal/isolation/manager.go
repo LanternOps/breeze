@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"net/url"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -227,6 +228,9 @@ type attemptCtx struct {
 	digest     Digest
 	serverTime time.Time
 	drift      bool
+	// notes are event types an isolator reported about an apply that still
+	// succeeded (e.g. conntrack_unavailable); journalled with the commit.
+	notes []string
 }
 
 // op is one locked operation.
@@ -386,6 +390,28 @@ func (o *op) attemptFailed(attemptID, code, detail string) Event {
 	return Event{Kind: EvAttemptFailed, AttemptID: attemptID, Code: code, Err: detail}
 }
 
+// eventTypePattern is isolationJournalEventSchema's `type`: a report carrying
+// any other event type would be rejected by the server as a whole.
+var eventTypePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// takeApplyNotes collects an isolator's notes on its last Apply, if it keeps
+// any (an optional interface; most isolators have none).
+func takeApplyNotes(iso Isolator) []string {
+	noter, ok := iso.(interface{ TakeApplyNotes() []string })
+	if !ok {
+		return nil
+	}
+	var notes []string
+	for _, note := range noter.TakeApplyNotes() {
+		if !eventTypePattern.MatchString(note) {
+			log.Warn("isolation: dropping an apply note that is not a valid event type", "note", truncate(note, 80))
+			continue
+		}
+		notes = append(notes, note)
+	}
+	return notes
+}
+
 func (o *op) noteError(msg string) {
 	log.Warn("isolation: " + msg)
 	if o.j.Episode != nil {
@@ -441,6 +467,7 @@ func (o *op) exec(e Effect) Event {
 			return o.attemptFailed(e.AttemptID, FailApplyError, "apply: "+err.Error())
 		}
 		a.digest = d
+		a.notes = append(a.notes, takeApplyNotes(iso)...)
 	case EffRunProbes:
 		return o.runProbes(e.AttemptID)
 	case EffCommit:
@@ -755,6 +782,9 @@ func (o *op) persist(next LocalState, ev Event, effects []Effect) error {
 		ep.LastVerifiedAt = verifiedAt
 		if a.kind == AttemptApply {
 			ep.AppliedAt = now
+		}
+		for _, note := range a.notes {
+			j.Append(now, note, next.IsolationID, next.Generation, "")
 		}
 	}
 	if terminalSeq > 0 && (next.Phase == journal.PhaseReleased || next.Phase == journal.PhaseRolledBack || (next.Phase == journal.PhaseNone && next.ReleaseKind == ReleaseSystem)) {
