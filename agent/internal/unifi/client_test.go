@@ -1,11 +1,16 @@
 package unifi
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -248,4 +253,66 @@ func TestFixturesSpeakTheControllerVocabulary(t *testing.T) {
 	if !strings.Contains(realClientListJSON, `"ipAddress"`) || !strings.Contains(realClientListJSON, `"uplinkDeviceId"`) {
 		t.Error("client fixture must keep ipAddress/uplinkDeviceId — the fields #5087 was about")
 	}
+}
+
+// Spec §12: the controller client is read-only; every request it issues is a GET.
+func TestClientOnlyIssuesGET_Spec12(t *testing.T) {
+	wc := newWifiController(t, 3)
+	inner := wc.server(t)
+	defer inner.Close()
+	var mu sync.Mutex
+	var methods []string
+	rec := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		methods = append(methods, r.Method)
+		mu.Unlock()
+		inner.Config.Handler.ServeHTTP(w, r)
+	}))
+	defer rec.Close()
+	c := NewAPIClient(rec.URL, "k", rec.Client())
+	ctx := context.Background()
+	if _, err := c.PollWith(ctx, PollOptions{Wifi: true, DetailBudget: 3, StatisticsBudget: 3}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _ = c.CollectDeviceStatistics(ctx, "site-1", "ap-000")
+	_, _, _ = c.CollectDeviceDetails(ctx, "site-1", "ap-000")
+	mu.Lock()
+	defer mu.Unlock()
+	if len(methods) < 5 {
+		t.Fatalf("only %d requests recorded; test would be vacuous", len(methods))
+	}
+	for _, m := range methods {
+		if m != http.MethodGet {
+			t.Fatalf("client issued a non-GET request: %s (all: %v)", m, methods)
+		}
+	}
+}
+
+var fixtureSecretRe = regexp.MustCompile(`(?i)x-api-key|apikey|api_key|authorization|bearer |-----BEGIN [A-Z ]*PRIVATE KEY-----`)
+
+// Sugestao nossa (not an explicit spec requirement): fixtures must never embed credentials.
+func TestFixturesContainNoSecrets(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("testdata", "*.json"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no fixtures found (err=%v): scan would be vacuous", err)
+	}
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m := fixtureSecretRe.Find(b); m != nil {
+			t.Errorf("%s contains secret-like material %q", f, m)
+		}
+	}
+	t.Run("detector catches planted secrets", func(t *testing.T) {
+		for _, plant := range []string{"X-API-KEY: abc", `{"apiKey":"x"}`, "api_key=1", "Authorization: Basic zz", "Bearer abc", "-----BEGIN RSA PRIVATE KEY-----"} {
+			if !fixtureSecretRe.Match([]byte(plant)) {
+				t.Errorf("detector missed %q", plant)
+			}
+		}
+		if fixtureSecretRe.Match(bytes.ToLower([]byte(`{"id":"ap-1","model":"E7"}`))) {
+			t.Error("detector false positive")
+		}
+	})
 }
