@@ -692,6 +692,15 @@ type createSnapshotOptions struct {
 	systemStateManifest   *systemstate.SystemStateManifest
 	layoutManifest        *layout.Manifest
 	junctions             []SnapshotJunction
+	onWarning             func(string)
+}
+
+// withRunWarning receives non-fatal run warnings raised mid-pass (the window
+// forecast, #11014), called from the caller's goroutine. RunBackupContext
+// folds them into the job's Warning; they are delivered as they happen, so
+// a run that later fails still carries them.
+func withRunWarning(fn func(string)) createSnapshotOption {
+	return func(o *createSnapshotOptions) { o.onWarning = fn }
 }
 
 // withRunIdentity stamps identity onto the new snapshot's BackupIdentity —
@@ -1189,11 +1198,20 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// learns the uploads ahead, in order, with the keys the loop below will
 	// assign. The dedupe decisions are made once, here, and reused below.
 	var plannedDecisions []plannedDecision
+	// plannedBytes is what the file pass plans to upload, known only when the
+	// decisions are made up front; it feeds the window forecast (#11014).
+	var plannedBytes int64
 	if planner, ok := unwrapProvider(provider).(providers.UploadPlanner); ok {
 		plannedDecisions = make([]plannedDecision, len(files))
 		claims := keyClaims.clone()
 		var entries []providers.PlannedUpload
 		for i, file := range files {
+			if ctx.Err() != nil {
+				// Stopped mid-plan (this pass can hash for hours): stop
+				// planning; the file pass below sees the stop before it
+				// admits anything and takes the normal stop exit.
+				break
+			}
 			if file.kind != "" {
 				continue
 			}
@@ -1210,9 +1228,15 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			}
 			naturalKey := ensureGzipExtension(path.Join(prefix, snapshotFilesDir, file.snapshotPath))
 			entries = append(entries, providers.PlannedUpload{LocalPath: file.sourcePath, Key: claims.assign(prefix, file.snapshotPath, naturalKey)})
+			plannedBytes += max(file.size, 0)
 		}
-		planner.PrepareUploads(entries)
+		if ctx.Err() == nil {
+			planner.PrepareUploads(entries)
+		}
 	}
+	forecast := newWindowForecast(provider)
+	forecast.begin(plannedBytes)
+	var uploadedBytes int64
 
 	// The upload pool's state (#8381; the loop below documents the split
 	// between the workers and this goroutine). workerCtx is cancelled only
@@ -1576,6 +1600,16 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		snapshot.Size += entry.Size
 		markUploaded(file.size, s.progress)
 		emitProgress(false)
+		uploadedBytes += max(file.size, 0)
+		if warning := forecast.check(uploadedBytes); warning != "" {
+			log.Warn("backup selection is unlikely to finish within its storage session",
+				"snapshotId", snapshot.ID,
+				"warning", warning,
+			)
+			if options.onWarning != nil {
+				options.onWarning(warning)
+			}
+		}
 		if journal != nil {
 			// Record logs and swallows its own write failures — a dead
 			// journal degrades resume for next time, it never fails this

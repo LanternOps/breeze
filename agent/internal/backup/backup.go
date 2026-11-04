@@ -1312,7 +1312,12 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// cleanup entirely (D18 §3.5) — see that block earlier in this
 	// function. D15's snapshotOpts/withSystemState wiring is independent of
 	// that and slots in here unchanged.
-	snapshotOpts := []createSnapshotOption{withRunIdentity(runIdentity), withUploadStagingDir(m.config.StagingDir), withJunctions(reparseSkipped.junctions)}
+	snapshotOpts := []createSnapshotOption{
+		withRunIdentity(runIdentity), withUploadStagingDir(m.config.StagingDir), withJunctions(reparseSkipped.junctions),
+		// Mid-pass warnings (the window forecast, #11014) land on the job as
+		// they happen, so a run that later fails still reports them.
+		withRunWarning(func(w string) { appendWarning(job, w) }),
+	}
 	if m.config.SystemStateEnabled && systemStateStagingDir != "" && job.SystemStateManifest != nil && len(job.SystemStateManifest.Artifacts) > 0 {
 		// Publish system state under this call's own snapshot ID, BEFORE its
 		// ordinary manifest.json — see withSystemState's doc comment. This
