@@ -9,9 +9,9 @@ const P = publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
 const attacker = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const RECEIVED = '2026-11-04T12:00:00Z';
 const T = Math.floor(Date.parse(RECEIVED) / 1000) - 60;
-const AAR_BODY = 'mx.avanan.net; dkim=pass header.d=mg.example.io; spf=pass smtp.mailfrom=mg.example.io';
+const AAR_BODY = 'mx.avanan.net; dkim=pass header.d=mg.example.com; spf=pass smtp.mailfrom=mg.example.com';
 const BASE: Header[] = [
-  { name: 'From', value: 'Person <person@mg.example.io>' },
+  { name: 'From', value: 'Person <person@mg.example.com>' },
   { name: 'Subject', value: 'Printer down' },
 ];
 
@@ -162,7 +162,7 @@ describe('evaluateTrustedArc', () => {
   });
 
   it('verifies a trusted seal at instance 2 over an intact chain', async () => {
-    const chain = seal(seal(BASE, { d: 'first.test', key: attacker.privateKey }), { i: 2, aar: 'mx.avanan.net; dmarc=pass header.from=mg.example.io' });
+    const chain = seal(seal(BASE, { d: 'first.test', key: attacker.privateKey }), { i: 2, aar: 'mx.avanan.net; dmarc=pass header.from=mg.example.com' });
     expect(await evalWith(chain)).toMatchObject({ status: 'verified', instance: 2 });
   });
 
@@ -276,23 +276,23 @@ describe('evaluateTrustedArc', () => {
   // Sealed by mailauth (an independent ARC implementation), not by this file's signer, so a
   // canonicalization bug shared by seal() and the verifier cannot hide here.
   describe('independent vectors', () => {
-    const VECTOR_KEY = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6FvbRiVai+HfkxM/a4pVhGwxGrpREyEFun3/9PSoTiaRHQvKRt+t5hs09Sv6LkcGtZQyxnnvfF64zUkHoHkQaHXdVul2s2JI4fv1wJFVm/w1mxqJFTv18W1v25dgZPOf4vR0eJVh3udrESZySLyTvdt1K9hYjaBMLxuHEZ9lNW/n/M8ezPi9Tezs5Fo/DlRBrHP++Xv2lq5lqWNcqnNlvd4GFXRhZw68hDUz1z7qqRas4bXtLAmO5VsN8wBrxkaMxHcyDJw5yJOp40a8bG1FGGOt7HOm1MankxIniT2XFTyQZN7SIX6dvMcxGiDWSI/xy+Xgn1SdG59WUsGK3QPVoQIDAQAB';
+    const VECTOR_KEY = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzout8XZG2Q6lNlYHt75ZHYckcVzL6WjDCYie55xvZMH7dk0wuOWw6Hnkp3OiJTSM1erB8f3xAI9sp4I1gsaLD8P/DhK/XvRuYoB98lPQRpfXAPCtYG9CtUtmk87B+187dPP/v5DJ/LxIiv7XybnLtWIklFD/VU0YATpVxaylf8bJAPNXGn2bLgLe75Bwcg3+YOfLm4TKeUJDx1zOpTMlC4i4E4OrdTXSu4yPtrA3w4NW2Yb2Snvk7isUeYn7MyT3L0/Q2M9DTRB6+uXckMYVKestC38YljCLMFZnOn9aEiGjJS7SdUMdtRRmWBjptK8wk5GLIqQrOzOkTuh9EJT9PwIDAQAB';
     const ONE_HOP: Header[] = [
       {
         "name": "ARC-Seal",
-        "value": "i=1; a=rsa-sha256; t=1793793540; cv=none; d=avanan.net; s=sel;\r\n b=txrOf5kwegqKB0HL5VBRV41NJPlAfQcGsZlg6l6jFwq+sY6xTYQn5v9AOcyeEA3WNXz+oNq+L\r\n 4VPB8hOXAaen6PSFvSzmLzqvQBNiGDn5g6d9qrF1HaUjIKLKr+8s4EQHO2XX819qwR+XOmmMXpj\r\n yWP+RhaRpTefQGtmyggAc6bbgxjMUNTxqS+J2cW0kmfwPXBynbx0FzDM06cvHRwXuz0TOJ7X0N/\r\n Yenud5W/GrMVysNfR/tVrd7iArOP823+UtjY9dXMxvFCt2HWLXxKL9EaY2iBfiEQbx2zB58oEDw\r\n MlxchmeMSdKhuhQwTy6kgUOQJYKD7pawXRnyvqG9FNQA=="
+        "value": "i=1; a=rsa-sha256; t=1793793540; cv=none; d=avanan.net; s=sel;\r\n b=kuzXyQI9/bZKOo6fYHxtny9Q1DmALxo4kFUj+h48j/0ajqI5DHDljx5bBVXjROoIYxSAnio/V\r\n 7JEet2T/sGhfHgucCl/OMfyU6wwybdPzIHusRqn+7PBLkJGUFGpOpHOpD++KkKC7WLx/274SIfx\r\n 1LtzM8X4igblgUhxrxRTi9h/0x0ORetX/QnIbvw1rizIuUD9ppWgHn3q0VSo09gDuvT9Kk9nAoh\r\n gSa1VJMS1PvvXDltnXmT6y5VuFz80Fg3jHHRrfGElPWHV5HSS9h4ak/ExJxYturTEqTI3GGFV73\r\n +CIzysZNQU/lhKdZ76ehj5i2ksRXWLnAnWD7xm+T/ZcQ=="
       },
       {
         "name": "ARC-Message-Signature",
-        "value": "i=1; a=rsa-sha256; c=relaxed/relaxed; d=avanan.net;\r\n h=Message-ID: Date: Subject: To: From; q=dns/txt; s=sel; t=1793793540;\r\n bh=Ba3gj8+xBPQLJTahTfzW6RbWQ/XPgESxkCi2B66PSQg=;\r\n b=qXyuENP/aT7L1x4XEm86lYChqAoG1nryv9xXPyppqBve4CJMn353I7dkLk/QW8F74G+5LVMTC\r\n hvbX1TLGlNrZZ09wtf86B6RtDLA8whqdRyPwY3FYZfXpYAM5UF1JaQX70X/riBRrcf9wlHSlz+P\r\n TQcCXXyrT6sOE1yWcSdN8W+o6ZpIjYAHM8gVPfDRXOUnMS5LWE/l219rFmEYQqD0GHEuPVsiHLI\r\n NfOr6+Vf+qcwceKRoTyoGGUocDDq7xznjVGxY5qmgtr+46ftHfByihJR+rXPszonQSOLANevmZU\r\n wKRE++RY6BnnJCYW5x3LuW7MecosK6jd3uJJaFFj2+kQ=="
+        "value": "i=1; a=rsa-sha256; c=relaxed/relaxed; d=avanan.net;\r\n h=Message-ID: Date: Subject: To: From; q=dns/txt; s=sel; t=1793793540;\r\n bh=Ba3gj8+xBPQLJTahTfzW6RbWQ/XPgESxkCi2B66PSQg=;\r\n b=MXAe/m3X67YXhfFqWmu1yQSKRIFm12PITl/bxor+0cNJFVuYBhwZsrR3zo2sYhnM0ilLa2F3p\r\n 4BO+GcMndQvi5pqwhIU5lcPf//JgLyQhZsZkaKTcOMl2PgwFds/I2bs2tO73BP0bQfeW2au1n1A\r\n O5B6CDGMG8n1B9V3yHMr5dwpV0QulJeyN4Rsp28p7nHm4BdlQebcQdChrjvoGmQ7pAN7uSdOVhh\r\n P5mItm4h03Srkg3IUxY3X45x/HjmDfM2wHsXJbwQ+BdGawjo15IkaM/42dtsuppgLT703qRTDdB\r\n x8qmKCNkEfJOtew37k4Fe5DQGQyCVmQIHr682gIUmbcQ=="
       },
       {
         "name": "ARC-Authentication-Results",
-        "value": "i=1; mx.avanan.net; dkim=pass header.d=mg.example.io; spf=pass smtp.mailfrom=mg.example.io"
+        "value": "i=1; mx.avanan.net; dkim=pass header.d=mg.example.com; spf=pass smtp.mailfrom=mg.example.com"
       },
       {
         "name": "From",
-        "value": "Person <person@mg.example.io>"
+        "value": "Person <person@mg.example.com>"
       },
       {
         "name": "To",
@@ -308,37 +308,37 @@ describe('evaluateTrustedArc', () => {
       },
       {
         "name": "Message-ID",
-        "value": "<vector@mg.example.io>"
+        "value": "<vector@mg.example.com>"
       }
     ];
     const TWO_HOP: Header[] = [
       {
         "name": "ARC-Seal",
-        "value": "i=2; a=rsa-sha256; t=1793793540; cv=pass; d=avanan.net; s=sel;\r\n b=y0IoegYFQfvRycg2ydYqx7qx1Poi1fHyHujn39VKIq2p2HgDxbMljifB22HPZWztbSA2Ga9EZ\r\n EsvUqFmR6V08bC3tQpbhjmyNzUt48Mlez4K+U+aIH889K99y3j2Rt6UPotAWol8hRVUnrtl/hUE\r\n FPVy9skybl9kEII/AYwmwFLYue+Q2n/joQATVz1fcBv5vC0egYWkbvhiOz2ClYrq6PaeSlP6tzt\r\n IFlOfgbbbEkxdrNsC/2Z25ysZqrS2Ku9ZmElGLI+1j3awnQJkQYIEtHt3DH4qLiBFLvRwGXbKEF\r\n BgicOcSdGxKCggeP27tjgSNWHHqoXXTFqOGLXo0uIlZA=="
+        "value": "i=2; a=rsa-sha256; t=1793793540; cv=pass; d=avanan.net; s=sel;\r\n b=Y8o9+da8XTOHDjtqilc2w+2J2q7hh1M5IDxJHZp+Aw2oPju2BGOeNUsD64NQyiBBtwBGQQksF\r\n /JDOdTZRna/PuSTZOzSHPMTFXO3EtgVFvbgOTU5X0avwMT9ArGQUxLTagbMR3IbnZ9uQZqi5ThE\r\n 6pDV3snmacbZzMOew5RBXnWWrHZDJfsxT3rDbGPPO8T+6OYKJxumoAzWLHQvulvQoqjogjX/D8y\r\n Yc8MYuMB8akEMjfMVDCMBKQXD4MNsqMumqlLSihhcl5ZFeev8CKSBkCGOAt8GwEiQ35s9pdCIOV\r\n ggfa+T/OrICo2EK4qbBpCbdax0te5kLQT9tdmE8KEFxA=="
       },
       {
         "name": "ARC-Message-Signature",
-        "value": "i=2; a=rsa-sha256; c=relaxed/relaxed; d=avanan.net;\r\n h=Message-ID: Date: Subject: To: From; q=dns/txt; s=sel; t=1793793540;\r\n bh=Ba3gj8+xBPQLJTahTfzW6RbWQ/XPgESxkCi2B66PSQg=;\r\n b=pQwbHz6aCnEtsboxrztscQDxg6ZHb4ecs3O4AMTRM0837d3bqqh8TbtO4E03kCplBE4Vy9MJU\r\n axp/+rRTUkdOsemSmDQ1LWa/f9anLH9Mk6oaOwZQ6MQ9Fl9bwW7NzwwaDSBuroWMzTVOAjxjlVA\r\n mY679T5WA9C8HOyXcvfpzzP3y9nTPwzyN/bSOn3zs8QM6iXi6EE7UfklquqOPXl2757es+o4Pxu\r\n W7BMzA3VLrkS+Q0KwnGB4J1FPpXKYYmxWmfh1rKY5lCnWBqRapnhssHOCOqmdscfF8WrsWAPcR+\r\n DcT9Sc0EEC1vieU3qpWVx6FtWptXrqpArE9aCxeir9rw=="
+        "value": "i=2; a=rsa-sha256; c=relaxed/relaxed; d=avanan.net;\r\n h=Message-ID: Date: Subject: To: From; q=dns/txt; s=sel; t=1793793540;\r\n bh=Ba3gj8+xBPQLJTahTfzW6RbWQ/XPgESxkCi2B66PSQg=;\r\n b=XVp9D0ExSIo6KAxSbKa0HfI08OOGRkxApbl1DM0AB5Zq8haz33tZtHoM7tpmj8MGc8d1B2kwH\r\n uLn/gOpw57p3At+55akIfMcKkQ8rG25ytOdRObRC2IOlGFXe4VbvP6ybp7563igNCJc3ki9DyJ5\r\n 0gJF3lN5L6/UERmMUf643Wq9uhDGwvd1Q4LfVkSU0JN7QAOPpSn2kKNQVEPFw1h09Ygo9Iax0sZ\r\n gEbyDdDiCrOsGLAfw/0KLQZR8N8SP6Qg9wMdz4LqL9QXIvChz4LTwP7s9sY3gFIm7JVvyllJ7e/\r\n vf0CnPB4rxkTNfO0btKzYlXL+3ql1GxSvtXUx/oyV53w=="
       },
       {
         "name": "ARC-Authentication-Results",
-        "value": "i=2; mx.avanan.net; arc=pass; dkim=pass header.d=mg.example.io"
+        "value": "i=2; mx.avanan.net; arc=pass; dkim=pass header.d=mg.example.com"
       },
       {
         "name": "ARC-Seal",
-        "value": "i=1; a=rsa-sha256; t=1793793540; cv=none; d=avanan.net; s=sel;\r\n b=txrOf5kwegqKB0HL5VBRV41NJPlAfQcGsZlg6l6jFwq+sY6xTYQn5v9AOcyeEA3WNXz+oNq+L\r\n 4VPB8hOXAaen6PSFvSzmLzqvQBNiGDn5g6d9qrF1HaUjIKLKr+8s4EQHO2XX819qwR+XOmmMXpj\r\n yWP+RhaRpTefQGtmyggAc6bbgxjMUNTxqS+J2cW0kmfwPXBynbx0FzDM06cvHRwXuz0TOJ7X0N/\r\n Yenud5W/GrMVysNfR/tVrd7iArOP823+UtjY9dXMxvFCt2HWLXxKL9EaY2iBfiEQbx2zB58oEDw\r\n MlxchmeMSdKhuhQwTy6kgUOQJYKD7pawXRnyvqG9FNQA=="
+        "value": "i=1; a=rsa-sha256; t=1793793540; cv=none; d=avanan.net; s=sel;\r\n b=kuzXyQI9/bZKOo6fYHxtny9Q1DmALxo4kFUj+h48j/0ajqI5DHDljx5bBVXjROoIYxSAnio/V\r\n 7JEet2T/sGhfHgucCl/OMfyU6wwybdPzIHusRqn+7PBLkJGUFGpOpHOpD++KkKC7WLx/274SIfx\r\n 1LtzM8X4igblgUhxrxRTi9h/0x0ORetX/QnIbvw1rizIuUD9ppWgHn3q0VSo09gDuvT9Kk9nAoh\r\n gSa1VJMS1PvvXDltnXmT6y5VuFz80Fg3jHHRrfGElPWHV5HSS9h4ak/ExJxYturTEqTI3GGFV73\r\n +CIzysZNQU/lhKdZ76ehj5i2ksRXWLnAnWD7xm+T/ZcQ=="
       },
       {
         "name": "ARC-Message-Signature",
-        "value": "i=1; a=rsa-sha256; c=relaxed/relaxed; d=avanan.net;\r\n h=Message-ID: Date: Subject: To: From; q=dns/txt; s=sel; t=1793793540;\r\n bh=Ba3gj8+xBPQLJTahTfzW6RbWQ/XPgESxkCi2B66PSQg=;\r\n b=qXyuENP/aT7L1x4XEm86lYChqAoG1nryv9xXPyppqBve4CJMn353I7dkLk/QW8F74G+5LVMTC\r\n hvbX1TLGlNrZZ09wtf86B6RtDLA8whqdRyPwY3FYZfXpYAM5UF1JaQX70X/riBRrcf9wlHSlz+P\r\n TQcCXXyrT6sOE1yWcSdN8W+o6ZpIjYAHM8gVPfDRXOUnMS5LWE/l219rFmEYQqD0GHEuPVsiHLI\r\n NfOr6+Vf+qcwceKRoTyoGGUocDDq7xznjVGxY5qmgtr+46ftHfByihJR+rXPszonQSOLANevmZU\r\n wKRE++RY6BnnJCYW5x3LuW7MecosK6jd3uJJaFFj2+kQ=="
+        "value": "i=1; a=rsa-sha256; c=relaxed/relaxed; d=avanan.net;\r\n h=Message-ID: Date: Subject: To: From; q=dns/txt; s=sel; t=1793793540;\r\n bh=Ba3gj8+xBPQLJTahTfzW6RbWQ/XPgESxkCi2B66PSQg=;\r\n b=MXAe/m3X67YXhfFqWmu1yQSKRIFm12PITl/bxor+0cNJFVuYBhwZsrR3zo2sYhnM0ilLa2F3p\r\n 4BO+GcMndQvi5pqwhIU5lcPf//JgLyQhZsZkaKTcOMl2PgwFds/I2bs2tO73BP0bQfeW2au1n1A\r\n O5B6CDGMG8n1B9V3yHMr5dwpV0QulJeyN4Rsp28p7nHm4BdlQebcQdChrjvoGmQ7pAN7uSdOVhh\r\n P5mItm4h03Srkg3IUxY3X45x/HjmDfM2wHsXJbwQ+BdGawjo15IkaM/42dtsuppgLT703qRTDdB\r\n x8qmKCNkEfJOtew37k4Fe5DQGQyCVmQIHr682gIUmbcQ=="
       },
       {
         "name": "ARC-Authentication-Results",
-        "value": "i=1; mx.avanan.net; dkim=pass header.d=mg.example.io; spf=pass smtp.mailfrom=mg.example.io"
+        "value": "i=1; mx.avanan.net; dkim=pass header.d=mg.example.com; spf=pass smtp.mailfrom=mg.example.com"
       },
       {
         "name": "From",
-        "value": "Person <person@mg.example.io>"
+        "value": "Person <person@mg.example.com>"
       },
       {
         "name": "To",
@@ -354,7 +354,7 @@ describe('evaluateTrustedArc', () => {
       },
       {
         "name": "Message-ID",
-        "value": "<vector@mg.example.io>"
+        "value": "<vector@mg.example.com>"
       }
     ];
     const VECTOR_RECEIVED = '2026-11-04T12:00:00Z';
@@ -366,7 +366,7 @@ describe('evaluateTrustedArc', () => {
 
     it('verifies a two-hop chain from another implementation at instance 2', async () => {
       expect(await evaluateTrustedArc(TWO_HOP, ['avanan.net'], VECTOR_RECEIVED, keyDeps())).toMatchObject({
-        status: 'verified', instance: 2, authResults: 'mx.avanan.net; arc=pass; dkim=pass header.d=mg.example.io',
+        status: 'verified', instance: 2, authResults: 'mx.avanan.net; arc=pass; dkim=pass header.d=mg.example.com',
       });
     });
 

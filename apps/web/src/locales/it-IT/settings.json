@@ -1738,7 +1738,7 @@
     "gatewayHint": "Se la posta raggiunge questa casella tramite un gateway in linea come Avanan, Mimecast, Proofpoint o Barracuda, il controllo di Microsoft respinge posta legittima. Indica il dominio di sigillatura ARC del gateway, cioè il valore d= nell'intestazione ARC-Seal di un messaggio che ha recapitato, e Breeze userà il suo verdetto. Lascia vuoto se non hai un gateway.",
     "gatewayWarning": "Aggiungi solo un gateway attraverso cui deve passare tutta la posta in arrivo di questo tenant: prima limita il recapito in ingresso in Exchange al gateway con un connettore. Altrimenti Breeze non può distinguere la posta recapitata dal gateway da quella inviata direttamente a Exchange.",
     "gatewayLabel": "Domini di sigillatura ARC attendibili",
-    "gatewayPlaceholder": "gateway.example.com",
+    "gatewayPlaceholder": "gateway.esempio.com",
     "gatewaySave": "Salva elenco gateway",
     "gatewaySaved": "Elenco dei gateway di posta salvato",
     "gatewaySaveFailed": "Impossibile salvare l'elenco dei gateway di posta.",

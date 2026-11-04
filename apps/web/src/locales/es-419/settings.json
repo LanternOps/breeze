@@ -1738,7 +1738,7 @@
     "gatewayHint": "Si el correo llega a este buzón a través de una puerta de enlace en línea como Avanan, Mimecast, Proofpoint o Barracuda, la comprobación de Microsoft rechaza correo legítimo. Indica el dominio de sellado ARC de la puerta de enlace, el valor d= del encabezado ARC-Seal de un mensaje que haya entregado, y Breeze usará su veredicto. Déjalo vacío si no tienes una puerta de enlace.",
     "gatewayWarning": "Agrega solo una puerta de enlace por la que deba pasar todo el correo entrante de este inquilino: primero restringe la entrega entrante en Exchange a la puerta de enlace con un conector. De lo contrario, Breeze no puede distinguir el correo entregado por la puerta de enlace del enviado directamente a Exchange.",
     "gatewayLabel": "Dominios de sellado ARC de confianza",
-    "gatewayPlaceholder": "gateway.example.com",
+    "gatewayPlaceholder": "gateway.ejemplo.com",
     "gatewaySave": "Guardar lista de puertas de enlace",
     "gatewaySaved": "Lista de puertas de enlace de correo guardada",
     "gatewaySaveFailed": "No se pudo guardar la lista de puertas de enlace de correo.",

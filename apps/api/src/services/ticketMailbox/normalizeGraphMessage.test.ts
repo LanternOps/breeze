@@ -528,12 +528,13 @@ describe('normalizeGraphMessage', () => {
       });
 
       it('aligns on the organizational domain, so a different name under a public suffix does not count', () => {
-        expect(run([...external], verifiedArc('mx.gw.test; dkim=pass header.d=mail.x.co.uk'), 'a@y.x.co.uk').senderAuth?.verified).toBe(true);
-        expect(run([...external], verifiedArc('mx.gw.test; dkim=pass header.d=attacker.co.uk'), 'a@x.co.uk').senderAuth?.verified).toBe(false);
+        const at = (domain: string) => `a@${domain}`;
+        expect(run([...external], verifiedArc('mx.gw.test; dkim=pass header.d=mail.x.co.uk'), at('y.x.co.uk')).senderAuth?.verified).toBe(true);
+        expect(run([...external], verifiedArc('mx.gw.test; dkim=pass header.d=attacker.co.uk'), at('x.co.uk')).senderAuth?.verified).toBe(false);
       });
 
       it('reads spf smtp.mailfrom in address form', () => {
-        expect(run([...external], verifiedArc('mx.gw.test; spf=pass smtp.mailfrom=bounce@mg.x.com')).senderAuth?.verified).toBe(true);
+        expect(run([...external], verifiedArc('mx.gw.test; spf=pass smtp.mailfrom=bounce@mail.x.com')).senderAuth?.verified).toBe(true);
       });
 
       it('ignores a verified seal when the message has no tenant proof', () => {

@@ -1738,7 +1738,7 @@
     "gatewayHint": "Posta bu kutuya Avanan, Mimecast, Proofpoint veya Barracuda gibi satır içi bir ağ geçidinden ulaşıyorsa Microsoft'un kendi denetimi meşru postaları reddeder. Ağ geçidinin ARC mühürleme etki alanını, yani teslim ettiği bir iletinin ARC-Seal üstbilgisindeki d= değerini girin; Breeze bunun yerine ağ geçidinin kararını kullanır. Ağ geçidiniz yoksa boş bırakın.",
     "gatewayWarning": "Yalnızca bu kiracının tüm gelen postasının geçmek zorunda olduğu bir ağ geçidi ekleyin: önce Exchange'de gelen teslimi bir bağlayıcıyla bu ağ geçidiyle sınırlayın. Aksi takdirde Breeze, ağ geçidinin teslim ettiği postayı doğrudan Exchange'e gönderilen postadan ayıramaz.",
     "gatewayLabel": "Güvenilen ARC mühürleme etki alanları",
-    "gatewayPlaceholder": "gateway.example.com",
+    "gatewayPlaceholder": "gateway.ornek.com",
     "gatewaySave": "Ağ geçidi listesini kaydet",
     "gatewaySaved": "Posta ağ geçidi listesi kaydedildi",
     "gatewaySaveFailed": "Posta ağ geçidi listesi kaydedilemedi.",
