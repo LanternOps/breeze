@@ -212,7 +212,7 @@ const productSKUMaxChars = 100
 func cleanProductSKU(value string) string {
 	cleaned := cleanHardwareIdentityValue(value)
 	switch strings.ToLower(strings.Trim(strings.Join(strings.Fields(cleaned), " "), ".")) {
-	case "sku", "system sku", "systemsku", "systemskunumber", "system sku number", "type1sku0":
+	case "sku", "sku number", "system sku", "systemsku", "systemskunumber", "system sku number", "type1sku0":
 		return ""
 	}
 	if utf8.RuneCountInString(cleaned) > productSKUMaxChars {

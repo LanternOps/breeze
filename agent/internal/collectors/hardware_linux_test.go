@@ -5,6 +5,7 @@ package collectors
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -50,8 +51,15 @@ func TestCollectLinuxProductSKU(t *testing.T) {
 	dmiRoot = root
 	t.Cleanup(func() { dmiRoot = prev })
 
+	dmiWarningOnce = sync.Once{}
+	t.Cleanup(func() { dmiWarningOnce = sync.Once{} })
 	if got := collectLinuxProductSKU(); got != "" {
 		t.Fatalf("missing file: got %q", got)
+	}
+	unspent := false
+	dmiWarningOnce.Do(func() { unspent = true })
+	if !unspent {
+		t.Fatal("a missing product_sku spent the one-shot DMI warning")
 	}
 
 	write := func(value string) {

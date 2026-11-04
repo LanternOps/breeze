@@ -542,16 +542,7 @@ func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {
 			snapshot.Hardware = c.lastSnapshot.Hardware
 		}
 	} else {
-		snapshot.Hardware = &HardwareState{
-			RAMTotalMB:   hardware.RAMTotalMB,
-			CPUModel:     hardware.CPUModel,
-			CPUCores:     hardware.CPUCores,
-			DiskTotalGB:  hardware.DiskTotalGB,
-			BIOSVersion:  hardware.BIOSVersion,
-			SerialNumber: hardware.SerialNumber,
-			ProductSKU:   hardware.ProductSKU,
-			Motherboard:  strings.TrimSpace(hardware.MotherboardManufacturer + " " + hardware.MotherboardProduct),
-		}
+		snapshot.Hardware = hardwareStateFrom(hardware)
 	}
 
 	if systemInfoErr != nil || systemInfo == nil {
@@ -1058,6 +1049,20 @@ func (c *ChangeTrackerCollector) diffUserAccounts(current *Snapshot) []ChangeRec
 	}
 
 	return changes
+}
+
+// hardwareStateFrom projects collected hardware onto the fields the tracker diffs.
+func hardwareStateFrom(hardware *HardwareInfo) *HardwareState {
+	return &HardwareState{
+		RAMTotalMB:   hardware.RAMTotalMB,
+		CPUModel:     hardware.CPUModel,
+		CPUCores:     hardware.CPUCores,
+		DiskTotalGB:  hardware.DiskTotalGB,
+		BIOSVersion:  hardware.BIOSVersion,
+		SerialNumber: hardware.SerialNumber,
+		ProductSKU:   hardware.ProductSKU,
+		Motherboard:  strings.TrimSpace(hardware.MotherboardManufacturer + " " + hardware.MotherboardProduct),
+	}
 }
 
 // diffHardware compares the current hardware state against the previous

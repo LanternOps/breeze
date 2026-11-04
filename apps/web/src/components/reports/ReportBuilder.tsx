@@ -646,7 +646,7 @@ const toNumber = (value: unknown): number | null => {
   return null;
 };
 
-const normalizePreviewRow = (type: BuilderReportType, row: PreviewRow): PreviewRow => {
+export const normalizePreviewRow = (type: BuilderReportType, row: PreviewRow): PreviewRow => {
   const normalized: PreviewRow = { ...row };
 
   if (type === 'devices') {

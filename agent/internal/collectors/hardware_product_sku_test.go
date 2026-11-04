@@ -1,6 +1,7 @@
 package collectors
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -26,6 +27,7 @@ func TestCleanProductSKU(t *testing.T) {
 		{name: "SKU placeholder: SystemSKUNumber", in: "SystemSKUNumber", want: ""},
 		{name: "SKU placeholder: System SKU Number", in: "System SKU Number", want: ""},
 		{name: "SKU placeholder: Type1Sku0", in: "Type1Sku0", want: ""},
+		{name: "SKU placeholder: SKU Number", in: "SKU Number", want: ""},
 		// A cut-off product number would misdirect a warranty or parts lookup,
 		// so anything over the column width is dropped, not truncated.
 		{name: "exactly 100 characters is kept", in: strings.Repeat("a", 100), want: strings.Repeat("a", 100)},
@@ -69,6 +71,28 @@ func TestWindowsProductSKU(t *testing.T) {
 				t.Fatalf("windowsProductSKU = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestHardwareStateFromCarriesProductSKU(t *testing.T) {
+	state := hardwareStateFrom(&HardwareInfo{SerialNumber: "SN-1", ProductSKU: "5S3F8EA#ABB"})
+	if state.ProductSKU != "5S3F8EA#ABB" {
+		t.Fatalf("ProductSKU = %q", state.ProductSKU)
+	}
+	if state.SerialNumber != "SN-1" {
+		t.Fatalf("SerialNumber = %q", state.SerialNumber)
+	}
+}
+
+// A snapshot written by an agent older than this field must load with an empty
+// SKU: that is what the "first value after upgrade" exemption keys on.
+func TestHardwareStateOldSnapshotLoadsEmptySKU(t *testing.T) {
+	var state HardwareState
+	if err := json.Unmarshal([]byte(`{"serialNumber":"SN-1","motherboard":"Acme"}`), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.ProductSKU != "" {
+		t.Fatalf("ProductSKU = %q", state.ProductSKU)
 	}
 }
 
