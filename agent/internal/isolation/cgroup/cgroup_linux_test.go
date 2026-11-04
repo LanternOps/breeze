@@ -25,6 +25,12 @@ type fakeTree struct {
 	delegated bool
 	mkdirErr  error
 	writeErr  error
+	// moveErrAfter is a migration that takes effect but still reports an error.
+	moveErrAfter error
+	// readFailsInAgent fails /proc/self/cgroup reads while in <unit>/agent.
+	readFailsInAgent bool
+	// moveBackErr fails a migration back to the unit cgroup.
+	moveBackErr error
 }
 
 func newFakeTree(t *testing.T) *fakeTree {
@@ -46,6 +52,20 @@ func (ft *fakeTree) current() string {
 	return ft.start
 }
 
+// migrate writes the pid into one cgroup.procs and out of the others, as the
+// kernel does.
+func (ft *fakeTree) migrate(path string, data []byte) error {
+	for _, sub := range []string{"agent", "children"} {
+		other := filepath.Join(ft.root, unitCgroup, sub, "cgroup.procs")
+		if other != path {
+			if _, err := os.Stat(other); err == nil {
+				_ = os.WriteFile(other, nil, 0o644)
+			}
+		}
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
 func (ft *fakeTree) system() *system {
 	return &system{
 		root: ft.root,
@@ -53,6 +73,9 @@ func (ft *fakeTree) system() *system {
 		readSelf: func() ([]byte, error) {
 			if ft.selfData != "" {
 				return []byte(ft.selfData), nil
+			}
+			if ft.readFailsInAgent && ft.current() == unitCgroup+"/agent" {
+				return nil, errors.New("read /proc/self/cgroup: EIO")
 			}
 			return []byte("0::" + ft.current() + "\n"), nil
 		},
@@ -77,7 +100,16 @@ func (ft *fakeTree) system() *system {
 			if ft.writeErr != nil {
 				return ft.writeErr
 			}
-			return os.WriteFile(path, data, 0o644)
+			if filepath.Dir(path) == filepath.Join(ft.root, unitCgroup) {
+				if ft.moveBackErr != nil {
+					return ft.moveBackErr
+				}
+				return ft.migrate(path, data)
+			}
+			if err := ft.migrate(path, data); err != nil {
+				return err
+			}
+			return ft.moveErrAfter
 		},
 		openDir: func(path string) (int, error) {
 			return syscall.Open(path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
@@ -323,5 +355,43 @@ func TestSetupSelfTurnsPlacementOffBeforeClosingOnFailure(t *testing.T) {
 	}
 	if strings.Join(order, ",") != "enable,disable,close" {
 		t.Fatalf("order = %v", order)
+	}
+}
+
+// A migration can take effect and still report an error. Placement may only go
+// off once the agent is verifiably out of <unit>/agent again: otherwise every
+// later child would start in the permitted cgroup.
+func TestSetupSelfMovesBackBeforeTurningPlacementOff(t *testing.T) {
+	ft := newFakeTree(t)
+	ft.moveErrAfter = &os.PathError{Op: "write", Err: syscall.EBUSY}
+	ft.readFailsInAgent = true
+	var order []string
+	s := ft.system()
+	s.closeFD = func(fd int) error { order = append(order, "close"); return syscall.Close(fd) }
+	_, err := s.setup(func(Layout) error { order = append(order, "enable"); return nil }, func() { order = append(order, "disable in "+ft.current()) })
+	if err == nil {
+		t.Fatal("setup must fail")
+	}
+	if strings.Join(order, ",") != "enable,disable in "+unitCgroup+",close" {
+		t.Fatalf("order = %v: placement went off while the agent could still be in the agent cgroup", order)
+	}
+}
+
+func TestSetupSelfKeepsPlacementWhenTheAgentCannotLeave(t *testing.T) {
+	ft := newFakeTree(t)
+	ft.moveErrAfter = &os.PathError{Op: "write", Err: syscall.EBUSY}
+	ft.moveBackErr = &os.PathError{Op: "write", Err: syscall.EACCES}
+	disabled, closed := false, false
+	s := ft.system()
+	s.closeFD = func(int) error { closed = true; return nil }
+	_, err := s.setup(func(Layout) error { return nil }, func() { disabled = true })
+	if err == nil {
+		t.Fatal("setup must fail")
+	}
+	if ft.current() != unitCgroup+"/agent" {
+		t.Fatalf("fixture: agent in %s", ft.current())
+	}
+	if disabled || closed {
+		t.Fatalf("disabled=%v closed=%v: the agent is in the permitted cgroup, so its children must stay placed", disabled, closed)
 	}
 }

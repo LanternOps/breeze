@@ -322,6 +322,35 @@ func TestLinuxDigestIgnoresHandlesAndCounters(t *testing.T) {
 	}
 }
 
+// nft may list an anonymous set's elements in a different order after a
+// reload; that is not drift.
+func TestLinuxDigestIgnoresSetElementOrder(t *testing.T) {
+	listing := func(set string) []byte {
+		return []byte(`{"nftables":[{"chain":{"family":"inet","table":"breeze_isolation","name":"input","hook":"input","policy":"drop"}},
+{"chain":{"family":"inet","table":"breeze_isolation","name":"output","hook":"output","policy":"drop"}},
+{"chain":{"family":"inet","table":"breeze_isolation","name":"forward","hook":"forward","policy":"drop"}},
+{"rule":{"chain":"output","expr":[{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":{"set":` + set + `}}},{"accept":null}]}}]}`)
+	}
+	a, err := digestNftListing(listing(`["192.0.2.10","192.0.2.11"]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := digestNftListing(listing(`["192.0.2.11","192.0.2.10"]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != b {
+		t.Fatal("set element order changed the digest")
+	}
+	c, err := digestNftListing(listing(`["192.0.2.10","192.0.2.12"]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c == a {
+		t.Fatal("a different set must change the digest")
+	}
+}
+
 func TestLinuxVerifyFailsWhenTheTableIsGone(t *testing.T) {
 	f := &fakeNft{}
 	i := newTestLinuxIsolator(f)

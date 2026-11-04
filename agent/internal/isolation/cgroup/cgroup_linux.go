@@ -137,18 +137,44 @@ func (s *system) setup(enable func(Layout) error, disable func()) (Layout, error
 			return abandon(false, &Error{Reason: ReasonSpawnUnavailable, Detail: "place a child in " + layout.ChildrenPath, Err: err})
 		}
 	}
+	agentCgroup := unit + "/" + agentLeaf
+	pid := []byte(strconv.Itoa(s.pid))
+	// inAgent reports where the process is; an unreadable answer counts as
+	// "maybe in the agent cgroup".
+	inAgent := func() bool {
+		data, err := s.readSelf()
+		if err != nil {
+			return true
+		}
+		now, err := parseSelf(data)
+		return err != nil || now == agentCgroup
+	}
+	// retreat handles a failure after placement went on. A migration can take
+	// effect and still report an error, so placement may go off only once the
+	// agent is verifiably out of <unit>/agent: with placement off there, every
+	// later child would start in the permitted cgroup. If the agent cannot be
+	// shown out, placement and its fd stay (the fd is deliberately leaked).
+	retreat := func(refusal error) (Layout, error) {
+		if inAgent() {
+			_ = s.writeFile(filepath.Join(unitDir, "cgroup.procs"), pid)
+			if inAgent() {
+				return Layout{}, errors.Join(refusal, fmt.Errorf("the agent may remain in %s, so child placement stays on", agentCgroup))
+			}
+		}
+		return abandon(true, refusal)
+	}
 	// cgroup.procs migrates every thread of the process (a v2 domain cgroup).
-	if current != unit+"/"+agentLeaf {
-		if err := s.writeFile(filepath.Join(agentDir, "cgroup.procs"), []byte(strconv.Itoa(s.pid))); err != nil {
-			return abandon(true, classify("move the agent into "+agentDir, err))
+	if current != agentCgroup {
+		if err := s.writeFile(filepath.Join(agentDir, "cgroup.procs"), pid); err != nil {
+			return retreat(classify("move the agent into "+agentDir, err))
 		}
 	}
 	data, err = s.readSelf()
 	if err != nil {
-		return abandon(true, &Error{Reason: ReasonUnavailable, Detail: "re-read /proc/self/cgroup", Err: err})
+		return retreat(&Error{Reason: ReasonUnavailable, Detail: "re-read /proc/self/cgroup", Err: err})
 	}
-	if moved, err := parseSelf(data); err != nil || moved != unit+"/"+agentLeaf {
-		return abandon(true, &Error{Reason: ReasonUnavailable, Detail: fmt.Sprintf("the agent did not land in %s/%s (now %q)", unit, agentLeaf, moved), Err: err})
+	if moved, err := parseSelf(data); err != nil || moved != agentCgroup {
+		return retreat(&Error{Reason: ReasonUnavailable, Detail: fmt.Sprintf("the agent did not land in %s (now %q)", agentCgroup, moved), Err: err})
 	}
 	return layout, nil
 }

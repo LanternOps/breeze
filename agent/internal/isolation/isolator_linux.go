@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -510,6 +511,24 @@ func (i *linuxIsolator) dropCount(ctx context.Context) (uint64, error) {
 	return 0, errors.New("the nft drop counter is not installed")
 }
 
+func sortedNftElements(elements []any) []any {
+	type keyed struct {
+		key  string
+		item any
+	}
+	list := make([]keyed, len(elements))
+	for n, item := range elements {
+		b, _ := json.Marshal(item)
+		list[n] = keyed{string(b), item}
+	}
+	sort.Slice(list, func(a, b int) bool { return list[a].key < list[b].key })
+	out := make([]any, len(list))
+	for n, k := range list {
+		out[n] = k.item
+	}
+	return out
+}
+
 func parseNftListing(data []byte) ([]map[string]any, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
@@ -570,7 +589,13 @@ func stripNftVolatile(value any) any {
 			case "handle", "packets", "bytes":
 				continue
 			}
-			out[key] = stripNftVolatile(item)
+			item = stripNftVolatile(item)
+			// An anonymous set is unordered; nft may list its elements in a
+			// different order after a reload, which is not drift.
+			if elements, ok := item.([]any); ok && key == "set" {
+				item = sortedNftElements(elements)
+			}
+			out[key] = item
 		}
 		return out
 	case []any:
