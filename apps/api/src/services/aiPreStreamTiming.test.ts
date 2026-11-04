@@ -97,4 +97,46 @@ describe('aiPreStreamTiming (#11004)', () => {
     expect(warnLines()[0]).not.toContain('detached');
     expect(warnLines()[0]).not.toContain('afterFinish');
   });
+
+  it('keeps request-supplied field values to one bounded token (no forged log lines)', async () => {
+    await withPreStreamTiming('chat.message', { sessionId: 'x\n[AI] forged line\r\n' + 'a'.repeat(200) }, async () => {
+      timePreStreamPhase('slow', () => advance(PRE_STREAM_SLOW_PHASE_MS));
+    });
+    const line = warnLines()[0]!;
+    expect(line).not.toMatch(/[\r\n]/);
+    expect(line).not.toContain('[AI] forged');
+    expect(line).toMatch(/sessionId=[A-Za-z0-9._:?-]{64} total=/);
+  });
+
+  it('warns at exactly the threshold and sums a repeated phase name', async () => {
+    await withPreStreamTiming('chat.message', { sessionId: 's-7' }, async () => {
+      timePreStreamPhase('lookup', () => advance(PRE_STREAM_SLOW_PHASE_MS / 2));
+      timePreStreamPhase('lookup', () => advance(PRE_STREAM_SLOW_PHASE_MS / 2));
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warnLines()[0]).toContain(`lookup=${PRE_STREAM_SLOW_PHASE_MS}ms`);
+  });
+
+  it('a failure while reporting never changes the request outcome', async () => {
+    warn.mockImplementation(() => { throw new Error('log sink down'); });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const value = await withPreStreamTiming('chat.message', { sessionId: 's-8' }, async () => {
+      timePreStreamPhase('slow', () => advance(PRE_STREAM_SLOW_PHASE_MS));
+      return 42;
+    });
+    expect(value).toBe(42);
+    expect(error).toHaveBeenCalled();
+  });
+
+  it('concurrent phases nest under their own parents', async () => {
+    await withPreStreamTiming('chat.message', { sessionId: 's-9' }, async () => {
+      await timePreStreamPhase('dispatch', () => Promise.all([
+        timePreStreamPhase('left', async () => { await Promise.resolve(); timePreStreamPhase('leaf', () => advance(300)); }),
+        timePreStreamPhase('right', async () => { await Promise.resolve(); timePreStreamPhase('leaf', () => advance(300)); }),
+      ]));
+    });
+    const line = warnLines()[0]!;
+    expect(line).toContain('dispatch.left.leaf=300ms');
+    expect(line).toContain('dispatch.right.leaf=300ms');
+  });
 });

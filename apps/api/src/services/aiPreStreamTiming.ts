@@ -58,6 +58,15 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
 
 const round = (ms: number) => Math.round(ms);
 
+/**
+ * Field values can be request input (the route's `:id` param, percent-decoded
+ * by Hono and not yet validated when the timer starts): keep them to one
+ * bounded token so a crafted id cannot forge or split a log line.
+ */
+function logSafe(value: string): string {
+  return value.replace(/[^A-Za-z0-9._:-]/g, '?').slice(0, 64);
+}
+
 function finishTimer(timer: PreStreamTimer): void {
   if (timer.finished) return;
   const totalMs = performance.now() - timer.startedAt;
@@ -77,7 +86,7 @@ function finishTimer(timer: PreStreamTimer): void {
 
   const fieldText = Object.entries(timer.fields)
     .filter(([, value]) => value !== undefined && value !== null && value !== '')
-    .map(([key, value]) => `${key}=${value}`)
+    .map(([key, value]) => `${key}=${logSafe(String(value))}`)
     .join(' ');
   const phaseText = entries.map(([name, ms]) => `${name}=${round(ms)}ms`).join(',');
   console.warn(
