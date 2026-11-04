@@ -76,6 +76,7 @@ vi.mock('./aiAgentSdkTools', () => ({
 vi.mock('./aiAgentSdk', () => ({
   createSessionPreToolUse: vi.fn(() => vi.fn()),
   createSessionPostToolUse: vi.fn(() => vi.fn()),
+  settleApprovalWaits: vi.fn(),
 }));
 vi.mock('./aiToolOutput', () => ({
   redactAiToolOutputText: (s: string) => s,
@@ -398,6 +399,81 @@ describe('turn budget (#10400)', () => {
     await session.processorPromise;
     expect(optionsOfLastQuery().tools).toEqual([]);
     expect(optionsOfLastQuery().maxTurns).toBe(10);
+  });
+
+  it('charges a search-only loop that hits the ceiling one turn, so retrying it is never free', async () => {
+    mockSdkQuery([
+      assistant('msg_1', [search('toolu_s1')]),
+      assistant('msg_2', [search('toolu_s2')]),
+      assistant('msg_3', [search('toolu_s3')]),
+      { ...RESULT_MSG, subtype: 'error_max_turns', num_turns: 3, errors: [] },
+    ]);
+    const session = await manager.getOrCreate(
+      'sess-search-loop', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(settledTurnCounts()).toEqual([1]);
+  });
+
+  // The SDK's ceiling carries search headroom, so it no longer stops a query of
+  // real work at the session's limit: the stream has to. Remaining work = 5.
+  describe('work budget inside a searching turn', () => {
+    const NEAR_LIMIT = { ...DB_SESSION, turnCount: 45 };
+    const realRoundTrips = (n: number) =>
+      Array.from({ length: n }, (_, i) => assistant(`msg_w${i}`, [work(`toolu_w${i}`)]));
+    const interruptOf = (session: { query: unknown }) =>
+      (session.query as { interrupt: ReturnType<typeof vi.fn> }).interrupt;
+    const start = (id: string) =>
+      manager.getOrCreate(id, NEAR_LIMIT, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG, undefined, undefined, { toolSearch: true });
+    const errorsOf = (session: { eventBus: { getReplayEvents(): Array<{ type: string }> } }) =>
+      session.eventBus.getReplayEvents().filter((e) => e.type === 'error');
+
+    it('stops at the first real round-trip past the limit and reports the coded turn limit', async () => {
+      mockSdkQuery([
+        ...realRoundTrips(6),
+        { ...RESULT_MSG, subtype: 'error_during_execution', num_turns: 6, errors: ['aborted'] },
+      ]);
+      const session = await start('sess-over');
+      await session.processorPromise;
+      expect(interruptOf(session)).toHaveBeenCalledTimes(1);
+      expect(errorsOf(session)).toEqual([expect.objectContaining({ code: 'turn_limit_reached' })]);
+    });
+
+    it('does not stop a turn that spends exactly its remaining work turns', async () => {
+      mockSdkQuery([...realRoundTrips(5), assistant('msg_end', [{ type: 'text', text: 'Done.' }]), { ...RESULT_MSG, num_turns: 6 }]);
+      const session = await start('sess-exact');
+      await session.processorPromise;
+      expect(interruptOf(session)).not.toHaveBeenCalled();
+      expect(errorsOf(session)).toEqual([]);
+    });
+
+    it('does not count search round-trips toward the limit', async () => {
+      mockSdkQuery([
+        ...Array.from({ length: 5 }, (_, i) => assistant(`msg_s${i}`, [search(`toolu_s${i}`)])),
+        ...realRoundTrips(5),
+        { ...RESULT_MSG, num_turns: 10 },
+      ]);
+      const session = await start('sess-searchy');
+      await session.processorPromise;
+      expect(interruptOf(session)).not.toHaveBeenCalled();
+      expect(settledTurnCounts()).toEqual([5]);
+    });
+
+    it('reports the limit and charges the real round-trips when the stop ends with no result', async () => {
+      mockSdkQuery(realRoundTrips(6));
+      const session = await start('sess-noresult');
+      await session.processorPromise;
+      expect(errorsOf(session)).toEqual([expect.objectContaining({ code: 'turn_limit_reached' })]);
+      expect(settledTurnCounts()).toEqual([6]);
+    });
+
+    it('leaves a query that cannot search to the SDK ceiling', async () => {
+      mockSdkQuery(realRoundTrips(6));
+      const session = await manager.getOrCreate('sess-nosearch', NEAR_LIMIT, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG);
+      await session.processorPromise;
+      expect(interruptOf(session)).not.toHaveBeenCalled();
+    });
   });
 
   it('still trips the ceiling and charges every round-trip of a real tool loop', async () => {

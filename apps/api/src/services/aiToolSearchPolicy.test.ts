@@ -111,11 +111,16 @@ describe('work-turn accounting (#10400)', () => {
     expect(workTurns(4, tally)).toBe(2);
   });
 
-  it('never goes negative', () => {
+  it('charges a turn that reached the model at least one turn, even if it only searched', () => {
     const tally = newRoundTripTally();
     noteAssistantRoundTrip(tally, { id: 'a', content: [search] });
     noteAssistantRoundTrip(tally, { id: 'b', content: [search] });
-    expect(workTurns(1, tally)).toBe(0);
+    expect(workTurns(2, tally)).toBe(1);
+    expect(workTurns(1, tally)).toBe(1);
+  });
+
+  it('charges nothing for a turn that never reached the model', () => {
+    expect(workTurns(0, newRoundTripTally())).toBe(0);
   });
 
   it('keys id-less messages apart', () => {

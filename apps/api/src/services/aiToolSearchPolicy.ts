@@ -102,6 +102,10 @@ export function isSdkBuiltinToolUse(name: string): boolean {
  * model round-trip, search included. Without headroom a query created late in
  * a session would stop mid-turn on its searches with work budget still left.
  * The ceiling stays finite, so a runaway loop (searches included) still trips.
+ *
+ * The headroom is for searches only. The SDK cannot tell them apart, so a
+ * searching query's real work is held to the session's limit in the stream
+ * (`ActiveSession.workTurnLimit`), not by this ceiling.
  */
 export const TOOL_SEARCH_TURN_HEADROOM = 10;
 
@@ -147,9 +151,15 @@ export function noteAssistantRoundTrip(
   }
 }
 
-/** The SDK's `num_turns` less this turn's retrieval-only round-trips; never negative. */
+/**
+ * The SDK's `num_turns` less this turn's retrieval-only round-trips. A turn
+ * that reached the model is charged at least one turn, so a turn that only
+ * searched (a search loop that hit the SDK ceiling) still advances the
+ * session toward its limit and can never be retried for free.
+ */
 export function workTurns(numTurns: number, tally: RoundTripTally): number {
+  if (numTurns <= 0) return 0;
   let retrievalOnly = 0;
   for (const key of tally.builtinCalls) if (!tally.workCalls.has(key)) retrievalOnly++;
-  return Math.max(0, numTurns - retrievalOnly);
+  return Math.max(1, numTurns - retrievalOnly);
 }
