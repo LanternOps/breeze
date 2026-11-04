@@ -33,6 +33,7 @@ import { chooseSessionModel, type SessionModelChoice } from './aiModels/sessionM
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { authorizeTopologySessionSite } from './topology/aiToolGate';
 import { topologySessionAccessCondition } from './topology/aiSessionAccess';
+import { timePreStreamPhase } from './aiPreStreamTiming';
 export { BREEZE_FALLBACK_MODEL, resolveDefaultModel } from './aiModel';
 export { InvalidSessionModelError } from './aiModels/invalidSessionModelError';
 
@@ -956,15 +957,19 @@ export async function buildSystemPrompt(
   // A-W02: the tool index is generated from the registry. Loaded lazily so
   // this module stays importable without the tool hub (routes/devices tests
   // mock db/schema partially and would otherwise pull aiToolSchemas in).
-  const [{ composeStaticSystemPrompt, renderPageContextToolBlocks, resolveToolIndexMode }, { listChatSurfaceToolNames }] = await Promise.all([
+  const [{ composeStaticSystemPrompt, renderPageContextToolBlocks, resolveToolIndexMode }, { listChatSurfaceToolNames }] = await timePreStreamPhase('systemPrompt.modules', () => Promise.all([
     import('./aiToolIndex'),
     import('./aiAgentSdkTools'),
-  ]);
+  ]));
   // W19 (#10065): `lazy` (default) ships the always-on domain index here and
   // pre-expands the page's domains below; `full` ships the legacy whole index.
+  // #11004: synchronous; the tool names come from the cached tool template.
   const toolIndexMode = resolveToolIndexMode();
-  const toolNames = listChatSurfaceToolNames();
-  parts.push(composeStaticSystemPrompt(toolNames, toolIndexMode));
+  const { toolNames, staticPrompt } = timePreStreamPhase('systemPrompt.toolIndex', () => {
+    const names = listChatSurfaceToolNames();
+    return { toolNames: names, staticPrompt: composeStaticSystemPrompt(names, toolIndexMode) };
+  });
+  parts.push(staticPrompt);
 
 
 
