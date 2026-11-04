@@ -70,13 +70,18 @@ function configureOauthEnv(url: string): void {
 async function startApi(): Promise<LiveServer> {
   const app = new Hono<{ Bindings: HttpBindings }>();
   const live = await listenEphemeral(app);
-  configureOauthEnv(live.url);
+  try {
+    configureOauthEnv(live.url);
 
-  const { oauthRoutes } = await import('../../routes/oauth');
-  const { oauthInteractionRoutes } = await import('../../routes/oauthInteraction');
-  app.route('/oauth', oauthRoutes);
-  app.route('/api/v1/oauth', oauthInteractionRoutes);
-  return live;
+    const { oauthRoutes } = await import('../../routes/oauth');
+    const { oauthInteractionRoutes } = await import('../../routes/oauthInteraction');
+    app.route('/oauth', oauthRoutes);
+    app.route('/api/v1/oauth', oauthInteractionRoutes);
+    return live;
+  } catch (err) {
+    await stopApi(live);
+    throw err;
+  }
 }
 
 async function stopApi(live: LiveServer): Promise<void> {

@@ -82,19 +82,24 @@ function configureOauthEnv(url: string): void {
 async function startApi(): Promise<LiveServer> {
   const app = new Hono<{ Bindings: HttpBindings }>();
   const live = await listenEphemeral(app);
-  configureOauthEnv(live.url);
+  try {
+    configureOauthEnv(live.url);
 
-  const { oauthRoutes } = await import('../../routes/oauth');
-  const { oauthInteractionRoutes } = await import('../../routes/oauthInteraction');
-  const { wellKnownRoutes } = await import('../../routes/oauthWellKnown');
-  const { mcpServerRoutes } = await import('../../routes/mcpServer');
+    const { oauthRoutes } = await import('../../routes/oauth');
+    const { oauthInteractionRoutes } = await import('../../routes/oauthInteraction');
+    const { wellKnownRoutes } = await import('../../routes/oauthWellKnown');
+    const { mcpServerRoutes } = await import('../../routes/mcpServer');
 
-  app.route('/oauth', oauthRoutes);
-  app.route('/api/v1/oauth', oauthInteractionRoutes);
-  app.route('/.well-known', wellKnownRoutes);
-  app.route('/api/v1/mcp', mcpServerRoutes);
+    app.route('/oauth', oauthRoutes);
+    app.route('/api/v1/oauth', oauthInteractionRoutes);
+    app.route('/.well-known', wellKnownRoutes);
+    app.route('/api/v1/mcp', mcpServerRoutes);
 
-  return live;
+    return live;
+  } catch (err) {
+    await stopApi(live);
+    throw err;
+  }
 }
 
 async function stopApi(s: LiveServer): Promise<void> {
