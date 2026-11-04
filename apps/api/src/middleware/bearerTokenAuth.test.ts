@@ -354,7 +354,6 @@ describe('bearerTokenAuthMiddleware', () => {
     ['non-200 JWKS response', () => new errors.JOSEError('Expected 200 OK from the JSON Web Key Set HTTP response')],
     ['JWKS fetch timeout', () => new errors.JWKSTimeout()],
     ['malformed JWKS document', () => new errors.JWKSInvalid('JSON Web Key Set malformed')],
-    ['duplicate keys in JWKS', () => new errors.JWKSMultipleMatchingKeys()],
     ['unparseable JWKS body', () => new errors.JOSEError('Failed to parse the JSON Web Key Set HTTP response as JSON')],
   ])('returns 503 (not 401) when the JWKS endpoint is unavailable: %s', async (_name, makeErr) => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -373,6 +372,11 @@ describe('bearerTokenAuthMiddleware', () => {
   it('keeps no-matching-key JWKS errors at 401', async () => {
     vi.mocked(jwtVerify).mockRejectedValueOnce(new errors.JWKSNoMatchingKey());
     await expectUnauthorized(createContext({ Authorization: 'Bearer token' }), /invalid token: ERR_JWKS_NO_MATCHING_KEY/);
+  });
+
+  it('keeps multiple-matching-keys at 401 (token-triggerable via a kid-less header)', async () => {
+    vi.mocked(jwtVerify).mockRejectedValueOnce(new errors.JWKSMultipleMatchingKeys());
+    await expectUnauthorized(createContext({ Authorization: 'Bearer token' }), /invalid token: ERR_JWKS_MULTIPLE_MATCHING_KEYS/);
   });
 
   it('authorizes a matching live auth epoch before consulting Redis', async () => {

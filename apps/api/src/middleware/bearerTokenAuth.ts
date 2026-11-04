@@ -405,12 +405,12 @@ function unauthorized(c: Context, opts: { message: string }): HTTPException {
 }
 
 // Verified against jose 6.x: only the JWKS fetch/parse paths throw these; no token
-// content can trigger them. Re-check on a jose major bump.
+// content can trigger them. Re-check on a jose major bump. Deliberately excludes
+// ERR_JWKS_MULTIPLE_MATCHING_KEYS: a kid-less token can trigger it, so it stays 401.
 const JWKS_UNAVAILABLE_CODES: ReadonlySet<string> = new Set([
   'ERR_JOSE_GENERIC',
   'ERR_JWKS_TIMEOUT',
   'ERR_JWKS_INVALID',
-  'ERR_JWKS_MULTIPLE_MATCHING_KEYS',
 ]);
 
 export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
