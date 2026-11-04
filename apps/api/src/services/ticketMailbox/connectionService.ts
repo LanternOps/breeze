@@ -64,6 +64,9 @@ export interface MailboxConnectionListItem {
    * AADSTS50011 redirect URI mismatch), or the callback was turned away before
    * it could touch the row (#6936). Always false for any other status. */
   consentExpired: boolean;
+  /** ARC sealing domains (the d= of an ARC-Seal) of the inline mail gateways this
+   * mailbox trusts for sender auth (#10862). Always empty for gmail rows. */
+  trustedArcSealers: string[];
   /** Gmail rows only (null for m365): the per-mailbox "mark handled" setting
    * and the last marking failure as a fixed code (never upstream text). */
   gmailHandling: GmailHandlingSettings | null;
@@ -101,6 +104,7 @@ type ConnectedMailbox = MailboxConnectionSnapshot & Pick<
   eligibleAfter: Date | null;
   /** When the first delta round after connect finished; null while it runs. */
   baselineCompletedAt: Date | null;
+  trustedArcSealers: string[];
 };
 
 type Row = typeof ticketMailboxConnections.$inferSelect;
@@ -139,6 +143,7 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
     eligibleAfter: ticketMailboxConnections.eligibleAfter,
     baselineSkippedCount: ticketMailboxConnections.baselineSkippedCount,
     baselineCompletedAt: ticketMailboxConnections.baselineCompletedAt,
+    trustedArcSealers: ticketMailboxConnections.trustedArcSealers,
     // Whether the row's CURRENT attempt still has a live state (either phase).
     // Sessions are single-use and TTL-bound, so none left means the flow is
     // dead. Read under the caller's RLS context like the rest of this query;
@@ -176,6 +181,7 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
       ? { count: row.consecutiveTransientFailures, lastAt: row.lastTransientFailureAt }
       : null,
     consentExpired: row.status === 'pending_consent' && row.consentSessionLive !== true,
+    trustedArcSealers: row.trustedArcSealers,
     gmailHandling: row.provider === 'gmail'
       ? {
         label: row.gmailHandledLabel,
@@ -188,6 +194,32 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
       ? { skippedCount: row.baselineSkippedCount, completedAt: row.baselineCompletedAt }
       : null,
   }));
+}
+
+/**
+ * Replace a Microsoft 365 mailbox's trusted ARC sealers (#10862). Runs in the
+ * caller's request DB context like updateGmailHandling. Only a non-disabled
+ * Microsoft 365 row of this partner matches; returns null when none did. The next
+ * sweep reads the new list, and mail already enqueued keeps the verdict it got.
+ */
+export async function updateTrustedArcSealers(
+  id: string,
+  partnerId: string,
+  sealers: string[],
+): Promise<{ id: string; mailboxAddress: string } | null> {
+  const rows = await db.update(ticketMailboxConnections)
+    .set({ trustedArcSealers: sealers, updatedAt: new Date() })
+    .where(and(
+      eq(ticketMailboxConnections.id, id),
+      eq(ticketMailboxConnections.partnerId, partnerId),
+      eq(ticketMailboxConnections.provider, 'm365'),
+      sql`${ticketMailboxConnections.status} <> 'disabled'`,
+    ))
+    .returning({
+      id: ticketMailboxConnections.id,
+      mailboxAddress: ticketMailboxConnections.mailboxAddress,
+    });
+  return rows[0] ?? null;
 }
 
 /**
@@ -257,6 +289,7 @@ export async function listConnectedMailboxes(): Promise<ConnectedMailbox[]> {
       consentAttemptId: ticketMailboxConnections.consentAttemptId,
       eligibleAfter: ticketMailboxConnections.eligibleAfter,
       baselineCompletedAt: ticketMailboxConnections.baselineCompletedAt,
+      trustedArcSealers: ticketMailboxConnections.trustedArcSealers,
     }).from(ticketMailboxConnections)
       .innerJoin(
         ticketMailboxTenantOwnerships,
