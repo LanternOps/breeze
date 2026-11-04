@@ -20,7 +20,8 @@ export type SenderAuthVerdict = 'pass' | 'fail' | 'neutral' | 'none' | 'unknown'
 // spoofable, so identity/state actions (treating a sender as a known portal user,
 // or threading a reply by ticket token) must gate on `verified`. `verified` is the
 // derived trust decision: a trusted DMARC pass, or (Microsoft 365 mailbox only)
-// Exchange's intra-tenant stamp — see `source`. When the provider omits all
+// Exchange's intra-tenant stamp, Exchange's own stamp on external mail, or a trusted
+// ARC sealer's verdict — see `source`. When the provider omits all
 // verdicts, `verified` is false (fail closed) — mail is quarantined for human
 // review, never auto-trusted and never hard-dropped.
 export interface SenderAuth {
@@ -37,9 +38,10 @@ export interface SenderAuth {
    * or connector allowed to send as another address passes too.
    * 'exchange-online': the DMARC verdict came from Exchange Online's own stamp on
    * external mail, for the message's From domain (#10862).
-   * 'trusted-arc-sealer': the verdict came from a gateway the connection lists as a
-   * trusted ARC sealer, whose seal verified and whose verdict is for the From domain
-   * (#10862). Absent: `verified` is the DMARC result of a provider stamp.
+   * 'trusted-arc-sealer': the sender-auth verdict (a DMARC pass, or an aligned DKIM or
+   * SPF pass) came from a gateway the connection lists as a trusted ARC sealer, whose
+   * seal verified and whose verdict is for the From domain (#10862).
+   * Absent: `verified` is the DMARC result of a provider stamp.
    */
   source?: 'exchange-internal' | 'exchange-online' | 'trusted-arc-sealer';
 }

@@ -105,6 +105,14 @@ const gmailHandlingBody = z.object({
 
 // Trusted ARC sealers (#10862): lowercase domains as they appear in an ARC-Seal's d=.
 const ARC_SEALER_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+// Mail providers that seal every customer's mail with one shared d=: trusting one
+// would trust mail any of their customers can send, so it is never a gateway here.
+// Exchange's own seal (d=microsoft.com) sits on the same chain as the gateway's,
+// which makes it the easy wrong value to copy.
+const SHARED_PROVIDER_SEALERS = new Set([
+  'microsoft.com', 'outlook.com', 'office365.com', 'onmicrosoft.com',
+  'google.com', 'gmail.com', 'googlemail.com',
+]);
 const trustedArcSealersBody = z.object({
   sealers: z.array(
     z.string().max(253).regex(ARC_SEALER_RE).refine(
@@ -112,6 +120,9 @@ const trustedArcSealersBody = z.object({
       // a mistake here would mean trusting more than one operator.
       (sealer) => getDomain(sealer, { allowPrivateDomains: true }) !== null,
       'Must be a domain name',
+    ).refine(
+      (sealer) => !SHARED_PROVIDER_SEALERS.has(getDomain(sealer, { allowPrivateDomains: true }) ?? sealer),
+      'A mail provider\'s shared sealing domain cannot be a trusted gateway',
     ),
   ).max(10).refine((sealers) => new Set(sealers).size === sealers.length, 'Duplicate sealer'),
 }).strict();

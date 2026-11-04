@@ -43,7 +43,7 @@ const { authRef, mocks, IdentityError } = vi.hoisted(() => ({
     listMailboxConnections: vi.fn(async (): Promise<unknown[]> => []),
     disableConnection: vi.fn(async () => true),
     updateTrustedArcSealers: vi.fn(),
-  updateGmailHandling: vi.fn(),
+    updateGmailHandling: vi.fn(),
     createAdminConsentSession: vi.fn(),
     createIdentityVerificationSession: vi.fn(),
     consumeConsentSession: vi.fn(),
@@ -1371,13 +1371,27 @@ describe('PATCH /connections/:id/trusted-arc-sealers (#10862)', () => {
     ['a too-long name', [`${'a'.repeat(250)}.example`]],
     ['a duplicate', ['gateway.example', 'gateway.example']],
     ['too many entries', Array.from({ length: 11 }, (_, i) => `g${i}.example`)],
+    ["Exchange's own sealing domain", ['microsoft.com']],
+    ["a mail provider's shared sealing domain", ['google.com']],
+    ['a host under a shared provider domain', ['arc.outlook.com']],
   ])('rejects %s before the service', async (_label, sealers) => {
     expect((await patch(app, { sealers })).status).toBe(400);
     expect(mocks.updateTrustedArcSealers).not.toHaveBeenCalled();
   });
 
-  it('rejects an unknown field', async () => {
+  it('rejects an unknown field, a missing or non-array list, and a non-uuid id', async () => {
     expect((await patch(app, { sealers: [], extra: 1 })).status).toBe(400);
+    expect((await patch(app, {})).status).toBe(400);
+    expect((await patch(app, { sealers: 'gateway.example' })).status).toBe(400);
+    expect((await patch(app, { sealers: [] }, 'not-a-uuid')).status).toBe(400);
+    expect(mocks.updateTrustedArcSealers).not.toHaveBeenCalled();
+  });
+
+  it('denies organization scope before the service or audit', async () => {
+    authRef.current = adminAuth({ scope: 'organization', partnerId: null, partnerOrgAccess: null });
+    expect((await patch(app, { sealers: [] })).status).toBe(403);
+    expect(mocks.updateTrustedArcSealers).not.toHaveBeenCalled();
+    expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
   });
 
   it('404s when no matching Microsoft 365 connection exists and writes no audit', async () => {

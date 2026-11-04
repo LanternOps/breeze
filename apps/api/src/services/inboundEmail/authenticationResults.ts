@@ -2,7 +2,7 @@ import type { SenderAuth, SenderAuthVerdict } from './types';
 
 // Shared Authentication-Results verdict parsing for inbound mail (Gmail and
 // Microsoft Graph). WHICH header is trusted stays provider-specific (each
-// normalizer's trustedAuthResults); this module only reads verdicts out of the
+// normalizer's own header selection); this module only reads verdicts out of the
 // header the caller already chose to trust.
 
 export function normalizeVerdict(raw: string | undefined): SenderAuthVerdict {

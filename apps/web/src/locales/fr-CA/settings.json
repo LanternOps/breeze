@@ -1736,7 +1736,7 @@
     "retest": "Retester",
     "gatewayTitle": "Passerelle de courriel (facultatif)",
     "gatewayHint": "Si le courriel arrive à cette boîte par une passerelle en ligne comme Avanan, Mimecast, Proofpoint ou Barracuda, la vérification de Microsoft rejette des courriels légitimes. Indiquez le domaine de scellement ARC de la passerelle, soit la valeur d= de l'en-tête ARC-Seal d'un message qu'elle a livré, et Breeze utilisera son verdict. Laissez ce champ vide si vous n'avez pas de passerelle.",
-    "gatewayWarning": "N'ajoutez qu'une passerelle par laquelle tout le courriel entrant de ce locataire doit passer : limitez d'abord la livraison entrante dans Exchange à la passerelle au moyen d'un connecteur. Sinon, quelqu'un qui détient un de ses sceaux pourrait écrire directement à Exchange et le réutiliser.",
+    "gatewayWarning": "N'ajoutez qu'une passerelle par laquelle tout le courriel entrant de ce locataire doit passer : limitez d'abord la livraison entrante dans Exchange à la passerelle au moyen d'un connecteur. Sinon, Breeze ne peut pas distinguer le courriel livré par la passerelle de celui envoyé directement à Exchange.",
     "gatewayLabel": "Domaines de scellement ARC approuvés",
     "gatewayPlaceholder": "gateway.example.com",
     "gatewaySave": "Enregistrer la liste des passerelles",

@@ -143,6 +143,7 @@ function TrustedArcSealers({
 
   const save = async () => {
     setSaving(true);
+    let savedOk = false;
     try {
       await runAction({
         request: () =>
@@ -155,12 +156,14 @@ function TrustedArcSealers({
         successMessage: t('m365Mailbox.gatewaySaved'),
         onUnauthorized,
       });
-      await onSaved();
+      savedOk = true;
     } catch (err) {
       if (!(err instanceof ActionError)) handleActionError(err, t('m365Mailbox.gatewaySaveFailed'));
     } finally {
       setSaving(false);
     }
+    // Outside the save's error handling: a failed reload is not a failed save.
+    if (savedOk) await onSaved().catch(() => {});
   };
 
   return (

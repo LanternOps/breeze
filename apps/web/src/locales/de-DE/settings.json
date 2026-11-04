@@ -1736,7 +1736,7 @@
     "retest": "Erneut testen",
     "gatewayTitle": "E-Mail-Gateway (optional)",
     "gatewayHint": "Wenn E-Mails dieses Postfach über ein Inline-Gateway wie Avanan, Mimecast, Proofpoint oder Barracuda erreichen, lehnt die Prüfung von Microsoft legitime E-Mails ab. Tragen Sie die ARC-Signaturdomäne des Gateways ein, also den Wert d= im ARC-Seal-Header einer von ihm zugestellten Nachricht. Breeze verwendet dann das Ergebnis des Gateways. Lassen Sie das Feld leer, wenn Sie kein Gateway verwenden.",
-    "gatewayWarning": "Fügen Sie nur ein Gateway hinzu, über das alle eingehenden E-Mails dieses Mandanten zwingend laufen: Beschränken Sie die eingehende Zustellung in Exchange zuerst mit einem Connector auf das Gateway. Andernfalls könnte jemand, der eines seiner Siegel besitzt, direkt an Exchange senden und es wiederverwenden.",
+    "gatewayWarning": "Fügen Sie nur ein Gateway hinzu, über das alle eingehenden E-Mails dieses Mandanten zwingend laufen: Beschränken Sie die eingehende Zustellung in Exchange zuerst mit einem Connector auf das Gateway. Andernfalls kann Breeze vom Gateway zugestellte E-Mails nicht von solchen unterscheiden, die direkt an Exchange gesendet wurden.",
     "gatewayLabel": "Vertrauenswürdige ARC-Signaturdomänen",
     "gatewayPlaceholder": "gateway.example.com",
     "gatewaySave": "Gateway-Liste speichern",

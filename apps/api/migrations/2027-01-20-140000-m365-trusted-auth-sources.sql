@@ -2,7 +2,8 @@
 -- report sender authentication, by ARC sealing domain (the d= of an ARC-Seal).
 -- Empty by default, so nothing changes for a mailbox that does not set it.
 --
--- No row is written here: the default fills existing rows.
+-- A CHECK caps the list at 10 and keeps it empty on non-m365 rows. No row is
+-- written here: the default fills existing rows.
 
 ALTER TABLE ticket_mailbox_connections
   ADD COLUMN IF NOT EXISTS trusted_arc_sealers text[] NOT NULL DEFAULT '{}';

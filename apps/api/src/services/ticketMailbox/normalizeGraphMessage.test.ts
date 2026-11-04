@@ -377,6 +377,46 @@ describe('normalizeGraphMessage', () => {
         expect(n.senderAuthConsulted).toBe('Exchange Online stamp: DMARC verdict is not for the From domain');
       });
 
+      it('FORGED: a conflicting duplicate header.from never matches, in either order', () => {
+        for (const props of ['header.from=x.com header.from=attacker.test', 'header.from=attacker.test header.from=x.com']) {
+          expect(run([...external, stamp(`mx.microsoft.com 1; dmarc=pass ${props}`)]).senderAuth?.verified).toBe(false);
+        }
+      });
+
+      it('needs every DMARC clause to pass', () => {
+        expect(run([...external, stamp('mx.microsoft.com 1; dmarc=pass header.from=x.com; dmarc=fail header.from=x.com')]).senderAuth?.verified).toBe(false);
+      });
+
+      it('does not read an authserv-id hidden in a comment', () => {
+        expect(run([...external, stamp('evil.test (mx.microsoft.com); dmarc=pass header.from=x.com')]).senderAuth?.verified).toBe(false);
+      });
+
+      it('fails closed on an unparseable From address', () => {
+        for (const from of ['nobody', 'a@b@x.com']) {
+          expect(run([...external, stamp('mx.microsoft.com 1; dmarc=pass header.from=x.com')], undefined, from).senderAuth?.verified).toBe(false);
+        }
+      });
+
+      it('FORGED: a conflicting duplicate header.from never matches, in either order', () => {
+        for (const props of ['header.from=x.com header.from=attacker.test', 'header.from=attacker.test header.from=x.com']) {
+          expect(run([...external, stamp(`mx.microsoft.com 1; dmarc=pass ${props}`)]).senderAuth?.verified).toBe(false);
+        }
+      });
+
+      it('needs every DMARC clause to pass', () => {
+        expect(run([...external, stamp('mx.microsoft.com 1; dmarc=pass header.from=x.com; dmarc=fail header.from=x.com')]).senderAuth?.verified).toBe(false);
+      });
+
+      it('does not read an authserv-id hidden in a comment', () => {
+        expect(run([...external, stamp('evil.test (mx.microsoft.com); dmarc=pass header.from=x.com')]).senderAuth?.verified).toBe(false);
+      });
+
+      it('fails closed on an unparseable From address', () => {
+        for (const from of ['nobody', 'a@b@x.com']) {
+          expect(run([...external, stamp('mx.microsoft.com 1; dmarc=pass header.from=x.com')], undefined, from).senderAuth?.verified).toBe(false);
+        }
+      });
+
       it('requires header.from on the DMARC clause', () => {
         expect(run([...external, stamp('mx.microsoft.com 1; dmarc=pass action=none')]).senderAuth?.verified).toBe(false);
       });
@@ -440,6 +480,46 @@ describe('normalizeGraphMessage', () => {
           const n = run([...external, eopFail], verifiedArc(results));
           expect(n.senderAuth?.verified).toBe(false);
           expect(n.senderAuthConsulted).toContain('trusted ARC sealer avanan.net: verdict is not for the From domain');
+        }
+      });
+
+      it('a bare sealed dmarc=pass, with no domain to bind, does not verify', () => {
+        for (const results of ['mx.gw.test; dmarc=pass', 'mx.gw.test; dmarc=pass; dkim=pass header.d=attacker.test']) {
+          const n = run([...external, eopFail], verifiedArc(results));
+          expect(n.senderAuth?.verified).toBe(false);
+          expect(n.senderAuthConsulted).toContain('trusted ARC sealer avanan.net: verdict is not for the From domain');
+        }
+      });
+
+      it('FORGED: a conflicting duplicate header.from in the sealed verdict never matches', () => {
+        for (const props of ['header.from=x.com header.from=attacker.test', 'header.from=attacker.test header.from=x.com']) {
+          expect(run([...external, eopFail], verifiedArc(`mx.gw.test; dmarc=pass ${props}`)).senderAuth?.verified).toBe(false);
+        }
+      });
+
+      it('does not align anything when the From address is unparseable', () => {
+        for (const from of ['nobody', 'a@b@x.com']) {
+          expect(run([...external], verifiedArc('mx.gw.test; dkim=pass header.d=localhost; spf=pass smtp.mailfrom=b@x.com'), from).senderAuth?.verified).toBe(false);
+        }
+      });
+
+      it('a bare sealed dmarc=pass, with no domain to bind, does not verify', () => {
+        for (const results of ['mx.gw.test; dmarc=pass', 'mx.gw.test; dmarc=pass; dkim=pass header.d=attacker.test']) {
+          const n = run([...external, eopFail], verifiedArc(results));
+          expect(n.senderAuth?.verified).toBe(false);
+          expect(n.senderAuthConsulted).toContain('trusted ARC sealer avanan.net: verdict is not for the From domain');
+        }
+      });
+
+      it('FORGED: a conflicting duplicate header.from in the sealed verdict never matches', () => {
+        for (const props of ['header.from=x.com header.from=attacker.test', 'header.from=attacker.test header.from=x.com']) {
+          expect(run([...external, eopFail], verifiedArc(`mx.gw.test; dmarc=pass ${props}`)).senderAuth?.verified).toBe(false);
+        }
+      });
+
+      it('does not align anything when the From address is unparseable', () => {
+        for (const from of ['nobody', 'a@b@x.com']) {
+          expect(run([...external], verifiedArc('mx.gw.test; dkim=pass header.d=localhost; spf=pass smtp.mailfrom=b@x.com'), from).senderAuth?.verified).toBe(false);
         }
       });
 

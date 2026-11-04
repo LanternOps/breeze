@@ -167,6 +167,36 @@ describe('runMailboxSweep', () => {
     expect(normalizeGraphMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1' }), 'p1', expect.any(String), { arc });
   });
 
+  it('retries recent mail next sweep, without enqueueing it or moving the cursor, when the sealer key lookup fails (#10862)', async () => {
+    vi.mocked(evaluateTrustedArc).mockResolvedValueOnce({ status: 'dns-unavailable', sealer: 'gateway.example' });
+    vi.mocked(listConnectedMailboxes).mockResolvedValue([{ ...conn(), trustedArcSealers: ['gateway.example'] }] as any);
+    vi.mocked(listInboxDelta).mockResolvedValue({
+      messages: [{ id: 'm1', receivedDateTime: new Date().toISOString() }],
+      deltaLink: 'delta-new',
+    } as any);
+
+    await runMailboxSweep();
+
+    expect(enqueueInboundEmail).not.toHaveBeenCalled();
+    expect(markRead).not.toHaveBeenCalled();
+    expect(updateDeltaCursor).not.toHaveBeenCalled();
+    expect(recordTransientPollFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets mail older than the retry window through to quarantine when the sealer key lookup fails', async () => {
+    vi.mocked(evaluateTrustedArc).mockResolvedValueOnce({ status: 'dns-unavailable', sealer: 'gateway.example' });
+    vi.mocked(listConnectedMailboxes).mockResolvedValue([{ ...conn(), trustedArcSealers: ['gateway.example'] }] as any);
+    vi.mocked(listInboxDelta).mockResolvedValue({
+      messages: [{ id: 'm1', receivedDateTime: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() }],
+      deltaLink: 'delta-new',
+    } as any);
+
+    await runMailboxSweep();
+
+    expect(enqueueInboundEmail).toHaveBeenCalledTimes(1);
+    expect(updateDeltaCursor).toHaveBeenCalledTimes(1);
+  });
+
   it('does not persist a cursor if enqueue throws (replay-safe)', async () => {
     vi.mocked(listConnectedMailboxes).mockResolvedValue([conn()] as any);
     vi.mocked(listInboxDelta).mockResolvedValue({ messages: [{ id: 'm1' }], deltaLink: 'delta-new' } as any);

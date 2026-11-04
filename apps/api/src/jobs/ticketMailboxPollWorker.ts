@@ -29,7 +29,16 @@ import {
   markRead,
 } from '../services/ticketMailbox/graphMailClient';
 import { normalizeGraphMessage } from '../services/ticketMailbox/normalizeGraphMessage';
-import { evaluateTrustedArc } from '../services/ticketMailbox/arcSeal';
+import { evaluateTrustedArc, type ArcEvaluation } from '../services/ticketMailbox/arcSeal';
+
+/** How long a message whose trusted sealer's key could not be fetched waits for a
+ * retry before it goes to quarantine like any other unverified mail. */
+const ARC_RETRY_WINDOW_MS = 60 * 60 * 1000;
+
+function isWithinArcRetryWindow(receivedDateTime: string | undefined): boolean {
+  const received = receivedDateTime ? Date.parse(receivedDateTime) : Number.NaN;
+  return Number.isFinite(received) && Date.now() - received < ARC_RETRY_WINDOW_MS;
+}
 import {
   getStartHistoryId,
   listInboxChanges,
@@ -216,6 +225,7 @@ async function sweepOne(
 
   let lastMessageAt: Date | null = null;
   let markReadSkipped = 0;
+  const arcCounts: Partial<Record<ArcEvaluation['status'], number>> = {};
   let beforeFloor = 0;
   const noUsableTime: string[] = [];
   try {
@@ -249,6 +259,19 @@ async function sweepOne(
         }
       }
       const arc = await evaluateTrustedArc(msg.internetMessageHeaders, c.trustedArcSealers, msg.receivedDateTime);
+      if (arc) arcCounts[arc.status] = (arcCounts[arc.status] ?? 0) + 1;
+      // The sealer's key could not be fetched. Quarantining would park genuine mail
+      // for a DNS blip, so stop here, before this message or the cursor moves, and
+      // retry next sweep (ingest dedups what this page already enqueued). Mail older
+      // than the retry window is let through to quarantine, so a sealer whose DNS
+      // stays down cannot hold the mailbox (#10862).
+      if (arc?.status === 'dns-unavailable' && isWithinArcRetryWindow(msg.receivedDateTime)) {
+        const failures = await recordTransientPollFailure(c, new Date());
+        console.warn('[mailboxPoll] trusted ARC sealer key lookup failed; will retry next sweep', {
+          id: c.id, sealer: arc.sealer, consecutiveFailures: failures,
+        });
+        return;
+      }
       const normalized = normalizeGraphMessage(msg, c.partnerId, c.mailboxAddress, { arc });
       await enqueueInboundEmail(normalized, {
         provider: 'm365',
@@ -286,6 +309,14 @@ async function sweepOne(
       err: err instanceof Error ? err.message : err,
     });
     return;
+  }
+
+  // A configured sealer none of whose seals verified this sweep is a configuration or
+  // DNS fault (a wrong d=, a rotated key), not spam: say so once per sweep.
+  if (!arcCounts.verified && ((arcCounts.invalid ?? 0) + (arcCounts['dns-unavailable'] ?? 0)) > 0) {
+    console.warn('[mailboxPoll] no seal from a trusted ARC sealer verified this sweep', {
+      id: c.id, sealers: c.trustedArcSealers, counts: arcCounts,
+    });
   }
 
   if (markReadSkipped > 0) {

@@ -204,6 +204,14 @@ describe('M365 inbound → ticket (real DB)', () => {
       // Another partner cannot reach it, and the column refuses what the API would too.
       const other = await withSystemDbAccessContext(async () => (await createPartner()).id);
       await expect(withSystemDbAccessContext(() => updateTrustedArcSealers(seed.connection.id, other, []))).resolves.toBeNull();
+
+      // A disabled mailbox is not edited.
+      const disabled = await seedConnection('column-disabled');
+      await withSystemDbAccessContext(() => db.update(ticketMailboxConnections)
+        .set({ status: 'disabled' }).where(eq(ticketMailboxConnections.id, disabled.connection.id)));
+      await expect(withSystemDbAccessContext(
+        () => updateTrustedArcSealers(disabled.connection.id, disabled.partnerId, ['gateway.test']),
+      )).resolves.toBeNull();
       await expect(withSystemDbAccessContext(() => db.execute(sql`
         UPDATE ticket_mailbox_connections
         SET trusted_arc_sealers = ${sql.raw(`ARRAY[${Array.from({ length: 11 }, (_, i) => `'g${i}.test'`).join(',')}]`)}

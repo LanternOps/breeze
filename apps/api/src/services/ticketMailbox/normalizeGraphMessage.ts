@@ -19,17 +19,16 @@ function header(headers: GraphMessage['internetMessageHeaders'], name: string): 
  * Graph's `internetMessageHeaders` returns the full header set, which can include an
  * `Authentication-Results` line a malicious sender put into their OWN message
  * (e.g. `Authentication-Results: anything; dmarc=pass`). Exchange Online stamps a
- * GENUINE header whose authserv-id is the receiving (accepted) domain. So — mirroring
- * the mailgun normalizer's authserv-id check — trust ONLY a header whose authserv-id
- * matches the support mailbox's own domain; ignore foreign/absent authserv-id headers.
- * Unmatched → '' → all verdicts 'unknown' → verified=false → the R4 gate quarantines
- * (never drops) for manual review. NOTE: if a tenant's EOP stamps a different
- * authserv-id than the mailbox domain, genuine mail will quarantine until this is
- * tuned — safe because nothing is lost. Mail sent from inside the tenant is the
- * common case of this (authserv-id `mx.microsoft.com`, dmarc=none); graphSenderAuth
- * verifies it from Exchange's intra-tenant stamp instead (#8299). Only read when
- * Exchange has NOT marked the message as external: external mail goes through
- * exchangeStampAuth and the trusted ARC sealers instead (#10862).
+ * header whose authserv-id is whatever its MX wrote. This legacy read — mirroring the
+ * mailgun normalizer's authserv-id check — trusts ONLY a header whose authserv-id
+ * matches the support mailbox's own domain; unmatched → '' → all verdicts 'unknown'
+ * → verified=false → the R4 gate quarantines (never drops) for manual review.
+ * Only read when Exchange has NOT marked the message as external (intra-tenant mail,
+ * or mail missing the org headers). External mail goes through exchangeStampAuth and
+ * the trusted ARC sealers instead, and never reads this form: Exchange Online writes
+ * `mx.microsoft.com`, so on external mail a mailbox-domain line can only be the
+ * sender's (#10862). Intra-tenant mail is verified from Exchange's intra-tenant stamp
+ * (#8299).
  */
 function trustedAuthResults(
   headers: GraphMessage['internetMessageHeaders'], mailboxDomain: string,
@@ -81,8 +80,8 @@ function allHeadersEqual(
  * The tenant's own Exchange saying this message came in from outside: AuthAs
  * Anonymous (attributed to no connector) or Partner (attributed to a partner
  * connector), with MessageDirectionality Incoming. Same firewall as
- * isExchangeIntraTenant, same strictness. Null is "no proof", and then no stamp is
- * read as Exchange's.
+ * isExchangeIntraTenant, same strictness. Null is "no proof of external origin":
+ * Exchange's stamp is not read, and the legacy mailbox-domain path applies.
  */
 function exchangeExternalAuthAs(
   headers: GraphMessage['internetMessageHeaders'],
@@ -194,9 +193,12 @@ function exchangeStampAuth(
  * Sender auth for a Microsoft 365 mailbox message, most specific proof first.
  *
  * External mail (exchangeExternalAuthAs): a verified seal from one of the connection's
- * trusted ARC sealers wins in both directions, because Exchange judges gateway-relayed
- * mail against the gateway's IP and modified body and so its own stamp is wrong there.
- * Otherwise Exchange's stamp decides. A mailbox-domain Authentication-Results line is
+ * trusted ARC sealers decides when its verdict is a pass for the From domain or a
+ * dmarc=fail, because Exchange judges gateway-relayed mail against the gateway's IP
+ * and modified body and so its own stamp is wrong there. Any other seal result
+ * (none, invalid, not for this domain) falls through to Exchange's stamp. A sealed
+ * dmarc=fail vetoes whatever domain it names: conservative, and a sender can only
+ * get their own mail quarantined that way. A mailbox-domain Authentication-Results line is
  * not read on this path: Exchange does not write that form, so all it can be is a line
  * from the sender. `Authentication-Results-Original` is never read: nothing shows who
  * wrote it, and on mail sent straight to Exchange that is the sender.
