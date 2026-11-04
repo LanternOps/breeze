@@ -23,7 +23,7 @@ func (e *enforcingIsolator) enforcing(context.Context) (bool, error) {
 	if e.enforcingErr != nil {
 		return false, e.enforcingErr
 	}
-	installed, _, _ := e.fakeIsolator.state()
+	installed, _, _ := e.state()
 	return installed, nil
 }
 

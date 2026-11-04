@@ -54,17 +54,6 @@ func runIsolationShell(t *testing.T, body string) isolationRun {
 	return isolationRun{out: string(out), calls: string(calls), root: root, code: code}
 }
 
-func stageRecovery(t *testing.T, root, version, content string) {
-	t.Helper()
-	dir := filepath.Join(root, "staging", "isolation-recovery", version)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "breeze-isolation-recovery"), []byte(content), 0o755); err != nil {
-		t.Fatal(err)
-	}
-}
-
 const installRecoveryBody = `ISOLATION_RECOVERY=$(install_isolation_recovery "$ROOT/staging/isolation-recovery" "$ROOT/Library/Breeze/isolation-recovery")
 echo "result=$ISOLATION_RECOVERY"`
 
