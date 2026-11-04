@@ -324,6 +324,55 @@ describe('LifecycleDefaultsCard', () => {
     await waitFor(() => expect(screen.getByTestId('lifecycle-cooldown')).toHaveValue(99));
   });
 
+  it('switching org during a save still loads the new org', async () => {
+    let finishPut: (response: Response) => void = () => {};
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (init?.method === 'PUT') return new Promise<Response>((resolve) => { finishPut = resolve; });
+      return json(defaults({
+        org: {
+          autoResolve: null,
+          rearmMode: null,
+          rearmDelayMinutes: null,
+          cooldownMinutes: input.includes(OTHER_ORG_ID) ? 99 : 20,
+        },
+      }));
+    });
+    const view = render(<LifecycleDefaultsCard />);
+
+    fireEvent.change(await screen.findByTestId('lifecycle-cooldown'), { target: { value: '12' } });
+    fireEvent.click(screen.getByTestId('lifecycle-save'));
+    await waitFor(() => expect(putCount()).toBe(1));
+
+    orgScope = orgSelected(OTHER_ORG_ID);
+    view.rerender(<LifecycleDefaultsCard />);
+    await waitFor(() => expect(screen.getByTestId('lifecycle-cooldown')).toHaveValue(99));
+
+    finishPut(json({ data: {} }));
+    await waitFor(() => expect(screen.getByTestId('lifecycle-cooldown')).not.toBeDisabled());
+    expect(screen.getByTestId('lifecycle-cooldown')).toHaveValue(99);
+    expect(putBody()).toMatchObject({ orgId: ORG_ID, cooldownMinutes: 12 });
+  });
+
+  it('a failed reload after a save says so and keeps the form', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let saved = false;
+    fetchMock.mockImplementation(async (_input: string, init?: RequestInit) => {
+      if (init?.method === 'PUT') {
+        saved = true;
+        return json({ data: {} });
+      }
+      return saved ? json({ error: 'nope' }, false, 500) : json(defaults());
+    });
+    render(<LifecycleDefaultsCard />);
+
+    fireEvent.change(await screen.findByTestId('lifecycle-cooldown'), { target: { value: '12' } });
+    fireEvent.click(screen.getByTestId('lifecycle-save'));
+
+    await screen.findByText('Could not load the lifecycle defaults.');
+    expect(screen.getByTestId('lifecycle-cooldown')).toHaveValue(12);
+    warn.mockRestore();
+  });
+
   it('waits for the org context before loading anything', async () => {
     orgScope = { ready: false, status: 'loading', scope: null, orgId: null, org: null, error: null };
     install();

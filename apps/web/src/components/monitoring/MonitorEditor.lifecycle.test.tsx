@@ -171,6 +171,28 @@ describe('MonitorEditor alert lifecycle section', () => {
     expect(body.rearmDelayMinutes).toBeNull();
   });
 
+  it('opening and saving a monitor with overrides changes nothing', async () => {
+    const overrides = { cooldownMinutes: 30, autoResolve: true, rearmMode: 'after_delay', rearmDelayMinutes: 45 };
+    install({ monitor: overrides });
+    await renderLoaded();
+
+    expect(await screen.findByTestId('monitor-editor-rearm-delay')).toHaveValue(45);
+    expect(screen.getByTestId('monitor-editor-rearm-mode')).toHaveValue('after_delay');
+    expect(screen.getByTestId('monitor-editor-auto-resolve')).toHaveValue('true');
+    expect(screen.getByTestId('monitor-editor-cooldown')).toHaveValue(30);
+
+    expect(await saveAndGetBody()).toMatchObject(overrides);
+  });
+
+  it('a stored delay with no after_delay mode cannot silently block Save', async () => {
+    install({ monitor: { rearmMode: null, rearmDelayMinutes: 30 } });
+    await renderLoaded();
+
+    const body = await saveAndGetBody();
+    expect(body.rearmMode).toBeNull();
+    expect(body.rearmDelayMinutes).toBeNull();
+  });
+
   it('shows the override disclosure when set', async () => {
     install({ monitor: { cooldownMinutes: 30, autoResolve: true, rearmMode: 'after_delay', rearmDelayMinutes: 45 } });
     await renderLoaded();

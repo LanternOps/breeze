@@ -481,7 +481,9 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         cooldownMinutes: monitor.cooldownMinutes ?? null,
         autoResolve: monitor.autoResolve ?? null,
         rearmMode: monitor.rearmMode ?? null,
-        rearmDelayMinutes: monitor.rearmDelayMinutes ?? null,
+        // The delay only exists with after_delay. A stray one would fail the pair rule on a
+        // field that isn't rendered, and Save would do nothing with no visible reason.
+        rearmDelayMinutes: monitor.rearmMode === 'after_delay' ? (monitor.rearmDelayMinutes ?? null) : null,
         responses: monitor.responses ?? [],
         deliveryMode: monitor.deliveryMode ?? 'inherit',
         deliveryChannelIds: monitor.deliveryChannelIds ?? [],

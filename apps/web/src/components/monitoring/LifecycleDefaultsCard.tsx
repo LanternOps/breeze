@@ -77,6 +77,8 @@ export default function LifecycleDefaultsCard() {
   const levelKey = orgId ?? 'partner';
   const [loaded, setLoaded] = useState<{ levelKey: string; defaults: AlertLifecycleDefaultsResponse } | null>(null);
   const defaults = loaded?.levelKey === levelKey ? loaded.defaults : null;
+  const currentLevelKey = useRef(levelKey);
+  currentLevelKey.current = levelKey;
   const [draft, setDraft] = useState<Draft | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -127,7 +129,9 @@ export default function LifecycleDefaultsCard() {
         onUnauthorized: UNAUTHORIZED,
       });
       // Inputs stay disabled through the reload so it cannot overwrite a newer edit.
-      await load();
+      // If the org changed mid-save, the effect is already loading the new level, and
+      // this closure's load would supersede that request with the old level's data.
+      if (currentLevelKey.current === levelKey) await load();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       handleActionError(err, t('monitoring:lifecycleDefaults.errors.save'));
@@ -152,7 +156,7 @@ export default function LifecycleDefaultsCard() {
 
       {!showForm && !loadFailed && <div className="mt-3 h-20 animate-pulse rounded-md bg-muted" />}
 
-      {!showForm && loadFailed && (
+      {loadFailed && (
         <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {t('monitoring:lifecycleDefaults.errors.load')}{' '}
           <button type="button" className="underline" onClick={() => void load()}>{t('common:actions.retry')}</button>
