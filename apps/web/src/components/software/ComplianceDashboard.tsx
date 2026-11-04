@@ -389,6 +389,11 @@ export default function ComplianceDashboard({
       name = params.get("name") ?? "";
       prefillVendor = params.get("vendor") ?? "";
       mode = parsePolicyMode(params.get("mode"));
+      for (const key of ["prefill", "name", "vendor", "mode"]) params.delete(key);
+      const search = params.toString();
+      replaceUrl(
+        window.location.pathname + (search ? `?${search}` : "") + window.location.hash,
+      );
     }
     if (name) {
       setSelectedPolicy({
@@ -403,9 +408,6 @@ export default function ComplianceDashboard({
       });
       setPrefillNonce((n) => n + 1);
       setModalMode("create");
-      // Clean up the URL
-      if (typeof window !== "undefined")
-        replaceUrl(window.location.pathname);
     }
   }, [prefill]);
   const handleCreate = () => {
