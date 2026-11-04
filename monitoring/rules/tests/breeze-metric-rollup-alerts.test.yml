@@ -1,0 +1,34 @@
+# promtool test rules for the #10960 metric-rollup compaction stall alert in the
+# `breeze-business-alerts` group.
+#
+#   promtool test rules monitoring/rules/tests/breeze-metric-rollup-alerts.test.yml
+#   (CI: .github/workflows/perf-rules.yml runs it with the pinned prom/prometheus image)
+rule_files:
+  - ../breeze-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # us: one month stalled, and a second series at 0 from a job restart on another
+  # instance must not hide it. eu: clean. One sample per minute.
+  - interval: 1m
+    input_series:
+      - series: 'breeze_metric_rollup_compaction_stalled_months{job="breeze-worker-us",instance="a",job_name="metric_rollup_maintenance"}'
+        values: '1x10'
+      - series: 'breeze_metric_rollup_compaction_stalled_months{job="breeze-worker-us",instance="b",job_name="metric_rollup_maintenance"}'
+        values: '0x10'
+      - series: 'breeze_metric_rollup_compaction_stalled_months{job="breeze-worker-eu",instance="c",job_name="metric_rollup_maintenance"}'
+        values: '0x10'
+    alert_rule_test:
+      - alertname: MetricRollupCompactionStalled
+        eval_time: 3m
+        exp_alerts: []
+      - alertname: MetricRollupCompactionStalled
+        eval_time: 7m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: breeze-worker-us
+            exp_annotations:
+              summary: "Legacy metric_rollups compaction has stalled on breeze-worker-us"
+              description: "1 legacy month(s) stayed uncompacted past the stall threshold because the cutover locks were never free. Their disk is not being reclaimed. The failed metric-rollup-maintenance job names the months."

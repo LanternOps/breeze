@@ -278,6 +278,19 @@ groups:
           summary: "breeze_active_devices has not refreshed on {{ $labels.job }}"
           description: "The fleet-gauge query is failing or timing out; device and organization counts are stale or never read."
 
+      # A contended legacy month retries nightly and is not worth anyone's time
+      # until it has been overdue for a week (#10960). `max by (job)` because only
+      # the instance running the maintenance job publishes this series.
+      - alert: MetricRollupCompactionStalled
+        expr: |
+          max by (job) (breeze_metric_rollup_compaction_stalled_months) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Legacy metric_rollups compaction has stalled on {{ $labels.job }}"
+          description: "{{ $value }} legacy month(s) stayed uncompacted past the stall threshold because the cutover locks were never free. Their disk is not being reclaimed. The failed metric-rollup-maintenance job names the months."
+
       - alert: AlertProcessingBacklog
         expr: |
           breeze_alert_queue_length > 100
