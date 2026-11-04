@@ -106,13 +106,16 @@ async function replaceCanonicalSet(
  * `contacts.roles[]` is then re-projected from the resulting canonical set.
  *
  * Phase 3 retirement (spec §8.4, §28): this adapter is compatibility-only and
- * fails closed. When the write would change anything, every assignment the
+ * fails closed. When the ROLE SET changes (a role added or removed), every assignment the
  * contact holds must be one the legacy shape can express: no Device Group row,
  * and every Site/Organization row at the scope the contact's pin derived BEFORE
  * this write. Otherwise it throws
  * `legacy-write-cannot-represent-scoped-responsibilities` rather than delete or
- * re-scope an assignment it has no authority over. `contacts.site_id` alone is
- * affiliation/primacy: callers must not invoke this for a siteId-only change.
+ * re-scope an assignment it has no authority over. An unchanged role set is a
+ * no-op that never throws and never touches contact_roles, even when the pin
+ * changed in the same call, exactly like a siteId-only change (`contacts.site_id`
+ * is affiliation/primacy). When roles change AND the pin moves, the gate is judged
+ * at the pre-write pin and the kept rows are re-scoped / widened as below.
  */
 type LegacyRolesWriteInput = {
   contactId: string;
@@ -140,7 +143,6 @@ async function planLegacyRolesWrite(exec: ContactExecutor, input: LegacyRolesWri
   const held = new Set<string>(existing.map((row) => row.role));
 
   const legacyScopeBeforeWrite = input.previousSiteId === undefined ? input.siteId : input.previousSiteId;
-  const pinChanged = legacyScopeBeforeWrite !== input.siteId;
 
   const removed = [...held].filter((role) => !desired.has(role));
   // Not filtered to CONTACT_ROLES: an unknown name must reach the role CHECK and
@@ -151,7 +153,9 @@ async function planLegacyRolesWrite(exec: ContactExecutor, input: LegacyRolesWri
   ];
 
   // Nothing to apply: leave the canonical set (and any scope it carries) alone.
-  const noop = removed.length === 0 && added.length === 0 && !pinChanged;
+  // An unchanged role set is a no-op even when the pin moved: a pin change with
+  // the same roles never re-scopes (the web UI sends siteId + roles on every save).
+  const noop = removed.length === 0 && added.length === 0;
   const representable = existing.every((row) =>
     row.deviceGroupId === null && row.siteId === legacyScopeBeforeWrite);
   return { desired, owned, existing, removed, added, noop, representable };
@@ -195,8 +199,9 @@ export async function syncLegacyContactRoles(
   if (input.siteId !== null) {
     // Kept roles with a legacy-derived (Organization or other-Site) row move to
     // the pinned Site; a row already at the pinned Site is left as it is.
+    // The representable gate puts every row at the single pre-write scope, so no
+    // row can already sit at the destination: nothing to deduplicate.
     const pinned = input.siteId;
-    const atPinnedSite = new Set(existing.filter((row) => row.siteId === pinned).map((row) => row.role));
     const stale = existing.filter((row) =>
       desired.has(row.role) && row.deviceGroupId === null && row.siteId !== pinned);
     const staleRoles = [...new Set(stale.map((row) => row.role))];
@@ -208,7 +213,6 @@ export async function syncLegacyContactRoles(
         or(isNull(contactRoles.siteId), ne(contactRoles.siteId, pinned)),
       ));
       for (const role of staleRoles) {
-        if (atPinnedSite.has(role)) continue;
         inserts.push({ role, isPrimary: stale.some((row) => row.role === role && row.isPrimary) });
       }
     }
@@ -216,8 +220,7 @@ export async function syncLegacyContactRoles(
 
   if (input.siteId === null && input.previousSiteId) {
     // Un-pin: kept roles the pin scoped to the previous Site go back to
-    // Organization. A role already held at Organization is deduplicated (the
-    // Site row is dropped) rather than violating the unique scope index.
+    // Organization (no row can already sit there: see the gate note above).
     const previous = input.previousSiteId;
     const atPreviousSite = existing.filter((row) =>
       desired.has(row.role) && row.deviceGroupId === null && row.siteId === previous);
@@ -229,11 +232,7 @@ export async function syncLegacyContactRoles(
         isNull(contactRoles.deviceGroupId),
         eq(contactRoles.siteId, previous),
       ));
-      const atOrganization = new Set(existing
-        .filter((row) => row.siteId === null && row.deviceGroupId === null)
-        .map((row) => row.role));
       for (const role of widenRoles) {
-        if (atOrganization.has(role)) continue;
         inserts.push({ role, isPrimary: atPreviousSite.some((row) => row.role === role && row.isPrimary) });
       }
     }

@@ -149,7 +149,7 @@ describe('contact_roles migration and tenancy contracts (#8087)', () => {
     expect(after!.roles).toEqual(['technical', 'admin']);
   });
 
-  runDb('roles + siteId in one patch re-scopes a legacy-shaped contact atomically (pin, then un-pin)', async () => {
+  runDb('roles + siteId in one patch with a CHANGED role set re-scopes a legacy-shaped contact atomically (pin, then un-pin)', async () => {
     const testDb = getTestDb();
     const f = await seedTwoOrgs();
     await testDb.update(contacts).set({ siteId: null, roles: ['technical'] }).where(eq(contacts.id, f.contactA.id));
@@ -164,10 +164,56 @@ describe('contact_roles migration and tenancy contracts (#8087)', () => {
     expect(held.every((r) => r.siteId === f.siteA.id && r.deviceGroupId === null)).toBe(true);
 
     await withDbAccessContext(ctx, () =>
-      updateContact(db, f.contactA.id, f.orgA.id, { siteId: null, roles: ['technical', 'admin'] }, { userId: null }));
+      updateContact(db, f.contactA.id, f.orgA.id, { siteId: null, roles: ['technical', 'admin', 'escalation'] }, { userId: null }));
     held = await rows();
-    expect(held).toHaveLength(2);
+    expect(held).toHaveLength(3);
     expect(held.every((r) => r.siteId === null && r.deviceGroupId === null)).toBe(true);
+  });
+
+  runDb('UI-style PATCH {siteId, roles: sameRoles} leaves contact_roles untouched (no re-scope, no broadening)', async () => {
+    const testDb = getTestDb();
+    const f = await seedTwoOrgs();
+    const siteA2 = await createSite({ orgId: f.orgA.id });
+    await testDb.update(contacts).set({ siteId: f.siteA.id, roles: ['admin'] }).where(eq(contacts.id, f.contactA.id));
+    await testDb.insert(contactRoles).values({ contactId: f.contactA.id, orgId: f.orgA.id, role: 'admin', siteId: f.siteA.id });
+    const ctx = orgContext(f.orgA.id, f.partner.id);
+    const rows = () => testDb.select().from(contactRoles).where(eq(contactRoles.contactId, f.contactA.id));
+
+    // Move to another Site with the same roles: admin stays at Site A.
+    await withDbAccessContext(ctx, () =>
+      updateContact(db, f.contactA.id, f.orgA.id, { siteId: siteA2.id, roles: ['admin'] }, { userId: null }));
+    let held = await rows();
+    expect(held).toHaveLength(1);
+    expect(held[0]).toMatchObject({ role: 'admin', siteId: f.siteA.id, deviceGroupId: null });
+
+    // UN-pin with the same roles: admin stays at Site A, it does NOT broaden to Organization.
+    await withDbAccessContext(ctx, () =>
+      updateContact(db, f.contactA.id, f.orgA.id, { siteId: null, roles: ['admin'] }, { userId: null }));
+    held = await rows();
+    expect(held).toHaveLength(1);
+    expect(held[0]).toMatchObject({ role: 'admin', siteId: f.siteA.id, deviceGroupId: null });
+    const [after] = await testDb.select().from(contacts).where(eq(contacts.id, f.contactA.id));
+    expect(after!.siteId).toBeNull();
+    expect(after!.roles).toEqual(['admin']);
+  });
+
+  runDb('un-pin with the same roles does not throw for a contact holding a Device Group row and changes nothing', async () => {
+    const testDb = getTestDb();
+    const f = await seedTwoOrgs();
+    await testDb.update(contacts).set({ siteId: f.siteA.id, roles: ['technical'] }).where(eq(contacts.id, f.contactA.id));
+    await testDb.insert(contactRoles).values([
+      { contactId: f.contactA.id, orgId: f.orgA.id, role: 'technical', siteId: f.siteA.id },
+      { contactId: f.contactA.id, orgId: f.orgA.id, role: 'technical', deviceGroupId: f.groupA.id },
+    ]);
+
+    await withDbAccessContext(orgContext(f.orgA.id, f.partner.id), () =>
+      updateContact(db, f.contactA.id, f.orgA.id, { siteId: null, roles: ['technical'] }, { userId: null }));
+
+    const held = await testDb.select().from(contactRoles).where(eq(contactRoles.contactId, f.contactA.id));
+    expect(held.map((r) => `${r.siteId ?? ''}|${r.deviceGroupId ?? ''}`).sort())
+      .toEqual([`${f.siteA.id}|`, `|${f.groupA.id}`].sort());
+    const [after] = await testDb.select().from(contacts).where(eq(contacts.id, f.contactA.id));
+    expect(after!.siteId).toBeNull();
   });
 
   runDb('a pinned contact keeps billing @ Organization after siteId-only, and billing_contact follows its later edits', async () => {

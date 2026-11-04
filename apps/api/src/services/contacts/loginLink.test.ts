@@ -198,22 +198,16 @@ describe('linkLoginToContact', () => {
     expect(addDerivedMock).toHaveBeenCalledWith(r.exec, { contactId: 'ct-scoped', orgId: ORG_ID, roles: ['portal'] });
   });
 
-  it('a billing grant locks the organization first and projects billing_contact after', async () => {
+  it('refuses to grant billing to an existing contact before writing anything', async () => {
     const r = recorder([[{ id: 'ct-1', roles: ['portal'] }]]);
-    const calls: string[] = [];
-    lockOrgMock.mockImplementation(async () => { calls.push('lock'); });
-    addDerivedMock.mockImplementation(async () => { calls.push('grant'); });
-    projectBillingMock.mockImplementation(async () => { calls.push('project'); return null; });
 
-    await linkLoginToContact(r.exec, {
+    await expect(linkLoginToContact(r.exec, {
       orgId: ORG_ID, email: 'known@acme.example', actor, roles: ['portal'], unionRoles: ['portal', 'billing'],
-    });
+    })).rejects.toMatchObject({ code: 'invalid-role' });
 
-    expect(addDerivedMock).toHaveBeenCalledWith(r.exec, { contactId: 'ct-1', orgId: ORG_ID, roles: ['billing'] });
-    expect(lockOrgMock).toHaveBeenCalledWith(r.exec, ORG_ID);
-    expect(projectBillingMock).toHaveBeenCalledWith(r.exec, ORG_ID);
-    // Parent-first: lock the org, then write the child, then project.
-    expect(calls).toEqual(['lock', 'grant', 'project']);
+    expect(addDerivedMock).not.toHaveBeenCalled();
+    expect(lockOrgMock).not.toHaveBeenCalled();
+    expect(projectBillingMock).not.toHaveBeenCalled();
     expect(updateContactMock).not.toHaveBeenCalled();
   });
 
