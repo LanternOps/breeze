@@ -76,6 +76,14 @@ const MAINTENANCE_ADVISORY_LOCK = 'metric_rollup_maintenance';
 const COMPACTION_RETRY_BACKOFF_MS: readonly number[] = [60_000, 180_000];
 
 /**
+ * Total time one run may spend in those waits, across every month. Each month
+ * keeps its own attempts, but a backlog of contended months must not stretch
+ * the nightly run (and a worker shutdown waiting on it) by 4 minutes a month.
+ * Once it is spent, a contended month defers after the attempt it is on.
+ */
+const COMPACTION_RETRY_SLEEP_BUDGET_MS = 15 * 60_000;
+
+/**
  * A month this many days past the day it came due for compaction, and still
  * contended, has stalled: the run reports it as a failure. Short of this a
  * contended month is routine and just retries on the next nightly run.
@@ -595,6 +603,8 @@ export async function runMetricRollupMaintenance(options: {
   retentionDays?: Partial<MetricRollupRetentionDays>;
   /** Test override for COMPACTION_RETRY_BACKOFF_MS. */
   compactionRetryBackoffMs?: readonly number[];
+  /** Test override for COMPACTION_RETRY_SLEEP_BUDGET_MS. */
+  compactionRetrySleepBudgetMs?: number;
 } = {}): Promise<MetricRollupMaintenanceResult> {
   const startedAt = Date.now();
   const now = options.now ?? new Date();
@@ -706,6 +716,7 @@ export async function runMetricRollupMaintenance(options: {
   }
 
   // 2. Retention, month by month.
+  const retrySleep = { remainingMs: options.compactionRetrySleepBudgetMs ?? COMPACTION_RETRY_SLEEP_BUDGET_MS };
   const months = (await step('list', 'list', '*', () => listMetricRollupMonthPartitions())) ?? [];
   for (const month of months) {
     const monthEnd = addMonths(month.monthStart, 1).getTime();
@@ -742,6 +753,7 @@ export async function runMetricRollupMaintenance(options: {
       keepHourly: !hourlyExpired,
       overdueDays: Math.floor((cutoffs.fiveMinute.getTime() - monthEnd) / DAY_MS),
       backoffMs: options.compactionRetryBackoffMs ?? COMPACTION_RETRY_BACKOFF_MS,
+      retrySleep,
       result,
     });
   }
@@ -763,8 +775,8 @@ export async function runMetricRollupMaintenance(options: {
  * rolls back and its retry copies the month again. The copy freezes writes to
  * this one already-closed month and blocks only DDL on the referenced tables,
  * so the repeat costs I/O, not availability. Prepare's commit survives, so a
- * retry never re-prepares (which would need ACCESS EXCLUSIVE to drop the stage
- * it just built).
+ * retry in the same run never re-prepares (which would need ACCESS EXCLUSIVE
+ * to drop the stage it just built); the next night's run does re-prepare.
  *
  * Nothing here is lost when a month defers: it is still flat, so the next run
  * lists it and picks it up, and months already done are bucketed and skipped.
@@ -775,10 +787,12 @@ async function compactLegacyMonth(
     keepHourly: boolean;
     overdueDays: number;
     backoffMs: readonly number[];
+    /** The run's shared COMPACTION_RETRY_SLEEP_BUDGET_MS, drawn down here. */
+    retrySleep: { remainingMs: number };
     result: MetricRollupMaintenanceResult;
   },
 ): Promise<void> {
-  const { keepHourly, overdueDays, backoffMs, result } = context;
+  const { keepHourly, overdueDays, backoffMs, retrySleep, result } = context;
   const monthLiteral = formatTimestampLiteral(month.monthStart);
   let prepared = false;
 
@@ -827,7 +841,8 @@ async function compactLegacyMonth(
         return;
       }
       const waitMs = backoffMs[attempt - 1];
-      if (waitMs !== undefined) {
+      if (waitMs !== undefined && waitMs <= retrySleep.remainingMs) {
+        retrySleep.remainingMs -= waitMs;
         await new Promise((resolve) => setTimeout(resolve, waitMs));
         continue;
       }

@@ -623,6 +623,89 @@ describe('metric rollup maintenance service', () => {
         expect(named(calls, 'breeze_compact_metric_rollup_partition')).toHaveLength(2);
       });
 
+      it('stops waiting once the run has spent its backoff budget, deferring the rest after one attempt', async () => {
+        const calls = installDb({
+          months: flat(MAY, JUNE),
+          failOn: (text) =>
+            text.includes('breeze_compact_metric_rollup_partition') ? lockNotAvailable() : null,
+        });
+
+        const result = await runMetricRollupMaintenance({
+          now: NOW,
+          compactionRetryBackoffMs: [5, 5],
+          compactionRetrySleepBudgetMs: 5,
+        });
+
+        expect(result.deferredCompactions.map((d) => [d.partition, d.attempts])).toEqual([
+          [MAY, 2],
+          [JUNE, 1],
+        ]);
+        expect(named(calls, 'breeze_compact_metric_rollup_partition')).toHaveLength(3);
+      });
+
+      it('attributes a non-lock error after a lock retry to the step that raised it', async () => {
+        let prepares = 0;
+        installDb({
+          months: flat(JUNE),
+          failOn: (text) => {
+            if (!text.includes('breeze_prepare_metric_rollup_compaction')) return null;
+            prepares += 1;
+            return prepares === 1 ? lockNotAvailable() : new Error('relation already exists');
+          },
+        });
+        const prepareThenFail = await runMetricRollupMaintenance({ now: NOW, ...NO_BACKOFF });
+        expect(prepareThenFail.failures).toEqual([
+          { step: 'prepare-compaction', partition: JUNE, error: 'relation already exists' },
+        ]);
+        expect(prepareThenFail.deferredCompactions).toEqual([]);
+
+        let compacts = 0;
+        installDb({
+          months: flat(JUNE),
+          failOn: (text) => {
+            if (!text.includes('breeze_compact_metric_rollup_partition')) return null;
+            compacts += 1;
+            return compacts === 1 ? lockNotAvailable() : new Error('disk full');
+          },
+        });
+        const compactThenFail = await runMetricRollupMaintenance({ now: NOW, ...NO_BACKOFF });
+        expect(compactThenFail.failures).toEqual([{ step: 'compact', partition: JUNE, error: 'disk full' }]);
+        expect(compactThenFail.deferredCompactions).toEqual([]);
+      });
+
+      it('records another run taking the maintenance lock during a backoff as a failure, and stops retrying', async () => {
+        let compacts = 0;
+        let lockChecks = 0;
+        const calls = installDb({
+          months: flat(JUNE),
+          failOn: (text) => {
+            if (!text.includes('breeze_compact_metric_rollup_partition')) return null;
+            compacts += 1;
+            return lockNotAvailable();
+          },
+        });
+        // Every step before the retry gets the run lock; the retry does not.
+        const base = executeMock.getMockImplementation()!;
+        executeMock.mockImplementation(async (statement: unknown) => {
+          const { text } = render(statement);
+          if (text.includes('pg_try_advisory_xact_lock')) {
+            lockChecks += 1;
+            if (compacts >= 1) return [{ acquired: false }];
+          }
+          return base(statement);
+        });
+
+        const result = await runMetricRollupMaintenance({ now: NOW, ...NO_BACKOFF });
+
+        expect(lockChecks).toBeGreaterThan(0);
+        expect(compacts).toBe(1);
+        expect(result.failures).toEqual([
+          { step: 'compact', partition: JUNE, error: 'maintenance lock held by another run' },
+        ]);
+        expect(result.deferredCompactions).toEqual([]);
+        expect(named(calls, 'breeze_compact_metric_rollup_partition')).toHaveLength(1);
+      });
+
       it('does not retry any other error: it is a failure on the first attempt', async () => {
         const calls = installDb({
           months: flat(JUNE),
