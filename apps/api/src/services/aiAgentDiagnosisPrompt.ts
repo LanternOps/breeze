@@ -39,9 +39,9 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
     anchors: [
       { file: 'installer/breeze.wxs', contains: ['Name="breeze-agent.exe"', 'Name="BreezeAgent"'] },
       { file: 'internal/agentapp/service_cmd_windows.go', contains: ['windowsServiceName = "BreezeAgent"'] },
-      { file: 'internal/collectors/command_limits.go', contains: ['cmd := exec.CommandContext(ctx, name, args...)'] },
+      { file: 'internal/collectors/command_limits.go', contains: ['cmd := procspawn.CommandContext(ctx, name, args...)'] },
       { file: 'internal/collectors/hardware.go', contains: ['cpuInfo, err := cpu.Info()'] },
-      { file: 'internal/collectors/classify_windows.go', contains: ['exec.Command("wmic", "systemenclosure"'] },
+      { file: 'internal/collectors/classify_windows.go', contains: ['procspawn.Command("wmic", "systemenclosure"'] },
     ],
   },
   {
@@ -49,14 +49,14 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
     anchors: [
       { file: 'internal/config/config.go', contains: ['DefaultHeartbeatIntervalSeconds = 60'] },
       { file: 'internal/heartbeat/ip_tracking.go', contains: ['var readDHCPEnabledAliases = readDHCPEnabledAliasesIPHelper', 'aliases, fallbackErr = readDHCPEnabledAliasesPowerShell()', 'commandOutput(2*time.Second, "powershell"', 'Get-NetIPInterface -AddressFamily IPv4', 'AssignmentType: determineAssignmentType('] },
-      { file: 'internal/heartbeat/ip_tracking_dhcp_windows.go', contains: ['windows.GetAdaptersAddresses(windows.AF_INET, flags, 0, head, &size)', 'a.Flags&ipAdapterDHCPEnabled != 0'], absent: ['"os/exec"', 'commandOutput('] },
+      { file: 'internal/heartbeat/ip_tracking_dhcp_windows.go', contains: ['windows.GetAdaptersAddresses(windows.AF_INET, flags, 0, head, &size)', 'a.Flags&ipAdapterDHCPEnabled != 0'], absent: ['"os/exec"', 'internal/procspawn"', 'commandOutput('] },
     ],
   },
   {
     text: 'Link speed: read in-process from the IP Helper interface table (one GetIfTable2Ex snapshot per metrics cycle, no PowerShell); per-interface results are cached 5 min, a failed table read yields 0.',
     anchors: [
       { file: 'internal/collectors/metrics.go', contains: ['speedCacheTTL = 5 * time.Minute', 'c.speedCache[ifaceName] = cachedSpeed{speed: speed, at: time.Now()}'] },
-      { file: 'internal/collectors/bandwidth_windows.go', contains: ['windows.GetIfTable2Ex(windows.MibIfTableNormal, &table)'], absent: ['"powershell"', 'exec.Command', 'commandOutput('] },
+      { file: 'internal/collectors/bandwidth_windows.go', contains: ['windows.GetIfTable2Ex(windows.MibIfTableNormal, &table)'], absent: ['"powershell"', 'exec.Command', 'procspawn.Command', 'commandOutput('] },
       { file: 'internal/collectors/linkspeed_table.go', contains: ['linkSpeedTableTTL = 30 * time.Second'] },
     ],
   },

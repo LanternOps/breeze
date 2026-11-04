@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -722,6 +723,13 @@ func TestManagerReportsUnsupportedReasonViaCapability(t *testing.T) {
 	c := iso.Capability()
 	if c.Version != 0 || c.Ready || c.UnsupportedReason == "" {
 		t.Fatalf("platform isolator capability %+v, want 0 with a reason in this wave", c)
+	}
+	// The engine half is about the no-engine isolator. On Linux the platform
+	// isolator is the real nft one: its answers depend on the host, and Release
+	// could delete a real table, so its engine paths are tested with a fake
+	// runner (isolator_linux_test.go) and never from here.
+	if runtime.GOOS == "linux" {
+		iso = unsupportedIsolator{}
 	}
 	if _, err := iso.Apply(context.Background(), ResolvedSpec{}); err == nil {
 		t.Fatal("unsupported isolator applied")
