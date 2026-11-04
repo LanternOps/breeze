@@ -24,6 +24,7 @@ import { interpolateAlertTemplate, type ResolvedAlertLifecycle } from '@breeze/s
 import { db } from '../db';
 import { alerts, devices } from '../db/schema';
 import { createAlert, resolveAlert, RESOLVABLE_ALERT_STATUSES, type RuleWithTemplate } from './alertService';
+import { readLifecycleSnapshot } from './alertLifecycle/resolve';
 import type { EvaluationResult } from './alertConditions/types';
 import { allocateSubjectEpisode, type MonitorObservation } from './monitors/episodeService';
 
@@ -41,7 +42,6 @@ export async function evaluateSubjectAlerts({ rule, template, device, monitor, l
   const subjects = evidence.subjects ?? [];
   const overrides = rule.overrideSettings as Record<string, unknown> | null;
   const severity = (overrides?.severity as RuleWithTemplate['effectiveSeverity']) ?? template.severity;
-  const autoResolve = lifecycle.autoResolve;
   const allocateEpisode = monitor
     ? () => allocateSubjectEpisode({ monitor, deviceId: device.id, orgId: device.orgId })
     : undefined;
@@ -76,13 +76,14 @@ export async function evaluateSubjectAlerts({ rule, template, device, monitor, l
     inArray(alerts.status, [...RESOLVABLE_ALERT_STATUSES]),
   ));
 
-  if (autoResolve) {
-    const byKey = new Map(subjects.map(s => [s.subjectKey, s]));
-    for (const alert of await open()) {
-      const subject = byKey.get(alert.subjectKey!);
-      if (!alert.requiresHuman && subject?.status === 'recovered') {
-        await resolveAlert(alert.id, `Auto-resolved: ${subject.description}`, undefined, true, 'condition_cleared');
-      }
+  const byKey = new Map(subjects.map(s => [s.subjectKey, s]));
+  for (const alert of await open()) {
+    const subject = byKey.get(alert.subjectKey!);
+    // Each alert keeps the lifecycle it opened with (settings rule 6); `lifecycle`
+    // only decides for an alert with no snapshot (opened before W2).
+    const autoResolve = (readLifecycleSnapshot(alert.context) ?? lifecycle).autoResolve;
+    if (autoResolve && !alert.requiresHuman && subject?.status === 'recovered') {
+      await resolveAlert(alert.id, `Auto-resolved: ${subject.description}`, undefined, true, 'condition_cleared');
     }
   }
 

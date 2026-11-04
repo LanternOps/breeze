@@ -39,7 +39,7 @@ vi.mock('../../db/partnerAxisRead', () => ({
   },
 }));
 
-import { createLifecycleLoader, legacyLifecycleValues, loadAlertLifecycle, readLifecycleSnapshot } from './resolve';
+import { createLifecycleLoader, hasMalformedLegacyCooldownOverride, legacyLifecycleValues, loadAlertLifecycle, readLifecycleSnapshot } from './resolve';
 
 const PARTNER = 'p0000000-0000-4000-8000-000000000000';
 const ORG_A = 'a0000000-0000-4000-8000-000000000000';
@@ -217,6 +217,23 @@ describe('legacyLifecycleValues', () => {
       expect(legacyLifecycleValues({ overrideSettings: { cooldownMinutes: bad } }, { autoResolve: true, cooldownMinutes: 9 }).cooldownMinutes)
         .toBe(9);
     }
+  });
+});
+
+describe('hasMalformedLegacyCooldownOverride', () => {
+  const legacy = (cooldownMinutes: unknown) => ({ managedByMonitorId: null, overrideSettings: { cooldownMinutes } });
+
+  it.each(['invalid', '30', -1, 2.5, true, {}])('flags the override the loader would ignore: %j', (bad) => {
+    expect(hasMalformedLegacyCooldownOverride(legacy(bad))).toBe(true);
+  });
+
+  it.each([0, 5, 20_000, null, undefined])('accepts a usable or absent override: %j', (ok) => {
+    expect(hasMalformedLegacyCooldownOverride(legacy(ok))).toBe(false);
+  });
+
+  it('is false with no overrides, and for a managed rule, which never reads the rule override', () => {
+    expect(hasMalformedLegacyCooldownOverride({ managedByMonitorId: null, overrideSettings: null })).toBe(false);
+    expect(hasMalformedLegacyCooldownOverride({ managedByMonitorId: MONITOR, overrideSettings: { cooldownMinutes: 'invalid' } })).toBe(false);
   });
 });
 

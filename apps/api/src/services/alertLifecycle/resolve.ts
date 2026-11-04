@@ -57,6 +57,9 @@ const LIFECYCLE_SOURCES: readonly LifecycleSource[] = ['monitor', 'org', 'partne
 const asRearmMode = (value: unknown): RearmMode | null =>
   (REARM_MODES as readonly unknown[]).includes(value) ? value as RearmMode : null;
 
+const isUsableCooldownOverride = (value: unknown): value is number =>
+  Number.isInteger(value) && (value as number) >= 0;
+
 /**
  * Legacy (non-monitor) values: rule override ?? template ?? built-in. `??`,
  * never `||`: 0 minutes and `false` are real settings. An override of the
@@ -72,9 +75,24 @@ export function legacyLifecycleValues(
   return {
     autoResolve: (typeof overrideAutoResolve === 'boolean' ? overrideAutoResolve : null)
       ?? template?.autoResolve ?? BUILTIN_ALERT_LIFECYCLE.autoResolve,
-    cooldownMinutes: (Number.isInteger(overrideCooldown) && (overrideCooldown as number) >= 0 ? overrideCooldown as number : null)
+    cooldownMinutes: (isUsableCooldownOverride(overrideCooldown) ? overrideCooldown : null)
       ?? template?.cooldownMinutes ?? BUILTIN_ALERT_LIFECYCLE.cooldownMinutes,
   };
+}
+
+/**
+ * A legacy rule whose stored cooldown override is set but unusable, which
+ * {@link legacyLifecycleValues} ignores. Durable offline admission refuses such
+ * a rule instead of alerting on a cooldown nobody configured: its own task
+ * fails and stays visible while its siblings proceed. A managed rule never
+ * reads this override, so it is never malformed here.
+ */
+export function hasMalformedLegacyCooldownOverride(
+  rule: Pick<AlertRuleRow, 'managedByMonitorId' | 'overrideSettings'>,
+): boolean {
+  if (rule.managedByMonitorId) return false;
+  const override = (rule.overrideSettings as Record<string, unknown> | null)?.cooldownMinutes;
+  return override !== undefined && override !== null && !isUsableCooldownOverride(override);
 }
 
 /** A monitor row's own settings, each `null` = inherit. */

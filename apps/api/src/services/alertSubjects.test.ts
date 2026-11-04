@@ -79,6 +79,19 @@ it.each(['unknown', 'absent', 'autoResolveOff', 'requiresHuman'])('%s preserves 
   expect(m.resolve).not.toHaveBeenCalled();
 });
 
+it.each([
+  { snapshot: false, current: true, resolved: false },
+  { snapshot: true, current: false, resolved: true },
+])('an open alert follows its snapshot autoResolve=$snapshot, not the current $current', async ({ snapshot, current, resolved }) => {
+  const sources = { autoResolve: 'monitor', rearmMode: 'builtin', rearmDelayMinutes: 'builtin', cooldownMinutes: 'builtin' };
+  m.open = [{
+    id: 'a', subjectKey: 'a', status: 'active', requiresHuman: false,
+    context: { lifecycle: { autoResolve: snapshot, rearmMode: 'new_evidence', rearmDelayMinutes: null, cooldownMinutes: 5, sources } },
+  }];
+  await evaluateSubjectAlerts(input({ a: 'recovered' }, current));
+  expect(m.resolve).toHaveBeenCalledTimes(resolved ? 1 : 0);
+});
+
 it('no open alerts means unknown for missing evidence; observed recovery means ok', async () => {
   expect(await evaluateSubjectAlerts(input({ a: 'unknown' }))).toBe('unknown');
   const arg = input({});
