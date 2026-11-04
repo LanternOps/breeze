@@ -20,6 +20,12 @@ export interface PromotableProposal {
   decidedAt: Date | null;
 }
 
+/** #10954: a person is signing this `review_failed` proposal in place of a verified run. */
+export interface PromoteReviewOverride {
+  acknowledgedPatterns: string[];
+  decisionNote: string;
+}
+
 export type PromoteResult =
   | { ok: true; scriptId: string; versionId: string }
   | { ok: false; status: 400 | 403 | 409; error: string };
@@ -37,17 +43,28 @@ export type PromoteResult =
  * two concurrent promotions of one proposal cannot both insert a script — the
  * loser's CAS matches nothing and it writes nothing. `insertScriptRow` runs as
  * a savepoint inside the same transaction, and the ids are stamped afterwards.
+ *
+ * #10954 `override`: from `review_failed` instead of `verified`. There was no
+ * run to copy a method from and no passing review to cite, so the version says
+ * who signed it: `approved_by` is the caller, `approval_method` is `direct_ui`,
+ * `review_id` stays null and the changelog states it plainly.
  */
 export async function promoteProposalToLibrary(args: {
   auth: AuthContext;
   proposal: PromotableProposal;
-  review: { id: string; riskTier: string | null; summary: string | null; createdAt: Date } | null;
+  review: { id: string; status?: string; riskTier: string | null; summary: string | null; createdAt: Date } | null;
   input: ScriptProposalPromoteInput;
+  override?: PromoteReviewOverride;
 }): Promise<PromoteResult> {
-  const { auth, proposal, review, input } = args;
+  const { auth, proposal, input, override } = args;
+  const fromStatus = override ? 'review_failed' : 'verified';
+  const wrongState = override ? 'proposal_not_review_failed' : 'proposal_not_verified';
+  // A failed review is no review: a proposal run under the override and then
+  // saved through the normal path must not cite it as provenance.
+  const review = args.review && args.review.status !== 'failed' && args.review.status !== 'timeout' ? args.review : null;
 
-  if (proposal.status !== 'verified') {
-    return { ok: false, status: 409, error: 'proposal_not_verified' };
+  if (proposal.status !== fromStatus) {
+    return { ok: false, status: 409, error: wrongState };
   }
 
   // An org-owned promotion is pinned to the PROPOSAL's org, never to whatever
@@ -62,14 +79,14 @@ export async function promoteProposalToLibrary(args: {
     return { ok: false, status: scope.status, error: scope.error };
   }
 
-  const approver = proposal.decidedBy ?? auth.user.id;
-  const approvedAt = proposal.decidedAt ?? new Date();
+  const approver = override ? auth.user.id : (proposal.decidedBy ?? auth.user.id);
+  const approvedAt = override ? new Date() : (proposal.decidedAt ?? new Date());
   // #5645 — the version's method is the RUN's method: `verified` was proved
   // against an execution row the release stamped (spec §4.1), so promotion
   // copies it rather than asserting one. Read BEFORE the transaction opens:
   // the loader takes its own system-scope connection, and holding it inside
   // `db.transaction` would double-hold the pool.
-  const approvalMethod = await loadProposalRunApprovalMethod(proposal.id, proposal.orgId);
+  const approvalMethod = override ? 'direct_ui' : await loadProposalRunApprovalMethod(proposal.id, proposal.orgId);
   if (approvalMethod === null) {
     // Recorded at the point the gap becomes permanent: promotion can happen
     // long after the run, so this is the only line that ties the version's
@@ -80,8 +97,10 @@ export async function promoteProposalToLibrary(args: {
   }
 
   return db.transaction(async (tx): Promise<PromoteResult> => {
-    const claimed = await transitionProposal(tx, proposal.id, ['verified'], 'promoted', {});
-    if (!claimed) return { ok: false, status: 409, error: 'proposal_not_verified' };
+    const claimed = await transitionProposal(tx, proposal.id, [fromStatus], 'promoted', override
+      ? { decidedBy: approver, decidedAt: approvedAt, decisionNote: override.decisionNote, acknowledgedPatterns: override.acknowledgedPatterns }
+      : {});
+    if (!claimed) return { ok: false, status: 409, error: wrongState };
 
     const script = await insertScriptRow(
       auth,
@@ -94,7 +113,7 @@ export async function promoteProposalToLibrary(args: {
         content: proposal.content,
         timeoutSeconds: proposal.timeoutSeconds,
         runAs: proposal.runAs,
-        acknowledgedSecurityPatterns: proposal.acknowledgedPatterns,
+        acknowledgedSecurityPatterns: override ? override.acknowledgedPatterns : proposal.acknowledgedPatterns,
       },
       {
         tx,
@@ -107,7 +126,9 @@ export async function promoteProposalToLibrary(args: {
           approvedBy: approver,
           approvedAt,
           approvalMethod,
-          changelog: `Promoted from AI proposal ${proposal.id}`,
+          changelog: override
+            ? `Saved from AI proposal ${proposal.id} without a passing AI review, signed by user ${auth.user.id}`
+            : `Promoted from AI proposal ${proposal.id}`,
           createdBy: auth.user.id,
         },
       },

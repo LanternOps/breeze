@@ -4,7 +4,7 @@
 // (W02, #5612). See spec §4.4 for the full pipeline and this module's
 // exported functions for the roadmap §3.4 contract this wave produces.
 import type { RiskTier, ScriptReviewVerdict, ScriptScanResult, TouchClass } from '@breeze/shared';
-import { riskTierRank, scriptReviewVerdictSchema } from '@breeze/shared';
+import { riskTierRank, SCRIPT_REVIEW_SUMMARY_MAX_LENGTH, scriptReviewVerdictSchema } from '@breeze/shared';
 import { APIConnectionTimeoutError, APIUserAbortError } from '@anthropic-ai/sdk';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
@@ -54,8 +54,22 @@ export const REVIEWER_PROMPT_VERSION = '2026-11-04.1';
 const HIGH_FLOOR_TOUCH_CLASSES = new Set<TouchClass>(['credentials', 'security_tooling', 'boot', 'disk', 'shell_eval']);
 const MEDIUM_FLOOR_TOUCH_CLASSES = new Set<TouchClass>(['users_groups', 'firewall', 'scheduled_tasks', 'registry']);
 
-function higherTier(a: RiskTier, b: RiskTier): RiskTier {
+export function higherRiskTier(a: RiskTier, b: RiskTier): RiskTier {
   return riskTierRank(a) >= riskTierRank(b) ? a : b;
+}
+
+/**
+ * The spec §4.4 floor on its own: what the deterministic classifier alone says
+ * about this content, whatever a model thinks. `applyReviewFloors` raises a
+ * verdict to it; the #10954 human override, which has no verdict, reads it
+ * directly.
+ */
+export function deterministicRiskFloor(scan: Pick<ScriptScanResult, 'strictHits' | 'touchClasses'>): RiskTier {
+  let floor: RiskTier = 'low';
+  if (scan.strictHits.length > 0) floor = higherRiskTier(floor, 'medium');
+  if (scan.touchClasses.some((c) => HIGH_FLOOR_TOUCH_CLASSES.has(c))) floor = higherRiskTier(floor, 'high');
+  if (scan.touchClasses.some((c) => MEDIUM_FLOOR_TOUCH_CLASSES.has(c))) floor = higherRiskTier(floor, 'medium');
+  return floor;
 }
 
 /**
@@ -70,12 +84,7 @@ export function applyReviewFloors(
   verdict: ScriptReviewVerdict,
   scan: Pick<ScriptScanResult, 'strictHits' | 'touchClasses'>,
 ): ScriptReviewVerdict {
-  let floor: RiskTier = 'low';
-  if (scan.strictHits.length > 0) floor = higherTier(floor, 'medium');
-  if (scan.touchClasses.some((c) => HIGH_FLOOR_TOUCH_CLASSES.has(c))) floor = higherTier(floor, 'high');
-  if (scan.touchClasses.some((c) => MEDIUM_FLOOR_TOUCH_CLASSES.has(c))) floor = higherTier(floor, 'medium');
-
-  const riskTier = higherTier(verdict.riskTier, floor);
+  const riskTier = higherRiskTier(verdict.riskTier, deterministicRiskFloor(scan));
 
   let recommendedAction = verdict.recommendedAction;
   if (verdict.goalMatch === 'no') recommendedAction = 'reject';
@@ -305,21 +314,41 @@ async function ensureStaticScanRow(job: ScriptReviewJobData, scan: ScriptScanRes
 export function interpretReviewerResponse(args: {
   stopReason: string | null | undefined;
   text: string | undefined;
-}): { ok: true; verdict: ScriptReviewVerdict } | { ok: false; reason: string } {
+}): { ok: true; verdict: ScriptReviewVerdict } | { ok: false; reason: string; retryable: boolean } {
   const parsedJson = parseVerdictText(args.text);
-  const parsed = parsedJson === undefined ? undefined : scriptReviewVerdictSchema.safeParse(parsedJson);
+  const parsed = parsedJson === undefined ? undefined : scriptReviewVerdictSchema.safeParse(clampVerdictFreeText(parsedJson));
   if (parsed?.success) return { ok: true, verdict: parsed.data };
   if (args.stopReason === 'max_tokens') {
     return {
       ok: false,
+      // Never retried: the same request hits the same cap and pays for it twice.
+      retryable: false,
       reason: `Reviewer ran out of output budget (${SCRIPT_REVIEW_MAX_OUTPUT_TOKENS} tokens, including thinking) before finishing its verdict`,
     };
   }
-  if (!parsed) return { ok: false, reason: 'Reviewer returned no parseable JSON verdict' };
+  if (!parsed) return { ok: false, retryable: true, reason: 'Reviewer returned no parseable JSON verdict' };
   return {
     ok: false,
+    // The model answered and its answer is wrong: the structural fields stay
+    // strict, and asking again would only be asking for a different verdict.
+    retryable: false,
     reason: `Malformed reviewer verdict: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`,
   };
+}
+
+/**
+ * #10954: a summary over the display limit is the reviewer being wordy, not a
+ * bad verdict, so it is cut rather than failing the whole review. `summary` is
+ * the only verdict string with a maximum. Array.from counts code points, the
+ * same unit zod 4.6's `.max()` measures, and cannot split a surrogate pair.
+ */
+function clampVerdictFreeText(parsed: unknown): unknown {
+  if (!parsed || typeof parsed !== 'object') return parsed;
+  const { summary } = parsed as { summary?: unknown };
+  if (typeof summary !== 'string') return parsed;
+  const codePoints = Array.from(summary);
+  if (codePoints.length <= SCRIPT_REVIEW_SUMMARY_MAX_LENGTH) return parsed;
+  return { ...parsed, summary: `${codePoints.slice(0, SCRIPT_REVIEW_SUMMARY_MAX_LENGTH - 1).join('')}…` };
 }
 
 /** The model's text, with an optional ```json fence stripped, parsed as JSON. */
@@ -462,87 +491,144 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
     return failReview(job, `Provider or model resolution failed (${name}): ${errorMessage(error)}`, 'failed', { reservationId, model });
   }
 
-  let outcome: Awaited<ReturnType<typeof createMessage>>;
-  let served: FailoverHop;
-  // The hop in flight (failure handling settles THIS hop, never another's).
-  let current = firstHop;
-  // One hard wall clock for the whole review, failover hops included.
+  // One hard wall clock for the whole review, failover hops and the parse
+  // retry included: scriptReviewWorker's lock is sized to this, not to a multiple.
   const deadline = AbortSignal.timeout(SCRIPT_REVIEW_TIMEOUT_MS);
-  try {
-    // W09 (#7607): a pre-output 429/529/5xx/key/quota failure fails over along
-    // the script_reviewer assignment's fallback list; each hop is admitted,
-    // reserved and settled on its own (failoverDispatch.ts). With no list the
-    // original error comes straight back (W03 behaviour).
-    ({ value: outcome, hop: served } = await runWithFailover({
-      first: firstHop,
-      reResolve: ({ excludeOfferingIds, cause, origin }) => resolveModel({
-        partnerId: partnerId!, orgId: job.orgId, surface: 'script_reviewer', maxTokens: SCRIPT_REVIEW_MAX_OUTPUT_TOKENS,
-        excludeOfferingIds, failoverCause: cause, failoverOrigin: origin,
-      }),
-      reserveHop: reserveFailoverHop({ orgId: job.orgId }),
-      attempt: (hop) => {
-        current = hop;
-        const client = hop.index === 0 ? client0 : anthropicClientFor(hop.resolved, { surface: 'script_review_verdict', orgId: job.orgId });
-        // No tools, one user turn, hard output cap, hard wall clock. `maxRetries: 0`
-        // because the SDK's own retry would silently double the wall clock and
-        // the spend for a call whose result is discarded on timeout anyway.
-        // Thinking/effort/betas come from the resolved wire params.
-        return createMessage(
-          client,
-          hop.resolved,
-          { max_tokens: SCRIPT_REVIEW_MAX_OUTPUT_TOKENS, system, messages: [{ role: 'user', content: user }] },
-          { signal: deadline, maxRetries: 0 },
-        );
-      },
-      settleFailedHop: settleZeroUsageHop({ orgId: job.orgId, userId: null, sessionId: null, agentRunId: null, sourceRef }),
-      isPreOutput: isPreOutputMessagesFailure,
-    }));
-  } catch (error) {
-    if (error instanceof FailoverExhaustedError) {
-      // Every hop runWithFailover tried is already settled on its own reservation.
-      return failReview(
+  // What this review has spent so far, across attempts. The ledger holds each
+  // attempt's own row; the review row carries the total.
+  let inputTokens = 0;
+  let outputTokens = 0;
+  // One provider call, on `first` and whatever it fails over to. A failure is
+  // resolved into the failure row here, so callers only see a usable response.
+  const callReviewer = async (first: FailoverHop): Promise<
+    | { ok: true; outcome: Awaited<ReturnType<typeof createMessage>>; served: FailoverHop }
+    | { ok: false; row: ScriptProposalReviewRow }
+  > => {
+    // The hop in flight (failure handling settles THIS hop, never another's).
+    let current = first;
+    try {
+      // W09 (#7607): a pre-output 429/529/5xx/key/quota failure fails over along
+      // the script_reviewer assignment's fallback list; each hop is admitted,
+      // reserved and settled on its own (failoverDispatch.ts). With no list the
+      // original error comes straight back (W03 behaviour).
+      const { value: outcome, hop: served } = await runWithFailover({
+        first,
+        reResolve: ({ excludeOfferingIds, cause, origin }) => resolveModel({
+          partnerId: partnerId!, orgId: job.orgId, surface: 'script_reviewer', maxTokens: SCRIPT_REVIEW_MAX_OUTPUT_TOKENS,
+          excludeOfferingIds, failoverCause: cause, failoverOrigin: origin,
+        }),
+        reserveHop: reserveFailoverHop({ orgId: job.orgId }),
+        attempt: (hop) => {
+          current = hop;
+          const client = hop.resolved === resolved ? client0 : anthropicClientFor(hop.resolved, { surface: 'script_review_verdict', orgId: job.orgId });
+          // No tools, one user turn, hard output cap, hard wall clock. `maxRetries: 0`
+          // because the SDK's own retry would silently double the wall clock and
+          // the spend for a call whose result is discarded on timeout anyway.
+          // Thinking/effort/betas come from the resolved wire params.
+          return createMessage(
+            client,
+            hop.resolved,
+            { max_tokens: SCRIPT_REVIEW_MAX_OUTPUT_TOKENS, system, messages: [{ role: 'user', content: user }] },
+            { signal: deadline, maxRetries: 0 },
+          );
+        },
+        settleFailedHop: settleZeroUsageHop({ orgId: job.orgId, userId: null, sessionId: null, agentRunId: null, sourceRef }),
+        isPreOutput: isPreOutputMessagesFailure,
+      });
+      return { ok: true, outcome, served };
+    } catch (error) {
+      if (error instanceof FailoverExhaustedError) {
+        // Every hop runWithFailover tried is already settled on its own reservation.
+        return { ok: false, row: await failReview(
+          job,
+          error.stop === 'admission_denied' && error.admissionMessage
+            ? `Reviewer model call failed and its backup model was not admitted: ${error.admissionMessage}`
+            : `Reviewer model call failed on every configured model: ${errorMessage(dispatchCause(error.lastError))}`,
+          'failed',
+          { reservationId: error.lastHop.reservationId, model: error.lastHop.binding.wireModel, inputTokens, outputTokens },
+        ) };
+      }
+      const cause = dispatchCause(error);
+      const timedOut = isTimeoutError(cause);
+      // A refused attempt that completed before its fallback threw was billed by
+      // the provider: settle it. Nothing completed → settles at zero.
+      await settleOn(current, attemptsOf(error), true);
+      return { ok: false, row: await failReview(
         job,
-        error.stop === 'admission_denied' && error.admissionMessage
-          ? `Reviewer model call failed and its backup model was not admitted: ${error.admissionMessage}`
-          : `Reviewer model call failed on every configured model: ${errorMessage(dispatchCause(error.lastError))}`,
-        'failed',
-        { reservationId: error.lastHop.reservationId, model: error.lastHop.binding.wireModel },
-      );
+        `Reviewer model call ${timedOut ? 'timed out' : 'failed'}: ${errorMessage(cause)}`,
+        timedOut ? 'timeout' : 'failed',
+        { reservationId: current.reservationId, model: current.binding.wireModel, inputTokens, outputTokens },
+      ) };
     }
-    const cause = dispatchCause(error);
-    const timedOut = isTimeoutError(cause);
-    // A refused attempt that completed before its fallback threw was billed by
-    // the provider: settle it. Nothing completed → settles at zero.
-    await settleOn(current, attemptsOf(error), true);
-    return failReview(
-      job,
-      `Reviewer model call ${timedOut ? 'timed out' : 'failed'}: ${errorMessage(cause)}`,
-      timedOut ? 'timeout' : 'failed',
-      { reservationId: current.reservationId, model: current.binding.wireModel },
-    );
+  };
+
+  /**
+   * #10954: reserve for the one parse retry, under its own key so its spend is
+   * admitted and settled apart from the attempt already settled. Null when the
+   * retry cannot be funded or the reservation faults: the review then fails
+   * with the parse reason it already has, because a billing fault is not the
+   * reviewer's verdict.
+   */
+  const reserveParseRetry = async (hop: FailoverHop): Promise<FailoverHop | null> => {
+    const idempotencyKey = `script-review:${job.proposalId}:${job.attempt}:parse-retry`;
+    try {
+      const reserved = await reserveFailoverHop({ orgId: job.orgId })(hop.resolved, hop.binding, idempotencyKey);
+      if (!reserved.ok) {
+        console.warn('[scriptReview] parse retry not admitted', { proposalId: job.proposalId, reason: reserved.reason });
+        return null;
+      }
+      return { ...hop, index: 0, idempotencyKey, reservationId: reserved.reservationId, reservedCostCents: reserved.reservedCostCents };
+    } catch (error) {
+      captureException(new Error(safeErrorMessage(error)), undefined, {
+        service: 'scriptReview', orgId: job.orgId, area: 'script_review_parse_retry',
+      });
+      return null;
+    }
+  };
+
+  const first = await callReviewer(firstHop);
+  if (!first.ok) return first.row;
+  let { outcome, served } = first;
+  const settle = (attempts: MessageAttempt[]) => settleOn(served, attempts);
+  let interpreted: ReturnType<typeof interpretReviewerResponse>;
+  let rawText: string | undefined;
+  // The attempt in `outcome` has already been settled (its retry fell through).
+  let settled = false;
+  for (let parseRetried = false; ; parseRetried = true) {
+    const resp = outcome.message;
+    const billed = messagesUsage(served.binding, outcome.attempts);
+    inputTokens += billed.usage.reduce((n, u) => n + u.tokens.input, 0);
+    outputTokens += billed.usage.reduce((n, u) => n + u.tokens.output, 0);
+    if (resp.stop_reason === 'refusal') {
+      // Tokens were spent: settle them, then fail the review with the category
+      // so the proposal shows why (§9.1a) instead of "no parseable verdict".
+      await settle(outcome.attempts);
+      return failReview(job, refusalHeadline(billed.outcome.refusalCategory), 'failed', { reservationId: served.reservationId, model: served.binding.wireModel, inputTokens, outputTokens });
+    }
+
+    const textBlock = resp.content.find((b) => b.type === 'text');
+    rawText = textBlock?.type === 'text' ? textBlock.text : undefined;
+    interpreted = interpretReviewerResponse({ stopReason: resp.stop_reason, text: rawText });
+    // #10954: one more try when the reply was not JSON at all, and only then.
+    if (interpreted.ok || !interpreted.retryable || parseRetried) break;
+
+    await settle(outcome.attempts);
+    const retryHop = await reserveParseRetry(served);
+    if (!retryHop) {
+      settled = true;
+      break;
+    }
+    const retried = await callReviewer(retryHop);
+    if (!retried.ok) return retried.row;
+    ({ outcome, served } = retried);
   }
 
   const servedReservationId = served.reservationId;
   const servedModel = served.binding.wireModel;
-  const settle = (attempts: MessageAttempt[]) => settleOn(served, attempts);
-  const resp = outcome.message;
-  const billed = messagesUsage(served.binding, outcome.attempts);
-  const inputTokens = billed.usage.reduce((n, u) => n + u.tokens.input, 0);
-  const outputTokens = billed.usage.reduce((n, u) => n + u.tokens.output, 0);
-  if (resp.stop_reason === 'refusal') {
-    // Tokens were spent: settle them, then fail the review with the category
-    // so the proposal shows why (§9.1a) instead of "no parseable verdict".
-    await settle(outcome.attempts);
-    return failReview(job, refusalHeadline(billed.outcome.refusalCategory), 'failed', { reservationId: servedReservationId, model: servedModel, inputTokens, outputTokens });
-  }
-
-  const textBlock = resp.content.find((b) => b.type === 'text');
-  const rawText = textBlock?.type === 'text' ? textBlock.text : undefined;
-  const interpreted = interpretReviewerResponse({ stopReason: resp.stop_reason, text: rawText });
 
   if (!interpreted.ok) {
     // Tokens really were spent: settle at the REAL counts, then fail closed.
-    await settle(outcome.attempts);
+    if (!settled) await settle(outcome.attempts);
     return failReview(job, interpreted.reason, 'failed', { reservationId: servedReservationId, model: servedModel, inputTokens, outputTokens, rawText });
   }
 

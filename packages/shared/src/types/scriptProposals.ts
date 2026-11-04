@@ -167,8 +167,21 @@ export interface ScriptProposalDetailDto {
   devices: Array<{ id: string; hostname: string; osType: string | null; status: string }>;
   executions: ScriptProposalExecutionDto[];
   verification: ScriptProposalVerificationDto;
+  /**
+   * #10954: set when this proposal's AI review reached no verdict. `humanApproved`
+   * is true once a person has signed it off without one.
+   */
+  reviewFailure: { reason: string | null; humanApproved: boolean } | null;
   /** Live-derived for THIS caller — never cached, never trusted from the client. */
-  viewer: { canDecide: boolean; canAcknowledge: boolean; canPromote: boolean };
+  viewer: {
+    canDecide: boolean;
+    canAcknowledge: boolean;
+    canPromote: boolean;
+    /** #10954: may run this `review_failed` proposal without a passing review. */
+    canOverrideRun: boolean;
+    /** #10954: may save this `review_failed` proposal to the library without a passing review. */
+    canOverrideSave: boolean;
+  };
 }
 
 // ---------------------------------------------------------------------------
