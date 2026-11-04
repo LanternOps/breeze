@@ -621,6 +621,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'partnerApi/devices.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/inventory.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'migrationWindows.ts': { exempt: 'human_only_tenant_restructure', note: 'Ticket migration windows (#8313): opening one widens a keyless partner service principal into import mode and needs the owner, an interactive session and a step-up grant; closing is a full-partner-admin action. No AI tool.' },
+  'ticketImports/runs.ts': { exempt: 'human_only_migration', note: 'Ticket import runs (#8313 W4): a dry run or an import into a migration window that only the principal owner can open, started and read by a partner-wide admin from the import wizard. Spec 2026-10-19 §5.7 gives the import no AI tool.' },
+  'ticketImports/sources.ts': { exempt: 'human_only_migration', note: 'Ticket import sources (#8313 W4): connecting a foreign helpdesk with a stored credential, mapping its orgs and groups, and the preflight. Owner-only and MFA-gated partner-admin actions with no AI tool (spec 2026-10-19 §5.7).' },
   'partnerApi/organizations.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/provisioning.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/relationships.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
@@ -773,6 +775,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // #8883 W5 (spec §5.7): reads and the dry run are tier 1; create/update/
   // reorder/delete are the tier-3 manage tool, partner-wide gate in the service.
   'tickets/routingRules.ts': { tools: ['list_ticket_routing_rules', 'test_ticket_routing_rule', 'manage_ticket_routing_rules'] },
+  'tickets/serviceCatalog.ts': { exempt: 'tool_in_later_wave', note: 'Service catalog management routes (#8325 wave A1); no MCP tool planned yet (#8325).' },
   'tickets/ticketResponseTemplates.ts': { tools: ['manage_ticket_response_templates'] }, // W06 (#6776)
   'tickets/tickets.ts': { tools: ['manage_tickets'] },
   'timeEntries/index.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },

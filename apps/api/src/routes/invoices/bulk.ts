@@ -6,15 +6,22 @@ import { bulkInvoiceIdsSchema, bulkVoidInvoicesSchema } from '@breeze/shared';
 import { runBulkIsolated } from '../../lib/bulkOps';
 import { deleteDraftInvoice, issueInvoice, voidInvoice } from '../../services/invoiceService';
 import { invoiceActorFrom, handleServiceError } from './invoices';
+import { assertBillingEnabledForPartner } from '../../services/billingEnabled';
+import { InvoiceServiceError, type InvoiceServiceErrorCode } from '../../services/invoiceTypes';
 import { auditBillingDocument } from '../../services/billingDocumentAudit';
 
 export const invoiceBulkRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const writePerm = requirePermission(PERMISSIONS.INVOICES_WRITE.resource, PERMISSIONS.INVOICES_WRITE.action);
+// Per-item errors would be tallied as 'skipped'; the master switch answers 404 for the whole call.
+const assertBulkBillingEnabled = (c: { get: (k: string) => unknown }) =>
+  assertBillingEnabledForPartner((c.get('auth') as AuthContext).partnerId,
+    (m, s, code) => new InvoiceServiceError(m, s, code as InvoiceServiceErrorCode));
 const sendPerm = requirePermission(PERMISSIONS.INVOICES_SEND.resource, PERMISSIONS.INVOICES_SEND.action);
 
 invoiceBulkRoutes.post('/bulk-delete', scopes, writePerm, zValidator('json', bulkInvoiceIdsSchema), async (c) => {
   try {
+    await assertBulkBillingEnabled(c);
     const ctx = dbAccessContextFromAuth(c.get('auth') as AuthContext);
     const actor = invoiceActorFrom(c);
     const { ids } = c.req.valid('json');
@@ -26,6 +33,7 @@ invoiceBulkRoutes.post('/bulk-delete', scopes, writePerm, zValidator('json', bul
 
 invoiceBulkRoutes.post('/bulk-issue', scopes, sendPerm, zValidator('json', bulkInvoiceIdsSchema), async (c) => {
   try {
+    await assertBulkBillingEnabled(c);
     const ctx = dbAccessContextFromAuth(c.get('auth') as AuthContext);
     const actor = invoiceActorFrom(c);
     const { ids } = c.req.valid('json');
@@ -36,6 +44,7 @@ invoiceBulkRoutes.post('/bulk-issue', scopes, sendPerm, zValidator('json', bulkI
 
 invoiceBulkRoutes.post('/bulk-void', scopes, sendPerm, zValidator('json', bulkVoidInvoicesSchema), async (c) => {
   try {
+    await assertBulkBillingEnabled(c);
     const ctx = dbAccessContextFromAuth(c.get('auth') as AuthContext);
     const actor = invoiceActorFrom(c);
     const { ids, reason } = c.req.valid('json');

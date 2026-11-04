@@ -1350,13 +1350,6 @@
           "updated": "Updated"
         },
         "searchPlaceholder": "Search tickets",
-        "status": {
-          "closed": "Closed",
-          "inProgress": "In Progress",
-          "open": "Open",
-          "resolved": "Resolved",
-          "waiting": "Waiting"
-        },
         "ticketCount": "{{filtered}} of {{total}} tickets",
         "title": "Alert tickets",
         "unlinked": "Unlinked"

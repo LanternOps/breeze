@@ -17,9 +17,10 @@ const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
 const row = (tag, commit, base = 'v0.118.0', note = 'portal fix') => `${tag}\t${commit}\t${base}\t${note}\n`;
 
-test('the committed ledger is header-only and valid', () => {
+test('the committed ledger keeps its header and every row is valid', () => {
   const text = readFileSync(join(HERE, '..', '..', LEDGER_PATH), 'utf8');
-  assert.deepEqual(parseLedger(text), []);
+  const tags = parseLedger(text).map(({ tag }) => tag);
+  assert.equal(new Set(tags).size, tags.length, 'a tag is listed twice');
   assert.match(text, /always created as a draft/u);
   assert.match(text, /Append-only once the tag exists/u);
 });

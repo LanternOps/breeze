@@ -22,7 +22,7 @@ import type { MfaMethod, PasskeyAuthenticationOptions, PasskeyRegistrationOption
 import { navigateTo } from '@/lib/navigation';
 import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
 import { formatNumber } from '@/lib/i18n/format';
-import { runAction } from '@/lib/runAction';
+import { ActionError, runAction } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { Dialog } from '../shared/Dialog';
@@ -44,7 +44,9 @@ import { replaceUrl } from '../../lib/replaceUrl';
 const SSO_REAUTH_MANAGE_DEAD_GRANT_CODES = new Set(['sso_reauth_required', 'sso_reauth_grant_expired']);
 
 const createProfileSchema = (t: TFunction) => z.object({
-  name: z.string().min(2, t('profilePage.nameMustBeAtLeast2Characters')),
+  name: z.string().trim()
+    .min(1, t('profilePage.nameIsRequired'))
+    .max(255, t('profilePage.nameMustBeAtMost255Characters')),
 });
 
 const passkeyMfaStateSchema = z.discriminatedUnion('mfaEnabled', [
@@ -85,6 +87,18 @@ type User = {
   hasPassword?: boolean;
   preferences?: UserPreferences;
 };
+
+type AvatarChange = { kind: 'replace'; file: File; previewUrl: string } | { kind: 'remove' };
+
+const avatarMutationResponseSchema = z.object({ avatarUrl: z.string().nullable() });
+const profileUpdateResponseSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  email: z.string(),
+  avatarUrl: z.string().nullable().optional(),
+  mfaEnabled: z.boolean().optional(),
+  mfaMethod: z.enum(['totp', 'sms', 'passkey']).nullable().optional(),
+}).passthrough();
 
 // Typed reason codes the SSO re-auth callback redirects back with
 // (`/settings/profile?ssoReauthError=<code>`). Anything not listed falls back
@@ -275,15 +289,10 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [mfaResumeView, setMfaResumeView] = useState<'recovery' | 'disable' | undefined>();
   const passkeyLandingDone = useRef(false);
 
-  // Avatar upload state
-  const [avatarFile, setAvatarFile] = useState<File | null>(null);
-  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
-  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
-  const [isDeletingAvatar, setIsDeletingAvatar] = useState(false);
-  const [avatarError, setAvatarError] = useState<string | undefined>();
-  const [avatarSuccess, setAvatarSuccess] = useState<string | undefined>();
+  const [avatarChange, setAvatarChange] = useState<AvatarChange | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const profileSavingRef = useRef(false);
   const updateAuthUser = useAuthStore((s) => s.updateUser);
 
   const {
@@ -298,22 +307,17 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     }
   });
 
-  const isProfileLoading = useMemo(
-    () => isUpdatingProfile || isSubmitting,
-    [isUpdatingProfile, isSubmitting]
-  );
-  // Preview priority: locally-selected file (object URL) → user's current
-  // avatar (fetched as blob through fetchWithAuth so the Bearer token gets
-  // attached — the API requires auth on GET /users/:id/avatar, and <img src=>
-  // can't send headers).
-  const resolvedAvatarUrl = useAvatarBlobUrl(avatarPreview ? null : user?.avatarUrl ?? null);
-  const previewAvatarUrl = avatarPreview || resolvedAvatarUrl || '';
+  const isProfileLoading = useMemo(() => isUpdatingProfile || isSubmitting, [isUpdatingProfile, isSubmitting]);
+  const resolvedAvatarUrl = useAvatarBlobUrl(user?.avatarUrl ?? null);
+  const previewAvatarUrl = avatarChange?.kind === 'remove'
+    ? ''
+    : avatarChange?.kind === 'replace'
+      ? avatarChange.previewUrl
+      : resolvedAvatarUrl ?? '';
+  const canRemoveAvatar = Boolean(user?.avatarUrl && avatarChange?.kind !== 'remove');
 
-  // Fetch user data on mount
   useEffect(() => {
-    if (initialUser) {
-      return;
-    }
+    if (initialUser) return;
 
     const fetchUser = async () => {
       try {
@@ -328,9 +332,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         }
         const userData = await response.json();
         setUser(userData);
-        reset({
-          name: userData.name ?? '',
-        });
+        reset({ name: userData.name ?? '' });
       } catch {
         setProfileError(t('profilePage.failedToLoadProfileData'));
       } finally {
@@ -368,43 +370,72 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   }, []);
 
   const handleProfileSubmit = async (values: ProfileFormValues) => {
+    if (profileSavingRef.current) return;
+    profileSavingRef.current = true;
+    let avatarChangeSaved = false;
     clearMessages();
     try {
       setIsUpdatingProfile(true);
-      const payload = {
-        name: values.name.trim(),
-      };
-
-      // runaction-exempt: inline-feedback handler. The catch below routes every failure into
-      // `profileError`, rendered as a banner directly above this form.
-      const response = await fetchWithAuth('/users/me', {
-        method: 'PATCH',
-        body: JSON.stringify(payload)
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message ?? t('profilePage.failedToUpdateProfile'));
+      if (avatarChange) {
+        const avatar = await runAction<z.infer<typeof avatarMutationResponseSchema>>({
+          request: () => {
+            if (avatarChange.kind === 'remove') {
+              return fetchWithAuth('/users/me/avatar', { method: 'DELETE' });
+            }
+            const body = new FormData();
+            body.append('file', avatarChange.file);
+            return fetchWithAuth('/users/me/avatar', { method: 'POST', body });
+          },
+          errorFallback: avatarChange.kind === 'replace'
+            ? t('profilePage.failedToUploadAvatar')
+            : t('profilePage.failedToRemoveAvatar'),
+          parseSuccess: (data) => avatarMutationResponseSchema.parse(data),
+          suppressErrorToast: () => true,
+          onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
+        });
+        const avatarUrl = avatar.avatarUrl;
+        avatarChangeSaved = true;
+        setUser((prev) => prev ? { ...prev, avatarUrl: avatarUrl ?? undefined } : prev);
+        updateAuthUser({ avatarUrl: avatarUrl ?? undefined });
+        setAvatarChange(null);
       }
 
-      const updatedUser = await response.json();
+      const updatedUser = await runAction<z.infer<typeof profileUpdateResponseSchema>>({
+        request: () => fetchWithAuth('/users/me', {
+          method: 'PATCH',
+          body: JSON.stringify({ name: values.name.trim() }),
+        }),
+        errorFallback: t('profilePage.failedToUpdateProfile'),
+        parseSuccess: (data) => profileUpdateResponseSchema.parse(data),
+        suppressErrorToast: () => true,
+        onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
+      });
+      const { avatarUrl: responseAvatarUrl, ...updatedUserFields } = updatedUser;
+      const avatarUpdate = responseAvatarUrl === undefined
+        ? {}
+        : { avatarUrl: responseAvatarUrl ?? undefined };
       setUser(prev => (prev ? {
         ...prev,
-        ...updatedUser,
+        ...updatedUserFields,
+        ...avatarUpdate,
         ...(updatedUser.mfaEnabled === false ? { mfaMethod: null } : {}),
-      } : updatedUser));
+      } : { ...updatedUserFields, ...avatarUpdate }));
+      updateAuthUser({ name: updatedUser.name, ...avatarUpdate });
       reset({
         name: updatedUser.name ?? '',
       });
       setProfileSuccess(t('profilePage.profileUpdatedSuccessfully'));
     } catch (error) {
-      setProfileError(error instanceof Error ? error.message : t('profilePage.failedToUpdateProfile'));
+      if (error instanceof ActionError && error.status === 401) return;
+      const message = error instanceof Error ? error.message : t('profilePage.failedToUpdateProfile');
+      setProfileError(avatarChangeSaved
+        ? t('profilePage.avatarSavedButNameUpdateFailed', { error: message })
+        : message);
     } finally {
+      profileSavingRef.current = false;
       setIsUpdatingProfile(false);
     }
   };
-
-  // --- Avatar upload handlers ---
 
   const validateAvatarFile = useCallback((file: File): string | null => {
     if (!ALLOWED_AVATAR_MIMES.includes(file.type)) {
@@ -419,95 +450,30 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     return null;
   }, [t]);
 
-  const clearAvatarMessages = useCallback(() => {
-    setAvatarError(undefined);
-    setAvatarSuccess(undefined);
-  }, []);
-
   const selectAvatarFile = useCallback((file: File) => {
-    clearAvatarMessages();
+    if (profileSavingRef.current) return;
+    clearMessages();
     const err = validateAvatarFile(file);
     if (err) {
-      setAvatarError(err);
+      setProfileError(err);
       return;
     }
-    // Revoke any previous preview to avoid leaks.
-    if (avatarPreview && avatarPreview.startsWith('blob:')) {
-      URL.revokeObjectURL(avatarPreview);
-    }
-    setAvatarFile(file);
-    setAvatarPreview(URL.createObjectURL(file));
-  }, [avatarPreview, validateAvatarFile, clearAvatarMessages]);
+    setAvatarChange({ kind: 'replace', file, previewUrl: URL.createObjectURL(file) });
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, [clearMessages, validateAvatarFile]);
 
-  const cancelAvatarSelection = useCallback(() => {
-    if (avatarPreview && avatarPreview.startsWith('blob:')) {
-      URL.revokeObjectURL(avatarPreview);
-    }
-    setAvatarFile(null);
-    setAvatarPreview(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  }, [avatarPreview]);
+  const handleAvatarRemove = useCallback(() => {
+    if (profileSavingRef.current) return;
+    clearMessages();
+    setAvatarChange({ kind: 'remove' });
+  }, [clearMessages]);
 
-  const handleAvatarUpload = useCallback(async () => {
-    if (!avatarFile) return;
-    clearAvatarMessages();
-
-    try {
-      setIsUploadingAvatar(true);
-      const form = new FormData();
-      form.append('file', avatarFile);
-      // fetchWithAuth skips its default JSON content-type for FormData bodies so
-      // the browser can set multipart/form-data with the correct boundary.
-      // runaction-exempt: inline-feedback handler. Failures land in `avatarError`,
-      // rendered next to the avatar picker along with the local validation errors.
-      const response = await fetchWithAuth('/users/me/avatar', {
-        method: 'POST',
-        body: form,
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error ?? errorData.message ?? t('profilePage.failedToUploadAvatar'));
-      }
-
-      const data = await response.json();
-      const newAvatarUrl: string = data.avatarUrl;
-      setUser((prev) => (prev ? { ...prev, avatarUrl: newAvatarUrl } : prev));
-      // Update the global auth store so the Header avatar refreshes immediately.
-      updateAuthUser({ avatarUrl: newAvatarUrl });
-
-      // Clear local preview state — the canonical URL will be used now.
-      cancelAvatarSelection();
-      setAvatarSuccess(t('profilePage.avatarUpdated'));
-    } catch (error) {
-      setAvatarError(error instanceof Error ? error.message : t('profilePage.failedToUploadAvatar'));
-    } finally {
-      setIsUploadingAvatar(false);
-    }
-  }, [avatarFile, clearAvatarMessages, cancelAvatarSelection, updateAuthUser]);
-
-  const handleAvatarDelete = useCallback(async () => {
-    clearAvatarMessages();
-    try {
-      setIsDeletingAvatar(true);
-      // runaction-exempt: inline-feedback handler — same `avatarError` banner as the upload above.
-      const response = await fetchWithAuth('/users/me/avatar', { method: 'DELETE' });
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error ?? errorData.message ?? t('profilePage.failedToRemoveAvatar'));
-      }
-      setUser((prev) => (prev ? { ...prev, avatarUrl: undefined } : prev));
-      updateAuthUser({ avatarUrl: undefined });
-      cancelAvatarSelection();
-      setAvatarSuccess(t('profilePage.avatarRemoved'));
-    } catch (error) {
-      setAvatarError(error instanceof Error ? error.message : t('profilePage.failedToRemoveAvatar'));
-    } finally {
-      setIsDeletingAvatar(false);
-    }
-  }, [clearAvatarMessages, cancelAvatarSelection, updateAuthUser]);
+  const handleAvatarUndo = useCallback(() => {
+    if (profileSavingRef.current) return;
+    clearMessages();
+    setAvatarChange(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, [clearMessages]);
 
   const handleAvatarFilePicked = useCallback((evt: React.ChangeEvent<HTMLInputElement>) => {
     const file = evt.target.files?.[0];
@@ -521,14 +487,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     if (file) selectAvatarFile(file);
   }, [selectAvatarFile]);
 
-  // Clean up object URLs on unmount.
-  useEffect(() => {
-    return () => {
-      if (avatarPreview && avatarPreview.startsWith('blob:')) {
-        URL.revokeObjectURL(avatarPreview);
-      }
-    };
-  }, [avatarPreview]);
+  useEffect(() => () => {
+    if (avatarChange?.kind === 'replace') URL.revokeObjectURL(avatarChange.previewUrl);
+  }, [avatarChange]);
 
   const handlePasswordChange = async (values: {
     currentPassword: string;
@@ -1609,51 +1570,37 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={isUploadingAvatar || isDeletingAvatar}
+                  disabled={isProfileLoading}
                   className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted transition-colors disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {t('profilePage.uploadNewPicture')}</button>
-                {user?.avatarUrl && !avatarFile && (
+                  {t('profilePage.changePicture')}</button>
+                {canRemoveAvatar && (
                   <button
                     type="button"
-                    onClick={handleAvatarDelete}
-                    disabled={isUploadingAvatar || isDeletingAvatar}
+                    onClick={handleAvatarRemove}
+                    disabled={isProfileLoading}
                     className="rounded-md border px-3 py-1.5 text-sm font-medium text-destructive hover:bg-destructive/10 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {isDeletingAvatar ? t('profilePage.removing') : t('profilePage.remove')}
+                    {t('profilePage.remove')}
                   </button>
                 )}
               </div>
-              <p className="text-xs text-muted-foreground">
-                {t('profilePage.pNGJPGOrWebPMax5MBDragAndDropOntoTheCircleOrClickUpload')}</p>
-              {avatarFile && (
+              {avatarChange && (
                 <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
-                  <span className="truncate">{avatarFile.name}</span>
-                  <span className="text-xs text-muted-foreground">{formatBytes(avatarFile.size)}</span>
+                  <span className="truncate">
+                    {avatarChange.kind === 'replace' ? avatarChange.file.name : t('profilePage.pictureRemovalPending')}
+                  </span>
                   <div className="ml-auto flex gap-2">
                     <button
                       type="button"
-                      onClick={handleAvatarUpload}
-                      disabled={isUploadingAvatar}
-                      className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {isUploadingAvatar ? t('profilePage.uploading') : t('profilePage.upload')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={cancelAvatarSelection}
-                      disabled={isUploadingAvatar}
+                      onClick={handleAvatarUndo}
+                      disabled={isProfileLoading}
                       className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {t('profilePage.cancel')}</button>
+                      {t('profilePage.undoAvatarChange')}
+                    </button>
                   </div>
                 </div>
-              )}
-              {avatarError && (
-                <p className="text-sm text-destructive" role="alert">{avatarError}</p>
-              )}
-              {avatarSuccess && (
-                <p className="text-sm text-emerald-600" role="status">{avatarSuccess}</p>
               )}
             </div>
           </div>
@@ -1688,7 +1635,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         </div>
 
         {profileError && (
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {profileError}
           </div>
         )}

@@ -86,6 +86,17 @@ export interface AgentDevice {
   status?: string | null;
 }
 
+export interface RadioOverview {
+  frequencyGHz: number;
+  channel: number | null;
+  channelWidthMHz: number | null;
+  wlanStandard: string | null;
+}
+export interface RadioStatistics {
+  frequencyGHz: number;
+  txRetriesPct: number | null;
+}
+
 // Deep telemetry rows (from GET /unifi/telemetry?siteId=).
 export interface TelemetryDevice {
   id: string;
@@ -95,6 +106,23 @@ export interface TelemetryDevice {
   uptimeSeconds: number | null;
   numClients: number | null;
   isStale: boolean;
+  // Wi-Fi additions (all optional: the API may omit them).
+  online?: boolean | null;
+  controllerState?: string | null;
+  wifiCapable?: boolean | null;
+  cpuPct?: number | null;
+  memPct?: number | null;
+  wirelessClientCount?: number | null;
+  uplinkRxRateBps?: number | null;
+  uplinkTxRateBps?: number | null;
+  radioOverview?: RadioOverview[] | null;
+  radioStatistics?: RadioStatistics[] | null;
+  deviceInventoryObservedAt?: string | null;
+  wifiDetailObservedAt?: string | null;
+  wifiStatisticsObservedAt?: string | null;
+  wifiClientsObservedAt?: string | null;
+  statisticsLastHeartbeatAt?: string | null;
+  statisticsNextHeartbeatAt?: string | null;
   poePorts: Array<{
     port_idx?: number;
     name?: string;

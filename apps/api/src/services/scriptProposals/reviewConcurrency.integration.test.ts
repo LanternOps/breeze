@@ -89,8 +89,8 @@ describe('script-review per-org concurrency slot (real Redis)', () => {
     const orgId = randomUUID();
     await tryAcquireOrgReviewSlot(orgId);
     const ttl = await redis().ttl(keyFor(orgId));
-    expect(ttl).toBeGreaterThan(60); // above SCRIPT_REVIEW_TIMEOUT_MS (60 s)
-    expect(ttl).toBeLessThanOrEqual(90);
+    expect(ttl).toBeGreaterThan(120); // above SCRIPT_REVIEW_TIMEOUT_MS (120 s)
+    expect(ttl).toBeLessThanOrEqual(150);
   });
 
   it('a slot whose holder died self-heals when the safety TTL expires', async () => {
@@ -98,7 +98,7 @@ describe('script-review per-org concurrency slot (real Redis)', () => {
     for (let i = 0; i < SCRIPT_REVIEW_ORG_CONCURRENCY; i++) await tryAcquireOrgReviewSlot(orgId);
     expect(await tryAcquireOrgReviewSlot(orgId)).toBe(false); // wedged: holders never release
 
-    // Fast-forward the 90 s safety TTL to 1 s instead of sleeping 90 s.
+    // Fast-forward the 150 s safety TTL to 1 s instead of sleeping 90 s.
     expect(await redis().expire(keyFor(orgId), 1)).toBe(1);
     await new Promise((r) => setTimeout(r, 1500));
 

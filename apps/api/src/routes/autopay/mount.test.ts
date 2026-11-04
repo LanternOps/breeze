@@ -1,6 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { Hono } from 'hono';
 import { beforeEach, expect, it, vi } from 'vitest';
+// Partner billing master switch: tests flip billingSwitch.enabled to simulate billing_enabled=false.
+const billingSwitch = vi.hoisted(() => ({ enabled: true }));
+vi.mock('../../services/billingEnabled', () => {
+  const assertOn = async (_id: unknown, make: (m: string, s: 404, c: 'BILLING_DISABLED') => Error) => {
+    if (!billingSwitch.enabled) throw make('Not found', 404, 'BILLING_DISABLED');
+  };
+  return { assertBillingEnabledForOrg: assertOn, assertBillingEnabledForPartner: assertOn };
+});
+beforeEach(() => { billingSwitch.enabled = true; });
 const h = vi.hoisted(() => ({
   select: vi.fn(), collect: vi.fn(), access: vi.fn(), context: false,
   exclude: vi.fn(),
@@ -281,6 +290,23 @@ it('confirmation recovery is scanner safe and available with rollout disabled',a
  const post=await app.request(url,{method:'POST',headers:{...headers,'x-disabled':'1'},body:'{}'});
  expect(post.status).toBe(200);expect(await post.json()).toEqual({processing:true});
  expect(h.identity).toHaveBeenCalledWith('token','confirm_payment');
+});
+it('a billing-disabled confirmation answers the unified 404 body, not the generic link refusal',async()=>{
+ h.confirm.mockRejectedValueOnce(new InvoiceServiceError('Not found',404,'BILLING_DISABLED'));
+ const res=await app.request('/api/v1/autopay/public/token/confirm',{method:'POST',headers,body:'{}'});
+ expect(res.status).toBe(404);
+ expect(await res.json()).toEqual({error:'Not found',code:'BILLING_DISABLED'});
+});
+it('skip stays available while billing is off',async()=>{
+ billingSwitch.enabled=false;
+ expect((await app.request('/api/v1/autopay/public/token/skip')).status).toBe(200);
+});
+it('Charge now answers 404 BILLING_DISABLED when billing is off, before any notice check, step-up or collection',async()=>{
+ chargeRows();billingSwitch.enabled=false;
+ const res=await charge();
+ expect(res.status).toBe(404);
+ expect(await res.json()).toEqual({error:'Not found',code:'BILLING_DISABLED'});
+ expect(h.collect).not.toHaveBeenCalled();
 });
 // R5: the page classifies a refusal by its code and reason, so the route passes them through.
 it('a refused confirmation carries its code and reason',async()=>{

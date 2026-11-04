@@ -3,7 +3,9 @@ package agentapp
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/config"
@@ -55,5 +57,48 @@ func TestReenrolClearsIdentity(t *testing.T) {
 	}
 	if len(purged) != 1 || purged[0] != oldScope {
 		t.Fatalf("purged %v, want [%s]", purged, oldScope)
+	}
+}
+
+// A successful (re-)enrolment drops the persisted Helper branding of every
+// session but keeps the other Helper settings.
+func TestReenrolClearsHelperBranding(t *testing.T) {
+	quietEnrollForTest(t)
+	resetSiteIDFlag(t)
+
+	baseDir := t.TempDir()
+	origDir := helperBrandingBaseDir
+	t.Cleanup(func() { helperBrandingBaseDir = origDir })
+	helperBrandingBaseDir = func() string { return baseDir }
+
+	cfgPath := filepath.Join(baseDir, "sessions", "1", "helper_config.yaml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("show_open_portal: true\nbranding:\n  scope_id: s\n  display_name: Acme\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	srv, _ := enrollTestServer(t)
+	origSave := saveEnrollmentFn
+	t.Cleanup(func() { saveEnrollmentFn = origSave })
+	cleared := false
+	saveEnrollmentFn = func(*config.Config, string) error {
+		data, _ := os.ReadFile(cfgPath)
+		cleared = !strings.Contains(string(data), "branding")
+		return nil
+	}
+
+	cfg := config.Default()
+	cfg.ServerURL = srv.URL
+	if err := enrollWithConfig(cfg, filepath.Join(t.TempDir(), "agent.yaml"), "key", "secret"); err != nil {
+		t.Fatalf("enrollWithConfig: %v", err)
+	}
+	if !cleared {
+		t.Fatal("branding must be cleared before the new enrollment is saved")
+	}
+	data, _ := os.ReadFile(cfgPath)
+	if !strings.Contains(string(data), "show_open_portal: true") {
+		t.Fatalf("other settings lost:\n%s", data)
 	}
 }

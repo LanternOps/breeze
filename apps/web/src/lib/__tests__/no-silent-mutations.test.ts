@@ -531,10 +531,9 @@ const TARGET_GLOBS = [
   'src/components/monitoring/DeployMonitorDialog.tsx',
   // #4050 (deferred from #4018 / PR #4041): the account-security surface — MFA
   // enable/disable, recovery-code rotation, passkey register/rename/delete, SSO
-  // re-auth, password and avatar changes. Every mutation here already reports
-  // its outcome, but through section-scoped inline banners rather than
-  // runAction, so each existing call site carries a reasoned
-  // `runaction-exempt:` marker. The point of guarding the file is the NEXT
+  // re-auth and password changes. The remaining exempt mutations report their
+  // outcome through section-scoped inline banners. The point of guarding the
+  // file is the NEXT
   // mutation: without an entry here, a bare fetchWithAuth added beside them
   // ships with zero CI signal on the one page where a silently-failed
   // "Disable MFA" or "Delete passkey" is a security-posture lie.

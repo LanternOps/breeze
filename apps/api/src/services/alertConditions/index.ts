@@ -101,6 +101,7 @@ import type {
   EvaluationResult,
   ThresholdCondition,
   SubjectEvidence,
+  ConditionTemplateValues,
 } from './types';
 
 export interface EvaluateOptions {
@@ -148,6 +149,8 @@ type LeafActualValueCandidate = {
   /** The leaf condition's own `type`, e.g. 'threshold' | 'patch_compliance'. */
   type?: string;
   actualValue?: number;
+  passed?: boolean;
+  templateValues?: ConditionTemplateValues;
 };
 
 type EvaluationAccumulator = {
@@ -182,6 +185,15 @@ function pickPrimaryActualValue(candidates: LeafActualValueCandidate[]): number 
     if (typeof c.actualValue === 'number') return c.actualValue;
   }
   return undefined;
+}
+
+/**
+ * The leaf whose template values fill the alert copy: the first that passed in
+ * tree order, since that is the leaf the alert is about, else the first at all.
+ */
+function pickLeafTemplateValues(candidates: LeafActualValueCandidate[]): ConditionTemplateValues | undefined {
+  const withValues = candidates.filter(c => c.templateValues);
+  return (withValues.find(c => c.passed) ?? withValues[0])?.templateValues;
 }
 
 async function evaluateConditionRecursive(
@@ -249,6 +261,8 @@ async function evaluateConditionRecursive(
     if (typeof result.actualValue === 'number') {
       slot.actualValue = result.actualValue;
     }
+    slot.passed = result.passed;
+    slot.templateValues = result.templateValues;
 
     return result.passed;
   }
@@ -300,7 +314,11 @@ export async function evaluateConditions(
   // Get latest metric for context
   const latestMetric = await getLatestMetric(deviceId);
 
-  const context: EvaluationResult['context'] = { deviceId, evaluatedAt };
+  const context: EvaluationResult['context'] = {
+    ...pickLeafTemplateValues(results.leafActualValues),
+    deviceId,
+    evaluatedAt,
+  };
 
   // Find the first condition carrying operator/value (threshold-shaped)
   // fields to include in context. `ThresholdCondition` is one such shape,
