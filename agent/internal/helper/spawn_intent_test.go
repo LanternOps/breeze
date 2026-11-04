@@ -68,14 +68,15 @@ func newSpawnIntentManager(t *testing.T, versionFn func(string) (string, error))
 	return mgr, rec
 }
 
-func assertEverySpawnCarriesConfig(t *testing.T, calls [][]string) {
+func assertEverySpawnCarriesConfig(t *testing.T, mgr *Manager, calls [][]string) {
 	t.Helper()
 	if len(calls) == 0 {
 		t.Fatal("expected the helper to be spawned")
 	}
+	want := filepath.Join(mgr.baseDir, "sessions", "3", "helper_config.yaml")
 	for i, args := range calls {
-		if len(args) != 2 || args[0] != "--config" || args[1] == "" {
-			t.Fatalf("spawn %d args = %v, want [--config <session path>] so Assist starts hidden", i, args)
+		if len(args) != 2 || args[0] != "--config" || args[1] != want {
+			t.Fatalf("spawn %d args = %v, want [--config %s] so Assist starts hidden", i, args, want)
 		}
 	}
 }
@@ -92,20 +93,35 @@ func TestSpawnCarriesConfigWhenHelperVersionUnknown(t *testing.T) {
 			return "", errBinaryVersionUnsupported
 		}},
 		{"binary version blank", func(string) (string, error) { return "  ", nil }},
+		// Readable but unparseable is not "known to be old" either.
+		{"version not semver", func(string) (string, error) { return "dev", nil }},
+		{"version two-part", func(string) (string, error) { return "0.14", nil }},
+		// The first helper that reads --config.
+		{"version at minimum", func(string) (string, error) { return "0.14.0", nil }},
+		{"prerelease of minimum", func(string) (string, error) { return "v0.14.0-rc1", nil }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mgr, rec := newSpawnIntentManager(t, tc.version)
 			mgr.Apply(&Settings{Enabled: true, ShowOpenPortal: true})
 			mgr.Shutdown()
-			assertEverySpawnCarriesConfig(t, rec.snapshot())
-
-			// The legacy root config is still written while the version is
-			// unknown, so a genuinely pre-0.14 helper reading it stays configured.
-			if _, err := os.Stat(mgr.legacyConfigPath()); err != nil {
-				t.Fatalf("legacy config not written while version unknown: %v", err)
-			}
+			assertEverySpawnCarriesConfig(t, mgr, rec.snapshot())
 		})
+	}
+}
+
+// While the version is unknown the shared legacy root config is still written.
+// That keeps a genuinely pre-0.14 helper whose version cannot be read
+// configured, on the assumption (not verified against such old builds) that it
+// ignores the --config argument it is now given.
+func TestLegacyConfigStillWrittenWhileHelperVersionUnknown(t *testing.T) {
+	mgr, _ := newSpawnIntentManager(t, func(string) (string, error) {
+		return "", errors.New("GetFileVersionInfoSize: access denied")
+	})
+	mgr.Apply(&Settings{Enabled: true, ShowOpenPortal: true})
+	mgr.Shutdown()
+	if _, err := os.Stat(mgr.legacyConfigPath()); err != nil {
+		t.Fatalf("legacy config not written while version unknown: %v", err)
 	}
 }
 
@@ -142,21 +158,27 @@ func TestSpawnStaysHiddenAcrossVersionKnowledgeChanges(t *testing.T) {
 			if len(calls) <= first {
 				t.Fatalf("expected a respawn after the first Assist exited; spawns = %v", calls)
 			}
-			assertEverySpawnCarriesConfig(t, calls)
+			assertEverySpawnCarriesConfig(t, mgr, calls)
 		})
 	}
 }
 
 func TestSpawnOmitsConfigOnlyForHelperKnownToPredateIt(t *testing.T) {
-	mgr, rec := newSpawnIntentManager(t, func(string) (string, error) { return "0.13.9", nil })
-	mgr.Apply(&Settings{Enabled: true, ShowOpenPortal: true})
-	mgr.Shutdown()
+	for _, v := range []string{"0.13.9", "v0.13.9-beta"} {
+		t.Run(v, func(t *testing.T) {
+			mgr, rec := newSpawnIntentManager(t, func(string) (string, error) { return v, nil })
+			mgr.Apply(&Settings{Enabled: true, ShowOpenPortal: true})
+			mgr.Shutdown()
 
-	calls := rec.snapshot()
-	if len(calls) == 0 {
-		t.Fatal("expected the helper to be spawned")
-	}
-	if len(calls[0]) != 0 {
-		t.Fatalf("spawn args = %v, want none for a helper older than %v", calls[0], minConfigFlagVersion)
+			calls := rec.snapshot()
+			if len(calls) == 0 {
+				t.Fatal("expected the helper to be spawned")
+			}
+			for i, args := range calls {
+				if len(args) != 0 {
+					t.Fatalf("spawn %d args = %v, want none for a helper older than %v", i, args, minConfigFlagVersion)
+				}
+			}
+		})
 	}
 }

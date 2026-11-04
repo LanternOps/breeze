@@ -896,35 +896,44 @@ func (m *Manager) helperSupportsConfigFlag() bool {
 }
 
 // helperKnownToPredateConfigFlag reports whether the installed helper has a
-// readable version older than minConfigFlagVersion. An unknown version is not
-// "old": the spawn keeps --config so Assist starts hidden (#10755).
+// parseable version older than minConfigFlagVersion. An empty or unparseable
+// version is not "old": the spawn keeps --config so Assist starts hidden
+// (#10755).
 func (m *Manager) helperKnownToPredateConfigFlag() bool {
-	v := m.installedVersionLocked()
-	if v == "" {
-		return false
-	}
-	return !semverAtLeast(v, minConfigFlagVersion)
+	v, ok := parseSemverCore(m.installedVersionLocked())
+	return ok && !semverCoreAtLeast(v, minConfigFlagVersion)
 }
 
 func semverAtLeast(version string, target [3]int) bool {
-	v := strings.TrimPrefix(version, "v")
+	v, ok := parseSemverCore(version)
+	return ok && semverCoreAtLeast(v, target)
+}
+
+// parseSemverCore parses the major.minor.patch core of "[v]X.Y.Z[-pre]".
+func parseSemverCore(version string) ([3]int, bool) {
+	var core [3]int
+	v := strings.TrimPrefix(strings.TrimSpace(version), "v")
 	if idx := strings.IndexByte(v, '-'); idx >= 0 {
 		v = v[:idx]
 	}
 	parts := strings.SplitN(v, ".", 3)
 	if len(parts) < 3 {
-		return false
+		return core, false
 	}
 	for i := 0; i < 3; i++ {
 		n, err := strconv.Atoi(parts[i])
 		if err != nil {
-			return false
+			return core, false
 		}
-		if n > target[i] {
-			return true
-		}
-		if n < target[i] {
-			return false
+		core[i] = n
+	}
+	return core, true
+}
+
+func semverCoreAtLeast(v, target [3]int) bool {
+	for i := 0; i < 3; i++ {
+		if v[i] != target[i] {
+			return v[i] > target[i]
 		}
 	}
 	return true
@@ -1121,6 +1130,7 @@ func (m *Manager) installedVersionLocked() string {
 	// invalid_current, and made helperSupportsConfigFlag spawn the helper
 	// without --config, so it wrote its status to the legacy root file this
 	// function ignores once sessions/ exists: the version could never recover.
+	// (Since #10755 an unknown version no longer drops --config from the spawn.)
 	if v, err := m.readBinaryVersion(); err == nil && strings.TrimSpace(v) != "" {
 		return strings.TrimSpace(v)
 	} else if err != nil && !errors.Is(err, errBinaryVersionUnsupported) && m.isInstalled() {
