@@ -236,6 +236,32 @@ type Capability struct {
 	Ready             bool
 }
 
+// securityCapabilities.networkIsolationVersion levels: the wire values of
+// NETWORK_ISOLATION_CAPABILITY in packages/shared/src/utils/networkIsolation.ts.
+const (
+	// CapabilityBase can isolate and release.
+	CapabilityBase = 1
+	// CapabilityDeadMan is reserved for the dead-man opt-in (W4d). This build
+	// does not implement it: validateSpec refuses deadManSeconds != 0.
+	CapabilityDeadMan = 2
+	// CapabilityPolicyAllow accepts scope:"any" entries under a policyRevision,
+	// on the heartbeat path as well as the command path. It does not imply
+	// CapabilityDeadMan until W4d ships, so a dead-man gate cannot read this
+	// level as support for it.
+	CapabilityPolicyAllow = 3
+)
+
+// AdvertisedVersion is the level this build reports on the heartbeat. An isolator
+// says only whether it can isolate here (Version); what the agent accepts on top
+// of that is the same on every OS. Version 0 stays 0: a build that cannot isolate
+// advertises nothing it could accept.
+func (c Capability) AdvertisedVersion() int {
+	if c.Version < CapabilityBase {
+		return 0
+	}
+	return CapabilityPolicyAllow
+}
+
 // Digest identifies an installed rule set.
 type Digest string
 

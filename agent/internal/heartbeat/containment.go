@@ -485,7 +485,7 @@ func containmentCapabilities(c *SecurityCapabilities) {
 		iso = isolation.NewPlatformIsolator()
 	}
 	cap := iso.Capability()
-	c.NetworkIsolationVersion = cap.Version
+	c.NetworkIsolationVersion = cap.AdvertisedVersion()
 	c.NetworkIsolationMechanism = cap.Mechanism
 	c.NetworkIsolationUnsupportedReason = cap.UnsupportedReason
 	c.NetworkIsolationReady = cap.Version >= 1 && cap.Ready
