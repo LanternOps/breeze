@@ -70,7 +70,15 @@ import type { FlowToolDescriptor } from './flows/flowTools';
 import { flowsEnabled } from '../config/env';
 import { buildFlowSdkTools, chatFlowToolRunStarter, flowMcpToolNames } from './flows/sdkFlowTools';
 import { sessionMayStartFlows } from './flows/flowToolGate';
-import { isSdkBuiltinToolUse, resolveToolSearchPolicy } from './aiToolSearchPolicy';
+import {
+  isSdkBuiltinToolUse,
+  newRoundTripTally,
+  noteAssistantRoundTrip,
+  resolveToolSearchPolicy,
+  sdkMaxTurns,
+  workTurns,
+  type RoundTripTally,
+} from './aiToolSearchPolicy';
 import { noteStreamedToolUse, resetToolUseCorrelationMarkers, takeDroppedToolUse } from './aiToolUseCorrelation';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
@@ -542,6 +550,13 @@ export interface ActiveSession {
    * after every flush (normal `result` or the abandoned-turn fallback below).
    */
   pendingTurnToolExecutionCount: number;
+  /**
+   * #10400: this turn's model round-trips, split into work and ToolSearch-only
+   * retrieval, so settlement charges the session's turn budget for work only.
+   * Shares pendingTurnUsage's reset-at-settlement lifecycle. Optional so
+   * fixtures that build ActiveSession literals compile unchanged.
+   */
+  pendingTurnRoundTrips?: RoundTripTally;
   /** Synchronously reserved focal auto-link slots; shares the tool-count reset lifecycle. */
   pendingTurnAutoLinkCount: number;
   /**
@@ -1175,6 +1190,7 @@ export class StreamingSessionManager {
       toolUseIdQueue: [],
       pendingTurnUsage: emptyPendingTurnUsage(),
       pendingTurnToolExecutionCount: 0,
+      pendingTurnRoundTrips: newRoundTripTally(),
       pendingTurnAutoLinkCount: 0,
       toolUseNames: new Map(),
       resultedToolUseIds: new Set(),
@@ -1242,6 +1258,9 @@ export class StreamingSessionManager {
     session.mcpServer = mcpServer;
     session.mcpPrefix = `mcp__${mcpServerName}__`;
 
+    // The session's remaining WORK turns (#10400: ToolSearch round-trips are
+    // not charged to turn_count). The SDK's own ceiling counts every
+    // round-trip, so a searching query gets headroom on top (sdkMaxTurns).
     const maxTurns = Math.max(1, dbSession.maxTurns - dbSession.turnCount);
 
     // Inject approval mode instructions into system prompt
@@ -1349,7 +1368,7 @@ export class StreamingSessionManager {
             // fallbackModel (the refusal fallback) and thinking/effort: all
             // from the resolved model, nothing derived here.
             ...sdkModelOptions(resolved),
-            maxTurns,
+            maxTurns: sdkMaxTurns(maxTurns, toolSearchPolicy.enabled),
             maxBudgetUsd,
             tools: toolSearchPolicy.tools,
             allowedTools: allowedTools ?? [...BREEZE_MCP_TOOL_NAMES, ...tenantMcpToolNames(tenantDescriptors), ...flowMcpToolNames(flowDescriptors)],
@@ -1786,6 +1805,8 @@ export class StreamingSessionManager {
               cache_read_input_tokens?: number | null;
               cache_creation_input_tokens?: number | null;
             } | undefined;
+            // #10400: which round-trips did work, for the turn budget.
+            noteAssistantRoundTrip(session.pendingTurnRoundTrips ??= newRoundTripTally(), message.message);
             if (apiUsage) {
               session.pendingTurnUsage.inputTokens += apiUsage.input_tokens ?? 0;
               session.pendingTurnUsage.outputTokens += apiUsage.output_tokens ?? 0;
@@ -2146,6 +2167,8 @@ export class StreamingSessionManager {
   ): Promise<{ inputTokens: number; outputTokens: number; costCents: number; outcome: TurnOutcome }> {
     const toolExecutionCount = session.pendingTurnToolExecutionCount;
     session.pendingTurnToolExecutionCount = 0;
+    const roundTrips = session.pendingTurnRoundTrips ?? newRoundTripTally();
+    session.pendingTurnRoundTrips = newRoundTripTally();
     session.pendingTurnAutoLinkCount = 0;
     session.pendingTurnUsage = emptyPendingTurnUsage();
     const observation = session.refusalObservation;
@@ -2220,7 +2243,9 @@ export class StreamingSessionManager {
         // reused query keeps the system prompt it was created with).
         prompt: session.promptProvenance,
         toolExecutionCount,
-        turnCount: result ? (result.num_turns ?? 0) : 1,
+        // #10400: work round-trips only — a ToolSearch-only round-trip loads
+        // tool definitions and is not charged to the session's turn budget.
+        turnCount: result ? workTurns(result.num_turns ?? 0, roundTrips) : 1,
         sdkUsage: {
           sessionId: session.breezeSessionId,
           nextSnapshot: turn.nextSnapshot,

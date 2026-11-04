@@ -85,7 +85,8 @@ vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined })
 
 import { StreamingSessionManager } from './streamingSessionManager';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
-import { TOOL_SEARCH_MIN_REMAINING_TURNS } from './aiToolSearchPolicy';
+import { TOOL_SEARCH_MIN_REMAINING_TURNS, TOOL_SEARCH_TURN_HEADROOM } from './aiToolSearchPolicy';
+import { settleInvocation } from './aiModels/settleInvocation';
 import type { AuthContext } from '../middleware/auth';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
@@ -305,5 +306,115 @@ describe('tool-search policy wiring (A-W04)', () => {
     expect(cardIds).toContain('toolu_mcp_02');
 
     expect(updateCalls.filter((u) => typeof u.flagReason === 'string')).toHaveLength(0);
+  });
+});
+
+// #10400: a session's turn budget counts work, not retrieval. A model
+// round-trip whose only tool calls are ToolSearch loads tool definitions and
+// does no work, so it must not spend `turn_count` (8 messages with 9 searches
+// exhausted a 50-turn session). The SDK's own per-query ceiling still counts
+// every round-trip, so a runaway loop — searches included — still trips.
+describe('turn budget (#10400)', () => {
+  function assistant(id: string | undefined, content: Array<Record<string, unknown>>) {
+    return {
+      type: 'assistant',
+      message: { ...(id ? { id } : {}), content, usage: { input_tokens: 10, output_tokens: 5 } },
+    };
+  }
+  const search = (id: string) => ({ type: 'tool_use', id, name: 'ToolSearch', input: { query: 'select:mcp__breeze__search_logs' } });
+  const work = (id: string) => ({ type: 'tool_use', id, name: 'mcp__breeze__set_device_context', input: PAREN_INPUT });
+  const settledTurnCounts = () =>
+    vi.mocked(settleInvocation).mock.calls.map((c) => (c[0] as { turnCount?: number }).turnCount);
+
+  it('does not charge ToolSearch-only round-trips to the session turn count', async () => {
+    mockSdkQuery([
+      assistant('msg_1', [search('toolu_s1')]),
+      userToolSearchResultMessage('toolu_s1'),
+      // The CLI emits one assistant message per content block, sharing the
+      // API response id: thinking + ToolSearch is still one search round-trip.
+      assistant('msg_2', [{ type: 'thinking', thinking: '', signature: 'sig' }]),
+      assistant('msg_2', [search('toolu_s2')]),
+      userToolSearchResultMessage('toolu_s2'),
+      // A search alongside a real call is work.
+      assistant('msg_3', [search('toolu_s3')]),
+      assistant('msg_3', [work('toolu_w1')]),
+      assistant('msg_4', [{ type: 'text', text: 'Done.' }]),
+      { ...RESULT_MSG, num_turns: 4 },
+    ]);
+    const session = await manager.getOrCreate(
+      'sess-budget', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(settledTurnCounts()).toEqual([2]);
+  });
+
+  it('counts an id-less assistant message as its own round-trip', async () => {
+    mockSdkQuery([
+      assistant(undefined, [search('toolu_s1')]),
+      assistant(undefined, [{ type: 'text', text: 'Done.' }]),
+      { ...RESULT_MSG, num_turns: 2 },
+    ]);
+    const session = await manager.getOrCreate(
+      'sess-anon', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(settledTurnCounts()).toEqual([1]);
+  });
+
+  it('starts each turn with a fresh tally', async () => {
+    mockSdkQuery([
+      assistant('msg_1', [search('toolu_s1')]),
+      assistant('msg_2', [{ type: 'text', text: 'One.' }]),
+      { ...RESULT_MSG, num_turns: 2 },
+      assistant('msg_3', [{ type: 'text', text: 'Two.' }]),
+      { ...RESULT_MSG, num_turns: 1 },
+    ]);
+    const session = await manager.getOrCreate(
+      'sess-two', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(settledTurnCounts()).toEqual([1, 1]);
+  });
+
+  it('gives the SDK query headroom for search round-trips on top of the remaining work turns', async () => {
+    mockSdkQuery([RESULT_MSG]);
+    const session = await manager.getOrCreate(
+      'sess-headroom', { ...DB_SESSION, turnCount: 40 }, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(optionsOfLastQuery().tools).toEqual(['ToolSearch']);
+    expect(optionsOfLastQuery().maxTurns).toBe(10 + TOOL_SEARCH_TURN_HEADROOM);
+  });
+
+  it('gives no headroom when the session cannot search', async () => {
+    mockSdkQuery([RESULT_MSG]);
+    const session = await manager.getOrCreate(
+      'sess-static', { ...DB_SESSION, turnCount: 40 }, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+    );
+    await session.processorPromise;
+    expect(optionsOfLastQuery().tools).toEqual([]);
+    expect(optionsOfLastQuery().maxTurns).toBe(10);
+  });
+
+  it('still trips the ceiling and charges every round-trip of a real tool loop', async () => {
+    mockSdkQuery([
+      assistant('msg_1', [work('toolu_w1')]),
+      assistant('msg_2', [work('toolu_w2')]),
+      assistant('msg_3', [work('toolu_w3')]),
+      { ...RESULT_MSG, subtype: 'error_max_turns', num_turns: 3, errors: [] },
+    ]);
+    const session = await manager.getOrCreate(
+      'sess-loop', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(settledTurnCounts()).toEqual([3]);
+    expect(session.eventBus.getReplayEvents()).toContainEqual(
+      expect.objectContaining({ type: 'error', code: 'turn_limit_reached' }),
+    );
   });
 });
