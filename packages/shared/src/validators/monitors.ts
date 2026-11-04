@@ -1,6 +1,13 @@
 import { z } from 'zod';
 import { automationActionSchema } from './automationActions';
 import { TIME_SYNC_FINDING_CODES } from '../constants/timeSync';
+import type { RearmMode } from '../utils/alertLifecycle';
+import {
+  alertCooldownMinutesSchema,
+  isValidRearmPair,
+  REARM_PAIR_MESSAGE,
+  rearmFieldsShape,
+} from './alertLifecycle';
 
 /**
  * Monitor definitions (#5287 W02).
@@ -317,8 +324,12 @@ const monitorDefinitionFields = {
   enabled: z.boolean(),
   condition: z.record(z.string(), z.unknown()),
   severity: monitorSeveritySchema,
-  cooldownMinutes: z.number().int().min(0).max(1440),
-  autoResolve: z.boolean(),
+  // Alert lifecycle overrides (#10765): null or omitted on create = inherit the
+  // device's org override, then its partner default. No create default: a new
+  // monitor inherits. The re-arm pair rule is in `refineDefinition`.
+  cooldownMinutes: alertCooldownMinutesSchema.nullable().optional(),
+  autoResolve: z.boolean().nullable().optional(),
+  ...rearmFieldsShape,
   autoResolveConditions: z.record(z.string(), z.unknown()).nullable().optional(),
   responses: monitorResponsesSchema,
   deliveryMode: monitorDeliveryModeSchema,
@@ -344,8 +355,6 @@ const baseDefinition = z.object(monitorDefinitionFields);
  */
 const createOnlyDefaults = {
   enabled: monitorDefinitionFields.enabled.default(true),
-  cooldownMinutes: monitorDefinitionFields.cooldownMinutes.default(5),
-  autoResolve: monitorDefinitionFields.autoResolve.default(false),
   responses: monitorDefinitionFields.responses.default([]),
   deliveryMode: monitorDefinitionFields.deliveryMode.default('inherit'),
   deliveryChannelIds: monitorDefinitionFields.deliveryChannelIds.default([]),
@@ -362,6 +371,8 @@ interface MonitorDefinitionShape {
   deliveryChannelIds?: string[];
   responses?: Array<{ type: string }>;
   aiAgentId?: string | null;
+  rearmMode?: RearmMode | null;
+  rearmDelayMinutes?: number | null;
 }
 
 /**
@@ -395,7 +406,8 @@ function refineDefinition<T extends z.ZodType<MonitorDefinitionShape>>(schema: T
     .refine((v) => !(v.responses ?? []).some((a) => a.type === 'ai_triage') || !!v.aiAgentId, {
       message: 'ai_triage responses require aiAgentId',
       path: ['responses'],
-    });
+    })
+    .refine(isValidRearmPair, { message: REARM_PAIR_MESSAGE, path: ['rearmDelayMinutes'] });
 }
 
 /**

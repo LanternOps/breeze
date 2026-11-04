@@ -61,6 +61,16 @@ describe('monitor compiler builders (#5289)', () => {
     expect(t.autoResolve).toBe(true);
   });
 
+  it('a monitor that inherits compiles the built-in into the NOT NULL template columns (#10765)', () => {
+    const t = buildCompiledTemplate({ ...def, cooldownMinutes: null, autoResolve: null });
+    expect(t.cooldownMinutes).toBe(5);
+    expect(t.autoResolve).toBe(false);
+    // An explicit 0 / false is a real override, never treated as inherit.
+    const explicit = buildCompiledTemplate({ ...def, cooldownMinutes: 0, autoResolve: false });
+    expect(explicit.cooldownMinutes).toBe(0);
+    expect(explicit.autoResolve).toBe(false);
+  });
+
   it('a cpu-kind template carries the general monitor category', () => {
     const t = buildCompiledTemplate(def);
     expect(t.category).toBe('monitor');
