@@ -1,6 +1,6 @@
 ---
 title: System Health: native platform-admin health tab
-issue: pending (track:spec issue to be filed and referenced here before merge)
+issue: LanternOps/breeze#10958
 discussion: LanternOps/breeze discussion #10764
 status: draft (for maintainer review; not approved for implementation)
 ---
