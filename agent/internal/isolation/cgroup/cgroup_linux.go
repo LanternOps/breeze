@@ -39,6 +39,7 @@ type system struct {
 	mkdir     func(string, os.FileMode) error
 	writeFile func(string, []byte) error
 	openDir   func(string) (int, error)
+	closeFD   func(int) error
 }
 
 // SetupSelf splits the agent's unit cgroup and moves this process into
@@ -46,10 +47,17 @@ type system struct {
 // path) and is idempotent: a process already in `<unit>/agent` keeps its
 // place. The caller owns the returned ChildrenFD.
 //
+// enable turns child placement on and disable turns it off again (nil for
+// neither). enable runs BEFORE the move: a child spawned while the agent is in
+// `<unit>/agent` with placement still off would inherit the management-plane
+// permit. If anything fails after enable, disable runs before the descriptor
+// closes, since a closed placement fd would make every later spawn fail.
+//
 // Refusals are *Error values: ReasonV1 (cgroup v1 or hybrid),
-// ReasonNotDelegated (no Delegate=yes, or EACCES/EPERM creating or migrating)
-// and ReasonUnavailable. A refusal leaves the process where it was.
-func SetupSelf() (Layout, error) {
+// ReasonNotDelegated (no Delegate=yes, or EACCES/EPERM creating or migrating),
+// ReasonSpawnUnavailable (enable refused) and ReasonUnavailable. A refusal
+// leaves the process where it was.
+func SetupSelf(enable func(Layout) error, disable func()) (Layout, error) {
 	return (&system{
 		root:      cgroupRoot,
 		pid:       os.Getpid(),
@@ -61,10 +69,11 @@ func SetupSelf() (Layout, error) {
 		openDir: func(p string) (int, error) {
 			return unix.Open(p, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 		},
-	}).setup()
+		closeFD: unix.Close,
+	}).setup(enable, disable)
 }
 
-func (s *system) setup() (Layout, error) {
+func (s *system) setup(enable func(Layout) error, disable func()) (Layout, error) {
 	data, err := s.readSelf()
 	if err != nil {
 		return Layout{}, &Error{Reason: ReasonUnavailable, Detail: "read /proc/self/cgroup", Err: err}
@@ -103,30 +112,45 @@ func (s *system) setup() (Layout, error) {
 			return Layout{}, classify("create "+dir, err)
 		}
 	}
-	// cgroup.procs migrates every thread of the process (a v2 domain cgroup).
-	if current != unit+"/"+agentLeaf {
-		if err := s.writeFile(filepath.Join(agentDir, "cgroup.procs"), []byte(strconv.Itoa(s.pid))); err != nil {
-			return Layout{}, classify("move the agent into "+agentDir, err)
-		}
-	}
-	data, err = s.readSelf()
-	if err != nil {
-		return Layout{}, &Error{Reason: ReasonUnavailable, Detail: "re-read /proc/self/cgroup", Err: err}
-	}
-	if moved, err := parseSelf(data); err != nil || moved != unit+"/"+agentLeaf {
-		return Layout{}, &Error{Reason: ReasonUnavailable, Detail: fmt.Sprintf("the agent did not land in %s/%s (now %q)", unit, agentLeaf, moved), Err: err}
-	}
 	fd, err := s.openDir(childrenDir)
 	if err != nil {
 		return Layout{}, classify("open "+childrenDir, err)
 	}
 	rel := strings.TrimPrefix(unit, "/")
-	return Layout{
+	layout := Layout{
 		AgentPath:    rel + "/" + agentLeaf,
 		ChildrenPath: rel + "/" + childrenLeaf,
 		Level:        strings.Count(rel, "/") + 2,
 		ChildrenFD:   fd,
-	}, nil
+	}
+	abandon := func(placed bool, refusal error) (Layout, error) {
+		if placed && disable != nil {
+			disable()
+		}
+		if err := s.closeFD(fd); err != nil {
+			return Layout{}, errors.Join(refusal, err)
+		}
+		return Layout{}, refusal
+	}
+	if enable != nil {
+		if err := enable(layout); err != nil {
+			return abandon(false, &Error{Reason: ReasonSpawnUnavailable, Detail: "place a child in " + layout.ChildrenPath, Err: err})
+		}
+	}
+	// cgroup.procs migrates every thread of the process (a v2 domain cgroup).
+	if current != unit+"/"+agentLeaf {
+		if err := s.writeFile(filepath.Join(agentDir, "cgroup.procs"), []byte(strconv.Itoa(s.pid))); err != nil {
+			return abandon(true, classify("move the agent into "+agentDir, err))
+		}
+	}
+	data, err = s.readSelf()
+	if err != nil {
+		return abandon(true, &Error{Reason: ReasonUnavailable, Detail: "re-read /proc/self/cgroup", Err: err})
+	}
+	if moved, err := parseSelf(data); err != nil || moved != unit+"/"+agentLeaf {
+		return abandon(true, &Error{Reason: ReasonUnavailable, Detail: fmt.Sprintf("the agent did not land in %s/%s (now %q)", unit, agentLeaf, moved), Err: err})
+	}
+	return layout, nil
 }
 
 // classify maps a permission failure to the Delegate remedy; root can only be

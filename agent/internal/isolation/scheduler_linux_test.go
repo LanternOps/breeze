@@ -401,7 +401,7 @@ func TestLinuxEnsurePollInstallsEnablesAndReadsBack(t *testing.T) {
 
 func TestLinuxReadyDetectsEachBrokenPrerequisite(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
+		name   string
 		break_ func(*linuxScheduler, *fakeSystemd)
 	}{
 		{"timer disabled", func(_ *linuxScheduler, f *fakeSystemd) { delete(f.enabled, linuxPollTimer) }},
@@ -414,7 +414,9 @@ func TestLinuxReadyDetectsEachBrokenPrerequisite(t *testing.T) {
 		{"self-test fails", func(s *linuxScheduler, _ *fakeSystemd) {
 			s.selfTest = func(string) error { return errors.New("self-test exit 1") }
 		}},
-		{"recovery unverifiable", func(s *linuxScheduler, _ *fakeSystemd) { s.verify = func(string) error { return errors.New("bad owner") } }},
+		{"recovery unverifiable", func(s *linuxScheduler, _ *fakeSystemd) {
+			s.verify = func(string) error { return errors.New("bad owner") }
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeSystemd()
@@ -505,14 +507,14 @@ func TestLinuxRemoveAllIsCleanWithNothingInstalled(t *testing.T) {
 
 func TestIsOwnedLinuxTimer(t *testing.T) {
 	for name, want := range map[string]bool{
-		"breeze-isolation-poll.timer":             true,
-		"breeze-isolation-expire.timer":           true,
+		"breeze-isolation-poll.timer":               true,
+		"breeze-isolation-expire.timer":             true,
 		"breeze-isolation-rollback-attempt-1.timer": true,
-		"breeze-isolation-rollback-.timer":        false,
-		"breeze-isolation-rollback-a b.timer":     false,
-		"breeze-isolation-other.timer":            false,
-		"unrelated-breeze-thing.timer":            false,
-		"breeze-isolation-poll.service":           false,
+		"breeze-isolation-rollback-.timer":          false,
+		"breeze-isolation-rollback-a b.timer":       false,
+		"breeze-isolation-other.timer":              false,
+		"unrelated-breeze-thing.timer":              false,
+		"breeze-isolation-poll.service":             false,
 	} {
 		if got := isOwnedLinuxTimer(name); got != want {
 			t.Errorf("isOwnedLinuxTimer(%q) = %v, want %v", name, got, want)

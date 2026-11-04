@@ -19,7 +19,20 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/isolation/cgroup"
+	"github.com/breeze-rmm/agent/internal/isolation/recoveryinstall"
 	"github.com/breeze-rmm/agent/internal/procspawn"
+)
+
+// TODO(#10098-activation): flip to true only in the activation PR, after L2 passes. Todd gate.
+const linuxIsolationActivated = false
+
+// Readiness reasons reported in securityCapabilities.networkIsolationUnsupportedReason.
+// The cgroup reasons come from the cgroup package.
+const (
+	linuxReasonNotActivated = "not_activated"
+	linuxReasonNftMissing   = "nft_missing"
+	linuxReasonRecovery     = "recovery_unavailable"
+	linuxReasonScheduler    = "scheduler_unavailable"
 )
 
 // linuxToolTimeout bounds one nft or conntrack run; a wedged netlink socket
@@ -37,6 +50,11 @@ var nftCgroupPathPattern = regexp.MustCompile(`^[A-Za-z0-9_.@:\\/-]+$`)
 // linuxIsolator is the nftables mechanism: one table, `inet breeze_isolation`,
 // that it creates, reads and deletes, and never anyone else's.
 type linuxIsolator struct {
+	// activated is linuxIsolationActivated; a field only so tests can force the
+	// activated wiring. Production never changes it.
+	activated bool
+	readiness readinessCache
+
 	nft        func(ctx context.Context, stdin []byte, args ...string) ([]byte, error)
 	conntrack  func(ctx context.Context, args ...string) ([]byte, error)
 	lookPath   func(string) (string, error)
@@ -44,8 +62,14 @@ type linuxIsolator struct {
 	baseline   func() (Baseline, error)
 	executable func() (string, error)
 
+	// setupCgroup splits the agent's cgroup with child placement on.
+	setupCgroup func() (cgroup.Layout, error)
+
 	mu    sync.Mutex
 	notes []string
+
+	splitMu sync.Mutex
+	split   *cgroup.Layout
 }
 
 // NewPlatformIsolator provides real nftables release and inspection even while
@@ -54,13 +78,13 @@ func NewPlatformIsolator() Isolator { return newLinuxIsolator() }
 
 func newLinuxIsolator() *linuxIsolator {
 	i := &linuxIsolator{
-		lookPath:   lookPathLinuxTool,
-		baseline:   readLinuxBaseline,
-		executable: os.Executable,
-		layout: func() (cgroup.Layout, error) {
-			return cgroup.Layout{}, errors.New("the agent's cgroup has not been split")
-		},
+		activated:   linuxIsolationActivated,
+		lookPath:    lookPathLinuxTool,
+		baseline:    readLinuxBaseline,
+		executable:  os.Executable,
+		setupCgroup: setupAgentCgroup,
 	}
+	i.layout = i.splitLayout
 	i.nft = func(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
 		return i.runTool(ctx, "nft", stdin, args...)
 	}
@@ -68,6 +92,15 @@ func newLinuxIsolator() *linuxIsolator {
 		return i.runTool(ctx, "conntrack", nil, args...)
 	}
 	return i
+}
+
+// setupAgentCgroup turns child placement on before the agent moves, so no child
+// can ever start in the permitted cgroup.
+func setupAgentCgroup() (cgroup.Layout, error) {
+	return cgroup.SetupSelf(
+		func(l cgroup.Layout) error { return procspawn.Enable(l.ChildrenFD, l.ChildrenPath) },
+		func() { procspawn.SetChildrenCgroup(-1) },
+	)
 }
 
 func lookPathLinuxTool(name string) (string, error) {
@@ -114,9 +147,116 @@ func (i *linuxIsolator) requireNft() error {
 	return nil
 }
 
-// Capability is reported through the readiness path (see Task 5).
+// Capability reads only cached readiness; a heartbeat never runs nft, touches
+// a cgroup or asks systemd. No readiness result can pass the activation switch.
 func (i *linuxIsolator) Capability() Capability {
-	return Capability{Mechanism: "nft", UnsupportedReason: "not_activated"}
+	c := Capability{Mechanism: "nft"}
+	if !i.activated {
+		c.UnsupportedReason = linuxReasonNotActivated
+		return c
+	}
+	r := &i.readiness
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	elapsed := r.clock().Sub(r.checkedAt)
+	var engine *linuxEngineError
+	switch {
+	case r.checkedAt.IsZero() || elapsed < 0 || elapsed >= readinessMaxAge:
+		c.UnsupportedReason = linuxReasonRecovery // no fresh proof of anything
+	case errors.As(r.engineErr, &engine):
+		c.UnsupportedReason = engine.reason
+	case r.recoveryErr != nil:
+		c.UnsupportedReason = linuxReasonRecovery
+	case !r.schedulerReady:
+		c.UnsupportedReason = linuxReasonScheduler
+	default:
+		c.Version = 1
+		c.Ready = true
+	}
+	return c
+}
+
+// linuxEngineError carries which of the mechanism's own prerequisites failed
+// through the shared readiness cache.
+type linuxEngineError struct {
+	reason string
+	err    error
+}
+
+func (e *linuxEngineError) Error() string { return e.reason + ": " + e.err.Error() }
+func (e *linuxEngineError) Unwrap() error { return e.err }
+
+func (i *linuxIsolator) configureRecoveryReadiness(scheduler RecoveryScheduler, wantVersion string) {
+	i.configureReadiness(func(ctx context.Context) (string, error) { return recoveryinstall.EnsureRecovery(ctx, wantVersion) }, scheduler.Ready)
+}
+
+func (i *linuxIsolator) configureReadiness(ensure func(context.Context) (string, error), scheduler func() (bool, string)) {
+	i.readiness.mu.Lock()
+	defer i.readiness.mu.Unlock()
+	i.readiness.probe = func(ctx context.Context) readinessInputs {
+		if err := ctx.Err(); err != nil {
+			return readinessInputs{engineErr: &linuxEngineError{linuxReasonNftMissing, err}, recoveryErr: err, schedulerReason: "cancelled"}
+		}
+		engineErr := i.probeEngine()
+		_, recoveryErr := ensure(ctx)
+		ready, reason := scheduler()
+		return readinessInputs{engineErr: engineErr, recoveryErr: recoveryErr, schedulerReady: ready, schedulerReason: reason}
+	}
+	i.readiness.checkedAt = time.Time{}
+}
+
+// probeEngine checks nft and establishes the cgroup split. The split happens
+// here, so only an activated agent ever moves itself or places a child.
+func (i *linuxIsolator) probeEngine() error {
+	if _, err := i.lookPath("nft"); err != nil {
+		return &linuxEngineError{linuxReasonNftMissing, err}
+	}
+	return i.ensureSplit()
+}
+
+func (i *linuxIsolator) ensureSplit() error {
+	i.splitMu.Lock()
+	defer i.splitMu.Unlock()
+	if i.split != nil {
+		return nil
+	}
+	layout, err := i.setupCgroup()
+	if err != nil {
+		reason := cgroup.ReasonUnavailable
+		var refusal *cgroup.Error
+		if errors.As(err, &refusal) {
+			reason = refusal.Reason
+		}
+		return &linuxEngineError{reason, err}
+	}
+	i.split = &layout
+	return nil
+}
+
+// splitLayout is what Apply permits. Before a successful split there is no
+// cgroup to scope a permit to, so there is nothing to apply.
+func (i *linuxIsolator) splitLayout() (cgroup.Layout, error) {
+	i.splitMu.Lock()
+	defer i.splitMu.Unlock()
+	if i.split == nil {
+		return cgroup.Layout{}, errors.New("the agent's cgroup has not been split")
+	}
+	return *i.split, nil
+}
+
+// While not activated, readiness is never probed: the result would be masked by
+// not_activated anyway, and a shipped capability-0 agent must not move itself
+// between cgroups, enable child placement, or ask systemd anything on a timer.
+func (i *linuxIsolator) RefreshReadiness(ctx context.Context) {
+	if i.activated {
+		i.readiness.refresh(ctx, true)
+	}
+}
+
+func (i *linuxIsolator) refreshCachedReadiness(ctx context.Context) {
+	if i.activated {
+		i.readiness.refresh(ctx, false)
+	}
 }
 
 // BinaryPaths reports the running agent for the upgrade handoff. The nft permit

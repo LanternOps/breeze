@@ -82,6 +82,7 @@ func (ft *fakeTree) system() *system {
 		openDir: func(path string) (int, error) {
 			return syscall.Open(path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
 		},
+		closeFD: syscall.Close,
 	}
 }
 
@@ -114,7 +115,7 @@ func TestParseSelfCgroup(t *testing.T) {
 
 func TestSetupSelfDerivesPathAndLevelFromProcSelf(t *testing.T) {
 	ft := newFakeTree(t)
-	layout, err := ft.system().setup()
+	layout, err := ft.system().setup(nil, nil)
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -153,7 +154,7 @@ func TestSetupSelfFollowsANonStandardUnitPath(t *testing.T) {
 		}
 		return []byte("0::" + ft.start + "\n"), nil
 	}
-	layout, err := s.setup()
+	layout, err := s.setup(nil, nil)
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -165,12 +166,12 @@ func TestSetupSelfFollowsANonStandardUnitPath(t *testing.T) {
 
 func TestSetupSelfIsIdempotentInsideTheAgentCgroup(t *testing.T) {
 	ft := newFakeTree(t)
-	first, err := ft.system().setup()
+	first, err := ft.system().setup(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = syscall.Close(first.ChildrenFD)
-	second, err := ft.system().setup()
+	second, err := ft.system().setup(nil, nil)
 	if err != nil {
 		t.Fatalf("second setup: %v", err)
 	}
@@ -193,7 +194,7 @@ func TestSetupSelfRefusesCgroupV1AndHybrid(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ft := newFakeTree(t)
 			ft.selfData, ft.cgroup2 = tc.self, tc.cgroup2
-			_, err := ft.system().setup()
+			_, err := ft.system().setup(nil, nil)
 			var ce *Error
 			if !errors.As(err, &ce) || ce.Reason != ReasonV1 {
 				t.Fatalf("err = %v, want reason %s", err, ReasonV1)
@@ -221,7 +222,7 @@ func TestSetupSelfRequiresDelegation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ft := newFakeTree(t)
 			tc.setup(ft)
-			_, err := ft.system().setup()
+			_, err := ft.system().setup(nil, nil)
 			var ce *Error
 			if !errors.As(err, &ce) || ce.Reason != ReasonNotDelegated {
 				t.Fatalf("err = %v, want reason %s", err, ReasonNotDelegated)
@@ -242,7 +243,7 @@ func TestSetupSelfRequiresDelegation(t *testing.T) {
 func TestSetupSelfRefusesAProcessOutsideAServiceUnit(t *testing.T) {
 	ft := newFakeTree(t)
 	ft.selfData = "0::/user.slice/user-1000.slice/session-2.scope\n"
-	_, err := ft.system().setup()
+	_, err := ft.system().setup(nil, nil)
 	var ce *Error
 	if !errors.As(err, &ce) || ce.Reason != ReasonNotDelegated {
 		t.Fatalf("err = %v, want reason %s", err, ReasonNotDelegated)
@@ -253,7 +254,74 @@ func TestSetupSelfFailsWhenTheMoveDidNotTakeEffect(t *testing.T) {
 	ft := newFakeTree(t)
 	s := ft.system()
 	s.readSelf = func() ([]byte, error) { return []byte("0::" + unitCgroup + "\n"), nil }
-	if _, err := s.setup(); err == nil {
+	if _, err := s.setup(nil, nil); err == nil {
 		t.Fatal("setup must verify the agent actually moved into the agent cgroup")
+	}
+}
+
+// A child spawned while the agent is already in <unit>/agent but placement is
+// still off would inherit the management-plane permit (spec §3.5: "a child that
+// briefly runs in .../agent is a hole"). So placement goes on first.
+func TestSetupSelfEnablesPlacementBeforeMovingTheAgent(t *testing.T) {
+	ft := newFakeTree(t)
+	var order []string
+	var seen Layout
+	s := ft.system()
+	layout, err := s.setup(func(l Layout) error {
+		seen = l
+		order = append(order, "enable in "+ft.current())
+		return nil
+	}, func() { order = append(order, "disable") })
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	defer func() { _ = syscall.Close(layout.ChildrenFD) }()
+	if len(order) != 1 || order[0] != "enable in "+unitCgroup {
+		t.Fatalf("placement must be enabled while the agent is still in the unit cgroup: %v", order)
+	}
+	if seen.ChildrenFD != layout.ChildrenFD || seen.ChildrenPath != layout.ChildrenPath || seen.ChildrenFD < 0 {
+		t.Fatalf("enable saw %+v, setup returned %+v", seen, layout)
+	}
+	if ft.current() != unitCgroup+"/agent" {
+		t.Fatalf("agent in %s", ft.current())
+	}
+}
+
+func TestSetupSelfDoesNotMoveWhenPlacementIsRefused(t *testing.T) {
+	ft := newFakeTree(t)
+	s := ft.system()
+	closed := -1
+	s.closeFD = func(fd int) error { closed = fd; return syscall.Close(fd) }
+	disabled := false
+	_, err := s.setup(func(Layout) error { return errors.New("clone3: function not implemented") }, func() { disabled = true })
+	var ce *Error
+	if !errors.As(err, &ce) || ce.Reason != ReasonSpawnUnavailable {
+		t.Fatalf("err = %v, want reason %s", err, ReasonSpawnUnavailable)
+	}
+	if ft.current() != unitCgroup {
+		t.Fatal("the agent must stay put when its children cannot be placed")
+	}
+	if closed < 0 {
+		t.Fatal("the children fd leaked")
+	}
+	if disabled {
+		t.Fatal("placement never went on, so there is nothing to disable")
+	}
+}
+
+// Closing the fd while placement still uses it would make every later spawn
+// fail, so a failure after enabling turns placement off first.
+func TestSetupSelfTurnsPlacementOffBeforeClosingOnFailure(t *testing.T) {
+	ft := newFakeTree(t)
+	ft.writeErr = &os.PathError{Op: "write", Err: syscall.EBUSY}
+	var order []string
+	s := ft.system()
+	s.closeFD = func(fd int) error { order = append(order, "close"); return syscall.Close(fd) }
+	_, err := s.setup(func(Layout) error { order = append(order, "enable"); return nil }, func() { order = append(order, "disable") })
+	if err == nil {
+		t.Fatal("a failed move must fail setup")
+	}
+	if strings.Join(order, ",") != "enable,disable,close" {
+		t.Fatalf("order = %v", order)
 	}
 }

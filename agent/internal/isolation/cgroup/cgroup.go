@@ -37,6 +37,9 @@ const (
 	// ReasonNotDelegated is a unit without Delegate=yes (an install that
 	// predates it), or a process not running in its own service unit.
 	ReasonNotDelegated = "cgroup_not_delegated"
+	// ReasonSpawnUnavailable is a host that cannot place a child with clone3
+	// CLONE_INTO_CGROUP (kernel older than 5.7, or a seccomp policy refusing it).
+	ReasonSpawnUnavailable = "cgroup_spawn_unavailable"
 	// ReasonUnavailable is any other failure to build or verify the split.
 	ReasonUnavailable = "cgroup_unavailable"
 )
