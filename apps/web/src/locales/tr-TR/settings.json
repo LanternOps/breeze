@@ -264,7 +264,17 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Yapay zeka bütçesinin uygulanmasını etkinleştirin",
+    "aiAccess": "Tüm kuruluşlar için yapay zeka",
+    "aiAccessOptions": {
+      "notSet": "Ayarlanmadı, her kuruluş kendisi karar verir",
+      "on": "Her kuruluş için açık",
+      "off": "Her kuruluş için kapalı"
+    },
+    "aiAccessHelp": "Bu, müşterilerinizin yapay zeka açma/kapama anahtarıdır, bir bütçe ayarı değildir. Ayarlandığında her kuruluşun kendi yapay zeka anahtarının yerine geçer. Aşağıdaki bütçe alanları her durumda geçerlidir.",
+    "offWarning": "Bu iş ortağının altındaki her kuruluş için yapay zeka kapalı. Sohbet, helper, Office eklentileri, yapay zeka ajanları ve zenginleştirme siz bunu değiştirene kadar reddedilir.",
+    "offConfirmTitle": "Yapay zeka her kuruluş için kapatılsın mı?",
+    "offConfirmMessage": "Bu iş ortağının altındaki her kuruluş yapay zekayı kaybeder: sohbet, helper, Office eklentileri, yapay zeka ajanları ve zenginleştirme reddedilir ve kuruluşlar onu kendileri yeniden açamaz. Kaydedene kadar hiçbir şey değişmez.",
+    "offConfirmAction": "Yapay zekayı kapat",
     "monthlyBudget": "Aylık Bütçe ($)",
     "dailyBudget": "Günlük Bütçe ($)",
     "approvalMode": "Onay Modu",

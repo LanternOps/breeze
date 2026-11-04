@@ -264,7 +264,17 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Activer l’application budgétaire par IA",
+    "aiAccess": "IA pour toutes les organisations",
+    "aiAccessOptions": {
+      "notSet": "Non défini, chaque organisation décide",
+      "on": "Activée pour toutes les organisations",
+      "off": "Désactivée pour toutes les organisations"
+    },
+    "aiAccessHelp": "Il s'agit de l'interrupteur IA de vos clients, pas d'un réglage de budget. Lorsqu'il est défini, il remplace l'interrupteur IA propre à chaque organisation. Les champs de budget ci-dessous s'appliquent dans les deux cas.",
+    "offWarning": "L'IA est désactivée pour toutes les organisations de ce partenaire. Le clavardage, le helper, les compléments Office, les agents IA et l'enrichissement sont refusés jusqu'à ce que vous changiez ce réglage.",
+    "offConfirmTitle": "Désactiver l'IA pour toutes les organisations?",
+    "offConfirmMessage": "Toutes les organisations de ce partenaire perdent l'IA : le clavardage, le helper, les compléments Office, les agents IA et l'enrichissement sont refusés, et les organisations ne peuvent pas la réactiver elles-mêmes. Rien ne change avant l'enregistrement.",
+    "offConfirmAction": "Désactiver l'IA",
     "monthlyBudget": "Budget mensuel ($)",
     "dailyBudget": "Budget quotidien ($)",
     "approvalMode": "Mode d’approbation",

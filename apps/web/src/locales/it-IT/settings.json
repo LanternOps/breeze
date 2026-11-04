@@ -264,7 +264,17 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Abilita l'applicazione dei budget IA",
+    "aiAccess": "IA per tutte le organizzazioni",
+    "aiAccessOptions": {
+      "notSet": "Non impostato, decide ogni organizzazione",
+      "on": "Attivata per ogni organizzazione",
+      "off": "Disattivata per ogni organizzazione"
+    },
+    "aiAccessHelp": "Questo è l'interruttore IA dei tuoi clienti, non un'impostazione di budget. Se impostato, sostituisce l'interruttore IA di ogni organizzazione. I campi di budget qui sotto si applicano in ogni caso.",
+    "offWarning": "L'IA è disattivata per ogni organizzazione di questo partner. Chat, helper, componenti aggiuntivi di Office, agenti IA e arricchimento vengono rifiutati finché non modifichi questa impostazione.",
+    "offConfirmTitle": "Disattivare l'IA per ogni organizzazione?",
+    "offConfirmMessage": "Ogni organizzazione di questo partner perde l'IA: chat, helper, componenti aggiuntivi di Office, agenti IA e arricchimento vengono rifiutati e le organizzazioni non possono riattivarla da sole. Non cambia nulla finché non salvi.",
+    "offConfirmAction": "Disattiva IA",
     "monthlyBudget": "Budget mensile ($)",
     "dailyBudget": "Budget giornaliero ($)",
     "approvalMode": "Modalità di approvazione",
