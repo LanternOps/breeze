@@ -3576,18 +3576,17 @@ jobs:
         timeout-minutes: 12
         env:
           TAURI_DEBS_DIR: ${{ steps.tauri-apt-cache.outputs.dir }}
-          TAURI_CACHE_HIT: ${{ steps.tauri-apt-cache.outputs.cache-hit }}
         run: |
-          # Cache hit: install the saved .deb closure with dpkg. No apt-get
-          # update, no mirror traffic (#9753). Any failure here falls through to
-          # the network path below, which is also the cache-miss path.
-          if [ "${TAURI_CACHE_HIT}" = "true" ] && ls "${TAURI_DEBS_DIR}"/*.deb >/dev/null 2>&1; then
-            if sudo timeout --kill-after=15s 90s dpkg -i "${TAURI_DEBS_DIR}"/*.deb; then
-              echo "Tauri system dependencies installed from cache (no mirror access)."
-              exit 0
-            fi
-            echo "::warning::cached .deb install failed; falling back to the network install"
-            sudo timeout --kill-after=15s 30s dpkg --configure -a || true
+          # Install from the restored closure with no mirror traffic (#9753). Exit 3
+          # means it could not be used and nothing changed, so the network path below
+          # still works; anything else means dpkg ran and failed, so stop here.
+          rc=0
+          bash .github/scripts/tauri-apt.sh cached "${TAURI_DEBS_DIR}" || rc=$?
+          if [ "${rc}" = 0 ]; then
+            exit 0
+          fi
+          if [ "${rc}" != 3 ]; then
+            exit "${rc}"
           fi
           # Network path. Download into a private archives dir so the .debs can
           # be copied into the cache dir once the install succeeds.

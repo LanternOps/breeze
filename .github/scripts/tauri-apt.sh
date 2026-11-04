@@ -17,6 +17,8 @@
 #   plan WORK               apt-get update, resolve; prints the closure id
 #   fetch WORK CACHE        download the planned closure and publish it to CACHE
 #   probe CACHE             does CACHE fit this runner? Offline, changes nothing
+#   cached CACHE            install from CACHE; exit 3 when it cannot be used and
+#                           nothing was touched, exit 1 when the install itself failed
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -134,6 +136,35 @@ cmd_probe() {
   return "${rc}"
 }
 
+# Two phases, because they call for different recoveries. Probe failing means this
+# image and closure do not fit (an image newer than the seed, or one needing a
+# package the closure lacks): nothing has changed, so another route can still work.
+# The install failing after the probe passed means dpkg ran and may have left the
+# system half configured, which no other route can recover from: stop here, rather
+# than spend the step's budget on a path that apt will refuse anyway.
+cmd_cached() {
+  local cache=$1 sources rc=0
+  if ! compgen -G "${cache}/archives/*.deb" >/dev/null || [ ! -d "${cache}/lists" ]; then
+    echo "No Tauri apt closure restored."
+    return 3
+  fi
+  if ! cmd_probe "${cache}"; then
+    echo "::warning::the cached Tauri apt closure does not fit this runner image; nothing was changed"
+    return 3
+  fi
+  sources=$(mktemp -d)
+  write_sources "${sources}"
+  apt_options "${sources}" "${cache}/lists" "${cache}/archives"
+  as_root env DEBIAN_FRONTEND=noninteractive timeout --kill-after=15s 4m apt-get install -y --no-download \
+    --no-install-recommends --no-remove "${APT_OPTS[@]}" "${TAURI_PKGS[@]}" || rc=$?
+  rm -rf -- "${sources}"
+  if [ "${rc}" != 0 ]; then
+    echo "::error::cache closure incomplete: apt-get install exited ${rc} after planning from the cache; reseed with: gh workflow run \"CI cache seed\" --ref main (#9847)"
+    return 1
+  fi
+  echo "Tauri system dependencies installed from cache (no mirror access)."
+}
+
 main() {
   local cmd=${1:-}
   shift || true
@@ -141,8 +172,9 @@ main() {
     plan) cmd_plan "$@" ;;
     fetch) cmd_fetch "$@" ;;
     probe) cmd_probe "$@" ;;
+    cached) cmd_cached "$@" ;;
     *)
-      echo "Usage: tauri-apt.sh plan WORK | fetch WORK CACHE | probe CACHE" >&2
+      echo "Usage: tauri-apt.sh plan WORK | fetch WORK CACHE | probe CACHE | cached CACHE" >&2
       exit 2
       ;;
   esac

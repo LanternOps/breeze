@@ -90,6 +90,8 @@ test('classifier: app output — the CI-plumbing allowlist is app=false, everyth
     // guided-setup-smoke (both HEAVY jobs, not lint/check-migrations/
     // security-audit), so it must not fast-track past the app gate.
     [['.github/scripts/prepare-ci-apt-sources.mjs'], 'app=true'],
+    // tauri-apt.sh installs rust-check's system dependencies.
+    [['.github/scripts/tauri-apt.sh'], 'app=true'],
     // check-agent-binary-signatures.sh is consumed by build-agent (a HEAVY
     // job), so it must not fast-track past the app gate either.
     [['scripts/security/check-agent-binary-signatures.sh'], 'app=true'],
@@ -704,6 +706,7 @@ test('every explicit app=true carve-out in the classifier is still referenced by
     '.github/workflows/ci.yml',
     '.github/scripts/classify-pr-paths.sh',
     '.github/scripts/prepare-ci-apt-sources.mjs',
+    '.github/scripts/tauri-apt.sh',
     '.github/scripts/mobile-native-ci.test.mjs',
     '.github/scripts/qemu-gate-paths.txt',
     'scripts/security/check-agent-binary-signatures.sh',

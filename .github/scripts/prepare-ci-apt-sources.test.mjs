@@ -132,28 +132,3 @@ for (const name of ['rust-check', 'guided-setup-smoke']) {
     }));
   }
 }
-
-// #9753: on a cache hit the Tauri deps install from the cached .debs with dpkg
-// and never invoke apt-get; if dpkg fails the network path still runs.
-for (const dpkgFails of [false, true]) {
-  test(`rust-check: cache hit installs with dpkg and ${dpkgFails ? 'falls back to apt-get when dpkg fails' : 'makes no apt-get call'}`, () => temporary((root) => {
-    const { source } = fixtures(root, { 'sources.list': distro });
-    const bin = path.join(root, 'bin'); mkdirSync(bin);
-    const calls = path.join(root, 'calls'); writeFileSync(calls, '');
-    const debs = path.join(root, 'debs'); mkdirSync(debs); writeFileSync(path.join(debs, 'a.deb'), '');
-    const stubs = {
-      sudo: 'exec "$@"',
-      timeout: 'while [[ "$1" == --* ]]; do shift; done; shift; exec "$@"',
-      sed: 'exit 0', sleep: 'exit 0',
-      dpkg: `printf 'dpkg %s\\n' "$*" >> "$CALLS"\n[[ "$1" == -i && -n "$DPKG_FAIL" ]] && exit 1\nexit 0`,
-      'apt-get': 'printf \'apt-get %s\\n\' "$*" >> "$CALLS"\nexit 0',
-    };
-    for (const [file, text] of Object.entries(stubs)) { const f = path.join(bin, file); writeFileSync(f, '#!/bin/bash\n' + text + '\n'); chmodSync(f, 0o755); }
-    const script = dependencyScript('rust-check').replace('/etc/apt "$CI_APT_DIR"', '"$FIXTURE_APT_SOURCE" "$CI_APT_DIR"');
-    const result = spawnSync('bash', ['-e', '-c', script], { encoding: 'utf8', cwd: new URL('../../', import.meta.url), env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CALLS: calls, FIXTURE_APT_SOURCE: source, TAURI_DEBS_DIR: debs, TAURI_CACHE_HIT: 'true', DPKG_FAIL: dpkgFails ? '1' : '' } });
-    assert.equal(result.status, 0, result.stdout + result.stderr);
-    const recorded = readFileSync(calls, 'utf8');
-    assert.match(recorded, /^dpkg -i .*a\.deb/m);
-    assert.equal(/apt-get/.test(recorded), dpkgFails);
-  }));
-}

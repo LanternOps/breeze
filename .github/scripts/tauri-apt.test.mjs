@@ -107,6 +107,60 @@ function seedCache(cache) {
 
 const output = (r) => r.stdout + r.stderr;
 
+test('cached, usable cache: installs through apt offline, never the mirror and never dpkg -i', () => harness(({ files, run, phaseNames }) => {
+  seedCache(files.cache);
+  const r = run('cached', files.cache);
+  assert.equal(r.status, 0, output(r));
+  assert.deepEqual(phaseNames(), ['probe', 'cached-install']);
+  assert.equal(readFileSync(files.dpkg, 'utf8'), '', 'dpkg must not be invoked directly');
+  assert.match(output(r), /installed from cache/);
+}));
+
+test('cached, closure does not fit this image: warns and reports unusable, having run no install', () => harness(({ files, run, phaseNames }) => {
+  seedCache(files.cache);
+  const r = run('cached', files.cache);
+  assert.equal(r.status, 3, output(r));
+  assert.deepEqual(phaseNames(), ['probe']);
+  assert.match(output(r), /::warning::/);
+}, { apt: 'probe 100\n' }));
+
+test('cached, install fails after the probe passed: a labelled failure that is NOT reported as unusable', () => harness(({ files, run, phaseNames }) => {
+  seedCache(files.cache);
+  const r = run('cached', files.cache);
+  assert.equal(r.status, 1, output(r));
+  assert.deepEqual(phaseNames(), ['probe', 'cached-install']);
+  assert.match(output(r), /::error::.*cache closure incomplete.*reseed/);
+}, { apt: 'cached-install 100\n' }));
+
+test('cached, nothing restored: reports unusable without calling apt', () => harness(({ files, run, phaseNames }) => {
+  const r = run('cached', files.cache);
+  assert.equal(r.status, 3, output(r));
+  assert.deepEqual(phaseNames(), []);
+}));
+
+test('cached, a restored entry from the old flat layout: reports unusable without calling apt', () => harness(({ files, run, phaseNames }) => {
+  mkdirSync(files.cache);
+  writeFileSync(path.join(files.cache, 'a_1_amd64.deb'), 'deb');
+  const r = run('cached', files.cache);
+  assert.equal(r.status, 3, output(r));
+  assert.deepEqual(phaseNames(), []);
+}));
+
+test('cached calls use only the fixed Ubuntu sources, never weaken verification, never remove packages', () => harness(({ files, run }) => {
+  seedCache(files.cache);
+  assert.equal(run('cached', files.cache).status, 0);
+  const calls = readFileSync(files.calls, 'utf8').trim().split('\n');
+  assert.equal(calls.length, 2);
+  for (const c of calls) {
+    assert.match(c, /Dir::Etc::sourcelist=\S+/, c);
+    assert.match(c, /Dir::Etc::sourceparts=-/, c);
+    assert.match(c, /--no-install-recommends/, c);
+    assert.match(c, /--no-remove/, c);
+    assert.doesNotMatch(c, /allow-unauthenticated|trusted=yes|AllowInsecure|Check-Valid-Until=false/, c);
+    for (const pkg of ['libwebkit2gtk-4.1-dev', 'libappindicator3-dev', 'librsvg2-dev', 'patchelf']) assert.ok(c.includes(pkg), `${pkg} missing: ${c}`);
+  }
+}));
+
 test('plan: resolves against an EMPTY dpkg status, so the closure ignores what the image preinstalls', () => harness(({ files, run, phases, phaseNames }) => {
   const r = run('plan', files.work);
   assert.equal(r.status, 0, output(r));

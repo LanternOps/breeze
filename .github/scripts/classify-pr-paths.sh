@@ -37,7 +37,8 @@
 # exceptions carve out files the allowlisted directories contain that a
 # HEAVY job (not lint/check-migrations/security-audit) actually consumes:
 # ci.yml itself; this classifier; prepare-ci-apt-sources.mjs (used by
-# rust-check and guided-setup-smoke); check-agent-binary-signatures.sh (used
+# rust-check and guided-setup-smoke); tauri-apt.sh (used by rust-check);
+# check-agent-binary-signatures.sh (used
 # by build-agent); verify-release-images.sh (copied and run by
 # scripts/smoke-guided-setup.sh inside guided-setup-smoke — an INDIRECT
 # consumer, so grep the scripts heavy jobs call, not just ci.yml);
@@ -277,6 +278,7 @@ while IFS= read -r path; do
     .github/workflows/*.yml) : ;;
     .github/scripts/classify-pr-paths.sh) app=true ;;
     .github/scripts/prepare-ci-apt-sources.mjs) app=true ;;
+    .github/scripts/tauri-apt.sh) app=true ;;
     .github/scripts/mobile-native-ci.test.mjs) app=true ;;
     .github/scripts/qemu-gate-paths.txt) app=true ;;
     .github/scripts/*) : ;;
