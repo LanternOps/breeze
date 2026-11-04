@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -99,15 +100,22 @@ func TestDefenderCmdletAbsentSkipsStatusSpawn(t *testing.T) {
 func TestDefenderServiceDisabledIsNotSupportedAndCached(t *testing.T) {
 	for _, tc := range []struct {
 		name string
+		out  string
 		err  error
 	}{
 		// PowerShell exits non-zero when the pipeline's last command failed...
 		{name: "non-zero exit", err: errors.New("exit status 1")},
 		// ...but ConvertTo-Json of an empty pipeline can still exit 0.
 		{name: "zero exit", err: nil},
+		// The hex digits' case is not something to rely on.
+		{name: "upper-case HRESULT", out: strings.ToUpper(defenderServiceDisabledOutput), err: errors.New("exit status 1")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			host := &fakeDefenderHost{moduleInstalled: true, statusOut: defenderServiceDisabledOutput, statusErr: tc.err}
+			out := tc.out
+			if out == "" {
+				out = defenderServiceDisabledOutput
+			}
+			host := &fakeDefenderHost{moduleInstalled: true, statusOut: out, statusErr: tc.err}
 			now := installFakeDefenderHost(t, host)
 
 			for range 3 {
@@ -179,6 +187,18 @@ func TestDefenderRealFailureStillSurfaces(t *testing.T) {
 				if err == nil || errors.Is(err, ErrNotSupported) {
 					t.Fatalf("err = %v, want a real (non-ErrNotSupported) failure", err)
 				}
+				if tc.err == errDefenderStatusTimeout && !errors.Is(err, errDefenderStatusTimeout) {
+					t.Fatalf("err = %v, want errDefenderStatusTimeout", err)
+				}
+				if tc.name == "other HRESULT" {
+					// The PowerShell error record is what an operator needs;
+					// "exit status 1" alone says nothing.
+					for _, want := range []string{"defender status command failed", "0x80070005"} {
+						if !strings.Contains(err.Error(), want) {
+							t.Fatalf("err = %q, want it to contain %q", err, want)
+						}
+					}
+				}
 			}
 			if n := host.count(defenderStatusPS); n != 2 {
 				t.Fatalf("status spawns = %d, want 2 (a real failure must not close the gate)", n)
@@ -214,8 +234,10 @@ func TestDefenderAvailabilityReDetectsAfterTTL(t *testing.T) {
 	}
 }
 
-// A third-party AV removed after 0x800106ba was cached: Defender is seen again
-// once the TTL expires.
+// A third-party AV removed (or a WinDefend that was not yet running at boot)
+// after 0x800106ba was cached: Defender is seen again once the shorter
+// service-disabled TTL expires. 0x800106ba is "service not running", which is
+// not always permanent, so it must not hide a Defender-only host for a day.
 func TestDefenderServiceDisabledReDetectsAfterTTL(t *testing.T) {
 	host := &fakeDefenderHost{moduleInstalled: true, statusOut: defenderServiceDisabledOutput, statusErr: errors.New("exit status 1")}
 	now := installFakeDefenderHost(t, host)
@@ -225,7 +247,7 @@ func TestDefenderServiceDisabledReDetectsAfterTTL(t *testing.T) {
 	}
 	host.statusOut, host.statusErr = healthyDefenderJSON, nil
 
-	*now = now.Add(defenderAvailabilityTTL - time.Second)
+	*now = now.Add(defenderServiceDisabledTTL - time.Second)
 	if _, err := collectDefenderStatus(); !errors.Is(err, ErrNotSupported) {
 		t.Fatalf("err before TTL = %v, want cached ErrNotSupported", err)
 	}
@@ -235,6 +257,9 @@ func TestDefenderServiceDisabledReDetectsAfterTTL(t *testing.T) {
 	}
 	if n := host.count(defenderStatusPS); n != 2 {
 		t.Fatalf("status spawns = %d, want 2", n)
+	}
+	if defenderServiceDisabledTTL > 2*time.Hour || defenderServiceDisabledTTL < slowProbeErrorTTL {
+		t.Fatalf("defenderServiceDisabledTTL = %s; want between slowProbeErrorTTL and 2h", defenderServiceDisabledTTL)
 	}
 }
 
@@ -269,7 +294,7 @@ func TestDefenderAvailabilityIndeterminateFallsThrough(t *testing.T) {
 // Output that is neither "available" nor "unavailable" (a profile banner, a
 // localized warning) must never close the gate.
 func TestDefenderAvailabilityUnexpectedOutputIsIndeterminate(t *testing.T) {
-	for _, out := range []string{"", "WARNING: something\r\nunavailable", "Available"} {
+	for _, out := range []string{"", "WARNING: something\r\nunavailable", "Available", "UNAVAILABLE"} {
 		host := &fakeDefenderHost{moduleInstalled: false, getCommandOut: out, statusOut: healthyDefenderJSON}
 		installFakeDefenderHost(t, host)
 		if _, err := collectDefenderStatus(); err != nil {
@@ -325,5 +350,81 @@ func TestDefenderModuleInstalled(t *testing.T) {
 	}
 	if !defenderModuleInstalled() {
 		t.Fatal("module dir present: want true")
+	}
+}
+
+// The cheap check passed (module directory present) but the cmdlet is gone:
+// a leftover directory after the feature was removed. PowerShell reports
+// CommandNotFoundException (not localized); that is the absent-cmdlet case
+// and closes the gate for the long TTL.
+func TestDefenderCmdletNotFoundDespiteModuleDir(t *testing.T) {
+	host := &fakeDefenderHost{
+		moduleInstalled: true,
+		statusOut: "Get-MpComputerStatus : The term 'Get-MpComputerStatus' is not recognized as the name of a cmdlet, function, script file, or operable program.\r\n" +
+			"    + CategoryInfo          : ObjectNotFound: (Get-MpComputerStatus:String) [], CommandNotFoundException\r\n" +
+			"    + FullyQualifiedErrorId : CommandNotFoundException",
+		statusErr: errors.New("exit status 1"),
+	}
+	now := installFakeDefenderHost(t, host)
+
+	if _, err := collectDefenderStatus(); !errors.Is(err, ErrNotSupported) {
+		t.Fatalf("err = %v, want ErrNotSupported", err)
+	}
+	*now = now.Add(defenderAvailabilityTTL - time.Second)
+	if _, err := collectDefenderStatus(); !errors.Is(err, ErrNotSupported) {
+		t.Fatalf("err = %v, want cached ErrNotSupported", err)
+	}
+	if n := host.count(defenderStatusPS); n != 1 {
+		t.Fatalf("status spawns = %d, want 1 within the long TTL", n)
+	}
+}
+
+// A CommandNotFoundException for some other command (a profile or module
+// script referencing a missing helper) is not proof Defender is absent.
+func TestDefenderOtherCommandNotFoundStillSurfaces(t *testing.T) {
+	host := &fakeDefenderHost{
+		moduleInstalled: true,
+		// PowerShell echoes the whole command line, so the Defender cmdlet's
+		// name appears even though another command is the missing one.
+		statusOut: "Some-Helper : The term 'Some-Helper' is not recognized\r\n" +
+			"+ Get-MpComputerStatus | Select-Object AMServiceEnabled | Some-Helper\r\n" +
+			"    + CategoryInfo          : ObjectNotFound: (Some-Helper:String) [], CommandNotFoundException\r\n" +
+			"    + FullyQualifiedErrorId : CommandNotFoundException",
+		statusErr: errors.New("exit status 1"),
+	}
+	installFakeDefenderHost(t, host)
+	if _, err := collectDefenderStatus(); err == nil || errors.Is(err, ErrNotSupported) {
+		t.Fatalf("err = %v, want a real failure", err)
+	}
+}
+
+func TestParseDefenderStatusFields(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		json string
+		want DefenderStatus
+	}{
+		{
+			name: "only AM service enabled",
+			json: `{"AMServiceEnabled":true,"AntispywareEnabled":false,"AntivirusEnabled":false,"RealTimeProtectionEnabled":false,"FullScanEndTime":"1/2/2026 3:04:05 PM"}`,
+			want: DefenderStatus{Enabled: true, LastFullScan: "2026-01-02T15:04:05Z"},
+		},
+		{
+			name: "only antispyware enabled",
+			json: `{"AntispywareEnabled":true,"AntivirusSignatureLastUpdated":"2026-01-02 03:04:05"}`,
+			want: DefenderStatus{Enabled: true, DefinitionsUpdatedAt: "2026-01-02T03:04:05Z"},
+		},
+		{
+			name: "everything off",
+			json: `{"AMServiceEnabled":false,"AntispywareEnabled":false,"AntivirusEnabled":false,"QuickScanEndTime":"not a date"}`,
+			want: DefenderStatus{LastQuickScan: "not a date"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseDefenderStatus(tc.json)
+			if err != nil || got != tc.want {
+				t.Fatalf("parse = %+v, %v; want %+v", got, err, tc.want)
+			}
+		})
 	}
 }

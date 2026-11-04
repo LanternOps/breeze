@@ -29,6 +29,13 @@ import (
 // removing a third-party AV re-enables Defender rarely; a day is soon enough.
 const defenderAvailabilityTTL = 24 * time.Hour
 
+// defenderServiceDisabledTTL is how long HRESULT 0x800106ba ("service not
+// running") keeps the gate closed. It is shorter than the absent-cmdlet TTL
+// because the condition is not always permanent: WinDefend may not have
+// started yet at boot, or a third-party AV may have just been removed. An
+// hour still cuts the failing spawn from every tick to one per hour.
+const defenderServiceDisabledTTL = time.Hour
+
 // defenderStatusPS is the per-tick Defender status query.
 const defenderStatusPS = "Get-MpComputerStatus | Select-Object AMServiceEnabled,AntispywareEnabled,AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureVersion,AntivirusSignatureLastUpdated,QuickScanEndTime,FullScanEndTime | ConvertTo-Json -Compress"
 
@@ -75,6 +82,10 @@ type defenderAvailabilityProbe struct {
 	state     defenderState
 	checkedAt time.Time
 	valid     bool
+	// closedFor is how long the current unavailable answer is trusted:
+	// defenderAvailabilityTTL when the cmdlet is absent,
+	// defenderServiceDisabledTTL after 0x800106ba.
+	closedFor time.Duration
 }
 
 func newDefenderAvailabilityProbe() *defenderAvailabilityProbe {
@@ -103,14 +114,18 @@ func (p *defenderAvailabilityProbe) unavailable() bool {
 
 	now := p.now()
 	ttl := defenderAvailabilityTTL
-	if p.state == defenderIndeterminate {
+	switch {
+	case p.state == defenderIndeterminate:
 		ttl = slowProbeErrorTTL
+	case p.state == defenderUnavailable && p.closedFor > 0:
+		ttl = p.closedFor
 	}
 	if !p.valid || now.Sub(p.checkedAt) >= ttl {
 		prev, wasValid := p.state, p.valid
 		p.state = p.detect()
 		p.checkedAt = now
 		p.valid = true
+		p.closedFor = defenderAvailabilityTTL
 		if p.state == defenderUnavailable && (!wasValid || prev != defenderUnavailable) {
 			log.Debug("Get-MpComputerStatus is not available on this host; skipping Microsoft Defender status",
 				"recheckIn", defenderAvailabilityTTL.String())
@@ -119,18 +134,19 @@ func (p *defenderAvailabilityProbe) unavailable() bool {
 	return p.state == defenderUnavailable
 }
 
-// markUnavailable closes the gate for a full TTL after the status call itself
-// proved Defender cannot answer on this host.
-func (p *defenderAvailabilityProbe) markUnavailable(reason string) {
+// markUnavailable closes the gate for ttl after the status call itself proved
+// Defender cannot answer on this host.
+func (p *defenderAvailabilityProbe) markUnavailable(reason string, ttl time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.valid || p.state != defenderUnavailable {
-		log.Debug("Microsoft Defender is disabled on this host; skipping Defender status",
-			"reason", reason, "recheckIn", defenderAvailabilityTTL.String())
+		log.Debug("Microsoft Defender cannot report status on this host; skipping Defender status",
+			"reason", reason, "recheckIn", ttl.String())
 	}
 	p.state = defenderUnavailable
 	p.checkedAt = p.now()
 	p.valid = true
+	p.closedFor = ttl
 }
 
 func (p *defenderAvailabilityProbe) detect() defenderState {
@@ -154,10 +170,19 @@ func (p *defenderAvailabilityProbe) detect() defenderState {
 	}
 }
 
-// defenderServiceDisabledHRESULT is what Get-MpComputerStatus reports when the
-// Defender service is disabled by policy or by a third-party AV. PowerShell
-// prints it in FullyQualifiedErrorId, which is not localized.
-const defenderServiceDisabledHRESULT = "0x800106ba"
+// Signatures in the status call's output that mean Defender cannot answer on
+// this host. Both appear in FullyQualifiedErrorId, which is not localized.
+const (
+	// defenderServiceDisabledHRESULT: the Defender service is disabled by
+	// policy or by a third-party AV (or not running yet).
+	defenderServiceDisabledHRESULT = "0x800106ba"
+	// defenderCmdletNotFound plus defenderCmdletNotFoundTarget: the module
+	// directory survived but the cmdlet is gone. The target is matched in
+	// CategoryInfo, not by name alone, because PowerShell echoes the whole
+	// command line (which names Get-MpComputerStatus) for any missing command.
+	defenderCmdletNotFound       = "commandnotfoundexception"
+	defenderCmdletNotFoundTarget = "(get-mpcomputerstatus:string)"
+)
 
 // collectDefenderStatus is the Windows GetDefenderStatus implementation. It is
 // platform-neutral (all spawns go through runDefenderPowerShell) so the gate
@@ -176,12 +201,20 @@ func collectDefenderStatus() (DefenderStatus, error) {
 		err = parseErr
 	} else if !errors.Is(err, errDefenderStatusTimeout) {
 		err = fmt.Errorf("defender status command failed: %w", err)
+		if detail := strings.TrimSpace(output); detail != "" {
+			err = fmt.Errorf("%w: %s", err, truncateForLog(detail, 300))
+		}
 	}
 
 	// PowerShell can exit 0 with only the error record on stderr, so check
-	// the signature whether the spawn or the parse failed.
-	if strings.Contains(strings.ToLower(output), defenderServiceDisabledHRESULT) {
-		defenderAvailability.markUnavailable("HRESULT " + defenderServiceDisabledHRESULT)
+	// the signatures whether the spawn or the parse failed.
+	lower := strings.ToLower(output)
+	switch {
+	case strings.Contains(lower, defenderServiceDisabledHRESULT):
+		defenderAvailability.markUnavailable("HRESULT "+defenderServiceDisabledHRESULT, defenderServiceDisabledTTL)
+		return DefenderStatus{}, errDefenderNotAvailable
+	case strings.Contains(lower, defenderCmdletNotFound) && strings.Contains(lower, defenderCmdletNotFoundTarget):
+		defenderAvailability.markUnavailable("Get-MpComputerStatus not found", defenderAvailabilityTTL)
 		return DefenderStatus{}, errDefenderNotAvailable
 	}
 	return DefenderStatus{}, err
