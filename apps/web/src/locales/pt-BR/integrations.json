@@ -1174,7 +1174,22 @@
     "updateCollector": "Atualizar coletor",
     "enableDeepTelemetry": "Ativar telemetria detalhada",
     "wired": "Cabeada",
-    "agentListTruncated": "Esta lista de agentes foi truncada em um limite de segurança e pode estar incompleta."
+    "agentListTruncated": "Esta lista de agentes foi truncada em um limite de segurança e pode estar incompleta.",
+    "online": "Online",
+    "offline": "Offline",
+    "controllerState": "Estado do controlador",
+    "uptime": "Tempo de atividade",
+    "wirelessClients": "clientes sem fio",
+    "cpu": "CPU",
+    "memory": "Memória",
+    "uplinkRx": "Uplink RX",
+    "uplinkTx": "Uplink TX",
+    "lastReportedStale": "Último relatório / desatualizado",
+    "asOf": "Em",
+    "channel": "Canal",
+    "width": "Largura",
+    "wlanStandard": "Padrão WLAN",
+    "txRetries": "Retentativas TX"
   },
   "webhookEditor": {
     "failedToSaveWebhook": "Falha ao salvar o webhook",
