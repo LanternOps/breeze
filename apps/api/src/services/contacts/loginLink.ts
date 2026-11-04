@@ -1,9 +1,10 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { contacts } from '../../db/schema/contacts';
 import { INBOUND_CONTACT_LOCK_NAMESPACE } from '../inboundEmail/resolveOrg';
-import { BILLING_ROLE, lockOrganizationForProjection, projectBillingContact } from './compat';
+import { BILLING_ROLE } from './compat';
 import {
   assertValidRoles,
+  ContactValidationError,
   createContact,
   normalizeContactEmail,
   type ContactActor,
@@ -157,12 +158,14 @@ export async function linkLoginToContact(
     // responsibilities, so this bypasses the fail-closed legacy `roles` adapter.
     if (missing.length > 0) {
       const granted = assertValidRoles(missing)!;
-      // Only an org-level `billing` grant can change organizations.billing_contact;
-      // it needs the same parent-first org lock `updateContact` takes.
-      const feedsBilling = granted.includes(BILLING_ROLE);
-      if (feedsBilling) await lockOrganizationForProjection(exec, input.orgId);
+      // A login never grants `billing` to an existing contact: that would change
+      // organizations.billing_contact and need the org lock, which this path
+      // (already holding the contact lock) must not take after it. Every caller
+      // passes `portal` or nothing; refuse anything else rather than skip it.
+      if (granted.includes(BILLING_ROLE)) {
+        throw new ContactValidationError('A login cannot grant the billing role.', 'invalid-role');
+      }
       await addLegacyDerivedContactRoles(exec, { contactId: existing.id, orgId: input.orgId, roles: granted });
-      if (feedsBilling) await projectBillingContact(exec, input.orgId);
     }
     return { contactId: existing.id, outcome: 'linked' };
   }

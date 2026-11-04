@@ -736,10 +736,11 @@ export async function updateContact(
   // Phase 3 retirement (spec §8.4, §28): `siteId` is affiliation/primacy
   // metadata and NEVER moves responsibilities by itself. Only a legacy `roles`
   // write reaches the compatibility adapter, which fails closed on a contact
-  // whose canonical assignments `roles[] + siteId` cannot express. When one
-  // request changes both fields the adapter judges the pre-write pin
-  // (`previousSiteId`), so a still-legacy-shaped contact may move and replace
-  // its roles atomically. Must run before the billing re-projection below.
+  // whose canonical assignments `roles[] + siteId` cannot express. An unchanged
+  // role set is a no-op even when siteId moved in the same request (contact_roles
+  // untouched, no refusal). When the roles DO change alongside siteId the adapter
+  // judges the pre-write pin (`previousSiteId`), so a still-legacy-shaped
+  // contact may move and replace its roles atomically. Must run before the billing re-projection below.
   if (patch.roles !== undefined) {
     await syncLegacyContactRoles(exec, {
       contactId,
