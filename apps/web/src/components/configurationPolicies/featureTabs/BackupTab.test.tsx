@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import BackupTab from './BackupTab';
+import BackupTab, { buildInlineSettings, inflateSettings } from './BackupTab';
 import { fetchWithAuth } from '../../../stores/auth';
 
 const saveMock = vi.fn();
@@ -697,6 +697,20 @@ describe('BackupTab', () => {
     );
     expect(screen.getByText('GFS Retention')).toBeTruthy();
     expect(screen.getByText('Backup Window')).toBeTruthy();
+  });
+
+  it('keeps runMissedBackupsOnConnect through a save of the form (#11013)', () => {
+    const inflated = inflateSettings({
+      schedule: { frequency: 'daily', time: '05:00', runMissedBackupsOnConnect: false },
+    });
+
+    expect(buildInlineSettings(inflated, 'file', {}).schedule).toMatchObject({ runMissedBackupsOnConnect: false });
+  });
+
+  it('adds no runMissedBackupsOnConnect to a policy that never set it (#11013)', () => {
+    const inflated = inflateSettings({ schedule: { frequency: 'daily', time: '05:00' } });
+
+    expect(buildInlineSettings(inflated, 'file', {}).schedule).not.toHaveProperty('runMissedBackupsOnConnect');
   });
 
   it('auto-opens the advanced disclosure when saved settings use it', async () => {

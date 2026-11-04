@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { BackupMode } from '@breeze/shared';
 import { db } from '../db';
 import { backupJobs, devices } from '../db/schema';
@@ -104,7 +104,11 @@ export async function createManualBackupJobIfIdle(
           input.backupMode
             ? eq(backupJobs.backupMode, input.backupMode)
             : sql`${backupJobs.backupMode} IS NULL`,
-          inArray(backupJobs.status, ACTIVE_BACKUP_JOB_STATUSES)
+          inArray(backupJobs.status, ACTIVE_BACKUP_JOB_STATUSES),
+          // #11013: a scheduled job waiting for its device to come back is not
+          // work in progress. Answering "already running" with it would leave
+          // the request with nothing dispatched.
+          isNull(backupJobs.catchUpUntil)
         )
       )
       .limit(1);

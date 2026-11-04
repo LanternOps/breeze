@@ -396,6 +396,11 @@ vi.mock('../services/agentWorkExpectation', () => ({
 // #3000: the Redis-available branch of the backup-result handler enqueues
 // instead of persisting inline. Mocked so both transports can be asserted —
 // previously the queued branch had no coverage at all.
+vi.mock('../jobs/backupCatchUp', () => ({
+  deviceHasBackupCatchUp: vi.fn(() => 'has-backup-catch-up'),
+  dispatchBackupCatchUpJobs: vi.fn(async () => 0),
+}));
+
 vi.mock('../jobs/backupEnqueue', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../jobs/backupEnqueue')>();
   return {
@@ -444,6 +449,7 @@ vi.mock('../services/sentry', async (importOriginal) => {
 import { db, runOutsideDbContext, withSystemDbAccessContext, withDbAccessContext } from '../db';
 import { devices, deviceCommands, discoveryJobs, scriptExecutions, supportSessions } from '../db/schema';
 import { captureException, captureMessage } from '../services/sentry';
+import { dispatchBackupCatchUpJobs } from '../jobs/backupCatchUp';
 import {
   createAgentWsHandlers,
   createAgentWsRoutes,
@@ -1681,6 +1687,49 @@ describe('WS lifecycle status writes — terminal-status guard (#2230)', () => {
     expect(whereMock).toHaveBeenCalledWith(
       and(OWN_ROW('device-123', 'agent-test'), TERMINAL_GUARD)
     );
+  });
+
+  describe('missed-schedule backup catch-up on connect (#11013)', () => {
+    const agent = { deviceId: 'device-123', agentId: 'agent-test', siteId: 'site-test', installIncarnation: 1, orgId: 'org-123', partnerId: 'partner-123' };
+    const deviceRow = (hasBackupCatchUp: boolean) => ({
+      id: 'device-123', siteId: 'site-test', hostname: 'h', agentVersion: '1', isEphemeral: false, hasBackupCatchUp,
+    });
+
+    beforeEach(() => {
+      vi.mocked(dispatchBackupCatchUpJobs).mockReset();
+      vi.mocked(dispatchBackupCatchUpJobs).mockResolvedValue(1);
+      vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    });
+
+    it('dispatches the device\'s waiting jobs', async () => {
+      vi.mocked(db.select).mockReturnValue(selectAgentDevice([deviceRow(true)]) as any);
+
+      await createAgentWsHandlers('agent-123', agent).onOpen({}, wsMock() as any);
+
+      expect(dispatchBackupCatchUpJobs).toHaveBeenCalledWith('device-123');
+    });
+
+    it('pays no further query for a device with nothing waiting', async () => {
+      vi.mocked(db.select).mockReturnValue(selectAgentDevice([deviceRow(false)]) as any);
+
+      await createAgentWsHandlers('agent-123', agent).onOpen({}, wsMock() as any);
+
+      expect(dispatchBackupCatchUpJobs).not.toHaveBeenCalled();
+    });
+
+    it('keeps the connection up and reports when the dispatch fails', async () => {
+      vi.mocked(db.select).mockReturnValue(selectAgentDevice([deviceRow(true)]) as any);
+      const failure = new Error('redis down');
+      vi.mocked(dispatchBackupCatchUpJobs).mockRejectedValueOnce(failure);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const ws = wsMock();
+
+      await createAgentWsHandlers('agent-123', agent).onOpen({}, ws as any);
+      await vi.waitFor(() => expect(captureException).toHaveBeenCalledWith(failure));
+
+      expect(ws.close).not.toHaveBeenCalled();
+      errorSpy.mockRestore();
+    });
   });
 
   it('excludes decommissioned/quarantined rows when flipping a device offline on disconnect', async () => {

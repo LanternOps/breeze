@@ -320,6 +320,10 @@ export const backupJobs = pgTable(
     //    made the stall rule unreachable for a live-but-wedged agent.
     lastProgressAt: timestamp('last_progress_at', { withTimezone: true }),
     lastKeepaliveAt: timestamp('last_keepalive_at', { withTimezone: true }),
+    // #11013: until when a scheduled job that found its device offline may still
+    // run on the next agent connect. Set only while the job waits; see
+    // jobs/backupCatchUp.ts for its lifecycle.
+    catchUpUntil: timestamp('catch_up_until', { withTimezone: true }),
     totalFiles: integer('total_files'),
     // Incremental-backup dedup stats: files/bytes referenced from a prior
     // snapshot instead of re-transferred this run. NULL = agent didn't report
@@ -364,6 +368,10 @@ export const backupJobs = pgTable(
     baseSnapshotIdIdx: index('backup_jobs_base_snapshot_id_idx')
       .on(table.baseSnapshotId)
       .where(sql`base_snapshot_id IS NOT NULL`),
+    // #11013: probed on every agent connect; holds deferred rows only.
+    catchUpDeviceIdx: index('backup_jobs_catch_up_device_idx')
+      .on(table.deviceId)
+      .where(sql`status = 'pending' AND catch_up_until IS NOT NULL`),
   })
 );
 

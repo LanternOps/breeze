@@ -119,6 +119,14 @@ Policies support additional controls for managing backup impact:
 | **Bandwidth limit** | Maximum throughput in Mbps to avoid saturating the network |
 | **Priority** | Controls ordering when multiple devices are scheduled simultaneously |
 
+### Devices that are off at the scheduled time
+
+A scheduled backup whose device is offline does not fail straight away. The job stays pending and runs when the agent next connects, for up to 20 hours after the scheduled time or until the policy's next run, whichever comes first.
+
+If the device stays offline for that whole window, the job fails with `Missed: device was offline for the whole catch-up window`. A backup that ran and went wrong reports its own error instead, so you can tell the two apart.
+
+To fail the job immediately instead, set `runMissedBackupsOnConnect` to `false` in the policy's schedule. This setting is API-only for now. Manual backups are not affected: they fail at once with `Agent not connected` if the device is offline.
+
 ---
 
 ## Monitoring Policy Coverage

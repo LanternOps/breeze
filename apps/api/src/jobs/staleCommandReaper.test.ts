@@ -856,6 +856,76 @@ describe('reapStaleBackupJobs', () => {
     );
   });
 
+  describe('pending missed-schedule catch-ups (#11013)', () => {
+    const MISSED = 'Missed: device was offline for the whole catch-up window';
+    const deferredRow = (catchUpUntil: Date, overrides: Record<string, unknown> = {}) => ({
+      id: 'job-catch-up',
+      deviceId: 'device-off',
+      errorLog: null,
+      createdAt: minutesAgo(600),
+      catchUpUntil,
+      deviceStatus: 'offline',
+      deviceLastSeenAt: minutesAgo(600),
+      ...overrides,
+    });
+    const wireSet = (id = 'job-catch-up') => {
+      const setMock = vi.fn(() => ({
+        where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id }]) })),
+      }));
+      updateMock.mockImplementation(() => ({ set: setMock }));
+      return setMock;
+    };
+
+    it('leaves a job alone before catch_up_until, however old it is', async () => {
+      selectMock
+        .mockReturnValueOnce(selectChain([]))
+        .mockReturnValueOnce(selectChain([deferredRow(new Date(Date.now() + 60_000))]));
+      const setMock = wireSet();
+
+      const reaped = await reapStaleBackupJobs();
+
+      expect(reaped).toBe(0);
+      expect(setMock).not.toHaveBeenCalled();
+    });
+
+    it('settles a lapsed one with the Missed reason, unmarked, and sends the device no stop', async () => {
+      selectMock
+        .mockReturnValueOnce(selectChain([]))
+        .mockReturnValueOnce(selectChain([deferredRow(new Date(Date.now() - 60_000), {
+          deviceStatus: 'online',
+          deviceLastSeenAt: minutesAgo(1),
+          deviceBackupVersion: '0.200.0',
+        })]));
+      const setMock = wireSet();
+
+      const reaped = await reapStaleBackupJobs();
+
+      expect(reaped).toBe(1);
+      expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', errorLog: MISSED }));
+      // Nothing was ever sent: no stop, and no reaper marker for a late result.
+      expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
+    });
+
+    it('measures a claimed catch-up from its dispatch, not from the schedule', async () => {
+      selectMock
+        .mockReturnValueOnce(selectChain([]))
+        .mockReturnValueOnce(selectChain([{
+          id: 'job-claimed',
+          deviceId: 'device-on',
+          errorLog: null,
+          createdAt: minutesAgo(600),
+          startedAt: minutesAgo(1),
+          catchUpUntil: null,
+        }]));
+      const setMock = wireSet('job-claimed');
+
+      const reaped = await reapStaleBackupJobs();
+
+      expect(reaped).toBe(0);
+      expect(setMock).not.toHaveBeenCalled();
+    });
+  });
+
   it('does not reap a pending job under an hour old', async () => {
     selectMock
       .mockReturnValueOnce(selectChain([]))
