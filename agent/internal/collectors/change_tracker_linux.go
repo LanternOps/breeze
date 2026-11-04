@@ -61,7 +61,7 @@ func (c *ChangeTrackerCollector) collectStartupItems(ctx context.Context) ([]Tra
 	}
 
 	// @reboot cron entries.
-	cronFiles, err := discoverLinuxCronFiles()
+	cronFiles, err := linuxCronFiles()
 	if err != nil {
 		combinedErr = errors.Join(combinedErr, err)
 	} else {
@@ -92,7 +92,7 @@ func (c *ChangeTrackerCollector) collectScheduledTasks(ctx context.Context) ([]T
 	var combinedErr error
 	tasks := make([]TrackedScheduledTask, 0)
 
-	cronFiles, err := discoverLinuxCronFiles()
+	cronFiles, err := linuxCronFiles()
 	if err != nil {
 		combinedErr = errors.Join(combinedErr, err)
 	} else {
@@ -248,6 +248,9 @@ type cronEntry struct {
 	command    string
 	lineNumber int
 }
+
+// linuxCronFiles is a seam so tests don't depend on the host's cron paths.
+var linuxCronFiles = discoverLinuxCronFiles
 
 func discoverLinuxCronFiles() ([]string, error) {
 	files := []string{"/etc/crontab"}

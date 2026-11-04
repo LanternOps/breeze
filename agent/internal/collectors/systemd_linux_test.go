@@ -95,30 +95,37 @@ esac`)
 	}
 }
 
-// cronRoot is unused by the collectors (they read absolute paths), so these
-// tests only assert on systemd-sourced items and on the absence of errors.
+// useCronFile points the change tracker at one temporary crontab, so these
+// tests never read the host's cron paths, which an unprivileged runner can't.
+func useCronFile(t *testing.T, content string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "crontab")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev := linuxCronFiles
+	linuxCronFiles = func() ([]string, error) { return []string{path}, nil }
+	t.Cleanup(func() { linuxCronFiles = prev })
+}
 
 func TestChangeTrackerWithoutSystemdSkipsSystemctl(t *testing.T) {
 	setHostSystemd(t, false)
+	useCronFile(t, "@reboot /usr/local/bin/boot-task\n0 1 * * * /usr/local/bin/nightly\n")
 	rec := recordCollectorCommands(t)
 	c := &ChangeTrackerCollector{}
 	startup, err := c.collectStartupItems(t.Context())
 	if err != nil {
 		t.Fatalf("startup err: %v", err)
 	}
-	for _, it := range startup {
-		if it.Type == "systemd" {
-			t.Fatalf("systemd item without systemd: %+v", it)
-		}
+	if len(startup) != 1 || startup[0].Type != "cron" || startup[0].Name != "boot-task" {
+		t.Fatalf("want only the @reboot cron item, got %+v", startup)
 	}
 	tasks, err := c.collectScheduledTasks(t.Context())
 	if err != nil {
 		t.Fatalf("tasks err: %v", err)
 	}
-	for _, it := range tasks {
-		if strings.HasSuffix(it.Path, ".timer") {
-			t.Fatalf("timer item without systemd: %+v", it)
-		}
+	if len(tasks) != 2 || tasks[0].Name != "boot-task" || tasks[1].Name != "nightly" {
+		t.Fatalf("want only the two cron tasks, got %+v", tasks)
 	}
 	if rec.count() != 0 {
 		t.Fatalf("spawned %v without systemd", rec.calls)
@@ -127,6 +134,7 @@ func TestChangeTrackerWithoutSystemdSkipsSystemctl(t *testing.T) {
 
 func TestChangeTrackerWithSystemdRunsSystemctl(t *testing.T) {
 	setHostSystemd(t, true)
+	useCronFile(t, "")
 	useFakeBinary(t, "systemctl", `case "$1" in
 list-unit-files) echo 'cron.service enabled enabled';;
 list-timers) echo 'Mon 2026-01-01 00:00:00 UTC 1h left n/a n/a backup.timer backup.service';;
