@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 )
 
 func (c *ChangeTrackerCollector) collectStartupItems(_ context.Context) ([]TrackedStartupItem, error) {
@@ -50,10 +51,22 @@ func (c *ChangeTrackerCollector) collectStartupItems(_ context.Context) ([]Track
 	return items, nil
 }
 
-// runDarwinCrontabList runs `crontab -l` for the agent's user. Tests replace
-// it to drive real subprocess exit codes, stderr and timeouts.
-var runDarwinCrontabList = func(ctx context.Context) ([]byte, error) {
+type darwinCrontabRunner func(ctx context.Context) ([]byte, error)
+
+func runDarwinCrontabListDefault(ctx context.Context) ([]byte, error) {
 	return runCollectorOutputWithContext(ctx, collectorShortCommandTimeout, "crontab", "-l")
+}
+
+// darwinCrontabListOverride, when non-nil, replaces `crontab -l` so tests can
+// drive real subprocess exit codes, stderr and timeouts. Atomic because
+// collector goroutines may outlive the test that set it.
+var darwinCrontabListOverride atomic.Pointer[darwinCrontabRunner]
+
+func runDarwinCrontabList(ctx context.Context) ([]byte, error) {
+	if override := darwinCrontabListOverride.Load(); override != nil {
+		return (*override)(ctx)
+	}
+	return runDarwinCrontabListDefault(ctx)
 }
 
 func (c *ChangeTrackerCollector) collectScheduledTasks(ctx context.Context) ([]TrackedScheduledTask, error) {

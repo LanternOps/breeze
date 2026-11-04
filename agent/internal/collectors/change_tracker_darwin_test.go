@@ -22,16 +22,16 @@ func TestParseDarwinCrontabTruncatesCommand(t *testing.T) {
 	}
 }
 
-// stubDarwinCrontabList points runDarwinCrontabList at a real `sh -c script`
+// stubDarwinCrontabList points the crontab runner at a real `sh -c script`
 // subprocess so the collector sees genuine *exec.ExitError values (with
 // Stderr populated by runCollectorOutputWithContext) and genuine timeouts.
 func stubDarwinCrontabList(t *testing.T, timeout time.Duration, script string) {
 	t.Helper()
-	orig := runDarwinCrontabList
-	runDarwinCrontabList = func(ctx context.Context) ([]byte, error) {
+	runner := darwinCrontabRunner(func(ctx context.Context) ([]byte, error) {
 		return runCollectorOutputWithContext(ctx, timeout, "sh", "-c", script)
-	}
-	t.Cleanup(func() { runDarwinCrontabList = orig })
+	})
+	darwinCrontabListOverride.Store(&runner)
+	t.Cleanup(func() { darwinCrontabListOverride.Store(nil) })
 }
 
 func TestCollectScheduledTasksNoCrontabStderrIsEmpty(t *testing.T) {
