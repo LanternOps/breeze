@@ -569,20 +569,19 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
    * with the parse reason it already has, because a billing fault is not the
    * reviewer's verdict.
    */
-  const reserveParseRetry = async (hop: FailoverHop): Promise<FailoverHop | null> => {
+  const reserveParseRetry = async (hop: FailoverHop): Promise<{ hop: FailoverHop } | { skipped: string }> => {
     const idempotencyKey = `script-review:${job.proposalId}:${job.attempt}:parse-retry`;
     try {
       const reserved = await reserveFailoverHop({ orgId: job.orgId })(hop.resolved, hop.binding, idempotencyKey);
       if (!reserved.ok) {
         console.warn('[scriptReview] parse retry not admitted', { proposalId: job.proposalId, reason: reserved.reason });
-        return null;
+        return { skipped: `${reserved.reason} not admitted` };
       }
-      return { ...hop, index: 0, idempotencyKey, reservationId: reserved.reservationId, reservedCostCents: reserved.reservedCostCents };
+      return { hop: { ...hop, index: 0, idempotencyKey, reservationId: reserved.reservationId, reservedCostCents: reserved.reservedCostCents } };
     } catch (error) {
-      captureException(new Error(safeErrorMessage(error)), undefined, {
-        service: 'scriptReview', orgId: job.orgId, area: 'script_review_parse_retry',
-      });
-      return null;
+      console.error('[scriptReview] parse retry reservation failed', { proposalId: job.proposalId, orgId: job.orgId });
+      captureException(error, undefined, { service: 'scriptReview', orgId: job.orgId, area: 'script_review_parse_retry' });
+      return { skipped: 'reservation failed' };
     }
   };
 
@@ -594,6 +593,9 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   let rawText: string | undefined;
   // The attempt in `outcome` has already been settled (its retry fell through).
   let settled = false;
+  // Why the one retry did not happen, when it did not: a billing problem must
+  // not read as the reviewer's own failure.
+  let retrySkipped: string | undefined;
   for (let parseRetried = false; ; parseRetried = true) {
     const resp = outcome.message;
     const billed = messagesUsage(served.binding, outcome.attempts);
@@ -613,12 +615,13 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
     if (interpreted.ok || !interpreted.retryable || parseRetried) break;
 
     await settle(outcome.attempts);
-    const retryHop = await reserveParseRetry(served);
-    if (!retryHop) {
+    const retry = await reserveParseRetry(served);
+    if ('skipped' in retry) {
       settled = true;
+      retrySkipped = retry.skipped;
       break;
     }
-    const retried = await callReviewer(retryHop);
+    const retried = await callReviewer(retry.hop);
     if (!retried.ok) return retried.row;
     ({ outcome, served } = retried);
   }
@@ -629,7 +632,8 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   if (!interpreted.ok) {
     // Tokens really were spent: settle at the REAL counts, then fail closed.
     if (!settled) await settle(outcome.attempts);
-    return failReview(job, interpreted.reason, 'failed', { reservationId: servedReservationId, model: servedModel, inputTokens, outputTokens, rawText });
+    const reason = retrySkipped ? `${interpreted.reason} (the one retry was not attempted: ${retrySkipped})` : interpreted.reason;
+    return failReview(job, reason, 'failed', { reservationId: servedReservationId, model: servedModel, inputTokens, outputTokens, rawText });
   }
 
   const floored = applyReviewFloors(interpreted.verdict, scan);

@@ -16,6 +16,7 @@ const m = vi.hoisted(() => ({
   resolveIntentApprovers: vi.fn(),
   assertApprovalAssurance: vi.fn(),
   resolveDevicePolicyForGate: vi.fn(),
+  captureException: vi.fn(),
   deviceRows: [] as unknown[],
   principal: { kind: 'user_session' } as Record<string, unknown>,
   grants: [] as Array<{ resource: string; action: string }>,
@@ -48,7 +49,7 @@ vi.mock('../../services/authenticatorAssurance', async (importOriginal) => ({
   assertApprovalAssurance: m.assertApprovalAssurance,
 }));
 vi.mock('../../services/aiDevicePathPolicy', () => ({ resolveDevicePolicyForGate: m.resolveDevicePolicyForGate }));
-vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../../services/sentry', () => ({ captureException: m.captureException }));
 vi.mock('../../config/env', async (o) => ({ ...(await o<Record<string, unknown>>()), aiScriptAuthoringEnabled: () => true }));
 vi.mock('../../db', async (importOriginal) => {
   const chain = {
@@ -441,6 +442,97 @@ describe('POST /:id/override-run', () => {
     expect(m.writeAuditEventAsync).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'script.proposal.review_override', result: 'failure',
       details: expect.objectContaining({ override: 'approved_without_passing_ai_review' }),
+    }));
+  });
+});
+
+// Review round (PR #10985): no exit after the claim may strand the proposal in
+// `approved` with nothing run, and nothing that already ran may be reported as
+// not run (the UI would then invite a second run).
+describe('POST /:id/override-run — after the claim', () => {
+  type Call = [unknown, string, string[], string, Record<string, unknown>];
+  const transitions = () => m.transitionProposal.mock.calls as unknown as Call[];
+  const restoredCalls = () => transitions().filter((c) => c[2][0] === 'approved' && c[3] === 'review_failed');
+  const onTransition = (to: string, impl: () => Promise<boolean>) => {
+    m.transitionProposal.mockImplementation(async (...args: unknown[]) => ((args as Call)[3] === to ? impl() : true));
+  };
+
+  beforeEach(() => vi.spyOn(console, 'error').mockImplementation(() => undefined));
+
+  it('a delivered run whose `executed` mark throws is still a run: 200, ok, never restored', async () => {
+    onTransition('executed', async () => { throw new Error('pool exhausted'); });
+
+    const res = await postRun();
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).results).toEqual([{ deviceId: D1, ok: true, executionId: 'e1', commandId: 'c1' }]);
+    expect(restoredCalls()).toHaveLength(0);
+    expect(m.captureException).toHaveBeenCalled();
+  });
+
+  it('a failed `executed` mark is retried on the next delivered device', async () => {
+    m.loadProposalRow.mockReset();
+    m.loadProposalRow
+      .mockResolvedValueOnce(proposalRow({ targetDeviceIds: [D1, D2] }))
+      .mockResolvedValue(proposalRow({ status: 'approved', targetDeviceIds: [D1, D2] }));
+    m.deviceRows = [{ id: D1, orgId: ORG }, { id: D2, orgId: ORG }];
+    let executedCalls = 0;
+    onTransition('executed', async () => {
+      executedCalls++;
+      if (executedCalls === 1) throw new Error('blip');
+      return true;
+    });
+
+    expect((await postRun()).status).toBe(200);
+    expect(executedCalls).toBe(2);
+  });
+
+  it('an `executed` mark that loses its CAS (the proposal moved under the run) is reported, not hidden', async () => {
+    onTransition('executed', async () => false);
+
+    expect((await postRun()).status).toBe(200);
+    expect(m.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({
+      area: 'script_proposal_review_override_state',
+    }));
+  });
+
+  it('a throw between the claim and the first delivery puts the proposal back and fails loudly', async () => {
+    m.loadProposalRow.mockReset();
+    m.loadProposalRow.mockResolvedValueOnce(proposalRow()).mockRejectedValueOnce(new Error('db blip'));
+
+    const res = await postRun();
+
+    expect(res.status).toBe(500);
+    expect(m.dispatchScriptToDevice).not.toHaveBeenCalled();
+    expect(restoredCalls()).toHaveLength(1);
+  });
+
+  it('a restore that throws after the audit write failed still surfaces the AUDIT error, and is reported', async () => {
+    m.writeAuditEventStrict.mockRejectedValueOnce(new Error('audit down'));
+    onTransition('review_failed', async () => { throw new Error('restore down'); });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const res = await postRun();
+
+    expect(res.status).toBe(500);
+    expect(m.dispatchScriptToDevice).not.toHaveBeenCalled();
+    expect(m.captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'restore down' }), undefined, expect.objectContaining({
+      area: 'script_proposal_review_override_restore',
+    }));
+    // The route's own error handler logs what reached it: the audit failure.
+    expect(errors.mock.calls.flat().some((a) => a instanceof Error && a.message === 'audit down')).toBe(true);
+  });
+
+  it('no device took it and the restore failed: the failure is still audited, and says the proposal is stuck', async () => {
+    m.dispatchScriptToDevice.mockResolvedValue({ ok: false, code: 'device_offline', error: 'Device is offline' });
+    onTransition('review_failed', async () => false);
+
+    const res = await postRun();
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'no_device_dispatched', restored: false });
+    expect(m.writeAuditEventAsync).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      result: 'failure', details: expect.objectContaining({ restored: false }),
     }));
   });
 });

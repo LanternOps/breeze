@@ -792,7 +792,11 @@ describe('runScriptReview — summary clamp and parse retry (#10954)', () => {
     expect(result).toMatchObject({ status: 'failed' });
     expect(shared.messagesCreateMock).toHaveBeenCalledTimes(1);
     expectSettledOnce(300, 40);
-    expect(shared.insertValues.at(-1)).toMatchObject({ summary: 'Reviewer returned no parseable JSON verdict', inputTokens: 300, outputTokens: 40 });
+    // The reason says the retry never happened, so a budget problem is not read as the reviewer's.
+    expect(shared.insertValues.at(-1)).toMatchObject({
+      summary: 'Reviewer returned no parseable JSON verdict (the one retry was not attempted: budget not admitted)',
+      inputTokens: 300, outputTokens: 40,
+    });
   });
 
   it('a retry reservation that throws still fails closed with the parse reason, and is reported', async () => {
@@ -807,8 +811,30 @@ describe('runScriptReview — summary clamp and parse retry (#10954)', () => {
 
     expect(result).toMatchObject({ status: 'failed' });
     expectSettledOnce(300, 40);
-    expect(shared.insertValues.at(-1)).toMatchObject({ summary: 'Reviewer returned no parseable JSON verdict' });
-    expect(shared.captureExceptionMock).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ area: 'script_review_parse_retry' }));
+    expect(shared.insertValues.at(-1)).toMatchObject({
+      summary: 'Reviewer returned no parseable JSON verdict (the one retry was not attempted: reservation failed)',
+    });
+    expect(shared.captureExceptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'pool exhausted' }), undefined, expect.objectContaining({ area: 'script_review_parse_retry' }),
+    );
+  });
+
+  it('a reply with no stop reason and no text is retried too', async () => {
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: REVIEW_ROW_ID, reviewerKind: 'model', status: 'completed' }]);
+    shared.messagesCreateMock
+      .mockResolvedValueOnce({ usage: { input_tokens: 300, output_tokens: 40 }, content: [] })
+      .mockResolvedValueOnce({
+        usage: { input_tokens: 500, output_tokens: 80 },
+        stop_reason: 'end_turn',
+        content: [{ type: 'text', text: JSON.stringify(VALID_VERDICT) }],
+      });
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ status: 'completed' });
+    expect(shared.messagesCreateMock).toHaveBeenCalledTimes(2);
   });
 
   it('a provider error on the retry fails the review, settles both, and keeps the first attempt\'s tokens on the row', async () => {

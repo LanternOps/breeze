@@ -269,7 +269,7 @@ export default function ScriptProposalApprovalCard({
           data-testid="script-proposal-review-failed-band"
           className="inline-flex rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-800 dark:bg-red-900/40 dark:text-red-200"
         >
-          {t(reviewFailure.humanApproved ? 'ai:scriptProposal.overrideApproved' : 'ai:scriptProposal.reviewFailedTitle')}
+          {reviewFailure.humanApproved ? t('ai:scriptProposal.overrideApproved') : t('ai:scriptProposal.reviewFailedTitle')}
         </div>
       ) : (
         <div

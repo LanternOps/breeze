@@ -233,14 +233,29 @@ export async function runReviewFailedOverride(args: {
   if (!claimed) return { ok: false, status: 409, body: { error: 'proposal_not_review_failed' } };
 
   // Puts the proposal back so the human can try again: nothing ran, and an
-  // `approved` row with no run would be a new dead end.
-  const restore = () => runOutsideDbContext(() => withSystemDbAccessContext(() =>
-    db.transaction((tx) => transitionProposal(tx, proposal.id, ['approved'], 'review_failed', {
-      decidedBy: null,
-      decidedAt: null,
-      decisionNote: proposal.decisionNote,
-      acknowledgedPatterns: [],
-    }))));
+  // `approved` row with no run would be a new dead end. Never throws, so it can
+  // never replace the error that made it necessary; false means the proposal is
+  // still `approved` (reported, because nothing else will move it).
+  const restore = async (): Promise<boolean> => {
+    try {
+      const restored = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+        db.transaction((tx) => transitionProposal(tx, proposal.id, ['approved'], 'review_failed', {
+          decidedBy: null,
+          decidedAt: null,
+          decisionNote: proposal.decisionNote,
+          acknowledgedPatterns: [],
+        }))));
+      if (restored) return true;
+      captureException(new Error('review override restore lost its CAS'), undefined, {
+        area: 'script_proposal_review_override_restore', proposalId: proposal.id,
+      });
+      return false;
+    } catch (err) {
+      console.error('[scriptProposals] review override could not put the proposal back', { proposalId: proposal.id, error: err });
+      captureException(err, undefined, { area: 'script_proposal_review_override_restore', proposalId: proposal.id });
+      return false;
+    }
+  };
 
   // Awaited before anything is sent: the audit row is the point of this path.
   try {
@@ -250,21 +265,30 @@ export async function runReviewFailedOverride(args: {
     throw err;
   }
 
-  // Reloaded so the dispatch carries the acknowledgements just stored: the agent
-  // refuses a STRICT match its payload does not acknowledge.
-  const claimedRow = await loadProposalRow(proposal.id);
-  if (!claimedRow || claimedRow.status !== 'approved') {
-    return { ok: false, status: 409, body: { error: 'proposal_not_review_failed' } };
+  // From here to the first delivery nothing has run, so any throw puts the
+  // proposal back. After it, something has: dispatchToTargets never throws.
+  let results: ReviewOverrideDeviceResult[];
+  try {
+    // Reloaded so the dispatch carries the acknowledgements just stored: the
+    // agent refuses a STRICT match its payload does not acknowledge.
+    const claimedRow = await loadProposalRow(proposal.id);
+    if (!claimedRow || claimedRow.status !== 'approved') {
+      // Moved by someone else since the claim; theirs to finish, not ours to undo.
+      return { ok: false, status: 409, body: { error: 'proposal_not_review_failed' } };
+    }
+    results = await dispatchToTargets(auth, claimedRow, targets);
+  } catch (err) {
+    await restore();
+    throw err;
   }
 
-  const results = await dispatchToTargets(auth, claimedRow, targets);
   if (!results.some((r) => r.ok)) {
-    await restore();
+    const restored = await restore();
     await writeAudit(reviewOverrideAuditEvent({
       auth, proposal, decision: 'run', acknowledgedPatterns,
-      result: 'failure', errorMessage: 'No target device accepted the script', details: { results },
+      result: 'failure', errorMessage: 'No target device accepted the script', details: { results, restored },
     }));
-    return { ok: false, status: 409, body: { error: 'no_device_dispatched', results } };
+    return { ok: false, status: 409, body: { error: 'no_device_dispatched', results, restored } };
   }
   return { ok: true, status: 'executed', results };
 }
@@ -278,6 +302,25 @@ async function dispatchToTargets(
   const byId = new Map(targets.map((d) => [d.id, d]));
   const results: ReviewOverrideDeviceResult[] = [];
   let markedExecuted = false;
+  // `executed` is what verification (and so the library) waits on. Separate
+  // from the delivery so a failure here never reports a run as not run, and
+  // retried on the next delivered device.
+  const markExecuted = async () => {
+    try {
+      const moved = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+        db.transaction((tx) => transitionProposal(tx, proposal.id, ['approved'], 'executed', {}))));
+      markedExecuted = true;
+      if (!moved) {
+        // Someone moved the proposal while it was being sent. The run stands.
+        captureException(new Error('review override run finished on a proposal that left approved'), undefined, {
+          area: 'script_proposal_review_override_state', proposalId: proposal.id,
+        });
+      }
+    } catch (err) {
+      console.error('[scriptProposals] review override could not mark the proposal executed', { proposalId: proposal.id, error: err });
+      captureException(err, undefined, { area: 'script_proposal_review_override_state', proposalId: proposal.id });
+    }
+  };
   for (const deviceId of proposal.targetDeviceIds) {
     const device = byId.get(deviceId);
     if (!device) {
@@ -308,17 +351,14 @@ async function dispatchToTargets(
         results.push({ deviceId, ok: false, error: dispatch.error });
         continue;
       }
-      if (!markedExecuted) {
-        markedExecuted = true;
-        await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-          db.transaction((tx) => transitionProposal(tx, proposal.id, ['approved'], 'executed', {}))));
-      }
       results.push({ deviceId, ok: true, executionId: dispatch.executionId, commandId: dispatch.commandId });
     } catch (err) {
       console.error('[scriptProposals] review override dispatch failed', { proposalId: proposal.id, deviceId, error: err });
       captureException(err);
       results.push({ deviceId, ok: false, error: err instanceof Error ? err.message : 'Execution failed' });
+      continue;
     }
+    if (!markedExecuted) await markExecuted();
   }
   return results;
 }
