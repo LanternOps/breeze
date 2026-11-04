@@ -46,8 +46,8 @@ if [ -f "$STAGING_DIR/breeze-watchdog" ]; then
     install_binary "$STAGING_DIR/breeze-watchdog" "$WATCHDOG_BINARY"
 fi
 # Network-isolation recovery (#10099): copy a bundled recovery binary out of
-# staging before staging is deleted. Inert until the release pipeline bundles
-# one, which none does yet. Never fatal: this is also the self-update path.
+# staging before staging is deleted. Does nothing unless the pkg staged one.
+# Never fatal: this is also the self-update path.
 ISOLATION_RECOVERY=""
 if ! ISOLATION_RECOVERY="$(install_isolation_recovery "$STAGING_DIR/isolation-recovery" /Library/Breeze/isolation-recovery)"; then
     echo "Warning: the isolation recovery binary was not installed; network isolation stays unavailable on this Mac" >&2

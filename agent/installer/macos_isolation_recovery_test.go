@@ -38,9 +38,11 @@ func runIsolationShell(t *testing.T, body string) isolationRun {
 	}
 	write("launchctl", fakeAgentLaunchctl)
 	recorder := "#!/bin/sh\necho \"${0##*/} $*\" >> \"$FAKE_STATE/calls\"\n"
-	for _, name := range []string{"sleep", "chown", "xattr"} {
+	for _, name := range []string{"sleep", "xattr"} {
 		write(name, recorder)
 	}
+	// FAIL_CHOWN=1 stands in for any step failing partway through an install.
+	write("chown", recorder+"[ -z \"$FAIL_CHOWN\" ] || exit 1\n")
 	cmd := exec.Command(bash, "-c", "set -e\n. '"+lib+"'\n"+body+"\n")
 	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "FAKE_STATE="+state, "SCENARIO=ok", "ROOT="+root)
 	out, err := cmd.CombinedOutput()
@@ -131,6 +133,33 @@ printf x > "$ROOT/staging/isolation-recovery/1.2.3 x/breeze-isolation-recovery"
 			t.Fatalf("installed it: %v", err)
 		}
 	})
+	// Postinstall calls these under `if !`, which turns `set -e` off inside them,
+	// so a failed step must stop the function by itself. It must not report a
+	// path, and must not leave a half-built version that would never be repaired.
+	t.Run("a step failing partway leaves nothing installed", func(t *testing.T) {
+		r := runIsolationShell(t, `mkdir -p "$ROOT/staging/isolation-recovery/1.2.3"
+printf x > "$ROOT/staging/isolation-recovery/1.2.3/breeze-isolation-recovery"
+export FAIL_CHOWN=1
+if ISOLATION_RECOVERY=$(install_isolation_recovery "$ROOT/staging/isolation-recovery" "$ROOT/Library/Breeze/isolation-recovery"); then
+  echo "reported success: $ISOLATION_RECOVERY"
+fi`)
+		if strings.Contains(r.out, "reported success") {
+			t.Fatalf("a failed install reported success:\n%s", r.out)
+		}
+		if _, err := os.Stat(filepath.Join(r.root, "Library/Breeze/isolation-recovery/1.2.3")); !os.IsNotExist(err) {
+			t.Fatalf("left a version behind: %v", err)
+		}
+	})
+	t.Run("an existing version with no binary in it is not installed", func(t *testing.T) {
+		r := runIsolationShell(t, `mkdir -p "$ROOT/staging/isolation-recovery/1.2.3" "$ROOT/Library/Breeze/isolation-recovery/1.2.3"
+printf x > "$ROOT/staging/isolation-recovery/1.2.3/breeze-isolation-recovery"
+if ISOLATION_RECOVERY=$(install_isolation_recovery "$ROOT/staging/isolation-recovery" "$ROOT/Library/Breeze/isolation-recovery"); then
+  echo "reported success: $ISOLATION_RECOVERY"
+fi`)
+		if strings.Contains(r.out, "reported success") {
+			t.Fatalf("named a recovery binary that does not exist:\n%s", r.out)
+		}
+	})
 	t.Run("a hidden directory is never a version", func(t *testing.T) {
 		r := runIsolationShell(t, `mkdir -p "$ROOT/staging/isolation-recovery/.hidden"
 printf x > "$ROOT/staging/isolation-recovery/.hidden/breeze-isolation-recovery"
@@ -181,6 +210,30 @@ cp '` + mustAbs(t, "../service/launchd/com.breeze.isolation.plist") + `' "$ROOT/
 		}
 		if !strings.Contains(r.calls, "chown root:wheel") {
 			t.Fatalf("plist not chowned:\n%s", r.calls)
+		}
+	})
+	// A plist left behind would read as "already installed" on every later
+	// install, so the job would never be repaired.
+	for _, tc := range []struct{ name, setup string }{
+		{"a step failing partway", "export FAIL_CHOWN=1\n"},
+		{"launchd refusing the job", "export SCENARIO=broken\n"},
+	} {
+		t.Run(tc.name+" leaves no plist", func(t *testing.T) {
+			r := runIsolationShell(t, setup+tc.setup+"if "+load+"; then echo reported-success; fi")
+			if strings.Contains(r.out, "reported-success") {
+				t.Fatalf("reported success:\n%s", r.out)
+			}
+			entries, err := os.ReadDir(filepath.Join(r.root, "Library/LaunchDaemons"))
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("left %v (%v)", entries, err)
+			}
+		})
+	}
+	t.Run("a missing template fails", func(t *testing.T) {
+		r := runIsolationShell(t, `mkdir -p "$ROOT/Library/LaunchDaemons"
+if `+load+`; then echo reported-success; fi`)
+		if strings.Contains(r.out, "reported-success") || !strings.Contains(r.out, "template") {
+			t.Fatalf("output:\n%s", r.out)
 		}
 	})
 	// An existing daemon may be pinned to the recovery path of an unresolved

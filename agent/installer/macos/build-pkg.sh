@@ -86,8 +86,7 @@ cp "$SCRIPT_DIR/install-location.sh" "$SCRIPTS/install-location.sh"
 cp "$SCRIPT_DIR/../../internal/sessionbroker/ensure_ipc_group.sh" "$SCRIPTS/ensure_ipc_group.sh"
 # The network-isolation recovery daemon's template (#10099). It travels with
 # the scripts, not in the payload: launchd would load a payload LaunchDaemon at
-# every boot. postinstall renders it only when a recovery binary was bundled,
-# and none is yet.
+# every boot. postinstall renders it only when a recovery binary was staged.
 cp "$SCRIPT_DIR/../../service/launchd/com.breeze.isolation.plist" "$SCRIPTS/com.breeze.isolation.plist"
 chmod 755 "$SCRIPTS/preinstall" "$SCRIPTS/postinstall"
 chmod 644 "$SCRIPTS/install-location.sh" "$SCRIPTS/ensure_ipc_group.sh" "$SCRIPTS/com.breeze.isolation.plist"

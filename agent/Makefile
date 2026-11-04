@@ -1,4 +1,4 @@
-.PHONY: build-isolation-recovery build-isolation-recovery-windows build-isolation-recovery-darwin buildbuild-agent build-yarac build-desktop-helper build-backup build-all build-all-agent build-all-desktop-helper build-all-backup build-windows-user-helper build-winres build-windows-msi clean test install install-service uninstall-service dev-push dev-push-helper build-watchdog build-watchdog-linux build-watchdog-darwin build-watchdog-windows dev-push-watchdog dev-push-both
+.PHONY: build-isolation-recovery build-isolation-recovery-windows build-isolation-recovery-darwin build build-agentbuild-yarac build-desktop-helper build-backup build-all build-all-agent build-all-desktop-helper build-all-backup build-windows-user-helper build-winres build-windows-msi clean test install install-service uninstall-service dev-push dev-push-helper build-watchdog build-watchdog-linux build-watchdog-darwin build-watchdog-windows dev-push-watchdog dev-push-both
 
 VERSION ?= 0.5.0
 # Local-dev targets intentionally keep plain LDFLAGS (self-host by
