@@ -9,6 +9,8 @@ export interface ToolUsageRow {
   completed: number;
   failed: number;
   rejected: number;
+  /** Platform refusals (#10411), counted apart from approval rejections. */
+  refused: number;
   distinctSessions: number;
   avgDurationMs: number | null;
   lastUsedAt: string | null;
@@ -61,6 +63,7 @@ export function toolUsageReportSqlText(days: number): string {
       COUNT(*) FILTER (WHERE e.status = 'completed')         AS completed,
       COUNT(*) FILTER (WHERE e.status = 'failed')            AS failed,
       COUNT(*) FILTER (WHERE e.status = 'rejected')          AS rejected,
+      COUNT(*) FILTER (WHERE e.status = 'refused')           AS refused,
       COUNT(DISTINCT e.session_id)                           AS distinct_sessions,
       AVG(e.duration_ms) FILTER (WHERE e.status = 'completed') AS avg_duration_ms,
       MAX(e.created_at)                                      AS last_used_at,
@@ -96,6 +99,7 @@ export async function buildToolUsageReport(days: number): Promise<ToolUsageRepor
     completed: Number(r.completed),
     failed: Number(r.failed),
     rejected: Number(r.rejected),
+    refused: Number(r.refused ?? 0),
     distinctSessions: Number(r.distinct_sessions),
     avgDurationMs: num(r.avg_duration_ms),
     lastUsedAt: r.last_used_at == null ? null : dateFromSqlValue(String(r.last_used_at)).toISOString(),

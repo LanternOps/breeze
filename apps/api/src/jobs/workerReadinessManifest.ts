@@ -22,6 +22,7 @@ export type WorkerInitializerClassification =
   | {
       kind: 'non_consumer';
       initializer:
+        | 'psaTicketingReconciler'
         | 'desktopSessionOrphanRecovery'
         | 'oauthRevocationRetryWorker'
         | 'topologyOutboxWorker'
@@ -50,6 +51,8 @@ const consumers = (
 });
 
 export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification[] = [
+  consumers('psaTicketingWorker'),
+  { kind: 'non_consumer', initializer: 'psaTicketingReconciler' },
   consumers('alertWorkers', ['alertWorker']),
   consumers('monitorConversionPreviewWorker'),
   consumers('alertCorrelationWorker'),
@@ -121,6 +124,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('quoteSendWorker'),
   consumers('enrollmentKeyCleanup'),
   consumers('migrationWindowSweep'),
+  consumers('ticketImportWorker'),
   consumers('partnerApiIdempotencyRetention'),
   consumers('quickSupportReaper'),
   consumers('wispGrantReconciler'),
@@ -200,6 +204,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('softwareDeploymentScheduler'),
   consumers('pamJobs', ['pamExpiryEnforcerWorker', 'pamStaleRequestWorker']),
   consumers('approvalExpiryReaper'),
+  consumers('networkIsolationSweeper'),
   consumers('workspaceReaper'),
   consumers('offboardingDrainReaper'),
   consumers('intentOutboxPublisher'),

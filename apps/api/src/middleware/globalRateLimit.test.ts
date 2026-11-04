@@ -159,6 +159,27 @@ describe('globalRateLimit — isolated desktop-ws bucket', () => {
     );
   });
 
+  // Prod 2026-11-04: one operator opening ~7 device detail pages in 80 s
+  // (each fans out ~15 reads plus the shell's partners/me, ws-ticket, feature
+  // flags) sent 328 dashboard requests in a minute and tripped the old 300
+  // cap. 600 keeps the runaway-client ceiling at ~10 req/s while leaving room
+  // for an ordinary browsing burst.
+  it('defaults the shared bucket to 600 requests per minute', async () => {
+    const fakeRedis = { marker: 'redis' };
+    mocks.getRedis.mockReturnValue(fakeRedis);
+    mocks.rateLimiter.mockResolvedValue({
+      allowed: true,
+      remaining: 599,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+    const app = new Hono();
+    app.use('*', globalRateLimit());
+    app.get('/api/v1/devices', (c) => c.json({ ok: true }));
+
+    await app.request('/api/v1/devices');
+    expect(mocks.rateLimiter).toHaveBeenCalledWith(fakeRedis, `global:${TEST_IP}`, 600, 60);
+  });
+
   it('exhausting the shared bucket does not throttle viewer traffic', async () => {
     const app = buildApp({ limit: 1, windowSeconds: 60 });
 
@@ -172,7 +193,7 @@ describe('globalRateLimit — isolated desktop-ws bucket', () => {
 
 // D13: the bare-metal-recovery helper fetches ONE object per file through
 // /backup/bmr/recover/download, so a 10k-file server would blow through the
-// shared 300/min budget in under half a minute. Only the download route is
+// shared 600/min budget in about a minute. Only the download route is
 // isolated — /recover/authenticate and /recover/complete deliberately keep
 // the shared budget (they're low-volume, human-in-the-loop calls, and each
 // already carries its own tighter per-route limiter).
@@ -243,7 +264,7 @@ describe('ISOLATED_BUCKETS pins', () => {
     expect(ISOLATED_BUCKETS.some((b) => '/api/v1/flows/abc'.startsWith(b.prefix))).toBe(false);
   });
 
-  it('meters bare-metal recovery object downloads separately from the shared 300/min budget (D13)', async () => {
+  it('meters bare-metal recovery object downloads separately from the shared 600/min budget (D13)', async () => {
     const { ISOLATED_BUCKETS } = await import('./globalRateLimit');
     const bucket = ISOLATED_BUCKETS.find((b) => b.prefix === '/api/v1/backup/bmr/recover/download');
     // authenticate/complete must NOT inherit the wide budget.

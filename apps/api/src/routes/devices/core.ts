@@ -14,6 +14,7 @@ import {
   deviceHardware,
   deviceHardwareHealth,
   deviceReliability,
+  deviceWarranty,
   deviceNetwork,
   deviceMetrics,
   deviceGroupMemberships,
@@ -80,6 +81,7 @@ import {
 } from '../agentWs';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { decommissionDeviceInTransaction } from '../../services/deviceDecommission';
+import { NetworkIsolationUnresolvedError } from '../../services/networkIsolation/lifecycle';
 import { getDeviceUninstallStatus } from '../../services/deviceUninstallState';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
 import { assertTtlWithinCap } from '../../services/enrollmentDefaults';
@@ -753,7 +755,8 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'software_compliance_status', 'software_policy_audit', 'software_remediation_requests',
   // Remote access
   'remote_sessions', 'tunnel_sessions',
-  // Monitoring & logs
+  // Monitoring & logs. Site-owned topology alerts detach before this sweep;
+  // only device-owned alerts still reference the device and are deleted.
   'service_process_check_results', 'alerts', 'agent_logs', 'script_executions',
   // #5291 W04 - probe results now name the device they ran FROM.
   'network_monitor_results',
@@ -1240,6 +1243,13 @@ coreRoutes.get(
       )`);
     }
 
+    if (query.isolated !== undefined) {
+      // Keep the literal state predicate identical to the unresolved-episode partial index.
+      // The existing request RLS context scopes this correlated subquery too.
+      const isolated = sql`EXISTS (SELECT 1 FROM device_network_isolations WHERE device_id = ${devices.id} AND state NOT IN ('released', 'expired', 'failed', 'uninstalled'))`;
+      conditions.push(query.isolated === 'true' ? isolated : sql`NOT (${isolated})`);
+    }
+
     if (query.status) {
       conditions.push(eq(devices.status, query.status));
     }
@@ -1290,7 +1300,8 @@ coreRoutes.get(
     const fetchLimit = isCursorMode ? limit + 1 : limit;
     const offset = isCursorMode ? 0 : Math.max(0, ((Number.parseInt(query.page ?? '1', 10) || 1) - 1) * limit);
 
-    const rows = await db
+    const includeWarranty = query.includeWarranty === 'true';
+    const listQuery = db
       .select({
         id: devices.id,
         orgId: devices.orgId,
@@ -1361,6 +1372,7 @@ coreRoutes.get(
         cpuCores: deviceHardware.cpuCores,
         ramTotalMb: deviceHardware.ramTotalMb,
         diskTotalGb: deviceHardware.diskTotalGb,
+        serialNumber: deviceHardware.serialNumber,
         // Reliability headline score (#1720) — surfaced as a sortable list
         // column. device_reliability is org-scoped (RLS shape #1), so the
         // leftJoin stays tenant-safe; null when no score computed yet.
@@ -1371,6 +1383,12 @@ coreRoutes.get(
         // Hardware & RAID rollup (#6854 W04) — null when no report yet.
         hardwareHealth: deviceHardwareHealth.health,
         hardwareHealthSummary: deviceHardwareHealth.summary,
+        // #9863 — Warranty column. Stored status, the same value the device's
+        // Warranty card shows; null when no warranty row exists yet.
+        ...(includeWarranty ? {
+          warrantyEndDate: deviceWarranty.warrantyEndDate,
+          warrantyStatus: deviceWarranty.status,
+        } : {}),
         // RDS per-session helpers (plan 2 heartbeat ingest) — UI hint only,
         // see the truthy-guard comment in heartbeat.ts. Tasks 13/14 gate the
         // session picker on this being 'on-demand' at the list-row level.
@@ -1398,7 +1416,13 @@ coreRoutes.get(
       .from(devices)
       .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
       .leftJoin(deviceReliability, eq(devices.id, deviceReliability.deviceId))
-      .leftJoin(deviceHardwareHealth, eq(devices.id, deviceHardwareHealth.deviceId))
+      .leftJoin(deviceHardwareHealth, eq(devices.id, deviceHardwareHealth.deviceId));
+    // The default list keeps its existing joins and query budget. Warranty
+    // is opt-in, backed by a unique device_id index (manual assets cannot
+    // match); the org-scoped table's RLS also applies to this join.
+    const rows = await (includeWarranty
+      ? listQuery.leftJoin(deviceWarranty, eq(devices.id, deviceWarranty.deviceId))
+      : listQuery)
       .where(whereCondition)
       .orderBy(...orderBy)
       .limit(fetchLimit)
@@ -1586,7 +1610,8 @@ coreRoutes.get(
           cpuModel: d.cpuModel,
           cpuCores: d.cpuCores,
           ramTotalMb: d.ramTotalMb,
-          diskTotalGb: d.diskTotalGb
+          diskTotalGb: d.diskTotalGb,
+          serialNumber: d.serialNumber
         },
         // Reliability column (#1720): null when the device has no computed
         // score yet (no device_reliability row) — the list renders a dash.
@@ -1595,6 +1620,8 @@ coreRoutes.get(
         reliabilityProvisional: d.reliabilityProvisional === true,
         hardwareHealth: d.hardwareHealth ?? null,
         hardwareHealthSummary: d.hardwareHealthSummary ?? null,
+        warrantyEndDate: d.warrantyEndDate ?? null,
+        warrantyStatus: d.warrantyStatus ?? null,
         helperLifecycleMode: d.helperLifecycleMode ?? null,
         // Selected above but historically the mapper is where list fields
         // get silently dropped (#800/#1273/#2138/#5701) — the #7068 stuck-
@@ -2390,15 +2417,22 @@ coreRoutes.delete(
     // let the command commit independently of the decommission write).
     let updated: typeof devices.$inferSelect | undefined;
     let uninstallQueued = false;
-    await db.transaction(async (tx) => {
-      const outcome = await decommissionDeviceInTransaction(tx, {
-        deviceId,
-        queueUninstall: uninstallAgent,
-        actorUserId: auth.user.id,
+    try {
+      await db.transaction(async (tx) => {
+        const outcome = await decommissionDeviceInTransaction(tx, {
+          deviceId,
+          queueUninstall: uninstallAgent,
+          actorUserId: auth.user.id,
+        });
+        updated = outcome.updated;
+        uninstallQueued = outcome.uninstallQueued;
       });
-      updated = outcome.updated;
-      uninstallQueued = outcome.uninstallQueued;
-    });
+    } catch (err) {
+      if (err instanceof NetworkIsolationUnresolvedError) {
+        return c.json({ error: err.code, message: err.message }, 409);
+      }
+      throw err;
+    }
 
     // Resolve any "possible replacement of THIS device" linkage now that the
     // old device is decommissioned (#2764). The banner/badge on the newer
@@ -2591,7 +2625,7 @@ coreRoutes.delete(
     // #2787 review — omits the whole spread while the dissolve ran anyway.
     let linkGroupId: string | null = null;
     let linkGroupDissolved = false;
-    let removedTopologyAlerts = 0;
+    let detachedTopologyAlerts = 0;
     let screenshotStorageKeys: string[] = [];
 
     // Delegated to `purgeRemovedDevice` (services/deviceLifecycle.ts) since
@@ -2659,8 +2693,11 @@ coreRoutes.delete(
       screenshotStorageKeys = purge.screenshotStorageKeys;
       linkGroupId = purge.linkGroupId;
       linkGroupDissolved = purge.linkGroupDissolved;
-      removedTopologyAlerts = purge.removedTopologyAlerts;
+      detachedTopologyAlerts = purge.detachedTopologyAlerts;
     } catch (err: unknown) {
+      if (err instanceof NetworkIsolationUnresolvedError) {
+        return c.json({ error: err.code, message: err.message }, 409);
+      }
       if (err instanceof DeviceLifecycleError) {
         return c.json({ error: err.message, code: err.code }, err.status);
       }
@@ -2737,8 +2774,8 @@ coreRoutes.delete(
         // silently lost their grouping.
         ...(linkGroupId ? { linkGroupId, linkGroupDissolved } : {}),
         // Site-owned topology alerts this device originated (M3-D6) — after a
-        // move-org they belong to ANOTHER org, so record that they went.
-        ...(removedTopologyAlerts > 0 ? { removedTopologyAlerts } : {}),
+        // move-org they belong to ANOTHER org; record the detached provenance.
+        ...(detachedTopologyAlerts > 0 ? { detachedTopologyAlerts } : {}),
       }
     });
 

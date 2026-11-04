@@ -241,11 +241,11 @@ describe('state machine round trip', () => {
       })).then((r) => (r.found ? r.value : 'missing')));
     const at = new Date();
     expect(await step({ type: 'dispatched', generation: 1, at })).toBe('dispatched');
-    expect(await step({ type: 'agent_verified', generation: 1, journalSeq: 4, at })).toBe('verified');
-    expect(await step({ type: 'agent_verified', generation: 1, journalSeq: 4, at })).toBe('stale_seq');
+    expect(await step({ type: 'agent_verified', isolationId: id, generation: 1, journalSeq: 4, at })).toBe('verified');
+    expect(await step({ type: 'agent_verified', isolationId: id, generation: 1, journalSeq: 4, at })).toBe('stale_seq');
     expect(await step({ type: 'release_requested', kind: 'console', generation: 1, at })).toBe('release_requested');
     expect(await step({ type: 'agent_absent', generation: 2, journalSeq: 9, at })).toBe('released');
-    expect(await step({ type: 'agent_verified', generation: 2, journalSeq: 10, at })).toBe('already_terminal');
+    expect(await step({ type: 'agent_verified', isolationId: id, generation: 2, journalSeq: 10, at })).toBe('already_terminal');
 
     const [row] = await admin<Record<string, unknown>>(sql`SELECT state, desired_state, generation, last_journal_seq::int AS seq,
       release_kind, released_at IS NOT NULL AS released, release_confirmed_at IS NOT NULL AS confirmed
@@ -261,7 +261,7 @@ describe('state machine round trip', () => {
     if (!created.ok) throw new Error('setup: create failed');
     const written = await withDbAccessContext(orgContext(orgId), () => db.transaction((tx) => withEpisodeLock(tx, created.episode.id, async (row) => {
       const prev = toEpisodeSnapshot(row);
-      const out = applyEpisodeEvent(prev, { type: 'agent_failed', code: 'control_plane_unreachable', generation: 1, journalSeq: 2, at: new Date() });
+      const out = applyEpisodeEvent(prev, { type: 'agent_failed', isolationId: row.id, code: 'control_plane_unreachable', generation: 1, journalSeq: 2, at: new Date() });
       if (!('next' in out)) throw new Error(out.ignored);
       return writeEpisodeSnapshot(tx, created.episode.id, prev, out.next);
     })));

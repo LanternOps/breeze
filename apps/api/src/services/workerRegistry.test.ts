@@ -28,6 +28,8 @@ import {
 // to catch drift between the plan's documented contract and the actual
 // registry, so it must not import the list from the module under test.
 const EXPECTED_WORKER_NAMES = [
+  'psaTicketingWorker',
+  'psaTicketingReconciler',
   'topologyReconcileWorker',
   'topologyCollectionRetentionWorker',
   'topologyOutboxWorker',
@@ -67,6 +69,8 @@ const EXPECTED_WORKER_NAMES = [
   'quoteSendWorker', 'enrollmentKeyCleanup',
   // Ticket migration windows (#8313) — the per-minute window sweep.
   'migrationWindowSweep',
+  // Ticket import framework (#8313 W4) — self-continuing import slices.
+  'ticketImportWorker',
   // Partner API tickets wave 3 — daily reaper for X-Idempotency-Key claims.
   'partnerApiIdempotencyRetention',
   'quickSupportReaper', 'wispGrantReconciler', 'softwareUploadSessionCleanup',
@@ -95,7 +99,7 @@ const EXPECTED_WORKER_NAMES = [
   'browserSecurityWorker', 'c2cBackupWorker', 'backupSlaWorker', 'drExecutionWorker',
   'recoveryMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
   'incidentCorrelationWorker', 'incidentTimelineEnricher', 'incidentSlaMonitor', 'staleCommandReaper',
-  'softwareDeploymentScheduler', 'pamJobs', 'approvalExpiryReaper', 'workspaceReaper', 'offboardingDrainReaper',
+  'softwareDeploymentScheduler', 'pamJobs', 'networkIsolationSweeper', 'approvalExpiryReaper', 'workspaceReaper', 'offboardingDrainReaper',
   'intentOutboxPublisher', 'aiOperatorTaskOutboxPublisher', 'aiOperatorTaskWorker',
   'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep', 'stripeSessionRevocationSweep',
   'ticketAttachmentReaper', 'quoteExpiryReaper', 'agreementRequestExpiryReaper', 'agreementRequestAutoReminder', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',

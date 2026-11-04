@@ -27,6 +27,7 @@ import type { Alert } from './AlertList';
 import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
 import AlertDeviceInfo from './AlertDeviceInfo';
+import { isDeviceAlert } from './AlertSubjectChip';
 import CreateTicketFromAlertDialog from './CreateTicketFromAlertDialog';
 import { anomalyDeepLinkHash, formatAnomalyConfidence, formatAnomalyType, formatAnomalyValue } from './alertMlContext';
 
@@ -222,7 +223,7 @@ export default function AlertDetails({
 
           <RemediationSuggestionsPanel sourceType="alert" sourceId={alert.id} orgId={alert.orgId ?? undefined} />
 
-          {alert.anomalyContext && (
+          {isDeviceAlert(alert) && alert.anomalyContext && (
             <div className="rounded-md border border-sky-500/30 bg-sky-500/10 p-4">
               <h3 className="text-sm font-semibold mb-3">{t('alertDetails.mlAnomalyEvidence')}</h3>
               <div className="grid gap-3 sm:grid-cols-2">
@@ -265,9 +266,10 @@ export default function AlertDetails({
 
           {/* Device Info */}
           <div className="rounded-md border p-4">
-            <h3 className="text-sm font-semibold mb-3">{t('alertDetails.deviceInformation')}</h3>
+            <h3 className="text-sm font-semibold mb-3">{isDeviceAlert(alert) ? t('alertDetails.deviceInformation') : t('subject.label')}</h3>
             <div className="grid gap-3 sm:grid-cols-2">
               <AlertDeviceInfo
+                {...alert}
                 deviceId={alert.deviceId}
                 deviceName={alert.deviceName}
                 ruleName={alert.ruleName}

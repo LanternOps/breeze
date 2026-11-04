@@ -84,7 +84,10 @@
       "resolved": "Resolvido",
       "suppressed": "Suprimido",
       "dismissed": "Dispensado"
-    }
+    },
+    "createPsaTicket": "Criar ticket PSA",
+    "psaTicketRequested": "Ticket PSA solicitado",
+    "failedToCreatePsaTicket": "Não foi possível solicitar o ticket PSA"
   },
   "alertDetails": {
     "closePanel": "Fechar painel",
@@ -654,6 +657,7 @@
       "info": "Informativo"
     },
     "status": {
+      "open": "Aberto",
       "active": "Ativo",
       "acknowledged": "Reconhecido",
       "resolved": "Resolvido",
@@ -967,5 +971,10 @@
       "body": "Os modelos existentes continuam editáveis aqui e serão convertidos na próxima versão.",
       "link": "Abrir Monitores"
     }
+  },
+  "subject": {
+    "label": "Assunto",
+    "backupWorkload": "Carga de backup",
+    "topologySite": "Site de topologia"
   }
 }

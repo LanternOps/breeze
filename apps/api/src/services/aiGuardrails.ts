@@ -18,7 +18,7 @@ import { rateLimiter } from './rate-limit';
 import { TOOL_RATE_LIMITS, resolveToolRateLimitMultiplier, scaleToolRateLimit, type ToolRateLimitScope } from './aiToolRateLimits';
 export { listEffectiveToolRateLimits, type EffectiveToolRateLimit } from './aiToolRateLimits';
 import { getRedis } from './redis';
-import { describePax8Action, humanizeToolAction } from './actionIntents/actionLabel';
+import { describePax8Action, describePax8Submit, humanizeToolAction } from './actionIntents/actionLabel';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import { WORKSPACE_TOOL_NAMES } from './workspace/workspaceToolNames';
 import { isFlowToolName } from './flows/toolNames';
@@ -82,7 +82,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // Wisp W07 (spec §3 "acts alone"): the auto-admit specialist kinds, derived
   // from SPECIALIST_KIND_POLICY (leaf data module).
   launch_specialist: [...AUTO_ADMIT_SPECIALIST_KINDS],
-  manage_policy_feature_link: ['describe'],
+  manage_policy_feature_link: ['describe', 'list'], // list is a pure read (#10412); add/update/remove keep their tiers
   // EDR response actions (#8167 W03, spec §4.10): a scan is non-disruptive,
   // so it runs without approval. The tool's base tier is 3, so every OTHER
   // action — isolate, release, and any value not offered yet (no adapter
@@ -268,7 +268,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // #6268: stopping an IOC sweep is the safe direction (queued scans are
   // cancelled, running ones finish), so it auto-executes with an audit row.
   ioc_hunt: ['cancel_sweep'],
-  manage_groups: ['add_devices', 'remove_devices'],
+  // manage_groups add_devices/remove_devices moved to TIER3_ACTIONS (#10149, QW9).
   // manage_maintenance_windows mutations disabled — managed via configuration policies
   manage_automations: ['enable', 'disable'],
   // manage_alert_rules is read-only; author conditions via manage_monitor_definitions
@@ -311,7 +311,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
 // entry does not belong here; leaving a read out only costs one lightweight
 // prompt.
 export const TIER2_READONLY_ACTIONS: Record<string, string[]> = {
-  manage_policy_feature_link: ['describe'],
+  manage_policy_feature_link: ['describe', 'list'],
   // Full-control W14 PR B (#6784): what the next billing run would bill — no write anywhere.
   manage_contracts: ['preview_invoice'],
   execute_command: ['event_logs_list', 'file_list', 'list_processes'],
@@ -522,7 +522,10 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // apt-get/dnf, journalctl, tmutil, brew) as root/LocalSystem with a 90-minute
   // ceiling, and some of its handlers cannot be undone (`Previous
   // Installations` deletes Windows.old, which is the rollback path).
-  system_cleanup: ['run'],
+  // `cancel` (#10161) mirrors POST …/run/:cleanupRunId/cancel, a requireMfa()
+  // route that mutates: the MFA-route invariant (TOOL_EXTRA_PERMISSIONS note)
+  // puts it at Tier 3.
+  system_cleanup: ['run', 'cancel'],
   manage_startup_items: ['disable', 'enable'],
   manage_scheduled_tasks: ['run', 'disable', 'enable'],
   // Fleet tools — Tier 3 actions (require user approval)
@@ -538,7 +541,10 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // resolveApprovalScope) and an IOC rule import (publishes a rule set every
   // policy using it then scans with).
   ioc_hunt: [IOC_HUNT_RUN_ACTION, 'import_iocs'],
-  manage_groups: ['create', 'update', 'delete'],
+  // #10149 (QW9): membership writes are supervised. Membership feeds agent run
+  // scope (triggers.deviceGroupIds), group-targeted config/peripheral policies,
+  // and schedules peripheral reconciliation for every touched device.
+  manage_groups: ['create', 'update', 'delete', 'add_devices', 'remove_devices'],
   // create/update/delete added W01-D3 (#6755): handler-disabled today
   // (aiToolsFleet.ts:2041, managed via configuration policies), same pattern
   // as manage_patches.setup_auto_approval above — escalated so re-enabling
@@ -679,7 +685,7 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_accounting_sync: ['link_mapping', 'unlink_mapping', 'sync_mapping', 'push', 'push_bulk'],
   // W15 PR A (#6785, Gate B): sync calls the vendor partner-wide; preflight sends staged content.
   manage_pax8_subscriptions: ['sync', 'link', 'unlink'],
-  manage_pax8_orders: ['preflight'],
+  manage_pax8_orders: ['preflight', 'submit', 'reconcile'],
   // Money-authoring drafts vs money-moving actions (#2551): this boundary
   // tracks reversibility/external-commitment, not dollar amount. Drafting —
   // create_draft, add_manual_line, add_catalog_line, update, etc. — only
@@ -773,6 +779,7 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
 // See docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md §3.2
 // for the full classification rationale.
 export const TIER3_FOUR_EYES_ACTIONS: Record<string, string[]> = {
+  manage_pax8_orders: ['submit'],
   // Financial / externally binding. `void` is not named in spec §3.2's
   // bullet list, but TOOL_PERMISSIONS maps it to the same `invoices:send`
   // RBAC action as issue/record_payment/void_payment — voiding an issued
@@ -880,6 +887,13 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   // EDR response actions whole-tool catch-all (#8167): an unknown action
   // string fails closed to four_eyes instead of falling through.
   'edr_endpoint_action',
+  // Network-isolation containment RELEASE (W13 #10101, spec §2/§3.10, ai.mdx):
+  // lifting an isolation reverses a mitigation on a device under incident
+  // response — the same class as s1_threat_action rollback and
+  // edr_endpoint_action unisolate. Isolating (execute_containment) stays
+  // supervised. The sole-operator WebAuthn fallback still applies, because the
+  // tool is not on selfApprovalPolicy's forbidden list.
+  'release_containment',
   // PAM elevation request. Classified four_eyes out of caution (not named in
   // spec §3.2). Full-control W04 (#6758) re-read the handler: it always
   // inserts a PENDING request and applies only an auto_deny rule verdict —
@@ -924,7 +938,9 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // maintenance operations a tech could run by hand on the box, and nothing in
   // it is externally binding or financial. Its irreversibility (Windows.old)
   // is a property of the ACTION the tech picked, not of the approval class.
-  system_cleanup: ['run'],
+  // `cancel` (#10161) fails one run on one device and reaches no one: the
+  // requester approves.
+  system_cleanup: ['run', 'cancel'],
   manage_startup_items: ['disable', 'enable'],
   manage_scheduled_tasks: ['run', 'disable', 'enable'],
   manage_configuration_policy: ['create', 'update', 'delete'],
@@ -935,7 +951,10 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_deliverables: ['apply_template'],
   manage_deployments: ['create', 'start', 'cancel'],
   manage_patches: ['install', 'setup_auto_approval'],
-  manage_groups: ['create', 'update', 'delete'],
+  // #10149 (QW9): membership writes are supervised. Membership feeds agent run
+  // scope (triggers.deviceGroupIds), group-targeted config/peripheral policies,
+  // and schedules peripheral reconciliation for every touched device.
+  manage_groups: ['create', 'update', 'delete', 'add_devices', 'remove_devices'],
   // create/update/delete added W01-D3 (#6755): handler-disabled today, same
   // supervised (not four_eyes) class as the sibling fleet tools above —
   // nothing here is externally binding or financial.
@@ -1072,7 +1091,7 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_accounting_sync: ['link_mapping', 'unlink_mapping', 'sync_mapping'],
   // W15 PR A (#6785): local billing links, partner-wide sync and vendor isMock preflight.
   manage_pax8_subscriptions: ['sync', 'link', 'unlink'],
-  manage_pax8_orders: ['preflight'],
+  manage_pax8_orders: ['preflight', 'reconcile'],
   manage_ticket_response_templates: ['create', 'update'],
   manage_quotes: ['decline', 'create_pay_link'],
   manage_billing_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
@@ -1329,6 +1348,10 @@ export function isInputAwareTier3(
   if (action !== 'add' && action !== 'update') return false;
   return (
     input.featureType === 'maintenance'
+    // #10100: containment extraAllow grants an isolated device network permits
+    // (execution_gated); the handler refuses a containment update that omits
+    // featureType, so this input check cannot be bypassed on update.
+    || input.featureType === 'containment'
     || warrantyHpCmslRequested(input.inlineSettings)
   );
 }
@@ -1863,6 +1886,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   read_artifact: { resource: 'ai_agents', action: 'read' },
   // Same permission as the editor's GET /orgs/:orgId/trust-page.
   get_trust_page_status: { resource: 'organizations', action: 'read' },
+  // #9763: same permission as GET /orgs/partners/me/settings-inheritance(/orgs) (ORGS_READ).
+  get_partner_settings_inheritance: { resource: 'organizations', action: 'read' },
   // Tool Catalog W03 (#5218): flows reuse the automations permissions.
   draft_flow: { resource: 'automations', action: 'write' },
   validate_flow: { resource: 'automations', action: 'read' },
@@ -1953,6 +1978,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     // /devices/:id/filesystem/system-cleanup/list (DEVICES_EXECUTE).
     list: { resource: 'devices', action: 'execute' },
     run: { resource: 'devices', action: 'execute' },
+    // POST …/run/:cleanupRunId/cancel (DEVICES_EXECUTE).
+    cancel: { resource: 'devices', action: 'execute' },
     status: { resource: 'devices', action: 'read' },
   },
   file_operations: {
@@ -2461,6 +2488,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Device-execute (analogy: s1_isolate_device, execute_command; collect_evidence includes
   // screenshot => privileged extraction like take_screenshot)
   execute_containment: { resource: 'devices', action: 'execute' },
+  // W13 (#10101): the human release route's permission (routes/devices/networkIsolation.ts).
+  release_containment: { resource: 'devices', action: 'execute' },
   collect_evidence: { resource: 'devices', action: 'execute' },
 
   // Policy-prereq family (analogy: manage_backup_profiles per-action map)
@@ -2856,6 +2885,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     remove_line: { resource: 'billing', action: 'manage' },
     preview: { resource: 'billing', action: 'manage' },
     preflight: { resource: 'billing', action: 'manage' },
+    submit: { resource: 'billing', action: 'manage' },
+    reconcile: { resource: 'billing', action: 'manage' },
   },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
@@ -4559,6 +4590,10 @@ export function buildApprovalDescription(
     case 'manage_groups':
       if (action === 'create') parts.push(`Create ${input.type ?? 'static'} device group "${input.name}"`);
       else if (action === 'delete') parts.push(`Delete device group ${(input.groupId as string)?.slice(0, 8)}...`);
+      else if (action === 'add_devices' || action === 'remove_devices') {
+        const count = Array.isArray(input.deviceIds) ? input.deviceIds.length : 0;
+        parts.push(`${action === 'add_devices' ? 'Add' : 'Remove'} ${count} device(s) ${action === 'add_devices' ? 'to' : 'from'} device group ${(input.groupId as string)?.slice(0, 8)}...`);
+      }
       else parts.push(`Group ${action}: ${(input.groupId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
       break;
 
@@ -4655,6 +4690,17 @@ export function buildApprovalDescription(
         break;
       }
       parts.push(`Containment: ${actionType ? w04Cap(actionType.replace(/_/g, ' ')) : '(unspecified action)'} on device ${String(input.deviceId).slice(0, 8)}...`);
+      break;
+    }
+    // W13 (#10101): the approver must see that this LIFTS a containment, and which episode.
+    case 'release_containment': {
+      if (!nonEmptyText(input.deviceId)) {
+        parts.push(humanizeToolAction(toolName, action));
+        break;
+      }
+      parts.push(`Release network isolation (episode ${String(input.isolationId ?? '').slice(0, 8)}...) on device ${String(input.deviceId).slice(0, 8)}... — the device rejoins the network`);
+      const reason = nonEmptyText(input.reason);
+      if (reason) parts.push(`— reason: "${w04Cap(reason)}"`);
       break;
     }
     case 'collect_evidence': {
@@ -4920,6 +4966,10 @@ export function buildApprovalDescription(
     }
     case 'manage_pax8_subscriptions':
     case 'manage_pax8_orders':
+      if (action === 'submit') {
+        parts.push(describePax8Submit(input));
+        break;
+      }
       parts.push(describePax8Action(toolName, action) ?? humanizeToolAction(toolName, action));
       break;
 

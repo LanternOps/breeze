@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import PsaConnectionsPage from './PsaConnectionsPage';
@@ -82,6 +82,44 @@ function installFetchRouter(routes: Record<string, unknown>, recorded: RecordedR
     throw new Error(`Unexpected fetchWithAuth call: ${key}`);
   });
 }
+
+describe('PsaConnectionsPage alert tickets', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('keeps the connection list up with a ledger ticket row and names its provider from the connection', async () => {
+    installFetchRouter(
+      {
+        'GET /psa/connections': {
+          data: [{ id: 'c-1', provider: 'connectwise', name: 'CW Prod', status: 'active' }],
+        },
+        'GET /psa/tickets?limit=25': {
+          data: [{
+            id: 'm-1',
+            psaId: 'c-1',
+            title: 'Ticket 8841',
+            status: null,
+            syncedAt: '2026-11-02T10:00:00.000Z',
+            connectionId: 'c-1',
+            alertId: 'alert-1',
+            createState: 'created',
+            externalTicketNumber: 'CW-8841',
+            externalTicketUrl: 'https://psa.example/tickets/8841',
+            raw: { externalTicketId: '8841' },
+          }],
+        },
+      },
+      []
+    );
+
+    render(<PsaConnectionsPage />);
+
+    const ticketLink = await screen.findByRole('link', { name: 'CW-8841' });
+    expect(screen.getByText('CW Prod')).toBeInTheDocument();
+    expect(within(ticketLink.closest('tr') as HTMLElement).getByText('ConnectWise')).toBeInTheDocument();
+  });
+});
 
 describe('PsaConnectionsPage round-trip contract', () => {
   beforeEach(() => {
@@ -287,7 +325,11 @@ describe('PsaConnectionsPage round-trip contract', () => {
     expect(testButton).toBeEnabled();
     expect(screen.queryByTestId('psa-test-dirty-hint')).toBeNull();
 
+    // Dialog autofocus runs on the next animation frame; let it finish before
+    // typing so it cannot move focus away from the token mid-keystroke.
+    await waitFor(() => expect(screen.getByLabelText(/connection name/i)).toHaveFocus());
     await user.type(screen.getByTestId('psa-credential-apiToken'), 'rotated-token');
+    expect(screen.getByTestId('psa-credential-apiToken')).toHaveValue('rotated-token');
 
     await waitFor(() => expect(testButton).toBeDisabled());
     expect(screen.getByTestId('psa-test-dirty-hint')).toBeInTheDocument();
@@ -586,7 +628,7 @@ describe('PsaConnectionsPage round-trip contract', () => {
 
     render(<PsaConnectionsPage />);
 
-    expect(await screen.findByRole('heading', { name: /^psa tickets$/i })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /^alert tickets$/i })).toBeTruthy();
     expect(screen.queryByText(/synced tickets/i)).toBeNull();
   });
 });

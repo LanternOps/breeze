@@ -603,6 +603,14 @@ export const scriptVerifyQueueJobDataSchema = z.object({
   attempt: z.number().int().min(1),
 });
 export type ScriptVerifyQueueJobData = z.infer<typeof scriptVerifyQueueJobDataSchema>;
+// #8313 W4: `ticket-import` queue, one job per slice of a run (spec
+// 2026-10-19 §5.8). Only the slice whose seq equals the run's slice_seq runs.
+export const ticketImportSliceJobDataSchema = z.object({
+  runId: z.string().uuid(),
+  partnerId: z.string().uuid(),
+  seq: z.number().int().min(0),
+}).strict();
+export type TicketImportSliceJobData = z.infer<typeof ticketImportSliceJobDataSchema>;
 export type QueueActorMeta = z.infer<typeof queueActorMetaSchema>;
 // Note: NOT named RouteEventJobData/DeliverEventJobData — those canonical
 // interfaces are hand-written in services/eventDispatchQueue.ts (the
@@ -639,3 +647,5 @@ export const webhookAttemptJobDataSchema = z.object({
   attemptsMade: z.number().int().min(0),
 }).strict();
 export type WebhookAttemptJobData = z.infer<typeof webhookAttemptJobDataSchema>;
+
+export const psaTicketingJobDataSchema = z.object({ mappingId: z.string().uuid(), op: z.enum(['create', 'close', 'note']) }).strict();

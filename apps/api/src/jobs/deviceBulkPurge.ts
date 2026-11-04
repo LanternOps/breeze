@@ -150,7 +150,7 @@ interface PurgeOneOutcome {
   linkGroupId: string | null;
   linkGroupDissolved: boolean;
   /** From `PurgeResult`; 0 when nothing was purged. */
-  removedTopologyAlerts?: number;
+  detachedTopologyAlerts?: number;
 }
 
 /**
@@ -196,7 +196,7 @@ async function purgeOne(
             code: null,
             linkGroupId: purged.linkGroupId,
             linkGroupDissolved: purged.linkGroupDissolved,
-            removedTopologyAlerts: purged.removedTopologyAlerts,
+            detachedTopologyAlerts: purged.detachedTopologyAlerts,
             screenshotStorageKeys: keys,
           };
         });
@@ -293,7 +293,7 @@ export async function processDeviceBulkPurgeJob(
                   linkGroupDissolved: outcome.linkGroupDissolved,
                 }
               : {}),
-            ...(outcome.removedTopologyAlerts ? { removedTopologyAlerts: outcome.removedTopologyAlerts } : {}),
+            ...(outcome.detachedTopologyAlerts ? { detachedTopologyAlerts: outcome.detachedTopologyAlerts } : {}),
           },
           result: 'success',
         });

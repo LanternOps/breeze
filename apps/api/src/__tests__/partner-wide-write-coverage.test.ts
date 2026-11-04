@@ -73,7 +73,12 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/wisp/nudgePreferences.ts': 'Wisp W06a: user-scoped row, RLS pins breeze_current_user_id — writes only wisp_nudge_preferences (user_id PK, the caller\'s own row inside their own partner; the policy ANDs breeze_current_user_id() with breeze_has_partner_access) and the worker digest/brief stamps in system context. The partner-wide urgent-capable writer lives in services/wisp/partnerNudgeSettings.ts and is gated on canManagePartnerWidePolicies',
   // --- business calendars (#8973 W4) ------------------------------------------
   'services/ticketRouting/repository.ts': 'data access only; every caller-facing write (routes/tickets/routingRules.ts and the manage_ticket_routing_rules AI tool) goes through services/ticketRouting/service.ts, which gates partner-wide rows on canManagePartnerWidePolicies (selected-access denial pinned in service.test.ts)',
+  'services/serviceCatalogService.ts': 'data access only; every caller-facing write goes through routes/tickets/serviceCatalog.ts, which gates partner-wide rows on canManagePartnerWidePolicies via resolveWritePartner (denial pinned in serviceCatalog.test.ts)',
   'services/businessCalendars/repository.ts': 'data access only; every caller-facing write goes through services/businessCalendars/service.ts, which gates partner-wide rows on canManagePartnerWidePolicies (selected-access denial pinned in service.test.ts)',
+  // Worker pauses only tighten operational state after an auth failure. Resume
+  // follows a successful test in routes/psa.ts, behind partnerWideWriteBlocked
+  // (canManagePartnerWidePolicies); neither operation edits ticketing config.
+  'services/psaAlertTicketing/pause.ts': 'system auth-error pause; resume is called only by the capability-gated PSA connection test route to lift that pause',
   // Wisp W02 (#9908): worker/system path only — it only ever TIGHTENS a grant
   // (pause/expire) or lifts a pause it set itself; the caller-facing
   // create/refresh/revoke/settings gates live in services/wisp/grants.ts.
@@ -448,6 +453,14 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/reportSeries/reconcile.ts': 'the multi-org report reconciler writes only ORG-owned series children: inserts carry a concrete org_id from the eligible target set, updates key on id + org_id + series_id, and reports_series_child_shape_chk forbids a partner-owned child. Its callers are services/reportSeries/store.ts (every entry point gated by canManagePartnerWidePolicies through requireSeriesPartner) and the schedule worker gate / repair sweep (system context, no caller)',
   'services/emailDomains/domainSync.ts': 'the sending-domain state machine runs only inside the sending-domains BullMQ worker, under system DB scope, with no caller and no auth context: it takes a domain id from a job payload, advances that ONE row between provider-observed statuses, and creates no partner-owned configuration. Every caller-facing create/update/delete of partner_sending_domains goes through routes/partnerSendingDomains.ts, which carries the canManagePartnerWidePolicies gate',
   'services/migrationWindows.ts': 'system sweep and admin-gated close: every caller-facing write of migration_windows / migration_window_orgs goes through routes/migrationWindows.ts, whose open and close routes carry the canManagePartnerWidePolicies gate (open is further owner-only and step-up bound); the remaining writer is the migration-window-sweep worker under system scope, with no caller',
+  // Ticket import framework (#8313 W4, spec 2026-10-19 §5.5 "Write gate").
+  // The six ticket_import_* tables are partner-axis with no org owner: the
+  // whole feature is partner-wide, so the gate is at the routes, which all run
+  // callerPartner() (routes/ticketImports/shared.ts → canManagePartnerWidePolicies)
+  // before any service call; create, edit and mappings are further owner-only.
+  'services/ticketImport/sourceStore.ts': 'called only from the gated routes/ticketImports (sources.ts, runs.ts), every one of which passes callerPartner() (canManagePartnerWidePolicies) first; create/edit/mappings are also owner-only',
+  'services/ticketImport/runLedger.ts': 'the ticket-import worker\'s writes (run cursor and counters, the per-source ledger, issue rows) under a partner-scoped context with no caller, and the stalled-run sweep (system scope, fails runs with no sign of life, no caller); every caller-facing write of these tables is gated in routes/ticketImports (callerPartner → canManagePartnerWidePolicies)',
+  'services/ticketImport/runStore.ts': 'called only from the gated routes/ticketImports/runs.ts (start, cancel, fail-on-enqueue), every one of which passes callerPartner() (canManagePartnerWidePolicies) first',
   // Partner Entitlements W1 (#9907). partner_entitlements rows are COMMERCIAL
   // facts, not partner-wide configuration: a partner must never write them, so
   // canManagePartnerWidePolicies (which a partner admin passes) is the wrong gate.

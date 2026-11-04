@@ -144,65 +144,165 @@ describe('manage_patches — per-device site scoping', () => {
   });
 });
 
-describe('manage_groups remove_devices — per-device site scoping', () => {
-  beforeEach(() => vi.clearAllMocks());
-
-  it('only removes in-scope devices; out-of-site device ids are excluded from the delete', async () => {
-    let call = 0;
-    mockDb.select.mockImplementation((cols?: unknown) => {
-      // 1st select: the group row (orgId)
-      if (call === 0) { call++; return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'g1', name: 'G', orgId: 'org-1' }]) }) }) }; }
-      // 2nd select: candidate devices { id, siteId }
-      return { from: () => ({ where: () => Promise.resolve([
-        { id: 'd-in', siteId: 'site-A' },
-        { id: 'd-out', siteId: 'site-FORBIDDEN' },
-      ]) }) };
-    });
-    let deletedIds: string[] | null = null;
-    deleteSpy.mockReturnValue({
-      where: (_cond: any) => {
-        // Capture the device-id list the delete is scoped to by re-running the
-        // inArray against a probe. We can't introspect the SQL easily, so the
-        // handler must have narrowed the id list before building the condition.
-        return { returning: () => Promise.resolve([{ deviceId: 'd-in' }]) };
-      },
-    });
-    // Spy on inArray indirectly: assert handler reports the skipped count.
-    const r = await handlerFor('manage_groups')({ action: 'remove_devices', groupId: 'g1', deviceIds: ['d-in', 'd-out'] }, makeAuth(['site-A']));
-    const parsed = JSON.parse(r);
-    expect(parsed.success).toBe(true);
-    // out-of-site device must be reported as skipped (not silently removed)
-    expect(parsed.removed).toBe(1);
-    expect(parsed.skipped).toBe(1);
+// #10149 (QW9): add_devices / remove_devices REFUSE the whole call when any
+// requested device is outside the group's org, outside a site-bound group's
+// site, or outside the caller's site / device scope — never a silent filter
+// that reports `skipped`. Dynamic groups refuse manual membership edits, as
+// REST does (routes/groups.ts POST /:id/devices, DELETE /:id/devices/:deviceId).
+describe('manage_groups add_devices/remove_devices — org/site scope guards (#10149)', () => {
+  type DeviceRow = { id: string; orgId: string; siteId: string | null };
+  const group = (over: Record<string, unknown> = {}) => ({
+    id: 'g1', name: 'G', orgId: 'org-1', partnerId: null, siteId: null, type: 'static', ...over,
   });
-
-  it('removes nothing (no delete) when all requested devices are out-of-site', async () => {
+  /** 1st select: the group (`.where().limit()`); every later select: device rows (`await .where()`). */
+  function mockSelects(groupRow: Record<string, unknown>, deviceRows: DeviceRow[]) {
     let call = 0;
     mockDb.select.mockImplementation(() => {
-      if (call === 0) { call++; return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'g1', name: 'G', orgId: 'org-1' }]) }) }) }; }
-      return { from: () => ({ where: () => Promise.resolve([{ id: 'd-out', siteId: 'site-FORBIDDEN' }]) }) };
+      const rows = call++ === 0 ? [groupRow] : deviceRows;
+      return { from: () => ({ where: () => ({
+        limit: () => Promise.resolve(rows),
+        then: (resolve: (v: unknown[]) => unknown, reject?: (e: unknown) => unknown) => Promise.resolve(rows).then(resolve, reject),
+      }) }) };
     });
-    const r = await handlerFor('manage_groups')({ action: 'remove_devices', groupId: 'g1', deviceIds: ['d-out'] }, makeAuth(['site-A']));
-    const parsed = JSON.parse(r);
-    expect(parsed.removed).toBe(0);
+  }
+  let insertSpy: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    insertSpy = vi.fn(() => ({ values: () => ({ onConflictDoNothing: () => ({
+      returning: () => Promise.resolve([{ deviceId: 'd1' }]),
+    }) }) }));
+    (db as any).insert = insertSpy;
+    deleteSpy.mockReturnValue({ where: () => ({ returning: () => Promise.resolve([{ deviceId: 'd1' }]) }) });
+  });
+  const expectNoWrite = () => {
+    expect(insertSpy).not.toHaveBeenCalled();
     expect(deleteSpy).not.toHaveBeenCalled();
+  };
+  const actions = ['add_devices', 'remove_devices'] as const;
+
+  it.each(actions)('%s rejects a device owned by another org (cross-org) with a tool error and writes nothing', async (action) => {
+    mockSelects(group(), [
+      { id: 'd1', orgId: 'org-1', siteId: 'site-A' },
+      { id: 'd-foreign', orgId: 'org-2', siteId: 'site-X' },
+    ]);
+    const parsed = JSON.parse(await handlerFor('manage_groups')({ action, groupId: 'g1', deviceIds: ['d1', 'd-foreign'] }, makeAuth(undefined)));
+    expect(parsed.success).toBeUndefined();
+    expect(parsed.error).toMatch(/different organization/);
+    expect(parsed.invalidDevices).toEqual(['d-foreign']);
+    expectNoWrite();
   });
 
-  it('unrestricted caller removes all requested devices (no regression)', async () => {
-    let call = 0;
-    mockDb.select.mockImplementation(() => {
-      if (call === 0) { call++; return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'g1', name: 'G', orgId: 'org-1' }]) }) }) }; }
-      return { from: () => ({ where: () => Promise.resolve([{ id: 'd1', siteId: 'site-Z' }, { id: 'd2', siteId: 'site-Y' }]) }) };
-    });
-    deleteSpy.mockReturnValue({
-      where: () => ({
-        returning: () => Promise.resolve([{ deviceId: 'd1' }, { deviceId: 'd2' }]),
-      }),
-    });
-    const r = await handlerFor('manage_groups')({ action: 'remove_devices', groupId: 'g1', deviceIds: ['d1', 'd2'] }, makeAuth(undefined));
-    const parsed = JSON.parse(r);
-    expect(parsed.success).toBe(true);
-    expect(deleteSpy).toHaveBeenCalled();
+  it.each(actions)('%s rejects an id that does not resolve (invisible under RLS reads the same as foreign)', async (action) => {
+    mockSelects(group(), [{ id: 'd1', orgId: 'org-1', siteId: 'site-A' }]);
+    const parsed = JSON.parse(await handlerFor('manage_groups')({ action, groupId: 'g1', deviceIds: ['d1', 'd-missing'] }, makeAuth(undefined)));
+    expect(parsed.error).toMatch(/different organization/);
+    expect(parsed.invalidDevices).toEqual(['d-missing']);
+    expectNoWrite();
+  });
+
+  it.each(actions)("%s rejects a device outside a site-bound group's site, even for an unrestricted caller", async (action) => {
+    mockSelects(group({ siteId: 'site-A' }), [
+      { id: 'd1', orgId: 'org-1', siteId: 'site-A' },
+      { id: 'd-other-site', orgId: 'org-1', siteId: 'site-B' },
+    ]);
+    const parsed = JSON.parse(await handlerFor('manage_groups')({ action, groupId: 'g1', deviceIds: ['d1', 'd-other-site'] }, makeAuth(undefined)));
+    expect(parsed.success).toBeUndefined();
+    expect(parsed.error).toMatch(/site/i);
+    expectNoWrite();
+  });
+
+  it.each(actions)('%s fails closed for a site-restricted caller on an org-wide group (REST groupSiteAllowed parity) instead of filtering', async (action) => {
+    mockSelects(group({ siteId: null }), [
+      { id: 'd-in', orgId: 'org-1', siteId: 'site-A' },
+      { id: 'd-out', orgId: 'org-1', siteId: 'site-FORBIDDEN' },
+    ]);
+    const parsed = JSON.parse(await handlerFor('manage_groups')({ action, groupId: 'g1', deviceIds: ['d-in', 'd-out'] }, makeAuth(['site-A'])));
+    expect(parsed.success).toBeUndefined();
+    expect(parsed.skipped).toBeUndefined();
+    expect(parsed.error).toMatch(/not found or access denied/);
+    expectNoWrite();
+  });
+
+  it.each(actions)("%s rejects a device outside a device-bound caller's exact device scope", async (action) => {
+    mockSelects(group({ siteId: 'site-A' }), [
+      { id: 'd-self', orgId: 'org-1', siteId: 'site-A' },
+      { id: 'd-sibling', orgId: 'org-1', siteId: 'site-A' },
+    ]);
+    const auth = { ...makeAuth(['site-A']), allowedDeviceIds: ['d-self'] } as AuthContext;
+    const parsed = JSON.parse(await handlerFor('manage_groups')({ action, groupId: 'g1', deviceIds: ['d-self', 'd-sibling'] }, auth));
+    expect(parsed.success).toBeUndefined();
+    expect(parsed.error).toMatch(/outside your access/);
+    expect(parsed.deniedDevices).toEqual(['d-sibling']);
+    expectNoWrite();
+  });
+
+  it.each(actions)('%s refuses a group whose site the caller cannot access', async (action) => {
+    mockSelects(group({ siteId: 'site-FORBIDDEN' }), [{ id: 'd1', orgId: 'org-1', siteId: 'site-FORBIDDEN' }]);
+    const parsed = JSON.parse(await handlerFor('manage_groups')({ action, groupId: 'g1', deviceIds: ['d1'] }, makeAuth(['site-A'])));
+    expect(parsed.error).toMatch(/not found or access denied/);
+    expectNoWrite();
+  });
+
+  it.each(actions)('%s refuses a dynamic group (membership is rule-driven), as REST does', async (action) => {
+    mockSelects(group({ type: 'dynamic' }), [{ id: 'd1', orgId: 'org-1', siteId: 'site-A' }]);
+    const parsed = JSON.parse(await handlerFor('manage_groups')({ action, groupId: 'g1', deviceIds: ['d1'] }, makeAuth(undefined)));
+    expect(parsed.error).toMatch(/dynamic group/);
+    expectNoWrite();
+  });
+
+  it.each(actions)('%s answers an out-of-site dynamic group with not-found, not the dynamic-group message', async (action) => {
+    mockSelects(group({ type: 'dynamic', siteId: 'site-FORBIDDEN' }), [{ id: 'd1', orgId: 'org-1', siteId: 'site-FORBIDDEN' }]);
+    const parsed = JSON.parse(await handlerFor('manage_groups')({ action, groupId: 'g1', deviceIds: ['d1'] }, makeAuth(['site-A'])));
+    expect(parsed.error).toMatch(/not found or access denied/);
+    expect(parsed.error).not.toMatch(/dynamic/);
+    expectNoWrite();
+  });
+
+  it.each(actions)('%s refuses more than 100 ids instead of truncating, before any query', async (action) => {
+    mockSelects(group(), []);
+    const deviceIds = Array.from({ length: 101 }, (_, i) => `d${i}`);
+    const parsed = JSON.parse(await handlerFor('manage_groups')({ action, groupId: 'g1', deviceIds }, makeAuth(undefined)));
+    expect(parsed.error).toMatch(/At most 100/);
+    expect(mockDb.select).not.toHaveBeenCalled();
+    expectNoWrite();
+  });
+
+  it.each(actions)('%s refuses an empty deviceIds array', async (action) => {
+    mockSelects(group(), []);
+    const parsed = JSON.parse(await handlerFor('manage_groups')({ action, groupId: 'g1', deviceIds: [] }, makeAuth(undefined)));
+    expect(parsed.error).toBe('deviceIds is required');
+    expectNoWrite();
+  });
+
+  it('add_devices de-duplicates repeated ids before writing', async () => {
+    mockSelects(group(), [{ id: 'd1', orgId: 'org-1', siteId: 'site-A' }]);
+    let inserted: unknown[] = [];
+    insertSpy.mockImplementation(() => ({ values: (rows: unknown[]) => { inserted = rows; return { onConflictDoNothing: () => ({
+      returning: () => Promise.resolve([{ deviceId: 'd1' }]),
+    }) }; } }));
+    const parsed = JSON.parse(await handlerFor('manage_groups')({ action: 'add_devices', groupId: 'g1', deviceIds: ['d1', 'd1'] }, makeAuth(undefined)));
+    expect(inserted).toHaveLength(1);
+    expect(parsed).toMatchObject({ success: true, added: 1 });
+    expect(parsed.alreadyMembers).toBeUndefined();
+  });
+
+  it("control: add_devices writes when every device is in the group's org and site", async () => {
+    mockSelects(group({ siteId: 'site-A' }), [{ id: 'd1', orgId: 'org-1', siteId: 'site-A' }]);
+    const parsed = JSON.parse(await handlerFor('manage_groups')({ action: 'add_devices', groupId: 'g1', deviceIds: ['d1'] }, makeAuth(['site-A'])));
+    expect(parsed).toMatchObject({ success: true, added: 1 });
+    expect(parsed.skipped).toBeUndefined();
+    expect(insertSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('control: remove_devices deletes when every device is in scope (unrestricted caller)', async () => {
+    mockSelects(group(), [
+      { id: 'd1', orgId: 'org-1', siteId: 'site-Z' },
+      { id: 'd2', orgId: 'org-1', siteId: 'site-Y' },
+    ]);
+    deleteSpy.mockReturnValue({ where: () => ({ returning: () => Promise.resolve([{ deviceId: 'd1' }, { deviceId: 'd2' }]) }) });
+    const parsed = JSON.parse(await handlerFor('manage_groups')({ action: 'remove_devices', groupId: 'g1', deviceIds: ['d1', 'd2'] }, makeAuth(undefined)));
+    expect(parsed).toMatchObject({ success: true, removed: 2 });
+    expect(deleteSpy).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -636,14 +736,25 @@ describe('SR5-20 manage_patches — compliance site scoping', () => {
     expect(parsed.approvals.total).toBe(3);
   });
 
-  it('returns the precomputed snapshot for an unrestricted caller (no regression)', async () => {
-    let call = 0;
-    mockDb.select.mockImplementation(() => {
-      if (call === 0) { call++; return { from: () => ({ where: () => Promise.resolve([{ total: 3 }]) }) }; }
-      return { from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'snap1', totalDevices: 10 }]) }) }) }) };
+  // #10396: computed live (the snapshot table has no writer), unnarrowed.
+  it('computes org-wide figures for an unrestricted caller without a device scan', async () => {
+    const selected: string[][] = [];
+    mockDb.select.mockImplementation((cols?: Record<string, unknown>) => {
+      const keys = cols ? Object.keys(cols) : [];
+      selected.push(keys);
+      const rows = keys.includes('approved') ? [{ total: 3 }]
+        : keys.includes('devicesNeedingPatches') ? [{ pending: 4, installed: 2, failed: 0, missing: 0, devicesNeedingPatches: 3 }]
+          : [{ deviceCount: 10 }];
+      const where = () => Promise.resolve(rows);
+      return { from: () => ({ where, innerJoin: () => ({ where }) }) };
     });
-    const r = await handlerFor('manage_patches')({ action: 'compliance' }, makeAuthWithPartner(undefined, 'p1'));
-    expect(JSON.parse(r).snapshot.id).toBe('snap1');
+    const parsed = JSON.parse(await handlerFor('manage_patches')({ action: 'compliance' }, makeAuthWithPartner(undefined, 'p1')));
+    expect(parsed.snapshot.totalDevices).toBe(10);
+    expect(parsed.snapshot.compliantDevices).toBe(7);
+    expect(parsed.snapshot.siteScoped).toBeUndefined();
+    expect(parsed.approvals.total).toBe(3);
+    // No per-device site scan for an unrestricted caller.
+    expect(selected.some((k) => k.length === 2 && k.includes('siteId'))).toBe(false);
   });
 });
 

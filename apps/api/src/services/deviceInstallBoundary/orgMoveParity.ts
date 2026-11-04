@@ -42,6 +42,9 @@ export const ORG_MOVE_PARITY: Readonly<Record<string, OrgMoveParityEntry>> = {
   'table:device_wake_attempts': { boundary: 'work_in_flight', tables: ['device_wake_attempts'] },
 
   // The move's own locks, guards and step-up.
+  'call:detachPsaMappingsForDeviceMove': {
+    moveOnly: 'cross-partner move refuses open PSA work and severs source-partner ledger pointers; a reattach keeps the tenant and PSA history',
+  },
   'call:lockOrgTicketLinks': { moveOnly: 'ticket-link lock taken for the org change' },
   'call:lockActorAssurance': { moveOnly: 'step-up admission of the mover (the reattach consumes its own at request, §8)' },
   'call:consumeStepUpGrant': { moveOnly: 'step-up admission of the mover (the reattach consumes its own at request, §8)' },

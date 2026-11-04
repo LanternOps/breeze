@@ -1,5 +1,9 @@
 // apps/api/src/services/aiOperator/targetService.test.ts
 import { describe, expect, it, vi } from 'vitest';
+
+const reserveTaskAccount = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('./accountReservations', () => ({ reserveTaskAccount }));
+
 import {
   CONTACT_LINK_SYSTEMS,
   createTaskTarget,
@@ -52,6 +56,19 @@ describe('targetService — kind/pointer agreement (recipe spec §5.1)', () => {
     });
     expect((values.mock.calls as unknown as Array<[Record<string, unknown>]>)[0]![0]).toMatchObject({
       provider: 'google', googleConnectionId: 'conn-1', m365ConnectionId: null,
+    });
+  });
+
+  it('#9981: every freeze reserves the account it froze, for the same task, on the same handle', async () => {
+    const values = vi.fn(() => ({ onConflictDoUpdate: () => ({ returning: async () => [{ id: 'acct-1' }] }) }));
+    const dbh = { insert: vi.fn(() => ({ values })), update: vi.fn(), select: vi.fn() } as never;
+    reserveTaskAccount.mockClear();
+    await freezeTargetAccount(dbh, {
+      orgId: 'org-1', taskId: 'task-1', targetId: 'target-1', provider: 'm365',
+      connectionId: 'conn-1', externalId: 'entra-oid-1', principalLabel: 'dana@acme.com',
+    });
+    expect(reserveTaskAccount).toHaveBeenCalledWith(dbh, {
+      orgId: 'org-1', taskId: 'task-1', provider: 'm365', externalId: 'entra-oid-1', principalLabel: 'dana@acme.com',
     });
   });
 

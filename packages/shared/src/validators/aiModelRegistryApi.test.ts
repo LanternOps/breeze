@@ -1,6 +1,6 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { z } from 'zod';
-import { AI_AGENT_ESCALATION_ROLES, MAX_FALLBACK_OFFERINGS } from '../constants/aiSurfaces';
+import { AI_AGENT_ESCALATION_ROLES, AI_SURFACES, MAX_FALLBACK_OFFERINGS } from '../constants/aiSurfaces';
 import type { AiAssignmentRowDto, AiUsageBreakdownDto, AiUsageRowDto } from '../types/aiModelRegistry';
 import {
   AI_ASSIGNMENT_WRITE_ROLES,
@@ -13,6 +13,8 @@ import {
   type AiUsageGroupBy,
   CONFIGURABLE_AI_SURFACES,
   CONFIGURABLE_AI_SURFACE_ROLES,
+  isConfigurableAiSurface,
+  PLATFORM_ONLY_AI_SURFACES,
   orgAssignmentInputSchema,
   partnerAssignmentInputSchema,
   MAX_AI_USAGE_RANGE_DAYS,
@@ -34,6 +36,18 @@ describe('CONFIGURABLE_AI_SURFACES', () => {
   it('is every surface except the platform-only patch_test', () => {
     expect(CONFIGURABLE_AI_SURFACES).not.toContain('patch_test');
     expect(CONFIGURABLE_AI_SURFACES).toHaveLength(9);
+  });
+});
+
+describe('isConfigurableAiSurface (#9496)', () => {
+  it('is false for the platform-only surfaces and true for every other surface', () => {
+    expect(PLATFORM_ONLY_AI_SURFACES).toEqual(['patch_test']);
+    for (const s of AI_SURFACES) {
+      expect(isConfigurableAiSurface(s)).toBe(!(PLATFORM_ONLY_AI_SURFACES as readonly string[]).includes(s));
+    }
+  });
+  it('is false for an unknown surface string (rows are read as text)', () => {
+    expect(isConfigurableAiSurface('not_a_surface')).toBe(false);
   });
 });
 

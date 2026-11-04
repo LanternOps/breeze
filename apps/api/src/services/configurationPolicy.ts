@@ -69,6 +69,7 @@ import {
   onedriveHelperInlineSettingsSchema,
   remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
   systemProtectionInlineSettingsSchema,
+  containmentInlineSettingsSchema,
   timeSyncInlineSettingsSchema,
   workloadInventoryInlineSettingsSchema,
   warrantyInlineSettingsSchema,
@@ -1211,6 +1212,7 @@ async function decomposeInlineSettings(
     case 'vulnerability':
     case 'device_lifecycle':
     case 'system_protection':
+    case 'containment':
     case 'security_agents':
       // Pure JSONB — no normalized table needed
       break;
@@ -1332,6 +1334,7 @@ async function deleteNormalizedRows(
     case 'vulnerability':
     case 'device_lifecycle':
     case 'system_protection':
+    case 'containment':
     case 'security_agents':
       // Pure JSONB — no normalized table to delete
       break;
@@ -1638,6 +1641,7 @@ async function assembleInlineSettings(
     case 'vulnerability':
     case 'device_lifecycle':
     case 'system_protection':
+    case 'containment':
     case 'security_agents':
       // Pure JSONB — settings stored directly on feature link
       return null;
@@ -1925,6 +1929,11 @@ export async function addFeatureLink(
     inlineSettings = systemProtectionInlineSettingsSchema.parse(inlineSettings);
   }
 
+  if (featureType === 'containment') {
+    if (featurePolicyId) throw new Error('containment is inline-only; featurePolicyId must not be set');
+    inlineSettings = containmentInlineSettingsSchema.parse(inlineSettings);
+  }
+
   // #5511 W02: warranty gains an hpCmsl block whose consent only the server may
   // write. There is no stored row yet on this path, so `stored` is null and an
   // enable always stamps fresh.
@@ -2094,6 +2103,13 @@ export async function updateFeatureLink(
 
     if (existing.featureType === 'system_protection' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
       updates.inlineSettings = systemProtectionInlineSettingsSchema.parse(updates.inlineSettings);
+    }
+
+    if (existing.featureType === 'containment') {
+      if (updates.featurePolicyId) throw new Error('containment is inline-only; featurePolicyId must not be set');
+      if (updates.inlineSettings !== undefined) {
+        updates.inlineSettings = containmentInlineSettingsSchema.parse(updates.inlineSettings);
+      }
     }
 
     // #6960: same backstop as addFeatureLink, on whichever fields are sent.
@@ -3190,6 +3206,8 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   // the generated software policy is owned on the config policy's own axis and
   // found via software_policies.managed_by_link_id.
   'security_agents',
+  // #10100: partner-wide inline settings; featurePolicyId is always refused below.
+  'containment',
 ]);
 
 /**
@@ -3440,7 +3458,8 @@ export async function validateFeaturePolicyExists(
     featureType === 'device_lifecycle' ||
     featureType === 'monitors' ||
     featureType === 'warranty' ||
-    featureType === 'system_protection'
+    featureType === 'system_protection' ||
+    featureType === 'containment'
   ) {
     // These have no policy table — they require inlineSettings.
     //

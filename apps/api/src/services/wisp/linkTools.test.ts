@@ -311,6 +311,17 @@ describe('wisp link tools — handlers', () => {
     expect(JSON.parse(await run('list_links', { limit: 51 })).error).toBe('invalid_input');
   });
 
+  it('list_links at the default cap shows all 50 pins and reports the 20 held-back autos', async () => {
+    links.listLinks.mockResolvedValueOnce([
+      ...Array.from({ length: 50 }, (_, i) => link({ id: `pin-${i}`, source: 'user_pin' })),
+      ...Array.from({ length: 20 }, (_, i) => link({ id: `auto-${i}`, source: 'auto' })),
+    ]);
+    const out = fencedJson(await run('list_links', {})) as { links: Array<{ source: string }>; more: number };
+    expect(out.links).toHaveLength(50);
+    expect(out.links.every((l) => l.source === 'user_pin')).toBe(true);
+    expect(out.more).toBe(20);
+  });
+
   it('list_links pages to limit and says how many it held back', async () => {
     const many = Array.from({ length: 5 }, (_, i) => link({ id: `l${i}`, label: `t${i}` }));
     links.listLinks.mockResolvedValueOnce(many);

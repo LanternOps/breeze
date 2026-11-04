@@ -76,6 +76,7 @@ import { businessCalendarRoutes } from './routes/businessCalendars';
 import { ticketRoutingRuleRoutes } from './routes/tickets/routingRules';
 import { ticketResponseTemplateRoutes } from './routes/tickets/ticketResponseTemplates';
 import { ticketFormRoutes } from './routes/tickets/forms';
+import { serviceCatalogRoutes } from './routes/tickets/serviceCatalog';
 import { tenantVariableRoutes } from './routes/tenantVariables';
 import { orgRoutes } from './routes/orgs';
 import { orgMergeRoutes } from './routes/orgMerge';
@@ -119,6 +120,7 @@ import { apiKeyRoutes } from './routes/apiKeys';
 import { servicePrincipalRoutes } from './routes/servicePrincipals';
 import { partnerServicePrincipalRoutes } from './routes/partnerServicePrincipals';
 import { migrationWindowRoutes } from './routes/migrationWindows';
+import { ticketImportRoutes } from './routes/ticketImports';
 import { partnerApiRoutes } from './routes/partnerApi';
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './routes/enrollmentKeys';
 import { installerRoutes } from './routes/installer';
@@ -148,6 +150,7 @@ import { fleetFindingsRoutes } from './routes/fleetFindings';
 import { discoveryRoutes } from './routes/discovery';
 import { discoveryAssetProbeRoutes } from './routes/discoveryAssetProbe';
 import { discoveryAssetPlacementRoutes } from './routes/discoveryAssetPlacement';
+import { discoveryAssetCircuitsRoutes } from './routes/discoveryAssetCircuits';
 import { monitoringAssetMetricsRoutes } from './routes/monitoringAssetMetrics';
 import { topologyRoutes } from './routes/topology';
 import { circuitRoutes } from './routes/circuits';
@@ -319,6 +322,7 @@ import {
 import { registerAiAgentEnqueuer } from './jobs/aiAgentEnqueuer';
 import { backfillC2cConnectionSecrets } from './services/c2cSecrets';
 import { backfillDefaultPatchSchedules } from './jobs/patchScheduleBackfill';
+import { reconcileDecommissionedDynamicMemberships } from './jobs/decommissionedGroupMembershipReconcile';
 import { registerAllEventSubscribers } from './services/eventSubscribers';
 import { registerTopologyPhysicalAuthorities } from './services/topology/physicalAuthorities';
 import { initializeDeviceEventHandlers } from './events/deviceEvents';
@@ -894,6 +898,7 @@ api.route('/business-calendars', businessCalendarRoutes);
 api.route('/ticket-routing-rules', ticketRoutingRuleRoutes);
 api.route('/', ticketResponseTemplateRoutes);
 api.route('/', ticketFormRoutes);
+api.route('/', serviceCatalogRoutes);
 api.route('/', tenantVariableRoutes);
 // Self-contained autopay auth must run before the broad org/portal routers.
 api.route('/autopay/public', publicAutopayRoutes);
@@ -941,6 +946,8 @@ api.route('/service-principals', servicePrincipalRoutes);
 api.route('/partner-service-principals', partnerServicePrincipalRoutes);
 // Ticket migration windows (#8313): partner-wide admin grants of import mode.
 api.route('/migration-windows', migrationWindowRoutes);
+// Ticket import framework (#8313 W4): sources, mappings and import runs.
+api.route('/ticket-imports', ticketImportRoutes);
 api.route('/partner-api', partnerApiRoutes);
 api.route('/enrollment-keys', publicEnrollmentRoutes); // Public download (no auth) — must precede auth-protected routes
 api.route('/enrollment-keys', enrollmentKeyRoutes);
@@ -1060,6 +1067,7 @@ api.route('/discovery', discoveryAssetProbeRoutes);
 // GET/PUT/DELETE /discovery/assets/:id/placement — physical placement, #8134.
 // Another sub-router at the same prefix; no path overlap, so order is immaterial.
 api.route('/discovery', discoveryAssetPlacementRoutes);
+api.route('/discovery', discoveryAssetCircuitsRoutes);
 api.route('/network/baselines', networkBaselineRoutes);
 api.route('/network/changes', networkChangeRoutes);
 api.route('/portal', portalRoutes);
@@ -1941,6 +1949,21 @@ async function bootstrap(): Promise<void> {
   } catch (err) {
     console.error('[startup] Failed to backfill default patch schedules:', err);
   }
+
+  // #9933: devices removed before dynamic groups started excluding
+  // decommissioned devices kept their non-pinned dynamic rows. Enqueue the
+  // normal device.created re-evaluation for each; once the jobs run the query
+  // finds nothing, so this is a no-op on later boots. Not awaited: it only
+  // enqueues, and boot should not wait on Redis round-trips per device.
+  void reconcileDecommissionedDynamicMemberships()
+    .then((result) => {
+      if (result.scanned > 0) {
+        console.log(`[startup] Queued dynamic-group re-evaluation for ${result.enqueued} removed device(s) (${result.failed} failed)`);
+      }
+    })
+    .catch((err) => {
+      console.error('[startup] Failed to reconcile removed devices out of dynamic groups:', err);
+    });
 
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)
   //

@@ -28,6 +28,8 @@ const (
 	TypePamDialogResult         = "pam_dialog_result"
 	TypePamDismissConsent       = "pam_dismiss_consent"
 	TypePamDismissConsentResult = "pam_dismiss_consent_result"
+	TypePamCloseDialog          = "pam_close_dialog"
+	TypePamCloseDialogResult    = "pam_close_dialog_result"
 
 	// Phase 4: Desktop + Clipboard
 	TypeDesktopStart  = "desktop_start"
@@ -287,6 +289,12 @@ type AuthRequest struct {
 	// targeted dismissal, because they would ignore the target (#8995).
 	SupportsTargetedPamDismiss bool `json:"supportsTargetedPamDismiss,omitempty"`
 
+	// SupportsPamDialogClose advertises that this SYSTEM helper honours
+	// pam_close_dialog: it takes down its own open PAM elevation dialog for a
+	// request and reports once the window is gone (#10370). Additive: older
+	// helpers omit it and are never sent the verb.
+	SupportsPamDialogClose bool `json:"supportsPamDialogClose,omitempty"`
+
 	// PromptProtocolVersion advertises the prompt host contract this
 	// renderer speaks (ipc.PromptProtocolVersion; absent = 0 = none). The
 	// broker clamps it to its own. Additive (#10190).
@@ -423,11 +431,31 @@ type PamDismissConsentRequest struct {
 	DeadlineUnixMs int64 `json:"deadlineUnixMs"`
 	// Instance, when set, restricts the dismissal to that one consent.exe
 	// process: the helper must leave every other UAC prompt alone and report
-	// no_consent_window if the instance is gone. Absent on the deny path, which
-	// keeps its untargeted behaviour. Only sent to helpers that advertised
+	// no_consent_window if the instance is gone. Absent on an untargeted
+	// dismissal (a deny whose consent.exe is unknown, and PAM gate recovery
+	// probes). Only sent to helpers that advertised
 	// AuthRequest.SupportsTargetedPamDismiss — an older helper would ignore the
 	// field and dismiss whatever prompt it found (#8995).
 	Instance *PamConsentInstance `json:"instance,omitempty"`
+}
+
+// PamCloseDialog asks the SYSTEM helper to take down its own PAM elevation
+// dialog for DialogID (the envelope ID the pam_request_dialog was sent with)
+// before the agent dismisses consent.exe on the deny path (#10370). The
+// dialog is topmost and takes the foreground, so while it is open an Escape
+// meant for the UAC prompt can land on it instead.
+type PamCloseDialog struct {
+	DialogID string `json:"dialogId"`
+}
+
+// PamCloseDialogResult reports whether the dialog is gone. WasOpen is false
+// when no dialog for DialogID was open (already answered or timed out on its
+// own); Closed is then true. Closed=false means the window could still be on
+// screen when the helper replied.
+type PamCloseDialogResult struct {
+	Closed  bool   `json:"closed"`
+	WasOpen bool   `json:"wasOpen"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 // PamConsentInstance identifies one consent.exe process by PID plus its
@@ -480,8 +508,13 @@ type DesktopStartRequest struct {
 	StartGeneration string          `json:"startGeneration,omitempty"`
 	Offer           string          `json:"offer"`
 	ICEServers      json.RawMessage `json:"iceServers,omitempty"`
-	DisplayIndex    int             `json:"displayIndex"`
-	GPUVendor       string          `json:"gpuVendor,omitempty"`
+	// RelayOnly is set by the server while the device is network-isolated
+	// (OD9): the helper must use ICETransportPolicyRelay with TURN servers
+	// only. Additive and omitempty — an older helper ignores it, an older
+	// service never sends it (false), so non-isolated sessions are unchanged.
+	RelayOnly    bool   `json:"relayOnly,omitempty"`
+	DisplayIndex int    `json:"displayIndex"`
+	GPUVendor    string `json:"gpuVendor,omitempty"`
 	// Agent-enforced session policy (findings #2, #7). Clipboard direction gates
 	// are pointers so an older service that doesn't set them leaves the helper at
 	// permissive defaults (preserve existing behavior). Timeouts of 0 = disabled.
@@ -665,6 +698,15 @@ type TCCStatus struct {
 	FullDiskAccess       bool      `json:"fullDiskAccess"`
 	RemoteDesktop        *bool     `json:"remoteDesktop,omitempty"`
 	CheckedAt            time.Time `json:"checkedAt"`
+	// DenialVerdict names why Screen Recording or Accessibility is denied
+	// (#10300): "requirement_mismatch" (the TCC row's stored code
+	// requirement does not match this binary), "legacy_row_no_csreq" (a
+	// requirement-less row from the retired self-heal), "not_granted",
+	// "unexplained" (the row matches; the cause is elsewhere) or
+	// "unobservable" (the row could not be read). Empty when nothing is
+	// denied, and from helpers older than #10300: readers must treat an
+	// absent value as "not diagnosed", never as healthy.
+	DenialVerdict string `json:"denialVerdict,omitempty"`
 }
 
 // SessionInfoItem describes one interactive Windows session for the

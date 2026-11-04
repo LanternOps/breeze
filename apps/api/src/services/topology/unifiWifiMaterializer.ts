@@ -98,8 +98,10 @@ export function buildUnifiWifiRows(input: { scope: TopologyScope; capturedAt: Da
     const row = rowFor(detail.deviceId);
     row.detailObservedAt = input.capturedAt;
     row.radioOverview = detail.radios;
+    if (detail.radios !== null && detail.radios.length > 0) capable.add(detail.deviceId); // spec 6.2: non-empty radios confirm AP for this poll
   }
   for (const stats of (byKind('statistics')?.rows ?? []) as RowsOf<'statistics'>) {
+    if (!capable.has(stats.deviceId)) continue;
     const row = rowFor(stats.deviceId);
     row.statisticsObservedAt = input.capturedAt;
     row.uptimeSeconds = stats.uptimeSeconds;

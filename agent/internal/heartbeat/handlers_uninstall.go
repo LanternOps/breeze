@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/isolation"
 	"github.com/breeze-rmm/agent/internal/macosuninstall"
 	"github.com/breeze-rmm/agent/internal/psscript"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -73,6 +76,10 @@ func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 		"removeConfig", removeConfig,
 	)
 
+	if err := releaseIsolationForUninstallFn(h); err != nil {
+		return tools.NewErrorResult(fmt.Errorf("self-uninstall refused: isolation release could not be confirmed; agent service remains installed: %w", err), time.Since(start).Milliseconds())
+	}
+
 	if err := prepareSelfUninstallFn(removeConfig); err != nil {
 		log.Error("self-uninstall preparation failed — teardown NOT handed off, agent service remains installed",
 			"error", err.Error(),
@@ -95,9 +102,27 @@ func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 // result otherwise, no shutdown scheduled on failure) is unit-testable without
 // touching a real service manager or exiting the test process.
 var (
+	releaseIsolationForUninstallFn  = releaseIsolationForUninstall
 	prepareSelfUninstallFn          = prepareSelfUninstall
 	scheduleSelfUninstallShutdownFn = scheduleSelfUninstallShutdown
 )
+
+// Release uses the live manager when available so it shares the request's
+// machine lock and journal. A local manager also covers legacy initialization
+// paths; absence is never inferred from the advertised capability.
+func releaseIsolationForUninstall(h *Heartbeat) error {
+	ctx := context.Background()
+	if h != nil && h.containment != nil {
+		if releaser, ok := h.containment.manager.(interface {
+			ReleaseAll(context.Context, string) error
+		}); ok {
+			return releaser.ReleaseAll(ctx, "uninstall")
+		}
+		return errors.New("containment manager cannot confirm uninstall release")
+	}
+	dir := config.GetDataDir()
+	return isolation.NewManager(isolation.ManagerDeps{DataDir: dir, Isolator: isolation.NewPlatformIsolator(), Scheduler: isolation.NewPlatformScheduler(dir)}).ReleaseAll(ctx, "uninstall")
+}
 
 // scheduleSelfUninstallShutdown shuts the agent down gracefully once the
 // result has had time to be submitted. The detached helper stops the service
@@ -175,21 +200,46 @@ type darwinUninstallScriptOptions struct {
 	DelaySeconds    int
 }
 
+// darwinUninstallIsolationLog records a teardown aborted by an unconfirmed
+// isolation release: by then the command result has already been sent.
+const darwinUninstallIsolationLog = "/Library/Logs/Breeze/uninstall-isolation-release-error.txt"
+
 // buildDarwinUninstallScript renders the detached teardown script for macOS.
-// Phase 1 already neutralized the watchdog in-process; the script re-asserts
-// it (bootout + pkill) BEFORE stopping the agent daemon as a backstop, so a
-// watchdog that survived phase 1 cannot respawn the agent mid-teardown.
-// Config removal happens here — after the agent process is dead — so the
+// It first re-confirms that network isolation is released (the handler did so
+// in-process, but the device can be isolated again before this runs); if that
+// fails it undoes phase 1's disable of the agent daemon and stops, so the
+// device keeps its agent and its recovery jobs. The watchdog phase 1 removed
+// is not restored here (ensureMissingWatchdog handles a missing one). Phase 1
+// already neutralized the watchdog in-process; the script re-asserts it (bootout + pkill) BEFORE
+// stopping the agent daemon as a backstop, so a watchdog that survived phase 1
+// cannot respawn the agent mid-teardown. The release is confirmed again once
+// the agent has stopped, because until then it could isolate the device again,
+// and only then do the recovery jobs go; if that fails the agent is loaded
+// again. Config removal happens here — after the agent process is dead — so the
 // still-running agent cannot resurrect files (logs, sockets, state) under a
 // freshly-deleted directory.
 func buildDarwinUninstallScript(opts darwinUninstallScriptOptions) string {
+	abortLog := func(reason string) string {
+		return fmt.Sprintf("  { date; echo 'self-uninstall aborted: %s'; } >> %s 2>/dev/null", reason, shQuote(darwinUninstallIsolationLog))
+	}
 	lines := []string{
 		macosuninstall.Functions,
+		macosuninstall.IsolationFunctions,
+		"if ! breeze_release_isolation; then",
+		abortLog("isolation release could not be confirmed; agent daemon re-enabled"),
+		fmt.Sprintf("  launchctl enable system/%s", shQuote(opts.Label)),
+		"  exit 1",
+		"fi",
 		fmt.Sprintf("sleep %d", opts.DelaySeconds),
 		fmt.Sprintf("breeze_bootout system/%s || exit 1", shQuote(opts.WatchdogLabel)),
 		fmt.Sprintf("pkill -x %s", shQuote(opts.WatchdogProcess)),
 		"breeze_stop_helpers || exit 1",
 		fmt.Sprintf("breeze_bootout system/%s || exit 1", shQuote(opts.Label)),
+		"if ! breeze_release_isolation || ! breeze_remove_isolation; then",
+		abortLog("after the agent stopped, the isolation release could not be confirmed or its recovery jobs could not be removed; agent daemon loaded again"),
+		fmt.Sprintf("  breeze_restart_agent %s %s", shQuote(opts.Label), shQuote(opts.PlistPath)),
+		"  exit 1",
+		"fi",
 		fmt.Sprintf("rm -f %s || exit 1", shQuote(opts.PlistPath)),
 		fmt.Sprintf("rm -f %s || exit 1", shQuote(opts.BinaryPath)),
 		"breeze_remove_auxiliary || exit 1",
@@ -396,7 +446,10 @@ type windowsUninstallScriptOptions struct {
 // buildWindowsUninstallScript renders the detached PowerShell teardown script.
 // Ordering is load-bearing:
 //
-//  1. re-assert the watchdog teardown FIRST (phase 1 already stopped/deleted
+//  0. confirm isolation release; if it fails, re-enable the agent service
+//     (undoing phase 1's start=disabled and cleared recovery actions), log
+//     under <ConfigDir>\logs, and abort without teardown,
+//  1. re-assert the watchdog teardown (phase 1 already stopped/deleted
 //     it, but sc.exe stop is asynchronous — a watchdog that survived phase 1
 //     must be dead before the agent stops or it may respawn it),
 //  2. Stop-Service on the agent (waits for Stopped — this is what kills the
@@ -413,7 +466,24 @@ type windowsUninstallScriptOptions struct {
 // SilentlyContinue: by this point the process that could report errors is
 // gone, so best-effort is all there is.
 func buildWindowsUninstallScript(opts windowsUninstallScriptOptions) string {
+	// Phase 1 already disabled the service and cleared its recovery actions.
+	// A failed release must undo that before aborting, or the device is left
+	// stopped and disabled (#2796) while Breeze-owned filters may remain.
 	lines := []string{
+		"try {",
+		fmt.Sprintf("  & '%s' containment release-all --reason uninstall", psQuote(opts.AgentBinaryPath)),
+		"  $breezeReleaseExit = $LASTEXITCODE",
+		"} catch { $breezeReleaseExit = 1 }",
+		"if ($breezeReleaseExit -ne 0) {",
+	}
+	if opts.ConfigDir != "" {
+		lines = append(lines, fmt.Sprintf("  \"$(Get-Date -Format o) self-uninstall aborted: isolation release could not be confirmed (exit $breezeReleaseExit); agent service re-enabled\" | Out-File -LiteralPath '%s' -Append -Encoding utf8 -ErrorAction SilentlyContinue", psQuote(strings.TrimRight(opts.ConfigDir, `\`)+`\logs\uninstall-isolation-release-error.txt`)))
+	}
+	lines = append(lines,
+		fmt.Sprintf("  sc.exe config '%s' start= auto | Out-Null", psQuote(opts.ServiceName)),
+		fmt.Sprintf("  sc.exe failure '%s' reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null", psQuote(opts.ServiceName)),
+		"  exit 1",
+		"}",
 		fmt.Sprintf("Start-Sleep -Seconds %d", opts.DelaySeconds),
 		fmt.Sprintf("sc.exe stop '%s' | Out-Null", psQuote(opts.WatchdogServiceName)),
 		fmt.Sprintf("sc.exe delete '%s' | Out-Null", psQuote(opts.WatchdogServiceName)),
@@ -423,7 +493,7 @@ func buildWindowsUninstallScript(opts windowsUninstallScriptOptions) string {
 		"Start-Sleep -Seconds 1",
 		fmt.Sprintf("Remove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", psQuote(opts.WatchdogBinaryPath)),
 		fmt.Sprintf("Remove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", psQuote(opts.AgentBinaryPath)),
-	}
+	)
 	if opts.RemoveConfig && opts.ConfigDir != "" {
 		lines = append(lines,
 			fmt.Sprintf("Remove-Item -LiteralPath '%s' -Recurse -Force -ErrorAction SilentlyContinue", psQuote(opts.ConfigDir)),

@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
-	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -58,6 +57,8 @@ var (
 // real ones.
 type ManagerDeps struct {
 	Isolator Isolator
+	// BinaryPaths returns the currently installed protected binaries.
+	BinaryPaths func() []string
 	// Scheduler arms the recovery tasks; Scheduler.Ready reports recovery
 	// readiness (self-test passed, tasks registered and read back).
 	Scheduler RecoveryScheduler
@@ -82,6 +83,10 @@ type Manager struct {
 	deps ManagerDeps
 
 	opMu sync.Mutex
+	// prevBins and handoffBins live until this process exits. Kernel rules and
+	// their journalled digest carry the handoff across restart; no new schema.
+	prevBins    []string
+	handoffBins []string
 
 	snapMu sync.RWMutex
 	snap   *journal.Journal
@@ -277,8 +282,9 @@ func (o *op) end() {
 func (o *op) now() time.Time { return o.m.deps.Clock.Now() }
 
 // load reads the journal into the op. A missing journal is an empty one; a
-// corrupt or unknown-schema journal is set aside and replaced by an empty
-// one whose rules must all be deleted.
+// corrupt or unknown-schema journal is represented by an empty one whose
+// rules must all be deleted. Keep the unreadable file until a replacement is
+// durably persisted: a failed cleanup must never look like a missing journal.
 func (o *op) load() error {
 	j, err := journal.Load(o.m.path())
 	switch {
@@ -290,9 +296,6 @@ func (o *op) load() error {
 		o.state = stateFromJournal(o.j)
 	case errors.Is(err, journal.ErrCorrupt) || errors.Is(err, journal.ErrUnknownSchema):
 		log.Warn("isolation journal unreadable; deleting every Breeze-owned rule", "error", err.Error())
-		if rerr := os.Rename(o.m.path(), o.m.path()+".corrupt"); rerr != nil {
-			log.Warn("could not set the unreadable isolation journal aside; it will be overwritten", "error", rerr.Error())
-		}
 		o.j, o.missing = journal.New(), false
 		o.j.Append(o.now(), "journal_reset", "", 0, truncate(err.Error(), 300))
 		o.state = stateFromJournal(o.j)
@@ -315,9 +318,9 @@ func (o *op) load() error {
 // accounts for: after a corrupt journal, or (checkOwned) when the journal is
 // missing or terminal but the isolator still owns rules.
 func (o *op) cleanupOrphans(checkOwned bool) {
-	if checkOwned && !o.state.RulesMayExist && !activePhase(o.state.Phase) && o.cap.Version >= 1 {
+	if checkOwned && !o.state.RulesMayExist && !activePhase(o.state.Phase) {
 		owned, err := o.m.deps.Isolator.Owned(o.ctx)
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrUnsupported) {
 			log.Warn("could not check for Breeze-owned isolation rules", "error", err.Error())
 		}
 		if err == nil && owned {
@@ -435,7 +438,13 @@ func (o *op) exec(e Effect) Event {
 		}
 		d, err := iso.Apply(o.ctx, a.spec)
 		if err != nil {
-			return o.attemptFailed(e.AttemptID, FailApplyError, "apply: "+err.Error())
+			code := FailApplyError
+			// The host cannot safely host the rules (pf compatibility, OD13):
+			// nothing was installed, and the console shows why.
+			if errors.As(err, new(ErrIncompatible)) {
+				code = FailMechanismUnavailable
+			}
+			return o.attemptFailed(e.AttemptID, code, "apply: "+err.Error())
 		}
 		a.digest = d
 	case EffRunProbes:
@@ -457,6 +466,7 @@ func (o *op) exec(e Effect) Event {
 		if e.Prior {
 			prior, err := priorSpec(o.j)
 			if err == nil {
+				prior.BinaryPaths = o.m.binaryPaths()
 				_, err = iso.Apply(o.ctx, prior)
 			}
 			if err != nil {
@@ -753,7 +763,7 @@ func (o *op) persist(next LocalState, ev Event, effects []Effect) error {
 			ep.AppliedAt = now
 		}
 	}
-	if terminalSeq > 0 && (next.Phase == journal.PhaseReleased || next.Phase == journal.PhaseRolledBack) {
+	if terminalSeq > 0 && (next.Phase == journal.PhaseReleased || next.Phase == journal.PhaseRolledBack || (next.Phase == journal.PhaseNone && next.ReleaseKind == ReleaseSystem)) {
 		j.PendingReport = &journal.TerminalReceipt{
 			IsolationID: next.IsolationID, Generation: next.Generation, State: next.State,
 			Kind: next.ReleaseKind, FailureCode: next.FailureCode, At: now, JournalSeq: terminalSeq,
@@ -927,6 +937,7 @@ func (o *op) resolveAttempt(id string, gen int, relay bool, allow []AllowEntry) 
 		}
 		resolved[host] = strs
 	}
+	spec.BinaryPaths = o.m.binaryPaths()
 	return &attemptCtx{id: newAttemptID(), allow: append([]AllowEntry(nil), allow...), proxy: proxy, spec: spec, resolved: resolved}, nil
 }
 
@@ -1185,6 +1196,7 @@ func (m *Manager) HandleIsolate(ctx context.Context, payload map[string]any) Com
 //  8. retake the lock, re-check attempt, deadline and digest;
 //  9. journal committed + fsync, disarm, report verified.
 func (m *Manager) isolate(ctx context.Context, spec Spec) CommandOutcome {
+	RefreshReadiness(ctx, m.deps.Isolator)
 	c := m.deps.Isolator.Capability()
 	if c.Version < 1 {
 		return unsupportedOutcome(spec.IsolationID, spec.Generation, c)
@@ -1325,6 +1337,7 @@ func (o *op) reverify() {
 		o.noteError("rebuild the journalled rules: " + err.Error())
 		return
 	}
+	stored.BinaryPaths = o.m.binaryPaths()
 	d, verr := o.m.deps.Isolator.Verify(o.ctx, stored)
 	if verr != nil || string(d) != ep.RuleDigest {
 		log.Warn("isolation rules drifted; re-applying", "isolationId", ep.IsolationID)
@@ -1446,7 +1459,11 @@ func (m *Manager) Tick(ctx context.Context) {
 }
 
 func (o *op) tick() {
-	o.cleanupOrphans(o.missing)
+	// Startup inspects the engine for orphans at any capability. The periodic
+	// tick does so only once this build can isolate: at capability 0 a
+	// never-isolated device would otherwise open a WFP session (Windows) or log
+	// ErrUnsupported (Linux/macOS) every minute, fleet-wide.
+	o.cleanupOrphans(o.missing && o.cap.Version >= 1)
 	if o.crashed || o.lockLost {
 		return
 	}
@@ -1509,6 +1526,11 @@ func (m *Manager) Startup(ctx context.Context) {
 	}
 	o.m.forceReverify.Store(true)
 	o.tick()
+	// Rebuild with this process's protected paths only after re-reading and
+	// re-verifying the inherited kernel rules. Recovery never prunes permits.
+	if !o.crashed && !o.lockLost && o.state.Phase == journal.PhaseCommitted && len(m.binaryPaths()) > 0 {
+		o.refresh(nil, false)
+	}
 }
 
 // LocalRelease is `breeze-agent containment release --code <c> | --force`,

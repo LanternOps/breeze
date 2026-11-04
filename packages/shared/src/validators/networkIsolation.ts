@@ -2,9 +2,11 @@ import { z } from 'zod';
 import {
   AGENT_REPORTABLE_STATES,
   ISOLATION_JOURNAL_PHASES,
+  ISOLATION_RESULT_PHASE_BY_STATE,
   ISOLATION_MECHANISMS,
   NETWORK_ISOLATION_LIMITS,
   NETWORK_ISOLATION_TTL,
+  type IsolationOrderingKey,
 } from '../utils/networkIsolation';
 
 /**
@@ -38,6 +40,14 @@ const cidrSchema = z
   .union([z.cidrv4(), z.cidrv6()])
   // Isolation never carries a blanket permit (spec §3.4).
   .refine((cidr) => !cidr.endsWith('/0'), { message: 'a /0 permit is not allowed' });
+
+/** Building blocks reused by the containment policy's `extraAllow` (#10100); prefixed to keep the barrel unambiguous. */
+export {
+  portsSchema as isolationPortsSchema,
+  protoSchema as isolationProtoSchema,
+  hostNameSchema as isolationHostNameSchema,
+  cidrSchema as isolationCidrSchema,
+};
 
 export const isolationAllowEntrySchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('host'), host: hostNameSchema, proto: protoSchema, ports: portsSchema, scope: scopeSchema }),
@@ -77,7 +87,7 @@ export type ExtendNetworkIsolationInput = z.infer<typeof extendNetworkIsolationS
 const timestampSchema = z.string().datetime({ offset: true });
 
 /** A string cut to `max` characters (code points) instead of failing validation. */
-function truncated(max: number) {
+export function truncated(max: number) {
   return z.string().transform((s) => Array.from(s).slice(0, max).join(''));
 }
 
@@ -153,10 +163,12 @@ const reportExtras = {
  * the server ships before any agent that could send a new member, and the caller (W1b reconcile) logs
  * a report it cannot parse.
  */
+const orderingKeyShape = {
+  isolationId: z.uuid(), generation: z.number().int().min(1), journalSeq: z.number().int().min(0),
+} satisfies { [K in keyof IsolationOrderingKey]: z.ZodType<IsolationOrderingKey[K]> };
+
 const activeReportSchema = z.object({
-  isolationId: z.uuid(),
-  generation: z.number().int().min(1),
-  journalSeq: z.number().int().min(0),
+  ...orderingKeyShape,
   state: z.enum(AGENT_REPORTABLE_STATES),
   phase: z.enum(ISOLATION_JOURNAL_PHASES),
   mechanism: z.enum(ISOLATION_MECHANISMS).nullish(),
@@ -177,3 +189,16 @@ const absentReportSchema = z.object({
 
 export const networkIsolationReportSchema = z.union([activeReportSchema, absentReportSchema]);
 export type NetworkIsolationReport = z.infer<typeof networkIsolationReportSchema>;
+
+/** Result evidence uses the same closed report vocabulary; W1d omits heartbeat-only phase. */
+export const networkIsolationResultSchema = activeReportSchema.extend({
+  phase: z.enum(ISOLATION_JOURNAL_PHASES).optional(),
+  verifiedAt: timestampSchema.nullish(),
+  rollback: z.boolean().optional(),
+  errorCode: z.string().max(128).regex(/^[a-z0-9_]+$/).optional(),
+}).transform(({ verifiedAt, ...report }) => ({
+  ...report,
+  phase: report.phase ?? ISOLATION_RESULT_PHASE_BY_STATE[report.state],
+  lastVerifiedAt: report.lastVerifiedAt ?? verifiedAt,
+}));
+export type NetworkIsolationResult = z.infer<typeof networkIsolationResultSchema>;

@@ -387,7 +387,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   // multiplied by 100, or the customer is over-charged 100x (see stripeMoney.ts).
   const chargeMinor = toMinorUnits(chargeNow.amount, inv.currencyCode);
   if (chargeMinor <= 0) return c.json({ error: 'Nothing to pay', code: ERROR_CODES.CONFLICT }, 409);
-  const { expiresAt: providerExpiresAtEpoch, quantum: expiryQuantum } = checkoutSessionExpiry();
+  const { expiresAt: providerExpiresAtEpoch, quantum: expiryQuantum } = checkoutSessionExpiry(inv.createdAt);
   let capture: Awaited<ReturnType<typeof prepareCardPayAndSave>>;
   try {
     capture = await prepareCardPayAndSave(inv.id, auth.user.orgId, {
@@ -492,7 +492,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     // balance charge (different product name but equal amount), so the amount alone
     // can't disambiguate — the explicit dep/bal discriminator does.
     // `_e<quantum>`: `expires_at` is part of the request and Stripe
-    // refuses an idempotent replay whose parameters moved, so the hour quantum
+    // refuses an idempotent replay whose parameters moved, so the invoice-anchored bucket start
     // is folded into the key — see checkoutSessionExpiry().
     // `_pd`: the request carries a PaymentIntent description (see services/invoiceCheckout.ts).
     idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${capture ? `_save_${capture.id}` : ''}_e${expiryQuantum}_pd`,

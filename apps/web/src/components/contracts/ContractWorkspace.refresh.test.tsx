@@ -26,9 +26,9 @@ vi.mock('../../stores/auth', () => ({
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 // The real button self-gates on the Wisp flag + grant (its own suite covers that).
-vi.mock('@/components/wisp/WispLinkButton', () => ({
-  default: ({ kind, id, orgId }: { kind: string; id: string; orgId: string | null }) => (
-    <div data-testid="wisp-link-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} />
+vi.mock('@/components/wisp/WispTalkButton', () => ({
+  default: ({ kind, id, orgId, label }: { kind: string; id: string; orgId: string | null; label: string }) => (
+    <div data-testid="wisp-talk-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} data-label={label} />
   ),
 }));
 vi.mock('./ContractDetail', () => ({ default: () => <div data-testid="mock-contract-detail" /> }));
@@ -74,7 +74,7 @@ describe('ContractWorkspace background refresh (#9305)', () => {
     expect(screen.queryByTestId('contract-workspace-loading')).toBeNull();
   });
 
-  it('mounts the Link-to-Wisp button in the header with the contract and its org (W08 Task 10)', async () => {
+  it('mounts the Talk-to-Wisp button in the header with the contract and its org (W08 Task 10)', async () => {
     vi.mocked(getContract).mockResolvedValue({
       ok: true,
       status: 200,
@@ -83,7 +83,8 @@ describe('ContractWorkspace background refresh (#9305)', () => {
       }),
     } as Response);
     render(<ContractWorkspace contractId="c1" />);
-    const button = await screen.findByTestId('wisp-link-button-mock');
+    const button = await screen.findByTestId('wisp-talk-button-mock');
+    expect(button.getAttribute('data-label')?.trim()).toBeTruthy();
     expect(button).toHaveAttribute('data-kind', 'contract');
     expect(button).toHaveAttribute('data-id', 'c1');
     expect(button).toHaveAttribute('data-org', 'org-7');

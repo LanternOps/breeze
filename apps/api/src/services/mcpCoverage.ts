@@ -313,6 +313,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'alertTemplates/templates.ts': { tools: ['manage_alert_rules'] },
   'alerts/alerts.ts': { tools: ['manage_alerts'] },
   'alerts/alertExternalTickets.ts': { tools: ['manage_alerts'] },
+  'alerts/alertPsaTicket.ts': { exempt: 'vendor_console_admin', note: 'Manual alert -> PSA ticket admission (#10499 W2-C); a human decision to raise a ticket in the external PSA, like psaAlertTicketing.ts.' },
   'alerts/channels.ts': { tools: ['manage_notification_channels'] },
   'alerts/correlations.ts': { tools: ['get_alert_correlations', 'manage_alert_correlations'] }, // W07 (#6777)
   'alerts/delivery.ts': { tools: ['manage_delivery'] },
@@ -409,6 +410,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'catalog/enrich.ts': { exempt: 'internal_plumbing', note: "AI copy-polish endpoint backing the catalog UI; the AI can draft copy and call manage_billing_catalog directly. From #6795." },
   'catalog/pricing.ts': { tools: ['manage_billing_catalog'] },
   'changes.ts': { tools: ['query_change_log'] },
+  'assetCircuitsResponse.ts': { exempt: 'internal_plumbing', note: 'Shared response builder for the read-only asset circuits routes (W1-D2, #8134); not a route.' },
+  'sitePermissionScope.ts': { exempt: 'internal_plumbing', note: 'Shared caller permission / site-scope helper for circuit and topology routes (W1-D2, #8134); not a route.' },
   'circuits.ts': { exempt: 'internal_plumbing', note: 'Circuits CRUD, termination and served sites (W1-B, #8134): the spec defines no AI/MCP tool for circuits or the WAN role; not an AI surface in this wave.' },
   'cisHardening.ts': { tools: ['get_cis_compliance', 'get_cis_device_report', 'apply_cis_remediation'] },
   'clientAi/admin.ts': { exempt: 'addin_surface' },
@@ -467,10 +470,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/eventlogs.ts': { tools: ['search_logs', 'get_log_trends', 'detect_log_correlations'] },
   'devices/events.ts': { tools: ['get_device_events'] }, // W13 (#6783)
   'devices/filesystem.ts': { tools: ['analyze_disk_usage', 'disk_cleanup'] },
-  // list/run/status are the same OS-native cleanup workflow as the `system_cleanup`
-  // AI tool (W05 gap triage). The route's cancel endpoint (#6485 F-5) has no
-  // matching `system_cleanup` action yet -- a small future addition, not a
-  // fresh MCP_COVERAGE gap.
+  // list/run/status/cancel are the same OS-native cleanup workflow as the
+  // `system_cleanup` AI tool (W05 gap triage; cancel = #6485 F-5 route, AI action #10161).
   'devices/filesystemSystemCleanup.ts': { tools: ['system_cleanup'] },
   'devices/function.ts': { tools: ['manage_device_function'] }, // W13 (#6783)
   'devices/groups.ts': { tools: ['manage_groups'] },
@@ -486,10 +487,17 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // GET /devices/:id/monitors (#6371 W05c2): the same per-device monitor state
   // is agent-reachable per monitor via get_monitor_activity's deviceId filter.
   'devices/monitors.ts': { tools: ['list_monitors', 'get_monitor_activity', 'reset_monitor_escalation'] },
+  // W13 (#10101): start is execute_containment with actionType network_isolation, and release
+  // is the four-eyes release_containment, both through the isolation service. Extend, acknowledge
+  // and the break-glass code stay human-only. The external MCP refuses release_containment by
+  // name and execute_containment when actionType is network_isolation.
+  'devices/networkIsolation.ts': { tools: ['execute_containment', 'release_containment'] },
+  'agents/isolationVerify.ts': { exempt: 'agent_transport' },
   'devices/forceReboot.ts': { exempt: 'human_only_force_reboot', note: 'Force reboot now: closes running apps; step-up bound to one device.' },
   'devices/moveOrg.ts': { exempt: 'human_only_tenant_restructure', note: 'Cross-tenant device move -- rewrites which tenant owns the device.' },
   'devices/network.ts': { tools: ['list_network_assets'] },
   'devices/options.ts': { exempt: 'internal_plumbing' },
+  'devices/circuits.ts': { exempt: 'internal_plumbing', note: 'Read-only WAN circuits/interfaces of a device for the placement card (W1-D2, #8134): the spec defines no AI/MCP tool for circuits.' },
   'devices/placement.ts': { tools: ['get_device_details'] },
   'devices/patches.ts': { tools: ['manage_patches'] },
   'devices/posture.ts': { tools: ['get_management_posture'] }, // W13 (#6783)
@@ -512,6 +520,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // (W04) serves the per-workload list.
   'devices/workloads.ts': { tools: ['query_device_workloads'] },
   'discovery.ts': { tools: ['list_network_assets', 'get_network_asset', 'network_discovery', 'get_network_asset_reachability'] },
+  'discoveryAssetCircuits.ts': { exempt: 'internal_plumbing', note: 'Read-only WAN circuits/interfaces of a discovered asset for the placement card (W1-D2, #8134): the spec defines no AI/MCP tool for circuits.' },
   'discoveryAssetPlacement.ts': { tools: ['get_network_asset'] },
   'discoveryAssetProbe.ts': { tools: ['probe_network_asset'] }, // W09 (#6779): "Check now", tier 2, site-strict executor
   'dnsSecurity.ts': { tools: ['get_dns_security', 'manage_dns_policy'] },
@@ -603,7 +612,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'partner.ts': { exempt: 'internal_plumbing', note: "/me + dashboard reads; get_executive_summary already overlaps most of the value. From #6801." },
   'partnerAiDataPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Partner default/ceiling of the AI data policy (device file read level, tool-output retention) -- the AI must not set its own data-handling policy.' },
   'partnerAiScriptPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Partner-wide ceiling on the unattended AI lane -- the AI must not widen its own authority.' },
-  'partnerSettingsInheritance.ts': { exempt: 'tool_in_later_wave', note: 'Partner-settings inheritance read model (#9170 W3); read tool tracked in #9763.' },
+  'partnerSettingsInheritance.ts': { tools: ['get_partner_settings_inheritance'] }, // #9763: tab counts + org drill-down, same full-partner gate
   'partnerApi/alerts.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/tickets.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API tickets feed for service principals; in-product ticket reads already have tools (manage_tickets).' },
   'partnerApi/alertWrites.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API alert acknowledge and resolve for service principals; in-product alert writes already have tools (manage_alerts).' },
@@ -615,6 +624,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'partnerApi/devices.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/inventory.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'migrationWindows.ts': { exempt: 'human_only_tenant_restructure', note: 'Ticket migration windows (#8313): opening one widens a keyless partner service principal into import mode and needs the owner, an interactive session and a step-up grant; closing is a full-partner-admin action. No AI tool.' },
+  'ticketImports/runs.ts': { exempt: 'human_only_migration', note: 'Ticket import runs (#8313 W4): a dry run or an import into a migration window that only the principal owner can open, started and read by a partner-wide admin from the import wizard. Spec 2026-10-19 §5.7 gives the import no AI tool.' },
+  'ticketImports/sources.ts': { exempt: 'human_only_migration', note: 'Ticket import sources (#8313 W4): connecting a foreign helpdesk with a stored credential, mapping its orgs and groups, and the preflight. Owner-only and MFA-gated partner-admin actions with no AI tool (spec 2026-10-19 §5.7).' },
   'partnerApi/organizations.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/provisioning.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/relationships.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
@@ -767,6 +778,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // #8883 W5 (spec §5.7): reads and the dry run are tier 1; create/update/
   // reorder/delete are the tier-3 manage tool, partner-wide gate in the service.
   'tickets/routingRules.ts': { tools: ['list_ticket_routing_rules', 'test_ticket_routing_rule', 'manage_ticket_routing_rules'] },
+  'tickets/serviceCatalog.ts': { exempt: 'tool_in_later_wave', note: 'Service catalog management routes (#8325 wave A1); no MCP tool planned yet (#8325).' },
   'tickets/ticketResponseTemplates.ts': { tools: ['manage_ticket_response_templates'] }, // W06 (#6776)
   'tickets/tickets.ts': { tools: ['manage_tickets'] },
   'timeEntries/index.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },

@@ -135,7 +135,7 @@ vi.mock('./policy', () => ({
 import { APIUserAbortError } from '@anthropic-ai/sdk';
 import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
 import { turnBindingFrom } from '../aiModels/turnBinding';
-import { ProposalNotReviewableError, runScriptReview, REVIEWER_PROMPT_VERSION } from './reviewer';
+import { ProposalNotReviewableError, runScriptReview, REVIEWER_PROMPT_VERSION, SCRIPT_REVIEW_MAX_OUTPUT_TOKENS } from './reviewer';
 
 const MODEL = 'claude-sonnet-5-5';
 const resolvedOk = () => makeResolvedModel('platform', { surface: 'script_reviewer', partnerId: PARTNER_ID, orgId: ORG_ID });
@@ -267,7 +267,7 @@ describe('runScriptReview — happy path', () => {
     // content delimited, device facts present, nothing session-shaped.
     expect(shared.messagesCreateMock).toHaveBeenCalledTimes(1);
     const [createArgs, createOpts] = shared.messagesCreateMock.mock.calls[0]! as [Record<string, unknown>, Record<string, unknown>];
-    expect(createArgs).toMatchObject({ model: MODEL, max_tokens: 2_000 });
+    expect(createArgs).toMatchObject({ model: MODEL, max_tokens: SCRIPT_REVIEW_MAX_OUTPUT_TOKENS });
     // Thinking/effort come from the resolved wire params, never per-model-id literals.
     expect(createArgs).toMatchObject({ thinking: { type: 'adaptive' }, output_config: { effort: 'medium' } });
     expect(createArgs).not.toHaveProperty('tools');
@@ -642,6 +642,29 @@ describe('runScriptReview — review-round fixes (#5636)', () => {
     expect(shared.insertValues.at(-1)).toMatchObject({ verdict: { rawText: 'Sure! Here is my review in prose…' } });
     expect(shared.captureExceptionMock).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ service: 'scriptReview', reviewStatus: 'failed' }));
   });
+
+  // #10971 — US prod 2026-11-04: adaptive thinking ate the whole output cap
+  // and the cut-off verdict was reported as "no parseable JSON verdict".
+  it('a verdict cut off by max_tokens fails with an output-budget reason, settles the real spend, and keeps the raw text', async () => {
+    queueReadsThroughModelCall();
+    shared.reserveAiBudgetMock.mockResolvedValueOnce(RESERVED);
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row-cap', reviewerKind: 'model', status: 'failed' }]);
+    shared.messagesCreateMock.mockResolvedValueOnce({
+      usage: { input_tokens: 3200, output_tokens: SCRIPT_REVIEW_MAX_OUTPUT_TOKENS },
+      stop_reason: 'max_tokens',
+      content: [{ type: 'text', text: '{"summary": "The script blocks audit (SACL) inheri' }],
+    });
+
+    await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    const row = shared.insertValues.at(-1) as { status: string; summary: string; verdict: { rawText: string } };
+    expect(row.status).toBe('failed');
+    expect(row.summary).toMatch(/output budget/i);
+    expect(row.summary).not.toMatch(/parseable/i);
+    expect(row.verdict.rawText).toContain('The script blocks audit');
+    expectSettledOnce(3200, SCRIPT_REVIEW_MAX_OUTPUT_TOKENS);
+  });
 });
 
 describe('runScriptReview — registry resolution (W03 Task 11)', () => {
@@ -679,7 +702,7 @@ describe('runScriptReview — registry resolution (W03 Task 11)', () => {
     queueHappy();
     await runScriptReview(JOB);
     expect(shared.resolveModelMock).toHaveBeenCalledWith({
-      partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'script_reviewer', maxTokens: 2000,
+      partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'script_reviewer', maxTokens: SCRIPT_REVIEW_MAX_OUTPUT_TOKENS,
     });
     // A system call: no userId, so no per-user permission gate.
     expect(shared.resolveModelMock.mock.calls[0]![0]).not.toHaveProperty('userId');

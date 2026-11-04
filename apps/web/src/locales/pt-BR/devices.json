@@ -1746,6 +1746,11 @@
     "on": "ativado",
     "multiBootMachinesTuckExpectedOffline": "Máquinas com inicialização múltipla: recolha os perfis de inicialização que deveriam estar offline sob o perfil relacionado que está online, em faixas estreitas. Desativado = lista simples.",
     "collapseLinkedInactiveProfiles": "Recolher perfis inativos vinculados",
+    "exportCsv": "Exportar CSV",
+    "exportCsvSelected": "Exportar CSV ({{count}} selecionados)",
+    "exportingCsv": "Exportando…",
+    "exportCsvFailed": "Não foi possível exportar a lista de dispositivos. Tente novamente.",
+    "exportCsvAttentionPartial": "Exportado, mas não foi possível carregar alertas e tickets abertos de alguns dispositivos; essas células indicam \"unavailable\".",
     "columns": "Colunas",
     "visibleInOrder": "Visíveis (em ordem)",
     "moveUp": "Mover para cima",
@@ -1878,7 +1883,10 @@
     "moveToSite": "Mover para o site",
     "moveSelectedToSite": "Mover para o site",
     "moveSiteMixedOrgs": "Os dispositivos selecionados pertencem a mais de uma organização",
-    "moveSiteOverCap": "Selecione no máximo {{count}} dispositivos para mover de uma vez"
+    "moveSiteOverCap": "Selecione no máximo {{count}} dispositivos para mover de uma vez",
+    "addToGroup": "Adicionar ao grupo…",
+    "removeFromGroup": "Remover do grupo…",
+    "groupMembershipOverCap": "Selecione no máximo {{count}} dispositivos para alterar a associação ao grupo de uma vez"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Falha ao buscar os logs do dispositivo",
@@ -2895,7 +2903,10 @@
         "version": "Versão do software",
         "vendor": "Fornecedor do software"
       },
-      "logShippingFailing": "Envio de logs com falha"
+      "logShippingFailing": "Envio de logs com falha",
+      "networkIsolation": {
+        "active": "Isolado"
+      }
     }
   },
   "filterChipBar": {
@@ -2967,7 +2978,10 @@
         "version": "Versão do software",
         "vendor": "Fornecedor do software"
       },
-      "logShippingFailing": "Envio de logs com falha"
+      "logShippingFailing": "Envio de logs com falha",
+      "networkIsolation": {
+        "active": "Isolado"
+      }
     }
   },
   "filterHelpPopover": {
@@ -3058,7 +3072,10 @@
         "version": "Versão do software",
         "vendor": "Fornecedor do software"
       },
-      "logShippingFailing": "Envio de logs com falha"
+      "logShippingFailing": "Envio de logs com falha",
+      "networkIsolation": {
+        "active": "Isolado"
+      }
     }
   },
   "filterValueEditor": {
@@ -4705,6 +4722,48 @@
       "mfaRequired": "A autenticação multifator é necessária para alterar a localização física."
     }
   },
+  "assetCircuitCard": {
+    "title": "WAN e circuito",
+    "loadFailed": "Não foi possível carregar as informações de WAN e circuito.",
+    "empty": "Nenhum circuito registrado ou visível para você neste ativo.",
+    "provider": "Operadora",
+    "cid": "ID do circuito",
+    "bandwidth": "Largura de banda",
+    "serviceType": "Tipo de serviço",
+    "administrativeStatus": "Status administrativo",
+    "sitesServed": "Sites atendidos por este circuito",
+    "terminationSite": "Site de terminação: {{site}} (de {{asset}} / {{iface}})",
+    "terminationSiteBare": "Site de terminação: {{site}}",
+    "terminationUnassigned": "Terminação não atribuída",
+    "terminationNeedsReassociation": "A terminação precisa ser reassociada",
+    "interfaces": "Interfaces",
+    "noInterfaces": "Nenhuma interface registrada.",
+    "wanBadge": "WAN",
+    "retiredBadge": "Aposentada",
+    "markWan": "Marcar como WAN",
+    "unmarkWan": "Remover WAN",
+    "truncated": "Apenas algumas interfaces são exibidas.",
+    "unmarkConfirm": {
+      "title": "Remover a função WAN?",
+      "message": "{{name}} deixará de ser tratada como interface WAN."
+    },
+    "status": {
+      "active": "Ativo",
+      "planned": "Planejado",
+      "suspended": "Suspenso",
+      "disconnected": "Desconectado"
+    },
+    "toasts": {
+      "marked": "Interface marcada como WAN",
+      "unmarked": "Função WAN removida",
+      "failed": "Não foi possível atualizar a função WAN",
+      "mfaRequired": "A autenticação multifator é necessária para alterar a função WAN.",
+      "hasTermination": "Esta interface tem uma terminação de circuito ativa. Mova ou remova a terminação primeiro.",
+      "retired": "Esta interface está aposentada e não pode mais ser alterada.",
+      "notFound": "Interface não encontrada. A lista foi recarregada.",
+      "permissionDenied": "Você não tem permissão para alterar a topologia."
+    }
+  },
   "partnerGroups": {
     "ownerScope": "Proprietário do grupo",
     "organization": "Esta organização",
@@ -4727,5 +4786,100 @@
     "membersError": "Não foi possível carregar os membros do grupo.",
     "retry": "Tentar novamente",
     "emptyMembers": "Nenhum dispositivo neste grupo."
+  },
+  "bulkGroupMembership": {
+    "titleAdd": "Adicionar ao grupo",
+    "titleRemove": "Remover do grupo",
+    "selectionSummary": "Dispositivos selecionados: {{n}} · Organização: {{org}}",
+    "groupLabel": "Grupo estático",
+    "selectGroup": "Selecione um grupo",
+    "loadingGroups": "Carregando grupos…",
+    "noGroups": "Nenhum grupo estático desta organização pode receber esta seleção.",
+    "scopeHint": "Somente os grupos estáticos desta organização são listados. Um grupo de site aparece apenas quando todos os dispositivos selecionados estão nesse site. Grupos dinâmicos não são listados: suas regras decidem quem é membro.",
+    "cancel": "Cancelar",
+    "saving": "Salvando…",
+    "submitAdd": "Adicionar dispositivos",
+    "submitRemove": "Remover dispositivos",
+    "failedToLoadGroups": "Falha ao carregar os grupos",
+    "failedToUpdate": "Falha ao atualizar a associação ao grupo",
+    "addResult": "{{group}}: {{added}} adicionados, {{skipped}} já estavam no grupo",
+    "removeResult": "{{group}}: {{removed}} removidos, {{notMember}} não estavam no grupo",
+    "removeResultForbidden": "{{group}}: {{removed}} removidos, {{notMember}} não estavam no grupo. Não removidos (sem acesso ao site do dispositivo): {{devices}}",
+    "andMore": "{{names}} e mais {{n}}"
+  },
+  "networkIsolation": {
+    "heading": "Isolamento de rede",
+    "isolate": "Isolar da rede…",
+    "release": "Remover isolamento…",
+    "release_queued": "Remover (na fila até o dispositivo reconectar)",
+    "startTitle": "Isolar da rede",
+    "releaseTitle": "Remover isolamento de rede",
+    "startDescription": "Bloquear o tráfego de rede, exceto as comunicações de gerenciamento do Breeze.",
+    "releaseDescription": "Solicitar a remoção das regras de isolamento do Breeze. Um dispositivo offline recebe a liberação ao reconectar.",
+    "serverWarning": "Este é um sistema operacional de servidor. O isolamento pode interromper serviços de outros dispositivos.",
+    "reason": "Motivo",
+    "ttlHours": "Duração (horas)",
+    "incidentId": "ID de incidente existente (opcional)",
+    "incidentTitle": "Título do novo incidente",
+    "remoteRelay": "Manter a área de trabalho remota acessível pelo relay",
+    "startSuccess": "Isolamento de rede solicitado",
+    "releaseSuccess": "Remoção do isolamento solicitada",
+    "mutationError": "Não foi possível atualizar o isolamento de rede. Tente novamente.",
+    "loadError": "Não foi possível carregar o isolamento de rede. Tente novamente.",
+    "unavailable": "A elegibilidade para isolamento de rede não está disponível.",
+    "extend": "Estender isolamento",
+    "extendTitle": "Estender isolamento de rede",
+    "extendSuccess": "Expiração do isolamento estendida",
+    "isolatedExpires": "Isolado · expira em {{hours}} h",
+    "acknowledge": "Confirmar liberação local",
+    "acknowledgeSuccess": "Liberação local confirmada",
+    "acknowledgeError": "Não foi possível confirmar a liberação local",
+    "showCode": "Mostrar códigos de emergência",
+    "hideCode": "Ocultar códigos de emergência",
+    "codeCurrent": "Código atual",
+    "codeNext": "Código da próxima hora",
+    "codeValidUntil": "Código atual válido até {{date}}",
+    "codeError": "Não foi possível carregar os códigos de emergência. Tente novamente.",
+    "incidentHeading": "Isolamento de rede",
+    "retry": "Tentar novamente o status de isolamento",
+    "filterLabel": "Isolado",
+    "states": {
+      "requested": "Isolamento solicitado",
+      "dispatched": "Isolamento enviado",
+      "applying": "Aplicando isolamento",
+      "applied": "Verificando isolamento",
+      "verified": "Isolamento verificado",
+      "release_requested": "Liberação solicitada",
+      "released": "Isolamento removido",
+      "expired": "Isolamento expirado",
+      "failed": "Falha no isolamento",
+      "released_locally": "Liberado localmente · requer confirmação",
+      "self_released": "Liberado automaticamente · requer confirmação",
+      "uninstalled": "Agente desinstalado"
+    },
+    "refusal": {
+      "feature_disabled": "Novos isolamentos de rede estão desativados.",
+      "partner_not_enabled": "O isolamento de rede não está ativado para este parceiro.",
+      "agent_below_gate": "Atualize para uma versão do agente que suporte isolamento de rede.",
+      "agent_not_ready": "O agente não está pronto para aplicar o isolamento de rede.",
+      "device_lifecycle": "O status do ciclo de vida deste dispositivo impede um novo isolamento.",
+      "unsupported_platform": "Esta plataforma não suporta isolamento de rede.",
+      "trust_restricted": "O status de confiança do parceiro impede novos isolamentos.",
+      "isolation_already_active": "Este dispositivo já tem um episódio de isolamento ativo.",
+      "isolation_unacknowledged": "Confirme a liberação local anterior antes de iniciar outro isolamento.",
+      "incident_mismatch": "Escolha um incidente aberto da organização deste dispositivo.",
+      "site_forbidden": "Você não tem acesso ao local deste dispositivo.",
+      "device_not_found": "Este dispositivo não foi encontrado.",
+      "isolation_not_found": "Este episódio de isolamento não foi encontrado.",
+      "relay_unavailable": "Nenhum relay de área de trabalho remota está disponível. Desative a opção de relay ou configure TURN.",
+      "invalid_allowlist": "A lista de permissões de isolamento do servidor é inválida. Contate seu administrador.",
+      "isolation_conflict": "O episódio de isolamento mudou. Atualize o status e tente novamente.",
+      "isolation_secret_unavailable": "Os códigos de recuperação estão temporariamente indisponíveis. Contate seu administrador.",
+      "approval_mismatch": "A aprovação não corresponde a esta solicitação de isolamento.",
+      "device_offline": "O dispositivo está offline. Atualize o status antes de iniciar o isolamento.",
+      "device_decommissioned": "Um dispositivo desativado não pode iniciar um novo isolamento.",
+      "device_pending_assignment": "Atribua este dispositivo a uma organização antes de iniciar o isolamento.",
+      "backup_helper_update_required": "Atualize o auxiliar de backup antes de iniciar o isolamento."
+    }
   }
 }

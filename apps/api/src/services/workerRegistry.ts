@@ -87,6 +87,20 @@ export interface StartWorkersHooks {
  */
 export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
+    name: 'psaTicketingWorker', placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/psaTicketingWorker');
+      return { init: m.initializePsaTicketingWorker, shutdown: m.shutdownPsaTicketingWorker };
+    },
+  },
+  {
+    name: 'psaTicketingReconciler', placement: 'global', runsWithoutRedis: true,
+    load: async () => {
+      const m = await import('../jobs/psaTicketingReconciler');
+      return { init: m.initializePsaTicketingReconciler, startWithoutRedis: m.initializePsaTicketingReconciler, shutdown: m.shutdownPsaTicketingReconciler };
+    },
+  },
+  {
     name: 'topologyReconcileWorker', placement: 'global',
     load: async () => {
       const m = await import('../jobs/topologyReconcileWorker');
@@ -792,6 +806,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Ticket import framework (#8313 W4): one slice of an import run per job,
+    // self-continuing, under the per-partner + global lease. 'global': no
+    // socket-local dispatch (verified by workerEntrypointClosure.contract.test.ts).
+    name: 'ticketImportWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/ticketImportWorker');
+      return { init: m.initializeTicketImportWorker, shutdown: m.shutdownTicketImportWorker };
+    },
+  },
+  {
     name: 'partnerApiIdempotencyRetention',
     placement: 'global',
     load: async () => {
@@ -1412,6 +1437,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/pamJobs');
       return { init: m.initializePamJobs, shutdown: m.shutdownPamJobs };
+    },
+  },
+  {
+    name: 'networkIsolationSweeper',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/networkIsolationSweeper');
+      return { init: m.initializeNetworkIsolationSweeper, shutdown: m.shutdownNetworkIsolationSweeper };
     },
   },
   {

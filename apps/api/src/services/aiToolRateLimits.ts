@@ -182,6 +182,7 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   assign_security_training: { limit: 10, windowSeconds: 300 },
   // Registration-debt payoff: rate limits for newly-permissioned tools.
   execute_containment: { limit: 5, windowSeconds: 600 },       // mirrors s1_isolate_device
+  release_containment: { limit: 5, windowSeconds: 600 },       // W13 (#10101): same budget as isolating
   collect_evidence: { limit: 10, windowSeconds: 300 },          // mirrors take_screenshot-class dispatch
   remediate_software_violation: { limit: 10, windowSeconds: 600 }, // mirrors apply_cis_remediation
   // Full-control W04 (#6758, quorum QW11): spec wiring checklist item 3 — the

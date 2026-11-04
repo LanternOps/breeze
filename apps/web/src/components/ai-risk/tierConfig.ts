@@ -208,6 +208,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'list_org_contacts', description: 'List organization contacts', category: 'Integrations' },
       { name: 'list_sites', description: 'List organization sites', category: 'Integrations' },
       { name: 'get_site', description: 'Get site details', category: 'Integrations' },
+      { name: 'get_partner_settings_inheritance', description: 'Which organizations override a partner setting', category: 'Integrations' },
       { name: 'query_webhooks', description: 'List webhooks and delivery status', category: 'Integrations' },
       { name: 'query_psa_status', description: 'PSA connection status', category: 'Integrations' },
       { name: 'query_agent_versions', description: 'Agent versions and upgrade status', category: 'Integrations' },
@@ -375,7 +376,6 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_deployments (pause/resume)', description: 'Pause or resume deployments', category: 'Fleet Operations' },
       { name: 'manage_patches (approve/decline/defer)', description: 'Patch approval decisions', category: 'Fleet Operations' },
       { name: 'ioc_hunt (cancel_sweep)', description: 'Cancel an IOC sweep', category: 'Security & Compliance' },
-      { name: 'manage_groups (add_devices/remove_devices)', description: 'Manage group membership', category: 'Fleet Operations' },
       { name: 'manage_automations (enable/disable)', description: 'Toggle automation status', category: 'Fleet Operations' },
       { name: 'generate_report (create/update/delete/generate)', description: 'Report management', category: 'Fleet Operations' },
       // Ticketing (P2-4, #4191) — pre-existing gap, manage_tickets had zero
@@ -479,12 +479,15 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'security_scan (quarantine/remove/restore)', description: 'Threat management actions', category: 'Security & Compliance' },
       { name: 'ioc_hunt (sweep/import_iocs)', description: 'Run a detect-only IOC sweep in one organization (second approver above 25 devices) or import IOCs as detection rules', category: 'Security & Compliance' },
       { name: 'edr_endpoint_action (isolate/unisolate)', description: 'EDR network isolation or release through the linked vendor (release needs a second approver)', category: 'Security & Compliance' },
+      // Network-isolation W13 (#10101): four-eyes; isolating (execute_containment) stays supervised.
+      { name: 'release_containment', description: 'Lift a Breeze network isolation from a device (needs a second approver)', category: 'Security & Compliance' },
       { name: 'manage_software_policy (create/update/delete)', description: 'Software policy management', category: 'Security & Compliance' },
       { name: 'remediate_software_violation', description: 'Remediate software violations', category: 'Security & Compliance' },
       // Files, Disk & Registry
       { name: 'file_operations (read/write/delete/mkdir/rename)', description: 'Read or mutate files on device', category: 'Files, Disk & Registry' },
       { name: 'disk_cleanup (execute)', description: 'Execute disk cleanup', category: 'Files, Disk & Registry' },
       { name: 'system_cleanup (run)', description: 'Run OS-native cleaners (Windows Disk Cleanup/DISM, macOS snapshots/Homebrew, Linux caches/journal)', category: 'Files, Disk & Registry' },
+      { name: 'system_cleanup (cancel)', description: 'Cancel a running native cleanup run', category: 'Files, Disk & Registry' },
       { name: 'registry_operations (set_value/create_key/delete_key)', description: 'Modify Windows registry', category: 'Files, Disk & Registry' },
       // Network & DNS
       { name: 'network_discovery', description: 'Network discovery scan', category: 'Network & DNS' },
@@ -541,6 +544,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_deployments (create/start/cancel)', description: 'Create, start, or cancel deployments', category: 'Fleet Operations' },
       { name: 'manage_patches (install/rollback)', description: 'Install or rollback patches', category: 'Fleet Operations' },
       { name: 'manage_groups (create/update/delete)', description: 'Create, update, or delete device groups', category: 'Fleet Operations' },
+      // #10149: membership writes feed group-targeted policies and agent run scope.
+      { name: 'manage_groups (add_devices/remove_devices)', description: 'Add devices to or remove devices from a static group', category: 'Fleet Operations' },
       { name: 'manage_automations (run)', description: 'Run an automation on demand', category: 'Fleet Operations' },
       // Ticketing (P2-4, #4191)
       { name: 'manage_tickets (move_org)', description: 'Move a ticket to a different organization', category: 'Ticketing' },
@@ -551,6 +556,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Full-control W14 (#6784): what every organization (or one) is billed, and the legal documents customers sign.
       { name: 'manage_pax8_subscriptions (sync/link/unlink)', description: 'Supervised: sync every organization or change which contract line later orders bill (full partner access)', category: 'Billing' },
       { name: 'manage_pax8_orders (preflight)', description: 'Supervised: send staged order content to Pax8 for an isMock dry run', category: 'Billing' },
+      { name: 'manage_pax8_orders (submit)', description: 'Submit a billable Pax8 order at an estimated current rate; two people approve, changed inputs refuse, and cancellations are terminal (not offered to AI agents)', category: 'Billing' },
+      { name: 'manage_pax8_orders (reconcile)', description: 'Supervised: record Pax8 outcomes from vendor evidence and update billing quantities; conflicting billing edits are flagged for review', category: 'Billing' },
       { name: 'manage_billing_profiles (create/update/archive/set_rows/clone/create_work_type/update_work_type/set_org_profile/clear_org_profile)', description: 'Change rate cards and work types (every organization of the partner) or which card bills an organization', category: 'Billing' },
       { name: 'manage_billing_settings (update_partner/update_org)', description: 'Change invoice defaults, customer-facing invoice text, or an organization\'s tax, terms and billing contact', category: 'Billing' },
       { name: 'manage_contract_templates (create_version/publish/archive)', description: 'Add a draft version, publish it for signature, or archive an organization\'s agreement template (not offered to AI agents)', category: 'Billing' },
@@ -729,6 +736,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Tier 2 without a screenshot; a screenshot (or unreadable evidenceTypes) needs approval (tier 3 supervised)
   { toolName: 'collect_evidence', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'execute_containment', tier: 3, permission: 'devices.execute + alerts.write', category: 'Security & Compliance' },
+  { toolName: 'release_containment', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 's1_isolate_device', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 's1_threat_action', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'sync_huntress_data', tier: 2, permission: 'organizations.write', category: 'Security & Compliance' },
@@ -1049,6 +1057,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   ioc_hunt: { list_rule_sets: 'devices.read', preview_sweep: 'devices.read', list_sweeps: 'devices.read', sweep_status: 'devices.read', sweep: 'devices.execute', cancel_sweep: 'devices.execute', import_iocs: 'devices.write' },
   get_security_posture: 'devices.read',
   get_trust_page_status: 'organizations.read',
+  get_partner_settings_inheritance: 'organizations.read',
   // Tool Catalog W03 (#5218)
   draft_flow: 'automations.write',
   validate_flow: 'automations.read',
@@ -1065,7 +1074,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   test_ticket_routing_rule: 'tickets.read',
   // Files & disk
   disk_cleanup: { preview: 'devices.read', execute: 'devices.execute' },
-  system_cleanup: { list: 'devices.execute', run: 'devices.execute', status: 'devices.read' },
+  system_cleanup: { list: 'devices.execute', run: 'devices.execute', cancel: 'devices.execute', status: 'devices.read' },
   file_operations: { list: 'devices.read', read: 'devices.read', write: 'devices.execute', delete: 'devices.execute', mkdir: 'devices.execute', rename: 'devices.execute' },
   // Registry
   registry_operations: { read_key: 'devices.execute', get_value: 'devices.execute', set_value: 'devices.execute', create_key: 'devices.execute', delete_key: 'devices.execute' },

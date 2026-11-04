@@ -2,6 +2,7 @@ import { isIP } from 'net';
 import { parseCimdAllowedHosts } from '../oauth/cimdHosts';
 import { MAX_BOOTSTRAP_TOKEN_TTL_MINUTES } from '@breeze/shared';
 import { parseUnattendedPrincipals } from '../services/mcpUnattendedPrincipals';
+import { TICKET_IMPORT_LIMIT_ENV_VARS } from '../services/ticketImport/importLimits';
 import { z } from 'zod';
 import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m365ControlPlane/runtimeConfig';
 import { validateM365CustomerGraphActionsRuntimeConfigAtBoot } from '../services/m365ControlPlane/writeActionRuntimeConfig';
@@ -650,6 +651,46 @@ const envObjectSchema = z
       .string()
       .optional()
       .describe('Attachment bytes one migration window may download and store per hour. A plain positive integer; default 2147483648 (2 GiB), never below 10485760 (one file).'),
+    // Ticket import worker knobs (#8313 W4, services/ticketImport/importLimits.ts):
+    // read per use through positiveIntEnv, which falls back to the default on
+    // anything but a plain positive integer and clamps into range. Declared so
+    // collectWarnings() reports an ignored value once at boot; not boot-refused.
+    TICKET_IMPORT_WORKER_CONCURRENCY: z
+      .string()
+      .optional()
+      .describe('Import slices one API process runs at once. Default 3, at most 32.'),
+    TICKET_IMPORT_GLOBAL_CONCURRENCY: z
+      .string()
+      .optional()
+      .describe('Import slices holding the lease across every process. Default 2; always kept below TICKET_IMPORT_WORKER_CONCURRENCY.'),
+    TICKET_IMPORT_LEASE_MS: z
+      .string()
+      .optional()
+      .describe('Lifetime of an import slice lease in ms, renewed every third of it. Default 60000, between 5000 and 600000.'),
+    TICKET_IMPORT_SLICE_MS: z
+      .string()
+      .optional()
+      .describe('Work one import slice does before it hands over, in ms. Default 300000, between 5000 and 3600000.'),
+    TICKET_IMPORT_SOURCE_CONCURRENCY: z
+      .string()
+      .optional()
+      .describe('Requests in flight to one import source at once. Default 2, at most 16.'),
+    TICKET_IMPORT_SOURCE_TIMEOUT_MS: z
+      .string()
+      .optional()
+      .describe('Timeout of one request to an import source, in ms. Default 30000, between 1000 and 300000.'),
+    TICKET_IMPORT_MAX_CLOCK_SKEW_MS: z
+      .string()
+      .optional()
+      .describe('How far in the future a source time may be and still be clamped to now, in ms. Default 300000.'),
+    TICKET_IMPORT_MAX_ISSUES_PER_RUN: z
+      .string()
+      .optional()
+      .describe('Report rows one import run keeps; counters stay exact beyond it. Default 50000.'),
+    TICKET_IMPORT_MAX_TICKET_BYTES: z
+      .string()
+      .optional()
+      .describe('Converted content of one imported ticket in bytes. Default 268435456 (256 MiB), between 1 MiB and 2 GiB.'),
     MFA_RECOVERY_CODE_PEPPER: z.string().optional(),
     BREEZE_BOOTSTRAP_ADMIN_EMAIL: z.string().optional(),
     BREEZE_BOOTSTRAP_ADMIN_PASSWORD: z.string().optional(),
@@ -1153,6 +1194,8 @@ const envObjectSchema = z
     // boot-refuses instead of silently staying on.
     HEARTBEAT_RETAIN_STATE_ENABLED: z.enum(['true', 'false']).default('true'),
     AGENT_ECH_ENABLED: z.enum(['true', 'false']).default('true'),
+    NETWORK_ISOLATION_ENABLED: z.enum(['true', 'false']).default('false'),
+    NETWORK_ISOLATION_ENABLED_PARTNER_IDS: z.string().refine(value => !value.trim() || value.split(',').every(id => z.string().uuid().safeParse(id.trim()).success), 'Expected comma-separated partner UUIDs').optional(),
 
     // Phase 2 of per-partner LLM BYOK (#3922), Task 3.1 — gates catalog-mode
     // routing (partner_ai_connections.catalog_entry_id). Off by default so a
@@ -3041,6 +3084,26 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
       message:
         `"${importBytesRaw}" is not a plain positive integer number of bytes; ` +
         'the default of 2147483648 (2 GiB) per window per hour applies.',
+    });
+  }
+
+  // The ticket import worker's knobs (services/ticketImport/importLimits.ts)
+  // are plain positive integers; anything else falls back to its default.
+  // The global lease cap is kept below the worker concurrency, so a slot is
+  // always free to defer a refused slice: say so when the values given say
+  // otherwise.
+  for (const key of TICKET_IMPORT_LIMIT_ENV_VARS) {
+    const raw = (env[key] ?? '').trim();
+    if (raw !== '' && !(/^\d+$/.test(raw) && Number.parseInt(raw, 10) > 0)) {
+      warnings.push({ key, message: `"${raw}" is not a plain positive integer; the default applies.` });
+    }
+  }
+  const importWorkers = Number.parseInt((env.TICKET_IMPORT_WORKER_CONCURRENCY ?? '').trim() || '3', 10);
+  const importGlobal = Number.parseInt((env.TICKET_IMPORT_GLOBAL_CONCURRENCY ?? '').trim() || '2', 10);
+  if (Number.isFinite(importWorkers) && Number.isFinite(importGlobal) && importWorkers > 1 && importGlobal >= importWorkers) {
+    warnings.push({
+      key: 'TICKET_IMPORT_GLOBAL_CONCURRENCY',
+      message: `${importGlobal} is not below TICKET_IMPORT_WORKER_CONCURRENCY (${importWorkers}); ${importWorkers - 1} applies.`,
     });
   }
 

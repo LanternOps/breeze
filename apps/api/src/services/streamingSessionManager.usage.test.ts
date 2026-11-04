@@ -164,6 +164,7 @@ async function runSession(
     budgetReservationId?: string;
     sdkSessionId?: string | null;
     withExtra?: boolean;
+    autoLinkCount?: number;
   } = {},
 ) {
   let releaseGate!: () => void;
@@ -185,6 +186,13 @@ async function runSession(
     (_u: { inputTokens: number; outputTokens: number; costCents: number }) => Promise.resolve(),
   );
   if (opts.withExtra) session.recordExtraUsage = recordExtraUsage;
+  expect(session.pendingTurnAutoLinkCount).toBe(0);
+  if (opts.autoLinkCount !== undefined) {
+    session.pendingTurnAutoLinkCount = opts.autoLinkCount;
+    // A focal hook follows postToolUse, so a real reservation always has a
+    // completed tool call to drive abandoned-turn settlement too.
+    session.pendingTurnToolExecutionCount = 1;
+  }
   releaseGate();
   await session.processorPromise;
   const doneUsage = session.eventBus
@@ -195,6 +203,13 @@ async function runSession(
 }
 
 describe('result settlement — partner-scoped sessions (#3095)', () => {
+  it.each(['completed', 'abandoned'])('resets focal auto-link reservations with tool usage on a %s turn', async (outcome) => {
+    const messages = outcome === 'completed' ? [result(100, 50)] : [];
+    const { session } = await runSession(`auto-link-${outcome}`, messages, { autoLinkCount: 5 });
+    expect(session.pendingTurnAutoLinkCount).toBe(0);
+    expect(session.pendingTurnToolExecutionCount).toBe(0);
+  });
+
   it('threads a durable reservation into the settlement', async () => {
     await runSession('sess-reserved', [result(100, 50)], { budgetReservationId: '77777777-7777-4777-8777-777777777777' });
 

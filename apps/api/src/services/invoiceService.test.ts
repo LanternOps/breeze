@@ -3,6 +3,18 @@ vi.mock('./autopay/invoiceControls', () => ({ renoticeSchedule: controls.renotic
 const { plan } = vi.hoisted(() => ({ plan: vi.fn().mockResolvedValue(null) }));
 vi.mock('./autopay/scheduler', () => ({ planAutopayForInvoice: plan }));
 
+// Partner billing master switch: driven by `billingGate.off`; the real gate is
+// proven in invoiceBillingGate.test.ts.
+const billingGate = vi.hoisted(() => ({ off: false, orgIds: [] as unknown[] }));
+vi.mock('./invoiceBillingGate', async () => {
+  const { InvoiceServiceError } = await import('./invoiceTypes');
+  const check = async (orgId?: unknown) => {
+    billingGate.orgIds.push(orgId);
+    if (billingGate.off) throw new InvoiceServiceError('Not found', 404, 'BILLING_DISABLED');
+  };
+  return { assertInvoiceBillingEnabled: check, assertInvoiceBillingEnabledById: check };
+});
+
 vi.mock('./autopay/reservation', () => ({
   assertCollectionAmountAvailable: vi.fn().mockResolvedValue(undefined),
   assertNoActiveCollection: vi.fn().mockResolvedValue(undefined),
@@ -3319,4 +3331,51 @@ it('projects all unresolved money after invoice authorization even with no autop
  const predicate=(db as unknown as {where:Mock}).where.mock.calls.at(-1)![0] as SQL;
  expect(new PgDialect().sqlToQuery(predicate).params).toEqual(['i1','org1','unapplied']);
  expect(detail.autopay).toBeNull();
+});
+
+describe('partner billing master switch (billing_enabled=false)', () => {
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+  const draft = { id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', siteId: null, currencyCode: 'USD' };
+  const sent = { ...draft, status: 'sent' };
+  beforeEach(() => { results.length = 0; setCalls.calls.length = 0; billingGate.orgIds.length = 0; billingGate.off = true; vi.clearAllMocks(); });
+  afterEach(() => { billingGate.off = false; });
+
+  const cases: Array<[string, unknown[], () => Promise<unknown>]> = [
+    ['createManualInvoice', [], () => svc.createManualInvoice({ orgId: 'org1' }, actor)],
+    ['assembleDraftFromOrg', [], () => svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-01-01', to: '2026-01-31' }, actor)],
+    ['assembleDraftFromTicket', [{ orgId: 'org1' }], () => svc.assembleDraftFromTicket('t1', actor)],
+    ['updateInvoice', [draft], () => svc.updateInvoice('i1', { notes: 'x' }, actor)],
+    ['deleteDraftInvoice', [draft], () => svc.deleteDraftInvoice('i1', actor)],
+    ['addManualLine', [draft], () => svc.addManualLine('i1', { name: 'x', quantity: 1, unitPrice: 1, taxable: false } as never, actor)],
+    ['addCatalogLine', [draft], () => svc.addCatalogLine('i1', 'cat1', 1, actor)],
+    ['addBundleLine', [draft], () => svc.addBundleLine('i1', 'b1', 1, actor)],
+    ['updateLine', [draft], () => svc.updateLine('i1', 'l1', { quantity: 2 }, actor)],
+    ['removeLine', [draft], () => svc.removeLine('i1', 'l1', actor)],
+    ['changeInvoiceCurrency', [draft], () => svc.changeInvoiceCurrency('i1', { currencyCode: 'EUR' }, actor)],
+    ['updateIssuedDueDate', [sent], () => svc.updateIssuedDueDate('i1', '2026-12-01', actor)],
+    ['refreshDraftTimeLines', [draft], () => svc.refreshDraftTimeLines('i1', actor)],
+    ['issueInvoice', [draft], () => svc.issueInvoice('i1', actor)],
+    ['voidInvoice', [], () => svc.voidInvoice('i1', 'dup', {}, actor)],
+  ];
+
+  it.each(cases)('%s -> 404 BILLING_DISABLED, no write attempted', async (_name, rows, run) => {
+    if (rows.length) queueResult(rows);
+    await expect(run()).rejects.toMatchObject({ status: 404, code: 'BILLING_DISABLED', message: 'Not found' });
+    expect(setCalls.calls).toEqual([]);
+    expect(billingGate.orgIds.length).toBeGreaterThan(0);
+  });
+
+  it.each(cases.filter(([n]) => !['createManualInvoice', 'assembleDraftFromOrg', 'assembleDraftFromTicket', 'voidInvoice'].includes(n)))(
+    '%s resolves the org from the already-loaded invoice row (no extra query)', async (_name, rows, run) => {
+      queueResult(rows);
+      await expect(run()).rejects.toMatchObject({ code: 'BILLING_DISABLED' });
+      expect(billingGate.orgIds).toEqual(['org1']);
+    });
+
+  it('recordPayment and getInvoice are never gated (gate not consulted)', async () => {
+    queueResult([draft]);
+    await svc.recordPayment('i1', { amount: 1, method: 'cash', paidAt: '2026-01-01T00:00:00Z' } as never, actor).catch(() => undefined);
+    await svc.getInvoice('i1', actor).catch(() => undefined);
+    expect(billingGate.orgIds).toEqual([]);
+  });
 });

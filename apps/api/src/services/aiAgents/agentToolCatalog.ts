@@ -244,6 +244,9 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   edr_endpoint_action: 'security_response',
   sync_edr_data: 'security_response',
   execute_containment: 'security_response',
+  // W13 (#10101): mapped because every registered tool must be; unreachable for
+  // agents through AGENT_HUMAN_ONLY_TOOLS (a release is a four-eyes human decision).
+  release_containment: 'security_response',
   apply_cis_remediation: 'security_response',
   get_cis_compliance: 'security_response',
   get_cis_device_report: 'security_response',
@@ -490,6 +493,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   get_site: 'tenancy',
   list_org_contacts: 'tenancy',
   list_organizations: 'tenancy',
+  get_partner_settings_inheritance: 'tenancy', // #9763 read: which orgs override a partner setting
   delete_tenant: 'tenancy',
   test_webhook: 'tenancy',
   query_webhooks: 'tenancy',

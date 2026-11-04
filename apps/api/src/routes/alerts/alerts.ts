@@ -1,3 +1,4 @@
+import { DEFAULT_ALERT_COOLDOWN_MINUTES } from '@breeze/shared';
 import { isDeviceOwned } from '../../services/alertOwner';
 import { Hono, type MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -31,6 +32,7 @@ import {
   buildDismissAlertCas,
   buildResolveAlertCas,
   buildSuppressAlertCas,
+  publishAlertSuppressed,
   buildUnsuppressAlertCas,
 } from '../../services/alertService';
 import { acknowledgeAlert } from '../../services/alertActions';
@@ -41,6 +43,7 @@ import { latestVerdictsForAlerts, projectAlertAiVerdictSummary } from '../../ser
 import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, unsuppressAlertSchema, bulkAlertActionSchema, type AlertStatusValue } from './schemas';
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck, alertSiteScopeCondition } from './helpers';
 import { fillStoredAlertCopy } from './alertCopy';
+import { enrichAlertSubjects } from '../../services/alertSubject';
 import { withAlertActorNames } from './actorNames';
 import { canAccessSite, getUserPermissions, hasPermission, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { createTicketFromAlert, TicketServiceError } from '../../services/ticketService';
@@ -355,6 +358,9 @@ alertsRoutes.get(
         // being named here.
         monitorId: alerts.monitorId,
         deviceId: alerts.deviceId,
+        ownerKind: alerts.ownerKind,
+        ownerRef: alerts.ownerRef,
+        topologySiteId: alerts.topologySiteId,
         orgId: alerts.orgId,
         status: alerts.status,
         severity: alerts.severity,
@@ -377,7 +383,7 @@ alertsRoutes.get(
         orgName: organizations.name
       })
       .from(alerts)
-      .leftJoin(devices, eq(alerts.deviceId, devices.id))
+      .leftJoin(devices, and(eq(alerts.deviceId, devices.id), eq(alerts.orgId, devices.orgId)))
       .leftJoin(alertRules, eq(alerts.ruleId, alertRules.id))
       .leftJoin(organizations, eq(alerts.orgId, organizations.id))
       .where(whereCondition)
@@ -439,7 +445,10 @@ alertsRoutes.get(
       verdictFeedbackRows.map((row) => [row.id, row.feedbackByName ?? null])
     );
 
-    const correlatedAlerts = attachAlertCorrelationSummaries(alertsWithActorNames, correlationRows);
+    const alertsWithSubjects = await enrichAlertSubjects(alertsWithActorNames.map(alert => ({
+      ...alert, deviceName: alert.deviceDisplayName || alert.deviceHostname,
+    })));
+    const correlatedAlerts = attachAlertCorrelationSummaries(alertsWithSubjects, correlationRows);
     const data = correlatedAlerts.map((alert) => {
       const verdict = verdictMap.get(alert.id);
       const { deviceDisplayName, ...rest } = alert;
@@ -451,7 +460,7 @@ alertsRoutes.get(
             feedbackByName: feedbackByNameByVerdictId.get(verdict.id) ?? null,
           }
           : null,
-      }, deviceDisplayName || rest.deviceHostname);
+      }, deviceDisplayName || rest.deviceHostname || rest.subjectName);
     });
 
     return c.json({
@@ -807,9 +816,14 @@ alertsRoutes.post(
         results.updated++;
         updatedIds.push(alert.id);
 
-        // The single suppress/dismiss endpoints don't publish an event-bus event,
-        // only ML feedback — mirror that here and keep publishEvent for ack/resolve.
-        if (action === 'acknowledge' || action === 'resolve') {
+        // Dismiss publishes no event-bus event, only ML feedback (no
+        // `alert.dismissed` event type exists). Suppress goes through the shared
+        // producer so its payload matches the single route and the AI tool.
+        if (action === 'suppress') {
+          await publishAlertSuppressed({
+            alert, suppressedBy: auth.user.id, suppressedUntil, source: 'alerts-route', now,
+          });
+        } else if (action === 'acknowledge' || action === 'resolve') {
           try {
             await publishEvent(
               action === 'acknowledge' ? 'alert.acknowledged' : 'alert.resolved',
@@ -1044,7 +1058,7 @@ alertsRoutes.post(
 
           const overrides = rule.overrideSettings as Record<string, unknown> | null;
           const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-            template?.cooldownMinutes ?? 15;
+            template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
           await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes, alert.subjectKey ?? undefined);
         }
       }
@@ -1146,6 +1160,10 @@ alertsRoutes.post(
     if (!updated) {
       return c.json({ error: ALERT_SUPPRESS_CAS_LOST_MESSAGE }, 409);
     }
+
+    await publishAlertSuppressed({
+      alert, suppressedBy: auth.user.id, suppressedUntil, source: 'alerts-route',
+    });
 
     await emitAlertStateFeedback({
       orgId: alert.orgId,
@@ -1349,7 +1367,7 @@ alertsRoutes.get(
     const [device] = alert.deviceId === null ? [] : await db
       .select()
       .from(devices)
-      .where(eq(devices.id, alert.deviceId))
+      .where(and(eq(devices.id, alert.deviceId), eq(devices.orgId, alert.orgId)))
       .limit(1);
 
     const [rule] = alert.ruleId ? await db
@@ -1401,8 +1419,13 @@ alertsRoutes.get(
       ? await withAlertActorNames([{ id: verdict.id, feedbackBy: verdict.feedbackBy }])
       : [];
 
+    const [alertWithSubject] = await enrichAlertSubjects([{
+      ...alertWithActorNames, deviceName: device?.displayName || device?.hostname,
+    }]);
+
     return c.json(withMlAlertContext(fillStoredAlertCopy({
       ...alertWithActorNames,
+      ...alertWithSubject,
       device: device ? {
         id: device.id,
         hostname: device.hostname,
@@ -1424,7 +1447,7 @@ alertsRoutes.get(
           feedbackByName: feedbackByNameRow?.feedbackByName ?? null,
         }
         : null,
-    }, device?.displayName || device?.hostname)));
+    }, device?.displayName || device?.hostname || alertWithSubject?.subjectName)));
   }
 );
 

@@ -14,8 +14,8 @@ Breeze's data model supports white-label branding -- logo, colors, custom CSS, a
 <Aside type="caution">
   What reaches customers depends on the level:
 
-  - **Partner Branding logo and colors appear on customer documents.** Quotes and invoices -- the web views and the PDFs -- use the logo and primary color saved under **Settings > Partner > Branding** (quote PDFs also set headings in the secondary color when it is dark enough to read), and agreement signing pages show the logo. An organization's own portal branding logo or primary color, when one is stored, wins field by field; today nothing in the dashboard writes those values, so in practice your partner Branding is what customers see.
-  - **The end-user portal does not use partner Branding.** The portal's logo, colors, and custom domain come only from the organization's portal branding record, and there is no dashboard control or API for writing those fields yet. The logo, colors, and theme on the **Settings > Organization > Branding** tab are a separate dashboard/appearance preference and do not change the portal or customer documents.
+  - **Partner Branding logo and colors appear on customer documents.** Quotes and invoices -- the web views and the PDFs -- use the logo and primary color saved under **Settings > Partner > Branding** (quote PDFs also set headings in the secondary color when it is dark enough to read), and agreement signing pages show the logo. An organization's own portal branding logo or primary color, when one is stored, wins field by field. The organization's **Primary color** is set on **Settings > Organization > Branding** (see [Organization primary color](#organization-primary-color)); nothing in the dashboard writes the organization logo yet, so your partner logo is what customers see.
+  - **The end-user portal does not use partner Branding.** The portal's logo, colors, and custom domain come only from the organization's portal branding record, and there is no dashboard control or API for writing the logo, secondary color or custom domain yet. The logo, secondary color, and theme on the **Settings > Organization > Branding** tab are a separate dashboard/appearance preference and do not change the portal or customer documents. The **Primary color** on that tab is the exception: from v0.126.0 it is written to the organization's portal branding record, so it sets the accent color on that organization's documents and portal pages (see below).
   - **Organization custom CSS does reach the portal.** The **Custom CSS** field on **Settings > Organization > Branding** is saved with the organization's portal settings and injected into portal pages.
 
   Outbound email templates (**Settings → Partner → Email templates**) edit the inner HTML of customer ticket, quote, invoice, and portal-invite mail; they do not change the email card's accent bar and do not pull colors from the Branding tab.
@@ -101,7 +101,7 @@ This ensures buttons and headers remain readable regardless of the chosen brand 
 
 ## Organization Branding
 
-Each organization has its own branding record in the `portal_branding` table, keyed by `orgId` (unique constraint). The visual fields below (logo, colors, custom domain) are read by the portal when rendering, and the logo and primary color override your partner Branding on quotes and invoices when set, but -- as noted above -- there is currently no admin-facing way to write them. The portal feature toggles and support-contact fields (`enableTickets`, `enableAssetCheckout`, `enableSelfService`, `enablePasswordReset`, `supportEmail`, `supportPhone`, `welcomeMessage`, `footerText`) are set from **Settings > Organization > Portal**, and `customCss` from the **Custom CSS** field on **Settings > Organization > Branding**.
+Each organization has its own branding record in the `portal_branding` table, keyed by `orgId` (unique constraint). The visual fields below (logo, colors, custom domain) are read by the portal when rendering, and the logo and primary color override your partner Branding on quotes and invoices when set. The primary color is written from **Settings > Organization > Branding**; there is currently no admin-facing way to write the other visual fields. The portal feature toggles and support-contact fields (`enableTickets`, `enableAssetCheckout`, `enableSelfService`, `enablePasswordReset`, `supportEmail`, `supportPhone`, `welcomeMessage`, `footerText`) are set from **Settings > Organization > Portal**, and `customCss` from the **Custom CSS** field on **Settings > Organization > Branding**.
 
 ### Branding Schema
 
@@ -123,6 +123,18 @@ Each organization has its own branding record in the `portal_branding` table, ke
 | `enableAssetCheckout` | boolean | Enable asset checkout/return on the portal |
 | `enableSelfService` | boolean | Enable self-service tools on the portal |
 | `enablePasswordReset` | boolean | Enable password reset on the portal |
+
+### Organization primary color
+
+The **Primary color** on **Settings > Organization > Branding** is the accent color on that organization's quotes, invoices and other customer documents. It overrides your partner Branding color for that one customer.
+
+<Steps>
+
+1. Open **Settings > Organization > Branding** for the customer.
+2. Enter a hex color (such as `#2563eb`) or use the color picker. Leave the field blank to use the partner's brand color, which the field shows as the inherited value.
+3. Click **Save**. An invalid hex value blocks the save and nothing is written.
+
+</Steps>
 
 ### Org Branding Editor
 
@@ -224,7 +236,7 @@ body {
 | PATCH | `/organizations/:id/portal-settings` | Update the portal feature toggles and support-contact fields |
 
 <Aside type="caution">
-  These are the only writable portal branding fields today, plus `customCss` (which the organization **Branding** tab saves through this endpoint). The visual fields (logo, colors, custom domain) are rejected by this endpoint -- see the caution near the top of this page.
+  These are the only writable portal branding fields today, plus `customCss` and `primaryColor` (which the organization **Branding** tab saves through this endpoint). `primaryColor` must be a `#rgb` or `#rrggbb` hex value, and `null` inherits the partner color; `GET` also returns `partnerPrimaryColor`, the inherited value. The other visual fields (logo, secondary color, custom domain) are rejected by this endpoint -- see the caution near the top of this page.
 </Aside>
 
 ### Portal Branding

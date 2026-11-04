@@ -27,7 +27,7 @@
  * All tenants are synthetic.
  */
 import './setup';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHmac, randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
@@ -121,6 +121,10 @@ afterAll(() => {
 });
 beforeEach(() => {
   queueAdds.length = 0;
+});
+// A test that pins `Date` (the DST fall-back case) must hand the real clock back whether it passes or fails.
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 const system = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn));
@@ -447,6 +451,12 @@ describe('the cutover, end to end (real Postgres + Redis, #5221 B7)', () => {
   }, 60_000);
 
   runDb('a schedule across a switch, a revert and a DST fall-back fires each occurrence once, twice in the repeated hour', async () => {
+    // The scenario is anchored to the 2026-11-01 America/New_York fall-back, so the switch has to
+    // happen BEFORE that date whatever the real clock says: pin `Date` (switch_at is `new Date()` in
+    // the switch service; the flow tick and legacy admission take their instants as arguments).
+    // Only `Date` is faked — timers stay real so Postgres/Redis I/O is untouched (the #10848 pattern).
+    // Restored by the file-level afterEach.
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-30T12:00:00Z') });
     const t = await tenant();
     // 01:30 New York: on 2026-11-01 that wall time happens twice (EDT 05:30Z, then EST 06:30Z).
     const trigger = { type: 'schedule' as const, cronExpression: '30 1 * * *', timezone: 'America/New_York' };
@@ -514,9 +524,12 @@ describe('the cutover, end to end (real Postgres + Redis, #5221 B7)', () => {
       scanAt: new Date(slot.getTime() + 4_000).toISOString(), enqueuedWhileUnswitched,
     });
 
-    // The current hour is before switch_at: one legacy run (spanning the orgs), no flow run.
-    const before = new Date(Math.floor(Date.now() / HOUR) * HOUR);
+    // The hour before the first one at or after switch_at: one legacy run (spanning the orgs), no
+    // flow run. Anchored on switch_at, not the wall clock: switch_at is SWITCH_LEAD_MS after the
+    // commit, so in the last minute of an hour the next top of the hour would still be before it.
+    const before = new Date(Math.ceil(S / HOUR) * HOUR - HOUR);
     expect(before.getTime()).toBeLessThan(S);
+    expect(before.getTime() + HOUR).toBeGreaterThanOrEqual(S);
     expect(await processFlowScheduleTick(new Date(before.getTime() + 10_000))).toMatchObject({ fired: 0 });
     expect(await legacyAdmit(before, false)).toMatchObject({ runId: expect.any(String) });
 

@@ -82,6 +82,8 @@ const { requireOrgAccessMock, requireSiteAccessMock } = vi.hoisted(() => ({
   requireOrgAccessMock: vi.fn(),
   requireSiteAccessMock: vi.fn(),
 }));
+const { billingGateMock } = vi.hoisted(() => ({ billingGateMock: vi.fn(async (_orgId: string) => undefined) }));
+vi.mock('./invoiceBillingGate', () => ({ assertInvoiceBillingEnabled: billingGateMock }));
 vi.mock('./invoiceService', () => ({
   requireOrgAccess: requireOrgAccessMock,
   requireSiteAccess: requireSiteAccessMock,
@@ -101,6 +103,8 @@ const partnerClient = (stripeAccountId = 'acct_9') => ({
 });
 
 const INV_ID = '11111111-1111-1111-1111-111111111111';
+// Anchors the Checkout expiry bucket (#10736): every invoice row the producer reads carries it.
+const INV_CREATED_AT = new Date('2026-10-01T10:17:42.000Z');
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
 
@@ -114,7 +118,7 @@ const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
  */
 function expectedIdempotencyKey(base: string): string {
   // _pd: the request carries a PaymentIntent description (FP-20); a new key keeps an in-hour replay identical.
-  return `${base}_e${checkoutSessionExpiry().quantum}_pd`;
+  return `${base}_e${checkoutSessionExpiry(INV_CREATED_AT).quantum}_pd`;
 }
 
 describe('createInvoicePayLink', () => {
@@ -124,7 +128,7 @@ it('checked card payments retain card-only Checkout and a stable save-enabled re
   getPartnerStripeClientMock.mockResolvedValue(partnerClient());
   sessionsCreateMock.mockResolvedValue({ id: 'cs_saved', url: 'https://checkout.stripe.com/c/cs_saved', payment_intent: 'pi_saved' });
   for (let replay = 0; replay < 2; replay++) {
-    dbResults.push([{ id: INV_ID, orgId: ORG_ID, partnerId: actor.partnerId, status: 'sent',
+    dbResults.push([{ id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: actor.partnerId, status: 'sent',
       balance: '100.00', depositDue: null, amountPaid: '0.00', currencyCode: 'USD', invoiceNumber: 'INV-SAVE', partnerName: 'Example MSP' }],
       [{ id: '44444444-4444-4444-8444-444444444444' }], []);
     if(replay)dbResults.push([{invoiceId:INV_ID,stripeAccountId:'acct_9'}]);
@@ -151,10 +155,42 @@ it('checked card payments retain card-only Checkout and a stable save-enabled re
     dbResults.length = 0;
     insertValuesMock.mockReset(); mappings.clear();
     prepareSaveMock.mockResolvedValue(null);
+    billingGateMock.mockReset(); billingGateMock.mockResolvedValue(undefined);
   });
 
+const sentInvoice = { id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent', currencyCode: 'USD', balance: '100.00', depositDue: null, amountPaid: '0.00', invoiceNumber: 'INV-BE' };
+
+it('billing off: 404 BILLING_DISABLED after the access checks and before any session', async () => {
+  dbResults.push([sentInvoice]);
+  billingGateMock.mockRejectedValueOnce(new InvoiceServiceError('Not found', 404, 'BILLING_DISABLED'));
+  await expect(createInvoicePayLink(INV_ID, actor)).rejects.toMatchObject({ status: 404, code: 'BILLING_DISABLED' });
+  expect(billingGateMock).toHaveBeenCalledWith(ORG_ID);
+  expect(sessionsCreateMock).not.toHaveBeenCalled();
+  expect(prepareSaveMock).not.toHaveBeenCalled();
+});
+
+it('another partner invoice answers the access error whether billing is on or off (no oracle)', async () => {
+  for (const off of [false, true]) {
+    dbResults.push([sentInvoice]);
+    requireOrgAccessMock.mockImplementationOnce(() => { throw new InvoiceServiceError('Access denied', 403, 'ORG_DENIED'); });
+    if (off) billingGateMock.mockRejectedValueOnce(new InvoiceServiceError('Not found', 404, 'BILLING_DISABLED'));
+    await expect(createInvoicePayLink(INV_ID, actor)).rejects.toMatchObject({ status: 403, code: 'ORG_DENIED' });
+  }
+  expect(billingGateMock).not.toHaveBeenCalled();
+});
+
+it('the public pay path opts out of the gate, so an issued invoice stays payable with billing off', async () => {
+  dbResults.push([sentInvoice], [{ id: '44444444-4444-4444-8444-444444444444' }], []);
+  getPartnerStripeClientMock.mockResolvedValue(partnerClient());
+  sessionsCreateMock.mockResolvedValue({ id: 'cs_pub', url: 'https://checkout.stripe.com/c/cs_pub', payment_intent: 'pi_pub' });
+  billingGateMock.mockRejectedValue(new InvoiceServiceError('Not found', 404, 'BILLING_DISABLED'));
+  const link = await createInvoicePayLink(INV_ID, actor, {}, { billingGate: false });
+  expect(link.url).toBe('https://checkout.stripe.com/c/cs_pub');
+  expect(billingGateMock).not.toHaveBeenCalled();
+});
+
 it('refuses a reserved invoice before calling Stripe', async () => {
-  dbResults.push([{ id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent', currencyCode: 'USD', balance: '100.00' }]);
+  dbResults.push([{ id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent', currencyCode: 'USD', balance: '100.00' }]);
   reservation.assert.mockRejectedValueOnce(new InvoiceServiceError('A payment is already processing', 409, 'COLLECTION_IN_PROGRESS'));
   await expect(createInvoicePayLink(INV_ID, actor)).rejects.toMatchObject({ status: 409, code: 'COLLECTION_IN_PROGRESS' });
   expect(sessionsCreateMock).not.toHaveBeenCalled();
@@ -166,7 +202,7 @@ it('refuses a reserved invoice before calling Stripe', async () => {
     // after the round-trip would still hand out a live capability during exactly
     // the window the revocation intent exists to close.
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '100.00', depositDue: null, amountPaid: '0.00',
       currencyCode: 'USD', invoiceNumber: 'INV-GATE',
     }]);
@@ -182,7 +218,7 @@ it('refuses a reserved invoice before calling Stripe', async () => {
 
   it('deposit unpaid: charges the deposit-remaining amount, not the full balance', async () => {
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '10000.00', depositDue: '3000.00', amountPaid: '0.00',
       currencyCode: 'USD', invoiceNumber: 'INV-1',
     }]);
@@ -203,7 +239,7 @@ it('refuses a reserved invoice before calling Stripe', async () => {
             product_data: { name: 'Deposit — Invoice INV-1' },
           }),
         })],
-        expires_at: checkoutSessionExpiry().expiresAt,
+        expires_at: checkoutSessionExpiry(INV_CREATED_AT).expiresAt,
         metadata: expect.objectContaining({ invoice_balance_cents: '300000' }),
       }),
       { idempotencyKey: expectedIdempotencyKey(`inv_${INV_ID}_300000_dep`) },
@@ -213,7 +249,7 @@ it('refuses a reserved invoice before calling Stripe', async () => {
 
   it('deposit already satisfied: charges the remaining balance with a plain product name', async () => {
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'partially_paid',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'partially_paid',
       balance: '7000.00', depositDue: '3000.00', amountPaid: '3000.00',
       currencyCode: 'USD', invoiceNumber: 'INV-1',
     }]);
@@ -231,7 +267,7 @@ it('refuses a reserved invoice before calling Stripe', async () => {
             product_data: { name: 'Invoice INV-1' },
           }),
         })],
-        expires_at: checkoutSessionExpiry().expiresAt,
+        expires_at: checkoutSessionExpiry(INV_CREATED_AT).expiresAt,
         metadata: expect.objectContaining({ invoice_balance_cents: '700000' }),
       }),
       { idempotencyKey: expectedIdempotencyKey(`inv_${INV_ID}_700000_bal`) },
@@ -241,7 +277,7 @@ it('refuses a reserved invoice before calling Stripe', async () => {
 
   it('no-deposit invoice: unchanged full-balance charge (byte-identical to pre-deposit behavior)', async () => {
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '100.00', depositDue: null, amountPaid: '0.00',
       currencyCode: 'USD', invoiceNumber: 'INV-3',
     }]);
@@ -259,7 +295,7 @@ it('refuses a reserved invoice before calling Stripe', async () => {
             product_data: { name: 'Invoice INV-3' },
           }),
         })],
-        expires_at: checkoutSessionExpiry().expiresAt,
+        expires_at: checkoutSessionExpiry(INV_CREATED_AT).expiresAt,
         metadata: expect.objectContaining({ invoice_balance_cents: '10000' }),
       }),
       { idempotencyKey: expectedIdempotencyKey(`inv_${INV_ID}_10000_bal`) },
@@ -274,7 +310,7 @@ it('refuses a reserved invoice before calling Stripe', async () => {
     // idempotencyKeys would collide and the second session creation would be
     // rejected with idempotency_error for ~24h.
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '10000.00', depositDue: '5000.00', amountPaid: '0.00',
       currencyCode: 'USD', invoiceNumber: 'INV-EQ',
     }]);
@@ -289,7 +325,7 @@ it('refuses a reserved invoice before calling Stripe', async () => {
     // Deposit now fully paid: the balance charge is ALSO 5000.00 (equal minor
     // amount to the deposit above) — simulating the exact collision scenario.
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'partially_paid',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'partially_paid',
       balance: '5000.00', depositDue: '5000.00', amountPaid: '5000.00',
       currencyCode: 'USD', invoiceNumber: 'INV-EQ',
     }]);
@@ -305,7 +341,7 @@ it('refuses a reserved invoice before calling Stripe', async () => {
 
   it('throws NOTHING_TO_PAY when the charge-now amount is zero', async () => {
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '0.00', depositDue: null, amountPaid: '0.00',
       currencyCode: 'USD', invoiceNumber: 'INV-4',
     }]);
@@ -318,7 +354,7 @@ it('refuses a reserved invoice before calling Stripe', async () => {
 
   it('returns a CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT warning when the account settles in another currency (never blocks)', async () => {
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '100.00', depositDue: null, amountPaid: '0.00',
       currencyCode: 'EUR', invoiceNumber: 'INV-EUR',
     }]);
@@ -347,7 +383,7 @@ it('refuses a reserved invoice before calling Stripe', async () => {
 
   it('account currency not cached (null): returns an explicit STRIPE_ACCOUNT_CURRENCY_UNKNOWN warning and still mints the session (review F6)', async () => {
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '100.00', depositDue: null, amountPaid: '0.00',
       currencyCode: 'EUR', invoiceNumber: 'INV-EUR',
     }]);
@@ -370,7 +406,7 @@ it('refuses a reserved invoice before calling Stripe', async () => {
 
   it('omits the warning key entirely when the account currency matches', async () => {
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '100.00', depositDue: null, amountPaid: '0.00',
       currencyCode: 'EUR', invoiceNumber: 'INV-EUR',
     }]);
@@ -385,7 +421,7 @@ it('refuses a reserved invoice before calling Stripe', async () => {
 
   it('rejects a Checkout session whose account changed before mapping persistence', async () => {
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '100.00', depositDue: null, amountPaid: '0.00',
       currencyCode: 'USD', invoiceNumber: 'INV-RACE',
     }]);
@@ -403,7 +439,7 @@ it('refuses a reserved invoice before calling Stripe', async () => {
 
   it('maps a Stripe currency_not_supported rejection to STRIPE_CURRENCY_UNSUPPORTED (409) naming the currency', async () => {
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '100.00', depositDue: null, amountPaid: '0.00',
       currencyCode: 'CHF', invoiceNumber: 'INV-CHF',
     }]);
@@ -421,7 +457,7 @@ it('refuses a reserved invoice before calling Stripe', async () => {
 
   it('propagates a non-currency Stripe error (StripeCardError) unchanged', async () => {
     dbResults.push([{
-      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
       balance: '100.00', depositDue: null, amountPaid: '0.00',
       currencyCode: 'USD', invoiceNumber: 'INV-CARD',
     }]);
@@ -448,10 +484,66 @@ it('refuses a reserved invoice before calling Stripe', async () => {
 it('reuses a public/MSP Checkout mapping on repeated create',async()=>{
  mappings.clear();dbResults.length=0;prepareSaveMock.mockResolvedValue(null);
  getPartnerStripeClientMock.mockResolvedValue(partnerClient());sessionsCreateMock.mockResolvedValue({id:'cs_reuse',url:'https://checkout.stripe.com/c/cs_reuse'});
- const inv={id:INV_ID,orgId:ORG_ID,partnerId:actor.partnerId,status:'sent',balance:'100.00',currencyCode:'USD',amountPaid:'0.00'};
+ const inv={id:INV_ID,orgId:ORG_ID,createdAt:INV_CREATED_AT,partnerId:actor.partnerId,status:'sent',balance:'100.00',currencyCode:'USD',amountPaid:'0.00'};
  for(let i=0;i<2;i++){
   dbResults.push([inv],[{id:'connection'}],[]);if(i)dbResults.push([{invoiceId:INV_ID,stripeAccountId:'acct_9'}]);
   await expect(createInvoicePayLink(INV_ID,actor)).resolves.toMatchObject({url:'https://checkout.stripe.com/c/cs_reuse'});
  }
  expect(mappings.size).toBe(1);
+});
+
+// #10736 — the Checkout expiry bucket (and so the idempotency key) is anchored
+// to the invoice, not to the wall-clock hour. A customer who signs a quote at
+// 08:59:59 (the accept creates the invoice and mints the session) and presses
+// Pay at 09:00:01 must replay the SAME request, not mint a second session.
+describe('checkoutSessionExpiry (#10736)', () => {
+  const HOUR = 3600;
+  const at = (iso: string) => new Date(iso);
+  const sec = (d: Date) => Math.floor(d.getTime() / 1000);
+
+  it('accept at 08:59:59 and Pay at 09:00:01 share one bucket for an invoice created at accept', () => {
+    const invoiceCreatedAt = at('2026-10-30T08:59:58.400Z');
+    const accept = checkoutSessionExpiry(invoiceCreatedAt, at('2026-10-30T08:59:59.000Z'));
+    const pay = checkoutSessionExpiry(invoiceCreatedAt, at('2026-10-30T09:00:01.000Z'));
+    expect(pay).toEqual(accept);
+  });
+
+  it('keeps one bucket when the app clock trails the database clock that stamped created_at', () => {
+    const invoiceCreatedAt = at('2026-10-30T08:59:58.000Z');
+    const accept = checkoutSessionExpiry(invoiceCreatedAt, at('2026-10-30T08:59:56.000Z'));
+    const pay = checkoutSessionExpiry(invoiceCreatedAt, at('2026-10-30T09:50:00.000Z'));
+    expect(pay).toEqual(accept);
+  });
+
+  it('the accept\'s bucket closes exactly 55 min after created_at (the 5-min lead)', () => {
+    const invoiceCreatedAt = at('2026-10-30T08:59:58.000Z');
+    const accept = checkoutSessionExpiry(invoiceCreatedAt, at('2026-10-30T08:59:59.000Z'));
+    expect(checkoutSessionExpiry(invoiceCreatedAt, at('2026-10-30T09:54:57.999Z'))).toEqual(accept);
+    expect(checkoutSessionExpiry(invoiceCreatedAt, at('2026-10-30T09:54:58.000Z')).quantum).toBe(accept.quantum + HOUR);
+  });
+
+  it('a Pay an hour or more after the bucket opened gets a later bucket (a fresh session, as before)', () => {
+    const invoiceCreatedAt = at('2026-10-30T08:59:58.000Z');
+    const first = checkoutSessionExpiry(invoiceCreatedAt, at('2026-10-30T09:00:01.000Z'));
+    const later = checkoutSessionExpiry(invoiceCreatedAt, at('2026-10-30T10:30:00.000Z'));
+    expect(later.quantum).toBe(first.quantum + HOUR);
+  });
+
+  it('every bucket opens within the last hour of `now`, so expires_at stays inside Stripe\'s [30 min, 24 h] window', () => {
+    const anchors = [at('2026-01-01T00:00:00.000Z'), at('2026-03-15T13:37:42.123Z'), at('2026-10-30T08:59:58.400Z'), at('2026-10-30T09:04:59.999Z')];
+    const nows = [at('2026-10-30T08:59:59.000Z'), at('2026-10-30T09:00:01.000Z'), at('2026-10-30T09:04:59.000Z'), at('2026-10-30T09:05:00.000Z'), at('2026-11-02T23:59:59.999Z')];
+    for (const anchor of anchors) {
+      for (const now of nows) {
+        const { quantum, expiresAt } = checkoutSessionExpiry(anchor, now);
+        expect(Number.isInteger(quantum)).toBe(true);
+        expect(quantum).toBeLessThanOrEqual(sec(now));
+        expect(quantum).toBeGreaterThan(sec(now) - HOUR);
+        // expires_at is a pure function of the quantum folded into the key, so
+        // one key can never be replayed with a different expires_at.
+        expect(expiresAt).toBe(quantum + 23 * HOUR);
+        expect(expiresAt - sec(now)).toBeGreaterThan(22 * HOUR);
+        expect(expiresAt - sec(now)).toBeLessThanOrEqual(23 * HOUR);
+      }
+    }
+  });
 });

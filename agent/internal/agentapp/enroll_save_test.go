@@ -35,6 +35,13 @@ func quietEnrollForTest(t *testing.T) {
 	orig := quietEnroll
 	t.Cleanup(func() { quietEnroll = orig })
 	quietEnroll = true
+
+	// Enrolment clears persisted Helper branding; never let a test do that to the
+	// host's real config dir.
+	origBase := helperBrandingBaseDir
+	t.Cleanup(func() { helperBrandingBaseDir = origBase })
+	baseDir := t.TempDir()
+	helperBrandingBaseDir = func() string { return baseDir }
 }
 
 // TestEnrollWithConfig_UnpreparableConfigDirSendsNoEnrollRequest: a config

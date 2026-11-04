@@ -13,6 +13,7 @@ import {
   onedriveHelperInlineSettingsSchema,
   securityAgentsInlineSettingsSchema,
   systemProtectionInlineSettingsSchema,
+  containmentInlineSettingsSchema,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
 import { checkSecurityAgentsLinkWrite, SecurityAgentsLinkWriteError } from './securityAgents/securityAgentsLinkWrite';
@@ -103,6 +104,7 @@ export const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (r
   // error instead of surfacing as the generic tool error. Normalized so the
   // JSONB stores the default-filled object, matching the HTTP route.
   system_protection: { schema: systemProtectionInlineSettingsSchema, normalize: true },
+  containment: { schema: containmentInlineSettingsSchema, normalize: true },
   // #6960: strict, so a guessed key (or a pasted secret) is named in the error.
   // Arming (enabled:true) and featurePolicyId are refused earlier, by
   // securityAgentsToolRefusal.
@@ -208,7 +210,7 @@ function validateInlineSettingsForFeature(
   }
 
   const entry = featureType ? VALIDATED_INLINE_SETTINGS[featureType] : undefined;
-  if (!entry || raw === undefined || raw === null) return { value: raw };
+  if (!entry || (featureType !== 'containment' && (raw === undefined || raw === null))) return { value: raw };
 
   const parsed = entry.schema.safeParse(raw);
   if (!parsed.success) {
@@ -246,6 +248,8 @@ export const MAINTENANCE_LINK_MACHINE_PRINCIPAL_DENIED =
   'Authoring a maintenance feature link suppresses monitoring and requires an interactive user session. API-key and OAuth-grant callers cannot perform this action.';
 export const MAINTENANCE_LINK_FEATURE_TYPE_REQUIRED =
   'This feature link is a maintenance link. Re-issue the call with featureType: "maintenance" so the change routes through approval.';
+export const CONTAINMENT_LINK_FEATURE_TYPE_REQUIRED =
+  'This feature link is a containment link. Re-issue the call with featureType: "containment" so the change routes through approval.';
 
 /** Per-feature inline settings reference, returned on demand by describe. */
 export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFeatureType, string>> = {
@@ -262,7 +266,7 @@ export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFea
   pam: `inlineSettings {uacInterceptionEnabled: boolean} — Windows UAC elevation prompt capture (default false / opt-in: capture is OFF when no policy assigns this feature). PAM rules/approvals are managed separately in the /pam console, not via config policies.`,
   vulnerability: `inlineSettings {enabled: boolean} — per-device CVE correlation / vulnerability scanning (default false / opt-in: devices with no policy are NOT scanned). Findings appear in the /vulnerabilities console; correlation runs daily.`,
   device_lifecycle: `inlineSettings {purgeRemovedAfterDays: number|null} — permanently delete removed devices N days after removal (1..3650); null/absent = keep forever. Purge is IRREVERSIBLE: it destroys the device record and all of its history. A daily job applies it; devices whose agent uninstall is still queued are skipped until it completes. Closest level wins, so an org-level link with null opts that org out of a partner-wide window.`,
-  remote_access: `{ webrtcDesktop: true, vncRelay: false, remoteTools: true, clipboardHostToViewer: true, clipboardViewerToHost: true, enableProxy: false, defaultAllowedPorts: [80,443], autoEnableProxy: false, maxConcurrentTunnels: 5, idleTimeoutMinutes: 5, maxSessionDurationHours: 8 (whole hours, 1..12 — remote desktop sessions are hard-capped at 12h and "unlimited"/0 is rejected), sessionPromptMode?: "off"|"notify"|"consent", consentUnavailableBehavior?: "proceed"|"block", notifyOnSessionEnd?: true, showActiveIndicator?: true, technicianIdentityLevel?: "name_email"|"name"|"generic", allowUserEndSession?: true (the person at the device may end the session from the on-screen indicator, after a confirmation; default true) } — all fields optional; updates MERGE over the currently stored settings, so send only the fields to change. Unknown keys are stripped, never applied — use exactly these key names.`,
+  remote_access: `{ webrtcDesktop: true, vncRelay: false, remoteTools: true, clipboardHostToViewer: true, clipboardViewerToHost: true, enableProxy: false, defaultAllowedPorts: [80,443], autoEnableProxy: false, maxConcurrentTunnels: 5, idleTimeoutMinutes: 30, maxSessionDurationHours: 8 (whole hours, 1..12 — remote desktop sessions are hard-capped at 12h and "unlimited"/0 is rejected), sessionPromptMode?: "off"|"notify"|"consent", consentUnavailableBehavior?: "proceed"|"block", notifyOnSessionEnd?: true, showActiveIndicator?: true, technicianIdentityLevel?: "name_email"|"name"|"generic", allowUserEndSession?: true (the person at the device may end the session from the on-screen indicator, after a confirmation; default true) } — all fields optional; updates MERGE over the currently stored settings, so send only the fields to change. Unknown keys are stripped, never applied — use exactly these key names.`,
   onedrive_helper: `{ silentAccountConfig?, filesOnDemand?, kfmSilentOptIn?, kfmFolders? (Desktop/Documents/Pictures), kfmBlockOptOut?, tenantAssociationId?, restartOnChange?, libraries?: [{ libraryId, displayName, targetingMode (everyone|graph_group|local_ad_group), groupId?, groupName?, siteUrl? }] }`,
   software_policy: `Link-only: featurePolicyId → existing software policy UUID; no inlineSettings.`,
   peripheral_control: `Link-only: featurePolicyId → existing peripheral policy UUID; no inlineSettings.`,
@@ -271,6 +275,7 @@ export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFea
   time_sync: `{ enforceNtp: false, ntpServers: [], pollIntervalMinutes: 60, timezone: { expected: 'site', pinnedTimezone: null, autoFix: false } } — inline-only domain-aware Windows time settings. Up to 5 NTP hosts, no flags or ports; at least one host when enforceNtp is true. pollIntervalMinutes is an integer in 15..1440. A pinned IANA timezone must have a Windows mapping and overrides the site timezone. Workgroup, Entra-only and forest-root PDC devices use manual peers; members, DCs and other PDCs use the domain hierarchy. Unknown roles are skipped. GPO wins. autoFix defaults to false.`,
   workload_inventory: `{ enabled: false, dockerEnabled: true, podmanEnabled: true, hypervEnabled: true, proxmoxEnabled: true, intervalMinutes: 60 } — inline-only workload inventory settings. enabled defaults to false (opt-in): runtimes are always detected, but containers and VMs are listed only when enabled is true and the runtime's own flag is true. Turning a runtime off deletes its listed workloads. intervalMinutes is an integer in 15..1440. Collection is read-only.`,
   security_agents: `{ version: 1, agents: [{ vendor: "huntress"|"sentinelone"|"controld"|"nextdns", enabled: boolean, platforms?: ["windows"|"macos"|"linux"] }] } — inline-only third-party security agent selection. Strict: no keys, tokens or other fields (per-customer keys come from the vendor integration). Each vendor at most once; agents: [] opts the assigned devices out. No featurePolicyId. This tool cannot enable a vendor (enabling installs software, which needs a person with devices.execute); it can only list vendors as disabled.`,
+  containment: `{ version: 1, extraAllow: [], defaultTtlHours: 72, deadManMinutes: 0, remoteRelay: true, requireSignedReleaseToken: false } — strict inline-only containment configuration (not consumed yet); version is required, other fields default as shown. No featurePolicyId. defaultTtlHours: integer 1..720; deadManMinutes: 0 or integer 15..1440. extraAllow: at most 32 strict { host? (DNS name), cidr?, proto: "tcp"|"udp"|"udp+tcp", ports: 1..16 unique integers 1..65535, label: trimmed 1..100 characters }; exactly one of host/cidr, no wildcard or localhost hosts, loopback networks, IPv4 prefixes shorter than /8, or IPv6 prefixes shorter than /32.`,
   system_protection: `{ beforePatching: true, beforeScripts: false, beforeSoftwareInstall: false, labelPrefix: 'Breeze' } — inline-only Windows System Restore checkpoint toggles. Strict: unknown keys are rejected, so there is no onFailure/abort setting. beforePatching defaults to true (matches existing agent behaviour); the other two default to false (opt-in). labelPrefix is 1..64 characters with no control characters. A checkpoint is best-effort and not a backup: Windows may throttle or later remove it.`,
 };
 
@@ -1151,6 +1156,12 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         }
       }
 
+      // #10100: same anti-bypass as maintenance. The guardrail escalates
+      // containment to tier 3 from input.featureType, so an update must name it.
+      if (action === 'update' && existingFeatureType === 'containment' && input.featureType !== 'containment') {
+        return JSON.stringify({ error: CONTAINMENT_LINK_FEATURE_TYPE_REQUIRED });
+      }
+
       if (action === 'add') {
         const featureType = input.featureType as string | undefined;
         if (!featureType) return JSON.stringify({ error: 'featureType is required for add' });
@@ -1163,6 +1174,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({
             error: `The "${featureType}" feature is not supported on partner-wide policies; it must be configured on an organization-scoped policy.`,
           });
+        }
+
+        if (featureType === 'containment' && input.featurePolicyId) {
+          return JSON.stringify({ error: 'containment is inline-only; featurePolicyId must not be set' });
         }
 
         if (featureType === 'security_agents') {
@@ -1211,6 +1226,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       if (action === 'update') {
         const featureLinkId = input.featureLinkId as string | undefined;
         if (!featureLinkId) return JSON.stringify({ error: 'featureLinkId is required for update' });
+
+        if (existingFeatureType === 'containment' && input.featurePolicyId) {
+          return JSON.stringify({ error: 'containment is inline-only; featurePolicyId must not be set' });
+        }
 
         if (existingFeatureType === 'security_agents') {
           const refusal = securityAgentsToolRefusal(input.featurePolicyId, input.inlineSettings);

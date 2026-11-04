@@ -10,6 +10,7 @@
  */
 /** Target selection for background work: must reference a parked-device predicate. */
 export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> = {
+  'services/psaAlertTicketing/workerStorage.ts': { guards: 1, reason: 'new creates exclude holding organizations; existing remote tickets still reconcile on their pinned connection' },
   'services/partnerGroupEvaluation.ts': { guards: 2, reason: 'system-context evaluator: partner organization discovery and per-org eligibility exclude holding organizations' },
   // --- shared resolvers -----------------------------------------------------
   'services/postureEvidence.ts': { guards: 1, reason: 'posture evidence device population (report + trust page)' },
