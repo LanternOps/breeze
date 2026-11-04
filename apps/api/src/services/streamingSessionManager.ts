@@ -58,6 +58,7 @@ import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits 
 import type { RequestLike } from './auditEvents';
 import type { WispSessionGrant } from './wisp/chatCeiling';
 import { getTrustedClientIpOrUndefined } from './clientIp';
+import { exitPreStreamTiming, timePreStreamPhase } from './aiPreStreamTiming';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
 import { isUnknownToolErrorText } from '@breeze/shared';
 import { hasCoreAiToolName } from './aiToolNames';
@@ -886,6 +887,12 @@ export class StreamingSessionManager {
    * Get or create an active streaming session.
    * If the session exists in memory and is alive, reuse it.
    * If not, create a new one (potentially resuming from saved sdkSessionId).
+   *
+   * #11004: the creation path's phases (tool binding + SDK MCP server, the
+   * subprocess spawn, and the awaited lookups around them) are recorded into
+   * the caller's pre-stream timer when one is active (web chat), and are
+   * no-ops otherwise. No wrapper is added at this method's boundary: it would
+   * delay the caller's resume behind the just-started background processor.
    */
   async getOrCreate(
     breezeSessionId: string,
@@ -1020,10 +1027,10 @@ export class StreamingSessionManager {
         if (reusable.state !== 'processing') {
           // Same for the approval timeout (#6475): a settings change applies
           // from the next message, never to a turn already in flight.
-          const [refreshedApprovalMode, refreshedWaitBudgetMs] = await Promise.all([
+          const [refreshedApprovalMode, refreshedWaitBudgetMs] = await timePreStreamPhase('reuse.approvalMode', () => Promise.all([
             loadApprovalMode(dbSession.orgId),
             loadApprovalWaitBudgetMs(dbSession.orgId),
-          ]);
+          ]));
           // Re-read through the map rather than the narrowed `reusable` alias:
           // a concurrent request may have started a turn — or evicted the
           // session entirely — while this lookup was outstanding.
@@ -1048,7 +1055,7 @@ export class StreamingSessionManager {
     // a custom-factory surface (script builder, helper, client AI, topology)
     // is refused outright.
     const { lookupWispGrant, unreachableWispAuth, WispSessionUnavailableError } = await import('./wisp/chatCeiling');
-    const wispGrant = await lookupWispGrant(breezeSessionId);
+    const wispGrant = await timePreStreamPhase('wispGrant', () => lookupWispGrant(breezeSessionId));
     if (wispGrant && mcpServerFactory) {
       throw new WispSessionUnavailableError('surface_unsupported', breezeSessionId);
     }
@@ -1062,10 +1069,10 @@ export class StreamingSessionManager {
       inputController.setSdkSessionId(dbSession.sdkSessionId);
     }
 
-    const [approvalMode, approvalWaitBudgetMs] = await Promise.all([
+    const [approvalMode, approvalWaitBudgetMs] = await timePreStreamPhase('approvalMode', () => Promise.all([
       loadApprovalMode(dbSession.orgId),
       loadApprovalWaitBudgetMs(dbSession.orgId),
-    ]);
+    ]));
 
     // Catalog provenance stamp only (below). A gateway connection (W06) has no
     // catalog revision: its provenance is llm_egress_events.connection_id and
@@ -1109,7 +1116,7 @@ export class StreamingSessionManager {
         // so a partner-scoped tech's session can resolve that org's own tool
         // sources too, not just partner-wide ones (#6023). A no-op for
         // org-scoped `toolAuth`, which ignores `targetOrgId`.
-        tenantDescriptors = await resolveTenantTools(toolAuth, dbSession.orgId);
+        tenantDescriptors = await timePreStreamPhase('tenantTools', () => resolveTenantTools(toolAuth, dbSession.orgId));
       } catch (err) {
         captureException(err);
         console.error('[StreamingSessionManager] Failed to resolve tenant tools, degrading to none:', err);
@@ -1126,7 +1133,7 @@ export class StreamingSessionManager {
         // Loaded on first use: the flow resolver's import graph stays out of
         // every chat session that never reaches this branch.
         const { resolveFlowTools } = await import('./flows/flowTools');
-        flowDescriptors = await resolveFlowTools(toolAuth, dbSession.orgId);
+        flowDescriptors = await timePreStreamPhase('flowTools', () => resolveFlowTools(toolAuth, dbSession.orgId));
       } catch (err) {
         captureException(err);
         console.error('[StreamingSessionManager] Failed to resolve flow tools, degrading to none:', err);
@@ -1208,37 +1215,40 @@ export class StreamingSessionManager {
 
     // Create MCP server with pre/post tool-use callbacks
     // Use custom factory if provided (e.g., script builder), otherwise default to breeze tools
-    let mcpServer: McpSdkServerConfigWithInstance;
-    let mcpServerName = 'breeze';
-    if (mcpServerFactory) {
-      const custom = mcpServerFactory(() => session.toolAuth, preToolUse, postToolUse, () => session);
-      mcpServer = custom.server;
-      mcpServerName = custom.name;
-    } else {
-      mcpServer = createBreezeMcpServer(
-        // A Wisp session's handlers run under the gate's per-call auth
-        // (check.toolAuth); this shared fallback reaches no org at all.
-        wispGrant ? () => unreachableWispAuth(session.toolAuth) : () => session.toolAuth,
-        preToolUse,
-        postToolUse,
-        () => session,
-        // `session.orgId` is set ONCE at session creation and never refreshed
-        // on reuse (unlike `session.toolAuth`, which the reuse branch above
-        // re-narrows to the CURRENT device org every turn, #3087). Since
-        // `execute.ts` now threads this org through the dispatch-time
-        // OWNER-predicate reload (#6023), a stale `session.orgId` would let a
-        // device-bound session keep dispatching a tool under its OLD org's
-        // credentials after the device moved — read `session.toolAuth.orgId`
-        // (fresh every turn for a device-bound session) and fall back to
-        // `session.orgId` only when `toolAuth` carries none (non-device
-        // sessions, whose org doesn't drift the same way).
-        [
-          ...buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.toolAuth.orgId ?? session.orgId),
-          // W5 PR C: flow tools — gated per call (live tier) in createSessionPreToolUse.
-          ...buildFlowSdkTools(flowDescriptors, chatFlowToolRunStarter(() => session)),
-        ],
-      );
-    }
+    // #11004: synchronous main-thread work (tool binding + SDK server
+    // creation) — timed as its own phase.
+    const { mcpServer, mcpServerName } = timePreStreamPhase('mcpServer', (): { mcpServer: McpSdkServerConfigWithInstance; mcpServerName: string } => {
+      if (mcpServerFactory) {
+        const custom = mcpServerFactory(() => session.toolAuth, preToolUse, postToolUse, () => session);
+        return { mcpServer: custom.server, mcpServerName: custom.name };
+      }
+      return {
+        mcpServerName: 'breeze',
+        mcpServer: createBreezeMcpServer(
+          // A Wisp session's handlers run under the gate's per-call auth
+          // (check.toolAuth); this shared fallback reaches no org at all.
+          wispGrant ? () => unreachableWispAuth(session.toolAuth) : () => session.toolAuth,
+          preToolUse,
+          postToolUse,
+          () => session,
+          // `session.orgId` is set ONCE at session creation and never refreshed
+          // on reuse (unlike `session.toolAuth`, which the reuse branch above
+          // re-narrows to the CURRENT device org every turn, #3087). Since
+          // `execute.ts` now threads this org through the dispatch-time
+          // OWNER-predicate reload (#6023), a stale `session.orgId` would let a
+          // device-bound session keep dispatching a tool under its OLD org's
+          // credentials after the device moved — read `session.toolAuth.orgId`
+          // (fresh every turn for a device-bound session) and fall back to
+          // `session.orgId` only when `toolAuth` carries none (non-device
+          // sessions, whose org doesn't drift the same way).
+          [
+            ...buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.toolAuth.orgId ?? session.orgId),
+            // W5 PR C: flow tools — gated per call (live tier) in createSessionPreToolUse.
+            ...buildFlowSdkTools(flowDescriptors, chatFlowToolRunStarter(() => session)),
+          ],
+        ),
+      };
+    });
     session.mcpServer = mcpServer;
     session.mcpPrefix = `mcp__${mcpServerName}__`;
 
@@ -1271,9 +1281,9 @@ export class StreamingSessionManager {
     // one SDK-child seam): the child env plus every grant it needs — an
     // audited CONNECT grant for a catalog connection, a gateway grant and a
     // deny-all proxy grant for a gateway connection (W06), nothing otherwise.
-    const child = await prepareSdkChild(resolved, {
+    const child = await timePreStreamPhase('prepareSdkChild', () => prepareSdkChild(resolved, {
       key: breezeSessionId, orgId: dbSession.orgId, aiSessionId: breezeSessionId,
-    });
+    }));
     const revokeEgressGrant = child.revoke;
     session.revokeEgressGrant = revokeEgressGrant;
 
@@ -1297,7 +1307,7 @@ export class StreamingSessionManager {
     // claim, and the worse of the two. The row count is the only thing that
     // makes either detectable.
     try {
-      await withSystemDbAccessContext(() => dbWriteExpectingRows(
+      await timePreStreamPhase('stampProvenance', () => withSystemDbAccessContext(() => dbWriteExpectingRows(
         'streamingSessionManager.stampCatalogProvenance',
         () => db
           .update(aiSessions)
@@ -1307,7 +1317,7 @@ export class StreamingSessionManager {
           })
           .where(eq(aiSessions.id, breezeSessionId))
           .returning({ id: aiSessions.id }),
-      ));
+      )));
     } catch (err) {
       // `org_id` and `cas_label`, NOT `service`/`orgId`/`sessionId`:
       // `setCallerTags` drops every key outside ALLOWED_TAG_NAMES, so a
@@ -1334,7 +1344,10 @@ export class StreamingSessionManager {
     const stderrLog = createSdkStderrRedactor((text) => console.error('[SDK-stderr]', breezeSessionId, text));
     session.flushSdkStderr = () => stderrLog.flush();
     try {
-      runOutsideDbContextSafe(() => {
+      // #11004: query() spawns the CLI subprocess synchronously on the main
+      // thread. Detached from the request's timer so the long-lived
+      // background processor never retains it.
+      timePreStreamPhase('spawn', () => exitPreStreamTiming(() => runOutsideDbContextSafe(() => {
         const childEnv = child.env;
         const toolSearchPolicy = resolveToolSearchPolicy({
           surfaceSearch: options?.toolSearch === true,
@@ -1379,7 +1392,7 @@ export class StreamingSessionManager {
           captureException(err);
           console.error('[StreamingSessionManager] Background processor error:', err);
         }).finally(() => stderrLog.flush());
-      });
+      })));
     } catch (err) {
       // The subprocess never started (a rejected child env, a query() throw).
       // Release the egress grant here — the session was never registered in

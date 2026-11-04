@@ -326,6 +326,7 @@ import { reconcileDecommissionedDynamicMemberships } from './jobs/decommissioned
 import { registerAllEventSubscribers } from './services/eventSubscribers';
 import { registerTopologyPhysicalAuthorities } from './services/topology/physicalAuthorities';
 import { initializeDeviceEventHandlers } from './events/deviceEvents';
+import { warmBreezeToolSurface } from './services/aiAgentSdkTools';
 import { buildWebhookFanoutDeps } from './services/webhookFanoutDeps';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { getClusterCacheBus } from './services/clusterCacheBus';
@@ -2274,6 +2275,18 @@ async function bootstrap(): Promise<void> {
   initializeDeviceEventHandlers();
 
   await initializeWorkers();
+
+  // #11004: build the static AI tool surface (~340 Zod tool declarations, their
+  // registry metadata and one throwaway SDK MCP server) now, so the first AI
+  // chat message after a restart does not pay for it on the request path. CPU
+  // only, no I/O. A failure only means the first session builds it instead.
+  try {
+    const warmed = warmBreezeToolSurface();
+    console.log(`[startup] AI tool surface warmed: ${warmed.tools} chat tools in ${warmed.ms}ms`);
+  } catch (error) {
+    console.error('[startup] AI tool surface warm-up failed; the first AI session will build it:', error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+  }
 
   // Periodically retry failed audit writes. The in-process queue is bounded
   // (10k entries) and per-entry attempts are capped (3) with exponential
