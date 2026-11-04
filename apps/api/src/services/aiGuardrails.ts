@@ -887,6 +887,12 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   // EDR response actions whole-tool catch-all (#8167): an unknown action
   // string fails closed to four_eyes instead of falling through.
   'edr_endpoint_action',
+  // Network-isolation containment RELEASE (W13 #10101, spec §2/§3.10, ai.mdx):
+  // lifting an isolation reverses a mitigation on a device under incident
+  // response — the same class as s1_threat_action rollback and
+  // edr_endpoint_action unisolate. Isolating (execute_containment) stays
+  // supervised. Keeps the sole-operator WebAuthn fallback (selfApprovalPolicy).
+  'release_containment',
   // PAM elevation request. Classified four_eyes out of caution (not named in
   // spec §3.2). Full-control W04 (#6758) re-read the handler: it always
   // inserts a PENDING request and applies only an auto_deny rule verdict —
@@ -2481,6 +2487,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Device-execute (analogy: s1_isolate_device, execute_command; collect_evidence includes
   // screenshot => privileged extraction like take_screenshot)
   execute_containment: { resource: 'devices', action: 'execute' },
+  // W13 (#10101): the human release route's permission (routes/devices/networkIsolation.ts).
+  release_containment: { resource: 'devices', action: 'execute' },
   collect_evidence: { resource: 'devices', action: 'execute' },
 
   // Policy-prereq family (analogy: manage_backup_profiles per-action map)
@@ -4681,6 +4689,17 @@ export function buildApprovalDescription(
         break;
       }
       parts.push(`Containment: ${actionType ? w04Cap(actionType.replace(/_/g, ' ')) : '(unspecified action)'} on device ${String(input.deviceId).slice(0, 8)}...`);
+      break;
+    }
+    // W13 (#10101): the approver must see that this LIFTS a containment, and which episode.
+    case 'release_containment': {
+      if (!nonEmptyText(input.deviceId)) {
+        parts.push(humanizeToolAction(toolName, action));
+        break;
+      }
+      parts.push(`Release network isolation (episode ${String(input.isolationId ?? '').slice(0, 8)}...) on device ${String(input.deviceId).slice(0, 8)}... — the device rejoins the network`);
+      const reason = nonEmptyText(input.reason);
+      if (reason) parts.push(`— reason: "${w04Cap(reason)}"`);
       break;
     }
     case 'collect_evidence': {

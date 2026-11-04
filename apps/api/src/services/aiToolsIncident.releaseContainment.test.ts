@@ -99,6 +99,28 @@ describe('release_containment routes through the isolation service only (W13 #10
     expect(out).toMatchObject({ success: true, commandId: 'release-command-1' });
   });
 
+  it('returns scalars only: never the allowlist snapshot, agent report or sealed secret', async () => {
+    vi.mocked(releaseNetworkIsolation).mockResolvedValue({
+      episode: {
+        id: ISOLATION_ID, state: 'release_requested', desiredState: 'released', generation: 4, releaseKind: 'ai',
+        allowSnapshot: [{ scope: 'breeze', host: 'control.example.test' }], lastAgentReport: { generation: 3 },
+        breakGlassSecretEnc: 'enc:never', reason: 'free text',
+      },
+      commandId: 'release-command-1',
+    } as never);
+    const out = await run(input, releasedContext);
+    expect(out.episode).toEqual({
+      id: ISOLATION_ID, state: 'release_requested', desiredState: 'released', generation: 4, releaseKind: 'ai',
+    });
+    expect(JSON.stringify(out)).not.toMatch(/control\.example\.test|enc:never|lastAgentReport|allowSnapshot/);
+  });
+
+  it('accepts an upper-case id when it names the bound episode', async () => {
+    const upper = { ...input, deviceId: DEVICE_ID.toUpperCase(), isolationId: ISOLATION_ID.toUpperCase() };
+    expect(await run(upper, releasedContext)).toMatchObject({ success: true });
+    expect(vi.mocked(releaseNetworkIsolation).mock.calls[0]![4]).toEqual({ kind: 'ai', approvalBinding: binding });
+  });
+
   it('trims the reason the way the service schema will', async () => {
     await run({ ...input, reason: '  Incident contained  ' }, releasedContext);
     expect(vi.mocked(releaseNetworkIsolation).mock.calls[0]![3]).toEqual({ reason: 'Incident contained' });

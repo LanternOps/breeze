@@ -1286,7 +1286,7 @@ describe('release_containment never reaches an agent principal (W13 #10101)', ()
 
   it('is a registered Tier-3 four-eyes tool (so this suite is not vacuous)', () => {
     expect(TOOL_TIERS.release_containment).toBe(3);
-    expect(resolveApprovalScope('release_containment', input)).toBe('four_eyes');
+    expect(resolveApprovalScope('release_containment', undefined, input)).toBe('four_eyes');
   });
 
   it.each(['act', 'shadow'] as const)('%s mode, explicitly allowlisted: deny — never allow, act or propose', (mode) => {

@@ -159,7 +159,6 @@ export type McpExemptReason =
    * plain reboot stays reachable through the existing device-command tools.
    */
   | 'human_only_force_reboot'
-  | 'human_only_network_isolation'
   /**
    * The chat / script-builder session transport itself (sessions, messages,
    * interrupt, approve-plan). This is the plumbing the AI features run over,
@@ -488,7 +487,10 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // GET /devices/:id/monitors (#6371 W05c2): the same per-device monitor state
   // is agent-reachable per monitor via get_monitor_activity's deviceId filter.
   'devices/monitors.ts': { tools: ['list_monitors', 'get_monitor_activity', 'reset_monitor_escalation'] },
-  'devices/networkIsolation.ts': { exempt: 'human_only_network_isolation', note: 'Interactive session and MFA only in W1; AI release is W4b #10101. Unattended MCP stays denied.' },
+  // W13 (#10101): start is execute_containment:network_isolation and release is the four-eyes
+  // release_containment, both through the isolation service. Extend, acknowledge and the
+  // break-glass code stay human-only, and the external MCP denies both tools by name.
+  'devices/networkIsolation.ts': { tools: ['execute_containment', 'release_containment'] },
   'agents/isolationVerify.ts': { exempt: 'agent_transport' },
   'devices/forceReboot.ts': { exempt: 'human_only_force_reboot', note: 'Force reboot now: closes running apps; step-up bound to one device.' },
   'devices/moveOrg.ts': { exempt: 'human_only_tenant_restructure', note: 'Cross-tenant device move -- rewrites which tenant owns the device.' },

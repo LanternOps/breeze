@@ -211,7 +211,9 @@ vi.mock('../services/permissions', async (importOriginal) => {
 });
 
 import { mcpServerRoutes, __isMcpApprovalRequiredForTests } from './mcpServer';
-import { checkGuardrails, isReadOnlyResolution, TIER2_ACTIONS, TIER3_ACTIONS } from '../services/aiGuardrails';
+import {
+  checkGuardrails, isReadOnlyResolution, resolveApprovalScope, TIER2_ACTIONS, TIER3_ACTIONS, TIER3_FOUR_EYES_TOOLS,
+} from '../services/aiGuardrails';
 
 // Real JSON schemas for the multiplexed tools these tests target, trimmed to
 // just the `action` enum the gate inspects (mirrors the real registry
@@ -1496,16 +1498,18 @@ describe('network isolation bypass refusal', () => {
     expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
   });
 
-  // W13 (#10101): the AI tool is now REGISTERED (Tier 3, four-eyes). Registration
-  // must not open an MCP path: drive the gate with the real registry tier and
-  // the real tool input, under every intents/unattended combination.
+  // W13 (#10101): the AI tool is now REGISTERED — Tier 3 in the registry and
+  // TOOL_TIERS (pinned by aiGuardrails.releaseContainment.test.ts), four-eyes in
+  // the REAL guardrail tables this suite runs on. Registration must not open an
+  // MCP path: drive the gate with that tier and the real tool input, under every
+  // intents/unattended combination.
   it.each([
     [false, false], [false, true], [true, false], [true, true],
   ] as const)('the registered release_containment stays refused (intents=%s unattended=%s)', async (intents, unattended) => {
-    const actual = await vi.importActual<typeof import('../services/aiTools')>('../services/aiTools');
-    const realTier = actual.getToolTier('release_containment');
-    expect(realTier).toBe(3);
-    mocks.getToolTier.mockImplementation((name: string) => (name === 'release_containment' ? realTier : undefined));
+    expect(TIER3_FOUR_EYES_TOOLS.has('release_containment')).toBe(true);
+    expect(resolveApprovalScope('release_containment', undefined, {})).toBe('four_eyes');
+    const registeredTier = 3; // TOOL_TIERS.release_containment (pinned elsewhere)
+    mocks.getToolTier.mockImplementation((name: string) => (name === 'release_containment' ? registeredTier : undefined));
     vi.stubEnv('MCP_TIER3_INTENTS_ENABLED', String(intents));
     vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', unattended ? principal : '');
     const releaseArgs = {
@@ -1513,7 +1517,7 @@ describe('network isolation bypass refusal', () => {
       isolationId: '33333333-3333-4333-8333-333333333333',
       reason: 'Incident contained and cleaned',
     };
-    expect(__isMcpApprovalRequiredForTests('release_containment', realTier!, {
+    expect(__isMcpApprovalRequiredForTests('release_containment', registeredTier, {
       unattendedPrincipal: true, toolInput: releaseArgs,
     })).toBe(true);
     const body = await (await callTool('release_containment', releaseArgs)).json();

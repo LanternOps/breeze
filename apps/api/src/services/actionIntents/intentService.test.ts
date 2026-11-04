@@ -365,7 +365,7 @@ import {
 import type { GuardrailCheck } from '../aiGuardrails';
 import { buildActionLabel } from './actionLabel';
 import { db, withDbAccessContext } from '../../db';
-import { computeEffectDigestOutcome, EffectDigestUnresolvableError } from './effectDigest';
+import { computeEffectDigestOutcome } from './effectDigest';
 import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 import { CallerVerificationRequiredError, CallerVerificationValidationError } from '../callerVerification/errors';
 
@@ -2265,7 +2265,7 @@ describe('createActionIntent — supervised/four_eyes scope', () => {
 
         await expect(createActionIntent(makeAuth(), baseInput({
           toolName: 'release_containment', input: releaseInput, idempotencyKey: `key-release-${reason}`,
-        }))).rejects.toBeInstanceOf(EffectDigestUnresolvableError);
+        }))).rejects.toMatchObject({ code: 'effect_digest_unresolvable' });
         expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
       });
   });

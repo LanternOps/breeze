@@ -31,12 +31,20 @@ describe('release_containment tier and approval class (W13 #10101)', () => {
     expect(check).toMatchObject({ tier: 3, allowed: true, requiresApproval: true });
   });
 
+  it('tells the approver it LIFTS an isolation, on which episode and device, and why', () => {
+    const { description } = checkGuardrails('release_containment', input);
+    expect(description).toContain('Release network isolation');
+    expect(description).toContain(ISOLATION_ID.slice(0, 8));
+    expect(description).toContain(DEVICE_ID.slice(0, 8));
+    expect(description).toContain('Incident contained and cleaned');
+  });
+
   it('is four-eyes, never supervised — isolating stays supervised', () => {
     expect(TIER3_FOUR_EYES_TOOLS.has('release_containment')).toBe(true);
     expect(TIER3_SUPERVISED_TOOLS.has('release_containment')).toBe(false);
-    expect(resolveApprovalScope('release_containment', input)).toBe('four_eyes');
-    expect(resolveApprovalScope('release_containment', {})).toBe('four_eyes');
-    expect(resolveApprovalScope('execute_containment', { actionType: 'network_isolation' })).toBe('supervised');
+    expect(resolveApprovalScope('release_containment', undefined, input)).toBe('four_eyes');
+    expect(resolveApprovalScope('release_containment', undefined, {})).toBe('four_eyes');
+    expect(resolveApprovalScope('execute_containment', undefined, { actionType: 'network_isolation' })).toBe('supervised');
   });
 
   it('keeps the sole-operator WebAuthn fallback (ai.mdx "Approving your own request")', () => {

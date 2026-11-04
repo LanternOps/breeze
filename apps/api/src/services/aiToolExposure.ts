@@ -142,6 +142,12 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // tool, which the deterministic coordinator admits after the run — so a
   // specialist can never launch a specialist (depth one).
   'launch_specialist',
+  // Network-isolation W13 (#10101, spec §2 and OD15): lifting a containment is
+  // a four-eyes HUMAN decision; the same rule denies it to unattended MCP
+  // principals. An agent proposal would also fail at release: the isolation
+  // service stamps the caller's user id on the queued command, which an agent
+  // id is not (the W08 topology precedent above).
+  'release_containment',
 ]);
 
 /**
