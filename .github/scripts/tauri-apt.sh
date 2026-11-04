@@ -37,11 +37,12 @@ as_root() {
 # Index file names derive from this URI, so the seed and every job must agree on
 # it, which is why it lives here. arm64 exists only for local container tests.
 #
-# The Azure mirror, deliberately: hosted runners are in Azure and it serves them
-# at 16 MB/s, while the public archive has crawled at KB/s from them (#9847). It
-# has had bad days too (#1605); TAURI_APT_MIRROR is the switch for one of those.
-# The 26.04 image resolves its mirror through /etc/apt/apt-mirrors.txt, so the
-# `azure.archive -> archive` sed this replaced had already stopped changing anything.
+# The Azure mirror is what these jobs were already using: the 26.04 image resolves
+# its mirror through /etc/apt/apt-mirrors.txt, so the `azure.archive -> archive` sed
+# this replaced had stopped changing anything. It serves indexes at ~20 MB/s but
+# throttles sustained .deb downloads to tens of kB/s after a burst of tens of MB
+# (seed run 41925110607), which is why a job must not depend on downloading the
+# closure. TAURI_APT_MIRROR is the switch for a day it misbehaves (#1605).
 write_sources() {
   local dir=$1 codename mirror
   codename=${TAURI_APT_CODENAME:-$(. /etc/os-release && echo "${VERSION_CODENAME}")}
@@ -91,9 +92,11 @@ cmd_plan() {
   : > "${work}/empty-status"
   apt_options "${work}" "${work}/lists" "${work}/archives"
   as_root timeout --kill-after=30s 3m apt-get update "${APT_OPTS[@]}" >&2
-  apt-get -s install --no-install-recommends --no-remove "${APT_OPTS[@]}" \
+  # `'URI' file size hash` per package, nothing downloaded. The hash makes the id
+  # change on any rebuild, and the file names let `fetch` reuse a restored closure.
+  apt-get install -y --print-uris --no-install-recommends --no-remove "${APT_OPTS[@]}" \
     -o "Dir::State::status=${work}/empty-status" "${TAURI_PKGS[@]}" \
-    | awk '/^Inst /{print $2, $3}' | LC_ALL=C sort > "${work}/plan.txt"
+    | awk "/^'/{print \$2, \$3, \$4}" | LC_ALL=C sort > "${work}/plan.txt"
   if [ ! -s "${work}/plan.txt" ]; then
     echo "::error::apt resolved no packages for the Tauri closure" >&2
     exit 1
@@ -102,12 +105,22 @@ cmd_plan() {
   { echo "layout=${CACHE_LAYOUT}"; cat "${work}/plan.txt"; } | sha256sum | cut -c1-16
 }
 
+# The first seed pays for the whole closure through the mirror's throttle (~50m
+# for 210 MB), so give it attempts that resume: apt keeps what it finished. Later
+# seeds start from the restored closure, and apt verifies each reused file against
+# the index hash, so only what the archive changed crosses the wire.
 cmd_fetch() {
-  local work=$1 cache=$2 expected count attempt attempts=3
+  local work=$1 cache=$2 expected count attempt attempts=4 name
   apt_options "${work}" "${work}/lists" "${work}/archives"
   expected=$(wc -l < "${work}/plan.txt" | tr -d ' ')
+  if [ -d "${cache}/archives" ]; then
+    while read -r name _; do
+      if [ -f "${cache}/archives/${name}" ]; then cp "${cache}/archives/${name}" "${work}/archives/"; fi
+    done < "${work}/plan.txt"
+    echo "Reusing $(find "${work}/archives" -maxdepth 1 -name '*.deb' | wc -l | tr -d ' ') of ${expected} debs from the restored closure."
+  fi
   for attempt in $(seq 1 "${attempts}"); do
-    if as_root timeout --kill-after=30s 15m apt-get install -y --download-only --no-install-recommends --no-remove \
+    if as_root timeout --kill-after=30s 20m apt-get install -y --download-only --no-install-recommends --no-remove \
       "${APT_OPTS[@]}" -o "Dir::State::status=${work}/empty-status" "${TAURI_PKGS[@]}"; then
       count=$(find "${work}/archives" -maxdepth 1 -name '*.deb' | wc -l | tr -d ' ')
       if [ "${count}" = "${expected}" ]; then
@@ -183,7 +196,8 @@ cleanup_network() {
 }
 
 network_failed() {
-  local phase=$1 rc=$2 why="exited ${rc}"
+  local phase=$1 rc=$2 why
+  why="exited ${rc}"
   if [ "${rc}" = 124 ] || [ "${rc}" = 137 ]; then why="hit its phase deadline"; fi
   echo "::error::Failed to install Tauri system dependencies: apt-get ${phase} ${why}; re-run to land on a fresh runner (#9847)."
   return 1

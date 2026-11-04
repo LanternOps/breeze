@@ -311,3 +311,15 @@ test('the Tauri seed verifies a closure offline before saving it, and only on a 
     assert.match(seedSteps[i], /^\s+if: steps\.cache\.outputs\.cache-hit != 'true'$/m);
   }
 });
+
+// The first seed of a closure downloads all of it through a mirror that throttles
+// sustained downloads, and a job killed by its timeout saves nothing.
+test('the Tauri seed job outlasts every download attempt the script can make', () => {
+  const seedJob = jobBlocks(seedText()).find((j) => j.name === 'seed-tauri-apt').text;
+  const jobMinutes = Number(seedJob.match(/^ {4}timeout-minutes:\s*(\d+)\s*$/m)?.[1]);
+  const script = read(new URL('./tauri-apt.sh', import.meta.url));
+  const attempts = Number(script.match(/attempts=(\d+)/)?.[1]);
+  const perAttempt = Number(script.match(/timeout --kill-after=30s (\d+)m apt-get install -y --download-only/)?.[1]);
+  assert.ok(attempts && perAttempt, 'could not read the fetch budget from tauri-apt.sh');
+  assert.ok(jobMinutes > attempts * perAttempt, `job ${jobMinutes}m vs ${attempts} x ${perAttempt}m of downloads`);
+});

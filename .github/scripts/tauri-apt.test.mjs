@@ -20,7 +20,7 @@ printf '%s\n' "$*" >> "$CALLS"
 phase=install
 case " $* " in
   *" update "*) phase=update ;;
-  *" -s "*) phase=simulate ;;
+  *" --print-uris "*) phase=uris ;;
   *" --download-only --no-download "*) phase=probe ;;
   *" --download-only "*) phase=download ;;
   *" --no-download "*) phase=cached-install ;;
@@ -39,10 +39,13 @@ if [ -n "\${RECORD_STATE:-}" ] && [ "$phase" = update ]; then
 fi
 code=$(awk -v p="$phase" '$1 == p { print $2; exit }' "$APT_SCRIPT" 2>/dev/null)
 code=\${code:-0}
-if [ "$phase" = simulate ] && [ "$code" = 0 ]; then cat "$SIM_OUTPUT" 2>/dev/null; fi
+if [ "$phase" = uris ] && [ "$code" = 0 ]; then cat "$SIM_OUTPUT" 2>/dev/null; fi
 if [ "$phase" = update ] && [ "$code" = 0 ]; then mkdir -p "$lists"; echo idx > "$lists/ubuntu_Packages"; fi
-if [ "$phase" = download ] && [ "$code" = 0 ] && [ -n "\${DOWNLOAD_DEBS:-}" ]; then
-  mkdir -p "$archives"; for d in $DOWNLOAD_DEBS; do echo deb > "$archives/$d"; done
+if [ "$phase" = download ]; then
+  ls "$archives" > "$(dirname "$APT_SCRIPT")/archives-at-download"
+  if [ "$code" = 0 ] && [ -n "\${DOWNLOAD_DEBS:-}" ]; then
+    mkdir -p "$archives"; for d in $DOWNLOAD_DEBS; do echo deb > "$archives/$d"; done
+  fi
 fi
 exit "$code"
 `.replaceAll('\\${', '${');
@@ -239,21 +242,23 @@ test('ensure, network path: fixed sources, verification intact, temporary state 
   }
 });
 
+const URIS = (...names) => names.map((n) => `'http://mirror/pool/${n}' ${n} 3 SHA256:${n.length}aa\n`).join('');
+
 test('plan: resolves against an EMPTY dpkg status, so the closure ignores what the image preinstalls', () => harness(({ files, run, phases, phaseNames }) => {
   const r = run('plan', files.work);
   assert.equal(r.status, 0, output(r));
-  assert.deepEqual(phaseNames(), ['update', 'simulate']);
+  assert.deepEqual(phaseNames(), ['update', 'uris']);
   const status = phases()[1].match(/status=(\S*)/)[1];
-  assert.ok(status, 'simulate must set Dir::State::status');
+  assert.ok(status, 'the download list must set Dir::State::status');
   assert.equal(readFileSync(status, 'utf8'), '', 'status file must be empty');
   assert.match(r.stdout.trim(), /^[0-9a-f]{16}$/, 'stdout is only the closure id');
-}, { sim: 'Inst libbrotli1 (1.2.0-3ubuntu0.1 Ubuntu:26.04/resolute [amd64])\nInst patchelf (0.18 Ubuntu:26.04/resolute [amd64])\n' }));
+}, { sim: `${URIS('libbrotli1_1.2_amd64.deb', 'patchelf_0.18_amd64.deb')}Reading package lists...\n` }));
 
-test('plan: the closure id tracks package versions and ignores resolver order', () => {
+test('plan: the closure id tracks package files and ignores resolver order and apt chatter', () => {
   const id = (sim) => harness(({ files, run }) => run('plan', files.work).stdout.trim(), { sim });
-  const a = 'Inst a (1 x [amd64])\nInst b (2 x [amd64])\n';
-  assert.equal(id(a), id('Inst b (2 x [amd64])\nInst a (1 x [amd64])\n'));
-  assert.notEqual(id(a), id('Inst a (1 x [amd64])\nInst b (3 x [amd64])\n'));
+  const a = URIS('a_1_amd64.deb', 'b_2_amd64.deb');
+  assert.equal(id(a), id(`Building dependency tree...\n${URIS('b_2_amd64.deb', 'a_1_amd64.deb')}`));
+  assert.notEqual(id(a), id(URIS('a_1_amd64.deb', 'b_3_amd64.deb')));
 });
 
 test('plan: an empty resolution fails rather than producing a key for nothing', () => harness(({ files, run }) => {
@@ -272,14 +277,28 @@ test('fetch: downloads the empty-status closure and publishes debs + lists into 
   assert.deepEqual(readdirSync(path.join(files.cache, 'archives')).sort(), ['a_1_amd64.deb', 'b_2_amd64.deb']);
   assert.ok(existsSync(path.join(files.cache, 'lists', 'ubuntu_Packages')));
   assert.equal(existsSync(path.join(files.cache, 'stale-from-partial-restore')), false, 'a partial restore must not leak into the save');
-}, { sim: 'Inst a (1 x [amd64])\nInst b (2 x [amd64])\n', env: { DOWNLOAD_DEBS: 'a_1_amd64.deb b_2_amd64.deb', TAURI_APT_SEED_BACKOFF: '0' } }));
+}, { sim: URIS('a_1_amd64.deb', 'b_2_amd64.deb'), env: { DOWNLOAD_DEBS: 'a_1_amd64.deb b_2_amd64.deb', TAURI_APT_SEED_BACKOFF: '0' } }));
+
+// The mirror throttles sustained downloads to tens of kB/s, so only the first seed
+// can afford the whole closure: later ones must fetch just what the archive changed.
+test('fetch: reuses debs the restored closure still plans, and drops the superseded ones', () => harness(({ files, run }) => {
+  assert.equal(run('plan', files.work).status, 0);
+  mkdirSync(path.join(files.cache, 'archives'), { recursive: true });
+  writeFileSync(path.join(files.cache, 'archives', 'a_1_amd64.deb'), 'kept');
+  writeFileSync(path.join(files.cache, 'archives', 'b_1_amd64.deb'), 'superseded');
+  const r = run('fetch', files.work, files.cache);
+  assert.equal(r.status, 0, output(r));
+  assert.deepEqual(readFileSync(path.join(files.cache, '..', 'archives-at-download'), 'utf8').match(/\S+\.deb/g), ['a_1_amd64.deb'], 'apt must be handed the reusable deb only');
+  assert.deepEqual(readdirSync(path.join(files.cache, 'archives')).sort(), ['a_1_amd64.deb', 'b_2_amd64.deb']);
+  assert.equal(readFileSync(path.join(files.cache, 'archives', 'a_1_amd64.deb'), 'utf8'), 'kept');
+}, { sim: URIS('a_1_amd64.deb', 'b_2_amd64.deb'), env: { DOWNLOAD_DEBS: 'b_2_amd64.deb', TAURI_APT_SEED_BACKOFF: '0' } }));
 
 test('fetch: fewer debs than the plan fails, so a partial closure is never saved', () => harness(({ files, run }) => {
   assert.equal(run('plan', files.work).status, 0);
   const r = run('fetch', files.work, files.cache);
   assert.notEqual(r.status, 0, output(r));
   assert.equal(existsSync(path.join(files.cache, 'archives')), false);
-}, { sim: 'Inst a (1 x [amd64])\nInst b (2 x [amd64])\n', env: { DOWNLOAD_DEBS: 'a_1_amd64.deb', TAURI_APT_SEED_BACKOFF: '0' } }));
+}, { sim: URIS('a_1_amd64.deb', 'b_2_amd64.deb'), env: { DOWNLOAD_DEBS: 'a_1_amd64.deb', TAURI_APT_SEED_BACKOFF: '0' } }));
 
 test('probe: reports the offline fit of a cache without installing anything', () => harness(({ files, run, phaseNames }) => {
   seedCache(files.cache);

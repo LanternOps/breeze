@@ -238,7 +238,9 @@ jobs:
     # Same label as rust-check in ci.yml (the policy test pins it), so a closure is
     # never saved under an ImageOS the job does not run on.
     runs-on: ubuntu-26.04
-    timeout-minutes: 25
+    # Only the first seed of a package list needs this: it downloads the whole
+    # closure through a mirror that throttles sustained downloads. See `fetch`.
+    timeout-minutes: 90
     permissions:
       contents: read
       actions: write # Prune superseded closures below.
