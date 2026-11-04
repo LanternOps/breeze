@@ -154,4 +154,8 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g116', prompt: "Submit Contoso's Pax8 order.", expect: [{ tool: 'manage_pax8_orders', action: 'preview' }, { tool: 'manage_pax8_orders', action: 'submit' }] },
   // #10161: ticket merge reaches the chat SDK shape (preview first, then the supervised merge).
   { id: 'g117', prompt: 'Ticket 1043 is a duplicate of 1042, merge it in.', expect: [{ tool: 'manage_tickets', action: 'merge_preview' }, { tool: 'manage_tickets', action: 'merge' }] },
+  // Network-isolation W13 (#10101): lifting a Breeze network isolation (four-eyes), and a
+  // negative — un-quarantining a FILE is a threat action, never release_containment.
+  { id: 'g118', prompt: 'Release the network isolation on FIN-LAPTOP-07, the incident is resolved.', expect: [{ tool: 'release_containment' }, { tool: 'resolve_device_context' }, { tool: 'get_incident_timeline' }, { tool: 'list_incidents' }] },
+  { id: 'g119', prompt: 'Un-quarantine the file Defender flagged on WS-01, it was a false positive.', expect: [{ tool: 'security_scan', action: 'restore' }, { tool: 'security_scan', action: 'status' }, { tool: 'resolve_device_context' }] },
 ];
