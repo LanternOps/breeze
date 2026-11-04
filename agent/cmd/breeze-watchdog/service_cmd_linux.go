@@ -5,11 +5,11 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/branding"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/spf13/cobra"
 )
 
@@ -97,7 +97,7 @@ func serviceInstallCmd() *cobra.Command {
 
 			// Stop existing service before replacing binary.
 			if _, err := os.Stat(watchdogUnitDst); err == nil {
-				if stopErr := exec.Command("systemctl", "stop", watchdogServiceName).Run(); stopErr != nil {
+				if stopErr := procspawn.Command("systemctl", "stop", watchdogServiceName).Run(); stopErr != nil {
 					fmt.Fprintf(os.Stderr, "Warning: failed to stop existing service: %v\n", stopErr)
 				} else {
 					fmt.Println("Stopped existing Breeze Watchdog service.")
@@ -158,12 +158,12 @@ func serviceUninstallCmd() *cobra.Command {
 			}
 
 			// Stop the service.
-			if err := exec.Command("systemctl", "stop", watchdogServiceName).Run(); err != nil {
+			if err := procspawn.Command("systemctl", "stop", watchdogServiceName).Run(); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to stop service: %v\n", err)
 			}
 
 			// Disable the service.
-			if err := exec.Command("systemctl", "disable", watchdogServiceName).Run(); err != nil {
+			if err := procspawn.Command("systemctl", "disable", watchdogServiceName).Run(); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to disable service: %v\n", err)
 			}
 
@@ -173,7 +173,7 @@ func serviceUninstallCmd() *cobra.Command {
 			}
 
 			// Reload systemd.
-			if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+			if err := procspawn.Command("systemctl", "daemon-reload").Run(); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to reload systemd: %v\n", err)
 			}
 
@@ -201,7 +201,7 @@ func serviceStartCmd() *cobra.Command {
 				return fmt.Errorf("service not installed — run 'sudo breeze-watchdog service install' first")
 			}
 
-			out, err := exec.Command("systemctl", "start", watchdogServiceName).CombinedOutput()
+			out, err := procspawn.Command("systemctl", "start", watchdogServiceName).CombinedOutput()
 			if err != nil {
 				return fmt.Errorf("failed to start service: %s", strings.TrimSpace(string(out)))
 			}
@@ -222,7 +222,7 @@ func serviceStopCmd() *cobra.Command {
 				return fmt.Errorf("must run as root (sudo breeze-watchdog service stop)")
 			}
 
-			out, err := exec.Command("systemctl", "stop", watchdogServiceName).CombinedOutput()
+			out, err := procspawn.Command("systemctl", "stop", watchdogServiceName).CombinedOutput()
 			if err != nil {
 				return fmt.Errorf("failed to stop service: %s", strings.TrimSpace(string(out)))
 			}
@@ -235,7 +235,7 @@ func serviceStopCmd() *cobra.Command {
 
 // restartWatchdogService restarts the watchdog via systemctl.
 func restartWatchdogService() error {
-	out, err := exec.Command("systemctl", "restart", watchdogServiceName).CombinedOutput()
+	out, err := procspawn.Command("systemctl", "restart", watchdogServiceName).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("systemctl restart failed: %s: %w", strings.TrimSpace(string(out)), err)
 	}

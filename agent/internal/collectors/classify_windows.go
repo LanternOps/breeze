@@ -3,13 +3,14 @@
 package collectors
 
 import (
-	"os/exec"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // getChassisType reads chassis type via WMIC on Windows.
 func getChassisType() string {
-	out, err := exec.Command("wmic", "systemenclosure", "get", "ChassisTypes", "/format:list").Output()
+	out, err := procspawn.Command("wmic", "systemenclosure", "get", "ChassisTypes", "/format:list").Output()
 	if err != nil {
 		return ""
 	}
