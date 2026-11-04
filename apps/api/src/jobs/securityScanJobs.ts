@@ -209,12 +209,13 @@ export function shouldScheduleSecurityScan(
 export async function schedulePolicyScans(
   entry: SecurityScanSchedulable,
   now: Date,
+  skippedMacosDeviceIds: Set<string> = new Set(),
 ): Promise<number> {
   if (entry.deviceIds.length === 0) return 0;
   const occurrence = occurrenceStart(now);
 
-  const deviceRows = await db
-    .select({ id: devices.id, orgId: devices.orgId })
+  const candidateRows = await db
+    .select({ id: devices.id, orgId: devices.orgId, osType: devices.osType })
     .from(devices)
     .where(and(
       inArray(devices.id, entry.deviceIds),
@@ -222,6 +223,14 @@ export async function schedulePolicyScans(
       notParkedDeviceCondition(),
       ne(devices.status, 'decommissioned'),
     ));
+
+  // #10375: macOS YARA scans kill the agent; remove this exclusion when it closes
+  // Keyed on OS, not agent version. Manual scans and IOC sweeps are unaffected.
+  const deviceRows = candidateRows.filter((device) => {
+    if (device.osType !== 'macos') return true;
+    skippedMacosDeviceIds.add(device.id);
+    return false;
+  });
   if (deviceRows.length === 0) return 0;
 
   // Per-org backpressure, evaluated per member org so one saturated org under a
@@ -299,6 +308,7 @@ async function processSchedulePolicies(now: Date): Promise<{
   let scheduledPolicies = 0;
   let scansQueued = 0;
   const timezoneByOrg = new Map<string, string>();
+  const skippedMacosDeviceIds = new Set<string>();
 
   for (const entry of entries) {
     // Timezone: the owning org's partner timezone, else UTC. A partner-wide
@@ -313,11 +323,17 @@ async function processSchedulePolicies(now: Date): Promise<{
     }
     if (!shouldScheduleSecurityScan(entry.settings, timezone, now)) continue;
 
-    const queued = await schedulePolicyScans(entry, now);
+    const queued = await schedulePolicyScans(entry, now, skippedMacosDeviceIds);
     if (queued > 0) {
       scansQueued += queued;
       scheduledPolicies++;
     }
+  }
+
+  if (skippedMacosDeviceIds.size > 0) {
+    console.debug(
+      `[SecurityScanJobs] schedule-policies: skipped ${skippedMacosDeviceIds.size} macOS device(s) this tick (#10375)`,
+    );
   }
 
   return { scheduledPolicies, scansQueued };
