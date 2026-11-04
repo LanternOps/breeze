@@ -264,7 +264,7 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Ativar aplicação de orçamento de IA",
+    "enable": "Breeze AI para todas as organizações",
     "monthlyBudget": "Orçamento mensal (US$)",
     "dailyBudget": "Orçamento diário (US$)",
     "approvalMode": "Modo de aprovação",
@@ -274,13 +274,16 @@
     "alertThresholds": "Avisar em (% do orçamento)",
     "alertThresholdsHelp": "Administradores parceiros com acesso a cobrança recebem um alerta no aplicativo em cada nível e um e-mail para alertas mensais e de limite atingido. Deixe em branco para herdar 50, 80, 95.",
     "notSet": "Não definido, as organizações configuram individualmente",
-    "description": "Os valores de orçamento são aplicados a todas as organizações filhas. Os valores em dólares são armazenados internamente em centavos.",
+    "description": "Os valores definidos aqui se aplicam a todas as organizações filhas e bloqueiam o campo correspondente da organização. Deixe um campo vazio para que as organizações o configurem.",
     "modes": {
       "perStep": "Por etapa",
       "actionPlan": "Plano de ação",
       "autoApprove": "Aprovar automaticamente",
       "hybridPlan": "Plano híbrido"
-    }
+    },
+    "aiOn": "Ativado",
+    "aiOff": "Desativado (bloqueia a AI em todas as organizações)",
+    "enableHelp": "Deixe como Não definido para que cada organização decida. Os limites de gasto abaixo se aplicam sempre que definidos; não há um botão separado para aplicá-los."
   },
   "aiBudgetThresholds": {
     "invalid": "Insira até cinco números inteiros entre 1 e 99, separados por vírgulas."
@@ -1085,8 +1088,8 @@
         "description": "Envie e-mails do seu próprio domínio"
       },
       "aiBudgets": {
-        "label": "Orçamentos de IA",
-        "description": "Limites de gastos com IA"
+        "label": "Orçamentos e limites de AI",
+        "description": "Limites de gasto, alertas e limites de taxa de AI"
       },
       "aiProvider": {
         "label": "Provedores e modelos de IA",
@@ -1109,8 +1112,8 @@
         "description": "Central de serviços, faturamento e topologia ativados/desativados"
       },
       "aiApprovals": {
-        "label": "Tempo limite de aprovação de IA",
-        "description": "Quanto tempo o Breeze AI aguarda a aprovação de uma ação restrita"
+        "label": "Aprovações de AI",
+        "description": "Modo de aprovação e quanto tempo o Breeze AI espera por uma aprovação"
       },
       "callerVerification": {
         "label": "Verificação de chamador",
@@ -6341,8 +6344,8 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "Orçamento de IA",
-    "description": "Limites de gastos, limites de frequência e modo de aprovação do Breeze AI nesta organização. Os campos que seu parceiro definiu são mostrados aqui, mas só podem ser alterados na aba do parceiro.",
+    "title": "Orçamento e limites de AI",
+    "description": "Limites de gasto, alertas e limites de taxa do Breeze AI nesta organização. Campos definidos pelo seu parceiro aparecem aqui, mas só podem ser alterados na aba do parceiro.",
     "selectOrganization": "Selecione uma organização para configurar seu orçamento de IA."
   },
   "orgSettingsPage": {
@@ -7812,7 +7815,8 @@
     "productDefault": "Padrão do produto ({{minutes}} minutos)",
     "range": "Escolha entre {{min}} e {{max}} minutos.",
     "description": "Por quanto tempo uma conversa em andamento com o Breeze AI aguarda que alguém aprove uma ação restrita (Tier 2/3) antes de desistir.",
-    "notForUnattendedNote": "Isso não é para trabalho noturno ou não supervisionado — o trabalho de longa duração passa pela fila de aprovações, que tem seu próprio vencimento."
+    "notForUnattendedNote": "Isso não é para trabalho noturno ou não supervisionado — o trabalho de longa duração passa pela fila de aprovações, que tem seu próprio vencimento.",
+    "modeDescription": "Como o chat do Breeze AI pede confirmação antes de executar ações protegidas. Aplica-se haja ou não um limite de gasto."
   },
   "orgAiApprovalTimeout": {
     "title": "Tempo limite de aprovação de IA",
@@ -8198,5 +8202,10 @@
     "hideContent": "Ocultar conteúdo",
     "conversationUnavailable": "Esta conversa não está mais disponível.",
     "usersLoadFailed": "Não foi possível carregar os técnicos."
+  },
+  "orgAiApprovalMode": {
+    "title": "Modo de aprovação de AI",
+    "description": "Como o chat do Breeze AI pede confirmação antes de executar ações protegidas (Tier 2/3) nesta organização. Aplica-se haja ou não um limite de gasto.",
+    "save": "Salvar"
   }
 }

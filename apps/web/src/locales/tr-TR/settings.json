@@ -264,7 +264,7 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Yapay zeka bütçesinin uygulanmasını etkinleştirin",
+    "enable": "Tüm kuruluşlar için Breeze AI",
     "monthlyBudget": "Aylık Bütçe ($)",
     "dailyBudget": "Günlük Bütçe ($)",
     "approvalMode": "Onay Modu",
@@ -274,13 +274,16 @@
     "alertThresholds": "Uyar (bütçenin %'si)",
     "alertThresholdsHelp": "Faturalama erişimine sahip partner yöneticileri her eşikte uygulama içi bir uyarı ve aylık ile limit aşımı uyarıları için e-posta alır. 50, 80, 95 değerlerini devralmak için boş bırakın.",
     "notSet": "Ayarlanmadı, kuruluşlar ayrı ayrı yapılandırılır",
-    "description": "Bütçe değerleri tüm alt kuruluşlarda uygulanır. Dolar tutarları dahili olarak sent cinsinden saklanır.",
+    "description": "Burada ayarlanan değerler her alt kuruluşa uygulanır ve ilgili kuruluş alanını kilitler. Kuruluşların yapılandırması için bir alanı boş bırakın.",
     "modes": {
       "perStep": "Adım Başına",
       "actionPlan": "Eylem Planı",
       "autoApprove": "Otomatik Onayla",
       "hybridPlan": "Hibrit Plan"
-    }
+    },
+    "aiOn": "Açık",
+    "aiOff": "Kapalı (her kuruluşta AI'ı engeller)",
+    "enableHelp": "Her kuruluşun kendisinin karar vermesi için Ayarlanmadı olarak bırakın. Aşağıdaki harcama sınırları ayarlandıkları anda uygulanır; bunları uygulamak için ayrı bir anahtar yoktur."
   },
   "aiBudgetThresholds": {
     "invalid": "1 ile 99 arasında, virgülle ayrılmış en fazla beş tam sayı girin."
@@ -1085,8 +1088,8 @@
         "description": "E-postaları kendi alan adınızdan gönderin"
       },
       "aiBudgets": {
-        "label": "Yapay Zeka Bütçeleri",
-        "description": "AI harcama sınırları"
+        "label": "AI bütçeleri ve sınırları",
+        "description": "AI harcama sınırları, uyarılar ve hız sınırları"
       },
       "aiProvider": {
         "label": "Yapay Zeka Sağlayıcıları ve Modelleri",
@@ -1109,8 +1112,8 @@
         "description": "Servis masası, faturalandırma ve topoloji açık/kapalı"
       },
       "aiApprovals": {
-        "label": "Yapay Zeka Onay Zaman Aşımı",
-        "description": "Breeze AI'ın kısıtlı bir eylemin onaylanmasını ne kadar bekleyeceği"
+        "label": "AI onayları",
+        "description": "Onay modu ve Breeze AI'ın onay için ne kadar beklediği"
       },
       "callerVerification": {
         "label": "Arayan doğrulama",
@@ -6341,8 +6344,8 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "Yapay zeka bütçesi",
-    "description": "Bu kuruluşta Breeze AI için harcama sınırları, hız sınırları ve onay modu. İş ortağınızın belirlediği alanlar burada gösterilir ancak yalnızca iş ortağı sekmesinden değiştirilebilir.",
+    "title": "AI bütçesi ve sınırları",
+    "description": "Bu kuruluşta Breeze AI için harcama sınırları, uyarılar ve hız sınırları. İş ortağınızın ayarladığı alanlar burada gösterilir ancak yalnızca iş ortağı sekmesinden değiştirilebilir.",
     "selectOrganization": "Yapay zeka bütçesini yapılandırmak için bir kuruluş seçin."
   },
   "orgSettingsPage": {
@@ -7812,7 +7815,8 @@
     "productDefault": "Ürün varsayılanı ({{minutes}} dakika)",
     "range": "{{min}}-{{max}} dakika arasında seçin.",
     "description": "Canlı bir Breeze AI turunun, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını vazgeçmeden önce ne kadar bekleyeceği.",
-    "notForUnattendedNote": "Bu, gece boyu veya gözetimsiz çalışmalar için değildir — uzun süreli çalışmalar kendi son kullanma tarihine sahip Onaylar kuyruğundan geçer."
+    "notForUnattendedNote": "Bu, gece boyu veya gözetimsiz çalışmalar için değildir — uzun süreli çalışmalar kendi son kullanma tarihine sahip Onaylar kuyruğundan geçer.",
+    "modeDescription": "Breeze AI sohbetinin korumalı eylemleri çalıştırmadan önce nasıl onay istediği. Harcama sınırı ayarlanmış olsun ya da olmasın uygulanır."
   },
   "orgAiApprovalTimeout": {
     "title": "Yapay Zeka Onay Zaman Aşımı",
@@ -8198,5 +8202,10 @@
     "hideContent": "İçeriği gizle",
     "conversationUnavailable": "Bu konuşma artık kullanılamıyor.",
     "usersLoadFailed": "Teknisyenler yüklenemedi."
+  },
+  "orgAiApprovalMode": {
+    "title": "AI onay modu",
+    "description": "Breeze AI sohbetinin bu kuruluşta korumalı (Tier 2/3) eylemleri çalıştırmadan önce nasıl onay istediği. Harcama sınırı ayarlanmış olsun ya da olmasın uygulanır.",
+    "save": "Kaydet"
   }
 }

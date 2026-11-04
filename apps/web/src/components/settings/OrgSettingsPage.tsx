@@ -717,6 +717,9 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                 semantics (touched-fields-only, its own lock model). This
                 goes through the page's wholesale settings PATCH instead, via
                 handleSave('aiApprovals', ...) below. */}
+            {/* Approval mode: stored with the budget fields (PUT /ai/budget)
+                but not a budget, so it sits beside the approval timeout. */}
+            <OrgAiBudgetSettings orgId={effectiveOrgId} section="approvals" />
             <OrgAiApprovalTimeoutCard
               initialData={orgDetails?.settings?.aiApprovals}
               effective={aiApprovalTimeout}

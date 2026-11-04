@@ -75,11 +75,13 @@ describe('badges sit on the classified fields of each tab', () => {
       'notifications.pushoverDefaultSound', 'notifications.pushoverDefaultUser',
     ]],
     ['AI budgets', <PartnerAiBudgetsTab data={{ enabled: true }} onChange={vi.fn()} />, [
-      'aiBudgets.alertThresholdPercents', 'aiBudgets.approvalMode', 'aiBudgets.dailyBudgetCents', 'aiBudgets.enabled',
+      'aiBudgets.alertThresholdPercents', 'aiBudgets.dailyBudgetCents', 'aiBudgets.enabled',
       'aiBudgets.maxTurnsPerSession', 'aiBudgets.messagesPerHourPerOrg', 'aiBudgets.messagesPerMinutePerUser',
       'aiBudgets.monthlyBudgetCents', 'aiBudgets.toolRateLimitMultiplier',
     ]],
-    ['AI approvals', <PartnerAiApprovalsTab data={{}} onChange={vi.fn()} />, ['aiApprovals.interactiveTimeoutMinutes']],
+    ['AI approvals', <PartnerAiApprovalsTab data={{}} onChange={vi.fn()} budgets={{}} onBudgetsChange={vi.fn()} />, [
+      'aiApprovals.interactiveTimeoutMinutes', 'aiBudgets.approvalMode',
+    ]],
     ['Remote access', <PartnerRemoteAccessTab data={{}} onChange={vi.fn()} networkProxy={{}} onNetworkProxyChange={vi.fn()} />, [
       'networkProxy.dedicatedTunnelOrigin', 'remoteAccessProviders.providers',
     ]],

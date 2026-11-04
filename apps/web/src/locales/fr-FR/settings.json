@@ -264,7 +264,7 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Activer l’application budgétaire par IA",
+    "enable": "Breeze AI pour toutes les organisations",
     "monthlyBudget": "Budget mensuel ($)",
     "dailyBudget": "Budget quotidien ($)",
     "approvalMode": "Mode d’approbation",
@@ -274,13 +274,16 @@
     "alertThresholds": "Avertir à (% du budget)",
     "alertThresholdsHelp": "Les administrateurs partenaires ayant accès à la facturation reçoivent une alerte dans l'application à chaque palier et un e-mail pour les alertes mensuelles et de plafond atteint. Laissez vide pour hériter de 50, 80, 95.",
     "notSet": "Non défini, les organisations se configurent individuellement",
-    "description": "Les valeurs budgétaires sont appliquées dans toutes les organisations d’enfants. Les montants en dollars sont stockés en centimes en interne.",
+    "description": "Les valeurs définies ici s'appliquent à chaque organisation enfant et verrouillent le champ correspondant de l'organisation. Laissez un champ vide pour que les organisations le configurent.",
     "modes": {
       "perStep": "Par étape",
       "actionPlan": "Plan d’action",
       "autoApprove": "Approbation automatique",
       "hybridPlan": "Plan hybride"
-    }
+    },
+    "aiOn": "Activé",
+    "aiOff": "Désactivé (bloque l'AI dans toutes les organisations)",
+    "enableHelp": "Laissez « Non défini » pour que chaque organisation décide. Les plafonds de dépenses ci-dessous s'appliquent dès qu'ils sont définis ; il n'y a pas d'interrupteur distinct pour les appliquer."
   },
   "aiBudgetThresholds": {
     "invalid": "Saisissez jusqu'à cinq nombres entiers entre 1 et 99, séparés par des virgules."
@@ -1085,8 +1088,8 @@
         "description": "Envoyez vos e-mails depuis votre propre domaine"
       },
       "aiBudgets": {
-        "label": "Budgets IA",
-        "description": "Limites de dépenses en IA"
+        "label": "Budgets et limites AI",
+        "description": "Plafonds de dépenses, alertes et limites de débit AI"
       },
       "aiProvider": {
         "label": "Fournisseurs et modèles d'IA",
@@ -1109,8 +1112,8 @@
         "description": "Service desk, facturation et topologie activés/désactivés"
       },
       "aiApprovals": {
-        "label": "Délai d'approbation IA",
-        "description": "Durée d'attente de Breeze AI pour l'approbation d'une action contrôlée"
+        "label": "Approbations AI",
+        "description": "Mode d'approbation et délai d'attente de Breeze AI pour une approbation"
       },
       "callerVerification": {
         "label": "Vérification de l’appelant",
@@ -6288,8 +6291,8 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "Budget IA",
-    "description": "Plafonds de dépenses, limites de fréquence et mode d’approbation de Breeze AI dans cette organisation. Les champs définis par votre partenaire sont affichés ici, mais ne peuvent être modifiés que dans l’onglet du partenaire.",
+    "title": "Budget et limites AI",
+    "description": "Plafonds de dépenses, alertes et limites de débit de Breeze AI dans cette organisation. Les champs définis par votre partenaire sont affichés ici, mais ne peuvent être modifiés que dans l'onglet partenaire.",
     "selectOrganization": "Sélectionnez une organisation pour configurer son budget IA."
   },
   "orgSettingsPage": {
@@ -7812,7 +7815,8 @@
     "productDefault": "Valeur par défaut du produit ({{minutes}} minutes)",
     "range": "Choisissez {{min}}-{{max}} minutes.",
     "description": "Durée pendant laquelle un tour de Breeze AI en cours attend qu'une personne approuve une action contrôlée (Tier 2/3) avant d'abandonner.",
-    "notForUnattendedNote": "Ceci n'est pas destiné au travail nocturne ou sans surveillance — le travail de longue durée passe par la file d'approbations, qui a son propre délai d'expiration."
+    "notForUnattendedNote": "Ceci n'est pas destiné au travail nocturne ou sans surveillance — le travail de longue durée passe par la file d'approbations, qui a son propre délai d'expiration.",
+    "modeDescription": "Comment le chat Breeze AI demande une confirmation avant d'exécuter des actions protégées. S'applique qu'un plafond de dépenses soit défini ou non."
   },
   "orgAiApprovalTimeout": {
     "title": "Délai d'approbation IA",
@@ -8198,5 +8202,10 @@
     "hideContent": "Masquer le contenu",
     "conversationUnavailable": "Cette conversation n'est plus disponible.",
     "usersLoadFailed": "Impossible de charger les techniciens."
+  },
+  "orgAiApprovalMode": {
+    "title": "Mode d'approbation AI",
+    "description": "Comment le chat Breeze AI demande une confirmation avant d'exécuter des actions protégées (Tier 2/3) dans cette organisation. S'applique qu'un plafond de dépenses soit défini ou non.",
+    "save": "Enregistrer"
   }
 }

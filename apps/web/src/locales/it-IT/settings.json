@@ -264,7 +264,7 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Abilita l'applicazione dei budget IA",
+    "enable": "Breeze AI per tutte le organizzazioni",
     "monthlyBudget": "Budget mensile ($)",
     "dailyBudget": "Budget giornaliero ($)",
     "approvalMode": "Modalità di approvazione",
@@ -274,13 +274,16 @@
     "alertThresholds": "Avvisa al (% del budget)",
     "alertThresholdsHelp": "Gli admin partner con accesso alla fatturazione ricevono un avviso in-app a ogni soglia e un'email per gli avvisi mensili e di limite raggiunto. Lascia vuoto per ereditare 50, 80, 95.",
     "notSet": "Non impostato, le org si configurano singolarmente",
-    "description": "I valori di budget vengono applicati a tutte le organizzazioni figlie. Gli importi in dollari sono archiviati internamente in centesimi.",
+    "description": "I valori impostati qui si applicano a ogni organizzazione figlia e bloccano il campo corrispondente dell'organizzazione. Lascia un campo vuoto per farlo configurare alle organizzazioni.",
     "modes": {
       "perStep": "Per passaggio",
       "actionPlan": "Piano d'azione",
       "autoApprove": "Approvazione automatica",
       "hybridPlan": "Piano ibrido"
-    }
+    },
+    "aiOn": "Attivo",
+    "aiOff": "Disattivo (blocca l'AI in ogni organizzazione)",
+    "enableHelp": "Lascia Non impostato per far decidere a ogni organizzazione. I limiti di spesa qui sotto si applicano non appena sono impostati; non esiste un interruttore separato per applicarli."
   },
   "aiBudgetThresholds": {
     "invalid": "Inserisci fino a cinque numeri interi tra 1 e 99, separati da virgole."
@@ -1085,8 +1088,8 @@
         "description": "Invia email dal tuo dominio"
       },
       "aiBudgets": {
-        "label": "Budget AI",
-        "description": "Limiti di spesa AI"
+        "label": "Budget e limiti AI",
+        "description": "Limiti di spesa, avvisi e limiti di frequenza AI"
       },
       "aiProvider": {
         "label": "Provider e modelli IA",
@@ -1109,8 +1112,8 @@
         "description": "Service desk, fatturazione e topologia on/off"
       },
       "aiApprovals": {
-        "label": "Timeout di approvazione IA",
-        "description": "Per quanto tempo Breeze AI attende l'approvazione di un'azione controllata"
+        "label": "Approvazioni AI",
+        "description": "Modalità di approvazione e per quanto Breeze AI attende un'approvazione"
       },
       "callerVerification": {
         "label": "Verifica del chiamante",
@@ -6336,8 +6339,8 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "Budget AI",
-    "description": "Limiti di spesa, limiti di frequenza e modalità di approvazione per Breeze AI in questa organizzazione. I campi impostati dal partner sono mostrati qui, ma possono essere modificati solo nella scheda del partner.",
+    "title": "Budget e limiti AI",
+    "description": "Limiti di spesa, avvisi e limiti di frequenza di Breeze AI in questa organizzazione. I campi impostati dal partner sono mostrati qui ma possono essere modificati solo nella scheda partner.",
     "selectOrganization": "Seleziona un'organizzazione per configurare il suo budget AI."
   },
   "orgSettingsPage": {
@@ -7812,7 +7815,8 @@
     "productDefault": "Predefinito del prodotto ({{minutes}} minuti)",
     "range": "Scegli tra {{min}} e {{max}} minuti.",
     "description": "Per quanto tempo un turno live di Breeze AI attende che qualcuno approvi un'azione controllata (Tier 2/3) prima di rinunciare.",
-    "notForUnattendedNote": "Questo non è per lavoro notturno o incustodito — il lavoro di lunga durata passa attraverso la coda delle approvazioni, che ha una propria scadenza."
+    "notForUnattendedNote": "Questo non è per lavoro notturno o incustodito — il lavoro di lunga durata passa attraverso la coda delle approvazioni, che ha una propria scadenza.",
+    "modeDescription": "Come la chat di Breeze AI chiede conferma prima di eseguire azioni protette. Si applica che sia impostato o meno un limite di spesa."
   },
   "orgAiApprovalTimeout": {
     "title": "Timeout di approvazione IA",
@@ -8198,5 +8202,10 @@
     "hideContent": "Nascondi contenuto",
     "conversationUnavailable": "Questa conversazione non è più disponibile.",
     "usersLoadFailed": "Impossibile caricare i tecnici."
+  },
+  "orgAiApprovalMode": {
+    "title": "Modalità di approvazione AI",
+    "description": "Come la chat di Breeze AI chiede conferma prima di eseguire azioni protette (Tier 2/3) in questa organizzazione. Si applica che sia impostato o meno un limite di spesa.",
+    "save": "Salva"
   }
 }

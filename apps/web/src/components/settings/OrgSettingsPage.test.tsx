@@ -538,8 +538,11 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
 
     const link = await screen.findByRole('link', { name: /^ai$/i });
     expect(link.getAttribute('aria-current')).toBe('page');
-    expect(screen.getByTestId('org-ai-budget')).not.toBeNull();
-    expect(aiBudgetProps.at(-1)).toMatchObject({ orgId: 'org-1' });
+    // Two cards from one editor: the budget card, and approval mode on its own
+    // beside the approval timeout (it is not a budget).
+    expect(screen.getAllByTestId('org-ai-budget')).toHaveLength(2);
+    expect(aiBudgetProps.some((p) => p.orgId === 'org-1' && p.section === undefined)).toBe(true);
+    expect(aiBudgetProps.some((p) => p.orgId === 'org-1' && p.section === 'approvals')).toBe(true);
     // W04 (#7602): the model-defaults override card mounts first on this tab, for this org.
     expect(screen.getByTestId('org-model-defaults-card')).not.toBeNull();
     expect(modelDefaultsProps.at(-1)).toMatchObject({ orgId: 'org-1' });

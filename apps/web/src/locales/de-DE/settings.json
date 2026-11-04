@@ -264,7 +264,7 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Aktivieren Sie die Durchsetzung von KI-Budgets",
+    "enable": "Breeze AI für alle Organisationen",
     "monthlyBudget": "Monatsbudget ($)",
     "dailyBudget": "Tagesbudget ($)",
     "approvalMode": "Genehmigungsmodus",
@@ -274,13 +274,16 @@
     "alertThresholds": "Warnen bei (% des Budgets)",
     "alertThresholdsHelp": "Partner-Admins mit Abrechnungszugriff erhalten bei jeder Stufe eine In-App-Benachrichtigung und eine E-Mail für monatliche und Obergrenzen-Warnungen. Leer lassen, um 50, 80, 95 zu übernehmen.",
     "notSet": "Nicht festgelegt, Organisationen werden individuell konfiguriert",
-    "description": "Budgetwerte werden in allen untergeordneten Organisationen durchgesetzt. Dollarbeträge werden intern in Cent gespeichert.",
+    "description": "Hier gesetzte Werte gelten für jede untergeordnete Organisation und sperren das entsprechende Organisationsfeld. Lassen Sie ein Feld leer, damit Organisationen es selbst konfigurieren.",
     "modes": {
       "perStep": "Pro Schritt",
       "actionPlan": "Aktionsplan",
       "autoApprove": "Automatisch genehmigen",
       "hybridPlan": "Hybridplan"
-    }
+    },
+    "aiOn": "Ein",
+    "aiOff": "Aus (blockiert AI in jeder Organisation)",
+    "enableHelp": "Lassen Sie „Nicht festgelegt“, damit jede Organisation selbst entscheidet. Ausgabenlimits unten gelten, sobald sie gesetzt sind; es gibt keinen separaten Schalter zur Durchsetzung."
   },
   "aiBudgetThresholds": {
     "invalid": "Geben Sie bis zu fünf ganze Zahlen zwischen 1 und 99 ein, durch Kommas getrennt."
@@ -1085,8 +1088,8 @@
         "description": "E-Mails von Ihrer eigenen Domain senden"
       },
       "aiBudgets": {
-        "label": "KI-Budgets",
-        "description": "KI-Ausgabenlimits"
+        "label": "AI-Budgets & Limits",
+        "description": "AI-Ausgabenlimits, Warnungen und Ratenlimits"
       },
       "aiProvider": {
         "label": "KI-Anbieter und Modelle",
@@ -1109,8 +1112,8 @@
         "description": "Service Desk, Abrechnung und Topologie ein/aus"
       },
       "aiApprovals": {
-        "label": "KI-Genehmigungs-Timeout",
-        "description": "Wie lange Breeze AI auf die Genehmigung einer geschützten Aktion wartet"
+        "label": "AI-Genehmigungen",
+        "description": "Genehmigungsmodus und wie lange Breeze AI auf eine Genehmigung wartet"
       },
       "callerVerification": {
         "label": "Anruferverifizierung",
@@ -6288,8 +6291,8 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "KI-Budget",
-    "description": "Ausgabenobergrenzen, Ratenlimits und Genehmigungsmodus für Breeze AI in dieser Organisation. Von Ihrem Partner festgelegte Felder werden hier angezeigt, können aber nur auf dem Partner-Tab geändert werden.",
+    "title": "AI-Budget & Limits",
+    "description": "Ausgabenlimits, Warnungen und Ratenlimits für Breeze AI in dieser Organisation. Felder, die Ihr Partner festgelegt hat, werden hier angezeigt, können aber nur im Partner-Tab geändert werden.",
     "selectOrganization": "Wählen Sie eine Organisation aus, um ihr KI-Budget zu konfigurieren."
   },
   "orgSettingsPage": {
@@ -7812,7 +7815,8 @@
     "productDefault": "Produktstandard ({{minutes}} Minuten)",
     "range": "Wählen Sie {{min}}-{{max}} Minuten.",
     "description": "Wie lange eine laufende Breeze AI-Runde auf die Genehmigung einer geschützten Aktion (Tier 2/3) wartet, bevor sie aufgegeben wird.",
-    "notForUnattendedNote": "Dies ist nicht für nächtliche oder unbeaufsichtigte Arbeiten gedacht — langlaufende Arbeiten durchlaufen die Genehmigungswarteschlange mit eigener Ablaufzeit."
+    "notForUnattendedNote": "Dies ist nicht für nächtliche oder unbeaufsichtigte Arbeiten gedacht — langlaufende Arbeiten durchlaufen die Genehmigungswarteschlange mit eigener Ablaufzeit.",
+    "modeDescription": "Wie der Breeze AI-Chat vor geschützten Aktionen nachfragt. Gilt unabhängig davon, ob ein Ausgabenlimit gesetzt ist."
   },
   "orgAiApprovalTimeout": {
     "title": "KI-Genehmigungs-Timeout",
@@ -8198,5 +8202,10 @@
     "hideContent": "Inhalt ausblenden",
     "conversationUnavailable": "Diese Unterhaltung ist nicht mehr verfügbar.",
     "usersLoadFailed": "Techniker konnten nicht geladen werden."
+  },
+  "orgAiApprovalMode": {
+    "title": "AI-Genehmigungsmodus",
+    "description": "Wie der Breeze AI-Chat in dieser Organisation vor geschützten (Tier 2/3) Aktionen nachfragt. Gilt unabhängig davon, ob ein Ausgabenlimit gesetzt ist.",
+    "save": "Speichern"
   }
 }
