@@ -51,7 +51,7 @@ status: approved, waves tracked on LanternOps/breeze#10838
 ### Task 1: Tables and tenancy registration
 
 **Files:**
-- Create: `apps/api/migrations/2027-01-19-100000-device-wake-tracking.sql`, `apps/api/src/db/schema/deviceWake.ts`
+- Create: `apps/api/migrations/2027-01-20-170000-device-wake-tracking.sql`, `apps/api/src/db/schema/deviceWake.ts`
 - Modify: `apps/api/src/db/schema/index.ts`, `services/tenantCascade.ts`, `services/orgMergeRegistry.ts`, `services/tenantExportPolicyRegistry.ts`, `routes/devices/core.ts`, `routes/devices/moveOrg.coverage.test.ts`, `services/deviceOrgMove/moveDeviceOrgInTransaction.ts`, `__tests__/integration/rls-coverage.integration.test.ts` if an allowlist applies
 - Test: `apps/api/src/__tests__/integration/deviceWakeTables.integration.test.ts`
 
