@@ -1,5 +1,5 @@
 import { and, eq, inArray } from 'drizzle-orm';
-import { PERMISSION_GRANTS, riskTierRank, type RiskTier } from '@breeze/shared';
+import { PERMISSION_GRANTS, riskTierRank, type RiskTier, type TouchClass } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { devices } from '../../db/schema/devices';
 import type { ScriptProposalRow } from '../../db/schema/scriptProposals';
@@ -92,7 +92,7 @@ export function reviewOverrideAuditEvent(args: {
       acknowledgedPatterns: args.acknowledgedPatterns,
       deterministicRiskFloor: deterministicRiskFloor({
         strictHits: proposal.strictHits ?? [],
-        touchClasses: proposal.touchClasses ?? [],
+        touchClasses: (proposal.touchClasses ?? []) as TouchClass[],
       }),
       ...args.details,
     },
@@ -106,7 +106,7 @@ export type ReviewOverrideRefusal = {
 };
 
 export type ReviewOverrideDeviceResult =
-  | { deviceId: string; ok: true; executionId: string | undefined; commandId: string | undefined }
+  | { deviceId: string; ok: true; executionId: string | null | undefined; commandId: string | null | undefined }
   | { deviceId: string; ok: false; error: string };
 
 export type ReviewOverrideRunResult =
@@ -183,7 +183,10 @@ export async function runReviewFailedOverride(args: {
     return { ok: false, status: 409, body: { error: 'proposal_scan_rejected' } };
   }
 
-  const floor = deterministicRiskFloor({ strictHits: proposal.strictHits ?? [], touchClasses: proposal.touchClasses ?? [] });
+  const floor = deterministicRiskFloor({
+    strictHits: proposal.strictHits ?? [],
+    touchClasses: (proposal.touchClasses ?? []) as TouchClass[],
+  });
   const selfApproval = await assertNotSelfApprovingHighRisk(auth, proposal, floor);
   if (selfApproval) return selfApproval;
 
