@@ -387,6 +387,9 @@ jobs:
       - name: Verify temporary CI apt source isolation
         run: node --test .github/scripts/prepare-ci-apt-sources.test.mjs
 
+      - name: Test Tauri apt closure script
+        run: node --test .github/scripts/tauri-apt.test.mjs
+
       - name: Guard retired AI documentation automation
         run: pnpm test:docs-automation
 
@@ -3526,7 +3529,9 @@ jobs:
   # promote it once its runtime/caching is proven.
   rust-check:
     name: Rust Check (Tauri apps)
-    runs-on: ubuntu-latest
+    # Same label as seed-tauri-apt in ci-cache-seed.yml (the policy test pins it):
+    # the cache key carries ImageOS, so the two must land on one distro release.
+    runs-on: ubuntu-26.04
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.rust == 'true'
     timeout-minutes: 35

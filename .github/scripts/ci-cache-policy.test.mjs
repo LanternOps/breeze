@@ -124,15 +124,18 @@ function withValue(step, field) {
   return norm(body.join(' '));
 }
 
+// The Tauri entry is named by its closure id, passed to the composite and computed
+// by the seed's plan step: the same value under two expressions.
+const sameClosure = (key) => key?.replace(/\$\{\{ (?:inputs|steps\.plan\.outputs)\.closure \}\}/u, '<closure>');
 const restoresIn = (list) =>
   list.filter((s) => usesOf(s).startsWith('actions/cache/restore@'))
-    .map((s) => ({ key: withValue(s, 'key'), path: withValue(s, 'path') }));
+    .map((s) => ({ key: sameClosure(withValue(s, 'key')), path: withValue(s, 'path') }));
 
 test('seed workflow saves every key ci.yml and the composites restore', () => {
   const seed = seedText();
   const saves = steps(seed, 6)
     .filter((s) => usesOf(s).startsWith('actions/cache/save@'))
-    .map((s) => ({ key: withValue(s, 'key'), path: withValue(s, 'path') }));
+    .map((s) => ({ key: sameClosure(withValue(s, 'key')), path: withValue(s, 'path') }));
   const wanted = [
     ...restoresIn(ciSteps),
     ...restoresIn(compositeSteps.map((c) => c.step)),
@@ -209,7 +212,7 @@ test('seed workflow exports every buildkit cache scope ci.yml reads', () => {
 test('seed workflow triggers, concurrency and pins', () => {
   const seed = seedText();
   for (const t of ['workflow_dispatch:', 'schedule:', 'pnpm-lock.yaml', 'agent/go.sum',
-    '.github/tauri-apt-packages.txt', 'docker/**', '.github/actions/**', '.github/workflows/ci-cache-seed.yml']) {
+    '.github/tauri-apt-packages.txt', '.github/scripts/tauri-apt.sh', 'docker/**', '.github/actions/**', '.github/workflows/ci-cache-seed.yml']) {
     assert.ok(seed.includes(t), `seed missing trigger ${t}`);
   }
   assert.match(seed, /group: ci-cache-seed\s*\n\s+cancel-in-progress: false/);
@@ -271,5 +274,40 @@ test('seed runner OS set covers every OS that restores each cache in ci.yml', ()
     for (const o of oses) {
       assert.ok(have[cache].has(o), `seed has no ${cache} job on ${o}, but ci.yml restores ${cache} there`);
     }
+  }
+});
+
+// ---- Tauri apt closure (#9847) ---------------------------------------------
+// Cached debs only install on the distro release they were resolved for, and a
+// fixed key would freeze the closure while runner images move past it.
+
+test('rust-check and the Tauri seed pin one explicit runner label', () => {
+  const label = (text, name) => jobBlocks(text).find((j) => j.name === name)?.text.match(/^ {4}runs-on:\s*(\S+)\s*$/m)?.[1];
+  const ciLabel = label(ci, 'rust-check');
+  assert.ok(ciLabel, 'rust-check has no runs-on');
+  assert.equal(label(seedText(), 'seed-tauri-apt'), ciLabel);
+  assert.doesNotMatch(ciLabel, /-latest$/, '-latest moves between distro releases while both are being served');
+});
+
+test('the Tauri restore takes the newest closure, and the seed asks for its exact one', () => {
+  const composite = composites.find((c) => c.name === 'tauri-apt-cache');
+  assert.ok(composite, 'missing tauri-apt-cache composite');
+  const restore = steps(composite.text, 4).find((s) => usesOf(s).startsWith('actions/cache/restore@'));
+  const prefix = withValue(restore, 'restore-keys');
+  assert.ok(prefix?.endsWith('-'), `restore-keys must be a prefix: ${prefix}`);
+  assert.equal(withValue(restore, 'key'), `${prefix}\${{ inputs.closure }}`);
+  const seed = jobBlocks(seedText()).find((j) => j.name === 'seed-tauri-apt').text;
+  assert.match(seed, /uses: \.\/\.github\/actions\/tauri-apt-cache\n\s+with:\n\s+closure: \$\{\{ steps\.plan\.outputs\.closure \}\}/);
+});
+
+test('the Tauri seed verifies a closure offline before saving it, and only on a miss', () => {
+  const seedSteps = steps(seedText(), 6);
+  const at = (re) => seedSteps.findIndex((s) => re.test(s));
+  const fetch = at(/tauri-apt\.sh fetch/);
+  const probe = at(/tauri-apt\.sh probe/);
+  const save = at(/name: Save Tauri apt cache/);
+  assert.ok(fetch >= 0 && probe > fetch && save > probe, `fetch ${fetch}, probe ${probe}, save ${save}`);
+  for (const i of [fetch, probe, save]) {
+    assert.match(seedSteps[i], /^\s+if: steps\.cache\.outputs\.cache-hit != 'true'$/m);
   }
 });
