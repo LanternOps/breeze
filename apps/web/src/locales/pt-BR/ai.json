@@ -655,7 +655,7 @@
       "dismissNote": "Dispensar"
     },
     "settings": {
-      "title": "Orçamento e verificação periódica",
+      "title": "Configurações do Wisp",
       "budget": "Orçamento diário",
       "tick": "Verificar a cada (minutos)",
       "save": "Salvar"

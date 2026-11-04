@@ -655,7 +655,7 @@
       "dismissNote": "Kapat"
     },
     "settings": {
-      "title": "Bütçe ve kontrol aralığı",
+      "title": "Wisp ayarları",
       "budget": "Günlük bütçe",
       "tick": "Kontrol aralığı (dakika)",
       "save": "Kaydet"

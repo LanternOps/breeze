@@ -655,7 +655,7 @@
       "dismissNote": "Fermer"
     },
     "settings": {
-      "title": "Budget et suivi",
+      "title": "Paramètres de Wisp",
       "budget": "Budget quotidien",
       "tick": "Suivi toutes les (minutes)",
       "save": "Enregistrer"

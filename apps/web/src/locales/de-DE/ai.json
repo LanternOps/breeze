@@ -655,7 +655,7 @@
       "dismissNote": "Schließen"
     },
     "settings": {
-      "title": "Budget und Check-in",
+      "title": "Wisp-Einstellungen",
       "budget": "Tagesbudget",
       "tick": "Check-in alle (Minuten)",
       "save": "Speichern"

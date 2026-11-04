@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { RefreshCw, Power, SlidersHorizontal, X } from 'lucide-react';
+import { ExternalLink, Paperclip, RefreshCw, Power, SlidersHorizontal, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { showToast } from '@/components/shared/Toast';
@@ -35,6 +35,10 @@ export type WispThreadHeaderProps = {
    * its identity card already states both, so the header keeps only the controls.
    */
   showIdentity?: boolean;
+  /** Chat-panel mode: the "Open in Wisp" link, kept in the control row. */
+  homeHref?: string;
+  /** Chat-panel mode: the attachments disclosure toggle, kept in the control row. */
+  attachments?: { open: boolean; onToggle: () => void };
 };
 
 const STATUS_TONE: Record<NonNullable<WispState>['status'], string> = {
@@ -67,8 +71,10 @@ function handleMutationError(err: unknown, fallback: string) {
 
 /**
  * The Wisp thread's header in the chat panel (W04 Task 8, spec §4.4/§6.1/§9):
- * scope, customer focus, grant status, refresh (primary when the user's live
- * reach has outgrown the grant), operational settings, and turn-off.
+ * scope + status on one row with every control (pause, refresh, settings,
+ * turn-off, and in the chat panel the attachments toggle and home link),
+ * the spend meter under it. Customer focus lives in the settings popover and
+ * is named in the identity row only once set.
  */
 export default function WispThreadHeader({
   wisp,
@@ -79,6 +85,8 @@ export default function WispThreadHeader({
   showFocus = true,
   currentActivity = null,
   showIdentity = true,
+  homeHref,
+  attachments,
 }: WispThreadHeaderProps) {
   const { t } = useTranslation('ai');
   const exitWispMode = useAiStore((s) => s.exitWispMode);
@@ -216,12 +224,31 @@ export default function WispThreadHeader({
         {showIdentity && (
           <>
             <span className="truncate font-medium text-foreground" data-testid="wisp-scope">{scopeLabel}</span>
-            <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${STATUS_TONE[budgetReached ? 'paused' : wisp.status]}`} data-testid="wisp-grant-status">
+            <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${STATUS_TONE[budgetReached ? 'paused' : wisp.status]}`} data-testid="wisp-grant-status">
               {t(/* i18n-dynamic */ `wisp.header.status.${budgetReached ? 'budgetReached' : wisp.status}`)}
             </span>
+            {showFocus && wisp.focusOrgId && (
+              <span className="min-w-0 truncate text-muted-foreground" title={t('wisp.focus.label')}>
+                · <span data-testid="wisp-focus-current" className="text-foreground">{wisp.focusOrgName ?? wisp.focusOrgId}</span>
+              </span>
+            )}
           </>
         )}
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex shrink-0 items-center gap-0.5" data-testid="wisp-header-controls">
+          {attachments && (
+            <button
+              type="button"
+              data-testid="wisp-attachments-toggle"
+              aria-expanded={attachments.open}
+              onClick={attachments.onToggle}
+              title={t('wisp.attachments.title')}
+              aria-label={t('wisp.attachments.title')}
+              className={`${iconButton} ${attachments.open ? 'bg-muted text-foreground' : ''}`}
+            >
+              <Paperclip className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {wisp.status === 'active' && <WispGrantPauseControl wisp={wisp} onChange={updateWisp} variant="icon" />}
           <button
             type="button"
             data-testid="wisp-refresh-grant"
@@ -237,12 +264,23 @@ export default function WispThreadHeader({
             <RefreshCw className="h-3.5 w-3.5" />
             {wideningAvailable && <span>{t('wisp.header.refresh')}</span>}
           </button>
-          <button type="button" data-testid="wisp-settings" onClick={() => openSettings()} title={t('wisp.settings.title')} className={iconButton} aria-expanded={settingsOpen}>
+          <button type="button" data-testid="wisp-settings" onClick={() => openSettings()} title={t('wisp.settings.title')} aria-label={t('wisp.settings.title')} className={`${iconButton} ${settingsOpen ? 'bg-muted text-foreground' : ''}`} aria-expanded={settingsOpen}>
             <SlidersHorizontal className="h-3.5 w-3.5" />
           </button>
-          <button type="button" data-testid="wisp-revoke" onClick={() => setConfirmRevoke(true)} title={t('wisp.header.revoke')} className={iconButton}>
+          <button type="button" data-testid="wisp-revoke" onClick={() => setConfirmRevoke(true)} title={t('wisp.header.revoke')} aria-label={t('wisp.header.revoke')} className={iconButton}>
             <Power className="h-3.5 w-3.5" />
           </button>
+          {homeHref && (
+            <a
+              href={homeHref}
+              data-testid="wisp-sidebar-open-home"
+              title={t('wisp.sidebar.openHome')}
+              aria-label={t('wisp.sidebar.openHome')}
+              className={iconButton}
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          )}
         </div>
       </div>
 
@@ -293,28 +331,30 @@ export default function WispThreadHeader({
         />
       )}
 
-      <WispGrantPauseControl wisp={wisp} onChange={updateWisp} />
-
-      {showFocus && <label className="flex items-center gap-2">
-        <span className="shrink-0 text-muted-foreground">{t('wisp.focus.label')}</span>
-        <select
-          data-testid="wisp-focus"
-          aria-label={t('wisp.focus.label')}
-          value={wisp.focusOrgId ?? ''}
-          disabled={focusPending}
-          onChange={(e) => void changeFocus(e.target.value || null)}
-          className="min-w-0 flex-1 rounded border bg-background px-2 py-1"
-        >
-          <option value="">{t('wisp.focus.none')}</option>
-          {focusOptions.map((o) => (
-            <option key={o.id} value={o.id}>{o.name}</option>
-          ))}
-        </select>
-      </label>}
+      {/* Active grants carry Pause in the control row above; a paused grant needs its reason + Resume row. */}
+      {wisp.status !== 'active' && <WispGrantPauseControl wisp={wisp} onChange={updateWisp} />}
 
       {settingsOpen && (
         <div className="space-y-2 rounded border p-2" data-testid="wisp-settings-panel">
           <p className="font-medium">{t('wisp.settings.title')}</p>
+          {showFocus && (
+            <label className="flex items-center justify-between gap-2">
+              <span className="shrink-0">{t('wisp.focus.label')}</span>
+              <select
+                data-testid="wisp-focus"
+                aria-label={t('wisp.focus.label')}
+                value={wisp.focusOrgId ?? ''}
+                disabled={focusPending}
+                onChange={(e) => void changeFocus(e.target.value || null)}
+                className="min-w-0 max-w-[60%] flex-1 rounded border bg-background px-2 py-1"
+              >
+                <option value="">{t('wisp.focus.none')}</option>
+                {focusOptions.map((o) => (
+                  <option key={o.id} value={o.id}>{o.name}</option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="flex items-center justify-between gap-2">
             {t('wisp.settings.budget')}
             <input

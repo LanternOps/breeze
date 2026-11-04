@@ -210,8 +210,12 @@ describe('AiChatSidebar keyboard shortcut (#9613)', () => {
 // removed the "Turn on Wisp" toggle: the grant decides the voice
 // (AiChatSidebar.wispHome.test.tsx covers the lookup).
 vi.mock('./WispThreadHeader', () => ({
-  default: (p: { wideningAvailable: boolean; orgName: string | null }) => (
-    <div data-testid="wisp-header-stub" data-widening={String(p.wideningAvailable)} data-org={p.orgName ?? ''} />
+  default: (p: { wideningAvailable: boolean; orgName: string | null; attachments?: { open: boolean; onToggle: () => void } }) => (
+    <div data-testid="wisp-header-stub" data-widening={String(p.wideningAvailable)} data-org={p.orgName ?? ''}>
+      {p.attachments && (
+        <button type="button" data-testid="wisp-attachments-toggle" aria-expanded={p.attachments.open} onClick={p.attachments.onToggle} />
+      )}
+    </div>
   ),
 }));
 vi.mock('./WispThreadAttachments', () => ({ default: () => <div data-testid="wisp-attachments-stub" /> }));

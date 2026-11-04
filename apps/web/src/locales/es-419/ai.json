@@ -655,7 +655,7 @@
       "dismissNote": "Descartar"
     },
     "settings": {
-      "title": "Presupuesto y revisión periódica",
+      "title": "Configuración de Wisp",
       "budget": "Presupuesto diario",
       "tick": "Revisión cada (minutos)",
       "save": "Guardar"

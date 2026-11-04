@@ -193,8 +193,10 @@ describe('WispThreadHeader (W04 Task 8)', () => {
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({ floorTickMinutes: 20 });
   });
 
-  it('focus switcher shows "No customer focus" when focusOrgId is null, the org name when set, and calls setWispFocus(orgId, name) on change', () => {
+  it('focus switcher (in the settings popover) shows "No customer focus" when focusOrgId is null, the org name when set, and calls setWispFocus(orgId, name) on change', () => {
     const { rerender } = render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    expect(screen.queryByTestId('wisp-focus')).toBeNull();
+    fireEvent.click(screen.getByTestId('wisp-settings'));
     const select = screen.getByTestId('wisp-focus') as HTMLSelectElement;
     expect(select.value).toBe('');
     expect(select.selectedOptions[0]!.textContent).toBe('No customer focus');
@@ -203,6 +205,8 @@ describe('WispThreadHeader (W04 Task 8)', () => {
 
     rerender(<WispThreadHeader wisp={wisp({ focusOrgId: 'org-a', focusOrgName: 'Alpha' })} orgName={null} wideningAvailable={false} />);
     expect((screen.getByTestId('wisp-focus') as HTMLSelectElement).selectedOptions[0]!.textContent).toBe('Alpha');
+    // a set focus is named in the identity row so it is visible without opening settings
+    expect(screen.getByTestId('wisp-focus-current').textContent).toBe('Alpha');
     fireEvent.change(screen.getByTestId('wisp-focus'), { target: { value: '' } });
     expect(h.setWispFocus).toHaveBeenLastCalledWith(null, null);
   });
@@ -211,6 +215,7 @@ describe('WispThreadHeader (W04 Task 8)', () => {
     let release!: () => void;
     h.setWispFocus.mockImplementationOnce(() => new Promise<void>((r) => { release = r; }));
     render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
     fireEvent.change(screen.getByTestId('wisp-focus'), { target: { value: 'org-a' } });
     expect(screen.getByTestId('wisp-focus')).toBeDisabled();
     await act(async () => { release(); });
@@ -242,8 +247,40 @@ describe('WispThreadHeader (W04 Task 8)', () => {
 
   it('an org-scoped grant offers only its own org as a focus', () => {
     render(<WispThreadHeader wisp={wisp({ scopeOrgId: 'org-a' })} orgName="Alpha" wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
     const values = Array.from((screen.getByTestId('wisp-focus') as HTMLSelectElement).options).map((o) => o.value);
     expect(values).toEqual(['', 'org-a']);
+  });
+
+  it('no focus set: nothing in the identity row names one', () => {
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    expect(screen.queryByTestId('wisp-focus-current')).toBeNull();
+  });
+
+  it('sidebar mode: the attachments toggle and the "Open in Wisp" link sit in the icon row; absent without the props', () => {
+    const onToggle = vi.fn();
+    const { rerender } = render(
+      <WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} homeHref="/wisp" attachments={{ open: false, onToggle }} />,
+    );
+    const toggle = screen.getByTestId('wisp-attachments-toggle');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(onToggle).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('wisp-sidebar-open-home')).toHaveAttribute('href', '/wisp');
+
+    rerender(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    expect(screen.queryByTestId('wisp-attachments-toggle')).toBeNull();
+    expect(screen.queryByTestId('wisp-sidebar-open-home')).toBeNull();
+  });
+
+  it('an active grant shows Pause as an icon in the control row; a paused grant keeps the reason row with Resume', () => {
+    const { rerender } = render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    const pause = screen.getByTestId('wisp-pause');
+    expect(pause.closest('[data-testid="wisp-header-controls"]')).not.toBeNull();
+    expect(screen.queryByTestId('wisp-pause-control')).toBeNull();
+    rerender(<WispThreadHeader wisp={wisp({ status: 'paused', pausedReason: 'user_paused' })} orgName={null} wideningAvailable={false} />);
+    expect(screen.getByTestId('wisp-pause-control')).toBeInTheDocument();
+    expect(screen.getByTestId('wisp-resume')).toBeInTheDocument();
   });
 });
 

@@ -12,6 +12,12 @@ type Patch = Partial<NonNullable<WispState>>;
 export type WispGrantPauseControlProps = {
   wisp: NonNullable<WispState>;
   onChange: (patch: Patch) => void;
+  /**
+   * `icon`: an active grant renders an icon-only Pause button so the thread
+   * header can keep it in its control row; a paused grant still gets the full
+   * reason + Resume row (the reason is the point of that row).
+   */
+  variant?: 'default' | 'icon';
 };
 
 const STATUSES: ReadonlySet<string> = new Set<WispGrantStatus>(['active', 'paused', 'revoked', 'expired']);
@@ -29,7 +35,7 @@ function patchFromDto(dto: unknown, fallback: { status: WispGrantStatus; pausedR
  * "Pause Wisp" / "Resume" (W06 Task 15, w00 A29). Pausing needs no step-up —
  * it never widens anything; resume is offered only for a user pause.
  */
-export default function WispGrantPauseControl({ wisp, onChange }: WispGrantPauseControlProps) {
+export default function WispGrantPauseControl({ wisp, onChange, variant = 'default' }: WispGrantPauseControlProps) {
   const { t } = useTranslation('ai');
   const [busy, setBusy] = useState(false);
   const reasonId = useId();
@@ -101,6 +107,21 @@ export default function WispGrantPauseControl({ wisp, onChange }: WispGrantPause
   })();
 
   const button = 'flex items-center gap-1 rounded border px-2 py-0.5 hover:bg-muted disabled:opacity-50';
+  if (variant === 'icon' && canPause(wisp.status)) {
+    return (
+      <button
+        type="button"
+        data-testid="wisp-pause"
+        disabled={busy}
+        onClick={() => void mutate('pause')}
+        title={t('wisp.pause')}
+        aria-label={t('wisp.pause')}
+        className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+      >
+        <Pause className="h-3.5 w-3.5" />
+      </button>
+    );
+  }
   return (
     <div className="flex flex-wrap items-center gap-2" data-testid="wisp-pause-control">
       {canPause(wisp.status) ? (

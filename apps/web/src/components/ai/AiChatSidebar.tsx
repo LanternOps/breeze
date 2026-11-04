@@ -444,7 +444,7 @@ export default function AiChatSidebar() {
               </div>
             )}
 
-            {/* Wisp thread: scope, focus, grant controls; attachments behind a disclosure.
+            {/* Wisp thread: one control row (focus lives in its settings popover); attachments behind a disclosure.
                 The brief, what needs you and the links live on the Wisp home (W08 #9921). */}
             {wisp && (
               <>
@@ -452,26 +452,9 @@ export default function AiChatSidebar() {
                   wisp={wisp}
                   orgName={wispScopeOrgName}
                   wideningAvailable={wisp.wideningAvailable}
+                  homeHref="/wisp"
+                  attachments={{ open: wispAttachmentsOpen, onToggle: () => setWispAttachmentsOpen((open) => !open) }}
                 />
-                <div className="flex items-center justify-between gap-2 border-b px-4 py-1.5">
-                  <button
-                    type="button"
-                    data-testid="wisp-attachments-toggle"
-                    aria-expanded={wispAttachmentsOpen}
-                    onClick={() => setWispAttachmentsOpen((open) => !open)}
-                    className="text-xs font-medium text-muted-foreground hover:text-foreground"
-                  >
-                    {t("wisp.attachments.title")}
-                  </button>
-                  <a
-                    href="/wisp"
-                    data-testid="wisp-sidebar-open-home"
-                    className="flex items-center gap-1 text-xs font-medium text-primary hover:underline"
-                  >
-                    {t("wisp.sidebar.openHome")}
-                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                  </a>
-                </div>
                 {wispAttachmentsOpen && (
                   <div className="border-b px-4 py-2">
                     <WispThreadAttachments key={wisp.threadId} wisp={wisp} />

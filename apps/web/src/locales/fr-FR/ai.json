@@ -655,7 +655,7 @@
       "dismissNote": "Fermer"
     },
     "settings": {
-      "title": "Budget et point de suivi",
+      "title": "Paramètres de Wisp",
       "budget": "Budget quotidien",
       "tick": "Point de suivi toutes les (minutes)",
       "save": "Enregistrer"

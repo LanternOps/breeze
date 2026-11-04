@@ -655,7 +655,7 @@
       "dismissNote": "Chiudi"
     },
     "settings": {
-      "title": "Budget e controllo periodico",
+      "title": "Impostazioni di Wisp",
       "budget": "Budget giornaliero",
       "tick": "Controllo ogni (minuti)",
       "save": "Salva"
