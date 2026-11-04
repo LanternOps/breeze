@@ -67,6 +67,8 @@ const EXPECTED_WORKER_NAMES = [
   'quoteSendWorker', 'enrollmentKeyCleanup',
   // Ticket migration windows (#8313) — the per-minute window sweep.
   'migrationWindowSweep',
+  // Ticket import framework (#8313 W4) — self-continuing import slices.
+  'ticketImportWorker',
   // Partner API tickets wave 3 — daily reaper for X-Idempotency-Key claims.
   'partnerApiIdempotencyRetention',
   'quickSupportReaper', 'wispGrantReconciler', 'softwareUploadSessionCleanup',

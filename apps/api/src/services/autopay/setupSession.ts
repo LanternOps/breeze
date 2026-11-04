@@ -15,6 +15,7 @@ import {InvoiceServiceError} from '../invoiceTypes';
 import {portalBase} from '../portalUrl';
 import {mapStripeCheckoutError} from '../stripeCheckoutErrors';
 import {isAutopayEnabledForPartner} from './autopayGate';
+import { assertAutopayBillingEnabledForPartner } from './billingGate';
 import {getAutopayStripeReadiness} from './stripeCapabilities';
 import {buildAutopayDisclosure,requireAcceptedAutopayDisclosure} from './consentText';
 import {AUTOPAY_CHECKOUT_WALLET_OPTIONS} from './feeDisclosure';
@@ -25,6 +26,7 @@ export async function prepareAutopayCapture(input:SetupInput,source:AutopaySetup
  const attempt=await withSystemDbAccessContext(async()=>{
   const [org]=await db.select().from(organizations).where(eq(organizations.id,input.orgId)).limit(1).for('update');
   if(!org||org.deletedAt||!['active','trial'].includes(org.status))throw new InvoiceServiceError('Organization unavailable',404,'ORG_NOT_FOUND');
+  await assertAutopayBillingEnabledForPartner(org.partnerId);
   if(!await isAutopayEnabledForPartner(db,org.partnerId))throw new InvoiceServiceError('Automatic payments unavailable',404,'INVALID_STATE');
   const [enrollment]=await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId,org.id)).limit(1).for('update');
   if(!enrollment||(!['requested','active'].includes(enrollment.status)&&!(enrollment.status==='paused'&&enrollment.pausedAt&&input.tokenId&&source==='setup_page')))throw new InvoiceServiceError('Request automatic payments first',409,'INVALID_STATE');

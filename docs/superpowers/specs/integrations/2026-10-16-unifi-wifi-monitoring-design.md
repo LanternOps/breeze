@@ -1,7 +1,7 @@
 ---
 title: UniFi Wi-Fi monitoring (AP radios and device statistics)
 issue: LanternOps/breeze discussion #7690
-status: W1 approved and merged (#9293); W2 entry-gate amendment awaiting maintainer review
+status: W1 (#9293) and W2 (#10166) merged; W3 read model and UI in progress
 related:
   - LanternOps/breeze#3208
   - LanternOps/breeze#7271

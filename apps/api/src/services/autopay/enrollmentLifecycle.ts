@@ -9,6 +9,7 @@ import {isHiddenOrgType} from '../unassignedPool/visibility';
 import {autopaySetupAttempts} from '../../db/schema/autopaySetupAttempts';
 import {getOrMintInvoiceLink,buildPublicInvoiceUrl} from '../invoiceLinkToken';
 import {isAutopayEnabledForPartner} from './autopayGate';
+import { assertAutopayBillingEnabledForPartner } from './billingGate';
 import {getAutopayStripeReadiness} from './stripeCapabilities';
 import {resolveBillingPaymentSettings} from './billingPaymentSettings';
 import {mintBillingLinkToken,revokeBillingLinkTokens,buildBillingLinkUrl,resolveBillingLinkToken} from './linkTokens';
@@ -147,6 +148,7 @@ export async function requestAutopay(db:Tx,actor:InvoiceActor,input:{orgIds:stri
  const result:{requested:string[];skipped:{orgId:string;reason:'no_billing_contact'|'already_active'|'stripe_not_ready'}[]}={requested:[],skipped:[]};
  for(const orgId of [...new Set(input.orgIds)].sort()){
   const org=await lockOrg(db,orgId,actor);
+  await assertAutopayBillingEnabledForPartner(org.partnerId);
   if(!await isAutopayEnabledForPartner(db,org.partnerId))throw new InvoiceServiceError('Automatic payments unavailable',404,'INVALID_STATE');
   const [existing]=await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId,orgId)).limit(1).for('update');
   const generation=nextEnrollmentRequest(existing??null);
@@ -223,7 +225,8 @@ export async function pauseAutopay(db:Tx,actor:InvoiceActor,orgId:string):Promis
   {announcedInvoiceIds:listedCharges(announced,inFlight).map(charge=>charge.invoiceId)});
 }
 export async function resumeAutopay(db:Tx,actor:InvoiceActor,orgId:string):Promise<void>{
- const org=await lockOrg(db,orgId,actor);const enrollment=await lockEnrollment(db,orgId);
+ const org=await lockOrg(db,orgId,actor);
+ await assertAutopayBillingEnabledForPartner(org.partnerId);const enrollment=await lockEnrollment(db,orgId);
  if(enrollment.status==='active')return;
  const method=await getAutopayMethod(db,orgId);
  if(enrollment.status!=='paused'||method?.status!=='active'||enrollment.needsAttentionReason)

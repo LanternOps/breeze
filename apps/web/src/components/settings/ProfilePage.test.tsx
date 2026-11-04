@@ -6,12 +6,15 @@ import { fetchWithAuth } from '../../stores/auth';
 import { SSO_REAUTH_INTENT_KEY, stashSsoReauthIntent } from '@/lib/ssoReauthIntent';
 import { writeDensity, writeFontPreference, writeThemePreference, writeTimeFormatPreference } from '@/lib/appearance';
 
+const { updateUserMock } = vi.hoisted(() => ({ updateUserMock: vi.fn() }));
+const { avatarBlobUrlMock } = vi.hoisted(() => ({ avatarBlobUrlMock: vi.fn<(url: string | null | undefined, onError?: () => void) => string | null>() }));
+
 vi.mock('../../stores/auth', () => ({
   createPasskeyCredential: vi.fn(),
   fetchWithAuth: vi.fn(),
   useAuthStore: Object.assign(
-    (selector: any) => selector({ updateUser: vi.fn() }),
-    { getState: () => ({ updateUser: vi.fn(), sessionGeneration: 0, commitReissuedSessionIfCurrent: vi.fn(() => true) }) }
+    (selector: any) => selector({ updateUser: updateUserMock }),
+    { getState: () => ({ updateUser: updateUserMock, sessionGeneration: 0, commitReissuedSessionIfCurrent: vi.fn(() => true) }) }
   )
 }));
 
@@ -27,7 +30,7 @@ vi.mock('../shared/Toast', () => ({ showToast: showToastMock }));
 // flow on /users/me/avatar; mocking the hook keeps the fetch mock consumption
 // order deterministic.
 vi.mock('@/lib/avatarBlobCache', () => ({
-  useAvatarBlobUrl: (url: string | null | undefined) => url ?? null,
+  useAvatarBlobUrl: avatarBlobUrlMock,
 }));
 
 // Approval-security section loads approver devices on mount; stub it so it
@@ -92,6 +95,7 @@ function installLocalStorageStub() {
 // Stub URL.createObjectURL / revokeObjectURL — jsdom doesn't provide them by
 // default, and the component calls them when a file is selected for preview.
 beforeEach(() => {
+  avatarBlobUrlMock.mockImplementation((url) => url ?? null);
   installLocalStorageStub();
   document.documentElement.classList.remove('dark');
   document.documentElement.removeAttribute('data-density');
@@ -104,139 +108,208 @@ describe('ProfilePage avatar settings', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchWithAuthMock.mockImplementation(async (url) => {
-      if (String(url) === '/auth/passkeys') {
-        return makeJsonResponse({ passkeys: [] });
-      }
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
       return undefined as unknown as Response;
     });
   });
 
-  it('does NOT render the old Avatar image URL input', () => {
-    render(
-      <ProfilePage
-        initialUser={{
-          id: 'user-1',
-          name: 'Casey Admin',
-          email: 'casey@example.com',
-          mfaEnabled: false
-        }}
-      />
-    );
+  it('does not render the legacy avatar URL field or coming soon copy', () => {
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', mfaEnabled: false }} />);
+
     expect(screen.queryByLabelText('Avatar image URL')).toBeNull();
     expect(screen.queryByText(/coming soon/i)).toBeNull();
-    // Helper text is present
-    expect(screen.getByText(/PNG, JPG, or WebP\. Max 5 MB\./)).toBeTruthy();
   });
 
-  it('uploads a PNG file, updates the avatar, and shows success', async () => {
+  it('keeps a selected picture local until Save changes uploads it', async () => {
+    const file = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'avatar.png', { type: 'image/png' });
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (String(url) === '/users/me/avatar') return makeJsonResponse({ avatarUrl: '/api/v1/users/user-1/avatar?v=2' });
+      if (String(url) === '/users/me' && init?.method === 'PATCH') return makeJsonResponse({ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', avatarUrl: '/api/v1/users/user-1/avatar?v=2' });
+      return makeJsonResponse({ name: 'Casey Admin', email: 'casey@example.com' });
+    });
+
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', mfaEnabled: false }} />);
+    fireEvent.change(screen.getByTestId('avatar-file-input'), { target: { files: [file] } });
+
+    expect(await screen.findByText('avatar.png')).toBeTruthy();
+    expect(screen.getByTestId('avatar-dropzone').querySelector('img')?.getAttribute('src')).toBe('blob:fake');
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url) === '/users/me/avatar')).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Profile updated successfully');
+
+    const upload = fetchWithAuthMock.mock.calls.find(([url]) => String(url) === '/users/me/avatar');
+    expect(upload?.[1]).toMatchObject({ method: 'POST' });
+    expect((upload?.[1]?.body as FormData).get('file')).toBe(file);
+    expect(fetchWithAuthMock.mock.calls.findIndex(([url]) => String(url) === '/users/me/avatar'))
+      .toBeLessThan(fetchWithAuthMock.mock.calls.findIndex(([url, init]) => String(url) === '/users/me' && init?.method === 'PATCH'));
+    expect(updateUserMock).toHaveBeenCalledWith({ name: 'Casey Admin', avatarUrl: '/api/v1/users/user-1/avatar?v=2' });
+  });
+
+  it.each([
+    { name: '  ', message: 'Name is required.', change: 'replace' },
+    { name: '  ', message: 'Name is required.', change: 'remove' },
+    { name: 'A'.repeat(256), message: 'Name must be at most 255 characters', change: 'replace' },
+    { name: 'A'.repeat(256), message: 'Name must be at most 255 characters', change: 'remove' },
+  ] as const)('keeps a staged $change pending when the name is invalid', async ({ name, message, change }) => {
     fetchWithAuthMock.mockImplementation(async (url) => {
-      if (String(url) === '/auth/passkeys') {
-        return makeJsonResponse({ passkeys: [] });
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      return makeJsonResponse({ name: 'Casey Admin', email: 'casey@example.com' });
+    });
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', avatarUrl: '/current/avatar', mfaEnabled: false }} />);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: name } });
+    if (change === 'replace') {
+      fireEvent.change(screen.getByTestId('avatar-file-input'), { target: { files: [new File(['x'], 'avatar.png', { type: 'image/png' })] } });
+      await screen.findByText('avatar.png');
+    } else {
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+      await screen.findByText('Picture removal pending');
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(await screen.findByText(message)).toBeTruthy();
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url) === '/users/me/avatar')).toBe(false);
+    expect(fetchWithAuthMock.mock.calls.some(([url, init]) => String(url) === '/users/me' && init?.method === 'PATCH')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeTruthy();
+    expect(showToastMock).not.toHaveBeenCalled();
+    expect(updateUserMock).not.toHaveBeenCalled();
+  });
+
+  it('saves a staged avatar removal for a valid one-character name', async () => {
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (String(url) === '/users/me/avatar' && init?.method === 'DELETE') return makeJsonResponse({ avatarUrl: null });
+      if (String(url) === '/users/me' && init?.method === 'PATCH') return makeJsonResponse({ id: 'user-1', name: 'A', email: 'casey@example.com' });
+      return makeJsonResponse({ name: 'Casey Admin', email: 'casey@example.com' });
+    });
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', avatarUrl: '/current/avatar', mfaEnabled: false }} />);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'A' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await screen.findByText('Picture removal pending');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await screen.findByText('Profile updated successfully');
+    const avatarDeleteIndex = fetchWithAuthMock.mock.calls.findIndex(([url, init]) => String(url) === '/users/me/avatar' && init?.method === 'DELETE');
+    const profileUpdateIndex = fetchWithAuthMock.mock.calls.findIndex(([url, init]) => String(url) === '/users/me' && init?.method === 'PATCH');
+    expect(avatarDeleteIndex).toBeGreaterThan(-1);
+    expect(avatarDeleteIndex).toBeLessThan(profileUpdateIndex);
+    expect(fetchWithAuthMock.mock.calls[profileUpdateIndex]?.[1]).toMatchObject({ body: JSON.stringify({ name: 'A' }) });
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+  });
+
+  it('reports that the picture saved when the name update fails and retries only the name', async () => {
+    let patchCalls = 0;
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (String(url) === '/users/me/avatar') return makeJsonResponse({ avatarUrl: '/api/v1/users/user-1/avatar?v=2' });
+      if (String(url) === '/users/me' && init?.method === 'PATCH') {
+        patchCalls += 1;
+        return patchCalls === 1
+          ? makeJsonResponse({ error: 'Name update rejected' }, false, 500)
+          : makeJsonResponse({ id: 'user-1', name: 'Casey Renamed', email: 'casey@example.com' });
       }
-      if (String(url) === '/users/me/avatar') {
-        return makeJsonResponse({
-          avatarUrl: '/api/v1/users/user-1/avatar',
-          size: 1234,
-          mime: 'image/png',
-          updatedAt: new Date().toISOString()
-        });
-      }
-      return undefined as unknown as Response;
+      return makeJsonResponse({ name: 'Casey Admin', email: 'casey@example.com' });
     });
 
-    render(
-      <ProfilePage
-        initialUser={{
-          id: 'user-1',
-          name: 'Casey Admin',
-          email: 'casey@example.com',
-          mfaEnabled: false
-        }}
-      />
-    );
-
-    const fileInput = screen.getByTestId('avatar-file-input') as HTMLInputElement;
-    const file = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'avatar.png', {
-      type: 'image/png'
-    });
-
-    fireEvent.change(fileInput, { target: { files: [file] } });
-
-    // Confirmation row appears
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', avatarUrl: '/current/avatar', mfaEnabled: false }} />);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Casey Renamed' } });
+    fireEvent.change(screen.getByTestId('avatar-file-input'), { target: { files: [new File(['x'], 'avatar.png', { type: 'image/png' })] } });
     await screen.findByText('avatar.png');
-    fireEvent.click(screen.getByRole('button', { name: 'Upload' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    await screen.findByText('Avatar updated.');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Picture change saved, but your name could not be updated: Name update rejected');
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+    expect(screen.getByTestId('avatar-dropzone').querySelector('img')?.getAttribute('src')).toBe('/api/v1/users/user-1/avatar?v=2');
+    expect(showToastMock).not.toHaveBeenCalled();
 
-    const uploadCall = fetchWithAuthMock.mock.calls.find(
-      ([url]) => String(url) === '/users/me/avatar'
-    );
-    expect(uploadCall).toBeDefined();
-    const [, init] = uploadCall!;
-    expect(init?.method).toBe('POST');
-    expect(init?.body).toBeInstanceOf(FormData);
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Profile updated successfully');
+    expect(fetchWithAuthMock.mock.calls.filter(([url]) => String(url) === '/users/me/avatar')).toHaveLength(1);
+    expect(patchCalls).toBe(2);
   });
 
-  it('shows a validation error for unsupported file types and does not call the API', () => {
-    render(
-      <ProfilePage
-        initialUser={{
-          id: 'user-1',
-          name: 'Casey Admin',
-          email: 'casey@example.com',
-          mfaEnabled: false
-        }}
-      />
-    );
-
-    const fileInput = screen.getByTestId('avatar-file-input') as HTMLInputElement;
-    const badFile = new File([new Uint8Array([1, 2, 3])], 'evil.svg', { type: 'image/svg+xml' });
-    fireEvent.change(fileInput, { target: { files: [badFile] } });
-
-    expect(screen.getByText(/Unsupported file type/i)).toBeTruthy();
-    expect(
-      fetchWithAuthMock.mock.calls.find(([url]) => String(url) === '/users/me/avatar')
-    ).toBeUndefined();
-  });
-
-  it('deletes the current avatar via the Remove button', async () => {
-    fetchWithAuthMock.mockImplementation(async (url) => {
-      if (String(url) === '/auth/passkeys') {
-        return makeJsonResponse({ passkeys: [] });
+  it('preserves the current avatar when a name-only response omits avatarUrl', async () => {
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (String(url) === '/users/me' && init?.method === 'PATCH') {
+        return makeJsonResponse({ id: 'user-1', name: 'Casey Renamed', email: 'casey@example.com' });
       }
-      if (String(url) === '/users/me/avatar') {
-        return makeJsonResponse({ avatarUrl: null });
-      }
-      return undefined as unknown as Response;
+      return makeJsonResponse({ name: 'Casey Admin', email: 'casey@example.com' });
     });
 
-    render(
-      <ProfilePage
-        initialUser={{
-          id: 'user-1',
-          name: 'Casey Admin',
-          email: 'casey@example.com',
-          avatarUrl: '/api/v1/users/user-1/avatar',
-          mfaEnabled: false
-        }}
-      />
-    );
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', avatarUrl: '/current/avatar', mfaEnabled: false }} />);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Casey Renamed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Profile updated successfully');
 
+    expect(updateUserMock).toHaveBeenCalledWith({ name: 'Casey Renamed' });
+    expect(screen.getByTestId('avatar-dropzone').querySelector('img')?.getAttribute('src')).toBe('/current/avatar');
+  });
+
+  it('labels a staged avatar removal', async () => {
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', avatarUrl: '/current/avatar', mfaEnabled: false }} />);
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
 
-    await screen.findByText('Avatar removed.');
+    expect(await screen.findByText('Picture removal pending')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeTruthy();
+  });
 
-    const deleteCall = fetchWithAuthMock.mock.calls.find(
-      ([url]) => String(url) === '/users/me/avatar'
-    );
-    expect(deleteCall).toBeDefined();
-    const [, init] = deleteCall!;
-    expect(init?.method).toBe('DELETE');
+  it('undoes a selected picture without calling the API', async () => {
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', avatarUrl: '/current/avatar', mfaEnabled: false }} />);
+    fireEvent.change(screen.getByTestId('avatar-file-input'), { target: { files: [new File(['x'], 'avatar.png', { type: 'image/png' })] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
 
-    // After successful delete, the Remove button is no longer shown.
-    await waitFor(() => {
-      expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull());
+    expect(screen.getByTestId('avatar-dropzone').querySelector('img')?.getAttribute('src')).toBe('/current/avatar');
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url) === '/users/me/avatar')).toBe(false);
+    expect(updateUserMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps the selected picture and shows the upload failure when Save fails', async () => {
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (String(url) === '/users/me/avatar') return makeJsonResponse({ error: 'Upload failed' }, false, 500);
+      return makeJsonResponse({ name: 'Casey Admin', email: 'casey@example.com' });
     });
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', mfaEnabled: false }} />);
+    fireEvent.change(screen.getByTestId('avatar-file-input'), { target: { files: [new File(['x'], 'avatar.png', { type: 'image/png' })] } });
+    await screen.findByText('avatar.png');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(await screen.findByText('Upload failed')).toBeTruthy();
+    expect(screen.getByText('avatar.png')).toBeTruthy();
+    expect(screen.getByTestId('avatar-dropzone').querySelector('img')?.getAttribute('src')).toBe('blob:fake');
+    expect(fetchWithAuthMock.mock.calls.some(([url, init]) => String(url) === '/users/me' && init?.method === 'PATCH')).toBe(false);
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps avatar removal pending until Save changes', async () => {
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (String(url) === '/users/me/avatar' && init?.method === 'DELETE') return makeJsonResponse({ avatarUrl: null });
+      if (String(url) === '/users/me' && init?.method === 'PATCH') return makeJsonResponse({ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', avatarUrl: null });
+      return makeJsonResponse({ name: 'Casey Admin', email: 'casey@example.com' });
+    });
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', avatarUrl: '/current/avatar', mfaEnabled: false }} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    expect(await screen.findByRole('button', { name: 'Undo' })).toBeTruthy();
+    expect(screen.getByTestId('avatar-dropzone').querySelector('img')).toBeNull();
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url) === '/users/me/avatar')).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Profile updated successfully');
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/users/me/avatar', { method: 'DELETE' });
+    expect(updateUserMock).toHaveBeenCalledWith({ name: 'Casey Admin', avatarUrl: undefined });
+  });
+
+  it('shows validation errors for unsupported files without calling the API', async () => {
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', mfaEnabled: false }} />);
+    fireEvent.change(screen.getByTestId('avatar-file-input'), { target: { files: [new File(['x'], 'evil.svg', { type: 'image/svg+xml' })] } });
+    expect(await screen.findByText(/Unsupported file type/)).toBeTruthy();
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url) === '/users/me/avatar')).toBe(false);
   });
 });
 
@@ -342,7 +415,7 @@ describe('ProfilePage theming settings', () => {
     await screen.findByText('Theming preferences saved.');
 
     const preferenceCall = fetchWithAuthMock.mock.calls.find(
-      ([url]) => String(url) === '/users/me'
+      ([url, init]) => String(url) === '/users/me' && init?.method === 'PATCH'
     );
     expect(preferenceCall).toBeDefined();
     const [, init] = preferenceCall!;
@@ -394,7 +467,7 @@ describe('ProfilePage theming settings', () => {
     await screen.findByText('Theming preferences saved.');
 
     const preferenceCall = fetchWithAuthMock.mock.calls.find(
-      ([url]) => String(url) === '/users/me'
+      ([url, init]) => String(url) === '/users/me' && init?.method === 'PATCH'
     );
     expect(preferenceCall).toBeDefined();
     const [, init] = preferenceCall!;

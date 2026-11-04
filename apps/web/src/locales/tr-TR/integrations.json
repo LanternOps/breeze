@@ -1174,7 +1174,22 @@
     "updateCollector": "Güncelleme toplayıcı",
     "enableDeepTelemetry": "Derin telemetriyi etkinleştir",
     "wired": "Kablolu",
-    "agentListTruncated": "Bu temsilci listesi güvenlik sınırı nedeniyle kısaltılmıştır ve eksik olabilir."
+    "agentListTruncated": "Bu temsilci listesi güvenlik sınırı nedeniyle kısaltılmıştır ve eksik olabilir.",
+    "online": "Çevrimiçi",
+    "offline": "Çevrimdışı",
+    "controllerState": "Denetleyici durumu",
+    "uptime": "Çalışma süresi",
+    "wirelessClients": "kablosuz istemciler",
+    "cpu": "CPU",
+    "memory": "Bellek",
+    "uplinkRx": "Uplink RX",
+    "uplinkTx": "Uplink TX",
+    "lastReportedStale": "Son bildirilen / eski",
+    "asOf": "Tarih:",
+    "channel": "Kanal",
+    "width": "Genişlik",
+    "wlanStandard": "WLAN standardı",
+    "txRetries": "TX yeniden denemeleri"
   },
   "webhookEditor": {
     "failedToSaveWebhook": "Webhook kaydedilemedi",

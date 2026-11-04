@@ -790,6 +790,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Ticket import framework (#8313 W4): one slice of an import run per job,
+    // self-continuing, under the per-partner + global lease. 'global': no
+    // socket-local dispatch (verified by workerEntrypointClosure.contract.test.ts).
+    name: 'ticketImportWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/ticketImportWorker');
+      return { init: m.initializeTicketImportWorker, shutdown: m.shutdownTicketImportWorker };
+    },
+  },
+  {
     name: 'partnerApiIdempotencyRetention',
     placement: 'global',
     load: async () => {
