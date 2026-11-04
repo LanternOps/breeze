@@ -351,6 +351,7 @@ export const WISP_NON_FOCAL_TOOLS: ReadonlySet<string> = new Set([
   'read_artifact',
   'recall',
   'registry_operations',
+  'release_containment',
   'reliability_feedback',
   'remediate_sensitive_data',
   'remediate_software_violation',
