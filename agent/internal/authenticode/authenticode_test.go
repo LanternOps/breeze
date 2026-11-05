@@ -1,6 +1,84 @@
 package authenticode
 
-import "testing"
+import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
+	"math/big"
+	"testing"
+	"time"
+)
+
+var oidCN = asn1.ObjectIdentifier{2, 5, 4, 3}
+
+func certWithSubject(t *testing.T, names ...pkix.AttributeTypeAndValue) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{ExtraNames: names},
+		NotBefore:    time.Unix(1_700_000_000, 0),
+		NotAfter:     time.Unix(1_900_000_000, 0),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der
+}
+
+func TestSignerFromDERReadsTheCommonName(t *testing.T) {
+	der := certWithSubject(t,
+		pkix.AttributeTypeAndValue{Type: asn1.ObjectIdentifier{2, 5, 4, 10}, Value: "Some Other Org"},
+		pkix.AttributeTypeAndValue{Type: oidCN, Value: "Dell Inc."},
+	)
+	signer, err := signerFromDER(der)
+	if err != nil {
+		t.Fatalf("signerFromDER: %v", err)
+	}
+	if signer.Subject != "Dell Inc." {
+		t.Fatalf("Subject = %q, want the CN and nothing else", signer.Subject)
+	}
+	if signer.ThumbprintSHA256 != thumbprintSHA256(der) {
+		t.Fatalf("ThumbprintSHA256 = %q", signer.ThumbprintSHA256)
+	}
+}
+
+// Each of these could make a certificate read as a publisher it does not name,
+// so the signer is refused rather than guessed at.
+func TestSignerFromDERFailsClosed(t *testing.T) {
+	tests := []struct {
+		name string
+		der  []byte
+	}{
+		{"not a certificate", []byte("not der")},
+		{"empty", nil},
+		{"no common name", certWithSubject(t, pkix.AttributeTypeAndValue{Type: asn1.ObjectIdentifier{2, 5, 4, 10}, Value: "Dell Inc."})},
+		{"empty common name", certWithSubject(t, pkix.AttributeTypeAndValue{Type: oidCN, Value: ""})},
+		{"two common names", certWithSubject(t,
+			pkix.AttributeTypeAndValue{Type: oidCN, Value: "Dell Inc."},
+			pkix.AttributeTypeAndValue{Type: oidCN, Value: "Evil Corp"},
+		)},
+		{"NUL inside the common name", certWithSubject(t, pkix.AttributeTypeAndValue{Type: oidCN, Value: "Dell Inc.\x00.evil.example"})},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			signer, err := signerFromDER(tt.der)
+			if err == nil {
+				t.Fatalf("signerFromDER accepted it as %+v", signer)
+			}
+			if signer != (Signer{}) {
+				t.Fatalf("a refused certificate must not name a signer, got %+v", signer)
+			}
+		})
+	}
+}
 
 func TestPublisherAllowed(t *testing.T) {
 	tests := []struct {

@@ -47,10 +47,6 @@ var (
 	procWTHelperGetProvCertFromChain   = wintrust.NewProc("WTHelperGetProvCertFromChain")
 )
 
-// oidCommonName is szOID_COMMON_NAME, the ANSI string CertGetNameString takes
-// as its type parameter for CERT_NAME_ATTR_TYPE.
-var oidCommonName = []byte("2.5.4.3\x00")
-
 // cryptProviderCert is the head of CRYPT_PROVIDER_CERT: only pCert is read, and
 // it directly follows cbStruct on every architecture.
 type cryptProviderCert struct {
@@ -102,7 +98,8 @@ func verifyTrust(path string, inspect func(state windows.Handle) error) error {
 		// Verification must not depend on reaching certificate infrastructure.
 		// The Authenticode chain and signature are still checked against local
 		// trust; revocation/AIA retrieval cannot open an extra network dependency
-		// here.
+		// here. These flags turn revocation checking off entirely, not down to
+		// the local cache: see the package comment.
 		ProvFlags: windows.WTD_REVOCATION_CHECK_NONE | windows.WTD_CACHE_ONLY_URL_RETRIEVAL | windows.WTD_DISABLE_MD2_MD4,
 	}
 	action := windows.WINTRUST_ACTION_GENERIC_VERIFY_V2
@@ -161,26 +158,6 @@ func readLeafSigner(state windows.Handle) (Signer, error) {
 	if cert == nil || cert.EncodedCert == nil || cert.Length == 0 {
 		return Signer{}, errors.New("read signer: empty leaf certificate")
 	}
-	subject := commonName(cert)
-	if subject == "" {
-		return Signer{}, errors.New("read signer: leaf certificate has no common name")
-	}
-	return Signer{
-		Subject:          subject,
-		ThumbprintSHA256: thumbprintSHA256(unsafe.Slice(cert.EncodedCert, cert.Length)),
-	}, nil
-}
-
-func commonName(cert *windows.CertContext) string {
-	typePara := unsafe.Pointer(&oidCommonName[0])
-	// Both counts include the terminating NUL, so 1 means an empty name.
-	size := windows.CertGetNameString(cert, windows.CERT_NAME_ATTR_TYPE, 0, typePara, nil, 0)
-	if size <= 1 {
-		return ""
-	}
-	buf := make([]uint16, size)
-	if windows.CertGetNameString(cert, windows.CERT_NAME_ATTR_TYPE, 0, typePara, &buf[0], size) <= 1 {
-		return ""
-	}
-	return windows.UTF16ToString(buf)
+	// Parsed here, while the state is open; the parse copies what it keeps.
+	return signerFromDER(unsafe.Slice(cert.EncodedCert, cert.Length))
 }
