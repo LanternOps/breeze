@@ -16,12 +16,16 @@
  *   2. Discovery — a `z.string()…max(N)`/`.length(N)` chain whose comments name
  *      a byte / UTF-16 / Go-agent sink (see SINK_MARKER) must carry a helper or
  *      be in REVIEWED_CODE_POINT_OK with the reason code points are right.
- *      Stale entries fail. This is how a new mirrored limit gets caught: the
- *      repo convention is to say what a limit mirrors next to it.
+ *      Stale entries fail. This is a heuristic: it relies on the repo
+ *      convention of saying what a limit mirrors next to it, so an uncommented
+ *      mirrored limit, or a schema built from a variable (`base.max(N)`), is
+ *      not discovered. PINNED is the hard guard.
  *   3. The detector itself, on synthetic source, so the scan cannot pass
  *      vacuously.
  *
- * Keys are `<repo path>::<property or variable name>`, never line numbers.
+ * Keys are `<repo path>::<variable>.<property path>::<bound>`, never line
+ * numbers. The bound is the `.max()`/`.length()` argument, or the helper's
+ * first argument on a helper-only chain.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
@@ -33,34 +37,38 @@ const REPO = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const ROOTS = ['apps/api/src', 'packages/shared/src/validators'];
 
 /** Comment text that says a limit is measured by something other than code points. */
-const SINK_MARKER = /\butf-?8\b|\butf-?16\b|\bwchar|\bbytes?\b|\bGo\b|\blen\(\)|\.go\b|agent\/internal\//i;
+const SINK_MARKER_CI = /\butf-?8\b|\butf-?16\b|\bwchar|\bbytes?\b|\blen\(\)|\.go\b|agent\/internal\//i;
+const SINK_MARKER_GO = /\bGo\b/; // case-sensitive: the language, not the verb
+const isSinkMarked = (text: string) => SINK_MARKER_CI.test(text) || SINK_MARKER_GO.test(text);
 const HELPER = /\b(utf8MaxBytes|utf16Max)\(/;
 
 /** Reviewed sink-bound fields: each must keep a unit helper on its length chain. */
 const PINNED: Record<string, string> = {
-  'apps/api/src/services/softwareActionPayload.ts::name': 'agent validateSoftwareName: Go len() <= 200 bytes',
-  'apps/api/src/services/softwareActionPayload.ts::version': 'agent validateSoftwareVersion: Go len() <= 100 bytes',
-  'apps/api/src/services/aiToolSchemas.ts::query': 'agent event_logs_query: XPath <= 4096 bytes',
-  'apps/api/src/routes/sensitiveData.ts::suppressFilePathRegex': 'agent skips a suppression regex over 512 bytes',
-  'packages/shared/src/validators/topologyConfiguration.ts::path': 'agent https target path <= 2048 bytes',
-  'packages/shared/src/validators/softwareDetection.ts::serviceName': 'agent service name <= 256 bytes',
-  'packages/shared/src/validators/index.ts::packageId': 'ring app-rules backfill SQL measures UTF-16 units',
-  'packages/shared/src/validators/index.ts::displayName': 'ring app-rules backfill SQL measures UTF-16 units',
-  'packages/shared/src/validators/index.ts::pinnedVersion': 'ring app-rules backfill SQL measures UTF-16 units',
+  'apps/api/src/services/softwareActionPayload.ts::softwareActionPayloadSchema.name::200': 'agent validateSoftwareName: Go len() <= 200 bytes',
+  'apps/api/src/services/softwareActionPayload.ts::softwareActionPayloadSchema.version::100': 'agent validateSoftwareVersion: Go len() <= 100 bytes',
+  'apps/api/src/services/aiToolSchemas.ts::executeCommandPayloadSchema.query::2000': 'agent event_logs_query: XPath <= 4096 bytes',
+  'apps/api/src/routes/sensitiveData.ts::policyScopeSchema.suppressFilePathRegex::300': 'agent skips a suppression regex over 512 bytes',
+  'packages/shared/src/validators/topologyConfiguration.ts::topologyTargetDefinitionSchema.path::2048': 'agent https target path <= 2048 bytes',
+  'packages/shared/src/validators/softwareDetection.ts::serviceRunningDetectionRuleSchema.serviceName::256': 'agent service name <= 256 bytes',
+  'packages/shared/src/validators/index.ts::policyAppRuleSchema.packageId::256': 'ring app-rules backfill SQL measures UTF-16 units',
+  'packages/shared/src/validators/index.ts::policyAppRuleSchema.displayName::255': 'ring app-rules backfill SQL measures UTF-16 units',
+  'packages/shared/src/validators/index.ts::policyAppRuleSchema.pinnedVersion::64': 'ring app-rules backfill SQL measures UTF-16 units',
 };
 
 /** Discovered by SINK_MARKER, reviewed: code points are the right unit. */
 const REVIEWED_CODE_POINT_OK: Record<string, string> = {
-  'apps/api/src/routes/agents/schemas.ts::signedInUpns':
+  'apps/api/src/routes/agents/schemas.ts::heartbeatSchema.onedriveDeviceState.signedInUpns::320':
     'inbound agent report; the agent caps at 320 bytes, so anything it sends fits 320 code points',
-  'apps/api/src/routes/agents/schemas.ts::attemptedAt': 'inbound agent clock string, parsed at ingest',
-  'apps/api/src/routes/agents/schemas.ts::eventId': 'inbound; bounds device_event_logs.event_id varchar(100), which counts characters',
-  'apps/api/src/routes/agents/schemas.ts::message': 'inbound; server-side abuse bound on a text column',
-  'apps/api/src/routes/partnerApi/schemas.ts::deviceHostname': 'response schema over a varchar(255) value; 2x is headroom',
-  'apps/api/src/services/aiToolSchemas.ts::processName': 'display-only approval label; never reaches the agent',
+  'apps/api/src/routes/agents/schemas.ts::restorePointOutcomeSchema.attemptedAt::64': 'inbound agent clock string, parsed at ingest',
+  'apps/api/src/routes/agents/schemas.ts::eventLogRowSchema.eventId::100': 'inbound; bounds device_event_logs.event_id varchar(100), which counts characters',
+  'apps/api/src/routes/agents/schemas.ts::eventLogRowSchema.message::2000': 'inbound; server-side abuse bound on a text column',
+  'apps/api/src/routes/partnerApi/schemas.ts::partnerAlertExportRecordSchema.deviceHostname::510': 'response schema over a varchar(255) value; 2x is headroom',
+  'apps/api/src/services/aiToolSchemas.ts::executeCommandPayloadSchema.processName::255': 'display-only approval label; never reaches the agent',
+  'packages/shared/src/validators/systemProtectionInlineSettings.ts::labelPrefixSchema::64':
+    'the agent truncates the restore-point description to its [256]uint16 budget itself; 64 code points <= 128 units',
 };
 
-interface Site { key: string; line: number; pinned: boolean; marked: boolean }
+interface Site { key: string; bound: string | null; line: number; pinned: boolean; marked: boolean }
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -90,34 +98,47 @@ export function stringLengthSites(source: string, file: string): Site[] {
     // A chain top: a call whose result is not itself the receiver of another call.
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && !(node.parent && isCallee(node, node.parent))) {
       const methods: string[] = [];
-      let bounded = false;
+      let bound: string | null = null;
+      let helperBound: string | null = null;
       let pinned = false;
       let cur: ts.Expression = node;
       for (;;) {
         if (ts.isCallExpression(cur) && ts.isPropertyAccessExpression(cur.expression)) {
           const name = cur.expression.name.text;
           methods.push(name);
-          if ((name === 'max' || name === 'length') && cur.arguments.length > 0) bounded = true;
-          if (name === 'check' && cur.arguments.some((arg) => HELPER.test(arg.getText(sf)))) pinned = true;
+          if ((name === 'max' || name === 'length') && cur.arguments.length > 0) bound ??= cur.arguments[0]!.getText(sf);
+          for (const arg of name === 'check' ? cur.arguments : []) {
+            if (ts.isCallExpression(arg) && HELPER.test(arg.expression.getText(sf) + '(')) {
+              pinned = true;
+              helperBound ??= arg.arguments[0]?.getText(sf) ?? null;
+            }
+          }
           cur = cur.expression.expression;
           continue;
         }
         if (ts.isPropertyAccessExpression(cur)) { methods.push(cur.name.text); cur = cur.expression; continue; }
         break;
       }
-      if (ts.isIdentifier(cur) && cur.text === 'z' && methods[methods.length - 1] === 'string' && (bounded || pinned)) {
-        let anchor: ts.Node | undefined = node;
-        let key = '<anonymous>';
-        while (anchor) {
-          if (ts.isPropertyAssignment(anchor)) { key = anchor.name.getText(sf).replace(/['"]/g, ''); break; }
-          if (ts.isVariableStatement(anchor)) { key = anchor.declarationList.declarations[0]!.name.getText(sf); break; }
-          anchor = anchor.parent;
+      // z.string()… or z.coerce.string()…
+      const root = methods[methods.length - 1] === 'coerce' ? methods[methods.length - 2] : methods[methods.length - 1];
+      if (ts.isIdentifier(cur) && cur.text === 'z' && root === 'string' && (bound !== null || pinned)) {
+        // Comments come from the nearest property or variable statement; the key
+        // qualifies the property by every enclosing property and the variable
+        // (or function) it lives in, so same-named fields in one file differ.
+        let anchor: ts.Node | undefined;
+        const path: string[] = [];
+        for (let n: ts.Node | undefined = node; n; n = n.parent) {
+          if (ts.isPropertyAssignment(n)) { path.unshift(n.name.getText(sf).replace(/['"]/g, '')); anchor ??= n; }
+          if (ts.isVariableStatement(n)) { path.unshift(n.declarationList.declarations[0]!.name.getText(sf)); anchor ??= n; break; }
+          if ((ts.isFunctionDeclaration(n) || ts.isMethodDeclaration(n)) && n.name) { path.unshift(`${n.name.getText(sf)}()`); break; }
         }
+        const key = path.join('.') || '<anonymous>';
         sites.push({
           key,
+          bound: bound ?? helperBound,
           line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1,
           pinned,
-          marked: SINK_MARKER.test(comments(anchor ?? node)),
+          marked: isSinkMarked(comments(anchor ?? node)),
         });
       }
     }
@@ -133,7 +154,7 @@ function scan(): Map<string, Site[]> {
     for (const path of sourceFiles(join(REPO, root))) {
       const file = relative(REPO, path);
       for (const site of stringLengthSites(readFileSync(path, 'utf8'), file)) {
-        const key = `${file}::${site.key}`;
+        const key = `${file}::${site.key}::${site.bound}`;
         out.set(key, [...(out.get(key) ?? []), site]);
       }
     }
@@ -152,7 +173,8 @@ describe('zod string limits pinned to their sink unit (#9976)', () => {
   it.each(Object.keys(PINNED))('%s still carries a unit helper', (key) => {
     const found = sites.get(key);
     expect(found, `${key} has no z.string() length chain any more; update PINNED`).toBeDefined();
-    expect(found!.some((s) => s.pinned), `${key} lost utf8MaxBytes/utf16Max (${PINNED[key]})`).toBe(true);
+    // Every chain with this name and bound, so a pinned sibling cannot mask an unpinned one.
+    expect(found!.every((s) => s.pinned), `${key} lost utf8MaxBytes/utf16Max (${PINNED[key]})`).toBe(true);
   });
 
   it('every sink-marked limit is pinned or reviewed', () => {
@@ -178,7 +200,7 @@ describe('stringLengthSites detector', () => {
 
   it('flags an unpinned limit next to a byte-sink comment', () => {
     expect(detect(`const s = z.object({\n  // the agent caps this at 64 bytes\n  label: z.string().min(1).max(64),\n});`))
-      .toEqual([{ key: 'label', line: 3, pinned: false, marked: true }]);
+      .toEqual([{ key: 's.label', bound: '64', line: 3, pinned: false, marked: true }]);
   });
 
   it('sees a helper anywhere on the chain, before or after .max()', () => {
@@ -188,11 +210,21 @@ describe('stringLengthSites detector', () => {
 
   it('does not borrow a helper from a sibling field', () => {
     const found = detect(`const c = z.object({ a: z.string().max(8), b: z.string().max(8).check(utf8MaxBytes(8)) });`);
-    expect(found.map((s) => [s.key, s.pinned])).toEqual([['a', false], ['b', true]]);
+    expect(found.map((s) => [s.key, s.pinned])).toEqual([['c.a', false], ['c.b', true]]);
   });
 
   it('ignores non-string bounds and unmarked limits', () => {
     expect(detect(`const d = z.object({ n: z.number().max(5), list: z.array(z.string()).max(5) });`)).toEqual([]);
     expect(detect(`const e = z.object({\n  // display name\n  name: z.string().max(200),\n});`)[0]?.marked).toBe(false);
+    // "go" the verb is not the Go language
+    expect(detect(`const f = z.object({\n  // labels go here\n  name: z.string().max(200),\n});`)[0]?.marked).toBe(false);
+  });
+
+  it('covers z.coerce.string(), .length(N), chains nested in z.array() and helper-only chains', () => {
+    expect(detect(`const g = z.object({ a: z.coerce.string().max(9) });`).map((s) => [s.key, s.bound])).toEqual([['g.a', '9']]);
+    expect(detect(`const h = z.object({ a: z.string().length(4) });`)[0]?.bound).toBe('4');
+    expect(detect(`const i = z.object({\n  // Go len() bytes\n  a: z.array(z.string().max(30)).max(5),\n});`))
+      .toEqual([{ key: 'i.a', bound: '30', line: 3, pinned: false, marked: true }]);
+    expect(detect(`const j = z.object({ a: z.string().check(utf16Max(64, 'msg')) })`)[0]).toMatchObject({ bound: '64', pinned: true });
   });
 });

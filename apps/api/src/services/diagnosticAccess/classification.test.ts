@@ -62,7 +62,7 @@ describe('diagnosticPathFormError', () => {
   });
 
   it('rejects a path within 4096 UTF-16 units but over 4096 UTF-8 bytes', () => {
-    expect(diagnosticPathFormError('/' + '中'.repeat(1366))).toBe('path must be 1-4096 characters'); // 4099 bytes
+    expect(diagnosticPathFormError('/' + '中'.repeat(1366))).toBe('path must be 1-4096 bytes (UTF-8)'); // 4099 bytes
   });
 });
 

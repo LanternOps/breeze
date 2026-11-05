@@ -666,8 +666,8 @@ export const partnerAlertExportRecordSchema = z.object({
   // Current device hostname at read time: enrichment, NOT a feed event. A
   // device rename does not advance the feed and is excluded from `revision`.
   // Limits are 2x the DB varchar length, set when zod counted UTF-16 units.
-  // zod >=4.6 counts code points like Postgres, so 2x is now only headroom; it
-  // stays because it is the published maxLength (#9976).
+  // zod >=4.6 counts code points like Postgres, so 2x is now only headroom;
+  // kept rather than tightening a partner-facing response contract (#9976).
   deviceHostname: z.string().max(510).nullable(),
   severity: z.enum(PARTNER_ALERT_SEVERITIES),
   status: z.enum(PARTNER_ALERT_STATUSES),

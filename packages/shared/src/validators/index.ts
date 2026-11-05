@@ -622,12 +622,6 @@ const patchSourceValueSchema = z.enum([
  */
 const PROVIDERLESS_PATCH_SOURCES = new Set<string>(['firmware', 'drivers']);
 
-// Lengths below are UTF-16 code units (an astral char counts twice), via the
-// shared `utf16Max` check. zod <=4.5 measured `.max()` this way; zod >=4.6
-// counts code points. The ring app-rules backfill migration (2026-12-26-230000)
-// emulates the UTF-16 rule in SQL, so it is pinned explicitly rather than left
-// to the zod version (#9976).
-
 /**
  * Patch sources an app rule may target. 'linux' (#9370) names an apt/dnf
  * package; the agent installs Linux updates one package at a time
@@ -636,6 +630,11 @@ const PROVIDERLESS_PATCH_SOURCES = new Set<string>(['firmware', 'drivers']);
  */
 export const APP_RULE_SOURCES = ['third_party', 'custom', 'linux'] as const;
 
+// Lengths below are UTF-16 code units (an astral char counts twice), via the
+// shared `utf16Max` check. zod <=4.5 measured `.max()` this way; zod >=4.6
+// counts code points. The ring app-rules backfill migration (2026-12-26-230000)
+// emulates the UTF-16 rule in SQL, so it is pinned explicitly rather than left
+// to the zod version (#9976).
 export const policyAppRuleSchema = z.object({
   source: z.enum(APP_RULE_SOURCES),
   packageId: z.string().min(1).check(utf16Max(256, 'Too long: expected <=256 characters')),

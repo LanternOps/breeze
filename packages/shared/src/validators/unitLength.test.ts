@@ -56,6 +56,13 @@ describe('utf8MaxBytes', () => {
     expect(result.error?.issues[0]?.message).toBe('over budget');
   });
 
+  it('runs later checks by default and stops them with abort: true', () => {
+    const later = (abort: boolean) => z.string().check(utf8MaxBytes(1, { abort })).refine(() => false, 'later')
+      .safeParse(CJK).error?.issues.map((i) => i.message);
+    expect(later(false)).toHaveLength(2);
+    expect(later(true)).toHaveLength(1);
+  });
+
   it('composes after other checks without changing the inferred type', () => {
     const named = z.object({ name: z.string().min(1).check(utf8MaxBytes(3)) });
     const parsed: { name: string } = named.parse({ name: 'abc' });

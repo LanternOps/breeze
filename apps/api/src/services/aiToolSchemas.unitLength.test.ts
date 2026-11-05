@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { executeCommandPayloadSchema } from './aiToolSchemas';
 
 // event_logs_query: the agent (remote/tools/eventlogs.go) refuses an XPath
@@ -14,5 +15,16 @@ describe('executeCommandPayloadSchema query byte budget', () => {
 
   it('rejects a query within 2000 code points but over 4096 UTF-8 bytes', () => {
     expect(executeCommandPayloadSchema.safeParse({ query: EMOJI.repeat(1025) }).success).toBe(false);
+  });
+});
+
+describe('executeCommandPayloadSchema JSON Schema', () => {
+  // The unit helper is invisible to JSON Schema; `.max(2000)` beside it is what
+  // gives the AI tool definition its maxLength. Dropping it must fail here.
+  it('keeps maxLength on the pinned field and converts without throwing', () => {
+    const json = z.toJSONSchema(executeCommandPayloadSchema, { unrepresentable: 'throw' }) as {
+      properties: Record<string, { maxLength?: number }>;
+    };
+    expect(json.properties.query?.maxLength).toBe(2000);
   });
 });

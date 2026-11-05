@@ -10,7 +10,8 @@ import { utf8MaxBytes } from '@breeze/shared';
 // validateSoftwareVersion. Keeping these synchronized prevents a request
 // that the API would accept from coming back as a generic validator error
 // from the agent. The agent measures with Go `len()` (UTF-8 bytes) while zod
-// 4.6 `.max()` counts code points, so the byte budget is pinned (#9976).
+// 4.6 `.max()` counts code points, so the byte budget is pinned (#9976). The
+// agent trims first, so the API bound is the same or slightly stricter.
 const SOFTWARE_NAME_UNSAFE = /[\\/\x00\r\n']/;
 const SHELL_META = /[;&|><`$'"]/;
 

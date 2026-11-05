@@ -206,8 +206,8 @@ export function classifyDiagnosticPath(p: string): DiagnosticPathClassification 
  */
 export function diagnosticPathFormError(p: string): string | null {
   // 4096 UTF-8 bytes, as the agent's validateDiagRequestPath measures it with
-  // Go len() (#9976). The message mirrors the agent's.
-  if (typeof p !== 'string' || p.length === 0 || utf8.encode(p).length > 4096) return 'path must be 1-4096 characters';
+  // Go len() (#9976).
+  if (typeof p !== 'string' || p.length === 0 || utf8.encode(p).length > 4096) return 'path must be 1-4096 bytes (UTF-8)';
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(p)) return 'path contains a control character';
   const norm = p.replace(/\\/g, '/');
