@@ -308,7 +308,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'aiModels/residency.ts':{ exempt: 'human_only_ai_governance', note: 'Data-residency requirement for AI calls -- a compliance control the AI must not change.' },
   'aiModels/shared.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'aiModels/usage.ts': { exempt: 'human_only_ai_governance', note: 'AI spend and refusal reporting by model / feature / tech -- admin showback, not an agent workflow.' },
-  'aiOperatorTasks.ts': { tools: ['list_operator_tasks', 'get_operator_task'] }, // W10 (#6780): the task list + detail reads; create / workflows / drafts are W16 (#6786)
+  'aiOperatorTasks.ts': { tools: ['list_operator_tasks', 'get_operator_task', 'create_operator_task'] }, // W10 (#6780) reads; W16 PR A (#6786): create_operator_task for service_recovery only. Left human (Decision 4): the identity_offboarding / identity_onboarding admissions, the task drafts, the workflow Library read and the account-reservation release
   'alertTemplates/correlations.ts': { tools: ['get_alert_correlations'] }, // W07 (#6777): links (list) and analyze; the legacy /groups twin is superseded by alerts/correlations.ts groups
   'alertTemplates/rules.ts': { tools: ['manage_alert_rules'] },
   'alertTemplates/templates.ts': { tools: ['manage_alert_rules'] },
@@ -634,7 +634,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'partnerSendingDomains.ts': { exempt: 'human_only_trust_material', note: "DNS verification is completed by a human at the registrar; test-send leaves the tenant. From #6803." },
   'partnerServicePrincipals.ts': { exempt: 'identity' },
   'partnerTrust.ts': { exempt: 'breeze_account', note: 'Trust review request to Breeze -- the partner-Breeze relationship itself.' },
-  'patchPlan.ts': { gap: '#6786' },
+  'patchPlan.ts': { tools: ['run_patch_plan'] }, // W16 PR A (#6786): "Run now" for the org's patch agent
   'patchPolicies.ts': { exempt: 'internal_plumbing', note: "Read-only kind='legacy' surface superseded by config-policy patch features; retire rather than build a tool. From #6804." },
   'patches/appOptions.ts': { exempt: 'internal_plumbing' },
   'patches/approvals.ts': { tools: ['manage_patches'] },

@@ -5188,8 +5188,8 @@ export function buildApprovalDescription(
         + 'It proposes installs for approval; nothing is installed without a further approval.');
       break;
     case 'create_operator_task':
-      parts.push(`Delegate restoring the ${w03Cap(String(input.serviceName ?? '(unspecified)'))} service on device ${w03Id(input.deviceId)} `
-        + 'to the AI Operator. It uses AI credits. Each change it makes asks for approval.');
+      parts.push(`Start an AI task to restore the ${w03Cap(String(input.serviceName ?? '(unspecified)'))} service on device ${w03Id(input.deviceId)}. `
+        + 'It uses AI credits. Each change it makes asks for approval.');
       break;
 
     case 'manage_report_recipients':

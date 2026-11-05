@@ -645,6 +645,9 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // request for one becomes the wisp_specialist_request approval card.
       { name: 'launch_specialist (operator_recipe/patch_plan/remediation_research/bulk_ticket_reply)', description: 'Ask Wisp to hand an AI task, patch plan, remediation research or one reply to a set of tickets to a specialist', category: 'AI Governance' },
       { name: 'wisp_specialist_request', description: 'Approve a specialist an assessment asked Wisp to run (raised only by the Wisp coordinator)', category: 'AI Governance' },
+      // Full-control W16 PR A (#6786): the two launches, supervised as a recorded exception (Decision 1).
+      { name: 'run_patch_plan', description: 'Run an organization\'s patch agent now. It uses AI credits and may notify people; each install it proposes is its own approval (not offered to AI agents)', category: 'AI Governance' },
+      { name: 'create_operator_task', description: 'Start an AI task that gets a stopped service running again on one device. It uses AI credits; each change it makes asks for approval (not offered to AI agents)', category: 'AI Governance' },
       // Wisp memory (W03 #9909): human-only — a person confirms or retracts on the memory page; never agent-callable.
       { name: 'confirm_memory', description: 'A person confirms a Wisp memory block', category: 'AI Governance' },
       { name: 'retract_memory', description: 'A person retracts a Wisp memory block', category: 'AI Governance' },
@@ -823,6 +826,9 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'cancel_check_in', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   // Wisp specialists (W07a #9913): sweeps/analysis run on the call; other kinds ask first.
   { toolName: 'launch_specialist', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
+  // Full-control W16 PR A (#6786).
+  { toolName: 'run_patch_plan', tier: 3, permission: 'ai_agents.write', category: 'AI Governance' },
+  { toolName: 'create_operator_task', tier: 3, permission: 'ai_agents.write', category: 'AI Governance' },
   // Other
   { toolName: 'export_dataset', tier: 1, permission: 'devices.read', category: 'Other' },
   // Endpoint messaging (#8742 W02)
@@ -1333,6 +1339,9 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   cancel_check_in: 'ai_sessions.use',
   // Wisp specialists (W07a #9913); wisp_specialist_request is the approval card.
   launch_specialist: 'ai_sessions.use',
+  // Full-control W16 PR A (#6786).
+  run_patch_plan: 'ai_agents.write',
+  create_operator_task: 'ai_agents.write',
   wisp_specialist_request: 'ai_sessions.use',
   generate_report: {
     list: 'reports.read',

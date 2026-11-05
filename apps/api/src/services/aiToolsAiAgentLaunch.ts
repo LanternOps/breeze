@@ -218,11 +218,11 @@ export function registerAiAgentLaunchTools(aiTools: Map<string, AiTool>): void {
     tier: 3,
     domain: 'ai',
     deviceArgs: ['deviceId'],
-    searchHint: 'delegate getting a stopped service running again on a device to the AI Operator (service recovery task)',
+    searchHint: 'start an AI task to get a stopped service running again on a device (service recovery)',
     definition: {
       name: OPERATOR_TOOL,
       description:
-        'Delegate restoring a stopped service on one device to the AI Operator. It investigates, then asks approval for each change. Pass alertId when an alert reported it. Needs approval; uses AI credits.',
+        'Start an AI task that gets a stopped service running again on one device. It investigates, then asks approval for each change. Pass alertId when an alert reported it. Needs approval; uses AI credits.',
       input_schema: orgAdminInputSchema(aiAgentLaunchToolSchemas.create_operator_task),
     },
     handler: (input, auth, context) => createOperatorTaskHandler(input, auth, context),
