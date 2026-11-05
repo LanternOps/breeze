@@ -151,7 +151,10 @@ export async function matchProviderDevices(
 
   // Candidate devices. `claimed` is a correlated EXISTS over the WHOLE table,
   // not just this connection — the partial unique index on breeze_device_id is
-  // global, so a row held by another connection is genuinely unavailable.
+  // global, so a row held by another connection is genuinely unavailable. The
+  // correlation goes through eq(), not a bare ${column} chunk: a single-table
+  // select strips qualifiers from direct chunks, which bound `id` to the inner
+  // table, so nothing read as claimed and the link batch hit the index (#9692).
   const candidateRows = await tx
     .select({
       deviceId: devices.id,
@@ -159,7 +162,7 @@ export async function matchProviderDevices(
       hostname: devices.hostname,
       displayName: devices.displayName,
       claimed: sql<boolean>`EXISTS (
-        SELECT 1 FROM backup_provider_devices x WHERE x.breeze_device_id = ${devices.id}
+        SELECT 1 FROM ${backupProviderDevices} WHERE ${eq(backupProviderDevices.breezeDeviceId, devices.id)}
       )`,
     })
     .from(devices)
