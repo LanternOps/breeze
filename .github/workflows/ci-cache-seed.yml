@@ -33,8 +33,9 @@ on:
     # The Tauri closure (and the Trivy DB) only: about a minute on a hit, and
     # it keeps the closure recently used and re-saves it if it was evicted.
     - cron: '17 11,17,23 * * *'
-    # Weekly: also rebuild the image layer caches (see seed-smoke-images).
-    - cron: '37 5 * * 1'
+    # Mondays and Thursdays: also rebuild the image layer caches (see
+    # seed-smoke-images); twice a week stays well inside the 7-day unused window.
+    - cron: '37 5 * * 1,4'
   workflow_dispatch:
 
 permissions:
@@ -343,12 +344,14 @@ jobs:
                   || echo "::warning::could not delete cache ${key}"
               done
 
-      # A hit saves nothing, and the entry restored at the top of this job can be
-      # evicted before it ends: on 2026-11-05 it was restored at 05:39 and gone by
-      # 09:36 (#11119). Look again on the way out and put back what was restored,
-      # which is the exact closure this job planned, verified when it was first
-      # saved. A listing that fails counts as gone: saving a key that still
-      # exists is refused by the cache service and changes nothing.
+      # A hit saves nothing. On 2026-11-05 the closure was restored at 05:39 and
+      # gone by 09:36 (#11119). This step only covers an eviction inside this
+      # job's own run; the six-hourly schedule bounds how long a lost closure
+      # stays lost, and the budget job keeps GitHub's eviction from being
+      # reached at all. Look again on the way out and put back what was
+      # restored: the exact closure this job planned, verified when first
+      # saved. A listing that fails or prints anything but a count counts as
+      # gone: saving a key that still exists is refused and changes nothing.
       - name: Check the Tauri apt entry survived
         id: recheck
         if: steps.cache.outputs.cache-hit == 'true'
@@ -363,7 +366,10 @@ jobs:
             echo "::warning::could not list caches; saving ${KEY} again in case it is gone"
             n=0
           fi
-          if [ "${n}" = "0" ]; then
+          case "${n}" in
+            '' | *[!0-9]*) echo "::warning::unexpected listing output '${n}'; saving ${KEY} again in case it is gone"; n=0 ;;
+          esac
+          if [ "${n}" -eq 0 ]; then
             echo "::warning::${KEY} is no longer in the cache; saving it again"
             echo "missing=true" >> "$GITHUB_OUTPUT"
           else
@@ -415,6 +421,19 @@ jobs:
           exit-code: '0'
           cache: 'false'
 
+      # Keys are immutable: never save a directory without the DB in it.
+      - name: Check the Trivy DB was downloaded
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          DB: ${{ github.workspace }}/.cache/trivy/db/trivy.db
+        run: |
+          if [ ! -s "${DB}" ]; then
+            echo "::error::${DB} is missing or empty after the Trivy scan; not saving"
+            exit 1
+          fi
+          ls -l "${DB}"
+
       - name: Save Trivy DB cache
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -430,10 +449,10 @@ jobs:
   # every commit, and mode=max keeps every stage), which is what pushed the repo
   # to its cache limit (#10762, #11119). The layers PRs actually reuse (base
   # images, dependency installs) change with the paths that trigger this
-  # workflow on push; the weekly run catches anything else.
+  # workflow on push; the twice-weekly run catches anything else.
   seed-smoke-images:
     name: Seed smoke image layers (${{ matrix.image }})
-    if: github.event_name != 'schedule' || github.event.schedule == '37 5 * * 1'
+    if: github.event_name != 'schedule' || github.event.schedule == '37 5 * * 1,4'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -474,7 +493,7 @@ jobs:
   seed-workspace-runtime:
     name: Seed workspace runtime layers
     # Same schedule as seed-smoke-images.
-    if: github.event_name != 'schedule' || github.event.schedule == '37 5 * * 1'
+    if: github.event_name != 'schedule' || github.event.schedule == '37 5 * * 1,4'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -517,32 +536,30 @@ jobs:
 
       # Keys are immutable, so each lockfile / go.sum / day leaves an entry per OS
       # behind (pnpm ~650 MB, go 1.2-1.4 GB, Trivy ~100 MB; #11119). Only the
-      # newest is restored by exact key and CI falls back to it by prefix. The
-      # keys are recomputed here: hashFiles is content-only, so it matches the
-      # seed jobs' on every OS. The script keeps everything when the newest key
-      # is not listed (that seed job's save failed). Runs on a hit too, to clear
-      # a pair an earlier failed prune left.
+      # newest is restored by exact key and CI falls back to it by prefix, so the
+      # script keeps each family's newest-created entry. (Recomputing the key
+      # here does not work: Windows checks go.sum out with CRLF, so its
+      # hashFiles differs from this runner's.) Runs on a hit too, to clear a pair
+      # an earlier failed prune left. Every family is tried; any failure turns
+      # the step red after the others ran, and the budget step still runs.
       - name: Prune superseded seed keys
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          PNPM_HASH: ${{ hashFiles('pnpm-lock.yaml') }}
-          GO_HASH: ${{ hashFiles('agent/go.sum', 'agent/go.mod') }}
         run: |
-          prune() {
-            node .github/scripts/ci-cache-prune.mjs superseded --prefix "$1" --keep "$1$2" \
-              || echo "::warning::pruning $1* failed; it only costs space"
-          }
-          for os in Linux macOS; do prune "pnpm-${os}-" "${PNPM_HASH}"; done
-          for os in Linux macOS Windows; do prune "go-${os}-" "${GO_HASH}"; done
-          prune cache-trivy- "$(date -u +'%Y-%m-%d')"
+          failed=0
+          for prefix in pnpm-Linux- pnpm-macOS- go-Linux- go-macOS- go-Windows- cache-trivy-; do
+            node .github/scripts/ci-cache-prune.mjs superseded --prefix "${prefix}" || failed=1
+          done
+          exit "${failed}"
 
       # Deletes the retired families, then evicts until the total is under the
       # budget: other refs' entries first, then main's least-recently-used
       # buildkit layers. Seed keys are never evicted here, so GitHub's own LRU
-      # eviction, which takes any kind, should not be reached. A red step means
-      # the seed keys alone no longer fit the budget.
+      # eviction, which takes any kind, should not be reached. Red means a
+      # listing or delete failed, or the seed keys alone no longer fit.
       - name: Enforce the cache budget
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: node .github/scripts/ci-cache-prune.mjs budget

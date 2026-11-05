@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { readFileSync, readdirSync, existsSync, mkdtempSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 // Cache hygiene (W1, #10744). Actions caches saved from pull_request and
@@ -38,7 +42,7 @@ const composites = readdirSync(ACTIONS_DIR)
   .map((d) => ({ name: d, text: read(new URL(`${d}/action.yml`, ACTIONS_DIR)) }));
 const compositeSteps = composites.flatMap((c) => steps(c.text, 4).map((s) => ({ name: c.name, step: s })));
 
-const usesOf = (step) => (step.match(/^\s*(?:- )?uses:\s*(\S+)/m) || [])[1] ?? '';
+const usesOf = (step) => ((step.match(/^\s*(?:- )?uses:\s*(\S+)/m) || [])[1] ?? '').replace(/^['"]|['"]$/g, '');
 
 test('setup-go never saves a cache in ci.yml', () => {
   const goSteps = ciSteps.filter((s) => usesOf(s).startsWith('actions/setup-go@'));
@@ -359,19 +363,43 @@ const workflows = readdirSync(WORKFLOWS_DIR)
 const triggers = (text) => text.slice(0, text.search(/^jobs:\s*$/m));
 const runsOnPrRefs = (text) => /^ {2}(?:pull_request|pull_request_target|merge_group):/m.test(triggers(text));
 
-function cacheViolations(text) {
+function cacheViolations(stepList) {
   const out = [];
-  for (const s of steps(text, 6)) {
+  for (const s of stepList) {
     const uses = usesOf(s);
-    if (uses.startsWith('actions/setup-go@') && !/^\s+cache:\s*false\s*$/m.test(s)) out.push(`setup-go without cache: false:\n${s}`);
-    if (uses.startsWith('actions/setup-node@') && /^\s+cache:/m.test(s)) out.push(`setup-node with a cache input:\n${s}`);
+    const cacheInput = withValue(s, 'cache');
+    if (uses.startsWith('actions/setup-go@') && cacheInput !== 'false') out.push(`setup-go without cache: false (it caches by default):\n${s}`);
+    // setup-node, setup-python, setup-java, setup-dotnet, ...: opt-in caches.
+    if (/^actions\/setup-(?!go@)[a-z]+@/.test(uses) && cacheInput !== null && cacheInput !== 'false') out.push(`${uses} with a cache input:\n${s}`);
     if (uses.startsWith('actions/cache') && !uses.startsWith('actions/cache/restore@')) out.push(`${uses} saves a cache`);
-    if (uses.startsWith('Swatinem/rust-cache@') && !/^\s+save-if:\s*false\s*$/m.test(s)) out.push(`rust-cache without save-if: false:\n${s}`);
-    if (uses.startsWith('aquasecurity/trivy-action@') && !/^\s+cache:\s*'false'\s*$/m.test(s)) out.push(`trivy-action without cache: 'false' (its default saves the DB and the binary):\n${s}`);
-    if (/^\s+cache-to:.*type=gha/m.test(s)) out.push(`buildkit exports to gha:\n${s}`);
+    if (uses.startsWith('Swatinem/rust-cache@') && withValue(s, 'save-if') !== 'false') out.push(`rust-cache without save-if: false:\n${s}`);
+    if (uses.startsWith('aquasecurity/trivy-action@') && cacheInput !== "'false'") out.push(`trivy-action without cache: 'false' (its default saves the DB and the binary):\n${s}`);
+    if (/type=gha/.test(withValue(s, 'cache-to') ?? '')) out.push(`buildkit exports to gha:\n${s}`);
   }
   return out;
 }
+
+test('cacheViolations catches each save shape, including block scalars and quoted uses', () => {
+  const step = (body) => `      - name: x\n${body}`;
+  const cases = [
+    step('        uses: actions/setup-go@abc\n        with:\n          go-version: 1'),
+    step('        uses: actions/setup-node@abc\n        with:\n          cache: pnpm'),
+    step('        uses: actions/setup-python@abc\n        with:\n          cache: pip'),
+    step("        uses: 'actions/cache@abc'"),
+    step('        uses: Swatinem/rust-cache@abc'),
+    step('        uses: aquasecurity/trivy-action@abc\n        with:\n          scan-type: fs'),
+    step('        uses: docker/build-push-action@abc\n        with:\n          cache-to: |\n            type=gha,mode=max'),
+  ];
+  for (const c of cases) assert.equal(cacheViolations([c]).length, 1, c);
+  const clean = [
+    step('        uses: actions/setup-go@abc\n        with:\n          cache: false'),
+    step('        uses: actions/setup-python@abc\n        with:\n          python-version: 3'),
+    step('        uses: actions/cache/restore@abc'),
+    step("        uses: aquasecurity/trivy-action@abc\n        with:\n          cache: 'false'"),
+    step('        uses: docker/build-push-action@abc\n        with:\n          cache-from: type=gha'),
+  ];
+  assert.deepEqual(cacheViolations(clean), []);
+});
 
 test('the PR-ref inventory found the workflows it is meant to police', () => {
   const pr = workflows.filter((w) => runsOnPrRefs(w.text)).map((w) => w.name);
@@ -384,9 +412,19 @@ test('the PR-ref inventory found the workflows it is meant to police', () => {
 
 for (const { name, text } of workflows.filter((w) => !SAVERS.has(w.name))) {
   test(`${name} saves no Actions cache`, () => {
-    assert.deepEqual(cacheViolations(text), []);
+    const stepList = steps(text, 6);
+    // A re-indented file would parse to no steps and pass vacuously.
+    const usesLines = (text.match(/^\s+(?:- )?uses:/gm) || []).length;
+    assert.equal(stepList.filter((s) => usesOf(s)).length, usesLines, `${name}: some uses: lines are not inside a parsed step`);
+    assert.deepEqual(cacheViolations(stepList), []);
   });
 }
+
+// Every workflow can call a local composite, so composites follow the same rule.
+test('composite actions save no Actions cache', () => {
+  assert.ok(compositeSteps.length >= 5);
+  assert.deepEqual(cacheViolations(compositeSteps.map((c) => c.step)), []);
+});
 
 // Dropping a built-in cache must not quietly leave the job cold: the restore has
 // to be there, after the setup step whose tool it asks for the cache dirs, and
@@ -465,51 +503,71 @@ test('the seed saves the Trivy DB under the key and path the composite restores,
 const loadPrune = () => import('./ci-cache-prune.mjs');
 const entry = (key, extra = {}) => ({ id: key.length, key, ref: 'refs/heads/main', sizeInBytes: 100, lastAccessedAt: '2026-11-05T00:00:00Z', ...extra });
 
-test('planSuperseded deletes every other key of the family, never the kept one or another family', async () => {
+// The newest-created entry is the current key. The key is not recomputed:
+// Windows checks go.sum out with CRLF, so its hashFiles differs from Linux's
+// (go-Windows-08d73e… vs go-Linux-5596bc… for the same go.sum on 2026-11-05).
+test('planSuperseded keeps the newest-created entry of the family and deletes the rest of it only', async () => {
   const { planSuperseded } = await loadPrune();
-  const entries = [entry('pnpm-Linux-new'), entry('pnpm-Linux-old'), entry('pnpm-macOS-x'), entry('pnpm-Linux-older'), entry('golangci-lint-v2-Linux')];
-  const { deletions, warning } = planSuperseded(entries, { prefix: 'pnpm-Linux-', keep: 'pnpm-Linux-new' });
-  assert.equal(warning, null);
-  assert.deepEqual(deletions.map((e) => e.key).sort(), ['pnpm-Linux-old', 'pnpm-Linux-older']);
+  const entries = [
+    entry('pnpm-Linux-mid', { id: 2, createdAt: at(5) }),
+    entry('pnpm-Linux-new', { id: 3, createdAt: at(9) }),
+    entry('pnpm-macOS-x', { id: 4, createdAt: at(10) }),
+    entry('pnpm-Linux-old', { id: 1, createdAt: at(1) }),
+    entry('golangci-lint-v2-Linux', { id: 5, createdAt: at(11) }),
+  ];
+  const { keep, deletions } = planSuperseded(entries, { prefix: 'pnpm-Linux-' });
+  assert.equal(keep.key, 'pnpm-Linux-new');
+  assert.deepEqual(deletions.map((e) => e.key).sort(), ['pnpm-Linux-mid', 'pnpm-Linux-old']);
 });
 
-test('planSuperseded deletes nothing when the kept key is not listed (a failed or lagging save)', async () => {
+test('planSuperseded: a lone entry or an empty family deletes nothing; a createdAt tie keeps the higher id', async () => {
   const { planSuperseded } = await loadPrune();
-  const { deletions, warning } = planSuperseded([entry('go-Linux-old')], { prefix: 'go-Linux-', keep: 'go-Linux-new' });
-  assert.deepEqual(deletions, []);
-  assert.match(warning, /go-Linux-new/);
+  assert.deepEqual(planSuperseded([entry('go-Linux-a', { createdAt: at(1) })], { prefix: 'go-Linux-' }).deletions, []);
+  assert.deepEqual(planSuperseded([], { prefix: 'go-Linux-' }), { keep: null, deletions: [] });
+  const tie = planSuperseded([entry('go-Linux-a', { id: 7, createdAt: at(1) }), entry('go-Linux-b', { id: 9, createdAt: at(1) })], { prefix: 'go-Linux-' });
+  assert.equal(tie.keep.key, 'go-Linux-b');
+  assert.throws(() => planSuperseded([], {}), /prefix/);
 });
 
-test('planSuperseded refuses a keep key outside its own prefix', async () => {
-  const { planSuperseded } = await loadPrune();
-  assert.throws(() => planSuperseded([], { prefix: 'go-Linux-', keep: 'pnpm-Linux-x' }), /prefix/);
-});
-
-// The prune job recomputes each key the seed jobs saved. If its hash or OS list
-// drifts from theirs it keeps the wrong key: with the "keep not listed" guard
-// that deletes nothing, but it also prunes nothing, silently.
+// The prune step names each family the seed saves, per OS it saves on. A family
+// missing from its list is never pruned, silently.
 const seedJob = (name) => jobBlocks(seedText()).find((j) => j.name === name);
 const runnerOs = { 'ubuntu-latest': 'Linux', 'macos-latest': 'macOS', 'windows-latest': 'Windows' };
 const matrixOses = (name) => seedJob(name).text.match(/^\s+os:\s*\[(.+)\]\s*$/m)[1].split(',').map((s) => runnerOs[s.trim()]);
 
-test('the prune job recomputes exactly the keys the pnpm, Go and Trivy seeds save, for every OS they run on', () => {
-  const prune = steps(seedJob('enforce-cache-budget').text, 6).find((s) => /name: Prune superseded seed keys$/m.test(s));
-  assert.ok(prune, 'missing Prune superseded seed keys step');
-  const families = [
-    { job: 'seed-pnpm', save: 'Save pnpm cache', prefix: 'pnpm-', env: 'PNPM_HASH' },
-    { job: 'seed-go', save: 'Save Go cache', prefix: 'go-', env: 'GO_HASH' },
+test('the prune step covers every family the pnpm, Go and Trivy seeds save, for every OS they run on', () => {
+  const budgetSteps = steps(seedJob('enforce-cache-budget').text, 6);
+  const pruneAt = budgetSteps.findIndex((s) => /name: Prune superseded seed keys$/m.test(s));
+  assert.ok(pruneAt >= 0, 'missing Prune superseded seed keys step');
+  const prune = budgetSteps[pruneAt];
+  const prefixes = prune.match(/for prefix in ([^;]+); do/)?.[1].trim().split(/\s+/);
+  assert.ok(prefixes, 'no prefix loop');
+  const wanted = [
+    ...matrixOses('seed-pnpm').map((os) => `pnpm-${os}-`),
+    ...matrixOses('seed-go').map((os) => `go-${os}-`),
+    'cache-trivy-',
   ];
-  for (const { job, save, prefix, env } of families) {
-    const key = withValue(steps(seedJob(job).text, 6).find((s) => new RegExp(`name: ${save}$`, 'm').test(s)), 'key');
-    assert.equal(`${prefix}\${{ runner.os }}-${withValue(prune, env)}`, key, `${env} vs the ${job} save key`);
-    const loop = prune.match(new RegExp(`for os in ([A-Za-z ]+); do prune "${prefix}\\$\\{os\\}-" "\\$\\{${env}\\}"; done`));
-    assert.ok(loop, `no prune loop for ${prefix}`);
-    assert.deepEqual(loop[1].trim().split(/\s+/).sort(), matrixOses(job).sort(), `${prefix} OS list vs the ${job} matrix`);
-  }
-  const date = composites.find((c) => c.name === 'restore-trivy-db').text.match(/date=\$\((date [^)]+)\)/)[1];
-  assert.ok(prune.includes(`prune cache-trivy- "$(${date})"`), `Trivy key must use the composite's ${date}`);
+  assert.deepEqual([...prefixes].sort(), wanted.sort());
+  // The save keys these prefixes stand for.
+  assert.ok(seedStep('Save pnpm cache').includes('key: pnpm-${{ runner.os }}-'));
+  assert.ok(seedStep('Save Go cache').includes('key: go-${{ runner.os }}-'));
+  assert.ok(seedStep('Save Trivy DB cache').includes('key: cache-trivy-'));
+  // Every family is tried, a failure is not swallowed, and the budget still runs.
+  assert.match(prune, /node \.github\/scripts\/ci-cache-prune\.mjs superseded --prefix "\$\{prefix\}" \|\| failed=1/);
+  assert.match(prune, /exit "\$\{failed\}"/);
   assert.doesNotMatch(prune, /continue-on-error/);
-  assert.match(prune, /\|\| echo "::warning::/, 'a failed prune warns and moves on; it only costs space');
+  const budget = budgetSteps.find((s) => /name: Enforce the cache budget$/m.test(s));
+  assert.ok(budgetSteps.indexOf(budget) > pruneAt);
+  assert.match(budget, /^\s+if: \$\{\{ !cancelled\(\) \}\}$/m);
+});
+
+test('the Trivy seed never saves a directory without the DB', () => {
+  const job = steps(seedJob('seed-trivy-db').text, 6);
+  const check = job.findIndex((s) => /name: Check the Trivy DB was downloaded$/m.test(s));
+  const save = job.findIndex((s) => /name: Save Trivy DB cache$/m.test(s));
+  assert.ok(check >= 0 && check < save);
+  assert.match(job[check], /\.cache\/trivy\/db\/trivy\.db/);
+  assert.match(job[check], /exit 1/);
 });
 
 // Seed jobs run pnpm install (dependency lifecycle scripts), go builds and trivy.
@@ -549,7 +607,8 @@ test('the Go seed drops the restored module cache before downloading a new go.su
 // kind, and the seed's own buildkit exports (~1 GB a run) were the churn.
 const DAILY = '17 5 * * *';
 const SIX_HOURLY = '17 11,17,23 * * *';
-const WEEKLY = '37 5 * * 1';
+// Twice a week: inside the 7-day window after which an unused entry is evicted.
+const WEEKLY = '37 5 * * 1,4';
 const jobIf = (name) => {
   const job = jobBlocks(seedText()).find((j) => j.name === name);
   assert.ok(job, `missing seed job ${name}`);
@@ -600,6 +659,9 @@ test('a Tauri hit re-checks its entry on the way out and saves it again if it is
   // (Seen on a branch dispatch: a branch-only listing re-saved main's closure.)
   assert.doesNotMatch(recheck, /--ref/);
   assert.match(recheck, /\.ref == env\.GITHUB_REF or \.ref == "refs\/heads\/main"/);
+  // Empty or non-numeric output is "gone" too, not "still cached".
+  assert.match(recheck, /'' \| \*\[!0-9\]\*\) .*n=0 ;;/);
+  assert.match(recheck, /if \[ "\$\{n\}" -eq 0 \]; then/);
   assert.doesNotMatch(recheck, /continue-on-error/);
   assert.match(resave, /^\s+if: steps\.recheck\.outputs\.missing == 'true'$/m);
   assert.ok(usesOf(resave).startsWith('actions/cache/save@'));
@@ -611,19 +673,33 @@ test('a Tauri hit re-checks its entry on the way out and saves it again if it is
 const GB = 1e9;
 const at = (h) => new Date(Date.UTC(2026, 10, 5, h)).toISOString();
 
-test('planBudget always deletes retired families, on any ref', async () => {
+// release.yml still saves these families on tag refs (it is exempt), so they
+// are retired on main only; elsewhere the over-budget pass reaches them.
+test('planBudget always deletes retired families on main, and leaves them alone elsewhere while under budget', async () => {
   const { planBudget, RETIRED_PREFIXES } = await loadPrune();
   assert.deepEqual([...RETIRED_PREFIXES].sort(), ['node-cache-', 'setup-go-', 'trivy-binary-']);
   const entries = [
     entry('node-cache-Linux-x64-pnpm-a', { sizeInBytes: 0.6 * GB }),
-    entry('setup-go-Windows-x64-go-1.26.10-b', { sizeInBytes: 0.2 * GB, ref: 'refs/pull/1/merge' }),
+    entry('setup-go-Windows-x64-go-1.26.10-b', { sizeInBytes: 0.2 * GB }),
     entry('trivy-binary-v0.70.0-Linux-X64', { sizeInBytes: 0.04 * GB }),
+    entry('node-cache-macOS-arm64-pnpm-t', { sizeInBytes: 0.6 * GB, ref: 'refs/tags/v1.0.0' }),
     entry('go-Linux-c', { sizeInBytes: 1.3 * GB }),
   ];
   const { deletions, remaining, overBudget } = planBudget(entries, { budgetBytes: 8.5 * GB, mainRef: 'refs/heads/main' });
   assert.deepEqual(deletions.map((e) => e.key).sort(), entries.slice(0, 3).map((e) => e.key).sort());
-  assert.equal(remaining, 1.3 * GB);
+  assert.equal(remaining, 1.9 * GB);
   assert.equal(overBudget, false);
+});
+
+test('planBudget: a total exactly at the budget evicts nothing; an unknown lastAccessedAt sorts as oldest', async () => {
+  const { planBudget } = await loadPrune();
+  const exact = [entry('buildkit-blob-1-sha256:a', { sizeInBytes: 2 * GB }), entry('go-Linux-a', { sizeInBytes: 6.5 * GB })];
+  assert.deepEqual(planBudget(exact, { budgetBytes: 8.5 * GB, mainRef: 'refs/heads/main' }).deletions, []);
+  const blobs = [
+    entry('buildkit-blob-1-sha256:known', { id: 1, sizeInBytes: 1 * GB, lastAccessedAt: at(1) }),
+    entry('buildkit-blob-1-sha256:unknown', { id: 2, sizeInBytes: 1 * GB, lastAccessedAt: undefined }),
+  ];
+  assert.deepEqual(planBudget(blobs, { budgetBytes: 1.5 * GB, mainRef: 'refs/heads/main' }).deletions.map((e) => e.key), ['buildkit-blob-1-sha256:unknown']);
 });
 
 test('planBudget evicts other refs first, then main buildkit blobs oldest-first, and stops at the budget', async () => {
@@ -680,4 +756,106 @@ test('the seed enforces the budget last, on main only, and a failure shows', asy
   assert.match(budget.text, /^ {4}permissions:\n {6}contents: read\n {6}actions: write\b/m);
   assert.match(budget.text, /node \.github\/scripts\/ci-cache-prune\.mjs budget$/m);
   assert.doesNotMatch(budget.text, /continue-on-error/);
+});
+
+// ---- The CLI against a stub `gh` ---------------------------------------------
+// The I/O half: what reaches `gh`, and which failures turn the step red.
+const PRUNE_CLI = fileURLToPath(new URL('./ci-cache-prune.mjs', import.meta.url));
+const STUB_GH = `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.STUB_LOG, JSON.stringify(args) + '\\n');
+if (args[0] === 'cache' && args[1] === 'list') {
+  let rows = JSON.parse(fs.readFileSync(process.env.STUB_LIST, 'utf8'));
+  const flag = (name) => { const i = args.indexOf(name); return i < 0 ? null : args[i + 1]; };
+  if (flag('--ref')) rows = rows.filter((r) => r.ref === flag('--ref'));
+  if (flag('--key')) rows = rows.filter((r) => r.key.startsWith(flag('--key')));
+  process.stdout.write(JSON.stringify(rows));
+} else if (args[0] === 'cache' && args[1] === 'delete') {
+  if (process.env.STUB_DELETE_FAIL === '1') { process.stderr.write('HTTP 403\\n'); process.exit(1); }
+} else { process.exit(3); }
+`;
+
+function runCli(args, rows, { deleteFails = false } = {}) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'ci-cache-prune-'));
+  try {
+    writeFileSync(path.join(dir, 'gh'), STUB_GH);
+    chmodSync(path.join(dir, 'gh'), 0o755);
+    writeFileSync(path.join(dir, 'list.json'), JSON.stringify(rows));
+    const log = path.join(dir, 'calls.log');
+    writeFileSync(log, '');
+    const r = spawnSync(process.execPath, [PRUNE_CLI, ...args], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${dir}${path.delimiter}${process.env.PATH}`,
+        GITHUB_REPOSITORY: 'o/r',
+        GITHUB_REF: 'refs/heads/main',
+        STUB_LIST: path.join(dir, 'list.json'),
+        STUB_LOG: log,
+        STUB_DELETE_FAIL: deleteFails ? '1' : '0',
+      },
+    });
+    const calls = readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    return { code: r.status, out: r.stdout, calls };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+const cliTest = process.platform === 'win32' ? test.skip : test;
+const deletesOf = (calls) => calls.filter((c) => c[1] === 'delete').map((c) => c[2]);
+
+cliTest('CLI superseded deletes the older entries by id on this ref and exits 0', () => {
+  const rows = [
+    entry('go-Linux-new', { id: 11, createdAt: at(9) }),
+    entry('go-Linux-old', { id: 10, createdAt: at(1) }),
+    entry('go-Linux-branch', { id: 12, createdAt: at(10), ref: 'refs/heads/other' }),
+  ];
+  const { code, calls } = runCli(['superseded', '--prefix', 'go-Linux-'], rows);
+  assert.equal(code, 0);
+  assert.deepEqual(deletesOf(calls), ['10']);
+  const listCall = calls.find((c) => c[1] === 'list');
+  assert.deepEqual(listCall.slice(listCall.indexOf('--ref'), listCall.indexOf('--ref') + 2), ['--ref', 'refs/heads/main']);
+});
+
+cliTest('CLI budget: every delete failing leaves the repo over budget and exits 1', () => {
+  const rows = [
+    entry('go-Linux-a', { id: 1, sizeInBytes: 8 * GB }),
+    entry('buildkit-blob-1-sha256:a', { id: 2, sizeInBytes: 1 * GB, lastAccessedAt: at(1) }),
+  ];
+  const { code, out, calls } = runCli(['budget'], rows, { deleteFails: true });
+  assert.equal(code, 1);
+  // The failed delete's size still counts: 9000 MB left, not the planned 8000.
+  assert.match(out, /9000 MB left \(1 deletes failed\)/);
+  assert.match(out, /over the 8500 MB budget because 1 deletes failed/);
+  assert.deepEqual(deletesOf(calls), ['2']);
+});
+
+cliTest('CLI budget: a failed delete fails the step even when the budget is met', () => {
+  const rows = [entry('node-cache-Linux-x64-pnpm-a', { id: 3, sizeInBytes: 1 * GB })];
+  assert.equal(runCli(['budget'], rows, { deleteFails: true }).code, 1);
+  assert.equal(runCli(['budget'], rows).code, 0);
+});
+
+cliTest('CLI budget: a listing that fills the page limit fails instead of trusting a short total', async () => {
+  const { LIST_LIMIT } = await loadPrune();
+  const rows = Array.from({ length: LIST_LIMIT }, (_, i) => entry(`buildkit-blob-1-sha256:${i}`, { id: i, sizeInBytes: 1 }));
+  const { code, out, calls } = runCli(['budget'], rows);
+  assert.equal(code, 1);
+  assert.match(out, /listing limit/);
+  assert.deepEqual(deletesOf(calls), []);
+});
+
+cliTest('CLI: bad usage exits 2 and calls nothing', () => {
+  for (const args of [['superseded'], ['superseded', '--prefix', 'x', '--keep', 'y'], ['budget', '--budget-bytes', '0'], ['nope']]) {
+    const { code, calls } = runCli(args, []);
+    assert.equal(code, 2, args.join(' '));
+    assert.deepEqual(calls, []);
+  }
+});
+
+cliTest('CLI --dry-run deletes nothing', () => {
+  const rows = [entry('node-cache-x', { id: 4 }), entry('go-Linux-a', { id: 5, createdAt: at(1) }), entry('go-Linux-b', { id: 6, createdAt: at(2) })];
+  assert.deepEqual(deletesOf(runCli(['budget', '--dry-run'], rows).calls), []);
+  assert.deepEqual(deletesOf(runCli(['superseded', '--prefix', 'go-Linux-', '--dry-run'], rows).calls), []);
 });
