@@ -1,6 +1,6 @@
 -- #8170 W06.2b: admit the Bitdefender GravityZone framework vendor in coverage rows.
--- Without it every coverage row for the vendor is refused, and in a policy naming
--- several vendors the shared insert fails, losing the other vendors' rows too.
+-- Without it every coverage row for the vendor is refused, and because rows are
+-- inserted in chunks of 1000, a refused row drops the other vendors' rows in its chunk.
 -- The vendor stays dormant (enableable: false), so no row names it yet.
 -- DDL only: no row writes, so no breeze.scope election. SECURITY_AGENT_STATUS_VENDORS
 -- mirrors this list (securityAgentStatusVendorBitdefender.migration.test.ts).
