@@ -90,7 +90,7 @@ const NOT_ENFORCED: Record<
   // which is the agent's existing behaviour — not "nothing happens".
   system_protection: { label: 'System Protection',  behavior: 'Not enforced — patch installs still attempt a Windows restore point; scripts and software installs do not.' },
   containment:       { label: 'Containment', behavior: 'Not enforced — isolation uses the fixed defaults: 72 h TTL, remote relay on, no extra permits, no dead-man.' },
-  security_agents:   { label: 'Security Agents',    behavior: 'Not enforced — no third-party security agents are installed from policy.' },
+  security_agents:   { label: 'Security Agents',    behavior: 'Not enforced — no third-party security agents are installed from policy.' },  oem_updates:       { label: 'Vendor Updates',     behavior: 'Not enforced — no vendor (Dell, Surface, HP, Lenovo) updates are scheduled for these devices.' },
 };
 
 export function getPolicyBaselineDefaults(): BaselineEntry[] {
