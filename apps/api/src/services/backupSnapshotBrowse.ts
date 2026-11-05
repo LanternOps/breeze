@@ -1,5 +1,7 @@
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { db } from '../db';
+import { lockTimeoutWasChanged, tightenStatementTimeout } from '../db/lockTimeout';
+import { pgErrorCode } from '../utils/pgErrors';
 import { backupSnapshotFiles, backupSnapshots } from '../db/schema/backup';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { readableIndexCondition } from './backupRestoreIntegrity';
@@ -16,6 +18,51 @@ import { createSelectionResolver, normalizeSnapshotPath, type SelectedSnapshotPa
 
 export const BROWSE_DEFAULT_LIMIT = 200;
 export const BROWSE_MAX_LIMIT = 1000;
+export const SEARCH_DEFAULT_LIMIT = 50;
+export const SEARCH_MAX_LIMIT = 100;
+export const SEARCH_QUERY_MIN_LENGTH = 2;
+export const SEARCH_QUERY_MAX_LENGTH = 256;
+
+// #11026: a million-row index is browsed and searched by a person waiting on
+// the answer. Past these, the honest answer is "try again", not a hung request
+// holding a pooled connection.
+export const BROWSE_STATEMENT_TIMEOUT_MS = 15_000;
+export const SEARCH_STATEMENT_TIMEOUT_MS = 10_000;
+
+/** A browse or search statement that ran past its timeout. */
+export class IndexQueryTimeoutError extends Error {
+  constructor() {
+    super('The snapshot file index query took too long');
+    this.name = 'IndexQueryTimeoutError';
+  }
+}
+
+type Executor = Pick<typeof db, 'execute' | 'select'>;
+
+/**
+ * Runs `query` in a savepoint of the request's transaction with
+ * statement_timeout lowered to `boundMs` (SET LOCAL, never widened). A timeout
+ * rolls back only the savepoint, so the request's transaction stays usable for
+ * its answer, and is reported as IndexQueryTimeoutError. On success the
+ * caller's own value is put back: a released savepoint keeps a SET LOCAL until
+ * the whole transaction ends.
+ */
+async function withStatementTimeout<T>(boundMs: number, query: (tx: Executor) => Promise<T>): Promise<T> {
+  try {
+    return await db.transaction(async (tx) => {
+      const priorMs = await tightenStatementTimeout(tx, boundMs);
+      const result = await query(tx);
+      if (lockTimeoutWasChanged(priorMs, boundMs)) {
+        await tx.execute(sql`SELECT set_config('statement_timeout', ${`${priorMs}ms`}, true)`);
+      }
+      return result;
+    });
+  } catch (err) {
+    // 57014 query_canceled: what statement_timeout raises.
+    if (pgErrorCode(err) === '57014') throw new IndexQueryTimeoutError();
+    throw err;
+  }
+}
 
 export type BrowseEntry = {
   name: string;
@@ -165,6 +212,8 @@ export async function listSnapshotDirectory(params: {
   segments: string[];
   limit: number;
   cursor?: { rank: 0 | 1; name: string } | null;
+  /** Test seam: the timeout to apply instead of BROWSE_STATEMENT_TIMEOUT_MS. */
+  statementTimeoutMs?: number;
 }): Promise<BrowsePage> {
   const { snapshotDbId, segments, limit, cursor } = params;
   const prefix = segments.join('/');
@@ -175,7 +224,7 @@ export async function listSnapshotDirectory(params: {
   // np = stored path with `\`→`/`, repeated `/` collapsed and leading `/`
   // stripped — the same segmentation normalizeSnapshotPath + filter(Boolean)
   // gave the old in-JS tree builder, so Windows and POSIX roots are unchanged.
-  const result = await db.execute(sql`
+  const result = await withStatementTimeout(params.statementTimeoutMs ?? BROWSE_STATEMENT_TIMEOUT_MS, (tx) => tx.execute(sql`
     WITH n AS (
       SELECT source_path, size, modified_at,
         regexp_replace(regexp_replace(replace(source_path, E'\\\\', '/'), '/{2,}', '/', 'g'), '^/+', '') AS np
@@ -210,8 +259,72 @@ export async function listSnapshotDirectory(params: {
     ${cursorFilter}
     ORDER BY g.rank, g.name COLLATE "C"
     LIMIT ${limit + 1}
-  `);
+  `));
 
   const rows = (Array.isArray(result) ? result : ((result as { rows?: unknown[] }).rows ?? [])) as BrowseRow[];
   return shapeBrowseRows(rows, segments, limit);
+}
+
+/** Search cursor: the stored source_path of the last result returned. */
+export function encodeSearchCursor(sourcePath: string): string {
+  return Buffer.from(sourcePath, 'utf8').toString('base64url');
+}
+
+export function decodeSearchCursor(cursor: string): string | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(cursor)) return null;
+  const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
+  return decoded.length > 0 ? decoded : null;
+}
+
+function lastSegment(sourcePath: string): string {
+  const segments = normalizeSnapshotPath(sourcePath).split('/').filter(Boolean);
+  return segments[segments.length - 1] ?? sourcePath;
+}
+
+/**
+ * Files of a snapshot whose stored path contains `query`, case-insensitively,
+ * anywhere: a file name or any folder above it. Matched with position(), so
+ * `%` and `_` are plain characters. Only an index that may be listed is read
+ * (readableIndexCondition), in source_path order, keyset-paged after `after`.
+ */
+export async function searchSnapshotFiles(params: {
+  snapshotDbId: string;
+  query: string;
+  limit: number;
+  after: string | null;
+  /** Test seam: the timeout to apply instead of SEARCH_STATEMENT_TIMEOUT_MS. */
+  statementTimeoutMs?: number;
+}): Promise<BrowsePage> {
+  const { snapshotDbId, query, limit, after } = params;
+  const rows = await withStatementTimeout(params.statementTimeoutMs ?? SEARCH_STATEMENT_TIMEOUT_MS, (tx) =>
+    tx
+      .select({
+        sourcePath: backupSnapshotFiles.sourcePath,
+        size: backupSnapshotFiles.size,
+        modifiedAt: backupSnapshotFiles.modifiedAt,
+      })
+      .from(backupSnapshotFiles)
+      .innerJoin(backupSnapshots, eq(backupSnapshots.id, backupSnapshotFiles.snapshotDbId))
+      .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
+      .where(and(
+        eq(backupSnapshotFiles.snapshotDbId, snapshotDbId),
+        readableIndexCondition(),
+        sql`position(lower(${query}::text) in lower(${backupSnapshotFiles.sourcePath})) > 0`,
+        ...(after === null ? [] : [gt(backupSnapshotFiles.sourcePath, after)]),
+      ))
+      .orderBy(asc(backupSnapshotFiles.sourcePath))
+      .limit(limit + 1),
+  );
+
+  const hasMore = rows.length > limit;
+  const page = hasMore ? rows.slice(0, limit) : rows;
+  const entries: BrowseEntry[] = page.map((row) => ({
+    name: lastSegment(row.sourcePath),
+    path: normalizeSnapshotPath(row.sourcePath),
+    type: 'file',
+    sizeBytes: row.size === null || row.size === undefined ? undefined : Number(row.size),
+    modifiedAt: row.modifiedAt ? new Date(row.modifiedAt).toISOString() : undefined,
+  }));
+  const last = page[page.length - 1];
+  return { entries, nextCursor: hasMore && last ? encodeSearchCursor(last.sourcePath) : null };
 }
