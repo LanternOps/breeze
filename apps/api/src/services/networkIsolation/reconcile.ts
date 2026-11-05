@@ -11,7 +11,7 @@ import { buildIsolationAllowlist, IsolationAllowlistError } from './allowlist';
 import { findHeartbeatEpisode, toEpisodeSnapshot, withEpisodeLock, writeEpisodeSnapshot, writeAgentReport, writePolicyEventProgress, type EpisodeTx } from './episodeStore';
 import { applyEpisodeEvent, type EpisodeEvent } from './stateMachine';
 import { synchronizeEpisodeOutcome } from './outcome';
-import { hasUnreadPolicyEvents, readIsolationPolicy, readPolicyEvents, type IsolationPolicy } from './policy';
+import { auditRefusedPolicyGroups, hasUnreadPolicyEvents, readIsolationPolicy, readPolicyEvents, type IsolationPolicy } from './policy';
 
 interface IsolationDevice { id: string; orgId: string; agentServerUrl?: string | null; networkIsolationVersion?: number | null }
 export const ISOLATION_SECRET_COLUMN = {
@@ -79,7 +79,7 @@ export async function buildContainmentHeartbeatBlock(tx: EpisodeTx, device: Isol
     policy = await readIsolationPolicy(device);
   } catch (err) {
     // No new answer, so the held one stands: a read fault must not look like a policy removal.
-    policy = { extras: desired.allow.filter(entry => entry.scope === 'any'), revision: desired.policyRevision ?? null };
+    policy = { extras: desired.allow.filter(entry => entry.scope === 'any'), revision: desired.policyRevision ?? null, refusedGroups: [] };
     throttled(`policy:${row.id}`, () => {
       console.error('[isolation] policy unavailable', { deviceId: device.id, isolationId: row.id });
       captureException(err, undefined, { phase: 'isolation_policy_unavailable', deviceId: device.id, isolationId: row.id });
@@ -100,9 +100,10 @@ export async function buildContainmentHeartbeatBlock(tx: EpisodeTx, device: Isol
   // Outside both try blocks on purpose: a failed write has aborted this savepoint, so it must reach
   // the caller, which answers from the stored block and rolls all of it back.
   let current = row;
-  if ((row.allowSnapshotRevision ?? null) !== policy.revision) {
+  if (row.allowSnapshotRevision !== policy.revision) {
     current = await recordPolicyChange(tx, row.id, desired.allow, policy.revision, new Date());
     context.row = current;
+    auditRefusedPolicyGroups(device.orgId, policy);
     if (current.desiredState !== 'isolated') return storedContainmentHeartbeatBlock(current, device);
     desired.generation = current.generation;
   }
@@ -116,13 +117,13 @@ export async function buildContainmentHeartbeatBlock(tx: EpisodeTx, device: Isol
  */
 async function recordPolicyChange(tx: EpisodeTx, id: string, allow: IsolationAllowEntry[], revision: string | null, at: Date): Promise<DeviceNetworkIsolation> {
   const locked = await withEpisodeLock(tx, id, async (row) => {
-    if ((row.allowSnapshotRevision ?? null) === revision) return row;
+    if (row.allowSnapshotRevision === revision) return row;
     const prev = toEpisodeSnapshot(row);
     const transition = applyEpisodeEvent(prev, { type: 'policy_changed', generation: row.generation, at });
     if ('ignored' in transition) return row;
     if (!await writeEpisodeSnapshot(tx, row.id, prev, transition.next, at, { allowSnapshot: allow, allowSnapshotRevision: revision })) throw new Error('isolation_snapshot_conflict');
     const updated: DeviceNetworkIsolation = { ...row, ...transition.next, allowSnapshot: allow, allowSnapshotRevision: revision };
-    await journalIsolationEvent(tx, updated, 'isolation_policy_changed', at, { fromRevision: row.allowSnapshotRevision ?? null, toRevision: revision });
+    await journalIsolationEvent(tx, updated, 'isolation_policy_changed', at, { fromRevision: row.allowSnapshotRevision, toRevision: revision });
     return updated;
   });
   if (!locked.found) throw new Error('isolation_episode_vanished');

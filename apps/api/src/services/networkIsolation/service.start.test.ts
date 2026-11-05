@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   device: {} as any, incident: {} as any, row: null as any, active: null as any, tombstone: null as any,
   writes: [] as any[], order: [] as string[], dispatch: vi.fn(), trust: vi.fn(), audit: vi.fn(),
-  txDepth: 0, seal: vi.fn(), decrypt: vi.fn(), resolvePolicy: vi.fn(),
+  txDepth: 0, seal: vi.fn(), decrypt: vi.fn(), resolvePolicy: vi.fn(), auditRefused: vi.fn(),
 }));
 vi.mock('../../db', () => {
   const chain = (rows: () => unknown[]) => { const promise = Promise.resolve().then(rows); return { limit: () => Object.assign(promise, { for: () => promise }) }; };
@@ -34,6 +34,7 @@ vi.mock('../sensitiveCommandPayload', () => ({ encryptSensitivePayloadFields: (_
 vi.mock('../secretCrypto', () => ({ encryptSecret: (...args: unknown[]) => h.seal(...args), decryptSecret: (...args: unknown[]) => h.decrypt(...args) }));
 vi.mock('../auditEvents', () => ({ writeRouteAudit: (...args: unknown[]) => h.audit(...args), requestLikeFromSnapshot: () => ({ req: { header: () => undefined } }) }));
 vi.mock('../featureConfigResolver', () => ({ resolveContainmentPolicy: (...args: unknown[]) => h.resolvePolicy(...args) }));
+vi.mock('../executionTargetGating', () => ({ auditRefusedExecutionGroups: (...args: unknown[]) => h.auditRefused(...args) }));
 vi.mock('./reconcile', () => ({ ISOLATION_SECRET_COLUMN: { table: 'device_network_isolations', column: 'break_glass_secret_enc', kind: 'text', aadBinding: 'row', description: 'Test' } }));
 vi.mock('./episodeStore', async original => ({
   ...(await original<typeof import('./episodeStore')>()),
@@ -62,7 +63,7 @@ const WITH_EXTRAS = { extraAllow: [{ host: 'edr.example.test', proto: 'tcp', por
 function episode(extra: Record<string, unknown> = {}) {
   return { id: isolationId, deviceId, orgId, state: 'verified', desiredState: 'isolated', generation: 3, lastJournalSeq: 5,
     expiresAt: new Date(Date.now() + 3_600_000), breakGlassSecretEnc: 'enc:stored', breakGlassAckSeq: 2,
-    lastAgentReport: { generation: 2 }, releaseConfirmedAt: null, failureCode: null, releaseKind: null, ...extra };
+    lastAgentReport: { generation: 2 }, releaseConfirmedAt: null, failureCode: null, releaseKind: null, allowSnapshotRevision: null, appliedPolicyRevision: null, ...extra };
 }
 beforeEach(() => {
   vi.clearAllMocks(); vi.unstubAllEnvs();
@@ -218,6 +219,28 @@ describe('startNetworkIsolation', () => {
       expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).not.toHaveProperty('error');
       expect(h.resolvePolicy).toHaveBeenCalledWith(deviceId);
       expect(sent()).not.toHaveProperty('policyRevision');
+    });
+    it('audits a refused group that would have supplied a policy', async () => {
+      h.device.networkIsolationVersion = 3;
+      const refusedGroups = [{ id: 'group-1', refusedFields: ['os_version'] }];
+      h.resolvePolicy.mockResolvedValue({ ...NO_EXTRAS, refusedGroups });
+      expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).not.toHaveProperty('error');
+      expect(h.auditRefused).toHaveBeenCalledWith(orgId, 'device.isolation.policy_group_refused', refusedGroups);
+      expect(sent().allow.every((entry: { scope: string }) => entry.scope === 'breeze')).toBe(true);
+    });
+    it('audits nothing when no group was refused', async () => {
+      h.device.networkIsolationVersion = 3;
+      h.resolvePolicy.mockResolvedValue(WITH_EXTRAS);
+      expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).not.toHaveProperty('error');
+      expect(h.auditRefused).not.toHaveBeenCalled();
+    });
+    it('a malformed stored policy resolves to the fixed permits, with no revision', async () => {
+      h.device.networkIsolationVersion = 3;
+      h.resolvePolicy.mockResolvedValue({ extraAllow: [], revision: 'c1i:malformed', invalidStoredSettings: true, refusedGroups: [] });
+      expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).not.toHaveProperty('error');
+      expect(sent().allow.every((entry: { scope: string }) => entry.scope === 'breeze')).toBe(true);
+      expect(sent()).not.toHaveProperty('policyRevision');
+      expect(h.row.allowSnapshotRevision).toBeNull();
     });
     it('an unreadable policy still isolates, on the fixed permits, and reports the fault', async () => {
       h.device.networkIsolationVersion = 3;

@@ -32,7 +32,7 @@ beforeEach(() => {
     incidentActionId: null, commandId: null, releaseCommandId: null, requestedByKind: 'user', requestedByUserId: null,
     state: 'applied', desiredState: 'isolated', generation: 1, lastJournalSeq: 2,
     breakGlassSecretEnc: 'secret-ciphertext-must-never-be-published', breakGlassAckSeq: null,
-    allowSnapshot: [{ kind: 'host', host: 'control.example.test', ports: [443], proto: 'tcp', scope: 'breeze' }],
+    allowSnapshot: [{ kind: 'host', host: 'control.example.test', ports: [443], proto: 'tcp', scope: 'breeze' }], allowSnapshotRevision: null, appliedPolicyRevision: null, policyEventSeq: 0,
     reason: 'private reason must never be published', deadManSeconds: 0, remoteRelay: false, mechanism: null,
     lastAgentReport: null, expiresAt: at, expiryWarnedAt: null, failureCode: null, releaseKind: null,
     requestedAt: at, dispatchedAt: null, appliedAt: at, verifiedAt: null, releaseRequestedAt: null,

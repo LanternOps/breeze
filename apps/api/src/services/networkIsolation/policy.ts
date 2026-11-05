@@ -1,6 +1,7 @@
 import { agentAcceptsPolicyAllow, containmentExtraAllowToEntries, type IsolationAllowEntry, type NetworkIsolationReport } from '@breeze/shared';
 import { withDbTransaction } from '../../db';
 import type { DeviceNetworkIsolation } from '../../db/schema';
+import { auditRefusedExecutionGroups, type RefusedExecutionGroup } from '../executionTargetGating';
 import { resolveContainmentPolicy } from '../featureConfigResolver';
 
 /** What the containment policy adds to one device's allowlist (#10100, spec §3.4). */
@@ -9,9 +10,13 @@ export interface IsolationPolicy {
   extras: readonly IsolationAllowEntry[];
   /** The resolver's revision; null when there is nothing to send under one. */
   revision: string | null;
+  /** Execution-unsafe groups whose containment policy was not applied to this device. */
+  refusedGroups: readonly RefusedExecutionGroup[];
 }
 
-export const NO_ISOLATION_POLICY: IsolationPolicy = Object.freeze({ extras: Object.freeze([]), revision: null });
+const POLICY_GROUP_REFUSED_ACTION = 'device.isolation.policy_group_refused';
+
+export const NO_ISOLATION_POLICY: IsolationPolicy = Object.freeze({ extras: Object.freeze([]), revision: null, refusedGroups: Object.freeze([]) });
 
 /**
  * The policy for a device, gated on what its agent accepts. Below `policyAllow` this is no policy and
@@ -26,7 +31,12 @@ export async function readIsolationPolicy(device: { id: string; networkIsolation
   if (!agentAcceptsPolicyAllow(device.networkIsolationVersion)) return NO_ISOLATION_POLICY;
   const policy = await withDbTransaction(() => resolveContainmentPolicy(device.id));
   const extras = containmentExtraAllowToEntries(policy.extraAllow);
-  return extras.length > 0 ? { extras, revision: policy.revision } : NO_ISOLATION_POLICY;
+  return { extras, revision: extras.length > 0 ? policy.revision : null, refusedGroups: policy.refusedGroups };
+}
+
+/** Called when the policy decides what a device is sent, so a refusal is on record without one entry per beat. */
+export function auditRefusedPolicyGroups(orgId: string, policy: IsolationPolicy): void {
+  if (policy.refusedGroups.length > 0) auditRefusedExecutionGroups(orgId, POLICY_GROUP_REFUSED_ACTION, [...policy.refusedGroups]);
 }
 
 /**
@@ -36,7 +46,7 @@ export async function readIsolationPolicy(device: { id: string; networkIsolation
  * when the rules commit, so those events are the evidence.
  */
 export function isolationPolicyPending(row: Pick<DeviceNetworkIsolation, 'desiredState' | 'allowSnapshotRevision' | 'appliedPolicyRevision'>): boolean {
-  return row.desiredState === 'isolated' && (row.allowSnapshotRevision ?? null) !== (row.appliedPolicyRevision ?? null);
+  return row.desiredState === 'isolated' && row.allowSnapshotRevision !== row.appliedPolicyRevision;
 }
 
 /** The agent's closed set (agent/internal/isolation/policy.go). Anything else is recorded as `unknown`. */
@@ -65,7 +75,7 @@ function relevantPolicyEvents(row: Pick<DeviceNetworkIsolation, 'id'>, report: N
 
 /** Whether this report holds policy events the server has not read. */
 export function hasUnreadPolicyEvents(row: Pick<DeviceNetworkIsolation, 'id' | 'policyEventSeq'>, report: NetworkIsolationReport): boolean {
-  return relevantPolicyEvents(row, report).some(event => event.seq > (row.policyEventSeq ?? 0));
+  return relevantPolicyEvents(row, report).some(event => event.seq > row.policyEventSeq);
 }
 
 /**
@@ -78,7 +88,7 @@ export function hasUnreadPolicyEvents(row: Pick<DeviceNetworkIsolation, 'id' | '
  */
 export function readPolicyEvents(row: Pick<DeviceNetworkIsolation, 'id' | 'generation' | 'desiredState' | 'allowSnapshotRevision' | 'appliedPolicyRevision' | 'policyEventSeq'>, report: NetworkIsolationReport): PolicyEventProgress | null {
   const events = relevantPolicyEvents(row, report);
-  const readTo = row.policyEventSeq ?? 0;
+  const readTo = row.policyEventSeq;
   const unread = events.filter(event => event.seq > readTo);
   if (unread.length === 0) return null;
 

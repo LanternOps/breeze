@@ -20,7 +20,7 @@ import { generateEpisodeSecret, currentBreakGlassCodes } from './breakGlass';
 import { createEpisode, findUnresolvedEpisode, findUnconfirmedTombstone, withEpisodeLock, writeEpisodeSnapshot, toEpisodeSnapshot, listEpisodes, type EpisodeTx } from './episodeStore';
 import { applyEpisodeEvent, type EpisodeEvent } from './stateMachine';
 import { ISOLATION_SECRET_COLUMN } from './reconcile';
-import { NO_ISOLATION_POLICY, isolationPolicyPending, readIsolationPolicy } from './policy';
+import { NO_ISOLATION_POLICY, auditRefusedPolicyGroups, isolationPolicyPending, readIsolationPolicy } from './policy';
 import { captureException } from '../sentry';
 import { isolationStartGate, type IsolationStartRefusal } from './gates';
 export type { IsolationStartRefusal } from './gates';
@@ -96,7 +96,7 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
     // Containment must not wait on policy: without one the device isolates on the fixed permits, and
     // the next heartbeat that can read the policy adds its permits under a new generation.
     let policy = NO_ISOLATION_POLICY;
-    try { policy = await readIsolationPolicy(device); }
+    try { policy = await readIsolationPolicy(device); auditRefusedPolicyGroups(device.orgId, policy); }
     catch (error) {
       console.error('[isolation] policy unavailable', { deviceId: device.id });
       captureException(error, undefined, { phase: 'isolation_policy_unavailable', deviceId: device.id });

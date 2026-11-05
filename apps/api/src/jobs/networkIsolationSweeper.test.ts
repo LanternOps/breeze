@@ -55,7 +55,7 @@ function episode(patch: Partial<DeviceNetworkIsolation> = {}): DeviceNetworkIsol
     incidentActionId: null, commandId: null, releaseCommandId: null, state: 'verified', desiredState: 'isolated', generation: 1,
     lastJournalSeq: 3, expiresAt: new Date(now.getTime() + 12 * hour), expiryWarnedAt: null,
     breakGlassSecretEnc: 'encrypted-fixture', breakGlassAckSeq: null, reason: 'Contain incident',
-    deadManSeconds: 0, remoteRelay: false, mechanism: null, allowSnapshot: [], lastAgentReport: null,
+    deadManSeconds: 0, remoteRelay: false, mechanism: null, allowSnapshot: [], allowSnapshotRevision: null, appliedPolicyRevision: null, policyEventSeq: 0, lastAgentReport: null,
     failureCode: null, releaseKind: null, requestedAt: now, dispatchedAt: null, appliedAt: null,
     verifiedAt: null, releaseRequestedAt: null, releasedAt: null, releaseConfirmedAt: null,
     acknowledgedAt: null, acknowledgedBy: null, createdAt: now, updatedAt: now,

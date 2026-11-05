@@ -4,9 +4,10 @@ import type { DeviceNetworkIsolation } from '../../db/schema';
 import type { EpisodeTx } from './episodeStore';
 import { captureException } from '../sentry';
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
-const store = vi.hoisted(() => ({ row: null as DeviceNetworkIsolation | null, writes: [] as Record<string, unknown>[], afterCommit: [] as Array<() => Promise<void>>, published: vi.fn(), resolvePolicy: vi.fn(), casResult: true }));
+const store = vi.hoisted(() => ({ row: null as DeviceNetworkIsolation | null, writes: [] as Record<string, unknown>[], afterCommit: [] as Array<() => Promise<void>>, published: vi.fn(), resolvePolicy: vi.fn(), casResult: true, auditRefused: vi.fn() }));
 vi.mock('../../db', () => ({ withDbTransaction: (fn: () => Promise<unknown>) => fn(), runAfterDbContextCommit: (_label: string, fn: () => Promise<void>) => { store.afterCommit.push(fn); } }));
 vi.mock('../featureConfigResolver', () => ({ resolveContainmentPolicy: (...args: unknown[]) => store.resolvePolicy(...args) }));
+vi.mock('../executionTargetGating', () => ({ auditRefusedExecutionGroups: (...args: unknown[]) => store.auditRefused(...args) }));
 vi.mock('../deviceSiteResolver', () => ({ resolveDeviceSiteId: vi.fn(async () => 'site') }));
 vi.mock('../eventBus', () => ({ publishEvent: (...args: unknown[]) => store.published(...args) }));
 vi.mock('./episodeStore', async (original) => ({
@@ -32,7 +33,7 @@ function row(desired = 'isolated'): DeviceNetworkIsolation {
   return { id, deviceId: device.id, orgId: device.orgId, generation: 2, lastJournalSeq: 5,
     state: desired === 'isolated' ? 'applied' : 'release_requested', desiredState: desired,
     expiresAt: new Date('2026-11-03T12:00:00Z'), deadManSeconds: 0, remoteRelay: false,
-    incidentId: '44444444-4444-4444-8444-444444444444', breakGlassSecretEnc: 'ciphertext', breakGlassAckSeq: null, allowSnapshot: allow,
+    incidentId: '44444444-4444-4444-8444-444444444444', breakGlassSecretEnc: 'ciphertext', breakGlassAckSeq: null, allowSnapshot: allow, allowSnapshotRevision: null, appliedPolicyRevision: null, policyEventSeq: 0,
     releaseConfirmedAt: null, failureCode: null, releaseKind: null, lastAgentReport: null,
   } as unknown as DeviceNetworkIsolation;
 }
@@ -371,6 +372,22 @@ describe('a revision change takes a new generation (#10100)', () => {
     const block = await buildContainmentHeartbeatBlock(tx, level3);
     expect(block.networkIsolation).toMatchObject({ desired: 'released', allow: [], generation: 3 });
     expect(store.row!.generation).toBe(3);
+  });
+  it('a policy going malformed narrows to the fixed permits under a new generation', async () => {
+    holding();
+    store.resolvePolicy.mockResolvedValue({ extraAllow: [], revision: 'c1i:malformed', invalidStoredSettings: true, refusedGroups: [] });
+    const block = await buildContainmentHeartbeatBlock(tx, level3);
+    expect(block.networkIsolation).toMatchObject({ generation: 3 });
+    expect(block.networkIsolation).not.toHaveProperty('policyRevision');
+    expect(block.networkIsolation!.allow.some(entry => entry.scope === 'any')).toBe(false);
+  });
+  it('audits refused groups when they change what the device is sent, not on every beat', async () => {
+    holding();
+    const refusedGroups = [{ id: 'group-1', refusedFields: ['os_version'] }];
+    store.resolvePolicy.mockResolvedValue({ ...NO_EXTRAS, refusedGroups });
+    for (let beat = 0; beat < 3; beat++) await buildContainmentHeartbeatBlock(tx, level3);
+    expect(store.auditRefused).toHaveBeenCalledTimes(1);
+    expect(store.auditRefused).toHaveBeenCalledWith(device.orgId, 'device.isolation.policy_group_refused', refusedGroups);
   });
   it('a concurrent beat that already recorded this revision is not bumped twice', async () => {
     const { withEpisodeLock } = await import('./episodeStore');
