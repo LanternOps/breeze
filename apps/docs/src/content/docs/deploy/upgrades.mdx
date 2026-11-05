@@ -99,6 +99,10 @@ import { Steps, Aside } from '@astrojs/starlight/components';
   The `binaries-init` container uses `pull_policy: always`, so `docker compose up -d` automatically pulls the latest binaries image and refreshes the volume — no manual steps needed.
 </Aside>
 
+## Redis 7 to 8
+
+The bundled Redis default moves from `redis:7-alpine` to `redis:8-alpine`. Redis 8 reads Redis 7.x RDB and AOF files, so the upgrade is a tag change: let the job queues drain, set `REDIS_IMAGE_REF=redis:8-alpine` (or your reviewed digest) in `.env`, then run `docker compose up -d redis`. You cannot roll back to Redis 7 once Redis 8 has written the data files. See [Production Deployment](/deploy/production/) for the supported versions.
+
 ## Agent reconnect settings
 
 From agent 0.125.0, agents pace their own traffic after an API restart or overload:

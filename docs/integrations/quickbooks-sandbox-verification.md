@@ -87,7 +87,7 @@ cd apps/web && NODE_OPTIONS="--max-old-space-size=8192" npx tsc --noEmit -p .
 
 Stack: `pnpm test-stack up` (not the top-level `docker-compose.yml postgres
 redis` — see deviation note below), which brought up an ephemeral,
-worktree-scoped `pgvector/pgvector:pg16` + `redis:7-alpine` pair via
+worktree-scoped `pgvector/pgvector:pg16` + `redis:8-alpine` pair via
 `docker-compose.test.yml`, both reported healthy. `.env.test` was generated
 with:
 
