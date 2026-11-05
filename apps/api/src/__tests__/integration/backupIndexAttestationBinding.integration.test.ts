@@ -31,6 +31,8 @@ import { deliverRecoveryCommandIntegrity, defaultRecoveryCommandIntegrityDeps } 
 import { defaultVerifyDeps, verifySnapshotAttestation } from '../../services/backupAttestationVerify';
 import { hydrateSnapshotFileIndex, readSnapshotFileIndexState } from '../../services/backupSnapshotFileIndex';
 import { resolveRestoreIntegrity } from '../../services/backupRestoreIntegrity';
+import { listSnapshotDirectory, readableSnapshotSourcePaths } from '../../services/backupSnapshotBrowse';
+import { readSnapshotIndexView } from '../../services/backupSnapshotIndexView';
 import { deliverBrokeredReadCommand } from '../../services/backupStorageSessions';
 import { backupReadCredentialPayload } from '../../services/backupCommandCredentials';
 import { CommandDeliveryDeferredError } from '../../services/commandDeliveryRefusal';
@@ -405,6 +407,42 @@ describe('a failed integrity lookup is never delivered, and never aborts the del
       return db.execute(sql`SELECT count(*)::int AS n FROM devices WHERE id = ${t.deviceId}`);
     });
     expect((after as unknown as Array<{ n: number }>)[0]!.n).toBe(1);
+  });
+});
+
+// #11026: the reader gate and the index view under the caller's own RLS
+// context, where the attestation must be visible for the gate to apply.
+describe('reader gate under RLS', () => {
+  runDb('an org user sees a mismatched snapshot as unavailable and lists nothing; another org sees nothing at all', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const other = await seedWriteTenant({ jobStatus: 'completed' });
+    const { snapshotId, snapshotDbId, manifest } = await seedSnapshot(t);
+    await getTestDb().execute(sql`
+      INSERT INTO backup_snapshot_files (snapshot_db_id, source_path, backup_path)
+      VALUES (${snapshotDbId}, 'C:/a', ${`snapshots/${snapshotId}/files/a`})
+    `);
+    await setIndex(snapshotDbId, 'agent', null);
+    await insertAttestation(t, snapshotDbId, snapshotId, manifest);
+
+    const asOwner = () => withDbAccessContext(orgContext(t.orgId), async () => ({
+      view: await readSnapshotIndexView(snapshotDbId, t.orgId),
+      listed: (await listSnapshotDirectory({ snapshotDbId, segments: [], limit: 50 })).entries.map((e) => e.name),
+    }));
+
+    expect(await asOwner()).toMatchObject({ view: { view: { state: 'ready' } }, listed: ['C:'] });
+
+    await getTestDb().execute(sql`UPDATE backup_snapshot_attestations SET status = 'mismatch', verified_at = now() WHERE snapshot_db_id = ${snapshotDbId}`);
+    expect(await asOwner()).toMatchObject({
+      view: { view: { state: 'unavailable', failure: 'attestation_failed', retryable: false }, shouldRequestHydration: false },
+      listed: [],
+    });
+
+    const asOther = await withDbAccessContext(orgContext(other.orgId), async () => ({
+      view: await readSnapshotIndexView(snapshotDbId, other.orgId),
+      listed: (await listSnapshotDirectory({ snapshotDbId, segments: [], limit: 50 })).entries,
+      paths: await readableSnapshotSourcePaths(snapshotDbId),
+    }));
+    expect(asOther).toEqual({ view: null, listed: [], paths: [] });
   });
 });
 
