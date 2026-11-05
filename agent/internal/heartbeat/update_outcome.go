@@ -213,6 +213,18 @@ type backupDeferralState struct {
 	lastError time.Time // zero until the episode has been escalated
 }
 
+// backupDeferralGap is the silence that ends an episode: backupDeferralEpisodeGap,
+// or two heartbeats when the configured interval is slower than that allows.
+func (h *Heartbeat) backupDeferralGap() time.Duration {
+	gap := backupDeferralEpisodeGap
+	if h.config != nil {
+		if twoBeats := 2 * time.Duration(h.config.HeartbeatIntervalSeconds) * time.Second; twoBeats > gap {
+			gap = twoBeats
+		}
+	}
+	return gap
+}
+
 // noteUpgradeDeferredByBackup logs one backup-busy deferral of targetVersion
 // at the level its episode has reached, and returns that level ("warn",
 // "debug" or "error").
@@ -223,7 +235,7 @@ func (h *Heartbeat) noteUpgradeDeferredByBackup(targetVersion string, now time.T
 	level := "debug"
 	switch {
 	case s.version != targetVersion || s.since.IsZero() || now.Before(s.lastSeen) ||
-		now.Sub(s.lastSeen) > backupDeferralEpisodeGap:
+		now.Sub(s.lastSeen) > h.backupDeferralGap():
 		s.version, s.since, s.lastError = targetVersion, now, time.Time{}
 		level = "warn"
 	case now.Sub(s.since) >= backupDeferralEscalateAfter &&

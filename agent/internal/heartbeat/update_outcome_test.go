@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/updater"
 )
 
@@ -379,6 +380,19 @@ func TestBackupDeferral_EscalatesWhenItPersists(t *testing.T) {
 	h.clearUpgradeBackupDeferral()
 	if got := h.noteUpgradeDeferredByBackup("0.125.0", t0.Add(26*time.Hour)); got != "warn" {
 		t.Fatalf("after the deferral cleared, the next one is a new episode; got %q", got)
+	}
+}
+
+// The heartbeat interval is configurable up to an hour. A slow interval must
+// not make every deferral look like a new episode that never escalates.
+func TestBackupDeferral_EscalatesOnASlowHeartbeat(t *testing.T) {
+	h := &Heartbeat{config: &config.Config{HeartbeatIntervalSeconds: 1800}}
+	t0 := time.Date(2026, 10, 20, 2, 41, 0, 0, time.UTC)
+	want := []string{"warn", "debug", "error"} // +0, +30m, +60m
+	for i, w := range want {
+		if got := h.noteUpgradeDeferredByBackup("0.124.0", t0.Add(time.Duration(i)*30*time.Minute)); got != w {
+			t.Fatalf("beat %d: level %q, want %q", i, got, w)
+		}
 	}
 }
 
