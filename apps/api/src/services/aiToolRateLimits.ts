@@ -295,6 +295,9 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   list_users: { limit: 30, windowSeconds: 300 },
   get_user: { limit: 30, windowSeconds: 300 },
   list_roles: { limit: 30, windowSeconds: 300 },
+  // Full-control W18 PR B (#6789): writers that reach customers (the portal) or send report data out (recipients).
+  manage_org_portal_settings: { limit: 15, windowSeconds: 300 },
+  manage_report_recipients: { limit: 20, windowSeconds: 300 },
 };
 
 /**

@@ -137,6 +137,8 @@ import { registerBackupRecoveryReadTools } from './aiToolsBackupRecoveryReads';
 import { registerC2CConfigTools } from './aiToolsC2CConfigs';
 import { registerOrgAdminReadTools } from './aiToolsOrgAdminReads';
 import { registerIdentityReadTools } from './aiToolsIdentityReads';
+import { registerOrgPortalSettingsTool } from './aiToolsOrgPortalSettings';
+import { registerReportRecipientsTool } from './aiToolsReportRecipients';
 import { registerBillingProfileTools } from './aiToolsBillingProfiles';
 import { registerBillingSettingsTools } from './aiToolsBillingSettings';
 import { registerContractTemplateTools } from './aiToolsContractTemplates';
@@ -489,6 +491,10 @@ registerC2CConfigTools(aiTools);
 // read-only identity directory (Breeze logins, roles). No identity write is a tool (W18-1).
 registerOrgAdminReadTools(aiTools);
 registerIdentityReadTools(aiTools);
+// Full-control W18 PR B (#6789): the two supervised org-admin writers (portal settings with a four-eyes sensitive
+// action, report recipients).
+registerOrgPortalSettingsTool(aiTools);
+registerReportRecipientsTool(aiTools);
 registerBillingSettingsTools(aiTools);
 registerContractTemplateTools(aiTools);
 registerDeviceBillingTools(aiTools);

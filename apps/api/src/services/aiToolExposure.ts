@@ -70,6 +70,11 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // Full-control W17 (#6788, Decision 4): list returns target mailboxes (the search_c2c_items / query_c2c_jobs
   // reasoning) and the writes choose whose mail is copied. No agent need is known, so the whole tool stays human.
   'manage_c2c_configs',
+  // Full-control W18 PR B (#6789, Decision 4, agent exposure): portal settings are a customer-visible exposure and
+  // recipients a data exit by email, both under prompt injection; an agent also runs at organization scope, which the
+  // portal settings routes refuse. The whole tools stay human, reads included.
+  'manage_org_portal_settings',
+  'manage_report_recipients',
   // Full-control W08 (#6778, W08-D1): every topology tool resolves its caller through
   // requireTopologySiteAccess / the template library, both of which read the caller's USER permissions
   // (getUserPermissions). An ai_agent principal's id is not a user, so each call would be refused; the

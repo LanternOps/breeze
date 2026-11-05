@@ -925,6 +925,20 @@ These read-only tools answer "who is this customer, who can log in, and what can
 
 Only `get_audit_retention` is available to AI agents. The other six are chat and MCP only: logins, roles and portal users are personal data with no device to scope them to, and the summary and readiness reads need partner scope.
 
+#### Customer portal settings and report recipients
+
+Two writers change what customers see and receive. Both are chat and MCP only (never offered to AI agents), and every change needs approval.
+
+| Tool | Actions | Approval |
+|------|---------|----------|
+| `manage_org_portal_settings` | `get`: an organization's portal settings. `update`: portal sections, support contact, welcome and footer text, logo and colours. `set_sensitive_access`: per-device patch and vulnerability detail, rack and room placement, the support-hours balance, network alerts and trust-page editing | `update` is supervised; `set_sensitive_access` needs two approvers |
+| `manage_report_recipients` | `list`, `add`, `remove` and `convert` the contacts a scheduled report is emailed to | Every write is supervised |
+
+- **Sensitive portal data needs two people.** What a customer has seen in the portal cannot be recalled, so `set_sensitive_access` is four-eyes, and the approval is bound to the flags as they stood when it was approved: if any changed in the meantime, the release is refused.
+- **`update` never turns on dormant sensitive data.** Network alerts and rack placement show only while the network section is on, and the hours balance only while Support usage is on. If one of those is already on, turning its section on with `update` is refused; use `set_sensitive_access` and name it.
+- **Custom CSS stays in the web app.** It is served to customers' browsers as written, so no AI tool writes it.
+- **Adding a recipient sends report data out of Breeze.** `add` and `convert` need the `reports:export` permission and an MFA-verified session. `convert` only moves an address already in the report's email list onto a contact, so it never adds a delivery.
+
 Financially binding or high-impact actions — issuing or voiding an invoice, recording or voiding a payment, contract lifecycle changes, sending a quote, changing a catalog price, and moving a ticket to another organization — are classified Tier 3, so they wait for a human approval rather than auto-executing. Drafting and editing (create_draft, adding lines, updating a draft) stays Tier 2 no matter how large the draft's total is — the tier boundary here is reversibility, not financial size: a draft is an internal, editable record until the commit action (send/issue/activate) exposes it beyond Breeze. See the [MCP Server documentation](/features/mcp-server/#ticketing-tools) for per-tool tiers, scopes, and required role permissions, including the note on why this differs from the tenant-structure gating on tools like `create_org`.
 
 ---

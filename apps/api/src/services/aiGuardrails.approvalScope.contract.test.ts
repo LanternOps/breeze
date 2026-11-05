@@ -1766,6 +1766,47 @@ const W18A_EXPECTED: Record<string, Record<string, W02Class>> = {
   list_roles: { list: 't1', get: 't1', users: 't1', effective_permissions: 't1' },
 };
 
+// ── W18 PR B class rows (#6789) ────────────────────────────────────────────
+// Copied from the W18 plan's PR B class review table, NOT derived from the guardrail tables.
+const W18B_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_org_portal_settings: { get: 't1', update: 'supervised', set_sensitive_access: 'four_eyes' },
+  manage_report_recipients: { list: 't1', add: 'supervised', remove: 'supervised', convert: 'supervised' },
+};
+
+describe('W18 PR B class rows (#6789)', () => {
+  it.each(Object.keys(W18B_EXPECTED))('%s: W18B_EXPECTED covers exactly the action enum, tool tier 1', (tool) => {
+    expect(Object.keys(W18B_EXPECTED[tool]!).sort()).toEqual([...(toolActionEnum(tool) ?? [])].sort());
+    expect(getToolTier(tool)).toBe(1);
+    for (const [action, cls] of Object.entries(W18B_EXPECTED[tool]!)) {
+      expect(classOf(tool, { action }), `${tool}:${action}`).toBe(cls);
+    }
+  });
+
+  it('set_sensitive_access is four_eyes via resolveApprovalScope; update and every recipient write are supervised', () => {
+    expect(resolveApprovalScope('manage_org_portal_settings', 'set_sensitive_access', { orgId: 'o1', flags: { enablePatchDetail: true } })).toBe('four_eyes');
+    expect(resolveApprovalScope('manage_org_portal_settings', 'update', { orgId: 'o1', settings: { enableReports: true } })).toBe('supervised');
+    for (const action of ['add', 'remove', 'convert']) {
+      expect(resolveApprovalScope('manage_report_recipients', action, { reportId: 'r1' }), action).toBe('supervised');
+    }
+  });
+
+  it('the MFA gate covers update, set_sensitive_access, add and convert, but not the reads or remove', () => {
+    for (const [tool, action] of [['manage_org_portal_settings', 'update'], ['manage_org_portal_settings', 'set_sensitive_access'], ['manage_report_recipients', 'add'], ['manage_report_recipients', 'convert']] as const) {
+      expect(isMfaGatedToolAction(tool, action), `${tool}:${action}`).toBe(true);
+    }
+    for (const [tool, action] of [['manage_org_portal_settings', 'get'], ['manage_report_recipients', 'list'], ['manage_report_recipients', 'remove']] as const) {
+      expect(isMfaGatedToolAction(tool, action), `${tool}:${action}`).toBe(false);
+    }
+  });
+
+  it('agent exposure: both tools agent-human-only, neither a denied read (Decision 4)', () => {
+    for (const tool of Object.keys(W18B_EXPECTED)) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(true);
+      expect(AGENT_DENIED_READ_TOOLS.has(tool), tool).toBe(false);
+    }
+  });
+});
+
 describe('W18 PR A class rows (#6789)', () => {
   it('covers the seven W18 PR A tools exactly once', () => {
     expect([...Object.keys(W18A_WHOLE_TOOL), ...Object.keys(W18A_EXPECTED)].sort()).toEqual([

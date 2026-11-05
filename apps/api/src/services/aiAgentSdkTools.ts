@@ -46,6 +46,7 @@ import { cancelCheckInShape, createWatchShape, deliveryToolShape, launchSpeciali
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
+import { orgAdminWriteToolSchemas } from './aiToolSchemasOrgAdminWrites';
 import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
@@ -755,6 +756,10 @@ export const TOOL_TIERS = {
   list_users: 1,
   get_user: 1,
   list_roles: 1,
+  // W18 PR B (#6789): tier 1 at the tool level; per-action classes (supervised update / add / remove / convert,
+  // four-eyes set_sensitive_access) live in aiGuardrails.
+  manage_org_portal_settings: 1,
+  manage_report_recipients: 1,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -5332,6 +5337,12 @@ export function buildBreezeSdkTools(
       makeHandler('get_user', getAuth, onPreToolUse, onPostToolUse)),
     tool('list_roles', registryDescription('list_roles'), orgAdminToolSchemas.list_roles.shape,
       makeHandler('list_roles', getAuth, onPreToolUse, onPostToolUse)),
+    tool('manage_org_portal_settings', registryDescription('manage_org_portal_settings'),
+      orgAdminWriteToolSchemas.manage_org_portal_settings.shape,
+      makeHandler('manage_org_portal_settings', getAuth, onPreToolUse, onPostToolUse)),
+    tool('manage_report_recipients', registryDescription('manage_report_recipients'),
+      orgAdminWriteToolSchemas.manage_report_recipients.shape,
+      makeHandler('manage_report_recipients', getAuth, onPreToolUse, onPostToolUse)),
     tool(
       'manage_contracts',
       registryDescription('manage_contracts'),

@@ -303,6 +303,27 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'list_roles', action: 'get', routeFile: 'roles.ts', method: 'get', path: '/:id' },
   { tool: 'list_roles', action: 'users', routeFile: 'roles.ts', method: 'get', path: '/:id/users' },
   { tool: 'list_roles', action: 'effective_permissions', routeFile: 'roles.ts', method: 'get', path: '/:id/effective-permissions' },
+  // Full-control W18 PR B (#6789): both portal writes bind to the one PATCH; the recipient writers to their routes, with
+  // Decision 5's export grant declared on add and convert.
+  { tool: 'manage_org_portal_settings', action: 'get', routeFile: 'orgPortalSettings.ts', method: 'get', path: '/organizations/:id/portal-settings' },
+  {
+    tool: 'manage_org_portal_settings', action: 'update', routeFile: 'orgPortalSettings.ts', method: 'patch', path: '/organizations/:id/portal-settings',
+    toolOnly: { extra: [], reason: 'Never writes customCss or a sensitive or permission flag, and refuses a parent enable that would activate a dormant sensitive child (row-locked).' },
+  },
+  {
+    tool: 'manage_org_portal_settings', action: 'set_sensitive_access', routeFile: 'orgPortalSettings.ts', method: 'patch', path: '/organizations/:id/portal-settings',
+    toolOnly: { extra: [], reason: 'Only the sensitive, permission and parent flags; four-eyes with a mandatory effect digest over the current flag values.' },
+  },
+  { tool: 'manage_report_recipients', action: 'list', routeFile: 'reports/recipients.ts', method: 'get', path: '/:id/recipients' },
+  {
+    tool: 'manage_report_recipients', action: 'add', routeFile: 'reports/recipients.ts', method: 'post', path: '/:id/recipients',
+    toolOnly: { extra: ['reports:export'], reason: 'Decision 5: every add is a scheduled delivery of report data by email, so the export grant and MFA apply to all of them (REST: series children only).' },
+  },
+  { tool: 'manage_report_recipients', action: 'remove', routeFile: 'reports/recipients.ts', method: 'delete', path: '/:id/recipients/:contactId' },
+  {
+    tool: 'manage_report_recipients', action: 'convert', routeFile: 'reports/recipients.ts', method: 'post', path: '/:id/recipients/convert',
+    toolOnly: { extra: ['reports:export'], reason: "Decision 5: export grant always, and only an address already in the report's emailRecipients converts, so convert never adds a delivery." },
+  },
   // Full-control W11 (#6781): the security policy tools bind to the route a technician uses for the same act.
   {
     tool: 'get_security_compliance', routeFile: 'security/dashboard.ts', method: 'get', path: '/dashboard',

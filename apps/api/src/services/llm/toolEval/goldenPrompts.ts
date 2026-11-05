@@ -174,4 +174,8 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g130', prompt: 'Who has portal access at Contoso?', expect: [{ tool: 'list_portal_users' }, { tool: 'list_organizations' }] },
   { id: 'g131', prompt: "Which of our technicians don't have MFA turned on?", expect: [{ tool: 'list_users' }] },
   { id: 'g132', prompt: 'What can someone with the Technician role actually do?', expect: [{ tool: 'list_roles', action: 'effective_permissions' }, { tool: 'list_roles', action: 'list' }] },
+  // Full-control W18 PR B (#6789): the two org-admin writers. g134 is the four-eyes action, not the supervised update.
+  { id: 'g133', prompt: "Turn on the reports section of Contoso's portal.", expect: [{ tool: 'manage_org_portal_settings', action: 'update' }, { tool: 'list_organizations' }] },
+  { id: 'g134', prompt: 'Show Contoso per-host vulnerability detail in their portal.', expect: [{ tool: 'manage_org_portal_settings', action: 'set_sensitive_access' }, { tool: 'list_organizations' }] },
+  { id: 'g135', prompt: "Add Dana to Contoso's monthly report.", expect: [{ tool: 'manage_report_recipients', action: 'add' }, { tool: 'list_org_contacts' }] },
 ];

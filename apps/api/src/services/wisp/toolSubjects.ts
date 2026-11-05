@@ -299,6 +299,7 @@ export const WISP_NON_FOCAL_TOOLS: ReadonlySet<string> = new Set([
   'manage_monitors',
   'manage_notification_channels',
   'manage_org_documents',
+  'manage_org_portal_settings', // W18 PR B (#6789): org-wide portal row, not a working-set subject
   'manage_pam_rules',
   'manage_patches',
   'manage_pax8_orders',
@@ -308,6 +309,7 @@ export const WISP_NON_FOCAL_TOOLS: ReadonlySet<string> = new Set([
   'manage_policy_feature_link',
   'manage_processes',
   'manage_recovery_keys',
+  'manage_report_recipients', // W18 PR B (#6789)
   'manage_saved_filters',
   'manage_scheduled_tasks',
   'manage_security_policies',

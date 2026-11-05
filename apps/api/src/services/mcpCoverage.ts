@@ -598,8 +598,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'orgDocuments.ts': { tools: ['list_org_documents', 'manage_org_documents'] },
   'orgKeyDates.ts': { tools: ['manage_key_dates'] },
   'orgMerge.ts': { exempt: 'human_only_tenant_restructure', note: 'Org merge preview/merge/run status -- rewrites which tenant owns the data.' },
-  'orgPortalPreview.ts': { exempt: 'tool_in_later_wave', note: 'Staff read-only Customer view of the portal read models (#9350). No AI tool yet; tracked with the org-settings tool gap #6789 (the frozen-gap list takes no new entries).' },
-  'orgPortalSettings.ts': { gap: '#6789' },
+  'orgPortalPreview.ts': { exempt: 'tool_in_later_wave', note: 'Staff read-only Customer view of the portal read models (#9350). No AI tool yet; tracked in #11129 (org portal preview tool gap) (the frozen-gap list takes no new entries).' },
+  'orgPortalSettings.ts': { tools: ['manage_org_portal_settings'] }, // W18 PR B (#6789): get, update, four-eyes set_sensitive_access; customCss stays human
   'orgPortalUsers.ts': { tools: ['list_portal_users'] }, // W18 (#6789): invite / disable / delete stay identity, no tool action (W18-1)
   'orgSummary.ts': { tools: ['get_org_summary'] }, // W18 (#6789)
   'orgTicketSettings.ts': { tools: ['manage_ticket_config'] }, // W06 (#6776): get_org_settings / update_org_settings
@@ -695,7 +695,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'reports/core.ts': { tools: ['generate_report'] },
   'reports/data.ts': { tools: ['generate_report'] },
   'reports/generate.ts': { tools: ['generate_report'] },
-  'reports/recipients.ts': { gap: '#6789' },
+  'reports/recipients.ts': { tools: ['manage_report_recipients'] }, // W18 PR B (#6789): list, add, remove, convert
   'reports/runs.ts': { tools: ['generate_report'] },
   // Multi-org report series (W02): generate_report lists and runs series
   // children like any org report; a series-management tool is a follow-up.
