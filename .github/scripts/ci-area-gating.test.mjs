@@ -174,8 +174,10 @@ test('classifier: every agent/ path the Tauri Rust sources read sets rust (and k
       if (!/\.(rs|toml)$|tauri\.conf\.json$/u.test(file)) continue;
       readFileSync(join(REPO_ROOT, file), 'utf8').split('\n').forEach((line, i) => {
         if (/^\s*(\/\/|#)/u.test(line)) return;
-        assert.doesNotMatch(line, /join\("agent"\)|push\("agent"\)/u,`${file}:${i + 1} builds an agent/ path this scan cannot follow`);
-        for (const m of line.matchAll(/"((?:\.\.\/)+agent\/[^"]+)"/gu)) targets.add(normalize(join(root, m[1])));
+        // Fail loudly on any agent/ literal the capture below cannot follow (a split
+        // join, a bare "agent" segment, a literal without the ../ prefix).
+        const rest = line.replace(/"((?:\.\.\/)+agent\/[^"]+)"/gu, (_, p) => { targets.add(normalize(join(root, p))); return '""'; });
+        assert.doesNotMatch(rest, /"[^"]*agent\/[^"]*"|(?:join|push|new)\("[^"]*agent"\)/u, `${file}:${i + 1} builds an agent/ path this scan cannot follow`);
       });
     }
   }
