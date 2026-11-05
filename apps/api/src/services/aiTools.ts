@@ -139,6 +139,7 @@ import { registerOrgAdminReadTools } from './aiToolsOrgAdminReads';
 import { registerIdentityReadTools } from './aiToolsIdentityReads';
 import { registerOrgPortalSettingsTool } from './aiToolsOrgPortalSettings';
 import { registerReportRecipientsTool } from './aiToolsReportRecipients';
+import { registerAiAgentLaunchTools } from './aiToolsAiAgentLaunch';
 import { registerBillingProfileTools } from './aiToolsBillingProfiles';
 import { registerBillingSettingsTools } from './aiToolsBillingSettings';
 import { registerContractTemplateTools } from './aiToolsContractTemplates';
@@ -495,6 +496,8 @@ registerIdentityReadTools(aiTools);
 // action, report recipients).
 registerOrgPortalSettingsTool(aiTools);
 registerReportRecipientsTool(aiTools);
+// Full-control W16 PR A (#6786): the two supervised launch tools (patch-plan run, service-recovery operator task).
+registerAiAgentLaunchTools(aiTools);
 registerBillingSettingsTools(aiTools);
 registerContractTemplateTools(aiTools);
 registerDeviceBillingTools(aiTools);

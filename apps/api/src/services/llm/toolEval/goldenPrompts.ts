@@ -178,4 +178,8 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g133', prompt: "Turn on the reports section of Contoso's portal.", expect: [{ tool: 'manage_org_portal_settings', action: 'update' }, { tool: 'list_organizations' }] },
   { id: 'g134', prompt: 'Show Contoso per-host vulnerability detail in their portal.', expect: [{ tool: 'manage_org_portal_settings', action: 'set_sensitive_access' }, { tool: 'list_organizations' }] },
   { id: 'g135', prompt: "Add Dana to Contoso's monthly report.", expect: [{ tool: 'manage_report_recipients', action: 'add' }, { tool: 'list_org_contacts' }] },
+  // Full-control W16 PR A (#6786): ordinary chat (no Wisp grant) picks the W16 launch tool, not launch_specialist
+  // and not manage_patches / manage_services.
+  { id: 'g136', prompt: 'Run the patch agent for Contoso now.', expect: [{ tool: 'run_patch_plan' }, { tool: 'list_organizations' }] },
+  { id: 'g137', prompt: 'Have the AI get the Print Spooler on WS-01 running again.', expect: [{ tool: 'create_operator_task' }, { tool: 'resolve_device_context' }] },
 ];

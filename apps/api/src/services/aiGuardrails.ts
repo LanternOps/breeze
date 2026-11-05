@@ -1150,6 +1150,14 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   // the approver). launch_specialist is NOT here: its base tier is 2, and its
   // tier-3 kinds are classified by TIER3_SUPERVISED_ACTIONS above.
   'wisp_specialist_request',
+  // Full-control W16 PR A (#6786), Decision 1: a RECORDED EXCEPTION to the class rule. A launch cannot be undone
+  // (credits) and it can notify people, which the rule would make four-eyes. Supervised instead, because what each
+  // launches is findings or per-effect approvals: a patch run executes nothing (patchLimits pins the run loop to 0
+  // actions; proposed installs are minted afterwards as supervised manage_patches:install cards), and an operator
+  // task asks approval for each change it makes.
+  // Per-org caps bound the spend; launch_specialist's patch_plan / operator_recipe kinds are already supervised; REST
+  // "Run now" is one person + MFA. Signed off in the W16 PR A body. Moving either to four-eyes needs no other change.
+  'run_patch_plan', 'create_operator_task',
   // #8742: customer-visible endpoint message; every action is enumerated in
   // TIER1_ACTIONS / TIER3_SUPERVISED_ACTIONS.
   'send_endpoint_message',
@@ -1978,6 +1986,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // human — not tool gates.
   launch_specialist: { resource: 'ai_sessions', action: 'use' },
   wisp_specialist_request: { resource: 'ai_sessions', action: 'use' },
+  // Full-control W16 PR A (#6786): = requirePermission on POST /ai/patch-plan/runs and POST /ai/operator/tasks.
+  run_patch_plan: { resource: 'ai_agents', action: 'write' },
+  create_operator_task: { resource: 'ai_agents', action: 'write' },
   list_sites: { resource: 'sites', action: 'read' },
   get_site: { resource: 'sites', action: 'read' },
   list_org_contacts: { resource: 'organizations', action: 'read' },
@@ -5171,6 +5182,18 @@ export function buildApprovalDescription(
       }
       break;
     }
+
+    // Full-control W16 PR A (#6786): what a launch costs and what it can do. The org id is truncated (the headline is
+    // input-only); the `on device <id>...` stub is rewritten to the device's name for every intent path
+    // (approvalDeviceName.ts).
+    case 'run_patch_plan':
+      parts.push(`Run the patch agent for organization ${w03Id(input.orgId)} now. It uses AI credits and may notify people. `
+        + 'It proposes installs for approval; nothing is installed without a further approval.');
+      break;
+    case 'create_operator_task':
+      parts.push(`Start an AI task to restore the ${w03Cap(String(input.serviceName ?? '(unspecified)'))} service on device ${w03Id(input.deviceId)}. `
+        + 'It uses AI credits. Each change it makes asks for approval.');
+      break;
 
     case 'manage_report_recipients':
       if (action === 'add' && input.mode === 'remove') {
