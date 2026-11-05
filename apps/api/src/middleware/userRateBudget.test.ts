@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 
 /**
@@ -61,7 +61,10 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
+import { readFileSync } from 'node:fs';
 import { authMiddleware } from './auth';
+import { httpExceptionResponse } from './httpExceptionResponse';
+import { isUserTokenRevoked } from '../services/tokenRevocation';
 import {
   __resetInMemoryCountersForTests,
   globalRateLimit,
@@ -75,19 +78,19 @@ function bearer(user: string) {
   return { headers: { Authorization: `Bearer token-${user}` } };
 }
 
+/** The HTTPException handling index.ts's onError uses (pinned below). */
+function appErrorHandler(err: Error, c: Context) {
+  if (err instanceof HTTPException) return httpExceptionResponse(err, c);
+  return c.json({ error: 'boom', detail: String(err) }, 500);
+}
+
 /**
  * `limit` is the shared anonymous per-IP bucket. The session ceiling stays out
  * of the way unless a test is about it.
  */
 function buildApp(options: Parameters<typeof globalRateLimit>[0] = {}) {
   const app = new Hono();
-  // The body shape index.ts's onError produces for an HTTPException.
-  app.onError((err, c) => {
-    if (err instanceof HTTPException) {
-      return c.json({ error: err.message, message: err.message }, err.status);
-    }
-    return c.json({ error: 'boom', detail: String(err) }, 500);
-  });
+  app.onError(appErrorHandler);
   app.use('*', globalRateLimit({ limit: 2, windowSeconds: 60, sessionIpLimit: 1000, ...options }));
   app.get('/api/v1/devices', authMiddleware, (c) => c.json({ ok: true }));
   app.get('/api/v1/desktop-ws/s1/viewer/session', authMiddleware, (c) => c.json({ ok: true }));
@@ -224,6 +227,45 @@ describe('per-user budget behind one IP (#10962)', () => {
     const throttled = await app.request('/api/v1/auth/mfa/confirm', { method: 'POST', ...bearer('alice') });
     expect(throttled.status).toBe(429);
     expect(throttled.headers.get('Retry-After')).toBe('60');
+  });
+});
+
+// extensions/gateway.ts dispatches through `wrapper.app.fetch(c.req.raw, ...)`,
+// which builds a NEW Hono context: nothing set on the outer context reaches the
+// inner authMiddleware, and headers set on the inner one do not reach the outer
+// onError. The budget has to survive that hop in both directions.
+describe('authMiddleware behind an inner-app dispatch (#10962)', () => {
+  function buildGatewayShapedApp() {
+    const inner = new Hono();
+    inner.use('*', (c, next) => authMiddleware(c, next) as Promise<void>);
+    inner.get('/api/v1/ext/widgets/thing', (c) => c.json({ ok: true }));
+    inner.onError((error) => { throw error; });
+
+    const app = new Hono();
+    app.onError(appErrorHandler);
+    app.use('*', globalRateLimit({ limit: 2, windowSeconds: 60, sessionIpLimit: 1000 }));
+    app.all('/api/v1/ext/*', (c) => inner.fetch(c.req.raw));
+    return app;
+  }
+
+  it('still charges the per-user budget', async () => {
+    const app = buildGatewayShapedApp();
+    for (let i = 0; i < 5; i += 1) {
+      expect((await app.request('/api/v1/ext/widgets/thing', bearer('alice'))).status).toBe(200);
+    }
+    expect((await app.request('/api/v1/ext/widgets/thing', bearer('alice'))).status).toBe(429);
+    expect((await app.request('/api/v1/ext/widgets/thing', bearer('bob'))).status).toBe(200);
+  });
+
+  it('keeps the 429 headers across the hop', async () => {
+    const app = buildGatewayShapedApp();
+    for (let i = 0; i < 5; i += 1) await app.request('/api/v1/ext/widgets/thing', bearer('alice'));
+    const throttled = await app.request('/api/v1/ext/widgets/thing', bearer('alice'));
+
+    expect(throttled.status).toBe(429);
+    expect(throttled.headers.get('Retry-After')).toBe('60');
+    expect(throttled.headers.get('X-RateLimit-Limit')).toBe('5');
+    expect(((await throttled.json()) as { error: string }).error).toBe('Too many requests');
   });
 });
 
@@ -409,6 +451,43 @@ describe('budget wiring (#10962)', () => {
     );
   });
 
+  it('a revoked token is refused without spending its owner\'s budget', async () => {
+    redisAllows();
+    vi.mocked(isUserTokenRevoked).mockResolvedValueOnce(true);
+    const res = await buildApp().request('/api/v1/devices', bearer('alice'));
+    expect(res.status).toBe(401);
+    expect(chargedKeys()).toEqual([`global:session:${IP}`]);
+  });
+
+  it.each([
+    ['the per-user budget', 'user_rate_budget', '1'],
+    ['the session ceiling', 'global_rate_limit', '100'],
+  ])('labels a refusal from %s in the request log', async (_label, reason, budget) => {
+    let logged: unknown;
+    const app = new Hono();
+    app.onError(appErrorHandler);
+    app.use('*', async (c, next) => {
+      await next();
+      logged = c.get('rejectReason');
+    });
+    app.use('*', globalRateLimit({ limit: 2, windowSeconds: 60, sessionIpLimit: 3 }));
+    app.get('/api/v1/devices', authMiddleware, (c) => c.json({ ok: true }));
+    vi.stubEnv(ENV_VAR, budget);
+
+    let last = 0;
+    for (let i = 0; i < 5 && last !== 429; i += 1) {
+      last = (await app.request('/api/v1/devices', bearer('alice'))).status;
+    }
+    expect(last).toBe(429);
+    expect(logged).toBe(reason);
+  });
+
+  it('index.ts answers an HTTPException through the handler these tests use', () => {
+    const indexSource = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
+    const onError = indexSource.slice(indexSource.indexOf('app.onError((err, c) => {'));
+    expect(onError.slice(0, 200)).toContain('return httpExceptionResponse(err, c);');
+  });
+
   it('never meters a route mounted without the front door', async () => {
     redisAllows();
     const app = new Hono();
@@ -417,7 +496,7 @@ describe('budget wiring (#10962)', () => {
     expect(mocks.rateLimiter).not.toHaveBeenCalled();
   });
 
-  it('E2E_MODE skips both halves', async () => {
+  it('E2E_MODE meters nothing: the front door skips, so the budget is never owed', async () => {
     redisAllows();
     vi.stubEnv('E2E_MODE', '1');
     const app = buildApp();
@@ -427,9 +506,10 @@ describe('budget wiring (#10962)', () => {
 });
 
 // Pins the existing middleware's choice for the new buckets: no client at all
-// falls back to the per-process in-memory counters (metered, not open); a Redis
-// client whose commands fail is rateLimiter's fail-closed deny, surfaced as a
-// normal 429 with Retry-After.
+// falls back to the per-process in-memory counters (metered, not open). A Redis
+// client whose commands fail makes rateLimiter return a deny (its fail-closed is
+// pinned in services/rate-limit.test.ts); these tests pin that a deny from it
+// surfaces as a normal 429 with Retry-After at each step.
 describe('Redis failure behaviour (#10962)', () => {
   it('Redis client absent: both new buckets fall back to in-memory counters, still metered', async () => {
     mocks.getRedis.mockReturnValue(null);
@@ -441,7 +521,7 @@ describe('Redis failure behaviour (#10962)', () => {
     expect(mocks.rateLimiter).not.toHaveBeenCalled();
   });
 
-  it('Redis commands failing at the front door: fails closed with 429', async () => {
+  it('a fail-closed deny at the front door answers 429', async () => {
     mocks.getRedis.mockReturnValue({ marker: 'redis' });
     mocks.rateLimiter.mockResolvedValue({
       allowed: false,
@@ -454,7 +534,7 @@ describe('Redis failure behaviour (#10962)', () => {
     expect(chargedKeys()).toEqual([`global:session:${IP}`]);
   });
 
-  it('Redis commands failing at the per-user step: fails closed with 429', async () => {
+  it('a fail-closed deny at the per-user step answers 429', async () => {
     mocks.getRedis.mockReturnValue({ marker: 'redis' });
     mocks.rateLimiter.mockImplementation(async (_redis: unknown, key: string) => ({
       allowed: !key.startsWith('rl:session:'),

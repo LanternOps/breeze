@@ -17,6 +17,7 @@ import { HTTPException } from 'hono/http-exception';
 import { authMiddleware } from '../../middleware/auth';
 import { globalRateLimit } from '../../middleware/globalRateLimit';
 import { createAccessToken, createRefreshToken } from '../../services/jwt';
+import { httpExceptionResponse } from '../../middleware/httpExceptionResponse';
 import { createPartner, createUser } from './db-utils';
 import { getTestRedis } from './setup';
 
@@ -25,9 +26,7 @@ const BUDGET = 3;
 function buildApp() {
   const app = new Hono();
   app.onError((err, c) => {
-    if (err instanceof HTTPException) {
-      return c.json({ error: err.message, message: err.message }, err.status);
-    }
+    if (err instanceof HTTPException) return httpExceptionResponse(err, c);
     throw err;
   });
   app.use('*', globalRateLimit({ limit: 2, windowSeconds: 60 }));
@@ -109,6 +108,21 @@ describe('per-user rate budget on real Redis (#10962)', () => {
     // Four rejected attempts were refunded: only the admitted three remain, so
     // the window recovers on schedule for a client honouring Retry-After.
     expect(await getTestRedis().zcard(`rl:session:${alice.userId}`)).toBe(BUDGET);
+  });
+
+  // The dashboard's real traffic shape: a device page fans out in parallel.
+  it('admits exactly the budget from a parallel burst', async () => {
+    const partner = await createPartner();
+    const alice = await sessionFor(partner.id);
+    const app = buildApp();
+
+    const results = await Promise.all(
+      Array.from({ length: BUDGET + 5 }, () => app.request('/api/v1/devices', alice.access)),
+    );
+    const statuses = results.map((res) => res.status);
+
+    expect(statuses.filter((status) => status === 200)).toHaveLength(BUDGET);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(5);
   });
 
   it('meters a refresh token used as a bearer as anonymous, not as a session', async () => {

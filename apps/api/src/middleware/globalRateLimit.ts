@@ -1,7 +1,12 @@
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { verifyToken } from '../services/jwt';
-import { spendFromBucket, TOO_MANY_REQUESTS, userRateBudgetPerMinute } from './rateLimitBudget';
+import {
+  markUserRateBudgetOwed,
+  spendFromBucket,
+  TOO_MANY_REQUESTS,
+  userRateBudgetPerMinute,
+} from './rateLimitBudget';
 // Side-effect import: brings the `tunnelSurface` ContextVariableMap augmentation into scope.
 import './tunnelHostDispatch';
 
@@ -64,8 +69,8 @@ export interface IsolatedBucket {
 /**
  * Tunnel-host requests (Network Proxy host mode) carry arbitrary device paths,
  * so the path-prefix buckets below can't isolate them: one device admin page
- * loading 100 subresources would otherwise drain the shared dashboard budget
- * of every user behind the same IP (plan G7).
+ * loading 100 subresources would otherwise drain a budget shared by everyone
+ * behind the same IP (plan G7).
  */
 export const TUNNEL_HOST_BUCKET: IsolatedBucket = { prefix: '', name: 'tunnelhost', limit: 1200 };
 
@@ -117,14 +122,14 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   { prefix: '/api/v1/backup/bmr/recover/download', name: 'bmrrecover', limit: 12_000 },
   // Partner sending-domain delivery events (W06). One provider egress IP
   // delivers every partner's bounces, complaints and deliveries, so on the
-  // shared 600/min per-IP budget a busy partner lane would throttle dashboard
-  // traffic that happens to share an egress address — and vice versa. The
+  // shared 600/min per-IP budget a busy partner lane would throttle anonymous
+  // and API-key traffic that happens to share an egress address — and vice versa. The
   // route carries its own 600/min limiter and rejects anything unsigned, so
   // this bucket only needs to stay out of runaway territory.
   { prefix: '/api/v1/webhooks/email-provider/', name: 'emaildomainswebhook', limit: 1200 },
   // EDR vendor push hints (W03 PR-B). One vendor egress IP delivers every
   // partner's console events, so the shared per-IP budget would couple partners
-  // to each other and to dashboard traffic. The route carries its own
+  // to each other and to anything else on it. The route carries its own
   // per-connection 60/min limiter (checked before any DB read) and rejects
   // anything without the connection's secret.
   { prefix: '/api/v1/webhooks/edr/', name: 'edrwebhook', limit: 1200 },
@@ -233,11 +238,12 @@ export function globalRateLimit(options?: GlobalRateLimitOptions): MiddlewareHan
     if (!bucket && await carriesValidSession(c)) {
       bucketLimit = options?.sessionIpLimit ?? userRateBudgetPerMinute() * SESSION_IP_CEILING_USERS;
       bucketKey = `global:session:${clientIp}`;
-      c.set('userRateBudgetEligible', true);
+      markUserRateBudgetOwed(c);
     }
 
     const allowed = await spendFromBucket(c, bucketKey, bucketLimit, windowSeconds);
     if (!allowed) {
+      c.set('rejectReason', 'global_rate_limit');
       return c.json({ error: TOO_MANY_REQUESTS }, 429);
     }
 

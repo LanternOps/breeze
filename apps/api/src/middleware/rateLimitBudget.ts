@@ -13,20 +13,25 @@ import { envInt } from '../utils/envInt';
  * depends on.
  */
 
-declare module 'hono' {
-  interface ContextVariableMap {
-    /**
-     * Set by globalRateLimit when it metered this request as a valid session,
-     * which is what makes authMiddleware charge the per-user budget. Requests
-     * the front door routed elsewhere (an isolated bucket, a tunnel host, a
-     * skip prefix, E2E mode) never owe it: a remote-desktop viewer polling
-     * through its own bucket must not drain its operator's dashboard budget.
-     */
-    userRateBudgetEligible: boolean;
-  }
-}
-
 export const TOO_MANY_REQUESTS = 'Too many requests';
+
+/**
+ * Requests globalRateLimit metered as a valid session, which is what makes
+ * authMiddleware charge the per-user budget. Requests the front door routed
+ * elsewhere (an isolated bucket, a tunnel host, a skip prefix, E2E mode) never
+ * owe it: a remote-desktop viewer polling through its own bucket must not drain
+ * its operator's dashboard budget.
+ *
+ * Keyed on the raw Request rather than a context variable because the extension
+ * gateway dispatches through `wrapper.app.fetch(c.req.raw, ...)`, which builds a
+ * new Hono context. A context variable would not reach the authMiddleware
+ * inside, and extension routes would silently escape the budget.
+ */
+const requestsOwingUserRateBudget = new WeakSet<Request>();
+
+export function markUserRateBudgetOwed(c: Context): void {
+  requestsOwingUserRateBudget.add(c.req.raw);
+}
 
 const MAX_IN_MEMORY_ENTRIES = 100_000;
 const CLEANUP_INTERVAL_MS = 60_000; // prune expired entries every 60s
@@ -139,10 +144,13 @@ export function userRateBudgetPerMinute(): number {
  *
  * Throws rather than returning a Response because several callers discard
  * authMiddleware's return value (`await authMiddleware(c, async () => {})`), and
- * a denial they dropped would surface as a 403 or a 500 instead of a 429.
+ * a denial they dropped would surface as a 403 or a 500 instead of a 429. The
+ * exception carries the headers in `res` because a throw out of the extension
+ * gateway's inner app leaves the context they were set on behind;
+ * httpExceptionResponse copies them back.
  */
 export async function chargeUserRateBudget(c: Context, userId: string): Promise<void> {
-  if (c.get('userRateBudgetEligible') !== true) return;
+  if (!requestsOwingUserRateBudget.has(c.req.raw)) return;
 
   const allowed = await spendFromBucket(
     c,
@@ -152,6 +160,10 @@ export async function chargeUserRateBudget(c: Context, userId: string): Promise<
     { refundOnReject: true },
   );
   if (!allowed) {
-    throw new HTTPException(429, { message: TOO_MANY_REQUESTS });
+    c.set('rejectReason', 'user_rate_budget');
+    throw new HTTPException(429, {
+      message: TOO_MANY_REQUESTS,
+      res: c.json({ error: TOO_MANY_REQUESTS }, 429),
+    });
   }
 }
