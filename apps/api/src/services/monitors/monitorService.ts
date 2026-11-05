@@ -17,9 +17,12 @@ import { getMonitorKindSpec, MonitorValidationError } from './kinds';
 import { compileMonitorInTx, type CompileOptions, type DbExecutor } from './monitorCompiler';
 import { assertNetworkCheckAssetOwner, NetworkCheckAssetError } from './networkCheckAsset';
 import { isPgForeignKeyViolation, pgErrorConstraint } from '../../utils/pgErrors';
+import { validateConditions } from '../alertConditions';
 import {
+  isLegacyRecoveryCondition,
   isValidRearmPair,
   REARM_PAIR_MESSAGE,
+  recoveryConditionProblem,
   type CreateMonitorDefinitionInput,
   type MonitorKind,
   type UpdateMonitorDefinitionInput,
@@ -225,6 +228,21 @@ function normalizeList(actions: unknown): AutomationAction[] {
   return normalizeAutomationActions(actions);
 }
 
+function assertRecoveryCondition(kind: MonitorKind, value: unknown, options: { allowLegacy: boolean }): void {
+  const problem = recoveryConditionProblem(kind, value, options);
+  if (problem) throw new MonitorValidationError(problem);
+}
+
+/**
+ * The shared schema checks a raw blob's shape; only the API knows which handler
+ * types exist. An unknown `type` would otherwise save and then never resolve.
+ */
+function assertLegacyRecoveryHandlers(value: unknown): void {
+  if (!isLegacyRecoveryCondition(value)) return;
+  const errors = validateConditions(value);
+  if (errors.length > 0) throw new MonitorValidationError(`autoResolveConditions is invalid: ${errors.join('; ')}`);
+}
+
 function validateDefinitionShape(args: {
   kind: MonitorKind;
   condition: Record<string, unknown>;
@@ -371,6 +389,7 @@ export async function createMonitorDefinition(
     recurrenceActions: input.recurrenceActions,
     aiAgentId: input.aiAgentId ?? null,
   });
+  assertRecoveryCondition(input.kind, input.autoResolveConditions, { allowLegacy: false });
 
   try {
     await assertNetworkCheckAssetOwner(input.kind, shape.condition, owner, executor);
@@ -452,6 +471,16 @@ export async function updateMonitorDefinition(
     aiAgentId: input.aiAgentId !== undefined ? input.aiAgentId : existing.aiAgentId,
   };
   const shape = validateDefinitionShape(merged);
+  // The schema cannot see the stored kind on a recovery-only patch, nor the
+  // stored recovery condition on a kind-only one. A patch touching neither leaves
+  // the stored value alone, so a row that could not be saved today can still be
+  // renamed or disabled (#10935).
+  if (input.autoResolveConditions !== undefined) {
+    assertRecoveryCondition(merged.kind, input.autoResolveConditions, { allowLegacy: true });
+    assertLegacyRecoveryHandlers(input.autoResolveConditions);
+  } else if (merged.kind !== existing.kind) {
+    assertRecoveryCondition(merged.kind, existing.autoResolveConditions, { allowLegacy: true });
+  }
   try {
     await assertNetworkCheckAssetOwner(merged.kind, shape.condition, existing, executor);
   } catch (error) {

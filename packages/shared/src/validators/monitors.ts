@@ -311,6 +311,64 @@ export const monitorConditionSchemas = {
 export type MonitorConditionSchemas = typeof monitorConditionSchemas;
 export type NetworkCheckMonitorCondition = z.infer<typeof monitorConditionSchemas.network_check>;
 
+/**
+ * Kinds that have a distinct recovery signal, so an explicit "Clears when"
+ * condition means something (alert re-arm W3, #10765). Every other kind clears
+ * on the inverse of its trigger. The API's kind spec `recoverySupported` must
+ * agree (kinds/index.test.ts).
+ */
+export const RECOVERY_CONDITION_KINDS = ['event_log'] as const satisfies readonly MonitorKind[];
+export type RecoveryConditionKind = (typeof RECOVERY_CONDITION_KINDS)[number];
+
+export function isRecoveryConditionKind(kind: MonitorKind): kind is RecoveryConditionKind {
+  return (RECOVERY_CONDITION_KINDS as readonly MonitorKind[]).includes(kind);
+}
+
+/** Deepest group nesting worth walking; the engine bails at the same depth. */
+const MAX_RECOVERY_GROUP_DEPTH = 10;
+
+/**
+ * A pre-W3 raw alert-condition blob the engine can evaluate: a leaf with a
+ * `type`, or a `{ logic, conditions }` group of those. A `{ conditions: [...] }`
+ * group with no `logic` is NOT one: the engine reads it as a leaf with no type,
+ * so its alerts could never auto-resolve (#10935).
+ */
+export function isLegacyRecoveryCondition(value: unknown, depth = 0): boolean {
+  if (depth > MAX_RECOVERY_GROUP_DEPTH) return false;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if ('logic' in record) {
+    return (record.logic === 'and' || record.logic === 'or')
+      && Array.isArray(record.conditions)
+      && record.conditions.length > 0
+      && record.conditions.every((child) => isLegacyRecoveryCondition(child, depth + 1));
+  }
+  return typeof record.type === 'string' && record.type.length > 0;
+}
+
+/** A value the editor and the compiler can treat as this kind's recovery condition. */
+export function isKindShapedRecoveryCondition(kind: MonitorKind, value: unknown): boolean {
+  return isRecoveryConditionKind(kind) && monitorConditionSchemas[kind].safeParse(value).success;
+}
+
+/**
+ * Why `value` cannot be saved as `kind`'s recovery condition, or null when it
+ * can. `allowLegacy` admits a raw blob (ND3): rows that already carry one stay
+ * editable, but a new monitor cannot start out with one.
+ */
+export function recoveryConditionProblem(
+  kind: MonitorKind,
+  value: unknown,
+  { allowLegacy }: { allowLegacy: boolean },
+): string | null {
+  if (value === null || value === undefined) return null;
+  if (allowLegacy && isLegacyRecoveryCondition(value)) return null;
+  if (!isRecoveryConditionKind(kind)) {
+    return `autoResolveConditions is only supported for kinds: ${RECOVERY_CONDITION_KINDS.join(', ')}`;
+  }
+  return isKindShapedRecoveryCondition(kind, value) ? null : `autoResolveConditions does not match kind ${kind}`;
+}
+
 /** Responses reuse the automation action vocabulary verbatim. */
 export const monitorResponsesSchema = z.array(automationActionSchema).max(10);
 export const monitorDeliveryModeSchema = z.enum(['none', 'inherit', 'channels']);
@@ -373,6 +431,7 @@ interface MonitorDefinitionShape {
   aiAgentId?: string | null;
   rearmMode?: RearmMode | null;
   rearmDelayMinutes?: number | null;
+  autoResolveConditions?: Record<string, unknown> | null;
 }
 
 /**
@@ -384,9 +443,26 @@ interface MonitorDefinitionShape {
  * condition that does not match. The delivery check skips an absent
  * `deliveryChannelIds` for the same reason: create always has it from its
  * default, and an absent list on a PATCH means the stored channels stay.
+ *
+ * `allowLegacyRecovery` is true on update only: see `recoveryConditionProblem`.
+ * With no `kind` in the patch, a value that fits no recovery kind at all is
+ * still refused here; the service checks the rest against the stored kind.
  */
-function refineDefinition<T extends z.ZodType<MonitorDefinitionShape>>(schema: T) {
+function refineDefinition<T extends z.ZodType<MonitorDefinitionShape>>(
+  schema: T,
+  { allowLegacyRecovery }: { allowLegacyRecovery: boolean },
+) {
   return schema
+    .superRefine((v, ctx) => {
+      const value = v.autoResolveConditions;
+      if (value === undefined || value === null) return;
+      const options = { allowLegacy: allowLegacyRecovery };
+      const fitsSomeKind = RECOVERY_CONDITION_KINDS.some((kind) => recoveryConditionProblem(kind, value, options) === null);
+      const problem = v.kind
+        ? recoveryConditionProblem(v.kind, value, options)
+        : fitsSomeKind ? null : `autoResolveConditions does not match any of: ${RECOVERY_CONDITION_KINDS.join(', ')}`;
+      if (problem) ctx.addIssue({ code: 'custom', path: ['autoResolveConditions'], message: problem });
+    })
     .refine(
       (v) => {
         if (!v.kind) return true;
@@ -421,9 +497,10 @@ export const createMonitorDefinitionSchema = refineDefinition(
     ownerScope: z.enum(['organization', 'partner']).default('organization'),
     orgId: z.string().uuid().optional(),
   }),
+  { allowLegacyRecovery: false },
 );
 
-export const updateMonitorDefinitionSchema = refineDefinition(baseDefinition.partial());
+export const updateMonitorDefinitionSchema = refineDefinition(baseDefinition.partial(), { allowLegacyRecovery: true });
 
 export type CreateMonitorDefinitionInput = z.infer<typeof createMonitorDefinitionSchema>;
 export type UpdateMonitorDefinitionInput = z.infer<typeof updateMonitorDefinitionSchema>;

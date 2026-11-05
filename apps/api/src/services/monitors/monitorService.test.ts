@@ -1060,3 +1060,75 @@ describe('per-monitor PSA board override (#10528, W2-A)', () => {
     expect(await getMonitorDefinition('monitor-1', auth())).toMatchObject({ psaBoardId: null });
   });
 });
+
+describe('recovery condition is checked against the MERGED kind (alert re-arm W3, #10935)', () => {
+  const EVENT_LOG_CONDITION = { category: 'application', level: 'warning', countThreshold: 1, windowMinutes: 60 };
+  const RECOVERY = { category: 'application', level: 'info', countThreshold: 1, windowMinutes: 60 };
+  const RAW_LEAF = { type: 'event_log', category: 'application', level: 'info', countThreshold: 1, windowMinutes: 60 };
+  const eventLogRow = (overrides: Record<string, unknown> = {}) =>
+    existingRow({ kind: 'event_log', condition: EVENT_LOG_CONDITION, ...overrides });
+  const patch = (body: Record<string, unknown>) =>
+    updateMonitorDefinition('monitor-1', body as UpdateMonitorDefinitionInput, auth());
+
+  // No real transaction body is needed: reaching the transaction is what proves validation passed.
+  beforeEach(() => {
+    dbMock.transaction.mockReset();
+    dbMock.transaction.mockImplementation((async () => ({ id: 'monitor-1' })) as never);
+  });
+
+  it('create refuses #10935\'s shape even when a caller skipped the schema', async () => {
+    await expect(createMonitorDefinition(
+      input({ kind: 'event_log', condition: EVENT_LOG_CONDITION, autoResolveConditions: { conditions: [RAW_LEAF] } }),
+      auth(),
+    )).rejects.toBeInstanceOf(MonitorValidationError);
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('a recovery-only patch on a cpu monitor is refused, though the schema cannot see the kind', async () => {
+    mockExisting(existingRow());
+    await expect(patch({ autoResolveConditions: RECOVERY })).rejects.toThrow(/autoResolveConditions/);
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('a recovery-only patch on an event_log monitor is accepted', async () => {
+    mockExisting(eventLogRow());
+    await patch({ autoResolveConditions: RECOVERY });
+    expect(dbMock.transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('changing the kind away from event_log re-checks the stored kind-shaped value', async () => {
+    mockExisting(eventLogRow({ autoResolveConditions: RECOVERY }));
+    await expect(patch({ kind: 'cpu', condition: { operator: 'gt', value: 90 } })).rejects.toThrow(/autoResolveConditions/);
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('changing the kind and clearing the recovery condition in one patch is accepted', async () => {
+    mockExisting(eventLogRow({ autoResolveConditions: RECOVERY }));
+    await patch({ kind: 'cpu', condition: { operator: 'gt', value: 90 }, autoResolveConditions: null });
+    expect(dbMock.transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('a stored raw blob survives a kind change: it was never kind-shaped', async () => {
+    mockExisting(eventLogRow({ autoResolveConditions: RAW_LEAF }));
+    await patch({ kind: 'cpu', condition: { operator: 'gt', value: 90 } });
+    expect(dbMock.transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unrelated edit never re-judges a stored value, even one that could not be saved today', async () => {
+    mockExisting(eventLogRow({ autoResolveConditions: { conditions: [RAW_LEAF] } }));
+    await patch({ name: 'Renamed', kind: 'event_log' });
+    expect(dbMock.transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('a raw blob sent in a patch must be one the condition handlers accept', async () => {
+    mockExisting(eventLogRow());
+    await expect(patch({ autoResolveConditions: { type: 'no_such_handler' } })).rejects.toThrow(/autoResolveConditions/);
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('an unchanged raw blob sent back in a patch is accepted', async () => {
+    mockExisting(eventLogRow({ autoResolveConditions: RAW_LEAF }));
+    await patch({ autoResolveConditions: RAW_LEAF });
+    expect(dbMock.transaction).toHaveBeenCalledTimes(1);
+  });
+});

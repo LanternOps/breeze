@@ -59,6 +59,13 @@ export interface MonitorKindSpec<C = Record<string, unknown>> {
    * on it without re-deriving the handler-type list.
    */
   agentDelivered: boolean;
+  /**
+   * True when this kind can have an explicit recovery condition, authored in
+   * `conditionSchema`'s shape and compiled through `toAlertCondition`. Must match
+   * `RECOVERY_CONDITION_KINDS` in `@breeze/shared`. Every other kind clears on
+   * the inverse of its trigger.
+   */
+  recoverySupported?: boolean;
 }
 
 /** Thrown by `getMonitorKindSpec` for an unknown kind and by `applyOverrides` when a merged override fails re-validation. */
