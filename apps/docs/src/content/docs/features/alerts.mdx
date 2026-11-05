@@ -57,10 +57,17 @@ From v0.126.0:
   alerted on. A new alert needs at least one matching event newer than those,
   and a recovery event clears the alert only if it is newer than the trigger.
 
+In releases after v0.126.0, monitor alerts take auto-resolve, re-arm and cooldown
+from the monitor, then its organization's default, then the partner default. An alert keeps the values it
+opened with, and its page shows them, for example _Re-arms on new evidence ·
+cooldown 5 min (partner default)_. See
+[Alert lifecycle](/features/monitors/#alert-lifecycle) for where to set them and
+how to name the event that clears an alert.
+
 ## Monitors
 
-Open **Alerts → Monitors** to create a condition, choose its severity and noise
-settings, add device-bound responses, and choose delivery and escalation.
+Open **Alerts → Monitors** to create a condition, choose its severity and
+lifecycle settings, add device-bound responses, and choose delivery and escalation.
 Attach the monitor to a configuration policy and assign that policy to devices.
 See [Monitors](/features/monitors/) for kinds, deployment and legacy retirement.
 
