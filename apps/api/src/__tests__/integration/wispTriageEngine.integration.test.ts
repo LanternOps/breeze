@@ -418,7 +418,7 @@ describe('flag off', () => {
 
     expect(await processWakeTick(new Date())).toEqual({
       grantsTicked: 0, watchesFired: 0, staleTicketsPublished: 0, watchesStopped: 0,
-      grantsPaused: 0, grantsResumed: 0, ticketClustersOpened: 0, incidentsOpened: 0,
+      grantsPaused: 0, grantsResumed: 0, ticketClustersOpened: 0, incidentsOpened: 0, checkInsRefired: 0,
     });
     await handleWispWakeEvent(alertEvent(t.orgA, randomUUID()));
 

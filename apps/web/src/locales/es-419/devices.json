@@ -1485,6 +1485,7 @@
     "cancel": "Cancelar",
     "editDisplayName": "Editar nombre para mostrar",
     "serialNumber": "Número de serie",
+    "productSku": "Número de producto",
     "manufacturer": "Fabricante",
     "model": "Modelo",
     "deviceRole": "Función del dispositivo",
@@ -1654,6 +1655,7 @@
       "ram": "RAM %",
       "lastSeen": "Visto por última vez",
       "serial": "N.º de serie",
+      "productSku": "Número de producto",
       "assetTag": "Etiqueta de activo",
       "location": "Ubicación",
       "source": "Origen"
@@ -1671,6 +1673,7 @@
       "ram": "Ordenar por uso de RAM",
       "lastSeen": "Ordenar por última hora vista",
       "serial": "Ordenar por número de serie",
+      "productSku": "Ordenar por número de producto",
       "assetTag": "Ordenar por etiqueta de activo",
       "location": "Ordenar por ubicación",
       "source": "Ordenar por origen"
@@ -2769,7 +2772,8 @@
       "bulkMoveSiteNotMovedForbidden": "{{devices}} (no tienes acceso a su sitio ni al sitio de destino)",
       "bulkMoveSiteNotMovedNotFound": "{{devices}} (ya no se encuentra; es posible que se haya eliminado)",
       "bulkMoveSiteNotMovedError": "{{devices}} (se produjo un error inesperado; vuelve a intentarlo)",
-      "deviceMovedToSite": "{{hostname}} se movió a un nuevo sitio"
+      "deviceMovedToSite": "{{hostname}} se movió a un nuevo sitio",
+      "bulkWakeResult": "Enviado a {{sent}}, omitidos {{skipped}}"
     },
     "tryAgain": "Intentar otra vez",
     "unknownDevice": "Desconocido",
@@ -2813,7 +2817,18 @@
     "emptyOrgTitleUnnamed": "Todavía no hay dispositivos en esta organización",
     "emptyOrgDescription": "Instala el agente en un equipo de esta organización para empezar a supervisarlo, o cambia a todas las organizaciones para ver el resto de tu flota.",
     "viewAllOrganizations": "Ver todas las organizaciones",
-    "importFromRmmShort": "Importar"
+    "importFromRmmShort": "Importar",
+    "wakeSkipReasons": {
+      "online": "ya en línea",
+      "relayUnavailable": "sin agente en línea en su sitio",
+      "missingMac": "sin dirección MAC registrada (el agente aún no se ha conectado)",
+      "missingSubnet": "sin historial IPv4 utilizable",
+      "ipv6": "solo con historial IPv6",
+      "relayDisconnected": "conexión del agente de retransmisión interrumpida durante el envío — reintentar",
+      "missingTarget": "no encontrados o acceso denegado",
+      "removed": "eliminados",
+      "invalidRelay": "con selección de agente de retransmisión no válida"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Agregar filtro",

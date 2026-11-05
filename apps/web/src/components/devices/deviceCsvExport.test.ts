@@ -64,6 +64,19 @@ describe('deviceCsvExport (#9726)', () => {
     ]);
   });
 
+  it('exports the product number for agent rows only (#9593)', () => {
+    const agent = dev({ hardware: { productSku: '5S3F8EA#ABB' } });
+    const manual = dev({ deviceClass: 'manual', hardware: { productSku: 'leak' } });
+    const network = dev({ deviceClass: 'network', hardware: { productSku: 'leak' } });
+    const csv = build([agent, manual, network], ['productSku']);
+    expect(rows(csv)).toEqual([
+      csvRow(['Device', 'Product Number']),
+      csvRow(['web-01', '5S3F8EA#ABB']),
+      csvRow(['web-01', '']),
+      csvRow(['web-01', '']),
+    ]);
+  });
+
   it('exports dates as ISO and blanks missing or unparsable ones', () => {
     const csv = build(
       [dev({ lastSeen: '2026-10-01T12:00:00Z', enrolledAt: undefined }), dev({ lastSeen: 'garbage', enrolledAt: '2026-01-02T03:04:05Z' })],

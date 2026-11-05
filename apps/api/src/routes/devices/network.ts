@@ -294,17 +294,24 @@ networkRoutes.get(
         // toUnifiedListShape's hostname precedence and status derivation.
         source: discoveredAssets.source,
         url: discoveredAssets.url,
+        // The correlation goes through eq(), not bare ${column} chunks: a
+        // single-table select strips qualifiers from direct chunks, which bound
+        // `asset_id = id` to the inner table and read false for every asset (#9692).
         snmpMonitoringEnabled: sql<boolean>`exists (
           select 1 from ${snmpDevices}
-          where ${snmpDevices.assetId} = ${discoveredAssets.id}
-            and ${snmpDevices.orgId} = ${discoveredAssets.orgId}
-            and ${snmpDevices.isActive} = true
+          where ${and(
+            eq(snmpDevices.assetId, discoveredAssets.id),
+            eq(snmpDevices.orgId, discoveredAssets.orgId),
+            eq(snmpDevices.isActive, true),
+          )}
         )`,
         networkMonitoringEnabled: sql<boolean>`exists (
           select 1 from ${networkMonitors}
-          where ${networkMonitors.assetId} = ${discoveredAssets.id}
-            and ${networkMonitors.orgId} = ${discoveredAssets.orgId}
-            and ${networkMonitors.isActive} = true
+          where ${and(
+            eq(networkMonitors.assetId, discoveredAssets.id),
+            eq(networkMonitors.orgId, discoveredAssets.orgId),
+            eq(networkMonitors.isActive, true),
+          )}
         )`,
       })
       .from(discoveredAssets)

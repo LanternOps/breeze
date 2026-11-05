@@ -1485,6 +1485,7 @@
     "cancel": "Abbrechen",
     "editDisplayName": "Anzeigenamen bearbeiten",
     "serialNumber": "Seriennummer",
+    "productSku": "Produktnummer",
     "manufacturer": "Hersteller",
     "model": "Modell",
     "deviceRole": "Geräterolle",
@@ -1654,6 +1655,7 @@
       "ram": "RAM %",
       "lastSeen": "Zuletzt gesehen",
       "serial": "Seriennummer",
+      "productSku": "Produktnummer",
       "assetTag": "Asset-Tag",
       "location": "Standort",
       "source": "Quelle"
@@ -1671,6 +1673,7 @@
       "ram": "Nach RAM-Auslastung sortieren",
       "lastSeen": "Sortieren nach der zuletzt gesehenen Zeit",
       "serial": "Nach Seriennummer sortieren",
+      "productSku": "Nach Produktnummer sortieren",
       "assetTag": "Nach Asset-Tag sortieren",
       "location": "Nach Standort sortieren",
       "source": "Nach Quelle sortieren"
@@ -2770,7 +2773,8 @@
       "bulkMoveSiteNotMovedForbidden": "{{devices}} (kein Zugriff auf den aktuellen Standort oder den Zielstandort)",
       "bulkMoveSiteNotMovedNotFound": "{{devices}} (nicht mehr gefunden; das Gerät wurde möglicherweise gelöscht)",
       "bulkMoveSiteNotMovedError": "{{devices}} (ein unerwarteter Fehler ist aufgetreten; bitte erneut versuchen)",
-      "deviceMovedToSite": "{{hostname}} an einen neuen Standort verschoben"
+      "deviceMovedToSite": "{{hostname}} an einen neuen Standort verschoben",
+      "bulkWakeResult": "An {{sent}} gesendet, {{skipped}} übersprungen"
     },
     "tryAgain": "Versuchen Sie es erneut",
     "unknownDevice": "Unbekannt",
@@ -2813,7 +2817,18 @@
     "emptyOrgTitleUnnamed": "Noch keine Geräte in dieser Organisation",
     "emptyOrgDescription": "Installieren Sie den Agent auf einem Rechner dieser Organisation, um ihn zu überwachen, oder wechseln Sie zu allen Organisationen, um den Rest Ihrer Flotte zu sehen.",
     "viewAllOrganizations": "Alle Organisationen anzeigen",
-    "importFromRmmShort": "Importieren"
+    "importFromRmmShort": "Importieren",
+    "wakeSkipReasons": {
+      "online": "bereits online",
+      "relayUnavailable": "ohne erreichbaren Agenten am Standort",
+      "missingMac": "ohne gespeicherte MAC-Adresse (Agent hat sich noch nicht gemeldet)",
+      "missingSubnet": "ohne nutzbare IPv4-Daten",
+      "ipv6": "nur mit IPv6-Daten",
+      "relayDisconnected": "Relay-Verbindung beim Senden getrennt — erneut versuchen",
+      "missingTarget": "nicht gefunden oder Zugriff verweigert",
+      "removed": "entfernt",
+      "invalidRelay": "mit ungültiger Relay-Auswahl"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Filter hinzufügen",

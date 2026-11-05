@@ -13,7 +13,7 @@
  * spelling.
  *
  * W02a (#10212): a caller that passes `post` (only `notifyUser`: brief, nudge,
- * digest) gets the thread post written in the SAME system-context callback
+ * digest, check-in) gets the thread post written in the SAME system-context callback
  * as the notification, so both commit or neither does, before any push. The
  * other notices (budget, orphaned watches, assessment digest) pass no post and
  * never become posts.

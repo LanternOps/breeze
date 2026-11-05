@@ -107,6 +107,17 @@ describe('partner-export child UPDATE triggers lock only on material change', ()
       .set({ memorySoldered: true }).where(eq(deviceHardware.deviceId, f.deviceId)))).resolves.toEqual([f.orgId]);
   });
 
+  // #9593: the material-change trigger diffs the whole row minus an excluded
+  // list, so a new column is material without a trigger change. This pins it:
+  // a product_sku change must advance the partner inventory watermark.
+  runDb('a product_sku-only device_hardware update is material', async () => {
+    const f = await seed();
+    await expect(orgLocksTakenBy((tx) => tx.update(deviceHardware)
+      .set({ productSku: '5S3F8EA#ABB' }).where(eq(deviceHardware.deviceId, f.deviceId)))).resolves.toEqual([f.orgId]);
+    await expect(orgLocksTakenBy((tx) => tx.update(deviceHardware)
+      .set({ productSku: '5S3F8EA#ABB' }).where(eq(deviceHardware.deviceId, f.deviceId)))).resolves.toEqual([]);
+  });
+
   runDb('a last_seen_at-only discovered_assets update takes no org lock; a material one does', async () => {
     const f = await seed();
     await expect(orgLocksTakenBy((tx) => tx.update(discoveredAssets)

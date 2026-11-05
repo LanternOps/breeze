@@ -39,7 +39,16 @@ Breeze removes only its own isolation rules on release. Other firewall or EDR is
 
 ### Windows recovery, uninstall, and upgrade
 
-The separate `breeze-isolation-recovery.exe` component handles provisional rollback, expiry, and boot recovery even when the main agent cannot run. Its installation path is `<agent install directory>\isolation-recovery\<version>\breeze-isolation-recovery.exe`, alongside the protected agent installation. Versions are installed side by side and are never overwritten in place. An unresolved episode keeps its scheduled tasks pinned to its journaled recovery path. Signature verification and a successful self-test are required before task actions can adopt a version. Strict Windows signature trust also means unsigned self-host recovery binaries cannot become ready.
+The separate `breeze-isolation-recovery.exe` component handles provisional rollback, expiry, and boot recovery even when the main agent cannot run. Its installation path is `<agent install directory>\isolation-recovery\<version>\breeze-isolation-recovery.exe`, alongside the protected agent installation. Versions are installed side by side and are never overwritten in place. An unresolved episode keeps its scheduled tasks pinned to its journaled recovery path. A version must pass trust verification and its self-test before task actions can adopt it.
+
+Self-host agents trust the recovery binary through the signed release manifest hash; hosted editions require Authenticode. Public self-host Windows builds ship unsigned, so a self-host agent checks the executable's SHA-256 against the `breeze-isolation-recovery-windows-<arch>.exe` entry in the Ed25519-signed release manifest for that exact version. The manifest is stored as `release-manifest.json` in the same version directory, and its signature is checked against the same keys the agent's updater trusts, on every check. Any of these reports `recovery_untrusted`, and the device is not ready:
+
+- the manifest is missing or its signature does not verify;
+- the manifest is for a different version;
+- the manifest has no entry for the recovery executable;
+- the executable's hash does not match the entry.
+
+An unsigned binary is never trusted just because it is present. A device made ready this way reports `self_host_manifest_hash` as its readiness detail. Like the rest of Windows isolation, this path is off by default and inactive in this release.
 
 The agent's self-uninstall and the Windows MSI uninstall release Breeze-owned isolation rules first. If release cannot be confirmed, uninstall fails before removing the agent files or recovery state. A clean, never-isolated device can still uninstall normally. The detached Windows teardown script checks release again before stopping or deleting services.
 

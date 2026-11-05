@@ -362,6 +362,8 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_reliability', 'device_reliability_baselines', 'device_reliability_history', 'device_sessions', 'device_software_inventory_state',
   'device_time_daily',
   'device_time_status',
+  'device_wake_attempts',
+  'device_wake_status',
   'device_vulnerabilities', 'device_warranty',
   'device_workload_runtimes', 'device_workloads',
   'dns_event_aggregations', 'dns_security_events',
@@ -461,6 +463,8 @@ export const DEVICE_ORG_FK_CASCADE_TABLES: readonly string[] = [
   'device_restore_point_attempts',
   // #6960 W03 — composite (device_id, org_id) FK ON UPDATE CASCADE.
   'security_agent_device_status',
+  'device_wake_attempts',
+  'device_wake_status',
 ];
 
 export function getDeviceOrgDenormalizedTables(): readonly string[] {
@@ -708,6 +712,8 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'device_hardware_health',
   'device_time_daily',
   'device_time_status',
+  'device_wake_attempts',
+  'device_wake_status',
   'device_network', 'device_ip_history', 'device_disks', 'device_memory_modules',
   'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',
   // Restore-checkpoint attempt ledger (#4755) — FK (device_id, org_id) ->
@@ -1367,6 +1373,7 @@ coreRoutes.get(
         ramTotalMb: deviceHardware.ramTotalMb,
         diskTotalGb: deviceHardware.diskTotalGb,
         serialNumber: deviceHardware.serialNumber,
+        productSku: deviceHardware.productSku,
         // Reliability headline score (#1720) — surfaced as a sortable list
         // column. device_reliability is org-scoped (RLS shape #1), so the
         // leftJoin stays tenant-safe; null when no score computed yet.
@@ -1605,7 +1612,8 @@ coreRoutes.get(
           cpuCores: d.cpuCores,
           ramTotalMb: d.ramTotalMb,
           diskTotalGb: d.diskTotalGb,
-          serialNumber: d.serialNumber
+          serialNumber: d.serialNumber,
+          productSku: d.productSku
         },
         // Reliability column (#1720): null when the device has no computed
         // score yet (no device_reliability row) — the list renders a dash.

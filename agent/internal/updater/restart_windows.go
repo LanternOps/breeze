@@ -223,11 +223,23 @@ func buildRestartScript(opts restartScriptOptions) string {
 		// Success path: start the service.
 		"  Start-Service -Name '"+serviceName+"'",
 		"} catch {",
+		// Nothing in this block may abort it before the closing Start-Service.
+		// Under the script-wide 'Stop' preference a failed Out-File (TEMP
+		// unwritable, disk full) would end the script and leave the service
+		// stopped; under 'Continue' it only drops the log (#9751).
+		"  $ErrorActionPreference = 'Continue'",
 		// Failure path: log structured diagnostics. ${env:TEMP} always exists
 		// on Windows (unlike C:\ProgramData\Breeze, which may not exist yet
 		// on a fresh install — see #609 / HardenProgramDataAcl sequencing).
-		"  $stamp = [int][double]::Parse((Get-Date -UFormat %s))",
-		"  $logPath = Join-Path $env:TEMP (\"breeze-update-failure-$stamp.log\")",
+		// Culture-invariant stamp. `[double]::Parse((Get-Date -UFormat %s))`
+		// throws on hosts whose number format rejects "." (PowerShell 5.1
+		// emits a fractional value), which aborted this catch block before
+		// the log and the Start-Service below (#9751).
+		"  $stamp = [DateTime]::UtcNow.Ticks",
+		// The heartbeat reads this file after a swap that did not take
+		// (heartbeat/update_outcome.go): keep the prefix and the
+		// "operation:" / "exception:" lines in step with that parser.
+		"  $logPath = Join-Path $env:TEMP (\""+UpdateHelperFailureLogPrefix+"$stamp.log\")",
 		"  $op = if ($_.InvocationInfo) { $_.InvocationInfo.Line } else { '<unknown>' }",
 		"  $msg = @(",
 		"    \"Breeze update-helper failure at $(Get-Date -Format o)\",",

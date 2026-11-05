@@ -97,11 +97,12 @@ const summary: ThreatDetectionSummary = {
 beforeEach(() => {
   textCalls.length = 0;
   autoTable.mockClear();
-  // downloadBlob touches the DOM; jsdom supplies it, but the object URL does not.
-  if (!URL.createObjectURL) {
-    Object.defineProperty(URL, 'createObjectURL', { value: () => 'blob:x', writable: true });
-    Object.defineProperty(URL, 'revokeObjectURL', { value: () => undefined, writable: true });
-  }
+  // downloadBlob touches the DOM. Stub the object-URL pair unconditionally:
+  // jsdom >= 30.1 implements createObjectURL natively (and throws on a Blob
+  // that is not a jsdom impl), so a conditional `if (!URL.createObjectURL)`
+  // guard skips the stub and the real implementation throws `_buffer` errors.
+  Object.defineProperty(URL, 'createObjectURL', { value: () => 'blob:x', writable: true, configurable: true });
+  Object.defineProperty(URL, 'revokeObjectURL', { value: () => undefined, writable: true, configurable: true });
 });
 
 describe('exportReport: threat_detection_review (staff/browser path)', () => {

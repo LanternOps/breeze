@@ -456,6 +456,8 @@ export const deviceHardware = pgTable('device_hardware', {
   diskTotalGb: integer('disk_total_gb'),
   gpuModel: varchar('gpu_model', { length: 255 }),
   serialNumber: varchar('serial_number', { length: 100 }),
+  // #9593: SMBIOS system SKU (HP's product number). NULL until an agent reports one.
+  productSku: varchar('product_sku', { length: 100 }),
   manufacturer: varchar('manufacturer', { length: 255 }),
   model: varchar('model', { length: 255 }),
   motherboardManufacturer: varchar('motherboard_manufacturer', { length: 255 }),
@@ -517,10 +519,11 @@ export const deviceNetwork = pgTable('device_network', {
   publicIp: varchar('public_ip', { length: 45 }),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
-  // Every reader of this table filters by device_id (device-detail /network,
+  // Device-detail readers filter by device_id (device-detail /network,
   // cascade delete, the Devices-list LAN IP lookup). See migration
   // 2026-08-07-device-network-device-id-index.sql.
   deviceIdIdx: index('device_network_device_id_idx').on(table.deviceId),
+  orgMacIdx: index('device_network_org_mac_idx').on(table.orgId, sql`lower(${table.macAddress})`),
 }));
 
 export const deviceIpHistory = pgTable('device_ip_history', {
@@ -547,6 +550,7 @@ export const deviceIpHistory = pgTable('device_ip_history', {
 }, (table) => ({
   deviceIdIdx: index('device_ip_history_device_id_idx').on(table.deviceId),
   orgIdIdx: index('device_ip_history_org_id_idx').on(table.orgId),
+  orgMacIdx: index('device_ip_history_org_mac_idx').on(table.orgId, sql`lower(${table.macAddress})`),
   ipAddressIdx: index('device_ip_history_ip_address_idx').on(table.ipAddress),
   firstSeenIdx: index('device_ip_history_first_seen_idx').on(table.firstSeen),
   lastSeenIdx: index('device_ip_history_last_seen_idx').on(table.lastSeen),

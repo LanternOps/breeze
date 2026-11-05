@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mobileDeepLink, parseWispDeepLink, webDeepLink } from './nudgeLinks';
+import { mobileDeepLink, parseWispDeepLink, webCheckInLink, webDeepLink } from './nudgeLinks';
 
 const T = '3f2a1c9e-7b4d-4e8f-9a01-2b3c4d5e6f70';
 const C = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
@@ -13,6 +13,11 @@ describe('nudgeLinks', () => {
   it('builds the web link with the concern in the hash', () => {
     expect(webDeepLink('t1', null)).toBe('/ai/wisp/thread/t1');
     expect(webDeepLink('t1', 'c1')).toBe('/ai/wisp/thread/t1#concern=c1');
+  });
+
+  it('webCheckInLink formats /ai/wisp/thread/<t>#checkin=<c>', () => {
+    expect(webCheckInLink('t1', 'c1')).toBe('/ai/wisp/thread/t1#checkin=c1');
+    expect(webCheckInLink(T, C).startsWith('/')).toBe(true);
   });
 
   it('the web link satisfies the user_notifications relative-link CHECK', () => {

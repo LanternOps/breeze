@@ -32,6 +32,10 @@ function hasControlCharacters(value: string): boolean {
   });
 }
 
+// `.max(64)` counts code points (zod >=4.6), so up to 128 UTF-16 units. That is
+// deliberate: the agent's buildDescription (systemrestore/create.go) fits the
+// description into the [256]uint16 SRSetRestorePointW buffer itself, budgeting
+// 255 units (#9976).
 const labelPrefixSchema = z
   .string()
   .min(1)

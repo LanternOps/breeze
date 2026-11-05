@@ -135,4 +135,17 @@ describe('device_inventory filters.deviceIds (#5776)', () => {
     const manual = report.rows.find((r) => r.serialNumber === 'MANUAL-SN');
     expect(manual?.deviceId).toBeNull();
   });
+
+  it('selects productSku for agent rows and projects null for manual assets (#9593)', async () => {
+    queueSelects(
+      [{ ...deviceRow(DEVICE_A, 'host-a'), productSku: '5S3F8EA#ABB' }],
+      [{ name: 'Spare Laptop', serialNumber: 'MANUAL-SN', createdAt: new Date('2026-05-01T00:00:00.000Z') }],
+    );
+
+    const report = await generateDeviceInventoryReport(ORG_ID, {}, authority());
+
+    expect(Object.keys(vi.mocked(db.select).mock.calls[0]?.[0] ?? {})).toContain('productSku');
+    expect(report.rows.find((r) => r.deviceId === DEVICE_A)?.productSku).toBe('5S3F8EA#ABB');
+    expect(report.rows.find((r) => r.serialNumber === 'MANUAL-SN')?.productSku).toBeNull();
+  });
 });

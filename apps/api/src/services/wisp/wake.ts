@@ -12,6 +12,9 @@
  *   requestAssessment    the 60 s per-(grant, org) debounce: ONE delayed
  *                        BullMQ job per pair is the window.
  *   pickRoundRobinOrg    pure: never-assessed orgs first, then the oldest.
+ *   enqueueCheckIn / removeCheckInJob / isCheckInJobLive
+ *                        the delayed `check-in` job of a Wisp check-in timer
+ *                        (#10991; services/wisp/checkIns.ts owns the rows).
  *
  * The 5-minute tick that drives floor ticks and watches lives in
  * jobs/wispWakeScheduler.ts, which also processes the delayed `assess` jobs.
@@ -47,17 +50,26 @@ const ASSESS_JOB_BACKOFF_MS = 30_000;
 
 export type WispAssessJobData = { grantId: string; orgId: string; reason: AssessmentReason } & DeterministicDigestHint;
 
+/** The delayed job that fires one `wisp_check_ins` row (jobs/wispWakeScheduler.ts processCheckInJob). */
+export const CHECK_IN_JOB = 'check-in';
+const CHECK_IN_JOB_ATTEMPTS = 3;
+const CHECK_IN_JOB_BACKOFF_MS = 30_000;
+
+export type WispCheckInJobData = { checkInId: string };
+
+type WakeQueueData = WispAssessJobData | WispCheckInJobData | Record<string, never>;
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (v: unknown): v is string => typeof v === 'string' && UUID_RE.test(v);
 
 /** Job states in which a job with this id still covers the window. */
 const LIVE_JOB_STATES = new Set(['waiting', 'delayed', 'active', 'prioritized', 'waiting-children']);
 
-let wakeQueue: Queue<WispAssessJobData | Record<string, never>> | null = null;
+let wakeQueue: Queue<WakeQueueData> | null = null;
 
-export function getWispWakeQueue(): Queue<WispAssessJobData | Record<string, never>> {
+export function getWispWakeQueue(): Queue<WakeQueueData> {
   if (!wakeQueue) {
-    wakeQueue = new Queue<WispAssessJobData | Record<string, never>>(WISP_WAKE_QUEUE, { connection: getBullMQConnection() });
+    wakeQueue = new Queue<WakeQueueData>(WISP_WAKE_QUEUE, { connection: getBullMQConnection() });
   }
   return wakeQueue;
 }
@@ -142,6 +154,75 @@ export async function requestAssessment(input: WispAssessJobData): Promise<'queu
     removeOnFail: { count: 100 },
   });
   return 'queued';
+}
+
+// ---------------------------------------------------------------------------
+// Check-in timers (#10991)
+// ---------------------------------------------------------------------------
+
+/** `wisp-check-in-${checkInId}` — no ':' (BullMQ reserves it). Stored as `wisp_check_ins.job_id`. */
+export function checkInJobId(checkInId: string): string {
+  return `wisp-check-in-${checkInId}`;
+}
+
+/**
+ * Add the delayed `check-in` job for one row. A LIVE job with this id already
+ * covers it, so that case adds nothing. A retained completed / failed record
+ * would make BullMQ no-op the add, so it is removed first (the
+ * requestAssessment precedent). If that removal fails this throws rather than
+ * add: the add would be silently ignored, and the caller (create / reconcile)
+ * must see that the row is still not queued. Callers enqueue only outside a
+ * DB context (#1105).
+ */
+export async function enqueueCheckIn(checkInId: string, delayMs: number): Promise<void> {
+  const queue = getWispWakeQueue();
+  const jobId = checkInJobId(checkInId);
+
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (LIVE_JOB_STATES.has(state)) return;
+    try {
+      await existing.remove();
+    } catch (err) {
+      throw new Error(`[wisp-wake] could not remove the finished check-in job ${jobId} (state ${state}): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  const data: WispCheckInJobData = { checkInId };
+  await queue.add(CHECK_IN_JOB, data, {
+    jobId,
+    delay: Number.isFinite(delayMs) ? Math.max(0, Math.trunc(delayMs)) : 0,
+    attempts: CHECK_IN_JOB_ATTEMPTS,
+    backoff: { type: 'exponential', delay: CHECK_IN_JOB_BACKOFF_MS },
+    removeOnComplete: true,
+    removeOnFail: { count: 100 },
+  });
+}
+
+/**
+ * Remove the row's job. False when there is none, or when BullMQ refuses (an
+ * active job is locked by its worker): fireCheckIn's compare-and-set on
+ * `scheduled` is what makes a cancelled row stay cancelled, not this removal.
+ */
+export async function removeCheckInJob(checkInId: string): Promise<boolean> {
+  const jobId = checkInJobId(checkInId);
+  const job = await getWispWakeQueue().getJob(jobId);
+  if (!job) return false;
+  try {
+    await job.remove();
+    return true;
+  } catch (err) {
+    console.warn('[wisp-wake] could not remove a check-in job', { jobId, err });
+    return false;
+  }
+}
+
+/** True while the row's job is waiting, delayed (incl. a retry backoff), active, prioritized or waiting on children. */
+export async function isCheckInJobLive(checkInId: string): Promise<boolean> {
+  const job = await getWispWakeQueue().getJob(checkInJobId(checkInId));
+  if (!job) return false;
+  return LIVE_JOB_STATES.has(await job.getState());
 }
 
 // ---------------------------------------------------------------------------
