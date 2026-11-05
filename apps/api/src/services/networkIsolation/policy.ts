@@ -1,5 +1,6 @@
-import { agentAcceptsPolicyAllow, containmentExtraAllowToEntries, type IsolationAllowEntry } from '@breeze/shared';
+import { agentAcceptsPolicyAllow, containmentExtraAllowToEntries, type IsolationAllowEntry, type NetworkIsolationReport } from '@breeze/shared';
 import { withDbTransaction } from '../../db';
+import type { DeviceNetworkIsolation } from '../../db/schema';
 import { resolveContainmentPolicy } from '../featureConfigResolver';
 
 /** What the containment policy adds to one device's allowlist (#10100, spec §3.4). */
@@ -26,4 +27,85 @@ export async function readIsolationPolicy(device: { id: string; networkIsolation
   const policy = await withDbTransaction(() => resolveContainmentPolicy(device.id));
   const extras = containmentExtraAllowToEntries(policy.extraAllow);
   return extras.length > 0 ? { extras, revision: policy.revision } : NO_ISOLATION_POLICY;
+}
+
+/**
+ * True while the server's policy for an isolated episode is not the one the agent last committed. Read
+ * this, not the state, to know a change has landed: a failed refresh keeps the old rules and still
+ * reports `verified` at the new generation. The agent journals `policy_applied` / `policy_removed` only
+ * when the rules commit, so those events are the evidence.
+ */
+export function isolationPolicyPending(row: Pick<DeviceNetworkIsolation, 'desiredState' | 'allowSnapshotRevision' | 'appliedPolicyRevision'>): boolean {
+  return row.desiredState === 'isolated' && (row.allowSnapshotRevision ?? null) !== (row.appliedPolicyRevision ?? null);
+}
+
+/** The agent's closed set (agent/internal/isolation/policy.go). Anything else is recorded as `unknown`. */
+const POLICY_REJECT_REASONS: ReadonlySet<string> = new Set(['revision_missing', 'revision_invalid', 'revision_regressed', 'generation_not_advanced', 'spec_invalid']);
+const POLICY_JOURNAL_TYPES: ReadonlySet<string> = new Set(['policy_applied', 'policy_removed', 'policy_rejected', 'refresh_reverted']);
+const WIRE_REVISION = /^[\x21-\x7e]{1,128}$/;
+const WIRE_CODE = /^[a-z0-9_]{1,64}$/;
+
+export interface PolicyEventProgress {
+  policyEventSeq: number;
+  /** Absent when no commit was reported; null when the agent removed its policy. */
+  appliedPolicyRevision?: string | null;
+  /** True when the agent committed a policy change in these events. */
+  committed: boolean;
+  timeline: { type: string; metadata: Record<string, unknown> }[];
+}
+
+type JournalEvent = NonNullable<NetworkIsolationReport['events']>[number];
+
+function relevantPolicyEvents(row: Pick<DeviceNetworkIsolation, 'id'>, report: NetworkIsolationReport): JournalEvent[] {
+  const bound = report.journalSeq ?? Number.POSITIVE_INFINITY;
+  return (report.events ?? [])
+    .filter(event => POLICY_JOURNAL_TYPES.has(event.type) && event.seq <= bound && (!event.isolationId || event.isolationId === row.id))
+    .sort((a, b) => a.seq - b.seq);
+}
+
+/** Whether this report holds policy events the server has not read. */
+export function hasUnreadPolicyEvents(row: Pick<DeviceNetworkIsolation, 'id' | 'policyEventSeq'>, report: NetworkIsolationReport): boolean {
+  return relevantPolicyEvents(row, report).some(event => event.seq > (row.policyEventSeq ?? 0));
+}
+
+/**
+ * Translate the unread policy events of a report (spec §3.8). The agent resends its whole journal on
+ * every beat, so `policyEventSeq` marks how far the server has read. Agent text is never copied: a
+ * reason outside the closed set becomes `unknown`, and a malformed revision is not believed.
+ *
+ * A failed refresh retries every beat, so its revert is recorded once per generation, and only while a
+ * policy change is outstanding. Any other refresh reverting is not a policy event.
+ */
+export function readPolicyEvents(row: Pick<DeviceNetworkIsolation, 'id' | 'generation' | 'desiredState' | 'allowSnapshotRevision' | 'appliedPolicyRevision' | 'policyEventSeq'>, report: NetworkIsolationReport): PolicyEventProgress | null {
+  const events = relevantPolicyEvents(row, report);
+  const readTo = row.policyEventSeq ?? 0;
+  const unread = events.filter(event => event.seq > readTo);
+  if (unread.length === 0) return null;
+
+  const progress: PolicyEventProgress = { policyEventSeq: Math.max(readTo, ...unread.map(event => event.seq)), committed: false, timeline: [] };
+  for (const event of unread) {
+    const base = { journalSeq: event.seq, reportedGeneration: event.generation ?? null };
+    if (event.type === 'policy_applied') {
+      if (!event.detail || !WIRE_REVISION.test(event.detail)) continue;
+      progress.appliedPolicyRevision = event.detail;
+      progress.committed = true;
+      progress.timeline.push({ type: event.type, metadata: { ...base, revision: event.detail } });
+    } else if (event.type === 'policy_removed') {
+      progress.appliedPolicyRevision = null;
+      progress.committed = true;
+      progress.timeline.push({ type: event.type, metadata: { ...base, revision: event.detail && WIRE_REVISION.test(event.detail) ? event.detail : null } });
+    } else if (event.type === 'policy_rejected') {
+      progress.timeline.push({ type: event.type, metadata: { ...base, reason: event.detail && POLICY_REJECT_REASONS.has(event.detail) ? event.detail : 'unknown' } });
+    }
+  }
+
+  const applied = progress.appliedPolicyRevision === undefined ? row.appliedPolicyRevision : progress.appliedPolicyRevision;
+  if (isolationPolicyPending({ desiredState: row.desiredState, allowSnapshotRevision: row.allowSnapshotRevision, appliedPolicyRevision: applied })) {
+    const reverts = events.filter(event => event.type === 'refresh_reverted' && event.generation === row.generation);
+    const first = reverts[0];
+    if (first && first.seq > readTo) {
+      progress.timeline.push({ type: 'policy_refresh_reverted', metadata: { journalSeq: first.seq, reportedGeneration: first.generation ?? null, reason: first.detail && WIRE_CODE.test(first.detail) ? first.detail : 'unknown' } });
+    }
+  }
+  return progress;
 }

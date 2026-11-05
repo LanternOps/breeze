@@ -186,6 +186,14 @@ export async function writeAgentReport(tx: EpisodeTx, id: string, safeReport: Sa
   }).where(eq(deviceNetworkIsolations.id, id));
 }
 
+/** How far the agent's journal has been read for policy events, and what it says is committed. */
+export async function writePolicyEventProgress(tx: EpisodeTx, id: string, progress: { policyEventSeq: number; appliedPolicyRevision?: string | null }): Promise<void> {
+  await tx.update(deviceNetworkIsolations).set({
+    policyEventSeq: progress.policyEventSeq,
+    ...(progress.appliedPolicyRevision !== undefined ? { appliedPolicyRevision: progress.appliedPolicyRevision } : {}),
+  }).where(eq(deviceNetworkIsolations.id, id));
+}
+
 /** An episode without its break-glass ciphertext: safe to hand to a route or the AI. */
 export type EpisodeSummary = Omit<DeviceNetworkIsolation, 'breakGlassSecretEnc'>;
 

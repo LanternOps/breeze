@@ -8,10 +8,10 @@ import { captureException } from '../sentry';
 import { decryptSecret } from '../secretCrypto';
 import { columnAad } from '../encryptedColumnTransform';
 import { buildIsolationAllowlist, IsolationAllowlistError } from './allowlist';
-import { findHeartbeatEpisode, toEpisodeSnapshot, withEpisodeLock, writeEpisodeSnapshot, writeAgentReport, type EpisodeTx } from './episodeStore';
+import { findHeartbeatEpisode, toEpisodeSnapshot, withEpisodeLock, writeEpisodeSnapshot, writeAgentReport, writePolicyEventProgress, type EpisodeTx } from './episodeStore';
 import { applyEpisodeEvent, type EpisodeEvent } from './stateMachine';
 import { synchronizeEpisodeOutcome } from './outcome';
-import { readIsolationPolicy, type IsolationPolicy } from './policy';
+import { hasUnreadPolicyEvents, readIsolationPolicy, readPolicyEvents, type IsolationPolicy } from './policy';
 
 interface IsolationDevice { id: string; orgId: string; agentServerUrl?: string | null; networkIsolationVersion?: number | null }
 export const ISOLATION_SECRET_COLUMN = {
@@ -202,7 +202,8 @@ export async function reconcileContainmentReport(tx: EpisodeTx, device: Isolatio
   const ack = report.secretAckSeq !== undefined && report.secretAckSeq > 0 && report.journalSeq !== undefined && report.secretAckSeq <= report.journalSeq ? report.secretAckSeq : undefined;
   const safeReport = safeAgentReport(report);
   const sameState = report.isolationId && candidate.lastAgentReport?.isolationId && report.state === candidate.lastAgentReport.state;
-  if (report.isolationId && report.journalSeq <= candidate.lastJournalSeq && sameState) {
+  // A command result can advance the sequence past events only a heartbeat carries.
+  if (report.isolationId && report.journalSeq <= candidate.lastJournalSeq && sameState && !hasUnreadPolicyEvents(candidate, report)) {
     // Held generation is evidence even on a duplicate sequence (break-glass code generation).
     await writeAgentReport(tx, id, safeReport, ack);
     context.row = { ...candidate, lastAgentReport: safeReport, ...(ack !== undefined && candidate.breakGlassAckSeq === null ? { breakGlassAckSeq: ack } : {}) };
@@ -212,19 +213,30 @@ export async function reconcileContainmentReport(tx: EpisodeTx, device: Isolatio
     if (row.deviceId !== device.id || row.orgId !== device.orgId) return;
     const prev = toEpisodeSnapshot(row);
     const transition = applyEpisodeEvent(prev, reportEpisodeEvent(row, report, serverNow));
+    // Before the outcome: a rejection arrives on exactly the reports the state machine ignores, from an
+    // agent still holding the older generation it refused to leave.
+    const policyEvents = readPolicyEvents(row, report);
+    const policyPatch = policyEvents ? {
+      policyEventSeq: policyEvents.policyEventSeq,
+      ...(policyEvents.appliedPolicyRevision !== undefined ? { appliedPolicyRevision: policyEvents.appliedPolicyRevision } : {}),
+    } : {};
+    if (policyEvents) {
+      await writePolicyEventProgress(tx, row.id, policyEvents);
+      for (const entry of policyEvents.timeline) await journalIsolationEvent(tx, row, entry.type, serverNow, entry.metadata);
+    }
     const previousReport = row.lastAgentReport;
     const newEvidence = report.isolationId && (!previousReport?.isolationId || report.journalSeq !== previousReport.journalSeq || report.generation !== previousReport.generation || report.state !== previousReport.state);
     if ('ignored' in transition) {
       if (transition.ignored !== 'already_terminal' && newEvidence) await journalIsolationEvent(tx, row, 'isolation_report_ignored', serverNow, { reason: transition.ignored, reportedGeneration: report.isolationId ? report.generation : null, journalSeq: report.journalSeq });
       await writeAgentReport(tx, row.id, safeReport, ack);
-      context.row = { ...row, lastAgentReport: safeReport, ...(ack !== undefined && row.breakGlassAckSeq === null ? { breakGlassAckSeq: ack } : {}) };
+      context.row = { ...row, ...policyPatch, lastAgentReport: safeReport, ...(ack !== undefined && row.breakGlassAckSeq === null ? { breakGlassAckSeq: ack } : {}) };
       return;
     }
     if (!await writeEpisodeSnapshot(tx, row.id, prev, transition.next, serverNow)) throw new Error('isolation_snapshot_conflict');
     await synchronizeEpisodeOutcome(tx, row, prev, transition.next, serverNow);
-    if (report.isolationId && report.ruleDigest && previousReport?.isolationId && previousReport.ruleDigest && report.ruleDigest !== previousReport.ruleDigest) await journalIsolationEvent(tx, row, 'drift_reapplied', serverNow);
+    if (report.isolationId && report.ruleDigest && previousReport?.isolationId && previousReport.ruleDigest && report.ruleDigest !== previousReport.ruleDigest && !policyEvents?.committed) await journalIsolationEvent(tx, row, 'drift_reapplied', serverNow);
     await writeAgentReport(tx, row.id, safeReport, ack);
     if (prev.state !== transition.next.state && isUnresolvedTerminalIsolationState(transition.next.state)) await journalIsolationEvent(tx, row, transition.next.state, serverNow);
-    context.row = { ...row, ...transition.next, lastAgentReport: safeReport, ...(ack !== undefined && row.breakGlassAckSeq === null ? { breakGlassAckSeq: ack } : {}) };
+    context.row = { ...row, ...transition.next, ...policyPatch, lastAgentReport: safeReport, ...(ack !== undefined && row.breakGlassAckSeq === null ? { breakGlassAckSeq: ack } : {}) };
   });
 }

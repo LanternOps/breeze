@@ -144,6 +144,14 @@ describe('startNetworkIsolation', () => {
     expect(result).toHaveProperty('episodes.0.lastReportedGeneration', 2);
     expect(result).not.toHaveProperty('episodes.0.breakGlassSecretEnc');
   });
+  it('says whether a policy change is still waiting on the agent', async () => {
+    h.row = episode({ allowSnapshotRevision: 'c1:new', appliedPolicyRevision: 'c1:old' });
+    expect(await listDeviceIsolations(auth, deviceId)).toHaveProperty('episodes.0.policyPending', true);
+    h.row = episode({ allowSnapshotRevision: 'c1:new', appliedPolicyRevision: 'c1:new' });
+    expect(await listDeviceIsolations(auth, deviceId)).toHaveProperty('episodes.0.policyPending', false);
+    h.row = episode({ allowSnapshotRevision: 'c1:new', appliedPolicyRevision: 'c1:old' });
+    expect(await extendNetworkIsolation(auth, deviceId, isolationId, 24)).toHaveProperty('episode.policyPending', true);
+  });
   it('carries the readiness explanation in start eligibility', async () => {
     h.device.networkIsolationReady = false;
     h.device.networkIsolationUnsupportedReason = 'Firewall backend unavailable';

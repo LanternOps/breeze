@@ -19,12 +19,13 @@ vi.mock('./episodeStore', async (original) => ({
 }));
 vi.mock('../secretCrypto', () => ({ decryptSecret: vi.fn(() => Buffer.alloc(32, 7).toString('base64')) }));
 import { buildContainmentHeartbeatBlock, reconcileContainmentReport, storedContainmentHeartbeatBlock, __resetIsolationLogThrottleForTests } from './reconcile';
+import { isolationPolicyPending } from './policy';
 const id = '11111111-1111-4111-8111-111111111111';
 const device = { id: '22222222-2222-4222-8222-222222222222', orgId: '33333333-3333-4333-8333-333333333333', agentServerUrl: 'https://control.example.test' };
 const now = new Date('2026-10-31T12:00:00Z');
 const allow = [{ kind: 'host', host: 'control.example.test', ports: [443], proto: 'tcp', scope: 'breeze' }];
 const tx = {
-  update: vi.fn(() => ({ set: vi.fn((v) => { store.writes.push(v); if ('lastAgentReport' in v) Object.assign(store.row!, v); return { where: vi.fn(async () => undefined) }; }) })),
+  update: vi.fn(() => ({ set: vi.fn((v) => { store.writes.push(v); if ('lastAgentReport' in v || 'policyEventSeq' in v) Object.assign(store.row!, v); return { where: vi.fn(async () => undefined) }; }) })),
   insert: vi.fn(() => ({ values: vi.fn((v) => { store.writes.push(v); return { returning: async () => [{ id: 'alert-id' }] }; }) })),
 } as unknown as EpisodeTx;
 function row(desired = 'isolated'): DeviceNetworkIsolation {
@@ -380,6 +381,128 @@ describe('a revision change takes a new generation (#10100)', () => {
     const block = await buildContainmentHeartbeatBlock(tx, level3);
     expect(block.networkIsolation).toMatchObject({ generation: 3, policyRevision: 'c1:policy' });
     expect(store.row!.generation).toBe(3);
+  });
+});
+
+describe('policy journal events reach the episode timeline (#10100)', () => {
+  const level3 = { ...device, networkIsolationVersion: 3 };
+  const ev = (seq: number, type: string, detail?: string, generation: number | undefined = 2, isolationId: string | undefined = id) => ({ seq, at: now.toISOString(), type, detail, generation, isolationId });
+  const report = (journalSeq: number, events: unknown[], extra: Record<string, unknown> = {}) => ({ isolationId: id, generation: 2, journalSeq, state: 'applied', phase: 'committed', events, ...extra });
+  const timeline = () => store.writes.filter(v => 'timeline' in v).map(v => inspect(v, { depth: 8 }));
+  const withType = (type: string) => timeline().filter(entry => entry.includes(`'${type}'`) || entry.includes(`\\"${type}\\"`) || entry.includes(`"type":"${type}"`));
+
+  it('surfaces applied, removed and rejected once each, though the agent resends its journal', async () => {
+    const events = [ev(6, 'policy_applied', 'c1:new'), ev(7, 'policy_removed', 'c1:new'), ev(8, 'policy_rejected', 'revision_missing')];
+    for (const seq of [8, 8, 8]) await reconcileContainmentReport(tx, device, report(seq, events), now);
+    expect(withType('policy_applied')).toHaveLength(1);
+    expect(withType('policy_removed')).toHaveLength(1);
+    expect(withType('policy_rejected')).toHaveLength(1);
+    expect(timeline().join()).toContain('revision_missing');
+    expect(store.row).toMatchObject({ policyEventSeq: 8, appliedPolicyRevision: null });
+  });
+  it('tracks the revision the agent last committed', async () => {
+    await reconcileContainmentReport(tx, device, report(6, [ev(6, 'policy_applied', 'c1:new')]), now);
+    expect(store.row).toMatchObject({ appliedPolicyRevision: 'c1:new', policyEventSeq: 6 });
+    await reconcileContainmentReport(tx, device, report(7, [ev(6, 'policy_applied', 'c1:new'), ev(7, 'policy_removed', 'c1:new')]), now);
+    expect(store.row).toMatchObject({ appliedPolicyRevision: null, policyEventSeq: 7 });
+  });
+  it('reads events a command result already advanced the sequence past', async () => {
+    Object.assign(store.row!, { lastJournalSeq: 6, lastAgentReport: { isolationId: id, generation: 2, journalSeq: 6, state: 'applied', phase: 'committed', mechanism: null, ruleDigest: null } });
+    await reconcileContainmentReport(tx, device, report(6, [ev(6, 'policy_applied', 'c1:new')]), now);
+    expect(withType('policy_applied')).toHaveLength(1);
+    expect(store.row).toMatchObject({ appliedPolicyRevision: 'c1:new' });
+  });
+  it('surfaces a rejection from an agent still holding an older generation', async () => {
+    Object.assign(store.row!, { generation: 3 });
+    const rejected = report(6, [ev(6, 'policy_rejected', 'generation_not_advanced', 3)]);
+    for (let beat = 0; beat < 3; beat++) await reconcileContainmentReport(tx, device, rejected, now);
+    expect(withType('policy_rejected')).toHaveLength(1);
+    expect(store.row).toMatchObject({ policyEventSeq: 6, lastJournalSeq: 5 });
+  });
+  it('accepts a rejection journalled without an identity, and ignores another episode', async () => {
+    await reconcileContainmentReport(tx, device, report(7, [
+      { seq: 6, at: now.toISOString(), type: 'policy_rejected', detail: 'spec_invalid' },
+      ev(7, 'policy_applied', 'c1:foreign', 2, '99999999-9999-4999-8999-999999999999'),
+    ]), now);
+    expect(withType('policy_rejected')).toHaveLength(1);
+    expect(withType('policy_applied')).toHaveLength(0);
+    expect(store.row!.appliedPolicyRevision ?? null).toBeNull();
+  });
+  it('reads events on an absence report too', async () => {
+    await reconcileContainmentReport(tx, device, { isolationId: null, phase: 'none', journalSeq: 6, events: [ev(6, 'policy_rejected', 'revision_invalid')] }, now);
+    expect(withType('policy_rejected')).toHaveLength(1);
+  });
+  it('never copies agent prose: an unknown reason and a malformed revision do not pass through', async () => {
+    await reconcileContainmentReport(tx, device, report(7, [ev(6, 'policy_rejected', 'AGENT-PROSE drop table'), ev(7, 'policy_applied', 'has space AGENT-PROSE')]), now);
+    expect(inspect(store.writes, { depth: 8 })).not.toContain('AGENT-PROSE');
+    expect(timeline().join()).toContain('unknown');
+    expect(withType('policy_applied')).toHaveLength(0);
+    expect(store.row!.appliedPolicyRevision ?? null).toBeNull();
+    expect(store.row).toMatchObject({ policyEventSeq: 7 });
+  });
+  it('ignores an event past the reported journal sequence', async () => {
+    await reconcileContainmentReport(tx, device, report(6, [ev(7, 'policy_applied', 'c1:ahead')]), now);
+    expect(withType('policy_applied')).toHaveLength(0);
+    expect(store.row!.appliedPolicyRevision ?? null).toBeNull();
+  });
+  it('records progress even without an incident to journal on', async () => {
+    Object.assign(store.row!, { incidentId: null });
+    await reconcileContainmentReport(tx, device, report(6, [ev(6, 'policy_applied', 'c1:new')]), now);
+    expect(timeline()).toHaveLength(0);
+    expect(store.row).toMatchObject({ appliedPolicyRevision: 'c1:new', policyEventSeq: 6 });
+  });
+  it('writes nothing for a report with no policy events', async () => {
+    await reconcileContainmentReport(tx, device, report(6, [ev(6, 'refreshed')]), now);
+    expect(store.writes.filter(v => 'policyEventSeq' in v)).toHaveLength(0);
+  });
+
+  describe('a narrowing is done when the agent committed it, not when it says verified', () => {
+    const pendingNarrowing = () => { store.row = { ...row(), state: 'verified', generation: 3, allowSnapshot: allow, allowSnapshotRevision: null, appliedPolicyRevision: 'c1:held', policyEventSeq: 5, lastAgentReport: { isolationId: id, generation: 2, journalSeq: 5, state: 'verified', phase: 'committed', mechanism: null, ruleDigest: 'with-permit' } } as unknown as DeviceNetworkIsolation; };
+    const beat = (journalSeq: number, events: unknown[], ruleDigest: string) => report(journalSeq, events, { generation: 3, state: 'verified', ruleDigest });
+
+    it('a failed refresh leaves it pending, whatever the state says, and records the revert once per generation', async () => {
+      pendingNarrowing();
+      const reverted = [ev(6, 'refresh_reverted', 'apply_error', 3), ev(7, 'refresh_reverted', 'apply_error', 3)];
+      await reconcileContainmentReport(tx, device, beat(6, reverted.slice(0, 1), 'with-permit'), now);
+      await reconcileContainmentReport(tx, device, beat(7, reverted, 'with-permit'), now);
+      expect(store.row).toMatchObject({ state: 'verified', appliedPolicyRevision: 'c1:held' });
+      expect(isolationPolicyPending(store.row!)).toBe(true);
+      expect(withType('policy_refresh_reverted')).toHaveLength(1);
+      expect(withType('policy_removed')).toHaveLength(0);
+    });
+    it('the commit that finally lands completes it, and is not mislabelled as drift', async () => {
+      pendingNarrowing();
+      await reconcileContainmentReport(tx, device, beat(6, [ev(6, 'refresh_reverted', 'apply_error', 3)], 'with-permit'), now);
+      await reconcileContainmentReport(tx, device, beat(8, [ev(6, 'refresh_reverted', 'apply_error', 3), ev(7, 'refreshed', undefined, 3), ev(8, 'policy_removed', 'c1:held', 3)], 'narrowed'), now);
+      expect(store.row!.appliedPolicyRevision).toBeNull();
+      expect(isolationPolicyPending(store.row!)).toBe(false);
+      expect(withType('policy_removed')).toHaveLength(1);
+      expect(timeline().join()).not.toContain('drift_reapplied');
+    });
+    it('a revert with no policy change outstanding is not a policy event', async () => {
+      await reconcileContainmentReport(tx, device, report(6, [ev(6, 'refresh_reverted', 'apply_error')]), now);
+      expect(withType('policy_refresh_reverted')).toHaveLength(0);
+    });
+    it('a revert from an older generation does not speak for this change', async () => {
+      pendingNarrowing();
+      await reconcileContainmentReport(tx, device, beat(6, [ev(6, 'refresh_reverted', 'apply_error', 2)], 'with-permit'), now);
+      expect(withType('policy_refresh_reverted')).toHaveLength(0);
+    });
+    it('a revert reason outside the wire shape stays out of the timeline', async () => {
+      pendingNarrowing();
+      await reconcileContainmentReport(tx, device, beat(6, [ev(6, 'refresh_reverted', 'AGENT PROSE', 3)], 'with-permit'), now);
+      expect(withType('policy_refresh_reverted')).toHaveLength(1);
+      expect(inspect(store.writes, { depth: 8 })).not.toContain('AGENT PROSE');
+    });
+    it('a tombstone has nothing pending', () => {
+      expect(isolationPolicyPending({ ...row('released'), allowSnapshotRevision: 'c1:a', appliedPolicyRevision: null } as unknown as DeviceNetworkIsolation)).toBe(false);
+    });
+    it('a new policy is pending from the bump until the agent commits it', async () => {
+      await buildContainmentHeartbeatBlock(tx, level3);
+      expect(isolationPolicyPending(store.row!)).toBe(true);
+      await reconcileContainmentReport(tx, device, report(6, [ev(6, 'policy_applied', 'c1:policy', 3)], { generation: 3 }), now);
+      expect(isolationPolicyPending(store.row!)).toBe(false);
+    });
   });
 });
 
