@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,7 +99,7 @@ func firewallRulesetFromCommand(timeout time.Duration, name string, args ...stri
 	defer cancel()
 
 	var out, errOut bytes.Buffer
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	// The permission checks in readFirewallRuleset match English error text.
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	cmd.Stdout = &out
