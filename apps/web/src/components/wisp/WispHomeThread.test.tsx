@@ -859,6 +859,34 @@ describe('WispHomeThread check-ins (W05 #10996)', () => {
     expect(toast.showToast).not.toHaveBeenCalled();
   });
 
+  it('a cancelled chip disappears at once, even when the reload after it fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    checkInsApi.listWispCheckIns.mockResolvedValueOnce([row('ci-2', 'scheduled'), row('ci-3', 'scheduled')]).mockRejectedValue(new Error('503'));
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    fireEvent.click((await screen.findAllByTestId('wisp-check-in-cancel'))[0]);
+    await waitFor(() => expect(screen.getAllByTestId('wisp-check-in-chip')).toHaveLength(1));
+    expect(screen.getByTestId('wisp-check-in-chip')).toHaveAttribute('data-check-in-id', 'ci-3');
+    warn.mockRestore();
+  });
+
+  it('a 404 cancel (already consumed or cancelled) drops the chip too', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    checkInsApi.listWispCheckIns.mockResolvedValueOnce([row('ci-2', 'scheduled')]).mockRejectedValue(new Error('503'));
+    checkInsApi.cancelWispCheckIn.mockRejectedValueOnce(new ActionError('gone', 404, 'not_found'));
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    fireEvent.click(await screen.findByTestId('wisp-check-in-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('wisp-check-in-chip')).toBeNull());
+    warn.mockRestore();
+  });
+
+  it('Run now is disabled while the chat is loading', async () => {
+    fetchMock.mockImplementation(withPosts([checkInPost('ci-1')]));
+    checkInsApi.listWispCheckIns.mockResolvedValue([row('ci-1', 'fired')]);
+    reset({ wisp, sessionId: 's-live', isLoading: true });
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    expect(await screen.findByTestId('wisp-post-run-now')).toBeDisabled();
+  });
+
   it('a cancel that throws outside runAction is toasted', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     checkInsApi.listWispCheckIns.mockResolvedValue([row('ci-2', 'scheduled')]);

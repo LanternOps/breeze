@@ -116,8 +116,9 @@ const noop = () => {};
  * finishes streaming (so the chip appears as soon as the reply that scheduled
  * it ends). Scheduled ones show as a chip above the composer with cancel; a
  * `check_in` post whose row is still `fired` gets **Run now**, which sends the
- * check-in message (the server prepends the instruction to that turn and
- * consumes the row). A paused grant shows its check-in posts read-only. A bell
+ * check-in message. The server prepends every fired check-in of the grant
+ * (oldest first, at most 5) to that turn and consumes them, so the button runs
+ * all that are due, not only the one clicked. A paused grant shows its check-in posts read-only. A bell
  * deep link (`#checkin=<id>`) scrolls its post into view once.
  */
 export default function WispHomeThread({
@@ -206,6 +207,12 @@ export default function WispHomeThread({
       .catch((err: unknown) => console.warn('[WispHomeThread] reading the thread\'s check-ins failed', err));
   }, [wisp.threadId]);
 
+  // Another thread's check-ins never show here, not even until the first read lands.
+  useEffect(() => {
+    checkInsToken.current++;
+    setCheckIns([]);
+  }, [wisp.threadId]);
+
   useEffect(() => {
     if (!live) {
       checkInsToken.current++;
@@ -222,16 +229,21 @@ export default function WispHomeThread({
     wasStreaming.current = isStreaming;
   }, [isStreaming, live, loadCheckIns]);
 
+  const dropCheckIn = (checkInId: string) => setCheckIns((prev) => prev.filter((c) => c.id !== checkInId));
   const onCancelCheckIn = async (checkInId: string) => {
     try {
       await cancelWispCheckIn(wisp.threadId, checkInId);
+      // Gone now, even if the reload below fails: the toast already said so.
+      dropCheckIn(checkInId);
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
       if (!(err instanceof ActionError)) {
         console.error('[WispHomeThread] cancelling a check-in failed', err);
         showToast({ type: 'error', message: t('wisp.checkIn.cancelFailed') });
+      } else if (err.status === 404) {
+        // Already consumed or cancelled (toasted by runAction): it is not pending any more.
+        dropCheckIn(checkInId);
       }
-      // A refusal (already fired and consumed, already cancelled) was toasted; the list below shows what is left.
     }
     loadCheckIns();
   };
@@ -252,12 +264,12 @@ export default function WispHomeThread({
           <WispPost
             post={post}
             onRunNow={runnable ? () => sendMessage(runNowMessage) : undefined}
-            runNowDisabled={isStreaming}
+            runNowDisabled={isStreaming || isLoading}
           />
         ),
       };
     }),
-    [timeline.posts, live, firedIds, sendMessage, runNowMessage, isStreaming],
+    [timeline.posts, live, firedIds, sendMessage, runNowMessage, isStreaming, isLoading],
   );
 
   // The bell's deep link (`#checkin=<id>`): bring its post into view once, the
