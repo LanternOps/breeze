@@ -596,6 +596,10 @@ test('a Tauri hit re-checks its entry on the way out and saves it again if it is
   assert.equal(sameClosure(withValue(recheck, 'KEY')), sameClosure(withValue(save, 'key')));
   // Listing failures count as "gone": saving a key that still exists is a no-op.
   assert.match(recheck, /missing=true/);
+  // A run restores from its own ref or from main; an entry on either survived.
+  // (Seen on a branch dispatch: a branch-only listing re-saved main's closure.)
+  assert.doesNotMatch(recheck, /--ref/);
+  assert.match(recheck, /\.ref == env\.GITHUB_REF or \.ref == "refs\/heads\/main"/);
   assert.doesNotMatch(recheck, /continue-on-error/);
   assert.match(resave, /^\s+if: steps\.recheck\.outputs\.missing == 'true'$/m);
   assert.ok(usesOf(resave).startsWith('actions/cache/save@'));

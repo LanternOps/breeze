@@ -357,8 +357,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           KEY: tauri-apt-${{ steps.image.outputs.id }}-${{ hashFiles('.github/tauri-apt-packages.txt') }}-${{ steps.plan.outputs.closure }}
         run: |
-          if ! n=$(gh cache list --repo "${GITHUB_REPOSITORY}" --ref "${GITHUB_REF}" --key "${KEY}" \
-            --limit 100 --json key --jq '[.[] | select(.key == env.KEY)] | length'); then
+          # All refs, then this run's own or main's: either is what CI restores.
+          if ! n=$(gh cache list --repo "${GITHUB_REPOSITORY}" --key "${KEY}" --limit 100 --json key,ref \
+            --jq '[.[] | select(.key == env.KEY and (.ref == env.GITHUB_REF or .ref == "refs/heads/main"))] | length'); then
             echo "::warning::could not list caches; saving ${KEY} again in case it is gone"
             n=0
           fi
