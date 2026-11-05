@@ -771,7 +771,6 @@ func (o *op) persist(next LocalState, ev Event, effects []Effect) error {
 		}
 		if a.policy != nil {
 			a.policy.adopt(j, now)
-			o.m.policyRejections = nil
 		}
 	}
 	if terminalSeq > 0 && (next.Phase == journal.PhaseReleased || next.Phase == journal.PhaseRolledBack || (next.Phase == journal.PhaseNone && next.ReleaseKind == ReleaseSystem)) {
@@ -786,6 +785,9 @@ func (o *op) persist(next LocalState, ev Event, effects []Effect) error {
 	o.j, o.state, o.missing, o.dirty = j, next, false, false
 	if commitOf {
 		o.m.lastReverify = now
+		if a.policy != nil {
+			o.m.policyRejections = nil
+		}
 	}
 	o.m.setSnapshot(j)
 	if o.m.onPersist != nil {
@@ -1286,9 +1288,10 @@ func (o *op) isolateLocked(spec Spec) {
 			}
 		} else if ep := o.j.Episode; string(spec.PolicyRevision) != ep.PolicyRevision || spec.Generation > ep.PolicyGeneration {
 			stampOf(spec).adopt(o.j, o.now())
-			o.m.policyRejections = nil
 			if err := o.save(); err != nil {
 				o.noteError("record the containment policy: " + err.Error())
+			} else {
+				o.m.policyRejections = nil
 			}
 		}
 		return
