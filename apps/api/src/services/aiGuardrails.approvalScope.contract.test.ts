@@ -425,6 +425,17 @@ describe('tier-3 approval scope classification', () => {
     expect(checkGuardrails('manage_policy_feature_link', { action: 'add', featureType: 'containment' }).tier).toBe(3);
   });
 
+  it('manage_policy_feature_link stays tier 2 for oem_updates: the handler refuses arming outright (#11070)', () => {
+    // Deliberately NOT escalated. Every arming write is refused by the handler
+    // (oemUpdatesToolRefusal, armAuthorized:false) whatever an approver says, so
+    // an approval card would only stand in front of a call that cannot succeed.
+    // What is left (off, a category removed, an update blocked) is the narrowing
+    // a person must never need extra rights for, as with security_agents.
+    const armed = { featureType: 'oem_updates', inlineSettings: { enabled: true, vendors: { dell: { enabled: true, categories: { bios: true } } } } };
+    expect(checkGuardrails('manage_policy_feature_link', { action: 'add', ...armed }).tier).toBe(2);
+    expect(checkGuardrails('manage_policy_feature_link', { action: 'update', ...armed }).tier).toBe(2);
+  });
+
   it('checkGuardrails surfaces the input-aware escalation on both branches', () => {
     const maintenance = checkGuardrails('manage_policy_feature_link', { action: 'add', featureType: 'maintenance' });
     expect(maintenance.tier).toBe(3);

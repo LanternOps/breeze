@@ -114,7 +114,7 @@ export function createSystemAuthContext(): AuthContext {
 // Internal: Build hierarchy target conditions
 // ============================================
 
-interface DeviceHierarchy {
+export interface DeviceHierarchy {
   deviceId: string;
   orgId: string;
   siteId: string;
@@ -124,7 +124,7 @@ interface DeviceHierarchy {
   osType: string;
 }
 
-async function loadDeviceHierarchy(deviceId: string, executor: DbExecutor = db): Promise<DeviceHierarchy | null> {
+export async function loadDeviceHierarchy(deviceId: string, executor: DbExecutor = db): Promise<DeviceHierarchy | null> {
   // 1. Load device
   const [device] = await executor
     .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, deviceRole: devices.deviceRole, osType: devices.osType })
@@ -221,7 +221,7 @@ export function buildRoleOsFilterConditions(device: DeviceRoleOs): SQL[] {
   ];
 }
 
-function buildTargetConditions(hierarchy: DeviceHierarchy): SQL[] {
+export function buildTargetConditions(hierarchy: DeviceHierarchy): SQL[] {
   const conditions: SQL[] = [];
 
   // Device level
@@ -275,7 +275,7 @@ function buildTargetConditions(hierarchy: DeviceHierarchy): SQL[] {
  * Sort rows by hierarchy level (device=5 wins first), then assignment priority ASC,
  * then createdAt ASC (earliest first as tiebreaker).
  */
-type HierarchyRanked = { assignmentLevel: string; assignmentPriority: number; assignmentCreatedAt: Date };
+export type HierarchyRanked = { assignmentLevel: string; assignmentPriority: number; assignmentCreatedAt: Date };
 
 /**
  * The comparator {@link sortByHierarchy} sorts with: negative when `a` wins
@@ -292,7 +292,7 @@ export function compareByHierarchy(a: HierarchyRanked, b: HierarchyRanked): numb
   return a.assignmentCreatedAt.getTime() - b.assignmentCreatedAt.getTime();
 }
 
-function sortByHierarchy<T extends HierarchyRanked>(rows: T[]): T[] {
+export function sortByHierarchy<T extends HierarchyRanked>(rows: T[]): T[] {
   return rows.sort(compareByHierarchy);
 }
 

@@ -1212,6 +1212,61 @@
           "generic": "Este valor no está permitido."
         }
       },
+      "vendorUpdatesTab": {
+        "title": "Actualizaciones de fabricante",
+        "description": "Ejecuta la herramienta de actualización propia de cada fabricante de hardware (Dell, Surface, HP, Lenovo) con una programación nocturna mensual.",
+        "partnerWideBadge": "En todo el partner: se aplica a todas las organizaciones a las que se asigne este criterio",
+        "enabled": "Ejecutar actualizaciones de fabricante con esta programación",
+        "enabledHelp": "Activar esta opción o agregar una categoría de actualización requiere el permiso devices.execute. Desactivarla nunca lo requiere.",
+        "scheduleHeading": "Programación",
+        "weekOfMonth": "Semana del mes",
+        "dayOfWeek": "Día",
+        "windowStart": "La ventana comienza (hora local del dispositivo)",
+        "windowHours": "Duración de la ventana (horas, de 1 a 8)",
+        "catchUpNights": "Noches de recuperación (0 a 14)",
+        "reboot": "Reinicio",
+        "rebootOvernight": "Durante la noche, dentro de la ventana",
+        "rebootNever": "No reiniciar nunca",
+        "scheduleHelp": "Una ejecución solo comienza dentro de su ventana. Un dispositivo que pierde su noche lo intenta de nuevo en cada noche de recuperación.",
+        "rebootNeverHelp": "Sin un reinicio controlado por Breeze, se omiten las actualizaciones de BIOS y firmware.",
+        "weeks": {
+          "first": "Primera",
+          "second": "Segunda",
+          "third": "Tercera",
+          "fourth": "Cuarta",
+          "last": "Última"
+        },
+        "days": {
+          "sun": "Domingo",
+          "mon": "Lunes",
+          "tue": "Martes",
+          "wed": "Miércoles",
+          "thu": "Jueves",
+          "fri": "Viernes",
+          "sat": "Sábado"
+        },
+        "vendorsHeading": "Fabricantes y categorías de actualización",
+        "vendorEnabled": "Actualizar dispositivos {{vendor}}",
+        "notShipped": "Disponible en una versión posterior",
+        "categories": {
+          "bios": "BIOS",
+          "firmware": "Firmware",
+          "driver": "Controladores",
+          "application": "Aplicaciones del fabricante"
+        },
+        "categoryClosed": "Aún no disponible: esta categoría todavía se está validando en hardware real.",
+        "nowAvailable": "Ya está disponible. Permanece desactivada hasta que la actives.",
+        "blockedLabel": "Actualizaciones bloqueadas",
+        "blockedPlaceholder": "ID de actualización, separados por comas",
+        "blockedHelp": "Breeze nunca instala una actualización incluida aquí.",
+        "executeRequired": "Activar las actualizaciones de fabricante, agregar una categoría, activar los reinicios nocturnos o desbloquear una actualización requiere el permiso devices.execute y MFA. Pide a alguien que lo tenga que guarde este cambio.",
+        "gateClosedRefusal": "Una de las categorías de actualización seleccionadas aún no está disponible, por lo que no se guardó el criterio. Quítala y guarda de nuevo.",
+        "invalid": "Revisa la programación: la ventana es de 1 a 8 horas completas, la recuperación es de 0 a 14 noches y la hora de inicio tiene el formato HH:MM.",
+        "storedInvalid": "La configuración guardada de esta política no es válida, por lo que las actualizaciones de fabricante están desactivadas en los dispositivos que alcanza. Revisa la configuración a continuación y guarda para corregirla.",
+        "gatesError": "No se pudo cargar qué categorías de actualización están disponibles, por lo que guardar está desactivado. Vuelve a cargar la página para intentarlo de nuevo.",
+        "stillGated": "Aún no hay ninguna categoría de actualización disponible, por lo que este criterio no instala nada por ahora. Las categorías se habilitan aquí a medida que cada fabricante termina la validación.",
+        "armingNotice": "Breeze ejecuta la herramienta firmada del propio fabricante y nunca aloja archivos del fabricante. Un dispositivo que no se ha vuelto a conectar después de una actualización de BIOS genera una alerta."
+      },
       "securityAgentsTab": {
         "title": "Agentes de seguridad",
         "description": "Implementa y mantiene instalados agentes de seguridad administrados en los dispositivos",

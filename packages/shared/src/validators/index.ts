@@ -35,6 +35,7 @@ export * from './ringFeatureUpdates';
 export * from './warrantyInlineSettings';
 export * from './systemProtectionInlineSettings';
 export * from './containmentPolicy';
+export * from './oemUpdatesPolicy';
 export * from './securityAgents';
 export * from './securityScanSweep';
 export * from './safeRelativePath';
