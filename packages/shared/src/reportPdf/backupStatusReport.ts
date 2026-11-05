@@ -6,7 +6,7 @@
  * verbatim — this module never imports reportPdf.ts back.
  */
 import type { jsPDF } from 'jspdf';
-import autoTable, { type CellHookData } from 'jspdf-autotable';
+import { autoTable, type CellHookData } from 'jspdf-autotable';
 import type { PdfChrome } from './hardwareLifecyclePdf';
 import type { BackupStatusReportData } from '../types/backupStatusReport';
 import type {
