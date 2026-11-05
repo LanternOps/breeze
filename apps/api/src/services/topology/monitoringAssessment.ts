@@ -37,6 +37,9 @@ export type TopologyMonitoringEvent = {
   runId: string | null;
   originDeviceId: string | null;
   originAgentId: string | null;
+  /** Opening run's origin interface (null together for ECMP / no single interface). Provenance only. */
+  interfaceId: string | null;
+  interfaceEpoch: string | null;
   reason: string | null;
 };
 export type TopologyAlertDecision = { streak: TopologyAlertStreak; action: 'open' | 'recover' | 'none' };
@@ -97,6 +100,8 @@ export function runToMonitoringEvent(run: RunRow): TopologyMonitoringEvent {
     runId: run.id,
     originDeviceId: run.originSnapshot.deviceId,
     originAgentId: run.originSnapshot.agentId,
+    interfaceId: run.originSnapshot.interfaceId ?? null,
+    interfaceEpoch: run.originSnapshot.interfaceEpoch ?? null,
     reason: completed ? null : run.failureReason ?? run.state,
   };
 }
@@ -105,7 +110,7 @@ function gapToMonitoringEvent(gap: TopologyMonitoringGapEvent): TopologyMonitori
   return {
     kind: 'scheduled_gap', policyRevision: gap.policyRevision, contextKey: gap.contextKey, family: gap.family, scheduledFor: gap.scheduledFor,
     occurrenceKey: gap.occurrenceKey, continuityKey: null, coverage: 'none', freshness: 'stale', assessment: 'unknown',
-    runId: null, originDeviceId: null, originAgentId: null, reason: gap.reason,
+    runId: null, originDeviceId: null, originAgentId: null, interfaceId: null, interfaceEpoch: null, reason: gap.reason,
   };
 }
 
@@ -175,6 +180,7 @@ export async function applyTopologyPolicyAssessments(scope: TopologyScope, polic
       const opened = await openTopologyPolicyAlert({
         scope, policy: { id: policy.id, key: policy.key, definition }, contextKey: event.contextKey, family: event.family,
         occurrenceKey: event.occurrenceKey, originDeviceId: event.originDeviceId, runId: event.runId,
+        interfaceId: event.interfaceId, interfaceEpoch: event.interfaceEpoch,
         consecutiveFailures: streak.consecutiveFailures, notify, now,
       });
       streak = { ...streak, activeAlertId: opened.alertId, lastNotifiedAt: notify ? now.toISOString() : previous.lastNotifiedAt };

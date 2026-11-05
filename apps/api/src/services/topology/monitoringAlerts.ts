@@ -48,6 +48,9 @@ export async function openTopologyPolicyAlert(input: {
   occurrenceKey: string;
   originDeviceId: string;
   runId: string | null;
+  /** Opening run's origin interface; both non-null or both null. Stored as alert provenance only; a reused open alert keeps the first opener's value. */
+  interfaceId?: string | null;
+  interfaceEpoch?: string | null;
   consecutiveFailures: number;
   notify: boolean;
   now: Date;
@@ -73,6 +76,7 @@ export async function openTopologyPolicyAlert(input: {
       runId: input.runId,
       occurrenceKey: input.occurrenceKey,
       consecutiveFailures: input.consecutiveFailures,
+      ...(input.interfaceId && input.interfaceEpoch ? { interface: { interfaceId: input.interfaceId, interfaceEpoch: input.interfaceEpoch, basis: 'origin' } } : {}),
     },
     status: 'active',
     triggeredAt: input.now,
