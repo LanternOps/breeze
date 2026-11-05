@@ -282,6 +282,9 @@ func TestHpUnreadableReportDoesNotFailRun(t *testing.T) {
 		"garbage":  []byte("not xml <<<"),
 		"foreign":  []byte(`<?xml version="1.0"?><Other><Recommendations/></Other>`),
 		"entities": []byte(`<?xml version="1.0"?><!DOCTYPE a [<!ENTITY x "y">]><HPIA>&x;</HPIA>`),
+		"doctype":  []byte(`<?xml version="1.0"?><!DOCTYPE HPIA><HPIA><Recommendations/></HPIA>`),
+		"trailing": []byte(`<HPIA><Recommendations/></HPIA><HPIA><Recommendations/></HPIA>`),
+		"cut off":  []byte(`<HPIA><Recommendations><Drivers>`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newHpFixture(t)
