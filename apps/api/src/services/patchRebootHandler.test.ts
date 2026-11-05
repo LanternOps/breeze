@@ -198,6 +198,63 @@ describe('executeReboot', () => {
 // #3207 — end-user reboot deferral
 // ============================================================================
 
+// #11065 W06 — deadlineAction: 'hold' (overnight vendor-update reboot)
+describe('executeReboot deadlineAction (#11065)', () => {
+  const windowEndsAt = new Date(Date.now() + 3 * 60 * 60_000);
+
+  it('sends no deadlineAction key when the caller did not ask for one', async () => {
+    vi.mocked(resolvePatchConfigForDevice).mockResolvedValue({ rebootDelayMinutes: 15 } as never);
+    await executeReboot('dev-1', 'reason', { windowEndsAt });
+    expect(payloadOf()).not.toHaveProperty('deadlineAction');
+  });
+
+  it('hold sends the action and makes the deadline the window close', async () => {
+    const res = await executeReboot('dev-1', 'Vendor updates', {
+      delayMinutes: 15,
+      deferral: DEFERRAL_OFF,
+      promptText: {},
+      windowEndsAt,
+      deadlineAction: 'hold',
+    });
+    expect(res).toEqual({ success: true, delayMinutes: 15 });
+    const payload = payloadOf();
+    expect(payload.deadlineAction).toBe('hold');
+    // With deferral off a forced reboot's deadline is the scheduled time; a held
+    // one's is the close, so a late timer inside the window still restarts.
+    expect(payload.deadline).toBe(windowEndsAt.toISOString());
+  });
+
+  it('hold keeps the policy deferral budget and caps it at the window close', async () => {
+    const deferral = { allowDeferral: true, maxDeferrals: 10, deferralMinutes: 1440 };
+    await executeReboot('dev-1', 'Vendor updates', {
+      delayMinutes: 15, deferral, promptText: {}, windowEndsAt, deadlineAction: 'hold',
+    });
+    const payload = payloadOf();
+    expect(payload).toMatchObject({ allowDeferral: true, maxDeferrals: 10, deferralMinutes: 1440 });
+    expect(payload.deadline).toBe(windowEndsAt.toISOString());
+  });
+
+  it('refuses a hold without a window close, and queues nothing', async () => {
+    const res = await executeReboot('dev-1', 'Vendor updates', {
+      delayMinutes: 15, deferral: DEFERRAL_OFF, promptText: {}, deadlineAction: 'hold',
+    });
+    expect(res.success).toBe(false);
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('refuses a hold whose restart would begin after the window closes', async () => {
+    const res = await executeReboot('dev-1', 'Vendor updates', {
+      delayMinutes: 60,
+      deferral: DEFERRAL_OFF,
+      promptText: {},
+      windowEndsAt: new Date(Date.now() + 10 * 60_000),
+      deadlineAction: 'hold',
+    });
+    expect(res.success).toBe(false);
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+  });
+});
+
 function payloadOf(): Record<string, unknown> {
   const call = vi.mocked(queueCommandForExecution).mock.calls[0];
   expect(call).toBeDefined();
