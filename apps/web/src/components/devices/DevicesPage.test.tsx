@@ -230,7 +230,7 @@ vi.mock('./DeviceCard', () => ({
 // action over the FULL device array it was given (mirroring the real
 // DeviceList, which hands the unfiltered selection to onBulkAction). Tests use
 // the per-action buttons to drive DevicesPage.handleBulkAction directly.
-type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null; status?: string; wanIp?: string | null; lanIp?: string | null; hardwareHealth?: string | null; hardwareHealthSummary?: Record<string, number> | null; reliabilityProvisional?: boolean };
+type StubDevice = { disks?: unknown[]; id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null; status?: string; wanIp?: string | null; lanIp?: string | null; hardwareHealth?: string | null; hardwareHealthSummary?: Record<string, number> | null; reliabilityProvisional?: boolean };
 vi.mock('./DeviceList', () => ({
   default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, onHideDecommissioned, includeDecommissioned, headerActions, onClearFilters, sortInHash, onWarrantyRequiredChange }: { onWarrantyRequiredChange?: (required: boolean) => void; devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; onHideDecommissioned?: () => void; includeDecommissioned?: boolean; headerActions?: React.ReactNode; onClearFilters?: () => void; sortInHash?: boolean }) => (
     <div
@@ -240,6 +240,7 @@ vi.mock('./DeviceList', () => ({
       data-sort-in-hash={sortInHash ? 'true' : 'false'}
       data-can-hide-decommissioned={onHideDecommissioned ? 'true' : 'false'}
       data-filter-ids={serverFilterIds ? [...serverFilterIds].sort().join(',') : ''}
+      data-disks={JSON.stringify(devices.map(d => d.disks))}
       data-hostnames={devices.map(d => d.hostname ?? '').join(',')}
       data-display-names={devices.map(d => d.displayName ?? '').join(',')}
       data-watchdog-versions={devices.map(d => d.watchdogVersion ?? '').join(',')}
@@ -414,6 +415,20 @@ beforeEach(() => {
     }
     return jsonResponse({ data: [] }); // /orgs, /orgs/sites, /device-groups
   });
+});
+
+describe('DevicesPage — disk inventory', () => {
+  it('passes disk inventory through to the list and defaults missing inventory to empty', async () => {
+    const disks = [{ mountPoint: '/', totalGb: 200, usedGb: 50, freeGb: 150, usedPercent: 25 }];
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), disks }, rawDevice(DEV_2, 'host-beta')],
+    } as never);
+    render(<DevicesPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId('device-list').getAttribute('data-disks')).toBe(JSON.stringify([disks, []]));
+    });
+  });
+
 });
 
 describe('DevicesPage — optional warranty loading', () => {

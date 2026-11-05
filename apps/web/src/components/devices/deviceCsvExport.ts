@@ -19,6 +19,7 @@ import { ATTENTION_SEVERITIES } from './deviceAttentionCounts';
 import { COLUMN_LABELS, type ColumnId } from './columnVisibility';
 import { formatDeviceOsVersion } from './osDisplay';
 import type { Device } from './DeviceList';
+import { displayedDisks, type DiskUsageScope } from './diskUsage';
 
 export type ExportCustomFieldDef = {
   fieldKey: string;
@@ -38,6 +39,7 @@ export type DevicesCsvInput = {
   /** Localised status label (the table's Status text). */
   statusLabel: (device: Device) => string;
   /** Present only when the Attention column is exported. */
+  diskUsageScope?: DiskUsageScope;
   attention?: ReadonlyMap<string, AttentionExportValue>;
 };
 
@@ -108,6 +110,7 @@ function columnCell(id: ColumnId, d: Device, input: DevicesCsvInput): Cell {
     case 'cpuModel': return d.hardware?.cpuModel;
     case 'cores': return d.hardware?.cpuCores;
     case 'ramTotal': return d.hardware?.ramTotalMb;
+    case 'diskUsage': return isAgent(d) ? displayedDisks(d.disks, input.diskUsageScope ?? 'all').map((disk) => `${disk.mountPoint}: ${disk.usedPercent}%`).join('; ') : '';
     case 'diskTotal': return d.hardware?.diskTotalGb;
     case 'lastSeen': return isoOrEmpty(d.lastSeen);
     case 'agentVersion': return d.agentVersion;

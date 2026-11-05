@@ -150,3 +150,14 @@ describe('deviceCsvExport (#9726)', () => {
     expect(devicesCsvFilename(new Date('2026-10-22T23:59:00Z'))).toBe('devices-2026-10-22.csv');
   });
 });
+
+
+it('exports disk usage for the selected scope and leaves non-agent assets blank', () => {
+  const disks = ['/', '/data'].map((mountPoint, i) => ({ mountPoint, totalGb: 100, usedGb: 40 + i, freeGb: 60 - i, usedPercent: 40 + i }));
+  const input = { devices: [dev({ disks }), dev({ disks, deviceClass: 'manual' })], columns: ['diskUsage'] as ColumnId[], customFieldDefs: [], statusLabel: (d: Device) => d.status };
+  expect(buildDevicesCsv(input)).toContain('/: 40%; /data: 41%');
+  const osCsv = buildDevicesCsv({ ...input, diskUsageScope: 'os' });
+  expect(osCsv).toContain('/: 40%');
+  expect(osCsv).not.toContain('/data');
+  expect(rows(osCsv).at(-1)).toBe(csvRow(['web-01', '']));
+});
