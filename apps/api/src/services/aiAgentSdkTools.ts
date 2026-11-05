@@ -1049,6 +1049,22 @@ function notifyToolSuccess(
   }
 }
 
+/**
+ * #10973: what the tool runs on. A call a gate classified as an unattended read
+ * runs on the classified copy, never the model's arguments; a pin for any other
+ * tool is a wiring bug and refuses the call.
+ */
+function dispatchArgs(
+  toolName: string,
+  args: Record<string, unknown>,
+  context: ToolExecutionContext | undefined,
+): Record<string, unknown> {
+  const read = context?.pinnedWispUnattendedRead;
+  if (!read) return args;
+  if (read.tool !== toolName) throw new Error(`Unattended-read pin for ${read.tool} reached ${toolName}`);
+  return { ...read.pinned };
+}
+
 function makeToolHandler(
   toolName: string,
   getAuth: () => AuthContext,
@@ -1128,6 +1144,7 @@ function makeToolHandler(
     }
     try {
       const auth = callToolAuth ?? getAuth();
+      const callArgs = dispatchArgs(toolName, args, verifiedContext);
       // Use the user's actual auth scope instead of system context so that
       // RLS policies and DB-level tenant isolation are enforced.
       //
@@ -1177,8 +1194,8 @@ function makeToolHandler(
       };
       const runTool = () =>
         Object.keys(execOptions).length > 0
-          ? executeTool(toolName, args, auth, execOptions)
-          : executeTool(toolName, args, auth);
+          ? executeTool(toolName, callArgs, auth, execOptions)
+          : executeTool(toolName, callArgs, auth);
       // A self-managed tool (#7128) gets NO per-call transaction: it hands work
       // to another process and waits on it, which under this wrapper meant an
       // uncommitted row the other process could not see and a pooled

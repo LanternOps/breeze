@@ -88,9 +88,10 @@ export type GrantCeiling = {
   /**
    * #10973: the grant-level unattended-reads switch, pinned AND live (Decision
    * 7): this revision's snapshot flag and `wisp_grants.unattended_reads`. A
-   * session or run pinned to an older revision never gains it.
+   * session or run pinned to an older revision never gains it. Only
+   * `resolveGrantCeiling` sets it; absent reads as off.
    */
-  unattendedReads: boolean;
+  unattendedReads?: boolean;
 };
 
 export type OrgCeilingTerm = {

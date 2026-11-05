@@ -47,6 +47,7 @@ import { checkGuardrails, checkPermissionRequirements, checkToolPermission, chec
 import { tenantToolPermissionRequirement } from './toolSources/guardrails';
 import { WispSessionUnavailableError } from './wisp/chatCeiling';
 import { GrantInactiveError } from './wisp/grantAuthority';
+import { classifyWispUnattendedRead } from './wisp/unattendedReads';
 import type { TenantToolDescriptor } from './toolSources/resolver';
 import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
@@ -183,6 +184,8 @@ vi.mock('./aiAgentSdkTools', () => ({
     take_screenshot: 2,
     manage_tickets: 2,
     execute_command: 3,
+    registry_operations: 2,
+    set_device_context: 2,
     m365_reset_password: 3,
     google_reset_password: 3,
     // Base (static) tier 1 — file_operations only reaches tier 3 via
@@ -350,6 +353,8 @@ vi.mock('./aiToolSchemas', async (importOriginal) => ({
 // ============================================
 
 type TestAuth = {
+  principal?: { kind: string };
+  helperDeviceId?: string;
   user: { id: string; email: string; name: string };
   orgId: string | null; // null for partner-scope logins — the real AuthContext.orgId type
   partnerId: string | null;
@@ -1205,6 +1210,192 @@ describe('createSessionPreToolUse — Wisp bookkeeping tools skip the per_step c
 
     expect(result).toMatchObject({ allowed: false });
     expect(mockCreateActionIntent).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createSessionPreToolUse — grant-level unattended reads (#10973)', () => {
+  const DEVICE = '00000000-0000-4000-8000-0000000000d1';
+  const REGISTRY = { action: 'get_value', deviceId: DEVICE, keyPath: 'HKLM\\SOFTWARE\\Vendor', valueName: 'Path' };
+  const SECURITY = { deviceId: DEVICE, commandType: 'event_logs_query', payload: { logName: 'Security', query: '*[System[EventID=4625]]' } };
+  const NOTE = { deviceId: DEVICE, contextType: 'issue', summary: 'Disk is failing' };
+  const approvalCards = (session: { eventBus: { publish: ReturnType<typeof vi.fn> } }) =>
+    session.eventBus.publish.mock.calls
+      .map((c) => c[0] as { type: string })
+      .filter((e) => e.type === 'approval_required');
+  const CALLS: Array<[string, Record<string, unknown>, string]> = [
+    ['registry_operations', REGISTRY, 'registry_read'],
+    ['execute_command', SECURITY, 'security_event_query'],
+    ['set_device_context', NOTE, 'device_context'],
+  ];
+
+  function onCeiling(unattendedReads: boolean) {
+    return { ok: true, toolAuth: {}, ceiling: { ...CEILING, unattendedReads }, permissionKeys: ['devices:execute'] };
+  }
+  function humanSession(overrides: Record<string, unknown> = {}) {
+    const auth = makeAuth({ scope: 'partner', orgId: null, accessibleOrgIds: ['org-1'], principal: { kind: 'user_session' } });
+    return wispSession({ auth, toolAuth: auth, approvalMode: 'per_step', ...overrides });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(checkToolPermission).mockResolvedValue(null);
+    vi.mocked(checkToolRateLimit).mockResolvedValue(null);
+    mockGetUserPushTokens.mockResolvedValue([]);
+    mockDispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
+    wisp.enforceWispCeiling.mockResolvedValue(onCeiling(true));
+    wisp.narrowAuthToCeiling.mockImplementation(tagNarrowed);
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) } as any);
+    vi.mocked(waitForApproval).mockResolvedValue(false);
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-sec' }));
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    // The real tier rule is pinned in aiGuardrails.wispUnattendedReads.test.ts;
+    // this stand-in keeps its shape: only the flag lowers a Security query.
+    vi.mocked(checkGuardrails).mockImplementation(((tool: string, input: Record<string, unknown>, ctx?: { wispUnattendedReads?: true }) => {
+      if (tool !== 'execute_command') return { allowed: true, tier: 2, requiresApproval: false, description: 'x' };
+      const read = ctx?.wispUnattendedReads ? classifyWispUnattendedRead(tool, input) : null;
+      return read
+        ? { allowed: true, tier: 2, requiresApproval: false, wispUnattendedRead: read, description: 'x' }
+        : { allowed: true, tier: 3, requiresApproval: true, approvalScope: 'supervised', description: 'x' };
+    }) as any);
+  });
+
+  const lastGuardrailContext = () => vi.mocked(checkGuardrails).mock.lastCall?.[2];
+
+  it.each(CALLS)('%s runs with no card, records its own method, and dispatches the pinned call', async (tool, input, kind) => {
+    const values = mockInsertValues();
+    const session = humanSession();
+
+    const result = await createSessionPreToolUse(session)(tool, input);
+
+    expect(result).toMatchObject({ allowed: true, context: { pinnedWispUnattendedRead: { kind, pinned: input } } });
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ toolName: tool, status: 'executing' }));
+    expect(approvalCards(session)).toHaveLength(0);
+    expect(waitForApproval).not.toHaveBeenCalled();
+    expect(mockCreateActionIntent).not.toHaveBeenCalled();
+
+    await createSessionPostToolUse(session)(tool, input, '{"ok":true}', false, 3);
+    const auditCall = mockWriteAuditEvent.mock.calls.find((c) => (c[1] as any)?.action === `ai.tool.${tool}`);
+    expect((auditCall![1] as any).details).toMatchObject({ approved: false, approvalMethod: 'wisp_unattended_read', tier: 2 });
+  });
+
+  it('the pinned call is a detached copy: the model\'s object can change afterwards', async () => {
+    mockInsertValues();
+    const input = { ...NOTE };
+    const result = await createSessionPreToolUse(humanSession())('set_device_context', input);
+    input.summary = 'changed';
+    expect((result as any).context.pinnedWispUnattendedRead.pinned.summary).toBe('Disk is failing');
+  });
+
+  it('under auto_approve a Security query is still recorded as the switch, not as the mode', async () => {
+    mockInsertValues();
+    const session = humanSession({ approvalMode: 'auto_approve' });
+    expect(await createSessionPreToolUse(session)('execute_command', SECURITY)).toMatchObject({ allowed: true });
+    await createSessionPostToolUse(session)('execute_command', SECURITY, '{"ok":true}', false, 3);
+    const auditCall = mockWriteAuditEvent.mock.calls.find((c) => (c[1] as any)?.action === 'ai.tool.execute_command');
+    expect((auditCall![1] as any).details).toMatchObject({ approvalMethod: 'wisp_unattended_read' });
+  });
+
+  describe('the switch off', () => {
+    beforeEach(() => { wisp.enforceWispCeiling.mockResolvedValue(onCeiling(false)); });
+
+    it('a registry read and a device note keep their card', async () => {
+      for (const [tool, input] of [CALLS[0]!, CALLS[2]!]) {
+        mockInsertReturning({ id: `exec-${tool}` });
+        const session = humanSession();
+        expect(await createSessionPreToolUse(session)(tool, input)).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+        expect(approvalCards(session)).toHaveLength(1);
+        expect(lastGuardrailContext()?.wispUnattendedReads).toBeUndefined();
+      }
+    });
+
+    it('a Security query stays a Tier-3 intent', async () => {
+      mockInsertReturning({ id: 'exec-sec' });
+      const result = await createSessionPreToolUse(humanSession())('execute_command', SECURITY);
+      expect(result).toMatchObject({ allowed: false });
+      expect(mockCreateActionIntent).toHaveBeenCalledTimes(1);
+      expect(lastGuardrailContext()?.wispUnattendedReads).toBeUndefined();
+    });
+  });
+
+  describe('carve-outs with the switch on', () => {
+    it('a paused session keeps the card, and a Security query stays Tier 3 rather than a lighter card', async () => {
+      mockInsertReturning({ id: 'exec-reg' });
+      const session = humanSession({ isPaused: true });
+      expect(await createSessionPreToolUse(session)('registry_operations', REGISTRY)).toMatchObject({ allowed: false });
+      expect(approvalCards(session)).toHaveLength(1);
+      expect(lastGuardrailContext()?.wispUnattendedReads).toBeUndefined();
+
+      mockCreateActionIntent.mockClear();
+      mockInsertReturning({ id: 'exec-sec' });
+      await createSessionPreToolUse(humanSession({ isPaused: true }))('execute_command', SECURITY);
+      expect(mockCreateActionIntent).toHaveBeenCalledTimes(1);
+    });
+
+    it('a plan in flight keeps today\'s behaviour: a Security query stays Tier 3', async () => {
+      mockInsertReturning({ id: 'exec-plan' });
+      const session = humanSession({ approvalMode: 'action_plan', activePlanId: 'plan-1' });
+      await createSessionPreToolUse(session)('execute_command', SECURITY);
+      expect(lastGuardrailContext()?.wispUnattendedReads).toBeUndefined();
+    });
+
+    it('a Helper session never opts in, even with the ceiling on', async () => {
+      const auth = makeAuth({ scope: 'partner', orgId: null, principal: { kind: 'user_session' }, helperDeviceId: 'device-1' });
+      mockInsertReturning({ id: 'exec-helper' });
+      mockDecideHelperToolAction.mockResolvedValue('denied');
+      await createSessionPreToolUse(wispSession({ auth, toolAuth: auth }))('registry_operations', REGISTRY);
+      expect(lastGuardrailContext()?.wispUnattendedReads).toBeUndefined();
+    });
+
+    it('a call outside the four keeps its card: a registry write', async () => {
+      mockInsertReturning({ id: 'exec-write' });
+      const session = humanSession();
+      const result = await createSessionPreToolUse(session)('registry_operations', { ...REGISTRY, action: 'set_value', valueData: 'x' });
+      expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+      expect(approvalCards(session)).toHaveLength(1);
+    });
+
+    it('a registry read carrying a write key keeps its card', async () => {
+      mockInsertReturning({ id: 'exec-write-key' });
+      const session = humanSession();
+      await createSessionPreToolUse(session)('registry_operations', { ...REGISTRY, valueData: 'x' });
+      expect(approvalCards(session)).toHaveLength(1);
+    });
+
+    it('a Security query outside the grammar is a Tier-3 intent', async () => {
+      mockInsertReturning({ id: 'exec-ql' });
+      await createSessionPreToolUse(humanSession())('execute_command', { ...SECURITY, payload: { logName: 'Security', query: '<QueryList/>' } });
+      expect(mockCreateActionIntent).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('a call the ceiling refuses never reaches the guardrail, whatever the switch says', async () => {
+    wisp.enforceWispCeiling.mockResolvedValue({ ok: false, refusal: { code: 'wisp_outside_ceiling', detail: 'permission', message: 'no' } });
+    const result = await createSessionPreToolUse(humanSession())('registry_operations', REGISTRY);
+    expect(result).toMatchObject({ allowed: false, error: 'no' });
+    expect(checkGuardrails).not.toHaveBeenCalled();
+  });
+
+  it('the permission gate still applies', async () => {
+    vi.mocked(checkToolPermission).mockResolvedValue('Missing devices:execute');
+    const result = await createSessionPreToolUse(humanSession())('registry_operations', REGISTRY);
+    expect(result).toMatchObject({ allowed: false, error: 'Missing devices:execute' });
+  });
+
+  it('the switch turned off during the authority re-check: refused, nothing runs', async () => {
+    mockInsertValues();
+    wisp.enforceWispCeiling.mockResolvedValueOnce(onCeiling(true)).mockResolvedValueOnce(onCeiling(false));
+    const result = await createSessionPreToolUse(humanSession())('registry_operations', REGISTRY);
+    expect(result).toMatchObject({ allowed: false });
+    expect(result).not.toHaveProperty('context');
+  });
+
+  it('an ordinary session with no grant never opts in', async () => {
+    mockInsertReturning({ id: 'exec-plain' });
+    const auth = makeAuth({ scope: 'organization', orgId: 'org-1', principal: { kind: 'user_session' } });
+    const session = makeActiveSession({ auth, toolAuth: auth, wispGrant: null, auditSnapshot: AUDIT_SNAPSHOT });
+    await createSessionPreToolUse(session)('registry_operations', REGISTRY);
+    expect(lastGuardrailContext()?.wispUnattendedReads).toBeUndefined();
+    expect(approvalCards(session)).toHaveLength(1);
   });
 });
 

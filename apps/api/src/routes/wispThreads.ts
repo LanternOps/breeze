@@ -165,6 +165,8 @@ export type OwnThread = {
     budgetCentsPerDay: number;
     floorTickMinutes: number;
     pausedReason: string | null;
+    unattendedReads: boolean;
+    unattendedReadsPinned: boolean;
   };
 };
 

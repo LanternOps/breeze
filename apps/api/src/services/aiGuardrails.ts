@@ -39,6 +39,7 @@ import {
 } from './wisp/specialistPolicy';
 import { LIVE_READ_INPUT_FLAGS, requestsLiveDeviceRead } from './aiLiveDeviceReads';
 import { classifyChatReadOnlyEventLogsQuery, type PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
+import { classifyWispUnattendedRead, type WispUnattendedRead } from './wisp/unattendedReads';
 // Env-only operator knob; the module imports nothing but @breeze/shared.
 import { iocHuntFourEyesDeviceThreshold } from './securityScanSweepConfig';
 import { IOC_HUNT_RUN_ACTION } from './iocHuntActions';
@@ -1400,8 +1401,9 @@ export const TIER3_INPUT_AWARE_TOOLS: ReadonlySet<string> = new Set<string>([
  * own tier at run time. Pinned by aiGuardrails.tierDecidingKeys.contract.test.ts;
  * a new input-aware branch needs an entry here.
  *
- * (event_logs_query's payload-aware classification is chat-session only and
- * never applies to a flow, which runs without a chat session.)
+ * (event_logs_query's payload-aware classifications, read-only #7906 and the
+ * #10973 unattended-reads switch, are chat-session only and never apply to a
+ * flow, which runs without a chat session and without a guardrail context.)
  */
 export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]>> = {
   // isInputAwareTier3: comment + isPublic === true, update_status to
@@ -1483,6 +1485,15 @@ export interface GuardrailContext {
    * it — so they keep the base Tier 3.
    */
   chatSession?: true;
+  /**
+   * #10973: set ONLY by the chat gate (`chatGuardrailContext`, aiAgentSdk.ts) for
+   * a call whose LIVE Wisp ceiling says the grant-level unattended-reads switch
+   * is on, and only when the gate could skip the card. Lowers a Security
+   * `event_logs_query` from the restricted grammar to Tier 2; honored only with
+   * `chatSession`. `checkAgentGuardrails` strips it. A troubleshooting run reaches
+   * the same switch through its own verified path in runLoop.ts, never this flag.
+   */
+  wispUnattendedReads?: true;
 }
 
 /** A `run_script` call that names a proposal instead of a library script. */
@@ -3105,6 +3116,11 @@ interface GuardrailCheckCommon {
    * these values, never the raw input.
    */
   pinnedEventLogsQuery?: PinnedEventLogsQuery;
+  /**
+   * #10973: set only when `wispUnattendedReads` lowered a Security query to Tier
+   * 2. The chat gate dispatches this classified call, never the raw input.
+   */
+  wispUnattendedRead?: WispUnattendedRead;
   reason?: string;
   description?: string;
 }
@@ -3358,6 +3374,23 @@ export function checkGuardrails(
         pinnedEventLogsQuery,
         description: buildApprovalDescription(toolName, action, input)
       };
+    }
+
+    // #10973: the grant-level switch. Not read-only: this read is Tier 2 only
+    // because the grantor opted in, so it keeps a Tier-2 audit row and no
+    // read-only presentation. Registry reads and set_device_context are Tier 2
+    // already; only this one needs lowering.
+    if (context.wispUnattendedReads === true) {
+      const wispUnattendedRead = classifyWispUnattendedRead(toolName, input);
+      if (wispUnattendedRead?.kind === 'security_event_query') {
+        return {
+          tier: 2,
+          allowed: true,
+          requiresApproval: false,
+          wispUnattendedRead,
+          description: buildApprovalDescription(toolName, action, input)
+        };
+      }
     }
   }
 
@@ -3785,7 +3818,10 @@ export function checkAgentGuardrails(
 ): AgentGuardrailCheck {
   // #7906: the chat-session opt-in is never honored for an agent run, even if
   // a caller hands it in — headless principals keep event_logs_query at Tier 3.
-  const agentContext = context?.chatSession ? { ...context, chatSession: undefined } : context;
+  // #10973: the same for the unattended-reads flag.
+  const agentContext = context?.chatSession || context?.wispUnattendedReads
+    ? { ...context, chatSession: undefined, wispUnattendedReads: undefined }
+    : context;
   const base: GuardrailCheck = opts.resolvedTier === 1 && isFlowToolName(toolName)
     ? { tier: 1, allowed: true, requiresApproval: false, readOnly: true, description: `Run ${toolName}` }
     : checkGuardrails(toolName, input, agentContext);
