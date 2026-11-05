@@ -120,6 +120,13 @@ export function zeroTicketSlaPerformanceRow(priority: TicketSlaPerformanceRow['p
   };
 }
 
+/** `59 min`, `2h 05m`, or an em dash for an unmeasured duration (never 0). */
+export function formatSlaMinutes(minutes: number | null): string {
+  if (minutes === null) return '—';
+  if (minutes < 60) return `${minutes} min`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
+}
+
 /** The summary of a report that measured nothing; `note` says why. */
 export function emptyTicketSlaPerformanceSummary(note: string): TicketSlaPerformanceSummary {
   const priorities = SLA_PRIORITIES.map(zeroTicketSlaPerformanceRow);
