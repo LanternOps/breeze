@@ -850,7 +850,7 @@ describe('#10542 — peer drop during a viewer reconnect', () => {
 
   it('holds the drop, then the reconnect offer is accepted and the expired hold leaves the session alone', async () => {
     const fx = await seed('active');
-    await markDesktopViewerReconnectIntent(fx.sessionId);
+    await markDesktopViewerReconnectIntent(fx.sessionId, SEED_GENERATION);
 
     await peerDrop(fx);
 
@@ -858,6 +858,15 @@ describe('#10542 — peer drop during a viewer reconnect', () => {
     expect(isDesktopSessionHeldForReconnect(fx.sessionId)).toBe(true);
     expect(await readFence(fx.sessionId)).toMatchObject({ status: 'active', generation: SEED_GENERATION, phase: 'none' });
     expect(await isRevoked(fx.sessionId)).toBe(false);
+    // The durable record is in place, and a viewer-token check during the
+    // grace lets the reconnect through.
+    const record = JSON.parse((await getRedis()!.get(`desktop-reconnect-hold:${fx.sessionId}`))!);
+    expect(record).toMatchObject({ deviceId: fx.deviceId, startGeneration: String(SEED_GENERATION) });
+    expect(await enforceExpiredDesktopReconnectHold({
+      id: fx.sessionId,
+      deviceId: fx.deviceId,
+      desktopStartGeneration: SEED_GENERATION,
+    })).toBe('none');
 
     // The viewer's reconnect offer commits a new start.
     const start = await withSystemDbAccessContext(() => commitDesktopStartIntent({
@@ -889,13 +898,33 @@ describe('#10542 — peer drop during a viewer reconnect', () => {
     expect(await isRevoked(fx.sessionId)).toBe(true);
   });
 
-  it('a held drop with no reconnect ends and revokes when the grace expires', async () => {
+  it('a late drop for the old peer, handled after the reconnect committed a newer start, is not held', async () => {
     const fx = await seed('active');
-    await markDesktopViewerReconnectIntent(fx.sessionId);
+    await markDesktopViewerReconnectIntent(fx.sessionId, SEED_GENERATION);
+    await withSystemDbAccessContext(() => commitDesktopStartIntent({
+      sessionId: fx.sessionId,
+      startCommandId: `desk-start-${fx.sessionId}-${randomUUID()}`,
+      promptMode: 'off',
+      consentUnavailableBehavior: null,
+      offer: OFFER,
+    }));
+    // The agent answered the new start: the row is active again, on start N+1.
+    await getTestDb().update(remoteSessions).set({ status: 'active' }).where(eq(remoteSessions.id, fx.sessionId));
+
+    await peerDrop(fx);
+
+    expect(isDesktopSessionHeldForReconnect(fx.sessionId)).toBe(false);
+    expect(await getRedis()!.get(`desktop-reconnect-hold:${fx.sessionId}`)).toBeNull();
+  });
+
+  it('a held drop with no reconnect ends and revokes when the end runs (timer or user end)', async () => {
+    const fx = await seed('active');
+    await markDesktopViewerReconnectIntent(fx.sessionId, SEED_GENERATION);
     await peerDrop(fx);
     expect(isDesktopSessionHeldForReconnect(fx.sessionId)).toBe(true);
 
-    // What the timer runs at expiry (the 20 s wait itself is unit-tested).
+    // The same end the timer runs at expiry, invoked directly; the 20 s wait
+    // itself is covered with fake timers in desktopReconnectGrace.test.ts.
     expect(await endHeldDesktopSessionNow(fx.sessionId, fx.deviceId)).toBe(true);
 
     expect(await readFence(fx.sessionId)).toMatchObject({ status: 'disconnected', phase: 'confirmed', generation: SEED_GENERATION + 1n });

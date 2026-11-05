@@ -904,9 +904,12 @@ describe('viewer reconnect hold (#10542)', () => {
 
   it('marks a reconnect in flight when the viewer fetches ICE servers for an active session', async () => {
     primeHappyPath();
+    mockViewerSelect({ session: { ...ACTIVE_SESSION, desktopStartGeneration: 7n }, device: DEVICE, user: USER });
     const res = await iceServersRequest();
     expect(res.status).toBe(200);
-    expect(markDesktopViewerReconnectIntent).toHaveBeenCalledWith(SESSION_ID);
+    // The mark names the start the session is on, so a late drop for an
+    // older peer is never held against a newer start.
+    expect(markDesktopViewerReconnectIntent).toHaveBeenCalledWith(SESSION_ID, 7n);
   });
 
   it('does not mark the first connect (session not yet active)', async () => {

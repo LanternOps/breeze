@@ -11,44 +11,58 @@ import { revokeViewerSession } from './viewerTokenRevocation';
  * #10542: a short hold on a desktop peer drop that the viewer's own
  * reconnect caused.
  *
- * When the viewer's WebRTC connection goes `disconnected`, the viewer closes
- * its old peer and starts a reconnect: it fetches ICE servers, then posts a new
- * offer. Closing the old peer makes the agent report `peer_disconnected`, and
- * that report used to end the session and revoke the viewer token at once
- * (Finding #5). Every reconnect offer then got a 401.
+ * When the viewer's WebRTC connection goes `disconnected`, the viewer
+ * reconnects: it closes its old peer, fetches ICE servers and posts a new
+ * offer. Closing the old peer drives the agent's peer to Closed/Failed, and
+ * the agent reports `peer_disconnected` at once. That report used to end the
+ * session and revoke the viewer token immediately (Finding #5), so every
+ * reconnect offer got a 401.
  *
- * A peer drop still ends the session at once, unless the viewer fetched ICE
- * servers for this live session within the last
- * DESKTOP_RECONNECT_INTENT_WINDOW_MS. In that case the end (terminal commit +
- * viewer-token revocation) waits DESKTOP_RECONNECT_GRACE_MS, and then happens
- * only if the session is still on the start the drop interrupted. A reconnect
- * offer commits a new start (it bumps `desktop_start_generation`), so the held
- * end matches nothing and the session continues.
+ * The viewer now marks the reconnect before it closes the old peer, by
+ * fetching ICE servers for the still-active session (older viewers fetch only
+ * after the close, so their mark usually, but not always, lands before the
+ * drop report). The mark names the start generation the session was on. A
+ * peer drop for that same start, within DESKTOP_RECONNECT_INTENT_WINDOW_MS,
+ * holds the end (terminal commit + viewer-token revocation) for
+ * DESKTOP_RECONNECT_GRACE_MS. When the grace runs out the session ends only if
+ * it is still on that start. The reconnect offer commits a new start (it bumps
+ * `desktop_start_generation`), so the held end matches nothing and the session
+ * continues. Every other drop ends the session at once, as before.
  *
  * The hold is bounded on every instance, not just the one holding the timer:
  *  - The timer lives on the API instance that holds the agent's socket.
  *  - A durable record (start generation + deadline) is written to Redis before
- *    the hold starts. validateViewerSessionAccess calls
+ *    the hold counts. validateViewerSessionAccess calls
  *    enforceExpiredDesktopReconnectHold, so once the deadline has passed any
  *    instance ends the session before it serves that viewer token again, even
  *    if the holding instance died and its timer was lost.
  *  - If the record cannot be written, there is no hold: the session ends at
- *    once, as before.
+ *    once.
  *
  * The hold ends early when the person at the device ends the session
- * (endHeldDesktopSessionNow). An End from the dashboard commits the terminal
- * state itself, so the held end then matches no live row and does nothing.
+ * (endHeldDesktopSessionNow, on the instance holding it). An End from the
+ * dashboard commits the terminal state itself, so the held end then matches no
+ * live row and does nothing.
  */
 
-/** Same as the agent's ICE-disconnected grace (agent/internal/remote/desktop/session_webrtc.go). */
+/**
+ * Matches the agent's 20 s ICE-disconnected grace timer
+ * (agent/internal/remote/desktop/session_webrtc.go, the
+ * PeerConnectionStateDisconnected branch). Keep the two in step.
+ */
 export const DESKTOP_RECONNECT_GRACE_MS = 20_000;
 
 /**
- * How long an ICE-server fetch counts as "a reconnect is in flight". The
- * viewer fetches ICE servers right after it closes the old peer, and the
- * agent's drop report normally follows within a second.
+ * How long a reconnect mark stays valid. The drop it is waiting for follows
+ * the viewer closing its old peer, which the agent reports as soon as its
+ * peer reaches Closed/Failed. A drop that only comes from the agent's own 20 s
+ * disconnected timer arrives after this window and ends the session at once.
  */
 export const DESKTOP_RECONNECT_INTENT_WINDOW_MS = 10_000;
+
+/** Delay between attempts when a held end fails (DB or Redis blip). */
+export const DESKTOP_RECONNECT_END_RETRY_MS = 5_000;
+const DESKTOP_RECONNECT_END_ATTEMPTS = 3;
 
 function intentKey(sessionId: string): string {
   return `desktop-viewer-reconnect:${sessionId}`;
@@ -58,16 +72,27 @@ function holdKey(sessionId: string): string {
   return `desktop-reconnect-hold:${sessionId}`;
 }
 
+function report(err: unknown, sessionId: string, where: string): void {
+  captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+    area: 'desktopReconnectGrace',
+    where,
+    desktopSessionId: sessionId,
+  });
+}
+
 /**
- * Record that the viewer is renegotiating this session. Returns false when the
- * mark could not be written; then a following peer drop ends the session at
- * once, which is the behavior before #10542.
+ * Record that the viewer is renegotiating this session, which is on
+ * `startGeneration`. Returns false when the mark could not be written; then a
+ * following peer drop ends the session at once, as before #10542.
  */
-export async function markDesktopViewerReconnectIntent(sessionId: string): Promise<boolean> {
+export async function markDesktopViewerReconnectIntent(
+  sessionId: string,
+  startGeneration: bigint,
+): Promise<boolean> {
   const redis = getRedis();
   if (!redis) return false;
   try {
-    await redis.set(intentKey(sessionId), '1', 'PX', DESKTOP_RECONNECT_INTENT_WINDOW_MS);
+    await redis.set(intentKey(sessionId), startGeneration.toString(), 'PX', DESKTOP_RECONNECT_INTENT_WINDOW_MS);
     return true;
   } catch (err) {
     console.error('[desktopReconnectGrace] Failed to record viewer reconnect intent:', err);
@@ -76,27 +101,31 @@ export async function markDesktopViewerReconnectIntent(sessionId: string): Promi
 }
 
 /**
- * Take the reconnect mark for this session, if there is one. Atomic (GETDEL),
- * so one ICE-server fetch allows at most one hold. Any failure returns false,
- * so the drop ends the session at once.
+ * Take the reconnect mark for this session, if there is one, and return the
+ * start generation it names. Atomic (GETDEL), so one mark allows at most one
+ * hold. Any failure returns null, so the drop ends the session at once.
  */
-export async function consumeDesktopViewerReconnectIntent(sessionId: string): Promise<boolean> {
+export async function consumeDesktopViewerReconnectIntent(sessionId: string): Promise<bigint | null> {
   const redis = getRedis();
-  if (!redis) return false;
+  if (!redis) return null;
+  let raw: string | null;
   try {
-    return (await redis.getdel(intentKey(sessionId))) === '1';
+    raw = await redis.getdel(intentKey(sessionId));
   } catch (err) {
     console.error('[desktopReconnectGrace] Failed to read viewer reconnect intent:', err);
-    return false;
+    return null;
   }
+  if (raw === null || !/^\d+$/.test(raw)) return null;
+  return BigInt(raw);
 }
 
 async function clearHoldRecord(sessionId: string): Promise<void> {
   try {
     await getRedis()?.del(holdKey(sessionId));
   } catch (err) {
-    // Harmless: a leftover record names a start that has ended, so it no
-    // longer matches a live session, and it expires with the viewer token.
+    // Harmless: a leftover record names a start the session is no longer on
+    // (or a session that is no longer live), so enforcement ignores it, and
+    // its TTL removes it.
     console.error('[desktopReconnectGrace] Failed to clear reconnect hold record:', err);
   }
 }
@@ -143,18 +172,36 @@ export async function endDesktopSessionAfterReconnectGrace(input: {
 interface HeldSession {
   deviceId: string;
   startGeneration: bigint;
+  record: string;
   timer: ReturnType<typeof setTimeout>;
   end: () => Promise<void>;
 }
 
 const heldSessions = new Map<string, HeldSession>();
+const pendingRetries = new Set<ReturnType<typeof setTimeout>>();
 
-async function runEnd(sessionId: string, end: () => Promise<void>): Promise<void> {
+/**
+ * Run a held end. A failure (DB or Redis blip) is reported and retried a
+ * bounded number of times; the durable hold record stays in place until an
+ * attempt succeeds, so enforcement still covers the session meanwhile.
+ */
+async function runEnd(sessionId: string, end: () => Promise<void>, attempt = 1): Promise<void> {
   try {
     await end();
   } catch (err) {
-    console.error(`[desktopReconnectGrace] Failed to end session ${sessionId} after the reconnect grace:`, err);
-    captureException(err instanceof Error ? err : new Error(String(err)));
+    console.error(
+      `[desktopReconnectGrace] Failed to end session ${sessionId} after the reconnect grace (attempt ${attempt}/${DESKTOP_RECONNECT_END_ATTEMPTS}):`,
+      err,
+    );
+    report(err, sessionId, 'held_end');
+    if (attempt < DESKTOP_RECONNECT_END_ATTEMPTS) {
+      const retry = setTimeout(() => {
+        pendingRetries.delete(retry);
+        void runEnd(sessionId, end, attempt + 1);
+      }, DESKTOP_RECONNECT_END_RETRY_MS);
+      retry.unref?.();
+      pendingRetries.add(retry);
+    }
   }
 }
 
@@ -173,7 +220,9 @@ export type HoldDesktopSessionOutcome = 'held' | 'already_held' | 'unavailable';
  *
  * A second drop for the same start does not extend the hold. A drop for a
  * newer start replaces the older hold, because the older start is already
- * superseded.
+ * superseded. The local entry is installed before the record is written, so
+ * two drops handled concurrently on this instance cannot leave the record
+ * naming the older start.
  */
 export async function holdDesktopSessionForReconnect(input: {
   sessionId: string;
@@ -183,32 +232,15 @@ export async function holdDesktopSessionForReconnect(input: {
 }): Promise<HoldDesktopSessionOutcome> {
   const existing = heldSessions.get(input.sessionId);
   if (existing && existing.startGeneration >= input.startGeneration) return 'already_held';
-
-  const graceMs = input.graceMs ?? DESKTOP_RECONNECT_GRACE_MS;
-  const record: HoldRecord = {
-    deviceId: input.deviceId,
-    startGeneration: input.startGeneration.toString(),
-    deadlineMs: Date.now() + graceMs,
-  };
   const redis = getRedis();
   if (!redis) return 'unavailable';
-  try {
-    // Kept as long as any viewer token for this session can live, so the
-    // deadline is enforceable for the token's whole life.
-    await redis.set(holdKey(input.sessionId), JSON.stringify(record), 'EX', VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS);
-  } catch (err) {
-    console.error('[desktopReconnectGrace] Failed to record reconnect hold; ending the session now:', err);
-    return 'unavailable';
-  }
 
-  // Re-read after the await: another drop may have installed a hold meanwhile.
-  const current = heldSessions.get(input.sessionId);
-  if (current) {
-    if (current.startGeneration >= input.startGeneration) return 'already_held';
-    clearTimeout(current.timer);
+  if (existing) {
+    clearTimeout(existing.timer);
     heldSessions.delete(input.sessionId);
   }
 
+  const graceMs = input.graceMs ?? DESKTOP_RECONNECT_GRACE_MS;
   const end = async () => {
     await endDesktopSessionAfterReconnectGrace({
       sessionId: input.sessionId,
@@ -216,9 +248,15 @@ export async function holdDesktopSessionForReconnect(input: {
       startGeneration: input.startGeneration,
     });
   };
+  const record: HoldRecord = {
+    deviceId: input.deviceId,
+    startGeneration: input.startGeneration.toString(),
+    deadlineMs: Date.now() + graceMs,
+  };
   const held: HeldSession = {
     deviceId: input.deviceId,
     startGeneration: input.startGeneration,
+    record: JSON.stringify(record),
     end,
     timer: setTimeout(() => {
       if (heldSessions.get(input.sessionId) !== held) return;
@@ -228,6 +266,26 @@ export async function holdDesktopSessionForReconnect(input: {
   };
   held.timer.unref?.();
   heldSessions.set(input.sessionId, held);
+
+  try {
+    // Kept for a full viewer-token lifetime from now, so the deadline stays
+    // enforceable for as long as any token for this session can be used.
+    await redis.set(holdKey(input.sessionId), held.record, 'EX', VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS);
+    // A newer hold replaced this one while the write was in flight, and this
+    // write may have landed after the newer one's. Write the current hold's
+    // record again so the record names the newest start.
+    const current = heldSessions.get(input.sessionId);
+    if (current && current !== held) {
+      await redis.set(holdKey(input.sessionId), current.record, 'EX', VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS);
+    }
+  } catch (err) {
+    console.error('[desktopReconnectGrace] Failed to record reconnect hold; ending the session now:', err);
+    if (heldSessions.get(input.sessionId) === held) {
+      clearTimeout(held.timer);
+      heldSessions.delete(input.sessionId);
+    }
+    return 'unavailable';
+  }
   return 'held';
 }
 
@@ -235,7 +293,8 @@ export async function holdDesktopSessionForReconnect(input: {
  * End a held session now instead of when the grace runs out. Used when the
  * person at the device ended the session; bound to that device, so one agent
  * cannot cut short a hold on another device's session. Returns false when
- * nothing was held for that device on this instance.
+ * nothing was held for that device on this instance. A failed end is retried
+ * as for the timer.
  */
 export async function endHeldDesktopSessionNow(sessionId: string, deviceId: string): Promise<boolean> {
   const held = heldSessions.get(sessionId);
@@ -262,10 +321,14 @@ export type PeerDropDecision = 'held' | 'end_now';
  *  - the agent gave no stop reason (a reason means the agent stopped the
  *    session on purpose, e.g. the no-video watchdog);
  *  - the session is not a WebSocket-relay stream owned by this agent;
- *  - the viewer fetched ICE servers for this session within the intent window
- *    (the mark is consumed, so one fetch allows one hold);
+ *  - the viewer marked a reconnect within the intent window (the mark is
+ *    consumed, so one mark allows one hold);
  *  - the session is still `active` on this device, with no terminal phase and
- *    no end reason (the person at the device did not end it);
+ *    no recorded end reason (a user end reported after this point cancels the
+ *    hold through endHeldDesktopSessionNow);
+ *  - the session is still on the start the mark named. A drop handled after
+ *    the reconnect offer already committed a newer start is a late report for
+ *    the old peer and is not held;
  *  - the durable hold record was written.
  */
 export async function holdDesktopPeerDropForReconnect(input: {
@@ -275,7 +338,8 @@ export async function holdDesktopPeerDropForReconnect(input: {
   relayOwned: boolean;
 }): Promise<PeerDropDecision> {
   if (input.stopReason || input.relayOwned) return 'end_now';
-  if (!(await consumeDesktopViewerReconnectIntent(input.sessionId))) return 'end_now';
+  const markedGeneration = await consumeDesktopViewerReconnectIntent(input.sessionId);
+  if (markedGeneration === null) return 'end_now';
 
   let row: { status: string; endReason: string | null; terminationPhase: string; desktopStartGeneration: bigint } | undefined;
   try {
@@ -295,16 +359,19 @@ export async function holdDesktopPeerDropForReconnect(input: {
     );
   } catch (err) {
     console.error(`[desktopReconnectGrace] Failed to read session ${input.sessionId} for a reconnect hold; ending it now:`, err);
+    report(err, input.sessionId, 'hold_read');
     return 'end_now';
   }
   if (!row || row.status !== 'active' || row.endReason !== null || (row.terminationPhase ?? 'none') !== 'none') {
     return 'end_now';
   }
+  const startGeneration = BigInt(row.desktopStartGeneration);
+  if (startGeneration !== markedGeneration) return 'end_now';
 
   const outcome = await holdDesktopSessionForReconnect({
     sessionId: input.sessionId,
     deviceId: input.deviceId,
-    startGeneration: BigInt(row.desktopStartGeneration),
+    startGeneration,
   });
   return outcome === 'unavailable' ? 'end_now' : 'held';
 }
@@ -346,18 +413,26 @@ export async function enforceExpiredDesktopReconnectHold(
     if (record.startGeneration !== session.desktopStartGeneration.toString()) return 'none';
     if (nowMs < record.deadlineMs) return 'none';
   } else {
-    console.error(`[desktopReconnectGrace] Unreadable reconnect hold record for session ${session.id}; ending the session`);
+    // Fail closed: a record we cannot read cannot prove its deadline.
+    const err = new Error(`Unreadable reconnect hold record for session ${session.id}`);
+    console.error(`[desktopReconnectGrace] ${err.message}; ending the session`);
+    report(err, session.id, 'hold_record_unreadable');
   }
 
-  await endDesktopSessionAfterReconnectGrace({
+  const outcome = await endDesktopSessionAfterReconnectGrace({
     sessionId: session.id,
     deviceId: session.deviceId,
     startGeneration: session.desktopStartGeneration,
   });
-  return 'ended';
+  // 'superseded': a reconnect committed a newer start (or the session ended
+  // another way) between the caller's read and this end. Nothing to refuse
+  // here; the caller's own status checks apply.
+  return outcome === 'ended' ? 'ended' : 'none';
 }
 
 export function __resetDesktopReconnectGraceForTest(): void {
   for (const held of heldSessions.values()) clearTimeout(held.timer);
   heldSessions.clear();
+  for (const retry of pendingRetries) clearTimeout(retry);
+  pendingRetries.clear();
 }

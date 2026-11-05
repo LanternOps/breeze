@@ -1868,14 +1868,14 @@ export function createDesktopWsRoutes(
       }
 
       // #10542: on a live session this fetch is the start of a reconnect (the
-      // first connect fetches while the row is still pending). The viewer has
-      // just closed its old peer, so the agent's peer-drop report for it is
-      // on its way; the mark lets that drop wait for this viewer's new offer
-      // instead of ending the session under it.
-      // Written before the ICE plan is resolved, so it lands as early as
-      // possible.
+      // first connect fetches while the row is still pending or connecting).
+      // The viewer sends it before it closes its old peer (older viewers send
+      // it just after), so the agent's peer-drop report for that peer follows
+      // the mark, and the mark lets that drop wait for this viewer's new offer
+      // instead of ending the session under it. Written before the ICE plan is
+      // resolved, so it lands as early as possible.
       if (access.session.status === 'active') {
-        await markDesktopViewerReconnectIntent(sessionId);
+        await markDesktopViewerReconnectIntent(sessionId, BigInt(access.session.desktopStartGeneration ?? 0));
       }
 
       const icePlan = await withSystemDbAccessContext(() =>
