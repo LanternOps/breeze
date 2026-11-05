@@ -18,6 +18,23 @@ func realStoreDir(t *testing.T) string {
 	return filepath.Join(base, "oem")
 }
 
+// A host that has never run a vendor update has no store directory. That has to
+// read as "nothing recorded" on the real Store, or every agent start reports an
+// unreadable marker and every first flash reports unreadable verifications.
+func TestFreshDirStoreHoldsNothing(t *testing.T) {
+	s := NewDirStore(realStoreDir(t))
+	if _, err := ReadMarker(s); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("ReadMarker err = %v", err)
+	}
+	list, err := readPendingVerifications(s)
+	if err != nil || len(list) != 0 {
+		t.Fatalf("pending = %v, %v", list, err)
+	}
+	if err := RecoverInterrupted(Deps{Store: s}); err != nil {
+		t.Fatalf("RecoverInterrupted: %v", err)
+	}
+}
+
 func TestDirStoreRoundTrip(t *testing.T) {
 	s := NewDirStore(realStoreDir(t))
 	if _, err := s.ReadFile("run.json"); !errors.Is(err, fs.ErrNotExist) {
@@ -35,6 +52,9 @@ func TestDirStoreRoundTrip(t *testing.T) {
 	}
 	if err := s.Remove("run.json"); err != nil {
 		t.Fatalf("second remove: %v", err)
+	}
+	if _, err := s.ReadFile("run.json"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("removed file err = %v", err)
 	}
 	dir, err := s.Dir("downloads")
 	if err != nil {
