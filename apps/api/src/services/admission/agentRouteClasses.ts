@@ -48,6 +48,10 @@ export const AGENT_ROUTE_ADMISSION_CLASSES: Readonly<Record<string, RouteClass>>
   // security-relevant (it closes a request a technician could still approve);
   // the agent retries, but a shed call keeps the request approvable meanwhile.
   'POST /:id/elevation-requests/:requestId/withdraw': 'protected',
+  // #11065: the post-reboot BitLocker/BIOS check after a vendor update. Once per
+  // run and 4 KiB at most; a non-2xx resend is the only retry the
+  // protection-still-suspended alert gets, so it is not shed.
+  'PUT /:id/oem-updates/verification': 'protected',
   'PUT /:id/eventlogs': 'protected',
   'GET /:id/winget-bootstrap/manifest': 'protected',
   'GET /:id/winget-bootstrap/file/:name': 'protected',
