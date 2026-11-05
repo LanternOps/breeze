@@ -9,7 +9,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import * as gate from './ci-gate.mjs';
-import { evaluateIf } from './queue-selection.mjs';
+import { evaluateIf, policyDigest } from './queue-selection.mjs';
 
 const REPO_ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '../..'));
 const realCi = readFileSync(join(REPO_ROOT, '.github/workflows/ci.yml'), 'utf8');
@@ -825,4 +825,555 @@ test('compareOracle: a needs job absent from the oracle is a difference; the mob
   const results = { lint: 'success', 'mobile-native-changes': 'skipped' };
   assert.deepEqual(gate.compareOracle({ 'mobile-native-changes': { result: 'skipped', outputs: {} } }, results, 'false'),
     [{ job: 'lint', oracle: null, gate: 'success' }]);
+});
+
+// ── C1: waiting for the candidate's CI run ───────────────────────────────
+
+const MIN = 60_000;
+const REPO = 'LanternOps/breeze';
+const HEAD_SHA = 'c'.repeat(40);
+const BASE_SHA = 'b'.repeat(40);
+const WORKFLOW_SHA = 'f'.repeat(40);
+const QUEUE_REF = `refs/heads/gh-readonly-queue/main/pr-1-${BASE_SHA}`;
+const ciRun = over => ({ id: 77, path: '.github/workflows/ci.yml', event: 'merge_group', head_sha: HEAD_SHA,
+  status: 'in_progress', conclusion: null, run_attempt: 1, ...over });
+const ciSuccessJob = (status, conclusion = null) => ({ name: 'CI Success', status, conclusion });
+
+// A fake clock and a fake Actions API. `state(elapsedMs)` says what the API
+// shows at that moment, or throws to simulate an outage.
+function waitIo(state) {
+  let now = 1_000_000_000;
+  const start = now;
+  const calls = [];
+  return {
+    calls,
+    elapsed: () => now - start,
+    now: () => now,
+    sleep: ms => { now += ms; },
+    gh(args) {
+      calls.push(args);
+      const shown = state(now - start);
+      if (/\/jobs\?/.test(args[1])) return JSON.stringify([{ jobs: shown.jobs ?? [] }]);
+      return JSON.stringify(shown.raw ?? { workflow_runs: shown.runs ?? [] });
+    },
+  };
+}
+const wait = (io, over = {}) => gate.waitForCi(io, { repository: REPO, headSha: HEAD_SHA, headRef: QUEUE_REF, ...over });
+
+test('waitForCi: only the ci.yml merge_group run for the exact head counts', () => {
+  const others = [ciRun({ id: 1, path: '.github/workflows/ci-copy.yml', status: 'completed', conclusion: 'success' }),
+    ciRun({ id: 2, event: 'pull_request', status: 'completed', conclusion: 'success' }),
+    ciRun({ id: 3, head_sha: 'd'.repeat(40), status: 'completed', conclusion: 'success' })];
+  const decoys = waitIo(() => ({ runs: others }));
+  assert.deepEqual(wait(decoys).reason, 'ci_run_missing');
+
+  const io = waitIo(() => ({ runs: [...others, ciRun({ status: 'completed', conclusion: 'success' })], jobs: [ciSuccessJob('completed', 'success')] }));
+  const out = wait(io);
+  assert.equal(out.run.id, 77);
+  assert.deepEqual(out.jobs.map(job => job.name), ['CI Success']);
+  assert.ok(io.calls[0][1].includes(`head_sha=${HEAD_SHA}`), io.calls[0][1]);
+  assert.ok(io.calls[0][1].includes('actions/workflows/ci.yml/runs'), io.calls[0][1]);
+});
+
+test('waitForCi: of two runs for one head, the newest governs', () => {
+  const io = waitIo(() => ({ runs: [ciRun({ id: 5, status: 'completed', conclusion: 'failure' }), ciRun({ id: 9, status: 'completed', conclusion: 'success' })] }));
+  assert.equal(wait(io).run.id, 9);
+});
+
+test('waitForCi: stops when CI Success has completed, whatever its conclusion, and not before', () => {
+  for (const conclusion of ['success', 'failure', 'skipped']) {
+    const io = waitIo(elapsed => ({ runs: [ciRun()], jobs: elapsed < 10 * MIN ? [ciSuccessJob('in_progress')] : [ciSuccessJob('completed', conclusion)] }));
+    const out = wait(io);
+    assert.equal(out.run.status, 'in_progress');
+    assert.equal(out.jobs[0].conclusion, conclusion);
+    assert.equal(io.elapsed(), 10 * MIN);
+  }
+});
+
+test('waitForCi: stops when the run has completed, even with no CI Success job', () => {
+  const io = waitIo(elapsed => elapsed < 3 * MIN ? { runs: [ciRun()] } : { runs: [ciRun({ status: 'completed', conclusion: 'failure' })], jobs: [] });
+  const out = wait(io);
+  assert.equal(out.run.conclusion, 'failure');
+  assert.deepEqual(out.jobs, []);
+  assert.equal(io.elapsed(), 3 * MIN);
+});
+
+test('waitForCi: no run past 15 minutes is ci_run_missing; one that appears at 14 is followed', () => {
+  const never = waitIo(() => ({ runs: [] }));
+  assert.equal(wait(never).reason, 'ci_run_missing');
+  assert.equal(never.elapsed(), 15 * MIN);
+  const late = waitIo(elapsed => elapsed < 14 * MIN ? { runs: [] } : { runs: [ciRun({ status: 'completed', conclusion: 'success' })] });
+  assert.equal(wait(late).run.id, 77);
+});
+
+test('waitForCi: the 140 minute deadline ends a run that never finishes', () => {
+  const io = waitIo(() => ({ runs: [ciRun()], jobs: [ciSuccessJob('queued')] }));
+  assert.equal(wait(io).reason, 'deadline');
+  assert.equal(io.elapsed(), 140 * MIN);
+});
+
+test('waitForCi: a cancelled run is ci_cancelled at once and names the run', () => {
+  const io = waitIo(() => ({ runs: [ciRun({ status: 'completed', conclusion: 'cancelled' })], jobs: [ciSuccessJob('completed', 'success')] }));
+  const out = wait(io);
+  assert.equal(out.reason, 'ci_cancelled');
+  assert.equal(out.run.id, 77);
+  assert.equal(io.elapsed(), 0);
+});
+
+test('waitForCi: an outage shorter than the tolerance is survived, 15 consecutive minutes is api_error', () => {
+  const down = elapsed => { if (elapsed < 14 * MIN) throw Error('HTTP 502'); return { runs: [ciRun({ status: 'completed', conclusion: 'success' })] }; };
+  assert.equal(wait(waitIo(down)).run.id, 77);
+
+  const io = waitIo(() => { throw Error('HTTP 502'); });
+  assert.equal(wait(io).reason, 'api_error');
+  assert.ok(io.elapsed() >= 15 * MIN && io.elapsed() < 18 * MIN, String(io.elapsed()));
+});
+
+test('waitForCi: the outage window counts consecutive failures, so a good poll resets it', () => {
+  // Down for 10 of every 11 minutes, for long past the tolerance. Never 15 in a row.
+  const io = waitIo(elapsed => {
+    if (elapsed > 60 * MIN) return { runs: [ciRun({ status: 'completed', conclusion: 'success' })] };
+    if (elapsed % (11 * MIN) < 10 * MIN) throw Error('HTTP 503');
+    return { runs: [ciRun()], jobs: [] };
+  });
+  assert.equal(wait(io).run.conclusion, 'success');
+});
+
+test('waitForCi: a failing jobs read and a malformed run list count as the API being down', () => {
+  const jobsDown = waitIo(() => ({ runs: [ciRun()] }));
+  const gh = jobsDown.gh;
+  jobsDown.gh = args => { if (/\/jobs\?/.test(args[1])) throw Error('HTTP 500'); return gh(args); };
+  assert.equal(wait(jobsDown).reason, 'api_error');
+  // A body with no list is not "no run yet", which would blame the candidate.
+  const malformed = waitIo(() => ({ raw: { message: 'Server Error' } }));
+  assert.equal(wait(malformed).reason, 'api_error');
+});
+
+// ── C1: verify ───────────────────────────────────────────────────────────
+
+const verifyEnv = over => ({ GITHUB_EVENT_NAME: 'merge_group', GITHUB_REPOSITORY: REPO, GITHUB_WORKFLOW_SHA: WORKFLOW_SHA,
+  GITHUB_WORKFLOW_REF: 'LanternOps/breeze/.github/workflows/ci-gate.yml@refs/heads/main', GITHUB_RUN_ID: '500', GITHUB_RUN_ATTEMPT: '2',
+  BASE_SHA, HEAD_SHA, HEAD_REF: QUEUE_REF, GITHUB_STEP_SUMMARY: 'summary.md', ...over });
+const passing = over => ({ verdict: 'pass', reason: 'required_jobs_passed', flags: { code: 'true', rust: 'false' }, policyPaths: [],
+  results: { lint: 'success' }, mobile: 'false', stdout: '', ...over });
+
+function verifyIo({ git = () => '', oracle } = {}) {
+  const out = [], err = [], files = new Map(), gitCalls = [];
+  let clock = 1_000_000_000; // a wait that is not stubbed out still ends
+  return { out, err, files, gitCalls,
+    all: () => [...out, ...err],
+    now: () => clock, sleep(ms) { clock += ms; },
+    stdout: text => out.push(text), stderr: text => err.push(text),
+    git(args) { gitCalls.push(args); return git(args); },
+    temp: () => 'tmp', remove: path => files.delete(path),
+    read: path => { if (!files.has(path)) throw Error(`no ${path}`); return files.get(path); },
+    write: (path, text) => files.set(path, text),
+    append: (path, text) => files.set(path, (files.get(path) ?? '') + text),
+    gh(args) {
+      if (args[0] === 'run') {
+        if (oracle instanceof Error) throw oracle;
+        files.set(join(args[args.indexOf('--dir') + 1], 'ci-needs-oracle.json'), JSON.stringify(oracle));
+        return '';
+      }
+      const name = args[1].match(/name=([\w-]+)/)?.[1];
+      return JSON.stringify([{ artifacts: oracle === undefined ? [] : [{ name, expired: false }] }]);
+    },
+  };
+}
+const finished = () => ({ run: ciRun({ status: 'completed', conclusion: 'success', run_attempt: 3 }), jobs: [ciSuccessJob('completed', 'success')] });
+const runVerify = (io, { env, waitFor = finished, decide = () => passing() } = {}) =>
+  gate.verify(io, verifyEnv(env), { waitForCi: waitFor, verdict: decide });
+const gateLines = io => io.all().filter(line => /^ci-gate:/.test(line));
+
+test('verify: exactly one ci-gate line, with every field in order, and exit 0 on pass', () => {
+  const io = verifyIo();
+  assert.equal(runVerify(io), 0);
+  assert.deepEqual(gateLines(io), [`ci-gate: verdict=pass reason=required_jobs_passed event=merge_group base=${BASE_SHA} head=${HEAD_SHA} ` +
+    'ci_run=77 attempt=3 policy_paths=[] flags={"code":"true","rust":"false"} oracle=absent']);
+});
+
+test('verify: exits non-zero on every verdict other than pass', () => {
+  const io = verifyIo();
+  assert.equal(runVerify(io, { decide: () => passing({ verdict: 'fail', reason: 'required_jobs_failed:lint', stdout: 'lint failed\n' }) }), 1);
+  assert.match(gateLines(io)[0], /^ci-gate: verdict=fail reason=required_jobs_failed:lint /);
+  assert.equal(gateLines(io).length, 1);
+  assert.ok(io.all().includes('ci-gate-script: lint failed'), 'the base script says why');
+  assert.equal(runVerify(verifyIo(), { decide: () => passing({ verdict: 'maybe' }) }), 1);
+});
+
+test('verify: an exception in the core is verdict=fail reason=error, not a bare stack', () => {
+  for (const [name, deps] of [
+    ['verdict', { decide() { throw Error('boom in core\nsecond line'); } }],
+    ['wait', { waitFor() { throw Error('boom in wait'); } }],
+  ]) {
+    const io = verifyIo();
+    assert.equal(runVerify(io, deps), 1, name);
+    assert.equal(gateLines(io).length, 1, name);
+    assert.match(gateLines(io)[0], /^ci-gate: verdict=fail reason=error event=merge_group /, name);
+    assert.ok(io.all().some(line => line.includes('boom in')), `${name}: the cause is logged`);
+    assert.ok(io.all().every(line => !line.includes('\n')), `${name}: one line each`);
+  }
+});
+
+test('verify: a GateError from the core keeps its own reason', () => {
+  const io = verifyIo();
+  assert.equal(runVerify(io, { decide() { throw new gate.GateError('aggregator_exec', 'spawn failed'); } }), 1);
+  assert.match(gateLines(io)[0], /verdict=fail reason=aggregator_exec /);
+});
+
+test('verify: pins itself by ancestry, before waiting for anything', () => {
+  const io = verifyIo({ git: args => { if (args[0] === 'merge-base') throw Error('exit 1'); return ''; } });
+  let waited = false;
+  assert.equal(runVerify(io, { waitFor() { waited = true; return finished(); } }), 1);
+  assert.equal(waited, false);
+  assert.match(gateLines(io)[0], /^ci-gate: verdict=fail reason=not_pinned /);
+  const ancestry = io.gitCalls.find(args => args[0] === 'merge-base');
+  assert.deepEqual(ancestry, ['merge-base', '--is-ancestor', WORKFLOW_SHA, 'origin/main']);
+  // An unusable sha cannot be ancestry-checked at all.
+  const bad = verifyIo();
+  assert.equal(runVerify(bad, { env: { GITHUB_WORKFLOW_SHA: '' } }), 1);
+  assert.match(gateLines(bad)[0], /reason=not_pinned /);
+});
+
+test('verify: logs GITHUB_WORKFLOW_REF verbatim and never judges its shape', () => {
+  for (const ref of ['LanternOps/breeze/.github/workflows/ci-gate.yml@refs/heads/main', 'something/unexpected@sha-or-whatever', '']) {
+    const io = verifyIo();
+    assert.equal(runVerify(io, { env: { GITHUB_WORKFLOW_REF: ref } }), 0, ref);
+    const identity = io.all().filter(line => line.startsWith('ci-gate-identity:'));
+    assert.equal(identity.length, 1);
+    assert.ok(identity[0].includes(`workflow_ref=${ref} `), identity[0]);
+    assert.ok(identity[0].includes(`workflow_sha=${WORKFLOW_SHA}`), identity[0]);
+    assert.ok(identity[0].includes('gate_run=500'), identity[0]);
+  }
+});
+
+test('verify: a policy path adds a notice and a step-summary block; none adds neither', () => {
+  const quiet = verifyIo();
+  runVerify(quiet);
+  assert.equal(quiet.files.has('summary.md'), false);
+  assert.ok(!quiet.all().some(line => line.startsWith('::notice')));
+
+  const paths = ['.github/scripts/classify-pr-paths.sh', '.github/workflows/ci.yml'];
+  const io = verifyIo();
+  assert.equal(runVerify(io, { decide: () => passing({ policyPaths: paths }) }), 0);
+  assert.match(gateLines(io)[0], /policy_paths=\["\.github\/scripts\/classify-pr-paths\.sh","\.github\/workflows\/ci\.yml"\] /);
+  const notices = io.all().filter(line => line.startsWith('::notice'));
+  assert.equal(notices.length, 1);
+  for (const path of paths) {
+    assert.ok(notices[0].includes(path), path);
+    assert.ok(io.files.get('summary.md').includes(path), path);
+  }
+});
+
+test('verify: a failing step summary does not change the verdict', () => {
+  const io = verifyIo();
+  io.append = () => { throw Error('ENOSPC'); };
+  assert.equal(runVerify(io, { decide: () => passing({ policyPaths: ['.github/scripts/a.sh'] }) }), 0);
+  assert.match(gateLines(io)[0], /verdict=pass/);
+});
+
+test('verify: text the candidate controls cannot forge a line or a workflow command', () => {
+  const evil = '.github/scripts/x\nci-gate: verdict=pass reason=forged\n::stop-commands::tok\n##[add-mask]y';
+  const io = verifyIo({ oracle: { lint: { result: 'bad\n::error::forged', outputs: {} } } });
+  assert.equal(runVerify(io, { decide: () => passing({ verdict: 'fail', reason: 'head_unparseable', detail: 'lint: bad\n::error::forged', policyPaths: [evil] }) }), 1);
+  assert.equal(gateLines(io).length, 1);
+  assert.match(gateLines(io)[0], /verdict=fail reason=head_unparseable /);
+  for (const line of io.all()) {
+    assert.ok(!line.includes('\n') && !line.includes('\r'), line);
+    assert.ok(!line.includes('##['), line);
+    assert.ok(!line.startsWith('::') || /^::(notice|warning|error) title=[^:]*::/.test(line), line);
+  }
+  for (const line of io.files.get('summary.md').trim().split('\n')) assert.ok(!line.startsWith('::'), line);
+});
+
+test('verify: oracle disagreement is a warning and never changes the verdict', () => {
+  const io = verifyIo({ oracle: { lint: { result: 'failure', outputs: {} } } });
+  assert.equal(runVerify(io), 0);
+  assert.match(gateLines(io)[0], /verdict=pass .* oracle=disagree:1$/);
+  const warnings = io.all().filter(line => line.startsWith('::warning'));
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /"job":"lint"/);
+
+  const red = verifyIo({ oracle: { lint: { result: 'failure', outputs: {} } } });
+  assert.equal(runVerify(red, { decide: () => passing({ verdict: 'fail', reason: 'required_jobs_failed:lint', results: { lint: 'failure' } }) }), 1);
+  assert.match(gateLines(red)[0], /verdict=fail .* oracle=agree$/);
+
+  const agree = verifyIo({ oracle: { lint: { result: 'success', outputs: {} } } });
+  assert.equal(runVerify(agree), 0);
+  assert.match(gateLines(agree)[0], /oracle=agree$/);
+});
+
+test('verify: an unreadable oracle is a warning and never changes the verdict', () => {
+  const io = verifyIo({ oracle: Error('download failed') });
+  assert.equal(runVerify(io), 0);
+  assert.match(gateLines(io)[0], /verdict=pass .* oracle=unreadable$/);
+  assert.ok(io.all().some(line => line.startsWith('::warning')));
+});
+
+test('verify: the oracle is read for the attempt that was judged', () => {
+  const io = verifyIo({ oracle: { lint: { result: 'success', outputs: {} } } });
+  const seen = [];
+  const gh = io.gh;
+  io.gh = args => { seen.push(args.join(' ')); return gh(args); };
+  runVerify(io);
+  assert.ok(seen.some(call => call.includes('artifacts?name=ci-needs-oracle-attempt-3')), seen.join('\n'));
+  assert.ok(seen.some(call => call.includes('run download 77') && call.includes('--name ci-needs-oracle-attempt-3')), seen.join('\n'));
+});
+
+test('verify: a timing reason from the wait is the verdict, and no verdict is computed', () => {
+  for (const out of [{ reason: 'ci_run_missing' }, { reason: 'deadline' }, { reason: 'api_error' }, { reason: 'ci_cancelled', run: ciRun({ id: 88, run_attempt: 2 }) }]) {
+    const io = verifyIo();
+    let decided = false;
+    assert.equal(runVerify(io, { waitFor: () => out, decide() { decided = true; return passing(); } }), 1, out.reason);
+    assert.equal(decided, false, out.reason);
+    assert.match(gateLines(io)[0], new RegExp(`^ci-gate: verdict=fail reason=${out.reason} `));
+    if (out.run) assert.match(gateLines(io)[0], / ci_run=88 attempt=2 /);
+    else assert.match(gateLines(io)[0], / ci_run=none attempt=none /);
+  }
+});
+
+test('verify: only merge_group is judged', () => {
+  const io = verifyIo();
+  assert.equal(runVerify(io, { env: { GITHUB_EVENT_NAME: 'pull_request' } }), 1);
+  assert.match(gateLines(io)[0], /^ci-gate: verdict=fail reason=wrong_event event=pull_request /);
+});
+
+test('verify: the verdict is asked about the exact queue shas and the jobs from the wait', () => {
+  const io = verifyIo();
+  let asked;
+  runVerify(io, { decide(_, input) { asked = input; return passing(); } });
+  assert.deepEqual([asked.baseSha, asked.headSha, asked.event, asked.apiJobs.map(job => job.name)], [BASE_SHA, HEAD_SHA, 'merge_group', ['CI Success']]);
+});
+
+// ── C1: the git paths, in real repositories ──────────────────────────────
+
+// origin has main (W), and candidate commits main never had; a clone of main
+// alone is what the gate's checkout of workflow_sha guarantees.
+function gateRemote(baseFiles, headFiles) {
+  const origin = repo({ 'gate.txt': 'pinned\n' }, baseFiles);
+  const run = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const inOrigin = (...args) => run(origin.cwd, ...args);
+  inOrigin('config', 'uploadpack.allowAnySHA1InWant', 'true');
+  inOrigin('checkout', '-q', '-B', 'candidate');
+  inOrigin('branch', '-f', 'main', origin.base);
+  const workflowSha = origin.base;
+  const baseSha = origin.head;
+  for (const [path, text] of Object.entries(headFiles)) {
+    mkdirSync(dirname(join(origin.cwd, path)), { recursive: true });
+    writeFileSync(join(origin.cwd, path), text);
+  }
+  inOrigin('add', '-A');
+  inOrigin('commit', '-q', '--allow-empty', '-m', 'candidate head');
+  const headSha = inOrigin('rev-parse', 'HEAD');
+  const clone = tempDir();
+  execFileSync('git', ['clone', '-q', '--single-branch', '--branch', 'main', '--no-tags', `file://${origin.cwd}`, clone], { stdio: 'ignore' });
+  const io = gate.createGateIO({ cwd: clone, env: { PATH: process.env.PATH } });
+  io.sleep = () => {};
+  const lines = [];
+  io.stdout = text => lines.push(text);
+  io.stderr = text => lines.push(text);
+  const has = sha => { try { run(clone, 'cat-file', '-e', `${sha}^{commit}`); return true; } catch { return false; } };
+  return { origin: origin.cwd, clone, io, lines, workflowSha, baseSha, headSha, has, inOrigin };
+}
+const realPolicyFiles = () => {
+  const files = { '.github/workflows/ci.yml': realCi, 'pnpm-lock.yaml': lockfile('4.13.5', '19.1.0'), '.github/scripts/mobile-lockfile-closure.mjs': closureScript };
+  for (const name of ['classify-pr-paths.sh', 'qemu-gate-paths.txt', 'integration-floor-paths.txt', 'path-reader-map.txt']) {
+    files[`.github/scripts/${name}`] = readFileSync(join(REPO_ROOT, '.github/scripts', name), 'utf8');
+  }
+  return files;
+};
+const docsOnlyJobs = () => gate.extractAggregator(realCi).needs.map(id => ({ name: gate.jobInstances(realCi, id).template,
+  conclusion: ['changes', 'docs-check'].includes(id) ? 'success' : 'skipped', status: 'completed' }));
+// The Actions API a real entry would see: its run is done, its jobs are listed.
+const fakeActions = (io, headSha, jobs) => {
+  io.gh = args => {
+    if (/\/jobs\?/.test(args[1] ?? '')) return JSON.stringify([{ jobs: [...jobs, ciSuccessJob('completed', 'success')] }]);
+    if (/\/artifacts\?/.test(args[1] ?? '')) return JSON.stringify([{ artifacts: [] }]);
+    return JSON.stringify({ workflow_runs: [ciRun({ head_sha: headSha, status: 'completed', conclusion: 'success' })] });
+  };
+};
+const remoteEnv = (r, over) => verifyEnv({ GITHUB_WORKFLOW_SHA: r.workflowSha, BASE_SHA: r.baseSha, HEAD_SHA: r.headSha, GITHUB_STEP_SUMMARY: '', ...over });
+const lineOf = r => r.lines.filter(line => /^ci-gate:/.test(line));
+
+test('verify: end to end, it fetches the candidate commits itself and judges them', () => {
+  const r = gateRemote(realPolicyFiles(), { 'docs/guide.md': '# x\n' });
+  assert.equal(r.has(r.baseSha) || r.has(r.headSha), false, 'candidate commits must start out absent');
+  fakeActions(r.io, r.headSha, docsOnlyJobs());
+  assert.equal(gate.verify(r.io, remoteEnv(r)), 0, r.lines.join('\n'));
+  assert.ok(r.has(r.baseSha) && r.has(r.headSha));
+  assert.equal(lineOf(r).length, 1);
+  assert.match(lineOf(r)[0], /^ci-gate: verdict=pass reason=required_jobs_passed event=merge_group /);
+  assert.match(lineOf(r)[0], /"code":"false"/);
+});
+
+test('verify: end to end, a failed required job goes red and is named', () => {
+  const r = gateRemote(realPolicyFiles(), { 'docs/guide.md': '# x\n' });
+  fakeActions(r.io, r.headSha, setJobs(docsOnlyJobs(), /^Docs Check$/, 'failure'));
+  assert.equal(gate.verify(r.io, remoteEnv(r)), 1);
+  assert.match(lineOf(r)[0], /^ci-gate: verdict=fail reason=required_jobs_failed:docs-check /);
+});
+
+test('verify: end to end, a workflow sha that is not on main is not_pinned', () => {
+  const r = gateRemote(realPolicyFiles(), { 'docs/guide.md': '# x\n' });
+  fakeActions(r.io, r.headSha, docsOnlyJobs());
+  // The candidate's own copy: it would be the head, or the merge ref.
+  r.io.git(['fetch', '--no-tags', '--quiet', 'origin', r.headSha]);
+  assert.equal(gate.verify(r.io, remoteEnv(r, { GITHUB_WORKFLOW_SHA: r.headSha })), 1);
+  assert.match(lineOf(r)[0], /reason=not_pinned /);
+});
+
+test('verify: main that moved past the checkout still pins; the fetch is its own', () => {
+  const r = gateRemote(realPolicyFiles(), { 'docs/guide.md': '# x\n' });
+  fakeActions(r.io, r.headSha, docsOnlyJobs());
+  // The gate ran from a newer main than this clone's origin/main knows.
+  r.inOrigin('branch', '-f', 'main', r.baseSha);
+  r.io.git(['fetch', '--no-tags', '--quiet', 'origin', r.baseSha]);
+  assert.equal(gate.verify(r.io, remoteEnv(r, { GITHUB_WORKFLOW_SHA: r.baseSha })), 0, r.lines.join('\n'));
+});
+
+test('verify: a fetch that cannot find a candidate commit is base_unreadable, not a crash', () => {
+  for (const which of ['BASE_SHA', 'HEAD_SHA']) {
+    const r = gateRemote(realPolicyFiles(), { 'docs/guide.md': '# x\n' });
+    fakeActions(r.io, r.headSha, docsOnlyJobs());
+    let waited = false;
+    const code = gate.verify(r.io, remoteEnv(r, { [which]: 'e'.repeat(40) }), { waitForCi() { waited = true; return finished(); } });
+    assert.equal(code, 1, which);
+    assert.equal(waited, false, which);
+    assert.equal(lineOf(r).length, 1, which);
+    assert.match(lineOf(r)[0], /^ci-gate: verdict=fail reason=base_unreadable /, which);
+  }
+  const garbled = gateRemote(realPolicyFiles(), { 'docs/guide.md': '# x\n' });
+  assert.equal(gate.verify(garbled.io, remoteEnv(garbled, { HEAD_SHA: 'not-a-sha\n::error::x' })), 1);
+  assert.match(lineOf(garbled)[0], /reason=base_unreadable/);
+  assert.ok(garbled.lines.every(line => !line.includes('\n')));
+});
+
+// ── C1: anchor ───────────────────────────────────────────────────────────
+
+const ANCHOR_KEYS = ['schema', 'head_sha', 'merge_sha', 'base_sha', 'pr_number', 'run_id', 'run_attempt', 'created_at', 'files', 'files_source', 'policy_digest', 'policy_in_files'];
+
+// The merge commit GitHub makes for a pull_request event: M^1 is the base, M^2 the head.
+function anchorRemote(headFiles, baseFiles = { 'src/a.ts': 'a\n' }) {
+  const r = gateRemote(baseFiles, headFiles);
+  const tree = r.inOrigin('rev-parse', `${r.headSha}^{tree}`);
+  const merge = r.inOrigin('commit-tree', tree, '-p', r.baseSha, '-p', r.headSha, '-m', 'merge');
+  r.inOrigin('update-ref', 'refs/pull/7/merge', merge);
+  r.env = over => ({ GITHUB_EVENT_NAME: 'pull_request', GITHUB_REPOSITORY: REPO, GITHUB_WORKFLOW_SHA: r.workflowSha,
+    GITHUB_WORKFLOW_REF: 'LanternOps/breeze/.github/workflows/ci-gate.yml@refs/heads/main', GITHUB_SHA: merge, PR_HEAD_SHA: r.headSha,
+    PR_NUMBER: '7', GITHUB_RUN_ID: '900', GITHUB_RUN_ATTEMPT: '2', ...over });
+  r.merge = merge;
+  r.written = () => { try { return JSON.parse(readFileSync(join(r.clone, gate.ANCHOR_FILE), 'utf8')); } catch { return null; } };
+  return r;
+}
+
+test('anchor: on a real merge commit, every field is right and the commit was fetched by sha', () => {
+  const r = anchorRemote({ 'src/b.ts': 'b\n' });
+  assert.equal(r.has(r.merge), false, 'the merge commit must start out absent');
+  r.io.now = () => Date.UTC(2026, 10, 5, 12, 0, 0);
+  assert.equal(gate.anchor(r.io, r.env()), 0, r.lines.join('\n'));
+  const a = r.written();
+  assert.deepEqual(Object.keys(a), ANCHOR_KEYS);
+  assert.deepEqual([a.schema, a.head_sha, a.merge_sha, a.base_sha, a.pr_number, a.run_id, a.run_attempt, a.created_at, a.files, a.files_source, a.policy_in_files],
+    [1, r.headSha, r.merge, r.baseSha, 7, 900, 2, '2026-11-05T12:00:00.000Z', ['src/b.ts'], 'merge-commit', false]);
+  // The same digest W4's record uses, so W05 can compare the two.
+  assert.equal(a.policy_digest, policyDigest(r.io, r.baseSha));
+  assert.match(a.policy_digest, /^[a-f\d]{64}$/);
+  assert.equal(lineOf(r).length, 1);
+  assert.match(lineOf(r)[0], new RegExp(`^ci-gate: verdict=pass reason=anchor_written event=pull_request base=${r.baseSha} head=${r.headSha} ci_run=none attempt=none policy_paths=\\[\\] flags=null oracle=none$`));
+  assert.ok(r.lines.some(line => line.startsWith('ci-gate-identity:') && line.includes('workflow_ref=LanternOps/breeze/.github/workflows/ci-gate.yml@refs/heads/main ')));
+});
+
+test('anchor: files are the diff from M to its first parent, not from the head', () => {
+  // A base that moved after the head branched: M^1 is not the head's parent.
+  const r = gateRemote({ 'src/a.ts': 'a\n' }, { 'src/b.ts': 'b\n' });
+  r.inOrigin('checkout', '-q', '-b', 'moved', r.baseSha);
+  writeFileSync(join(r.origin, 'src/moved.ts'), 'm\n');
+  r.inOrigin('add', '-A');
+  r.inOrigin('commit', '-q', '-m', 'base moved');
+  const movedBase = r.inOrigin('rev-parse', 'HEAD');
+  writeFileSync(join(r.origin, 'src/b.ts'), 'b\n');
+  r.inOrigin('add', '-A');
+  const merge = r.inOrigin('commit-tree', r.inOrigin('write-tree'), '-p', movedBase, '-p', r.headSha, '-m', 'merge');
+  r.inOrigin('update-ref', 'refs/pull/8/merge', merge);
+  assert.equal(gate.anchor(r.io, { GITHUB_EVENT_NAME: 'pull_request', GITHUB_SHA: merge, PR_HEAD_SHA: r.headSha, PR_NUMBER: '8', GITHUB_RUN_ID: '1', GITHUB_RUN_ATTEMPT: '1' }), 0, r.lines.join('\n'));
+  const a = JSON.parse(readFileSync(join(r.clone, gate.ANCHOR_FILE), 'utf8'));
+  assert.equal(a.base_sha, movedBase);
+  assert.deepEqual(a.files, ['src/b.ts']);
+});
+
+test('anchor: a policy path sets policy_in_files and nulls the digest', () => {
+  const r = anchorRemote({ '.github/scripts/classify-pr-paths.sh': '#!/bin/sh\n', 'src/b.ts': 'b\n' });
+  assert.equal(gate.anchor(r.io, r.env()), 0, r.lines.join('\n'));
+  const a = r.written();
+  assert.equal(a.policy_in_files, true);
+  assert.equal(a.policy_digest, null);
+  assert.match(lineOf(r)[0], /policy_paths=\["\.github\/scripts\/classify-pr-paths\.sh"\]/);
+});
+
+test('anchor: a quoted (non-ASCII) policy path still counts as a policy path', () => {
+  const r = anchorRemote({ '.github/scripts/café.mjs': 'x\n' });
+  assert.equal(gate.anchor(r.io, r.env()), 0, r.lines.join('\n'));
+  const a = r.written();
+  assert.equal(a.policy_in_files, true);
+  assert.equal(a.policy_digest, null);
+});
+
+test('anchor: M^2 not being the head writes nothing and exits 0 with a stderr reason', () => {
+  const r = anchorRemote({ 'src/b.ts': 'b\n' });
+  const errors = [];
+  r.io.stderr = text => { errors.push(text); r.lines.push(text); };
+  assert.equal(gate.anchor(r.io, r.env({ PR_HEAD_SHA: 'd'.repeat(40) })), 0);
+  assert.equal(r.written(), null);
+  assert.match(lineOf(r)[0], /^ci-gate: verdict=pass reason=merge_head_mismatch /);
+  assert.ok(errors.some(line => line.includes('merge_head_mismatch')), errors.join('\n'));
+});
+
+test('anchor: a single-parent commit is not a merge commit; nothing is written', () => {
+  const r = anchorRemote({ 'src/b.ts': 'b\n' });
+  r.io.git(['fetch', '--no-tags', '--quiet', 'origin', r.headSha]);
+  assert.equal(gate.anchor(r.io, r.env({ GITHUB_SHA: r.headSha })), 0);
+  assert.equal(r.written(), null);
+  assert.match(lineOf(r)[0], /reason=merge_head_mismatch /);
+});
+
+test('anchor: a failed fetch is base_unreadable, exits 0, and writes nothing', () => {
+  const r = anchorRemote({ 'src/b.ts': 'b\n' });
+  assert.equal(gate.anchor(r.io, r.env({ GITHUB_SHA: 'e'.repeat(40) })), 0);
+  assert.equal(r.written(), null);
+  assert.equal(lineOf(r).length, 1);
+  assert.match(lineOf(r)[0], /^ci-gate: verdict=pass reason=base_unreadable /);
+});
+
+test('anchor: an unusable input or an exception exits 0 with exactly one line and no anchor', () => {
+  for (const over of [{ PR_NUMBER: '' }, { PR_HEAD_SHA: '' }, { GITHUB_SHA: 'not-a-sha' }, { GITHUB_RUN_ID: 'x' }, { GITHUB_EVENT_NAME: 'merge_group' }]) {
+    const r = anchorRemote({ 'src/b.ts': 'b\n' });
+    assert.equal(gate.anchor(r.io, r.env(over)), 0, JSON.stringify(over));
+    assert.equal(r.written(), null, JSON.stringify(over));
+    assert.equal(lineOf(r).length, 1, JSON.stringify(over));
+    assert.match(lineOf(r)[0], /^ci-gate: verdict=pass reason=anchor_invalid_input /, JSON.stringify(over));
+  }
+  const r = anchorRemote({ 'src/b.ts': 'b\n' });
+  r.io.write = () => { throw Error('disk full'); };
+  assert.equal(gate.anchor(r.io, r.env()), 0);
+  assert.equal(r.written(), null);
+  assert.equal(lineOf(r).length, 1);
+  assert.match(lineOf(r)[0], /^ci-gate: verdict=pass reason=anchor_error /);
+  assert.ok(r.lines.some(line => line.includes('disk full')));
+});
+
+test('anchor: an earlier anchor file is never left to be uploaded', () => {
+  const r = anchorRemote({ 'src/b.ts': 'b\n' });
+  writeFileSync(join(r.clone, gate.ANCHOR_FILE), '{"stale":true}\n');
+  assert.equal(gate.anchor(r.io, r.env({ PR_HEAD_SHA: 'd'.repeat(40) })), 0);
+  assert.equal(r.written(), null);
+});
+
+test('runCLI: verify and anchor are subcommands, and an unknown one is still a usage error', () => {
+  const io = verifyIo({ git: args => { if (args[0] === 'merge-base') throw Error('no'); return ''; } });
+  assert.equal(gate.runCLI(io, ['verify'], verifyEnv()), 1);
+  assert.match(gateLines(io)[0], /reason=not_pinned/);
+  const a = verifyIo();
+  assert.equal(gate.runCLI(a, ['anchor'], { GITHUB_EVENT_NAME: 'pull_request' }), 0);
+  assert.match(gateLines(a)[0], /verdict=pass reason=anchor_invalid_input/);
+  assert.throws(() => gate.runCLI(verifyIo(), ['nope'], {}), /verify.*anchor/s);
 });
