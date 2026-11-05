@@ -4115,7 +4115,7 @@ jobs:
           # self-hoster who later flips the flag needs no database swap, which
           # is exactly the shape .env.example ships.
           POSTGRES_IMAGE_REF=pgvector/pgvector:pg16
-          REDIS_IMAGE_REF=redis:7-alpine
+          REDIS_IMAGE_REF=redis:8-alpine
           COTURN_IMAGE_REF=coturn/coturn:latest
           # Required in production by config/validate.ts (#625) — without
           # this, agents would accept unsigned release manifests. CI uses
@@ -4508,7 +4508,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
       redis:
-        image: redis:7-alpine
+        image: redis:8-alpine
         ports:
           - 6379:6379
         options: >-
@@ -4843,7 +4843,7 @@ jobs:
           BREEZE_BINARIES_IMAGE_REF=ghcr.io/lanternops/breeze/binaries:latest
           CADDY_IMAGE_REF=caddy:2-alpine
           POSTGRES_IMAGE_REF=pgvector/pgvector:pg16
-          REDIS_IMAGE_REF=redis:7-alpine
+          REDIS_IMAGE_REF=redis:8-alpine
           COTURN_IMAGE_REF=coturn/coturn:latest
           EOF
 
