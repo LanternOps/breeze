@@ -2747,6 +2747,7 @@
       "helpdesk": "Assume chamados e propõe respostas e próximos passos.",
       "designer": "Lê toda a frota e escreve um projeto de monitoramento justificado para um técnico aprovar.",
       "research": "Integrado. Pesquisa um problema em um dispositivo quando um técnico pede e sugere correções seguras. Nunca executa nada.",
+      "troubleshoot": "Integrado. Trabalha em segundo plano em um dispositivo quando o Wisp o transfere. Cada alteração que ele deseja é uma solicitação que uma pessoa aprova.",
       "researchLink": "Abrir memória de correções",
       "designerLink": "Abrir design de frota"
     },
@@ -2895,7 +2896,8 @@
       "patch": "Aplicação de patches",
       "helpdesk": "Central de ajuda",
       "designer": "Projetista de frota",
-      "research": "Pesquisa de correções"
+      "research": "Pesquisa de correções",
+      "troubleshoot": "Solução de problemas de dispositivo"
     },
     "modes": {
       "off": "Desligado",

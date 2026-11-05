@@ -1658,6 +1658,11 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   max_concurrent_assessment_runs: false,
   assessment_rate: false,
   assessment_requires_grant: false,
+  // Wisp delegation W1 (#11084): device_troubleshooting volume guards and its
+  // grant precondition. Unreachable — automations never admit that profile.
+  max_concurrent_troubleshoot_runs: false,
+  troubleshoot_rate: false,
+  troubleshoot_requires_grant: false,
 });
 
 // Exported for direct unit coverage of the script_executions correlation

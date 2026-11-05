@@ -29,6 +29,7 @@ import type { AgentModelBinding } from './agentModelBinding';
 import { AgentModelNotAllowedError } from './agentModelErrors';
 import { assertScriptIdsAuthorizable } from './scriptAuthorization';
 import { assertResearchAgentEdit, pinResearchCreateInput, ResearchAgentEditError } from './researchAgentEdit';
+import { assertTroubleshootAgentEdit, TroubleshootAgentEditError } from './troubleshootAgentEdit';
 import { ensureDefaultPatchSchedule } from './scheduleService';
 
 export class UnsupportedAgentModeError extends Error {
@@ -680,6 +681,9 @@ export async function createAgent(
   // output with every default materialised (limits, mode, triggers...), so a
   // PATCH-shaped field check would refuse every legitimate create.
   if (input.kind === 'research' && !owner.orgId) throw new ResearchAgentEditError(['ownerScope']);
+  // Wisp delegation W1 (#11084): the troubleshoot agent is system-provisioned
+  // only (troubleshootProvisioning.ts) — service backstop for the zod refusal.
+  if (input.kind === 'troubleshoot') throw new TroubleshootAgentEditError(['kind']);
 
   // Recipients are membership-validated BEFORE anything is written: a typo'd
   // or cross-tenant id must never be persisted, because notification-time
@@ -809,6 +813,8 @@ export async function updateAgent(
     // W2: the built-in research agent (baseline or org override) takes only
     // enable/disable and research budget/cap edits.
     if (existing.kind === 'research') assertResearchAgentEdit(input as Record<string, unknown>);
+    // #11084: the built-in troubleshoot agent takes only enable/disable and a rename.
+    if (existing.kind === 'troubleshoot') assertTroubleshootAgentEdit(input as Record<string, unknown>);
 
     let modelColumns: Partial<typeof aiAgents.$inferInsert> = {};
     if (offeringChoice !== undefined && offeringNeedsBinding(existing, offeringChoice)) {

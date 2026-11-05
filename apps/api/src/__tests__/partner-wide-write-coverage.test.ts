@@ -326,6 +326,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // --- caller-facing, gated at the route layer (verify the gate when editing
   //     these services or adding ANY new route caller) -----------------------
   'services/aiAgents/researchProvisioning.ts': 'system provisioner: inserts the one built-in research baseline per partner (kind research, no caller-chosen fields) the first time research is admitted; every caller-facing edit goes through agentService, which gates partner rows',
+  'services/aiAgents/troubleshootProvisioning.ts': 'system provisioner: its only write is one INSERT, inside inSystemDbContext, of the built-in troubleshoot agent with no caller-chosen fields; the partner id comes from the wisp_grants row (ceiling.partnerId), never from a request, and a user PATCH goes through agentService, which gates partner rows. Pinned by the "stays a system-only provisioner" test below',
   'services/aiAgents/agentService.ts': 'gated centrally in services/aiAgents/access.ts (assertAgentWriteAllowed), called before every write',
   // P2-5 (#4192). The promote executor writes the ORG axis ONLY, by
   // construction: the clone it may insert pins `partnerId: null` +
@@ -590,6 +591,40 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
 
     const stale = Object.keys(ALLOWED_WITHOUT_CAPABILITY_CHECK).filter((rel) => !stillMutating.has(rel));
     expect(stale, `Remove these from ALLOWED_WITHOUT_CAPABILITY_CHECK: ${stale.join(', ')}`).toEqual([]);
+  }, 30_000);
+
+  // The exemption above holds only while these stay true, so they are asserted
+  // rather than left to the reason string (#11084).
+  it('services/aiAgents/troubleshootProvisioning.ts stays a system-only provisioner', () => {
+    const rel = 'services/aiAgents/troubleshootProvisioning.ts';
+    const source = readFileSync(join(API_SRC, rel), 'utf8');
+
+    // One write, an INSERT, and it sits inside the system-scope callback.
+    expect(source.match(/\.(insert|update|delete)\(\s*\w+/g)).toEqual(['.insert(aiAgents']);
+    const systemScope = source.indexOf('return inSystemDbContext(');
+    expect(systemScope).toBeGreaterThan(-1);
+    const insertAt = source.indexOf('.insert(aiAgents');
+    expect(insertAt).toBeGreaterThan(systemScope);
+    expect(insertAt).toBeLessThan(source.indexOf("'troubleshootProvisioning.ensure'"));
+
+    // The pattern above sees only builder calls. Raw SQL or an upsert would be a
+    // second write, and an upsert could overwrite a partner's existing row.
+    expect(source).not.toMatch(/\.execute\(|onConflictDoUpdate|\.set\(/);
+
+    // No request-derived values reach this file: it never sees an auth context.
+    expect(source).not.toMatch(/\bAuthContext\b|\bauth\.|from 'hono'/);
+
+    // The only caller is the Wisp launcher, not a route, and it passes the
+    // context's partner id, which the coordinator takes from the grant row.
+    const callers = collectSourceFiles()
+      .filter((file) => readFileSync(file, 'utf8').includes('ensureTroubleshootAgent('))
+      .map((file) => relative(API_SRC, file));
+    expect(callers.sort()).toEqual(['services/aiAgents/troubleshootProvisioning.ts', 'services/wisp/specialistLaunchers.ts']);
+    expect(readFileSync(join(API_SRC, 'services/wisp/specialistLaunchers.ts'), 'utf8'))
+      .toContain('ensureTroubleshootAgent(ctx.partnerId)');
+    const coordinator = readFileSync(join(API_SRC, 'services/wisp/coordinator.ts'), 'utf8');
+    expect(coordinator.match(/SPECIALIST_LAUNCHERS\[/g)).toHaveLength(1);
+    expect(coordinator).toMatch(/SPECIALIST_LAUNCHERS\[input\.kind\]\(\{[^}]*partnerId: ceiling\.partnerId,/);
   }, 30_000);
 
   it('every allowlist entry documents why it is exempt', () => {

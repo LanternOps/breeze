@@ -61,11 +61,12 @@ describe('bulkTicketReplyParamsSchema', () => {
 });
 
 describe('WISP_SPECIALIST_KINDS', () => {
-  it('lists the six W07 specialist kinds and is exported from the barrel', async () => {
+  it('lists the six W07 specialist kinds plus device_troubleshooting (#11084) and is exported from the barrel', async () => {
     const mod: Record<string, unknown> = await import('./wispSpecialists');
     const barrel: Record<string, unknown> = await import('./index');
     expect(mod.WISP_SPECIALIST_KINDS).toEqual([
       'sweep', 'analysis', 'operator_recipe', 'patch_plan', 'remediation_research', 'bulk_ticket_reply',
+      'device_troubleshooting',
     ]);
     expect(barrel.WISP_SPECIALIST_KINDS).toBe(mod.WISP_SPECIALIST_KINDS);
   });

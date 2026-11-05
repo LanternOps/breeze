@@ -21,15 +21,19 @@ vi.mock('../../services/eventBus', async (importOriginal) => {
 });
 
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { actionIntents, aiAgentRuns, aiAgents, devices, wispGrantRevisions, wispGrants } from '../../db/schema';
+import { actionIntents, aiAgentRuns, aiAgents, devices, organizations, wispGrantRevisions, wispGrants } from '../../db/schema';
 import type { WispCeilingSnapshot } from '../../db/schema/wisp';
 import { createAndEnqueueAgentRun, registerAgentRunEnqueuer } from '../../services/aiAgents/runService';
 import { requestSpecialist } from '../../services/wisp/coordinator';
+import { currentActivity, listActivity } from '../../services/wisp/activity';
+import { resolveGrantCeiling } from '../../services/wisp/grantAuthority';
 import { wispSpecialistRequestHandler } from '../../services/aiToolsWisp';
 import { createActionIntent } from '../../services/actionIntents/intentService';
 import { buildAgentAuthContext } from '../../services/aiAgents/agentAuthContext';
 import type { AuthContext } from '../../middleware/auth';
 import { specialistDedupeKey } from '../../services/wisp/specialistLaunchers';
+import { deliverRunEvent, shutdownChatRunBridge, watchRunForSession } from '../../services/workspace/chatRunBridge';
+import { streamingSessionManager } from '../../services/streamingSessionManager';
 import { WISP_SPECIALIST_REQUEST_TOOL } from '../../services/wisp/specialistPolicy';
 import {
   assignUserToPartner,
@@ -259,6 +263,247 @@ describe('Wisp specialist coordinator (real Postgres)', () => {
     await sys(() => db.delete(aiAgentRuns).where(eq(aiAgentRuns.id, runId)));
     const [orphan] = await sys(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.id, rows[0]!.id)));
     expect(orphan).toMatchObject({ depth: 1, requestedByRunId: null, orgId: t.org.id });
+  });
+
+  // #11084: the provisioned troubleshoot agent, the forced-shadow admission, and
+  // Decision 2's reason for a new kind: the STORED allowlist is what intent
+  // minting re-checks, so a proposal from the run actually becomes an approval.
+  it('device_troubleshooting: an approved request admits a shadow, device-pinned run under a provisioned agent whose proposals mint supervised intents', async () => {
+    const t = await seedTenant([
+      { resource: 'ai_sessions', action: 'use' },
+      { resource: 'ai_agents', action: 'write' },
+      { resource: 'devices', action: 'read' },
+      { resource: 'devices', action: 'write' },
+      { resource: 'devices', action: 'execute' },
+    ]);
+    const parentRunId = await seedAssessmentRun(t, t.deviceId);
+    const approver = {
+      principal: { kind: 'user_session' },
+      user: { id: t.admin.id, email: 'admin@wisp.test', name: 'Admin', isPlatformAdmin: false },
+      token: null, partnerId: t.partner.id, orgId: null, scope: 'partner',
+      accessibleOrgIds: [t.org.id], partnerOrgAccess: 'all',
+      orgCondition: () => undefined, canAccessOrg: (id: string) => id === t.org.id,
+    } as unknown as AuthContext;
+    const requestId = randomUUID();
+    const result = await requestSpecialist(
+      {
+        grantId: t.grant.grantId, grantRevisionId: t.grant.revisionId, orgId: t.org.id, kind: 'device_troubleshooting',
+        params: { deviceId: t.deviceId, goal: 'Outlook crashes on start' }, requestedByRunId: parentRunId,
+      },
+      { requester: { kind: 'approval', intentId: randomUUID(), auth: approver }, requestId },
+    );
+    expect(result).toMatchObject({ admitted: true });
+
+    const [run] = await sys(() => db.select().from(aiAgentRuns)
+      .where(and(eq(aiAgentRuns.orgId, t.org.id), eq(aiAgentRuns.dedupeKey, specialistDedupeKey(requestId)))));
+    expect(run).toMatchObject({ profile: 'device_troubleshooting', deviceId: t.deviceId, modeAtStart: 'shadow', grantId: t.grant.grantId });
+    expect(run!.triggerRef).toMatchObject({ source: 'wisp_specialist', kind: 'device_troubleshooting', deviceId: t.deviceId, goal: 'Outlook crashes on start' });
+
+    const [agent] = await sys(() => db.select().from(aiAgents).where(eq(aiAgents.id, run!.agentId)));
+    expect(agent).toMatchObject({
+      kind: 'troubleshoot', orgId: null, partnerId: t.partner.id, mode: 'shadow', createdBy: null,
+      provisionedBy: 'system:device_troubleshooting',
+    });
+
+    const [device] = await sys(() => db.select({ siteId: devices.siteId }).from(devices).where(eq(devices.id, t.deviceId)));
+    const agentAuth = buildAgentAuthContext(
+      agent!,
+      { id: run!.id, orgId: t.org.id, deviceId: t.deviceId, deviceSiteId: device!.siteId },
+      { id: t.org.id, partnerId: t.partner.id },
+    );
+    // Tier 2: minted, one human approver, never policy-decidable.
+    const tier2 = await createActionIntent(agentAuth, {
+      toolName: 'set_device_context',
+      input: { deviceId: t.deviceId, contextType: 'issue', summary: 'Outlook profile looks corrupt' },
+      source: 'ai_agent',
+      orgId: t.org.id,
+    });
+    expect(tier2).toMatchObject({ status: 'pending_approval' });
+    const [row] = await sys(() => db.select().from(actionIntents).where(eq(actionIntents.id, tier2.id)));
+    expect(row).toMatchObject({ requestingAgentRunId: run!.id, originPrincipalKind: 'ai_agent', status: 'pending_approval', approvalScope: 'supervised' });
+
+    // The Workers panel source, against real SQL (the unit suite mocks the query).
+    const ceiling = await sys(() => resolveGrantCeiling(t.grant.grantId, t.grant.revisionId));
+    const all = await listActivity(ceiling, { limit: 50 });
+    expect(all.items.find((i) => i.kind === 'specialist')).toMatchObject({
+      id: run!.id, orgId: t.org.id, runStatus: 'queued', href: `/ai-agents/runs/${run!.id}`,
+      title: expect.stringMatching(/^Device troubleshooting · wisp-spec-/),
+    });
+    // The keyset expression is valid SQL: one item per page walks the same list, no repeats.
+    const walked: string[] = [];
+    let cursor: string | undefined;
+    for (let i = 0; i < all.items.length + 1; i++) {
+      const page = await listActivity(ceiling, { limit: 1, ...(cursor ? { cursor } : {}) });
+      walked.push(...page.items.map((item) => item.id));
+      if (!page.nextCursor) break;
+      cursor = page.nextCursor;
+    }
+    expect(walked).toEqual(all.items.map((i) => i.id));
+    await expect(currentActivity(t.grant.grantId)).resolves.toMatchObject({ orgId: t.org.id });
+  });
+
+  it('activity query negative space against real SQL: other grant, no specialist source, cross-org device and a finished run stay out', async () => {
+    const perms = [
+      { resource: 'ai_sessions', action: 'use' },
+      { resource: 'ai_agents', action: 'write' },
+      { resource: 'devices', action: 'read' },
+    ];
+    const t = await seedTenant(perms);
+    const other = await seedTenant(perms);
+    const specialistRef = { source: 'wisp_specialist', kind: 'device_troubleshooting' };
+    // trigger_ref / agent_id are immutable on a run row, so rows are inserted
+    // directly as copies of an admitted run (its agent + policy snapshot).
+    const [template] = await sys(async () => {
+      const id = await seedAssessmentRun(t, t.deviceId);
+      return db.select().from(aiAgentRuns).where(eq(aiAgentRuns.id, id));
+    });
+    const insertRun = async (over: Record<string, unknown>): Promise<string> => {
+      const { id: _id, ...base } = template!;
+      const [row] = await sys(() => db.insert(aiAgentRuns).values({
+        ...base, dedupeKey: `neg:${randomUUID()}`, status: 'queued', profile: 'device_troubleshooting',
+        triggerRef: specialistRef, deviceId: t.deviceId, ...over,
+      } as never).returning({ id: aiAgentRuns.id }));
+      return row!.id;
+    };
+
+    // Positive control: a real specialist run on the tenant's own device.
+    const included = await insertRun({});
+    // (1) A second grant's specialist run (a run row pinned to the OTHER grant).
+    //     A grant row guard requires the grant to cover the run's org, so the second grant is a
+    //     sibling in the SAME partner (a different grantor) rather than another tenant's.
+    const second = await sys(async () => {
+      const [g] = await db.insert(wispGrants).values({
+        partnerId: t.partner.id, orgId: null, grantorUserId: t.admin.id, status: 'active',
+        expiresAt: new Date(Date.now() + 30 * 86_400_000),
+      }).returning({ id: wispGrants.id });
+      const snapshot: WispCeilingSnapshot = {
+        version: 1, permissionKeys: ['ai_sessions:use'], orgIds: [t.org.id], siteIds: null, toolAllowlist: null, deniedTools: [],
+      };
+      const [r] = await db.insert(wispGrantRevisions).values({
+        grantId: g!.id, partnerId: t.partner.id, revision: 1, ceilingSnapshot: snapshot,
+        factorProof: { method: 'step_up', verifiedAt: new Date().toISOString() },
+      }).returning({ id: wispGrantRevisions.id });
+      await db.update(wispGrants).set({ currentRevisionId: r!.id }).where(eq(wispGrants.id, g!.id));
+      return { grantId: g!.id, revisionId: r!.id };
+    });
+    const otherGrantRun = await insertRun({ grantId: second.grantId, grantRevisionId: second.revisionId });
+    // (2) Same grant, not an assessment, no specialist source.
+    const plainRun = await insertRun({ profile: 'full', triggerRef: {} });
+    // (3) A specialist run whose device_id belongs to ANOTHER org.
+    const crossOrgRun = await insertRun({ deviceId: other.deviceId });
+
+    const ceiling = await sys(() => resolveGrantCeiling(t.grant.grantId, t.grant.revisionId));
+    const { items } = await listActivity(ceiling, { limit: 100 });
+    const ids = items.map((i) => i.id);
+    expect(ids).toContain(included);
+    expect(ids).not.toContain(otherGrantRun);
+    expect(ids).not.toContain(plainRun);
+
+    const [ownDevice] = await sys(() => db.select({ hostname: devices.hostname }).from(devices).where(eq(devices.id, t.deviceId)));
+    const [foreignDevice] = await sys(() => db.select({ hostname: devices.hostname }).from(devices).where(eq(devices.id, other.deviceId)));
+    const [orgRow] = await sys(() => db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, t.org.id)));
+    expect(items.find((i) => i.id === included)!.title).toBe(`Device troubleshooting · ${ownDevice!.hostname}`);
+    const crossTitle = items.find((i) => i.id === crossOrgRun)!.title;
+    expect(crossTitle).toBe(`Device troubleshooting · ${orgRow!.name}`);
+    expect(crossTitle).not.toContain(foreignDevice!.hostname);
+
+    // currentActivity: a queued specialist run is current, a finished one is not.
+    const solo = await seedTenant(perms);
+    const [soloTemplate] = await sys(async () => {
+      const id = await seedAssessmentRun(solo, solo.deviceId);
+      return db.select().from(aiAgentRuns).where(eq(aiAgentRuns.id, id));
+    });
+    const { id: _soloId, ...soloBase } = soloTemplate!;
+    const [soloRun] = await sys(() => db.insert(aiAgentRuns).values({
+      ...soloBase, dedupeKey: `neg:${randomUUID()}`, status: 'queued', profile: 'device_troubleshooting',
+      triggerRef: specialistRef, deviceId: solo.deviceId,
+    } as never).returning({ id: aiAgentRuns.id }));
+    // The template is an assessment run still queued: finish it so only the specialist run is current.
+    await sys(() => db.update(aiAgentRuns).set({ status: 'completed', finishedAt: new Date() } as never).where(eq(aiAgentRuns.id, soloTemplate!.id)));
+    await expect(currentActivity(solo.grant.grantId)).resolves.toMatchObject({ orgId: solo.org.id });
+    await sys(() => db.update(aiAgentRuns).set({ status: 'completed', finishedAt: new Date() } as never).where(eq(aiAgentRuns.id, soloRun!.id)));
+    await expect(currentActivity(solo.grant.grantId)).resolves.toBeNull();
+  });
+
+  it('chat bridge: an awaiting_approval device_troubleshooting run reports ONLY its own still-pending intents (real reader, real SQL)', async () => {
+    const t = await seedTenant([
+      { resource: 'ai_sessions', action: 'use' },
+      { resource: 'ai_agents', action: 'write' },
+      { resource: 'devices', action: 'read' },
+      { resource: 'devices', action: 'write' },
+      { resource: 'devices', action: 'execute' },
+    ]);
+    const parentRunId = await seedAssessmentRun(t, t.deviceId);
+    const approver = {
+      principal: { kind: 'user_session' },
+      user: { id: t.admin.id, email: 'admin@wisp.test', name: 'Admin', isPlatformAdmin: false },
+      token: null, partnerId: t.partner.id, orgId: null, scope: 'partner',
+      accessibleOrgIds: [t.org.id], partnerOrgAccess: 'all',
+      orgCondition: () => undefined, canAccessOrg: (id: string) => id === t.org.id,
+    } as unknown as AuthContext;
+
+    /** One admitted device_troubleshooting run plus the agent auth its proposals mint under. */
+    const admit = async () => {
+      const requestId = randomUUID();
+      const result = await requestSpecialist(
+        {
+          grantId: t.grant.grantId, grantRevisionId: t.grant.revisionId, orgId: t.org.id, kind: 'device_troubleshooting',
+          params: { deviceId: t.deviceId, goal: 'Outlook crashes on start' }, requestedByRunId: parentRunId,
+        },
+        { requester: { kind: 'approval', intentId: randomUUID(), auth: approver }, requestId },
+      );
+      expect(result).toMatchObject({ admitted: true });
+      const [run] = await sys(() => db.select().from(aiAgentRuns)
+        .where(and(eq(aiAgentRuns.orgId, t.org.id), eq(aiAgentRuns.dedupeKey, specialistDedupeKey(requestId)))));
+      const [agent] = await sys(() => db.select().from(aiAgents).where(eq(aiAgents.id, run!.agentId)));
+      const [device] = await sys(() => db.select({ siteId: devices.siteId }).from(devices).where(eq(devices.id, t.deviceId)));
+      const auth = buildAgentAuthContext(
+        agent!,
+        { id: run!.id, orgId: t.org.id, deviceId: t.deviceId, deviceSiteId: device!.siteId },
+        { id: t.org.id, partnerId: t.partner.id },
+      );
+      return { runId: run!.id, auth };
+    };
+    const propose = (auth: AuthContext, summary: string) => createActionIntent(auth, {
+      toolName: 'set_device_context',
+      input: { deviceId: t.deviceId, contextType: 'issue', summary },
+      source: 'ai_agent',
+      orgId: t.org.id,
+    });
+
+    const watched = await admit();
+    const sibling = await admit();
+    const pendingIntent = await propose(watched.auth, 'Outlook profile looks corrupt');
+    const decidedIntent = await propose(watched.auth, 'Roaming profile is oversized');
+    const siblingIntent = await propose(sibling.auth, 'Another run: disk nearly full');
+    expect([pendingIntent.status, decidedIntent.status, siblingIntent.status]).toEqual(['pending_approval', 'pending_approval', 'pending_approval']);
+    await sys(() => db.update(actionIntents).set({
+      status: 'rejected', decidedByUserId: t.admin.id, decidedAt: new Date(), decidedVia: 'human',
+    } as never).where(eq(actionIntents.id, decidedIntent.id)));
+    await sys(() => db.update(aiAgentRuns).set({
+      status: 'awaiting_approval', finishedAt: new Date(), summary: 'Two fixes proposed',
+      intentIds: [pendingIntent.id, decidedIntent.id],
+    } as never).where(eq(aiAgentRuns.id, watched.runId)));
+
+    const SESSION_ID = randomUUID();
+    const published: Array<Record<string, unknown>> = [];
+    const fakeSession = {
+      orgId: t.org.id, breezeSessionId: SESSION_ID, pendingRunResults: [] as unknown[],
+      eventBus: { publish: (e: Record<string, unknown>) => { published.push(e); } },
+    };
+    const getSession = vi.spyOn(streamingSessionManager, 'get').mockReturnValue(fakeSession as never);
+    try {
+      watchRunForSession({ runId: watched.runId, sessionId: SESSION_ID, orgId: t.org.id });
+      await deliverRunEvent({ type: 'ai.agent.run.awaiting_approval', payload: { runId: watched.runId } });
+    } finally {
+      getSession.mockRestore();
+      await shutdownChatRunBridge();
+    }
+
+    expect(published).toEqual([expect.objectContaining({
+      type: 'run_result', runId: watched.runId, status: 'awaiting_approval', summary: 'Two fixes proposed', pendingIntentCount: 1,
+    })]);
+    expect(fakeSession.pendingRunResults).toEqual([expect.objectContaining({ runId: watched.runId, status: 'awaiting_approval', pendingIntentCount: 1 })]);
   });
 
   it('no other agent path can mint the carrier: createActionIntent refuses it without the coordinator mint', async () => {

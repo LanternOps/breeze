@@ -310,6 +310,11 @@ function assertModeAllowedForKind(
   if (v.kind === 'research' && v.ownerScope === 'partner') {
     ctx.addIssue({ code: 'custom', path: ['ownerScope'], message: 'research agents are provisioned by the system; only organization overrides can be created' });
   }
+  // Wisp delegation W1 (#11084): the troubleshoot agent is provisioned by the
+  // system per partner (troubleshootProvisioning.ts) and has no override model.
+  if (v.kind === 'troubleshoot') {
+    ctx.addIssue({ code: 'custom', path: ['kind'], message: 'troubleshoot agents are provisioned by the system and cannot be created' });
+  }
 }
 type AiAgentKindLike = (typeof AI_AGENT_KINDS)[number];
 type AiAgentModeLike = (typeof AI_AGENT_MODES)[number];
