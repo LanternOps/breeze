@@ -67,6 +67,10 @@ type surfaceLane struct {
 	gate *ToolGate
 }
 
+var _ ToolFreeLane = (*surfaceLane)(nil)
+
+func (l *surfaceLane) toolFree() {}
+
 func newSurfaceLane(host surfaceHost) *surfaceLane {
 	l := &surfaceLane{host: host}
 	l.gate = NewToolGate("surface", l.detect)
@@ -158,6 +162,9 @@ type surfaceRun struct {
 	blockedOnPower bool
 	// firmwareBlocked is set when a firmware gate refused.
 	firmwareBlocked bool
+	// uncertain is set when an install ended in a way that does not show whether
+	// a capsule was staged.
+	uncertain bool
 }
 
 // Apply runs: anything owed first, search, drivers, then firmware behind its own
@@ -180,6 +187,13 @@ func (l *surfaceLane) Apply(ctx context.Context, _ ToolState, plan FilterPlan, _
 		res.Outcome, res.RebootRequired = OutcomeBlockedRebootPending, true
 		return res, nil
 	}
+	// The registry flag is not guaranteed after a capsule, since the lane stages on
+	// its own judgment. Anything but this answer reads to the API as "the device
+	// came back", which disarms its monitor and clears the reboot clock.
+	if owed, err := bitlockerguard.RebootOwed(l.host.guard); err == nil && owed {
+		res.Outcome, res.RebootRequired, res.ErrorCode = OutcomeBlockedRebootPending, true, strPtr("bitlocker_guard_open")
+		return res, nil
+	}
 	// An open record is a suspension still settling. An unreadable one is treated
 	// the same: nothing new starts until it is understood.
 	if held, err := bitlockerguard.Held(l.host.guard); held || err != nil {
@@ -193,7 +207,7 @@ func (l *surfaceLane) Apply(ctx context.Context, _ ToolState, plan FilterPlan, _
 	found, err := l.host.search(ctx)
 	if err != nil {
 		l.gate.Invalidate()
-		res.Outcome, res.ErrorCode = OutcomeFailed, strPtr("wu_search_failed")
+		res.Outcome, res.ErrorCode = OutcomeRetryLater, strPtr("wu_search_failed")
 		return res, runErr("wu_search_failed", err)
 	}
 	selected := patching.SelectSurfaceDriverUpdates(found, plan.BlockedIDs)
@@ -285,21 +299,31 @@ func (l *surfaceLane) installFirmware(ctx context.Context, updates []patching.Dr
 		return
 	}
 
+	outcomes := l.host.install(ctx, updateIDs(updates))
+	// A short answer says nothing about the updates it left out.
+	run.uncertain = len(outcomes) != len(updates)
 	staged := false
-	for _, o := range l.host.install(ctx, updateIDs(updates)) {
+	for _, o := range outcomes {
 		u := findUpdate(updates, o.UpdateID)
 		if o.Err != nil {
-			log.Warn("Surface firmware install failed", "updateId", o.UpdateID, "error", o.Err.Error())
+			log.Warn("Surface firmware install failed", "updateId", o.UpdateID, "installStarted", o.InstallStarted, "error", o.Err.Error())
 		}
-		title := firmwareTitle(u.Title, o)
-		run.note(u, CategoryFirmware, o, title)
-		if o.Err == nil && !o.Result.Skipped {
+		run.note(u, CategoryFirmware, o, firmwareTitle(u.Title, o))
+		switch {
+		case o.Err == nil && !o.Result.Skipped:
 			staged = true
+		case o.Err != nil && o.InstallStarted:
+			run.uncertain = true
 		}
 	}
-	if staged {
+	if run.uncertain {
+		run.code = "firmware_install_uncertain"
+	}
+	if staged || run.uncertain {
 		// A capsule applies during the reboot, whatever WUA reported. The volume
-		// stays suspended for it, and the guard brings protection back after.
+		// stays suspended for it, and the guard brings protection back after. An
+		// uncertain install is treated the same: a needless overnight reboot costs
+		// far less than a recovery prompt the next morning.
 		run.reboot = true
 		return
 	}
@@ -336,10 +360,13 @@ func (r *surfaceRun) result(res RunResult) RunResult {
 	if r.code != "" {
 		res.ErrorCode = strPtr(r.code)
 	}
+	if r.failed > 0 && res.ErrorCode == nil {
+		res.ErrorCode = strPtr("install_failed") // the reason per update is in the agent log
+	}
 	switch {
-	case r.installed > 0 && r.failed > 0:
+	case r.installed > 0 && (r.failed > 0 || r.uncertain):
 		res.Outcome = OutcomePartial
-	case r.failed > 0:
+	case r.failed > 0 || r.uncertain:
 		res.Outcome = OutcomeFailed
 	case r.installed > 0 && r.reboot:
 		res.Outcome = OutcomeSuccessRebootRequired
@@ -348,7 +375,10 @@ func (r *surfaceRun) result(res RunResult) RunResult {
 	case r.blockedOnPower:
 		res.Outcome = OutcomeBlockedOnBattery
 	case r.firmwareBlocked:
-		res.Outcome = OutcomeFailed
+		// Not "failed": nothing was flashed, and the runner keeps a pending
+		// verification for a failed run, which could later raise an alert against
+		// a run that never touched the volume.
+		res.Outcome = OutcomeRetryLater
 	default:
 		res.Outcome = OutcomeNoUpdates
 	}

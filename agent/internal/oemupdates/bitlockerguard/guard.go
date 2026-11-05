@@ -336,12 +336,48 @@ func MarkInstalling(t Token, deps Deps) error {
 }
 
 // Resume puts back a suspension right away, for a run that ended with nothing
-// staged. On an error the record stays and ResumeOnStart keeps trying.
+// staged. On an error the record stays and ResumeOnStart keeps trying, without
+// waiting for a reboot nothing needs. With no record the suspension is no longer
+// ours, so a token alone resumes nothing.
 func Resume(ctx context.Context, t Token, deps Deps) error {
 	if !t.active {
 		return nil
 	}
+	r, ok, err := readRecord(deps.Store)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	if r.Installing {
+		r.Installing = false
+		if err := writeRecord(deps.Store, r); err != nil {
+			log.Warn("could not record that nothing is staged; a failed resume would wait for a reboot", "error", err.Error())
+		}
+	}
 	return resumeNow(ctx, deps)
+}
+
+// RebootOwed reports a firmware install still waiting for its reboot: a record
+// whose install started, with no boot since the suspend. An unreadable boot time
+// counts as owed, because a flash started and nothing shows the reboot happened.
+func RebootOwed(deps Deps) (bool, error) {
+	if deps.Store == nil {
+		return false, errSeamsMissing
+	}
+	r, ok, err := readRecord(deps.Store)
+	if err != nil || !ok || !r.Installing {
+		return false, err
+	}
+	if deps.BootTime == nil {
+		return true, nil
+	}
+	boot, err := deps.BootTime()
+	if err != nil {
+		return true, nil
+	}
+	return !boot.After(r.SuspendedAt), nil
 }
 
 // resumeNow re-enables a volume whose record is ours, confirms it, and only then
@@ -518,6 +554,43 @@ func resumeScript(drive string) (string, error) {
 		return "", fmt.Errorf("mount point %q is not a drive letter", drive)
 	}
 	return fmt.Sprintf("Resume-BitLocker -MountPoint '%s' -ErrorAction Stop | Out-Null", drive), nil
+}
+
+// boundedBuffer keeps at most limit bytes and says when it overflowed. A Write
+// never fails, so a chatty process is not killed by its own pipe.
+type boundedBuffer struct {
+	data     []byte
+	limit    int
+	overflow bool
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	keep := p
+	if room := b.limit - len(b.data); len(p) > room {
+		b.overflow = true
+		keep = p[:max(room, 0)]
+	}
+	b.data = append(b.data, keep...)
+	return len(p), nil
+}
+
+// commandError describes how a PowerShell command ended. A process the context
+// killed says nothing about the WMI call behind it, which may still land. stderr
+// is included because it holds the reason; these commands print no key material.
+// manage-bde's output never comes through here.
+func commandError(ctx context.Context, err error, stderr *boundedBuffer) error {
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("%w: %v", ErrIndeterminate, err)
+	}
+	if stderr != nil {
+		if text := strings.Join(strings.Fields(string(stderr.data)), " "); text != "" {
+			return fmt.Errorf("%w: %s", err, text)
+		}
+	}
+	return err
 }
 
 // manageBdeArgs asks for TPM protectors only, so a recovery password is never in

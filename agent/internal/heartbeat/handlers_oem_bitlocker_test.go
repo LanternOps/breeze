@@ -116,6 +116,38 @@ func TestOemBitLockerWatchTicksAndVerifiesWhenTheRecordCloses(t *testing.T) {
 	}
 }
 
+// Verifying first would report "suspended" for a volume the guard is about to
+// resume, and raise an alert for nothing.
+func TestVerifyOemUpdatesRunsTheGuardFirst(t *testing.T) {
+	prevGOOS, prevVerify := oemGOOS, oemVerifyPending
+	t.Cleanup(func() { oemGOOS, oemVerifyPending = prevGOOS, prevVerify })
+	oemGOOS = "windows"
+	var order []string
+	installBitLockerSeams(t, func() (bitlockerguard.Result, error) {
+		order = append(order, "guard")
+		return bitlockerguard.Result{Action: bitlockerguard.ActionNone}, nil
+	})
+	oemVerifyPending = func(context.Context, oemupdates.Deps, func(oemupdates.Verification) error) error {
+		order = append(order, "verify")
+		return nil
+	}
+	stop := make(chan struct{})
+	close(stop) // the agent is stopping, so the watch loop ends at once
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		(&Heartbeat{stopChan: stop}).verifyOemUpdates()
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("verifyOemUpdates must stop with the agent")
+	}
+	if strings.Join(order, ",") != "guard,verify" {
+		t.Fatalf("order = %v", order)
+	}
+}
+
 // The real lane is registered: the handler no longer answers lane_not_built.
 func TestOemHandlerRunsTheSurfaceLane(t *testing.T) {
 	s := installOemSeams(t, "windows", true)

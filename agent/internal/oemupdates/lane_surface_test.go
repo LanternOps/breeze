@@ -45,20 +45,22 @@ type surfaceRig struct {
 	searches     int
 	installFail  map[string]error
 	installSkip  map[string]bool
-	reboot       map[string]bool
-	wuDisabled   bool
-	pending      bool
-	pendingErr   error
-	power        PowerStatus
-	powerErr     error
-	blVolume     string
-	blStateErr   error
-	suspendErr   error
-	resumeErr    error
-	manageBde    string
-	manageBdeErr error
-	bootAt       time.Time
-	events       []string
+	// installStarted marks a failure past the point WUA began installing.
+	installStarted map[string]bool
+	reboot         map[string]bool
+	wuDisabled     bool
+	pending        bool
+	pendingErr     error
+	power          PowerStatus
+	powerErr       error
+	blVolume       string
+	blStateErr     error
+	suspendErr     error
+	resumeErr      error
+	manageBde      string
+	manageBdeErr   error
+	bootAt         time.Time
+	events         []string
 }
 
 func newSurfaceRig(t *testing.T) *surfaceRig {
@@ -70,9 +72,11 @@ func newSurfaceRig(t *testing.T) *surfaceRig {
 		installFail: map[string]error{},
 		installSkip: map[string]bool{},
 		reboot:      map[string]bool{},
-		power:       PowerStatus{ACLineStatus: 1, BatteryFlag: 1, BatteryLifePercent: 90},
-		blVolume:    security.BitLockerStateOn,
-		manageBde:   boundManageBde,
+
+		installStarted: map[string]bool{},
+		power:          PowerStatus{ACLineStatus: 1, BatteryFlag: 1, BatteryLifePercent: 90},
+		blVolume:       security.BitLockerStateOn,
+		manageBde:      boundManageBde,
 	}
 	rig.bootAt = rig.clock.Now().Add(-24 * time.Hour)
 	rig.deps.Power = fakePower{status: rig.power}
@@ -128,7 +132,7 @@ func newSurfaceRig(t *testing.T) *surfaceRig {
 			out := make([]patching.DriverInstallOutcome, 0, len(ids))
 			for _, id := range ids {
 				rig.event("install:" + id)
-				o := patching.DriverInstallOutcome{UpdateID: id, Err: rig.installFail[id]}
+				o := patching.DriverInstallOutcome{UpdateID: id, Err: rig.installFail[id], InstallStarted: rig.installStarted[id]}
 				o.Result = patching.InstallResult{PatchID: id, RebootRequired: rig.reboot[id], Skipped: rig.installSkip[id]}
 				out = append(out, o)
 			}
@@ -331,8 +335,13 @@ func TestFirmwareRequiresPcr7Binding(t *testing.T) {
 			rig.updates = []patching.DriverUpdate{fwUpdate("f1")}
 			rig.manageBde, rig.manageBdeErr = c.output, c.err
 			res := rig.runIt(t)
-			if res.Outcome != OutcomeFailed || code(res) != c.code {
+			// Not "failed": that keeps a pending verification for a flash that
+			// never happened (flashMayHaveRun).
+			if res.Outcome != OutcomeRetryLater || code(res) != c.code {
 				t.Fatalf("result = %+v", res)
+			}
+			if list, _ := readPendingVerifications(rig.store); len(list) != 0 {
+				t.Fatalf("a refused flash owes no verification: %+v", list)
 			}
 			if skipReason(res, CategoryFirmware) != SkipGate {
 				t.Fatalf("skipped = %+v", res.SkippedCategories)
@@ -402,6 +411,92 @@ func TestFirmwareInstallFailureResumesAtOnce(t *testing.T) {
 	}
 }
 
+// An error once WUA began installing says nothing about the capsule. It may be
+// staged, and resuming under it risks a recovery prompt, so the volume stays
+// suspended and the reboot that settles it is asked for.
+func TestFirmwareErrorAfterInstallStartedStaysSuspended(t *testing.T) {
+	rig := newSurfaceRig(t)
+	rig.updates = []patching.DriverUpdate{fwUpdate("f1")}
+	rig.installFail["f1"] = errors.New("install failed: missing result")
+	rig.installStarted["f1"] = true
+	res := rig.runIt(t)
+	if res.Outcome != OutcomeFailed || !res.RebootRequired || code(res) != "firmware_install_uncertain" {
+		t.Fatalf("result = %+v", res)
+	}
+	if rig.has("resume") || rig.blVolume != security.BitLockerStateSuspended {
+		t.Fatalf("events=%v volume=%s", rig.got(), rig.blVolume)
+	}
+	if list, _ := readPendingVerifications(rig.store); len(list) != 1 {
+		t.Fatalf("the reboot still owes a verification: %+v", list)
+	}
+}
+
+func TestFirmwareInstallWithAMissingOutcomeStaysSuspended(t *testing.T) {
+	rig := newSurfaceRig(t)
+	rig.updates = []patching.DriverUpdate{fwUpdate("f1")}
+	rig.host.install = func(context.Context, []string) []patching.DriverInstallOutcome { return nil }
+	rig.lane = newSurfaceLane(rig.host)
+	res := rig.runIt(t)
+	if res.Outcome != OutcomeFailed || !res.RebootRequired || rig.has("resume") || code(res) != "firmware_install_uncertain" {
+		t.Fatalf("result=%+v events=%v", res, rig.got())
+	}
+	if list, _ := readPendingVerifications(rig.store); len(list) != 1 {
+		t.Fatalf("the reboot still owes a verification: %+v", list)
+	}
+}
+
+// A second run before the reboot must not read as "the device came back": the API
+// would disarm its not-returned monitor and clear the reboot clock.
+func TestSurfaceRunBeforeTheOwedRebootSaysARebootIsOwed(t *testing.T) {
+	rig := newSurfaceRig(t)
+	rig.updates = []patching.DriverUpdate{fwUpdate("f1")}
+	if res := rig.runIt(t); !res.RebootRequired {
+		t.Fatalf("first run = %+v", res)
+	}
+	rig.searches = 0
+	rig.pending = false // Windows set no flag; the lane staged on its own judgment
+	res := rig.runIt(t)
+	if res.Outcome != OutcomeBlockedRebootPending || !res.RebootRequired || code(res) != "bitlocker_guard_open" {
+		t.Fatalf("second run = %+v", res)
+	}
+	if rig.searches != 0 {
+		t.Fatal("it must stop before searching")
+	}
+	// Rebooted, guard still settling: nothing is owed any more, so try again later.
+	rig.bootAt = rig.clock.Now().Add(time.Hour)
+	res = rig.runIt(t)
+	if res.Outcome != OutcomeRetryLater || res.RebootRequired {
+		t.Fatalf("after the reboot = %+v", res)
+	}
+}
+
+func TestSurfaceRefusesOnAnUnreadableGuardRecord(t *testing.T) {
+	rig := newSurfaceRig(t)
+	if err := rig.store.WriteFile("bitlocker-guard.json", []byte("{not json")); err != nil {
+		t.Fatal(err)
+	}
+	rig.updates = []patching.DriverUpdate{drvUpdate("d1"), fwUpdate("f1")}
+	res := rig.runIt(t)
+	if res.Outcome != OutcomeRetryLater || code(res) != "bitlocker_guard_open" || rig.has("install") || rig.has("suspend") {
+		t.Fatalf("result=%+v events=%v", res, rig.got())
+	}
+}
+
+func TestToolFreeLaneCannotReportReadyWithAnError(t *testing.T) {
+	_, outcome, err := EnsureTool(context.Background(), brokenToolFree{newFakeLane()}, nil, Deps{})
+	if err == nil || outcome != OutcomeToolUnavailable {
+		t.Fatalf("outcome=%q err=%v", outcome, err)
+	}
+}
+
+type brokenToolFree struct{ *fakeLane }
+
+func (brokenToolFree) toolFree() {}
+
+func (brokenToolFree) Ready() (ToolState, Outcome, error) {
+	return ToolState{}, "", errors.New("could not tell")
+}
+
 func TestFirmwareSkippedByWindowsUpdateResumesAtOnce(t *testing.T) {
 	rig := newSurfaceRig(t)
 	rig.updates = []patching.DriverUpdate{fwUpdate("f1")}
@@ -436,6 +531,12 @@ func TestFailedResumeIsNamedAndKeepsTheRecord(t *testing.T) {
 	}
 	if held, _ := bitlockerguard.Held(rig.guardDeps); !held {
 		t.Fatal("the record must stay so the guard keeps trying")
+	}
+	// Nothing is staged, so the guard retries now rather than waiting for a reboot.
+	rig.resumeErr = nil
+	r, err := ResumeBitLocker(context.Background(), rig.deps, rig.guardDeps)
+	if err != nil || r.Action != bitlockerguard.ActionResumed || r.Reason != bitlockerguard.ReasonNoInstall {
+		t.Fatalf("res=%+v err=%v", r, err)
 	}
 }
 
@@ -621,8 +722,13 @@ func TestFirmwareRefusedWhenTheVolumeIsSuspendedBySomeoneElse(t *testing.T) {
 	rig.blVolume = security.BitLockerStateSuspended
 	rig.updates = []patching.DriverUpdate{fwUpdate("f1")}
 	res := rig.runIt(t)
-	if res.Outcome != OutcomeFailed || code(res) != "bitlocker_already_suspended" {
+	if res.Outcome != OutcomeRetryLater || code(res) != "bitlocker_already_suspended" {
 		t.Fatalf("result = %+v", res)
+	}
+	// After the next reboot this would report "suspended" and raise an alert
+	// against a run that never touched the volume.
+	if list, _ := readPendingVerifications(rig.store); len(list) != 0 {
+		t.Fatalf("a refused flash owes no verification: %+v", list)
 	}
 	if rig.has("install") || rig.has("suspend") || rig.has("resume") || rig.blVolume != security.BitLockerStateSuspended {
 		t.Fatalf("events=%v volume=%s: their suspension stays as it was", rig.got(), rig.blVolume)
@@ -648,7 +754,7 @@ func TestFirmwareRefusedWhenBitLockerStateIsUnknown(t *testing.T) {
 	rig.blStateErr = errors.New("powershell failed")
 	rig.updates = []patching.DriverUpdate{fwUpdate("f1")}
 	res := rig.runIt(t)
-	if res.Outcome != OutcomeFailed || code(res) != "bitlocker_unreadable" || rig.has("install") {
+	if res.Outcome != OutcomeRetryLater || code(res) != "bitlocker_unreadable" || rig.has("install") {
 		t.Fatalf("result=%+v events=%v", res, rig.got())
 	}
 }
@@ -658,7 +764,7 @@ func TestFirmwareRefusedWhenSuspendFails(t *testing.T) {
 	rig.suspendErr = errors.New("access denied")
 	rig.updates = []patching.DriverUpdate{fwUpdate("f1")}
 	res := rig.runIt(t)
-	if res.Outcome != OutcomeFailed || code(res) != "bitlocker_suspend_failed" || rig.has("install") {
+	if res.Outcome != OutcomeRetryLater || code(res) != "bitlocker_suspend_failed" || rig.has("install") {
 		t.Fatalf("result=%+v events=%v", res, rig.got())
 	}
 }
@@ -784,7 +890,7 @@ func TestSurfaceSearchFailureIsNotNoUpdates(t *testing.T) {
 	rig := newSurfaceRig(t)
 	rig.searchErr = errors.New("0x8024402c")
 	res := rig.runIt(t)
-	if res.Outcome != OutcomeFailed || code(res) != "wu_search_failed" {
+	if res.Outcome != OutcomeRetryLater || code(res) != "wu_search_failed" {
 		t.Fatalf("result = %+v", res)
 	}
 }
@@ -805,7 +911,7 @@ func TestSurfaceAllDriversFailed(t *testing.T) {
 	rig.updates = []patching.DriverUpdate{drvUpdate("d1")}
 	rig.installFail["d1"] = errors.New("failed")
 	res := rig.runIt(t)
-	if res.Outcome != OutcomeFailed || len(res.Items) != 1 || res.Items[0].Result != ItemFailed {
+	if res.Outcome != OutcomeFailed || code(res) != "install_failed" || len(res.Items) != 1 || res.Items[0].Result != ItemFailed {
 		t.Fatalf("result = %+v", res)
 	}
 }

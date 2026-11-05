@@ -38,7 +38,11 @@ func verifyPublisher(v Verifier, path string, allow LaneAllowlist) error {
 // spec, only a tool already in range is used.
 func EnsureTool(ctx context.Context, lane Lane, spec *ToolSpec, deps Deps) (ToolState, Outcome, error) {
 	if free, ok := lane.(ToolFreeLane); ok {
-		return free.Ready()
+		state, outcome, err := free.Ready()
+		if err != nil && outcome == "" {
+			outcome = OutcomeToolUnavailable // an error never reads as ready
+		}
+		return state, outcome, err
 	}
 	eff, err := effectiveRange(lane.Range(), spec)
 	if err != nil {

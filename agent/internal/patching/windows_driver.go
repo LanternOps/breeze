@@ -1,6 +1,7 @@
 package patching
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -47,6 +48,27 @@ type DriverInstallOutcome struct {
 	UpdateID string
 	Result   InstallResult
 	Err      error
+	// InstallStarted says the install was handed to WUA. With Err set, the update
+	// may be staged anyway; without it, nothing was touched.
+	InstallStarted bool
+}
+
+// driverUpdateFrom builds a DriverUpdate from a property reader. A manufacturer or
+// model that cannot be read is an error, not an empty string: empty reads as "not
+// Surface", which would report no updates on a broken read. An unreadable class
+// stays empty, which classifies as firmware.
+func driverUpdateFrom(id string, read func(property string) (string, error)) (DriverUpdate, error) {
+	maker, err := read("DriverManufacturer")
+	if err != nil {
+		return DriverUpdate{}, fmt.Errorf("DriverManufacturer: %w", err)
+	}
+	model, err := read("DriverModel")
+	if err != nil {
+		return DriverUpdate{}, fmt.Errorf("DriverModel: %w", err)
+	}
+	title, _ := read("Title")
+	class, _ := read("DriverClass")
+	return DriverUpdate{UpdateID: id, Title: title, DriverManufacturer: maker, DriverClass: class, DriverModel: model}, nil
 }
 
 // surfaceManufacturers name Surface on their own. "Microsoft" does not: it also
@@ -71,11 +93,10 @@ func IsSurfaceDriverUpdate(u DriverUpdate) bool {
 // driver would flash with BitLocker on and none of the firmware gates; a driver
 // taken for firmware only waits behind stricter gates.
 func ClassifyDriverUpdate(u DriverUpdate) DriverKind {
-	class := strings.ToLower(strings.TrimSpace(u.DriverClass))
-	if class == "" || class == "firmware" {
+	if strings.TrimSpace(u.DriverClass) == "" {
 		return DriverKindFirmware
 	}
-	for _, text := range []string{u.Title, u.DriverModel} {
+	for _, text := range []string{u.DriverClass, u.Title, u.DriverModel} {
 		text = strings.ToLower(text)
 		for _, word := range []string{"firmware", "uefi", "bios"} {
 			if strings.Contains(text, word) {

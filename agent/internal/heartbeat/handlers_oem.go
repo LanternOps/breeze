@@ -174,7 +174,7 @@ func (h *Heartbeat) verifyOemUpdates() {
 	// reports its state.
 	watch := &oemBitLockerWatch{}
 	watch.pass(ctx, deps)
-	if err := oemupdates.VerifyPending(ctx, deps, h.putOemVerification); err != nil && !errors.Is(err, context.Canceled) {
+	if err := oemVerifyPending(ctx, deps, h.putOemVerification); err != nil && !errors.Is(err, context.Canceled) {
 		log.Warn("vendor update verification incomplete", "error", err.Error())
 	}
 	// A suspended volume can wait days for its reboot, and this process may never
@@ -182,7 +182,7 @@ func (h *Heartbeat) verifyOemUpdates() {
 	ticker := time.NewTicker(oemBitLockerTick)
 	defer ticker.Stop()
 	watch.run(ctx, deps, ticker.C, func() {
-		if err := oemupdates.VerifyPending(ctx, deps, h.putOemVerification); err != nil && !errors.Is(err, context.Canceled) {
+		if err := oemVerifyPending(ctx, deps, h.putOemVerification); err != nil && !errors.Is(err, context.Canceled) {
 			log.Warn("vendor update verification incomplete", "error", err.Error())
 		}
 	})
@@ -196,6 +196,7 @@ const oemBitLockerTick = 10 * time.Minute
 var (
 	oemResumeBitLocker = oemupdates.ResumeBitLocker
 	oemGuardDeps       = oemupdates.ProductionGuardDeps
+	oemVerifyPending   = oemupdates.VerifyPending
 )
 
 // oemBitLockerWatch drives the guard's resume pass.

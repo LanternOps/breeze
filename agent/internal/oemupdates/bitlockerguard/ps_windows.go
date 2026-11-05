@@ -19,6 +19,8 @@ const (
 	commandWaitDelay = 10 * time.Second
 	// maxManageBdeOutput bounds what is read. A TPM listing is well under this.
 	maxManageBdeOutput = 64 << 10
+	// maxCommandStderr is enough for a cmdlet's error message.
+	maxCommandStderr = 1 << 10
 )
 
 // system32 is where every tool here is run from, by full path: this runs as
@@ -37,14 +39,10 @@ func runPowerShell(ctx context.Context, script string) error {
 	cmd := procspawn.CommandContext(ctx,
 		filepath.Join(system32(), "WindowsPowerShell", "v1.0", "powershell.exe"),
 		"-NoProfile", "-NonInteractive", "-Command", script)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, io.Discard, io.Discard
+	stderr := &boundedBuffer{limit: maxCommandStderr}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, io.Discard, stderr
 	cmd.WaitDelay = commandWaitDelay
-	err := cmd.Run()
-	// A process the context killed tells us nothing about the WMI call behind it.
-	if err != nil && ctx.Err() != nil {
-		return fmt.Errorf("%w: %v", ErrIndeterminate, err)
-	}
-	return err
+	return commandError(ctx, cmd.Run(), stderr)
 }
 
 func systemSuspend(ctx context.Context, count int) error {
@@ -69,25 +67,6 @@ func systemResume(ctx context.Context) error {
 		return err
 	}
 	return runPowerShell(ctx, script)
-}
-
-// boundedBuffer keeps at most limit bytes and says when it overflowed.
-type boundedBuffer struct {
-	data     []byte
-	limit    int
-	overflow bool
-}
-
-func (b *boundedBuffer) Write(p []byte) (int, error) {
-	room := b.limit - len(b.data)
-	if len(p) > room {
-		b.overflow = true
-		p2 := p[:max(room, 0)]
-		b.data = append(b.data, p2...)
-		return len(p), nil
-	}
-	b.data = append(b.data, p...)
-	return len(p), nil
 }
 
 // systemProtectors never puts the output in an error or a log.

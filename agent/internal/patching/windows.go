@@ -232,7 +232,7 @@ func (w *WindowsUpdateProvider) SearchDriverUpdates(ctx context.Context) ([]Driv
 		return nil, err
 	}
 	var out []DriverUpdate
-	return out, w.withSession(func(session *ole.IDispatch) error {
+	err := w.withSession(func(session *ole.IDispatch) error {
 		searcherVar, err := oleutil.CallMethod(session, "CreateUpdateSearcher")
 		if err != nil {
 			return fmt.Errorf("create searcher failed: %w", err)
@@ -286,6 +286,7 @@ func (w *WindowsUpdateProvider) SearchDriverUpdates(ctx context.Context) ([]Driv
 		out = found
 		return nil
 	})
+	return out, err
 }
 
 func (w *WindowsUpdateProvider) readDriverUpdate(updates *ole.IDispatch, index int) (DriverUpdate, error) {
@@ -312,17 +313,9 @@ func (w *WindowsUpdateProvider) readDriverUpdate(updates *ole.IDispatch, index i
 	if err != nil {
 		return DriverUpdate{}, err
 	}
-	// A manufacturer that cannot be read is an error, not an empty string: empty
-	// reads as "not Surface", which would report no updates on a broken read.
-	maker, err := w.getStringProperty(update, "DriverManufacturer")
-	if err != nil {
-		return DriverUpdate{}, fmt.Errorf("DriverManufacturer: %w", err)
-	}
-	title, _ := w.getStringProperty(update, "Title")
-	// An unreadable class is empty, which classifies as firmware: the safe way.
-	class, _ := w.getStringProperty(update, "DriverClass")
-	model, _ := w.getStringProperty(update, "DriverModel")
-	return DriverUpdate{UpdateID: id, Title: title, DriverManufacturer: maker, DriverClass: class, DriverModel: model}, nil
+	return driverUpdateFrom(id, func(property string) (string, error) {
+		return w.getStringProperty(update, property)
+	})
 }
 
 // InstallDriverUpdates installs the given updates one at a time through
@@ -336,8 +329,11 @@ func (w *WindowsUpdateProvider) InstallDriverUpdates(ctx context.Context, ids []
 			out = append(out, DriverInstallOutcome{UpdateID: id, Err: err})
 			continue
 		}
-		res, err := w.InstallWithHook(id, nil)
-		out = append(out, DriverInstallOutcome{UpdateID: id, Result: res, Err: err})
+		// The hook runs at the true mutation boundary: after the skip check and the
+		// download, right before the installer is created.
+		started := false
+		res, err := w.InstallWithHook(id, func(string) { started = true })
+		out = append(out, DriverInstallOutcome{UpdateID: id, Result: res, Err: err, InstallStarted: started})
 	}
 	return out
 }

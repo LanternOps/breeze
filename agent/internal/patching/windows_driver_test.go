@@ -1,6 +1,7 @@
 package patching
 
 import (
+	"errors"
 	"reflect"
 	"strconv"
 	"testing"
@@ -77,6 +78,8 @@ func TestFirmwareClassSplitFromDriver(t *testing.T) {
 		{"title names firmware under another class", DriverUpdate{DriverClass: "System", Title: "Surface - Firmware - 1.2.3"}, DriverKindFirmware},
 		{"model names UEFI under another class", DriverUpdate{DriverClass: "System", DriverModel: "Surface UEFI"}, DriverKindFirmware},
 		{"title names UEFI", DriverUpdate{DriverClass: "System", Title: "Surface UEFI update"}, DriverKindFirmware},
+		{"class contains firmware", DriverUpdate{DriverClass: "System Firmware", Title: "Surface update"}, DriverKindFirmware},
+		{"class contains UEFI", DriverUpdate{DriverClass: "UEFI", Title: "Surface update"}, DriverKindFirmware},
 		{"system driver", DriverUpdate{DriverClass: "System", Title: "Surface - System - 1.2.3", DriverModel: "Surface Serial Hub"}, DriverKindDriver},
 		{"hid driver", DriverUpdate{DriverClass: "HIDClass", Title: "Surface - HIDClass - 2.0"}, DriverKindDriver},
 		{"network driver", DriverUpdate{DriverClass: "Net", Title: "Surface - Net - 3.0"}, DriverKindDriver},
@@ -102,6 +105,36 @@ func TestBlockedUpdateIdsDropped(t *testing.T) {
 	}
 	if got := driverIDs(plan.Firmware); !reflect.DeepEqual(got, []string{"cccc-3"}) {
 		t.Fatalf("firmware = %v", got)
+	}
+}
+
+// Both read rules lean the safe way: an unreadable manufacturer or model must not
+// read as "not Surface" and report no updates; an unreadable class is firmware.
+func TestDriverUpdateFromReadRules(t *testing.T) {
+	values := map[string]string{"Title": "t", "DriverManufacturer": "Microsoft", "DriverClass": "System", "DriverModel": "Surface Dock"}
+	reader := func(fail string) func(string) (string, error) {
+		return func(prop string) (string, error) {
+			if prop == fail {
+				return "", errors.New("no such property")
+			}
+			return values[prop], nil
+		}
+	}
+	u, err := driverUpdateFrom("id-1", reader(""))
+	if err != nil || u != (DriverUpdate{UpdateID: "id-1", Title: "t", DriverManufacturer: "Microsoft", DriverClass: "System", DriverModel: "Surface Dock"}) {
+		t.Fatalf("u=%+v err=%v", u, err)
+	}
+	for _, prop := range []string{"DriverManufacturer", "DriverModel"} {
+		if _, err := driverUpdateFrom("id-1", reader(prop)); err == nil {
+			t.Errorf("unreadable %s must fail the read", prop)
+		}
+	}
+	u, err = driverUpdateFrom("id-1", reader("DriverClass"))
+	if err != nil || ClassifyDriverUpdate(u) != DriverKindFirmware {
+		t.Fatalf("unreadable class: u=%+v err=%v", u, err)
+	}
+	if u, err := driverUpdateFrom("id-1", reader("Title")); err != nil || u.Title != "" {
+		t.Fatalf("unreadable title: u=%+v err=%v", u, err)
 	}
 }
 

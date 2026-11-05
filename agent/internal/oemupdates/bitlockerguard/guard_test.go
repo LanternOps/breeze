@@ -689,6 +689,93 @@ func TestResumeNowPutsBackAToken(t *testing.T) {
 	recordGone(t, store)
 }
 
+// Only a volume with a record is ever resumed, even with a token in hand.
+func TestResumeWithAStaleTokenDoesNothing(t *testing.T) {
+	v, store := newVolume(), newMemStore()
+	tok := mustSuspend(t, v, store)
+	if err := store.Remove(recordFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := Resume(context.Background(), tok, v.deps(store)); err != nil || v.resumes != 0 {
+		t.Fatalf("err=%v resumes=%d: this suspension is no longer ours", err, v.resumes)
+	}
+}
+
+// Resume means nothing is staged. If it fails, the next pass must retry soon and
+// not hold for a reboot nothing needs.
+func TestFailedResumeRetriesWithoutWaitingForAReboot(t *testing.T) {
+	v, store := newVolume(), newMemStore()
+	tok := mustSuspend(t, v, store)
+	mustInstalling(t, v, store, tok)
+	v.resumeErr = errors.New("powershell timed out")
+	if err := Resume(context.Background(), tok, v.deps(store)); err == nil {
+		t.Fatal("want an error")
+	}
+	v.resumeErr = nil
+	res, err := ResumeOnStart(context.Background(), v.deps(store))
+	if err != nil || res.Action != ActionResumed || res.Reason != ReasonNoInstall {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+}
+
+func TestRebootOwed(t *testing.T) {
+	v, store := newVolume(), newMemStore()
+	check := func(want bool) {
+		t.Helper()
+		if got, err := RebootOwed(v.deps(store)); got != want || err != nil {
+			t.Fatalf("owed=%v err=%v, want %v", got, err, want)
+		}
+	}
+	check(false) // no record
+	tok := mustSuspend(t, v, store)
+	check(false) // no install started
+	mustInstalling(t, v, store, tok)
+	check(true)
+	v.bootErr = errors.New("no boot time")
+	check(true) // a flash started and nothing shows the reboot happened
+	v.bootErr = nil
+	v.afterReboot()
+	check(false)
+	store.files[recordFile] = []byte("{not json")
+	if _, err := RebootOwed(v.deps(store)); err == nil {
+		t.Fatal("an unreadable record must say so")
+	}
+}
+
+func TestCommandError(t *testing.T) {
+	alive := context.Background()
+	if err := commandError(alive, nil, nil); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	failed := errors.New("exit status 1")
+	stderr := &boundedBuffer{limit: 16}
+	if _, err := stderr.Write([]byte("access denied\r\n and a lot more text after the limit")); err != nil {
+		t.Fatal(err)
+	}
+	err := commandError(alive, failed, stderr)
+	if !errors.Is(err, failed) || errors.Is(err, ErrIndeterminate) || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("err = %v", err)
+	}
+	if strings.ContainsAny(err.Error(), "\r\n") {
+		t.Fatalf("err = %q: a command's text must not break a log line", err)
+	}
+	dead, cancel := context.WithCancel(alive)
+	cancel()
+	if err := commandError(dead, failed, nil); !errors.Is(err, ErrIndeterminate) {
+		t.Fatalf("killed by the context: %v", err)
+	}
+}
+
+func TestBoundedBufferKeepsTheLimitAndSaysSo(t *testing.T) {
+	b := &boundedBuffer{limit: 4}
+	if n, err := b.Write([]byte("abc")); n != 3 || err != nil || b.overflow {
+		t.Fatalf("n=%d err=%v overflow=%v", n, err, b.overflow)
+	}
+	if n, err := b.Write([]byte("defg")); n != 4 || err != nil || !b.overflow || string(b.data) != "abcd" {
+		t.Fatalf("n=%d err=%v overflow=%v data=%q", n, err, b.overflow, b.data)
+	}
+}
+
 func TestResumeOfAnInactiveTokenDoesNothing(t *testing.T) {
 	v, store := newVolume(), newMemStore()
 	v.state = security.BitLockerStateSuspended // someone else's
