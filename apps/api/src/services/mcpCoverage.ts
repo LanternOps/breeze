@@ -345,16 +345,14 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'authenticator.ts': { exempt: 'identity' },
   'automations.ts': { tools: ['manage_automations'] },
   'backup/bmr.ts': { exempt: 'human_only_trust_material', note: "BMR tokens, signing keys and boot media are finished by a human at the physical machine; recover/* is recovery-environment transport. From #6792." },
-  'backup/bmrRecoveries.ts': { gap: '#6788' },
+  // W17 (#6788): reads only. Create, cancel and reissue stay human: the one-time code goes to a person at the machine.
+  'backup/bmrRecoveries.ts': { tools: ['list_bmr_recoveries'] },
   'backup/configs.ts': { tools: ['manage_backup_configs'] },
   'backup/dashboard.ts': { tools: ['query_backups', 'get_backup_status'] },
   'backup/encryption.ts': { exempt: 'human_only_trust_material', note: "Key rotate/delete can orphan every snapshot; key metadata alone is low AI value. From #6793." },
-  // #6008 W03 — unified breeze+provider backup-health read model for the
-  // Integrations tab (GET /backup/health/devices). No MCP tool queries this
-  // read model yet; `get_backup_status` (backup/dashboard.ts) reads
-  // Breeze-native backup_jobs directly and does not cover provider-sourced
-  // rows, so it is not real coverage for this surface.
-  'backup/health.ts': { gap: '#6141' },
+  // #6008 W03 unified breeze+provider backup-health read model (GET /backup/health/devices). W17 (#6788).
+  // `get_backup_status` (backup/dashboard.ts) reads Breeze-native backup_jobs and does not cover provider-sourced rows.
+  'backup/health.ts': { tools: ['get_backup_health'] },
   'backup/hyperv.ts': { tools: ['query_hyperv_vms', 'get_hyperv_vm_details', 'manage_hyperv_vm', 'trigger_hyperv_backup', 'restore_hyperv_vm', 'manage_hyperv_checkpoints'] },
   'backup/jobs.ts': { tools: ['query_backups', 'trigger_backup'] },
   'backup/mssql.ts': { tools: ['query_mssql_instances', 'get_mssql_backup_status', 'trigger_mssql_backup', 'restore_mssql_database', 'verify_mssql_backup'] },
@@ -384,9 +382,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'backup/sla.ts': { tools: ['query_backup_sla', 'get_sla_breaches', 'get_sla_compliance_report', 'configure_backup_sla'] },
   'backup/snapshots.ts': { tools: ['browse_snapshots', 'query_backups'] },
   'backup/vault.ts': { tools: ['query_vaults', 'get_vault_status', 'configure_vault', 'trigger_vault_sync'] },
-  'backup/verification.ts': { gap: '#6788' },
+  'backup/verification.ts': { tools: ['manage_backup_verification'] }, // W17 (#6788)
   'backup/vmrestore.ts': { tools: ['get_vm_restore_estimate', 'restore_as_vm', 'instant_boot_vm'] },
-  'backup/vss.ts': { gap: '#6788' },
+  'backup/vss.ts': { tools: ['get_vss_status'] }, // W17 (#6788)
   'autopay/index.ts': { exempt: 'human_only_autopay', note: 'MSP enrollment administration; AI/MCP money-movement writes are excluded by the autopay v1 design (§3).' },
   'autopay/public.ts': { exempt: 'portal', note: 'Customer token-authorized enrollment and stop flow; not an MCP surface.' },
   'portal/paymentMethods.ts': { exempt: 'portal', note: 'Customer portal payment-method and autopay controls; not an MCP surface.' },
@@ -396,7 +394,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'browserSecurity.ts': { tools: ['get_browser_security', 'manage_browser_policy'] },
   // #8973 W4 business-hours calendars: read-only list_business_calendars; writes are human-only in v1 (spec §5.7).
   'businessCalendars.ts': { tools: ['list_business_calendars'] },
-  'c2c/configs.ts': { gap: '#6788' },
+  'c2c/configs.ts': { tools: ['manage_c2c_configs'] }, // W17 (#6788): human-only, agents never reach it
   'c2c/connections.ts': { tools: ['query_c2c_connections'] },
   'c2c/items.ts': { tools: ['search_c2c_items', 'restore_c2c_items'] },
   'c2c/jobs.ts': { tools: ['query_c2c_jobs', 'trigger_c2c_sync'] },

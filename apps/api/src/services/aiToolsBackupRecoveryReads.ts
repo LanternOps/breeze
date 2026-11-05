@@ -18,12 +18,11 @@
  * health feed at all, because the rows span devices.
  */
 import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
-import type { BackupHealthRow } from '@breeze/shared';
+import { EXTERNAL_BACKUP_STATUSES, type BackupHealthRow } from '@breeze/shared';
 import { db } from '../db';
 import { backupSnapshots, bareMetalRecoveries, devices } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { verifyDeviceAccess } from './aiTools';
 import {
   BACKUP_HEALTH_LEVELS,
   BACKUP_HEALTH_SOURCES,
@@ -36,15 +35,17 @@ import { isOverdue } from './bareMetalRecoveryCodes';
 import { listBackupHealthRows, summarizeBackupHealth, type BackupHealthListOptions } from './backupHealthReadModel';
 import { emptyBackupHealthSummary } from './backupHealthRows';
 import { ResilienceAuthorizationError, authorizeResilienceResources } from './resilienceSiteAuthorization';
-import { EXTERNAL_BACKUP_STATUSES } from '@breeze/shared';
 import { resolveUnmappedDevices } from '../routes/backup/health';
-
-const BMR_TOOL = 'list_bmr_recoveries';
-const HEALTH_TOOL = 'get_backup_health';
 
 const FAILURE_REASON_MAX_CHARS = 2000;
 const WARNINGS_SHOWN = 10;
 const WARNING_MAX_CHARS = 500;
+
+/** Lazy: aiTools.ts imports this module, so a static value import would be a cycle. */
+async function verifyDeviceAccess(...args: Parameters<typeof import('./aiTools').verifyDeviceAccess>) {
+  const { verifyDeviceAccess: verify } = await import('./aiTools');
+  return verify(...args);
+}
 
 function str(value: unknown): string | undefined {
   return typeof value === 'string' && value !== '' ? value : undefined;
@@ -267,13 +268,13 @@ async function readBackupHealth(auth: AuthContext, input: Record<string, unknown
 }
 
 export function registerBackupRecoveryReadTools(aiTools: Map<string, AiTool>): void {
-  aiTools.set(BMR_TOOL, {
+  aiTools.set('list_bmr_recoveries', {
     tier: 1,
     domain: 'backup',
     searchHint: 'bare metal recovery progress: where did a rebuild get to, status, failure reason, overdue check-in',
     deviceArgs: ['deviceId'],
     definition: {
-      name: BMR_TOOL,
+      name: 'list_bmr_recoveries',
       description: 'Read bare-metal recoveries. Actions: list (newest first, optional deviceId), get (recoveryId). Status, phase times, failure reason and warnings; whether a target, plan or result exists, not their contents.',
       input_schema: {
         type: 'object' as const,
@@ -282,7 +283,7 @@ export function registerBackupRecoveryReadTools(aiTools: Map<string, AiTool>): v
           orgId: { type: 'string', description: 'Organization UUID (narrows to one you can reach)' },
           deviceId: { type: 'string', description: 'list: only this device\'s recoveries' },
           recoveryId: { type: 'string', description: 'get: recovery UUID from list' },
-          limit: { type: 'number', description: 'list: max rows (default 25, max 50)' },
+          limit: { type: 'number', description: 'Max rows for list (default 25, max 50)' },
         },
         required: ['action'],
         additionalProperties: false,
@@ -298,17 +299,17 @@ export function registerBackupRecoveryReadTools(aiTools: Map<string, AiTool>): v
           ? await listRecoveries(auth, input, orgs.orgIds)
           : await getRecovery(auth, input, orgs.orgIds);
       } catch (error) {
-        return thrown(BMR_TOOL, error);
+        return thrown('list_bmr_recoveries', error);
       }
     },
   });
 
-  aiTools.set(HEALTH_TOOL, {
+  aiTools.set('get_backup_health', {
     tier: 1,
     domain: 'backup',
     searchHint: 'backup health across customers including Cove and other providers, failing or stale backups, unprotected devices',
     definition: {
-      name: HEALTH_TOOL,
+      name: 'get_backup_health',
       description: 'Backup health per device across the organizations you reach, from Breeze jobs and connected backup providers together, with totals. Filter by source, health, status or search; withBackup false adds devices with no backup at all.',
       input_schema: {
         type: 'object' as const,
@@ -330,7 +331,7 @@ export function registerBackupRecoveryReadTools(aiTools: Map<string, AiTool>): v
       try {
         return await readBackupHealth(auth, input);
       } catch (error) {
-        return thrown(HEALTH_TOOL, error);
+        return thrown('get_backup_health', error);
       }
     },
   });

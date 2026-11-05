@@ -9,11 +9,12 @@
  *    nothing, so a supervised card per lookup would be noise.
  *
  * Scope:
- *  - These services read under system context and filter by org and site only, so
+ *  - These services take any org they are handed and filter by org and site only, so
  *    the org and exact-device axes are decided HERE, before any service call. A
  *    foreign `orgId` is refused, and a device-bound run names one of its own
  *    devices (`list`, `readiness`) or is refused (`health`, which has no device
- *    axis at all).
+ *    axis at all). RLS also bounds the org under a tool call, because the services'
+ *    nested system context keeps the ambient one. It knows nothing of the other axes.
  *  - No input maps to `refresh`: `GET /backup/health?refresh` calls
  *    `recalculateReadinessScores`, which writes, and these are tier-1 reads.
  *
@@ -23,7 +24,6 @@
  */
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
-import { verifyDeviceAccess } from './aiTools';
 import { aiExecuteCommand, requireAiOrigin } from './aiDispatch';
 import { CommandTypes } from './commandTypes';
 import { sanitizeThrownToolError } from './aiToolErrors';
@@ -52,7 +52,6 @@ import {
 type Action = (typeof BACKUP_VERIFICATION_ACTIONS)[number];
 
 const TOOL = 'manage_backup_verification';
-const VSS_TOOL = 'get_vss_status';
 const DEVICE_BOUND_NEEDS_DEVICE = 'A session bound to specific devices must name one of its devices (deviceId)';
 
 /** The agent's raw reply, when it is not the writer list, is shown at most this long. */
@@ -60,6 +59,12 @@ const VSS_RAW_MAX_CHARS = 4096;
 const VSS_WRITERS_SHOWN = 200;
 const VSS_WRITER_NAME_MAX_CHARS = 256;
 const VSS_LAST_ERROR_MAX_CHARS = 500;
+
+/** Lazy: aiTools.ts imports this module, so a static value import would be a cycle. */
+async function verifyDeviceAccess(...args: Parameters<typeof import('./aiTools').verifyDeviceAccess>) {
+  const { verifyDeviceAccess: verify } = await import('./aiTools');
+  return verify(...args);
+}
 
 function str(value: unknown): string | undefined {
   return typeof value === 'string' && value !== '' ? value : undefined;
@@ -279,13 +284,13 @@ function parseWriters(stdout: string | undefined): { writers: unknown[] | null }
 }
 
 export function registerBackupVerificationTools(aiTools: Map<string, AiTool>): void {
-  aiTools.set(TOOL, {
+  aiTools.set('manage_backup_verification', {
     tier: 1,
     domain: 'backup',
     searchHint: 'backup verification history, integrity check, test restore, recovery readiness, who could we least recover',
     deviceArgs: ['deviceId'],
     definition: {
-      name: TOOL,
+      name: 'manage_backup_verification',
       description:
         'Backup verification. Actions: health (org summary), list (past checks), readiness (recovery score per device, lowest first), run (deviceId; queues an integrity or test_restore check on the machine and needs approval).',
       input_schema: {
@@ -322,13 +327,13 @@ export function registerBackupVerificationTools(aiTools: Map<string, AiTool>): v
     },
   });
 
-  aiTools.set(VSS_TOOL, {
+  aiTools.set('get_vss_status', {
     tier: 2,
     domain: 'backup',
     searchHint: 'VSS writers, volume shadow copy health on a Windows device, why a backup cannot quiesce',
     deviceArgs: ['deviceId'],
     definition: {
-      name: VSS_TOOL,
+      name: 'get_vss_status',
       description: 'Read the Volume Shadow Copy writers on one online Windows device, live from its agent: each writer\'s name, state and last error. Changes nothing on the machine.',
       input_schema: {
         type: 'object' as const,
@@ -340,7 +345,7 @@ export function registerBackupVerificationTools(aiTools: Map<string, AiTool>): v
       },
     },
     handler: async (input, auth) => {
-      const mfa = mfaGatedToolError(VSS_TOOL, undefined, auth);
+      const mfa = mfaGatedToolError('get_vss_status', undefined, auth);
       if (mfa) return mfa;
       const deviceId = str(input.deviceId);
       if (!deviceId) return jsonError('deviceId is required', 'VALIDATION_ERROR');
@@ -354,7 +359,7 @@ export function registerBackupVerificationTools(aiTools: Map<string, AiTool>): v
           return jsonError(`VSS is a Windows feature; this device runs ${device.osType}.`, 'UNSUPPORTED_OS');
         }
         // aiExecuteCommand applies the AI remote-tools policy and stamps the AI origin; a denial comes back as a failed result.
-        const result = await aiExecuteCommand(auth, VSS_TOOL, device.id, CommandTypes.VSS_WRITER_LIST, {}, {
+        const result = await aiExecuteCommand(auth, 'get_vss_status', device.id, CommandTypes.VSS_WRITER_LIST, {}, {
           userId: auth.user.id,
           timeoutMs: 30000,
         });
@@ -370,7 +375,7 @@ export function registerBackupVerificationTools(aiTools: Map<string, AiTool>): v
           ...(parsed.writers.length > VSS_WRITERS_SHOWN ? { truncated: true } : {}),
         });
       } catch (error) {
-        return thrown(VSS_TOOL, error);
+        return thrown('get_vss_status', error);
       }
     },
   });

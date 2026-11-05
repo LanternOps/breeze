@@ -70,6 +70,9 @@ import { softwareToolSchemas } from './aiToolSchemasSoftware';
 import { deviceOpsToolSchemas } from './aiToolSchemasDeviceOps';
 import { billingToolSchemas } from './aiToolSchemasBilling';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
+import { backupVerificationToolSchemas } from './aiToolSchemasBackupVerification';
+import { backupRecoveryReadToolSchemas } from './aiToolSchemasBackupRecoveryReads';
+import { c2cConfigToolSchemas } from './aiToolSchemasC2CConfigs';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -613,6 +616,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // Full-control W14 (#6784): billing lifecycle tools (PR A).
   ...billingToolSchemas,
   ...pax8ToolSchemas,
+  // Full-control W17 (#6788): backup verification, VSS, recovery reads and C2C configs.
+  ...backupVerificationToolSchemas,
+  ...backupRecoveryReadToolSchemas,
+  ...c2cConfigToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),

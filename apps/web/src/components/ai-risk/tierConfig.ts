@@ -189,6 +189,11 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'query_dr_plans', description: 'List disaster recovery plans', category: 'Backup & Recovery' },
       { name: 'get_dr_plan_details', description: 'Disaster recovery plan details', category: 'Backup & Recovery' },
       // Full-control W03 (#6757)
+      // Full-control W17 (#6788): verification, recovery and backup-health reads, and which mailboxes a C2C config covers.
+      { name: 'manage_backup_verification (health/list/readiness)', description: 'See backup verification results and how recoverable each device is', category: 'Backup & Recovery' },
+      { name: 'list_bmr_recoveries (list/get)', description: 'See where a bare-metal recovery has got to', category: 'Backup & Recovery' },
+      { name: 'get_backup_health', description: 'See backup health per device, from Breeze and connected backup providers', category: 'Backup & Recovery' },
+      { name: 'manage_c2c_configs (list)', description: 'See which mailboxes each cloud-to-cloud backup config covers', category: 'Backup & Recovery' },
       { name: 'manage_backup_profiles (list/get)', description: 'List or read backup profiles (what each one backs up)', category: 'Backup & Recovery' },
       { name: 'get_dr_execution_status', description: 'Disaster recovery execution status', category: 'Backup & Recovery' },
       // Monitoring & Analytics
@@ -333,6 +338,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_notification_channels (test)', description: 'Test notification channel', category: 'Alerts & Notifications' },
       // Backup & Recovery (full-control W03, #6757)
       { name: 'manage_dr_plan (create_plan/update_plan/add_group/update_group)', description: 'Create or edit a disaster recovery plan and its groups (refused while the plan is running)', category: 'Backup & Recovery' },
+      // Full-control W17 (#6788): runs a read-only command on the machine.
+      { name: 'get_vss_status', description: 'Read the Volume Shadow Copy writers on a Windows device, live (read-only)', category: 'Backup & Recovery' },
       { name: 'manage_backup_profiles (create)', description: 'Create an organization backup profile (a partner-wide profile needs approval)', category: 'Backup & Recovery' },
       { name: 'configure_backup_sla (create/update)', description: 'Create or change a backup SLA (RPO/RTO targets and breach alerts)', category: 'Backup & Recovery' },
       // Monitoring & Analytics (#5290 W03)
@@ -510,6 +517,9 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_hyperv_vm (start/stop/force_stop/pause/resume/save)', description: 'Change a Hyper-V VM\'s power state', category: 'Backup & Recovery' },
       { name: 'manage_hyperv_checkpoints (create/delete/apply)', description: 'Create a checkpoint; deleting or applying one needs a second approver', category: 'Backup & Recovery' },
       { name: 'manage_dr_plan (delete_group)', description: 'Delete a group from a disaster recovery plan', category: 'Backup & Recovery' },
+      // Full-control W17 (#6788): a check runs on the machine; a C2C config chooses whose mail is copied, where and when.
+      { name: 'manage_backup_verification (run)', description: 'Queue a backup integrity check or test restore on a device', category: 'Backup & Recovery' },
+      { name: 'manage_c2c_configs (create/update/delete)', description: 'Create, change or delete a cloud-to-cloud backup config (whose mail is copied, where and when)', category: 'Backup & Recovery' },
       { name: 'manage_backup_profiles (update/delete)', description: 'Change or delete a backup profile (may be partner-wide)', category: 'Backup & Recovery' },
       { name: 'restore_snapshot', description: 'Restore a backup snapshot (second approver)', category: 'Backup & Recovery' },
       { name: 'restore_as_vm', description: 'Restore a snapshot as a new VM or disk image (second approver)', category: 'Backup & Recovery' },
@@ -751,6 +761,12 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Backup & Recovery
   { toolName: 'configure_backup_sla', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
   { toolName: 'configure_vault', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
+  // Full-control W17 (#6788): `tier` is the registry tier; the per-action classes are in TIER_DEFINITIONS.
+  { toolName: 'manage_backup_verification', tier: 1, permission: 'organizations.read / devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'get_vss_status', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'list_bmr_recoveries', tier: 1, permission: 'backup.read', category: 'Backup & Recovery' },
+  { toolName: 'get_backup_health', tier: 1, permission: 'backup.read', category: 'Backup & Recovery' },
+  { toolName: 'manage_c2c_configs', tier: 1, permission: 'organizations.read / organizations.write', category: 'Backup & Recovery' },
   { toolName: 'trigger_vault_sync', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'execute_dr_plan', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'manage_dr_plan', tier: 2, permission: 'devices.write', category: 'Backup & Recovery' },
@@ -890,6 +906,22 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
     acknowledge_related: 'alerts.acknowledge',
     feedback: 'alerts.read',
     rca_feedback: 'alerts.read',
+  },
+  // Full-control W17 (#6788)
+  manage_backup_verification: {
+    health: 'organizations.read',
+    list: 'organizations.read',
+    readiness: 'organizations.read',
+    run: 'devices.execute',
+  },
+  get_vss_status: 'devices.execute',
+  list_bmr_recoveries: 'backup.read',
+  get_backup_health: 'backup.read',
+  manage_c2c_configs: {
+    list: 'organizations.read',
+    create: 'organizations.write',
+    update: 'organizations.write',
+    delete: 'organizations.write',
   },
   manage_device_anomalies: {
     list: 'devices.read',

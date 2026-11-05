@@ -264,6 +264,12 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   browse_device_event_log: { limit: 15, windowSeconds: 300 },
   manage_tenant_variables: { limit: 20, windowSeconds: 300 },
   manage_support_sessions: { limit: 10, windowSeconds: 300 },
+  // W17 (#6788): the VSS read waits on the machine, so it uses the live event-log limit.
+  manage_backup_verification: { limit: 30, windowSeconds: 300 },
+  get_vss_status: { limit: 15, windowSeconds: 300 },
+  manage_c2c_configs: { limit: 20, windowSeconds: 300 },
+  list_bmr_recoveries: { limit: 40, windowSeconds: 300 },
+  get_backup_health: { limit: 30, windowSeconds: 300 },
   // W14 (#6784, W14-D9): billing writes use the W13 write limit.
   manage_billing_profiles: { limit: 20, windowSeconds: 300 },
   manage_billing_settings: { limit: 20, windowSeconds: 300 },

@@ -172,12 +172,12 @@ async function remove(auth: AuthContext, input: Record<string, unknown>): Promis
 }
 
 export function registerC2CConfigTools(aiTools: Map<string, AiTool>): void {
-  aiTools.set(TOOL, {
+  aiTools.set('manage_c2c_configs', {
     tier: 1,
     domain: 'integrations',
     searchHint: 'cloud-to-cloud backup config: which mailboxes, schedule, retention, storage; Microsoft 365 or Google Workspace',
     definition: {
-      name: TOOL,
+      name: 'manage_c2c_configs',
       description:
         'Cloud-to-cloud backup configs. Actions: list; create (connectionId, name, backupScope); update (configId); delete (configId, refused when it has backup history). Writes choose whose mail is copied and need approval.',
       input_schema: {
@@ -210,7 +210,7 @@ export function registerC2CConfigTools(aiTools: Map<string, AiTool>): void {
             },
           },
           isActive: { type: 'boolean', description: 'update: false stops the schedule' },
-          limit: { type: 'number', description: 'list: max rows (default 50, max 100)' },
+          limit: { type: 'number', description: 'Max rows for list (default 50, max 100)' },
         },
         required: ['action'],
         additionalProperties: false,
