@@ -390,6 +390,14 @@ describe('agent hardware inventory — memory modules (#5351)', () => {
     }
   });
 
+  it('passes productSku through to the hardware write (#9593)', async () => {
+    const res = await postHardware(makeApp(), { ...DELL, productSku: '5S3F8EA#ABB' });
+
+    expect(res.status).toBe(200);
+    const [, , hardware] = vi.mocked(writeHardwareReport).mock.calls[0]!;
+    expect(hardware).toEqual({ ...DELL, productSku: '5S3F8EA#ABB' });
+  });
+
   it('never truncates an over-limit block into a partial snapshot', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const modules = Array.from({ length: 300 }, (_, i) => ({ ...MODULE, slotKey: `k${i}` }));

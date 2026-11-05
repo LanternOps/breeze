@@ -36,6 +36,14 @@ const desktopAccessReasonSchema = z.enum([
   'x11_auth_failed',
 ]);
 
+// #9593: device_hardware.product_sku is varchar(100). One odd firmware string must
+// not fail the whole hardware report on a Postgres length error, and a cut-off
+// product number would misdirect a warranty lookup, so it is dropped instead.
+const productSkuField = z.string().transform((value) => {
+  const trimmed = value.trim();
+  return trimmed && trimmed.length <= 100 ? trimmed : undefined;
+}).optional();
+
 export const enrollSchema = z.object({
   enrollmentKey: z.string().min(1),
   enrollmentSecret: z.string().min(1).optional(),
@@ -54,6 +62,7 @@ export const enrollSchema = z.object({
     ramTotalMb: z.number().int().optional(),
     diskTotalGb: z.number().int().optional(),
     serialNumber: z.string().optional(),
+    productSku: productSkuField,
     manufacturer: z.string().optional(),
     model: z.string().optional(),
     motherboardManufacturer: z.string().optional(),
@@ -1041,6 +1050,7 @@ export const updateHardwareSchema = z.object({
   ramTotalMb: z.number().int().optional(),
   diskTotalGb: z.number().int().optional(),
   serialNumber: z.string().optional(),
+  productSku: productSkuField,
   manufacturer: z.string().optional(),
   model: z.string().optional(),
   motherboardManufacturer: z.string().optional(),

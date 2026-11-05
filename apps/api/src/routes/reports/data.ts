@@ -165,7 +165,8 @@ dataRoutes.get(
         diskTotalGb: deviceHardware.diskTotalGb,
         manufacturer: deviceHardware.manufacturer,
         model: deviceHardware.model,
-        serialNumber: deviceHardware.serialNumber
+        serialNumber: deviceHardware.serialNumber,
+        productSku: deviceHardware.productSku
       })
       .from(devices)
       .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))

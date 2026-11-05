@@ -209,6 +209,7 @@ import { issueMtlsCertForDevice } from './helpers';
 import { rateLimiter } from '../../services/rate-limit';
 import {
   devices as devicesTable,
+  deviceHardware as deviceHardwareTable,
   enrollmentKeys as enrollmentKeysTable,
   partners as partnersTable,
   supportSessions as supportSessionsTable,
@@ -268,6 +269,10 @@ interface TxSpy {
   updatedTables: unknown[];
   /** set() payloads passed to tx.update(devices) — asserts in-place re-enrollment. */
   deviceUpdateValues: Record<string, unknown>[];
+  /** values() passed to tx.insert(deviceHardware). */
+  hardwareInsertValues: Record<string, unknown>[];
+  /** onConflictDoUpdate() `set` for tx.insert(deviceHardware). */
+  hardwareConflictSets: Record<string, unknown>[];
 }
 
 /**
@@ -286,6 +291,8 @@ function mockTransaction(
     deviceInsertValues: [],
     updatedTables: [],
     deviceUpdateValues: [],
+    hardwareInsertValues: [],
+    hardwareConflictSets: [],
   };
 
   vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
@@ -320,9 +327,13 @@ function mockTransaction(
         return {
           values: vi.fn((values: Record<string, unknown>) => {
             if (table === devicesTable) spy.deviceInsertValues.push(values);
+            if (table === deviceHardwareTable) spy.hardwareInsertValues.push(values);
             return {
               returning: vi.fn().mockResolvedValue([insertedDevice]),
-              onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+              onConflictDoUpdate: vi.fn((config: { set: Record<string, unknown> }) => {
+                if (table === deviceHardwareTable) spy.hardwareConflictSets.push(config.set);
+                return Promise.resolve(undefined);
+              }),
             };
           }),
         };
@@ -1075,6 +1086,31 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     const body = (await resp.json()) as Record<string, unknown>;
     expect(body.deviceId).toBe('device-hw-match-fresh');
     expect(tx.updatedTables).not.toContain(devicesTable);
+  });
+
+  it('stores the product number from enrollment on insert and on conflict (#9593)', async () => {
+    mockKeyLookup({
+      id: 'key-sku',
+      orgId: 'org-sku',
+      siteId: 'site-sku',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+    mockSelectRows([{ partnerId: 'partner-sku' }]);
+    mockSelectRows([]);
+    const tx = mockTransaction({ id: 'device-sku', orgId: 'org-sku', siteId: 'site-sku', hostname: 'host-1' }, 'key-sku');
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...baseEnrollBody, hardwareInfo: { serialNumber: 'S-1', productSku: '5S3F8EA#ABB' } }),
+    });
+
+    expect(resp.status).toBe(201);
+    expect(tx.hardwareInsertValues[0]).toMatchObject({ productSku: '5S3F8EA#ABB' });
+    expect(tx.hardwareConflictSets[0]).toMatchObject({ productSku: '5S3F8EA#ABB' });
   });
 
   it('raises the identity-collision alert only when the colliding row is currently online', async () => {
