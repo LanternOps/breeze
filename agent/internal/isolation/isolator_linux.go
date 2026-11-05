@@ -167,14 +167,14 @@ func (i *linuxIsolator) Capability() Capability {
 	switch {
 	case r.checkedAt.IsZero() || elapsed < 0 || elapsed >= readinessMaxAge:
 		c.UnsupportedReason = linuxReasonRecovery // no fresh proof of anything
-	case r.engineErr != nil:
+	case r.in.engineErr != nil:
 		c.UnsupportedReason = cgroup.ReasonUnavailable
-		if errors.As(r.engineErr, &engine) {
+		if errors.As(r.in.engineErr, &engine) {
 			c.UnsupportedReason = engine.reason
 		}
-	case r.recoveryErr != nil:
+	case r.in.recoveryErr != nil:
 		c.UnsupportedReason = linuxReasonRecovery
-	case !r.schedulerReady:
+	case !r.in.schedulerReady:
 		c.UnsupportedReason = linuxReasonScheduler
 	default:
 		c.Version = 1

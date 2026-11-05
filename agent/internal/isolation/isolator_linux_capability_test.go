@@ -279,8 +279,8 @@ func TestLinuxCapabilityRefusesAnUntypedEngineError(t *testing.T) {
 	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
 	i.readiness.now = func() time.Time { return now }
 	i.readiness.checkedAt = now
-	i.readiness.engineErr = errors.New("some other failure")
-	i.readiness.schedulerReady = true
+	i.readiness.in.engineErr = errors.New("some other failure")
+	i.readiness.in.schedulerReady = true
 	if got := i.Capability(); got.Ready || got.Version != 0 || got.UnsupportedReason == "" {
 		t.Fatalf("capability = %+v", got)
 	}
