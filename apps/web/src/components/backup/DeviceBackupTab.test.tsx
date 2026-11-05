@@ -3,9 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceBackupTab from './DeviceBackupTab';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+}));
+
+vi.mock('../shared/Toast', () => ({
+  showToast: vi.fn(),
 }));
 
 vi.mock('./BackupVerificationTab', () => ({
@@ -1043,6 +1048,200 @@ describe('DeviceBackupTab', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(20000);
         await flush();
+      });
+      expect(calls.status).toBe(2);
+    });
+
+    it('keeps the error banner steady across failing polls, so the page does not scroll every tick', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-11-05T12:00:00.000Z'));
+      const scrollIntoView = vi.fn();
+      const original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = scrollIntoView;
+      try {
+        let statusCalls = 0;
+        let releasePoll: (res: Response) => void = () => {};
+        const failed = () => makeJsonResponse({ error: 'boom' }, false, 500);
+        fetchMock.mockImplementation(async (input) => {
+          const url = String(input);
+          if (url === '/backup/status/device-1') {
+            statusCalls += 1;
+            if (statusCalls === 1) {
+              return makeJsonResponse({ data: { protected: true, lastJob: null, activeJobs: [activeJob()] } });
+            }
+            if (statusCalls === 2) return failed();
+            // Held open across a commit, as a real network gap is. act() would
+            // otherwise batch a clear and a re-set into one render.
+            return new Promise<Response>((resolve) => { releasePoll = resolve; });
+          }
+          if (url === '/backup/jobs?deviceId=device-1') return makeJsonResponse({ data: [] });
+          if (url === '/backup/snapshots?deviceId=device-1') return makeJsonResponse({ data: [] });
+          return makeJsonResponse({}, false, 404);
+        });
+
+        render(<DeviceBackupTab deviceId="device-1" />);
+        await act(async () => {
+          await flush();
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(5000);
+          await flush();
+        });
+        expect(screen.getByText('Failed to load some data (500)')).toBeTruthy();
+        expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+        // The next poll is in flight: the banner must not blink off.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(5000);
+          await flush();
+        });
+        expect(statusCalls).toBe(3);
+        expect(screen.getByText('Failed to load some data (500)')).toBeTruthy();
+
+        await act(async () => {
+          releasePoll(failed());
+          await flush();
+          await flush();
+        });
+        expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      } finally {
+        Element.prototype.scrollIntoView = original;
+      }
+    });
+
+    it('clears the error banner once a later poll succeeds', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-11-05T12:00:00.000Z'));
+      let statusCalls = 0;
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/status/device-1') {
+          statusCalls += 1;
+          if (statusCalls === 2) return makeJsonResponse({ error: 'boom' }, false, 500);
+          return makeJsonResponse({ data: { protected: true, lastJob: null, activeJobs: [activeJob()] } });
+        }
+        if (url === '/backup/jobs?deviceId=device-1') return makeJsonResponse({ data: [] });
+        if (url === '/backup/snapshots?deviceId=device-1') return makeJsonResponse({ data: [] });
+        return makeJsonResponse({}, false, 404);
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+      await act(async () => {
+        await flush();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+        await flush();
+      });
+      expect(screen.getByText('Failed to load some data (500)')).toBeTruthy();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+        await flush();
+      });
+      expect(screen.queryByText('Failed to load some data (500)')).toBeNull();
+    });
+
+    it('does not let an older poll response bring back a job that Stop already removed', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-11-05T12:00:00.000Z'));
+      let statusCalls = 0;
+      let releasePoll: (res: Response) => void = () => {};
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = (init as RequestInit | undefined)?.method ?? 'GET';
+        if (url === '/backup/status/device-1') {
+          statusCalls += 1;
+          // Call 2 is the poll, held open across the whole stop.
+          if (statusCalls === 2) return new Promise<Response>((resolve) => { releasePoll = resolve; });
+          return makeJsonResponse({
+            data: { protected: true, lastJob: null, activeJobs: statusCalls === 1 ? [activeJob()] : [] },
+          });
+        }
+        if (url === '/backup/jobs?deviceId=device-1') return makeJsonResponse({ data: [] });
+        if (url === '/backup/snapshots?deviceId=device-1') return makeJsonResponse({ data: [] });
+        if (url === '/backup/jobs/job-live/cancel' && method === 'POST') {
+          return makeJsonResponse({ id: 'job-live', status: 'cancelled' });
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+      await act(async () => {
+        await flush();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+        await flush();
+      });
+      expect(statusCalls).toBe(2);
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('device-backup-active-job-stop'));
+        await vi.advanceTimersByTimeAsync(0);
+        await flush();
+        await flush();
+      });
+      expect(statusCalls).toBe(3);
+      expect(screen.queryByTestId('device-backup-active-job')).toBeNull();
+
+      await act(async () => {
+        releasePoll(makeJsonResponse({ data: { protected: true, lastJob: null, activeJobs: [activeJob()] } }));
+        await flush();
+        await flush();
+      });
+      expect(screen.queryByTestId('device-backup-active-job')).toBeNull();
+    });
+
+    it('surfaces the partial-delivery warning from a cancel that could not reach the agent', async () => {
+      mockStatus(() => [activeJob()]);
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (input, init) => {
+        if (String(input) === '/backup/jobs/job-live/cancel') {
+          return makeJsonResponse({ id: 'job-live', status: 'cancelled', warning: 'Stop signal not delivered' });
+        }
+        return base(input, init);
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+      fireEvent.click(await screen.findByTestId('device-backup-active-job-stop'));
+
+      await waitFor(() => {
+        expect(showToast).toHaveBeenCalledWith({ message: 'Stop signal not delivered', type: 'warning' });
+      });
+    });
+
+    it('re-enables Stop and refetches nothing when the cancel fails', async () => {
+      const calls = mockStatus(() => [activeJob()]);
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (input, init) => {
+        if (String(input) === '/backup/jobs/job-live/cancel') {
+          return makeJsonResponse({ error: 'Nope' }, false, 500);
+        }
+        return base(input, init);
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+      const stop = (await screen.findByTestId('device-backup-active-job-stop')) as HTMLButtonElement;
+      fireEvent.click(stop);
+
+      await waitFor(() => {
+        expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+      });
+      await waitFor(() => {
+        expect((screen.getByTestId('device-backup-active-job-stop') as HTMLButtonElement).disabled).toBe(false);
+      });
+      expect(calls.status).toBe(1);
+    });
+
+    it('refreshes after a successful stop', async () => {
+      const calls = mockStatus((call) => (call === 1 ? [activeJob()] : []));
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+      fireEvent.click(await screen.findByTestId('device-backup-active-job-stop'));
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('device-backup-active-job')).toBeNull();
       });
       expect(calls.status).toBe(2);
     });

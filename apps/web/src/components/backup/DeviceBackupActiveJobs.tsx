@@ -25,7 +25,7 @@ type DeviceBackupActiveJobsProps = {
   jobs: ActiveBackupJob[];
   /** Omit to hide the Stop button. */
   onStop?: (jobId: string) => void;
-  /** The job whose stop request is in flight; its button is disabled. */
+  /** The job whose stop request is in flight. Every Stop button is disabled until it ends. */
   stoppingId?: string | null;
 };
 
@@ -66,7 +66,8 @@ export default function DeviceBackupActiveJobs({ jobs, onStop, stoppingId }: Dev
           const phase = deriveActivePhase(job);
           const { stalled, minutes } = stallState(job, progress.now);
           const bps = stalled ? undefined : progress.speeds.get(job.id);
-          const etaMs = phase === 'backing_up' && !stalled ? estimateRemainingMs(job, bps) : null;
+          // No speed means no ETA: stalled above, and a resuming run has moved no bytes.
+          const etaMs = estimateRemainingMs(job, bps);
           const total = job.totalSize ?? 0;
           const done = job.transferredSize ?? 0;
           const percent = job.status === 'running' && total > 0 ? Math.min(100, (done / total) * 100) : null;
@@ -109,7 +110,7 @@ export default function DeviceBackupActiveJobs({ jobs, onStop, stoppingId }: Dev
                     type="button"
                     data-testid="device-backup-active-job-stop"
                     onClick={() => onStop(job.id)}
-                    disabled={stoppingId === job.id}
+                    disabled={stoppingId != null}
                     className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent disabled:opacity-50"
                   >
                     {stoppingId === job.id ? (

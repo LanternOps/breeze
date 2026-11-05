@@ -224,37 +224,44 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
   // without a second fetch. `null` = not answered yet.
   const [hasExternalBackup, setHasExternalBackup] = useState<boolean | null>(null);
 
+  // The tab re-fetches on a timer while a backup is in flight, so requests can
+  // overlap with a refresh or a stop. Only the newest request may write state.
+  const latestFetchRef = useRef(0);
   const fetchData = useCallback(async () => {
-    setError(undefined);
+    const fetchId = ++latestFetchRef.current;
     try {
       const [statusRes, jobsRes, snapshotsRes] = await Promise.all([
         fetchWithAuth(`/backup/status/${deviceId}`),
         fetchWithAuth(`/backup/jobs?deviceId=${deviceId}`),
         fetchWithAuth(`/backup/snapshots?deviceId=${deviceId}`),
       ]);
+      const [statusPayload, jobsPayload, snapshotsPayload] = await Promise.all([
+        statusRes.ok ? statusRes.json() : null,
+        jobsRes.ok ? jobsRes.json() : null,
+        snapshotsRes.ok ? snapshotsRes.json() : null,
+      ]);
+      if (fetchId !== latestFetchRef.current) return;
 
       if (statusRes.ok) {
-        const payload = await statusRes.json();
-        setStatus(payload?.data ?? payload ?? null);
+        setStatus(statusPayload?.data ?? statusPayload ?? null);
       }
 
       if (jobsRes.ok) {
-        const payload = await jobsRes.json();
-        setJobs(Array.isArray(payload?.data) ? payload.data : []);
+        setJobs(Array.isArray(jobsPayload?.data) ? jobsPayload.data : []);
       }
 
       if (snapshotsRes.ok) {
-        const payload = await snapshotsRes.json();
-        setSnapshots(Array.isArray(payload?.data) ? payload.data : []);
+        setSnapshots(Array.isArray(snapshotsPayload?.data) ? snapshotsPayload.data : []);
       }
 
+      // Set from the outcome instead of clearing up front: a banner cleared at
+      // the start of every 5 s poll would blink, and useScrollToError would
+      // pull the page back to it each time it reappeared.
       const firstFail = [statusRes, jobsRes, snapshotsRes].find((r) => !r.ok);
-      if (firstFail) {
-        setError(`Failed to load some data (${firstFail.status})`);
-      }
+      setError(firstFail ? `Failed to load some data (${firstFail.status})` : undefined);
     } catch (err) {
       console.error('[DeviceBackupTab] fetchData:', err);
-      setError(friendlyFetchError(err));
+      if (fetchId === latestFetchRef.current) setError(friendlyFetchError(err));
     } finally {
       setLoading(false);
     }
@@ -304,7 +311,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
   useEffect(() => {
     if (!hasActiveJobs) return;
     // Skip a tick while the previous poll is unanswered, so a slow API cannot
-    // stack requests or have an older response overwrite a newer one.
+    // stack requests.
     let inFlight = false;
     const timer = setInterval(() => {
       if (inFlight) return;

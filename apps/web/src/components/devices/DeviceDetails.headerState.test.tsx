@@ -4,6 +4,7 @@ import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import DeviceDetails, { METRIC_SAMPLE_FRESH_MS, metricsAreCurrent } from './DeviceDetails';
 import type { Device } from './DeviceList';
+import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../stores/auth')>();
@@ -119,6 +120,21 @@ describe('DeviceDetails header state (#9026)', () => {
     expect(button).toHaveAttribute('data-kind', 'device');
     expect(button).toHaveAttribute('data-id', 'device-1');
     expect(button).toHaveAttribute('data-org', 'org-1');
+  });
+
+  it('mounts the Backup running badge in the header (#11027)', async () => {
+    const notFound = { ok: false, status: 404, statusText: 'NOT FOUND', json: vi.fn().mockResolvedValue({}) };
+    const running = { ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data: [{ id: 'job-1' }] }) };
+    const fetchMock = vi.mocked(fetchWithAuth);
+    fetchMock.mockImplementation(async (input) =>
+      (String(input).includes('status=running') ? running : notFound) as unknown as Response,
+    );
+    try {
+      render(<DeviceDetails device={base} />);
+      expect((await screen.findByTestId('device-backup-running-badge')).textContent).toContain('Backup running');
+    } finally {
+      fetchMock.mockResolvedValue(notFound as unknown as Response);
+    }
   });
 
   it('keeps the plain status label when the device is online', () => {

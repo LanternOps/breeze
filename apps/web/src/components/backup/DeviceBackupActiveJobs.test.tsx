@@ -131,8 +131,34 @@ describe('DeviceBackupActiveJobs', () => {
     expect(onStop).toHaveBeenCalledWith('job-running');
   });
 
-  it('disables Stop for the job being stopped', () => {
-    render(<DeviceBackupActiveJobs jobs={[job()]} onStop={vi.fn()} stoppingId="job-running" />);
-    expect((screen.getByTestId('device-backup-active-job-stop') as HTMLButtonElement).disabled).toBe(true);
+  it('disables every Stop button while one stop is in flight', () => {
+    // The tab handles one stop at a time, so a live button on the other card
+    // would swallow the click with no feedback.
+    render(
+      <DeviceBackupActiveJobs
+        jobs={[job(), job({ id: 'job-other', status: 'pending', startedAt: null })]}
+        onStop={vi.fn()}
+        stoppingId="job-running"
+      />,
+    );
+    const buttons = screen.getAllByTestId('device-backup-active-job-stop') as HTMLButtonElement[];
+    expect(buttons.map((b) => b.disabled)).toEqual([true, true]);
+  });
+
+  it('derives speed and ETA from the delta between polls, and drops them when bytes stop moving', () => {
+    const { rerender } = render(<DeviceBackupActiveJobs jobs={[job()]} />);
+    // First sample: the running average, 1 MB over 10 min → 3 MB left ≈ 30 min.
+    expect(screen.getByTestId('device-backup-active-job-eta').textContent).toBe('about 30m left');
+
+    // 10 s later, 100 KB more: 10 KB/s → 2.9 MB left ≈ 4 min 50 s. A running
+    // average would say about 26 min, so this proves the sample was kept.
+    vi.setSystemTime(new Date(NOW.getTime() + 10_000));
+    rerender(<DeviceBackupActiveJobs jobs={[job({ transferredSize: 1_100_000 })]} />);
+    expect(screen.getByTestId('device-backup-active-job-eta').textContent).toBe('about 4m left');
+
+    // Same bytes on the next poll: no speed, so no ETA, not a misleading average.
+    vi.setSystemTime(new Date(NOW.getTime() + 15_000));
+    rerender(<DeviceBackupActiveJobs jobs={[job({ transferredSize: 1_100_000 })]} />);
+    expect(screen.queryByTestId('device-backup-active-job-eta')).toBeNull();
   });
 });
