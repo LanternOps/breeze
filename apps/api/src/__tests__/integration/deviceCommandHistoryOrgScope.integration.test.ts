@@ -230,8 +230,63 @@ describe('device command history is scoped to the current organization', () => {
     await recordMerge(f.partner.id, f.targetOrg.id, finalOrg.id);
     await repointAsOrgMerge(f.deviceId, finalOrg.id, finalSite.id);
 
+    // An organization outside the merge lineage stays out on this path too.
+    const unrelatedOrg = await createOrganization({ partnerId: f.partner.id });
+    await insertCommand(f.deviceId, { submittedOrgId: unrelatedOrg.id });
+
+    const expected = [stampedLoser, unstampedLoser].sort();
     const token = await orgUserToken(f.partner.id, finalOrg.id);
-    expect((await historyIds(app, token, f.deviceId)).ids).toEqual([stampedLoser, unstampedLoser].sort());
+    expect((await historyIds(app, token, f.deviceId)).ids).toEqual(expected);
+    expect((await historyIds(app, f.partnerToken, f.deviceId)).ids).toEqual(expected);
+  });
+
+  it('a merged device that left and came back keeps the lineage but only this tenure’s unstamped rows', async () => {
+    const f = await seed();
+    const app = buildApp();
+    const survivor = await createOrganization({ partnerId: f.partner.id });
+    const survivorSite = await createSite({ orgId: survivor.id });
+
+    const stampedLoser = await insertCommand(f.deviceId, { submittedOrgId: f.sourceOrg.id });
+    await insertCommand(f.deviceId);
+    await recordMerge(f.partner.id, f.sourceOrg.id, survivor.id);
+    await repointAsOrgMerge(f.deviceId, survivor.id, survivorSite.id);
+
+    await moveThroughRoute(f, f.targetOrg.id, f.targetSite.id);
+    await insertCommand(f.deviceId, { submittedOrgId: f.targetOrg.id });
+    await insertCommand(f.deviceId);
+    await moveThroughRoute(f, survivor.id, survivorSite.id);
+    const afterReturn = await insertCommand(f.deviceId);
+
+    const token = await orgUserToken(f.partner.id, survivor.id);
+    expect((await historyIds(app, token, f.deviceId)).ids).toEqual([stampedLoser, afterReturn].sort());
+  });
+
+  it('the scope holds when the routes’ own filters are applied', async () => {
+    const f = await seed();
+    const app = buildApp();
+    await insertCommand(f.deviceId, { submittedOrgId: f.sourceOrg.id });
+    await insertCommand(f.deviceId, { status: 'failed', submittedOrgId: f.sourceOrg.id });
+    await moveThroughRoute(f, f.targetOrg.id, f.targetSite.id);
+    const completed = await insertCommand(f.deviceId, { submittedOrgId: f.targetOrg.id });
+    const failed = await insertCommand(f.deviceId, { status: 'failed', submittedOrgId: f.targetOrg.id });
+
+    const token = await orgUserToken(f.partner.id, f.targetOrg.id);
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const history = await app.request(
+      `/devices/${f.deviceId}/patches/history?type=scan&status=failed`,
+      { headers },
+    );
+    expect(history.status).toBe(200);
+    const historyBody = (await history.json()) as { history: Array<{ id: string }>; total: number };
+    expect(historyBody.history.map((row) => row.id)).toEqual([failed]);
+    expect(historyBody.total).toBe(1);
+
+    const list = await app.request(`/devices/${f.deviceId}/commands?status=completed`, { headers });
+    expect(list.status).toBe(200);
+    const listBody = (await list.json()) as { data: Array<{ id: string }>; pagination: { total: number } };
+    expect(listBody.data.map((row) => row.id)).toEqual([completed]);
+    expect(listBody.pagination.total).toBe(1);
   });
 
   it('a merge does not reach back past an earlier move into the merged-away organization', async () => {

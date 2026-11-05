@@ -57,11 +57,14 @@ describe('deviceCommandsInCurrentOrg', () => {
 
   it('no epoch visible: stamped rows only, never every unstamped row', async () => {
     selectMock.mockReturnValueOnce(epochRead({ epochCount: 0, tenureStart: null, viaMerge: false }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     const { sql, params } = render(await deviceCommandsInCurrentOrg(DEVICE));
 
     expect(params).toEqual([DEVICE.orgId]);
     expect(sql).not.toContain('is null');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(DEVICE.id));
+    warn.mockRestore();
   });
 
   it('a device that arrived through a merge: takes the merge lineage and the whole device tenure', async () => {

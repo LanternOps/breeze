@@ -19,6 +19,8 @@ function latestTenureStart() {
 
 function commandsBelongingTo(orgIds: string[], tenureStart: string | null): SQL {
   const unstamped = isNull(deviceCommands.submittedOrgId);
+  // created_at has no zone and is written by the column's now() default in the
+  // session zone; comparing it to a timestamptz reads it back in that same zone.
   return or(
     inArray(deviceCommands.submittedOrgId, orgIds),
     tenureStart === null
@@ -65,6 +67,7 @@ export async function deviceCommandsInCurrentOrg(device: { id: string; orgId: st
   // None visible means the tenure could not be read, not that it is unbounded,
   // so unstamped rows stay out rather than falling through as in scope.
   if (!own || own.epochCount === 0) {
+    console.warn(`[devices] no ownership epoch visible for device ${device.id}; hiding its unstamped command rows`);
     return eq(deviceCommands.submittedOrgId, device.orgId);
   }
 
