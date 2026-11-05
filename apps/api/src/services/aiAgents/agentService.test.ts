@@ -1414,6 +1414,16 @@ describe('built-in troubleshoot agent edits through updateAgent (#11084)', () =>
     await updateAgent(auth(), 'a1', { enabled: false, name: 'X' } as never);
     expect(state.updatedValues).toMatchObject({ enabled: false, name: 'X' });
   });
+
+  // The provisioner is exempt from the partner-wide write gate only because the
+  // user-facing edit path is gated here (partner-wide-write-coverage.test.ts).
+  it('denies a permitted field to a caller without full partner authority, before any update', async () => {
+    state.currentRow = troubleshoot;
+    state.returnedRow = troubleshoot;
+    await expect(updateAgent(auth({ partnerOrgAccess: 'selected' }), 'a1', { enabled: false } as never))
+      .rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+    expect(state.updatedValues).toBeNull();
+  });
 });
 
 describe('troubleshoot agent creation backstop (#11084)', () => {
