@@ -15,6 +15,8 @@ import { attachDeviceNames, restoreModeFromTargetConfig } from './deviceNames';
 import { restoreListSchema, restoreSchema } from './schemas';
 import { resolveSelectedSnapshotPaths, selectedSnapshotPathError } from '../../services/backupSelectedPaths';
 import { readableSnapshotSourcePaths } from '../../services/backupSnapshotBrowse';
+import { readSnapshotIndexView } from '../../services/backupSnapshotIndexView';
+import { requestFileIndexHydrationAfterContext } from './fileIndexHydrationRequest';
 import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
@@ -246,7 +248,13 @@ restoreRoutes.post(
       const sourcePaths = await readableSnapshotSourcePaths(snapshot.id);
 
       if (sourcePaths.length === 0) {
-        return c.json({ error: 'Selective restore is unavailable for snapshots without indexed files' }, 409);
+        // #11026: a snapshot that has files but no index yet builds one, so
+        // the selection can be made once its list is ready.
+        const index = await readSnapshotIndexView(snapshot.id, orgId);
+        if (index?.shouldRequestHydration) {
+          requestFileIndexHydrationAfterContext(snapshot.id, 'browse');
+        }
+        return c.json({ error: 'Selective restore is unavailable for snapshots without indexed files', code: 'index_unavailable' }, 409);
       }
 
       // The browse tree shows forward-slash paths; map each selection back to
