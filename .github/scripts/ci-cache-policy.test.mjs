@@ -273,3 +273,24 @@ test('seed runner OS set covers every OS that restores each cache in ci.yml', ()
     }
   }
 });
+
+// A cached .deb closure is seeded on one `ubuntu-latest` image patch level and
+// restored on every other one (the key omits ImageVersion on purpose). When a
+// -dev package in the closure pins a runtime library version the current image
+// does not carry (libbrotli-dev = libbrotli1 1.2.0-3ubuntu0.1 vs the image's
+// 1.2.0-3build1, seen 2026-11-04 on ubuntu-26.04), `dpkg -i` leaves those
+// packages unpacked-but-unconfigured. Left in place, they make the network
+// fallback resolve against the stale pin and fail with "Unmet dependencies", so
+// the fallback must first remove every package the failed install left behind.
+test('rust-check removes half-installed packages before the network fallback', () => {
+  const ci = read(new URL('../workflows/ci.yml', import.meta.url));
+  const step = ci.slice(ci.indexOf('name: Install Tauri system dependencies'));
+  const fallback = step.indexOf('cached .deb install failed; falling back');
+  const network = step.indexOf('# Network path.');
+  assert.ok(fallback > 0 && network > fallback, 'expected the cache fallback warning before the network path');
+  const between = step.slice(fallback, network);
+  assert.match(between, /dpkg-query -W -f='\$\{binary:Package\} \$\{db:Status-Abbrev\}\\n'/,
+    'fallback must list package states with dpkg-query');
+  assert.match(between, /dpkg --remove --force-depends --force-remove-reinstreq/,
+    'fallback must remove the packages the failed cached install left half-installed');
+});
