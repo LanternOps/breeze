@@ -139,7 +139,7 @@ export function registerWispTools(aiTools: Map<string, AiTool>): void {
     tier: 2,
     domain: 'ai',
     deviceArgs: [],
-    searchHint: 'hand work to a specialist agent: sweep, sandbox analysis, Operator task, patch plan, research, bulk ticket reply, device troubleshooting',
+    searchHint: 'hand work to a specialist: sweep, analysis, Operator task, patch plan, research, bulk reply, device troubleshooting',
     definition: {
       name: 'launch_specialist',
       // #10144: the params of the long kinds live here (the params field's

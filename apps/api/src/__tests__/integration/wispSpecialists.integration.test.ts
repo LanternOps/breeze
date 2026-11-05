@@ -25,6 +25,8 @@ import { actionIntents, aiAgentRuns, aiAgents, devices, wispGrantRevisions, wisp
 import type { WispCeilingSnapshot } from '../../db/schema/wisp';
 import { createAndEnqueueAgentRun, registerAgentRunEnqueuer } from '../../services/aiAgents/runService';
 import { requestSpecialist } from '../../services/wisp/coordinator';
+import { currentActivity, listActivity } from '../../services/wisp/activity';
+import { resolveGrantCeiling } from '../../services/wisp/grantAuthority';
 import { wispSpecialistRequestHandler } from '../../services/aiToolsWisp';
 import { createActionIntent } from '../../services/actionIntents/intentService';
 import { buildAgentAuthContext } from '../../services/aiAgents/agentAuthContext';
@@ -259,6 +261,83 @@ describe('Wisp specialist coordinator (real Postgres)', () => {
     await sys(() => db.delete(aiAgentRuns).where(eq(aiAgentRuns.id, runId)));
     const [orphan] = await sys(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.id, rows[0]!.id)));
     expect(orphan).toMatchObject({ depth: 1, requestedByRunId: null, orgId: t.org.id });
+  });
+
+  // #11084: the provisioned troubleshoot agent, the forced-shadow admission, and
+  // Decision 2's reason for a new kind: the STORED allowlist is what intent
+  // minting re-checks, so a proposal from the run actually becomes an approval.
+  it('device_troubleshooting: an approved request admits a shadow, device-pinned run under a provisioned agent whose proposals mint supervised intents', async () => {
+    const t = await seedTenant([
+      { resource: 'ai_sessions', action: 'use' },
+      { resource: 'ai_agents', action: 'write' },
+      { resource: 'devices', action: 'read' },
+      { resource: 'devices', action: 'write' },
+      { resource: 'devices', action: 'execute' },
+    ]);
+    const parentRunId = await seedAssessmentRun(t, t.deviceId);
+    const approver = {
+      principal: { kind: 'user_session' },
+      user: { id: t.admin.id, email: 'admin@wisp.test', name: 'Admin', isPlatformAdmin: false },
+      token: null, partnerId: t.partner.id, orgId: null, scope: 'partner',
+      accessibleOrgIds: [t.org.id], partnerOrgAccess: 'all',
+      orgCondition: () => undefined, canAccessOrg: (id: string) => id === t.org.id,
+    } as unknown as AuthContext;
+    const requestId = randomUUID();
+    const result = await requestSpecialist(
+      {
+        grantId: t.grant.grantId, grantRevisionId: t.grant.revisionId, orgId: t.org.id, kind: 'device_troubleshooting',
+        params: { deviceId: t.deviceId, goal: 'Outlook crashes on start' }, requestedByRunId: parentRunId,
+      },
+      { requester: { kind: 'approval', intentId: randomUUID(), auth: approver }, requestId },
+    );
+    expect(result).toMatchObject({ admitted: true });
+
+    const [run] = await sys(() => db.select().from(aiAgentRuns)
+      .where(and(eq(aiAgentRuns.orgId, t.org.id), eq(aiAgentRuns.dedupeKey, specialistDedupeKey(requestId)))));
+    expect(run).toMatchObject({ profile: 'device_troubleshooting', deviceId: t.deviceId, modeAtStart: 'shadow', grantId: t.grant.grantId });
+    expect(run!.triggerRef).toMatchObject({ source: 'wisp_specialist', kind: 'device_troubleshooting', deviceId: t.deviceId, goal: 'Outlook crashes on start' });
+
+    const [agent] = await sys(() => db.select().from(aiAgents).where(eq(aiAgents.id, run!.agentId)));
+    expect(agent).toMatchObject({
+      kind: 'troubleshoot', orgId: null, partnerId: t.partner.id, mode: 'shadow', createdBy: null,
+      provisionedBy: 'system:device_troubleshooting',
+    });
+
+    const [device] = await sys(() => db.select({ siteId: devices.siteId }).from(devices).where(eq(devices.id, t.deviceId)));
+    const agentAuth = buildAgentAuthContext(
+      agent!,
+      { id: run!.id, orgId: t.org.id, deviceId: t.deviceId, deviceSiteId: device!.siteId },
+      { id: t.org.id, partnerId: t.partner.id },
+    );
+    // Tier 2: minted, one human approver, never policy-decidable.
+    const tier2 = await createActionIntent(agentAuth, {
+      toolName: 'set_device_context',
+      input: { deviceId: t.deviceId, contextType: 'issue', summary: 'Outlook profile looks corrupt' },
+      source: 'ai_agent',
+      orgId: t.org.id,
+    });
+    expect(tier2).toMatchObject({ status: 'pending_approval' });
+    const [row] = await sys(() => db.select().from(actionIntents).where(eq(actionIntents.id, tier2.id)));
+    expect(row).toMatchObject({ requestingAgentRunId: run!.id, originPrincipalKind: 'ai_agent', status: 'pending_approval', approvalScope: 'supervised' });
+
+    // The Workers panel source, against real SQL (the unit suite mocks the query).
+    const ceiling = await sys(() => resolveGrantCeiling(t.grant.grantId, t.grant.revisionId));
+    const all = await listActivity(ceiling, { limit: 50 });
+    expect(all.items.find((i) => i.kind === 'specialist')).toMatchObject({
+      id: run!.id, orgId: t.org.id, runStatus: 'queued', href: `/ai-agents/runs/${run!.id}`,
+      title: expect.stringMatching(/^Device troubleshooting · wisp-spec-/),
+    });
+    // The keyset expression is valid SQL: one item per page walks the same list, no repeats.
+    const walked: string[] = [];
+    let cursor: string | undefined;
+    for (let i = 0; i < all.items.length + 1; i++) {
+      const page = await listActivity(ceiling, { limit: 1, ...(cursor ? { cursor } : {}) });
+      walked.push(...page.items.map((item) => item.id));
+      if (!page.nextCursor) break;
+      cursor = page.nextCursor;
+    }
+    expect(walked).toEqual(all.items.map((i) => i.id));
+    await expect(currentActivity(t.grant.grantId)).resolves.toMatchObject({ orgId: t.org.id });
   });
 
   it('no other agent path can mint the carrier: createActionIntent refuses it without the coordinator mint', async () => {
