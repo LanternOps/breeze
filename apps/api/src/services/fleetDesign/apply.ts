@@ -560,6 +560,7 @@ async function stepRoleCorrections(ctx: ApplyCtx, tx: ApplyTransaction): Promise
     });
     const row = await recordApplied({
       orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef, itemKind: 'role_correction', step: 5,
+      createdRefs: { deviceRole: rc.to },
       beforeImage: { deviceRole: current.deviceRole, deviceRoleSource: current.deviceRoleSource },
       userId: ctx.userId,
     }, tx);

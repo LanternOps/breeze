@@ -115,6 +115,8 @@ type ResolverResult =
       verifiedTopologyDiagnostic?: Omit<VerifiedTopologyDiagnostic, 'effectDigest'>;
       /** Network-isolation W13 (#10101): the episode binding `release_containment` pinned. */
       verifiedIsolationRelease?: ApprovalBinding;
+      /** Full-control W16 PR B (#6786): the handler re-derives under its lock (digest attached by resolveEffectDigest). */
+      bindsFleetDesign?: true;
     }
   | { kind: 'missing_arg' }
   | { kind: 'target_absent' };
@@ -537,6 +539,34 @@ const EFFECT_DIGEST_RESOLVERS: Record<
       .limit(1);
     const current = Object.fromEntries(PORTAL_TOOL_SENSITIVE_KEYS.map((key) => [key, row?.[key] === true]));
     return material(canonicalJson({ v: 1, orgId, requested: Object.fromEntries(requested), current }));
+  },
+
+  // manage_ai_agent_schedules:delete (full-control W16 PR B, #6786; four-eyes). Pins the row and every override's
+  // contents: a baseline delete cascades them and cannot be undone (scheduleDeleteDigest.ts). Mandatory per action.
+  'manage_ai_agent_schedules:delete': async (args, database) => {
+    const scheduleId = typeof args.scheduleId === 'string' ? args.scheduleId.toLowerCase() : null;
+    if (!scheduleId) return MISSING_ARG;
+    if (!UUID_RE.test(scheduleId)) return TARGET_ABSENT;
+    const { scheduleDeleteDigestMaterial } = await import('./scheduleDeleteDigest');
+    const pinned = await scheduleDeleteDigestMaterial(scheduleId, database);
+    return pinned ? material(canonicalJson(pinned)) : TARGET_ABSENT;
+  },
+
+  // manage_fleet_designs:apply / :rollback (full-control W16 PR B, #6786; four-eyes, Decision 5). The state apply and
+  // rollback resolve against, read with no auth (fleetDesign/applyTargets.ts). Both release paths verify in an earlier
+  // transaction than the one that writes, so a match also carries the digest to the handler, which re-derives it under
+  // the report-run lock (`verifiedFleetDesignBinding`). Mandatory per action.
+  'manage_fleet_designs:apply': async (args, database) => {
+    if (typeof args.reportRunId !== 'string' || !args.approval) return MISSING_ARG;
+    const { fleetDesignApplyDigestMaterial } = await import('./fleetDesignDigest');
+    const pinned = await fleetDesignApplyDigestMaterial(args, database);
+    return pinned ? { kind: 'material', material: canonicalJson(pinned), bindsFleetDesign: true } : TARGET_ABSENT;
+  },
+  'manage_fleet_designs:rollback': async (args, database) => {
+    if (typeof args.reportRunId !== 'string') return MISSING_ARG;
+    const { fleetDesignRollbackDigestMaterial } = await import('./fleetDesignDigest');
+    const pinned = await fleetDesignRollbackDigestMaterial(args, database);
+    return pinned ? { kind: 'material', material: canonicalJson(pinned), bindsFleetDesign: true } : TARGET_ABSENT;
   },
 
   // W15: one real Pax8 order, with local destination / billing inputs pinned. Vendor rates are
@@ -1112,6 +1142,7 @@ async function resolveEffectDigest(
   verified?: VerifiedRunScript;
   verifiedTopologyDiagnostic?: VerifiedTopologyDiagnostic;
   verifiedIsolationRelease?: ApprovalBinding;
+  verifiedFleetDesignBinding?: { digest: string };
 }> {
   const action = typeof args.action === 'string' ? args.action : undefined;
   const key = effectDigestResolverKey(toolName, action);
@@ -1128,6 +1159,7 @@ async function resolveEffectDigest(
       ? { verifiedTopologyDiagnostic: { ...result.verifiedTopologyDiagnostic, effectDigest: digest } }
       : {}),
     ...(result.verifiedIsolationRelease ? { verifiedIsolationRelease: result.verifiedIsolationRelease } : {}),
+    ...(result.bindsFleetDesign ? { verifiedFleetDesignBinding: { digest } } : {}),
   };
 }
 
@@ -1181,6 +1213,9 @@ export async function computeEffectDigestForRelease(
   }
   if (resolved.verifiedIsolationRelease) {
     return { digest, context: { verifiedIsolationRelease: resolved.verifiedIsolationRelease } };
+  }
+  if (resolved.verifiedFleetDesignBinding) {
+    return { digest, context: { verifiedFleetDesignBinding: resolved.verifiedFleetDesignBinding } };
   }
   return { digest };
 }
