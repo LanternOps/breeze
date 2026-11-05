@@ -181,6 +181,58 @@ func TestRebootKeepsAFlashOutThroughItsCountdown(t *testing.T) {
 	}
 }
 
+// restart_service aimed at the agent stops it, and with it whatever it is running.
+func TestAgentRestartRefusedDuringSection(t *testing.T) {
+	g := useTestGuard(t)
+	release, err := g.Enter("bios", "cmd-1", time.Hour)
+	if err != nil {
+		t.Fatalf("Enter: %v", err)
+	}
+	spawned := 0
+	original := spawnDelayedRestartFn
+	spawnDelayedRestartFn = func() error { spawned++; return nil }
+	t.Cleanup(func() { spawnDelayedRestartFn = original })
+
+	result := RestartService(map[string]any{"name": agentServiceName})
+	if result.Status != "failed" || !strings.Contains(result.Error, "firmware update") {
+		t.Fatalf("result = %+v, want a failure naming the firmware update", result)
+	}
+	if spawned != 0 {
+		t.Fatal("the restart helper was spawned during a firmware section")
+	}
+
+	if err := release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if result := RestartService(map[string]any{"name": agentServiceName}); result.Status != "completed" {
+		t.Fatalf("agent restart with no section = %+v", result)
+	}
+	if spawned != 1 {
+		t.Fatalf("spawned = %d, want 1", spawned)
+	}
+	// The helper restarts the agent from another process a few seconds from now,
+	// so this process keeps its admission until it is stopped.
+	if _, err := g.Enter("bios", "cmd-2", time.Hour); !errors.Is(err, flashguard.ErrPowerActionPending) {
+		t.Fatalf("Enter after a scheduled agent restart = %v, want ErrPowerActionPending", err)
+	}
+}
+
+func TestFailedAgentRestartReleasesItsAdmission(t *testing.T) {
+	g := useTestGuard(t)
+	original := spawnDelayedRestartFn
+	spawnDelayedRestartFn = func() error { return errors.New("spawn blocked") }
+	t.Cleanup(func() { spawnDelayedRestartFn = original })
+
+	if result := RestartService(map[string]any{"name": agentServiceName}); result.Status != "failed" {
+		t.Fatalf("result = %+v", result)
+	}
+	release, err := g.Enter("bios", "cmd-1", time.Hour)
+	if err != nil {
+		t.Fatalf("Enter after a failed agent restart: %v", err)
+	}
+	_ = release()
+}
+
 // A shutdown that failed armed nothing, so it must not refuse a later flash.
 func TestFailedRebootLeavesNoCountdown(t *testing.T) {
 	g := useTestGuard(t)

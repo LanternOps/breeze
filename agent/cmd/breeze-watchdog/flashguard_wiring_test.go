@@ -22,7 +22,7 @@ func TestDoUpdateAgentRefusedDuringSection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewJournal: %v", err)
 	}
-	defer journal.Close()
+	defer func() { _ = journal.Close() }()
 
 	serverCalled := false
 	serverURL := func() string { serverCalled = true; return "https://example.invalid" }
@@ -46,7 +46,7 @@ func TestDoUpdateAgentWithNoSectionIsUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewJournal: %v", err)
 	}
-	defer journal.Close()
+	defer func() { _ = journal.Close() }()
 
 	err = doUpdateAgent("9.9.9", func() string { return "https://example.invalid" }, &tokenHolder{}, journal)
 	if err == nil || !strings.Contains(err.Error(), "no auth token") {

@@ -66,8 +66,10 @@ func TestUpgradeHoldLogsAgainForALaterSection(t *testing.T) {
 		t.Fatal("no section must not block an upgrade")
 	}
 	release := enterTestSection(t, g)
-	if !h.flashSectionBlocksUpgrade("9.9.9") || !h.flashSectionBlocksUpgrade("9.9.9") {
-		t.Fatal("an open section must block an upgrade")
+	for i := 0; i < 2; i++ {
+		if !h.flashSectionBlocksUpgrade("9.9.9") {
+			t.Fatal("an open section must block an upgrade, on every offer")
+		}
 	}
 	if err := release(); err != nil {
 		t.Fatalf("release: %v", err)

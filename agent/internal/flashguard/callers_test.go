@@ -25,7 +25,7 @@ import (
 // comment naming one does not.
 var powerSymbols = []string{
 	"UpdateFromURL", "UpdateFrom", "UpdateTo", "UpdateToWithOptions",
-	"RestartSelf", "RestartAfterRollback", "RestartWithHelper",
+	"RestartSelf", "RestartAfterRollback", "RestartWithHelper", "RestartAgentService", "runAgentRestartNow",
 	"ExitWindowsEx", "InitiateSystemShutdown", "InitiateSystemShutdownEx", "InitiateShutdown", "NtShutdownSystem",
 }
 
@@ -69,11 +69,13 @@ var powerSites = map[site]admission{
 	{"internal/remote/tools/system_safemode_windows.go", "RebootToSafeMode", "buildShutdownCommand"}: {"internal/remote/tools/system_safemode_windows.go", "RebootToSafeMode"},
 
 	// Agent replacement and restart.
-	{"internal/heartbeat/heartbeat.go", "doUpgrade", "UpdateToWithOptions"}:                {"internal/heartbeat/heartbeat.go", "doUpgrade"},
-	{"internal/heartbeat/handlers_devupdate.go", "handleDevUpdateAgent", "UpdateFromURL"}:  {"internal/heartbeat/handlers_devupdate.go", "handleDevUpdateAgent"},
-	{"internal/heartbeat/handlers_rollback_backend.go", "Restart", "RestartAfterRollback"}: {"internal/heartbeat/handlers_rollback_backend.go", "Swap"},
-	{"internal/heartbeat/identity_sync.go", packageLevel, "RestartSelf"}:                   {"internal/heartbeat/identity_sync.go", "restartForIdentity"},
-	{"cmd/breeze-watchdog/main.go", "doUpdateAgent", "UpdateTo"}:                           {"cmd/breeze-watchdog/main.go", "doUpdateAgent"},
+	{"internal/heartbeat/heartbeat.go", "doUpgrade", "UpdateToWithOptions"}:                     {"internal/heartbeat/heartbeat.go", "doUpgrade"},
+	{"internal/heartbeat/handlers_devupdate.go", "handleDevUpdateAgent", "UpdateFromURL"}:       {"internal/heartbeat/handlers_devupdate.go", "handleDevUpdateAgent"},
+	{"internal/heartbeat/handlers_rollback_backend.go", "Restart", "RestartAfterRollback"}:      {"internal/heartbeat/handlers_rollback_backend.go", "Swap"},
+	{"internal/heartbeat/identity_sync.go", packageLevel, "RestartSelf"}:                        {"internal/heartbeat/identity_sync.go", "restartForIdentity"},
+	{"internal/remote/tools/services.go", "RestartService", "RestartAgentService"}:              {"internal/remote/tools/agent_restart.go", "RestartAgentService"},
+	{"internal/remote/tools/agent_restart.go", "RunDelayedRestartHelper", "runAgentRestartNow"}: {"internal/remote/tools/agent_restart.go", "RestartAgentService"},
+	{"cmd/breeze-watchdog/main.go", "doUpdateAgent", "UpdateTo"}:                                {"cmd/breeze-watchdog/main.go", "doUpdateAgent"},
 }
 
 // notPowerSites cannot interrupt a firmware update, each for the reason given.

@@ -430,7 +430,7 @@ func (g *Guard) readJSON(name string, into any) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, maxStateFileBytes+1))
 	if err != nil {
 		return err
@@ -504,15 +504,27 @@ func (l *heldLock) release() {
 	_ = l.file.Close()
 }
 
+// openLockFile prepares the directory only when the lock file is missing. Repairing
+// the directory's permissions is not free and contends with other callers, and a
+// transient failure there would turn into a fail-open admission.
+func (g *Guard) openLockFile() (*os.File, error) {
+	path := filepath.Join(g.dir, lockFile)
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err == nil || !errors.Is(err, fs.ErrNotExist) {
+		return f, err
+	}
+	if err := securefs.EnsurePrivateDir(g.dir); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+}
+
 // acquire takes the lock on a fresh handle, so holders inside one process
 // conflict exactly as holders in two processes do. It never blocks in the OS: it
 // retries until wait has passed and then returns errLockBusy, so a wedged holder
 // can delay a caller but never hang it.
 func (g *Guard) acquire(mode lockMode, wait time.Duration) (*heldLock, error) {
-	if err := securefs.EnsurePrivateDir(g.dir); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(filepath.Join(g.dir, lockFile), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := g.openLockFile()
 	if err != nil {
 		return nil, err
 	}
