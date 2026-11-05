@@ -159,7 +159,7 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // the FK raw.
   ['services/aiToolsAgentLogs.ts:405', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — get_vss_status (W17, #6788): the same aiExecuteCommand -> resolveCommandCreatedBy path.
-  ['services/aiToolsBackupVerification.ts:366', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsBackupVerification.ts:374', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   ['services/aiToolsAgentLogs.ts:470', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — trigger_agent_upgrade / trigger_agent_restart: same aiExecuteCommand
   // -> resolveCommandCreatedBy path.

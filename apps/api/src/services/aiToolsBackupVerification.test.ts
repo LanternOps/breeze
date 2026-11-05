@@ -162,8 +162,9 @@ describe('manage_backup_verification (W17)', () => {
     const health = await run(verification, { action: 'health' }, empty);
     expect(health.status).toBe('unknown');
     expect(health.verification.coveragePercent).toBeNull();
-    expect(await run(verification, { action: 'list' }, empty)).toMatchObject({ count: 0, verifications: [] });
-    expect(await run(verification, { action: 'readiness' }, empty)).toMatchObject({ summary: { devices: 0 }, devices: [] });
+    // An empty ceiling is "you can see nothing", never "there is nothing": both say so.
+    expect(await run(verification, { action: 'list' }, empty)).toMatchObject({ count: 0, verifications: [], note: expect.stringContaining('site') });
+    expect(await run(verification, { action: 'readiness' }, empty)).toMatchObject({ summary: { devices: 0 }, devices: [], note: expect.stringContaining('site') });
     expect(service.getBackupHealthSummary).not.toHaveBeenCalled();
     expect(service.listBackupVerifications).not.toHaveBeenCalled();
     expect(service.listRecoveryReadiness).not.toHaveBeenCalled();
@@ -284,6 +285,25 @@ describe('manage_backup_verification (W17)', () => {
     expect(compacted.verifications[0]!.status).toBe('failed');
   });
 
+  it('a failure after the command is queued never reads as a failed run (a retry would queue a second command)', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    audit.createAuditLogAsync.mockImplementationOnce(() => { throw new Error('audit down'); });
+    const out = await run(verification, { action: 'run', deviceId: DEVICE });
+    expect(out.code).toBeUndefined();
+    expect(out.verification).toMatchObject({ id: 'v1' });
+    expect(service.runBackupVerification).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  it('run applies the list rules to the fresh row: reason only when failed or partial, normalized and capped', async () => {
+    service.runBackupVerification.mockResolvedValue({ verification: { ...ROW, details: { reason: `a\n\n${'b'.repeat(400)}` } }, readiness: null });
+    const failed = await run(verification, { action: 'run', deviceId: DEVICE });
+    expect(failed.verification.reason.startsWith('a b')).toBe(true);
+    expect(failed.verification.reason.length).toBeLessThanOrEqual(200);
+    service.runBackupVerification.mockResolvedValue({ verification: { ...ROW, status: 'pending', details: { reason: 'queued', source: 'ai.verify' } }, readiness: null });
+    expect((await run(verification, { action: 'run', deviceId: DEVICE })).verification.reason).toBeNull();
+  });
+
   it('run output is allow-listed too', async () => {
     const out = await run(verification, { action: 'run', deviceId: DEVICE });
     expect(out.verification).toMatchObject({ id: 'v1', status: 'failed', reason: 'checksum mismatch' });
@@ -339,10 +359,19 @@ describe('get_vss_status (W17)', () => {
     expect((await run(vss, { deviceId: DEVICE })).writers).toEqual([{ name: 'W', state: 'stable', lastError: null }]);
   });
 
-  it('a nil slice from the agent is no writers known, not an error', async () => {
-    dispatch.aiExecuteCommand.mockResolvedValue({ status: 'completed', stdout: 'null' });
+  it('a nil slice or empty reply says the agent reported no writers, never a clean bill of health', async () => {
+    for (const stdout of ['null', '', undefined]) {
+      dispatch.aiExecuteCommand.mockResolvedValue({ status: 'completed', stdout });
+      const out = await run(vss, { deviceId: DEVICE });
+      expect(out).toMatchObject({ deviceId: DEVICE, writers: null, note: expect.stringContaining('no VSS writers') });
+    }
+  });
+
+  it('malformed writer entries are counted, not silently dropped', async () => {
+    dispatch.aiExecuteCommand.mockResolvedValue({ status: 'completed', stdout: JSON.stringify([{ name: 'W', state: 'stable' }, 'junk', 7]) });
     const out = await run(vss, { deviceId: DEVICE });
-    expect(out).toEqual({ deviceId: DEVICE, writers: null });
+    expect(out.writers).toHaveLength(1);
+    expect(out.droppedMalformed).toBe(2);
   });
 
   it('non-Windows refused without a command', async () => {

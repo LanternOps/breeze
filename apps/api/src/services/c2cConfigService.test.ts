@@ -5,7 +5,8 @@ const CONFIG = '00000000-0000-4000-8000-0000000000e1';
 const CONNECTION = '00000000-0000-4000-8000-0000000000e2';
 const STORAGE = '00000000-0000-4000-8000-0000000000e3';
 
-const { selectQueue, insertReturning, updateReturning, deleteReturning, holding } = vi.hoisted(() => ({
+const { selectQueue, insertReturning, updateReturning, deleteReturning, holding, dbContext } = vi.hoisted(() => ({
+  dbContext: { active: false, withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()) },
   selectQueue: [] as unknown[][],
   insertReturning: vi.fn(),
   updateReturning: vi.fn(),
@@ -14,6 +15,8 @@ const { selectQueue, insertReturning, updateReturning, deleteReturning, holding 
 }));
 
 vi.mock('../db', () => ({
+  hasDbAccessContext: () => dbContext.active,
+  withDbTransaction: (fn: () => Promise<unknown>) => dbContext.withDbTransaction(fn),
   db: {
     select: vi.fn(() => {
       // One queue entry per query, taken when it is awaited, whichever call ends the chain.
@@ -102,8 +105,22 @@ describe('c2cConfigService', () => {
 
   it('service: a job that appears after the check is a 23503, mapped to CONFIG_HAS_HISTORY', async () => {
     selectQueue.push([], []);
-    deleteReturning.mockRejectedValue(Object.assign(new Error('fk'), { code: '23503' }));
+    deleteReturning.mockRejectedValue(Object.assign(new Error('fk'), { code: '23503', constraint_name: 'c2c_backup_jobs_config_id_fkey' }));
     expect(await deleteC2cConfig(ORG, CONFIG)).toEqual({ ok: false, code: 'CONFIG_HAS_HISTORY' });
+  });
+
+  it('a 23503 from any other foreign key is not read as history', async () => {
+    selectQueue.push([], []);
+    deleteReturning.mockRejectedValue(Object.assign(new Error('fk'), { code: '23503', constraint_name: 'some_other_fkey' }));
+    await expect(deleteC2cConfig(ORG, CONFIG)).rejects.toThrow('fk');
+  });
+
+  it('the delete runs inside a savepoint when there is an ambient transaction', async () => {
+    dbContext.active = true;
+    selectQueue.push([], []);
+    expect(await deleteC2cConfig(ORG, CONFIG)).toEqual({ ok: true, value: ROW });
+    expect(dbContext.withDbTransaction).toHaveBeenCalledTimes(1);
+    dbContext.active = false;
   });
 
   it('any other delete failure propagates', async () => {

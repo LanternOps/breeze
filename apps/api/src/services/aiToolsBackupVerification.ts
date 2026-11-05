@@ -30,7 +30,7 @@ import { sanitizeThrownToolError } from './aiToolErrors';
 import { mfaGatedToolError } from './aiToolMfaGate';
 import { BACKUP_VERIFICATION_ACTIONS, BACKUP_VERIFICATION_STATUSES, BACKUP_VERIFICATION_TYPES } from './aiToolSchemasBackupVerification';
 import { WRITE_ORG_AMBIGUOUS_ERROR, resolveReadableToolOrgScope } from './aiToolWriteOrg';
-import { siteAllowlistOf } from './aiToolsSiteScope';
+import { SITE_SCOPE_EMPTY_NOTE, siteAllowlistOf } from './aiToolsSiteScope';
 import { auditToolWrite } from './aiToolsSecurityPolicyShared';
 import { bounded, clampLimit, clip, jsonError, notFound, thrown, verifiedUserIdOrNull } from './aiToolsSoftwareShared';
 import { attachDeviceNames } from '../routes/backup/deviceNames';
@@ -47,6 +47,7 @@ import {
   listBackupVerifications,
   listRecoveryReadiness,
   runBackupVerification,
+  toVerificationListItem,
 } from '../routes/backup/verificationService';
 
 type Action = (typeof BACKUP_VERIFICATION_ACTIONS)[number];
@@ -167,7 +168,7 @@ async function listVerifications(auth: AuthContext, input: Record<string, unknow
   const org = deviceId ? await resolveDeviceOrg(auth, deviceId, str(input.orgId)) : resolveOneOrg(auth, str(input.orgId));
   if ('error' in org) return org.error;
   const siteIds = siteAllowlistOf(auth);
-  if (siteIds?.length === 0) return bounded({ count: 0, verifications: [] });
+  if (siteIds?.length === 0) return bounded({ count: 0, verifications: [], note: SITE_SCOPE_EMPTY_NOTE });
 
   const rows = await listBackupVerifications(org.orgId, {
     deviceId,
@@ -192,7 +193,7 @@ async function readReadiness(auth: AuthContext, input: Record<string, unknown>):
   const org = deviceId ? await resolveDeviceOrg(auth, deviceId, str(input.orgId)) : resolveOneOrg(auth, str(input.orgId));
   if ('error' in org) return org.error;
   const siteIds = siteAllowlistOf(auth);
-  if (siteIds?.length === 0) return bounded({ summary: summarizeRecoveryReadiness([]), devices: [] });
+  if (siteIds?.length === 0) return bounded({ summary: summarizeRecoveryReadiness([]), devices: [], note: SITE_SCOPE_EMPTY_NOTE });
 
   const all = await listRecoveryReadiness(org.orgId, siteIds);
   const rows = deviceId ? all.filter((row) => row.deviceId === deviceId) : all;
@@ -216,8 +217,9 @@ async function runVerification(auth: AuthContext, input: Record<string, unknown>
   const org = await resolveDeviceOrg(auth, deviceId, str(input.orgId));
   if ('error' in org) return org.error;
 
+  let started: Awaited<ReturnType<typeof runBackupVerification>>;
   try {
-    const { verification, readiness } = await runBackupVerification({
+    started = await runBackupVerification({
       orgId: org.orgId,
       deviceId,
       verificationType: (str(input.verificationType) ?? 'integrity') as BackupVerification['verificationType'],
@@ -228,7 +230,18 @@ async function runVerification(auth: AuthContext, input: Record<string, unknown>
       requestedBy: await verifiedUserIdOrNull(auth),
       aiOrigin: requireAiOrigin(auth, TOOL),
     });
+  } catch (error) {
+    const classified = classifyVerificationRunError(error);
+    if (classified.code === 'INTERNAL') {
+      console.error(`[${TOOL}]`, sanitizeThrownToolError(TOOL, error));
+      return jsonError('Operation failed. Check server logs for details.', 'INTERNAL');
+    }
+    return jsonError(classified.message, classified.code);
+  }
 
+  // The command is queued from here on. Nothing below may turn that into a failure the model would retry.
+  const { verification, readiness } = started;
+  try {
     auditToolWrite(auth, {
       orgId: org.orgId,
       action: 'backup.verification.run',
@@ -242,19 +255,14 @@ async function runVerification(auth: AuthContext, input: Record<string, unknown>
         status: verification.status,
       },
     });
-
-    return bounded({
-      verification: projectVerification(verification),
-      readiness: readiness ? projectReadiness(readiness) : null,
-    });
   } catch (error) {
-    const classified = classifyVerificationRunError(error);
-    if (classified.code === 'INTERNAL') {
-      console.error(`[${TOOL}]`, sanitizeThrownToolError(TOOL, error));
-      return jsonError('Operation failed. Check server logs for details.', 'INTERNAL');
-    }
-    return jsonError(classified.message, classified.code);
+    console.error(`[${TOOL}] audit write failed after the command was queued`, sanitizeThrownToolError(TOOL, error));
   }
+  return bounded({
+    // The list projection's rules (reason only when failed or partial, normalized and capped) apply to a fresh row too.
+    verification: projectVerification(toVerificationListItem(verification)),
+    readiness: readiness ? projectReadiness(readiness) : null,
+  });
 }
 
 function projectWriter(entry: unknown): { name: string | null; state: string | null; lastError: string | null } | null {
@@ -370,11 +378,16 @@ export function registerBackupVerificationTools(aiTools: Map<string, AiTool>): v
 
         const parsed = parseWriters(result.stdout);
         if ('raw' in parsed) return bounded({ deviceId: device.id, writers: null, raw: parsed.raw });
-        if (!parsed.writers) return bounded({ deviceId: device.id, writers: null });
-        const writers = parsed.writers.slice(0, VSS_WRITERS_SHOWN).map(projectWriter).filter(Boolean);
+        if (!parsed.writers) {
+          // Never a clean bill of health: a Windows machine normally reports several writers.
+          return bounded({ deviceId: device.id, writers: null, note: 'The agent reported no VSS writers; the writer list could not be read.' });
+        }
+        const shown = parsed.writers.slice(0, VSS_WRITERS_SHOWN).map(projectWriter);
+        const writers = shown.filter(Boolean);
         return bounded({
           deviceId: device.id,
           writers,
+          ...(writers.length < shown.length ? { droppedMalformed: shown.length - writers.length } : {}),
           ...(parsed.writers.length > VSS_WRITERS_SHOWN ? { truncated: true } : {}),
         });
       } catch (error) {

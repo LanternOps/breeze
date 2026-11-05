@@ -217,7 +217,7 @@ describe('get_backup_health (W17)', () => {
     expect(health.listBackupHealthRows).not.toHaveBeenCalled();
 
     const empty = await run(backupHealth, {}, makeAuth({ allowedSiteIds: [] }));
-    expect(empty).toMatchObject({ rows: [], nextCursor: null, stale: false, unmappedDevices: 0 });
+    expect(empty).toMatchObject({ rows: [], nextCursor: null, stale: false, unmappedDevices: 0, note: expect.stringContaining('site') });
     expect(empty.summary).toEqual(emptyBackupHealthSummary());
     expect(health.listBackupHealthRows).not.toHaveBeenCalled();
   });

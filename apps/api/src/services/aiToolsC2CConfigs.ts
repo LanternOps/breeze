@@ -34,6 +34,7 @@ import { PROTECTED_ORG_ERROR } from './unassignedPool/orgType';
 import { WRITE_ORG_AMBIGUOUS_ERROR, resolveReadableToolOrgScope, resolveWritableToolOrgId } from './aiToolWriteOrg';
 import { auditToolWrite, bounded, defined, deviceBoundDenied, json, jsonError, notFound, orgWideWriteDenied, str, thrown } from './aiToolsSecurityPolicyShared';
 import { agentRefusal, isAgentPrincipal } from './aiToolsTicketOpsShared';
+import { clampLimit } from './aiToolsSoftwareShared';
 
 type Action = (typeof C2C_CONFIG_ACTIONS)[number];
 
@@ -84,7 +85,7 @@ async function list(auth: AuthContext, input: Record<string, unknown>): Promise<
   const org = readOrg(auth, str(input.orgId));
   if ('error' in org) return org.error;
   const rows = await listC2cConfigs(org.orgId);
-  const limit = typeof input.limit === 'number' ? input.limit : 50;
+  const limit = clampLimit(input.limit, 50, 100);
   const configs = rows.slice(0, limit).map(projectConfig);
   return bounded({ count: configs.length, total: rows.length, configs });
 }

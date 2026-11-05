@@ -246,7 +246,7 @@ async function readBackupHealth(auth: AuthContext, input: Record<string, unknown
   const siteIds = siteAllowlistOf(auth);
   if (orgIds.length === 0 || siteIds?.length === 0) {
     // A caller who can see nothing has not observed a healthy fleet; the all-zero summary says exactly that.
-    return bounded({ rows: [], summary: emptyBackupHealthSummary(), nextCursor: null, stale: false, unmappedDevices: 0 });
+    return bounded({ rows: [], summary: emptyBackupHealthSummary(), nextCursor: null, stale: false, unmappedDevices: 0, note: SITE_SCOPE_EMPTY_NOTE });
   }
 
   const opts: BackupHealthListOptions = {

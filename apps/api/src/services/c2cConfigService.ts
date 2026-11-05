@@ -8,7 +8,7 @@
  */
 import { and, eq } from 'drizzle-orm';
 import type { z } from 'zod';
-import { db } from '../db';
+import { db, hasDbAccessContext, withDbTransaction } from '../db';
 import { backupConfigs, c2cBackupConfigs, c2cBackupItems, c2cBackupJobs, c2cConnections } from '../db/schema';
 import type { createC2cConfigSchema, updateC2cConfigSchema } from '../routes/c2c/schemas';
 import { isHoldingOrg } from './unassignedPool/protectedOrg';
@@ -108,12 +108,16 @@ export async function updateC2cConfig(orgId: string, id: string, input: UpdateC2
   return row ? { ok: true, value: row } : { ok: false, code: 'NOT_FOUND' };
 }
 
+/** The two foreign keys that hold a config in place (0079-c2c-backup.sql, inline REFERENCES, no ON DELETE). */
+export const C2C_CONFIG_HISTORY_FKS = ['c2c_backup_jobs_config_id_fkey', 'c2c_backup_items_config_id_fkey'] as const;
+
 /**
  * `c2c_backup_jobs.config_id` and `c2c_backup_items.config_id` reference the
  * config with no ON DELETE, so a config with history cannot be deleted and the
- * history is what must survive. The check runs first because a failed statement
- * aborts the caller's ambient transaction; the 23503 mapping covers a job created
- * between the check and the delete.
+ * history is what must survive. The check answers the common case without a
+ * failed statement. A job created between the check and the delete raises 23503
+ * inside a savepoint (`withDbTransaction`), so the caller's ambient transaction
+ * stays usable; any other failure propagates.
  */
 export async function deleteC2cConfig(orgId: string, id: string): Promise<C2cConfigResult<C2cConfigRow>> {
   const [job] = await db
@@ -129,14 +133,15 @@ export async function deleteC2cConfig(orgId: string, id: string): Promise<C2cCon
     .limit(1);
   if (item) return { ok: false, code: 'CONFIG_HAS_HISTORY' };
 
+  const remove = () => db
+    .delete(c2cBackupConfigs)
+    .where(and(eq(c2cBackupConfigs.id, id), eq(c2cBackupConfigs.orgId, orgId)))
+    .returning();
   try {
-    const [deleted] = await db
-      .delete(c2cBackupConfigs)
-      .where(and(eq(c2cBackupConfigs.id, id), eq(c2cBackupConfigs.orgId, orgId)))
-      .returning();
+    const [deleted] = await (hasDbAccessContext() ? withDbTransaction(remove) : remove());
     return deleted ? { ok: true, value: deleted } : { ok: false, code: 'NOT_FOUND' };
   } catch (error) {
-    if (isPgForeignKeyViolation(error)) return { ok: false, code: 'CONFIG_HAS_HISTORY' };
+    if (C2C_CONFIG_HISTORY_FKS.some((fk) => isPgForeignKeyViolation(error, fk))) return { ok: false, code: 'CONFIG_HAS_HISTORY' };
     throw error;
   }
 }
