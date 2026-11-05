@@ -925,7 +925,7 @@ Two tools start AI work, the same work as the **Run now** buttons. Both need one
 
 | Tool | Actions | Approval |
 |------|---------|----------|
-| `manage_ai_agent_schedules` | `create`: a partner baseline for every organization, or one organization's tighter override. `update`. `delete` | `create` and `update` are supervised; `delete` needs two approvers |
+| `manage_ai_agent_schedules` | `create`: a partner baseline for every organization, or one organization's tighter override. `update`. `delete` | `create` and `update` are supervised; `delete` needs two approvers, and for a baseline the second must be a partner-level user with access to all organizations |
 | `manage_fleet_designs` | `run`, `preview`, `applied`, `apply`, `rollback`, `document` | `preview` and `applied` need none; `run` and `document` are supervised; `apply` and `rollback` need two approvers |
 
 - **`manage_ai_agent_schedules` cannot turn on act mode, and an armed schedule can only be narrowed.** An update may only set act mode off. While a baseline is armed, a change that widens what runs unattended or changes the cadence is refused. Arming stays on the AI Agents page. Deleting a baseline deletes every organization's override and cannot be undone, and deleting an override that narrows an armed baseline is refused.

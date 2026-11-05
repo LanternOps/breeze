@@ -35,6 +35,7 @@
     "expired": "Diese Anfrage ist abgelaufen, bevor entschieden werden konnte.",
     "notSoleApprover": "Diese Anfrage muss jetzt von einer anderen Person genehmigt werden – Sie können Ihre eigene Anfrage nicht mehr genehmigen.",
     "siteCeiling": "Diese Genehmigung gewährt organisationsweite Berechtigungen. Ihr Zugriff ist auf bestimmte Standorte beschränkt, daher muss eine andere Person darüber entscheiden.",
+    "approverScopeRequired": "Diese Genehmigung betrifft alle Organisationen des Partners. Sie muss daher von einer genehmigenden Person auf Partnerebene mit Zugriff auf alle Organisationen entschieden werden.",
     "noApproverDevice": "Zum Genehmigen der eigenen Anfrage ist Touch ID / Windows Hello erforderlich.",
     "freshFactorRequired": "Diese Prüfung erfordert eine neue Passkey-Bestätigung (Touch ID, Windows Hello oder ein Hardwareschlüssel) für genau diese Freigabe. Versuchen Sie es erneut.",
     "registerDevice": "Dieses Gerät registrieren",

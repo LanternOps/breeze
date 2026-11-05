@@ -85,6 +85,19 @@ describe('schedules', () => {
     const target = await resolveAiDesignIntentTarget('manage_ai_agent_schedules', { action: 'delete', scheduleId: SCHEDULE });
     expect(target).toMatchObject({ orgId: null, partnerId: PARTNER });
     expect(target?.cardDetail).toContain('2 organizations');
+    expect(target?.cardDetail).toContain('needs a partner-level approver');
+  });
+
+  it('delete of a baseline with no overrides still says who can approve it', async () => {
+    h.queue = [[{ orgId: null, partnerId: PARTNER }], []];
+    const target = await resolveAiDesignIntentTarget('manage_ai_agent_schedules', { action: 'delete', scheduleId: SCHEDULE });
+    expect(target?.cardDetail).toContain('needs a partner-level approver');
+  });
+
+  it('delete of an override carries no partner-level line', async () => {
+    h.queue = [[{ orgId: ORG, partnerId: null }]];
+    const target = await resolveAiDesignIntentTarget('manage_ai_agent_schedules', { action: 'delete', scheduleId: SCHEDULE });
+    expect(target).toEqual({ orgId: ORG, partnerId: null });
   });
 
   it('a malformed or missing id names nothing and never reaches a query', async () => {

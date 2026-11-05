@@ -23,6 +23,7 @@ import { fleetDesignApprovalSchema, type FleetDesignApproval, type FleetDesignOu
 import { sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiAgentSchedules, fleetDesignAppliedItems, reportRuns, reports } from '../../db/schema';
+import { PARTNER_LEVEL_APPROVER_NOTE } from './partnerWideEffect';
 
 export const AI_DESIGN_INTENT_TOOLS: ReadonlySet<string> = new Set(['manage_ai_agent_schedules', 'manage_fleet_designs']);
 
@@ -77,8 +78,8 @@ async function scheduleTarget(input: Record<string, unknown>): Promise<AiDesignI
       orgId: null,
       partnerId: row.partnerId,
       cardDetail: overrides.length > 0
-        ? `This is a baseline for every organization, and ${plural(overrides.length, 'organization')} lose their own override of it.`
-        : 'This is a baseline for every organization.',
+        ? `This is a baseline for every organization, and ${plural(overrides.length, 'organization')} lose their own override of it. ${PARTNER_LEVEL_APPROVER_NOTE}`
+        : `This is a baseline for every organization. ${PARTNER_LEVEL_APPROVER_NOTE}`,
     };
   });
 }

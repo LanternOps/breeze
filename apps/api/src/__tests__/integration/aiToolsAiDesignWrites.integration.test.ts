@@ -15,7 +15,9 @@
  *   - an apply released after a device left the function's group refuses and writes no ledger row;
  *   - a change committed after digest verification and before the handler's lock refuses (`CONTENT_CHANGED`);
  *   - two concurrent releases of one apply: one applies, the other finds the ledger moved and refuses;
- *   - a rollback released after someone assigned the policy elsewhere refuses, and the digest binds it.
+ *   - a rollback released after someone assigned the policy elsewhere refuses, and the digest binds it;
+ *   - a baseline delete needs a full-partner approver at fan-out, at decide and at release, while an org-level override
+ *     delete keeps the org's approver set.
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
@@ -176,6 +178,16 @@ async function seedOverride(orgId: string, baseline: { id: string; agentId: stri
 
 const schedulesOf = (partnerId: string) => getTestDb().select().from(aiAgentSchedules).where(eq(aiAgentSchedules.partnerId, partnerId));
 
+/** A second partner member holding `approvals:decide`: a baseline delete's eligible approver when `orgAccess` is `all`. */
+async function addPartnerApprover(partnerId: string, opts: { orgAccess?: 'all' | 'selected'; orgIds?: string[] } = {}): Promise<Person & { membershipId: string }> {
+  const role = await createRole({ scope: 'partner', partnerId, name: `W16B partner approver ${randomUUID()}` });
+  await grantRolePermissions(role.id, [PERMISSIONS.APPROVALS_DECIDE]);
+  const row = await createUser({ partnerId, orgId: null, email: `w16b-papp-${randomUUID()}@example.com` });
+  const membership = await assignUserToPartner(row.id, partnerId, role.id, opts.orgAccess ?? 'all');
+  if (opts.orgIds) await getTestDb().update(partnerUsers).set({ orgIds: opts.orgIds }).where(eq(partnerUsers.id, membership.id));
+  return { id: row.id, email: row.email, roleId: role.id, membershipId: membership.id };
+}
+
 describe('manage_ai_agent_schedules released by the worker (Decision 8)', () => {
   const createBaselineInput = (agentId: string) => ({
     action: 'create', ownerScope: 'partner', kind: 'sweep', agentId, cron: '0 2 * * *', timezone: 'UTC', sweepKinds: ['disk_pressure'], enabled: true,
@@ -217,7 +229,9 @@ describe('manage_ai_agent_schedules released by the worker (Decision 8)', () => 
     const f = await seedSchedules();
     const baseline = await seedBaseline(f.partner.id, f.agentId);
     const override = await seedOverride(f.org.id, baseline);
-    const intent = await fileAndRelease(f.auth, 'manage_ai_agent_schedules', { action: 'delete', scheduleId: baseline.id }, f.approver, {
+    const partnerApprover = await addPartnerApprover(f.partner.id);
+    const intent = await fileAndRelease(f.auth, 'manage_ai_agent_schedules', { action: 'delete', scheduleId: baseline.id }, partnerApprover, {
+      approverScope: 'partner',
       beforeRelease: async () => {
         await getTestDb().update(aiAgentSchedules).set({ enabled: false }).where(eq(aiAgentSchedules.id, override.id));
       },
@@ -231,10 +245,111 @@ describe('manage_ai_agent_schedules released by the worker (Decision 8)', () => 
     const f = await seedSchedules();
     const baseline = await seedBaseline(f.partner.id, f.agentId);
     const override = await seedOverride(f.org.id, baseline);
-    const intent = await fileAndRelease(f.auth, 'manage_ai_agent_schedules', { action: 'delete', scheduleId: baseline.id }, f.approver);
+    const partnerApprover = await addPartnerApprover(f.partner.id);
+    const intent = await fileAndRelease(f.auth, 'manage_ai_agent_schedules', { action: 'delete', scheduleId: baseline.id }, partnerApprover, { approverScope: 'partner' });
     expect(intent.status, JSON.stringify(intent.result)).toBe('completed');
     await expect(schedulesOf(f.partner.id)).resolves.toHaveLength(0);
     await expect(getTestDb().select().from(aiAgentSchedules).where(eq(aiAgentSchedules.id, override.id))).resolves.toHaveLength(0);
+  });
+});
+
+describe('approver scope for a partner-wide intent', () => {
+  const approversOf = async (intentId: string) => {
+    const rows = await withSystemDbAccessContext(() =>
+      db.select({ id: approvalRequests.id, userId: approvalRequests.userId, riskSummary: approvalRequests.riskSummary })
+        .from(approvalRequests)
+        .where(eq(approvalRequests.intentId, intentId)));
+    return rows;
+  };
+
+  /** A queued row for someone the fan-out left out: a card from before this rule, or a stale one. */
+  async function queueStaleCard(intentId: string, userId: string) {
+    const [source] = await getTestDb().select().from(approvalRequests).where(eq(approvalRequests.intentId, intentId)).limit(1);
+    const { id: _id, createdAt: _createdAt, ...rest } = source!;
+    const [row] = await getTestDb().insert(approvalRequests).values({ ...rest, userId } as never).returning({ id: approvalRequests.id });
+    return row!.id;
+  }
+
+  const fileBaselineDelete = async (f: Awaited<ReturnType<typeof seedSchedules>>) => {
+    const baseline = await seedBaseline(f.partner.id, f.agentId);
+    const snapshot = await createActionIntent(f.auth, {
+      toolName: 'manage_ai_agent_schedules', input: { action: 'delete', scheduleId: baseline.id }, source: 'chat', orgId: f.org.id,
+    } as never);
+    expect(snapshot.status, JSON.stringify(snapshot)).toBe('pending_approval');
+    return { baseline, snapshot };
+  };
+
+  runDb('an org-axis admin and a selected member are not eligible for a baseline delete; a full-partner member is, and the card says so', async () => {
+    const f = await seedSchedules();
+    const partnerApprover = await addPartnerApprover(f.partner.id);
+    const selected = await addPartnerApprover(f.partner.id, { orgAccess: 'selected', orgIds: [f.org.id] });
+    const { snapshot } = await fileBaselineDelete(f);
+
+    const rows = await approversOf(snapshot.id);
+    expect(rows.map((r) => r.userId)).toEqual([partnerApprover.id]);
+    expect(rows.map((r) => r.userId)).not.toContain(f.approver.id);
+    expect(rows.map((r) => r.userId)).not.toContain(selected.id);
+    expect(rows[0]!.riskSummary).toContain('needs a partner-level approver');
+  });
+
+  runDb('an org-axis admin holding a stale card is refused at decide, and the intent stays pending', async () => {
+    const f = await seedSchedules();
+    await addPartnerApprover(f.partner.id);
+    const { snapshot, baseline } = await fileBaselineDelete(f);
+    const staleRowId = await queueStaleCard(snapshot.id, f.approver.id);
+
+    const res = await approve(f.approver, f.org.id, f.partner.id, staleRowId);
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({ error: 'approver_scope_required' });
+    expect((await intentRow(snapshot.id)).status).toBe('pending_approval');
+    await expect(getTestDb().select().from(aiAgentSchedules).where(eq(aiAgentSchedules.id, baseline.id))).resolves.toHaveLength(1);
+  });
+
+  runDb('a selected member holding a stale card is refused at decide', async () => {
+    const f = await seedSchedules();
+    await addPartnerApprover(f.partner.id);
+    const selected = await addPartnerApprover(f.partner.id, { orgAccess: 'selected', orgIds: [f.org.id] });
+    const { snapshot } = await fileBaselineDelete(f);
+    const staleRowId = await queueStaleCard(snapshot.id, selected.id);
+
+    const res = await approve(selected, f.org.id, f.partner.id, staleRowId, 'partner');
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({ error: 'approver_scope_required' });
+  });
+
+  runDb('an approver narrowed to selected after approving is refused at release, and the baseline survives', async () => {
+    const f = await seedSchedules();
+    const partnerApprover = await addPartnerApprover(f.partner.id);
+    const baseline = await seedBaseline(f.partner.id, f.agentId);
+    const intent = await fileAndRelease(f.auth, 'manage_ai_agent_schedules', { action: 'delete', scheduleId: baseline.id }, partnerApprover, {
+      approverScope: 'partner',
+      beforeRelease: async () => {
+        await getTestDb().update(partnerUsers).set({ orgAccess: 'selected', orgIds: [f.org.id] }).where(eq(partnerUsers.id, partnerApprover.membershipId));
+      },
+    });
+    expect(intent.status).toBe('failed');
+    expect(intent.errorCode).toBe('approver_scope_required');
+    await expect(getTestDb().select().from(aiAgentSchedules).where(eq(aiAgentSchedules.id, baseline.id))).resolves.toHaveLength(1);
+  });
+
+  runDb("an org-level override delete keeps today's approver set, and an org admin can decide it", async () => {
+    const f = await seedSchedules();
+    const baseline = await seedBaseline(f.partner.id, f.agentId);
+    const override = await seedOverride(f.org.id, baseline);
+    const intent = await fileAndRelease(f.auth, 'manage_ai_agent_schedules', { action: 'delete', scheduleId: override.id }, f.approver);
+    expect(intent.status, JSON.stringify(intent.result)).toBe('completed');
+    expect((await approversOf(intent.id)).map((r) => r.userId)).toEqual([f.approver.id]);
+    expect((await approversOf(intent.id))[0]!.riskSummary).not.toContain('partner-level');
+    await expect(getTestDb().select().from(aiAgentSchedules).where(eq(aiAgentSchedules.id, override.id))).resolves.toHaveLength(0);
+    await expect(getTestDb().select().from(aiAgentSchedules).where(eq(aiAgentSchedules.id, baseline.id))).resolves.toHaveLength(1);
+  });
+
+  runDb('with no other full-partner approver the requester gets the sole-operator row, not an org admin', async () => {
+    const f = await seedSchedules();
+    const { snapshot } = await fileBaselineDelete(f);
+    expect((await approversOf(snapshot.id)).map((r) => r.userId)).toEqual([f.requester.id]);
   });
 });
 

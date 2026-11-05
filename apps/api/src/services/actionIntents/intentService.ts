@@ -68,6 +68,7 @@ import {
   type IntentTargetScope,
   type ResolveIntentApproversDiagnostics,
 } from './intentApprovers';
+import { mayHavePartnerWideEffect, PARTNER_LEVEL_APPROVER_NOTE } from './partnerWideEffect';
 import { isSoleOperatorSelfApprovalForbidden } from './selfApprovalPolicy';
 import { computeEffectDigestOutcome, EffectDigestUnresolvableError, type EffectDigestOutcome } from './effectDigest';
 import { DIAGNOSE_CONNECTIVITY_TOOL_NAME, requiresPinnedEffectDigest } from './pinnedEffectPolicy';
@@ -2254,13 +2255,21 @@ export async function createActionIntent(
     : runScriptGroupNote
       ? `${buildTargetSummary(input.toolName, input.input)} [${runScriptGroupNote}]`
       : buildTargetSummary(input.toolName, input.input);
-  const impactSummary = externalTool
+  const baseImpactSummary = externalTool
     ? `Calls ${input.toolName} on ${externalTool.sourceName} with arguments: ${
         Object.keys(input.input).length > 0 ? Object.keys(input.input).sort().join(', ') : '(none)'
       }`
     : invokedFlow
     ? `Starts flow "${invokedFlow.flowName}" with inputs: ${flowInputKeys()}. Its own sensitive steps still wait for approval.`
     : buildImpactSummary(input.toolName, input.input, guardrail);
+  // Approver scope on a partner-wide intent. The summary is the risk line on every
+  // approval surface, so it says who can approve whichever path filed this.
+  let requirePartnerAxis = false;
+  if (mayHavePartnerWideEffect(input.toolName, input.input)) {
+    const { intentRequiresPartnerAxisApprover } = await import('./partnerAxisApprover');
+    requirePartnerAxis = await intentRequiresPartnerAxisApprover({ actionName: input.toolName, arguments: input.input, orgId });
+  }
+  const impactSummary = requirePartnerAxis ? `${baseImpactSummary} ${PARTNER_LEVEL_APPROVER_NOTE}` : baseImpactSummary;
   // What the approver READS. `targetSummary` stays the audit signature.
   const labelReason = input.actionLabel ?? guardrail.description ?? null;
   // #5106 turned "on device 6eae0f70..." into "on <name>" using the SCOPED
@@ -2433,6 +2442,7 @@ export async function createActionIntent(
           ? FLOW_TOOL_APPROVER_PERMISSION
           : undefined,
     requireOrgWideGovernance,
+    ...(requirePartnerAxis ? { requirePartnerAxis } : {}),
     onDiagnostics: (diagnostics) => {
       governanceDiagnostics = diagnostics;
     },
