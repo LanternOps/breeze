@@ -386,6 +386,8 @@ const TARGET_GLOBS = [
   // codes, so a silent failure would leave a tech reading out a dead code or
   // believing a session was torn down when it wasn't.
   'src/components/remote/QuickSupportPage.tsx',
+  // File browser "New folder" (#10975).
+  'src/components/remote/FileManager.tsx',
   // PSA connections: create/update/delete/status/test all mutate stored PSA
   // credentials or a live connection's state. They were rewritten with bare
   // fetchWithAuth + setError, which the page's error banner only renders when

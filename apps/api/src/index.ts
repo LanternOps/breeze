@@ -380,6 +380,7 @@ import {
 } from './services/readiness';
 import { createReadinessHandler } from './routes/readiness';
 import { dbSaturationResponse } from './middleware/dbSaturationResponse';
+import { httpExceptionResponse } from './middleware/httpExceptionResponse';
 import { resolveReadinessTiming } from './config/readinessConfig';
 
 const { db } = dbModule;
@@ -1236,19 +1237,7 @@ app.notFound((c) => {
 app.onError((err, c) => {
   // Handle HTTPException properly (e.g., 401, 403, etc.)
   if (err instanceof HTTPException) {
-    // A typed HTTPException may carry a machine-readable `code` (e.g.
-    // `lease_unavailable`) that callers switch on. This handler builds the body
-    // itself instead of delegating to `err.getResponse()`, so the code has to
-    // be copied across explicitly or it is silently dropped.
-    const typedCode = (err as { code?: unknown }).code;
-    return c.json(
-      {
-        error: err.message || 'Request failed',
-        message: err.message,
-        ...(typeof typedCode === 'string' && typedCode ? { code: typedCode } : {})
-      },
-      err.status
-    );
+    return httpExceptionResponse(err, c);
   }
 
   // W08 (#8147): a pool-acquire timeout (#8229/#8243) or an RLS prologue

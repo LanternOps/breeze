@@ -101,6 +101,8 @@ Backup and restore jobs move through these statuses:
 | **Failed** | Encountered an error (check the error details) |
 | **Canceled** | Explicitly stopped by a user before completion |
 
+Failed, partial, completed-with-errors and cancelled jobs also show a category badge, such as **Device offline** or **Storage problem**, next to their error text. See [Reading a failed backup's category](/backup/troubleshooting/#reading-a-failed-backups-category) for what each one means and what to check first.
+
 Jobs are triggered either **automatically** by a policy schedule, **manually** via the Run Backup button, or as part of a **restore** operation.
 
 **Completed with errors** is new in v0.118.0; earlier releases reported these runs as **Completed**. API consumers see the status value `completed_with_errors`. It counts as a successful backup for "no successful backup" checks and is not a failure for "consecutive failures" checks. To be alerted on it, add a **Backup continuity** [monitor](/features/monitors/) with the **Completed with file errors** check, which fires when a device's latest backup ended in that state.

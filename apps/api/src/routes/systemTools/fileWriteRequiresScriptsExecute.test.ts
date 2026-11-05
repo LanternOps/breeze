@@ -1,8 +1,8 @@
 /**
- * File upload, copy and move write files with the agent's own privileges, so
- * they require `scripts:execute` (the grant script execution needs) on top of
- * the router-wide `devices:execute`. Trash restore returns an item to the path
- * it was deleted from and stays at `devices:execute`.
+ * File upload, copy, move and mkdir write to the device with the agent's own
+ * privileges, so they require `scripts:execute` (the grant script execution
+ * needs) on top of the router-wide `devices:execute`. Trash restore returns an
+ * item to the path it was deleted from and stays at `devices:execute`.
  *
  * Drives the REAL `systemToolsRoutes` router with the real `hasPermission`
  * grant matching. Only the permission lookup, the device row and the agent
@@ -106,6 +106,7 @@ const WRITE_ROUTES: Array<[string, string, unknown]> = [
   ['upload', '/files/upload', { path: '/tmp/report.txt', content: 'hello\n' }],
   ['copy', '/files/copy', { items: [{ sourcePath: '/tmp/report.txt', destPath: '/tmp/report-copy.txt' }] }],
   ['move', '/files/move', { items: [{ sourcePath: '/tmp/report.txt', destPath: '/tmp/archive/report.txt' }] }],
+  ['mkdir', '/files/mkdir', { path: '/tmp/archive' }],
 ];
 
 beforeEach(() => {

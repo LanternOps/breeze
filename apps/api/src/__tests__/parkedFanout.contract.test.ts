@@ -216,6 +216,9 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/oemUpdates/revalidation.ts': 'vendor update claim recheck (#11065): reads the partner of the one device being claimed; selects no targets. A parked device is cancelled by partitionClaimable first',
+  'services/oemUpdates/alerts.ts': 'vendor update alerts (#11065): reads the hostname of one device the monitor or a result already named; selects no targets',
+  'services/oemUpdates/results.ts': 'vendor update results (#11065): applies an agent report to the one device that sent it; selects no targets',
   'services/networkIsolation/lifecycle.ts': 'lifecycle: locks explicitly scoped devices to block destructive operations while isolation is unresolved; no background target selection',
   'jobs/networkIsolationSweeper.ts': 'lifecycle: recovery and expiry warnings for existing isolation episodes must survive parked/disabled devices; device lookup only resolves the episode notification site, never selects new isolation targets',
   'services/networkIsolation/service.ts': 'Single-device service under caller RLS and site access; selects no fan-out targets. dispatchDeviceCommand refuses parked devices; heartbeat tombstones retain recovery intent.',
@@ -335,6 +338,7 @@ const EXEMPT: Record<string, string> = {
   'services/aiOperator/deviceCommandEvidence.ts': 'derived: device lookup by id and org from a task\'s own row',
   'services/aiOperator/identityDiscovery.ts': 'org-pinned: start-form device SUGGESTIONS by last_user, pinned to the task\'s own org; never an effect target',
   'services/aiOperator/requesterAccessGate.ts': 'request path: rechecks a human requester\'s live org/site access to a task\'s device',
+  'services/aiOperator/serviceRecoveryLaunch.ts': 'request path: reads the one device named on a launch request, pinned to the request org and checked against the caller\'s sites',
   'services/aiOperator/taskReadQueries.ts': 'request path: read-only operator task list/detail/plan queries (moved from routes/ai/operator); devices is joined only to apply the caller\'s site restriction, no device is selected as a target',
   'services/aiOperator/taskService.ts': 'request path: creates a task for a device named on the request, scoped to the request org',
   'services/aiOperator/verification.ts': 'derived: re-validates a task\'s own device is still in the task\'s org',
@@ -379,6 +383,7 @@ const EXEMPT: Record<string, string> = {
   'services/deviceFunction.ts': 'org-pinned: membership check scoped to an explicit org and device pair',
   'services/deviceHierarchy.ts': 'single-device request read keyed on the authenticated device id (scoped.deviceId); loads raw facts only and decides nothing. Parked (pre-assignment) devices never reach its heartbeat caller: heartbeat.ts returns the minimal parked beat at the agent.isPreAssignment early return (routes/agents/heartbeat.ts:492) before any hierarchy consumer runs; resolvers that receive it apply exactly the org rules they applied to their own reads.',
   'services/deviceLifecycle.ts': 'lifecycle: restore/purge of one locked removed device',
+  'services/devicePurgeUninstallGate.ts': 'derived: an SQL expression for the uninstall state of the device row its caller already selects or has locked; selects no work of its own',
   'services/deviceOwnershipEpoch.ts': 'derived: an SQL expression for the epoch of the one device its caller is inserting a row for; selects no work',
   'services/deviceLinkGroups.ts': 'request path: mutations scoped to a link group or caller-supplied devices from link routes and the deletion cascade',
   'services/deviceMtlsCertificateIssuance.ts': 'org-pinned: locks and activates a certificate for one caller-supplied (device, org) pair; not a selector',

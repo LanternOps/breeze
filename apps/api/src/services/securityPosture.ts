@@ -1159,6 +1159,40 @@ export async function getSecurityPostureCounts(filter: SecurityPostureFilter): P
   };
 }
 
+/**
+ * Latest persisted overall posture score per device for a set of orgs — one
+ * batched query, no limit, scores only (no factor hydration). Same
+ * latest-snapshot-per-device ranking as `listLatestSecurityPosture`; used by
+ * the partner dashboard rollup (#11039). Callers pass already-authorized
+ * orgIds plus the exact device ids they display, so hidden (ephemeral, parked,
+ * decommissioned) devices never skew the score and the window only ranks
+ * snapshots of those devices.
+ */
+export async function listLatestPostureScoresByOrgs(
+  orgIds: readonly string[],
+  deviceIds: readonly string[]
+): Promise<Array<{ orgId: string; deviceId: string; overallScore: number }>> {
+  if (orgIds.length === 0 || deviceIds.length === 0) return [];
+  const ranked = db
+    .select({
+      orgId: securityPostureSnapshots.orgId,
+      deviceId: securityPostureSnapshots.deviceId,
+      overallScore: securityPostureSnapshots.overallScore,
+      rn: sql<number>`row_number() over (partition by ${securityPostureSnapshots.deviceId} order by ${securityPostureSnapshots.capturedAt} desc)`.as('rn')
+    })
+    .from(securityPostureSnapshots)
+    .where(and(
+      inArray(securityPostureSnapshots.orgId, [...orgIds]),
+      inArray(securityPostureSnapshots.deviceId, [...deviceIds])
+    ))
+    .as('ranked_partner_posture_scores');
+  const rows = await db
+    .select({ orgId: ranked.orgId, deviceId: ranked.deviceId, overallScore: ranked.overallScore })
+    .from(ranked)
+    .where(eq(ranked.rn, 1));
+  return rows.map((r) => ({ orgId: r.orgId, deviceId: r.deviceId, overallScore: Number(r.overallScore) }));
+}
+
 export async function getLatestSecurityPostureForDevice(deviceId: string): Promise<SecurityPostureItem | null> {
   const [row] = await db
     .select({

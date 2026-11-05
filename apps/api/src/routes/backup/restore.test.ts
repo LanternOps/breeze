@@ -17,7 +17,7 @@ let permissionsState: any;
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'orderBy']) {
+  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'orderBy', 'innerJoin', 'leftJoin']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -38,6 +38,14 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: (...args: unknown[]) => runOutsideDbContextMock(...(args as [any])),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+  runAfterDbContextExit: (_label: string, work: () => unknown) => { afterContextWork.push(work); },
+}));
+
+// #11026: selective restore on a snapshot with no index asks for one.
+let afterContextWork: Array<() => unknown> = [];
+const enqueueHydrationMock = vi.fn(async (..._args: unknown[]) => 'job-1');
+vi.mock('../../jobs/backupSnapshotFileIndexWorker', () => ({
+  enqueueSnapshotFileIndexHydration: (...args: unknown[]) => enqueueHydrationMock(...args),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -157,6 +165,10 @@ const gateDeps = vi.hoisted(() => ({
 }));
 vi.mock('../../services/backupRestoreIntegrity', () => ({
   resolveRestoreIntegrity: (...args: unknown[]) => gateDeps.resolveRestoreIntegrity(...args),
+  // The condition itself is proved against Postgres (backupSnapshotBrowse.integration.test.ts).
+  readableIndexCondition: () => undefined,
+  INDEX_BINDABLE_ATTESTATION_STATUSES: new Set(['pending', 'verified', 'producer_only']),
+  indexFailedOnAttestation: () => false,
 }));
 vi.mock('../auth/helpers', () => ({
   userIsMfaProtected: (...args: unknown[]) => gateDeps.userIsMfaProtected(...args),
@@ -467,6 +479,51 @@ describe('restore routes', () => {
   // — which the agent also matches by originalPath — must exact-match
   // backup_snapshot_files.source_path and succeed, instead of 400ing with
   // "Selected path is not available in this snapshot".
+  describe('#11026 selective restore without a readable index', () => {
+    const snapshot = { id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' };
+    const indexRow = (overrides: Record<string, unknown>) => ({
+      id: 'snap-db-1', fileCount: 18000, fileIndexStatus: 'none', fileIndexManifestSha256: null, fileIndexError: null,
+      fileIndexHydratedAt: null, integrityStatus: 'pending', storageIdentity: 's3::e::b', attestationStatus: null,
+      attestationManifestSha256: null, hasRows: false, ...overrides,
+    });
+    const post = () => app.request('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshotId: 'snap-db-1', restoreType: 'selective', selectedPaths: ['C:/a.txt'] }),
+    });
+
+    beforeEach(() => {
+      afterContextWork = [];
+      enqueueHydrationMock.mockClear();
+    });
+
+    it('a none snapshot answers 409 index_unavailable and requests hydration after the context exits', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([snapshot]))
+        .mockReturnValueOnce(chainMock([])) // no readable rows
+        .mockReturnValueOnce(chainMock([indexRow({})]));
+      const res = await post();
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'index_unavailable' });
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+      for (const run of afterContextWork) await run();
+      expect(enqueueHydrationMock).toHaveBeenCalledWith('snap-db-1', 'browse');
+    });
+
+    it('rows of a snapshot with a mismatched attestation are not readable: 409, and no hydration is requested', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([snapshot]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock([indexRow({ hasRows: true, attestationStatus: 'mismatch', attestationManifestSha256: 'a'.repeat(64) })]));
+      const res = await post();
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'index_unavailable' });
+      for (const run of afterContextWork) await run();
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+  });
+
   it('accepts a selective restore selection matching the indexed originalPath', async () => {
     selectMock
       .mockReturnValueOnce(

@@ -298,6 +298,9 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   // Full-control W18 PR B (#6789): writers that reach customers (the portal) or send report data out (recipients).
   manage_org_portal_settings: { limit: 15, windowSeconds: 300 },
   manage_report_recipients: { limit: 20, windowSeconds: 300 },
+  // Full-control W16 PR A (#6786): each call admits a credit-debiting run or an operator task.
+  run_patch_plan: { limit: 5, windowSeconds: 300 },
+  create_operator_task: { limit: 10, windowSeconds: 300 },
 };
 
 /**

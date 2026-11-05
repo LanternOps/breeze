@@ -43,7 +43,7 @@ import { fetchAllSites } from '@/lib/fetchAllSites';
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
-import { sendDeviceCommand, sendBulkCommand, executeScript, exitMaintenanceMode, decommissionDevice, bulkDecommissionDevices, permanentDeleteDevice, requestWakeCommand, requestBulkWakeCommand, type WakeResponse, type BulkWakeSummary, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost, bulkRestoreDevices, startBulkPurge, fetchPurgeRun, PURGE_POLL_INTERVAL_MS } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, exitMaintenanceMode, decommissionDevice, bulkDecommissionDevices, requestWakeCommand, requestBulkWakeCommand, type WakeResponse, type BulkWakeSummary, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost, bulkRestoreDevices, startBulkPurge, fetchPurgeRun, PURGE_POLL_INTERVAL_MS } from '../../services/deviceActions';
 import type { BulkMaintenanceResponse } from '../../services/deviceActions';
 import MaintenanceModeDialog from './MaintenanceModeDialog';
 import { isInMaintenance } from '../../lib/maintenanceResource';
@@ -54,6 +54,7 @@ import AccessDenied from '../shared/AccessDenied';
 import { ENABLE_NETWORK_DEVICES_IN_LIST } from '@/lib/featureFlags';
 import ProgressBar from '../shared/ProgressBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import ForcePermanentDeleteDialog, { permanentDeleteRequest, uninstallNotConfirmedState, type UninstallState } from './ForcePermanentDeleteDialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 import { applyOrgSwitch } from '@/lib/orgSwitch';
 import { BULK_GROUP_MEMBERSHIP_CAP, BULK_SITE_MOVE_CAP, CONFIRM_REQUIRED_BULK_COMMANDS, DECOMMISSION_BLOCKED_BULK_ACTIONS, QUEUEING_BULK_COMMANDS, bulkGroupMembershipBlock, bulkMoveSiteAgents, bulkMoveSiteBlock, isCommandQueueable } from './bulkActionGating';
@@ -380,6 +381,8 @@ export default function DevicesPage() {
   // not, so whether rebooting a production box asked "are you sure?" depended
   // on which screen you were on — and the list is the dense, easy-to-mis-click
   // one, with Reboot sitting next to Run Script and Wake.
+  // #11153: the API refused a permanent delete because the agent never confirmed its uninstall.
+  const [forceDelete, setForceDelete] = useState<{ device: Device; state: UninstallState } | null>(null);
   const [pendingDeviceAction, setPendingDeviceAction] = useState<{ action: string; device: Device } | null>(null);
   // #3987: bulk Remove asks the agent question ONCE for the whole selection,
   // then runBulkRemove runs the per-device DELETE loop with that one answer.
@@ -1197,6 +1200,31 @@ export default function DevicesPage() {
     }
   };
 
+  // #11153: `force` is only ever true when the operator chose "Delete anyway"
+  // in the force dialog after the API refused with UNINSTALL_NOT_CONFIRMED.
+  const runPermanentDelete = async (device: Device, force: boolean) => {
+    try {
+      await permanentDeleteRequest(device.id, {
+        force,
+        errorFallback: t('devicesPage.toasts.deleteFailed', { hostname: device.hostname }),
+        onUnauthorized: handleSessionExpired,
+      });
+      // No warning branch: the API returns `{ success: true }` and nothing else since #2787.
+      showToast({ type: 'success', message: t('devicesPage.toasts.permanentlyDeleted', { hostname: device.hostname }) });
+      await refreshDevices();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      const state = uninstallNotConfirmedState(err);
+      if (state) {
+        setForceDelete({ device, state });
+        return;
+      }
+      if (!(err instanceof ActionError)) {
+        showToast({ type: 'error', message: t('devicesPage.toasts.deleteFailed', { hostname: device.hostname }) });
+      }
+    }
+  };
+
   const handleDeviceAction = async (action: string, device: Device) => {
     if (actionInProgress) return;
     // #4014: every branch of runDeviceAction below addresses an enrolled agent
@@ -1444,17 +1472,9 @@ export default function DevicesPage() {
               showToast({ type: 'success', message: t('devicesPage.toasts.permanentDeleteCancelled'), duration: 2000 });
             }
           });
-          setTimeout(async () => {
+          setTimeout(() => {
             if (pdCancelled) return;
-            try {
-              await permanentDeleteDevice(device.id);
-              // No warning branch: the API returns `{ success: true }` and
-              // nothing else since #2787 (see permanentDeleteDevice).
-              showToast({ type: 'success', message: t('devicesPage.toasts.permanentlyDeleted', { hostname: device.hostname }) });
-              await refreshDevices();
-            } catch (err) {
-              showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.deleteFailed', { hostname: device.hostname }) });
-            }
+            void runPermanentDelete(device, false);
           }, 5000);
           break;
         }
@@ -2063,7 +2083,9 @@ export default function DevicesPage() {
           // must not become 40 toasts, and a bare count would hide WHY.
           const byCode: Record<string, number> = {};
           for (const s of skipped) byCode[s.code] = (byCode[s.code] ?? 0) + 1;
-          const reasons = Object.entries(byCode).map(([code, n]) => `${n} ${code}`).join('; ');
+          const reasons = Object.entries(byCode)
+            .map(([code, n]) => `${n} ${code === 'UNINSTALL_NOT_CONFIRMED' ? t('devicesPage.toasts.bulkPurgeSkipUninstallNotConfirmed') : code}`)
+            .join('; ');
           showToast({
             type: 'warning',
             message: purged === 0
@@ -2909,6 +2931,19 @@ export default function DevicesPage() {
         />
       )}
 
+      {forceDelete && (
+        <ForcePermanentDeleteDialog
+          hostname={forceDelete.device.hostname}
+          state={forceDelete.state}
+          onClose={() => setForceDelete(null)}
+          onConfirm={() => {
+            const target = forceDelete.device;
+            setForceDelete(null);
+            void runPermanentDelete(target, true);
+          }}
+          confirmTestId="permanent-delete-force-confirm"
+        />
+      )}
       {/* #3698: mirror of the device-detail confirm gate, reusing the SAME
           deviceActions.confirm.* copy so the two screens read identically and
           no new locale keys are needed. Double-click safety is the shared

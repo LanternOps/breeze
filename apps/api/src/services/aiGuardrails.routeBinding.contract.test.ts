@@ -324,6 +324,15 @@ const BINDINGS: readonly Binding[] = [
     tool: 'manage_report_recipients', action: 'convert', routeFile: 'reports/recipients.ts', method: 'post', path: '/:id/recipients/convert',
     toolOnly: { extra: ['reports:export'], reason: "Decision 5: export grant always, and only an address already in the report's emailRecipients converts, so convert never adds a delivery." },
   },
+  // Full-control W16 PR A (#6786): each launch binds to its "Run now" route (same permission and MFA).
+  {
+    tool: 'run_patch_plan', routeFile: 'patchPlan.ts', method: 'post', path: '/runs',
+    toolOnly: { extra: [], reason: 'Decision 6: refuses site- and device-restricted sessions, which could not read a device-less run; a release keys the run on its action intent.' },
+  },
+  {
+    tool: 'create_operator_task', routeFile: 'aiOperatorTasks.ts', method: 'post', path: '/tasks',
+    toolOnly: { extra: [], reason: 'Decision 4: service_recovery only (no recipeKey input, so no identity recipe); runs only as the release of its own approved intent, which is the idempotency key; a named alert must be on the device.' },
+  },
   // Full-control W11 (#6781): the security policy tools bind to the route a technician uses for the same act.
   {
     tool: 'get_security_compliance', routeFile: 'security/dashboard.ts', method: 'get', path: '/dashboard',
@@ -672,9 +681,10 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'manage_scheduled_tasks', action: 'list', routeFile: 'systemTools/scheduledTasks.ts', method: 'get', path: '/devices/:deviceId/tasks', parents: ['systemTools/index.ts'] },
   { tool: 'manage_services', action: 'list', routeFile: 'systemTools/services.ts', method: 'get', path: '/devices/:deviceId/services', parents: ['systemTools/index.ts'] },
   { tool: 'file_operations', action: 'list', routeFile: 'systemTools/fileBrowser.ts', method: 'get', path: '/devices/:deviceId/files', parents: ['systemTools/index.ts'] },
-  // Upload and move also carry scripts:execute (fileBrowser.ts requireScriptsExecute).
+  // Upload, move and mkdir also carry scripts:execute (fileBrowser.ts requireScriptsExecute).
   { tool: 'file_operations', action: 'write', routeFile: 'systemTools/fileBrowser.ts', method: 'post', path: '/devices/:deviceId/files/upload', parents: ['systemTools/index.ts'] },
   { tool: 'file_operations', action: 'rename', routeFile: 'systemTools/fileBrowser.ts', method: 'post', path: '/devices/:deviceId/files/move', parents: ['systemTools/index.ts'] },
+  { tool: 'file_operations', action: 'mkdir', routeFile: 'systemTools/fileBrowser.ts', method: 'post', path: '/devices/:deviceId/files/mkdir', parents: ['systemTools/index.ts'] },
   { tool: 'registry_operations', action: 'get_value', routeFile: 'systemTools/registry.ts', method: 'get', path: '/devices/:deviceId/registry/value', parents: ['systemTools/index.ts'] },
   // Live device reads outside /system-tools. The live request is bound to the
   // route that sends the same command; the stored-data read to the route that

@@ -63,7 +63,6 @@ vi.mock('../../../services/deviceActions', () => ({
   toggleMaintenanceMode: vi.fn(),
   decommissionDevice: vi.fn(),
   bulkDecommissionDevices: vi.fn(),
-  permanentDeleteDevice: vi.fn(),
   sendWakeCommand: vi.fn(),
   summarizeBulkWakeFailures: vi.fn(() => ''),
   summarizeBulkCommandFailures: vi.fn(() => ''),

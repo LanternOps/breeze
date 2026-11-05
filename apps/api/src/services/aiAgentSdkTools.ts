@@ -47,6 +47,7 @@ import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
 import { orgAdminWriteToolSchemas } from './aiToolSchemasOrgAdminWrites';
+import { aiAgentLaunchToolSchemas } from './aiToolSchemasAiAgentLaunch';
 import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
@@ -760,6 +761,9 @@ export const TOOL_TIERS = {
   // four-eyes set_sensitive_access) live in aiGuardrails.
   manage_org_portal_settings: 1,
   manage_report_recipients: 1,
+  // W16 PR A (#6786): the two launch tools, Tier 3 supervised as a whole (aiGuardrails TIER3_SUPERVISED_TOOLS).
+  run_patch_plan: 3,
+  create_operator_task: 3,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -5343,6 +5347,10 @@ export function buildBreezeSdkTools(
     tool('manage_report_recipients', registryDescription('manage_report_recipients'),
       orgAdminWriteToolSchemas.manage_report_recipients.shape,
       makeHandler('manage_report_recipients', getAuth, onPreToolUse, onPostToolUse)),
+    tool('run_patch_plan', registryDescription('run_patch_plan'), aiAgentLaunchToolSchemas.run_patch_plan.shape,
+      makeHandler('run_patch_plan', getAuth, onPreToolUse, onPostToolUse)),
+    tool('create_operator_task', registryDescription('create_operator_task'), aiAgentLaunchToolSchemas.create_operator_task.shape,
+      makeHandler('create_operator_task', getAuth, onPreToolUse, onPostToolUse)),
     tool(
       'manage_contracts',
       registryDescription('manage_contracts'),

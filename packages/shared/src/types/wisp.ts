@@ -9,6 +9,7 @@
  * apps/api/migrations/*-wisp-thread-links.sql — change both together (a
  * contract test in apps/api compares them).
  */
+import type { WispBriefSchedule } from '../validators/wispNudgePreferences';
 import type { ActivityItem, BriefSection, CurrentActivity } from './wispActivity';
 import type { Concern, ConcernSubjectKind } from './wispConcerns';
 
@@ -151,6 +152,10 @@ export interface WispHomePayload {
   current: CurrentActivity;
   links: WispThreadLink[];
   partner: { enabled: boolean };
+  /** When and where the grantor's morning brief goes out (#10402). */
+  briefSchedule: WispBriefSchedule;
+  /** When this grant's one first-look post was written, or null (#10402). */
+  firstLookAt: string | null;
 }
 
 export interface WispHomeResponse {

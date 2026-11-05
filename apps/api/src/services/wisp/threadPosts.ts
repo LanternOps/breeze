@@ -13,11 +13,12 @@
  * connection (always a system context). A retried delivery with the same
  * dedupe key writes nothing (ON CONFLICT (thread_id, dedupe_key) DO NOTHING).
  */
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { BriefSection } from '@breeze/shared';
 import { db } from '../../db';
 import { wispConcerns } from '../../db/schema/wispConcerns';
 import { wispThreadPosts, type WispThreadPostKind } from '../../db/schema/wispThreadPosts';
+import { inSystemContext } from './grantAuthority';
 
 export type ThreadPostKind = WispThreadPostKind;
 
@@ -46,6 +47,20 @@ export class ThreadPostConcernError extends Error {
     super(`recordThreadPost: concern ${concernId} not found under partner ${partnerId}`);
     this.name = 'ThreadPostConcernError';
   }
+}
+
+/**
+ * When this thread's first look was posted, or null (#10402). The home reads it
+ * so a post the poll would otherwise have no reason to fetch still reaches the
+ * page. System context: the caller already checked it is the grantor's thread.
+ */
+export async function firstLookPostedAt(threadId: string): Promise<string | null> {
+  const [row] = await inSystemContext(() => db
+    .select({ createdAt: wispThreadPosts.createdAt })
+    .from(wispThreadPosts)
+    .where(and(eq(wispThreadPosts.threadId, threadId), eq(wispThreadPosts.kind, 'first_look')))
+    .limit(1));
+  return row ? row.createdAt.toISOString() : null;
 }
 
 const TITLE_MAX_CHARS = 255;

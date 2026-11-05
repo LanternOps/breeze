@@ -18,7 +18,7 @@ import {
   latestBackupRunOrderBy,
   latestBackupRunWindowOrder,
 } from '../../services/backupJobOrdering';
-import { splitReparseSkipNotice } from '@breeze/shared';
+import { classifyBackupFailure, splitReparseSkipNotice, stripInlineIndexDropNote } from '@breeze/shared';
 import { getNextRun, resolveScopedOrgId } from './helpers';
 import { usageHistoryQuerySchema } from './schemas';
 import {
@@ -142,7 +142,7 @@ async function resolveAttentionItems(
         items.push({
           id: `backup-failing-${deviceId}`,
           title: `${deviceName}: latest backup completed with file errors`,
-          description: [latest.errorLog, `Completed ${lastFailureAt}`].filter(Boolean).join(' · '),
+          description: [stripInlineIndexDropNote(latest.errorLog).warning, `Completed ${lastFailureAt}`].filter(Boolean).join(' · '),
           severity: 'warning',
           lastFailureAt,
         });
@@ -162,7 +162,9 @@ async function resolveAttentionItems(
         if (job.status === 'partial') sawPartial = true;
         // #9543: the agent's skipped-reparse-point note is informational, so
         // it is never the reason a device needs attention.
-        if (!reason && job.errorLog) reason = splitReparseSkipNotice(job.errorLog).diagnostic;
+        // #11026: nor is a historic note that a file list did not fit in the
+        // result: the list was not lost.
+        if (!reason && job.errorLog) reason = splitReparseSkipNotice(stripInlineIndexDropNote(job.errorLog).warning).diagnostic;
       }
 
       const deviceName = latest.deviceName ?? latest.deviceHostname ?? deviceId.slice(0, 8);
@@ -485,6 +487,7 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
     totalSize: r.job.totalSize ?? null,
     errorCount: r.job.errorCount ?? null,
     errorLog: r.job.errorLog ?? null,
+    failureCategory: classifyBackupFailure({ status: r.job.status, errorLog: r.job.errorLog }),
   }));
 
   return c.json({
@@ -619,11 +622,15 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
             // tab showed a clean, green backup for a run that read every file
             // off the live volume. Already secret-redacted at write time.
             errorLog: lastJob.errorLog ?? null,
+            failureCategory: classifyBackupFailure({ status: lastJob.status, errorLog: lastJob.errorLog }),
           }
         : null,
       lastSuccessAt: lastSuccess?.completedAt?.toISOString() ?? null,
       lastFailureAt: lastFailure?.completedAt?.toISOString() ?? null,
       lastFailureError: lastFailure?.errorLog ?? null,
+      lastFailureCategory: lastFailure
+        ? classifyBackupFailure({ status: lastFailure.status, errorLog: lastFailure.errorLog })
+        : null,
       nextScheduledAt: (() => {
         // Prefer normalized settings; fall back to inline_settings on the feature link
         const schedule = (resolved?.settings?.schedule ?? resolved?.inlineSettings) as Record<string, unknown> | null;

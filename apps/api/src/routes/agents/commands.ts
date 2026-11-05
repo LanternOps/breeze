@@ -92,6 +92,8 @@ export const commandsRoutes = new Hono();
  */
 const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   'wake_on_lan',
+  // Vendor updates (#11065): both transports reach the same handler.
+  'oem_update_run',
   // Disk Cleanup v2 W04. Listed here because this route has NO inline block
   // for it — the handler is registry-only precisely so both transports run
   // exactly the same code.

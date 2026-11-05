@@ -265,6 +265,10 @@ export const REVALIDATION_REQUIRED_TYPES: ReadonlySet<string> = new Set([
   // collector, credential revision and actor epochs are unchanged.
   'topology_interface_poll',
   'script',
+  // Vendor updates (#11065): a queued run must not outlive its gates. Registered by
+  // services/oemUpdates/revalidation.ts: a kill switch, a closed gate or the flag going
+  // off cancels the row while it is still unclaimed. A running one is never touched.
+  'oem_update_run',
 ]);
 
 export function registerCommandRevalidation(

@@ -10,12 +10,11 @@
  * Lock-screen safety: the title and body carry counts and concern summaries
  * Wisp itself wrote; this file never adds org or device names of its own.
  */
-import { and, asc, eq, gt, inArray, isNotNull, or, sql } from 'drizzle-orm';
-import { CONCERN_SEVERITIES, resolveWispNudgePrefs } from '@breeze/shared';
+import { and, eq, gt, inArray, or } from 'drizzle-orm';
+import { CONCERN_SEVERITIES, resolveBriefTimezone, resolveWispNudgePrefs } from '@breeze/shared';
 import type { BriefSection, Concern, ConcernSeverity } from '@breeze/shared';
 import { wispEnabled } from '../../config/env';
 import { db } from '../../db';
-import { mobileDevices } from '../../db/schema/mobile';
 import { wispGrants } from '../../db/schema/wisp';
 import { captureException } from '../sentry';
 import { listActivity } from './activity';
@@ -25,7 +24,7 @@ import { GrantInactiveError, inSystemContext, resolveGrantCeiling } from './gran
 import type { SYSTEM_PAUSE_REASONS } from './grants';
 import { notifyUser } from './notifyUser';
 import { mobileDeepLink } from './nudgeLinks';
-import { loadNudgeBookkeeping, markBriefSent } from './nudgePreferences';
+import { loadNudgeBookkeeping, markBriefSent, partnerTimezones, phoneTimezones } from './nudgePreferences';
 import { getOrCreateThread } from './threads';
 import { listWatches } from './watches';
 
@@ -86,6 +85,9 @@ function localParts(d: Date, tz: string): { date: string; minutes: number } {
   return { date: `${parts.year}-${parts.month}-${parts.day}`, minutes: Number(parts.hour) * 60 + Number(parts.minute) };
 }
 
+/** A brief time is `HH:MM` (24 h); anything else means no brief. */
+const BRIEF_TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
 export function briefDue(
   prefs: { briefTimeLocal: string | null; briefTimezone: string | null },
   lastBriefAt: Date | null,
@@ -94,7 +96,7 @@ export function briefDue(
 ): { due: boolean; localDate: string } {
   const tz = safeTimeZone(prefs.briefTimezone ?? fallbackTz);
   const today = localParts(now, tz);
-  const m = prefs.briefTimeLocal === null ? null : /^([01]\d|2[0-3]):([0-5]\d)$/.exec(prefs.briefTimeLocal);
+  const m = prefs.briefTimeLocal === null ? null : BRIEF_TIME_RE.exec(prefs.briefTimeLocal);
   if (!m) return { due: false, localDate: today.date };
   if (today.minutes < Number(m[1]) * 60 + Number(m[2])) return { due: false, localDate: today.date };
   // YYYY-MM-DD compares correctly as a string.
@@ -202,18 +204,33 @@ export async function buildBrief(
 
 type SweepGrant = { id: string; partnerId: string; grantorUserId: string; status: string; pausedReason: string | null };
 
-/** Grantor → timezone of the oldest active mobile device that has one. */
-async function fallbackTimezones(userIds: string[]): Promise<Map<string, string>> {
-  if (userIds.length === 0) return new Map();
-  const tzExpr = sql<string | null>`${mobileDevices.quietHours}->>'timezone'`;
-  const rows = await db
-    .select({ userId: mobileDevices.userId, timezone: tzExpr })
-    .from(mobileDevices)
-    .where(and(inArray(mobileDevices.userId, userIds), eq(mobileDevices.status, 'active'), isNotNull(tzExpr)))
-    .orderBy(asc(mobileDevices.createdAt));
-  const out = new Map<string, string>();
-  for (const r of rows) if (r.timezone && !out.has(r.userId)) out.set(r.userId, r.timezone);
-  return out;
+/**
+ * #10391: when this user's brief fires, resolved exactly as the sweep resolves it
+ * (preference → phone → browser → partner → UTC) — for the Wisp chat seed.
+ * `timeLocal` null = briefs off. Elects system scope for the device/partner reads.
+ */
+export async function briefScheduleFor(
+  userId: string,
+  partnerId?: string | null,
+): Promise<{ timeLocal: string | null; timezone: string }> {
+  const book = (await loadNudgeBookkeeping([userId])).get(userId);
+  const prefs = book?.prefs ?? resolveWispNudgePrefs(null);
+  const timeLocal = prefs.briefTimeLocal !== null && BRIEF_TIME_RE.test(prefs.briefTimeLocal) ? prefs.briefTimeLocal : null;
+  // A valid preference zone wins outright: no device or partner read, as in the sweep.
+  const preferred = prefs.briefTimezone && resolveBriefTimezone({ preference: prefs.briefTimezone }) === prefs.briefTimezone
+    ? prefs.briefTimezone
+    : null;
+  if (preferred) return { timeLocal, timezone: preferred };
+  const { phoneTz, partnerTz } = await inSystemContext(async () => ({
+    phoneTz: await phoneTimezones([userId]),
+    partnerTz: partnerId ? await partnerTimezones([partnerId]) : new Map<string, string>(),
+  }));
+  const timezone = resolveBriefTimezone({
+    phone: phoneTz.get(userId),
+    browser: book?.browserTimezone,
+    partner: partnerId ? partnerTz.get(partnerId) : null,
+  });
+  return { timeLocal, timezone: safeTimeZone(timezone) };
 }
 
 export async function runMorningBriefs(now: Date = new Date()): Promise<{ due: number; sent: number; suppressed: number }> {
@@ -221,7 +238,7 @@ export async function runMorningBriefs(now: Date = new Date()): Promise<{ due: n
   // Dark by default: checked every run so the flag can flip without a restart.
   if (!wispEnabled()) return result;
 
-  const { grants, tzByUser } = await inSystemContext(async () => {
+  const { grants, phoneTz, partnerTz } = await inSystemContext(async () => {
     const rows: SweepGrant[] = await db
       .select({
         id: wispGrants.id,
@@ -241,7 +258,8 @@ export async function runMorningBriefs(now: Date = new Date()): Promise<{ due: n
     // Defence in depth: a user-paused grant never gets a brief, whatever the query returned.
     const eligible = rows.filter((g) => g.status === 'active' || (g.status === 'paused' && isSystemPauseReason(g.pausedReason)));
     const userIds = [...new Set(eligible.map((g) => g.grantorUserId))];
-    return { grants: eligible, tzByUser: await fallbackTimezones(userIds) };
+    const partnerIds = [...new Set(eligible.map((g) => g.partnerId))];
+    return { grants: eligible, phoneTz: await phoneTimezones(userIds), partnerTz: await partnerTimezones(partnerIds) };
   });
   if (grants.length === 0) return result;
 
@@ -253,7 +271,13 @@ export async function runMorningBriefs(now: Date = new Date()): Promise<{ due: n
       const book = bookkeeping.get(grant.grantorUserId);
       const prefs = book?.prefs ?? resolveWispNudgePrefs(null);
       const lastBriefAt = book?.lastBriefAt ?? null;
-      const { due, localDate } = briefDue(prefs, lastBriefAt, now, tzByUser.get(grant.grantorUserId) ?? 'UTC');
+      const zone = resolveBriefTimezone({
+        preference: prefs.briefTimezone,
+        phone: phoneTz.get(grant.grantorUserId),
+        browser: book?.browserTimezone,
+        partner: partnerTz.get(grant.partnerId),
+      });
+      const { due, localDate } = briefDue({ ...prefs, briefTimezone: zone }, lastBriefAt, now, 'UTC');
       if (!due) continue;
       result.due += 1;
 

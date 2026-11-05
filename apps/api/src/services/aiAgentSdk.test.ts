@@ -150,6 +150,10 @@ vi.mock('./aiAgentSdkTools', () => ({
     run_script: 3,
     // Network-isolation W13 (#10101): four-eyes release.
     release_containment: 3,
+    // W16 PR A (#6786): the launch tools, and a control that also names an org.
+    run_patch_plan: 3,
+    create_operator_task: 3,
+    manage_org_portal_settings: 1,
   },
   BREEZE_MCP_TOOL_NAMES: [],
 }));
@@ -2205,6 +2209,59 @@ describe('createSessionPreToolUse', () => {
         { id: 'intent-6', orgId: 'org-1', taskId: null, requestingFlowRunId: null },
         'intent_completed',
       );
+    });
+
+    // W16 PR A (#6786): a launch names its org as an argument, and a partner-scope
+    // session can be bound to another org in reach. The intent lives in the org
+    // the launch acts on: its approvers, its stored reason and a durable release's
+    // rebuilt authority are all keyed on `action_intents.org_id`.
+    describe('a launch tool naming an org other than the session org (#6786)', () => {
+      const reachOf = (...orgIds: string[]) => makeAuth({
+        scope: 'partner',
+        orgId: null,
+        accessibleOrgIds: orgIds,
+        canAccessOrg: (orgId: string) => orgIds.includes(orgId),
+      });
+
+      beforeEach(() => {
+        vi.mocked(checkGuardrails).mockReturnValue({
+          allowed: true, tier: 3, requiresApproval: true, description: 'Launch',
+        } as any);
+        mockInsertReturning({ id: 'exec-l' });
+        mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-l', approvalRequestIds: ['appr-l'] }));
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+        } as any);
+        mockWaitForIntentDecision.mockResolvedValue('rejected');
+      });
+
+      const ORG_2 = '00000000-0000-4000-8000-0000000000c2';
+      const ORG_9 = '00000000-0000-4000-8000-0000000000c9';
+      const DEVICE = '00000000-0000-4000-8000-0000000000d1';
+
+      it.each([
+        ['run_patch_plan', { orgId: ORG_2 }],
+        ['create_operator_task', { orgId: ORG_2, deviceId: DEVICE, serviceName: 'Spooler' }],
+      ])('%s files its intent in the named org', async (toolName, input) => {
+        const auth = reachOf('org-1', ORG_2);
+        const session = makeActiveSession({ auth, toolAuth: auth });
+        await createSessionPreToolUse(session)(toolName, input);
+        expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName, orgId: ORG_2 });
+      });
+
+      it('an org outside the call\'s reach never becomes the intent org', async () => {
+        const auth = reachOf('org-1');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+        await createSessionPreToolUse(session)('run_patch_plan', { orgId: ORG_9 });
+        expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName: 'run_patch_plan', orgId: 'org-1' });
+      });
+
+      it('any other tool keeps the session org (control)', async () => {
+        const auth = reachOf('org-1', ORG_2);
+        const session = makeActiveSession({ auth, toolAuth: auth });
+        await createSessionPreToolUse(session)('manage_org_portal_settings', { action: 'update', orgId: ORG_2, settings: { enableTickets: true } });
+        expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ orgId: 'org-1' });
+      });
     });
 
     // #10384: a partner-scope session bound to org-1 runs a reviewed proposal

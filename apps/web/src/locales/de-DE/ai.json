@@ -892,11 +892,15 @@
       "summary": "Zusammenfassung",
       "open": "Öffnen",
       "unread": "Ungelesen",
-      "specialistResult": "Spezialistenbericht"
+      "specialistResult": "Spezialistenbericht",
+      "firstLook": "Erster Überblick"
     },
     "welcome": {
       "title": "Ich sehe mich in {{scope}} um.",
       "body": "Ihr erster Bericht kommt jeden Morgen, sobald ich mich umgesehen habe. Fragen Sie mich in der Zwischenzeit gern alles.",
+      "firstLookTitle": "Ich habe mir {{scope}} ein erstes Mal angesehen.",
+      "firstLookBody": "Was ich gefunden habe, steht im Beitrag oben. Fragen Sie mich gern alles dazu.",
+      "briefAt": "Ihr Morgenbericht kommt um {{time}} ({{timezone}}).",
       "suggestions": {
         "needsMe": {
           "label": "Was braucht mich heute?",
@@ -940,6 +944,12 @@
       "buttonPlain": "KI dazu fragen",
       "draft": "Zu {{label}}: ",
       "switchFocus": "Wisp konzentriert sich auf {{from}}. Zu {{to}} wechseln?"
+    },
+    "plainChat": {
+      "new": "Neuer einfacher Chat",
+      "newDescription": "Breeze AI mit allen Tools, auf die Sie Zugriff haben. Nicht Wisp.",
+      "wispDescription": "Wisp, mit Ihrer Berechtigung",
+      "label": "Breeze AI · nicht Wisp"
     }
   },
   "wispConcerns": {

@@ -29,7 +29,8 @@ import { redactSecretsDeep, redactSecretsFromOutput } from './secretRedaction';
 import { findForeignSnapshotClaim } from './backupSnapshotOwnership';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { attestAgentResultSnapshot, attestLateAgentResult, attestedJobIdForSnapshot } from './backupAttestation';
-import { recordBackupAttestation, recordSnapshotPublishRefused } from './backupMetrics';
+import { recordBackupAttestation, recordSnapshotFileIndex, recordSnapshotPublishRefused } from './backupMetrics';
+import { stripInlineIndexDropNote } from '@breeze/shared';
 import {
   SNAPSHOT_ID_RESERVATION_CONSTRAINT,
   allowedSnapshotIdsForJob,
@@ -996,6 +997,10 @@ export async function applyBackupCommandResultToJob(params: {
   }
   const metadata = normalizeMetadata(result.metadata);
   const now = new Date();
+  // #11026: a file list too big to send with the result is not lost, it is in
+  // the snapshot's manifest, so the helper's note about it is not a job problem
+  // and never reaches errorLog. The count stays on the snapshot, for telemetry.
+  const { warning: resultWarning, droppedEntries: inlineDroppedEntries } = stripInlineIndexDropNote(result.warning);
 
   const updateData: Record<string, unknown> = {
     updatedAt: now,
@@ -1061,10 +1066,10 @@ export async function applyBackupCommandResultToJob(params: {
     updateData.fileCount = result.filesBackedUp ?? null;
     updateData.totalSize = result.bytesBackedUp ?? null;
     updateData.backupType = result.backupType ?? null;
-    if (result.warning) {
+    if (resultWarning) {
       // #2434: warning/error are agent-supplied free text surfaced in the
       // backup UI — redact secrets before persisting to errorLog.
-      updateData.errorLog = redactSecretsFromOutput(result.warning);
+      updateData.errorLog = redactSecretsFromOutput(resultWarning);
     } else if (source === 'reconcile') {
       // #3006: a reconcile adoption may flip a job the AGENT genuinely failed
       // (no reaper marker). Nulling error_log there would destroy the only
@@ -1134,7 +1139,7 @@ export async function applyBackupCommandResultToJob(params: {
     // picked `error` (it is populated on every failure path) and discarded the
     // warning entirely, so the one diagnostic explaining WHY the run was
     // degraded never reached the UI.
-    const failureParts = [result.error, result.warning].filter(
+    const failureParts = [result.error, resultWarning].filter(
       (part): part is string => typeof part === 'string' && part.length > 0
     );
     updateData.errorLog = redactSecretsFromOutput(
@@ -1421,6 +1426,10 @@ export async function applyBackupCommandResultToJob(params: {
     };
   }
 
+  if (inlineDroppedEntries !== null) {
+    recordSnapshotFileIndex('inline_dropped', 'dropped');
+  }
+
   // #3036 — the org this result is actually attributed to. Read back off the row
   // we just updated, NOT taken from the caller: an org move that lands between
   // enqueue and this write leaves the caller's `orgId` pointing at the device's
@@ -1492,6 +1501,7 @@ export async function applyBackupCommandResultToJob(params: {
     ...metadata,
     hasIndexedFiles: Boolean(result.snapshot?.files?.length),
     fileIndexVersion: result.snapshot?.files?.length ? 1 : 0,
+    ...(inlineDroppedEntries !== null ? { fileIndexInlineDroppedEntries: inlineDroppedEntries } : {}),
   };
   const snapshotLabel = buildSnapshotLabel(snapshotMetadata, timestamp);
 

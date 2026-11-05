@@ -1,0 +1,361 @@
+{
+  "name": "doctored-classifier",
+  "source": {
+    "run_id": 42042459294,
+    "pr": 11128,
+    "derived": "path-gated-rust-false where the candidate classifier reported api=false: every api-gated job skipped while the base classifier says api=true"
+  },
+  "changed": [
+    "apps/api/src/__tests__/integration/aiToolsOrgAdminWrites.integration.test.ts",
+    "apps/api/src/__tests__/mcp-coverage.test.ts",
+    "apps/api/src/routes/orgPortalSettings.ts",
+    "apps/api/src/routes/reports/recipients.operations.test.ts",
+    "apps/api/src/routes/reports/recipients.ts",
+    "apps/api/src/services/actionIntents/effectDigest.ts",
+    "apps/api/src/services/actionIntents/effectDigest.w18b.test.ts",
+    "apps/api/src/services/actionIntents/pinnedEffectPolicy.ts",
+    "apps/api/src/services/aiAgentSdkTools.ts",
+    "apps/api/src/services/aiAgents/__snapshots__/agentToolCatalog.contract.test.ts.snap",
+    "apps/api/src/services/aiAgents/agentToolCatalog.ts",
+    "apps/api/src/services/aiGuardrails.approvalScope.contract.test.ts",
+    "apps/api/src/services/aiGuardrails.routeBinding.contract.test.ts",
+    "apps/api/src/services/aiGuardrails.ts",
+    "apps/api/src/services/aiToolExposure.ts",
+    "apps/api/src/services/aiToolIndex.w18-budget.test.ts",
+    "apps/api/src/services/aiToolMfaGate.ts",
+    "apps/api/src/services/aiToolOutput.ts",
+    "apps/api/src/services/aiToolRateLimits.ts",
+    "apps/api/src/services/aiToolSchemas.ts",
+    "apps/api/src/services/aiToolSchemasOrgAdminWrites.ts",
+    "apps/api/src/services/aiTools.ts",
+    "apps/api/src/services/aiToolsOrgPortalSettings.test.ts",
+    "apps/api/src/services/aiToolsOrgPortalSettings.ts",
+    "apps/api/src/services/aiToolsReportRecipients.test.ts",
+    "apps/api/src/services/aiToolsReportRecipients.ts",
+    "apps/api/src/services/llm/toolEval/goldenPrompts.test.ts",
+    "apps/api/src/services/llm/toolEval/goldenPrompts.ts",
+    "apps/api/src/services/mcpCoverage.ts",
+    "apps/api/src/services/orgPortalSettingsService.test.ts",
+    "apps/api/src/services/orgPortalSettingsService.ts",
+    "apps/api/src/services/portal/portalSensitiveParents.ts",
+    "apps/api/src/services/wisp/toolSubjects.ts",
+    "apps/docs/src/content/docs/features/ai.mdx",
+    "apps/docs/src/content/docs/features/mcp-server.mdx",
+    "apps/web/src/components/ai-risk/tierConfig.ts"
+  ],
+  "flags": {
+    "code": "true",
+    "docs": "true",
+    "agent": "false",
+    "app": "true",
+    "api": "true",
+    "web": "true",
+    "portal": "false",
+    "addins": "false",
+    "m365": "false",
+    "rust": "false",
+    "topology_browser": "false",
+    "agent_code": "false",
+    "integration": "true",
+    "path_readers": "true",
+    "reader_tests": "apps/api/src/config/redisEvictionPolicyDocs.test.ts apps/api/src/services/aiGuardrailsAiDocs.parity.test.ts apps/api/src/services/aiToolIndex.test.ts apps/web/src/lib/__tests__/alertingDocs.test.ts"
+  },
+  "mobile": "false",
+  "jobs": [
+    {
+      "name": "Detect Code Changes",
+      "conclusion": "success"
+    },
+    {
+      "name": "Detect Mobile Native Changes",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Web (shard 4/4)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Web (shard 2/4)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Type Check",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Web (shard 3/4)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Mobile",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Web (shard 1/4)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Check Migrations",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Viewer",
+      "conclusion": "success"
+    },
+    {
+      "name": "Path-read contracts",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 6/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 1/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Rust Check (Windows)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Release Ledger",
+      "conclusion": "success"
+    },
+    {
+      "name": "Docs Check",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 10/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 11/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 4/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Security Audit",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Document UI",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Smoke Image (web)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 13/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Shared",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Smoke Image (api)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 16/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 3/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Check Migrations (non-superuser)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Integration Tests (shard 15/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 5/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Smoke Image (portal)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Workspace Runtime Smoke",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 12/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 2/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 7/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 8/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 14/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 9/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Lint",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test M365 Graph Read Executor",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Agent Windows manifest guard",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Portal",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test PowerPoint Add-in",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Rust Check (Tauri apps)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Lint Agent (Go)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Topology Production Browser Gate (Chromium)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test M365 Communications Executor",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test M365 Graph Actions Executor",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Agent (race)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Word Add-in",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Office Add-in Core",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Outlook Add-in",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Recovery media E2E (QEMU)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Excel Add-in",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Agent",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Build Mobile iOS (Simulator)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Build Web",
+      "conclusion": "success"
+    },
+    {
+      "name": "Guided Setup Smoke (self-host installer)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build API",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Auth Browser Transition (Chromium)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Smoke Test",
+      "conclusion": "success"
+    },
+    {
+      "name": "Portal Dev E2E (hydration, non-blocking)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build M365 Communications Executor",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Build Agent (${{ matrix.goos }}/${{ matrix.goarch }})",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Build M365 Graph Read Executor",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Build M365 Graph Actions Executor",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Windows Runtime Smoke",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Build Portal",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Agent (Windows)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Main Red Alert",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Record CI Provenance",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test API (shard ${{ matrix.shard }}/8)",
+      "conclusion": "skipped"
+    }
+  ],
+  "ci_success": "success",
+  "base_ci": "ci-90125f4edcfa.yml",
+  "head_ci": "ci-90125f4edcfa.yml",
+  "expect": {
+    "verdict": "fail",
+    "reason": "required_jobs_failed"
+  }
+}

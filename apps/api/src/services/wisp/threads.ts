@@ -32,6 +32,7 @@ import { listWorkingSet } from './threadLinks';
 import { listConcernsForCeiling } from './concerns';
 import type { ResolvedEntity } from './entityRefs';
 import { THREAD_SUMMARY_MAX_CHARS, truncateSummary } from './threadSummary';
+import { loadStandingLoopFacts, renderStandingLoop, type StandingLoopFacts } from './standingLoop';
 
 export type WispThread = {
   id: string;
@@ -297,8 +298,39 @@ export async function updateThreadSummary(threadId: string, summary: string): Pr
  * A focus org outside the ceiling makes `recallForGrant` throw
  * CeilingViolationError; it propagates (the caller re-checks the focus at
  * session create, w00 A24).
+ *
+ * `opts.model` marks a CHAT seed (#10391): the session's model id, and the
+ * `## Wisp standing loop` section is appended after the behaviour block,
+ * filled from the grant. The assessment seed passes no model and gets none.
  */
-export async function seedContextForSession(threadId: string, ceiling: GrantCeiling, auth: AuthContext | null = null, opts?: { viewing?: ResolvedEntity | null }): Promise<string> {
+export async function seedContextForSession(
+  threadId: string,
+  ceiling: GrantCeiling,
+  auth: AuthContext | null = null,
+  opts?: { viewing?: ResolvedEntity | null; model?: string },
+): Promise<string> {
+  const seed = await threadSeed(threadId, ceiling, auth, opts);
+  if (opts?.model === undefined) return seed;
+  return `${seed}\n\n${await standingLoopSection(ceiling, opts.model)}`;
+}
+
+/**
+ * The standing-loop section. A failed fact read is logged and captured, and the
+ * section still renders (identity and the loop, no numbers): the model must
+ * not fall back to denying the loop because a count query failed.
+ */
+async function standingLoopSection(ceiling: GrantCeiling, model: string): Promise<string> {
+  let facts: StandingLoopFacts | null = null;
+  try {
+    facts = await loadStandingLoopFacts(ceiling);
+  } catch (err) {
+    console.error(`[wisp] seed: reading the standing-loop facts of grant ${ceiling.grantId} failed; rendering without them`, err);
+    captureException(err, undefined, { grantId: ceiling.grantId, op: 'wisp.seed_standing_loop' });
+  }
+  return renderStandingLoop(facts, model);
+}
+
+async function threadSeed(threadId: string, ceiling: GrantCeiling, auth: AuthContext | null, opts?: { viewing?: ResolvedEntity | null }): Promise<string> {
   return inSystemContext(async () => {
     const [row] = await db
       .select()

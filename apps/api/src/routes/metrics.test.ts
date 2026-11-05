@@ -1983,6 +1983,22 @@ describe('backup storage-session and helper-capability metrics', () => {
     for (const s of series) expect(Object.keys(s.labels)).toEqual(['outcome']);
   });
 
+  it('counts snapshot file index events by event and outcome (#11026)', async () => {
+    const { recordSnapshotFileIndex } = await import('../services/backupMetrics');
+    recordSnapshotFileIndex('inline_dropped', 'dropped');
+    recordSnapshotFileIndex('hydration', 'complete');
+    recordSnapshotFileIndex('hydration', 'complete');
+    recordSnapshotFileIndex('hydration', 'manifest_missing');
+
+    const series = await seriesOf('breeze_backup_snapshot_file_index_total');
+    expect(series).toEqual(expect.arrayContaining([
+      { labels: { event: 'inline_dropped', outcome: 'dropped' }, value: 1 },
+      { labels: { event: 'hydration', outcome: 'complete' }, value: 2 },
+      { labels: { event: 'hydration', outcome: 'manifest_missing' }, value: 1 },
+    ]));
+    for (const s of series) expect(Object.keys(s.labels).sort()).toEqual(['event', 'outcome']);
+  });
+
   it('counts restore integrity expectations by command type, status and reason', async () => {
     const { recordRestoreIntegrity } = await import('../services/backupMetrics');
     recordRestoreIntegrity('backup_restore', 'attested', 'server_verified');

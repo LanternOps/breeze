@@ -1037,6 +1037,7 @@ const REPOINT_TABLES: readonly string[] = [
   // SET CONSTRAINTS ALL DEFERRED lets parents and this row repoint in separate
   // statements; breeze_network_isolation_device_moved skips a merging org.
   "device_network_isolations",
+  "device_oem_update_status",
   "device_patches",
   "device_process_samples",
   "device_recovery_keys",

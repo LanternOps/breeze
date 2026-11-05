@@ -40,6 +40,8 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'jobs/auditBaselineJobs.ts': { guards: 4, reason: 'audit policy collection' },
   'services/auditBaselineService.ts': { guards: 1, reason: 'default audit baseline seeding over orgs' },
   'jobs/maintenanceRebootWorker.ts': { guards: 1, reason: 'maintenance reboot candidates' },
+  'jobs/oemUpdatesWorker.ts': { guards: 1, reason: 'vendor update not-returned monitor over armed status rows' },
+  'services/oemUpdates/dispatch.ts': { guards: 1, reason: 'the one seam that queues a vendor update run refuses a parked device with its own code' },
   'jobs/softwareRemediationWorker.ts': { guards: 2, reason: 'software remediation per device' },
   'jobs/softwareComplianceWorker.ts': { guards: 1, reason: 'software policy compliance checks' },
   'jobs/peripheralJobs.ts': { guards: 3, reason: 'peripheral policy distribution and reconciliation' },

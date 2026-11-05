@@ -17,7 +17,6 @@ vi.mock('../../services/deviceActions', () => ({
   toggleMaintenanceMode: vi.fn(),
   decommissionDevice: vi.fn(),
   clearDeviceSessions: vi.fn(),
-  permanentDeleteDevice: vi.fn(),
   sendWakeCommand: vi.fn(),
   watchWakeOutcome: vi.fn(),
   WakeCommandError: class WakeCommandError extends Error {},

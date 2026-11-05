@@ -8,6 +8,7 @@ import {
   XCircle
 } from 'lucide-react';
 import { formatNumber } from '@/lib/i18n/format';
+import type { BackupFailureCategory } from '@breeze/shared';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -33,6 +34,7 @@ export type BackupJob = {
   totalSize?: number | null;
   errorCount?: number | null;
   errorLog?: string | null;
+  failureCategory?: BackupFailureCategory | null;
   // Legacy fields for compatibility
   device?: string;
   config?: string;

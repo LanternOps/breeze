@@ -193,6 +193,24 @@ async function queueRemoveUninstall(deviceId: string, actorUserId: string): Prom
   );
 }
 
+/**
+ * #11153 — the agent confirmed its uninstall. A purge now refuses a device
+ * whose agent never did (UNINSTALL_NOT_CONFIRMED), so tests that are about
+ * something else seed this first; the gate's own cases live in
+ * devicePurgeUninstallGate.integration.test.ts.
+ */
+async function confirmUninstall(deviceId: string): Promise<void> {
+  await getTestDb().insert(deviceCommands).values({
+    deviceId,
+    type: 'self_uninstall',
+    payload: { removeConfig: true },
+    status: 'completed',
+    targetRole: 'agent',
+    uninstallReasons: ['device_remove'],
+    completedAt: new Date(),
+  });
+}
+
 /** Org-scoped RLS context, the shape `authMiddleware` builds for an org-token request. */
 function orgContext(orgId: string): DbAccessContext {
   return {
@@ -430,6 +448,7 @@ describe('deviceLifecycle (integration)', () => {
   it('rolls back a single-device purge when it would unlink a hidden-site survivor', async () => {
     const tenant = await seedTenant();
     const linked = await seedMixedSiteLinkGroup(tenant, 'single-purge');
+    await confirmUninstall(linked.visible.id);
 
     await expect(
       withSystemDbAccessContext(() =>
@@ -477,6 +496,7 @@ describe('deviceLifecycle (integration)', () => {
   it('re-applies the serialized site ceiling in the bulk worker and leaves the target intact', async () => {
     const tenant = await seedTenant();
     const linked = await seedMixedSiteLinkGroup(tenant, 'bulk-purge');
+    await confirmUninstall(linked.visible.id);
     const jobId = '77777777-7777-4777-8777-777777777777';
 
     const result = (await processDeviceBulkPurgeJob({
@@ -575,7 +595,7 @@ describe('deviceLifecycle (integration)', () => {
     expect(stillQueued[0]!.status).toBe('pending');
   });
 
-  it('purge proceeds once the pending uninstall has been cancelled by a restore + re-remove', async () => {
+  it('after a restore + "leave installed" re-remove the purge is no longer UNINSTALL_PENDING, but needs force (#11153)', async () => {
     const tenant = await seedTenant();
     const device = await seedDevice(tenant.orgId, tenant.siteId);
     await queueRemoveUninstall(device.id, tenant.userId);
@@ -589,11 +609,18 @@ describe('deviceLifecycle (integration)', () => {
     expect(restored.uninstallAlreadyDispatched).toBe(false);
     expect(await deviceStatus(device.id)).toBe('offline');
 
-    // ...so a Remove that leaves the agent installed, then a purge, is allowed.
+    // ...so after a Remove that leaves the agent installed the pending
+    // refusal is gone — but the agent is still out there, so the purge now
+    // asks for an explicit force instead of orphaning it silently (#11153).
     await withSystemDbAccessContext(() =>
       db.execute(sql`UPDATE devices SET status = 'decommissioned' WHERE id = ${device.id}`),
     );
-    await withSystemDbAccessContext(() => db.transaction((tx) => purgeRemovedDevice(tx, device.id)));
+    await expect(
+      withSystemDbAccessContext(() => db.transaction((tx) => purgeRemovedDevice(tx, device.id))),
+    ).rejects.toMatchObject({ code: 'UNINSTALL_NOT_CONFIRMED', details: { uninstallState: 'none' } });
+    await withSystemDbAccessContext(() =>
+      db.transaction((tx) => purgeRemovedDevice(tx, device.id, undefined, { force: true })),
+    );
     expect(await deviceExists(device.id)).toBe(false);
   });
 
@@ -610,7 +637,7 @@ describe('deviceLifecycle (integration)', () => {
   // pass here pins that arm specifically rather than "some row shape".
   // -------------------------------------------------------------------------
 
-  it('purge PROCEEDS when the device_remove uninstall deadline has already passed', async () => {
+  it('an expired device_remove uninstall is NOT pending — it is refused as unconfirmed instead (#11153)', async () => {
     const tenant = await seedTenant();
     const device = await seedDevice(tenant.orgId, tenant.siteId);
     await queueRemoveUninstall(device.id, tenant.userId);
@@ -638,11 +665,15 @@ describe('deviceLifecycle (integration)', () => {
     expect(row!.status).toBe('pending');
     expect(row!.uninstall_reasons).toContain('device_remove');
 
-    await withSystemDbAccessContext(() => db.transaction((tx) => purgeRemovedDevice(tx, device.id)));
-    expect(await deviceExists(device.id)).toBe(false);
+    // Not UNINSTALL_PENDING (the deadline arm), and not purged either: the
+    // agent never collected it, so it is still installed (#11153).
+    await expect(
+      withSystemDbAccessContext(() => db.transaction((tx) => purgeRemovedDevice(tx, device.id))),
+    ).rejects.toMatchObject({ code: 'UNINSTALL_NOT_CONFIRMED', details: { uninstallState: 'expired' } });
+    expect(await deviceExists(device.id)).toBe(true);
   });
 
-  it('purge PROCEEDS when the only pending uninstall belongs to tenant offboarding', async () => {
+  it('a pending tenant-offboarding uninstall is NOT this removal\'s pending row (#11153: refused as unconfirmed)', async () => {
     const tenant = await seedTenant();
     const device = await seedDevice(tenant.orgId, tenant.siteId);
 
@@ -664,8 +695,12 @@ describe('deviceLifecycle (integration)', () => {
       }),
     );
 
-    await withSystemDbAccessContext(() => db.transaction((tx) => purgeRemovedDevice(tx, device.id)));
-    expect(await deviceExists(device.id)).toBe(false);
+    // Not UNINSTALL_PENDING: the row is another owner's. Nothing confirms this
+    // device's agent came off either, so it is the unconfirmed refusal.
+    await expect(
+      withSystemDbAccessContext(() => db.transaction((tx) => purgeRemovedDevice(tx, device.id))),
+    ).rejects.toMatchObject({ code: 'UNINSTALL_NOT_CONFIRMED', details: { uninstallState: 'none' } });
+    expect(await deviceExists(device.id)).toBe(true);
   });
 
   it('purge racing restore: the purge that commits second loses cleanly (NOT_REMOVED)', async () => {
@@ -687,9 +722,10 @@ describe('deviceLifecycle (integration)', () => {
     expect(await deviceStatus(device.id)).toBe('offline');
   });
 
-  it('purge succeeds on a removed device with no pending uninstall and removes the row', async () => {
+  it('purge succeeds on a removed device whose uninstall completed, and removes the row', async () => {
     const tenant = await seedTenant();
     const device = await seedDevice(tenant.orgId, tenant.siteId);
+    await confirmUninstall(device.id);
 
     const result = await withSystemDbAccessContext(() =>
       db.transaction((tx) => purgeRemovedDevice(tx, device.id)),
@@ -718,6 +754,7 @@ describe('deviceLifecycle (integration)', () => {
     const otherOrg = await createOrganization({ partnerId: tenant.partnerId, status: 'active' });
     const moved = await seedDevice(tenant.orgId, tenant.siteId);
     const stayed = await seedDevice(tenant.orgId, tenant.siteId);
+    await confirmUninstall(stayed.id);
 
     const payload: DeviceBulkPurgeJobPayload = {
       jobId: '22222222-2222-4222-8222-222222222222',
@@ -797,6 +834,7 @@ describe('deviceLifecycle (integration)', () => {
   it('an org-scoped cascade context leaves an RLS-hidden cascade row behind and fails the whole delete; a system-scoped context (matching the route since wave 05) removes it cleanly', async () => {
     const tenant = await seedTenant();
     const device = await seedDevice(tenant.orgId, tenant.siteId);
+    await confirmUninstall(device.id);
 
     // Poison the cascade with a row `tenant.orgId`'s own context cannot see:
     // an `alerts` row stamped with a DIFFERENT org. Nothing in normal
