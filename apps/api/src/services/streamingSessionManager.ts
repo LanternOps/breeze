@@ -27,7 +27,7 @@ import type { AiStreamEvent, AiApprovalMode, AiPendingCardEvent } from '@breeze/
 import type { PendingRunResult } from './workspace/chatRunBridge';
 import { AsyncEventQueue } from '../utils/asyncQueue';
 import { prepareSdkChild, sdkModelOptions } from './aiModels/connectionFactory';
-import { takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
+import { takeGatewayFailure, takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
 import { PROVIDER_FAILURE_GENERIC_MESSAGE, providerFailureMessage } from './aiModels/providerFailureMessage';
 import { classifySdkAssistantError } from './aiModels/failover';
 import { catalogEndpointOf } from './aiModels/sdkChildEnv';
@@ -2019,7 +2019,10 @@ export class StreamingSessionManager {
             // #7794: the model gateway's reason for this turn's failure, if it
             // had one. Always taken here, so a note from a retry that later
             // recovered never surfaces on a later turn.
-            const gatewayNote = takeGatewayFailureNote(session.breezeSessionId);
+            const gatewayFailure = takeGatewayFailure(session.breezeSessionId);
+            const gatewayNote = gatewayFailure?.message ?? null;
+            // #10577: settled by name, read from the observation below.
+            if (gatewayFailure?.code === 'context_window_exceeded') session.refusalObservation.contextWindowExceeded = true;
             // #3095: use the session's canonical org id (from the aiSessions DB
             // row — always set), NOT `auth.orgId`, which is null for partner-
             // and system-scoped users. The old guard on `auth.orgId` silently

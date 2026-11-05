@@ -61,6 +61,7 @@ vi.mock('./toolSources/resolver', () => ({ resolveTenantTools: vi.fn(async () =>
 vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
 
 import { StreamingSessionManager } from './streamingSessionManager';
+import { settleInvocation } from './aiModels/settleInvocation';
 import { __resetGatewayFailureNotesForTests, noteGatewayFailure, takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import { baseAuth, baseDbSession, scriptedQuery, sdkResult } from './__testutils__/streamingSessionManagerHarness';
@@ -135,6 +136,28 @@ describe('gateway failure reason in the chat turn error (#7794)', () => {
     release();
     await session.processorPromise;
     expect(errorMessages(session)).toEqual([NOTE]);
+  });
+
+  describe('a context-window refusal (#10577)', () => {
+    const TOO_LARGE = 'This request is about 140,000 tokens, which does not fit.';
+    const lastSettlement = () => vi.mocked(settleInvocation).mock.lastCall?.[0] as unknown as {
+      outcome: { stopReason: string }; sdkUsage: { usageNote: string; usageConfirmed: boolean };
+    };
+
+    it('shows its reason and settles as context_window_exceeded, not no_result', async () => {
+      const { errors } = await runTurn('s-window', [{ ...sdkResult(), is_error: true, modelUsage: {} }],
+        () => noteGatewayFailure('s-window', TOO_LARGE, 'context_window_exceeded'));
+      expect(errors).toEqual([TOO_LARGE]);
+      const settled = lastSettlement();
+      expect(settled.sdkUsage).toMatchObject({ usageNote: 'context_window_exceeded', usageConfirmed: true });
+      expect(settled.outcome.stopReason).toBe('context_window_exceeded');
+    });
+
+    it('an uncoded gateway note still settles as before', async () => {
+      await runTurn('s-uncoded', [{ ...sdkResult(), is_error: true, modelUsage: {} }],
+        () => noteGatewayFailure('s-uncoded', NOTE));
+      expect(lastSettlement().sdkUsage).toMatchObject({ usageNote: 'no_result', usageConfirmed: false });
+    });
   });
 
   it('a note for another session never leaks into this one', async () => {
