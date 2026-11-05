@@ -86,7 +86,7 @@ func (c *flipContext) Err() error {
 
 // #11201: a stuck step costs its own state and nothing else.
 func TestRunBestEffortSteps_StuckStepIsReportedAndTheRunContinues(t *testing.T) {
-	setCollectionDeadlines(t, 50*time.Millisecond, time.Minute, 50*time.Millisecond)
+	setCollectionDeadlines(t, 500*time.Millisecond, time.Minute, 200*time.Millisecond)
 
 	manifest := &SystemStateManifest{}
 	steps := []collectionStep{
@@ -133,7 +133,7 @@ func TestRunBestEffortSteps_NothingCapturedIsAnError(t *testing.T) {
 	returnsWithin(t, 10*time.Second, func() {
 		err = runBestEffortSteps(context.Background(), manifest, []collectionStep{{"stuck", stuckStep(t)}}, t.TempDir())
 	})
-	if err == nil || !strings.Contains(err.Error(), "produced no artifacts") {
+	if err == nil || !strings.Contains(err.Error(), "produced no artifacts") || !strings.Contains(err.Error(), "stuck: stopped by its deadline") {
 		t.Fatalf("err = %v, want the no-artifacts error", err)
 	}
 	if !slices.Equal(manifest.IncompleteSteps, []string{"stuck"}) {
@@ -144,7 +144,7 @@ func TestRunBestEffortSteps_NothingCapturedIsAnError(t *testing.T) {
 // The Windows path: a stuck required step fails the run hard (an image without
 // its registry would not boot) and says why; the reason reaches error_log.
 func TestRunCollectionSteps_StuckRequiredStepFailsWithItsReason(t *testing.T) {
-	setCollectionDeadlines(t, 50*time.Millisecond, time.Minute, 50*time.Millisecond)
+	setCollectionDeadlines(t, 500*time.Millisecond, time.Minute, 200*time.Millisecond)
 
 	manifest := &SystemStateManifest{}
 	steps := []collectionStep{
@@ -165,7 +165,7 @@ func TestRunCollectionSteps_StuckRequiredStepFailsWithItsReason(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("err = %v, want it to carry the deadline", err)
 	}
-	if !strings.Contains(err.Error(), "stopped after") {
+	if !strings.Contains(err.Error(), "stopped by its deadline") {
 		t.Errorf("err = %q, want it to say the step ran out of time", err)
 	}
 	if got := artifactNames(manifest.Artifacts); !slices.Equal(got, []string{"services"}) {
@@ -174,7 +174,7 @@ func TestRunCollectionSteps_StuckRequiredStepFailsWithItsReason(t *testing.T) {
 }
 
 func TestRunCollectionSteps_StuckOptionalStepOnlyWarns(t *testing.T) {
-	setCollectionDeadlines(t, 50*time.Millisecond, time.Minute, 50*time.Millisecond)
+	setCollectionDeadlines(t, 500*time.Millisecond, time.Minute, 200*time.Millisecond)
 
 	manifest := &SystemStateManifest{}
 	steps := []collectionStep{
@@ -268,14 +268,14 @@ func TestRunBounded_RunCancellationStopsTheStep(t *testing.T) {
 			return nil, stepCtx.Err()
 		})
 	})
-	if !isCollectionInterrupted(err) || !errors.Is(err, context.Canceled) {
+	if !isCollectionInterrupted(err) || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "the run's cancellation") {
 		t.Fatalf("err = %v, want an interrupted step caused by cancellation", err)
 	}
 }
 
 // Every step sees the whole-collection budget, however many there are.
 func TestCollectSystemStateWithOptions_BudgetCoversTheWholeCollection(t *testing.T) {
-	setCollectionDeadlines(t, time.Hour, 100*time.Millisecond, 50*time.Millisecond)
+	setCollectionDeadlines(t, time.Hour, 600*time.Millisecond, 200*time.Millisecond)
 
 	stubPlatformCollector(t, func(ctx context.Context, stagingDir string) (*SystemStateManifest, error) {
 		manifest := &SystemStateManifest{}

@@ -25,8 +25,9 @@ func CollectSystemState(ctx context.Context) (manifest *SystemStateManifest, sta
 // notably the run's VSS shadow copies, from which the Windows collector copies
 // the registry hive files instead of spawning reg.exe (see CollectOptions).
 //
-// It returns within collectionTimeout (plus one abandonGrace per step) however
-// the host behaves: see bounded.go.
+// It returns within collectionTimeout, plus up to one abandonGrace for each
+// bounded call (every step, the OS version probe, the hardware profile),
+// however the host behaves: see bounded.go.
 func CollectSystemStateWithOptions(ctx context.Context, opts CollectOptions) (manifest *SystemStateManifest, stagingDir string, err error) {
 	stagingDir, err = os.MkdirTemp("", "breeze-systemstate-*")
 	if err != nil {

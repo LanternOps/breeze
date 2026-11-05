@@ -359,7 +359,7 @@ func copyTree(ctx context.Context, srcRoot, dstRoot string) error {
 		return nil
 	})
 	if walkErr != nil {
-		return walkErr // cut short: the staged tree is discarded, nothing to fix up
+		return walkErr // cut short: skip the dir fixups; the partial tree is in no artifact and the step reports the failure
 	}
 
 	// Fix up every staged directory's real permissions/mtime/ownership now

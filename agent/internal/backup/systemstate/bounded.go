@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/procspawn"
@@ -18,7 +19,8 @@ import (
 // Collection copies live trees (/etc, /Library/Preferences), spawns OS tools
 // and reads /proc, /sys and shadow copies, all on hosts we do not control.
 // None of that may hold a backup up indefinitely: a step that outlasts its
-// deadline loses that step's state, is named in the manifest's IncompleteSteps
+// deadline loses whatever it had not yet captured, is named in the manifest's
+// IncompleteSteps
 // (which the run turns into a job warning) and the next step runs.
 //
 // Two layers do this, because neither is enough alone:
@@ -54,7 +56,7 @@ var (
 	// commandWaitDelay bounds how long Wait may block on a grandchild that
 	// inherited a subprocess's stdout: exec.CommandContext kills only the
 	// direct child, and without this Output() blocks until the grandchild exits
-	// too. The clock also starts when the child exits by itself, so it is
+	// too. The clock also starts when the child exits by itself, so 30 s is
 	// generous enough not to cut off a tool's own late-writing helper.
 	commandWaitDelay = 30 * time.Second
 )
@@ -63,18 +65,26 @@ var (
 // collected like a step but is not in any platform's step list.
 const hardwareProfileStep = "hardware_profile"
 
-// collectionInterruptedError reports that ctx ended (a deadline, or the run
-// being cancelled) before a collection step finished. Err is whatever the step
-// itself returned, if it returned at all.
+// collectionInterruptedError reports that ctx ended before a collection step
+// finished: the step's own deadline, or (RunEnded) the whole collection's
+// budget or the run being cancelled, in which case a step may not have got
+// going at all. Err is whatever the step itself returned, if it returned at
+// all. The message leaves the step's name to the caller, which already prefixes
+// it (runCollectionSteps, runBestEffortSteps, the step= log attribute).
 type collectionInterruptedError struct {
-	Step    string
-	Elapsed time.Duration
-	Cause   error // the context's error
-	Err     error
+	Step     string
+	Elapsed  time.Duration
+	RunEnded bool
+	Cause    error // the context's error
+	Err      error
 }
 
 func (e *collectionInterruptedError) Error() string {
-	msg := fmt.Sprintf("%s: stopped after %s: %s", e.Step, e.Elapsed.Round(time.Millisecond), e.Cause)
+	by := "its deadline"
+	if e.RunEnded {
+		by = "the collection's time budget or the run's cancellation"
+	}
+	msg := fmt.Sprintf("stopped by %s after %s: %s", by, e.Elapsed.Round(time.Millisecond), e.Cause)
 	if e.Err != nil && !errors.Is(e.Err, e.Cause) {
 		msg += ": " + e.Err.Error()
 	}
@@ -139,7 +149,9 @@ func runBounded[T any](ctx context.Context, name string, timeout time.Duration, 
 	}
 
 	if cause := boundCtx.Err(); cause != nil {
-		return res.val, &collectionInterruptedError{Step: name, Elapsed: time.Since(start), Cause: cause, Err: res.err}
+		return res.val, &collectionInterruptedError{
+			Step: name, Elapsed: time.Since(start), RunEnded: ctx.Err() != nil, Cause: cause, Err: res.err,
+		}
 	}
 	return res.val, res.err
 }
@@ -160,6 +172,7 @@ func runStep(ctx context.Context, s collectionStep, stagingDir string) ([]Artifa
 // it always has on these platforms: such a failure is permanent for the host
 // and would otherwise put a warning on every one of its runs.
 func runBestEffortSteps(ctx context.Context, manifest *SystemStateManifest, steps []collectionStep, stagingDir string) error {
+	var reasons []string
 	for _, s := range steps {
 		arts, err := runStep(ctx, s, stagingDir)
 		manifest.Artifacts = append(manifest.Artifacts, arts...)
@@ -167,12 +180,16 @@ func runBestEffortSteps(ctx context.Context, manifest *SystemStateManifest, step
 			continue
 		}
 		slog.Warn("systemstate: step failed", "step", s.name, "error", err.Error())
+		reasons = append(reasons, s.name+": "+err.Error())
 		if isCollectionInterrupted(err) {
 			manifest.IncompleteSteps = append(manifest.IncompleteSteps, s.name)
 		}
 	}
 	if len(manifest.Artifacts) == 0 {
-		return fmt.Errorf("system state collection produced no artifacts - all %d steps failed", len(steps))
+		// Carry each step's reason: this string becomes the job's "not
+		// collected" warning, and "all steps failed" alone hides a hung disk.
+		return fmt.Errorf("system state collection produced no artifacts - all %d steps failed: %s",
+			len(steps), strings.Join(reasons, "; "))
 	}
 	return nil
 }
@@ -216,10 +233,9 @@ func collectorCommand(ctx context.Context, name string, args ...string) *exec.Cm
 	return cmd
 }
 
-// contextReader fails a read once ctx has ended. Wrapping a file in it also
-// keeps io.Copy off copy_file_range, which would hand the whole file to one
-// uninterruptible syscall: on the CI runner in #11201 one 43 MB file took over
-// three minutes that way, with the deadline unable to act until it returned.
+// contextReader fails a read once ctx has ended. In a file-to-file copy it also
+// keeps io.Copy off copy_file_range, which hands the whole file to one
+// uninterruptible syscall: the frame every hung goroutine in #11201 sat in.
 type contextReader struct {
 	ctx context.Context
 	r   io.Reader
