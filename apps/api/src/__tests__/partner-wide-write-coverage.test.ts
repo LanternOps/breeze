@@ -387,6 +387,8 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // #8165 W01b. Mirrors the backup entries: the EDR mapping service is reached only through the gated route; the persist writers run only in the sync worker.
   'services/edrProviders/mapping.ts': 'remapEdrTenant has one caller, PUT /edr/tenants/:id/mapping, which passes requireEdrPartnerAdmin (→ canManagePartnerWidePolicies) before it is reached; autoMapEdrTenants runs only inside the edr-provider-sync worker under system context',
   'services/edrProviders/persist.ts': 'upsertTenants/persistInventory/persistDetections run only inside the edr-provider-sync worker under system context, invoked from a job payload with no caller to gate; every row they write takes the syncing connection\'s own partner_id',
+  // #8170 W06.1: the installer-material door. Same shape as persist.ts and mapping.ts.
+  'services/edrProviders/installerMaterial.ts': 'persistInstallerOutcomes runs only in the edr-provider-sync worker under system context (job payload, no caller), and writes only the installer_* columns of tenants that run loaded; clearTenantInstallerMaterial is called only from PATCH /edr/connections/:id and PUT /edr/tenants/:id/mapping, both after requireEdrPartnerAdmin (→ canManagePartnerWidePolicies), inside that request\'s transaction',
   // W01a (#5612). cutScriptVersion's only write to `scripts` is
   // `.set({ version, updatedAt })` on a row it just located by id and locked
   // FOR UPDATE — it never reads or writes org_id/partner_id, so it can neither
