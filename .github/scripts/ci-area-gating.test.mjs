@@ -162,6 +162,43 @@ test('classifier: every packages/ path the Tauri Rust sources read sets rust', (
   }
 });
 
+// #11042: the helper's Rust tests also read Go sources under agent/internal/ipc
+// (wire-contract drift checks). agent/* otherwise sets only api + agent_code, so a
+// PR touching just those Go files would skip rust-check. Re-derive the set from
+// the Rust sources instead of trusting the classifier's list; the narrow set (not
+// a glob) is right because the Rust side names individual files.
+test('classifier: every agent/ path the Tauri Rust sources read sets rust (and keeps api + agent_code)', () => {
+  const targets = new Set();
+  for (const root of ['apps/viewer/src-tauri', 'apps/helper/src-tauri']) {
+    for (const file of walk(root)) {
+      if (!/\.(rs|toml)$|tauri\.conf\.json$/u.test(file)) continue;
+      readFileSync(join(REPO_ROOT, file), 'utf8').split('\n').forEach((line, i) => {
+        if (/^\s*(\/\/|#)/u.test(line)) return;
+        assert.doesNotMatch(line, /join\("agent"\)|push\("agent"\)/u,`${file}:${i + 1} builds an agent/ path this scan cannot follow`);
+        for (const m of line.matchAll(/"((?:\.\.\/)+agent\/[^"]+)"/gu)) targets.add(normalize(join(root, m[1])));
+      });
+    }
+  }
+  // The literals are joined onto env!("CARGO_MANIFEST_DIR") (the src-tauri root).
+  assert.ok(targets.size >= 2, `vacuous scan: ${[...targets]}`);
+  for (const target of targets) {
+    assert.ok(existsSync(join(REPO_ROOT, target)), `${target} does not exist: wrong resolution in this scan?`);
+    const out = classify([target]);
+    assert.equal(out.rust, 'true', `${target} is read by the Rust tests but does not set rust`);
+    assert.equal(out.api, 'true', target);
+    assert.equal(out.agent_code, 'true', target);
+  }
+});
+
+test('classifier: an agent/internal/ipc file the Rust tests do not read leaves rust unset', () => {
+  for (const path of ['agent/internal/ipc/protocol.go', 'agent/internal/ipc/chat_test.go', 'agent/internal/heartbeat/heartbeat.go', 'agent/cmd/breeze-agent/main.go']) {
+    const out = classify([path]);
+    assert.equal(out.rust, 'false', path);
+    assert.equal(out.api, 'true', path);
+    assert.equal(out.agent_code, 'true', path);
+  }
+});
+
 test('classifier: shared/global inputs set every area', () => {
   for (const path of [
     'packages/office-addin-core/src/x.ts',
