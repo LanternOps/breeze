@@ -934,20 +934,31 @@ describe('#10542 — peer drop during a viewer reconnect', () => {
 
   it('a hold whose timer was lost is ended by the next viewer-token check after its deadline', async () => {
     const fx = await seed('active');
+    // A grace long enough that the holding instance's own timer cannot fire
+    // during the test. With a 1 ms grace the timer fired while the Redis write
+    // was still in flight, ended the session and cleared the record, and the
+    // check below then found nothing to enforce (flaky on slower runners).
+    const graceMs = 60_000;
+    const heldAt = Date.now();
     expect(await holdDesktopSessionForReconnect({
       sessionId: fx.sessionId,
       deviceId: fx.deviceId,
       startGeneration: SEED_GENERATION,
-      // Long enough that the timer cannot fire while the hold's Redis write is
-      // in flight; the check below is handed a clock past the deadline instead.
-      graceMs: 60_000,
+      graceMs,
     })).toBe('held');
     // The holding instance goes away before its timer fires.
     __resetDesktopReconnectGraceForTest();
 
     const session = { id: fx.sessionId, deviceId: fx.deviceId, desktopStartGeneration: SEED_GENERATION };
-    expect(await enforceExpiredDesktopReconnectHold(session)).toBe('none');
-    expect(await enforceExpiredDesktopReconnectHold(session, Date.now() + 60_001)).toBe('ended');
+    // Control: before the deadline the record lets the request through and
+    // the session stays live.
+    expect(await enforceExpiredDesktopReconnectHold(session, heldAt)).toBe('none');
+    expect(await readFence(fx.sessionId)).toMatchObject({ status: 'active' });
+    expect(await isRevoked(fx.sessionId)).toBe(false);
+
+    // The next check after the deadline ends it.
+    const afterDeadline = Date.now() + graceMs + 1;
+    expect(await enforceExpiredDesktopReconnectHold(session, afterDeadline)).toBe('ended');
     expect(await readFence(fx.sessionId)).toMatchObject({ status: 'disconnected' });
     expect(await isRevoked(fx.sessionId)).toBe(true);
   });
