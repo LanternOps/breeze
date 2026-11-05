@@ -100,11 +100,24 @@ func (i *windowsIsolator) Capability() Capability {
 	return i.readiness.capability(i.activated)
 }
 
+// configureRecoveryReadiness reads the scheduler's trust path, so the probe can
+// report recovery_untrusted and the self-host manifest-hash detail. The
+// distribution PR's production Installer must take the same policy
+// (scheduler trustPolicy()) so EnsureRecovery and Ready() agree.
 func (i *windowsIsolator) configureRecoveryReadiness(scheduler RecoveryScheduler, wantVersion string) {
-	i.configureReadiness(func(ctx context.Context) (string, error) { return recoveryinstall.EnsureRecovery(ctx, wantVersion) }, scheduler.Ready)
+	i.configureTrustReadiness(func(ctx context.Context) (string, error) { return recoveryinstall.EnsureRecovery(ctx, wantVersion) }, schedulerReadiness(scheduler))
 }
 
 func (i *windowsIsolator) configureReadiness(ensure func(context.Context) (string, error), scheduler func() (bool, string)) {
+	i.configureTrustReadiness(ensure, func() (recoveryinstall.TrustPath, error) {
+		if ok, why := scheduler(); !ok {
+			return "", errors.New(why)
+		}
+		return "", nil
+	})
+}
+
+func (i *windowsIsolator) configureTrustReadiness(ensure func(context.Context) (string, error), scheduler func() (recoveryinstall.TrustPath, error)) {
 	i.readiness.mu.Lock()
 	defer i.readiness.mu.Unlock()
 	i.readiness.probe = func(ctx context.Context) readinessInputs {
@@ -116,8 +129,7 @@ func (i *windowsIsolator) configureReadiness(ensure func(context.Context) (strin
 			closeWindowsSession(session)
 		}
 		_, recoveryErr := ensure(ctx)
-		ready, reason := scheduler()
-		return readinessInputs{engineErr: engineErr, recoveryErr: recoveryErr, schedulerReady: ready, schedulerReason: reason}
+		return readinessFromProbe(engineErr, recoveryErr, scheduler)
 	}
 	i.readiness.checkedAt = time.Time{}
 }

@@ -1,4 +1,4 @@
-import { createAuditLogAsync, type InitiatedByType } from './auditService';
+import { createAuditLog, createAuditLogAsync, type CreateAuditLogParams, type InitiatedByType } from './auditService';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { sanitizeAuditPayload } from './auditPayloadSanitizer';
 import * as dbModule from '../db';
@@ -136,7 +136,18 @@ export function derivePartnerAttribution(c: RequestLike, event: Pick<AuditEventI
 }
 
 export function writeAuditEventAsync(c: RequestLike, event: AuditEventInput): Promise<void> {
+  return createAuditLogAsync(buildAuditLogParams(c, event));
+}
 
+/**
+ * Rejects when the row did not land, for a path that must not proceed unaudited.
+ * Otherwise identical to `writeAuditEventAsync`.
+ */
+export function writeAuditEventStrict(c: RequestLike, event: AuditEventInput): Promise<void> {
+  return createAuditLog(buildAuditLogParams(c, event));
+}
+
+function buildAuditLogParams(c: RequestLike, event: AuditEventInput): CreateAuditLogParams {
   const details = (event.details && typeof event.details === 'object')
     ? { ...event.details }
     : {};
@@ -175,7 +186,7 @@ export function writeAuditEventAsync(c: RequestLike, event: AuditEventInput): Pr
     ? (sanitizeAuditPayload(details) as Record<string, unknown>)
     : undefined;
 
-  return createAuditLogAsync({
+  return {
     orgId: event.orgId ?? undefined,
     // Resolved now, not at persist time: a failed write is replayed from the
     // retry queue long after the request (and its auth) is gone.
@@ -193,7 +204,7 @@ export function writeAuditEventAsync(c: RequestLike, event: AuditEventInput): Pr
     result: event.result ?? 'success',
     errorMessage: event.errorMessage,
     initiatedBy,
-  });
+  };
 }
 
 /** Fire-and-forget compatibility wrapper for existing audit call sites. */

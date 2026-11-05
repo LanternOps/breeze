@@ -42,7 +42,8 @@ const REQUESTER = '22222222-2222-4222-8222-222222222222';
 const STRANGER = '33333333-3333-4333-8333-333333333333';
 const PROPOSAL = '44444444-4444-4444-8444-444444444444';
 
-const auth = (userId: string, mfa = true) => ({
+const auth = (userId: string, mfa = true, principal: Record<string, unknown> = { kind: 'user_session' }) => ({
+  principal,
   user: { id: userId }, scope: 'organization', orgId: ORG, partnerId: null,
   accessibleOrgIds: [ORG], token: { mfa },
 }) as never;
@@ -66,6 +67,114 @@ beforeEach(() => {
   loadProposalExecutions.mockResolvedValue([]);
   loadProposalDevices.mockResolvedValue([]);
   scopeDeviceIdsToCaller.mockResolvedValue(null);
+});
+
+// #10954: who may sign a proposal whose AI review reached no verdict.
+describe('loadScriptProposalDetail — review failure and the human override', () => {
+  const DEVICE = '55555555-5555-4555-8555-555555555551';
+  const failedRow = (over: Record<string, unknown> = {}) => ({
+    ...baseRow(), status: 'review_failed', riskTier: null, decidedBy: null,
+    decisionNote: 'Reviewer returned no parseable JSON verdict', targetDeviceIds: [DEVICE],
+    expiresAt: new Date(Date.now() + 3_600_000), ...over,
+  });
+  const failedReview = { id: 'r1', reviewerKind: 'model', status: 'failed', summary: 'Reviewer returned no parseable', verdict: { error: 'x' }, createdAt: new Date() };
+  const grant = (...held: string[]) => hasPermission.mockImplementation((_p: unknown, resource: string, action: string) => held.includes(`${resource}:${action}`));
+  const viewerOf = async (a: never) => {
+    const r = await loadScriptProposalDetail(a, PROPOSAL);
+    if (!r.ok) throw new Error(`denied: ${r.reason}`);
+    return r.dto.viewer;
+  };
+
+  beforeEach(() => {
+    canAccessOrg.mockReturnValue(true);
+    userCanDecideApprovals.mockReturnValue(true);
+    loadProposalRow.mockResolvedValue(failedRow());
+    loadLatestReview.mockResolvedValue(failedReview);
+    grant('scripts:execute', 'scripts:write');
+  });
+
+  it('offers both overrides to a human with run, write and decide permission and MFA', async () => {
+    expect(await viewerOf(auth(STRANGER))).toMatchObject({ canOverrideRun: true, canOverrideSave: true, canPromote: false });
+  });
+
+  it('run needs approvals:decide; save does not', async () => {
+    userCanDecideApprovals.mockReturnValue(false);
+    expect(await viewerOf(auth(REQUESTER))).toMatchObject({ canOverrideRun: false, canOverrideSave: true });
+  });
+
+  it('neither is offered without scripts:execute, in the proposal org', async () => {
+    grant('scripts:write');
+    expect(await viewerOf(auth(STRANGER))).toMatchObject({ canOverrideRun: false, canOverrideSave: false });
+    expect(getUserPermissions).toHaveBeenCalledWith(STRANGER, expect.objectContaining({ orgId: ORG }));
+  });
+
+  it('save needs scripts:write; run does not', async () => {
+    grant('scripts:execute');
+    expect(await viewerOf(auth(STRANGER))).toMatchObject({ canOverrideRun: true, canOverrideSave: false });
+  });
+
+  it('neither is offered without MFA', async () => {
+    expect(await viewerOf(auth(STRANGER, false))).toMatchObject({ canOverrideRun: false, canOverrideSave: false });
+  });
+
+  it.each([
+    [{ kind: 'api_key', apiKeyId: 'k1' }],
+    [{ kind: 'oauth_grant', grantId: 'g1' }],
+    [{ kind: 'ai_agent', agentId: 'a1', runId: 'r1' }],
+    [{ kind: 'flow', flowId: 'f1', runId: 'r1' }],
+  ])('neither is offered to the non-human principal %j', async (principal) => {
+    expect(await viewerOf(auth(STRANGER, true, principal))).toMatchObject({ canOverrideRun: false, canOverrideSave: false });
+  });
+
+  it('run is not offered when a target is outside the caller\'s scope; save still is', async () => {
+    loadProposalRow.mockResolvedValue(failedRow({ targetDeviceIds: [DEVICE, '55555555-5555-4555-8555-555555555552'] }));
+    scopeDeviceIdsToCaller.mockResolvedValue([DEVICE]);
+    expect(await viewerOf(auth(STRANGER))).toMatchObject({ canOverrideRun: false, canOverrideSave: true });
+  });
+
+  it('run is not offered once the proposal has expired; save still is', async () => {
+    loadProposalRow.mockResolvedValue(failedRow({ expiresAt: new Date(Date.now() - 1000) }));
+    expect(await viewerOf(auth(STRANGER))).toMatchObject({ canOverrideRun: false, canOverrideSave: true });
+  });
+
+  it.each([
+    'proposed', 'scan_rejected', 'reviewed', 'approved', 'rejected', 'changes_requested',
+    'expired', 'superseded', 'executed', 'verified', 'verification_failed', 'promoted',
+  ])('neither is offered on a proposal in `%s`', async (status) => {
+    loadProposalRow.mockResolvedValue(failedRow({ status }));
+    expect(await viewerOf(auth(STRANGER))).toMatchObject({ canOverrideRun: false, canOverrideSave: false });
+  });
+
+  it('reports the whole failure reason from decision_note while the proposal is review_failed', async () => {
+    const r = await loadScriptProposalDetail(auth(STRANGER), PROPOSAL);
+    expect(r.ok && r.dto.reviewFailure).toEqual({ reason: 'Reviewer returned no parseable JSON verdict', humanApproved: false });
+  });
+
+  it('falls back to the review row when no note was written', async () => {
+    loadProposalRow.mockResolvedValue(failedRow({ decisionNote: null }));
+    const r = await loadScriptProposalDetail(auth(STRANGER), PROPOSAL);
+    expect(r.ok && r.dto.reviewFailure).toEqual({ reason: failedReview.summary, humanApproved: false });
+  });
+
+  it('still reports the failure after a person signed it, and that they did', async () => {
+    loadProposalRow.mockResolvedValue(failedRow({ status: 'executed', decidedBy: STRANGER, decisionNote: 'Approved by a person…' }));
+    const r = await loadScriptProposalDetail(auth(STRANGER), PROPOSAL);
+    expect(r.ok && r.dto.reviewFailure).toEqual({ reason: failedReview.summary, humanApproved: true });
+  });
+
+  it('is null for a proposal whose review completed', async () => {
+    loadProposalRow.mockResolvedValue(failedRow({ status: 'reviewed', riskTier: 'low' }));
+    loadLatestReview.mockResolvedValue({ ...failedReview, status: 'completed', summary: 'fine' });
+    const r = await loadScriptProposalDetail(auth(STRANGER), PROPOSAL);
+    expect(r.ok && r.dto.reviewFailure).toBeNull();
+  });
+
+  it('is null for a proposal that only has a static-scan row', async () => {
+    loadProposalRow.mockResolvedValue(failedRow({ status: 'scan_rejected', decisionNote: null }));
+    loadLatestReview.mockResolvedValue({ ...failedReview, reviewerKind: 'static_scan', status: 'failed' });
+    const r = await loadScriptProposalDetail(auth(STRANGER), PROPOSAL);
+    expect(r.ok && r.dto.reviewFailure).toBeNull();
+  });
 });
 
 describe('loadScriptProposalDetail', () => {
@@ -116,7 +225,9 @@ describe('loadScriptProposalDetail', () => {
     canAccessOrg.mockReturnValue(true);
     hasPermission.mockReturnValue(true);
     const reviewed = await loadScriptProposalDetail(auth(STRANGER, true), PROPOSAL);
-    expect(reviewed.ok && reviewed.dto.viewer).toEqual({ canDecide: true, canAcknowledge: true, canPromote: false });
+    expect(reviewed.ok && reviewed.dto.viewer).toEqual({
+      canDecide: true, canAcknowledge: true, canPromote: false, canOverrideRun: false, canOverrideSave: false,
+    });
 
     const noMfa = await loadScriptProposalDetail(auth(STRANGER, false), PROPOSAL);
     expect(noMfa.ok && noMfa.dto.viewer.canAcknowledge).toBe(false);
