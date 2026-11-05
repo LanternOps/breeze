@@ -56,16 +56,16 @@ func (s *fakeSystem) BootTime() (time.Time, error) { return s.boot, nil }
 var desktopOnAC = PowerStatus{ACLineStatus: 1, BatteryFlag: 128, BatteryLifePercent: 255}
 
 type runFixture struct {
-	lane  *fakeLane
-	ver   *fakeVerifier
-	exec  *fakeExec
-	store *memStore
-	clock *fixedClock
-	prot  *fakeProtectors
-	sys   *fakeSystem
-	guard *flashguard.Guard
-	deps  Deps
-	req   RunRequest
+	lane   *fakeLane
+	ver    *fakeVerifier
+	exec   *fakeExec
+	store  *memStore
+	clock  *fixedClock
+	prot   *fakeProtectors
+	sys    *fakeSystem
+	guard  *flashguard.Guard
+	deps   Deps
+	req    RunRequest
 	stages []string
 }
 
