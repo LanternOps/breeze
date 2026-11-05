@@ -162,7 +162,7 @@ async function lockAndReverify(
 
   const { computeEffectDigestForRelease } = await import('./actionIntents/effectDigest');
   const recomputed = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() => computeEffectDigestForRelease(TOOL, input, db)));
+    withSystemDbAccessContext(() => computeEffectDigestForRelease(TOOL, input, db, { intentOrgId: report.orgId })));
   if (recomputed.digest !== binding.digest) {
     auditToolWrite(auth, {
       orgId: report.orgId,

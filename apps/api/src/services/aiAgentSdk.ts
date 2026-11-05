@@ -1499,8 +1499,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     // W16 PR B (#6786, #11181): the two design tools name their org through a row, so
     // an approver of org A is never approving a change to org B. Same reach rule as
     // above; a target outside it adds nothing to the card, so a foreign id reveals
-    // nothing. A failed lookup is non-fatal: the intent stays in the session org, the
-    // handler answers not found or refuses at release, and the card says it is short.
+    // nothing. A failed lookup is non-fatal: the intent stays in the session org and the
+    // card says it is short. A Fleet Design of another org then has no pin for that org,
+    // so no intent is filed; a schedule's handler answers not found or refuses at release.
     let designCardDetail: string | undefined;
     if (!flowTool && !tenant && AI_DESIGN_INTENT_TOOLS.has(toolName)) {
       try {
@@ -2784,7 +2785,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           if (hasPinnedDigest(intentRow)) {
             const recomputed = await runOutsideDbContext(() =>
               withSystemDbAccessContext(() =>
-                computeEffectDigestForRelease(intentRow.actionName, intentRow.arguments, db),
+                computeEffectDigestForRelease(intentRow.actionName, intentRow.arguments, db, { intentOrgId: intentRow.orgId }),
               ),
             );
             if (recomputed.digest !== intentRow.effectDigest) {

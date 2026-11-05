@@ -3,7 +3,7 @@
  * `manage_fleet_designs:apply` and `:rollback` pins. A leaf loaded on demand, so the
  * resolver registrations in effectDigest.ts stay one line and that module does not
  * take the Fleet Design graph. `null` means there is nothing to pin: not a Fleet
- * Design report of an org, or arguments no handler could run.
+ * Design report of the intent's org, or arguments no handler could run.
  */
 import { fleetDesignApprovalSchema } from '@breeze/shared';
 import type { Database } from '../../db';
@@ -16,17 +16,17 @@ export function fleetDesignReportRunIdArg(args: Record<string, unknown>): string
   return typeof args.reportRunId === 'string' && UUID_RE.test(args.reportRunId) ? args.reportRunId : null;
 }
 
-export async function fleetDesignApplyDigestMaterial(args: Record<string, unknown>, database: Database) {
+export async function fleetDesignApplyDigestMaterial(args: Record<string, unknown>, intentOrgId: string, database: Database) {
   const reportRunId = fleetDesignReportRunIdArg(args);
   const approval = fleetDesignApprovalSchema.safeParse(args.approval);
   if (!reportRunId || !approval.success) return null;
-  const targets = await snapshotFleetDesignApplyTargets(reportRunId, approval.data, database);
+  const targets = await snapshotFleetDesignApplyTargets(reportRunId, intentOrgId, approval.data, database);
   return targets ? { v: 1, reportRunId, ...targets } : null;
 }
 
-export async function fleetDesignRollbackDigestMaterial(args: Record<string, unknown>, database: Database) {
+export async function fleetDesignRollbackDigestMaterial(args: Record<string, unknown>, intentOrgId: string, database: Database) {
   const reportRunId = fleetDesignReportRunIdArg(args);
   if (!reportRunId) return null;
-  const targets = await snapshotFleetDesignRollbackTargets(reportRunId, database);
+  const targets = await snapshotFleetDesignRollbackTargets(reportRunId, intentOrgId, database);
   return targets ? { v: 1, reportRunId, ...targets } : null;
 }

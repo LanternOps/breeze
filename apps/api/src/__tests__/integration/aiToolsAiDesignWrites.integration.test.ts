@@ -537,18 +537,22 @@ function outcomeFor(deviceIds: string[], roleCorrections: string[] = []): FleetD
   });
 }
 
-async function seedFleet() {
-  const f = await seedPartner(fleetGrants);
-  const deviceIds = [await seedDevice(f.org.id, f.site.id), await seedDevice(f.org.id, f.site.id)];
+async function seedDesignRun(orgId: string, deviceIds: string[]) {
   const outcome = outcomeFor(deviceIds, deviceIds);
   const [report] = await getTestDb().insert(reports).values({
-    orgId: f.org.id, name: 'Fleet Design', type: 'ai_fleet_design', config: {}, schedule: 'one_time', format: 'pdf', createdBy: null,
+    orgId, name: 'Fleet Design', type: 'ai_fleet_design', config: {}, schedule: 'one_time', format: 'pdf', createdBy: null,
   }).returning({ id: reports.id });
   const summary = { fleetDesign: { schemaVersion: outcome.schemaVersion, outcome, runId: null, orgName: 'Fixture', generatedAt: new Date().toISOString() } } as unknown as FleetDesignReportSummary;
   const [run] = await getTestDb().insert(reportRuns).values({
     reportId: report!.id, status: 'completed', startedAt: new Date(), completedAt: new Date(), rowCount: 0, result: { rows: [], rowCount: 0, summary },
   }).returning({ id: reportRuns.id });
-  return { ...f, deviceIds, reportRunId: run!.id };
+  return run!.id;
+}
+
+async function seedFleet() {
+  const f = await seedPartner(fleetGrants);
+  const deviceIds = [await seedDevice(f.org.id, f.site.id), await seedDevice(f.org.id, f.site.id)];
+  return { ...f, deviceIds, reportRunId: await seedDesignRun(f.org.id, deviceIds) };
 }
 
 const functionsOnly: FleetDesignApproval = { functions: ['file_server'], monitoring: [], retired: [], automation: [], legacy: [], roleCorrections: [], displacementsAccepted: [] };
@@ -562,8 +566,8 @@ const contextOf = (auth: AuthContext) => buildDbAccessContext({ scope: auth.scop
 const applyFunctions = (f: Awaited<ReturnType<typeof seedFleet>>) => withDbAccessContext(contextOf(f.auth), () => applyFleetDesign(f.auth, f.reportRunId, functionsOnly));
 
 /** The digest a release would verify, read as the release paths read it. */
-const verified = async (input: Record<string, unknown>) => {
-  const result = await withSystemDbAccessContext(() => computeEffectDigestForRelease('manage_fleet_designs', input, db));
+const verified = async (input: Record<string, unknown>, intentOrgId: string) => {
+  const result = await withSystemDbAccessContext(() => computeEffectDigestForRelease('manage_fleet_designs', input, db, { intentOrgId }));
   expect(result.digest).toMatch(/^[0-9a-f]{64}$/);
   expect(result.context?.verifiedFleetDesignBinding).toEqual({ digest: result.digest });
   return result.context!.verifiedFleetDesignBinding!;
@@ -649,7 +653,7 @@ describe('manage_fleet_designs under the report-run lock (Review Focus #3)', () 
   runDb('a change committed after verification and before the lock refuses: CONTENT_CHANGED, no ledger row', async () => {
     const f = await seedFleet();
     const args = input(f.reportRunId);
-    const binding = await verified(args);
+    const binding = await verified(args, f.org.id);
     await getTestDb().update(devices).set({ deviceRoleSource: 'manual' }).where(eq(devices.id, f.deviceIds[0]!));
     const out = await runFleet(f.auth, args, binding);
     expect(out.code).toBe('CONTENT_CHANGED');
@@ -659,7 +663,7 @@ describe('manage_fleet_designs under the report-run lock (Review Focus #3)', () 
   runDb('CONTROL: with nothing changed the verified digest matches under the caller context, and it applies', async () => {
     const f = await seedFleet();
     const args = input(f.reportRunId);
-    const out = await runFleet(f.auth, args, await verified(args));
+    const out = await runFleet(f.auth, args, await verified(args, f.org.id));
     expect(out.error).toBeUndefined();
     expect(out.applied).toEqual(['functions:file_server']);
   });
@@ -674,7 +678,7 @@ describe('manage_fleet_designs under the report-run lock (Review Focus #3)', () 
   runDb('two concurrent releases of one apply: one applies, the other refuses on the moved ledger', async () => {
     const f = await seedFleet();
     const args = input(f.reportRunId);
-    const binding = await verified(args);
+    const binding = await verified(args, f.org.id);
     const results = await Promise.all([runFleet(f.auth, args, binding), runFleet(f.auth, args, binding)]);
     const codes = results.map((r) => r.code).sort();
     expect(codes).toEqual(['CONTENT_CHANGED', undefined].sort());
@@ -686,9 +690,27 @@ describe('manage_fleet_designs under the report-run lock (Review Focus #3)', () 
     const f = await seedFleet();
     const foreign = await seedFleet();
     const args = input(foreign.reportRunId);
-    const out = await runFleet(f.auth, args, await verified(args));
+    const out = await runFleet(f.auth, args, await verified(args, foreign.org.id));
     expect(out.code).toBe('NOT_FOUND');
     await expect(ledgerOf(foreign.reportRunId)).resolves.toHaveLength(0);
+  });
+
+  runDb("another org's design under one partner: no digest for this intent's org, and no intent is filed over it", async () => {
+    const f = await seedFleet();
+    const sibling = await createOrganization({ partnerId: f.partner.id });
+    const siblingRun = await seedDesignRun(sibling.id, f.deviceIds);
+
+    for (const args of [input(siblingRun), { action: 'rollback', reportRunId: siblingRun }]) {
+      const here = await withSystemDbAccessContext(() => computeEffectDigestForRelease('manage_fleet_designs', args, db, { intentOrgId: f.org.id }));
+      expect(here).toEqual({ digest: null });
+      await verified(args, sibling.id);
+    }
+
+    await expect(createActionIntent(f.auth, {
+      toolName: 'manage_fleet_designs', input: input(siblingRun), source: 'chat', orgId: f.org.id,
+    } as never)).rejects.toMatchObject({ code: 'effect_digest_unresolvable' });
+    const filed = await getTestDb().select({ id: actionIntents.id }).from(actionIntents).where(eq(actionIntents.orgId, f.org.id));
+    expect(filed).toEqual([]);
   });
 
   runDb('a preview reads the design under the caller context, with no approval', async () => {

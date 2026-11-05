@@ -243,7 +243,7 @@ describe.each(['apply', 'rollback'] as const)('%s release gate', (action) => {
   it('re-derives the digest AFTER taking the report-run lock, then writes', async () => {
     await run(input, auth(), released);
     expect(h.order).toEqual(['lock', 'digest', action]);
-    expect(h.digest).toHaveBeenCalledWith('manage_fleet_designs', input, expect.anything());
+    expect(h.digest).toHaveBeenCalledWith('manage_fleet_designs', input, expect.anything(), { intentOrgId: ORG });
   });
 
   it('a change after verification is refused under the lock: CONTENT_CHANGED, no write', async () => {

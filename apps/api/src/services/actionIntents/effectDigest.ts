@@ -176,9 +176,17 @@ export type EffectDigestOutcome =
   | { kind: 'unresolved'; reason: 'missing_arg' | 'target_absent' }
   | { kind: 'pinned'; digest: string };
 
+/**
+ * The intent a digest is for. Most resolvers ignore it: their row is named by the
+ * arguments and checked by the handler. A resolver whose target names its own org
+ * reads it to refuse a target outside the intent's org, so nothing is pinned for an
+ * approver of the wrong org. With no org given, that resolver pins nothing.
+ */
+export type EffectDigestScope = { intentOrgId?: string };
+
 const EFFECT_DIGEST_RESOLVERS: Record<
   string,
-  (args: Record<string, unknown>, database: Database) => Promise<ResolverResult>
+  (args: Record<string, unknown>, database: Database, scope: EffectDigestScope) => Promise<ResolverResult>
 > = {
   // run_script (Tier 3, SUPERVISED — see the scope-independence note in the
   // header; this resolver was unreachable until pinning stopped being gated
@@ -555,17 +563,20 @@ const EFFECT_DIGEST_RESOLVERS: Record<
   // manage_fleet_designs:apply / :rollback (full-control W16 PR B, #6786; four-eyes, Decision 5). The state apply and
   // rollback resolve against, read with no auth (fleetDesign/applyTargets.ts). Both release paths verify in an earlier
   // transaction than the one that writes, so a match also carries the digest to the handler, which re-derives it under
-  // the report-run lock (`verifiedFleetDesignBinding`). Mandatory per action.
-  'manage_fleet_designs:apply': async (args, database) => {
+  // the report-run lock (`verifiedFleetDesignBinding`). Mandatory per action. A design
+  // outside the intent's org pins nothing, so no approver of another org can pass it.
+  'manage_fleet_designs:apply': async (args, database, { intentOrgId }) => {
     if (typeof args.reportRunId !== 'string' || !args.approval) return MISSING_ARG;
+    if (!intentOrgId) return TARGET_ABSENT;
     const { fleetDesignApplyDigestMaterial } = await import('./fleetDesignDigest');
-    const pinned = await fleetDesignApplyDigestMaterial(args, database);
+    const pinned = await fleetDesignApplyDigestMaterial(args, intentOrgId, database);
     return pinned ? { kind: 'material', material: canonicalJson(pinned), bindsFleetDesign: true } : TARGET_ABSENT;
   },
-  'manage_fleet_designs:rollback': async (args, database) => {
+  'manage_fleet_designs:rollback': async (args, database, { intentOrgId }) => {
     if (typeof args.reportRunId !== 'string') return MISSING_ARG;
+    if (!intentOrgId) return TARGET_ABSENT;
     const { fleetDesignRollbackDigestMaterial } = await import('./fleetDesignDigest');
-    const pinned = await fleetDesignRollbackDigestMaterial(args, database);
+    const pinned = await fleetDesignRollbackDigestMaterial(args, intentOrgId, database);
     return pinned ? { kind: 'material', material: canonicalJson(pinned), bindsFleetDesign: true } : TARGET_ABSENT;
   },
 
@@ -1118,8 +1129,9 @@ export async function computeEffectDigestOutcome(
   toolName: string,
   args: Record<string, unknown>,
   database: Database,
+  scope: EffectDigestScope = {},
 ): Promise<EffectDigestOutcome> {
-  const resolved = await resolveEffectDigest(toolName, args, database);
+  const resolved = await resolveEffectDigest(toolName, args, database, scope);
   // Project `verified` back off. The creation path has no dispatch to feed and
   // no business holding decrypted tenant plaintext one property access away —
   // narrowing the declared return type alone would leave the object carrying
@@ -1137,6 +1149,7 @@ async function resolveEffectDigest(
   toolName: string,
   args: Record<string, unknown>,
   database: Database,
+  scope: EffectDigestScope,
 ): Promise<{
   outcome: EffectDigestOutcome;
   verified?: VerifiedRunScript;
@@ -1148,7 +1161,7 @@ async function resolveEffectDigest(
   const key = effectDigestResolverKey(toolName, action);
   if (!key) return { outcome: { kind: 'not_applicable' } };
 
-  const result = await EFFECT_DIGEST_RESOLVERS[key]!(args, database);
+  const result = await EFFECT_DIGEST_RESOLVERS[key]!(args, database, scope);
   if (result.kind !== 'material') return { outcome: { kind: 'unresolved', reason: result.kind } };
 
   const digest = createHash('sha256').update(result.material).digest('hex');
@@ -1204,8 +1217,9 @@ export async function computeEffectDigestForRelease(
   toolName: string,
   args: Record<string, unknown>,
   database: Database,
+  scope: EffectDigestScope = {},
 ): Promise<EffectDigestReleaseResult> {
-  const resolved = await resolveEffectDigest(toolName, args, database);
+  const resolved = await resolveEffectDigest(toolName, args, database, scope);
   const digest = resolved.outcome.kind === 'pinned' ? resolved.outcome.digest : null;
   if (resolved.verified) return { digest, context: { verifiedRunScript: resolved.verified } };
   if (resolved.verifiedTopologyDiagnostic) {

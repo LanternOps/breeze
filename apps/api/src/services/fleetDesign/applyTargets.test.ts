@@ -63,7 +63,6 @@ import { previewFleetDesignApply } from './preview';
 import { snapshotFleetDesignApplyTargets, snapshotFleetDesignRollbackTargets } from './applyTargets';
 
 const ORG = '00000000-0000-4000-8000-0000000000a1';
-const PARTNER = '00000000-0000-4000-8000-0000000000a2';
 const RUN = '00000000-0000-4000-8000-0000000000a3';
 const D1 = '00000000-0000-4000-8000-0000000000d1';
 const D2 = '00000000-0000-4000-8000-0000000000d2';
@@ -91,7 +90,7 @@ function outcome(): FleetDesignOutcome {
 }
 
 const reportRow = (over: Record<string, unknown> = {}) => ({
-  reportRunId: RUN, orgId: ORG, partnerId: null, summary: { fleetDesign: { outcome: outcome() } }, ...over,
+  reportRunId: RUN, summary: { fleetDesign: { outcome: outcome() } }, ...over,
 });
 
 const approval = (over: Partial<FleetDesignApproval> = {}): FleetDesignApproval => ({
@@ -133,7 +132,7 @@ const update = (table: unknown, fn: (row: Record<string, unknown>) => Record<str
   h.tables.set(table, (h.tables.get(table) ?? []).map(fn));
 };
 
-const applySnap = (a: FleetDesignApproval = approval()) => snapshotFleetDesignApplyTargets(RUN, a, database);
+const applySnap = (a: FleetDesignApproval = approval()) => snapshotFleetDesignApplyTargets(RUN, ORG, a, database);
 
 beforeEach(seed);
 
@@ -216,7 +215,6 @@ describe('snapshotFleetDesignApplyTargets', () => {
 
   it.each([
     ['a missing run', () => h.tables.set(reportRuns, [])],
-    ['a partner-owned report', () => h.tables.set(reportRuns, [reportRow({ orgId: null, partnerId: PARTNER })])],
     ['a run with no stored design', () => h.tables.set(reportRuns, [reportRow({ summary: {} })])],
   ])('%s is null, the resolver reports TARGET_ABSENT', async (_label, mutate) => {
     mutate();
@@ -233,7 +231,7 @@ describe('snapshotFleetDesignRollbackTargets', () => {
       { id: 'l4', itemRef: 'functions:old', itemKind: 'function', status: 'rolled_back', step: 1, appliedAt: new Date('2026-10-01T00:00:01Z'), createdRefs: {}, beforeImage: null },
     ]);
   });
-  const rollbackSnap = () => snapshotFleetDesignRollbackTargets(RUN, database);
+  const rollbackSnap = () => snapshotFleetDesignRollbackTargets(RUN, ORG, database);
 
   it('pins only applied rows, with their before-image hashed', async () => {
     const snap = await rollbackSnap();
@@ -257,9 +255,7 @@ describe('snapshotFleetDesignRollbackTargets', () => {
     expect(JSON.stringify(await rollbackSnap())).not.toBe(before);
   });
 
-  it('a partner-owned or missing run is null', async () => {
-    h.tables.set(reportRuns, [reportRow({ orgId: null, partnerId: PARTNER })]);
-    await expect(rollbackSnap()).resolves.toBeNull();
+  it('a missing run is null', async () => {
     h.tables.set(reportRuns, []);
     await expect(rollbackSnap()).resolves.toBeNull();
   });

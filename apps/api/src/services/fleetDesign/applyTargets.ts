@@ -9,9 +9,10 @@
  * the inputs the preview resolves against: what the approver saw, as the state that
  * produced it. `applyTargets.test.ts` checks the two agree.
  *
- * Bound to the org a report names, never to a caller: the handler reads it system-
- * scoped too (under the report-run lock, on a second connection), so a partner-wide
- * row an org session sees differently cannot make a matching digest refuse.
+ * Bound to the intent's org, never to a caller: a report of any other org reads as
+ * missing, so an approver of one org cannot pass a design of another. The handler reads
+ * it system-scoped too (under the report-run lock, on a second connection), so a
+ * partner-wide row an org session sees differently cannot make a matching digest refuse.
  *
  * It holds no row lock and no plaintext destination: a notification channel's config
  * (for slack, teams and webhook the URL IS the credential) is hashed.
@@ -75,20 +76,16 @@ function parseMonitoring(ref: string): { functionKey: string; kind: string; inde
   return match ? { functionKey: match[1]!, kind: match[2]!, index: Number(match[3]) } : null;
 }
 
-/** The report's org and stored design. Null for "missing / not a Fleet Design / not an org's" alike. */
-async function loadOrgReport(reportRunId: string, database: Executor): Promise<{ orgId: string; outcome: FleetDesignOutcome | null } | null> {
+/** The stored design. Null for "missing / not a Fleet Design / not this org's" alike. */
+async function loadOrgReport(reportRunId: string, orgId: string, database: Executor): Promise<{ outcome: FleetDesignOutcome | null } | null> {
   const [row] = await database
-    .select({
-      orgId: reports.orgId,
-      partnerId: reports.partnerId,
-      summary: sql<FleetDesignReportSummary | null>`${reportRuns.result}->'summary'`,
-    })
+    .select({ summary: sql<FleetDesignReportSummary | null>`${reportRuns.result}->'summary'` })
     .from(reportRuns)
     .innerJoin(reports, eq(reportRuns.reportId, reports.id))
-    .where(and(eq(reportRuns.id, reportRunId), eq(reports.type, FLEET_DESIGN_REPORT_TYPE)))
+    .where(and(eq(reportRuns.id, reportRunId), eq(reports.orgId, orgId), eq(reports.type, FLEET_DESIGN_REPORT_TYPE)))
     .limit(1);
-  if (!row || !row.orgId || row.partnerId) return null;
-  return { orgId: row.orgId, outcome: row.summary?.fleetDesign?.outcome ?? null };
+  if (!row) return null;
+  return { outcome: row.summary?.fleetDesign?.outcome ?? null };
 }
 
 async function loadGroupMembers(groupId: string, orgId: string, database: Executor): Promise<string[]> {
@@ -192,10 +189,10 @@ async function loadChannelStates(channelIds: readonly string[], database: Execut
 
 export type FleetDesignApplyTargets = NonNullable<Awaited<ReturnType<typeof snapshotFleetDesignApplyTargets>>>;
 
-export async function snapshotFleetDesignApplyTargets(reportRunId: string, approval: FleetDesignApproval, database: Executor) {
-  const report = await loadOrgReport(reportRunId, database);
+export async function snapshotFleetDesignApplyTargets(reportRunId: string, orgId: string, approval: FleetDesignApproval, database: Executor) {
+  const report = await loadOrgReport(reportRunId, orgId, database);
   if (!report?.outcome) return null;
-  const { orgId, outcome } = report;
+  const { outcome } = report;
   const canonical = canonicalApproval(approval);
 
   const ledger = await database
@@ -302,10 +299,9 @@ export type FleetDesignRollbackTargets = NonNullable<Awaited<ReturnType<typeof s
  * The ledger's `applied` rows in step order, plus the live state each would touch:
  * rollback compares and overwrites that state, so what it does depends on it.
  */
-export async function snapshotFleetDesignRollbackTargets(reportRunId: string, database: Executor) {
-  const report = await loadOrgReport(reportRunId, database);
+export async function snapshotFleetDesignRollbackTargets(reportRunId: string, orgId: string, database: Executor) {
+  const report = await loadOrgReport(reportRunId, orgId, database);
   if (!report) return null;
-  const { orgId } = report;
 
   const rows = (await database
     .select({

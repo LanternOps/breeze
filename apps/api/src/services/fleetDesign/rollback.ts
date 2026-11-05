@@ -153,6 +153,7 @@ async function rollbackRoleCorrection(ctx: RollbackCtx, row: FleetDesignLedgerRo
   const appliedRole = row.createdRefs?.deviceRole
     ?? ctx.outcome?.sections?.unsure?.roleCorrections?.find((r) => r.deviceId === deviceId)?.proposedRole;
   if (!appliedRole) throw new RollbackRefused('modified_since_apply');
+  // own-device-row-allowlisted: fleet-design-rollback-role-correction
   const [updated] = await db
     .update(devices)
     .set({ deviceRole: before.deviceRole, deviceRoleSource: before.deviceRoleSource, updatedAt: new Date() })

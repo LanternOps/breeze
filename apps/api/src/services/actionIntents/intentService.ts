@@ -2629,7 +2629,7 @@ export async function createActionIntent(
       // effect_digest NULL, which both release paths treat as "nothing to
       // check", not a failure. The `unresolved` cases are audited after
       // commit — they are intents that SHOULD have been pinned and weren't.
-      const effectDigestOutcome = await computeEffectDigestOutcome(input.toolName, input.input, db);
+      const effectDigestOutcome = await computeEffectDigestOutcome(input.toolName, input.input, db, { intentOrgId: orgId });
       // A tool whose pin is MANDATORY (effectDigest.ts's
       // requiresPinnedEffectDigest) never stores a NULL digest: refuse the
       // proposal instead of inheriting the legacy "nothing to check" fallback.

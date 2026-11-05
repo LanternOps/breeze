@@ -2409,6 +2409,7 @@ describe('createActionIntent — effect-digest pinning wiring', () => {
       'run_script',
       { scriptId: 'script-1', deviceIds: ['device-1'] },
       db,
+      { intentOrgId: ORG_ID },
     );
     expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBe('d'.repeat(64));
   });
@@ -2433,6 +2434,7 @@ describe('createActionIntent — effect-digest pinning wiring', () => {
       'run_script',
       { scriptId: 'script-1', deviceIds: ['device-1'] },
       db,
+      { intentOrgId: ORG_ID },
     );
     expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBe('e'.repeat(64));
   });
@@ -2449,7 +2451,7 @@ describe('createActionIntent — effect-digest pinning wiring', () => {
       baseInput({ toolName: 'm365_send_mail', input: { to: ['a@example.com'] }, idempotencyKey: 'key-fe-unpinnable' }),
     );
 
-    expect(computeEffectDigestOutcome).toHaveBeenCalledWith('m365_send_mail', { to: ['a@example.com'] }, db);
+    expect(computeEffectDigestOutcome).toHaveBeenCalledWith('m365_send_mail', { to: ['a@example.com'] }, db, { intentOrgId: ORG_ID });
     expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBeNull();
     // `not_applicable` is the expected, correct case — it must NOT pollute the
     // unpinned signal.

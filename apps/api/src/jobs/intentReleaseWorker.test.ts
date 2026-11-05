@@ -1720,6 +1720,7 @@ describe('releaseApprovedIntent', () => {
         intent.actionName,
         intent.arguments,
         mockedDb,
+        { intentOrgId: intent.orgId },
       );
       expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
@@ -1890,7 +1891,7 @@ describe('releaseApprovedIntent', () => {
 
       await releaseApprovedIntent(intent.id);
 
-      expect(effectDigestMock.computeEffectDigestForRelease).toHaveBeenCalledWith('release_containment', releaseArgs, expect.anything());
+      expect(effectDigestMock.computeEffectDigestForRelease).toHaveBeenCalledWith('release_containment', releaseArgs, expect.anything(), { intentOrgId: intent.orgId });
       const call = aiToolsMock.executeTool.mock.calls[0]!;
       expect(call.slice(0, 2)).toEqual(['release_containment', releaseArgs]);
       const context = (call[3] as { context?: ToolExecutionContext }).context!;

@@ -19,6 +19,8 @@ import { fleetDesignApplyDigestMaterial, fleetDesignRollbackDigestMaterial } fro
 
 const database = {} as Database;
 const ID = '11111111-1111-4111-8111-111111111111';
+const ORG = '22222222-2222-4222-8222-222222222222';
+const scope = { intentOrgId: ORG };
 
 beforeEach(() => {
   for (const fn of Object.values(h)) fn.mockReset();
@@ -73,19 +75,19 @@ describe.each(['apply', 'rollback'] as const)('manage_fleet_designs:%s', (action
   const snapshot = action === 'apply' ? h.apply : h.rollback;
 
   it('a match hands the handler the digest it matched', async () => {
-    const released = await computeEffectDigestForRelease('manage_fleet_designs', args(), database);
+    const released = await computeEffectDigestForRelease('manage_fleet_designs', args(), database, scope);
     expect(released.digest).toMatch(/^[0-9a-f]{64}$/);
     expect(released.context).toEqual({ verifiedFleetDesignBinding: { digest: released.digest } });
   });
 
   it('no report id is missing_arg', async () => {
     const { reportRunId: _dropped, ...rest } = args();
-    await expect(computeEffectDigestOutcome('manage_fleet_designs', rest, database)).resolves.toEqual({ kind: 'unresolved', reason: 'missing_arg' });
+    await expect(computeEffectDigestOutcome('manage_fleet_designs', rest, database, scope)).resolves.toEqual({ kind: 'unresolved', reason: 'missing_arg' });
     expect(snapshot).not.toHaveBeenCalled();
   });
 
   it('a malformed report id never reaches a read, and there is no binding', async () => {
-    const released = await computeEffectDigestForRelease('manage_fleet_designs', args({ reportRunId: 'nope' }), database);
+    const released = await computeEffectDigestForRelease('manage_fleet_designs', args({ reportRunId: 'nope' }), database, scope);
     expect(released.digest).toBeNull();
     expect(released.context).toBeUndefined();
     expect(snapshot).not.toHaveBeenCalled();
@@ -93,31 +95,40 @@ describe.each(['apply', 'rollback'] as const)('manage_fleet_designs:%s', (action
 
   it('a run that is not an org design is target_absent, and there is no binding', async () => {
     snapshot.mockResolvedValue(null);
-    await expect(computeEffectDigestOutcome('manage_fleet_designs', args(), database)).resolves.toEqual({ kind: 'unresolved', reason: 'target_absent' });
-    const released = await computeEffectDigestForRelease('manage_fleet_designs', args(), database);
+    await expect(computeEffectDigestOutcome('manage_fleet_designs', args(), database, scope)).resolves.toEqual({ kind: 'unresolved', reason: 'target_absent' });
+    const released = await computeEffectDigestForRelease('manage_fleet_designs', args(), database, scope);
     expect(released.digest).toBeNull();
     expect(released.context).toBeUndefined();
   });
 
+  it("reads the design in the intent's org, and with no org there is nothing to pin", async () => {
+    await computeEffectDigestForRelease('manage_fleet_designs', args(), database, scope);
+    expect(snapshot.mock.calls[0]!.slice(0, 2)).toEqual([ID, ORG]);
+    snapshot.mockClear();
+
+    await expect(computeEffectDigestOutcome('manage_fleet_designs', args(), database)).resolves.toEqual({ kind: 'unresolved', reason: 'target_absent' });
+    expect(snapshot).not.toHaveBeenCalled();
+  });
+
   it('a different snapshot is a different digest', async () => {
-    const before = await computeEffectDigestForRelease('manage_fleet_designs', args(), database);
+    const before = await computeEffectDigestForRelease('manage_fleet_designs', args(), database, scope);
     snapshot.mockResolvedValue({ orgId: 'o', moved: true });
-    const after = await computeEffectDigestForRelease('manage_fleet_designs', args(), database);
+    const after = await computeEffectDigestForRelease('manage_fleet_designs', args(), database, scope);
     expect(after.digest).not.toBe(before.digest);
   });
 });
 
 describe('fleetDesignDigest', () => {
   it('apply needs a parseable approval, and defaults its arrays as the route does', async () => {
-    await expect(fleetDesignApplyDigestMaterial({ reportRunId: ID, approval: { functions: ['Not A Key'] } }, database)).resolves.toBeNull();
-    await expect(fleetDesignApplyDigestMaterial({ reportRunId: ID }, database)).resolves.toBeNull();
+    await expect(fleetDesignApplyDigestMaterial({ reportRunId: ID, approval: { functions: ['Not A Key'] } }, ORG, database)).resolves.toBeNull();
+    await expect(fleetDesignApplyDigestMaterial({ reportRunId: ID }, ORG, database)).resolves.toBeNull();
     expect(h.apply).not.toHaveBeenCalled();
-    await expect(fleetDesignApplyDigestMaterial({ reportRunId: ID, approval: {} }, database)).resolves.toMatchObject({ v: 1, reportRunId: ID });
-    expect(h.apply.mock.calls[0]![1]).toMatchObject({ functions: [], roleCorrections: [] });
+    await expect(fleetDesignApplyDigestMaterial({ reportRunId: ID, approval: {} }, ORG, database)).resolves.toMatchObject({ v: 1, reportRunId: ID });
+    expect(h.apply.mock.calls[0]![2]).toMatchObject({ functions: [], roleCorrections: [] });
   });
 
   it('rollback needs a uuid', async () => {
-    await expect(fleetDesignRollbackDigestMaterial({ reportRunId: 'nope' }, database)).resolves.toBeNull();
-    await expect(fleetDesignRollbackDigestMaterial({ reportRunId: ID }, database)).resolves.toMatchObject({ v: 1, reportRunId: ID });
+    await expect(fleetDesignRollbackDigestMaterial({ reportRunId: 'nope' }, ORG, database)).resolves.toBeNull();
+    await expect(fleetDesignRollbackDigestMaterial({ reportRunId: ID }, ORG, database)).resolves.toMatchObject({ v: 1, reportRunId: ID });
   });
 });
