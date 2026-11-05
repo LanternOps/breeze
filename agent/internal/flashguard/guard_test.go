@@ -341,58 +341,170 @@ func TestUnusableDirRefusesEnterButNotPowerActions(t *testing.T) {
 	done()
 }
 
-// Holds the invariant the guard exists for: at no instant is a section open
-// while a power action is executing. Run with -race.
-func TestAdmitAndEnterAreAtomic(t *testing.T) {
-	g := New(t.TempDir())
-	var inSection, inAction, violations, entered, admitted atomic.Int64
-	t.Cleanup(func() {
-		// Both sides must have run, or the invariant was never exercised.
-		if entered.Load() == 0 || admitted.Load() == 0 {
-			t.Errorf("vacuous run: %d sections, %d power actions", entered.Load(), admitted.Load())
-		}
-	})
-	var wg sync.WaitGroup
-	stop := time.Now().Add(300 * time.Millisecond)
+// atomicityDeadline only turns a guard that refuses for ever into a failure rather
+// than a test timeout. A passing run never comes near it.
+const atomicityDeadline = 30 * time.Second
 
-	for i := 0; i < 4; i++ {
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			for time.Now().Before(stop) {
-				release, err := g.Enter("bios", "cmd", time.Hour)
-				if err != nil {
-					continue
-				}
-				entered.Add(1)
-				inSection.Add(1)
-				if inAction.Load() != 0 {
-					violations.Add(1)
-				}
-				inSection.Add(-1)
-				_ = release()
+// atomicityProbe counts turns taken on each side of the guard and catches them
+// overlapping. A turn retries until it gets in, then checks for the other side
+// last thing before leaving its window. Because both sides check at the end of
+// their window, any overlap at all is seen by whichever side leaves first.
+type atomicityProbe struct {
+	t                          *testing.T
+	g                          *Guard
+	inSection, inAction        atomic.Int64
+	violations                 atomic.Int64
+	sections, actions          atomic.Int64
+	enterRefused, admitRefused atomic.Int64
+}
+
+// turn is one side's single turn: onRefused runs after each refusal, hold runs
+// inside the window.
+type turn func(onRefused, hold func())
+
+func (p *atomicityProbe) section(onRefused, hold func()) {
+	deadline := time.Now().Add(atomicityDeadline)
+	for {
+		release, err := p.g.Enter("bios", "cmd", time.Hour)
+		if err == nil {
+			p.sections.Add(1)
+			p.inSection.Add(1)
+			hold()
+			if p.inAction.Load() != 0 {
+				p.violations.Add(1)
 			}
-		}()
-		go func() {
-			defer wg.Done()
-			for time.Now().Before(stop) {
-				done, err := g.AdmitPowerAction("reboot")
-				if err != nil {
-					continue
-				}
-				admitted.Add(1)
-				inAction.Add(1)
-				if inSection.Load() != 0 {
-					violations.Add(1)
-				}
-				inAction.Add(-1)
-				done()
+			p.inSection.Add(-1)
+			if err := release(); err != nil {
+				p.t.Errorf("release: %v", err)
 			}
-		}()
+			return
+		}
+		if !errors.Is(err, ErrSectionActive) && !errors.Is(err, ErrPowerActionPending) {
+			p.t.Errorf("Enter: %v", err)
+			return
+		}
+		p.enterRefused.Add(1)
+		onRefused()
+		if time.Now().After(deadline) {
+			p.t.Errorf("Enter still refused after %v: %v", atomicityDeadline, err)
+			return
+		}
+		time.Sleep(lockRetryInterval)
+	}
+}
+
+func (p *atomicityProbe) action(onRefused, hold func()) {
+	deadline := time.Now().Add(atomicityDeadline)
+	for {
+		done, err := p.g.AdmitPowerAction("reboot")
+		if err == nil {
+			p.actions.Add(1)
+			p.inAction.Add(1)
+			hold()
+			if p.inSection.Load() != 0 {
+				p.violations.Add(1)
+			}
+			p.inAction.Add(-1)
+			done()
+			return
+		}
+		if !errors.Is(err, ErrFlashInProgress) {
+			p.t.Errorf("AdmitPowerAction: %v", err)
+			return
+		}
+		p.admitRefused.Add(1)
+		onRefused()
+		if time.Now().After(deadline) {
+			p.t.Errorf("AdmitPowerAction still refused after %v: %v", atomicityDeadline, err)
+			return
+		}
+		time.Sleep(lockRetryInterval)
+	}
+}
+
+// headStart puts lead in its window and keeps it there until the other side has
+// tried and been refused, so the conflict is certain rather than likely. If a
+// broken guard lets the other side in instead, it finishes its turn inside lead's
+// window and the overlap is counted.
+func headStart(lead, other turn) {
+	inWindow := make(chan struct{})
+	contended := make(chan struct{})
+	var openWindow, settle sync.Once
+	opened := func() { openWindow.Do(func() { close(inWindow) }) }
+	settled := func() { settle.Do(func() { close(contended) }) }
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		defer opened() // a lead that failed outright must not strand the wait below
+		lead(func() {}, func() {
+			opened()
+			<-contended
+		})
+	})
+	<-inWindow
+	for range 2 {
+		wg.Go(func() {
+			defer settled()
+			other(settled, func() {})
+		})
 	}
 	wg.Wait()
-	if v := violations.Load(); v != 0 {
+}
+
+// freeRace starts both sides at one instant. Each holds its window for one lock
+// retry so that a turn polling the lock can land inside it.
+func (p *atomicityProbe) freeRace() {
+	start := make(chan struct{})
+	hold := func() { time.Sleep(lockRetryInterval) }
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() {
+			<-start
+			p.section(func() {}, hold)
+		})
+		wg.Go(func() {
+			<-start
+			p.action(func() {}, hold)
+		})
+	}
+	close(start)
+	wg.Wait()
+}
+
+// Holds the invariant the guard exists for: at no instant is a section open
+// while a power action is executing. Run with -race.
+//
+// The guard's lock is not fair (see AdmitPowerAction), so a time-boxed loop on
+// both sides can give either side no turn at all. Here each side has a fixed
+// number of turns and stops competing once they are used, so neither can starve
+// the other past the end of a round and the counts below are exact.
+func TestAdmitAndEnterAreAtomic(t *testing.T) {
+	logging.DiscardOutput() // every section logs twice
+	t.Cleanup(func() { logging.Init("text", "info", nil) })
+
+	const raceRounds = 8
+	p := &atomicityProbe{t: t, g: New(t.TempDir())}
+
+	headStart(p.section, p.action)
+	headStart(p.action, p.section)
+	for i := 0; i < raceRounds && !t.Failed(); i++ {
+		p.freeRace()
+	}
+
+	if v := p.violations.Load(); v != 0 {
 		t.Fatalf("a section and a power action overlapped %d times", v)
+	}
+	if t.Failed() {
+		return // a turn gave up, so the counts below would only add noise
+	}
+	// Every turn must have run, and each side must have been refused by the other
+	// at least once, or the invariant was never exercised.
+	const want = 3 + 2*raceRounds
+	if p.sections.Load() != want || p.actions.Load() != want {
+		t.Errorf("vacuous run: %d sections and %d power actions, want %d of each", p.sections.Load(), p.actions.Load(), want)
+	}
+	if p.enterRefused.Load() == 0 || p.admitRefused.Load() == 0 {
+		t.Errorf("vacuous run: %d Enter refusals, %d admission refusals", p.enterRefused.Load(), p.admitRefused.Load())
 	}
 }
 

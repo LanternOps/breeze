@@ -401,6 +401,14 @@ func (g *Guard) clearExpired() {
 // If the lock cannot be taken at all, the lock is skipped and a section recorded
 // on disk still refuses the action. Enter fails closed on the same error, so an
 // agent with a broken data directory keeps the reboots it had before this guard.
+//
+// The lock is not fair. Nobody queues on it: every holder takes it by retrying a
+// non-blocking attempt, so a contender in a tight loop can keep out one that polls.
+// Back-to-back sections can refuse every admission, and overlapping admissions can
+// refuse every Enter, for as long as the loop lasts. That only delays the loser,
+// which is told so; the two never overlap. Fairness is not worth having here: a
+// section is one firmware install, an admission is one power action, and a caller
+// that must not lose uses WaitForPowerAction.
 func (g *Guard) AdmitPowerAction(name string) (done func(), err error) {
 	lock, err := g.acquire(lockShared, g.lockWait)
 	switch {
