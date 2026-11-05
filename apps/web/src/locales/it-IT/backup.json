@@ -49,7 +49,6 @@
     "policyId": "ID criterio",
     "featureLinkId": "ID collegamento funzionalità",
     "errorLog": "Log errori",
-    "savings": "{{protected}} protetti - {{uploaded}} caricati",
     "errorCount_one": "{{count}} errore",
     "errorCount_other": "{{count}} errori",
     "failedCount_one": "{{count}} non riuscito",
@@ -1244,5 +1243,36 @@
       "hint": "Breeze non riconosce ancora questo errore. Il messaggio completo è riportato sotto."
     },
     "troubleshootingLink": "Guida alla risoluzione dei problemi"
+  },
+  "fullRunReason": {
+    "no_prior_snapshot": "Primo backup per questo dispositivo e questa destinazione",
+    "base_expired": "Il backup precedente era scaduto in base alla conservazione",
+    "storage_identity_changed": "La destinazione del backup è cambiata",
+    "backup_type_mismatch": "Il backup precedente era di un altro tipo",
+    "base_job_not_completed": "Nessun backup precedente è stato completato correttamente",
+    "base_retired": "Il backup precedente è stato rimosso dalla conservazione",
+    "base_retired_race": "Il backup precedente è stato rimosso dalla conservazione",
+    "base_deleted_race": "Il backup precedente è stato rimosso dalla conservazione",
+    "no_verified_base": "Nessun backup precedente ha superato la verifica di integrità",
+    "key_root_changed": "La cartella di destinazione (prefisso) è cambiata",
+    "base_key_root_unreadable": "Impossibile leggere la posizione di archiviazione del backup precedente",
+    "invalid_destination_prefix": "Il prefisso di destinazione non è valido",
+    "nothing_reused": "Era disponibile un backup precedente, ma non è stato possibile riutilizzare alcun file invariato",
+    "unrecorded": "Motivo non registrato (questo backup è stato eseguito prima che Breeze lo registrasse)"
+  },
+  "jobDataSummary": {
+    "uploadedAndReused": "{{uploaded}} caricati · {{reused}} riutilizzati",
+    "processedBeforeStopped": "{{processed}} elaborati prima dell'interruzione",
+    "full": "Completo",
+    "heading": "Cosa ha archiviato questa esecuzione",
+    "protected": "Protetti",
+    "uploadedThisRun": "Caricati in questa esecuzione",
+    "reusedFromEarlier": "Riutilizzati da backup precedenti",
+    "backupType": "Tipo di backup",
+    "incremental": "Incrementale",
+    "fullWithReason": "Completo: {{reason}}",
+    "explainer": "Vengono caricati solo i file nuovi o modificati. I file invariati vengono riutilizzati dai backup precedenti eseguiti da questo dispositivo verso la stessa destinazione.",
+    "learnMore": "Come funzionano i backup incrementali",
+    "resumedAt": "Questa esecuzione ha ripreso un backup interrotto il {{time}}."
   }
 }

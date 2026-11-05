@@ -19,6 +19,7 @@ import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { formatNumber } from '@/lib/i18n/format';
 import { formatBytes } from './backupDashboardHelpers';
+import BackupJobDataSummary from './BackupJobDataSummary';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import { asList } from '@/lib/asList';
@@ -26,7 +27,7 @@ import ReparseSkipNotice from './ReparseSkipNotice';
 import BackupFailureCategoryBadge from './BackupFailureCategoryBadge';
 import { stripInternalTagPrefix, truncateErrorSummary } from './backupErrorText';
 import { estimateRemainingMs, formatEta, nextSpeedSample, stallState } from './backupJobProgress';
-import { splitReparseSkipNotice, stripInlineIndexDropNote, type BackupFailureCategory } from '@breeze/shared';
+import { splitReparseSkipNotice, stripInlineIndexDropNote, type BackupFailureCategory, type BackupJobDataAccounting } from '@breeze/shared';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -61,6 +62,10 @@ type BackupJobRaw = {
   errorCount?: number | null;
   errorLog?: string | null;
   failureCategory?: BackupFailureCategory | null;
+  // Absent on an older API during a rolling deploy.
+  dataAccounting?: BackupJobDataAccounting | null;
+  // GET /jobs/:id only.
+  resumedAt?: string | null;
   policyId?: string | null;
   featureLinkId?: string | null;
   snapshotId?: string | null;
@@ -83,6 +88,7 @@ type BackupJob = {
   // to 60 characters for the table, so the whole reason has to live here.
   errorDetail: string | null;
   failureCategory: BackupFailureCategory | null;
+  dataAccounting: BackupJobDataAccounting | null;
   // Live-progress fields (running rows). null when the agent never reported
   // progress (legacy agent) — the UI falls back to an indeterminate bar.
   transferredSize: number | null;
@@ -213,6 +219,7 @@ function mapJob(raw: BackupJobRaw): BackupJob {
     errorCount: raw.errorCount ?? 0,
     errorDetail: cleanedErrorLog,
     failureCategory: raw.failureCategory ?? null,
+    dataAccounting: raw.dataAccounting ?? null,
     errorSummary: cleanedErrorLog
       ? truncateErrorSummary(cleanedErrorLog)
       : raw.errorCount
@@ -639,6 +646,8 @@ export default function BackupJobList() {
                               )}
                             </div>
                           </div>
+                        ) : job.dataAccounting && job.status !== 'queued' ? (
+                          <BackupJobDataSummary accounting={job.dataAccounting} variant="cell" />
                         ) : (
                           job.size
                         )}
@@ -725,19 +734,13 @@ export default function BackupJobList() {
                               <p className="mt-1 break-all text-foreground">{details.featureLinkId ?? '--'}</p>
                             </div>
                           </div>
-                          {/* A partial or completed_with_errors run still produced
-                              a restorable snapshot, so its dedup savings are as
-                              real as a completed run's. */}
-                          {(job.status === 'completed' || job.status === 'partial' || job.status === 'completed_with_errors') && details.referencedSize != null && (
-                            <p
-                              data-testid="backup-job-savings"
-                              className="mt-4 text-xs text-muted-foreground"
-                            >
-                              {t('backupJobList.savings', {
-                                protected: formatBytes(details.totalSize ?? 0),
-                                uploaded: formatBytes(Math.max(0, (details.totalSize ?? 0) - details.referencedSize)),
-                              })}
-                            </p>
+                          {details.dataAccounting && (
+                            <BackupJobDataSummary
+                              accounting={details.dataAccounting}
+                              variant="detail"
+                              resumedAt={details.resumedAt}
+                              inFlight={isRunning || job.status === 'queued'}
+                            />
                           )}
                           {detailNotes.reparseSkipped && (
                             <ReparseSkipNotice summary={detailNotes.reparseSkipped} className="mt-4" />

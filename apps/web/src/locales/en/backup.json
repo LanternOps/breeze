@@ -49,7 +49,6 @@
     "policyId": "Policy ID",
     "featureLinkId": "Feature Link ID",
     "errorLog": "Error Log",
-    "savings": "{{protected}} protected — {{uploaded}} uploaded",
     "errorCount_one": "{{count}} error",
     "errorCount_other": "{{count}} errors",
     "failedCount_one": "{{count}} failed",
@@ -1244,5 +1243,36 @@
       "hint": "Breeze does not recognise this error yet. The full message is shown below."
     },
     "troubleshootingLink": "Troubleshooting guide"
+  },
+  "fullRunReason": {
+    "no_prior_snapshot": "First backup for this device and destination",
+    "base_expired": "The previous backup had expired under retention",
+    "storage_identity_changed": "The backup destination changed",
+    "backup_type_mismatch": "The previous backup was a different type",
+    "base_job_not_completed": "No earlier backup finished successfully",
+    "base_retired": "The previous backup was removed by retention",
+    "base_retired_race": "The previous backup was removed by retention",
+    "base_deleted_race": "The previous backup was removed by retention",
+    "no_verified_base": "No earlier backup passed integrity verification",
+    "key_root_changed": "The destination folder (prefix) changed",
+    "base_key_root_unreadable": "The previous backup's storage location could not be read",
+    "invalid_destination_prefix": "The destination prefix is invalid",
+    "nothing_reused": "An earlier backup was available, but no unchanged files could be reused",
+    "unrecorded": "Reason not recorded (this backup ran before Breeze tracked it)"
+  },
+  "jobDataSummary": {
+    "uploadedAndReused": "{{uploaded}} uploaded · {{reused}} reused",
+    "processedBeforeStopped": "{{processed}} processed before it stopped",
+    "full": "Full",
+    "heading": "What this run stored",
+    "protected": "Protected",
+    "uploadedThisRun": "Uploaded this run",
+    "reusedFromEarlier": "Reused from earlier backups",
+    "backupType": "Backup type",
+    "incremental": "Incremental",
+    "fullWithReason": "Full — {{reason}}",
+    "explainer": "Only new or changed files are uploaded. Unchanged files are reused from earlier backups made by this device to the same destination.",
+    "learnMore": "How incremental backups work",
+    "resumedAt": "This run resumed an interrupted backup at {{time}}."
   }
 }

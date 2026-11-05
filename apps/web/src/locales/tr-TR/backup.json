@@ -49,7 +49,6 @@
     "policyId": "Politika Kimliği",
     "featureLinkId": "Özellik Bağlantı Kimliği",
     "errorLog": "Hata Günlüğü",
-    "savings": "{{protected}} korumalı — {{uploaded}} yüklendi",
     "errorCount_one": "{{count}} hatası",
     "errorCount_other": "{{count}} hatalar",
     "failedCount_one": "{{count}} başarısız oldu",
@@ -1244,5 +1243,36 @@
       "hint": "Breeze bu hatayı henüz tanımıyor. Tam ileti aşağıda gösteriliyor."
     },
     "troubleshootingLink": "Sorun giderme kılavuzu"
+  },
+  "fullRunReason": {
+    "no_prior_snapshot": "Bu cihaz ve hedef için ilk yedekleme",
+    "base_expired": "Önceki yedeklemenin saklama süresi dolmuştu",
+    "storage_identity_changed": "Yedekleme hedefi değişti",
+    "backup_type_mismatch": "Önceki yedekleme farklı türdeydi",
+    "base_job_not_completed": "Önceki hiçbir yedekleme başarıyla tamamlanmadı",
+    "base_retired": "Önceki yedekleme, saklama kuralı nedeniyle kaldırıldı",
+    "base_retired_race": "Önceki yedekleme, saklama kuralı nedeniyle kaldırıldı",
+    "base_deleted_race": "Önceki yedekleme, saklama kuralı nedeniyle kaldırıldı",
+    "no_verified_base": "Önceki hiçbir yedekleme bütünlük doğrulamasını geçmedi",
+    "key_root_changed": "Hedef klasör (önek) değişti",
+    "base_key_root_unreadable": "Önceki yedeklemenin depolama konumu okunamadı",
+    "invalid_destination_prefix": "Hedef öneki geçersiz",
+    "nothing_reused": "Önceki bir yedekleme vardı, ancak değişmeyen hiçbir dosya yeniden kullanılamadı",
+    "unrecorded": "Neden kaydedilmedi (bu yedekleme, Breeze bunu izlemeye başlamadan önce çalıştı)"
+  },
+  "jobDataSummary": {
+    "uploadedAndReused": "{{uploaded}} yüklendi · {{reused}} yeniden kullanıldı",
+    "processedBeforeStopped": "Durmadan önce {{processed}} işlendi",
+    "full": "Tam",
+    "heading": "Bu çalıştırmanın depoladıkları",
+    "protected": "Korunan",
+    "uploadedThisRun": "Bu çalıştırmada yüklenen",
+    "reusedFromEarlier": "Önceki yedeklemelerden yeniden kullanılan",
+    "backupType": "Yedekleme türü",
+    "incremental": "Artımlı",
+    "fullWithReason": "Tam: {{reason}}",
+    "explainer": "Yalnızca yeni veya değişen dosyalar yüklenir. Değişmeyen dosyalar, bu cihazın aynı hedefe yaptığı önceki yedeklemelerden yeniden kullanılır.",
+    "learnMore": "Artımlı yedeklemeler nasıl çalışır",
+    "resumedAt": "Bu çalıştırma, kesintiye uğrayan bir yedeklemeyi {{time}} tarihinde sürdürdü."
   }
 }

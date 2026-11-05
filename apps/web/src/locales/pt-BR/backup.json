@@ -49,7 +49,6 @@
     "policyId": "ID da política",
     "featureLinkId": "ID do link de recurso",
     "errorLog": "Log de erros",
-    "savings": "{{protected}} protegidos — {{uploaded}} enviados",
     "errorCount_one": "{{count}} erro",
     "errorCount_other": "{{count}} erros",
     "failedCount_one": "{{count}} com falha",
@@ -1244,5 +1243,36 @@
       "hint": "O Breeze ainda não reconhece este erro. A mensagem completa é exibida abaixo."
     },
     "troubleshootingLink": "Guia de solução de problemas"
+  },
+  "fullRunReason": {
+    "no_prior_snapshot": "Primeiro backup para este dispositivo e destino",
+    "base_expired": "O backup anterior expirou pela retenção",
+    "storage_identity_changed": "O destino do backup mudou",
+    "backup_type_mismatch": "O backup anterior era de outro tipo",
+    "base_job_not_completed": "Nenhum backup anterior terminou com sucesso",
+    "base_retired": "O backup anterior foi removido pela retenção",
+    "base_retired_race": "O backup anterior foi removido pela retenção",
+    "base_deleted_race": "O backup anterior foi removido pela retenção",
+    "no_verified_base": "Nenhum backup anterior passou na verificação de integridade",
+    "key_root_changed": "A pasta de destino (prefixo) mudou",
+    "base_key_root_unreadable": "Não foi possível ler o local de armazenamento do backup anterior",
+    "invalid_destination_prefix": "O prefixo de destino é inválido",
+    "nothing_reused": "Havia um backup anterior disponível, mas nenhum arquivo sem alterações pôde ser reutilizado",
+    "unrecorded": "Motivo não registrado (este backup foi executado antes de o Breeze registrá-lo)"
+  },
+  "jobDataSummary": {
+    "uploadedAndReused": "{{uploaded}} enviados · {{reused}} reutilizados",
+    "processedBeforeStopped": "{{processed}} processados antes de parar",
+    "full": "Completo",
+    "heading": "O que esta execução armazenou",
+    "protected": "Protegidos",
+    "uploadedThisRun": "Enviados nesta execução",
+    "reusedFromEarlier": "Reutilizados de backups anteriores",
+    "backupType": "Tipo de backup",
+    "incremental": "Backup incremental",
+    "fullWithReason": "Completo: {{reason}}",
+    "explainer": "Somente arquivos novos ou alterados são enviados. Arquivos sem alterações são reutilizados de backups anteriores feitos por este dispositivo para o mesmo destino.",
+    "learnMore": "Como funcionam os backups incrementais",
+    "resumedAt": "Esta execução retomou um backup interrompido em {{time}}."
   }
 }
