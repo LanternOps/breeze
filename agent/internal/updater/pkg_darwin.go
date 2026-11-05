@@ -5,8 +5,9 @@ package updater
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // installViaPkg downloads the macOS .pkg installer for the given version
@@ -38,7 +39,7 @@ func (u *Updater) installViaPkg(version, expectedSHA256 string) error {
 
 	// Run the .pkg installer (requires root, which the agent service has)
 	log.Info("installing pkg", "path", pkgPath)
-	cmd := exec.Command("installer", "-pkg", pkgPath, "-target", "/")
+	cmd := procspawn.Command("installer", "-pkg", pkgPath, "-target", "/")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("installer failed: %w (output: %s)", err, string(output))

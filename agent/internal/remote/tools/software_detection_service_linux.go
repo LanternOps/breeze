@@ -7,6 +7,8 @@ import (
 	"errors"
 	"os/exec"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 const systemctlTimeout = 5 * time.Second
@@ -19,7 +21,7 @@ func platformServiceStatus(name string) (running bool, supported bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), systemctlTimeout)
 	defer cancel()
 
-	err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", "--", name).Run()
+	err := procspawn.CommandContext(ctx, "systemctl", "is-active", "--quiet", "--", name).Run()
 	if err == nil {
 		return classifySystemctl(nil, nil)
 	}

@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // start starts the terminal session. It uses ConPTY (Windows 10 1809+) when
@@ -96,11 +98,11 @@ func (s *Session) startPipes() error {
 	var cmd *exec.Cmd
 	shellBase := strings.ToLower(filepath.Base(s.Shell))
 	if shellBase == "powershell.exe" || shellBase == "pwsh.exe" {
-		cmd = exec.Command(s.Shell, "-NoExit", "-Command", powershellBootstrapCommand())
+		cmd = procspawn.Command(s.Shell, "-NoExit", "-Command", powershellBootstrapCommand())
 	} else if shellBase == "cmd.exe" {
-		cmd = exec.Command(s.Shell, "/K", "chcp 65001 >nul")
+		cmd = procspawn.Command(s.Shell, "/K", "chcp 65001 >nul")
 	} else {
-		cmd = exec.Command(s.Shell)
+		cmd = procspawn.Command(s.Shell)
 	}
 	cmd.Env = applyShellEnv(os.Environ())
 

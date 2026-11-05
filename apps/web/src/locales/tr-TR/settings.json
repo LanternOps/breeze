@@ -264,7 +264,17 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Yapay zeka bütçesinin uygulanmasını etkinleştirin",
+    "aiAccess": "Tüm kuruluşlar için yapay zeka",
+    "aiAccessOptions": {
+      "notSet": "Ayarlanmadı, her kuruluş kendisi karar verir",
+      "on": "Her kuruluş için açık",
+      "off": "Her kuruluş için kapalı"
+    },
+    "aiAccessHelp": "Bu, müşterilerinizin yapay zeka açma/kapama anahtarıdır, bir bütçe ayarı değildir. Ayarlandığında her kuruluşun kendi yapay zeka anahtarının yerine geçer. Aşağıdaki bütçe alanları her durumda geçerlidir.",
+    "offWarning": "Bu iş ortağının altındaki her kuruluş için yapay zeka kapalı. Sohbet, helper, Office eklentileri, yapay zeka ajanları ve zenginleştirme siz bunu değiştirene kadar reddedilir.",
+    "offConfirmTitle": "Yapay zeka her kuruluş için kapatılsın mı?",
+    "offConfirmMessage": "Bu iş ortağının altındaki her kuruluş yapay zekayı kaybeder: sohbet, helper, Office eklentileri, yapay zeka ajanları ve zenginleştirme reddedilir ve kuruluşlar onu kendileri yeniden açamaz. Kaydedene kadar hiçbir şey değişmez.",
+    "offConfirmAction": "Yapay zekayı kapat",
     "monthlyBudget": "Aylık Bütçe ($)",
     "dailyBudget": "Günlük Bütçe ($)",
     "approvalMode": "Onay Modu",
@@ -1734,6 +1744,16 @@
     "baselineSkipped_one": "Bu posta kutusunda zaten bulunan {{count}} ileti içe aktarılmayacak. Yalnızca bağlantıdan sonra alınan postalar destek bildirimine dönüşecek.",
     "baselineSkipped_other": "Bu posta kutusunda zaten bulunan {{count}} ileti içe aktarılmayacak. Yalnızca bağlantıdan sonra alınan postalar destek bildirimine dönüşecek.",
     "retest": "Yeniden test edin",
+    "gatewayTitle": "Posta ağ geçidi (isteğe bağlı)",
+    "gatewayHint": "Posta bu kutuya Avanan, Mimecast, Proofpoint veya Barracuda gibi satır içi bir ağ geçidinden ulaşıyorsa Microsoft'un kendi denetimi meşru postaları reddeder. Ağ geçidinin ARC mühürleme etki alanını, yani teslim ettiği bir iletinin ARC-Seal üstbilgisindeki d= değerini girin; Breeze bunun yerine ağ geçidinin kararını kullanır. Ağ geçidiniz yoksa boş bırakın.",
+    "gatewayWarning": "Yalnızca bu kiracının tüm gelen postasının geçmek zorunda olduğu bir ağ geçidi ekleyin: önce Exchange'de gelen teslimi bir bağlayıcıyla bu ağ geçidiyle sınırlayın. Aksi takdirde Breeze, ağ geçidinin teslim ettiği postayı doğrudan Exchange'e gönderilen postadan ayıramaz.",
+    "gatewayLabel": "Güvenilen ARC mühürleme etki alanları",
+    "gatewayPlaceholder": "gateway.ornek.com",
+    "gatewaySave": "Ağ geçidi listesini kaydet",
+    "gatewaySaved": "Posta ağ geçidi listesi kaydedildi",
+    "gatewaySaveFailed": "Posta ağ geçidi listesi kaydedilemedi.",
+    "gatewayInvalid": "\"{{value}}\" bir etki alanı adı değil.",
+    "gatewayTooMany": "En fazla {{max}} etki alanı girin.",
     "reconnect": "Yeniden bağlan",
     "disconnect": "Bağlantıyı kes",
     "empty": "Henüz bağlı bir posta kutusu yok.",
@@ -1857,16 +1877,21 @@
   },
   "orgBrandingEditor": {
     "title": "Markalama",
-    "description": "{{organization}} için portal deneyimini özelleştirin.",
+    "description": "{{organization}} müşteri portalı ve belgeleri için logo, renkler ve özel CSS.",
     "save": "Marka bilinci oluşturmayı koruyun",
     "saved": "Markalama ayarları kaydedildi.",
+    "saveError": "Marka ayarları kaydedilemedi.",
     "managedByPartner": "İş ortağı tarafından yönetiliyor",
     "logo": {
       "title": "Logosu",
       "previewAlt": "Kuruluş logosu önizlemesi",
       "uploadNew": "Yeni bir logo yükleyin",
-      "recommendation": "SVG veya PNG, önerilen 512x512",
-      "selected": "Seçilen: {{name}}"
+      "selected": "Seçilen: {{name}}",
+      "help": "Bu kuruluşun müşteri portalında ve tekliflerinde, faturalarında ve raporlarında gösterilir. İş ortağının logosunu kullanmak için boş bırakın.",
+      "inheritedSource": "İş ortağı logosu",
+      "remove": "Kaldır",
+      "loadError": "Kaydedilen logo yüklenemedi. Yüklenene kadar logo yükleme devre dışı.",
+      "legacyNotice": "Bu logo daha önce kaydedildi ancak müşterilere hiç gösterilmedi. Kullanmaya başlamak için kaydedin veya kaldırın."
     },
     "colors": {
       "primary": "Ana renk",
@@ -1874,42 +1899,16 @@
       "primaryInheritedSource": "İş ortağı marka rengi",
       "primaryHelp": "Bu kuruluşun tekliflerinde, faturalarında ve diğer müşteri belgelerinde kullanılan vurgu rengi. İş ortağının marka rengini kullanmak için boş bırakın.",
       "primaryInvalid": "#2563eb gibi bir onaltılık renk girin.",
-      "primaryLoadError": "Kaydedilen ana renk yüklenemedi. Yüklenene kadar düzenleme devre dışı."
-    },
-    "theme": {
-      "title": "Tema",
-      "description": "Sistem, mümkün olduğunda kullanıcının işletim sistemi tercihine saygı duyar.",
-      "options": {
-        "light": "Işık",
-        "dark": "Karanlık",
-        "system": "Sistem"
-      }
-    },
-    "subdomain": {
-      "title": "Portal alt alanı",
-      "previewUrl": "Mevcut önizleme URL'si: {{url}}"
+      "primaryLoadError": "Kaydedilen ana renk yüklenemedi. Yüklenene kadar düzenleme devre dışı.",
+      "secondaryInheritedSource": "İş ortağı ikincil rengi",
+      "secondaryHelp": "Bu kuruluşun teklif PDF'lerinde, okunacak kadar koyuysa başlık rengi; rapor PDF'lerinde vurgu rengi. İş ortağının ikincil rengini kullanmak için boş bırakın.",
+      "secondaryLoadError": "Kaydedilen ikincil renk yüklenemedi. Yüklenene kadar düzenleme devre dışı."
     },
     "customCss": {
       "title": "Özel CSS (gelişmiş)",
       "description": "Aralığa, tipografiye veya düzene ince ayar yapmak için özel stiller kullanın.",
-      "saveError": "Özel CSS kaydedilemedi.",
       "loadError": "Şu anda kayıtlı özel CSS yüklenemedi. Bu yüklenene kadar düzenleme devre dışı.",
       "saveBlockedByLoadError": "Özel CSS kaydedilmedi: mevcut değer doğrulanamadı. Sayfayı yeniden yükleyip tekrar deneyin."
-    },
-    "preview": {
-      "action": "Önizleme",
-      "title": "Portal önizlemesi",
-      "description": "Mevcut markalama girdilerine dayalı canlı taslak",
-      "close": "Önizlemeyi kapat",
-      "logoAlt": "Logoyu önizleyin",
-      "portalName": "{{organization}} Portalı",
-      "welcome": "Tekrar hoş geldiniz",
-      "body": "Bu önizleme, renkler ve logo seçenekleri de dahil olmak üzere mevcut portal markalama taslağınızı yansıtır.",
-      "openTicket": "Destek bildirimini aç",
-      "viewDevices": "Cihaz listesini görüntüle",
-      "urlLabel": "Önizleme URL'si",
-      "cssPayload": "Özel CSS verisi",
-      "noCustomCss": "/* Özel CSS yok */"
     }
   },
   "orgDefaultsEditor": {
@@ -6385,7 +6384,7 @@
       "extensionsDescription": "Üçüncü taraf uzantı bölümleri",
       "portalBranding": "Portal ve Markalama",
       "branding": "Markalama",
-      "brandingDescription": "Portal teması ve görselleri",
+      "brandingDescription": "Logo, renkler ve özel CSS",
       "portal": "Müşteri Portalı",
       "portalDescription": "Özellikler ve destek",
       "securityAccess": "Güvenlik ve Erişim",

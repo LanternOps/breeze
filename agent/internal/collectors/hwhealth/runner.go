@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os/exec"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 type execResult struct {
@@ -41,7 +43,7 @@ func runTool(parent context.Context, timeout time.Duration, path string, args ..
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	start := time.Now()
-	cmd := exec.CommandContext(ctx, path, args...)
+	cmd := procspawn.CommandContext(ctx, path, args...)
 	out := &limitBuffer{limit: 4 * 1024 * 1024}
 	errout := &limitBuffer{limit: 64 * 1024}
 	cmd.Stdout = out

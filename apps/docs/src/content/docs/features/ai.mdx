@@ -376,6 +376,16 @@ When billing is not configured, AI usage is unlimited — cost tracking still re
   Cost tracking is automatic — no configuration required. It works for both the main AI assistant and the Helper AI chat. Billing credit enforcement is optional and requires the billing service environment variables. See [Environment Variables](/deploy/environment/) for details.
 </Aside>
 
+### Turning AI on or off for every organisation
+
+The AI on/off switch lives on each organisation's **Org settings → AI** tab. The **AI Budgets** tab of Partner Settings has a matching **AI for all organizations** control with three choices:
+
+- **Not set, each organization decides** (the default): each organisation keeps its own switch.
+- **On for every organization**: AI is on everywhere, and organisations can't turn it off.
+- **Off for every organization**: AI is refused for every organisation, including chat, the Helper, Office add-ins, AI agents, flow AI steps and enrichment, and organisations can't turn AI back on. Breeze asks you to confirm before it takes this choice, and the tab shows a warning while it is in force.
+
+This control is separate from the budget caps on the same tab. Caps and billing credits still apply whichever choice is set. In v0.126.0 and earlier the control was a checkbox labelled "Enable AI budget enforcement", and clearing it after ticking it saved **Off**. If AI is unexpectedly refused across your organisations, check this control and set it back to **Not set**, then check each organisation's own AI switch.
+
 ### Budget alerts
 
 Independent of hard budget enforcement, an organisation can get warned as its AI spend approaches its cap. Each period (daily and monthly) is checked against a ladder of percentage thresholds, and once spend crosses a rung, an alert fires for that rung.

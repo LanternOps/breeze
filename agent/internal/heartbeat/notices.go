@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"runtime"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/prompthost"
 	"github.com/breeze-rmm/agent/internal/promptidentity"
 	"github.com/breeze-rmm/agent/internal/promptkinds"
@@ -103,7 +103,7 @@ var openMacSettingsCmd = func(ctx context.Context, uid int, url string) error {
 		return errors.New("opening System Settings is supported only on macOS")
 	}
 	u := strconv.Itoa(uid)
-	out, err := exec.CommandContext(ctx, "/bin/launchctl", "asuser", u, "/usr/bin/sudo", "-u", "#"+u, "/usr/bin/open", url).CombinedOutput()
+	out, err := procspawn.CommandContext(ctx, "/bin/launchctl", "asuser", u, "/usr/bin/sudo", "-u", "#"+u, "/usr/bin/open", url).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, truncateForLog(string(out), 200))
 	}

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 const (
@@ -43,7 +45,7 @@ func runCollectorOutputWithContext(parent context.Context, timeout time.Duration
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	output := &cappedBuffer{max: collectorCommandOutputLimit}
 	stderr := &cappedBuffer{max: collectorStderrCaptureLimit}
 	cmd.Stdout = output
@@ -118,7 +120,7 @@ func runCollectorCombinedOutputWithContext(parent context.Context, timeout time.
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	output := &cappedBuffer{max: collectorCommandOutputLimit}
 	// os/exec serializes writes when Stdout and Stderr are the same writer.
 	cmd.Stdout = output
@@ -141,7 +143,7 @@ func runCollectorLimitedOutput(timeout time.Duration, name string, args ...strin
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("%s pipe failed: %w", name, err)
@@ -196,7 +198,7 @@ func runCollectorBoundedOutput(timeout time.Duration, name string, args ...strin
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	stderr := &cappedBuffer{max: 4 * 1024}
 	cmd.Stderr = stderr
 	// Insurance against an orphaned descendant inheriting the stdout pipe: if

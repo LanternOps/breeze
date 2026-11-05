@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/updater"
 )
@@ -233,7 +234,7 @@ func (h *Heartbeat) installUserHelperBinary(tempPath, installPath, version strin
 	// ("process not found") is the benign no-helper-running case; any other
 	// non-zero (access denied, could-not-terminate) predicts an imminent
 	// sharing-violation on copy, so log it at WARN rather than hiding it.
-	killCmd := exec.Command("taskkill", "/F", "/IM", "breeze-user-helper.exe")
+	killCmd := procspawn.Command("taskkill", "/F", "/IM", "breeze-user-helper.exe")
 	killOut, killErr := killCmd.CombinedOutput()
 	switch {
 	case killErr == nil:
@@ -429,7 +430,7 @@ func handleDevUpdateDesktopHelper(h *Heartbeat, start time.Time, downloadURL, ch
 	// Also kickstart any other helpers that may be loaded but weren't hit by
 	// the post-update kickstart routine above (e.g. a helper running in a
 	// disconnected user session).
-	_ = exec.Command("launchctl", "kickstart", "-k", "loginwindow/com.breeze.desktop-helper-loginwindow").Run()
+	_ = procspawn.Command("launchctl", "kickstart", "-k", "loginwindow/com.breeze.desktop-helper-loginwindow").Run()
 
 	return tools.NewSuccessResult(map[string]any{
 		"message":   "desktop helper replaced and kickstarted",

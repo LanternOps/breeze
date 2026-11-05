@@ -17,6 +17,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/privilege"
 	"github.com/breeze-rmm/agent/internal/procoutput"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 var log = logging.L("executor")
@@ -566,7 +567,7 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 	} else {
 		args = append(shellArgs, scriptPath)
 	}
-	cmd := exec.CommandContext(ctx, shellCmd, args...)
+	cmd := procspawn.CommandContext(ctx, shellCmd, args...)
 
 	// Set working directory
 	cmd.Dir = e.workDir
@@ -1059,7 +1060,7 @@ func checkBashSyntax(scriptPath string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bashPath, "-n", scriptPath)
+	cmd := procspawn.CommandContext(ctx, bashPath, "-n", scriptPath)
 	hideWindow(cmd)
 	output, err := cmd.CombinedOutput()
 	if err == nil {
