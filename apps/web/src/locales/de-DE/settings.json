@@ -3728,6 +3728,7 @@
         "get_active_users": "Aktive Benutzer",
         "get_ai_agent_run": "Details zum KI-Agent-Lauf",
         "get_alert_correlations": "Warnungskorrelationen",
+        "get_backup_health": "Backup-Zustand",
         "get_backup_status": "Backup-Status",
         "get_browser_security": "Browsersicherheit",
         "get_catalog_item": "Katalogeintrag nachschlagen",
@@ -3810,12 +3811,14 @@
         "get_user_experience_metrics": "Nutzererfahrungsmetriken",
         "get_vault_status": "Tresorstatus",
         "get_vm_restore_estimate": "VM-Wiederherstellungsschätzung",
+        "get_vss_status": "VSS-Writer-Status",
         "get_vulnerability_report": "Schwachstellenbericht",
         "instant_boot_vm": "Ein Backup als VM sofort starten",
         "link_entity": "Ein Element mit einem Wisp-Thread verknüpfen",
         "list_ai_agent_runs": "KI-Agent-Läufe",
         "list_ai_agent_schedules": "KI-Agent-Zeitpläne",
         "list_ai_agents": "KI-Agent-Liste",
+        "list_bmr_recoveries": "Bare-Metal-Wiederherstellungen",
         "list_business_calendars": "Geschäftszeitenkalender",
         "list_concerns": "Wisp-Anliegen",
         "list_configuration_policies": "Liste der Konfigurationsrichtlinien",
@@ -3859,6 +3862,7 @@
         "manage_automations": "Automatisierungen verwalten",
         "manage_backup_configs": "Backup-Konfigurationen verwalten",
         "manage_backup_profiles": "Backup-Profile verwalten",
+        "manage_backup_verification": "Backup-Überprüfung",
         "manage_billing_catalog": "Abrechnungspreisliste verwalten",
         "manage_billing_profiles": "Abrechnungs-Preismodelle verwalten",
         "manage_billing_settings": "Abrechnungseinstellungen verwalten",
@@ -4106,6 +4110,10 @@
           "dashboard": "SNMP-Dashboard",
           "history": "SNMP-Metrikverlauf"
         },
+        "list_bmr_recoveries": {
+          "get": "Details der Bare-Metal-Wiederherstellung",
+          "list": "Bare-Metal-Wiederherstellungen auflisten"
+        },
         "manage_accounting_sync": {
           "customers": "Buchhaltungskunden auflisten",
           "income_accounts": "Ertragskonten auflisten",
@@ -4160,6 +4168,12 @@
           "get": "Details zum Backup-Profil",
           "list": "Backup-Profile auflisten",
           "update": "Ein Backup-Profil aktualisieren"
+        },
+        "manage_backup_verification": {
+          "health": "Überprüfungsstatus",
+          "list": "Backup-Überprüfungen auflisten",
+          "readiness": "Wiederherstellungsbereitschaft",
+          "run": "Backup-Überprüfung ausführen"
         },
         "manage_billing_catalog": {
           "archive_item": "Einen Preislisteneintrag archivieren",

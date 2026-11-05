@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The holding-org refusal reads the org; the db mocks below do not model it.
-vi.mock('../../services/unassignedPool/protectedOrg', () => ({ isHoldingOrg: vi.fn(async () => false) }));
+const { holdingOrg } = vi.hoisted(() => ({ holdingOrg: { value: false } }));
+vi.mock('../../services/unassignedPool/protectedOrg', () => ({ isHoldingOrg: vi.fn(async () => holdingOrg.value) }));
 import { Hono } from 'hono';
 import { c2cConfigsRoutes } from './configs';
 
@@ -24,14 +25,17 @@ function chainMock(resolvedValue: unknown = []) {
 const selectMock = vi.fn(() => chainMock([]));
 const insertMock = vi.fn(() => chainMock([]));
 const updateMock = vi.fn(() => chainMock([]));
+const deleteMock = vi.fn(() => chainMock([]));
 const writeRouteAuditMock = vi.fn();
 
 vi.mock('../../db', () => ({
+  hasDbAccessContext: () => false,
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
     insert: (...args: unknown[]) => insertMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
-    delete: vi.fn(() => chainMock([])),
+    delete: (...args: unknown[]) => deleteMock(...(args as [])),
   },
 }));
 
@@ -44,6 +48,8 @@ vi.mock('../../db/schema', () => ({
     id: 'c2c_connections.id',
     orgId: 'c2c_connections.org_id',
   },
+  c2cBackupJobs: { id: 'c2c_backup_jobs.id', orgId: 'c2c_backup_jobs.org_id', configId: 'c2c_backup_jobs.config_id' },
+  c2cBackupItems: { id: 'c2c_backup_items.id', orgId: 'c2c_backup_items.org_id', configId: 'c2c_backup_items.config_id' },
   c2cBackupConfigs: {
     id: 'c2c_backup_configs.id',
     orgId: 'c2c_backup_configs.org_id',
@@ -97,6 +103,7 @@ describe('c2c config routes', () => {
     vi.clearAllMocks();
     permissionGate.deny = false;
     mfaGate.deny = false;
+    holdingOrg.value = false;
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('auth', authState as any);
@@ -187,6 +194,94 @@ describe('c2c config routes', () => {
 
     expect(res.status).toBe(201);
     expect((await res.json()).storageConfigId).toBe(STORAGE_CONFIG_ID);
+  });
+
+  // #6788: the route now maps the shared service's result codes. These pin the pre-refactor responses.
+  const createBody = JSON.stringify({ connectionId: CONNECTION_ID, name: 'M365 mail', backupScope: 'mail' });
+  const configRow = (over: Record<string, unknown> = {}) => ({
+    id: STORAGE_CONFIG_ID, orgId: ORG_ID, connectionId: CONNECTION_ID, name: 'M365 mail', backupScope: 'mail', targetUsers: [],
+    storageConfigId: null, schedule: null, retention: null, isActive: true,
+    createdAt: new Date('2026-05-02T00:00:00.000Z'), updatedAt: new Date('2026-05-02T00:00:00.000Z'), ...over,
+  });
+
+  it('route: create in the holding org is the protected-org 409, before any lookup', async () => {
+    holdingOrg.value = true;
+    const res = await app.request('/c2c/configs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: createBody });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'ORG_PROTECTED' });
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('route: create with a connection outside the org is 404 Connection not found', async () => {
+    const res = await app.request('/c2c/configs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: createBody });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Connection not found' });
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('route: update of a config the org does not hold is 404 Config not found', async () => {
+    const res = await app.request(`/c2c/configs/${STORAGE_CONFIG_ID}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Renamed' }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Config not found' });
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('route: update returns the config and audits the changed fields', async () => {
+    updateMock.mockReturnValueOnce(chainMock([configRow({ name: 'Renamed', isActive: false })]));
+    const res = await app.request(`/c2c/configs/${STORAGE_CONFIG_ID}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Renamed', isActive: false }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({ id: STORAGE_CONFIG_ID, name: 'Renamed', isActive: false, createdAt: '2026-05-02T00:00:00.000Z' });
+    expect(body.orgId).toBeUndefined();
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_ID, action: 'c2c.config.update', resourceId: STORAGE_CONFIG_ID, details: { changedFields: ['name', 'isActive'] },
+    }));
+  });
+
+  it('route: delete with no history deletes and audits', async () => {
+    deleteMock.mockReturnValueOnce(chainMock([configRow()]));
+    const res = await app.request(`/c2c/configs/${STORAGE_CONFIG_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ deleted: true });
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_ID, action: 'c2c.config.delete', resourceId: STORAGE_CONFIG_ID, resourceName: 'M365 mail',
+    }));
+  });
+
+  it('route: delete with item history only (no job) is also 409', async () => {
+    selectMock.mockReturnValueOnce(chainMock([])).mockReturnValueOnce(chainMock([{ id: 'item-1' }]));
+    const res = await app.request(`/c2c/configs/${STORAGE_CONFIG_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(409);
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  // #6788: c2c_backup_jobs and c2c_backup_items reference the config with no ON DELETE, so history refuses the delete.
+  it('route: delete with history answers 409, not 500, and writes no audit row', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{ id: 'job-1' }]));
+    const res = await app.request(`/c2c/configs/${STORAGE_CONFIG_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'CONFIG_HAS_HISTORY' });
+    expect(deleteMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('route: a job created mid-delete (23503) also answers 409', async () => {
+    deleteMock.mockReturnValueOnce({
+      where: () => ({ returning: () => Promise.reject(Object.assign(new Error('fk'), { code: '23503', constraint_name: 'c2c_backup_items_config_id_fkey' })) }),
+    } as never);
+    const res = await app.request(`/c2c/configs/${STORAGE_CONFIG_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'CONFIG_HAS_HISTORY' });
+  });
+
+  it('route: a delete with no history and no matching row is a 404', async () => {
+    const res = await app.request(`/c2c/configs/${STORAGE_CONFIG_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(404);
   });
 
   it('rejects update when storage config is not in the scoped org', async () => {

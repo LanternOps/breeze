@@ -32,7 +32,7 @@ export const DOMAIN_VOCABULARY: Readonly<Record<AiToolDomain, string>> = {
   monitoring: 'alerts and alert rules, monitors, incidents, logs, fixes and remediation, alert delivery and escalation, SLA and capacity',
   network: 'network assets and discovery, topology, connectivity diagnostics, links, IP and interface history, DNS filtering',
   security: 'security posture, configuration policies, CIS, compliance, audit and change logs, IOC hunts, scans, user risk, peripherals, elevation',
-  backup: 'backups and jobs, snapshots, restores, vaults, Hyper-V, SQL Server, disaster recovery plans, backup SLA',
+  backup: 'backups and jobs, snapshots, restores, vaults, Hyper-V, SQL Server, disaster recovery plans, backup SLA, VSS, verification',
   tickets: 'tickets, checklists, routing rules, time entries and timers, timesheets, business calendars, end-user messages',
   billing: 'invoices, quotes, contracts, catalog items, distributor products, Pax8 orders',
   accounts: 'organizations and sites, contacts, documents, deliverables, key dates',

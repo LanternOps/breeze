@@ -3728,6 +3728,7 @@
         "get_active_users": "Utilisateurs actifs",
         "get_ai_agent_run": "Détails de l'exécution de l'agent IA",
         "get_alert_correlations": "Corrélations d'alertes",
+        "get_backup_health": "État des sauvegardes",
         "get_backup_status": "État des sauvegardes",
         "get_browser_security": "Sécurité des navigateurs",
         "get_catalog_item": "Recherche d'un article du catalogue",
@@ -3810,12 +3811,14 @@
         "get_user_experience_metrics": "Indicateurs d'expérience utilisateur",
         "get_vault_status": "État du coffre-fort",
         "get_vm_restore_estimate": "Estimation de restauration de VM",
+        "get_vss_status": "État des rédacteurs VSS",
         "get_vulnerability_report": "Rapport de vulnérabilités",
         "instant_boot_vm": "Démarrer instantanément une sauvegarde en VM",
         "link_entity": "Lier un élément à un fil Wisp",
         "list_ai_agent_runs": "Exécutions des agents IA",
         "list_ai_agent_schedules": "Planifications des agents IA",
         "list_ai_agents": "Liste des agents IA",
+        "list_bmr_recoveries": "Restaurations bare-metal",
         "list_business_calendars": "Calendriers des heures ouvrées",
         "list_concerns": "Points de vigilance Wisp",
         "list_configuration_policies": "Liste des politiques de configuration",
@@ -3859,6 +3862,7 @@
         "manage_automations": "Gérer les automatisations",
         "manage_backup_configs": "Gérer les configurations de sauvegarde",
         "manage_backup_profiles": "Gérer les profils de sauvegarde",
+        "manage_backup_verification": "Vérification des sauvegardes",
         "manage_billing_catalog": "Gérer le catalogue tarifaire de facturation",
         "manage_billing_profiles": "Gérer les grilles tarifaires",
         "manage_billing_settings": "Gérer les paramètres de facturation",
@@ -4106,6 +4110,10 @@
           "dashboard": "Tableau de bord SNMP",
           "history": "Historique des indicateurs SNMP"
         },
+        "list_bmr_recoveries": {
+          "get": "Détails de la restauration bare-metal",
+          "list": "Lister les restaurations bare-metal"
+        },
         "manage_accounting_sync": {
           "customers": "Lister les clients comptables",
           "income_accounts": "Lister les comptes de produits",
@@ -4160,6 +4168,12 @@
           "get": "Détails du profil de sauvegarde",
           "list": "Lister les profils de sauvegarde",
           "update": "Mettre à jour un profil de sauvegarde"
+        },
+        "manage_backup_verification": {
+          "health": "État des vérifications",
+          "list": "Lister les vérifications de sauvegarde",
+          "readiness": "État de préparation à la restauration",
+          "run": "Lancer une vérification de sauvegarde"
         },
         "manage_billing_catalog": {
           "archive_item": "Archiver un article du catalogue tarifaire",

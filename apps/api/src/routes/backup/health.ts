@@ -124,7 +124,7 @@ backupHealthRoutes.get(
  * a partner/system caller; an org token would read zero rows through RLS
  * anyway, and short-circuiting saves the round-trip.
  */
-async function resolveUnmappedDevices(auth: { scope: string; partnerId: string | null }): Promise<number> {
+export async function resolveUnmappedDevices(auth: { scope: string; partnerId: string | null }): Promise<number> {
   if (auth.scope !== 'partner' && auth.scope !== 'system') return 0;
   if (!auth.partnerId) return 0;
   const rows = (await db

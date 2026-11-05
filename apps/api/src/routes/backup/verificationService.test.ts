@@ -245,6 +245,32 @@ describe('backup verification service', () => {
     expect(summary.verification.coveragePercent).toBe(0);
   });
 
+  it('stamps the AI origin on the command when an AI surface decided it (W17, #6788)', async () => {
+    vi.mocked(queueCommandForExecution).mockResolvedValueOnce({
+      command: { id: 'cmd-verify-ai', status: 'sent' } as any,
+    });
+    const aiOrigin = { kind: 'chat', sessionId: 's1' } as never;
+
+    const { verification } = await runBackupVerification({
+      orgId: 'org-123',
+      deviceId: 'dev-001',
+      backupJobId: 'job-001',
+      verificationType: 'integrity',
+      source: 'ai.verify',
+      aiOrigin,
+    });
+
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      'dev-001',
+      'backup_verify',
+      expect.anything(),
+      expect.objectContaining({ expectedOrgId: 'org-123', aiOrigin }),
+    );
+
+    const idx = backupVerifications.findIndex((v) => v.id === verification.id);
+    if (idx >= 0) backupVerifications.splice(idx, 1);
+  });
+
   it('dispatches the verification command with a destination reference, never the stored credential', async () => {
     vi.mocked(queueCommandForExecution).mockResolvedValueOnce({
       command: { id: 'cmd-verify-1', status: 'sent' } as any,
