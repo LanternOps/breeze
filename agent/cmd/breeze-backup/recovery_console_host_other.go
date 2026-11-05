@@ -4,10 +4,10 @@ package main
 
 import (
 	"os"
-	"os/exec"
 
 	"github.com/breeze-rmm/agent/internal/backup/layout"
 	"github.com/breeze-rmm/agent/internal/backup/rebuild"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // recoveryKernelCmdlineFile is the Linux media's cmdline source.
@@ -38,7 +38,7 @@ func defaultConsoleHost() consoleHost {
 			return sys.RootSources()
 		},
 		Power: func(action string) error {
-			return exec.Command("systemctl", action).Run()
+			return procspawn.Command("systemctl", action).Run()
 		},
 		Shell:       runRecoveryShell,
 		AcquireLock: acquireRecoveryConsoleLock,

@@ -21,7 +21,7 @@ export const FIELD_LABEL_KEYS: Readonly<Record<string, string>> = {
   'defaults.defaultEnrollmentTtlMinutes': 'partnerDefaults.enrollment.ttl',
   'defaults.defaultEnrollmentDeviceCount': 'partnerDefaults.enrollment.deviceCount',
   'defaults.maxEnrollmentLinkTtlMinutes': 'partnerDefaults.enrollment.maxTtl',
-  'aiBudgets.enabled': 'partnerAiBudgets.enable',
+  'aiBudgets.enabled': 'partnerAiBudgets.aiAccess',
   'aiBudgets.monthlyBudgetCents': 'partnerAiBudgets.monthlyBudget',
   'aiBudgets.dailyBudgetCents': 'partnerAiBudgets.dailyBudget',
   'aiBudgets.maxTurnsPerSession': 'partnerAiBudgets.maxTurns',

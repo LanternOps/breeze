@@ -5,9 +5,10 @@ package updater
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"syscall"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // Restart tries service managers in order, then falls back to exec.
@@ -28,7 +29,7 @@ func Restart() error {
 }
 
 func restartSystemd() error {
-	out, err := exec.Command("systemctl", "restart", "breeze-agent").CombinedOutput()
+	out, err := procspawn.Command("systemctl", "restart", "breeze-agent").CombinedOutput()
 	if err != nil {
 		log.Warn("systemd restart failed", "error", err.Error(), "output", string(out))
 		return err
@@ -38,7 +39,7 @@ func restartSystemd() error {
 }
 
 func restartLaunchd() error {
-	out, err := exec.Command("launchctl", "kickstart", "-k", "system/com.breeze.agent").CombinedOutput()
+	out, err := procspawn.Command("launchctl", "kickstart", "-k", "system/com.breeze.agent").CombinedOutput()
 	if err != nil {
 		log.Warn("launchd restart failed", "error", err.Error(), "output", string(out))
 		return err

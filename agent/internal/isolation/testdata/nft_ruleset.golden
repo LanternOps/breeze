@@ -1,0 +1,45 @@
+table inet breeze_isolation {
+	counter breeze_drop {
+	}
+
+	chain input {
+		type filter hook input priority filter - 10; policy drop;
+		iif "lo" accept
+		ct state established,related ct mark 0x42424242 accept
+		meta nfproto ipv4 udp sport 67 udp dport 68 accept
+		meta nfproto ipv4 udp sport 68 udp dport 67 accept
+		meta nfproto ipv6 udp sport 546 udp dport 547 accept
+		meta nfproto ipv6 udp sport 547 udp dport 546 accept
+		icmp type 0 accept
+		icmp type 3 icmp code 4 accept
+		icmpv6 type { 2, 129, 130, 131, 132, 133, 134, 135, 136, 137 } accept
+	}
+
+	chain output {
+		type filter hook output priority filter - 10; policy drop;
+		oif "lo" accept
+		ct state established,related ct mark 0x42424242 accept
+		meta nfproto ipv4 udp sport 67 udp dport 68 accept
+		meta nfproto ipv4 udp sport 68 udp dport 67 accept
+		meta nfproto ipv6 udp sport 546 udp dport 547 accept
+		meta nfproto ipv6 udp sport 547 udp dport 546 accept
+		icmp type 0 accept
+		icmp type 3 icmp code 4 accept
+		icmpv6 type { 2, 129, 130, 131, 132, 133, 134, 135, 136, 137 } accept
+		ip daddr { 192.0.2.53 } tcp dport 53 ct mark set 0x42424242 accept
+		ip daddr { 192.0.2.53 } udp dport 53 ct mark set 0x42424242 accept
+		ip6 daddr { 2001:db8::53 } tcp dport 53 ct mark set 0x42424242 accept
+		ip6 daddr { 2001:db8::53 } udp dport 53 ct mark set 0x42424242 accept
+		ip daddr { 203.0.113.0/24 } tcp dport { 443 } ct mark set 0x42424242 accept
+		socket cgroupv2 level 3 "system.slice/breeze-agent.service/agent" ip daddr { 192.0.2.10 } tcp dport { 443 } ct mark set 0x42424242 accept
+		socket cgroupv2 level 3 "system.slice/breeze-agent.service/agent" ip daddr { 198.51.100.5 } tcp dport { 3478, 5349 } ct mark set 0x42424242 accept
+		socket cgroupv2 level 3 "system.slice/breeze-agent.service/agent" ip daddr { 198.51.100.5 } udp dport { 3478, 5349 } ct mark set 0x42424242 accept
+		socket cgroupv2 level 3 "system.slice/breeze-agent.service/agent" ip daddr { 203.0.113.7 } tcp dport { 3128 } ct mark set 0x42424242 accept
+		socket cgroupv2 level 3 "system.slice/breeze-agent.service/agent" ip6 daddr { 2001:db8::10 } tcp dport { 443 } ct mark set 0x42424242 accept
+		counter name "breeze_drop" drop
+	}
+
+	chain forward {
+		type filter hook forward priority filter - 10; policy drop;
+	}
+}

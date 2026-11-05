@@ -3,8 +3,9 @@
 package heartbeat
 
 import (
-	"os/exec"
 	"syscall"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // startDetachedProcess launches name/args in a new process group and releases
@@ -12,7 +13,7 @@ import (
 // service's process. Same pattern as updater.RestartWithHelper — the child
 // must outlive the agent so it can tear the agent's own service down (#2878).
 func startDetachedProcess(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	cmd := procspawn.Command(name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
 	}

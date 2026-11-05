@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // InstantBootConfig configures an instant boot VM from a backup snapshot.
@@ -342,7 +342,7 @@ func configureBootLoader(driveLetter string) error {
 	}
 
 	// bcdboot populates the EFI System Partition boot files.
-	if out, err := exec.Command(exe, args...).CombinedOutput(); err != nil {
+	if out, err := procspawn.Command(exe, args...).CombinedOutput(); err != nil {
 		return bcdbootFailure(exe, out, err)
 	}
 	return nil
