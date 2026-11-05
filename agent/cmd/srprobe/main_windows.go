@@ -31,13 +31,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // Layout A — exactly as shipped (preflight_windows.go before #4752).
@@ -196,7 +197,7 @@ func freq() {
 func ps(cmd string) {
 	// PowerShell rather than a WMI binding: this is a throwaway diagnostic and
 	// the shipped verifier (W02) does its own typed enumeration.
-	out, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", cmd).CombinedOutput()
+	out, err := procspawn.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", cmd).CombinedOutput()
 	fmt.Println(strings.TrimSpace(string(out)))
 	if err != nil {
 		fmt.Printf("(enumeration error: %v)\n", err)

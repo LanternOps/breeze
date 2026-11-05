@@ -4,9 +4,10 @@ package tools
 
 import (
 	"os"
-	"os/exec"
 	"strings"
 	"syscall"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 const agentServiceName = "com.breeze.agent"
@@ -20,7 +21,7 @@ func spawnDelayedRestart() error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(self, delayedRestartHelperCommand)
+	cmd := procspawn.Command(self, delayedRestartHelperCommand)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return err
@@ -30,5 +31,5 @@ func spawnDelayedRestart() error {
 }
 
 func runAgentRestartNow() error {
-	return exec.Command("launchctl", "kickstart", "-k", "system/"+agentServiceName).Run()
+	return procspawn.Command("launchctl", "kickstart", "-k", "system/"+agentServiceName).Run()
 }

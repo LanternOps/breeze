@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/patching"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // updateAttempt mirrors uninstallAttempt — each is a single package-manager
@@ -351,7 +352,7 @@ func installedVersionMatchesPin(installed, pin string) bool {
 func queryInstalledLinuxVersion(name string) (string, error) {
 	if _, err := exec.LookPath("dpkg-query"); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		out, err := exec.CommandContext(ctx, "dpkg-query", "-W", "-f=${Version}", name).Output()
+		out, err := procspawn.CommandContext(ctx, "dpkg-query", "-W", "-f=${Version}", name).Output()
 		cancel()
 		if err == nil {
 			if v := strings.TrimSpace(string(out)); v != "" {
@@ -362,7 +363,7 @@ func queryInstalledLinuxVersion(name string) (string, error) {
 
 	if _, err := exec.LookPath("rpm"); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		out, err := exec.CommandContext(ctx, "rpm", "-q", "--queryformat", "%{VERSION}-%{RELEASE}", name).Output()
+		out, err := procspawn.CommandContext(ctx, "rpm", "-q", "--queryformat", "%{VERSION}-%{RELEASE}", name).Output()
 		cancel()
 		if err == nil {
 			v := strings.TrimSpace(string(out))
@@ -388,7 +389,7 @@ func runUpdateAttempts(softwareName string, attempts []updateAttempt) error {
 
 		attempted++
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		cmd := exec.CommandContext(ctx, attempt.command, attempt.args...)
+		cmd := procspawn.CommandContext(ctx, attempt.command, attempt.args...)
 		output, err := cmd.CombinedOutput()
 		cancel()
 		sanitizedOutput, outputTruncated := sanitizeUninstallOutput(string(output))

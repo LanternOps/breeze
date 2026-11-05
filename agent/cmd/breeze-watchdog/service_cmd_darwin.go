@@ -5,10 +5,10 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/securefs"
 	"github.com/spf13/cobra"
 )
@@ -94,7 +94,7 @@ func serviceInstallCmd() *cobra.Command {
 
 			// Stop existing service before replacing binary.
 			if _, err := os.Stat(watchdogPlistDst); err == nil {
-				if stopErr := exec.Command("launchctl", "unload", watchdogPlistDst).Run(); stopErr != nil {
+				if stopErr := procspawn.Command("launchctl", "unload", watchdogPlistDst).Run(); stopErr != nil {
 					fmt.Fprintf(os.Stderr, "Warning: failed to stop existing service: %v\n", stopErr)
 				} else {
 					fmt.Println("Stopped existing Breeze Watchdog service.")
@@ -125,10 +125,10 @@ func serviceInstallCmd() *cobra.Command {
 			fmt.Printf("LaunchDaemon plist installed to %s\n", watchdogPlistDst)
 
 			// Bootstrap the service.
-			out, err := exec.Command("launchctl", "bootstrap", "system", watchdogPlistDst).CombinedOutput()
+			out, err := procspawn.Command("launchctl", "bootstrap", "system", watchdogPlistDst).CombinedOutput()
 			if err != nil {
 				// Fallback to legacy load.
-				out2, err2 := exec.Command("launchctl", "load", watchdogPlistDst).CombinedOutput()
+				out2, err2 := procspawn.Command("launchctl", "load", watchdogPlistDst).CombinedOutput()
 				if err2 != nil {
 					return fmt.Errorf("failed to load service: %s / %s",
 						strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
@@ -152,9 +152,9 @@ func serviceUninstallCmd() *cobra.Command {
 
 			// Stop and unload.
 			if isWatchdogLoaded() {
-				out, err := exec.Command("launchctl", "bootout", "system/"+watchdogLabel).CombinedOutput()
+				out, err := procspawn.Command("launchctl", "bootout", "system/"+watchdogLabel).CombinedOutput()
 				if err != nil {
-					out2, err2 := exec.Command("launchctl", "unload", watchdogPlistDst).CombinedOutput()
+					out2, err2 := procspawn.Command("launchctl", "unload", watchdogPlistDst).CombinedOutput()
 					if err2 != nil {
 						fmt.Fprintf(os.Stderr, "Warning: failed to stop service: %s / %s\n",
 							strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
@@ -193,14 +193,14 @@ func serviceStartCmd() *cobra.Command {
 			}
 
 			if isWatchdogLoaded() {
-				out, err := exec.Command("launchctl", "kickstart", "system/"+watchdogLabel).CombinedOutput()
+				out, err := procspawn.Command("launchctl", "kickstart", "system/"+watchdogLabel).CombinedOutput()
 				if err != nil {
 					return fmt.Errorf("failed to start service: %s", strings.TrimSpace(string(out)))
 				}
 			} else {
-				out, err := exec.Command("launchctl", "bootstrap", "system", watchdogPlistDst).CombinedOutput()
+				out, err := procspawn.Command("launchctl", "bootstrap", "system", watchdogPlistDst).CombinedOutput()
 				if err != nil {
-					out2, err2 := exec.Command("launchctl", "load", watchdogPlistDst).CombinedOutput()
+					out2, err2 := procspawn.Command("launchctl", "load", watchdogPlistDst).CombinedOutput()
 					if err2 != nil {
 						return fmt.Errorf("failed to load service: %s / %s",
 							strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
@@ -228,9 +228,9 @@ func serviceStopCmd() *cobra.Command {
 				return nil
 			}
 
-			out, err := exec.Command("launchctl", "bootout", "system/"+watchdogLabel).CombinedOutput()
+			out, err := procspawn.Command("launchctl", "bootout", "system/"+watchdogLabel).CombinedOutput()
 			if err != nil {
-				out2, err2 := exec.Command("launchctl", "unload", watchdogPlistDst).CombinedOutput()
+				out2, err2 := procspawn.Command("launchctl", "unload", watchdogPlistDst).CombinedOutput()
 				if err2 != nil {
 					return fmt.Errorf("failed to stop service: %s / %s",
 						strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
@@ -245,7 +245,7 @@ func serviceStopCmd() *cobra.Command {
 
 // restartWatchdogService restarts the watchdog via launchctl kickstart.
 func restartWatchdogService() error {
-	out, err := exec.Command("launchctl", "kickstart", "-k", "system/"+watchdogLabel).CombinedOutput()
+	out, err := procspawn.Command("launchctl", "kickstart", "-k", "system/"+watchdogLabel).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("launchctl kickstart failed: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -259,7 +259,7 @@ func agentBinaryPath() string {
 }
 
 func isWatchdogLoaded() bool {
-	err := exec.Command("launchctl", "print", "system/"+watchdogLabel).Run()
+	err := procspawn.Command("launchctl", "print", "system/"+watchdogLabel).Run()
 	return err == nil
 }
 

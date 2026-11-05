@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // readOneKey reads at most one byte within d using stty's non-canonical
@@ -18,7 +20,7 @@ import (
 // readOneKey's os.Stdin.Read blocked until a newline — the "Rebooting in
 // 10 s" countdown on the KIT proof never fired (2026-09-12).
 func sttyCommand(args ...string) *exec.Cmd {
-	cmd := exec.Command("stty", args...)
+	cmd := procspawn.Command("stty", args...)
 	cmd.Stdin = os.Stdin
 	return cmd
 }

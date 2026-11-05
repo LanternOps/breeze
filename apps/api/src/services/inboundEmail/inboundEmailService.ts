@@ -402,9 +402,11 @@ export async function processInboundEmail(
     // known-portal-user match must NOT be trusted to append a PUBLIC comment, reopen a
     // ticket, or create a ticket as a trusted sender unless the sender's domain is
     // authenticated. We rely on the verdicts the provider already computed at its MX
-    // boundary (aligned SPF+DKIM, or DMARC pass). On a Microsoft 365 mailbox, mail the
-    // tenant's own Exchange stamped as intra-tenant also counts (senderAuth.source
-    // 'exchange-internal', normalizeGraphMessage, #8299). When NOT verified, route the
+    // boundary (aligned SPF+DKIM, or DMARC pass). On a Microsoft 365 mailbox three more
+    // sources count (senderAuth.source, normalizeGraphMessage): Exchange's intra-tenant
+    // stamp ('exchange-internal', #8299), Exchange's own DMARC stamp on external mail
+    // ('exchange-online') and a trusted ARC sealer's verdict ('trusted-arc-sealer',
+    // #10862). When NOT verified, route the
     // message to the EXISTING quarantine/review path instead of auto-acting — mail is
     // never dropped.
     if (!n.senderAuth?.verified) {
@@ -424,8 +426,9 @@ export async function processInboundEmail(
           }
         );
       }
-      const reason = gap
-        ? `unverified sender (SPF/DKIM/DMARC): ${gap}`
+      const reasonDetail = gap ?? n.senderAuthConsulted;
+      const reason = reasonDetail
+        ? `unverified sender (SPF/DKIM/DMARC): ${reasonDetail}`
         : 'unverified sender (SPF/DKIM/DMARC)';
       // Default: route to the review queue. If the partner opted into dropping
       // unverified mail, silently ignore it instead (audit row only, no review

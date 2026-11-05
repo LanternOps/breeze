@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/updater"
 	"gopkg.in/yaml.v3"
@@ -361,7 +361,7 @@ func defaultSpawnFunc(sessionKey, binaryPath string, args ...string) (int, error
 	if len(args) >= 2 && args[0] == "--config" {
 		return spawnWithConfig(binaryPath, sessionKey, args[1])
 	}
-	cmd := exec.Command(binaryPath, args...)
+	cmd := procspawn.Command(binaryPath, args...)
 	cmd.Dir = filepath.Dir(binaryPath)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -846,10 +846,14 @@ func (m *Manager) ensureRunningSession(state *sessionState) error {
 	}
 	var pid int
 	var err error
-	if m.helperSupportsConfigFlag() {
-		pid, err = m.spawnFunc(state.key, m.binaryPath, "--config", state.configPath)
-	} else {
+	// #10755: the helper reads a launch without --config as a person opening
+	// Assist and shows its window (or tells a running instance to). Every
+	// agent launch must stay hidden, so --config is dropped only for a helper
+	// known to predate it, never because the version could not be read.
+	if m.helperKnownToPredateConfigFlag() {
 		pid, err = m.spawnFunc(state.key, m.binaryPath)
+	} else {
+		pid, err = m.spawnFunc(state.key, m.binaryPath, "--config", state.configPath)
 	}
 	if err != nil {
 		return err
@@ -880,6 +884,9 @@ func (m *Manager) crashLoopRetryReasonLocked(state *sessionState) string {
 	return ""
 }
 
+// helperSupportsConfigFlag reports whether the installed helper is KNOWN to
+// read --config. False when the version is unknown: callers use it to also
+// write the shared legacy config, which is harmless for a current helper.
 func (m *Manager) helperSupportsConfigFlag() bool {
 	v := m.installedVersionLocked()
 	if v == "" {
@@ -888,25 +895,45 @@ func (m *Manager) helperSupportsConfigFlag() bool {
 	return semverAtLeast(v, minConfigFlagVersion)
 }
 
+// helperKnownToPredateConfigFlag reports whether the installed helper has a
+// parseable version older than minConfigFlagVersion. An empty or unparseable
+// version is not "old": the spawn keeps --config so Assist starts hidden
+// (#10755).
+func (m *Manager) helperKnownToPredateConfigFlag() bool {
+	v, ok := parseSemverCore(m.installedVersionLocked())
+	return ok && !semverCoreAtLeast(v, minConfigFlagVersion)
+}
+
 func semverAtLeast(version string, target [3]int) bool {
-	v := strings.TrimPrefix(version, "v")
+	v, ok := parseSemverCore(version)
+	return ok && semverCoreAtLeast(v, target)
+}
+
+// parseSemverCore parses the major.minor.patch core of "[v]X.Y.Z[-pre]".
+func parseSemverCore(version string) ([3]int, bool) {
+	var core [3]int
+	v := strings.TrimPrefix(strings.TrimSpace(version), "v")
 	if idx := strings.IndexByte(v, '-'); idx >= 0 {
 		v = v[:idx]
 	}
 	parts := strings.SplitN(v, ".", 3)
 	if len(parts) < 3 {
-		return false
+		return core, false
 	}
 	for i := 0; i < 3; i++ {
 		n, err := strconv.Atoi(parts[i])
 		if err != nil {
-			return false
+			return core, false
 		}
-		if n > target[i] {
-			return true
-		}
-		if n < target[i] {
-			return false
+		core[i] = n
+	}
+	return core, true
+}
+
+func semverCoreAtLeast(v, target [3]int) bool {
+	for i := 0; i < 3; i++ {
+		if v[i] != target[i] {
+			return v[i] > target[i]
 		}
 	}
 	return true
@@ -1103,6 +1130,7 @@ func (m *Manager) installedVersionLocked() string {
 	// invalid_current, and made helperSupportsConfigFlag spawn the helper
 	// without --config, so it wrote its status to the legacy root file this
 	// function ignores once sessions/ exists: the version could never recover.
+	// (Since #10755 an unknown version no longer drops --config from the spawn.)
 	if v, err := m.readBinaryVersion(); err == nil && strings.TrimSpace(v) != "" {
 		return strings.TrimSpace(v)
 	} else if err != nil && !errors.Is(err, errBinaryVersionUnsupported) && m.isInstalled() {
