@@ -82,7 +82,7 @@ export const wispThreadPosts = pgTable('wisp_thread_posts', {
   orgIdx: index('wisp_thread_posts_org_idx').on(t.orgId).where(sql`org_id IS NOT NULL`),
   concernIdx: index('wisp_thread_posts_concern_idx').on(t.concernId).where(sql`concern_id IS NOT NULL`),
   notificationIdx: index('wisp_thread_posts_notification_idx').on(t.notificationId).where(sql`notification_id IS NOT NULL`),
-  kindChk: check('wisp_thread_posts_kind_chk', sql`${t.kind} IN ('brief','nudge','digest','check_in','specialist_result')`),
+  kindChk: check('wisp_thread_posts_kind_chk', sql`${t.kind} IN ('brief','nudge','digest','check_in','specialist_result','first_look')`),
 }));
 
 export type WispThreadPostRow = typeof wispThreadPosts.$inferSelect;

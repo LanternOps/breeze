@@ -69,6 +69,16 @@ export async function mintWispGrantStepUp(input: {
   });
 }
 
+/** The IANA zone this browser reports (#10402, the morning brief's default); null when it names none. */
+export function detectBrowserTimezone(): string | null {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+  } catch (err) {
+    console.warn('[wispGrant] the browser reported no time zone', err);
+    return null;
+  }
+}
+
 const STATUSES: ReadonlySet<string> = new Set<WispGrantStatus>(['active', 'paused', 'revoked', 'expired']);
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 const int = (v: unknown, fallback: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);

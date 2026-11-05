@@ -892,11 +892,15 @@
       "summary": "Resumo",
       "open": "Abrir",
       "unread": "Não lido",
-      "specialistResult": "Relatório do especialista"
+      "specialistResult": "Relatório do especialista",
+      "firstLook": "Primeira olhada"
     },
     "welcome": {
       "title": "Estou dando uma olhada em {{scope}}.",
       "body": "Seu primeiro resumo chega toda manhã, assim que eu der uma olhada. Enquanto isso, pergunte o que quiser.",
+      "firstLookTitle": "Já dei uma primeira olhada em {{scope}}.",
+      "firstLookBody": "O que encontrei está na publicação acima. Pergunte o que quiser sobre isso.",
+      "briefAt": "Seu resumo da manhã sai às {{time}} ({{timezone}}).",
       "suggestions": {
         "needsMe": {
           "label": "O que precisa da minha atenção hoje?",
