@@ -87,7 +87,19 @@
     },
     "createPsaTicket": "PSA-Ticket erstellen",
     "psaTicketRequested": "PSA-Ticket angefordert",
-    "failedToCreatePsaTicket": "PSA-Ticket konnte nicht angefordert werden"
+    "failedToCreatePsaTicket": "PSA-Ticket konnte nicht angefordert werden",
+    "lifecycleLine": {
+      "text": "{{rearm}} · Abklingzeit {{minutes}} Min. ({{source}})",
+      "rearmNewEvidence": "Wird bei neuen Nachweisen wieder scharf",
+      "rearmAfterDelay": "Wird nach {{minutes}} Min. wieder scharf",
+      "sources": {
+        "monitor": "dieser Monitor",
+        "org": "Org-Standard",
+        "partner": "Partner-Standard",
+        "builtin": "integrierter Standard",
+        "legacy": "Alarmregel"
+      }
+    }
   },
   "alertDetails": {
     "closePanel": "Panel schließen",

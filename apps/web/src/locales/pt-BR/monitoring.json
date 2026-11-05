@@ -222,7 +222,20 @@
     "psaBoardDefault": "Usar o quadro padrão da conexão",
     "psaBoardHelp": "Os chamados de alertas deste monitor são criados neste quadro, em vez do padrão da conexão.",
     "psaBoardReadOnly": "Os chamados de alertas vão para o quadro #{{id}} do PSA",
-    "psaBoardUnavailable": "Não foi possível carregar os quadros do PSA, então a substituição do quadro está indisponível no momento."
+    "psaBoardUnavailable": "Não foi possível carregar os quadros do PSA, então a substituição do quadro está indisponível no momento.",
+    "clearsWhen": {
+      "title": "É resolvido quando",
+      "hint": "É resolvido apenas por um evento registrado depois do evento que disparou o alerta.",
+      "noneHint": "Nenhuma condição de recuperação definida: o alerta é resolvido quando o gatilho deixa de corresponder.",
+      "add": "Adicionar uma condição de recuperação",
+      "removeCondition": "Remover",
+      "keepCustom": "Manter a condição personalizada",
+      "customTitle": "Condição de recuperação personalizada (API)",
+      "customHint": "Esta condição foi definida pela API e não pode ser editada aqui. Salvar a mantém como está.",
+      "replaceCustom": "Substituir",
+      "invalid": "Um dos valores da condição de recuperação não é válido.",
+      "customUnusable": "Esta condição não pode ser avaliada, então os alertas deste monitor não serão resolvidos automaticamente. Substitua-a para corrigir isso."
+    }
   },
   "kinds": {
     "composite": "Composto (todas ou alguma de várias)",

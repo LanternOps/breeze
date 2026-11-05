@@ -222,7 +222,20 @@
     "psaBoardDefault": "Use the connection’s default board",
     "psaBoardHelp": "Alert tickets for this monitor are created on this board instead of the connection’s default.",
     "psaBoardReadOnly": "Alert tickets go to PSA board #{{id}}",
-    "psaBoardUnavailable": "Could not load PSA boards, so the board override is unavailable right now."
+    "psaBoardUnavailable": "Could not load PSA boards, so the board override is unavailable right now.",
+    "clearsWhen": {
+      "title": "Clears when",
+      "hint": "Clears only on an event logged after the alert's trigger event.",
+      "noneHint": "No recovery condition is set, so the alert clears once the trigger stops matching.",
+      "add": "Add a recovery condition",
+      "removeCondition": "Remove",
+      "keepCustom": "Keep the custom condition",
+      "customTitle": "Custom recovery condition (API)",
+      "customHint": "This condition was set through the API and can't be edited here. Saving keeps it as it is.",
+      "replaceCustom": "Replace",
+      "invalid": "One of the recovery condition's values isn't valid.",
+      "customUnusable": "This condition can't be evaluated, so this monitor's alerts won't auto-resolve. Replace it to fix this."
+    }
   },
   "kinds": {
     "composite": "Composite (all or any of several)",
