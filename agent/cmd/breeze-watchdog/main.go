@@ -16,6 +16,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/ech"
+	"github.com/breeze-rmm/agent/internal/flashguard"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/securefs"
@@ -1433,6 +1434,10 @@ var heartbeatUpgradeBackoff updater.TargetBackoff
 // exponential per-target backoff instead of a re-download on every poll. A new
 // target version is attempted immediately. Skipped polls are not journaled:
 // the failure that started the backoff already was, with its retry time.
+// heldUpgradeJournaled records, per component, the target whose firmware hold
+// has already been journaled.
+var heldUpgradeJournaled sync.Map
+
 func runHeartbeatUpgrade(b *updater.TargetBackoff, journal *watchdog.Journal, component, version string, update func() error) {
 	if _, active := b.Remaining(component, version); active {
 		return
@@ -1445,6 +1450,16 @@ func runHeartbeatUpgrade(b *updater.TargetBackoff, journal *watchdog.Journal, co
 		b.Clear(component)
 		return
 	}
+	if errors.Is(err, flashguard.ErrFlashInProgress) {
+		// Not a failure, and not backed off: the next heartbeat offers it again.
+		// Journaled once per target rather than on every poll of a long flash.
+		key := component + "@" + version
+		if prev, loaded := heldUpgradeJournaled.Swap(component, key); !loaded || prev != key {
+			journal.Log(watchdog.LevelInfo, "failover.upgrade_"+component+"_held", map[string]any{"version": version})
+		}
+		return
+	}
+	heldUpgradeJournaled.Delete(component)
 	fields := map[string]any{
 		"version": version,
 		"error":   err.Error(),
@@ -1630,6 +1645,16 @@ func updateTrustConfig(journal *watchdog.Journal, component string) (*config.Con
 // downloads follow that promotion instead of pinning the dead primary captured
 // in cfg at startup (#2478).
 func doUpdateAgent(targetVersion string, serverURL func() string, tokens *tokenHolder, journal *watchdog.Journal) error {
+	// This replaces and restarts the agent, so it must not run during a firmware
+	// update. Held through the update and for a while after it, so a section
+	// cannot open while the agent restart is still under way. A watchdog
+	// self-update needs no admission: it does not touch the agent.
+	done, err := flashguard.Default().AdmitPowerAction("watchdog_update_agent")
+	if err != nil {
+		return err
+	}
+	handedOff := false
+	defer func() { flashguard.ReleaseAfterHandoff(done, handedOff) }()
 	tok := tokens.Get()
 	if tok == nil {
 		return fmt.Errorf("no auth token available")
@@ -1665,6 +1690,7 @@ func doUpdateAgent(targetVersion string, serverURL func() string, tokens *tokenH
 		// return value without redacting there too.
 		return err
 	}
+	handedOff = true
 	journal.Log(watchdog.LevelInfo, "update.agent_success", map[string]any{
 		"version": targetVersion,
 	})
