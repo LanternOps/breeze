@@ -117,6 +117,28 @@ export function joinRemotePath(basePath: string, name: string): string {
   return `${normalized}/${name}`;
 }
 
+/**
+ * Why a new folder name cannot be used in `parentPath`, or null when it can.
+ *
+ * The clash check is not cosmetic: the agent runs MkdirAll, so creating a folder
+ * that already exists reports success and creates nothing. Windows compares
+ * names case-insensitively, refuses its reserved characters, and silently drops
+ * a trailing dot, so its rules apply only under a Windows path.
+ */
+export function validateFolderName(
+  name: string,
+  parentPath: string,
+  existingNames: readonly string[],
+): 'invalid' | 'exists' | null {
+  const windows = isWindowsPath(parentPath);
+  if (name === '.' || name === '..' || /[\u0000-\u001f/\\]/.test(name)) return 'invalid';
+  if (windows && /[<>:"|?*]|\.$/.test(name)) return 'invalid';
+
+  const comparable = (value: string) => (windows ? value.toLowerCase() : value);
+  const taken = existingNames.some((existing) => comparable(existing) === comparable(name));
+  return taken ? 'exists' : null;
+}
+
 export function buildBreadcrumbs(path: string): PathBreadcrumbModel {
   if (isWindowsPath(path)) {
     const normalized = normalizeWindowsPath(path);
