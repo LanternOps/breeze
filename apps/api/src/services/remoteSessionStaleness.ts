@@ -26,10 +26,12 @@ export function remoteSessionStaleCondition(now: Date) {
     ),
     and(
       eq(remoteSessions.status, 'connecting'),
-      // Measured from the session's original start when it has one (a
+      // Measured from the session's original start when it has one (a first
       // WebSocket-fallback start stamps it before waiting on its consent
       // prompt), otherwise from creation. started_at is never earlier than
-      // created_at, so this can only keep a row longer, never expire one sooner.
+      // created_at, so this can only keep a row longer than creation alone
+      // would. A live session re-offering keeps its original start, so it can
+      // already read as stale here while it reconnects (#11113).
       // The cutoff is bound as an ISO string: a Date inside a raw sql
       // template bypasses the column encoder and fails to bind (#3369).
       sql`COALESCE(${remoteSessions.startedAt}, ${remoteSessions.createdAt}) <= ${new Date(now.getTime() - REMOTE_SESSION_CONNECTING_STALE_MS).toISOString()}::timestamp`,

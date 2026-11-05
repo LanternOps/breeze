@@ -179,6 +179,14 @@ async function backdateStart(sessionId: string, startedAt: Date): Promise<void> 
   await getTestDb().update(remoteSessions).set({ startedAt }).where(eq(remoteSessions.id, sessionId));
 }
 
+/** Far enough back that a first start stamped from created_at cannot pass as `now`. */
+async function backdateCreation(sessionId: string): Promise<void> {
+  await getTestDb()
+    .update(remoteSessions)
+    .set({ createdAt: new Date(Date.now() - 10 * 60 * 1000) })
+    .where(eq(remoteSessions.id, sessionId));
+}
+
 /** Reach a live session whose first answer was at `startedAt`. */
 async function liveSessionStartedAt(startedAt: Date): Promise<Fixture> {
   const f = await buildFixture();
@@ -195,6 +203,7 @@ describe('#11113 remote session max duration across reconnects', () => {
 
   it('the first answer starts the clock', async () => {
     const f = await buildFixture();
+    await backdateCreation(f.sessionId);
     expect((await readSession(f.sessionId)).startedAt).toBeNull();
 
     const before = Date.now();
@@ -234,6 +243,12 @@ describe('#11113 remote session max duration across reconnects', () => {
 
     expect(new Set(deadlines).size).toBe(1);
     expect(deadlines[0]).toBeLessThanOrEqual(original.getTime() + REVOCATION_LEASE_HARD_CAP_MS);
+
+    // The other side of the deadline: a session still inside its maximum keeps
+    // renewing after the same reconnects, on the deadline it already had.
+    const renewal = await renewRevocationLease(f.sessionId);
+    expect(renewal).toMatchObject({ status: 'renewed', hardDeadline: deadlines[0] });
+    expect((await readSession(f.sessionId)).status).toBe('active');
   });
 
   it('a session past original + max is revoked even after N reconnects', async () => {
@@ -274,6 +289,7 @@ describe('#11113 remote session max duration across reconnects', () => {
 
   it('the first WebSocket-fallback start still stamps the start attempt', async () => {
     const f = await buildFixture();
+    await backdateCreation(f.sessionId);
 
     const before = Date.now();
     const result = await withSystemDbAccessContext(() =>

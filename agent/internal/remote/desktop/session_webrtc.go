@@ -622,9 +622,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			go session.onPeerDisconnected()
 			// Transient: a brief network blip enters this state. We deliberately
 			// do NOT fire OnSessionStopped (peer_disconnected) here — doing so
-			// would mark the server session disconnected+revoked on a hiccup,
-			// unless the viewer had just announced a reconnect, in which case
-			// the API holds the session for a short grace instead (#10542).
+			// would mark the server session disconnected+revoked on a hiccup.
 			// Instead we schedule the 20s grace timer below; only the
 			// grace-expired branch (terminal) and the Failed/Closed branch
 			// escalate to OnSessionStopped. So peer_disconnected is terminal-only.
@@ -659,6 +657,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			})
 
 		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+			// The report does not always end the server session at once: when
+			// the viewer announced a reconnect just before closing its peer,
+			// the API holds this peer_disconnected for a short grace instead of
+			// revoking under the reconnect (#10542).
 			logSelectedPair("failed-or-closed")
 			m.StopSession(sessionID)
 			if m.OnSessionStopped != nil {
