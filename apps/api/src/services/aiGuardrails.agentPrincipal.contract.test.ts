@@ -196,6 +196,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_active_users',
   'get_ai_agent_run', // A-W06 Tier-1 read
   'get_alert_correlations', // W07 (#6777) Tier-1 read: org-scoped correlation views, refused to exact-device runs in the handler
+  'get_backup_health', // W17 (#6788) Tier-1 read: refused to exact-device runs in the handler
   // W01 (#6755)
   'get_backup_status',
   // W01 (#6755) follow-up
@@ -296,6 +297,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   // W01 (#6755)
   'get_vault_status',
   'get_vm_restore_estimate',
+  'get_vss_status', // W17 (#6788) TIER2_READONLY: a read-only command on one device, MFA and device axes in the handler
   'get_vulnerability_report',
   'google_email_report',
   'google_list_licenses',
@@ -305,6 +307,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_ai_agent_runs', // A-W06 Tier-1 read
   'list_ai_agent_schedules', // W10 (#6780) Tier-1 read
   'list_ai_agents', // A-W06 Tier-1 read
+  'list_bmr_recoveries', // W17 (#6788) Tier-1 read: scalars only, device and site axes enforced in the handler
   'list_business_calendars', // #8973 W4 Tier-1 read
   'list_concerns', // Wisp W05a: Tier 1 concern read; refuses without auth.wispGrant, ceiling-filtered by the service
   'list_configuration_policies',

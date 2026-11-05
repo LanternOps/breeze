@@ -770,6 +770,12 @@ export const TOOL_TIERS = {
   manage_dr_plan: 2,
   execute_dr_plan: 3,
   manage_backup_profiles: 1,
+  // Full-control W17 (#6788). The multiplexers' real per-action classes live in aiGuardrails.
+  manage_backup_verification: 1,
+  list_bmr_recoveries: 1,
+  get_backup_health: 1,
+  manage_c2c_configs: 1,
+  get_vss_status: 2,
   configure_backup_sla: 2,
   configure_vault: 2,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
@@ -4496,6 +4502,41 @@ export function buildBreezeSdkTools(
       registryDescription('manage_backup_profiles'),
       inputShape('manage_backup_profiles'),
       makeHandler('manage_backup_profiles', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_backup_verification',
+      registryDescription('manage_backup_verification'),
+      inputShape('manage_backup_verification'),
+      makeHandler('manage_backup_verification', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_vss_status',
+      registryDescription('get_vss_status'),
+      inputShape('get_vss_status'),
+      makeHandler('get_vss_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_bmr_recoveries',
+      registryDescription('list_bmr_recoveries'),
+      inputShape('list_bmr_recoveries'),
+      makeHandler('list_bmr_recoveries', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_backup_health',
+      registryDescription('get_backup_health'),
+      inputShape('get_backup_health'),
+      makeHandler('get_backup_health', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_c2c_configs',
+      registryDescription('manage_c2c_configs'),
+      inputShape('manage_c2c_configs'),
+      makeHandler('manage_c2c_configs', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

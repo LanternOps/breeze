@@ -2,9 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
-const { executeMock, contextLabels } = vi.hoisted(() => ({
+const { executeMock, contextLabels, openContexts } = vi.hoisted(() => ({
   executeMock: vi.fn(),
   contextLabels: [] as Array<string | undefined>,
+  openContexts: { count: 0 },
 }));
 
 vi.mock('../db', () => ({
@@ -12,9 +13,14 @@ vi.mock('../db', () => ({
     execute: executeMock,
   },
   runOutsideDbContext: (fn: () => Promise<unknown>) => fn(),
-  withSystemDbAccessContext: (fn: () => Promise<unknown>, label?: string) => {
+  withSystemDbAccessContext: async (fn: () => Promise<unknown>, label?: string) => {
     contextLabels.push(label);
-    return fn();
+    openContexts.count += 1;
+    try {
+      return await fn();
+    } finally {
+      openContexts.count -= 1;
+    }
   },
 }));
 
@@ -486,6 +492,266 @@ describe('metric rollup maintenance service', () => {
           error: 'metric_rollups_default already holds rows for this month, so its partition cannot be created',
         },
       ]);
+    });
+
+    describe('a legacy month that cannot get its locks (#10960)', () => {
+      const MAY = 'metric_rollups_y2026m05';
+      const JUNE = 'metric_rollups_y2026m06';
+      // NOW's 5-minute cutoff is 2026-07-01, so June came due today (0 days
+      // overdue) and May came due 30 days ago.
+      const NO_BACKOFF = { compactionRetryBackoffMs: [0, 0] };
+
+      /** The shape postgres-js + drizzle produce: the SQLSTATE sits on `.cause`. */
+      function lockNotAvailable(): Error {
+        const cause = Object.assign(new Error('breeze_metric_rollup_lock_nowait: could not lock'), { code: '55P03' });
+        return new Error('Failed query: SELECT public.breeze_compact_metric_rollup_partition', { cause });
+      }
+
+      function flat(...names: string[]): MonthRow[] {
+        return names.map((partitionName) => ({ partitionName, relkind: 'r', leaves: [] }));
+      }
+
+      /** Throws 55P03 the first `times` calls of `fn` for the month. */
+      function failFirst(fn: string, month: string, times: number) {
+        let seen = 0;
+        return (text: string, params: unknown[]) => {
+          if (!text.includes(fn) || !String(params[0]).startsWith(month)) return null;
+          seen += 1;
+          return seen <= times ? lockNotAvailable() : null;
+        };
+      }
+
+      it('retries the compact without re-preparing, so a later attempt can cut over', async () => {
+        const calls = installDb({
+          months: flat(JUNE),
+          failOn: failFirst('breeze_compact_metric_rollup_partition', '2026-06', 1),
+        });
+
+        const result = await runMetricRollupMaintenance({ now: NOW, ...NO_BACKOFF });
+
+        expect(result.compactedPartitions).toEqual([JUNE]);
+        expect(result.failures).toEqual([]);
+        expect(result.deferredCompactions).toEqual([]);
+        expect(named(calls, 'breeze_prepare_metric_rollup_compaction')).toHaveLength(1);
+        expect(named(calls, 'breeze_compact_metric_rollup_partition')).toHaveLength(2);
+      });
+
+      it('defers the month when every attempt is contended, without failing a run that is not yet stalled', async () => {
+        const calls = installDb({
+          months: flat(JUNE),
+          failOn: failFirst('breeze_compact_metric_rollup_partition', '2026-06', 99),
+        });
+
+        const result = await runMetricRollupMaintenance({ now: NOW, ...NO_BACKOFF });
+
+        expect(result.compactedPartitions).toEqual([]);
+        expect(result.failures).toEqual([]);
+        expect(result.deferredCompactions).toEqual([
+          {
+            partition: JUNE,
+            step: 'compact',
+            attempts: 3,
+            overdueDays: 0,
+            stalled: false,
+            error: 'breeze_metric_rollup_lock_nowait: could not lock',
+          },
+        ]);
+        expect(named(calls, 'breeze_compact_metric_rollup_partition')).toHaveLength(3);
+      });
+
+      it('fails the run only once the month has been overdue past the stall threshold', async () => {
+        const sixDays = new Date(NOW.getTime() + 6 * 24 * 60 * 60 * 1000);
+        const sevenDays = new Date(NOW.getTime() + 7 * 24 * 60 * 60 * 1000);
+        const failOn = (text: string) =>
+          text.includes('breeze_compact_metric_rollup_partition') ? lockNotAvailable() : null;
+
+        installDb({ months: flat(JUNE), failOn });
+        const before = await runMetricRollupMaintenance({ now: sixDays, ...NO_BACKOFF });
+        expect(before.failures).toEqual([]);
+        expect(before.deferredCompactions[0]).toMatchObject({ overdueDays: 6, stalled: false });
+
+        installDb({ months: flat(JUNE), failOn });
+        const after = await runMetricRollupMaintenance({ now: sevenDays, ...NO_BACKOFF });
+        expect(after.deferredCompactions[0]).toMatchObject({ overdueDays: 7, stalled: true });
+        expect(after.failures).toHaveLength(1);
+        expect(after.failures[0]).toMatchObject({ step: 'compact', partition: JUNE });
+        expect(after.failures[0]!.error).toContain('7 days overdue');
+        expect(after.failures[0]!.error).toContain('could not lock');
+      });
+
+      it('gives every month its own attempts: an exhausted month costs the next one nothing', async () => {
+        const mayFails = failFirst('breeze_compact_metric_rollup_partition', '2026-05', 99);
+        const juneFails = failFirst('breeze_compact_metric_rollup_partition', '2026-06', 2);
+        const calls = installDb({
+          months: flat(MAY, JUNE),
+          failOn: (text, params) => mayFails(text, params) ?? juneFails(text, params),
+        });
+
+        const result = await runMetricRollupMaintenance({ now: NOW, ...NO_BACKOFF });
+
+        expect(result.deferredCompactions.map((d) => [d.partition, d.attempts])).toEqual([[MAY, 3]]);
+        expect(result.compactedPartitions).toEqual([JUNE]);
+        expect(named(calls, 'breeze_compact_metric_rollup_partition')).toHaveLength(6);
+      });
+
+      it('retries a contended prepare too (a stale stage needs ACCESS EXCLUSIVE to drop), counting it against the month', async () => {
+        const calls = installDb({
+          months: flat(JUNE),
+          failOn: failFirst('breeze_prepare_metric_rollup_compaction', '2026-06', 99),
+        });
+
+        const result = await runMetricRollupMaintenance({ now: NOW, ...NO_BACKOFF });
+
+        expect(result.deferredCompactions[0]).toMatchObject({ step: 'prepare-compaction', attempts: 3 });
+        expect(named(calls, 'breeze_prepare_metric_rollup_compaction')).toHaveLength(3);
+        expect(named(calls, 'breeze_compact_metric_rollup_partition')).toHaveLength(0);
+      });
+
+      it('shares one budget across prepare and compact', async () => {
+        const prepareFails = failFirst('breeze_prepare_metric_rollup_compaction', '2026-06', 1);
+        const calls = installDb({
+          months: flat(JUNE),
+          failOn: (text, params) =>
+            prepareFails(text, params) ??
+            (text.includes('breeze_compact_metric_rollup_partition') ? lockNotAvailable() : null),
+        });
+
+        const result = await runMetricRollupMaintenance({ now: NOW, ...NO_BACKOFF });
+
+        expect(result.deferredCompactions[0]).toMatchObject({ step: 'compact', attempts: 3 });
+        expect(named(calls, 'breeze_prepare_metric_rollup_compaction')).toHaveLength(2);
+        expect(named(calls, 'breeze_compact_metric_rollup_partition')).toHaveLength(2);
+      });
+
+      it('stops waiting once the run has spent its backoff budget, deferring the rest after one attempt', async () => {
+        const calls = installDb({
+          months: flat(MAY, JUNE),
+          failOn: (text) =>
+            text.includes('breeze_compact_metric_rollup_partition') ? lockNotAvailable() : null,
+        });
+
+        const result = await runMetricRollupMaintenance({
+          now: NOW,
+          compactionRetryBackoffMs: [5, 5],
+          compactionRetrySleepBudgetMs: 5,
+        });
+
+        expect(result.deferredCompactions.map((d) => [d.partition, d.attempts])).toEqual([
+          [MAY, 2],
+          [JUNE, 1],
+        ]);
+        expect(named(calls, 'breeze_compact_metric_rollup_partition')).toHaveLength(3);
+      });
+
+      it('attributes a non-lock error after a lock retry to the step that raised it', async () => {
+        let prepares = 0;
+        installDb({
+          months: flat(JUNE),
+          failOn: (text) => {
+            if (!text.includes('breeze_prepare_metric_rollup_compaction')) return null;
+            prepares += 1;
+            return prepares === 1 ? lockNotAvailable() : new Error('relation already exists');
+          },
+        });
+        const prepareThenFail = await runMetricRollupMaintenance({ now: NOW, ...NO_BACKOFF });
+        expect(prepareThenFail.failures).toEqual([
+          { step: 'prepare-compaction', partition: JUNE, error: 'relation already exists' },
+        ]);
+        expect(prepareThenFail.deferredCompactions).toEqual([]);
+
+        let compacts = 0;
+        installDb({
+          months: flat(JUNE),
+          failOn: (text) => {
+            if (!text.includes('breeze_compact_metric_rollup_partition')) return null;
+            compacts += 1;
+            return compacts === 1 ? lockNotAvailable() : new Error('disk full');
+          },
+        });
+        const compactThenFail = await runMetricRollupMaintenance({ now: NOW, ...NO_BACKOFF });
+        expect(compactThenFail.failures).toEqual([{ step: 'compact', partition: JUNE, error: 'disk full' }]);
+        expect(compactThenFail.deferredCompactions).toEqual([]);
+      });
+
+      it('records another run taking the maintenance lock during a backoff as a failure, and stops retrying', async () => {
+        let compacts = 0;
+        let lockChecks = 0;
+        const calls = installDb({
+          months: flat(JUNE),
+          failOn: (text) => {
+            if (!text.includes('breeze_compact_metric_rollup_partition')) return null;
+            compacts += 1;
+            return lockNotAvailable();
+          },
+        });
+        // Every step before the retry gets the run lock; the retry does not.
+        const base = executeMock.getMockImplementation()!;
+        executeMock.mockImplementation(async (statement: unknown) => {
+          const { text } = render(statement);
+          if (text.includes('pg_try_advisory_xact_lock')) {
+            lockChecks += 1;
+            if (compacts >= 1) return [{ acquired: false }];
+          }
+          return base(statement);
+        });
+
+        const result = await runMetricRollupMaintenance({ now: NOW, ...NO_BACKOFF });
+
+        expect(lockChecks).toBeGreaterThan(0);
+        expect(compacts).toBe(1);
+        expect(result.failures).toEqual([
+          { step: 'compact', partition: JUNE, error: 'maintenance lock held by another run' },
+        ]);
+        expect(result.deferredCompactions).toEqual([]);
+        expect(named(calls, 'breeze_compact_metric_rollup_partition')).toHaveLength(1);
+      });
+
+      it('does not retry any other error: it is a failure on the first attempt', async () => {
+        const calls = installDb({
+          months: flat(JUNE),
+          failOn: (text) =>
+            text.includes('breeze_compact_metric_rollup_partition') ? new Error('disk full') : null,
+        });
+
+        const result = await runMetricRollupMaintenance({ now: NOW, ...NO_BACKOFF });
+
+        expect(result.failures).toEqual([{ step: 'compact', partition: JUNE, error: 'disk full' }]);
+        expect(result.deferredCompactions).toEqual([]);
+        expect(named(calls, 'breeze_compact_metric_rollup_partition')).toHaveLength(1);
+      });
+
+      it('backs off 1 then 3 minutes by default, holding no transaction while it waits', async () => {
+        vi.useFakeTimers();
+        try {
+          const calls = installDb({
+            months: flat(JUNE),
+            failOn: (text) =>
+              text.includes('breeze_compact_metric_rollup_partition') ? lockNotAvailable() : null,
+          });
+          const compacts = () => named(calls, 'breeze_compact_metric_rollup_partition').length;
+
+          const run = runMetricRollupMaintenance({ now: NOW });
+          await vi.advanceTimersByTimeAsync(0);
+          expect(compacts()).toBe(1);
+          expect(openContexts.count).toBe(0);
+
+          await vi.advanceTimersByTimeAsync(59_999);
+          expect(compacts()).toBe(1);
+          await vi.advanceTimersByTimeAsync(1);
+          expect(compacts()).toBe(2);
+          expect(openContexts.count).toBe(0);
+
+          await vi.advanceTimersByTimeAsync(179_999);
+          expect(compacts()).toBe(2);
+          await vi.advanceTimersByTimeAsync(1);
+          expect(compacts()).toBe(3);
+
+          const result = await run;
+          expect(result.deferredCompactions[0]).toMatchObject({ attempts: 3 });
+        } finally {
+          vi.useRealTimers();
+        }
+      });
     });
 
     it('does not compact a month that prepare no longer finds flat', async () => {

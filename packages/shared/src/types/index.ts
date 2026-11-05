@@ -269,6 +269,8 @@ export interface DeviceHardware {
   diskTotalGb: number | null;
   gpuModel: string | null;
   serialNumber: string | null;
+  /** SMBIOS system SKU (the HP product number); null until reported. */
+  productSku: string | null;
   manufacturer: string | null;
   model: string | null;
   motherboardManufacturer: string | null;

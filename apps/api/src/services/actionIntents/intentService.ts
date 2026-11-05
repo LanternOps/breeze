@@ -645,6 +645,17 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
       default: return null;
     }
   },
+  // Full-control W17 (#6788).
+  manage_backup_verification: (input) =>
+    nonEmptyString(input.action) === 'run' ? 'Queues a backup check on the machine. It uses device and storage resources while it runs.' : null,
+  manage_c2c_configs: (input) => {
+    switch (nonEmptyString(input.action)) {
+      case 'create': return 'Chooses whose mail is copied, where it is stored and on what schedule.';
+      case 'update': return 'Changes whose mail is copied, where it is stored or on what schedule.';
+      case 'delete': return 'Deletes the config. Refused while backup history depends on it.';
+      default: return null;
+    }
+  },
   manage_quotes: (input) =>
     nonEmptyString(input.action) === 'send' ? 'Sends the quote to the customer.' : null,
   manage_pax8_subscriptions: (input) => describePax8Action('manage_pax8_subscriptions', nonEmptyString(input.action)),

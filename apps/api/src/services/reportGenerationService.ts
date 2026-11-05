@@ -390,6 +390,7 @@ type DeviceInventoryRow = {
   ramTotalMb: number | null;
   diskTotalGb: number | null;
   serialNumber: string | null;
+  productSku: string | null;
 };
 
 /** Shared row query; callers retain their own authority checks and narrowing. */
@@ -408,7 +409,8 @@ export async function readDeviceInventoryRows(orgId: string, conditions: SQL[]) 
       cpuModel: deviceHardware.cpuModel,
       ramTotalMb: deviceHardware.ramTotalMb,
       diskTotalGb: deviceHardware.diskTotalGb,
-      serialNumber: deviceHardware.serialNumber
+      serialNumber: deviceHardware.serialNumber,
+      productSku: deviceHardware.productSku
     })
     .from(devices)
     .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
@@ -511,6 +513,7 @@ export async function generateDeviceInventoryReport(
         ramTotalMb: null,
         diskTotalGb: null,
         serialNumber: asset.serialNumber,
+        productSku: null,
       });
     }
 

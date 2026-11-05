@@ -489,9 +489,10 @@ test('existing classifier test harness still extracts exactly the classifier she
 });
 
 test('real sparse queue checkout verifies base policy and computes shadow without network', () => tempRepo(({ dir, git, put, commit }) => {
-  for (const path of [...queue.POLICY_FILES, 'apps/api/vitest.integration.config.ts',
-    ...Object.keys(context.playwrightConfigs).map(name => `e2e-tests/${name}`)]) {
-    put(path, readFileSync(join(REPO_ROOT, path), 'utf8'));
+  // Listed files that have not landed yet (the W02 gate) are absent at base too.
+  for (const path of new Set([...queue.POLICY_FILES, 'apps/api/vitest.integration.config.ts',
+    ...Object.keys(context.playwrightConfigs).map(name => `e2e-tests/${name}`)])) {
+    if (existsSync(join(REPO_ROOT, path))) put(path, readFileSync(join(REPO_ROOT, path), 'utf8'));
   }
   const base = commit('base policies');
   git('checkout', '-qb', 'pr'); put('apps/web/src/x.ts', 'export const x = 1;'); const head = commit('PR');

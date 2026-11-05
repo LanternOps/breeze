@@ -812,6 +812,7 @@
           "os": "OS",
           "owner": "Owner",
           "patch_level": "Patch level",
+          "product_number": "Product Number",
           "serial": "Serial",
           "site": "Site",
           "status": "Status"

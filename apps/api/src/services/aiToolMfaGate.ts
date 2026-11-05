@@ -64,6 +64,11 @@ export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly stri
   // W15 PR A (#6785): every Pax8 write mirrors requireMfa() at REST, including isMock preflight.
   manage_pax8_subscriptions: Object.freeze(['sync', 'link', 'unlink']),
   manage_pax8_orders: Object.freeze(['create_draft', 'add_line', 'update_line', 'remove_line', 'preflight', 'submit', 'reconcile']),
+  // Full-control W17 (#6788): POST /backup/verify and GET /backup/vss/status/:deviceId carry requireMfa(), the VSS read
+  // included (it runs a command on the machine); C2C config writes carry it too. Their reads carry none.
+  manage_backup_verification: Object.freeze(['run']),
+  get_vss_status: '*',
+  manage_c2c_configs: Object.freeze(['create', 'update', 'delete']),
   manage_pam_rules: Object.freeze([
     'create_rule', 'update_rule', 'delete_rule', 'set_config',
     'create_signer_group', 'update_signer_group', 'delete_signer_group',

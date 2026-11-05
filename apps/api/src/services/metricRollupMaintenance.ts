@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { pgErrorCode, pgErrorNode } from '../utils/pgErrors';
 import {
   METRIC_ROLLUP_BUCKET_RETENTION_DAYS,
   metricRollupRetentionCutoffs,
@@ -66,6 +67,32 @@ export const DEFAULT_METRIC_ROLLUP_DEFAULT_DRAIN_PAGES_PER_BATCH = 128;
 const MAINTENANCE_LOCK_TIMEOUT_MS = 5000;
 const MAINTENANCE_ADVISORY_LOCK = 'metric_rollup_maintenance';
 
+/**
+ * Waits between one legacy month's compaction attempts when it cannot get its
+ * locks (#10960), so its attempts = this length + 1. Long enough to sample a
+ * different moment of traffic, not the same busy second. The budget is per
+ * month, and spans prepare and compact. No transaction is open during a wait.
+ */
+const COMPACTION_RETRY_BACKOFF_MS: readonly number[] = [60_000, 180_000];
+
+/**
+ * Total time one run may spend in those waits, across every month. Each month
+ * keeps its own attempts, but a backlog of contended months must not stretch
+ * the nightly run (and a worker shutdown waiting on it) by 4 minutes a month.
+ * Once it is spent, a contended month defers after the attempt it is on.
+ */
+const COMPACTION_RETRY_SLEEP_BUDGET_MS = 15 * 60_000;
+
+/**
+ * A month this many days past the day it came due for compaction, and still
+ * contended, has stalled: the run reports it as a failure. Short of this a
+ * contended month is routine and just retries on the next nightly run.
+ */
+const COMPACTION_STALL_AFTER_DAYS = 7;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const PG_LOCK_NOT_AVAILABLE = '55P03';
+
 type RetainedBucketSeconds = 300 | 3600;
 const BUCKET_LEAF_SUFFIX: Record<300 | 3600 | 86400, string> = { 300: '5m', 3600: '1h', 86400: '1d' };
 
@@ -89,6 +116,19 @@ export type MetricRollupMonthPartition = {
 export type MetricRollupMaintenanceFailure = {
   step: string;
   partition: string;
+  error: string;
+};
+
+/** A legacy month left uncompacted because it could not get its locks (#10960). */
+export type MetricRollupDeferredCompaction = {
+  partition: string;
+  /** The step whose locks ran out on the last attempt. */
+  step: 'prepare-compaction' | 'compact';
+  attempts: number;
+  /** Whole days since the month's 5-minute rows expired and it came due. */
+  overdueDays: number;
+  /** Past COMPACTION_STALL_AFTER_DAYS; the month is in `failures` too. */
+  stalled: boolean;
   error: string;
 };
 
@@ -126,6 +166,8 @@ export type MetricRollupMaintenanceResult = {
   cutoffs: { fiveMinute: string; hourly: string; daily: string };
   /** Steps that failed; the rest of the run still completed. */
   failures: MetricRollupMaintenanceFailure[];
+  /** Legacy months still uncompacted because their locks were never free. */
+  deferredCompactions: MetricRollupDeferredCompaction[];
   durationMs: number;
   skipped?: boolean;
   reason?: string;
@@ -559,6 +601,10 @@ export async function runMetricRollupMaintenance(options: {
   defaultDrainPagesPerBatch?: number;
   /** Test/ops override; normalized exactly like the env settings. */
   retentionDays?: Partial<MetricRollupRetentionDays>;
+  /** Test override for COMPACTION_RETRY_BACKOFF_MS. */
+  compactionRetryBackoffMs?: readonly number[];
+  /** Test override for COMPACTION_RETRY_SLEEP_BUDGET_MS. */
+  compactionRetrySleepBudgetMs?: number;
 } = {}): Promise<MetricRollupMaintenanceResult> {
   const startedAt = Date.now();
   const now = options.now ?? new Date();
@@ -594,6 +640,7 @@ export async function runMetricRollupMaintenance(options: {
       daily: cutoffs.daily.toISOString(),
     },
     failures: [],
+    deferredCompactions: [],
     durationMs: 0,
   };
   const finish = (): MetricRollupMaintenanceResult => {
@@ -669,6 +716,7 @@ export async function runMetricRollupMaintenance(options: {
   }
 
   // 2. Retention, month by month.
+  const retrySleep = { remainingMs: options.compactionRetrySleepBudgetMs ?? COMPACTION_RETRY_SLEEP_BUDGET_MS };
   const months = (await step('list', 'list', '*', () => listMetricRollupMonthPartitions())) ?? [];
   for (const month of months) {
     const monthEnd = addMonths(month.monthStart, 1).getTime();
@@ -701,33 +749,121 @@ export async function runMetricRollupMaintenance(options: {
 
     // Legacy flat month: rewrite it once its 5-minute rows have expired.
     if (!fiveMinuteExpired) continue;
-    const keepHourly = !hourlyExpired;
-    const monthLiteral = formatTimestampLiteral(month.monthStart);
-    // Own transaction: adding the staged leaves' FKs locks devices and
-    // organizations, and that lock must be released before the long copy.
-    const prepared = await step('prepareCompaction', 'prepare-compaction', month.name, async () =>
-      readPartitionNameResult(
-        await db.execute(sql`
-          SELECT public.breeze_prepare_metric_rollup_compaction(
-            ${monthLiteral}::timestamp, ${keepHourly}
-          ) AS "partitionName"
-        `),
-        `prepare compaction ${month.name}`,
-      ),
-    );
-    if (!prepared) continue;
-    const compacted = await step('compact', 'compact', month.name, async () =>
-      readPartitionNameResult(
-        await db.execute(sql`
-          SELECT public.breeze_compact_metric_rollup_partition(
-            ${monthLiteral}::timestamp, ${keepHourly}
-          ) AS "partitionName"
-        `),
-        `compact ${month.name}`,
-      ),
-    );
-    if (compacted) result.compactedPartitions.push(compacted);
+    await compactLegacyMonth(month, {
+      keepHourly: !hourlyExpired,
+      overdueDays: Math.floor((cutoffs.fiveMinute.getTime() - monthEnd) / DAY_MS),
+      backoffMs: options.compactionRetryBackoffMs ?? COMPACTION_RETRY_BACKOFF_MS,
+      retrySleep,
+      result,
+    });
   }
 
   return finish();
+}
+
+/**
+ * Rewrite one legacy flat month into per-bucket leaves.
+ *
+ * The SQL side takes its locks with NOWAIT so it can never queue readers or join
+ * a deadlock (#10829). The price is that under steady traffic it can run out of
+ * its attempts, and that raises 55P03. That is contention, not a fault, so
+ * #10960 retries it after a wait instead of leaving the month for tomorrow, and
+ * only reports a failure once the month has been overdue for
+ * COMPACTION_STALL_AFTER_DAYS.
+ *
+ * Copy and cutover share one transaction, so a compact that loses the cutover
+ * rolls back and its retry copies the month again. The copy freezes writes to
+ * this one already-closed month and blocks only DDL on the referenced tables,
+ * so the repeat costs I/O, not availability. Prepare's commit survives, so a
+ * retry in the same run never re-prepares (which would need ACCESS EXCLUSIVE
+ * to drop the stage it just built); the next night's run does re-prepare.
+ *
+ * Nothing here is lost when a month defers: it is still flat, so the next run
+ * lists it and picks it up, and months already done are bucketed and skipped.
+ */
+async function compactLegacyMonth(
+  month: MetricRollupMonthPartition,
+  context: {
+    keepHourly: boolean;
+    overdueDays: number;
+    backoffMs: readonly number[];
+    /** The run's shared COMPACTION_RETRY_SLEEP_BUDGET_MS, drawn down here. */
+    retrySleep: { remainingMs: number };
+    result: MetricRollupMaintenanceResult;
+  },
+): Promise<void> {
+  const { keepHourly, overdueDays, backoffMs, retrySleep, result } = context;
+  const monthLiteral = formatTimestampLiteral(month.monthStart);
+  let prepared = false;
+
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      if (!prepared) {
+        // Own transaction: adding the staged leaves' FKs locks devices and
+        // organizations, and that lock must be released before the long copy.
+        const name = await inMaintenanceStep('prepareCompaction', async () =>
+          readPartitionNameResult(
+            await db.execute(sql`
+              SELECT public.breeze_prepare_metric_rollup_compaction(
+                ${monthLiteral}::timestamp, ${keepHourly}
+              ) AS "partitionName"
+            `),
+            `prepare compaction ${month.name}`,
+          ),
+        );
+        if (name === LOCK_HELD) {
+          result.failures.push({ step: 'prepare-compaction', partition: month.name, error: 'maintenance lock held by another run' });
+          return;
+        }
+        if (name === null) return;
+        prepared = true;
+      }
+      const name = await inMaintenanceStep('compact', async () =>
+        readPartitionNameResult(
+          await db.execute(sql`
+            SELECT public.breeze_compact_metric_rollup_partition(
+              ${monthLiteral}::timestamp, ${keepHourly}
+            ) AS "partitionName"
+          `),
+          `compact ${month.name}`,
+        ),
+      );
+      if (name === LOCK_HELD) {
+        result.failures.push({ step: 'compact', partition: month.name, error: 'maintenance lock held by another run' });
+        return;
+      }
+      if (name !== null) result.compactedPartitions.push(name);
+      return;
+    } catch (error) {
+      const failedStep = prepared ? 'compact' : 'prepare-compaction';
+      if (pgErrorCode(error) !== PG_LOCK_NOT_AVAILABLE) {
+        result.failures.push({ step: failedStep, partition: month.name, error: errorMessage(error) });
+        return;
+      }
+      const waitMs = backoffMs[attempt - 1];
+      if (waitMs !== undefined && waitMs <= retrySleep.remainingMs) {
+        retrySleep.remainingMs -= waitMs;
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        continue;
+      }
+      const reason = String(pgErrorNode(error)?.message ?? errorMessage(error));
+      const stalled = overdueDays >= COMPACTION_STALL_AFTER_DAYS;
+      result.deferredCompactions.push({
+        partition: month.name,
+        step: failedStep,
+        attempts: attempt,
+        overdueDays,
+        stalled,
+        error: reason,
+      });
+      if (stalled) {
+        result.failures.push({
+          step: failedStep,
+          partition: month.name,
+          error: `stalled: ${overdueDays} days overdue for compaction, locks unavailable on all ${attempt} attempts this run: ${reason}`,
+        });
+      }
+      return;
+    }
+  }
 }

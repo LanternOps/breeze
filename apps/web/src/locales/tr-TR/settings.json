@@ -3728,6 +3728,7 @@
         "get_active_users": "Etkin kullanıcılar",
         "get_ai_agent_run": "Yapay zeka aracısı çalıştırma ayrıntıları",
         "get_alert_correlations": "Uyarı korelasyonları",
+        "get_backup_health": "Yedekleme durumu",
         "get_backup_status": "Yedekleme durumu",
         "get_browser_security": "Tarayıcı güvenliği",
         "get_catalog_item": "Katalog öğesi arama",
@@ -3810,12 +3811,14 @@
         "get_user_experience_metrics": "Kullanıcı deneyimi metrikleri",
         "get_vault_status": "Kasa durumu",
         "get_vm_restore_estimate": "VM geri yükleme tahmini",
+        "get_vss_status": "VSS yazıcı durumu",
         "get_vulnerability_report": "Güvenlik açığı raporu",
         "instant_boot_vm": "Bir yedeği VM olarak anında başlat",
         "link_entity": "Bir öğeyi Wisp konuşmasına bağla",
         "list_ai_agent_runs": "Yapay zeka aracısı çalıştırmaları",
         "list_ai_agent_schedules": "Yapay zeka aracısı zamanlamaları",
         "list_ai_agents": "Yapay zeka aracıları listesi",
+        "list_bmr_recoveries": "Çıplak metal kurtarmaları",
         "list_business_calendars": "Çalışma saati takvimleri",
         "list_concerns": "Wisp endişeleri",
         "list_configuration_policies": "Yapılandırma politikaları listesi",
@@ -3859,6 +3862,7 @@
         "manage_automations": "Otomasyonları yönet",
         "manage_backup_configs": "Yedekleme yapılandırmalarını yönet",
         "manage_backup_profiles": "Yedekleme profillerini yönet",
+        "manage_backup_verification": "Yedekleme doğrulaması",
         "manage_billing_catalog": "Faturalama fiyat listesini yönet",
         "manage_billing_profiles": "Faturalama ücret çizelgelerini yönet",
         "manage_billing_settings": "Faturalama ayarlarını yönet",
@@ -4106,6 +4110,10 @@
           "dashboard": "SNMP panosu",
           "history": "SNMP metrik geçmişi"
         },
+        "list_bmr_recoveries": {
+          "get": "Çıplak metal kurtarma ayrıntıları",
+          "list": "Çıplak metal kurtarmalarını listele"
+        },
         "manage_accounting_sync": {
           "customers": "Muhasebe müşterilerini listele",
           "income_accounts": "Gelir hesaplarını listele",
@@ -4160,6 +4168,12 @@
           "get": "Yedekleme profili ayrıntıları",
           "list": "Yedekleme profillerini listele",
           "update": "Bir yedekleme profilini güncelle"
+        },
+        "manage_backup_verification": {
+          "health": "Doğrulama durumu",
+          "list": "Yedekleme doğrulamalarını listele",
+          "readiness": "Kurtarma hazırlığı",
+          "run": "Yedekleme doğrulaması çalıştır"
         },
         "manage_billing_catalog": {
           "archive_item": "Bir fiyat listesi öğesini arşivle",

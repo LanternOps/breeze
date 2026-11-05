@@ -24,6 +24,7 @@ exports[`agentToolCatalog contract > pins the unreachable set so a reachability 
   "manage_access_reviews",
   "manage_ai_agents",
   "manage_alert_correlations",
+  "manage_c2c_configs",
   "manage_custom_fields",
   "manage_known_guests",
   "manage_pam_rules",

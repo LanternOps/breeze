@@ -60,6 +60,7 @@ export const workInFlightHandler: BoundaryHandler = {
     'security_scans',
     'sensitive_data_scans',
     'device_restore_point_attempts',
+    'device_wake_attempts',
     'local_vaults',
   ],
   async run(ctx) {
@@ -144,6 +145,11 @@ export const workInFlightHandler: BoundaryHandler = {
        WHERE device_id = ${d}::uuid AND status = 'requested'
       RETURNING id`));
 
+    const wakeAttempts = rowCount(await db.execute(sql`
+      UPDATE device_wake_attempts SET outcome = 'unknown', resolved_at = now()
+       WHERE device_id = ${d}::uuid AND outcome IN ('pending', 'sent')
+      RETURNING id`));
+
     const vaultSyncs = rowCount(await db.execute(sql`
       UPDATE local_vaults SET last_sync_status = 'failed', last_sync_error = ${reason}, updated_at = now()
        WHERE device_id = ${d}::uuid AND last_sync_status = 'pending'
@@ -162,6 +168,7 @@ export const workInFlightHandler: BoundaryHandler = {
       'security_scans.failed': securityScans,
       'sensitive_data_scans.failed': sensitiveScans,
       'device_restore_point_attempts.failed': restorePoints,
+      'device_wake_attempts.unknown': wakeAttempts,
       'local_vaults.sync_failed': vaultSyncs,
     };
   },

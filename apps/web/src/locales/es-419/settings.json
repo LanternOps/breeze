@@ -3728,6 +3728,7 @@
         "get_active_users": "Usuarios activos",
         "get_ai_agent_run": "Detalles de la ejecución del agente de IA",
         "get_alert_correlations": "Correlaciones de alertas",
+        "get_backup_health": "Estado de los respaldos",
         "get_backup_status": "Estado de los respaldos",
         "get_browser_security": "Seguridad del navegador",
         "get_catalog_item": "Búsqueda de un artículo del catálogo",
@@ -3810,12 +3811,14 @@
         "get_user_experience_metrics": "Métricas de experiencia del usuario",
         "get_vault_status": "Estado de la bóveda",
         "get_vm_restore_estimate": "Estimación de restauración de VM",
+        "get_vss_status": "Estado de los escritores VSS",
         "get_vulnerability_report": "Informe de vulnerabilidades",
         "instant_boot_vm": "Arrancar un respaldo al instante como VM",
         "link_entity": "Vincular un elemento a un hilo de Wisp",
         "list_ai_agent_runs": "Ejecuciones de agentes de IA",
         "list_ai_agent_schedules": "Programaciones de agentes de IA",
         "list_ai_agents": "Lista de agentes de IA",
+        "list_bmr_recoveries": "Recuperaciones bare-metal",
         "list_business_calendars": "Calendarios de horario laboral",
         "list_concerns": "Inquietudes de Wisp",
         "list_configuration_policies": "Lista de políticas de configuración",
@@ -3859,6 +3862,7 @@
         "manage_automations": "Administrar automatizaciones",
         "manage_backup_configs": "Administrar configuraciones de respaldo",
         "manage_backup_profiles": "Administrar perfiles de respaldo",
+        "manage_backup_verification": "Verificación de respaldos",
         "manage_billing_catalog": "Administrar la lista de precios de facturación",
         "manage_billing_profiles": "Administrar tarifarios de facturación",
         "manage_billing_settings": "Administrar la configuración de facturación",
@@ -4106,6 +4110,10 @@
           "dashboard": "Panel de SNMP",
           "history": "Historial de métricas de SNMP"
         },
+        "list_bmr_recoveries": {
+          "get": "Detalles de la recuperación bare-metal",
+          "list": "Listar recuperaciones bare-metal"
+        },
         "manage_accounting_sync": {
           "customers": "Listar clientes contables",
           "income_accounts": "Listar cuentas de ingresos",
@@ -4160,6 +4168,12 @@
           "get": "Detalles del perfil de respaldo",
           "list": "Listar perfiles de respaldo",
           "update": "Actualizar un perfil de respaldo"
+        },
+        "manage_backup_verification": {
+          "health": "Estado de las verificaciones",
+          "list": "Listar verificaciones de respaldo",
+          "readiness": "Preparación para la recuperación",
+          "run": "Ejecutar una verificación de respaldo"
         },
         "manage_billing_catalog": {
           "archive_item": "Archivar un artículo de la lista de precios",

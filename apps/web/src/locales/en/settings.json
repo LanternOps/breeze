@@ -3728,6 +3728,7 @@
         "get_active_users": "Active users",
         "get_ai_agent_run": "AI agent run details",
         "get_alert_correlations": "Alert correlations",
+        "get_backup_health": "Backup health",
         "get_backup_status": "Backup status",
         "get_browser_security": "Browser security",
         "get_catalog_item": "Catalog item lookup",
@@ -3810,12 +3811,14 @@
         "get_user_experience_metrics": "User experience metrics",
         "get_vault_status": "Vault status",
         "get_vm_restore_estimate": "VM restore estimate",
+        "get_vss_status": "VSS writer status",
         "get_vulnerability_report": "Vulnerability report",
         "instant_boot_vm": "Instant-boot a backup as a VM",
         "link_entity": "Link an item to a Wisp thread",
         "list_ai_agent_runs": "AI agent runs",
         "list_ai_agent_schedules": "AI agent schedules",
         "list_ai_agents": "AI agents list",
+        "list_bmr_recoveries": "Bare-metal recoveries",
         "list_business_calendars": "Business-hours calendars",
         "list_concerns": "Wisp concerns",
         "list_configuration_policies": "Configuration policies list",
@@ -3859,6 +3862,7 @@
         "manage_automations": "Manage automations",
         "manage_backup_configs": "Manage backup configurations",
         "manage_backup_profiles": "Manage backup profiles",
+        "manage_backup_verification": "Backup verification",
         "manage_billing_catalog": "Manage the billing price book",
         "manage_billing_profiles": "Manage billing rate cards",
         "manage_billing_settings": "Manage billing settings",
@@ -4106,6 +4110,10 @@
           "dashboard": "SNMP dashboard",
           "history": "SNMP metric history"
         },
+        "list_bmr_recoveries": {
+          "get": "Bare-metal recovery details",
+          "list": "List bare-metal recoveries"
+        },
         "manage_accounting_sync": {
           "customers": "List accounting customers",
           "income_accounts": "List income accounts",
@@ -4160,6 +4168,12 @@
           "get": "Backup profile details",
           "list": "List backup profiles",
           "update": "Update a backup profile"
+        },
+        "manage_backup_verification": {
+          "health": "Verification health",
+          "list": "List backup verifications",
+          "readiness": "Recovery readiness",
+          "run": "Run a backup verification"
         },
         "manage_billing_catalog": {
           "archive_item": "Archive a price book item",

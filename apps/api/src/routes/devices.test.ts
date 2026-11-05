@@ -277,6 +277,7 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  withAuthDbAccessContext: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => fn()),
   requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
     // Populate the `permissions` context value so getDeviceWithOrgAndSiteCheck
     // doesn't trip its "called without requirePermission" 500 safety throw.

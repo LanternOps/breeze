@@ -812,6 +812,7 @@
           "os": "OS",
           "owner": "Propietario",
           "patch_level": "Nivel de parche",
+          "product_number": "Número de producto",
           "serial": "Serie",
           "site": "Sitio",
           "status": "Estado"

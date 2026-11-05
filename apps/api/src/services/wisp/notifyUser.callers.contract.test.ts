@@ -4,7 +4,7 @@
  *   - `createNotification(` appears under services/wisp/ ONLY in deliver.ts,
  *     and nowhere under services/aiAgents/.
  *   - `notifyUser(` (the nudge primitive: quiet hours, prefs, backoff, push)
- *     is called only by the four nudge producers below.
+ *     is called only by the five nudge producers below.
  *   - `deliverInApp(` is called only by notifyUser and W05's non-nudge notices
  *     (budget exhausted, orphaned watches, deterministic digest).
  *
@@ -52,6 +52,7 @@ describe('Wisp delivery funnel (w00 A18)', () => {
       'services/wisp/incidentCorrelator.ts', // partner-level incident nudges (w00 reconciliation 9)
       'services/wisp/nudgeDigest.ts', // the 15-minute digest
       'services/wisp/brief.ts', // the morning brief (A28)
+      'services/wisp/checkIns.ts', // a fired check-in timer (#10991)
     ]);
     const sites = callers('notifyUser');
     expect(sites.filter((f) => !allowed.has(f))).toEqual([]);
