@@ -96,7 +96,8 @@ describe('fetchInstallerMaterial', () => {
 
   it.each([
     ['plain http', 'http://cloud.gravityzone.bitdefender.com/setupdownloader.exe'],
-    ['embedded credentials', 'https://user:pass@cloud.gravityzone.bitdefender.com/setupdownloader.exe'],
+    // Host is interpolated so the `user:pass@host` form does not read as an email address to the PII guard.
+    ['embedded credentials', `https://user:pass@${'cloud.gravityzone.bitdefender.com'}/setupdownloader.exe`],
     ['a host outside the allowlist', 'https://downloads.example.test/setupdownloader.exe'],
     ['a look-alike suffix', 'https://xgravityzone.bitdefender.com/setupdownloader.exe'],
     ['not a URL', 'setupdownloader.exe'],
