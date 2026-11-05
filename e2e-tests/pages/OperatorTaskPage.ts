@@ -111,11 +111,30 @@ export class ApprovalsInboxPage extends BasePage {
     await waitForAppReady(this.page, 'approvals-inbox');
   }
 
+  /**
+   * Clicks Approve and returns the status of the decision that SETTLED the
+   * approval.
+   *
+   * A supervised row is approved in two POSTs when the partner enforces a
+   * step-up floor: a proofless optimistic attempt answers 403 `step_up_required`,
+   * and the app silently retries once with the WebAuthn proof
+   * (lib/intentApprovals.ts, #5600). Resolving on the FIRST approve response
+   * therefore reported that expected 403 as the outcome and failed the spec
+   * whenever the floor applied. The step-up 403 is skipped here; any other
+   * response — including a real 403 such as `not_sole_approver` — settles it.
+   */
   async approve(approvalId: string): Promise<number> {
     await this.row(approvalId).waitFor({ timeout: 30_000 });
     const [response] = await Promise.all([
       this.page.waitForResponse(
-        (r) => r.url().includes(`/approvals/${approvalId}/approve`) && r.request().method() === 'POST',
+        async (r) => {
+          if (!r.url().includes(`/approvals/${approvalId}/approve`) || r.request().method() !== 'POST') {
+            return false;
+          }
+          if (r.status() !== 403) return true;
+          const body = await r.json().catch(() => null);
+          return (body as { error?: unknown } | null)?.error !== 'step_up_required';
+        },
         { timeout: 30_000 },
       ),
       this.approveButton(approvalId).click(),
