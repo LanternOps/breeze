@@ -400,6 +400,29 @@ describe('vendor update seam against real PostgreSQL', () => {
     expect(status!.rebootPendingSince).toBeInstanceOf(Date);
   });
 
+  runDb('a second BIOS run blocked by the reboot the first still owes leaves the monitor armed', async () => {
+    const { org, deviceId } = await seed();
+    const first = await dispatchOemUpdateRun(runInput(deviceId, org.id, { requestedCategories: ['bios'] }));
+    const firstId = first.ok ? first.commandId : '';
+    await applyOemUpdateResult({
+      commandId: firstId,
+      deviceId,
+      result: { ...goodResult, outcome: 'success_reboot_required', rebootRequired: true },
+    });
+    await getTestDb().update(deviceCommands).set({ status: 'completed' }).where(eq(deviceCommands.id, firstId));
+
+    const second = await dispatchOemUpdateRun(runInput(deviceId, org.id, { requestedCategories: ['bios'] }));
+    await applyOemUpdateResult({
+      commandId: second.ok ? second.commandId : '',
+      deviceId,
+      result: { ...goodResult, outcome: 'blocked_reboot_pending', items: [] },
+    });
+
+    const status = await statusRow(deviceId);
+    expect(status!.returnDeadlineAt).toBeInstanceOf(Date);
+    expect(status!.rebootPendingSince).toBeInstanceOf(Date);
+  });
+
   runDb('a driver-only run blocked by a pending reboot leaves an earlier flash armed', async () => {
     const { org, deviceId } = await seed();
     const flash = await dispatchOemUpdateRun(runInput(deviceId, org.id, { requestedCategories: ['bios'] }));

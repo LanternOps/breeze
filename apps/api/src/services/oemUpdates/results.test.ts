@@ -305,6 +305,16 @@ describe('applyOemUpdateResult', () => {
       expect(state.updates[0]).toMatchObject({ returnDeadlineAt: null });
     });
 
+    it('a BIOS run blocked by the reboot an earlier flash still owes stays armed', async () => {
+      state.status = statusRow({
+        returnDeadlineAt: new Date('2027-01-02T00:00:00.000Z'),
+        rebootPendingSince: new Date('2027-01-01T00:00:00.000Z'),
+      });
+      await apply(goodResult({ outcome: 'blocked_reboot_pending' }));
+      expect(state.updates[0]).not.toHaveProperty('returnDeadlineAt');
+      expect(resolveReturnedDeviceAlerts).not.toHaveBeenCalled();
+    });
+
     it('a driver-only run blocked by a pending reboot says nothing about an earlier flash: it stays armed', async () => {
       state.command = { id: COMMAND_ID, deviceId: DEVICE_ID, type: 'oem_update_run', payload: { categories: ['driver'] } };
       state.status = armed();

@@ -87,8 +87,10 @@ function askedForFlash(payload: unknown): boolean {
  * Whether this result ends the wait for the device to come back.
  *
  * Blocked by a pending reboot: the tool never ran, so a flash run flashed nothing
- * and there is nothing to come back from. A driver-only run blocked the same way
- * says nothing about an earlier flash that armed the monitor, so that stays armed.
+ * and there is nothing to come back from, unless an earlier run already owed that
+ * reboot. Then the block is that flash's restart still to come, so it stays armed.
+ * A driver-only run blocked the same way says nothing about an earlier flash that
+ * armed the monitor, so that stays armed too.
  *
  * Otherwise, a run that owes no restart means the device is here. The lane reports
  * `blocked_reboot_pending` for an existing pending reboot (spec 4.2; Dell exit 5), so a clean result also means
@@ -100,7 +102,7 @@ function disarmsMonitor(
   commandPayload: unknown,
 ): boolean {
   if (!status?.returnDeadlineAt) return false;
-  if (result.outcome === 'blocked_reboot_pending') return askedForFlash(commandPayload);
+  if (result.outcome === 'blocked_reboot_pending') return !status.rebootPendingSince && askedForFlash(commandPayload);
   return !result.rebootRequired && !result.shutdownRequired;
 }
 
