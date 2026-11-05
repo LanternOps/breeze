@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Layers, Lock } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useJwtClaims } from '@/lib/authScope';
@@ -7,8 +7,7 @@ import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { useDefaultReportOwnerScope } from '../ReportOwnerScopeField';
 import type { Report } from '../ReportsList';
 import { SeriesChildRecipients } from './SeriesChildRecipients';
-import { detachSeriesChild, fetchSeriesDetail } from './seriesApi';
-import type { SeriesRecipientRule } from './types';
+import { detachSeriesChild } from './seriesApi';
 
 export type SeriesChildAccess = 'msp' | 'readonly' | 'managed';
 
@@ -132,31 +131,13 @@ export function SeriesChildSummary({ report }: { report: Report }) {
  */
 export function SeriesChildView({ report, onChanged }: { report: Report; onChanged: () => void }) {
   const access = useSeriesChildAccess();
-  const [rule, setRule] = useState<SeriesRecipientRule | null>(null);
-
-  useEffect(() => {
-    // Only a user who may read report_series asks for it (Review Focus 5).
-    if (access !== 'msp' || !report.seriesId) return;
-    let live = true;
-    fetchSeriesDetail(report.seriesId)
-      .then((detail) => {
-        if (live && detail) setRule(detail.series.recipientRule);
-      })
-      .catch((err: unknown) => {
-        // The rule only powers the "Included by rule" hint; editing still works.
-        console.warn('[SeriesChildView] series rule unavailable', err);
-      });
-    return () => {
-      live = false;
-    };
-  }, [access, report.seriesId]);
 
   return (
     <div className="space-y-6">
       <SeriesChildLockBanner report={report} access={access} onDetached={onChanged} />
       <SeriesChildSummary report={report} />
       {!report.archivedAt && report.orgId && (
-        <SeriesChildRecipients reportId={report.id} orgId={report.orgId} rule={rule} />
+        <SeriesChildRecipients reportId={report.id} orgId={report.orgId} />
       )}
     </div>
   );

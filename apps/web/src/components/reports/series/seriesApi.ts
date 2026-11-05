@@ -135,11 +135,21 @@ export async function fetchOrgContacts(orgId: string): Promise<OrgContact[]> {
   return (body?.data ?? []).filter((c) => Boolean(c.email));
 }
 
-export async function fetchChildOverrides(reportId: string): Promise<ChildRecipientOverride[]> {
+/** `ruleContactIds` is the server's raw rule match for the child's org (before
+ *  overrides); null when the caller cannot read the series (org users). */
+export async function fetchChildRecipients(
+  reportId: string,
+): Promise<{ overrides: ChildRecipientOverride[]; ruleContactIds: string[] | null }> {
   const res = await fetchWithAuth(`/reports/${encodeURIComponent(reportId)}/recipients`);
   if (!res.ok) throw new Error(`recipients answered ${res.status}`);
-  const body = (await readJson(res)) as { data?: { contactId: string; mode?: string }[] } | null;
-  return (body?.data ?? []).map((r) => ({ contactId: r.contactId, mode: r.mode === 'remove' ? 'remove' : 'add' }));
+  const body = (await readJson(res)) as {
+    data?: { contactId: string; mode?: string }[];
+    ruleContactIds?: string[] | null;
+  } | null;
+  return {
+    overrides: (body?.data ?? []).map((r) => ({ contactId: r.contactId, mode: r.mode === 'remove' ? 'remove' : 'add' })),
+    ruleContactIds: Array.isArray(body?.ruleContactIds) ? body.ruleContactIds : null,
+  };
 }
 
 // ---------- mutations (every one runAction-wrapped) ----------
