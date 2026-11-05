@@ -654,3 +654,76 @@ test('replay: the three-branch control is parsed from the base script, not hardc
     env: Object.fromEntries(Object.entries(contextOf(f).aggregator.env).map(([k, v]) => [k === 'RUST_CHANGED' ? 'RUST_AREA' : k, v])) };
   assert.ok(gate.controlTargets(renamed, f.flags).threeBranch);
 });
+
+// ── B4: the needs oracle and the dispatch-only replay job ────────────────
+
+const ciJob = id => gate.workflowJobsOf(realCi)[id]?.body ?? assert.fail(`no ${id} job`);
+const stepsOf = body => body.split(/^      - (?=name: )/m).slice(1);
+
+test('ci-success: the first step writes the oracle from an env var and cannot fail CI Success', () => {
+  const [oracle, upload, check] = stepsOf(ciJob('ci-success'));
+  assert.match(oracle, /^name: Record needs oracle \(W02, advisory\)\n/);
+  assert.match(oracle, /^        continue-on-error: true$/m);
+  assert.match(oracle, /^          NEEDS_JSON: \$\{\{ toJSON\(needs\) \}\}$/m);
+  assert.match(oracle, /^        run: printf '%s\\n' "\$\{NEEDS_JSON\}" > ci-needs-oracle\.json$/m);
+  assert.doesNotMatch(oracle, /\$\{\{[^}]*\}\}[^\n]*>|run:[^\n]*\$\{\{/, 'needs reaches the shell only through env');
+  assert.match(upload, /^name: Upload needs oracle \(W02, advisory\)\n/);
+  assert.match(upload, /^        if: \$\{\{ !cancelled\(\) \}\}$/m);
+  assert.match(upload, /^        continue-on-error: true$/m);
+  assert.match(upload, /^        uses: actions\/upload-artifact@[0-9a-f]{40} # v\d+$/m);
+  assert.match(upload, /^          name: ci-needs-oracle-attempt-\$\{\{ github\.run_attempt \}\}$/m);
+  assert.match(upload, /^          path: ci-needs-oracle\.json$/m);
+  assert.match(upload, /^          retention-days: 7$/m);
+  assert.match(check, /^name: Check all jobs passed\n/);
+});
+
+test('ci-success: the Check all jobs passed run block is unchanged by the oracle', () => {
+  const { script } = gate.extractAggregator(realCi);
+  const lines = script.split('\n');
+  assert.deepEqual(lines.slice(0, 4), ['STACK_CHANGED=false', 'case " ${API_CHANGED} ${WEB_CHANGED} ${PORTAL_CHANGED} " in',
+    '  *" true "*) STACK_CHANGED=true ;;', 'esac']);
+  assert.deepEqual(lines.slice(-3), ['  exit 1', 'fi', 'echo "All required jobs passed!"']);
+});
+
+test('ci-gate-replay: dispatch-only, read-only, full history, never in ci-success needs', () => {
+  const body = ciJob('ci-gate-replay');
+  assert.match(body, /^    if: github\.event_name == 'workflow_dispatch'$/m);
+  assert.doesNotMatch(body, /^    needs:/m);
+  assert.match(body, /^    timeout-minutes: 30$/m);
+  assert.match(body, /^    permissions:\n      contents: read\n      actions: read\n    steps:$/m);
+  assert.match(body, /^          fetch-depth: 0$/m);
+  assert.match(body, /^          persist-credentials: false$/m);
+  assert.match(body, /^          sparse-checkout: \|\n            \.github\/scripts\n            \.github\/workflows\n          sparse-checkout-cone-mode: false$/m);
+  assert.match(body, /^        run: node \.github\/scripts\/ci-gate\.mjs replay$/m);
+  assert.doesNotMatch(body, /continue-on-error|secrets\./);
+  assert.ok(!gate.extractAggregator(realCi).needs.includes('ci-gate-replay'));
+});
+
+test('lint registers the gate suite', () => {
+  assert.match(ciJob('lint'), /^        run: node --test \.github\/scripts\/ci-gate\.test\.mjs$/m);
+});
+
+test('replay: the oracle is compared, and a difference is reported as a disagreement', () => {
+  const needsOf = f => Object.fromEntries(Object.entries(judge(f).results).map(([job, result]) =>
+    [job, { result, outputs: job === 'mobile-native-changes' ? { mobile: f.mobile } : {} }]));
+  const good = needsOf(GREEN);
+  assert.equal(good['mobile-native-changes'].result, 'success');
+  const samples = [...Array.from({ length: 15 }, () => sample(GREEN)), sample(RED), sample(GREEN), sample(GREEN), sample(GREEN)];
+  const oracle = {
+    16: good,
+    17: { ...good, 'test-shared': { result: 'skipped', outputs: {} } },
+    18: { ...good, 'mobile-native-changes': { result: 'success', outputs: { mobile: 'true' } } },
+  };
+  const out = fakeReplay(samples, { oracle }).run();
+  assert.equal(out.oracleCompared, 3);
+  assert.deepEqual(out.disagreements.map(d => [d.kind, d.job, d.oracle, d.gate]), [
+    ['oracle', 'test-shared', 'skipped', 'success'], ['oracle', 'mobile', 'true', 'false']]);
+  assert.equal(out.ok, false);
+  assert.equal(fakeReplay(samples, { oracle: { 16: good } }).run().ok, true);
+});
+
+test('compareOracle: a needs job absent from the oracle is a difference; the mobile output only when the job ran', () => {
+  const results = { lint: 'success', 'mobile-native-changes': 'skipped' };
+  assert.deepEqual(gate.compareOracle({ 'mobile-native-changes': { result: 'skipped', outputs: {} } }, results, 'false'),
+    [{ job: 'lint', oracle: null, gate: 'success' }]);
+});

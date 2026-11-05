@@ -427,6 +427,35 @@ export function runControls(io, ctx, apiJobs) {
   return { run: controls.length, failures };
 }
 
+// ── The needs oracle ─────────────────────────────────────────────────────
+//
+// `ci-success` uploads toJSON(needs). It is candidate-written, so it is never
+// authority: a difference is only reported, and never changes a verdict.
+
+export function compareOracle(oracle, results, mobile) {
+  const diffs = [];
+  for (const [job, result] of Object.entries(results)) {
+    const seen = oracle?.[job]?.result ?? null;
+    if (seen !== result) diffs.push({ job, oracle: seen, gate: result });
+  }
+  const native = oracle?.['mobile-native-changes'];
+  if (native?.result === 'success' && native.outputs?.mobile !== mobile) {
+    diffs.push({ job: 'mobile', oracle: native.outputs?.mobile ?? null, gate: mobile });
+  }
+  return diffs;
+}
+
+function readOracle(io, repository, run) {
+  const name = `ci-needs-oracle-attempt-${run.run_attempt}`;
+  const pages = ghJson(io, ['api', `repos/${repository}/actions/runs/${run.id}/artifacts?name=${name}&per_page=100`, '--paginate', '--slurp']);
+  if (!pages.flatMap(page => page.artifacts ?? []).some(artifact => artifact.name === name && !artifact.expired)) return null;
+  const dir = io.temp();
+  try {
+    io.gh(['run', 'download', String(run.id), '--repo', repository, '--name', name, '--dir', dir]);
+    return JSON.parse(io.read(join(dir, 'ci-needs-oracle.json')));
+  } finally { io.remove(dir); }
+}
+
 // ── Replay against real merge-queue runs ─────────────────────────────────
 
 const QUEUE_REF = /^gh-readonly-queue\/[\w.-]+\/pr-(\d+)-([a-f\d]{40})$/;
@@ -488,13 +517,23 @@ export function replay(io, { repository, limit = 50, minEvaluated = 15, widenTo 
     out.evaluated++;
     if (s.recorded === 'failure') out.red++;
     const agrees = (result.verdict === 'pass') === (s.recorded === 'success');
-    if (!agrees) out.disagreements.push({ run: run.id, pr: s.pr, recorded: s.recorded, verdict: result.verdict, reason: result.reason });
+    if (!agrees) out.disagreements.push({ kind: 'verdict', run: run.id, pr: s.pr, recorded: s.recorded, verdict: result.verdict, reason: result.reason });
     let controls = '';
     if (agrees && s.recorded === 'success' && ctx) {
       const c = runControls(io, ctx, s.jobs);
       out.controlsRun += c.run;
       out.controlFailures.push(...c.failures.map(failure => ({ run: run.id, ...failure })));
       controls = ` controls=${c.run} control_failures=${c.failures.length}`;
+    }
+    if (ctx && Object.keys(result.results ?? {}).length) {
+      let oracle = null;
+      try { oracle = readOracle(io, repository, run); } catch (error) {
+        io.stderr(`ci-gate-replay: run ${run.id}: oracle unreadable: ${String(error.message ?? error).split('\n')[0]}`);
+      }
+      if (oracle) {
+        out.oracleCompared++;
+        for (const diff of compareOracle(oracle, result.results, ctx.mobile)) out.disagreements.push({ kind: 'oracle', run: run.id, pr: s.pr, ...diff });
+      }
     }
     io.stdout(`ci-gate-replay-run: run=${run.id} pr=${s.pr} recorded=${s.recorded} verdict=${result.verdict} reason=${result.reason}${controls}`);
   };
