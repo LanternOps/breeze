@@ -59,7 +59,13 @@ export type HydrationDeps = {
   openSpoolWriter?: (path: string) => Writable;
 };
 
-const FILE_ROW_BATCH_SIZE = 1000;
+/**
+ * Each batch is one JSON string, and those strings are what survives into the
+ * old generation during a million-entry hydration. 1,000 rows went over the
+ * 300 MB peak-RSS bound in one of two runs at 1.1M entries; 250 stays under it
+ * for about the same wall time (#11026).
+ */
+const FILE_ROW_BATCH_SIZE = 250;
 /**
  * Distinct older snapshots one manifest may name. Each costs a lookup inside the
  * publish transaction, and a real chain is bounded by retention, so anything near

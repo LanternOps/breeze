@@ -177,7 +177,7 @@ afterEach(async () => {
 });
 
 describe('hydrateSnapshotFileIndex over a stream', () => {
-  it('a 5,000-entry manifest publishes the same rows and digest, in 1,000-row batches', async () => {
+  it('a 5,000-entry manifest publishes the same rows and digest, in 250-row batches', async () => {
     loadSnapshot();
     const bytes = manifest(entries(5000));
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: deps(async () => stream(bytes)) });
@@ -196,7 +196,7 @@ describe('hydrateSnapshotFileIndex over a stream', () => {
       modified_at: '2026-11-01T10:11:12.123Z',
     });
     const batches = executeMock.mock.calls.map((c) => batchRows(c[0]).length);
-    expect(batches).toEqual([1000, 1000, 1000, 1000, 1000]);
+    expect(batches).toEqual(Array.from({ length: 20 }, () => 250));
     expect(committed.statuses).toContain('complete');
   });
 

@@ -109,6 +109,10 @@ describe('file index acceptance at 1.1M entries', () => {
           }),
         ),
       );
+      const [published] = (await withSystemDbAccessContext(() =>
+        db.execute(sql`SELECT now()::text AS at`),
+      )) as unknown as Array<{ at: string }>;
+
       // Only now: reading the whole manifest here first would grow this
       // process's heap before the baseline above, and flatter the memory figure.
       const hash = createHash('sha256');
@@ -174,10 +178,10 @@ describe('file index acceptance at 1.1M entries', () => {
       let analyzed = false;
       while (!analyzed && Date.now() < analyzeDeadline) {
         const [stat] = (await withSystemDbAccessContext(() => db.execute(sql`
-          SELECT last_autoanalyze > now() - interval '10 minutes' AS recent
+          SELECT last_autoanalyze > ${published!.at}::timestamptz AS since_publish
           FROM pg_stat_all_tables WHERE relname = 'backup_snapshot_files'
-        `))) as unknown as Array<{ recent: boolean | null }>;
-        analyzed = stat?.recent === true;
+        `))) as unknown as Array<{ since_publish: boolean | null }>;
+        analyzed = stat?.since_publish === true;
         if (!analyzed) await new Promise((resolve) => setTimeout(resolve, 5000));
       }
       const settledReadings = await readings();
@@ -208,9 +212,12 @@ describe('file index acceptance at 1.1M entries', () => {
       expect(searchHit.result.entries.map((e) => e.name)).toEqual(['export-record-0299999.dat']);
       expect(selection.result).toEqual({ ok: true, paths: [LARGEST_FOLDER] });
 
-      // The plan's pass bounds. Reported, never tuned.
+      // The plan's pass bounds. Reported, never tuned. The browse bound applies
+      // to the settled state: the first minute after a publish is a known slow
+      // period, reported above as rightAfterPublish.
       expect(hydration.peakRssDeltaMb).toBeLessThan(300);
       expect(hydration.eventLoopP99Ms).toBeLessThan(200);
+      expect(analyzed).toBe(true);
       expect(browseRoot.ms).toBeLessThan(5000);
     } finally {
       await rm(spoolBaseDir, { recursive: true, force: true });

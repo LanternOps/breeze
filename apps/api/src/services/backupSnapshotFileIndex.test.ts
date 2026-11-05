@@ -401,12 +401,12 @@ describe('hydrateSnapshotFileIndex', () => {
     expect(outcome).toMatchObject({ status: 'failed', failure: 'origin_unverifiable', retryable: false });
   });
 
-  it('writes rows in 1,000-row batches then publishes sha/counts/metadata in one final transaction', async () => {
+  it('writes rows in 250-row batches then publishes sha/counts/metadata in one final transaction', async () => {
     selectMock
       .mockReturnValueOnce(chainMock([snapshotRow()]))
       .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
       .mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, keyLayout: 'legacy_flat', keyPrefix: null, metadata: {} }]));
-    const entries = Array.from({ length: 1500 }, (_, i) => ({
+    const entries = Array.from({ length: 300 }, (_, i) => ({
       sourcePath: `/f${i}`, backupPath: `snapshots/snap-older/files/f${i}.gz`, size: 1,
     }));
     const bytes = manifestBytes(entries);
@@ -414,12 +414,12 @@ describe('hydrateSnapshotFileIndex', () => {
 
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
 
-    expect(outcome).toMatchObject({ status: 'complete', entryCount: 1500, externalCount: 1500 });
+    expect(outcome).toMatchObject({ status: 'complete', entryCount: 300, externalCount: 300 });
     expect((outcome as { manifestSha256: string }).manifestSha256).toBe(createHash('sha256').update(bytes).digest('hex'));
-    // 2 batches of file rows (1000 + 500), written in the ONE publish
+    // 2 batches of file rows (250 + 50), written in the ONE publish
     // transaction so a reader never sees a partial index (#11026 D4).
     expect(transactionMock).toHaveBeenCalledTimes(1);
-    expect(executeMock.mock.calls.map((c) => batchRows(c[0]).length)).toEqual([1000, 500]);
+    expect(executeMock.mock.calls.map((c) => batchRows(c[0]).length)).toEqual([250, 50]);
   });
 
   it('reclaims a stale hydrating row (>30min) — the CAS predicate itself expresses staleness', async () => {
