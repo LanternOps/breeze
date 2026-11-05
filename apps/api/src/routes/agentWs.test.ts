@@ -303,6 +303,14 @@ vi.mock('../services/agentPresence', () => ({
   readAgentPresence: vi.fn(async () => null),
 }));
 
+// #10542: the peer-drop reconnect hold. Default (and after resetAllMocks):
+// undefined, i.e. not 'held', so every other suite sees the immediate end.
+vi.mock('../services/desktopReconnectGrace', () => ({
+  DESKTOP_RECONNECT_GRACE_MS: 20_000,
+  holdDesktopPeerDropForReconnect: vi.fn(async () => 'end_now'),
+  endHeldDesktopSessionNow: vi.fn(async () => false),
+}));
+
 vi.mock('../services/viewerTokenRevocation', () => ({
   revokeViewerSession: vi.fn(async () => undefined),
   // The real terminalWs ping loop consults this; never revoked in these suites.
@@ -514,11 +522,12 @@ import {
 import { consumeWsTicket } from '../services/remoteSessionAuth';
 import { createAuditLogAsync } from '../services/auditService';
 import { registerTunnelOwnership } from './tunnelWs';
-import { handleDesktopFrame, settleDesktopStreamStart, closeDesktopRelayForStop } from './desktopWs';
+import { handleDesktopFrame, settleDesktopStreamStart, closeDesktopRelayForStop, isDesktopSessionOwnedByAgent } from './desktopWs';
 import { processBackupVerificationResult } from './backup/verificationService';
 import { updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { rateLimiter } from '../services/rate-limit';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
+import { endHeldDesktopSessionNow, holdDesktopPeerDropForReconnect } from '../services/desktopReconnectGrace';
 import { publishEvent } from '../services/eventBus';
 import {
   consumeDispatchedExpectation,
@@ -2859,6 +2868,119 @@ describe('agent websocket command results', () => {
     const setArg = sessionSetSpy.mock.calls[0]![0] as Record<string, unknown>;
     expect(setArg.status).toBe('disconnected');
     expect('errorMessage' in setArg).toBe(false);
+  });
+
+  describe('#10542 — peer drop during a viewer reconnect', () => {
+    const preValidatedAgent = { deviceId: 'device-123', agentId: 'agent-test', siteId: 'site-test', installIncarnation: 1, orgId: 'org-123', partnerId: 'partner-123' };
+    const peerDrop = (result: Record<string, unknown> = {}) => ({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'desk-disconnect-session-123',
+        status: 'completed',
+        result: { sessionId: 'session-123', event: 'peer_disconnected', ...result },
+      }),
+    });
+
+    it('holds the end (no terminal write, no token revoke) when the drop follows a viewer reconnect', async () => {
+      const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws);
+      vi.mocked(holdDesktopPeerDropForReconnect).mockResolvedValue('held');
+      vi.mocked(isDesktopSessionOwnedByAgent).mockReturnValue(false);
+      vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'session-123', terminalGeneration: 1 }]) as any);
+
+      await handlers.onMessage(peerDrop() as any, ws as any);
+
+      expect(holdDesktopPeerDropForReconnect).toHaveBeenCalledWith({
+        sessionId: 'session-123',
+        deviceId: 'device-123',
+        stopReason: null,
+        relayOwned: false,
+      });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(revokeViewerSession).not.toHaveBeenCalled();
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    });
+
+    it('Finding #5 unchanged: a drop with no reconnect in flight ends the session and revokes the viewer token at once', async () => {
+      const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws);
+      vi.mocked(holdDesktopPeerDropForReconnect).mockResolvedValue('end_now');
+      const sessionSetSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'session-123', terminalGeneration: 1 }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValue({ set: sessionSetSpy } as any);
+
+      await handlers.onMessage(peerDrop() as any, ws as any);
+
+      expect(sessionSetSpy).toHaveBeenCalledTimes(1);
+      expect((sessionSetSpy.mock.calls[0]![0] as Record<string, unknown>).status).toBe('disconnected');
+      expect(revokeViewerSession).toHaveBeenCalledWith('session-123');
+    });
+
+    it('passes the agent stop reason through, so a deliberate stop is never held', async () => {
+      const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws);
+      vi.mocked(holdDesktopPeerDropForReconnect).mockResolvedValue('end_now');
+      vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'session-123', terminalGeneration: 1 }]) as any);
+
+      await handlers.onMessage(peerDrop({ stopReason: 'capture failed' }) as any, ws as any);
+
+      expect(holdDesktopPeerDropForReconnect).toHaveBeenCalledWith(
+        expect.objectContaining({ stopReason: 'capture failed' }),
+      );
+      expect(revokeViewerSession).toHaveBeenCalledWith('session-123');
+    });
+
+    it('ends at once when the hold decision itself throws', async () => {
+      const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws);
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.mocked(holdDesktopPeerDropForReconnect).mockRejectedValue(new Error('boom'));
+      vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'session-123', terminalGeneration: 1 }]) as any);
+
+      await handlers.onMessage(peerDrop() as any, ws as any);
+
+      expect(db.update).toHaveBeenCalled();
+      expect(revokeViewerSession).toHaveBeenCalledWith('session-123');
+      errSpy.mockRestore();
+    });
+
+    it('tells the hold decision when this agent owns a WebSocket-relay stream for the session', async () => {
+      const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws);
+      vi.mocked(holdDesktopPeerDropForReconnect).mockResolvedValue('end_now');
+      vi.mocked(isDesktopSessionOwnedByAgent).mockReturnValue(true);
+      vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'session-123', terminalGeneration: 1 }]) as any);
+
+      await handlers.onMessage(peerDrop() as any, ws as any);
+
+      expect(holdDesktopPeerDropForReconnect).toHaveBeenCalledWith(expect.objectContaining({ relayOwned: true }));
+    });
+
+    it('a desk-userend report cuts a held session short, bound to the reporting device', async () => {
+      const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws);
+      recordDesktopSessionEndedByUserMock.mockResolvedValue('recorded');
+
+      await handlers.onMessage({
+        data: JSON.stringify({
+          type: 'command_result',
+          commandId: 'desk-userend-session-123',
+          status: 'completed',
+          result: { sessionId: 'session-123', event: 'ended_by_user' },
+        }),
+      } as any, ws as any);
+
+      expect(endHeldDesktopSessionNow).toHaveBeenCalledWith('session-123', 'device-123');
+    });
   });
 
   it('rejects desktop start failures with mismatched session IDs', async () => {

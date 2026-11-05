@@ -82,6 +82,12 @@ vi.mock('../services/viewerTokenRevocation', () => ({
   revokeViewerSession: vi.fn(async () => undefined),
 }));
 
+// #10542: the reconnect hold. Defaults: marking succeeds, nothing is held.
+vi.mock('../services/desktopReconnectGrace', () => ({
+  markDesktopViewerReconnectIntent: vi.fn(async () => true),
+  enforceExpiredDesktopReconnectHold: vi.fn(async () => 'none'),
+}));
+
 vi.mock('./agentWs', () => ({
   sendCommandToAgent: vi.fn(() => true),
   sendDesktopIceCandidateToAgent: vi.fn(() => true),
@@ -175,6 +181,7 @@ import { createDesktopWsRoutes } from './desktopWs';
 import { RemoteSessionPromptPolicyError } from './remote/consentGate';
 import { getRedis } from '../services/redis';
 import { desktopStartInFlightRedisKey } from '../services/desktopStartInFlight';
+import { enforceExpiredDesktopReconnectHold, markDesktopViewerReconnectIntent } from '../services/desktopReconnectGrace';
 
 // -------------------------------------------------------------------
 // Helpers
@@ -877,6 +884,93 @@ describe('GET /:id/viewer/session failure diagnostics', () => {
   it('rejects non-desktop sessions', async () => {
     mockViewerSelect({ session: { ...failedSession, type: 'terminal' }, device: DEVICE, user: USER });
     expect((await request()).status).toBe(404);
+  });
+});
+
+// #10542: a peer drop the viewer's reconnect caused is held for a short grace.
+// These routes are the viewer half of that: the ICE-server fetch marks the
+// reconnect, and a held session whose deadline passed is ended before any
+// viewer-token route serves it again.
+describe('viewer reconnect hold (#10542)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(enforceExpiredDesktopReconnectHold).mockResolvedValue('none');
+    vi.mocked(markDesktopViewerReconnectIntent).mockResolvedValue(true);
+  });
+
+  const iceServersRequest = () => buildApp().request(`/${SESSION_ID}/viewer/ice-servers`, {
+    headers: { Authorization: 'Bearer valid.viewer.token' },
+  });
+
+  it('marks a reconnect in flight when the viewer fetches ICE servers for an active session', async () => {
+    primeHappyPath();
+    mockViewerSelect({ session: { ...ACTIVE_SESSION, desktopStartGeneration: 7n }, device: DEVICE, user: USER });
+    const res = await iceServersRequest();
+    expect(res.status).toBe(200);
+    // The mark names the start the session is on, so a late drop for an
+    // older peer is never held against a newer start.
+    expect(markDesktopViewerReconnectIntent).toHaveBeenCalledWith(SESSION_ID, 7n);
+  });
+
+  it('does not mark the first connect (session not yet active)', async () => {
+    primeHappyPath();
+    mockViewerSelect({ session: { ...ACTIVE_SESSION, status: 'pending' }, device: DEVICE, user: USER });
+    const res = await iceServersRequest();
+    expect(res.status).toBe(200);
+    expect(markDesktopViewerReconnectIntent).not.toHaveBeenCalled();
+  });
+
+  it('still serves ICE servers when the mark cannot be written', async () => {
+    primeHappyPath();
+    vi.mocked(markDesktopViewerReconnectIntent).mockResolvedValue(false);
+    expect((await iceServersRequest()).status).toBe(200);
+  });
+
+  it('accepts the reconnect offer while the hold is running', async () => {
+    primeHappyPath();
+    rigDesktopStartIntentSelects({ lockedStatus: 'active' });
+    const res = await offerRequest();
+    expect(res.status).toBe(200);
+    expect(enforceExpiredDesktopReconnectHold).toHaveBeenCalledWith(
+      expect.objectContaining({ id: SESSION_ID, deviceId: DEVICE_ID }),
+    );
+    expect(sendCommandToAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses with 401 'Session closed' once the hold's deadline passed (and it ended the session)", async () => {
+    primeHappyPath();
+    vi.mocked(enforceExpiredDesktopReconnectHold).mockResolvedValue('ended');
+    const res = await offerRequest();
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Session closed' });
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('refuses with 503 when the hold record cannot be checked', async () => {
+    primeHappyPath();
+    vi.mocked(enforceExpiredDesktopReconnectHold).mockResolvedValue('unavailable');
+    const res = await offerRequest();
+    expect(res.status).toBe(503);
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it.each([['ws-ticket', 'POST'], ['ice-servers', 'GET']])('enforces an expired hold on %s too', async (route, method) => {
+    primeHappyPath();
+    vi.mocked(enforceExpiredDesktopReconnectHold).mockResolvedValue('ended');
+    const res = await buildApp().request(`/${SESSION_ID}/viewer/${route}`, {
+      method, headers: { Authorization: 'Bearer valid.viewer.token' },
+    });
+    expect(res.status).toBe(401);
+    expect(markDesktopViewerReconnectIntent).not.toHaveBeenCalled();
+  });
+
+  it('does not run the hold check on the failure-diagnostics read', async () => {
+    primeHappyPath();
+    const res = await buildApp().request(`/${SESSION_ID}/viewer/session`, {
+      headers: { Authorization: 'Bearer valid.viewer.token' },
+    });
+    expect(res.status).toBe(200);
+    expect(enforceExpiredDesktopReconnectHold).not.toHaveBeenCalled();
   });
 });
 
