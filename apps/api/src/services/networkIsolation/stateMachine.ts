@@ -86,7 +86,8 @@ export type EpisodeEvent =
     | { type: 'uninstalled' }
     | { type: 'not_delivered' }
     | { type: 'extend'; expiresAt: Date }
-    // The allow snapshot's policy revision changed; the agent refuses a new revision at an old generation.
+    // The allow snapshot's policy revision changed; the agent refuses a different revision or added
+    // permits at a generation it has already adopted.
     | { type: 'policy_changed' }
     // The human who resolved it; the audit trail for the one human gate.
     | { type: 'acknowledge'; userId: string }

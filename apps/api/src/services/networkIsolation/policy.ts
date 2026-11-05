@@ -12,11 +12,13 @@ export interface IsolationPolicy {
   revision: string | null;
   /** Execution-unsafe groups whose containment policy was not applied to this device. */
   refusedGroups: readonly RefusedExecutionGroup[];
+  /** The winning policy's stored settings are malformed, so its permits were dropped. */
+  invalidStoredSettings: boolean;
 }
 
 const POLICY_GROUP_REFUSED_ACTION = 'device.isolation.policy_group_refused';
 
-export const NO_ISOLATION_POLICY: IsolationPolicy = Object.freeze({ extras: Object.freeze([]), revision: null, refusedGroups: Object.freeze([]) });
+export const NO_ISOLATION_POLICY: IsolationPolicy = Object.freeze({ extras: Object.freeze([]), revision: null, refusedGroups: Object.freeze([]), invalidStoredSettings: false });
 
 /**
  * The policy for a device, gated on what its agent accepts. Below `policyAllow` this is no policy and
@@ -31,19 +33,19 @@ export async function readIsolationPolicy(device: { id: string; networkIsolation
   if (!agentAcceptsPolicyAllow(device.networkIsolationVersion)) return NO_ISOLATION_POLICY;
   const policy = await withDbTransaction(() => resolveContainmentPolicy(device.id));
   const extras = containmentExtraAllowToEntries(policy.extraAllow);
-  return { extras, revision: extras.length > 0 ? policy.revision : null, refusedGroups: policy.refusedGroups };
+  return { extras, revision: extras.length > 0 ? policy.revision : null, refusedGroups: policy.refusedGroups, invalidStoredSettings: policy.invalidStoredSettings };
 }
 
-/** Called when the policy decides what a device is sent, so a refusal is on record without one entry per beat. */
 export function auditRefusedPolicyGroups(orgId: string, policy: IsolationPolicy): void {
   if (policy.refusedGroups.length > 0) auditRefusedExecutionGroups(orgId, POLICY_GROUP_REFUSED_ACTION, [...policy.refusedGroups]);
 }
 
 /**
- * True while the server's policy for an isolated episode is not the one the agent last committed. Read
+ * True while the server's policy for an isolated episode is not the one the agent last adopted. Read
  * this, not the state, to know a change has landed: a failed refresh keeps the old rules and still
- * reports `verified` at the new generation. The agent journals `policy_applied` / `policy_removed` only
- * when the rules commit, so those events are the evidence.
+ * reports `verified` at the new generation. The agent journals `policy_applied` / `policy_removed` when
+ * it adopts a revision, on a verified rules commit or when the rules already match; a failed refresh
+ * adopts nothing, so those events are the evidence.
  */
 export function isolationPolicyPending(row: Pick<DeviceNetworkIsolation, 'desiredState' | 'allowSnapshotRevision' | 'appliedPolicyRevision'>): boolean {
   return row.desiredState === 'isolated' && row.allowSnapshotRevision !== row.appliedPolicyRevision;
@@ -54,6 +56,8 @@ const POLICY_REJECT_REASONS: ReadonlySet<string> = new Set(['revision_missing', 
 const POLICY_JOURNAL_TYPES: ReadonlySet<string> = new Set(['policy_applied', 'policy_removed', 'policy_rejected', 'refresh_reverted']);
 const WIRE_REVISION = /^[\x21-\x7e]{1,128}$/;
 const WIRE_CODE = /^[a-z0-9_]{1,64}$/;
+/** More than any real report holds; a device cannot grow the incident timeline by 200 entries a beat. */
+const MAX_POLICY_TIMELINE_ENTRIES = 8;
 
 export interface PolicyEventProgress {
   policyEventSeq: number;
@@ -69,7 +73,9 @@ type JournalEvent = NonNullable<NetworkIsolationReport['events']>[number];
 function relevantPolicyEvents(row: Pick<DeviceNetworkIsolation, 'id'>, report: NetworkIsolationReport): JournalEvent[] {
   const bound = report.journalSeq ?? Number.POSITIVE_INFINITY;
   return (report.events ?? [])
-    .filter(event => POLICY_JOURNAL_TYPES.has(event.type) && event.seq <= bound && (!event.isolationId || event.isolationId === row.id))
+    // Only a rejection may lack an identity: the agent drops one that failed validation rather than journal it.
+    .filter(event => POLICY_JOURNAL_TYPES.has(event.type) && event.seq <= bound
+      && (event.isolationId === row.id || (event.type === 'policy_rejected' && !event.isolationId)))
     .sort((a, b) => a.seq - b.seq);
 }
 
@@ -117,5 +123,6 @@ export function readPolicyEvents(row: Pick<DeviceNetworkIsolation, 'id' | 'gener
       progress.timeline.push({ type: 'policy_refresh_reverted', metadata: { journalSeq: first.seq, reportedGeneration: first.generation ?? null, reason: first.detail && WIRE_CODE.test(first.detail) ? first.detail : 'unknown' } });
     }
   }
+  progress.timeline = progress.timeline.slice(-MAX_POLICY_TIMELINE_ENTRIES);
   return progress;
 }

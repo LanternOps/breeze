@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setupHeartbeatHarness, heartbeatSavepointDepth, beat as heartbeat } from './heartbeatTestHarness';
-import { buildContainmentHeartbeatBlock, reconcileContainmentReport, noteIsolationReportDropped } from '../../services/networkIsolation/reconcile';
+import { buildContainmentHeartbeatBlock, reconcileContainmentReport, noteIsolationReportDropped, storedContainmentHeartbeatBlock } from '../../services/networkIsolation/reconcile';
 import { captureException } from '../../services/sentry';
 import { heartbeatSchema } from './schemas';
 const beat = { status: 'ok', agentVersion: '999.0.0', metrics: { cpuPercent: 1, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 } };
@@ -60,6 +60,23 @@ describe('heartbeat isolation fault containment', () => {
     expect(vi.mocked(reconcileContainmentReport).mock.calls[0]?.[2]).toEqual({ isolationId: null, phase: 'none' });
     expect(reconcileDepth).toBe(1);
     expect(buildDepth).toBe(1);
+  });
+  it("gates the block on this beat's capability, not the stored one (#10100)", async () => {
+    const response = await heartbeat({ securityCapabilities: { networkIsolationVersion: 1 } });
+    expect(response.status).toBe(200);
+    expect(vi.mocked(buildContainmentHeartbeatBlock).mock.calls[0]?.[1]).toMatchObject({ networkIsolationVersion: 1 });
+  });
+  it('a beat that reports no capability counts as level 0, matching what the device row records', async () => {
+    await heartbeat();
+    expect(vi.mocked(buildContainmentHeartbeatBlock).mock.calls[0]?.[1]).toMatchObject({ networkIsolationVersion: 0 });
+  });
+  it("the stored fallback uses this beat's capability too (#10100)", async () => {
+    vi.mocked(buildContainmentHeartbeatBlock).mockImplementationOnce(async (_tx, _device, context) => {
+      context!.row = row as never;
+      throw new Error('block failed');
+    });
+    await heartbeat({ securityCapabilities: { networkIsolationVersion: 2 } });
+    expect(vi.mocked(storedContainmentHeartbeatBlock).mock.calls.at(-1)?.[1]).toMatchObject({ networkIsolationVersion: 2 });
   });
   it('keeps heartbeat 200 and the stored containment block when decrypt/build throws', async () => {
     vi.mocked(buildContainmentHeartbeatBlock).mockImplementationOnce(async (_tx, _device, context) => {

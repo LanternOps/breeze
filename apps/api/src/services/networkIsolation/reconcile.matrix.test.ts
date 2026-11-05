@@ -295,12 +295,13 @@ describe('a revision change takes a new generation (#10100)', () => {
   const timelineTypes = () => store.writes.filter(v => 'timeline' in v).map(v => inspect(v, { depth: 8 }));
 
   it('a first policy on a running episode: generation, snapshot and revision move together', async () => {
-    const context: { row?: DeviceNetworkIsolation | null } = {};
+    const context: { row?: DeviceNetworkIsolation | null } = { row: { ...store.row! } };
     const block = await buildContainmentHeartbeatBlock(tx, level3, context);
     expect(store.row).toMatchObject({ generation: 3, allowSnapshotRevision: 'c1:policy' });
     expect(store.row!.allowSnapshot).toContainEqual(EDR_ENTRY);
     expect(block.networkIsolation).toMatchObject({ generation: 3, policyRevision: 'c1:policy' });
-    expect(context.row).toMatchObject({ generation: 3, allowSnapshotRevision: 'c1:policy' });
+    // Not committed until the savepoint releases; the route's fallback must not send it if that fails.
+    expect(context.row).toMatchObject({ generation: 2, allowSnapshotRevision: null });
     const { writeEpisodeSnapshot } = await import('./episodeStore');
     const call = vi.mocked(writeEpisodeSnapshot).mock.calls.at(-1)!;
     expect(call[5]).toMatchObject({ allowSnapshotRevision: 'c1:policy' });
@@ -381,7 +382,7 @@ describe('a revision change takes a new generation (#10100)', () => {
     expect(block.networkIsolation).not.toHaveProperty('policyRevision');
     expect(block.networkIsolation!.allow.some(entry => entry.scope === 'any')).toBe(false);
   });
-  it('audits refused groups when they change what the device is sent, not on every beat', async () => {
+  it('audits refused groups once, not on every beat, when they take a policy away', async () => {
     holding();
     const refusedGroups = [{ id: 'group-1', refusedFields: ['os_version'] }];
     store.resolvePolicy.mockResolvedValue({ ...NO_EXTRAS, refusedGroups });
@@ -392,12 +393,44 @@ describe('a revision change takes a new generation (#10100)', () => {
   it('a concurrent beat that already recorded this revision is not bumped twice', async () => {
     const { withEpisodeLock } = await import('./episodeStore');
     vi.mocked(withEpisodeLock).mockImplementationOnce(async (_tx, _id, fn) => {
-      store.row = { ...store.row!, generation: 3, allowSnapshotRevision: 'c1:policy' };
-      return { found: true, value: await fn(store.row) };
+      store.row = { ...store.row!, generation: 3, allowSnapshot: [...allow, EDR_ENTRY], allowSnapshotRevision: 'c1:policy' } as never;
+      return { found: true, value: await fn(store.row!) };
     });
     const block = await buildContainmentHeartbeatBlock(tx, level3);
     expect(block.networkIsolation).toMatchObject({ generation: 3, policyRevision: 'c1:policy' });
     expect(store.row!.generation).toBe(3);
+  });
+  it('an extend that won the lock is not undone: the block carries its expiry with its generation', async () => {
+    const extended = new Date('2026-11-09T12:00:00Z');
+    const { withEpisodeLock } = await import('./episodeStore');
+    vi.mocked(withEpisodeLock).mockImplementationOnce(async (_tx, _id, fn) => {
+      store.row = { ...store.row!, generation: 3, expiresAt: extended };
+      return { found: true, value: await fn(store.row) };
+    });
+    const block = await buildContainmentHeartbeatBlock(tx, level3);
+    expect(block.networkIsolation).toMatchObject({ generation: 4, expiresAt: extended.toISOString(), policyRevision: 'c1:policy' });
+  });
+  it('the block after a bump still delivers an unacknowledged secret', async () => {
+    expect((await buildContainmentHeartbeatBlock(tx, level3)).networkIsolation).toHaveProperty('breakGlassSecret');
+  });
+  it('says when a malformed policy, not an operator, took the permits away', async () => {
+    holding();
+    store.resolvePolicy.mockResolvedValue({ extraAllow: [], revision: 'c1i:malformed', invalidStoredSettings: true, refusedGroups: [] });
+    await buildContainmentHeartbeatBlock(tx, level3);
+    expect(timelineTypes().join()).toContain('invalidStoredSettings');
+  });
+  it('a deliberate removal does not claim the policy was malformed', async () => {
+    holding();
+    store.resolvePolicy.mockResolvedValue({ ...NO_EXTRAS, invalidStoredSettings: false });
+    await buildContainmentHeartbeatBlock(tx, level3);
+    expect(timelineTypes().join()).not.toContain('invalidStoredSettings');
+  });
+  it('audits a refused group even when the revision never changes, once', async () => {
+    const refusedGroups = [{ id: 'group-1', refusedFields: ['os_version'] }];
+    store.resolvePolicy.mockResolvedValue({ ...NO_EXTRAS, refusedGroups });
+    for (let beat = 0; beat < 3; beat++) await buildContainmentHeartbeatBlock(tx, level3);
+    expect(store.row!.generation).toBe(2);
+    expect(store.auditRefused).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -444,6 +477,21 @@ describe('policy journal events reach the episode timeline (#10100)', () => {
     expect(withType('policy_rejected')).toHaveLength(1);
     expect(withType('policy_applied')).toHaveLength(0);
     expect(store.row!.appliedPolicyRevision ?? null).toBeNull();
+  });
+  it('only a rejection may lack an identity: a commit must name this episode', async () => {
+    const anonymous = (seq: number, type: string, detail: string) => ({ seq, at: now.toISOString(), type, detail, generation: 2 });
+    await reconcileContainmentReport(tx, device, report(7, [anonymous(6, 'policy_applied', 'c1:leftover'), anonymous(7, 'policy_removed', 'c1:leftover')]), now);
+    expect(withType('policy_applied')).toHaveLength(0);
+    expect(withType('policy_removed')).toHaveLength(0);
+    expect(store.row!.appliedPolicyRevision).toBeNull();
+  });
+  it('bounds the timeline entries one report can add, keeping the newest', async () => {
+    const flood = Array.from({ length: 200 }, (_, i) => ev(6 + i, 'policy_rejected', 'spec_invalid'));
+    await reconcileContainmentReport(tx, device, report(205, flood), now);
+    expect(withType('policy_rejected')).toHaveLength(8);
+    expect(timeline().join()).toContain('"journalSeq":205');
+    expect(timeline().join()).not.toContain('"journalSeq":6,');
+    expect(store.row).toMatchObject({ policyEventSeq: 205 });
   });
   it('reads events on an absence report too', async () => {
     await reconcileContainmentReport(tx, device, { isolationId: null, phase: 'none', journalSeq: 6, events: [ev(6, 'policy_rejected', 'revision_invalid')] }, now);

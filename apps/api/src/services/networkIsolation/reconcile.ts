@@ -21,9 +21,11 @@ export const ISOLATION_SECRET_COLUMN = {
 /** Per-beat lookup cache, shared by reconciliation and response construction. */
 export interface HeartbeatEpisodeContext { row?: DeviceNetworkIsolation | null }
 const faults = new Map<string, number>();
-function throttled(key: string, emit: () => void): void {
+/** A refused group stays refused for days; once per process per few hours keeps it on record without flooding. */
+const REFUSED_GROUP_AUDIT_WINDOW_MS = 6 * 3_600_000;
+function throttled(key: string, emit: () => void, windowMs = 60_000): void {
   const now = Date.now();
-  if (now - (faults.get(key) ?? -Infinity) < 60_000) return;
+  if (now - (faults.get(key) ?? -Infinity) < windowMs) return;
   if (faults.size >= 10_000) faults.delete(faults.keys().next().value!);
   faults.set(key, now);
   emit();
@@ -79,12 +81,13 @@ export async function buildContainmentHeartbeatBlock(tx: EpisodeTx, device: Isol
     policy = await readIsolationPolicy(device);
   } catch (err) {
     // No new answer, so the held one stands: a read fault must not look like a policy removal.
-    policy = { extras: desired.allow.filter(entry => entry.scope === 'any'), revision: desired.policyRevision ?? null, refusedGroups: [] };
+    policy = { extras: desired.allow.filter(entry => entry.scope === 'any'), revision: desired.policyRevision ?? null, refusedGroups: [], invalidStoredSettings: false };
     throttled(`policy:${row.id}`, () => {
       console.error('[isolation] policy unavailable', { deviceId: device.id, isolationId: row.id });
       captureException(err, undefined, { phase: 'isolation_policy_unavailable', deviceId: device.id, isolationId: row.id });
     });
   }
+  if (policy.refusedGroups.length > 0) throttled(`refused:${row.id}`, () => auditRefusedPolicyGroups(device.orgId, policy), REFUSED_GROUP_AUDIT_WINDOW_MS);
   try {
     desired.allow = buildIsolationAllowlist({ serverUrl: device.agentServerUrl ?? process.env.AGENT_SERVER_URL ?? '', remoteRelay: row.remoteRelay, policyExtras: policy.extras });
     if (policy.revision) desired.policyRevision = policy.revision;
@@ -99,23 +102,24 @@ export async function buildContainmentHeartbeatBlock(tx: EpisodeTx, device: Isol
   }
   // Outside both try blocks on purpose: a failed write has aborted this savepoint, so it must reach
   // the caller, which answers from the stored block and rolls all of it back.
-  let current = row;
-  if (row.allowSnapshotRevision !== policy.revision) {
-    current = await recordPolicyChange(tx, row.id, desired.allow, policy.revision, new Date());
-    context.row = current;
-    auditRefusedPolicyGroups(device.orgId, policy);
-    if (current.desiredState !== 'isolated') return storedContainmentHeartbeatBlock(current, device);
-    desired.generation = current.generation;
-  }
-  return withBreakGlassSecret(block, current, device);
+  if (row.allowSnapshotRevision === policy.revision) return withBreakGlassSecret(block, row, device);
+  // Build from the row read under the lock, whole: an extend may have won it, and an expiry older than
+  // its generation would stick on the agent, which treats an equal generation as already applied. Not
+  // written to `context`: this is uncommitted until the caller's savepoint releases, and the caller's
+  // fallback must not send a generation that rolled back.
+  const current = await recordPolicyChange(tx, row.id, desired.allow, policy, new Date());
+  return withBreakGlassSecret(storedContainmentHeartbeatBlock(current, device), current, device);
 }
 
 /**
- * Bump the generation in the same statement that records the permits it delivers: the agent refuses a
- * changed revision at a generation it has already adopted, and would keep the old rules. Re-reads under
- * the row lock, because a release or another beat may have moved the episode since the unlocked read.
+ * Bump the generation in the same statement that records the permits it delivers: at a generation it
+ * has already adopted, the agent refuses a different revision or added permits, and would keep the old
+ * rules. Only a removal would pass without a new generation; every change takes one, for one rule.
+ * Re-reads under the row lock, because a release, an extend or another beat may have moved the episode
+ * since the unlocked read.
  */
-async function recordPolicyChange(tx: EpisodeTx, id: string, allow: IsolationAllowEntry[], revision: string | null, at: Date): Promise<DeviceNetworkIsolation> {
+async function recordPolicyChange(tx: EpisodeTx, id: string, allow: IsolationAllowEntry[], policy: IsolationPolicy, at: Date): Promise<DeviceNetworkIsolation> {
+  const revision = policy.revision;
   const locked = await withEpisodeLock(tx, id, async (row) => {
     if (row.allowSnapshotRevision === revision) return row;
     const prev = toEpisodeSnapshot(row);
@@ -123,7 +127,7 @@ async function recordPolicyChange(tx: EpisodeTx, id: string, allow: IsolationAll
     if ('ignored' in transition) return row;
     if (!await writeEpisodeSnapshot(tx, row.id, prev, transition.next, at, { allowSnapshot: allow, allowSnapshotRevision: revision })) throw new Error('isolation_snapshot_conflict');
     const updated: DeviceNetworkIsolation = { ...row, ...transition.next, allowSnapshot: allow, allowSnapshotRevision: revision };
-    await journalIsolationEvent(tx, updated, 'isolation_policy_changed', at, { fromRevision: row.allowSnapshotRevision, toRevision: revision });
+    await journalIsolationEvent(tx, updated, 'isolation_policy_changed', at, { fromRevision: row.allowSnapshotRevision, toRevision: revision, ...(policy.invalidStoredSettings ? { invalidStoredSettings: true } : {}) });
     return updated;
   });
   if (!locked.found) throw new Error('isolation_episode_vanished');

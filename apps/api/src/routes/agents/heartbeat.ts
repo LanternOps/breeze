@@ -2358,15 +2358,18 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   let containment: ContainmentDesiredBlock = { networkIsolation: null };
   if (isolation) {
     const { buildContainmentHeartbeatBlock, storedContainmentHeartbeatBlock } = isolation;
+    // `device` was read before this beat's capability write, and a capability claim is same-heartbeat
+    // truth: an agent that just dropped below level 3 would reject a block carrying policy permits.
+    const beatDevice = { ...device, networkIsolationVersion: data.securityCapabilities?.networkIsolationVersion ?? 0 };
     try {
       // A cached absence needs no block build (and no SAVEPOINT / RELEASE).
       containment = isolationContext.row === null
         ? storedContainmentHeartbeatBlock(null)
-        : await withDbTransaction(() => buildContainmentHeartbeatBlock(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device, isolationContext));
+        : await withDbTransaction(() => buildContainmentHeartbeatBlock(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, beatDevice, isolationContext));
     } catch (err) {
       console.error('[heartbeat] isolation block failed', { deviceId: device.id, isolationId: isolationContext.row?.id });
       captureException(err, undefined, { phase: 'isolation_heartbeat_block', deviceId: device.id, isolationId: isolationContext.row?.id ?? 'unknown' });
-      containment = storedContainmentHeartbeatBlock(isolationContext.row, device);
+      containment = storedContainmentHeartbeatBlock(isolationContext.row, beatDevice);
     }
   }
 

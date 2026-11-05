@@ -86,6 +86,15 @@ describe('containment policy on a held episode', () => {
     expect(await timelineTypes(context, incidentId)).toEqual(['isolation_policy_changed']);
   });
 
+  it('two beats racing over one change take one generation and one timeline entry', async () => {
+    const { partner, episode, context, level3, incidentId } = await fixture();
+    await seedPartnerPolicy(partner.id, [EXTRA]);
+    const blocks = await Promise.all([beat(context, level3), beat(context, level3)]);
+    for (const block of blocks) expect(block.networkIsolation).toMatchObject({ generation: 2 });
+    expect((await readRow(context, episode.id)).generation).toBe(2);
+    expect(await timelineTypes(context, incidentId)).toEqual(['isolation_policy_changed']);
+  });
+
   it('a context blind to the partner sees no policy and takes no generation', async () => {
     const { partner, episode, context, level3 } = await fixture();
     await seedPartnerPolicy(partner.id, [EXTRA]);
