@@ -11,6 +11,8 @@ import (
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 const registryKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Run`
@@ -36,7 +38,7 @@ func uninstallPackage() error {
 // uninstallProductCode runs msiexec /x for one ProductCode. Exit 3010 (reboot
 // required) counts as success.
 func uninstallProductCode(productCode string) error {
-	cmd := exec.Command("msiexec", "/x", productCode, "/qn", "/norestart")
+	cmd := procspawn.Command("msiexec", "/x", productCode, "/qn", "/norestart")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 3010 {
@@ -121,7 +123,7 @@ func installPackage(msiPath, binaryPath, version string) error {
 // runMSIInstall runs the MSI installer silently.
 // Exit code 3010 means success but reboot required — treated as success.
 func runMSIInstall(msiPath string) error {
-	cmd := exec.Command("msiexec", "/i", msiPath, "/qn", "/norestart")
+	cmd := procspawn.Command("msiexec", "/i", msiPath, "/qn", "/norestart")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		// Exit code 3010 = ERROR_SUCCESS_REBOOT_REQUIRED
@@ -155,7 +157,7 @@ func msiReinstallArgs(msiPath string) []string {
 // msiPath (#6868). The caller's on-disk version check still decides whether
 // the files were actually replaced.
 func runMSIReinstall(msiPath string) error {
-	cmd := exec.Command("msiexec", msiReinstallArgs(msiPath)...)
+	cmd := procspawn.Command("msiexec", msiReinstallArgs(msiPath)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		exitErr, ok := err.(*exec.ExitError)

@@ -561,6 +561,7 @@ const fieldDefinitionsByType: Record<BuilderReportType, FieldDefinition[]> = {
     { id: 'site', label: 'Site', dataType: 'string' },
     { id: 'owner', label: 'Owner', dataType: 'string' },
     { id: 'serial', label: 'Serial', dataType: 'string' },
+    { id: 'product_number', label: 'Product Number', dataType: 'string' },
     { id: 'last_seen', label: 'Last seen', dataType: 'date' },
     { id: 'cpu', label: 'CPU usage', dataType: 'number' },
     { id: 'memory', label: 'Memory usage', dataType: 'number' },
@@ -645,7 +646,7 @@ const toNumber = (value: unknown): number | null => {
   return null;
 };
 
-const normalizePreviewRow = (type: BuilderReportType, row: PreviewRow): PreviewRow => {
+export const normalizePreviewRow = (type: BuilderReportType, row: PreviewRow): PreviewRow => {
   const normalized: PreviewRow = { ...row };
 
   if (type === 'devices') {
@@ -653,6 +654,7 @@ const normalizePreviewRow = (type: BuilderReportType, row: PreviewRow): PreviewR
     const osVersion = typeof row.osVersion === 'string' ? row.osVersion : '';
     normalized.os = [osType, osVersion].filter(Boolean).join(' ').trim();
     normalized.serial = row.serial ?? row.serialNumber ?? null;
+    normalized.product_number = row.product_number ?? row.productSku ?? null;
     normalized.last_seen = row.last_seen ?? row.lastSeenAt ?? null;
     normalized.memory = row.memory ?? row.ramTotalMb ?? null;
     normalized.disk_usage = row.disk_usage ?? row.diskTotalGb ?? null;

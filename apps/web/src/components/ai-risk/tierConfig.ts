@@ -189,6 +189,11 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'query_dr_plans', description: 'List disaster recovery plans', category: 'Backup & Recovery' },
       { name: 'get_dr_plan_details', description: 'Disaster recovery plan details', category: 'Backup & Recovery' },
       // Full-control W03 (#6757)
+      // Full-control W17 (#6788): verification, recovery and backup-health reads, and which mailboxes a C2C config covers.
+      { name: 'manage_backup_verification (health/list/readiness)', description: 'See backup verification results and how recoverable each device is', category: 'Backup & Recovery' },
+      { name: 'list_bmr_recoveries (list/get)', description: 'See where a bare-metal recovery has got to', category: 'Backup & Recovery' },
+      { name: 'get_backup_health', description: 'See backup health per device, from Breeze and connected backup providers', category: 'Backup & Recovery' },
+      { name: 'manage_c2c_configs (list)', description: 'See which mailboxes each cloud-to-cloud backup config covers', category: 'Backup & Recovery' },
       { name: 'manage_backup_profiles (list/get)', description: 'List or read backup profiles (what each one backs up)', category: 'Backup & Recovery' },
       { name: 'get_dr_execution_status', description: 'Disaster recovery execution status', category: 'Backup & Recovery' },
       // Monitoring & Analytics
@@ -301,6 +306,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'list_concerns', description: 'List the loose ends Wisp is tracking inside the delegation grant', category: 'AI Governance' },
       // Wisp thread links (W08 #9914): offered only when Wisp is on, and only under a delegation grant.
       { name: 'list_links', description: 'List the objects linked to the Wisp thread that you can still see', category: 'AI Governance' },
+      // Wisp check-in timers (#10991 W03): offered only when Wisp is on, and only under a delegation grant.
+      { name: 'list_check_ins', description: 'List the follow-up check-ins Wisp has scheduled on its thread', category: 'AI Governance' },
       // Other
       { name: 'query_custom_fields', description: 'Custom field definitions and values', category: 'Other' },
       { name: 'manage_tags (list)', description: 'List all device tags', category: 'Other' },
@@ -333,6 +340,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_notification_channels (test)', description: 'Test notification channel', category: 'Alerts & Notifications' },
       // Backup & Recovery (full-control W03, #6757)
       { name: 'manage_dr_plan (create_plan/update_plan/add_group/update_group)', description: 'Create or edit a disaster recovery plan and its groups (refused while the plan is running)', category: 'Backup & Recovery' },
+      // Full-control W17 (#6788): runs a read-only command on the machine.
+      { name: 'get_vss_status', description: 'Read the Volume Shadow Copy writers on a Windows device, live (read-only)', category: 'Backup & Recovery' },
       { name: 'manage_backup_profiles (create)', description: 'Create an organization backup profile (a partner-wide profile needs approval)', category: 'Backup & Recovery' },
       { name: 'configure_backup_sla (create/update)', description: 'Create or change a backup SLA (RPO/RTO targets and breach alerts)', category: 'Backup & Recovery' },
       // Monitoring & Analytics (#5290 W03)
@@ -445,6 +454,9 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'create_watch', description: 'Ask Wisp to check something on a schedule', category: 'AI Governance' },
       // Wisp thread links (W08 #9914): links one object you can see to the thread.
       { name: 'link_entity', description: 'Link a ticket, device, quote or other object to the Wisp thread', category: 'AI Governance' },
+      // Wisp check-in timers (#10991 W03): a follow-up on the grant's own thread; notifies the grantor, runs nothing.
+      { name: 'schedule_check_in', description: 'Ask Wisp to check back on its thread in 1 minute to 7 days', category: 'AI Governance' },
+      { name: 'cancel_check_in', description: 'Cancel a check-in Wisp scheduled on its thread', category: 'AI Governance' },
       // Wisp specialists (W07a #9913): sweeps and sandbox analysis run on the call.
       { name: 'launch_specialist (sweep/analysis)', description: 'Ask Wisp to hand a sweep or sandbox analysis to a specialist agent', category: 'AI Governance' },
     ],
@@ -479,6 +491,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'security_scan (quarantine/remove/restore)', description: 'Threat management actions', category: 'Security & Compliance' },
       { name: 'ioc_hunt (sweep/import_iocs)', description: 'Run a detect-only IOC sweep in one organization (second approver above 25 devices) or import IOCs as detection rules', category: 'Security & Compliance' },
       { name: 'edr_endpoint_action (isolate/unisolate)', description: 'EDR network isolation or release through the linked vendor (release needs a second approver)', category: 'Security & Compliance' },
+      // Network-isolation W13 (#10101): four-eyes; isolating (execute_containment) stays supervised.
+      { name: 'release_containment', description: 'Lift a Breeze network isolation from a device (needs a second approver)', category: 'Security & Compliance' },
       { name: 'manage_software_policy (create/update/delete)', description: 'Software policy management', category: 'Security & Compliance' },
       { name: 'remediate_software_violation', description: 'Remediate software violations', category: 'Security & Compliance' },
       // Files, Disk & Registry
@@ -508,6 +522,9 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_hyperv_vm (start/stop/force_stop/pause/resume/save)', description: 'Change a Hyper-V VM\'s power state', category: 'Backup & Recovery' },
       { name: 'manage_hyperv_checkpoints (create/delete/apply)', description: 'Create a checkpoint; deleting or applying one needs a second approver', category: 'Backup & Recovery' },
       { name: 'manage_dr_plan (delete_group)', description: 'Delete a group from a disaster recovery plan', category: 'Backup & Recovery' },
+      // Full-control W17 (#6788): a check runs on the machine; a C2C config chooses whose mail is copied, where and when.
+      { name: 'manage_backup_verification (run)', description: 'Queue a backup integrity check or test restore on a device', category: 'Backup & Recovery' },
+      { name: 'manage_c2c_configs (create/update/delete)', description: 'Create, change or delete a cloud-to-cloud backup config (whose mail is copied, where and when)', category: 'Backup & Recovery' },
       { name: 'manage_backup_profiles (update/delete)', description: 'Change or delete a backup profile (may be partner-wide)', category: 'Backup & Recovery' },
       { name: 'restore_snapshot', description: 'Restore a backup snapshot (second approver)', category: 'Backup & Recovery' },
       { name: 'restore_as_vm', description: 'Restore a snapshot as a new VM or disk image (second approver)', category: 'Backup & Recovery' },
@@ -734,6 +751,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Tier 2 without a screenshot; a screenshot (or unreadable evidenceTypes) needs approval (tier 3 supervised)
   { toolName: 'collect_evidence', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'execute_containment', tier: 3, permission: 'devices.execute + alerts.write', category: 'Security & Compliance' },
+  { toolName: 'release_containment', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 's1_isolate_device', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 's1_threat_action', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'sync_huntress_data', tier: 2, permission: 'organizations.write', category: 'Security & Compliance' },
@@ -748,6 +766,12 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Backup & Recovery
   { toolName: 'configure_backup_sla', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
   { toolName: 'configure_vault', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
+  // Full-control W17 (#6788): `tier` is the registry tier; the per-action classes are in TIER_DEFINITIONS.
+  { toolName: 'manage_backup_verification', tier: 1, permission: 'organizations.read / devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'get_vss_status', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'list_bmr_recoveries', tier: 1, permission: 'backup.read', category: 'Backup & Recovery' },
+  { toolName: 'get_backup_health', tier: 1, permission: 'backup.read', category: 'Backup & Recovery' },
+  { toolName: 'manage_c2c_configs', tier: 1, permission: 'organizations.read / organizations.write', category: 'Backup & Recovery' },
   { toolName: 'trigger_vault_sync', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'execute_dr_plan', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'manage_dr_plan', tier: 2, permission: 'devices.write', category: 'Backup & Recovery' },
@@ -779,6 +803,9 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'resolve_concern', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   // Wisp thread links (W08 #9914)
   { toolName: 'link_entity', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
+  // Wisp check-in timers (#10991 W03)
+  { toolName: 'schedule_check_in', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
+  { toolName: 'cancel_check_in', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   // Wisp specialists (W07a #9913): sweeps/analysis run on the call; other kinds ask first.
   { toolName: 'launch_specialist', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   // Other
@@ -887,6 +914,22 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
     acknowledge_related: 'alerts.acknowledge',
     feedback: 'alerts.read',
     rca_feedback: 'alerts.read',
+  },
+  // Full-control W17 (#6788)
+  manage_backup_verification: {
+    health: 'organizations.read',
+    list: 'organizations.read',
+    readiness: 'organizations.read',
+    run: 'devices.execute',
+  },
+  get_vss_status: 'devices.execute',
+  list_bmr_recoveries: 'backup.read',
+  get_backup_health: 'backup.read',
+  manage_c2c_configs: {
+    list: 'organizations.read',
+    create: 'organizations.write',
+    update: 'organizations.write',
+    delete: 'organizations.write',
   },
   manage_device_anomalies: {
     list: 'devices.read',
@@ -1238,6 +1281,10 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Wisp thread links (W08 #9914)
   link_entity: 'ai_sessions.use',
   list_links: 'ai_sessions.use',
+  // Wisp check-in timers (#10991 W03)
+  schedule_check_in: 'ai_sessions.use',
+  list_check_ins: 'ai_sessions.use',
+  cancel_check_in: 'ai_sessions.use',
   // Wisp specialists (W07a #9913); wisp_specialist_request is the approval card.
   launch_specialist: 'ai_sessions.use',
   wisp_specialist_request: 'ai_sessions.use',

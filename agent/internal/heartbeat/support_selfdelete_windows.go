@@ -4,8 +4,9 @@ package heartbeat
 
 import (
 	"os"
-	"os/exec"
 	"syscall"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // createNoWindow suppresses the console window of the detached trampoline.
@@ -37,7 +38,7 @@ const createNoWindow = 0x08000000
 // verbatim.
 func startSupportSelfDelete(exePath, workDir string) error {
 	cmdLine, env := buildSupportSelfDeleteCmdLine(exePath, workDir)
-	cmd := exec.Command("cmd")
+	cmd := procspawn.Command("cmd")
 	cmd.Env = append(os.Environ(), env...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | createNoWindow,

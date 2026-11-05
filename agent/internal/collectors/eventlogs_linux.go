@@ -137,6 +137,9 @@ func (c *EventLogCollector) collectSystemEvents(since time.Time) ([]EventLogEntr
 
 // queryJournal runs journalctl with JSON output and returns parsed entries
 func (c *EventLogCollector) queryJournal(since time.Time, matches ...string) ([]journalEntry, error) {
+	if !hostHasSystemd() {
+		return nil, nil
+	}
 	sinceStr := since.UTC().Format("2006-01-02 15:04:05")
 
 	args := []string{

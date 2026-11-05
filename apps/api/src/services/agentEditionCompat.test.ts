@@ -205,6 +205,9 @@ describe('agent-binary update command types are only named at known sites (#4093
     // update/update_agent rows to refuse a below-floor agent target while an
     // isolation episode is unresolved. It never builds or dispatches one.
     'apps/api/src/services/commandClaimEligibility.ts',
+    // #10919: the same claim-time check, moved here. Only inspects queued update rows for the
+    // isolation upgrade floor; never builds, inserts or dispatches a command.
+    'apps/api/src/services/networkIsolation/upgradeFloor.ts',
   ]);
 
   function walk(dir: string, out: string[] = []): string[] {

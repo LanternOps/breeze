@@ -812,6 +812,7 @@
           "os": "SO",
           "owner": "Proprietario",
           "patch_level": "Nivel de patch",
+          "product_number": "Número do produto",
           "serial": "Número de série",
           "site": "Site",
           "status": "Status"

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { is, SQL } from 'drizzle-orm';
 
@@ -75,6 +75,7 @@ vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }))
 import { DelayedError } from 'bullmq';
 import { db } from '../db';
 import { isCronDue } from '../services/cronDue';
+import { resolveAllSecurityScanScheduledDevices } from '../services/featureConfigResolver';
 import {
   buildSecurityScanPayload,
   enqueueSweepDispatches,
@@ -247,6 +248,63 @@ describe('sweep pump wiring (#6263 W05)', () => {
   });
 });
 
+describe('schedule-policies repeatable tick evaluates cron on the wall clock (#10031)', () => {
+  // BullMQ hands every repeat of a repeatable job the data it was registered
+  // with, so `scanAt` is boot time forever. Due-ness must follow the clock.
+  const REGISTERED = { type: 'schedule-policies', scanAt: '2026-09-18T01:58:00.000Z' } as const;
+  const entry = {
+    configPolicyId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    orgId: null,
+    partnerId: 'pppppppp-pppp-4ppp-8ppp-pppppppppppp',
+    settings: { ...SECURITY_SCAN_SETTINGS_DEFAULTS }, // cron '0 2 * * *', UTC (partner-wide)
+    deviceIds: ['d1'],
+  };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    const actual = await vi.importActual<typeof import('../services/cronDue')>('../services/cronDue');
+    vi.mocked(isCronDue).mockImplementation(actual.isCronDue);
+    vi.mocked(resolveAllSecurityScanScheduledDevices).mockResolvedValue([entry] as never);
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    addBulkMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.mocked(isCronDue).mockReset();
+  });
+
+  it('two ticks of the same registration across the 02:00 boundary: the second one schedules', async () => {
+    const { createSecurityScanWorker } = await import('./securityScanJobs');
+    const processor = (createSecurityScanWorker() as unknown as {
+      __processor: (job: unknown, token?: string) => Promise<unknown>;
+    }).__processor;
+    const tick = () => processor({ name: 'schedule-policies', data: REGISTERED, id: 'repeat:1' }, 'tok');
+
+    vi.setSystemTime(new Date('2026-09-18T01:59:30.000Z'));
+    await expect(tick()).resolves.toEqual({ scheduledPolicies: 0, scansQueued: 0 });
+    expect(vi.mocked(isCronDue).mock.calls[0]![2]).toEqual(new Date('2026-09-18T01:59:30.000Z'));
+    expect(db.select).not.toHaveBeenCalled();
+
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockReturnValue(chain([{ id: SCAN }])) } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chain([{ id: 'd1', orgId: 'org-1' }])) // device rows
+      .mockReturnValueOnce(chain([{ count: 0 }])) // getOrgQueuedScans
+      .mockReturnValueOnce(chain([])); // busy query
+
+    vi.setSystemTime(new Date('2026-09-18T02:00:30.000Z'));
+    await expect(tick()).resolves.toEqual({ scheduledPolicies: 1, scansQueued: 1 });
+    expect(vi.mocked(isCronDue).mock.calls[1]![2]).toEqual(new Date('2026-09-18T02:00:30.000Z'));
+    expect(addBulkMock).toHaveBeenCalledWith([
+      expect.objectContaining({
+        data: expect.objectContaining({ origin: 'policy_scheduler', occurrenceIso: '2026-09-18T02:00:00.000Z' }),
+      }),
+    ]);
+  });
+});
+
 describe('scheduler predicates exclude queued sweep scans (#6263 W05-2)', () => {
   const entry = {
     configPolicyId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -275,6 +333,136 @@ describe('scheduler predicates exclude queued sweep scans (#6263 W05-2)', () => 
     expect(busy).toMatch(
       /not \("security_scans"\."sweep_id" is not null and "security_scans"\."status" = 'queued'\) and \("security_scans"\."status" in \('queued','running'\) or "security_scans"\."started_at" >= \$\d+\)/,
     );
+  });
+});
+
+describe('scheduled scans leave macOS out until #10375 closes', () => {
+  const NOW = new Date('2026-09-18T02:00:00Z');
+  const baseEntry = {
+    configPolicyId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    orgId: null,
+    partnerId: 'pppppppp-pppp-4ppp-8ppp-pppppppppppp',
+    settings: { ...SECURITY_SCAN_SETTINGS_DEFAULTS },
+  };
+  let insertedValues: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    insertedValues = vi.fn((rows: Array<{ deviceId: string }>) =>
+      chain(rows.map((r) => ({ id: `scan-${r.deviceId}` }))),
+    );
+    vi.mocked(db.insert).mockReset().mockReturnValue({ values: insertedValues } as any);
+    addBulkMock.mockResolvedValue(undefined);
+  });
+
+  const insertedDeviceIds = () =>
+    (insertedValues.mock.calls[0]![0] as Array<{ deviceId: string }>).map((r) => r.deviceId);
+
+  it('a policy spanning Windows, Linux and macOS enqueues only the non-macOS devices', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chain([
+        { id: 'd-win', orgId: 'org-1', osType: 'windows' },
+        { id: 'd-mac', orgId: 'org-1', osType: 'macos' },
+        { id: 'd-lin', orgId: 'org-1', osType: 'linux' },
+      ]))
+      .mockReturnValueOnce(chain([{ count: 0 }])) // getOrgQueuedScans
+      .mockReturnValueOnce(chain([])); // busy query
+
+    await expect(
+      schedulePolicyScans({ ...baseEntry, deviceIds: ['d-win', 'd-mac', 'd-lin'] } as any, NOW),
+    ).resolves.toBe(2);
+
+    expect(insertedDeviceIds()).toEqual(['d-win', 'd-lin']);
+    expect(addBulkMock.mock.calls[0]![0]).toHaveLength(2);
+  });
+
+  it('a macOS-only policy enqueues nothing, does not error, and spends no further queries', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(chain([
+      { id: 'd-mac-1', orgId: 'org-1', osType: 'macos' },
+      { id: 'd-mac-2', orgId: 'org-2', osType: 'macos' },
+    ]));
+
+    await expect(
+      schedulePolicyScans({ ...baseEntry, deviceIds: ['d-mac-1', 'd-mac-2'] } as any, NOW),
+    ).resolves.toBe(0);
+
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(addBulkMock).not.toHaveBeenCalled();
+  });
+
+  it('keys on OS, not agent version: the newest macOS agent is still skipped, an old Windows agent is not', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chain([
+        { id: 'd-win-old', orgId: 'org-1', osType: 'windows', agentVersion: '0.1.0' },
+        { id: 'd-mac-new', orgId: 'org-1', osType: 'macos', agentVersion: '99.0.0' },
+      ]))
+      .mockReturnValueOnce(chain([{ count: 0 }]))
+      .mockReturnValueOnce(chain([]));
+
+    await schedulePolicyScans({ ...baseEntry, deviceIds: ['d-win-old', 'd-mac-new'] } as any, NOW);
+
+    expect(insertedDeviceIds()).toEqual(['d-win-old']);
+    // The projection is the real proof: no version is even read for this decision.
+    const projection = vi.mocked(db.select).mock.calls[0]![0] as unknown as Record<string, unknown>;
+    expect(Object.keys(projection)).toContain('osType');
+    expect(Object.keys(projection)).not.toContain('agentVersion');
+  });
+
+  describe('per-tick skipped count', () => {
+    const REGISTERED = { type: 'schedule-policies', scanAt: '2026-09-18T01:58:00.000Z' } as const;
+    let debugSpy: ReturnType<typeof vi.spyOn>;
+
+    const tick = async () => {
+      const { createSecurityScanWorker } = await import('./securityScanJobs');
+      const processor = (createSecurityScanWorker() as unknown as {
+        __processor: (job: unknown, token?: string) => Promise<unknown>;
+      }).__processor;
+      return processor({ name: 'schedule-policies', data: REGISTERED, id: 'repeat:1' }, 'tok');
+    };
+
+    beforeEach(() => {
+      debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+      vi.mocked(isCronDue).mockReturnValue(true);
+    });
+
+    afterEach(() => {
+      debugSpy.mockRestore();
+      vi.mocked(isCronDue).mockReset();
+    });
+
+    it('logs once per tick with the distinct device count across every due policy', async () => {
+      vi.mocked(resolveAllSecurityScanScheduledDevices).mockResolvedValue([
+        { ...baseEntry, deviceIds: ['d-mac-1', 'd-mac-2'] },
+        { ...baseEntry, deviceIds: ['d-mac-2'] }, // same Mac under a second policy
+      ] as never);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(chain([
+          { id: 'd-mac-1', orgId: 'org-1', osType: 'macos' },
+          { id: 'd-mac-2', orgId: 'org-1', osType: 'macos' },
+        ]))
+        .mockReturnValueOnce(chain([{ id: 'd-mac-2', orgId: 'org-1', osType: 'macos' }]));
+
+      await expect(tick()).resolves.toEqual({ scheduledPolicies: 0, scansQueued: 0 });
+
+      expect(debugSpy).toHaveBeenCalledTimes(1);
+      expect(debugSpy.mock.calls[0]![0]).toContain('skipped 2 macOS device(s)');
+    });
+
+    it('stays quiet on a tick that skipped nothing', async () => {
+      vi.mocked(resolveAllSecurityScanScheduledDevices).mockResolvedValue([
+        { ...baseEntry, deviceIds: ['d-win'] },
+      ] as never);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(chain([{ id: 'd-win', orgId: 'org-1', osType: 'windows' }]))
+        .mockReturnValueOnce(chain([{ count: 0 }]))
+        .mockReturnValueOnce(chain([]));
+
+      await expect(tick()).resolves.toEqual({ scheduledPolicies: 1, scansQueued: 1 });
+
+      expect(debugSpy).not.toHaveBeenCalled();
+    });
   });
 });
 

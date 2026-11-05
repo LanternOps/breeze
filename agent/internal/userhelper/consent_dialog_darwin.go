@@ -5,9 +5,9 @@ package userhelper
 import (
 	"bytes"
 	"context"
-	"os/exec"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // showConsentDialogOS renders the consent prompt via osascript, the same
@@ -22,7 +22,7 @@ func showConsentDialogOS(ctx context.Context, req ipc.ConsentRequest, presented 
 	// "button returned:..."/"gave up:..." record to stdout; on failure the
 	// error number (e.g. -128 for the user's cancel) is on stderr.
 	var out bytes.Buffer
-	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
+	cmd := procspawn.CommandContext(ctx, "osascript", "-e", script)
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	if err := cmd.Start(); err != nil {

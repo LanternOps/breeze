@@ -79,7 +79,7 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   // Public invoice view-and-pay links (2026-08-21 spec §6): unauthenticated,
   // bearer-URL surface. Isolated so a scanner hammering a leaked/expired link
   // can't burn the shared budget of everything else behind the same NAT, and
-  // capped well below the global 300 — a human paying an invoice makes a
+  // capped well below the global 600 — a human paying an invoice makes a
   // handful of requests. The Stripe-backed mutations (/pay, /settle-return)
   // carry an additional per-token limiter inside the route.
   { prefix: '/api/v1/invoices/public/', name: 'invoicepublic', limit: 60 },
@@ -91,7 +91,7 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   { prefix: '/api/v1/agreements/public/', name: 'agreementpublic', limit: 60 },
   // Bare-metal recovery (2026-09-09 assurance campaign, D13): the recovery
   // helper fetches ONE object per file through /backup/bmr/recover/download,
-  // so a 10k-file server would be capped at 300 files/min by the shared
+  // so a 10k-file server would be capped at 600 files/min by the shared
   // bucket. Only the download route is isolated: it is token-authenticated,
   // path-scoped to a single snapshot and carries its own per-token limiter,
   // so the bucket only needs to stay below "runaway client" territory.
@@ -100,7 +100,7 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   { prefix: '/api/v1/backup/bmr/recover/download', name: 'bmrrecover', limit: 12_000 },
   // Partner sending-domain delivery events (W06). One provider egress IP
   // delivers every partner's bounces, complaints and deliveries, so on the
-  // shared 300/min per-IP budget a busy partner lane would throttle dashboard
+  // shared 600/min per-IP budget a busy partner lane would throttle dashboard
   // traffic that happens to share an egress address — and vice versa. The
   // route carries its own 600/min limiter and rejects anything unsigned, so
   // this bucket only needs to stay out of runaway territory.
@@ -161,7 +161,17 @@ function cleanupExpiredEntries(): void {
 }
 
 interface GlobalRateLimitOptions {
-  /** Max requests per window for the shared bucket. Default: 300 */
+  /**
+   * Max requests per window for the shared bucket. Default: 600.
+   *
+   * Raised from 300 on 2026-11-04: a single operator browsing ~7 device detail
+   * pages in 80 s (each fans out ~15 reads, plus the shell's partners/me,
+   * ws-ticket and feature-flag calls) sent 328 dashboard requests in one
+   * minute and was bounced with 429s. 600/min still caps a runaway client at
+   * ~10 req/s. Per-user budgeting for authenticated dashboard traffic (so
+   * several techs behind one office NAT stop sharing a bucket) is tracked
+   * separately.
+   */
   limit?: number;
   /** Window size in seconds. Default: 60 */
   windowSeconds?: number;
@@ -174,7 +184,7 @@ interface GlobalRateLimitOptions {
 }
 
 export function globalRateLimit(options?: GlobalRateLimitOptions): MiddlewareHandler {
-  const limit = options?.limit ?? 300;
+  const limit = options?.limit ?? 600;
   const windowSeconds = options?.windowSeconds ?? 60;
   const isolatedBuckets = options?.isolatedBuckets ?? ISOLATED_BUCKETS;
   const windowMs = windowSeconds * 1000;

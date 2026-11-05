@@ -7,8 +7,9 @@ import {
   tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks, devices,
   notificationChannels, ticketForms, ticketResponseTemplates,
   ticketChecklistTemplates, ticketChecklistTemplateItems,
-  softwareCatalog, softwareVersions, softwareInstallMethods,
+  softwareCatalog, softwareVersions, softwareInstallMethods, deviceNetworkIsolations,
 } from '../../db/schema';
+import type { ApprovalBinding } from '../networkIsolation/service';
 import {
   fingerprintSoftwareInstallMethodDependency, fingerprintSoftwareVersionDependency,
 } from '../softwareDependencyIdentity';
@@ -111,6 +112,8 @@ type ResolverResult =
       verified?: VerifiedRunScript;
       /** Topology M4-D3: the pinned diagnostic effect (digest attached by resolveEffectDigest). */
       verifiedTopologyDiagnostic?: Omit<VerifiedTopologyDiagnostic, 'effectDigest'>;
+      /** Network-isolation W13 (#10101): the episode binding `release_containment` pinned. */
+      verifiedIsolationRelease?: ApprovalBinding;
     }
   | { kind: 'missing_arg' }
   | { kind: 'target_absent' };
@@ -895,6 +898,44 @@ const EFFECT_DIGEST_RESOLVERS: Record<
       iocDigest,
     }));
   },
+
+  // release_containment (Tier 3, four-eyes) — network-isolation W13 (#10101,
+  // spec §3.8 "Approval binding"). It pins the episode's binding
+  // `{orgId, deviceId, isolationId, generation}` and nothing else.
+  // - An extend or a release by someone else makes a new generation, and an
+  //   org move changes orgId. Either one before release is `content_changed`.
+  // - Agent progress at the same generation (applied → verified, a journal
+  //   tick) leaves the approval valid.
+  // - The secret, expiry and reason are not pinned. The argument digest
+  //   already pins the reason.
+  // The pin is required (pinnedEffectPolicy.ts): creation refuses an episode
+  // it cannot pin, and release refuses a missing digest. On a match the
+  // release path hands the handler this binding (`verifiedIsolationRelease`).
+  // `releaseNetworkIsolation` re-checks it under the episode lock, which
+  // closes the window between this read and the release.
+  //
+  // The release paths read under a system context, so the query names the
+  // device as well as the id, and the row is checked again here. A wrong or
+  // RLS-blind read can never pin another device's episode.
+  release_containment: async (args, database) => {
+    if (typeof args.isolationId !== 'string' || typeof args.deviceId !== 'string') return MISSING_ARG;
+    if (!UUID_RE.test(args.isolationId) || !UUID_RE.test(args.deviceId)) return TARGET_ABSENT;
+    const isolationId = args.isolationId.toLowerCase();
+    const deviceId = args.deviceId.toLowerCase();
+    const [row] = await database
+      .select({
+        id: deviceNetworkIsolations.id,
+        orgId: deviceNetworkIsolations.orgId,
+        deviceId: deviceNetworkIsolations.deviceId,
+        generation: deviceNetworkIsolations.generation,
+      })
+      .from(deviceNetworkIsolations)
+      .where(and(eq(deviceNetworkIsolations.id, isolationId), eq(deviceNetworkIsolations.deviceId, deviceId)))
+      .limit(1);
+    if (!row || row.id.toLowerCase() !== isolationId || row.deviceId.toLowerCase() !== deviceId) return TARGET_ABSENT;
+    const binding: ApprovalBinding = { orgId: row.orgId, deviceId: row.deviceId, isolationId: row.id, generation: row.generation };
+    return { kind: 'material', material: canonicalJson({ v: 1, ...binding }), verifiedIsolationRelease: binding };
+  },
 };
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -1037,7 +1078,12 @@ async function resolveEffectDigest(
   toolName: string,
   args: Record<string, unknown>,
   database: Database,
-): Promise<{ outcome: EffectDigestOutcome; verified?: VerifiedRunScript; verifiedTopologyDiagnostic?: VerifiedTopologyDiagnostic }> {
+): Promise<{
+  outcome: EffectDigestOutcome;
+  verified?: VerifiedRunScript;
+  verifiedTopologyDiagnostic?: VerifiedTopologyDiagnostic;
+  verifiedIsolationRelease?: ApprovalBinding;
+}> {
   const action = typeof args.action === 'string' ? args.action : undefined;
   const key = effectDigestResolverKey(toolName, action);
   if (!key) return { outcome: { kind: 'not_applicable' } };
@@ -1052,6 +1098,7 @@ async function resolveEffectDigest(
     ...(result.verifiedTopologyDiagnostic
       ? { verifiedTopologyDiagnostic: { ...result.verifiedTopologyDiagnostic, effectDigest: digest } }
       : {}),
+    ...(result.verifiedIsolationRelease ? { verifiedIsolationRelease: result.verifiedIsolationRelease } : {}),
   };
 }
 
@@ -1102,6 +1149,9 @@ export async function computeEffectDigestForRelease(
   if (resolved.verified) return { digest, context: { verifiedRunScript: resolved.verified } };
   if (resolved.verifiedTopologyDiagnostic) {
     return { digest, context: { verifiedTopologyDiagnostic: resolved.verifiedTopologyDiagnostic } };
+  }
+  if (resolved.verifiedIsolationRelease) {
+    return { digest, context: { verifiedIsolationRelease: resolved.verifiedIsolationRelease } };
   }
   return { digest };
 }

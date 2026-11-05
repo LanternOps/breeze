@@ -114,6 +114,7 @@ async function resolveDocumentBranding(
     .select({
       logoUrl: portalBranding.logoUrl,
       primaryColor: portalBranding.primaryColor,
+      secondaryColor: portalBranding.secondaryColor,
       footerText: portalBranding.footerText,
     })
     .from(portalBranding)

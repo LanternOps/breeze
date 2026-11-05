@@ -812,6 +812,7 @@
           "os": "OS",
           "owner": "Propriétaire",
           "patch_level": "Niveau de patch",
+          "product_number": "Numéro de produit",
           "serial": "Feuilleton",
           "site": "Site",
           "status": "Statut"

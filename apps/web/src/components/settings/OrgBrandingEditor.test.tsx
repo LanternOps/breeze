@@ -37,26 +37,35 @@ function getCustomCssTextarea() {
   return block?.querySelector('textarea') as HTMLTextAreaElement;
 }
 
-function getSubdomainInput() {
-  const portalBlock = screen.getByText('Portal subdomain').parentElement;
-  return portalBlock?.querySelector('input') as HTMLInputElement;
-}
-
 describe('OrgBrandingEditor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('opens a live preview modal using current branding inputs', async () => {
-    render(<OrgBrandingEditor organizationName="Acme Systems" />);
+  // #9673: nothing reads these, so the tab must not offer them.
+  it('does not offer controls that change nothing: theme, portal subdomain, preview URL, draft preview', async () => {
+    fetchMock.mockResolvedValue(makeJsonResponse({ data: { customCss: null } }));
+    const { container } = render(<OrgBrandingEditor organizationName="Acme Systems" orgId={ORG_ID} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
 
-    fireEvent.change(getSubdomainInput(), { target: { value: 'acme-it' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    expect(screen.queryByText('Theme')).toBeNull();
+    expect(screen.queryByText('Portal subdomain')).toBeNull();
+    expect(screen.queryByText(/Available preview URL/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Preview' })).toBeNull();
+    expect(container.querySelector('select')).toBeNull();
+    expect(container.textContent).not.toMatch(/https:\/\/your-org\./);
+  });
 
-    await screen.findByText('Portal preview');
-    expect(screen.queryByText('Preview opened in a mock window.')).toBeNull();
-    expect(screen.getAllByText(/https:\/\/acme-it\./).length).toBeGreaterThan(0);
-    expect(screen.queryByText('Acme Systems Portal')).not.toBeNull();
+  // An archived org must not be written to and then told the save failed.
+  it('saveBlockedMessage refuses Save before any write', async () => {
+    fetchMock.mockResolvedValue(makeJsonResponse({ data: { customCss: null } }));
+    const onSave = vi.fn();
+    render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} onSave={onSave} saveBlockedMessage="Archived." />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId('branding-save'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ message: 'Archived.', type: 'error' }));
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
+    expect(onSave).not.toHaveBeenCalled();
   });
 
   it('without an orgId, Save does not attempt a portal-settings call (no crash)', async () => {
@@ -100,7 +109,7 @@ describe('OrgBrandingEditor', () => {
     expect(screen.getByText(/PNG, JPEG, or WebP/)).toBeTruthy();
   });
 
-  it('saves customCss via PATCH /orgs/organizations/:id/portal-settings, decoupled from other branding fields', async () => {
+  it('saves customCss via PATCH /orgs/organizations/:id/portal-settings', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
       if (url === `/orgs/organizations/${ORG_ID}/portal-settings` && !init?.method) {
@@ -127,10 +136,9 @@ describe('OrgBrandingEditor', () => {
     const body = JSON.parse(String(patchCall![1]!.body));
     expect(body).toEqual({ customCss: '.a { color: blue; }' });
 
-    // onSave still fires for the unrelated branding fields (logo/colors/theme/subdomain),
-    // and its payload must NOT carry customCss any more — that's the portal-settings PATCH's job.
-    expect(onSave).toHaveBeenCalledTimes(1);
-    expect(onSave.mock.calls[0][0]).not.toHaveProperty('customCss');
+    // #9673: everything on this tab goes through that PATCH. onSave only tells
+    // the page the save finished, and carries no settings.
+    expect(onSave).toHaveBeenCalledExactlyOnceWith();
   });
 
   it('sends null when the customCss textarea is cleared', async () => {
@@ -288,51 +296,320 @@ describe('OrgBrandingEditor coordinated save (#6030)', () => {
   });
 });
 
-describe('OrgBrandingEditor logo upload (#8017)', () => {
+// #9673 (settings rules 1 + 4): the org logo lives in portal_branding.logo_url,
+// which the portal and every customer document read, and is saved through the
+// portal-settings PATCH, never organizations.settings.branding.
+describe('OrgBrandingEditor logo (#9673)', () => {
   const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==';
+  const PARTNER_LOGO = 'data:image/png;base64,UEFSVE5FUkxPR08=';
+  const OLD_LOGO = 'data:image/png;base64,T0xETE9HTw==';
+  const portalUrl = `/orgs/organizations/${ORG_ID}/portal-settings`;
+
+  function mockPortal(data: Record<string, unknown>) {
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === portalUrl && init?.method === 'PATCH') {
+        return makeJsonResponse({ data: {} });
+      }
+      return makeJsonResponse({ data: { customCss: null, ...data } });
+    });
+  }
+
+  const patchBody = () => {
+    const call = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    return call ? JSON.parse(String(call[1]!.body)) : undefined;
+  };
+  const preview = () => screen.queryByTestId('branding-logo-preview') as HTMLImageElement | null;
+  const fileInput = (container: HTMLElement) => container.querySelector('input[type="file"]') as HTMLInputElement;
+  const pickLogo = (container: HTMLElement) => {
+    fireEvent.change(fileInput(container), { target: { files: [new File(['x'], 'logo.png', { type: 'image/png' })] } });
+  };
+  const loaded = (container: HTMLElement) => waitFor(() => expect(fileInput(container).disabled).toBe(false));
+
   beforeEach(() => {
     vi.clearAllMocks();
     URL.createObjectURL = vi.fn(() => 'blob:http://localhost/abc');
     URL.revokeObjectURL = vi.fn();
   });
 
-  const pickLogo = (container: HTMLElement) => {
-    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
-    fireEvent.change(input, { target: { files: [new File(['x'], 'logo.png', { type: 'image/png' })] } });
-  };
+  it("shows the org's own logo from portal-settings", async () => {
+    mockPortal({ logoUrl: OLD_LOGO, partnerLogoUrl: PARTNER_LOGO });
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+    await loaded(container);
+    expect(preview()?.getAttribute('src')).toBe(OLD_LOGO);
+    expect(screen.getByText('Overrides Partner logo')).toBeTruthy();
+  });
 
-  it('persists an encoded data URI, never a session-local blob: URL', async () => {
+  it("shows the partner's logo and where it comes from while the org has none", async () => {
+    mockPortal({ logoUrl: null, partnerLogoUrl: PARTNER_LOGO });
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+    await loaded(container);
+    expect(preview()?.getAttribute('src')).toBe(PARTNER_LOGO);
+    expect(screen.getByText('Inherits from Partner logo')).toBeTruthy();
+    expect(screen.queryByTestId('branding-logo-remove')).toBeNull();
+  });
+
+  it('says when neither level has a logo', async () => {
+    mockPortal({ logoUrl: null, partnerLogoUrl: null });
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+    await loaded(container);
+    expect(preview()).toBeNull();
+    expect(screen.getByText('No Partner logo configured')).toBeTruthy();
+  });
+
+  it('saves an upload through portal-settings as an encoded data URI, never a blob: URL', async () => {
+    mockPortal({ logoUrl: null, partnerLogoUrl: null });
     resizeToDataUrl.mockResolvedValue(DATA_URL);
     const onSave = vi.fn();
-    const { container } = render(<OrgBrandingEditor organizationName="Acme" onSave={onSave} />);
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} onSave={onSave} />);
+    await loaded(container);
     pickLogo(container);
-    await waitFor(() => expect(resizeToDataUrl).toHaveBeenCalledOnce());
-    fireEvent.click(screen.getByRole('button', { name: 'Save branding' }));
-    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
-    expect(onSave.mock.calls[0][0].logoUrl).toBe(DATA_URL);
+    await waitFor(() => expect(preview()?.getAttribute('src')).toBe(DATA_URL));
+    fireEvent.click(screen.getByTestId('branding-save'));
+    await screen.findByText('Branding settings saved.');
+    expect(patchBody()).toEqual({ customCss: null, logoUrl: DATA_URL });
+    expect(onSave).toHaveBeenCalledExactlyOnceWith();
+  });
+
+  it('an untouched logo is not re-sent', async () => {
+    mockPortal({ logoUrl: OLD_LOGO, partnerLogoUrl: null });
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+    await loaded(container);
+    fireEvent.click(screen.getByTestId('branding-save'));
+    await screen.findByText('Branding settings saved.');
+    expect(patchBody()).toEqual({ customCss: null });
+  });
+
+  it('Remove clears the override, so the org inherits the partner logo again', async () => {
+    mockPortal({ logoUrl: OLD_LOGO, partnerLogoUrl: PARTNER_LOGO });
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+    await loaded(container);
+    fireEvent.click(screen.getByTestId('branding-logo-remove'));
+    expect(preview()?.getAttribute('src')).toBe(PARTNER_LOGO);
+    fireEvent.click(screen.getByTestId('branding-save'));
+    await screen.findByText('Branding settings saved.');
+    expect(patchBody()).toEqual({ customCss: null, logoUrl: null });
+  });
+
+  it('clears the file input after a pick, so the same file can be picked again after Remove', async () => {
+    mockPortal({ logoUrl: null, partnerLogoUrl: null });
+    resizeToDataUrl.mockResolvedValue(DATA_URL);
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+    await loaded(container);
+    const setValue = vi.fn();
+    Object.defineProperty(fileInput(container), 'value', { configurable: true, get: () => '', set: setValue });
+    pickLogo(container);
+    await waitFor(() => expect(preview()?.getAttribute('src')).toBe(DATA_URL));
+    expect(setValue).toHaveBeenCalledWith('');
+  });
+
+  it('a second save after an upload does not re-send the logo', async () => {
+    mockPortal({ logoUrl: null, partnerLogoUrl: null });
+    resizeToDataUrl.mockResolvedValue(DATA_URL);
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+    await loaded(container);
+    pickLogo(container);
+    await waitFor(() => expect(preview()?.getAttribute('src')).toBe(DATA_URL));
+    fireEvent.click(screen.getByTestId('branding-save'));
+    await screen.findByText('Branding settings saved.');
+    await waitFor(() => expect(screen.getByTestId('branding-save')).not.toBeDisabled());
+
+    fetchMock.mockClear();
+    fireEvent.click(screen.getByTestId('branding-save'));
+    await waitFor(() => expect(patchBody()).toEqual({ customCss: null }));
+    expect(preview()?.getAttribute('src')).toBe(DATA_URL);
   });
 
   it('toasts and keeps the previous logo when the image cannot be decoded', async () => {
+    mockPortal({ logoUrl: OLD_LOGO, partnerLogoUrl: null });
     resizeToDataUrl.mockRejectedValue(new Error('Invalid image file'));
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    const onSave = vi.fn();
-    const { container } = render(<OrgBrandingEditor organizationName="Acme" branding={{ logoUrl: 'https://cdn.example.com/old.png' }} onSave={onSave} />);
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+    await loaded(container);
     pickLogo(container);
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
-    fireEvent.click(screen.getByRole('button', { name: 'Save branding' }));
-    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
-    expect(onSave.mock.calls[0][0].logoUrl).toBe('https://cdn.example.com/old.png');
+    expect(preview()?.getAttribute('src')).toBe(OLD_LOGO);
+    fireEvent.click(screen.getByTestId('branding-save'));
+    await screen.findByText('Branding settings saved.');
+    expect(patchBody()).toEqual({ customCss: null });
   });
 
   it('rejects an oversized logo and keeps the previous logo', async () => {
+    mockPortal({ logoUrl: OLD_LOGO, partnerLogoUrl: null });
     resizeToDataUrl.mockResolvedValue('data:image/png;base64,' + 'A'.repeat(400_001));
-    const onSave = vi.fn();
-    const { container } = render(<OrgBrandingEditor organizationName="Acme" branding={{ logoUrl: 'https://cdn.example.com/old.png' }} onSave={onSave} />);
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+    await loaded(container);
     pickLogo(container);
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
-    fireEvent.click(screen.getByRole('button', { name: 'Save branding' }));
-    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
-    expect(onSave.mock.calls[0][0].logoUrl).toBe('https://cdn.example.com/old.png');
+    expect(preview()?.getAttribute('src')).toBe(OLD_LOGO);
+  });
+
+  it('upload stays disabled until portal-settings has loaded, and after a failed load', async () => {
+    fetchMock.mockResolvedValue(makeJsonResponse({ error: 'boom' }, false, 500));
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+    expect(fileInput(container).disabled).toBe(true);
+    await screen.findByText('Could not load the saved logo. Uploading is disabled until this loads.');
+    expect(fileInput(container).disabled).toBe(true);
+  });
+
+  it('a partner lock on the legacy settings field does not disable the org override', async () => {
+    mockPortal({ logoUrl: null, partnerLogoUrl: PARTNER_LOGO });
+    const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} locked={['branding.logoUrl']} />);
+    await loaded(container);
+    expect(screen.queryByText('Managed by partner')).toBeNull();
+  });
+
+  // The legacy blob holds a real upload, unlike its colours (the editor wrote
+  // hard-coded defaults on every save), so it is offered, not silently dropped.
+  describe('a logo saved to the retired organizations.settings.branding', () => {
+    it('is shown with a notice and written to portal-settings on Save', async () => {
+      mockPortal({ logoUrl: null, partnerLogoUrl: PARTNER_LOGO });
+      const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} legacyLogoUrl={OLD_LOGO} />);
+      await loaded(container);
+      expect(preview()?.getAttribute('src')).toBe(OLD_LOGO);
+      expect(screen.getByTestId('branding-logo-legacy-notice')).toBeTruthy();
+      fireEvent.click(screen.getByTestId('branding-save'));
+      await screen.findByText('Branding settings saved.');
+      expect(patchBody()).toEqual({ customCss: null, logoUrl: OLD_LOGO });
+      expect(screen.queryByTestId('branding-logo-legacy-notice')).toBeNull();
+    });
+
+    it('is not offered before portal-settings has loaded, or when that load fails', async () => {
+      fetchMock.mockResolvedValue(makeJsonResponse({ error: 'boom' }, false, 500));
+      render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} legacyLogoUrl={OLD_LOGO} />);
+      expect(screen.queryByTestId('branding-logo-legacy-notice')).toBeNull();
+      await screen.findByText('Could not load the saved logo. Uploading is disabled until this loads.');
+      expect(screen.queryByTestId('branding-logo-legacy-notice')).toBeNull();
+    });
+
+    it("yields to the org's own portal_branding logo", async () => {
+      mockPortal({ logoUrl: DATA_URL, partnerLogoUrl: null });
+      const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} legacyLogoUrl={OLD_LOGO} />);
+      await loaded(container);
+      expect(preview()?.getAttribute('src')).toBe(DATA_URL);
+      expect(screen.queryByTestId('branding-logo-legacy-notice')).toBeNull();
+      fireEvent.click(screen.getByTestId('branding-save'));
+      await screen.findByText('Branding settings saved.');
+      expect(patchBody()).toEqual({ customCss: null });
+    });
+
+    it('can be removed instead of applied', async () => {
+      mockPortal({ logoUrl: null, partnerLogoUrl: null });
+      const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} legacyLogoUrl={OLD_LOGO} />);
+      await loaded(container);
+      fireEvent.click(screen.getByTestId('branding-logo-remove'));
+      expect(preview()).toBeNull();
+      expect(screen.queryByTestId('branding-logo-legacy-notice')).toBeNull();
+      fireEvent.click(screen.getByTestId('branding-save'));
+      await screen.findByText('Branding settings saved.');
+      expect(patchBody()).toEqual({ customCss: null, logoUrl: null });
+    });
+
+    it.each(['blob:http://localhost/abc', 'data:image/svg+xml;base64,PHN2Zz4=', 'http://cdn.example.com/l.png'])(
+      'is ignored when the write schema would refuse it: %s',
+      async (legacy) => {
+        mockPortal({ logoUrl: null, partnerLogoUrl: null });
+        const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} legacyLogoUrl={legacy} />);
+        await loaded(container);
+        expect(screen.queryByTestId('branding-logo-legacy-notice')).toBeNull();
+        fireEvent.click(screen.getByTestId('branding-save'));
+        await screen.findByText('Branding settings saved.');
+        expect(patchBody()).toEqual({ customCss: null });
+      },
+    );
+  });
+});
+
+// #9673: the org override of the partner's secondary colour, on the same chain
+// as the primary colour.
+describe('OrgBrandingEditor secondary color (#9673)', () => {
+  const portalUrl = `/orgs/organizations/${ORG_ID}/portal-settings`;
+
+  function mockPortal(data: Record<string, unknown>) {
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === portalUrl && init?.method === 'PATCH') {
+        return makeJsonResponse({ data: {} });
+      }
+      return makeJsonResponse({ data: { customCss: null, ...data } });
+    });
+  }
+
+  const colorInput = () => screen.getByTestId('branding-secondary-color') as HTMLInputElement;
+  const picker = () => screen.getByTestId('branding-secondary-color-picker') as HTMLInputElement;
+  const patchBody = () => {
+    const call = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    return call ? JSON.parse(String(call[1]!.body)) : undefined;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("loads the org's own secondary colour from portal-settings", async () => {
+    mockPortal({ secondaryColor: '#0f766e', partnerSecondaryColor: '#7c3aed' });
+    render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+    await waitFor(() => expect(colorInput().value).toBe('#0f766e'));
+    expect(picker().value).toBe('#0f766e');
+  });
+
+  it('shows the inherited partner colour and its source while the org value is blank', async () => {
+    mockPortal({ secondaryColor: null, partnerSecondaryColor: '#7c3aed' });
+    render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+    await waitFor(() => expect(colorInput().placeholder).toBe('#7c3aed'));
+    expect(colorInput().value).toBe('');
+    expect(screen.getByText('Inherits from Partner secondary color')).toBeTruthy();
+    expect(picker().value).toBe('#7c3aed');
+  });
+
+  it('a change is saved through portal-settings; an untouched value is not re-sent', async () => {
+    mockPortal({ secondaryColor: '#0f766e', partnerSecondaryColor: null });
+    render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+    await waitFor(() => expect(colorInput().value).toBe('#0f766e'));
+    fireEvent.click(screen.getByTestId('branding-save'));
+    await screen.findByText('Branding settings saved.');
+    expect(patchBody()).toEqual({ customCss: null });
+
+    fetchMock.mockClear();
+    fireEvent.change(colorInput(), { target: { value: '#123456' } });
+    fireEvent.click(screen.getByTestId('branding-save'));
+    await waitFor(() => expect(patchBody()).toEqual({ customCss: null, secondaryColor: '#123456' }));
+  });
+
+  it('clearing the field sends null so the org inherits again', async () => {
+    mockPortal({ secondaryColor: '#0f766e', partnerSecondaryColor: '#7c3aed' });
+    render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+    await waitFor(() => expect(colorInput().value).toBe('#0f766e'));
+    fireEvent.change(colorInput(), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('branding-save'));
+    await waitFor(() => expect(patchBody()).toEqual({ customCss: null, secondaryColor: null }));
+  });
+
+  it('refuses to save a value that is not a hex colour: no writes, an error toast', async () => {
+    mockPortal({ secondaryColor: null, partnerSecondaryColor: null });
+    const onSave = vi.fn();
+    render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} onSave={onSave} />);
+    await waitFor(() => expect(colorInput().disabled).toBe(false));
+    fireEvent.change(colorInput(), { target: { value: 'teal' } });
+    expect(colorInput().getAttribute('aria-invalid')).toBe('true');
+    fireEvent.click(screen.getByTestId('branding-save'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error', message: 'Enter a hex color such as #2563eb.'
+    })));
+    expect(patchBody()).toBeUndefined();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('a partner lock on the legacy settings field does not disable the org override', async () => {
+    mockPortal({ secondaryColor: null, partnerSecondaryColor: '#7c3aed' });
+    render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} locked={['branding.secondaryColor']} />);
+    await waitFor(() => expect(colorInput().placeholder).toBe('#7c3aed'));
+    expect(colorInput().disabled).toBe(false);
+  });
+
+  it('disables the field when portal-settings could not be loaded', async () => {
+    fetchMock.mockResolvedValue(makeJsonResponse({ error: 'boom' }, false, 500));
+    render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+    await waitFor(() => expect(colorInput().disabled).toBe(true));
+    expect(screen.getByText('Could not load the saved secondary color. Editing is disabled until this loads.')).toBeTruthy();
   });
 });
 
@@ -380,7 +657,8 @@ describe('OrgBrandingEditor primary color (#9962)', () => {
 
   it('ignores the legacy organizations.settings.branding.primaryColor value', async () => {
     mockPortal({ primaryColor: null, partnerPrimaryColor: null });
-    render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} branding={{ primaryColor: '#ff0000' } as never} />);
+    // The page passes only the legacy logo: no other legacy value can reach the editor.
+    render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
     await waitFor(() => expect(colorInput().disabled).toBe(false));
     expect(colorInput().value).toBe('');
     expect(screen.getByText('No Partner brand color configured')).toBeTruthy();
@@ -399,8 +677,7 @@ describe('OrgBrandingEditor primary color (#9962)', () => {
 
     await screen.findByText('Branding settings saved.');
     expect(patchBody()).toEqual({ customCss: null, primaryColor: '#0F766E' });
-    expect(onSave).toHaveBeenCalledOnce();
-    expect(onSave.mock.calls[0][0]).not.toHaveProperty('primaryColor');
+    expect(onSave).toHaveBeenCalledExactlyOnceWith();
   });
 
   it('the colour picker sets the override, and it is saved', async () => {

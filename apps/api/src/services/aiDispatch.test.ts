@@ -40,7 +40,9 @@ import {
   aiInsertQueuedCommandInTransaction,
   requireAiOrigin,
   MissingAiOriginError,
+  RawNetworkIsolationCommandError,
 } from './aiDispatch';
+import { USE_NETWORK_ISOLATION_ROUTES } from './networkIsolation/bypass';
 import {
   REMOTE_TOOLS_COMMAND_TYPES,
   REMOTE_TOOLS_DISABLED_BY_POLICY,
@@ -272,5 +274,60 @@ describe('aiDispatch enforces the per-device remote-tools policy', () => {
   it('with an ambient context JOINS it rather than opening a second connection', async () => {
     await aiExecuteCommand(withOrigin, 'manage_services', 'dev-1', 'stop_service', {});
     expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+});
+
+describe('aiDispatch refuses raw network-isolation commands (#10919)', () => {
+  const RAW_COMMANDS: Array<[string, Record<string, unknown>]> = [
+    ['execute_containment', { actionType: 'network_isolation', parameters: { allow: [] } }],
+    ['release_containment', { isolationId: 'episode', generation: 1 }],
+    ['release_containment', {}],
+  ];
+  const auth = { aiOrigin: AGENT_ORIGIN } as never;
+  const expectNothingDispatched = () => {
+    for (const fn of [executeCommand, executeCommandWithSystemPrecheck, executeCommandWithCallerPrecheck, queueCommandForExecution, queueCommand, insertQueuedCommandInTransaction, dispatchDeviceCommand]) {
+      expect(fn).not.toHaveBeenCalled();
+    }
+  };
+
+  it.each(RAW_COMMANDS)('aiExecuteCommand refuses %s %j', async (type, payload) => {
+    expect(await aiExecuteCommand(auth, 't', 'device', type, payload)).toEqual({ status: 'failed', error: USE_NETWORK_ISOLATION_ROUTES });
+    expectNothingDispatched();
+  });
+  it.each(RAW_COMMANDS)('aiExecuteCommandWithSystemPrecheck refuses %s %j', async (type, payload) => {
+    expect(await aiExecuteCommandWithSystemPrecheck(auth, 't', 'device', type, payload, {} as never))
+      .toEqual({ status: 'failed', error: USE_NETWORK_ISOLATION_ROUTES });
+    expectNothingDispatched();
+  });
+  it.each(RAW_COMMANDS)('aiQueueCommandForExecution refuses %s %j', async (type, payload) => {
+    expect(await aiQueueCommandForExecution(auth, 't', 'device', type, payload)).toEqual({ error: USE_NETWORK_ISOLATION_ROUTES });
+    expectNothingDispatched();
+  });
+  it.each(RAW_COMMANDS)('aiQueueCommand throws for %s %j', async (type, payload) => {
+    await expect(aiQueueCommand(auth, 't', 'device', type, payload)).rejects.toBeInstanceOf(RawNetworkIsolationCommandError);
+    expectNothingDispatched();
+  });
+  it.each(RAW_COMMANDS)('aiDispatchDeviceCommand refuses %s %j', async (type, payload) => {
+    expect(await aiDispatchDeviceCommand(auth, 't', { deviceId: 'device', type, payload }))
+      .toEqual({ ok: false, code: USE_NETWORK_ISOLATION_ROUTES, error: USE_NETWORK_ISOLATION_ROUTES });
+    expectNothingDispatched();
+  });
+  it.each(RAW_COMMANDS)('aiInsertQueuedCommandInTransaction throws for %s %j', async (type, payload) => {
+    await expect(aiInsertQueuedCommandInTransaction(AGENT_ORIGIN, {} as never, { deviceId: 'device', type, payload } as never))
+      .rejects.toMatchObject({ code: USE_NETWORK_ISOLATION_ROUTES });
+    expectNothingDispatched();
+  });
+  it('refuses before reading the remote-tools policy', async () => {
+    await aiQueueCommandForExecution(auth, 't', 'device', 'release_containment', {});
+    expect(checkRemoteAccess).not.toHaveBeenCalled();
+  });
+  it.each(['process_kill', 'account_disable', 'usb_block'])('still dispatches execute_containment %s', async (actionType) => {
+    const result = await aiQueueCommandForExecution(auth, 't', 'device', 'execute_containment', { actionType });
+    expect(result).toEqual({ command: { id: 'cmd-1' } });
+    expect(queueCommandForExecution).toHaveBeenCalledTimes(1);
+  });
+  it('still requires an origin first: a missing origin is the louder failure', async () => {
+    await expect(aiQueueCommandForExecution(withoutOrigin, 't', 'device', 'release_containment', {}))
+      .rejects.toBeInstanceOf(MissingAiOriginError);
   });
 });

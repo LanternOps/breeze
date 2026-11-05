@@ -7,10 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // psVMPayload is the JSON shape returned by Get-VM | ConvertTo-Json.
@@ -199,7 +200,7 @@ func vmStateString(state int) string {
 // runPS executes a PowerShell command under the host's own powershell.exe
 // (powerShellExe) and returns stdout.
 func runPS(command string) (string, error) {
-	cmd := exec.Command(powerShellExe(), "-NoProfile", "-NonInteractive", "-Command", command)
+	cmd := procspawn.Command(powerShellExe(), "-NoProfile", "-NonInteractive", "-Command", command)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("powershell failed: %w: %s", err, string(out))

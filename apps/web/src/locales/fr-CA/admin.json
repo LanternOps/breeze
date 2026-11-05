@@ -1129,6 +1129,8 @@
       "sensitive_data_finding": "Constat de données sensibles",
       "sensitive_data_policy": "Politique de données sensibles",
       "sensitive_data_scan": "Analyse de données sensibles",
+      "service_catalog": "Catalogue de services",
+      "service_catalog_item": "Élément du catalogue de services",
       "service_principal": "Principal de service",
       "site": "Site",
       "sla_definition": "Définition de SLA",

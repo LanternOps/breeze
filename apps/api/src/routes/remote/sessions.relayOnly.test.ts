@@ -148,7 +148,7 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe.each(['ice', 'offer'] as const)('JWT desktop %s relay policy', (kind) => {
-  it.each(['applied', 'verified'])('uses TURN only for %s isolation', async (state) => {
+  it.each(['applying', 'applied', 'verified', 'release_requested'])('uses TURN only for %s isolation', async (state) => {
     mocks.findUnresolvedEpisode.mockResolvedValue({ state, remoteRelay: true });
     const response = await request(kind);
     expect(response.status).toBe(200);
@@ -162,7 +162,7 @@ describe.each(['ice', 'offer'] as const)('JWT desktop %s relay policy', (kind) =
     expect(mocks.findUnresolvedEpisode).toHaveBeenCalledWith({ context: 'request' }, DEVICE_ID);
   });
 
-  it.each(['applied', 'verified'])('refuses %s isolation without the relay opt-in before starting', async (state) => {
+  it.each(['applying', 'applied', 'verified', 'release_requested'])('refuses %s isolation without the relay opt-in before starting', async (state) => {
     mocks.findUnresolvedEpisode.mockResolvedValue({ state, remoteRelay: false });
     const response = await request(kind);
     expect(response.status).toBe(409);
@@ -179,7 +179,7 @@ describe.each(['ice', 'offer'] as const)('JWT desktop %s relay policy', (kind) =
     assertNoStart();
   });
 
-  it.each([null, 'applying', 'release_requested'])('preserves ordinary wire fields with episode state %s', async (state) => {
+  it.each([null, 'released', 'expired'])('preserves ordinary wire fields with episode state %s', async (state) => {
     mocks.findUnresolvedEpisode.mockResolvedValue(state ? { state, remoteRelay: false } : null);
     const response = await request(kind);
     expect(response.status).toBe(200);

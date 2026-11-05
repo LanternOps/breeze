@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // CollectHardwareProfile captures hardware info from /proc, /sys, and lsblk.
@@ -27,7 +28,7 @@ func (c *LinuxCollector) CollectHardwareProfile() (*HardwareProfile, error) {
 	}
 
 	// Disks from lsblk -J
-	if out, err := exec.Command("lsblk", "-J", "-b", "-o", "NAME,SIZE,MODEL,TYPE,MOUNTPOINT,FSTYPE,LABEL").Output(); err == nil {
+	if out, err := procspawn.Command("lsblk", "-J", "-b", "-o", "NAME,SIZE,MODEL,TYPE,MOUNTPOINT,FSTYPE,LABEL").Output(); err == nil {
 		hw.Disks = parseLsblkJSON(out)
 	}
 

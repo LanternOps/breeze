@@ -30,6 +30,7 @@ vi.mock('../db/schema', () => ({ backupConfigs: { id: 'id', approvalGeneration: 
 import type { z } from 'zod';
 import {
   closeBackupQueue,
+  enqueueBackupCatchUpDispatch,
   enqueueBackupDispatch,
   enqueueBackupDispatchCapabilityWait,
   enqueueBackupResults,
@@ -47,6 +48,63 @@ describe('backup enqueue helpers', () => {
       from: () => ({ where: () => ({ limit: () => Promise.resolve([{ approvalGeneration: 4 }]) }) }),
     });
     await closeBackupQueue();
+  });
+
+  describe('missed-schedule catch-up (#11013)', () => {
+    const ROW = {
+      jobId: '11111111-1111-4111-8111-111111111111',
+      configId: '22222222-2222-4222-8222-222222222222',
+      orgId: '33333333-3333-4333-8333-333333333333',
+      deviceId: '44444444-4444-4444-8444-444444444444',
+      catchUpUntil: new Date('2026-11-05T01:00:00.000Z'),
+      configGeneration: 7,
+    };
+
+    it('carries the window on a scheduled dispatch', async () => {
+      await enqueueBackupDispatch(ROW.jobId, ROW.configId, ROW.orgId, ROW.deviceId, undefined, {
+        catchUpUntil: ROW.catchUpUntil.toISOString(),
+      });
+
+      expect(addMock.mock.calls[0]?.[1]).toMatchObject({ catchUpUntil: ROW.catchUpUntil.toISOString() });
+      expect(addMock.mock.calls[0]?.[1]).not.toHaveProperty('catchUpDispatch');
+    });
+
+    it('queues the reconnect dispatch under one stable id that frees as soon as it finishes', async () => {
+      await enqueueBackupCatchUpDispatch(ROW);
+
+      const [name, payload, options] = addMock.mock.calls[0] as [string, Record<string, unknown>, Record<string, unknown>];
+      expect(name).toBe('dispatch-backup');
+      expect(payload).toMatchObject({
+        jobId: ROW.jobId,
+        catchUpDispatch: true,
+        catchUpUntil: ROW.catchUpUntil.toISOString(),
+        // The generation stamped when the job started waiting, never a fresh
+        // read: that would bless an edit made while it waited (contract §3).
+        configGeneration: 7,
+      });
+      expect(dbSelectMock).not.toHaveBeenCalled();
+      // A second connect while this one is queued dedupes on the id; a retained
+      // finished job would silently swallow the connect after a later flap.
+      expect(options).toMatchObject({
+        jobId: `backup-dispatch-${ROW.jobId}-catch-up`,
+        attempts: 1,
+        removeOnComplete: true,
+        removeOnFail: true,
+      });
+      expect(options.delay).toBeGreaterThan(0);
+    });
+
+    it('lets a cancellation find the queued reconnect dispatch', async () => {
+      const remove = vi.fn(async () => undefined);
+      getJobMock.mockImplementation(async (id: string) => (
+        id === `backup-dispatch-${ROW.jobId}-catch-up`
+          ? { getState: async () => 'delayed', remove }
+          : null
+      ));
+
+      await expect(removeQueuedBackupDispatch(ROW.jobId)).resolves.toBe(true);
+      expect(remove).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('uses a stable BullMQ job id for backup dispatch', async () => {

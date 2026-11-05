@@ -58,6 +58,8 @@ const EXPECTED_WORKER_NAMES = [
   'filesystemCleanupRunRetention',
   // #8581 — daily prune of device_restore_point_attempts.
   'restorePointAttemptRetention',
+  'wakeAttemptSweep',
+  'wakeAttemptRetention',
   // #9128 — daily prune of terminal webhook_deliveries rows.
   'webhookDeliveryRetention',
   // #10019/#10020 — DNS events/aggregations retention + background integration delete.

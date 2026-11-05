@@ -189,6 +189,8 @@ export const INSTALL_BOUNDARY_CLASSIFICATION: Readonly<Record<string, InstallBou
   device_time_daily: history('time sync history'),
   device_time_status: handled('install_state', 'the old install’s sequence cursor is dropped'),
   device_vulnerabilities: history('findings, re-correlated from the new inventory'),
+  device_wake_attempts: handled('work_in_flight', 'open wake attempts resolve as unknown; closed attempts remain history'),
+  device_wake_status: handled('install_state', 'the new install inherits no wake readiness or proof'),
   device_warranty: configuration('warranty of the same hardware'),
   device_workload_runtimes: history('workload inventory'),
   device_workloads: history('workload inventory'),

@@ -682,6 +682,22 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'wakeAttemptSweep',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/wakeAttemptSweep');
+      return { init: m.initializeWakeAttemptSweep, shutdown: m.shutdownWakeAttemptSweep };
+    },
+  },
+  {
+    name: 'wakeAttemptRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/wakeAttemptRetention');
+      return { init: m.initializeWakeAttemptRetention, shutdown: m.shutdownWakeAttemptRetention };
+    },
+  },
+  {
     // #9128 — daily prune of terminal webhook_deliveries rows.
     name: 'webhookDeliveryRetention',
     placement: 'global',

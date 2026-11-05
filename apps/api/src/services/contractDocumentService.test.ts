@@ -494,25 +494,27 @@ describe('contractDocumentService.freezeSignedAgreement (quote source)', () => {
   });
 
   it('createExecutedDocuments produces byte-identical rows to a direct freezeSignedAgreement call', async () => {
-    await createExecutedDocuments(makeQuote(), 'acc1', ['contractA'], [authoredRenderData()], [authoredBlock], EFFECTIVE, 'en', EVIDENCE);
-    const viaLoop = { ...insertedValues[0]! };
-    insertedValues.length = 0;
-    await freezeSignedAgreement({
-      ...base,
-      render: { sourceType: 'authored', bodyHtml: authoredRenderData().bodyHtml, fileData: null, templateName: 'Master Services Agreement', versionSha256: 'a'.repeat(64) },
-      ctx: renderContextFromQuote(makeQuote(), { effectiveDate: EFFECTIVE, renderLocale: 'en' }),
-    });
-    const direct = insertedValues[0]!;
-    expect(direct.renderedHtml).toBe(viaLoop.renderedHtml);
-    // pdfkit stamps CreationDate and derives the trailer /ID from it
-    // (PDFSecurity.generateFileID(info)); compare everything but those two.
-    const strip = (b: Buffer) => b.toString('latin1')
-      .replace(/\/CreationDate \(D:[^)]*\)/, '')
-      .replace(/\/ID \[<[0-9a-f]+> <[0-9a-f]+>\]/i, '');
-    expect(strip(direct.pdfData as Buffer)).toBe(strip(viaLoop.pdfData as Buffer));
-    const { pdfData: _a, sha256: _b, byteSize: _c, ...directRest } = direct;
-    const { pdfData: _d, sha256: _e, byteSize: _f, ...loopRest } = viaLoop;
-    expect(directRest).toEqual(loopRest);
+    // pdfkit stamps CreationDate from the wall clock and hashes it into the trailer
+    // /ID (PDFSecurity.generateFileID(info)), so both renders must read one clock.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2030-01-01T00:00:00.000Z'));
+      await createExecutedDocuments(makeQuote(), 'acc1', ['contractA'], [authoredRenderData()], [authoredBlock], EFFECTIVE, 'en', EVIDENCE);
+      const viaLoop = { ...insertedValues[0]! };
+      insertedValues.length = 0;
+      await freezeSignedAgreement({
+        ...base,
+        render: { sourceType: 'authored', bodyHtml: authoredRenderData().bodyHtml, fileData: null, templateName: 'Master Services Agreement', versionSha256: 'a'.repeat(64) },
+        ctx: renderContextFromQuote(makeQuote(), { effectiveDate: EFFECTIVE, renderLocale: 'en' }),
+      });
+      const direct = insertedValues[0]!;
+      expect(direct.renderedHtml).toBe(viaLoop.renderedHtml);
+      // As latin1 so a failure prints a readable PDF diff, not two Buffer dumps.
+      expect((direct.pdfData as Buffer).toString('latin1')).toBe((viaLoop.pdfData as Buffer).toString('latin1'));
+      expect(direct).toEqual(viaLoop);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

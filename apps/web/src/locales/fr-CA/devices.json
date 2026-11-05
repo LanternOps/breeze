@@ -1485,6 +1485,7 @@
     "cancel": "Annuler",
     "editDisplayName": "Modifier le nom d’affichage",
     "serialNumber": "Numéro de série",
+    "productSku": "Numéro de produit",
     "manufacturer": "Fabricant",
     "model": "Modèle",
     "deviceRole": "Rôle de l’appareil",
@@ -1654,6 +1655,7 @@
       "ram": "RAM %",
       "lastSeen": "Dernière apparition",
       "serial": "N° de série",
+      "productSku": "Numéro de produit",
       "assetTag": "Étiquette d'actif",
       "location": "Emplacement",
       "source": "Source"
@@ -1671,6 +1673,7 @@
       "ram": "Trier par RAM utilisation",
       "lastSeen": "Trier par dernière heure vue",
       "serial": "Trier par numéro de série",
+      "productSku": "Trier par numéro de produit",
       "assetTag": "Trier par étiquette d'actif",
       "location": "Trier par emplacement",
       "source": "Trier par source"
@@ -2769,7 +2772,8 @@
       "bulkMoveSiteNotMovedForbidden": "{{devices}} (vous n’avez pas accès à son site ou au site de destination)",
       "bulkMoveSiteNotMovedNotFound": "{{devices}} (introuvable; il a peut-être été supprimé)",
       "bulkMoveSiteNotMovedError": "{{devices}} (une erreur inattendue s’est produite; réessayez)",
-      "deviceMovedToSite": "{{hostname}} a été déplacé vers un nouveau site"
+      "deviceMovedToSite": "{{hostname}} a été déplacé vers un nouveau site",
+      "bulkWakeResult": "Envoyé à {{sent}}, {{skipped}} ignorés"
     },
     "tryAgain": "Réessayer",
     "unknownDevice": "Inconnu",
@@ -2813,7 +2817,18 @@
     "emptyOrgTitleUnnamed": "Aucun appareil dans cette organisation pour l’instant",
     "emptyOrgDescription": "Installez l’agent sur un poste de cette organisation pour commencer à le surveiller, ou passez à toutes les organisations pour voir le reste de votre parc.",
     "viewAllOrganizations": "Voir toutes les organisations",
-    "importFromRmmShort": "Importer"
+    "importFromRmmShort": "Importer",
+    "wakeSkipReasons": {
+      "online": "déjà en ligne",
+      "relayUnavailable": "sans agent en ligne sur leur site",
+      "missingMac": "sans adresse MAC enregistrée (l’agent ne s’est pas encore connecté)",
+      "missingSubnet": "sans historique IPv4 utilisable",
+      "ipv6": "avec un historique IPv6 seulement",
+      "relayDisconnected": "relais déconnecté pendant l’envoi — réessayer",
+      "missingTarget": "introuvables ou accès refusé",
+      "removed": "supprimés",
+      "invalidRelay": "avec une sélection de relais non valide"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Ajouter un filtre",

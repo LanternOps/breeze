@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest';
 import { Hono } from 'hono';
 import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
 import {
-  TIER1_ACTIONS, TIER2_ACTIONS,
+  TIER1_ACTIONS, TIER2_ACTIONS, TIER2_READONLY_TOOLS,
   TIER3_ACTIONS, TIER3_FOUR_EYES_ACTIONS, TIER3_FOUR_EYES_TOOLS,
   TIER3_SUPERVISED_ACTIONS, TIER3_SUPERVISED_TOOLS,
   TIER3_INPUT_AWARE_ACTIONS, TIER3_INPUT_AWARE_TOOLS,
@@ -17,6 +17,7 @@ import {
   checkGuardrails, resolveApprovalScope, isInputAwareTier3, AGENT_HUMAN_ONLY_TOOLS,
 } from './aiGuardrails';
 import { toolActionEnum } from './aiToolActions';
+import { isMfaGatedToolAction } from './aiToolMfaGate';
 import { AGENT_DENIED_READ_TOOLS, AGENT_HUMAN_ONLY_ACTIONS } from './aiToolExposure';
 import { getToolTier, getAllRegisteredToolNames, getToolDefinitions } from './aiTools';
 import { toolInputSchemas } from './aiToolSchemas';
@@ -1674,5 +1675,78 @@ describe('W11 input-aware owner scopes (#6781, W11-D4 / W11-D13)', () => {
     // An update never changes ownership: static supervised, not input-aware.
     expect(TIER3_INPUT_AWARE_ACTIONS.has('manage_security_policies:update')).toBe(false);
     expect(classOf('manage_security_policies', { action: 'update', ownerScope: 'partner' })).toBe('supervised');
+  });
+});
+
+// ── W17 class rows (#6788) ─────────────────────────────────────────────────
+// Copied from the W17 plan's per-action class review, NOT derived from the guardrail tables. Every action-enum member
+// has a row, so a new action reds here until someone classifies it.
+const W17_EXPECTED: Record<string, Record<string, W02Class>> = {
+  // run queues a command on the machine and cannot be unsent.
+  manage_backup_verification: { health: 't1', list: 't1', readiness: 't1', run: 'supervised' },
+  list_bmr_recoveries: { list: 't1', get: 't1' },
+  // create/update choose whose mail is copied, to which storage, on what schedule; auto_approve runs tier 2 unprompted.
+  manage_c2c_configs: { list: 't1', create: 'supervised', update: 'supervised', delete: 'supervised' },
+};
+const W17_WRITES = ['manage_backup_verification:run', 'manage_c2c_configs:create', 'manage_c2c_configs:update', 'manage_c2c_configs:delete'];
+
+describe('W17 class rows (#6788)', () => {
+  it.each(Object.keys(W17_EXPECTED))('%s: W17_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W17_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W17_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it('registry tiers: the multiplexers and reads are 1, the VSS read is 2 and read-only', () => {
+    for (const tool of ['manage_backup_verification', 'list_bmr_recoveries', 'get_backup_health', 'manage_c2c_configs']) {
+      expect(getToolTier(tool), tool).toBe(1);
+    }
+    expect(getToolTier('get_vss_status')).toBe(2);
+    expect(TIER2_READONLY_TOOLS.has('get_vss_status')).toBe(true);
+    expect(classOf('get_vss_status', {})).toBe('t2');
+    expect(classOf('get_backup_health', {})).toBe('t1');
+  });
+
+  it('W17 every write is MFA-gated, and no read is', () => {
+    for (const key of W17_WRITES) {
+      const [tool, action] = key.split(':') as [string, string];
+      expect(isMfaGatedToolAction(tool, action), key).toBe(true);
+    }
+    expect(isMfaGatedToolAction('get_vss_status', undefined)).toBe(true);
+    for (const [tool, action] of [
+      ['manage_backup_verification', 'health'], ['manage_backup_verification', 'list'], ['manage_backup_verification', 'readiness'],
+      ['list_bmr_recoveries', 'list'], ['list_bmr_recoveries', 'get'], ['manage_c2c_configs', 'list'], ['get_backup_health', undefined],
+    ] as const) {
+      expect(isMfaGatedToolAction(tool, action), `${tool}:${action}`).toBe(false);
+    }
+  });
+
+  it('no W17 read action is in TIER2_ACTIONS or TIER3_ACTIONS', () => {
+    for (const [tool, actions] of Object.entries(W17_EXPECTED)) {
+      for (const [action, cls] of Object.entries(actions)) {
+        if (cls !== 't1') continue;
+        expect(TIER2_ACTIONS[tool] ?? [], `${tool}:${action}`).not.toContain(action);
+        expect(TIER3_ACTIONS[tool] ?? [], `${tool}:${action}`).not.toContain(action);
+      }
+    }
+  });
+
+  it('nothing in this wave is four-eyes or input-aware', () => {
+    const rows = Object.entries(W17_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [`${tool}:${a}`, c] as const));
+    expect(rows.filter(([, c]) => c === 'four_eyes')).toEqual([]);
+    for (const [key] of rows) expect(TIER3_INPUT_AWARE_ACTIONS.has(key), key).toBe(false);
+  });
+
+  it('manage_c2c_configs is never agent-reachable; the other four are', () => {
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('manage_c2c_configs')).toBe(true);
+    for (const tool of ['manage_backup_verification', 'get_vss_status', 'list_bmr_recoveries', 'get_backup_health']) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(false);
+    }
   });
 });

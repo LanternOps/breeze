@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -169,8 +170,20 @@ func TestContainmentWireCapabilitiesAndAbsentReport(t *testing.T) {
 	if fields["networkIsolationVersion"] != float64(0) || fields["networkIsolationReady"] != false {
 		t.Fatal("unsupported capabilities must be explicit")
 	}
-	if _, ok := fields["networkIsolationMechanism"]; ok {
-		t.Fatal("empty mechanism must be omitted")
+	// A build with a real isolator names its mechanism even at capability 0
+	// (not activated); elsewhere the empty mechanism is omitted.
+	switch mechanism, ok := fields["networkIsolationMechanism"]; runtime.GOOS {
+	case "windows", "darwin", "linux":
+		if want := map[string]string{"windows": "wfp", "darwin": "pf", "linux": "nft"}[runtime.GOOS]; mechanism != want {
+			t.Fatalf("mechanism %v, want %s", mechanism, want)
+		}
+		if fields["networkIsolationUnsupportedReason"] != "not_activated" {
+			t.Fatalf("a shipped capability-0 build must say why: %v", fields["networkIsolationUnsupportedReason"])
+		}
+	default:
+		if ok {
+			t.Fatal("empty mechanism must be omitted")
+		}
 	}
 	h := &Heartbeat{containment: &containmentRuntime{manager: isolation.NewManager(isolation.ManagerDeps{DataDir: t.TempDir()})}}
 	b, err = json.Marshal(h.containmentReport())
@@ -290,7 +303,7 @@ func TestContainmentCapabilitiesUsesCachedPlatform(t *testing.T) {
 	for n := 0; n < 3; n++ {
 		var capabilities SecurityCapabilities
 		containmentCapabilities(&capabilities)
-		if capabilities.NetworkIsolationVersion != 1 || !capabilities.NetworkIsolationReady || capabilities.NetworkIsolationMechanism != "wfp" {
+		if capabilities.NetworkIsolationVersion != isolation.CapabilityPolicyAllow || !capabilities.NetworkIsolationReady || capabilities.NetworkIsolationMechanism != "wfp" {
 			t.Fatalf("capability=%+v", capabilities)
 		}
 	}
@@ -298,6 +311,44 @@ func TestContainmentCapabilitiesUsesCachedPlatform(t *testing.T) {
 		t.Fatalf("reads=%d", iso.reads)
 	}
 }
+
+// The levels are the wire contract with NETWORK_ISOLATION_CAPABILITY in
+// packages/shared/src/utils/networkIsolation.ts. A build that cannot isolate
+// advertises 0 whatever it could accept: this wave activates nothing.
+func TestContainmentCapabilityLevels(t *testing.T) {
+	if isolation.CapabilityBase != 1 || isolation.CapabilityDeadMan != 2 || isolation.CapabilityPolicyAllow != 3 {
+		t.Fatalf("levels changed: base %d, deadMan %d, policyAllow %d", isolation.CapabilityBase, isolation.CapabilityDeadMan, isolation.CapabilityPolicyAllow)
+	}
+	previous := currentContainmentPlatform.Load()
+	t.Cleanup(func() { currentContainmentPlatform.Store(previous) })
+	for _, tc := range []struct {
+		name  string
+		cap   isolation.Capability
+		want  int
+		ready bool
+	}{
+		{"not activated", isolation.Capability{Mechanism: "wfp", UnsupportedReason: "not_activated"}, 0, false},
+		{"unsupported", isolation.Capability{UnsupportedReason: "unsupported"}, 0, false},
+		{"capable, not ready", isolation.Capability{Version: 1, Mechanism: "pf"}, isolation.CapabilityPolicyAllow, false},
+		{"capable, ready", isolation.Capability{Version: 1, Mechanism: "pf", Ready: true}, isolation.CapabilityPolicyAllow, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			currentContainmentPlatform.Store(&containmentPlatform{isolator: staticCapabilityIsolator{cap: tc.cap}})
+			var got SecurityCapabilities
+			containmentCapabilities(&got)
+			if got.NetworkIsolationVersion != tc.want || got.NetworkIsolationReady != tc.ready {
+				t.Fatalf("capabilities %+v, want version %d ready %v", got, tc.want, tc.ready)
+			}
+		})
+	}
+}
+
+type staticCapabilityIsolator struct {
+	isolation.Isolator
+	cap isolation.Capability
+}
+
+func (i staticCapabilityIsolator) Capability() isolation.Capability { return i.cap }
 
 type cachedCapabilityIsolator struct {
 	isolation.Isolator

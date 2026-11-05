@@ -244,6 +244,9 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   edr_endpoint_action: 'security_response',
   sync_edr_data: 'security_response',
   execute_containment: 'security_response',
+  // W13 (#10101): mapped because every registered tool must be; unreachable for
+  // agents through AGENT_HUMAN_ONLY_TOOLS (a release is a four-eyes human decision).
+  release_containment: 'security_response',
   apply_cis_remediation: 'security_response',
   get_cis_compliance: 'security_response',
   get_cis_device_report: 'security_response',
@@ -371,6 +374,12 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   search_c2c_items: 'backup_recovery',
   trigger_c2c_sync: 'backup_recovery',
   restore_c2c_items: 'backup_recovery',
+  // W17 (#6788). manage_c2c_configs is mapped too, but AGENT_HUMAN_ONLY_TOOLS keeps it out of the catalog.
+  manage_backup_verification: 'backup_recovery',
+  get_vss_status: 'backup_recovery',
+  list_bmr_recoveries: 'backup_recovery',
+  get_backup_health: 'backup_recovery',
+  manage_c2c_configs: 'backup_recovery',
 
   // ---- config_policies ----
   apply_configuration_policy: 'config_policies',
@@ -512,6 +521,10 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   // Wisp W08 thread links (domain 'ai'), as W03/W05a chose.
   link_entity: 'tenancy',
   list_links: 'tenancy',
+  // Wisp check-in timers (domain 'ai', #10991 W03), as W03/W05a/W08 chose.
+  schedule_check_in: 'tenancy',
+  list_check_ins: 'tenancy',
+  cancel_check_in: 'tenancy',
   // Wisp W07 specialists (domain 'ai'), as W03/W05a chose. launch_specialist
   // is AGENT_HUMAN_ONLY_TOOLS and wisp_specialist_request is HUMAN_ONLY_TOOLS
   // (raised only by the coordinator); mapped for completeness.

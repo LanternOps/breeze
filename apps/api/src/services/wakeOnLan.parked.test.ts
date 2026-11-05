@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('./wakeAttempts', () => ({
+  openOrJoinWakeAttempt: vi.fn(async () => ({ attemptId: '11111111-1111-4111-8111-111111111111', joined: false })),
+  recordWakeRefusal: vi.fn(async () => {}),
+  applyWakeRelayResult: vi.fn(async () => {}),
+}));
+
 // Devices parked in a holding org, by id. The helper's query is proven against
 // Postgres in parkedCommandDelivery.integration.test.ts.
 const parkedDeviceIds = vi.hoisted(() => new Set<string>());
@@ -12,9 +18,11 @@ vi.mock('./unassignedPool/deliveryEligibility', async () => ({
 
 const { selectMock, insertMock } = vi.hoisted(() => ({ selectMock: vi.fn(), insertMock: vi.fn() }));
 vi.mock('../db', () => ({
+  withSystemDbAccessContext: (fn: () => unknown) => fn(),
   db: {
     select: (...a: unknown[]) => selectMock(...(a as [])),
     insert: (...a: unknown[]) => insertMock(...(a as [])),
+    update: () => ({ set: () => ({ where: async () => {} }) }),
   },
 }));
 vi.mock('./commandDispatch', () => ({
@@ -59,6 +67,7 @@ describe('dispatchWake for a device parked in a holding org', () => {
     const chain = (rows: unknown[]) => {
       const where = () => Object.assign(Promise.resolve(rows), {
         limit: async () => rows,
+        groupBy: () => ({ orderBy: () => ({ limit: async () => rows }) }),
         orderBy: () => Object.assign(Promise.resolve(rows), { limit: async () => rows }),
       });
       return { from: () => ({ where }) };
@@ -66,11 +75,13 @@ describe('dispatchWake for a device parked in a holding org', () => {
     selectMock
       .mockReturnValueOnce(chain([{ id: TARGET, orgId: 'org-1', siteId: 'site-1', hostname: 'target' }]))
       .mockReturnValueOnce(chain([{ mac: 'aa:bb:cc:dd:ee:ff', isPrimary: true, updatedAt: new Date() }]))
+      .mockReturnValueOnce(chain([])) // Recent MAC history.
       .mockReturnValueOnce(chain([{ ip: '192.168.1.20', mask: '255.255.255.0', lastSeen: new Date() }]))
       .mockReturnValueOnce(chain([{ id: RELAY, agentId: 'relay-agent', hostname: 'relay', siteId: 'site-1', status: 'online' }]));
     parkedDeviceIds.add(RELAY);
 
-    const result = await dispatchWake(TARGET, 'user-1', { relayDeviceIdOverride: RELAY });
+    const prepared = await dispatchWake(TARGET, 'user-1', { relayDeviceIdOverride: RELAY });
+    const result = prepared.ok ? await prepared.deliver() : prepared;
 
     expect(result).toMatchObject({ ok: false, code: 'DEVICE_PENDING_ASSIGNMENT' });
     expect(insertMock).not.toHaveBeenCalled();
@@ -87,6 +98,7 @@ describe('dispatchWake when the push claim cancels the wake command', () => {
     const chain = (rows: unknown[]) => {
       const where = () => Object.assign(Promise.resolve(rows), {
         limit: async () => rows,
+        groupBy: () => ({ orderBy: () => ({ limit: async () => rows }) }),
         orderBy: () => Object.assign(Promise.resolve(rows), { limit: async () => rows }),
       });
       return { from: () => ({ where }) };
@@ -94,6 +106,7 @@ describe('dispatchWake when the push claim cancels the wake command', () => {
     selectMock
       .mockReturnValueOnce(chain([{ id: TARGET, orgId: 'org-1', siteId: 'site-1', hostname: 'target' }]))
       .mockReturnValueOnce(chain([{ mac: 'aa:bb:cc:dd:ee:ff', isPrimary: true, updatedAt: new Date() }]))
+      .mockReturnValueOnce(chain([])) // Recent MAC history.
       .mockReturnValueOnce(chain([{ ip: '192.168.1.20', mask: '255.255.255.0', lastSeen: new Date() }]))
       .mockReturnValueOnce(chain([{ id: RELAY, agentId: 'relay-agent', hostname: 'relay', siteId: 'site-1', status: 'online' }]));
     insertMock.mockReturnValue({
@@ -105,7 +118,8 @@ describe('dispatchWake when the push claim cancels the wake command', () => {
       status: 'cancelled', id: 'wake-cmd', reason: 'requester_inactive',
     });
 
-    const result = await dispatchWake(TARGET, 'user-1', { relayDeviceIdOverride: RELAY });
+    const prepared = await dispatchWake(TARGET, 'user-1', { relayDeviceIdOverride: RELAY });
+    const result = prepared.ok ? await prepared.deliver() : prepared;
 
     expect(result).toMatchObject({
       ok: false,
@@ -126,6 +140,7 @@ describe('dispatchWake pushes to the relay agent id read in the claim (#8318 §6
     const chain = (rows: unknown[]) => {
       const where = () => Object.assign(Promise.resolve(rows), {
         limit: async () => rows,
+        groupBy: () => ({ orderBy: () => ({ limit: async () => rows }) }),
         orderBy: () => Object.assign(Promise.resolve(rows), { limit: async () => rows }),
       });
       return { from: () => ({ where }) };
@@ -133,6 +148,7 @@ describe('dispatchWake pushes to the relay agent id read in the claim (#8318 §6
     selectMock
       .mockReturnValueOnce(chain([{ id: TARGET, orgId: 'org-1', siteId: 'site-1', hostname: 'target' }]))
       .mockReturnValueOnce(chain([{ mac: 'aa:bb:cc:dd:ee:ff', isPrimary: true, updatedAt: new Date() }]))
+      .mockReturnValueOnce(chain([])) // Recent MAC history.
       .mockReturnValueOnce(chain([{ ip: '192.168.1.20', mask: '255.255.255.0', lastSeen: new Date() }]))
       // The relay as read before the claim.
       .mockReturnValueOnce(chain([{ id: RELAY, agentId: 'relay-agent', hostname: 'relay', siteId: 'site-1', status: 'online' }]));
@@ -147,7 +163,8 @@ describe('dispatchWake pushes to the relay agent id read in the claim (#8318 §6
     });
     vi.mocked(sendCommandToAgent).mockReturnValue(true);
 
-    const result = await dispatchWake(TARGET, 'user-1', { relayDeviceIdOverride: RELAY });
+    const prepared = await dispatchWake(TARGET, 'user-1', { relayDeviceIdOverride: RELAY });
+    const result = prepared.ok ? await prepared.deliver() : prepared;
 
     expect(result).toMatchObject({ ok: true, commandId: 'wake-cmd' });
     expect(sendCommandToAgent).toHaveBeenCalledTimes(1);

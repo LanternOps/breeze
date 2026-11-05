@@ -32,18 +32,68 @@ Remote desktop uses **TURN relay only**, with no direct/STUN fallback. A self-ho
 | OS | Mechanism | Permit boundary |
 | --- | --- | --- |
 | Windows (first release) | Windows Filtering Platform (WFP), with a dedicated Breeze provider and sublayer | Breeze application identity **and** destination/port; persistent and boot-time filters protect restart |
-| Linux (planned) | Dedicated nftables table with input, output, and forward chains | Breeze process cgroup **and** destination/port; child processes run separately |
-| macOS (planned) | Dedicated pf anchor attached to a compatible ruleset | Destination/port only; pf cannot identify the process |
+| Linux (planned; not active in any release) | Dedicated nftables table (`inet breeze_isolation`) with input, output, and forward chains | The agent's own cgroup **and** destination/port; child processes are placed in a separate cgroup before they start |
+| macOS (planned, not activated) | Dedicated pf anchor `com.breeze/isolation`, attached only to a compatible ruleset; Breeze releases only its own pf enable reference | Destination/port only; pf cannot identify the process |
 
 Breeze removes only its own isolation rules on release. Other firewall or EDR isolation can still block connectivity after Breeze isolation is released. A failed management reachability or enforcement probe causes rollback; a separate recovery component enforces expiry even if the main agent fails. Recovery still depends on working storage, OS scheduling, and firewall facilities. Powered-off devices run overdue recovery at boot or resume.
 
 ### Windows recovery, uninstall, and upgrade
 
-The separate `breeze-isolation-recovery.exe` component handles provisional rollback, expiry, and boot recovery even when the main agent cannot run. Its installation path is `<agent install directory>\isolation-recovery\<version>\breeze-isolation-recovery.exe`, alongside the protected agent installation. Versions are installed side by side and are never overwritten in place. An unresolved episode keeps its scheduled tasks pinned to its journaled recovery path. Signature verification and a successful self-test are required before task actions can adopt a version. Strict Windows signature trust also means unsigned self-host recovery binaries cannot become ready.
+The separate `breeze-isolation-recovery.exe` component handles provisional rollback, expiry, and boot recovery even when the main agent cannot run. Its installation path is `<agent install directory>\isolation-recovery\<version>\breeze-isolation-recovery.exe`, alongside the protected agent installation. Versions are installed side by side and are never overwritten in place. An unresolved episode keeps its scheduled tasks pinned to its journaled recovery path. A version must pass trust verification and its self-test before task actions can adopt it.
+
+Self-host agents trust the recovery binary through the signed release manifest hash; hosted editions require Authenticode. Public self-host Windows builds ship unsigned, so a self-host agent checks the executable's SHA-256 against the `breeze-isolation-recovery-windows-<arch>.exe` entry in the Ed25519-signed release manifest for that exact version. The manifest is stored as `release-manifest.json` in the same version directory, and its signature is checked against the same keys the agent's updater trusts, on every check. Any of these reports `recovery_untrusted`, and the device is not ready:
+
+- the manifest is missing or its signature does not verify;
+- the manifest is for a different version;
+- the manifest has no entry for the recovery executable;
+- the executable's hash does not match the entry.
+
+An unsigned binary is never trusted just because it is present. A device made ready this way reports `self_host_manifest_hash` as its readiness detail. Like the rest of Windows isolation, this path is off by default and inactive in this release.
 
 The agent's self-uninstall and the Windows MSI uninstall release Breeze-owned isolation rules first. If release cannot be confirmed, uninstall fails before removing the agent files or recovery state. A clean, never-isolated device can still uninstall normally. The detached Windows teardown script checks release again before stopping or deleting services.
 
 An MSI upgrade never runs the uninstall release action and does not un-isolate the device. The agent does not start a self-update while the device is isolated. If isolation begins after an update has already been downloaded, the update is checked again just before the binary swap. When executable paths change, both old and new paths are permitted before the swap. After restart the agent reads the journal, re-verifies isolation, and removes the old-path permits. The swap is refused if the new agent's journal schema cannot be confirmed compatible.
+
+### Linux (planned)
+
+Linux isolation is **not available in any release**. Linux agents advertise capability 0 and do not move between cgroups, place child processes, or apply rules. This section describes the intended behavior.
+
+**Mechanism.** Isolation is one nftables table, `inet breeze_isolation`, applied as a single atomic batch after a kernel dry run. A host without `nft` cannot be isolated; there is no iptables fallback. Breeze touches only its own table: `ufw` and `firewalld` reloads leave it in place, and an accept in another table cannot override a drop in this one. Applying isolation flushes the connection-tracking table so that open connections cannot outlive the apply; flows Breeze permits re-establish themselves. A host without the `conntrack` tool still drops those connections' packets, and the episode journal records `conntrack_unavailable`.
+
+**Cgroup split and `Delegate=yes`.** The `breeze-agent` unit runs with `Delegate=yes`, which hands its cgroup subtree to the agent. The agent moves itself into `<unit>/agent`, and every child it starts (terminal, script, helper) is created directly in `<unit>/children`, so it never runs in the permitted cgroup. The firewall permit matches only sockets created in `<unit>/agent`. The `breeze-backup` helper stays in the agent's cgroup because it reaches the backup server, and places its own children in `<unit>/children`. `Delegate=yes` is not a sandbox directive: child processes keep the unrestricted environment remote scripts rely on. An install whose unit predates `Delegate=yes` reports `cgroup_not_delegated` and cannot be isolated until the agent is reinstalled.
+
+**Readiness.** Linux isolation requires **Linux 5.13 or later**: nftables can match a socket's cgroup only from 5.13, and child placement at creation needs 5.7. A Linux agent names the first prerequisite it lacks:
+
+- `nft_missing`
+- `cgroup_v1`: cgroup v1 and hybrid hosts are not supported.
+- `cgroup_not_delegated`
+- `cgroup_spawn_unavailable`: the kernel or a seccomp policy cannot place a child at creation.
+- `cgroup_unavailable`: any other failure to split the cgroup.
+- `nft_cgroupv2_unsupported`: the kernel cannot match a socket's cgroup.
+- `recovery_unavailable`
+- `scheduler_unavailable`
+
+**Systemd units and recovery.** The separate `breeze-isolation-recovery` binary lives in `/usr/local/lib/breeze/isolation-recovery/<version>/`; versions are installed side by side and are never overwritten. It runs from:
+
+- `breeze-isolation.service`, ordered before `network-pre.target`. nftables rules do not survive a reboot, so this reinstalls a still-valid episode before networking starts. At that point the agent's cgroup does not exist, so the boot rules carry only the baseline and policy destinations; management access returns when the agent starts and re-applies the full rules. An expired or unconfirmed episode is released instead.
+- `breeze-isolation-poll.timer`, one minute after boot and every 15 minutes, as the expiry backstop.
+- Two one-shot `systemd-run` timers: the 90-second provisional rollback (`breeze-isolation-rollback-<attempt>`) and the expiry (`breeze-isolation-expire`).
+
+**Uninstall.** Self-uninstall and `uninstall.sh` release Breeze-owned rules first. If release cannot be confirmed, nothing is removed, and self-uninstall re-enables and restarts the agent service. The units and recovery binaries are removed only after a confirmed release, or when `nft` shows no Breeze rules installed. A failed `nft` query never counts as "no rules". A never-isolated device uninstalls normally.
+
+**Limits specific to Linux.** Isolation filters at the IP layer. Traffic a Linux bridge switches at layer 2 between a guest and a physical interface (bridged VMs or containers) does not pass the forward chain and needs separate network controls; routed and NAT container traffic is dropped. Hardware-offloaded flows are also a documented limitation.
+
+### macOS (planned)
+
+macOS support is implemented but **disabled in this release**: agents report capability 0 with the reason `not_activated`, and no signed recovery executable is distributed, so readiness also fails closed. The design below applies once it is activated.
+
+- **pf anchor.** Breeze rules live only in the anchor `com.breeze/isolation`. The main ruleset must reference that anchor, and the only way to add the reference is to reload the main ruleset from `/etc/pf.conf`. Breeze does that only when the reference is missing, with its anchor ahead of Apple's, and otherwise changes only its own anchor. Breeze does not disable pf: it takes, and later releases, only its own pf enable reference, so pf stays on while anything else holds one.
+- **Incompatible configurations are refused, not overwritten.** The apply fails with `mechanism_unavailable` and the console shows why when Internet Sharing is on (the reload would destroy its anchors), when another anchor or rule is live that `/etc/pf.conf` would not restore, when `set skip` covers a network interface that is up, or when a `quick pass` or `rdr pass` rule would let traffic bypass the Breeze anchor. A refused apply changes nothing.
+- **Re-verification.** Every 5 minutes, the agent checks that the anchor holds its rules, that the main ruleset still references it, that pf is enabled, and that no `set skip` or `quick pass` has appeared since. Anything that reloads the main ruleset silently detaches the anchor. The agent re-attaches it while the ruleset is still compatible, and otherwise reports the drift and its reason.
+- **No per-process scope.** pf cannot match a process, so every permit is destination and port only and applies to every process on the Mac. See the shared-address risk below.
+- **Recovery.** A separate root LaunchDaemon, `com.breeze.isolation`, runs the versioned `breeze-isolation-recovery` executable from `/Library/Breeze/isolation-recovery/<version>/` at boot and every 15 minutes. It releases an expired episode and, because pf keeps no rules across a reboot, installs a still-valid one again. While an apply is provisional, `com.breeze.isolation.rollback` checks every 15 seconds and rolls the apply back once its deadline has passed; `com.breeze.isolation.expire` runs once at the expiry time. Versions are installed side by side and never overwritten in place.
+- **Boot window.** launchd starts the LaunchDaemon with no ordering against the network, so an exposure window exists after each boot. Its length has not been measured yet; the macOS lab test does that before activation.
+- **Uninstall releases first.** The agent's self-uninstall and `breeze-agent service uninstall` release isolation before stopping any Breeze daemon, falling back to the recovery executable, and stop with the agent still installed if the release cannot be confirmed. They confirm the release again once the agent has stopped, then remove the recovery LaunchDaemons and executables; if that second check fails, the agent is loaded again and recovery stays in place. The downloadable `uninstall.sh` does not perform this release.
 
 Residual risks remain:
 

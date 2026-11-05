@@ -65,6 +65,10 @@ vi.mock('./wisp/linkTools', () => ({
   registerWispLinkTools: vi.fn(),
 }));
 
+vi.mock('./wisp/checkInTools', () => ({
+  registerWispCheckInTools: vi.fn(),
+}));
+
 vi.mock('./aiToolsWisp', () => ({
   registerWispTools: vi.fn(),
 }));

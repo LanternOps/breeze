@@ -18,6 +18,10 @@ const PINNED_EFFECT_DIGEST_REQUIRED: ReadonlySet<string> = new Set([
   // Tool Catalog W06 (#5221, Decision 5): a fleet script approval's whole authority is the
   // pinned script + frozen device list (fleetEffectDigest.ts).
   'run_script_on_targets',
+  // Network-isolation W13 (#10101, spec §3.8): a four-eyes release is bound to
+  // one episode generation; an unbound release would un-contain whatever the
+  // episode has become by the time it runs.
+  'release_containment',
 ]);
 
 /**

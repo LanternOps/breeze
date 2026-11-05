@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -718,10 +719,23 @@ func TestManagerStartupRearmsAndReverifies(t *testing.T) {
 }
 
 func TestManagerReportsUnsupportedReasonViaCapability(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		// macOS has a real pf isolator: Apply below would run pfctl, and as root
+		// it could load the main ruleset. isolator_darwin_*_test.go cover it
+		// against fakePF, including the capability-0 tripwire.
+		t.Skip("never run pf from a unit test")
+	}
 	iso := NewPlatformIsolator()
 	c := iso.Capability()
 	if c.Version != 0 || c.Ready || c.UnsupportedReason == "" {
 		t.Fatalf("platform isolator capability %+v, want 0 with a reason in this wave", c)
+	}
+	// The engine half is about the no-engine isolator. On Linux the platform
+	// isolator is the real nft one: its answers depend on the host, and Release
+	// could delete a real table, so its engine paths are tested with a fake
+	// runner (isolator_linux_test.go) and never from here.
+	if runtime.GOOS == "linux" {
+		iso = unsupportedIsolator{}
 	}
 	if _, err := iso.Apply(context.Background(), ResolvedSpec{}); err == nil {
 		t.Fatal("unsupported isolator applied")

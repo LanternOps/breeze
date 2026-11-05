@@ -372,6 +372,43 @@ describe('DeviceInfoTab — hardware summary display', () => {
     expect(screen.queryByText('System Product Name')).toBeNull();
   });
 
+  describe('product number (#9593)', () => {
+    const renderWithHardware = async (hardware: Record<string, unknown>) => {
+      fetchWithAuthMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? 'GET';
+        if (url === `/devices/${deviceId}` && method === 'GET') {
+          return makeJsonResponse({ ...baseDeviceInfoPayload, hardware });
+        }
+        if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+        return makeJsonResponse({}, false, 404);
+      });
+      render(<DeviceInfoTab deviceId={deviceId} />);
+      await screen.findByText('Hardware Summary');
+    };
+
+    it('shows the product number directly after the serial number', async () => {
+      await renderWithHardware({ serialNumber: 'SN-1', productSku: '5S3F8EA#ABB', manufacturer: 'HP' });
+
+      const value = screen.getByText('5S3F8EA#ABB');
+      const label = screen.getByText('Product Number');
+      expect(value.parentElement).toBe(label.parentElement);
+      expect(label.parentElement?.previousElementSibling).toHaveTextContent('Serial Number');
+    });
+
+    it.each([
+      ['absent', undefined],
+      ['null', null],
+      ['blank', '  '],
+      ['a placeholder', 'To be filled by O.E.M.'],
+    ])('hides the row when the value is %s', async (_label, productSku) => {
+      await renderWithHardware({ serialNumber: 'SN-1', productSku, manufacturer: 'HP' });
+
+      expect(screen.getByText('Serial Number')).toBeInTheDocument();
+      expect(screen.queryByText('Product Number')).toBeNull();
+    });
+  });
+
   it('renders motherboard details in the hardware summary', async () => {
     fetchWithAuthMock.mockImplementation(async (input, init) => {
       const url = String(input);

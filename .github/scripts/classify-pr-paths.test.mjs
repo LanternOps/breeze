@@ -58,7 +58,7 @@ test('classifier: any non-docs path reports code=true; docs=true only when a doc
     [['README.md', 'apps/web/src/App.tsx'], 'code=true\ndocs=true\nagent=false\napp=true\napi=true\nweb=true\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true\npath_readers=true\nreader_tests=apps/api/src/db/bootstrapDocs.test.ts'],
     [['docs/guide.md', '.github/workflows/ci.yml'], 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true\npath_readers=false\nreader_tests='],
     [['apps/mobile/docs.md.bak'], 'code=true\ndocs=false\nagent=false\napp=true\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true\npath_readers=false\nreader_tests='],
-    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=false\nagent_code=true\nintegration=true\npath_readers=false\nreader_tests='],
+    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=false\ntopology_browser=false\nagent_code=true\nintegration=true\npath_readers=false\nreader_tests='],
   ]) {
     const run = classify(paths);
     assert.equal(run.status, 0, run.stderr);
@@ -86,10 +86,12 @@ test('classifier: app output — the CI-plumbing allowlist is app=false, everyth
     // Explicit exceptions carved OUT of the allowlist → app=true
     [['.github/workflows/ci.yml'], 'app=true'],
     [['.github/scripts/classify-pr-paths.sh'], 'app=true'],
-    // prepare-ci-apt-sources.mjs is consumed by rust-check and
-    // guided-setup-smoke (both HEAVY jobs, not lint/check-migrations/
-    // security-audit), so it must not fast-track past the app gate.
+    // prepare-ci-apt-sources.mjs is consumed by guided-setup-smoke (a HEAVY
+    // job, not lint/check-migrations/security-audit), so it must not fast-track
+    // past the app gate.
     [['.github/scripts/prepare-ci-apt-sources.mjs'], 'app=true'],
+    // tauri-apt.sh installs rust-check's system dependencies.
+    [['.github/scripts/tauri-apt.sh'], 'app=true'],
     // check-agent-binary-signatures.sh is consumed by build-agent (a HEAVY
     // job), so it must not fast-track past the app gate either.
     [['scripts/security/check-agent-binary-signatures.sh'], 'app=true'],
@@ -704,6 +706,7 @@ test('every explicit app=true carve-out in the classifier is still referenced by
     '.github/workflows/ci.yml',
     '.github/scripts/classify-pr-paths.sh',
     '.github/scripts/prepare-ci-apt-sources.mjs',
+    '.github/scripts/tauri-apt.sh',
     '.github/scripts/mobile-native-ci.test.mjs',
     '.github/scripts/qemu-gate-paths.txt',
     'scripts/security/check-agent-binary-signatures.sh',

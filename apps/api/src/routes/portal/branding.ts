@@ -6,10 +6,41 @@ import { portalBranding } from '../../db/schema';
 import { brandingParamSchema } from './schemas';
 import { applyPortalCacheHeaders, buildWeakEtag, isEtagFresh } from './helpers';
 import { resolvePortalCapabilities } from './featureFlags';
-import { combinePortalCustomCss, loadPartnerPortalCustomCss } from './portalCustomCss';
+import { combinePortalCustomCss, loadPartnerPortalDefaults, type PartnerPortalDefaults } from './portalCustomCss';
+import { resolveDocumentBrand } from '../../services/partnerDocumentBrand';
 import { ERROR_CODES } from '@breeze/shared';
 
 export const brandingRoutes = new Hono();
+
+/**
+ * Layer the partner's defaults over an org's portal_branding row. #9674: the
+ * partner's Custom CSS applies ahead of the org's own. #9673: the logo and
+ * colours resolve through resolveDocumentBrand, so the portal shows what the
+ * org's quotes and invoices show (partner default, org override).
+ */
+function withPartnerDefaults<T extends {
+  logoUrl: string | null;
+  primaryColor: string | null;
+  secondaryColor: string | null;
+  customCss: string | null;
+}>(branding: T, partner: PartnerPortalDefaults) {
+  return {
+    ...branding,
+    ...resolveDocumentBrand(branding, partner.settings),
+    customCss: combinePortalCustomCss(partner.customCss, branding.customCss),
+  };
+}
+
+/**
+ * The branding of an org with no portal_branding row: only what its partner
+ * set. Null when the partner has set nothing either.
+ */
+function partnerOnlyBranding(partner: PartnerPortalDefaults): Record<string, string> | null {
+  const brand = resolveDocumentBrand(undefined, partner.settings);
+  const entries = Object.entries({ customCss: partner.customCss, ...brand })
+    .filter((entry): entry is [string, string] => entry[1] !== null);
+  return entries.length > 0 ? Object.fromEntries(entries) : null;
+}
 
 async function resolveBrandingByDomain(domain: string) {
   const normalizedDomain = domain.trim().toLowerCase();
@@ -52,20 +83,24 @@ async function resolveBrandingByDomain(domain: string) {
     return null;
   }
 
-  // #9674: the partner's Custom CSS applies to every child org's portal,
-  // ahead of the org's own (see portalCustomCss.ts).
-  const partnerCss = await loadPartnerPortalCustomCss(branding.orgId);
-  return { ...branding, customCss: combinePortalCustomCss(partnerCss, branding.customCss) };
+  const partner = await loadPartnerPortalDefaults(branding.orgId);
+  return { branding: withPartnerDefaults(branding, partner), degraded: partner.degraded };
 }
 
 brandingRoutes.get('/branding/:domain', zValidator('param', brandingParamSchema), async (c) => {
   const { domain } = c.req.valid('param');
-  const branding = await resolveBrandingByDomain(domain);
-  if (!branding) {
+  const resolved = await resolveBrandingByDomain(domain);
+  if (!resolved) {
     return c.json({ error: 'Branding not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
-  const payload = { branding };
+  const payload = { branding: resolved.branding };
+  // Built without the partner's defaults (lookup failed): serve it, but never
+  // let a shared cache pin it for an hour.
+  if (resolved.degraded) {
+    c.header('Cache-Control', 'no-store');
+    return c.json(payload);
+  }
   applyPortalCacheHeaders(c, {
     scope: 'public',
     browserMaxAgeSeconds: 300,
@@ -138,9 +173,8 @@ brandingRoutes.get('/branding', async (c) => {
     .where(eq(portalBranding.orgId, auth.user.orgId))
     .limit(1);
 
-  // #9674: the partner's Custom CSS applies to every child org's portal,
-  // ahead of the org's own (see portalCustomCss.ts). Part of the ETag below.
-  const partnerCss = await loadPartnerPortalCustomCss(auth.user.orgId);
+  // Part of the ETag below, so a partner change is never answered 304.
+  const partner = await loadPartnerPortalDefaults(auth.user.orgId);
 
   let payload: { branding: Record<string, unknown> };
   if (!branding) {
@@ -148,20 +182,19 @@ brandingRoutes.get('/branding', async (c) => {
     // default state, not an error. Match the public /branding/:domain 404
     // contract so the portal falls into its documented 404 → defaultBranding
     // path (flags undefined → every gated surface fails closed).
-    if (!partnerCss) {
+    const partnerOnly = partnerOnlyBranding(partner);
+    if (!partnerOnly) {
       return c.json({ error: 'Branding not found', code: ERROR_CODES.NOT_FOUND }, 404);
     }
-    // The partner's CSS still applies. Return it alone: no visibility flags,
-    // so the portal's merge over defaultBranding fails every gated surface
-    // closed exactly as the 404 path does.
-    payload = { branding: { customCss: partnerCss } };
+    // The partner's brand and CSS still apply. Return them alone: no visibility
+    // flags, so the portal's merge over defaultBranding fails every gated
+    // surface closed exactly as the 404 path does.
+    payload = { branding: partnerOnly };
   } else {
     // Trust Center W3d: a per-USER capability (org flag + org-scoped admin contact), read fresh like the
     // flags; the trust-page routes re-check it on every request. Part of the ETag, so a change is never a 304.
     const { canEditTrustPage } = await resolvePortalCapabilities({ id: auth.user.id, orgId: auth.user.orgId });
-    payload = {
-      branding: { ...branding, customCss: combinePortalCustomCss(partnerCss, branding.customCss), canEditTrustPage },
-    };
+    payload = { branding: { ...withPartnerDefaults(branding, partner), canEditTrustPage } };
   }
   applyPortalCacheHeaders(c, {
     scope: 'private',

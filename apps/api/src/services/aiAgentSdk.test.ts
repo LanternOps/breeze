@@ -148,6 +148,8 @@ vi.mock('./aiAgentSdkTools', () => ({
     get_device_details: 1,
     // #4883: the handler behind script builder's `execute_script_on_device`.
     run_script: 3,
+    // Network-isolation W13 (#10101): four-eyes release.
+    release_containment: 3,
   },
   BREEZE_MCP_TOOL_NAMES: [],
 }));
@@ -4980,6 +4982,62 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     // #5645: the decision record rides ALONGSIDE the verified material.
     expect((result as { context?: { releaseDecision?: unknown } }).context?.releaseDecision)
       .toEqual({ approvalScope: 'four_eyes', decidedVia: 'webauthn_platform' });
+  });
+
+  // Network-isolation W13 (#10101): the episode binding a four-eyes
+  // release_containment approval was pinned over reaches the handler from the
+  // same matching recompute (the handler refuses without it).
+  it('carries the release_containment episode binding from a MATCHING recompute back to the handler', async () => {
+    const releaseInput = {
+      deviceId: '11111111-1111-4111-8111-111111111111',
+      isolationId: '33333333-3333-4333-8333-333333333333',
+      reason: 'Incident contained',
+    };
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true, tier: 3, requiresApproval: true, approvalScope: 'four_eyes', description: 'Release network isolation',
+    } as any);
+    mockInsertReturning({ id: 'exec-plan-release' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-plan-release', approvalRequestIds: ['appr-plan-release'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true); // wins the release CAS
+    const selectChain: Record<string, unknown> = {
+      from: vi.fn(() => selectChain),
+      where: vi.fn(() => selectChain),
+      limit: vi.fn(async () => [
+        {
+          id: 'intent-plan-release',
+          boundArgumentDigest: 'digest',
+          actionName: 'release_containment',
+          arguments: releaseInput,
+          effectDigest: 'stored-release-digest',
+          approvalScope: 'four_eyes',
+          decidedVia: 'webauthn_platform',
+        },
+      ]),
+    };
+    vi.mocked(db.select).mockReturnValue(selectChain as any);
+    const verifiedIsolationRelease = {
+      orgId: '22222222-2222-4222-8222-222222222222', deviceId: releaseInput.deviceId,
+      isolationId: releaseInput.isolationId, generation: 3,
+    };
+    mockComputeEffectDigest.mockResolvedValueOnce({
+      digest: 'stored-release-digest', // matches
+      context: { verifiedIsolationRelease },
+    });
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'release_containment', input: releaseInput }]]),
+    });
+
+    const result = await createSessionPreToolUse(session)('release_containment', releaseInput);
+
+    expect(result.allowed).toBe(true);
+    expect((result as { context?: { verifiedIsolationRelease?: unknown } }).context?.verifiedIsolationRelease)
+      .toBe(verifiedIsolationRelease);
+    expect((result as { intentId?: string }).intentId).toBe('intent-plan-release');
   });
 
   // Regression guards restored from PR #2853. Task 1 necessarily inverted the

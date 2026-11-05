@@ -90,6 +90,10 @@ vi.mock('../../services/aiRemoteToolsPolicy', () => ({
 // seam and the shared run-status resolver (with its cancel-and-fail
 // transaction) all run for real against the mocked db above.
 
+vi.mock('./commandOrgScope', () => ({
+  deviceCommandsInCurrentOrg: vi.fn(async () => ({ type: 'commandOrgScope' })),
+}));
+
 vi.mock('./helpers', () => ({
   SITE_ACCESS_DENIED: Symbol.for('site-access-denied'),
   getDeviceWithOrgAndSiteCheck: getDeviceWithOrgAndSiteCheckMock,
