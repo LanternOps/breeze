@@ -321,6 +321,12 @@ func (c *sessionControl) controlRequest(ctx context.Context, op string, body any
 	return resp, err
 }
 
+// TimeUntilDeadline implements providers.SessionWindow: the time left before
+// the session's deadline, on the control plane's clock (see serverNow).
+func (c *sessionControl) TimeUntilDeadline() time.Duration {
+	return c.desc.deadline.Sub(c.serverNow())
+}
+
 func (c *sessionControl) checkDeadline() error {
 	if !c.serverNow().Before(c.desc.deadline) {
 		return c.markLost(errors.New("session deadline has passed"))

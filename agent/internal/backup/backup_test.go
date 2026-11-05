@@ -1453,10 +1453,10 @@ func TestStartRunKeepalive_EmitsThenStopsCleanly(t *testing.T) {
 	var mu sync.Mutex
 	var calls int
 	var sawSnapshotID bool
-	onProgress := func(filesDone, filesTotal int, bytesDone, bytesTotal int64, snapshotID string) {
+	onProgress := func(p RunProgress) {
 		mu.Lock()
 		calls++
-		if snapshotID != "" {
+		if p.SnapshotID != "" {
 			sawSnapshotID = true
 		}
 		mu.Unlock()

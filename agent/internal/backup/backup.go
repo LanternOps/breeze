@@ -1304,7 +1304,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// before the (throttled) per-file progress calls start arriving.
 		// No snapshot exists yet — createSnapshotWithProgress mints the ID
 		// below and emits it on its own first (forced) progress call.
-		progressFn(0, len(files), 0, bytesTotal, "")
+		progressFn(RunProgress{FilesTotal: len(files), BytesTotal: bytesTotal})
 	}
 
 	// D18 W03 hoisted the journal-open (and its stale-journal handling) to
@@ -1312,7 +1312,12 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// cleanup entirely (D18 §3.5) — see that block earlier in this
 	// function. D15's snapshotOpts/withSystemState wiring is independent of
 	// that and slots in here unchanged.
-	snapshotOpts := []createSnapshotOption{withRunIdentity(runIdentity), withUploadStagingDir(m.config.StagingDir), withJunctions(reparseSkipped.junctions)}
+	snapshotOpts := []createSnapshotOption{
+		withRunIdentity(runIdentity), withUploadStagingDir(m.config.StagingDir), withJunctions(reparseSkipped.junctions),
+		// Mid-pass warnings (the window forecast, #11014) land on the job as
+		// they happen, so a run that later fails still reports them.
+		withRunWarning(func(w string) { appendWarning(job, w) }),
+	}
 	if m.config.SystemStateEnabled && systemStateStagingDir != "" && job.SystemStateManifest != nil && len(job.SystemStateManifest.Artifacts) > 0 {
 		// Publish system state under this call's own snapshot ID, BEFORE its
 		// ordinary manifest.json — see withSystemState's doc comment. This
@@ -1639,7 +1644,7 @@ func startRunKeepalive(ctx context.Context, onProgress ProgressFn) (stop func())
 				// the pre-upload phases. filesDone stays 0, so nothing the loop
 				// later reports can appear to go backwards. This keepalive only
 				// runs before the snapshot is created, so it never has an ID.
-				onProgress(0, 0, 0, 0, "")
+				onProgress(RunProgress{})
 			}
 		}
 	}()
