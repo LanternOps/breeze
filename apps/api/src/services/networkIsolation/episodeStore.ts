@@ -235,6 +235,9 @@ export function toEpisodeSnapshot(row: DeviceNetworkIsolation): EpisodeSnapshot 
  * generation and journal high-water mark (compare-and-swap). Under `withEpisodeLock` that always
  * holds; outside it, a concurrent writer makes this return false instead of overwriting newer state.
  * False also means the row vanished (a concurrent device delete). Callers must handle false.
+ *
+ * `allowSnapshot` is for a policy change: the new permits and the generation that delivers them land in
+ * one UPDATE, so neither can be seen without the other.
  */
 export async function writeEpisodeSnapshot(
   tx: EpisodeTx,
@@ -242,11 +245,13 @@ export async function writeEpisodeSnapshot(
   prev: EpisodeSnapshot,
   next: EpisodeSnapshot,
   at: Date = new Date(),
+  allowSnapshot?: Pick<DeviceNetworkIsolation, 'allowSnapshot' | 'allowSnapshotRevision'>,
 ): Promise<boolean> {
   const updated = await tx
     .update(deviceNetworkIsolations)
     .set({
       ...(isTerminalIsolationState(next.state) ? { breakGlassSecretEnc: '' } : {}),
+      ...allowSnapshot,
       state: next.state,
       desiredState: next.desiredState,
       generation: next.generation,

@@ -1,7 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import {
   ISOLATION_RELEASE_JOURNAL_TYPES, agentAcceptsPolicyAllow, failureCodeFromJournalType, isUnresolvedTerminalIsolationState, networkIsolationReportSchema,
-  type ContainmentDesiredBlock, type NetworkIsolationReport, type IsolationFailureCode, type SafeAgentReport,
+  type ContainmentDesiredBlock, type IsolationAllowEntry, type NetworkIsolationReport, type IsolationFailureCode, type SafeAgentReport,
 } from '@breeze/shared';
 import { deviceNetworkIsolations, incidents, type DeviceNetworkIsolation } from '../../db/schema';
 import { captureException } from '../sentry';
@@ -95,7 +95,43 @@ export async function buildContainmentHeartbeatBlock(tx: EpisodeTx, device: Isol
       console.error('[isolation] allowlist fallback', { deviceId: device.id, isolationId: row.id, source });
       captureException(err, undefined, { phase: 'isolation_allowlist_fallback', source });
     });
+    return withBreakGlassSecret(block, row, device);
   }
+  // Outside both try blocks on purpose: a failed write has aborted this savepoint, so it must reach
+  // the caller, which answers from the stored block and rolls all of it back.
+  let current = row;
+  if ((row.allowSnapshotRevision ?? null) !== policy.revision) {
+    current = await recordPolicyChange(tx, row.id, desired.allow, policy.revision, new Date());
+    context.row = current;
+    if (current.desiredState !== 'isolated') return storedContainmentHeartbeatBlock(current, device);
+    desired.generation = current.generation;
+  }
+  return withBreakGlassSecret(block, current, device);
+}
+
+/**
+ * Bump the generation in the same statement that records the permits it delivers: the agent refuses a
+ * changed revision at a generation it has already adopted, and would keep the old rules. Re-reads under
+ * the row lock, because a release or another beat may have moved the episode since the unlocked read.
+ */
+async function recordPolicyChange(tx: EpisodeTx, id: string, allow: IsolationAllowEntry[], revision: string | null, at: Date): Promise<DeviceNetworkIsolation> {
+  const locked = await withEpisodeLock(tx, id, async (row) => {
+    if ((row.allowSnapshotRevision ?? null) === revision) return row;
+    const prev = toEpisodeSnapshot(row);
+    const transition = applyEpisodeEvent(prev, { type: 'policy_changed', generation: row.generation, at });
+    if ('ignored' in transition) return row;
+    if (!await writeEpisodeSnapshot(tx, row.id, prev, transition.next, at, { allowSnapshot: allow, allowSnapshotRevision: revision })) throw new Error('isolation_snapshot_conflict');
+    const updated: DeviceNetworkIsolation = { ...row, ...transition.next, allowSnapshot: allow, allowSnapshotRevision: revision };
+    await journalIsolationEvent(tx, updated, 'isolation_policy_changed', at, { fromRevision: row.allowSnapshotRevision ?? null, toRevision: revision });
+    return updated;
+  });
+  if (!locked.found) throw new Error('isolation_episode_vanished');
+  return locked.value;
+}
+
+function withBreakGlassSecret(block: ContainmentDesiredBlock, row: DeviceNetworkIsolation, device: IsolationDevice): ContainmentDesiredBlock {
+  const desired = block.networkIsolation;
+  if (desired?.desired !== 'isolated') return block;
   if (row.breakGlassAckSeq === null && row.breakGlassSecretEnc) {
     try {
       const secret = decryptSecret(row.breakGlassSecretEnc, { aad: columnAad(ISOLATION_SECRET_COLUMN, row.id), strict: true });

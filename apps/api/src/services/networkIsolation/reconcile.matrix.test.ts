@@ -4,7 +4,7 @@ import type { DeviceNetworkIsolation } from '../../db/schema';
 import type { EpisodeTx } from './episodeStore';
 import { captureException } from '../sentry';
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
-const store = vi.hoisted(() => ({ row: null as DeviceNetworkIsolation | null, writes: [] as Record<string, unknown>[], afterCommit: [] as Array<() => Promise<void>>, published: vi.fn(), resolvePolicy: vi.fn() }));
+const store = vi.hoisted(() => ({ row: null as DeviceNetworkIsolation | null, writes: [] as Record<string, unknown>[], afterCommit: [] as Array<() => Promise<void>>, published: vi.fn(), resolvePolicy: vi.fn(), casResult: true }));
 vi.mock('../../db', () => ({ withDbTransaction: (fn: () => Promise<unknown>) => fn(), runAfterDbContextCommit: (_label: string, fn: () => Promise<void>) => { store.afterCommit.push(fn); } }));
 vi.mock('../featureConfigResolver', () => ({ resolveContainmentPolicy: (...args: unknown[]) => store.resolvePolicy(...args) }));
 vi.mock('../deviceSiteResolver', () => ({ resolveDeviceSiteId: vi.fn(async () => 'site') }));
@@ -15,7 +15,7 @@ vi.mock('./episodeStore', async (original) => ({
   findUnresolvedEpisode: vi.fn(async () => store.row && !['released','expired','failed','uninstalled'].includes(store.row.state) ? store.row : null),
   findUnconfirmedTombstone: vi.fn(async () => store.row?.desiredState === 'released' && !store.row.releaseConfirmedAt ? store.row : null),
   withEpisodeLock: vi.fn(async (_tx, id, fn) => store.row?.id === id ? { found: true, value: await fn(store.row) } : { found: false }),
-  writeEpisodeSnapshot: vi.fn(async (_tx, _id, _prev, next) => { Object.assign(store.row!, next); return true; }),
+  writeEpisodeSnapshot: vi.fn(async (_tx, _id, _prev, next, _at, also) => { Object.assign(store.row!, next, also); return store.casResult; }),
 }));
 vi.mock('../secretCrypto', () => ({ decryptSecret: vi.fn(() => Buffer.alloc(32, 7).toString('base64')) }));
 import { buildContainmentHeartbeatBlock, reconcileContainmentReport, storedContainmentHeartbeatBlock, __resetIsolationLogThrottleForTests } from './reconcile';
@@ -37,7 +37,7 @@ function row(desired = 'isolated'): DeviceNetworkIsolation {
 }
 const EDR_ENTRY = { kind: 'host', host: 'edr.example.test', proto: 'tcp', ports: [443], scope: 'any' };
 const WITH_EXTRAS = { extraAllow: [{ host: 'edr.example.test', proto: 'tcp', ports: [443], label: 'EDR cloud' }], revision: 'c1:policy', refusedGroups: [] };
-beforeEach(() => { __resetIsolationLogThrottleForTests?.(); store.row = row(); store.writes = []; store.afterCommit = []; vi.clearAllMocks(); store.resolvePolicy.mockReset(); store.resolvePolicy.mockResolvedValue(WITH_EXTRAS); });
+beforeEach(() => { __resetIsolationLogThrottleForTests?.(); store.row = row(); store.writes = []; store.afterCommit = []; vi.clearAllMocks(); store.resolvePolicy.mockReset(); store.resolvePolicy.mockResolvedValue(WITH_EXTRAS); store.casResult = true; });
 // Every same-generation/non-stale cell has a complete explicit outcome.
 const EXPECTED = {
   isolated: {
@@ -283,6 +283,103 @@ describe('stored fallback carries the snapshot revision (#10100)', () => {
       expect(captureException).toHaveBeenCalledTimes(1);
       expect(captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { phase: 'isolation_policy_unavailable', deviceId: device.id, isolationId: id });
     } finally { error.mockRestore(); }
+  });
+});
+
+describe('a revision change takes a new generation (#10100)', () => {
+  const level3 = { ...device, networkIsolationVersion: 3 };
+  const NO_EXTRAS = { extraAllow: [], revision: 'c1:defaults', refusedGroups: [] };
+  const holding = (extra: Record<string, unknown> = {}) => { store.row = { ...row(), allowSnapshot: [...allow, EDR_ENTRY], allowSnapshotRevision: 'c1:held', ...extra } as unknown as DeviceNetworkIsolation; };
+  const timelineTypes = () => store.writes.filter(v => 'timeline' in v).map(v => inspect(v, { depth: 8 }));
+
+  it('a first policy on a running episode: generation, snapshot and revision move together', async () => {
+    const context: { row?: DeviceNetworkIsolation | null } = {};
+    const block = await buildContainmentHeartbeatBlock(tx, level3, context);
+    expect(store.row).toMatchObject({ generation: 3, allowSnapshotRevision: 'c1:policy' });
+    expect(store.row!.allowSnapshot).toContainEqual(EDR_ENTRY);
+    expect(block.networkIsolation).toMatchObject({ generation: 3, policyRevision: 'c1:policy' });
+    expect(context.row).toMatchObject({ generation: 3, allowSnapshotRevision: 'c1:policy' });
+    const { writeEpisodeSnapshot } = await import('./episodeStore');
+    const call = vi.mocked(writeEpisodeSnapshot).mock.calls.at(-1)!;
+    expect(call[5]).toMatchObject({ allowSnapshotRevision: 'c1:policy' });
+    expect(timelineTypes().join()).toContain('isolation_policy_changed');
+  });
+  it('a changed revision takes a new generation', async () => {
+    holding();
+    const block = await buildContainmentHeartbeatBlock(tx, level3);
+    expect(block.networkIsolation).toMatchObject({ generation: 3, policyRevision: 'c1:policy' });
+  });
+  it('an unchanged revision keeps the generation, beat after beat', async () => {
+    holding({ allowSnapshotRevision: 'c1:policy' });
+    for (let beat = 0; beat < 3; beat++) {
+      expect((await buildContainmentHeartbeatBlock(tx, level3)).networkIsolation).toMatchObject({ generation: 2, policyRevision: 'c1:policy' });
+    }
+    expect(store.writes.filter(v => 'timeline' in v)).toHaveLength(0);
+  });
+  it('removing the policy takes a new generation and drops the revision', async () => {
+    holding();
+    store.resolvePolicy.mockResolvedValue(NO_EXTRAS);
+    const block = await buildContainmentHeartbeatBlock(tx, level3);
+    expect(block.networkIsolation).toMatchObject({ generation: 3 });
+    expect(block.networkIsolation).not.toHaveProperty('policyRevision');
+    expect(store.row).toMatchObject({ generation: 3, allowSnapshotRevision: null });
+    expect(store.row!.allowSnapshot.some(entry => entry.scope === 'any')).toBe(false);
+  });
+  it('an agent that drops below level 3 is narrowed under a new generation', async () => {
+    holding();
+    const block = await buildContainmentHeartbeatBlock(tx, { ...device, networkIsolationVersion: 1 });
+    expect(block.networkIsolation).toMatchObject({ generation: 3 });
+    expect(block.networkIsolation).not.toHaveProperty('policyRevision');
+    expect(store.resolvePolicy).not.toHaveBeenCalled();
+  });
+  it('an episode with no policy keeps its generation at every level', async () => {
+    store.resolvePolicy.mockResolvedValue(NO_EXTRAS);
+    for (const networkIsolationVersion of [1, 2, 3]) {
+      expect((await buildContainmentHeartbeatBlock(tx, { ...device, networkIsolationVersion })).networkIsolation).toMatchObject({ generation: 2 });
+    }
+    expect(store.row!.generation).toBe(2);
+  });
+  it('a policy read fault does not bump', async () => {
+    holding();
+    store.resolvePolicy.mockRejectedValue(new Error('read failed'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect((await buildContainmentHeartbeatBlock(tx, level3)).networkIsolation).toMatchObject({ generation: 2, policyRevision: 'c1:held' });
+      expect(store.row!.generation).toBe(2);
+    } finally { error.mockRestore(); }
+  });
+  it('an allowlist fault does not bump: the snapshot and the generation must stay a pair', async () => {
+    holding();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect((await buildContainmentHeartbeatBlock(tx, { ...level3, agentServerUrl: 'invalid-url' })).networkIsolation).toMatchObject({ generation: 2, policyRevision: 'c1:held' });
+      expect(store.row).toMatchObject({ generation: 2, allowSnapshotRevision: 'c1:held' });
+    } finally { error.mockRestore(); }
+  });
+  it('a lost compare-and-swap fails the block and journals nothing, so the savepoint rolls back whole', async () => {
+    store.casResult = false;
+    await expect(buildContainmentHeartbeatBlock(tx, level3)).rejects.toThrow('isolation_snapshot_conflict');
+    expect(store.writes.filter(v => 'timeline' in v)).toHaveLength(0);
+  });
+  it('a release that won the lock sends the tombstone, not a new generation', async () => {
+    const { withEpisodeLock } = await import('./episodeStore');
+    vi.mocked(withEpisodeLock).mockImplementationOnce(async (_tx, _id, fn) => {
+      store.row = { ...store.row!, state: 'release_requested', desiredState: 'released', generation: 3 };
+      return { found: true, value: await fn(store.row) };
+    });
+    const block = await buildContainmentHeartbeatBlock(tx, level3);
+    expect(block.networkIsolation).toMatchObject({ desired: 'released', allow: [], generation: 3 });
+    expect(store.row!.generation).toBe(3);
+  });
+  it('a concurrent beat that already recorded this revision is not bumped twice', async () => {
+    const { withEpisodeLock } = await import('./episodeStore');
+    vi.mocked(withEpisodeLock).mockImplementationOnce(async (_tx, _id, fn) => {
+      store.row = { ...store.row!, generation: 3, allowSnapshotRevision: 'c1:policy' };
+      return { found: true, value: await fn(store.row) };
+    });
+    const block = await buildContainmentHeartbeatBlock(tx, level3);
+    expect(block.networkIsolation).toMatchObject({ generation: 3, policyRevision: 'c1:policy' });
+    expect(store.row!.generation).toBe(3);
   });
 });
 

@@ -336,3 +336,19 @@ describe('purity', () => {
     expect(imports.filter((p) => /\/db\b|drizzle|postgres/.test(p!))).toEqual([]);
   });
 });
+
+describe('policy_changed (#10100)', () => {
+  it.each(['requested', 'dispatched', 'applying', 'applied', 'verified'] as const)('takes a new generation from %s without moving the state', (state) => {
+    expect(next(snap({ state, generation: 4 }), ev('policy_changed', { generation: 4 }))).toMatchObject({ state, generation: 5, desiredState: 'isolated' });
+  });
+  it('is refused during a release and after a terminal state', () => {
+    expect(ignored(snap({ state: 'release_requested', desiredState: 'released' }), ev('policy_changed'))).toBe('invalid_transition');
+    expect(ignored(snap({ state: 'failed', desiredState: 'released', failureCode: 'apply_error' }), ev('policy_changed'))).toBe('already_terminal');
+    expect(ignored(snap({ state: 'self_released', desiredState: 'released' }), ev('policy_changed'))).toBe('already_terminal');
+  });
+  it('is ordered like every other event', () => {
+    expect(ignored(snap({ state: 'verified', generation: 2 }), ev('policy_changed', { generation: 1 }))).toBe('stale_generation');
+    expect(ignored(snap({ state: 'verified', generation: 2 }), ev('policy_changed', { generation: 3 }))).toBe('invalid_transition');
+  });
+});
+
