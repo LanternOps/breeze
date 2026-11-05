@@ -340,12 +340,11 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   // Partner/system-only aggregates use user auth but cannot be reached by
   // organization site-restricted roles; see SITE_SCOPE_INPUT_EXEMPT above.
   'routes/huntress.ts:GET /status',
-  // Newly visible to the widened detector (#4019). Neither references a
-  // non-user auth guard token in its file (orgSummary uses plain authMiddleware;
-  // bmr's public router has no auth middleware at all), so both are recorded
-  // here as deliberate exceptions; reasons in SITE_SCOPE_INPUT_EXEMPT above.
+  // Newly visible to the widened detector (#4019). bmr's public router has no
+  // auth middleware at all, so it is recorded here as a deliberate exception;
+  // reasons in SITE_SCOPE_INPUT_EXEMPT above. (orgSummary left this list when
+  // W18 PR A rewrote the handler — #6789.)
   'routes/backup/bmr.ts:POST /bmr/recover/authenticate',
-  'routes/orgSummary.ts:GET /organizations/:id/summary',
   'routes/updateRings.ts:GET /:id/compliance',
   // Compliance list (see note in SITE_SCOPE_INPUT_EXEMPT). Reached via user
   // auth (requireScope) but exempt because the escrow enrichment is constrained
