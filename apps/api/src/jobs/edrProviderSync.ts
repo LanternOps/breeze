@@ -42,8 +42,8 @@ import {
 import { EDR_ACTION_UNKNOWN_GIVEUP_MS, pollEdrActionStatus } from '../services/edrProviders/actionStatus';
 import { ensureBuiltinPackage, getBuiltinPackage } from '../services/builtinDeploymentPackages';
 import {
-  INSTALLER_STATE_SELECT,
   installerRefreshDue,
+  installerStateSelect,
   persistInstallerOutcomes,
   pickInstallerFetches,
   type InstallerOutcome,
@@ -529,7 +529,7 @@ async function loadForSync(connectionId: string, stream: EdrSyncStream): Promise
         orgId: edrTenants.orgId,
         apiHost: edrTenants.apiHost,
         detectionCursor: edrTenants.detectionCursor,
-        ...INSTALLER_STATE_SELECT,
+        ...installerStateSelect(),
       })
       .from(edrTenants)
       .where(and(eq(edrTenants.connectionId, connectionId), sql`${edrTenants.vendorMissingSince} IS NULL`));

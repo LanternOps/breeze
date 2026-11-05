@@ -132,6 +132,14 @@ export function installArgsCarryPlaceholders(provider: LegacyBuiltinProvider, ar
  * provisions nothing and touches no table.
  */
 export async function ensureBuiltinPackage(params: {
+  provider: LegacyBuiltinProvider;
+  partnerId: string;
+}): Promise<{ catalogId: string }>;
+export async function ensureBuiltinPackage(params: {
+  provider: BuiltinProvider;
+  partnerId: string;
+}): Promise<{ catalogId: string } | { catalogId: null; skipped: 'unreleased' }>;
+export async function ensureBuiltinPackage(params: {
   provider: BuiltinProvider;
   partnerId: string;
 }): Promise<{ catalogId: string } | { catalogId: null; skipped: 'unreleased' }> {

@@ -54,19 +54,27 @@ export function openInstallerMaterial(tenantId: string, ciphertext: string): Ins
   }
 }
 
-/** Status columns for the sync job's Phase 1. A boolean instead of the ciphertext: Phase 2 never needs it. */
-export const INSTALLER_STATE_SELECT = {
-  installerHasMaterial: sql<boolean>`(${edrTenants.installerSecretEncrypted} IS NOT NULL AND ${edrTenants.installerSecretEncrypted} <> '')`,
-  installerFetchedAt: edrTenants.installerFetchedAt,
-  installerExpiresAt: edrTenants.installerExpiresAt,
-  installerFetchError: edrTenants.installerFetchError,
-} as const;
+/**
+ * Status columns for the sync job's Phase 1. A boolean instead of the ciphertext:
+ * Phase 2 never needs it. A function, like the one below, because this module is in
+ * softwareDeployment's import closure and many suites mock the schema partially.
+ */
+export function installerStateSelect() {
+  return {
+    installerHasMaterial: sql<boolean>`(${edrTenants.installerSecretEncrypted} IS NOT NULL AND ${edrTenants.installerSecretEncrypted} <> '')`,
+    installerFetchedAt: edrTenants.installerFetchedAt,
+    installerExpiresAt: edrTenants.installerExpiresAt,
+    installerFetchError: edrTenants.installerFetchError,
+  };
+}
 
 /** For installer-tenant selection only. Readiness callers must not receive the ciphertext. */
-export const INSTALLER_SEALED_SELECT = {
-  sealedMaterial: edrTenants.installerSecretEncrypted,
-  installerExpiresAt: edrTenants.installerExpiresAt,
-} as const;
+export function installerSealedSelect() {
+  return {
+    sealedMaterial: edrTenants.installerSecretEncrypted,
+    installerExpiresAt: edrTenants.installerExpiresAt,
+  };
+}
 
 /**
  * Pure. Due when there is no material, its expiry is inside the margin, it is

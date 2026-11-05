@@ -1,7 +1,7 @@
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { edrConnections, edrTenants, organizations } from '../../db/schema';
-import { INSTALLER_SEALED_SELECT } from './installerMaterial';
+import { installerSealedSelect } from './installerMaterial';
 import type { EdrInstallerProviderKey } from './providerKeys';
 
 /**
@@ -75,7 +75,7 @@ export async function loadInstallerTenantSelections(
           orgPartnerId: organizations.partnerId,
           connectionActive: edrConnections.isActive,
           connectionStatus: edrConnections.status,
-          ...INSTALLER_SEALED_SELECT,
+          ...installerSealedSelect(),
         })
         .from(edrTenants)
         .innerJoin(edrConnections, eq(edrTenants.connectionId, edrConnections.id))
