@@ -25,6 +25,17 @@
  *    is still collectable destroys the only thing that will ever clean the
  *    endpoint). Neither is re-implemented here; both are counted and skipped.
  *
+ *  - NEVER FORCES PAST AN UNCONFIRMED UNINSTALL (#11153). A device whose agent
+ *    never confirmed it came off (failed, expired or cancelled uninstall, or
+ *    none queued) is left alone: deleting it would orphan a running agent with
+ *    nobody to notice. Such devices are kept OUT of the candidate query by the
+ *    shared gate (`devicePurgeUninstallGate.ts`) rather than refused one by
+ *    one, because candidates are oldest-first and capped — an org with 200
+ *    unconfirmed devices would otherwise re-pick them every night and never
+ *    reach the ones behind them. They are counted per org instead
+ *    (`skippedUninstallNotConfirmed`, in the summary and the run log) and stay
+ *    until an operator deletes them by hand, or the agent confirms.
+ *
  *  - THAT STATUS RE-CHECK IS NOT SUFFICIENT ON ITS OWN, so the ORG and the
  *    ELIGIBILITY WINDOW are re-read in the same statement that takes the lock
  *    (`purgeOneRemovedDevice`). The candidate SELECT is unlocked and its rows
@@ -51,7 +62,8 @@ import { invalidateOrgDeviceCount } from '../services/agentOrgRateLimit';
 import { captureException } from '../services/sentry';
 import { recordRetentionRun } from '../services/retentionMetrics';
 import { getOrgPurgeRemovedAfterDays } from '../services/deviceLifecyclePolicy';
-import { DeviceLifecycleError, purgeRemovedDevice } from '../services/deviceLifecycle';
+import { DeviceLifecycleError, purgeRemovedDevice, type PurgeResult } from '../services/deviceLifecycle';
+import { purgeUninstallAttemptableSql } from '../services/devicePurgeUninstallGate';
 import { listDeviceScreenshotStorageKeys } from '../services/screenshotStorage';
 import { removeScreenshotFiles } from '../services/screenshotFiles';
 import { attachWorkerObservability } from './workerObservability';
@@ -86,6 +98,12 @@ export interface RemovedDevicePurgeSummary {
   purged: number;
   /** Refused because a `device_remove` agent uninstall is still collectable. */
   skippedUninstallPending: number;
+  /**
+   * #11153 — past the window but left alone because the agent never confirmed
+   * it was uninstalled. Not an incomplete drain: nothing here will purge them
+   * on its own, so counting them as backlog would alarm every night forever.
+   */
+  skippedUninstallNotConfirmed: number;
   /** Restored or already gone between the SELECT and the lock — not an error. */
   skippedRaced: number;
   failed: number;
@@ -126,6 +144,11 @@ export type RemovedDevicePurgeSkip =
   | 'ORG_CHANGED'
   | 'NO_LONGER_ELIGIBLE';
 
+/** `skip: null` means the device was purged, with the uninstall state that allowed it. */
+export type RemovedDevicePurgeOutcome =
+  | { skip: RemovedDevicePurgeSkip }
+  | { skip: null; uninstallState: PurgeResult['uninstallState'] };
+
 export interface RemovedDevicePurgeCandidate {
   deviceId: string;
   /** The org the device was in when the candidate SELECT chose it. */
@@ -157,7 +180,8 @@ export interface RemovedDevicePurgeCandidate {
  * second `FOR UPDATE` the service then takes on this row in this transaction is
  * a no-op on a lock we already hold.
  *
- * Returns the skip reason, or `null` when the device was purged. Only
+ * Returns the skip reason, or `skip: null` plus the uninstall state when the
+ * device was purged. Only
  * `DeviceLifecycleError` is translated; anything else propagates so the caller
  * can count it as a failure and report it — a deadlock or a constraint
  * violation is not a "skip".
@@ -167,10 +191,13 @@ export interface RemovedDevicePurgeCandidate {
  */
 export async function purgeOneRemovedDevice(
   candidate: RemovedDevicePurgeCandidate,
-): Promise<RemovedDevicePurgeSkip | null> {
+): Promise<RemovedDevicePurgeOutcome> {
   try {
     const outcome = await inSystemContext('removedDevicePurge.purgeOne', () =>
-      db.transaction(async (tx): Promise<{ skip: RemovedDevicePurgeSkip } | { skip: null; screenshotStorageKeys: string[] }> => {
+      db.transaction(async (tx): Promise<
+        | { skip: RemovedDevicePurgeSkip }
+        | { skip: null; screenshotStorageKeys: string[]; uninstallState: PurgeResult['uninstallState'] }
+      > => {
         const rows = (await tx.execute(
           sql`SELECT org_id, decommissioned_at FROM devices WHERE id = ${candidate.deviceId} FOR UPDATE`,
         )) as unknown as Array<{ org_id: string; decommissioned_at: Date | string | null }>;
@@ -189,20 +216,22 @@ export async function purgeOneRemovedDevice(
 
         // #8117 — under the devices row lock, so the key list is complete.
         const screenshotStorageKeys = await listDeviceScreenshotStorageKeys(tx, candidate.deviceId);
-        await purgeRemovedDevice(tx, candidate.deviceId);
-        return { skip: null, screenshotStorageKeys };
+        // No `force`, ever: an unattended job does not get to decide that an
+        // unconfirmed agent is fine to orphan (#11153).
+        const purged = await purgeRemovedDevice(tx, candidate.deviceId);
+        return { skip: null, screenshotStorageKeys, uninstallState: purged.uninstallState };
       }));
-    if (outcome.skip !== null) return outcome.skip;
+    if (outcome.skip !== null) return { skip: outcome.skip };
     // Committed (the system context is a top-level transaction). Never throws;
     // leftovers are retried by the screenshot orphan sweep.
     if (outcome.screenshotStorageKeys.length > 0) {
       await removeScreenshotFiles(outcome.screenshotStorageKeys, `removed-device purge device=${candidate.deviceId}`);
     }
-    return null;
+    return { skip: null, uninstallState: outcome.uninstallState };
   } catch (err) {
     // Deliberately caught OUTSIDE the transaction so a DeviceLifecycleError
     // still rolls it back, exactly as before.
-    if (err instanceof DeviceLifecycleError) return err.code;
+    if (err instanceof DeviceLifecycleError) return { skip: err.code };
     throw err;
   }
 }
@@ -231,6 +260,7 @@ export async function runRemovedDevicePurgeOnce(now: Date = new Date()): Promise
     orgsCapped: 0,
     purged: 0,
     skippedUninstallPending: 0,
+    skippedUninstallNotConfirmed: 0,
     skippedRaced: 0,
     failed: 0,
     durationMs: 0,
@@ -258,6 +288,18 @@ export async function runRemovedDevicePurgeOnce(now: Date = new Date()): Promise
     summary.orgsWithPolicy += 1;
 
     const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+    // Removed, past the window, with a known removal time. The gate is applied
+    // on top of this for candidates and negated for the unconfirmed count, so
+    // the two partition the same set.
+    const pastWindow = and(
+      eq(devices.orgId, orgId),
+      eq(devices.status, 'decommissioned'),
+      // Explicit even though `NULL < cutoff` is already NULL: a device
+      // whose removal time is unknown must never be purged, and that has
+      // to survive a future rewrite of the comparison.
+      isNotNull(devices.decommissionedAt),
+      lt(devices.decommissionedAt, cutoff),
+    );
 
     let candidates: EligibleDevice[];
     try {
@@ -269,15 +311,10 @@ export async function runRemovedDevicePurgeOnce(now: Date = new Date()): Promise
             decommissionedAt: devices.decommissionedAt,
           })
           .from(devices)
-          .where(and(
-            eq(devices.orgId, orgId),
-            eq(devices.status, 'decommissioned'),
-            // Explicit even though `NULL < cutoff` is already NULL: a device
-            // whose removal time is unknown must never be purged, and that has
-            // to survive a future rewrite of the comparison.
-            isNotNull(devices.decommissionedAt),
-            lt(devices.decommissionedAt, cutoff),
-          ))
+          // #11153 — only devices the purge could actually take: confirmed, or
+          // still pending (refused below as UNINSTALL_PENDING, and back on a
+          // later run). See the module doc for why this is not a per-row skip.
+          .where(and(pastWindow, purgeUninstallAttemptableSql()))
           // Oldest first: a capped org drains deterministically instead of
           // re-picking an arbitrary slice every night.
           .orderBy(asc(devices.decommissionedAt))
@@ -287,6 +324,27 @@ export async function runRemovedDevicePurgeOnce(now: Date = new Date()): Promise
       captureException(err);
       summary.orgsFailed += 1;
       continue;
+    }
+
+    // #11153 — the devices this run will NOT touch because their agent never
+    // confirmed it was uninstalled. Reporting only: a failure here is logged
+    // and the org is still purged, since the count changes nothing it does.
+    try {
+      const [row] = await inSystemContext('removedDevicePurge.countUnconfirmed', () =>
+        db
+          .select({ unconfirmedCount: sql<number>`count(*)::int` })
+          .from(devices)
+          .where(and(pastWindow, sql`NOT (${purgeUninstallAttemptableSql()})`)));
+      const unconfirmed = Number(row?.unconfirmedCount ?? 0);
+      if (unconfirmed > 0) {
+        summary.skippedUninstallNotConfirmed += unconfirmed;
+        console.warn(
+          `${LOG_PREFIX} org ${orgId}: ${unconfirmed} removed device(s) past the ${days}-day window were NOT purged because their agent never confirmed it was uninstalled; delete them from the device page to override.`,
+        );
+      }
+    } catch (err) {
+      console.error(`${LOG_PREFIX} Failed to count unconfirmed-uninstall devices for org ${orgId}:`, err);
+      captureException(err);
     }
 
     if (candidates.length === REMOVED_DEVICE_PURGE_MAX_PER_ORG_PER_RUN) {
@@ -299,9 +357,9 @@ export async function runRemovedDevicePurgeOnce(now: Date = new Date()): Promise
     let purgedThisOrg = 0;
 
     for (const candidate of candidates) {
-      let code: RemovedDevicePurgeSkip | null;
+      let outcome: RemovedDevicePurgeOutcome;
       try {
-        code = await purgeOneRemovedDevice({
+        outcome = await purgeOneRemovedDevice({
           deviceId: candidate.id,
           orgId,
           // The SAME cutoff the candidate query used, re-applied under the
@@ -317,10 +375,17 @@ export async function runRemovedDevicePurgeOnce(now: Date = new Date()): Promise
         continue;
       }
 
+      const code = outcome.skip;
       if (code === 'UNINSTALL_PENDING') {
         // Expected and self-healing: the agent uninstall is still collectable,
         // so the device comes back around on a later run once it completes.
         summary.skippedUninstallPending += 1;
+        continue;
+      }
+      if (code === 'UNINSTALL_NOT_CONFIRMED') {
+        // Its state changed between the candidate query and the lock (for
+        // example a pending uninstall expired). Same skip as the count above.
+        summary.skippedUninstallNotConfirmed += 1;
         continue;
       }
       if (code !== null) {
@@ -353,6 +418,9 @@ export async function runRemovedDevicePurgeOnce(now: Date = new Date()): Promise
             retentionPolicy: true,
             purgeRemovedAfterDays: days,
             decommissionedAt: candidate.decommissionedAt?.toISOString() ?? null,
+            // #11153 — the job never forces; this is the state that allowed it.
+            force: false,
+            uninstallState: outcome.uninstallState,
           },
           result: 'success',
           initiatedBy: 'schedule',
@@ -381,7 +449,7 @@ export async function runRemovedDevicePurgeOnce(now: Date = new Date()): Promise
 
   console.log(
     `${LOG_PREFIX} Purged ${summary.purged} removed devices across ${summary.orgsWithPolicy}/${summary.orgsChecked} orgs ` +
-    `(uninstall-pending=${summary.skippedUninstallPending}, raced=${summary.skippedRaced}, ` +
+    `(uninstall-pending=${summary.skippedUninstallPending}, uninstall-not-confirmed=${summary.skippedUninstallNotConfirmed}, raced=${summary.skippedRaced}, ` +
     `failed=${summary.failed}, orgs-skipped=${summary.orgsFailed}, orgs-capped=${summary.orgsCapped}) in ${summary.durationMs}ms`,
   );
 

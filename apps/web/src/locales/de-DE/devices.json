@@ -433,6 +433,18 @@
         "message": "{{hostname}} entfernen? Das Gerät wird aus Ihrer aktiven Flotte genommen und nicht mehr überwacht. Der Verlauf bleibt erhalten, und Sie können es später wiederherstellen.",
         "confirm": "Entfernen"
       },
+      "forcePermanentDelete": {
+        "confirm": "Trotzdem löschen",
+        "reason": {
+          "agentReturned": "Eine Deinstallation wurde zuvor abgeschlossen, aber der Agent hat sich seitdem wieder gemeldet (er wurde neu installiert).",
+          "cancelled": "Die Agent-Deinstallation wurde abgebrochen, bevor sie ausgeführt wurde.",
+          "expired": "Der Agent hat die Deinstallation vor Ablauf der Frist nie abgeholt.",
+          "failed": "Der Deinstallationsbefehl wurde auf dem Gerät ausgeführt, meldete aber einen Fehler.",
+          "none": "Für dieses Gerät wurde keine Agent-Deinstallation eingeplant (es wurde entfernt und der Agent blieb installiert)."
+        },
+        "risk": "Wenn Sie {{hostname}} jetzt löschen, kann der Agent installiert und aktiv bleiben, ohne dass ihn jemand verwaltet. Dies kann nicht rückgängig gemacht werden.",
+        "title": "Der Agent hat die Entfernung nicht bestätigt"
+      },
       "permanentDelete": {
         "title": "{{hostname}} endgültig löschen?",
         "message": "Damit wird der gesamte Verlauf dieses Geräts gelöscht — Tickets, Alarme, Patch- und Backup-Datensätze. Dies kann nicht rückgängig gemacht werden.",
@@ -2689,6 +2701,7 @@
       "bulkMaintenanceSuccess_other": "Wartungsmodus für {{count}} Geräte {{verb}}",
       "bulkPurgeFailed": "Endgültiges Löschen fehlgeschlagen: {{reason}}",
       "bulkPurgeNoneDeleted": "Kein Gerät wurde gelöscht: {{reasons}}",
+      "bulkPurgeSkipUninstallNotConfirmed": "übersprungen: Der Agent hat die Deinstallation nie bestätigt (diese Geräte einzeln über das Gerät löschen)",
       "bulkWakeAllFailed": "Aufwecken aller Geräte fehlgeschlagen",
       "bulkWakeSent": "Aufweckbefehle gesendet",
       "bulkWakeSomeFailed": "Aufwecken einiger Geräte fehlgeschlagen",

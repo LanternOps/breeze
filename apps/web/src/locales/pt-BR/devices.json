@@ -433,6 +433,18 @@
         "message": "Tem certeza de que deseja remover {{hostname}}? Isso o tirará da sua frota ativa e ele deixará de ser monitorado. O histórico é mantido e você pode restaurá-lo depois.",
         "confirm": "Remover"
       },
+      "forcePermanentDelete": {
+        "confirm": "Excluir mesmo assim",
+        "reason": {
+          "agentReturned": "Uma desinstalação foi concluída antes, mas o agente se conectou novamente desde então (foi reinstalado).",
+          "cancelled": "A desinstalação do agente foi cancelada antes de ser executada.",
+          "expired": "O agente nunca voltou para buscar a desinstalação antes de ela expirar.",
+          "failed": "O comando de desinstalação foi executado no dispositivo, mas informou uma falha.",
+          "none": "Nenhuma desinstalação do agente foi enfileirada para este dispositivo (ele foi removido com o agente mantido instalado)."
+        },
+        "risk": "Excluir {{hostname}} agora pode deixar o agente instalado e em execução sem que ninguém o gerencie. Esta ação não pode ser desfeita.",
+        "title": "O agente não confirmou a remoção"
+      },
       "permanentDelete": {
         "title": "Excluir {{hostname}} permanentemente?",
         "message": "Isso exclui todo o histórico deste dispositivo: chamados, alertas e registros de patches e backups. Não é possível desfazer.",
@@ -2693,6 +2705,7 @@
       "bulkMaintenanceSuccess_other": "{{count}} dispositivos {{verb}} modo de manutenção",
       "bulkPurgeFailed": "Falha na exclusão permanente: {{reason}}",
       "bulkPurgeNoneDeleted": "Nenhum dispositivo foi excluído: {{reasons}}",
+      "bulkPurgeSkipUninstallNotConfirmed": "ignorados: o agente nunca confirmou a desinstalação (exclua-os um por vez pelo dispositivo)",
       "bulkWakeAllFailed": "Falha ao despertar todos os dispositivos",
       "bulkWakeSent": "Comando de despertar em massa enviado",
       "bulkWakeSomeFailed": "Falha ao despertar alguns dispositivos",
