@@ -111,6 +111,34 @@ describe('userDirectory gates (W18, #6789)', () => {
     }
   });
 
+  it('no credential column is ever SELECTED by the list or single-user reads (projection, not row shape)', async () => {
+    const CREDENTIAL = /password|secret|recovery|totp|token|hash|epoch|grace|forceMfa/i;
+    queue.push([{ orgAccess: 'all' }], [userRow], []);
+    await listScopedUsersForCaller(partnerAuth());
+    queue.push([{ orgAccess: 'all' }], [{ id: 'u-1' }]);
+    await getScopedUserForCaller(partnerAuth(), 'u-1');
+    const orgAuth = { scope: 'organization', partnerId: null, orgId: 'o-1', user: { id: 'u' } } as never;
+    queue.push([{ id: 'u-1' }]);
+    await getScopedUserForCaller(orgAuth, 'u-1');
+    // selects[1] is the list query, selects[4] and selects[5] the two single-user reads.
+    const listed = Object.keys(selects[1] as object);
+    expect(listed).toContain('email');
+    // The list SELECTS mfaEpoch / grace / roleForceMfa only to derive mfaStatus; they are stripped from the
+    // output (asserted above). Nothing else credential-shaped is selected.
+    expect(listed.filter((k) => CREDENTIAL.test(k)).sort()).toEqual(['mfaEnrollmentGraceGrantedAt', 'mfaEpoch', 'roleForceMfa']);
+    for (const cols of [selects[4], selects[5]]) {
+      expect(Object.keys(cols as object)).toContain('email');
+      expect(Object.keys(cols as object).filter((k) => CREDENTIAL.test(k))).toEqual([]);
+    }
+  });
+
+  it('a partner token with no allowlist array still needs orgAccess all (stricter than the router)', async () => {
+    queue.push([{ orgAccess: 'selected' }]);
+    expect(await listScopedUsersForCaller(partnerAuth({ accessibleOrgIds: undefined }))).toMatchObject({ ok: false, code: 'FORBIDDEN' });
+    queue.push([{ orgAccess: 'selected' }]);
+    expect(await getScopedUserForCaller(partnerAuth({ accessibleOrgIds: null }), 'u-1')).toMatchObject({ ok: false, code: 'FORBIDDEN' });
+  });
+
   it('an organization caller lists its org without a partner membership read', async () => {
     const auth = { scope: 'organization', partnerId: null, orgId: 'o-1', user: { id: 'u' } } as never;
     queue.push([{ ...userRow, orgAccess: undefined, orgIds: undefined, siteIds: null, deviceGroupIds: null }], []);

@@ -7,9 +7,11 @@
  *  - summary, readiness and portal users are partner (or system) reads, so
  *    organization scope is refused; the per-section grants come from the
  *    caller's live permission set, exactly as `c.get('permissions')` on REST;
- *  - a missing, deleted and inaccessible org are one NOT_FOUND answer;
- *  - summary and readiness describe whole organizations, so a session bound
- *    to specific devices is refused (stricter than REST, which has none).
+ *  - a missing, deleted and inaccessible org are one NOT_FOUND answer (summary,
+ *    portal users, audit retention); readiness lists such requested ids under
+ *    `notFound` instead, without saying which reason applied;
+ *  - summary, readiness and portal users describe whole organizations, so a
+ *    session bound to specific devices is refused (stricter than REST).
  * Only `get_audit_retention` is agent-reachable (W18 plan, agent exposure).
  */
 import type { AuthContext } from '../middleware/auth';
@@ -80,7 +82,7 @@ export function registerOrgAdminReadTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_account_readiness',
       description:
-        'Setup readiness for up to 50 organizations: sites, devices, policy, primary and billing contacts, billing address, pending portal invites, overdue invoices, integrations, backup. Omit orgIds for your first 50 by name (truncated says more exist). Partner scope.',
+        'Setup readiness for up to 50 organizations: sites, devices, policy, primary and billing contacts, billing address, pending portal invites, overdue invoices, integrations, backup. Omit orgIds for your first 50 by name (truncated says more exist); unreachable ids are listed in notFound. Partner scope.',
       input_schema: orgAdminInputSchema(orgAdminToolSchemas.get_account_readiness),
     },
     handler: async (input, auth) => {
@@ -108,7 +110,11 @@ export function registerOrgAdminReadTools(aiTools: Map<string, AiTool>): void {
         }
         const can = await aiCallerGrantCheck(auth);
         const response = await buildAccountReadinessResponse({ partnerId: partner.partnerId, orgIds, accessibleOrgIds, can });
-        return bounded({ ...response, truncated });
+        // A requested org that is missing, deleted, hidden or outside the caller's reach is dropped by
+        // resolveAcceptedOrgs; say so, one undifferentiated list, rather than answer as if it were not asked about.
+        const returned = new Set(response.orgs.map((org) => org.orgId));
+        const notFound = parsed.value.orgIds ? orgIds.filter((id) => !returned.has(id)) : [];
+        return bounded({ ...response, truncated, ...(notFound.length > 0 ? { notFound } : {}) });
       } catch (error) {
         return thrown('get_account_readiness', error);
       }
@@ -148,7 +154,7 @@ export function registerOrgAdminReadTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'list_portal_users',
       description:
-        "An organization's customer-portal logins (newest first, up to 100): name, email, status (active, pending setup, disabled), notifications, last login, invited date. Not Breeze staff logins (list_users). Partner scope.",
+        "An organization's customer-portal logins (newest first; 50 by default, up to 100): name, email, status (active, pending setup, disabled), notifications, last login, invited date. Not Breeze staff logins (list_users). Partner scope.",
       input_schema: orgAdminInputSchema(orgAdminToolSchemas.list_portal_users),
     },
     handler: async (input, auth) => {

@@ -1,8 +1,9 @@
 /**
  * Shared helpers for the W18 org-admin and identity read tools (full-control
  * W18, #6789). Inputs are validated against the same `.strict()` zod schemas
- * the MCP / Agent SDK surfaces are declared from, so the three surfaces can
- * never accept different arguments.
+ * the MCP / Agent SDK surfaces are declared from. The SDK registers `.shape`,
+ * which is not strict on its own: dispatch (`validateToolInput`) and the
+ * handler's `parseInput` are what reject an unknown key, so keep both.
  */
 import { z } from 'zod';
 import type { AuthContext } from '../middleware/auth';
@@ -28,7 +29,7 @@ export function parseInput<S extends z.ZodType>(schema: S, input: unknown): { ok
 
 /** Organization summary, readiness and portal users are partner (or system) reads on REST. */
 export function partnerScopeDenied(auth: AuthContext, what: string): string | null {
-  return auth.scope === 'organization'
+  return auth.scope !== 'partner' && auth.scope !== 'system'
     ? jsonError(`${what} is read at partner scope; an organization-scoped session cannot read it`, 'PARTNER_SCOPE_REQUIRED')
     : null;
 }

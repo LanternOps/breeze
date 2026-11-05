@@ -128,6 +128,8 @@ export function registerIdentityReadTools(aiTools: Map<string, AiTool>): void {
             const result = await getRoleEffectivePermissionsForCaller(auth, roleId!, orgId);
             return result.ok ? bounded(result.value) : refusal(result, 'Role');
           }
+          default:
+            return jsonError(`Unknown list_roles action: ${String(action satisfies never)}`, 'VALIDATION_ERROR');
         }
       } catch (error) {
         return thrown('list_roles', error);

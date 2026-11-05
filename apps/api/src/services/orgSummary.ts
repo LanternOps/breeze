@@ -310,7 +310,8 @@ export async function resolveOrgSummary(
   // a read-only aggregate view, not the archive detail surface, so an
   // archive-lifecycle org that fails canAccessOrg simply 404s like any
   // other inaccessible id.
-  if (auth.scope === 'partner' && !auth.canAccessOrg(id)) return null;
+  // Only system scope is unbounded; any other scope must reach the org through its allowlist.
+  if (auth.scope !== 'system' && !auth.canAccessOrg(id)) return null;
 
   return buildOrgSummary(id, can);
 }

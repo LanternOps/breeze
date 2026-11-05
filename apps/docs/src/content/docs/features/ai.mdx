@@ -913,8 +913,8 @@ These read-only tools answer "who is this customer, who can log in, and what can
 | `get_audit_retention` | 1 | An organization's audit-log retention policy: whether one is configured, retention days and last cleanup |
 | `list_portal_users` | 1 | An organization's customer-portal logins and their status (active, pending setup, disabled). Needs partner scope |
 | `list_users` | 1 | Breeze staff logins (technicians and admins) with role, MFA status and last login. Needs full partner access |
-| `get_user` | 1 | One Breeze login with its role and organization and site access |
-| `list_roles` | 1 | Breeze roles: list them, read one role's permissions, see who holds it, or see its effective (inherited) permissions |
+| `get_user` | 1 | One Breeze login with its role and organization and site access. Needs full partner access |
+| `list_roles` | 1 | Breeze roles: list them, read one role's permissions, see who holds it, or see its effective (inherited) permissions. Partner callers need full partner access |
 
 Only `get_audit_retention` is available to AI agents. The other six are chat and MCP only: logins, roles and portal users are personal data with no device to scope them to, and the summary and readiness reads need partner scope.
 

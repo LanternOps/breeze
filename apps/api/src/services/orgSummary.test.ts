@@ -79,6 +79,12 @@ describe('resolveOrgSummary access', () => {
     expect(froms).toHaveLength(0);
   });
 
+  it('any non-system scope is bounded by its allowlist (organization included), before any query', async () => {
+    const auth = { scope: 'organization', canAccessOrg: () => false } as never;
+    expect(await resolveOrgSummary(auth, ORG, all)).toBeNull();
+    expect(froms).toHaveLength(0);
+  });
+
   it('system scope is not bounded by an allowlist', async () => {
     queue.push([{ id: ORG, currencyCode: null }]);
     const auth = { scope: 'system', canAccessOrg: () => false } as never;

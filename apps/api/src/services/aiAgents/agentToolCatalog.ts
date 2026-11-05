@@ -447,7 +447,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   query_analytics: 'automations_reports',
   get_executive_summary: 'automations_reports',
   query_audit_log: 'automations_reports',
-  // Full-control W18 PR A (#6789): the only agent-reachable W18 read (one number for one org), beside query_audit_log.
+  // Full-control W18 PR A (#6789): the only agent-reachable W18 read (one org's retention policy), beside query_audit_log.
   get_audit_retention: 'automations_reports',
   query_change_log: 'automations_reports',
   search_documentation: 'automations_reports',

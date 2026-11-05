@@ -65,12 +65,15 @@ export async function hasFullPartnerMembership(auth: { user: { id: string }; par
 
 /**
  * The `userRoutes.use('*')` partner gate plus `getScopeContext`, as a result
- * instead of a thrown HTTPException. Same order and messages as the route.
+ * instead of a thrown HTTPException. Same order and messages as the route,
+ * with one deliberate tightening: the router skips the membership read when
+ * `accessibleOrgIds` is not an array; this gate never does, so a partner
+ * token assembled without an allowlist still needs `orgAccess: 'all'`.
  */
 export async function resolveUserDirectoryScope(auth: DirectoryAuth): Promise<{ ok: true; scopeContext: ScopeContext } | DirectoryRefusal> {
   if (auth.scope === 'partner') {
     if (!auth.partnerId) return { ok: false, code: 'FORBIDDEN', message: PARTNER_CONTEXT_REQUIRED };
-    if (Array.isArray(auth.accessibleOrgIds) && !(await hasFullPartnerMembership(auth))) {
+    if (!(await hasFullPartnerMembership(auth))) {
       return { ok: false, code: 'FORBIDDEN', message: FULL_PARTNER_ACCESS_REQUIRED };
     }
     return { ok: true, scopeContext: { scope: 'partner', partnerId: auth.partnerId } };

@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const ORG = '00000000-0000-4000-8000-0000000000c1';
 const ORG_B = '00000000-0000-4000-8000-0000000000c2';
 const PARTNER = '00000000-0000-4000-8000-0000000000e1';
-const HASH_SENTINEL = '$argon2id$PORTAL-HASH-SENTINEL';
 
 const h = vi.hoisted(() => ({
   resolveOrgSummary: vi.fn(),
@@ -77,14 +76,27 @@ describe('W18 org admin read tools (#6789)', () => {
     expect(h.listPortal).not.toHaveBeenCalled();
   });
 
-  it('device-bound session refused by get_org_summary and get_account_readiness', async () => {
+  it.each([
+    ['get_org_summary', { orgId: ORG }],
+    ['get_account_readiness', {}],
+    ['list_portal_users', { orgId: ORG }],
+  ] as const)('device-bound session refused by %s before any service call', async (name, input) => {
     const bound = auth({ allowedDeviceIds: ['d-1'] } as Partial<AuthContext>);
-    expect(parse(await run('get_org_summary', { orgId: ORG }, bound)).code).toBe('ACCESS_DENIED');
-    expect(parse(await run('get_account_readiness', {}, bound)).code).toBe('ACCESS_DENIED');
+    expect(parse(await run(name, input, bound)).code).toBe('ACCESS_DENIED');
     expect(h.resolveOrgSummary).not.toHaveBeenCalled();
+    expect(h.buildReadiness).not.toHaveBeenCalled();
+    expect(h.defaultOrgIds).not.toHaveBeenCalled();
+    expect(h.listPortal).not.toHaveBeenCalled();
   });
 
-  it('get_org_summary: inaccessible org same not-found as missing, and the caller grants reach the service', async () => {
+  it('system scope passes the partner-scope gate (an allowlist, not an organization blacklist)', async () => {
+    const system = auth({ scope: 'system', partnerId: null, accessibleOrgIds: null } as Partial<AuthContext>);
+    h.resolveOrgSummary.mockResolvedValue({ orgId: ORG, sites: { count: 0 } });
+    expect(parse(await run('get_org_summary', { orgId: ORG }, system))).toMatchObject({ orgId: ORG });
+  });
+
+  // Only the null -> NOT_FOUND mapping: the isolation itself is resolveOrgSummary's (orgSummary.test.ts, integration).
+  it('get_org_summary: a null summary maps to one NOT_FOUND, and the caller grants reach the service', async () => {
     h.resolveOrgSummary.mockResolvedValue(null);
     const foreign = await run('get_org_summary', { orgId: ORG_B }, auth());
     const missing = await run('get_org_summary', { orgId: ORG }, auth());
@@ -113,10 +125,16 @@ describe('W18 org admin read tools (#6789)', () => {
     expect(parse(await run('get_account_readiness', { orgIds: ids }, auth())).code).toBe('VALIDATION_ERROR');
     expect(h.buildReadiness).not.toHaveBeenCalled();
 
-    h.buildReadiness.mockResolvedValue({ partnerId: PARTNER, orgs: [] });
+    h.buildReadiness.mockResolvedValue({ partnerId: PARTNER, orgs: [{ orgId: ORG }] });
     const out = parse(await run('get_account_readiness', { orgIds: [ORG, ORG.toUpperCase()] }, auth()));
     expect(h.buildReadiness).toHaveBeenCalledWith(expect.objectContaining({ orgIds: [ORG] }));
     expect(out.truncated).toBe(false);
+    expect(out.notFound).toBeUndefined();
+
+    // A requested org the builder dropped (foreign, deleted, hidden) is named, never silently omitted.
+    h.buildReadiness.mockResolvedValue({ partnerId: PARTNER, orgs: [{ orgId: ORG }] });
+    const partial = parse(await run('get_account_readiness', { orgIds: [ORG, ORG_B] }, auth()));
+    expect(partial.notFound).toEqual([ORG_B]);
 
     expect(parse(await run('get_account_readiness', { partnerId: '00000000-0000-4000-8000-0000000000e9' }, auth())).code).toBe('FORBIDDEN');
   });
@@ -145,12 +163,14 @@ describe('W18 org admin read tools (#6789)', () => {
     expect(parse(await run('get_audit_retention', {}, auth())).code).toBe('VALIDATION_ERROR');
   });
 
-  it('list_portal_users caps at limit, sets truncated and never relays a password hash', async () => {
+  // The password hash never reaching this layer is proven where it is dropped (portalUserDirectory.test.ts) and on a
+  // real row (aiToolsOrgAdminScope.integration.test.ts); this handler only relays the service's projection.
+  it('list_portal_users caps at limit and sets truncated', async () => {
     const rows = Array.from({ length: 3 }, (_, i) => ({ id: `pu-${i}`, email: `p${i}@x.com`, name: `P${i}`, effectiveStatus: 'active' }));
     h.listPortal.mockResolvedValue(rows);
     const out = parse(await run('list_portal_users', { orgId: ORG, limit: 2 }, auth()));
     expect(out).toMatchObject({ showing: 2, total: 3, truncated: true });
-    expect(JSON.stringify(out)).not.toContain(HASH_SENTINEL);
+    expect(parse(await run('list_portal_users', { orgId: ORG }, auth()))).toMatchObject({ showing: 3, truncated: false });
 
     h.listPortal.mockResolvedValue(null);
     expect(parse(await run('list_portal_users', { orgId: ORG_B }, auth())).code).toBe('NOT_FOUND');

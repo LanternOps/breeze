@@ -64,8 +64,8 @@ export async function listPortalUsersForOrg(orgId: string): Promise<PortalUserLi
 }
 
 /**
- * `listPortalUsersForOrg` behind the route's `resolveAccessibleOrg`: a partner
- * caller only within its allowlist, and only a live (non-deleted) org. A
+ * `listPortalUsersForOrg` behind the route's `resolveAccessibleOrg`: any
+ * non-system caller only within its allowlist, and only a live (non-deleted) org. A
  * malformed id, an inaccessible org and a missing one are the same null.
  * Scope (partner or system) is enforced by the caller.
  */
@@ -74,7 +74,7 @@ export async function listPortalUsersForCaller(
   orgId: string,
 ): Promise<PortalUserListItem[] | null> {
   if (!PG_UUID_REGEX.test(orgId)) return null;
-  if (auth.scope === 'partner' && !auth.canAccessOrg(orgId)) return null;
+  if (auth.scope !== 'system' && !auth.canAccessOrg(orgId)) return null;
   const [org] = await db.select({ id: organizations.id }).from(organizations)
     .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt))).limit(1);
   if (!org) return null;

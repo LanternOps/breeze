@@ -63,12 +63,15 @@ describe('W18 identity read tools (#6789)', () => {
     }
   });
 
-  it('device-bound sessions are refused before any directory read', async () => {
+  it.each([
+    ['list_users', {}],
+    ['get_user', { userId: USER }],
+    ['list_roles', { action: 'list' }],
+    ['list_roles', { action: 'users', roleId: ROLE }],
+  ] as const)('device-bound session refused by %s before any directory read', async (name, input) => {
     const bound = auth({ allowedDeviceIds: ['d-1'] } as Partial<AuthContext>);
-    expect(parse(await run('list_users', {}, bound)).code).toBe('ACCESS_DENIED');
-    expect(parse(await run('list_roles', { action: 'list' }, bound)).code).toBe('ACCESS_DENIED');
-    expect(h.listUsers).not.toHaveBeenCalled();
-    expect(h.listRoles).not.toHaveBeenCalled();
+    expect(parse(await run(name, input, bound)).code).toBe('ACCESS_DENIED');
+    for (const fn of Object.values(h)) expect(fn).not.toHaveBeenCalled();
   });
 
   it('list_users caps at limit and sets truncated', async () => {

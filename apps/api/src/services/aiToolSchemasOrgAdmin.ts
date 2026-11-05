@@ -11,7 +11,9 @@ export const ROLE_READ_ACTIONS = ['list', 'get', 'users', 'effective_permissions
 
 /** Decision 7: the default set and the cap of `get_account_readiness`. */
 export const ACCOUNT_READINESS_TOOL_MAX_ORGS = 50;
+/** Row cap of `list_portal_users`. */
 export const PORTAL_USERS_TOOL_MAX = 100;
+/** Row cap of `list_users` and of `list_roles` list / users. */
 export const USERS_TOOL_MAX = 200;
 
 export const orgAdminToolSchemas = {

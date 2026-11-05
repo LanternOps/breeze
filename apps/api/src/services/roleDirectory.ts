@@ -91,7 +91,7 @@ export async function resolvePartnerFocusedOrgId(
 // `orgStore` auto-selects one on load, so a partner admin effectively always
 // sends an orgId. Deriving the scope from that param alone flipped the acting
 // scope to `organization` for every request, and the `role.scope !==
-// scopeContext.scope` guard below then 404'd every partner-scoped role — while
+// scopeContext.scope` guard in the routes/roles.ts handlers then 404'd every partner-scoped role — while
 // `GET /roles` happily kept listing them. The role itself is the only reliable
 // statement of which axis a request is operating on.
 //
@@ -130,7 +130,7 @@ export async function resolveRoleActingScope(
     // org B's role id and PATCH/DELETE/clone against B, which is the wrong
     // customer even though the partner has umbrella access to both. Requiring
     // the match keeps the request bound to the org it names, which is what the
-    // rest of this file's comments promise.
+    // role routes' focused-org handling promises (routes/roles.ts).
     const resolved = await resolvePartnerFocusedOrgId(auth, focusedOrgId);
     if (!resolved) return null;
     if (!role.isSystem && role.orgId !== resolved) return null;
@@ -570,29 +570,46 @@ type RoleDetail = NonNullable<Awaited<ReturnType<typeof getRoleDetail>>>;
 type RoleUserRow = NonNullable<Awaited<ReturnType<typeof listRoleUsers>>>[number];
 type RoleEffectivePermissions = NonNullable<Awaited<ReturnType<typeof getRoleEffectivePermissions>>>;
 
+const FOCUSED_ORG_NOT_FOUND: DirectoryRefusal = { ok: false, code: 'NOT_FOUND', message: 'Organization not found or access denied' };
+
+/**
+ * The tool's gate: the router gate, then a named org that the caller cannot
+ * focus on. REST silently ignores an unusable `?orgId=` (the web client sends
+ * one on every request); the tool refuses it, so the model is never told "org X
+ * has no custom roles" when it was simply not allowed to look (W18 review).
+ */
+async function resolveToolScope(auth: RoleAuth, focusedOrgId: string | null | undefined): Promise<{ ok: true; scopeContext: ScopeContext } | DirectoryRefusal> {
+  const gate = resolveRoleDirectoryScope(auth);
+  if (!gate.ok || !focusedOrgId) return gate;
+  if (gate.scopeContext.scope === 'organization') {
+    return focusedOrgId === gate.scopeContext.orgId ? gate : FOCUSED_ORG_NOT_FOUND;
+  }
+  return (await resolvePartnerFocusedOrgId(auth, focusedOrgId)) ? gate : FOCUSED_ORG_NOT_FOUND;
+}
+
 /** `GET /roles` with the router gate applied: the AI tool's entry point. */
 export async function listRolesForCaller(auth: RoleAuth, focusedOrgId?: string | null): Promise<DirectoryResult<RoleListRow[]>> {
-  const gate = resolveRoleDirectoryScope(auth);
+  const gate = await resolveToolScope(auth, focusedOrgId);
   if (!gate.ok) return gate;
   return { ok: true, value: await listRolesForScope(auth, gate.scopeContext, focusedOrgId) };
 }
 
 export async function getRoleDetailForCaller(auth: RoleAuth, roleId: string, focusedOrgId?: string | null): Promise<DirectoryResult<RoleDetail>> {
-  const gate = resolveRoleDirectoryScope(auth);
+  const gate = await resolveToolScope(auth, focusedOrgId);
   if (!gate.ok) return gate;
   const value = await getRoleDetail(auth, roleId, focusedOrgId);
   return value ? { ok: true, value } : ROLE_NOT_FOUND;
 }
 
 export async function listRoleUsersForCaller(auth: RoleAuth, roleId: string, focusedOrgId?: string | null): Promise<DirectoryResult<RoleUserRow[]>> {
-  const gate = resolveRoleDirectoryScope(auth);
+  const gate = await resolveToolScope(auth, focusedOrgId);
   if (!gate.ok) return gate;
   const value = await listRoleUsers(auth, roleId, focusedOrgId);
   return value ? { ok: true, value } : ROLE_NOT_FOUND;
 }
 
 export async function getRoleEffectivePermissionsForCaller(auth: RoleAuth, roleId: string, focusedOrgId?: string | null): Promise<DirectoryResult<RoleEffectivePermissions>> {
-  const gate = resolveRoleDirectoryScope(auth);
+  const gate = await resolveToolScope(auth, focusedOrgId);
   if (!gate.ok) return gate;
   const value = await getRoleEffectivePermissions(auth, roleId, focusedOrgId);
   return value ? { ok: true, value } : ROLE_NOT_FOUND;
