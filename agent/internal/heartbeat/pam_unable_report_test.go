@@ -189,7 +189,14 @@ func TestDeliverPamUnableCancelsInFlightOnStop(t *testing.T) {
 	}
 	// The real shutdown path: Stop cancels the report as it begins, before
 	// its bounded drain.
-	go h.Stop()
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		h.Stop()
+	}()
+	// Join Stop before the test returns: it reads package state (e.g. log)
+	// that other tests swap, so it must not outlive this test (#11062).
+	t.Cleanup(func() { <-stopped })
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) {
@@ -221,7 +228,14 @@ func TestDeliverPamUnableStopsPendingRetryWait(t *testing.T) {
 	}
 	// The real shutdown path: Stop cancels the report as it begins, before
 	// its bounded drain.
-	go h.Stop()
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		h.Stop()
+	}()
+	// Join Stop before the test returns: it reads package state (e.g. log)
+	// that other tests swap, so it must not outlive this test (#11062).
+	t.Cleanup(func() { <-stopped })
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) {
