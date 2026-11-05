@@ -36,6 +36,8 @@ export class GateError extends Error {
 const DERIVED_OUTPUTS = new Set(['mobile-native-changes.mobile']);
 const isSha = value => typeof value === 'string' && /^[a-f\d]{40}$/i.test(value);
 const nonEmptyLines = text => text.split('\n').filter(Boolean);
+// execFileSync's message starts "Command failed: <argv>". The cause is in stderr.
+const failureText = error => (nonEmptyLines(String(error?.stderr ?? '').trim())[0] ?? nonEmptyLines(String(error?.message ?? error))[0] ?? 'unknown failure').slice(0, 300);
 
 export function createGateIO(options = {}) {
   const io = createIO(options);
@@ -463,17 +465,17 @@ function readOracle(io, repository, run) {
 
 const QUEUE_REF = /^gh-readonly-queue\/[\w.-]+\/pr-(\d+)-([a-f\d]{40})$/;
 
-function hasCommit(io, sha) {
+function hasCommit(io, sha, onFailure = () => {}) {
   try { io.git(['cat-file', '-e', `${sha}^{commit}`]); return true; } catch { /* not local yet */ }
   // An ejected group's head may be gone from the server.
-  try { io.git(['fetch', '--no-tags', '--quiet', 'origin', sha]); io.git(['cat-file', '-e', `${sha}^{commit}`]); return true; } catch { return false; }
+  try { io.git(['fetch', '--no-tags', '--quiet', 'origin', sha]); io.git(['cat-file', '-e', `${sha}^{commit}`]); return true; } catch (error) { onFailure(error); return false; }
 }
 
 // The Actions API returns transient 5xx often enough that one attempt is a bug. Reads only.
 function ghJson(io, args) {
   for (let attempt = 1; ; attempt++) {
     try { return JSON.parse(io.gh(args)); } catch (error) {
-      if (attempt >= 3) throw new GateError('api_error', `${args[1]}: ${String(error.message ?? error).split('\n')[0]}`);
+      if (attempt >= 3) throw new GateError('api_error', `${args[1]}: ${failureText(error)}`);
       io.sleep?.(attempt * 5_000);
     }
   }
@@ -482,8 +484,9 @@ function ghJson(io, args) {
 export function runJobs(io, repository, runId) {
   // The default filter is the latest attempt, which is what needs.<job> sees.
   const pages = ghJson(io, ['api', `repos/${repository}/actions/runs/${runId}/jobs?per_page=100&filter=latest`, '--paginate', '--slurp']);
-  if (!Array.isArray(pages)) throw new GateError('api_error', 'jobs pagination');
-  return pages.flatMap(page => page.jobs ?? []).map(({ name, conclusion, status }) => ({ name, conclusion, status }));
+  // A page with no list is an API problem. Read as zero jobs, it would blame the candidate.
+  if (!Array.isArray(pages) || !pages.every(page => Array.isArray(page?.jobs))) throw new GateError('api_error', 'jobs pagination');
+  return pages.flatMap(page => page.jobs).map(({ name, conclusion, status }) => ({ name, conclusion, status }));
 }
 
 function queueSample(io, repository, run) {
@@ -659,7 +662,6 @@ export function waitForCi(io, { repository, headSha, headRef, deadlineMs = DEADL
 const logValue = value => JSON.stringify(value).replaceAll('##[', '#\\u0023[');
 const commandData = text => text.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
 const logSha = value => isSha(value) ? value : 'none';
-const firstLine = error => String(error?.message ?? error).split('\n')[0];
 
 function gateLine({ verdict: outcome, reason, event, base, head, ciRun = 'none', attempt = 'none', policyPaths = [], flags = null, oracle = 'none' }) {
   return `ci-gate: verdict=${outcome} reason=${reason} event=${/^\w+$/.test(event ?? '') ? event : 'none'} base=${logSha(base)} head=${logSha(head)} ` +
@@ -676,20 +678,29 @@ function logIdentity(io, env) {
 // ── verify: the verdict for one queue entry ──────────────────────────────
 
 // The checkout is of workflow_sha, so candidate commits are not guaranteed local.
-function fetchCommit(io, sha) {
+// Returns why the commit cannot be had, or null once it is here.
+function fetchFailure(io, sha) {
+  let cause = 'not found';
   for (let attempt = 1; attempt <= 3; attempt++) {
-    if (hasCommit(io, sha)) return true;
+    if (hasCommit(io, sha, error => { cause = failureText(error); })) return null;
     if (attempt < 3) io.sleep(attempt * 5_000);
   }
-  return false;
+  return cause;
 }
 
-function isPinned(io, workflowSha) {
-  if (!isSha(workflowSha)) return false;
+// Returns why the gate is not pinned, or null when it is.
+function pinFailure(io, workflowSha) {
+  if (!isSha(workflowSha)) return 'GITHUB_WORKFLOW_SHA is not a sha';
   // The checkout normally wrote this ref; fetching it here means the answer does
   // not depend on that. A failed fetch leaves what is local, and no ref is not pinned.
-  try { io.git(['fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main']); } catch { /* judged below */ }
-  try { io.git(['merge-base', '--is-ancestor', workflowSha, 'origin/main']); return true; } catch { return false; }
+  let fetchNote = '';
+  try { io.git(['fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main']); }
+  catch (error) { fetchNote = ` (fetching main failed: ${failureText(error)})`; }
+  try { io.git(['merge-base', '--is-ancestor', workflowSha, 'origin/main']); return null; } catch (error) {
+    // Exit 1 is the answer "no". Anything else means the check could not run.
+    const why = error?.status === 1 ? 'not an ancestor of origin/main' : `ancestry check failed: ${failureText(error)}`;
+    return `${workflowSha}: ${why}${fetchNote}`;
+  }
 }
 
 // Advisory: the artifact is candidate-written, so no outcome here can change a verdict.
@@ -702,7 +713,7 @@ function checkOracle(io, repository, run, out) {
     for (const diff of diffs) io.stderr(`::warning title=ci-gate oracle disagreement::${commandData(logValue(diff))}`);
     return diffs.length ? `disagree:${diffs.length}` : 'agree';
   } catch (error) {
-    io.stderr(`::warning title=ci-gate oracle unreadable::${commandData(logValue(firstLine(error)))}`);
+    io.stderr(`::warning title=ci-gate oracle unreadable::${commandData(logValue(failureText(error)))}`);
     return 'unreadable';
   }
 }
@@ -714,19 +725,24 @@ function reportPolicyPaths(io, env, policyPaths) {
   if (!env.GITHUB_STEP_SUMMARY) return;
   try {
     io.append(env.GITHUB_STEP_SUMMARY, `### CI Gate: this entry touches policy paths\n\n${listed.map(path => `- ${path}`).join('\n')}\n`);
-  } catch (error) { io.stderr(`ci-gate-detail: step summary not written: ${logValue(firstLine(error))}`); }
+  } catch (error) { io.stderr(`ci-gate-detail: step summary not written: ${logValue(failureText(error))}`); }
 }
 
 function judgeEntry(io, env, { waitForCi: wait, verdict: decide }, line) {
+  const started = io.now();
   if (env.GITHUB_EVENT_NAME !== 'merge_group') return { reason: 'wrong_event' };
   const repository = env.GITHUB_REPOSITORY;
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository ?? '')) return { reason: 'invalid_repository' };
-  if (!isPinned(io, env.GITHUB_WORKFLOW_SHA)) return { reason: 'not_pinned' };
+  const unpinned = pinFailure(io, env.GITHUB_WORKFLOW_SHA);
+  if (unpinned) return { reason: 'not_pinned', detail: unpinned };
   if (!isSha(env.BASE_SHA) || !isSha(env.HEAD_SHA)) return { reason: 'base_unreadable', detail: 'invalid revision' };
-  if (!fetchCommit(io, env.BASE_SHA)) return { reason: 'base_unreadable', detail: `cannot fetch base ${env.BASE_SHA}` };
-  if (!fetchCommit(io, env.HEAD_SHA)) return { reason: 'base_unreadable', detail: `cannot fetch head ${env.HEAD_SHA}` };
+  for (const [name, sha] of [['base', env.BASE_SHA], ['head', env.HEAD_SHA]]) {
+    const cause = fetchFailure(io, sha);
+    if (cause) return { reason: 'base_unreadable', detail: `cannot fetch ${name} ${sha}: ${cause}` };
+  }
 
-  const waited = wait(io, { repository, headSha: env.HEAD_SHA, headRef: env.HEAD_REF });
+  // The deadline covers the whole script, so a slow fetch cannot push it past the job timeout.
+  const waited = wait(io, { repository, headSha: env.HEAD_SHA, headRef: env.HEAD_REF, deadlineMs: DEADLINE_MS - (io.now() - started) });
   if (waited.run) Object.assign(line, { ciRun: waited.run.id, attempt: waited.run.run_attempt });
   if (waited.reason) return waited;
 
@@ -751,7 +767,7 @@ export function verify(io, env, deps = {}) {
   } catch (error) {
     line.verdict = 'fail';
     line.reason = error instanceof GateError ? error.code : 'error';
-    io.stderr(`ci-gate-detail: ${logValue(firstLine(error))}`);
+    io.stderr(`ci-gate-detail: ${logValue(failureText(error))}`);
   }
   io.stdout(gateLine(line));
   return line.verdict === 'pass' ? 0 : 1;
@@ -768,22 +784,28 @@ export const ANCHOR_FILE = 'ci-gate-anchor.json';
 function writeAnchor(io, env) {
   const merge = env.GITHUB_SHA;
   const head = env.PR_HEAD_SHA;
-  const [pr, runId, runAttempt] = [env.PR_NUMBER, env.GITHUB_RUN_ID, env.GITHUB_RUN_ATTEMPT].map(value => /^[1-9]\d*$/.test(value ?? '') ? Number(value) : null);
-  if (env.GITHUB_EVENT_NAME !== 'pull_request' || !isSha(merge) || !isSha(head) || pr === null || runId === null || runAttempt === null) {
-    return { reason: 'anchor_invalid_input' };
-  }
-  if (!fetchCommit(io, merge)) return { reason: 'base_unreadable' };
+  const isCount = value => /^[1-9]\d*$/.test(value ?? '');
+  const invalid = [
+    ...(env.GITHUB_EVENT_NAME === 'pull_request' ? [] : ['GITHUB_EVENT_NAME']),
+    ...[['GITHUB_SHA', merge], ['PR_HEAD_SHA', head]].filter(([, value]) => !isSha(value)).map(([name]) => name),
+    ...['PR_NUMBER', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'].filter(name => !isCount(env[name])),
+  ];
+  if (invalid.length) return { reason: 'anchor_invalid_input', detail: `invalid: ${invalid.join(', ')}` };
+  const cause = fetchFailure(io, merge);
+  if (cause) return { reason: 'base_unreadable', detail: `cannot fetch ${merge}: ${cause}` };
+  // rev-parse --verify --quiet exits 1 with no output when there is no such parent.
   const parent = number => { try { return io.git(['rev-parse', '--verify', '--quiet', `${merge}^${number}`]).trim(); } catch { return null; } };
   const base = parent(1);
-  if (!isSha(base)) return { reason: 'base_unreadable' };
-  if (parent(2) !== head) return { reason: 'merge_head_mismatch', base };
+  if (!isSha(base)) return { reason: 'base_unreadable', detail: `${merge} has no first parent` };
+  const second = parent(2);
+  if (second !== head) return { reason: 'merge_head_mismatch', base, detail: `M^2=${second ?? 'none'} expected ${head}` };
   // `files` is W4's quoted listing, what a classifier reads. Policy paths come from
   // an unquoted (-z) listing of the same diff, so an unusual name still matches.
   const files = nonEmptyLines(io.git(['diff', '--name-only', '--no-renames', base, merge]));
   const policyPaths = io.git(['diff', '-z', '--name-only', '--no-renames', base, merge]).split('\0').filter(Boolean).filter(isPolicyPath);
   const policyInFiles = policyPaths.length > 0;
-  io.write(ANCHOR_FILE, `${JSON.stringify({ schema: 1, head_sha: head, merge_sha: merge, base_sha: base, pr_number: pr, run_id: runId,
-    run_attempt: runAttempt, created_at: new Date(io.now()).toISOString(), files, files_source: 'merge-commit',
+  io.write(ANCHOR_FILE, `${JSON.stringify({ schema: 1, head_sha: head, merge_sha: merge, base_sha: base, pr_number: Number(env.PR_NUMBER), run_id: Number(env.GITHUB_RUN_ID),
+    run_attempt: Number(env.GITHUB_RUN_ATTEMPT), created_at: new Date(io.now()).toISOString(), files, files_source: 'merge-commit',
     policy_digest: policyInFiles ? null : policyDigest(io, base), policy_in_files: policyInFiles }, null, 2)}\n`);
   return { reason: 'anchor_written', base, policyPaths };
 }
@@ -794,8 +816,8 @@ export function anchor(io, env) {
     logIdentity(io, env);
     io.remove(ANCHOR_FILE); // A re-run must never upload a previous attempt's file.
     Object.assign(line, writeAnchor(io, env));
-  } catch (error) { io.stderr(`ci-gate-detail: ${logValue(firstLine(error))}`); }
-  if (line.reason !== 'anchor_written') io.stderr(`ci-gate-detail: no anchor written: ${line.reason}`);
+  } catch (error) { line.detail = failureText(error); }
+  if (line.reason !== 'anchor_written') io.stderr(`ci-gate-detail: no anchor written: ${line.reason} ${logValue(line.detail ?? '')}`);
   io.stdout(gateLine(line));
   return 0;
 }

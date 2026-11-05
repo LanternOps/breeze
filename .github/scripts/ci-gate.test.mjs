@@ -882,10 +882,12 @@ test('waitForCi: of two runs for one head, the newest governs', () => {
 
 test('waitForCi: stops when CI Success has completed, whatever its conclusion, and not before', () => {
   for (const conclusion of ['success', 'failure', 'skipped']) {
-    const io = waitIo(elapsed => ({ runs: [ciRun()], jobs: elapsed < 10 * MIN ? [ciSuccessJob('in_progress')] : [ciSuccessJob('completed', conclusion)] }));
+    // Another job finishing must not end the wait, or the verdict judges a partial list.
+    const lint = { name: 'Lint', status: 'completed', conclusion: 'success' };
+    const io = waitIo(elapsed => ({ runs: [ciRun()], jobs: [lint, elapsed < 10 * MIN ? ciSuccessJob('in_progress') : ciSuccessJob('completed', conclusion)] }));
     const out = wait(io);
     assert.equal(out.run.status, 'in_progress');
-    assert.equal(out.jobs[0].conclusion, conclusion);
+    assert.equal(out.jobs[1].conclusion, conclusion);
     assert.equal(io.elapsed(), 10 * MIN);
   }
 });
@@ -926,7 +928,27 @@ test('waitForCi: an outage shorter than the tolerance is survived, 15 consecutiv
 
   const io = waitIo(() => { throw Error('HTTP 502'); });
   assert.equal(wait(io).reason, 'api_error');
-  assert.ok(io.elapsed() >= 15 * MIN && io.elapsed() < 18 * MIN, String(io.elapsed()));
+  // One poll is 60 s plus the 15 s of ghJson's retries, so 15 minutes is reached within 75 s.
+  assert.ok(io.elapsed() >= 15 * MIN && io.elapsed() <= 16.25 * MIN, String(io.elapsed()));
+});
+
+test('waitForCi: api_error carries the real cause from stderr, not just the failed command', () => {
+  const io = waitIo(() => { throw Object.assign(Error('Command failed: gh api repos/x\ngh: API rate limit exceeded (HTTP 403)'), { stderr: 'gh: API rate limit exceeded (HTTP 403)\n' }); });
+  const out = wait(io);
+  assert.equal(out.reason, 'api_error');
+  assert.match(out.detail, /API rate limit exceeded \(HTTP 403\)/);
+});
+
+test('waitForCi: a bug is not reported as an outage', () => {
+  const io = waitIo(() => ({ raw: { workflow_runs: [null] } }));
+  assert.throws(() => wait(io), TypeError);
+  assert.equal(io.elapsed(), 0);
+});
+
+test('runJobs: a page with no job list is an API problem, not zero jobs that blame the candidate', () => {
+  const io = waitIo(() => ({}));
+  io.gh = () => JSON.stringify([{ jobs: [{ name: 'Lint', conclusion: 'success', status: 'completed' }] }, { message: 'Server Error' }]);
+  assert.throws(() => gate.runJobs(io, REPO, 1), error => error.code === 'api_error');
 });
 
 test('waitForCi: the outage window counts consecutive failures, so a good poll resets it', () => {
@@ -1033,6 +1055,46 @@ test('verify: pins itself by ancestry, before waiting for anything', () => {
   const bad = verifyIo();
   assert.equal(runVerify(bad, { env: { GITHUB_WORKFLOW_SHA: '' } }), 1);
   assert.match(gateLines(bad)[0], /reason=not_pinned /);
+});
+
+test('verify: not_pinned says whether the answer was no or the check could not run', () => {
+  const failing = error => verifyIo({ git: args => { if (args[0] === 'merge-base' || (error.fetchToo && args[0] === 'fetch')) throw error; return ''; } });
+  const details = io => io.all().filter(line => line.startsWith('ci-gate-detail:')).join('\n');
+
+  const no = failing(Object.assign(Error('Command failed'), { status: 1 }));
+  assert.equal(runVerify(no), 1);
+  assert.match(details(no), /not an ancestor of origin\/main/);
+
+  const cannot = failing(Object.assign(Error('Command failed'), { status: 128, stderr: "fatal: Not a valid object name origin/main\n", fetchToo: true }));
+  assert.equal(runVerify(cannot), 1);
+  assert.match(gateLines(cannot)[0], /reason=not_pinned /);
+  assert.match(details(cannot), /ancestry check failed: fatal: Not a valid object name origin\/main/);
+  assert.match(details(cannot), /fetching main failed/);
+});
+
+test('verify: an unfetchable candidate commit logs which one and why', () => {
+  const io = verifyIo({ git: args => {
+    if (args[0] === 'cat-file' && args[2].startsWith(HEAD_SHA)) throw Error('absent');
+    if (args[0] === 'fetch' && args.includes(HEAD_SHA)) throw Object.assign(Error('Command failed'), { stderr: 'fatal: remote error: upload-pack: not our ref\n' });
+    return '';
+  } });
+  assert.equal(runVerify(io), 1);
+  assert.match(gateLines(io)[0], /reason=base_unreadable /);
+  const detail = io.all().find(line => line.startsWith('ci-gate-detail:'));
+  assert.ok(detail.includes(`head ${HEAD_SHA}`), detail);
+  assert.match(detail, /upload-pack: not our ref/);
+});
+
+test('verify: time spent fetching comes off the wait, so a verdict line always lands before the job timeout', () => {
+  const io = verifyIo();
+  const git = io.git;
+  io.git = args => { io.sleep(10 * MIN); return git(args); }; // fetch main, merge-base, two cat-files
+  let deadlineMs;
+  runVerify(io, { waitFor(_, input) { deadlineMs = input.deadlineMs; return finished(); } });
+  assert.equal(deadlineMs, 100 * MIN);
+  // Past the deadline already: no poll, and a line saying so.
+  const late = waitIo(() => assert.fail('must not poll'));
+  assert.equal(wait(late, { deadlineMs: -1 }).reason, 'deadline');
 });
 
 test('verify: logs GITHUB_WORKFLOW_REF verbatim and never judges its shape', () => {
@@ -1326,6 +1388,18 @@ test('anchor: M^2 not being the head writes nothing and exits 0 with a stderr re
   assert.equal(r.written(), null);
   assert.match(lineOf(r)[0], /^ci-gate: verdict=pass reason=merge_head_mismatch /);
   assert.ok(errors.some(line => line.includes('merge_head_mismatch')), errors.join('\n'));
+  assert.ok(errors.some(line => line.includes(`M^2=${r.headSha}`) && line.includes(`expected ${'d'.repeat(40)}`)), errors.join('\n'));
+});
+
+test('anchor: an unusable input is named, and a failed fetch says why', () => {
+  for (const [over, name] of [[{ PR_NUMBER: '' }, 'PR_NUMBER'], [{ PR_HEAD_SHA: 'x' }, 'PR_HEAD_SHA'], [{ GITHUB_SHA: 'x' }, 'GITHUB_SHA'], [{ GITHUB_RUN_ID: 'x' }, 'GITHUB_RUN_ID'], [{ GITHUB_RUN_ATTEMPT: '' }, 'GITHUB_RUN_ATTEMPT'], [{ GITHUB_EVENT_NAME: 'merge_group' }, 'GITHUB_EVENT_NAME']]) {
+    const r = anchorRemote({ 'src/b.ts': 'b\n' });
+    gate.anchor(r.io, r.env(over));
+    assert.ok(r.lines.some(line => line.startsWith('ci-gate-detail:') && line.includes(name)), `${name}:\n${r.lines.join('\n')}`);
+  }
+  const r = anchorRemote({ 'src/b.ts': 'b\n' });
+  gate.anchor(r.io, r.env({ GITHUB_SHA: 'e'.repeat(40) }));
+  assert.ok(r.lines.some(line => line.startsWith('ci-gate-detail:') && /base_unreadable .*(fatal|error)/i.test(line)), r.lines.join('\n'));
 });
 
 test('anchor: a single-parent commit is not a merge commit; nothing is written', () => {
@@ -1433,6 +1507,19 @@ test('docs: both agent docs describe CI Gate, and the rollback order is pinned',
   for (const claim of [/does not prove tests ran honestly/i, /drop it from `ci-success`/i, /later PR/i, /green replay run/i, /blocks its own fix/i]) {
     assert.match(merge, claim);
   }
+  // Rollback must work from a clean machine in an incident: no local file from G1.
+  assert.doesNotMatch(rollback, /\/tmp\//);
+});
+
+test('docs: every reason the gate can log is in the runbook table', () => {
+  const merge = readFileSync(join(REPO_ROOT, 'docs/agents/merge-and-deploy.md'), 'utf8');
+  const table = merge.slice(merge.indexOf('**Reading a run.**'), merge.indexOf('**Changing the gate.**'));
+  const source = readFileSync(join(REPO_ROOT, '.github/scripts/ci-gate.mjs'), 'utf8');
+  const emitted = new Set([...source.matchAll(/reason: '(\w+)'/g), ...source.matchAll(/GateError\('(\w+)'/g), ...source.matchAll(/ciAt\(\w+, '(\w+)'\)/g)].map(match => match[1]));
+  for (const cliOnly of ['usage', 'not_recordable']) emitted.delete(cliOnly); // record-fixture only; never in a gate run
+  assert.ok(emitted.has('not_pinned') && emitted.has('anchor_written') && emitted.has('head_unreadable'), 'the scan must see the reasons');
+  for (const reason of emitted) assert.ok(table.includes(`\`${reason}\``), `${reason} is not in the runbook`);
+  assert.ok(table.includes('`required_jobs_failed`'), 'the bare form, when no job can be blamed');
 });
 
 test('runCLI: verify and anchor are subcommands, and an unknown one is still a usage error', () => {

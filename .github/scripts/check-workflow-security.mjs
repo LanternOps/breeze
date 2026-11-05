@@ -1485,9 +1485,11 @@ const GATE_RUN = {
 // Every `with:` key each action may take, and the values that are fixed.
 const GATE_ACTIONS = {
   'actions/checkout': { keys: ['ref', 'fetch-depth', 'persist-credentials', 'sparse-checkout', 'sparse-checkout-cone-mode'],
-    fixed: { ref: '${{ github.workflow_sha }}', 'fetch-depth': '0', 'persist-credentials': 'false', 'sparse-checkout': '.github/scripts' } },
+    fixed: { ref: '${{ github.workflow_sha }}', 'fetch-depth': '0', 'persist-credentials': 'false', 'sparse-checkout': '.github/scripts', 'sparse-checkout-cone-mode': 'false' } },
   'actions/setup-node': { keys: ['node-version', 'package-manager-cache'], fixed: { 'package-manager-cache': 'false' } },
-  'actions/upload-artifact': { keys: ['name', 'path', 'retention-days', 'if-no-files-found'], fixed: {}, if: "github.event_name == 'pull_request'" },
+  'actions/upload-artifact': { keys: ['name', 'path', 'retention-days', 'if-no-files-found'],
+    fixed: { name: 'ci-gate-anchor-attempt-${{ github.run_attempt }}', path: 'ci-gate-anchor.json', 'retention-days': '7', 'if-no-files-found': 'ignore' },
+    if: "github.event_name == 'pull_request'" },
 };
 const GATE_FORBIDDEN_KEYS = new Set(['continue-on-error', 'concurrency', 'cancel-in-progress', 'paths', 'paths-ignore',
   'cache', 'cache-dependency-path', 'container', 'services']);

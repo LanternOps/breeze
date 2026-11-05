@@ -29,16 +29,19 @@ Moved verbatim from `CLAUDE.md` (2026-10-07). Read before merging a PR or deploy
 |---|---|
 | `required_jobs_passed` | pass |
 | `required_jobs_failed:<jobs>` | the base script said no; these jobs are why |
-| `not_pinned` | the workflow sha is not on `main`, so this is not the pinned copy |
-| `base_unreadable` | a queue sha could not be fetched or read |
+| `required_jobs_failed` | the base script said no, and no single job explains it; read the `ci-gate-script:` lines |
+| `not_pinned` | the workflow sha is not on `main`, so this is not the pinned copy, or the check could not run; `ci-gate-detail:` says which |
+| `base_unreadable` | a queue sha, base or head, could not be fetched or read; `ci-gate-detail:` says which and why |
 | `head_unreadable`, `head_unparseable`, `aggregator_unparseable`, `aggregator_exec`, `duplicate_job_name`, `continue_on_error_unsupported` | the verdict could not be computed; fails closed |
 | `ci_run_missing` | no `ci.yml` run for this exact sha within 15 minutes |
 | `ci_cancelled` | the entry's CI run was cancelled, usually a stale group |
 | `deadline` | still not finished after 140 minutes |
 | `api_error` | the Actions API failed for 15 consecutive minutes; infrastructure, not the PR |
 | `wrong_event`, `invalid_repository`, `error` | a bug in the gate or its wiring |
+| `anchor_written` | PR only: the anchor was recorded |
+| `merge_head_mismatch`, `anchor_invalid_input`, `anchor_error` | PR only, and still `verdict=pass`: no anchor was written, because `github.sha` was not a merge of the head, an input was bad, or writing it failed |
 
-`oracle=disagree:<n>` is a warning and never changes a verdict, but it means the gate's rollup differs from `needs.<job>.result`. Look into it. On a PR, `reason=anchor_written` is normal, and any other reason means no anchor, which W05 treats as "run everything".
+`oracle=disagree:<n>` is a warning and never changes a verdict, but it means the gate's rollup differs from `needs.<job>.result`. Look into it. On a PR, no anchor is safe: W05 treats it as "run everything". So when counting verdicts, read `reason`, because a PR with no anchor also logs `verdict=pass`.
 
 **Changing the gate.** Any PR changing `ci-gate.mjs` or `ci-gate.yml` attaches a green replay run: `gh workflow run CI --ref <branch>`, then read the `ci-gate-replay:` line (`disagreements=0 controlFailures=0`). The dispatch cannot run `ci-gate.yml` itself. `pinned-ci-gate-invariants` in `check-workflow-security.mjs` fixes the workflow's shape.
 
@@ -48,8 +51,8 @@ Moved verbatim from `CLAUDE.md` (2026-10-07). Read before merging a PR or deploy
 
 **Under Active, a broken gate blocks its own fix**, and a revert of itself. Enforcement goes off first, always, and only the owner can do it (`admin:org`).
 
-1. The owner sets the org ruleset to **Evaluate** or **Disabled**: `gh api -X PUT orgs/LanternOps/rulesets/<id> --input <(jq '.enforcement="evaluate"' /tmp/breeze-ci-gate-ruleset.json)`.
-2. Confirm with `gh api repos/LanternOps/breeze/rules/branches/main --jq '[.[]|select(.type=="workflows")]'` and `gh api orgs/LanternOps/rulesets/<id> --jq .enforcement`.
+1. The owner sets the org ruleset to **Evaluate** or **Disabled**. In the UI: LanternOps → Settings → Repository → Rulesets → `Breeze pinned CI gate` → Enforcement status. By API: find the id with `gh api orgs/LanternOps/rulesets --jq '.[]|{id,name,enforcement}'`, then `gh api -X PUT orgs/LanternOps/rulesets/<id> -f enforcement=evaluate`.
+2. Confirm with `gh api orgs/LanternOps/rulesets/<id> --jq .enforcement` and `gh api repos/LanternOps/breeze/rules/branches/main --jq '[.[]|select(.type=="workflows")]'`.
 3. Only then touch the workflow or `ci-gate.mjs`.
 
 Do not remove or rename `ci-gate.yml` while the rule is Active.

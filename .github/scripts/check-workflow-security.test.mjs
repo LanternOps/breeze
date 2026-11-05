@@ -1720,6 +1720,11 @@ const GATE_MUTATIONS = [
   ['a self-hosted runner', (t) => t.replace('runs-on: ubuntu-latest', 'runs-on: self-hosted'), /runs-on must be ubuntu-latest/u],
   ['a different timeout', (t) => t.replace('timeout-minutes: 145', 'timeout-minutes: 360'), /timeout-minutes must be 145/u],
   ['a renamed job', (t) => t.replace('    name: CI Gate\n', '    name: Gate\n'), /the job name must be exactly CI Gate/u],
+  ['uploading the whole checkout', (t) => t.replace('path: ci-gate-anchor.json', 'path: .'), /must set path: ci-gate-anchor\.json/u],
+  ['a longer artifact retention', (t) => t.replace('retention-days: 7', 'retention-days: 90'), /must set retention-days: 7/u],
+  ['failing the PR when there is no anchor', (t) => t.replace('if-no-files-found: ignore', 'if-no-files-found: error'), /must set if-no-files-found: ignore/u],
+  ['an artifact name W05 would not find', (t) => t.replace('name: ci-gate-anchor-attempt-${{ github.run_attempt }}', 'name: anchor'), /must set name: ci-gate-anchor-attempt-/u],
+  ['cone-mode sparse checkout', (t) => t.replace('sparse-checkout-cone-mode: false', 'sparse-checkout-cone-mode: true'), /must set sparse-checkout-cone-mode: false/u],
   ['a second job', (t) => `${t}\n  other:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n`, /there must be exactly one job/u],
   ['no verify step', (t) => t.replace(VERIFY_STEP, '        run: node .github/scripts/ci-gate.mjs anchor\n'), /the gate must run node \.github\/scripts\/ci-gate\.mjs verify/u],
 ];
