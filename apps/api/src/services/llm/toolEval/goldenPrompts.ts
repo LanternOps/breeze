@@ -158,4 +158,12 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   // negative — un-quarantining a FILE is a threat action, never release_containment.
   { id: 'g118', prompt: 'Release the network isolation on FIN-LAPTOP-07, the incident is resolved.', expect: [{ tool: 'release_containment' }, { tool: 'resolve_device_context' }, { tool: 'get_incident_timeline' }, { tool: 'list_incidents' }] },
   { id: 'g119', prompt: 'Un-quarantine the file Defender flagged on WS-01, it was a false positive.', expect: [{ tool: 'security_scan', action: 'restore' }, { tool: 'security_scan', action: 'status' }, { tool: 'resolve_device_context' }] },
+  // Full-control W18 PR A (#6789): org admin reads and the read-only identity directory. g124 names Breeze logins, not
+  // Microsoft 365 identities or device sessions (Decision 6: the descriptions carry that distinction).
+  { id: 'g120', prompt: 'Give me a quick overview of Contoso.', expect: [{ tool: 'get_org_summary' }, { tool: 'list_organizations' }] },
+  { id: 'g121', prompt: "Which of our customers aren't fully set up?", expect: [{ tool: 'get_account_readiness' }] },
+  { id: 'g122', prompt: "How long do we keep Contoso's audit logs?", expect: [{ tool: 'get_audit_retention' }, { tool: 'list_organizations' }] },
+  { id: 'g123', prompt: 'Who has portal access at Contoso?', expect: [{ tool: 'list_portal_users' }, { tool: 'list_organizations' }] },
+  { id: 'g124', prompt: "Which of our technicians don't have MFA turned on?", expect: [{ tool: 'list_users' }] },
+  { id: 'g125', prompt: 'What can someone with the Technician role actually do?', expect: [{ tool: 'list_roles', action: 'effective_permissions' }, { tool: 'list_roles', action: 'list' }] },
 ];

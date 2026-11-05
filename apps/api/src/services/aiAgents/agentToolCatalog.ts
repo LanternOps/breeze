@@ -447,6 +447,8 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   query_analytics: 'automations_reports',
   get_executive_summary: 'automations_reports',
   query_audit_log: 'automations_reports',
+  // Full-control W18 PR A (#6789): the only agent-reachable W18 read (one number for one org), beside query_audit_log.
+  get_audit_retention: 'automations_reports',
   query_change_log: 'automations_reports',
   search_documentation: 'automations_reports',
   get_invite_funnel: 'automations_reports', // deployment/enrollment funnel report
@@ -494,6 +496,14 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   list_org_contacts: 'tenancy',
   list_organizations: 'tenancy',
   get_partner_settings_inheritance: 'tenancy', // #9763 read: which orgs override a partner setting
+  // Full-control W18 PR A (#6789): mapped for the picker's completeness only. All six are AGENT_DENIED_READ_TOOLS,
+  // so the catalog never offers them (pinned in the unreachable-set snapshot).
+  get_org_summary: 'tenancy',
+  get_account_readiness: 'tenancy',
+  list_portal_users: 'tenancy',
+  list_users: 'tenancy',
+  get_user: 'tenancy',
+  list_roles: 'tenancy',
   delete_tenant: 'tenancy',
   test_webhook: 'tenancy',
   query_webhooks: 'tenancy',

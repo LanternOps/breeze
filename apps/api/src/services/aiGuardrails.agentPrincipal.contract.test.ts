@@ -196,6 +196,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_active_users',
   'get_ai_agent_run', // A-W06 Tier-1 read
   'get_alert_correlations', // W07 (#6777) Tier-1 read: org-scoped correlation views, refused to exact-device runs in the handler
+  'get_audit_retention', // W18 (#6789): tier-1 retention days for one org; the only agent-reachable W18 read
   // W01 (#6755)
   'get_backup_status',
   // W01 (#6755) follow-up
@@ -930,6 +931,13 @@ describe('Task 2 — act disposition matrix', () => {
  */
 const EXPECTED_AGENT_DENIED_READ_TOOLS = [
   'get_operator_task', // W10 (#6780, QW5)
+  // W18 PR A (#6789, Decision 4): identity reads, and the partner-scope summary / readiness reads.
+  'get_account_readiness',
+  'get_org_summary',
+  'get_user',
+  'list_portal_users',
+  'list_roles',
+  'list_users',
   'get_user_risk_detail',
   'get_sensitive_data_overview',
   'get_user_risk_scores',
@@ -955,6 +963,13 @@ describe('AGENT_DENIED_READ_TOOLS (W01-D5 / WQ1 / WQ2, #6755)', () => {
       expect(aiTools.has(name), `${name}: not a registered tool`).toBe(true);
       expect(reason.trim().length, `${name}: reason must say why (>= 20 chars)`).toBeGreaterThanOrEqual(20);
     }
+  });
+
+  it('every W18 identity read stays in AGENT_DENIED_READ_TOOLS; get_audit_retention alone stays reachable (#6789)', () => {
+    for (const name of ['list_users', 'get_user', 'list_roles', 'list_portal_users', 'get_org_summary', 'get_account_readiness']) {
+      expect(AGENT_DENIED_READ_TOOLS.has(name), name).toBe(true);
+    }
+    expect(AGENT_DENIED_READ_TOOLS.has('get_audit_retention')).toBe(false);
   });
 
   it('is disjoint from AGENT_HUMAN_ONLY_TOOLS', () => {

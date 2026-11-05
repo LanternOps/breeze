@@ -70,6 +70,7 @@ import { softwareToolSchemas } from './aiToolSchemasSoftware';
 import { deviceOpsToolSchemas } from './aiToolSchemasDeviceOps';
 import { billingToolSchemas } from './aiToolSchemasBilling';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
+import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -613,6 +614,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // Full-control W14 (#6784): billing lifecycle tools (PR A).
   ...billingToolSchemas,
   ...pax8ToolSchemas,
+  // Full-control W18 PR A (#6789): org admin and identity reads.
+  ...orgAdminToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),

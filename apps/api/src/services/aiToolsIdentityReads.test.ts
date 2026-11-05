@@ -43,7 +43,7 @@ describe('W18 identity read tools (#6789)', () => {
     const props = (n: string) => Object.keys(tools.get(n)!.definition.input_schema.properties ?? {}).sort();
     expect(props('list_users')).toEqual(['limit']);
     expect(props('get_user')).toEqual(['userId']);
-    expect(props('list_roles')).toEqual(['action', 'orgId', 'roleId']);
+    expect(props('list_roles')).toEqual(['action', 'limit', 'orgId', 'roleId']);
     const actions = (tools.get('list_roles')!.definition.input_schema.properties as any).action.enum;
     expect(actions).toEqual([...ROLE_READ_ACTIONS]);
     expect(actions).toEqual(['list', 'get', 'users', 'effective_permissions']);
@@ -92,6 +92,8 @@ describe('W18 identity read tools (#6789)', () => {
     expect(h.roleDetail).not.toHaveBeenCalled();
     h.listRoles.mockResolvedValue({ ok: true, value: [{ id: ROLE, name: 'Tech' }] });
     expect(parse(await run('list_roles', { action: 'list', orgId: ORG }))).toMatchObject({ roles: [{ id: ROLE }] });
+    h.listRoles.mockResolvedValue({ ok: true, value: [{ id: ROLE }, { id: 'r-2' }, { id: 'r-3' }] });
+    expect(parse(await run('list_roles', { action: 'list', limit: 2 }))).toMatchObject({ showing: 2, total: 3, truncated: true });
     expect(h.listRoles).toHaveBeenCalledWith(expect.anything(), ORG);
   });
 

@@ -35,9 +35,9 @@ export const DOMAIN_VOCABULARY: Readonly<Record<AiToolDomain, string>> = {
   backup: 'backups and jobs, snapshots, restores, vaults, Hyper-V, SQL Server, disaster recovery plans, backup SLA',
   tickets: 'tickets, checklists, routing rules, time entries and timers, timesheets, business calendars, end-user messages',
   billing: 'invoices, quotes, contracts, catalog items, distributor products, Pax8 orders',
-  accounts: 'organizations and sites, contacts, documents, deliverables, key dates',
+  accounts: 'organizations and sites, contacts, documents, deliverables, key dates, portal',
   integrations: 'EDR (SentinelOne, Huntress), Microsoft 365, Google Workspace, cloud-to-cloud backup, PSA, webhooks, notification channels',
-  admin: 'reports, data export, agent versions and logs, saved filters, invites, tenant deletion',
+  admin: 'reports, data export, agent versions and logs, saved filters, invites, tenant deletion, users and roles',
   ai: 'AI agents and their runs, stored result artifacts, workspace runs',
 };
 

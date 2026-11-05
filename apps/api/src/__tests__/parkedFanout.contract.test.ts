@@ -283,6 +283,11 @@ const EXEMPT: Record<string, string> = {
   'services/deviceOrgMove/moveDeviceOrgInTransaction.ts': 'request path: moves the one device its caller named, after that caller\'s own checks; not a selector',
   'services/monitors/networkCheckAlertDevice.ts': 'resolves a device inside the org chosen by networkCheckAlertSweep',
   'services/orgAccountReadiness.ts': 'org administration (holding org already guarded)',
+  // Full-control W18 (#6789): lifted verbatim from their routes; request-path aggregates over the ONE org (or the
+  // accepted org list) the caller named, after the route's / tool's own access check.
+  'services/orgAccountReadinessResponse.ts': 'org administration (holding org already guarded): the default org set uses notHiddenOrgType(), the same filter as resolveAcceptedOrgs',
+  'services/orgSummary.ts': 'request path: counts the devices of the ONE org the caller named and may access (decommissioned excluded, as the record page); selects no targets and dispatches no work',
+  'services/roleDirectory.ts': 'role administration: isHiddenOrgType() keeps the holding org out of a focused-org role read; reads no devices',
   'services/orgArchive.ts': 'org administration (holding org already guarded)',
   'services/orgMerge.ts': 'org administration (holding org already guarded)',
   'services/quickSupportOrg.ts': 'defines the Quick Support helpers',

@@ -132,6 +132,8 @@ import { registerTenantVariableTools } from './aiToolsTenantVariables';
 import { registerSupportSessionTools } from './aiToolsSupportSessions';
 import { registerPax8Tools } from './aiToolsPax8';
 import { registerPax8OrderTools } from './aiToolsPax8Orders';
+import { registerOrgAdminReadTools } from './aiToolsOrgAdminReads';
+import { registerIdentityReadTools } from './aiToolsIdentityReads';
 import { registerBillingProfileTools } from './aiToolsBillingProfiles';
 import { registerBillingSettingsTools } from './aiToolsBillingSettings';
 import { registerContractTemplateTools } from './aiToolsContractTemplates';
@@ -475,6 +477,10 @@ registerSupportSessionTools(aiTools);
 registerBillingProfileTools(aiTools);
 registerPax8Tools(aiTools);
 registerPax8OrderTools(aiTools);
+// Full-control W18 PR A (#6789): org admin reads (summary, readiness, audit retention, portal users) and the
+// read-only identity directory (Breeze logins, roles). No identity write is a tool (W18-1).
+registerOrgAdminReadTools(aiTools);
+registerIdentityReadTools(aiTools);
 registerBillingSettingsTools(aiTools);
 registerContractTemplateTools(aiTools);
 registerDeviceBillingTools(aiTools);

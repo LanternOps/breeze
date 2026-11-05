@@ -277,6 +277,14 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   search_pax8_products: { limit: 30, windowSeconds: 300 },
   manage_pax8_orders: { limit: 30, windowSeconds: 300 },
   manage_pax8_subscriptions: { limit: 10, windowSeconds: 300 },
+  // Full-control W18 PR A (#6789): readiness fans out over up to 50 orgs per call, so it gets half the budget.
+  get_org_summary: { limit: 30, windowSeconds: 300 },
+  get_account_readiness: { limit: 15, windowSeconds: 300 },
+  get_audit_retention: { limit: 30, windowSeconds: 300 },
+  list_portal_users: { limit: 30, windowSeconds: 300 },
+  list_users: { limit: 30, windowSeconds: 300 },
+  get_user: { limit: 30, windowSeconds: 300 },
+  list_roles: { limit: 30, windowSeconds: 300 },
 };
 
 /**

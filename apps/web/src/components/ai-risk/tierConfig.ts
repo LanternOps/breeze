@@ -129,6 +129,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'system_cleanup (status)', description: 'Read the progress and result of a native cleanup run', category: 'Files, Disk & Registry' },
       // Logs & Audit
       { name: 'query_audit_log', description: 'Search audit logs', category: 'Logs & Audit' },
+      { name: 'get_audit_retention', description: 'An organization\'s audit-log retention policy: configured or not, retention days, last cleanup', category: 'Logs & Audit' },
       { name: 'query_change_log', description: 'Device change log search', category: 'Logs & Audit' },
       { name: 'search_logs', description: 'Event log search', category: 'Logs & Audit' },
       { name: 'get_log_trends', description: 'Log trend analysis', category: 'Logs & Audit' },
@@ -307,6 +308,13 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_saved_filters (list/get)', description: 'List and view saved filters', category: 'Other' },
       // Endpoint messaging (#8742 W02)
       { name: 'send_endpoint_message (list/get)', description: 'List sent end-user messages and their delivery status', category: 'Ticketing' },
+      // Full-control W18 (#6789): organization, user and role reads. User and role writes are deliberately not AI tools.
+      { name: 'get_org_summary', description: 'One organization at a glance: devices online, open alerts and tickets, contracts, invoices, sites, contact, portal users (sections you lack permission for are omitted)', category: 'Integrations' },
+      { name: 'get_account_readiness', description: 'Setup readiness for up to 50 organizations: contacts, billing address, policy, pending portal invites, overdue invoices, integrations, backup', category: 'Integrations' },
+      { name: 'list_portal_users', description: 'An organization\'s customer-portal logins and their status (active, pending setup, disabled)', category: 'Integrations' },
+      { name: 'list_users', description: 'Breeze staff logins with role, MFA status and last login (full partner access)', category: 'Integrations' },
+      { name: 'get_user', description: 'One Breeze login with its role and organization and site access', category: 'Integrations' },
+      { name: 'list_roles (list/get/users/effective_permissions)', description: 'Breeze roles, one role\'s permissions, who holds it and its effective (inherited) permissions', category: 'Integrations' },
     ],
   },
   {
@@ -863,6 +871,14 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_contract_documents', tier: 1, permission: 'agreements.read / agreements.write', category: 'Billing' },
   { toolName: 'manage_contracts', tier: 2, permission: 'contracts.read / contracts.write / contracts.manage', category: 'Billing' },
   { toolName: 'manage_accounting_sync', tier: 1, permission: 'accounting.read / accounting.manage (+ organizations.write + catalog.write, or invoices.write)', category: 'Billing' },
+  // Full-control W18 (#6789): all tier 1.
+  { toolName: 'get_org_summary', tier: 1, permission: 'organizations.read', category: 'Integrations' },
+  { toolName: 'get_account_readiness', tier: 1, permission: 'organizations.read', category: 'Integrations' },
+  { toolName: 'list_portal_users', tier: 1, permission: 'organizations.read', category: 'Integrations' },
+  { toolName: 'list_users', tier: 1, permission: 'users.read', category: 'Integrations' },
+  { toolName: 'get_user', tier: 1, permission: 'users.read', category: 'Integrations' },
+  { toolName: 'list_roles', tier: 1, permission: 'users.read', category: 'Integrations' },
+  { toolName: 'get_audit_retention', tier: 1, permission: 'audit.read', category: 'Logs & Audit' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────
@@ -928,6 +944,14 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   list_ai_agent_schedules: 'ai_agents.read',
   list_fleet_designs: 'ai_agents.read',
   get_fleet_design: 'ai_agents.read',
+  // Full-control W18 (#6789).
+  get_org_summary: 'organizations.read',
+  get_account_readiness: 'organizations.read',
+  list_portal_users: 'organizations.read',
+  list_users: 'users.read',
+  get_user: 'users.read',
+  list_roles: 'users.read',
+  get_audit_retention: 'audit.read',
   // Full-control W11 (#6781): the permission each action needs (access-review, compliance and PAM writes also need your MFA session).
   get_security_compliance: 'devices.read',
   manage_security_recommendations: { list: 'devices.read', complete: 'devices.write', dismiss: 'devices.write' },

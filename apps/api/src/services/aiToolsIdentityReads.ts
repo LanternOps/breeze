@@ -18,7 +18,7 @@ import {
   listRoleUsersForCaller,
   listRolesForCaller,
 } from './roleDirectory';
-import { orgAdminToolSchemas, USERS_TOOL_MAX } from './aiToolSchemasOrgAdmin';
+import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
 import {
   bounded,
   capped,
@@ -54,7 +54,7 @@ export function registerIdentityReadTools(aiTools: Map<string, AiTool>): void {
       try {
         const result = await listScopedUsersForCaller(auth);
         if (!result.ok) return refusal(result, 'User');
-        const page = capped(result.value, parsed.value.limit ?? Math.min(100, USERS_TOOL_MAX));
+        const page = capped(result.value, parsed.value.limit ?? 100);
         return bounded({ users: page.rows, showing: page.showing, total: page.total, truncated: page.truncated });
       } catch (error) {
         return thrown('list_users', error);
@@ -104,12 +104,15 @@ export function registerIdentityReadTools(aiTools: Map<string, AiTool>): void {
       const parsed = parseInput(orgAdminToolSchemas.list_roles, input);
       if (!parsed.ok) return parsed.error;
       const { action, roleId, orgId } = parsed.value;
+      const limit = parsed.value.limit ?? 100;
       if (action !== 'list' && !roleId) return jsonError(`roleId is required for ${action}`, 'VALIDATION_ERROR');
       try {
         switch (action) {
           case 'list': {
             const result = await listRolesForCaller(auth, orgId);
-            return result.ok ? bounded({ roles: result.value }) : refusal(result, 'Role');
+            if (!result.ok) return refusal(result, 'Role');
+            const page = capped(result.value, limit);
+            return bounded({ roles: page.rows, showing: page.showing, total: page.total, truncated: page.truncated });
           }
           case 'get': {
             const result = await getRoleDetailForCaller(auth, roleId!, orgId);
@@ -118,7 +121,7 @@ export function registerIdentityReadTools(aiTools: Map<string, AiTool>): void {
           case 'users': {
             const result = await listRoleUsersForCaller(auth, roleId!, orgId);
             if (!result.ok) return refusal(result, 'Role');
-            const page = capped(result.value, USERS_TOOL_MAX);
+            const page = capped(result.value, limit);
             return bounded({ users: page.rows, showing: page.showing, total: page.total, truncated: page.truncated });
           }
           case 'effective_permissions': {

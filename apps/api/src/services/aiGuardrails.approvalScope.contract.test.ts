@@ -1676,3 +1676,58 @@ describe('W11 input-aware owner scopes (#6781, W11-D4 / W11-D13)', () => {
     expect(classOf('manage_security_policies', { action: 'update', ownerScope: 'partner' })).toBe('supervised');
   });
 });
+
+// ── W18 PR A class rows (#6789, spec checklist item 3) ─────────────────────
+// Copied from the W18 plan's class review table, NOT derived from the guardrail tables. Six are single reads; list_roles
+// multiplexes four reads. No W18 tool carries a write action (W18-1: user and role writes stay identity).
+const W18A_WHOLE_TOOL: Record<string, W02Class> = {
+  get_org_summary: 't1',
+  get_account_readiness: 't1',
+  get_audit_retention: 't1',
+  list_portal_users: 't1',
+  list_users: 't1',
+  get_user: 't1',
+};
+const W18A_EXPECTED: Record<string, Record<string, W02Class>> = {
+  list_roles: { list: 't1', get: 't1', users: 't1', effective_permissions: 't1' },
+};
+
+describe('W18 PR A class rows (#6789)', () => {
+  it('covers the seven W18 PR A tools exactly once', () => {
+    expect([...Object.keys(W18A_WHOLE_TOOL), ...Object.keys(W18A_EXPECTED)].sort()).toEqual([
+      'get_account_readiness', 'get_audit_retention', 'get_org_summary', 'get_user',
+      'list_portal_users', 'list_roles', 'list_users',
+    ]);
+  });
+
+  it.each(Object.entries(W18A_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, {})).toBe(cls);
+    expect(getToolTier(tool)).toBe(1);
+  });
+
+  it('list_roles: W18A_EXPECTED covers exactly the action enum, every action tier 1', () => {
+    expect(Object.keys(W18A_EXPECTED.list_roles!).sort()).toEqual([...(toolActionEnum('list_roles') ?? [])].sort());
+    for (const [action, cls] of Object.entries(W18A_EXPECTED.list_roles!)) {
+      expect(classOf('list_roles', { action }), action).toBe(cls);
+    }
+  });
+
+  it('nothing in W18 PR A is tier 2, supervised or four-eyes', () => {
+    for (const tool of [...Object.keys(W18A_WHOLE_TOOL), ...Object.keys(W18A_EXPECTED)]) {
+      expect(TIER2_ACTIONS[tool] ?? [], tool).toEqual([]);
+      expect(TIER3_SUPERVISED_ACTIONS[tool] ?? [], tool).toEqual([]);
+      expect(TIER3_FOUR_EYES_ACTIONS[tool] ?? [], tool).toEqual([]);
+    }
+  });
+
+  it('agent exposure: six denied reads, get_audit_retention reachable, none agent-human-only (Decision 4)', () => {
+    for (const tool of ['get_org_summary', 'get_account_readiness', 'list_portal_users', 'list_users', 'get_user', 'list_roles']) {
+      expect(AGENT_DENIED_READ_TOOLS.has(tool), tool).toBe(true);
+    }
+    expect(AGENT_DENIED_READ_TOOLS.has('get_audit_retention')).toBe(false);
+    for (const tool of [...Object.keys(W18A_WHOLE_TOOL), ...Object.keys(W18A_EXPECTED)]) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(false);
+    }
+  });
+});

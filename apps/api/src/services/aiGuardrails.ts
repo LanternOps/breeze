@@ -466,6 +466,8 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   search_pax8_products: ['search', 'provision_details', 'dependencies', 'pricing'],
   manage_pax8_subscriptions: ['list', 'drift'],
   manage_pax8_orders: ['list', 'get', 'preview'],
+  // Full-control W18 PR A (#6789): the role directory's four reads. No role or user write is a tool action (W18-1).
+  list_roles: ['list', 'get', 'users', 'effective_permissions'],
   manage_delivery: ['resolve', 'list_routing', 'list_escalation'],
   manage_deployments: ['list', 'get', 'device_status'],
   manage_groups: ['list', 'get', 'preview', 'membership_log'],
@@ -2863,6 +2865,20 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   // W15 PR A (#6785): REST requires billing:manage even for reads exposing vendor costs.
   get_pax8_status: { resource: 'billing', action: 'manage' },
+  // Full-control W18 PR A (#6789): each = its REST route's requirePermission. The summary and readiness sections
+  // need their own grants on top (resolved in the handler from the live permission set, as on REST).
+  get_org_summary: { resource: 'organizations', action: 'read' },
+  get_account_readiness: { resource: 'organizations', action: 'read' },
+  get_audit_retention: { resource: 'audit', action: 'read' },
+  list_portal_users: { resource: 'organizations', action: 'read' },
+  list_users: { resource: 'users', action: 'read' },
+  get_user: { resource: 'users', action: 'read' },
+  list_roles: {
+    list: { resource: 'users', action: 'read' },
+    get: { resource: 'users', action: 'read' },
+    users: { resource: 'users', action: 'read' },
+    effective_permissions: { resource: 'users', action: 'read' },
+  },
   search_pax8_products: {
     search: { resource: 'billing', action: 'manage' },
     provision_details: { resource: 'billing', action: 'manage' },

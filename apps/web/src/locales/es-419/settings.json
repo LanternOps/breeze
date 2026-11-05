@@ -3728,6 +3728,7 @@
         "get_active_users": "Usuarios activos",
         "get_ai_agent_run": "Detalles de la ejecución del agente de IA",
         "get_alert_correlations": "Correlaciones de alertas",
+        "get_audit_retention": "Leer la retención del registro de auditoría",
         "get_backup_status": "Estado de los respaldos",
         "get_browser_security": "Seguridad del navegador",
         "get_catalog_item": "Búsqueda de un artículo del catálogo",

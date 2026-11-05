@@ -275,6 +275,34 @@ const BINDINGS: readonly Binding[] = [
     tool: 'get_fleet_design', routeFile: 'fleetDesign.ts', method: 'get', path: '/:reportRunId',
     toolOnly: { extra: [], reason: 'Refuses site- and device-restricted sessions, and returns counts plus the design markdown, not the stored outcome with script bodies.' },
   },
+  // Full-control W18 PR A (#6789): org admin and identity reads bind to the route a technician uses for the same read.
+  // The router-level gates (full partner membership for users.ts, canManagePartnerWidePolicies for roles.ts) are not
+  // permissions; they moved into the shared operations both doors call.
+  {
+    tool: 'get_org_summary', routeFile: 'orgSummary.ts', method: 'get', path: '/organizations/:id/summary',
+    toolOnly: { extra: [], reason: 'Same per-section grants from the live permission set; additionally refuses device-bound sessions, and organization scope as the route does.' },
+  },
+  {
+    tool: 'get_account_readiness', routeFile: 'orgAccountReadiness.ts', method: 'get', path: '/account-readiness',
+    toolOnly: { extra: [], reason: 'Caps a call at 50 orgs (route: 200) with a first-50-by-name default; refuses device-bound sessions and a foreign partnerId instead of ignoring it.' },
+  },
+  { tool: 'get_audit_retention', routeFile: 'orgAuditRetentionSettings.ts', method: 'get', path: '/organizations/:id/audit-retention' },
+  {
+    tool: 'list_portal_users', routeFile: 'orgPortalUsers.ts', method: 'get', path: '/organizations/:id/portal-users',
+    toolOnly: { extra: [], reason: 'Capped at 100 rows with truncated; refuses device-bound sessions.' },
+  },
+  {
+    tool: 'list_users', routeFile: 'users.ts', method: 'get', path: '/',
+    toolOnly: { extra: [], reason: 'Same full-partner-membership gate as the router; capped at 200 rows and refused to device-bound sessions.' },
+  },
+  {
+    tool: 'get_user', routeFile: 'users.ts', method: 'get', path: '/:id',
+    toolOnly: { extra: [], reason: 'Same full-partner-membership gate as the router; refused to device-bound sessions.' },
+  },
+  { tool: 'list_roles', action: 'list', routeFile: 'roles.ts', method: 'get', path: '/' },
+  { tool: 'list_roles', action: 'get', routeFile: 'roles.ts', method: 'get', path: '/:id' },
+  { tool: 'list_roles', action: 'users', routeFile: 'roles.ts', method: 'get', path: '/:id/users' },
+  { tool: 'list_roles', action: 'effective_permissions', routeFile: 'roles.ts', method: 'get', path: '/:id/effective-permissions' },
   // Full-control W11 (#6781): the security policy tools bind to the route a technician uses for the same act.
   {
     tool: 'get_security_compliance', routeFile: 'security/dashboard.ts', method: 'get', path: '/dashboard',

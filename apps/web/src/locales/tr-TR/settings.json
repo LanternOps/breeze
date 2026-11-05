@@ -3728,6 +3728,7 @@
         "get_active_users": "Etkin kullanıcılar",
         "get_ai_agent_run": "Yapay zeka aracısı çalıştırma ayrıntıları",
         "get_alert_correlations": "Uyarı korelasyonları",
+        "get_audit_retention": "Denetim günlüğü saklama süresini oku",
         "get_backup_status": "Yedekleme durumu",
         "get_browser_security": "Tarayıcı güvenliği",
         "get_catalog_item": "Katalog öğesi arama",

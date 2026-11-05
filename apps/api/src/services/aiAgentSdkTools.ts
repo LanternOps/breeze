@@ -45,6 +45,7 @@ import { aiRunContextInputShape } from './scriptRunRequest';
 import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listConcernsShape, listLinksShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas, PARTNER_SETTINGS_INHERITANCE_BUCKETS, PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
+import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
 import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
@@ -739,6 +740,14 @@ export const TOOL_TIERS = {
   search_pax8_products: 1,
   manage_pax8_subscriptions: 1,
   manage_pax8_orders: 1,
+  // W18 PR A (#6789): org admin and identity reads, all tier 1. list_roles' four actions are TIER1_READ_ACTIONS.
+  get_org_summary: 1,
+  get_account_readiness: 1,
+  get_audit_retention: 1,
+  list_portal_users: 1,
+  list_users: 1,
+  get_user: 1,
+  list_roles: 1,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -5222,6 +5231,20 @@ export function buildBreezeSdkTools(
       makeHandler('manage_pax8_subscriptions', getAuth, onPreToolUse, onPostToolUse)),
     tool('manage_pax8_orders', registryDescription('manage_pax8_orders'), pax8ToolSchemas.manage_pax8_orders.shape,
       makeHandler('manage_pax8_orders', getAuth, onPreToolUse, onPostToolUse)),
+    tool('get_org_summary', registryDescription('get_org_summary'), orgAdminToolSchemas.get_org_summary.shape,
+      makeHandler('get_org_summary', getAuth, onPreToolUse, onPostToolUse)),
+    tool('get_account_readiness', registryDescription('get_account_readiness'), orgAdminToolSchemas.get_account_readiness.shape,
+      makeHandler('get_account_readiness', getAuth, onPreToolUse, onPostToolUse)),
+    tool('get_audit_retention', registryDescription('get_audit_retention'), orgAdminToolSchemas.get_audit_retention.shape,
+      makeHandler('get_audit_retention', getAuth, onPreToolUse, onPostToolUse)),
+    tool('list_portal_users', registryDescription('list_portal_users'), orgAdminToolSchemas.list_portal_users.shape,
+      makeHandler('list_portal_users', getAuth, onPreToolUse, onPostToolUse)),
+    tool('list_users', registryDescription('list_users'), orgAdminToolSchemas.list_users.shape,
+      makeHandler('list_users', getAuth, onPreToolUse, onPostToolUse)),
+    tool('get_user', registryDescription('get_user'), orgAdminToolSchemas.get_user.shape,
+      makeHandler('get_user', getAuth, onPreToolUse, onPostToolUse)),
+    tool('list_roles', registryDescription('list_roles'), orgAdminToolSchemas.list_roles.shape,
+      makeHandler('list_roles', getAuth, onPreToolUse, onPostToolUse)),
     tool(
       'manage_contracts',
       registryDescription('manage_contracts'),

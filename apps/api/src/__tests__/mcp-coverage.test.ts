@@ -32,17 +32,11 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'backup/verification.ts',
   'backup/vss.ts',
   'c2c/configs.ts',
-  'orgAccountReadiness.ts',
-  'orgAuditRetentionSettings.ts',
   'orgPortalSettings.ts',
-  'orgPortalUsers.ts',
-  'orgSummary.ts',
   'patchPlan.ts',
   'reports/recipients.ts',
-  'roles.ts',
   'tickets/export.ts',
   'unifi/index.ts',
-  'users.ts',
 ]);
 
 describe('MCP_COVERAGE (route module → tool surface)', () => {

@@ -428,6 +428,12 @@ To make sure `run_script` executes exactly the content you reviewed, take `conte
 | `list_org_contacts` | 1 | List an organization's contacts by site or role, respecting organization and site access. |
 | `list_sites` | 1 | List accessible sites with device counts, optionally filtered by organization or name. |
 | `get_site` | 1 | Retrieve one accessible site's details by site ID. |
+| `get_org_summary` | 1 | One organization at a glance: devices online, open alerts and tickets, active contracts, outstanding invoices, sites, primary contact, portal users and last activity. Sections you lack permission for are omitted. Requires `organizations:read` and partner scope; not offered to AI agents. |
+| `get_account_readiness` | 1 | Setup readiness for up to 50 organizations: contacts, billing address, policy, pending portal invites, overdue invoices, integrations and backup. Requires `organizations:read` and partner scope; not offered to AI agents. |
+| `list_portal_users` | 1 | An organization's customer-portal logins and their status (active, pending setup, disabled). Requires `organizations:read` and partner scope; not offered to AI agents. |
+| `list_users` | 1 | Breeze staff logins (technicians and admins) with role, MFA status and last login. Requires `users:read` and full partner access; not offered to AI agents. |
+| `get_user` | 1 | One Breeze login with its role and organization and site access. Requires `users:read`; not offered to AI agents. |
+| `list_roles` | 1 | Breeze roles: `list`, `get` (one role's permissions), `users` (who holds it) and `effective_permissions` (including inherited). Read-only; requires `users:read`; not offered to AI agents. |
 | `get_partner_settings_inheritance` | 1 | Which organizations have their own value for a partner setting, override it, or are shadowed by it: per-setting counts for one partner settings tab, or the organizations behind one count. Secret settings show set or not set only. Partner scope with full partner organization access only. |
 | `list_ai_agents` | 1 | List accessible AI agents and their enabled state, optionally including disabled agents. |
 | `list_ai_agent_runs` | 1 | List recent accessible AI agent runs with status, verdict, and cost, filtered by agent or organization. |
@@ -448,6 +454,7 @@ To make sure `run_script` executes exactly the content you reviewed, take `conte
 | `search_agent_logs` | 1 | Search agent diagnostic logs with filters for device, level, component, time range, and message text. |
 | `set_agent_log_level` | 2 | Temporarily increase agent log shipping verbosity for debugging. Auto-reverts after a set duration. |
 | `query_audit_log` | 1 | Search the audit log for recent actions, filterable by action, resource, actor type, and time range. |
+| `get_audit_retention` | 1 | An organization's audit-log retention policy: whether one is configured, retention days and last cleanup. Requires `audit:read`. Also offered to AI agents. |
 | `read_artifact` | 1 | Page through a stored large tool-result artifact by byte offset, using the `artifact.handle` from an earlier result. Scoped to your own session or agent run; see the note above "Available tools". |
 
 ### Configuration policy tools

@@ -193,6 +193,14 @@ export const AGENT_DENIED_READ_TOOLS: ReadonlyMap<string, string> = new Map<stri
   // other agent runs, with no device axis to bound an autonomous run.
   ['list_operator_tasks', 'Operator task objectives, hand-off summaries and outcome text are free text authored by humans and other agent runs, org-wide with no device axis: a prompt-injection channel into a run that can act.'],
   ['get_operator_task', 'Task steps, events, plan renderings and hand-off text are free text authored by humans and other agent runs, org-wide with no device axis: a prompt-injection channel into a run that can act.'],
+  // Full-control W18 PR A (#6789, Decision 4, signed off 2026-11-05): identity reads have no device axis, and the
+  // summary / readiness reads require partner or system scope, which an agent (always organization scope) never has.
+  ['list_users', 'Names, emails, roles and MFA status of every Breeze login in the tenant, with no device axis to bound an autonomous run.'],
+  ['get_user', 'One Breeze login\'s identity, role and organization or site access: personal data with no device axis.'],
+  ['list_portal_users', 'Names and emails of a customer\'s portal logins: personal data with no device axis.'],
+  ['list_roles', 'The permission matrix and who holds each role; an autonomous run has no operational need for it.'],
+  ['get_org_summary', 'Requires partner or system scope; an agent always runs at organization scope, so a catalog row could never execute.'],
+  ['get_account_readiness', 'Requires partner or system scope; an agent always runs at organization scope, so a catalog row could never execute.'],
 ]);
 
 /**

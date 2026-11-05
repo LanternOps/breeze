@@ -40,6 +40,7 @@ export const orgAdminToolSchemas = {
     action: z.enum(ROLE_READ_ACTIONS),
     roleId: uuid.optional().describe('Role UUID; required except for list'),
     orgId: uuid.optional().describe("Partner callers: an organization UUID, to include that org's roles or read one of them"),
+    limit: z.number().int().min(1).max(USERS_TOOL_MAX).optional().describe('Max rows for list and users (default 100, max 200)'),
   }).strict(),
 } as const;
 
