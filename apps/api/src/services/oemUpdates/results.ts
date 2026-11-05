@@ -90,8 +90,8 @@ function askedForFlash(payload: unknown): boolean {
  * and there is nothing to come back from. A driver-only run blocked the same way
  * says nothing about an earlier flash that armed the monitor, so that stays armed.
  *
- * Otherwise, a run that owes no restart means the device is here. The agent's
- * preflight blocks a run while a reboot is pending, so a clean result also means
+ * Otherwise, a run that owes no restart means the device is here. The lane reports
+ * `blocked_reboot_pending` for an existing pending reboot (spec 4.2; Dell exit 5), so a clean result also means
  * an earlier flash's reboot has happened.
  */
 function disarmsMonitor(
