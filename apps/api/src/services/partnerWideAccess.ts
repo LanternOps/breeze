@@ -18,7 +18,8 @@ import type { AuthContext } from '../middleware/auth';
 /**
  * True when the caller may create/modify partner-wide state. Contexts that
  * never resolved a partner membership (org scope, agent, helper, MCP keys)
- * have no partnerOrgAccess and fail closed. Deliberately NOT derivable from
+ * have no partnerOrgAccess and fail closed (MCP stops offering the tools this
+ * makes dead: PARTNER_WIDE_ONLY_TOOLS below, #10930). Deliberately NOT derivable from
  * accessibleOrgIds: a 'selected' user whose selection happens to cover every
  * current org still must not administer partner-wide state.
  */
@@ -45,6 +46,60 @@ export const PARTNER_WIDE_WRITE_DENIED_MESSAGE =
  */
 export const PARTNER_WIDE_READ_DENIED_MESSAGE =
   'Viewing the organization breakdown requires full partner org access (orgAccess must be "all")';
+
+/**
+ * AI tools whose handler refuses EVERY invocation unless
+ * `canManagePartnerWidePolicies(auth)` holds (#10930). An MCP credential's
+ * context (`buildAuthFromApiKey`) never carries `partnerOrgAccess`, by design,
+ * so over MCP these tools are dead: `tools/list` does not offer them and
+ * `tools/call` refuses them before the handler with
+ * {@link PARTNER_WIDE_UNAVAILABLE_OVER_MCP_MESSAGE}. The handler's own gate
+ * stays the authority; this list only stops advertising a tool it would refuse.
+ *
+ * - `any_scope`: refused for every caller without full partner access
+ *   (an org-scope caller is refused too, by scope or by the gate).
+ * - `partner_scope`: the gate applies only at partner scope; an org-scope
+ *   caller has its own path through the tool.
+ *
+ * A tool with only SOME partner-wide actions or rows (manage_patches approve,
+ * manage_update_rings create) is not listed here: its other actions work.
+ * partnerWideOnlyTools.contract.test.ts runs every registered handler and
+ * fails when this list and the handlers disagree, in either direction.
+ */
+export const PARTNER_WIDE_ONLY_TOOLS: ReadonlyMap<string, 'any_scope' | 'partner_scope'> = new Map([
+  ['get_partner_settings_inheritance', 'any_scope'],
+  ['get_pax8_status', 'any_scope'],
+  ['manage_pax8_subscriptions', 'any_scope'],
+  ['manage_accounting_sync', 'any_scope'],
+  ['manage_known_guests', 'any_scope'],
+  ['get_unifi_status', 'any_scope'],
+  ['trigger_unifi_sync', 'any_scope'],
+  ['manage_ticket_inbox', 'any_scope'],
+  ['manage_ticket_response_templates', 'any_scope'],
+  ['sync_edr_data', 'any_scope'],
+  ['manage_access_reviews', 'partner_scope'],
+]);
+
+/** True when this caller can never get past `toolName`'s partner-wide gate (see {@link PARTNER_WIDE_ONLY_TOOLS}). */
+export function partnerWideGateRefusesTool(
+  toolName: string,
+  auth: Pick<AuthContext, 'scope' | 'partnerOrgAccess'>,
+): boolean {
+  const applies = PARTNER_WIDE_ONLY_TOOLS.get(toolName);
+  if (!applies || canManagePartnerWidePolicies(auth)) return false;
+  return applies === 'any_scope' || auth.scope === 'partner';
+}
+
+/**
+ * The one refusal an MCP caller gets for partner-wide state (#10930): the
+ * pre-handler refusal of a {@link PARTNER_WIDE_ONLY_TOOLS} tool, and the
+ * rewrite of a mixed tool's partner-wide refusal. It names the connection as
+ * the reason, because the other messages ("orgAccess must be \"all\"") send a
+ * full-access partner admin looking for access they already have.
+ */
+export const PARTNER_WIDE_UNAVAILABLE_OVER_MCP_MESSAGE =
+  'Partner-wide state is not available over MCP or API-key connections: they never carry full partner org access, '
+  + 'whatever access your own account has. Use the Breeze web app AI assistant, signed in as a user with full partner org access.';
 
 /** Thrown by service mutators when a partner-wide row is visible to the caller but not administrable. Routes map it to 403. */
 export class PartnerWideWriteDeniedError extends Error {
