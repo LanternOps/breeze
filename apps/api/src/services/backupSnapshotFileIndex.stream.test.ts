@@ -20,9 +20,17 @@ function chainMock(resolvedValue: unknown = []) {
   return Object.assign(Promise.resolve(resolvedValue), chain);
 }
 
-const { selectMock, insertMock, updateMock, deleteMock, transactionMock, resolveSnapshotProviderConfigMock, committed } = vi.hoisted(() => ({
+/** The file rows a batch statement carries: its one JSON parameter. */
+function batchRows(statement: unknown): Array<Record<string, unknown>> {
+  const chunks = (statement as { queryChunks: unknown[] }).queryChunks;
+  const json = chunks.find((c): c is string => typeof c === 'string' && c.startsWith('['));
+  return json ? JSON.parse(json) : [];
+}
+
+const { selectMock, insertMock, executeMock, updateMock, deleteMock, transactionMock, resolveSnapshotProviderConfigMock, committed } = vi.hoisted(() => ({
   selectMock: vi.fn<(...args: unknown[]) => any>(),
   insertMock: vi.fn<(...args: unknown[]) => any>(),
+  executeMock: vi.fn<(...args: unknown[]) => any>(),
   updateMock: vi.fn<(...args: unknown[]) => any>(),
   deleteMock: vi.fn<(...args: unknown[]) => any>(),
   transactionMock: vi.fn<(cb: (tx: unknown) => unknown) => unknown>(),
@@ -120,6 +128,8 @@ beforeEach(async () => {
   updateMock.mockImplementation(() => chainMock([{ id: SNAPSHOT_DB_ID }]));
   deleteMock.mockImplementation(() => chainMock([]));
   insertMock.mockImplementation(() => chainMock([]));
+  // As postgres-js answers: an array-like result carrying the row count.
+  executeMock.mockImplementation(async (statement: unknown) => Object.assign([], { count: batchRows(statement).length }));
   // A transaction applies its writes only if its callback returns: a throw
   // rolls everything back, so `committed` only ever holds published state.
   transactionMock.mockImplementation(async (cb: any) => {
@@ -128,14 +138,11 @@ beforeEach(async () => {
     let deletes = 0;
     const tx = {
       select: routeSelect,
-      insert: (...args: unknown[]) => {
-        const chain = insertMock(...(args as []));
-        const values = chain.values;
-        chain.values = vi.fn((batch: Array<Record<string, unknown>>) => {
-          if (Array.isArray(batch) && batch[0] && 'sourcePath' in batch[0]) rows.push(...batch);
-          return values(batch);
-        });
-        return chain;
+      insert: (...args: unknown[]) => insertMock(...(args as [])),
+      execute: async (statement: unknown) => {
+        const result = await executeMock(statement);
+        rows.push(...batchRows(statement));
+        return result;
       },
       update: (...args: unknown[]) => {
         const chain = updateMock(...(args as []));
@@ -183,17 +190,27 @@ describe('hydrateSnapshotFileIndex over a stream', () => {
     });
     expect(committed.rows).toHaveLength(5000);
     expect(committed.rows[4999]).toEqual({
-      snapshotDbId: SNAPSHOT_DB_ID,
-      sourcePath: '/data/file-4999.txt',
-      backupPath: ownKey(4999),
+      source_path: '/data/file-4999.txt',
+      backup_path: ownKey(4999),
       size: 4999,
-      modifiedAt: new Date('2026-11-01T10:11:12.123456789Z'),
+      modified_at: '2026-11-01T10:11:12.123Z',
     });
-    const batches = insertMock.mock.results
-      .map((r) => r.value.values.mock?.calls?.[0]?.[0])
-      .filter((v) => Array.isArray(v) && v[0] && 'sourcePath' in v[0]);
-    expect(batches.every((b: unknown[]) => b.length <= 1000)).toBe(true);
+    const batches = executeMock.mock.calls.map((c) => batchRows(c[0]).length);
+    expect(batches).toEqual([1000, 1000, 1000, 1000, 1000]);
     expect(committed.statuses).toContain('complete');
+  });
+
+  it('writes each batch as one parameter, not a parameter per value', async () => {
+    // A 5,000-parameter statement cost more in query building than everything
+    // else in the run put together, measured at 1.1M entries.
+    loadSnapshot();
+    await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: deps(async () => stream(manifest(entries(2500)))) });
+    expect(insertMock).not.toHaveBeenCalled();
+    for (const [statement] of executeMock.mock.calls) {
+      const values = (statement as { queryChunks: unknown[] }).queryChunks.filter((c) => typeof c === 'string');
+      expect(values).toHaveLength(2); // the snapshot id and the JSON
+      expect(values[0]).toBe(SNAPSHOT_DB_ID);
+    }
   });
 
   it('reads the manifest through openManifest with the key under the snapshot root', async () => {
@@ -215,7 +232,7 @@ describe('hydrateSnapshotFileIndex over a stream', () => {
     expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_differs_from_attestation', retryable: false });
     expect(transactionMock).not.toHaveBeenCalled();
     expect(deleteMock).not.toHaveBeenCalled();
-    expect(insertMock).not.toHaveBeenCalled();
+    expect(executeMock).not.toHaveBeenCalled();
   });
 
   it('a bad entry at index 4,999 writes nothing, leaves the old rows, and names the entry', async () => {
@@ -229,7 +246,7 @@ describe('hydrateSnapshotFileIndex over a stream', () => {
     expect(reason).toContain('files.4999.backupPath');
     expect(reason).toContain('"/data/the-bad-one.txt"');
     expect(transactionMock).not.toHaveBeenCalled();
-    expect(insertMock).not.toHaveBeenCalled();
+    expect(executeMock).not.toHaveBeenCalled();
     expect(deleteMock).not.toHaveBeenCalled();
   });
 
@@ -372,9 +389,6 @@ describe('hydrateSnapshotFileIndex over a stream', () => {
   it('spools under a private directory while the run is using it', async () => {
     loadSnapshot();
     const seen: string[] = [];
-    insertMock.mockImplementation(() => {
-      return chainMock([]);
-    });
     transactionMock.mockImplementationOnce(async () => {
       seen.push(...(await spoolDirs()));
       return { status: 'skipped', reason: 'superseded' };
@@ -398,7 +412,7 @@ describe('hydrateSnapshotFileIndex over a stream', () => {
 
   it('a count the database reports differently from the manifest rolls the whole write back', async () => {
     loadSnapshot();
-    insertMock.mockImplementation(() => chainMock(Object.assign([], { count: 1 })));
+    executeMock.mockImplementation(async () => Object.assign([], { count: 1 }));
     await expect(
       hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: deps(async () => stream(manifest(entries(3)))) }),
     ).rejects.toThrow(/expected to write 3 .* wrote 1/);
@@ -416,14 +430,14 @@ describe('hydrateSnapshotFileIndex over a stream', () => {
     ];
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: deps(async () => stream(manifest(files))) });
     expect(outcome).toMatchObject({ status: 'complete', entryCount: 1 });
-    expect(committed.rows.map((r) => r.sourcePath)).toEqual(['/f']);
+    expect(committed.rows.map((r) => r.source_path)).toEqual(['/f']);
   });
 
   it('indexes the original path of a VSS entry', async () => {
     loadSnapshot();
     const files = [{ sourcePath: '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\x', originalPath: 'C:\\x', backupPath: ownKey(1) }];
     await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: deps(async () => stream(manifest(files))) });
-    expect(committed.rows.map((r) => r.sourcePath)).toEqual(['C:\\x']);
+    expect(committed.rows.map((r) => r.source_path)).toEqual(['C:\\x']);
   });
 
   it('a null files key is an empty snapshot, as the agent writes a nil slice', async () => {

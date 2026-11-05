@@ -46,9 +46,16 @@ function chainMock(resolvedValue: unknown = []) {
   return Object.assign(Promise.resolve(resolvedValue), chain);
 }
 
-const { selectMock, insertMock, updateMock, deleteMock, transactionMock, resolveSnapshotProviderConfigMock, fence } = vi.hoisted(() => ({
+/** The file rows of one batch statement: its one JSON parameter (#11026). */
+function batchRows(statement: unknown): Array<{ source_path: string; backup_path: string; size: number | null; modified_at: string | null }> {
+  const json = (statement as { queryChunks: unknown[] }).queryChunks.find((c): c is string => typeof c === 'string' && c.startsWith('['));
+  return json ? JSON.parse(json) : [];
+}
+
+const { selectMock, insertMock, executeMock, updateMock, deleteMock, transactionMock, resolveSnapshotProviderConfigMock, fence } = vi.hoisted(() => ({
   selectMock: vi.fn<(...args: unknown[]) => any>(),
   insertMock: vi.fn<(...args: unknown[]) => any>(),
+  executeMock: vi.fn<(...args: unknown[]) => any>(),
   updateMock: vi.fn<(...args: unknown[]) => any>(),
   deleteMock: vi.fn<(...args: unknown[]) => any>(),
   transactionMock: vi.fn<(cb: (tx: unknown) => unknown) => unknown>(),
@@ -91,6 +98,7 @@ vi.mock('../db', () => {
   const tx = {
     select: (...args: unknown[]) => routeSelect(...args),
     insert: (...args: unknown[]) => insertMock(...(args as [])),
+    execute: (...args: unknown[]) => executeMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
     delete: (...args: unknown[]) => deleteMock(...(args as [])),
   };
@@ -145,13 +153,15 @@ beforeEach(() => {
   vi.clearAllMocks();
   selectMock.mockImplementation(() => chainMock([]));
   insertMock.mockImplementation(() => chainMock([]));
+  // As postgres-js answers: an array-like result carrying the row count.
+  executeMock.mockImplementation(async (statement: unknown) => Object.assign([], { count: batchRows(statement).length }));
   // The claim's RETURNING (#6488) echoes the row the test's first select
   // loaded, as the real UPDATE would; a test that simulates a concurrent move
   // overrides the claim result explicitly.
   updateMock.mockImplementation(() => chainMock([{ id: SNAPSHOT_DB_ID }]));
   deleteMock.mockImplementation(() => chainMock([]));
   transactionMock.mockImplementation(async (cb: any) => cb({
-    select: routeSelect, insert: insertMock, update: updateMock, delete: deleteMock,
+    select: routeSelect, insert: insertMock, execute: executeMock, update: updateMock, delete: deleteMock,
   }));
   fence.override = {};
   fence.reads = [];
@@ -261,10 +271,8 @@ describe('hydrateSnapshotFileIndex', () => {
       originSnapshotIds: [REAL_MANIFEST_BASE_ID],
     });
     // Every content entry — backslash and colon keys included — is written verbatim as a file row.
-    const insertedRows = insertMock.mock.results
-      .map((r) => r.value)
-      .flatMap((chain) => (chain?.values?.mock?.calls ?? []).flatMap((c: unknown[]) => c[0] as Array<{ backupPath: string }>));
-    const insertedKeys = new Set(insertedRows.map((r) => r.backupPath));
+    const insertedRows = executeMock.mock.calls.flatMap((c) => batchRows(c[0]));
+    const insertedKeys = new Set(insertedRows.map((r) => r.backup_path));
     for (const f of [...external, ...own]) expect(insertedKeys.has(f.backupPath)).toBe(true);
     for (const f of contentless) expect(insertedKeys.has('')).toBe(false);
   });
@@ -411,10 +419,7 @@ describe('hydrateSnapshotFileIndex', () => {
     // 2 batches of file rows (1000 + 500), written in the ONE publish
     // transaction so a reader never sees a partial index (#11026 D4).
     expect(transactionMock).toHaveBeenCalledTimes(1);
-    const fileBatches = insertMock.mock.results
-      .map((r) => (r.value as { values: ReturnType<typeof vi.fn> }).values.mock.calls[0]?.[0] as Array<Record<string, unknown>> | undefined)
-      .filter((v) => Array.isArray(v) && v.some((row) => 'sourcePath' in row));
-    expect(fileBatches.map((b) => b!.length)).toEqual([1000, 500]);
+    expect(executeMock.mock.calls.map((c) => batchRows(c[0]).length)).toEqual([1000, 500]);
   });
 
   it('reclaims a stale hydrating row (>30min) — the CAS predicate itself expresses staleness', async () => {
@@ -466,7 +471,7 @@ describe('hydrateSnapshotFileIndex', () => {
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
     selectMock.mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, keyLayout: 'legacy_flat', keyPrefix: null, metadata: {} }]));
     // insert during the file-row batch write throws an unclassified error
-    insertMock.mockImplementationOnce(() => {
+    executeMock.mockImplementationOnce(() => {
       throw new Error('boom: insert failed');
     });
     const deps = {
@@ -503,7 +508,7 @@ describe('file index bound to the snapshot attestation', () => {
   const bytes = manifestBytes([{ sourcePath: '/b', backupPath: 'snapshots/snap-current/files/b.gz', size: 20 }]);
   const digest = createHash('sha256').update(bytes).digest('hex');
   const other = 'f'.repeat(64);
-  const fileRowInserts = () => insertMock.mock.calls.length;
+  const fileRowInserts = () => executeMock.mock.calls.length + insertMock.mock.calls.length;
 
   it('skips a complete index built from the attested manifest', async () => {
     selectMock.mockReturnValueOnce(chainMock([snapshotRow({
@@ -711,6 +716,7 @@ describe('hydrateSnapshotFileIndex key root (#7081)', () => {
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'origin_key_root_mismatch', retryable: false });
     expect(insertMock).not.toHaveBeenCalled();
+    expect(executeMock).not.toHaveBeenCalled();
   });
 
   it('fails origin_key_root_mismatch for a retired origin under another root', async () => {
@@ -782,7 +788,7 @@ describe('hydration telemetry (#11026)', () => {
 
   it('counts a run that threw as error, and still throws', async () => {
     arrange();
-    insertMock.mockImplementationOnce(() => { throw new Error('boom'); });
+    executeMock.mockImplementationOnce(() => { throw new Error('boom'); });
     const bytes = manifestBytes([{ sourcePath: '/b', backupPath: 'snapshots/snap-current/files/b.gz', size: 20 }]);
     await expect(hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest: openOf(bytes) } })).rejects.toThrow('boom');
     expect(onSnapshotFileIndex).toHaveBeenCalledWith('hydration', 'error', 1);
@@ -790,7 +796,7 @@ describe('hydration telemetry (#11026)', () => {
 
   it('rethrows the original error when recording the failure also fails', async () => {
     arrange();
-    insertMock.mockImplementationOnce(() => { throw new Error('boom'); });
+    executeMock.mockImplementationOnce(() => { throw new Error('boom'); });
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     // Claim succeeds; the outer catch's failure write then fails too.
     updateMock
@@ -819,6 +825,7 @@ describe('publish fence (#11026 D5): a superseded hydration never publishes', ()
     expect(outcome).toEqual({ status: 'skipped', reason: 'superseded' });
     expect(deleteMock).not.toHaveBeenCalled();
     expect(insertMock).not.toHaveBeenCalled();
+    expect(executeMock).not.toHaveBeenCalled();
     expect(setsCarrying('complete')).toHaveLength(0);
     expect(setsCarrying('failed')).toHaveLength(0);
     expect(fence.reads[0]!.for).toHaveBeenCalledWith('update');
@@ -831,6 +838,7 @@ describe('publish fence (#11026 D5): a superseded hydration never publishes', ()
     expect(outcome).toEqual({ status: 'skipped', reason: 'superseded' });
     expect(setsCarrying('complete')).toHaveLength(0);
     expect(insertMock).not.toHaveBeenCalled();
+    expect(executeMock).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -841,6 +849,7 @@ describe('publish fence (#11026 D5): a superseded hydration never publishes', ()
     fence.override = override;
     expect(await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: fetching() })).toEqual({ status: 'skipped', reason: 'superseded' });
     expect(insertMock).not.toHaveBeenCalled();
+    expect(executeMock).not.toHaveBeenCalled();
   });
 
   it('a snapshot row gone at publish is superseded', async () => {
@@ -850,6 +859,7 @@ describe('publish fence (#11026 D5): a superseded hydration never publishes', ()
     }));
     expect(await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: fetching() })).toEqual({ status: 'skipped', reason: 'superseded' });
     expect(insertMock).not.toHaveBeenCalled();
+    expect(executeMock).not.toHaveBeenCalled();
   });
 
   it('a failure from a superseded run does not overwrite the newer state: it is scoped by the claim and reports superseded', async () => {

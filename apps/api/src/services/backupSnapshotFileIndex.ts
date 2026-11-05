@@ -8,8 +8,9 @@
 import { createHash } from 'node:crypto';
 import type { Writable } from 'node:stream';
 import { z } from 'zod';
-import { and, eq, isNull, lt, ne, or } from 'drizzle-orm';
+import { and, eq, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { extractRowCount } from '../db/rowCount';
 import {
   backupJobs,
   backupSnapshotFiles,
@@ -405,6 +406,8 @@ async function claimSnapshotForHydration(
   );
 }
 
+type FileRowJson = { source_path: string; backup_path: string; size: number | null; modified_at: string | null };
+
 /** What pass 1 learned about a spooled manifest. The rows stay on disk until pass 2. */
 type ParsedManifest = {
   manifestSha256: string;
@@ -688,13 +691,21 @@ async function verifyOriginsAndWrite(
       // in memory: all of them commit together with the publish below.
       await tx.delete(backupSnapshotFiles).where(eq(backupSnapshotFiles.snapshotDbId, snapshotDbId));
       let inserted = 0;
-      let batch: Array<typeof backupSnapshotFiles.$inferInsert> = [];
+      let batch: FileRowJson[] = [];
       const writeBatch = async () => {
         if (batch.length === 0) return;
-        const written = await tx.insert(backupSnapshotFiles).values(batch);
-        // The driver's own count of rows written, when it reports one.
-        const count = (written as unknown as { count?: unknown }).count;
-        inserted += typeof count === 'number' ? count : batch.length;
+        // One JSON parameter, not the query builder's multi-row VALUES: its
+        // objects for 5,000 values a statement were two thirds of everything
+        // that outlived a minor GC at 1.1M entries, and what grew the heap.
+        // The ::text keeps the driver from serializing the string as JSON again.
+        const written = await tx.execute(sql`
+          INSERT INTO ${backupSnapshotFiles} (snapshot_db_id, source_path, backup_path, size, modified_at)
+          SELECT ${snapshotDbId}::uuid, r.source_path, r.backup_path, r.size, r.modified_at
+          FROM json_to_recordset(${JSON.stringify(batch)}::text::json)
+            AS r(source_path text, backup_path text, size bigint, modified_at timestamp)
+        `);
+        // The database's own count of rows written.
+        inserted += extractRowCount(written);
         batch = [];
       };
       await scanManifest(verifiedSpoolBytes(spool), {
@@ -704,11 +715,12 @@ async function verifyOriginsAndWrite(
           const file = entry as HydrationEntry;
           if (!file.backupPath) return;
           batch.push({
-            snapshotDbId,
-            sourcePath: file.originalPath ?? file.sourcePath,
-            backupPath: file.backupPath,
+            source_path: file.originalPath ?? file.sourcePath,
+            backup_path: file.backupPath,
             size: file.size ?? null,
-            modifiedAt: file.modTime ? new Date(file.modTime) : null,
+            // As the column's own mapping sends it: a UTC ISO string, stored
+            // in a timestamp without time zone.
+            modified_at: file.modTime ? new Date(file.modTime).toISOString() : null,
           });
           if (batch.length >= FILE_ROW_BATCH_SIZE) await writeBatch();
         },

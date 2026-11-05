@@ -140,6 +140,29 @@ export function shapeBrowseRows(rows: BrowseRow[], segments: string[], limit: nu
 export const SELECTION_PAGE_SIZE = 5000;
 
 /**
+ * readableIndexCondition for one snapshot, as a subquery on no row of the file
+ * table: Postgres evaluates it once per statement, where a join would repeat it
+ * for each of a million rows. Still decided in the statement that reads them.
+ */
+function snapshotIndexIsReadable(snapshotDbId: string) {
+  return sql`EXISTS (
+    SELECT 1 FROM ${backupSnapshots}
+    LEFT JOIN ${backupSnapshotAttestations} ON ${backupSnapshotAttestations.snapshotDbId} = ${backupSnapshots.id}
+    WHERE ${backupSnapshots.id} = ${snapshotDbId} AND ${readableIndexCondition()}
+  )`;
+}
+
+/**
+ * The keyset bound, on every page including the first (a stored path is never
+ * empty). It makes (snapshot_db_id, source_path) the obvious index whatever the
+ * statistics say: right after a bulk publish they still claim one row, and the
+ * planner would otherwise read and sort the whole snapshot for the first page.
+ */
+function afterSourcePath(after: string | null) {
+  return gt(backupSnapshotFiles.sourcePath, after ?? '');
+}
+
+/**
  * One keyset page of the stored source paths a selective restore may resolve
  * against: the same rows the listing would show (#11026), decided in the
  * statement that reads them. Ordered by source_path, the second column of
@@ -149,12 +172,10 @@ async function readableSourcePathPage(snapshotDbId: string, after: string | null
   const rows = await db
     .select({ sourcePath: backupSnapshotFiles.sourcePath })
     .from(backupSnapshotFiles)
-    .innerJoin(backupSnapshots, eq(backupSnapshots.id, backupSnapshotFiles.snapshotDbId))
-    .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
     .where(and(
       eq(backupSnapshotFiles.snapshotDbId, snapshotDbId),
-      readableIndexCondition(),
-      ...(after === null ? [] : [gt(backupSnapshotFiles.sourcePath, after)]),
+      snapshotIndexIsReadable(snapshotDbId),
+      afterSourcePath(after),
     ))
     .orderBy(asc(backupSnapshotFiles.sourcePath))
     .limit(SELECTION_PAGE_SIZE);
@@ -304,13 +325,11 @@ export async function searchSnapshotFiles(params: {
         modifiedAt: backupSnapshotFiles.modifiedAt,
       })
       .from(backupSnapshotFiles)
-      .innerJoin(backupSnapshots, eq(backupSnapshots.id, backupSnapshotFiles.snapshotDbId))
-      .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
       .where(and(
         eq(backupSnapshotFiles.snapshotDbId, snapshotDbId),
-        readableIndexCondition(),
+        snapshotIndexIsReadable(snapshotDbId),
         sql`position(lower(${query}::text) in lower(${backupSnapshotFiles.sourcePath})) > 0`,
-        ...(after === null ? [] : [gt(backupSnapshotFiles.sourcePath, after)]),
+        afterSourcePath(after),
       ))
       .orderBy(asc(backupSnapshotFiles.sourcePath))
       .limit(limit + 1),
