@@ -24,7 +24,7 @@ should actually run.
 | Date | 2026-09-01 |
 | Breeze build SHA | `20a5d14494b7e9e45792982b7e6bc12ba83956d0` (branch `feat/quickbooks-accounting-mappings`) |
 | Tester | Final-review fix wave (automated) |
-| Environment | Local worktree, ephemeral `pnpm test-stack` Postgres 16 (pgvector) + Redis 7 containers |
+| Environment | Local worktree, ephemeral `pnpm test-stack` Postgres 16 (pgvector) + Redis 8 containers |
 
 The gate was re-run in full against that SHA, which is the head of the
 branch's code changes; only this document changed afterwards. See the

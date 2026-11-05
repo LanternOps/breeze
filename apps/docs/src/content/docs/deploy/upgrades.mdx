@@ -101,7 +101,14 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
 ## Redis 7 to 8
 
-The bundled Redis default moves from `redis:7-alpine` to `redis:8-alpine`. Redis 8 reads Redis 7.x RDB and AOF files, so the upgrade is a tag change: let the job queues drain, set `REDIS_IMAGE_REF=redis:8-alpine` (or your reviewed digest) in `.env`, then run `docker compose up -d redis`. You cannot roll back to Redis 7 once Redis 8 has written the data files. See [Production Deployment](/deploy/production/) for the supported versions.
+The reference configuration and CI now use Redis 8.x (`redis:8-alpine`) instead of Redis 7. Redis 8 reads Redis 7.x data files, so the upgrade is an image change:
+
+1. Back up the Redis volume. This is your rollback path.
+2. Let the job queues drain. Queue state lives in Redis and persists across the restart, but draining avoids interrupting in-flight jobs.
+3. Set `REDIS_IMAGE_REF` in `.env` to a reviewed digest of a Redis 8.x image.
+4. Run `docker compose up -d redis`. The API reconnects on its own; restart it if it does not.
+
+Redis 7 may not be able to read data files written by Redis 8, so restore the backup if you need to roll back. See [Production Deployment](/deploy/production/) for the supported versions.
 
 ## Agent reconnect settings
 
