@@ -18,6 +18,7 @@ import type {
   EdrActionStatus,
   EdrConnectionStatus,
   EdrDetectionStatus,
+  EdrInstallerFetchErrorCode,
   EdrDeviceMatchSource,
   EdrEndpointHealth,
   EdrEndpointType,
@@ -139,8 +140,13 @@ export const edrTenants = pgTable('edr_tenants', {
   orgId: uuid('org_id').references(() => organizations.id, { onDelete: 'set null' }),
   /** NULL = never mapped. `manual` / `manual_unmapped` are never touched by auto-mapping. */
   mappingSource: varchar('mapping_source', { length: 20 }).$type<EdrMappingSource>(),
-  /** Per-tenant installer token / link (W06). */
+  /** Sealed installer material (W06). Written only by services/edrProviders/installerMaterial.ts. */
   installerSecretEncrypted: text('installer_secret_encrypted'),
+  installerFetchedAt: timestamp('installer_fetched_at', { withTimezone: true }),
+  /** NULL = the vendor's link does not expire. */
+  installerExpiresAt: timestamp('installer_expires_at', { withTimezone: true }),
+  /** A code from EDR_INSTALLER_FETCH_ERROR_CODES, never vendor text (the column is exported). */
+  installerFetchError: varchar('installer_fetch_error', { length: 40 }).$type<EdrInstallerFetchErrorCode>(),
   endpointCount: integer('endpoint_count').notNull().default(0),
   openDetectionCount: integer('open_detection_count').notNull().default(0),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),

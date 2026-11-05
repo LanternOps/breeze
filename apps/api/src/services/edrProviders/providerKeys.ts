@@ -15,6 +15,18 @@ export function isEdrProviderKey(key: string): key is EdrProviderKey {
 }
 
 /**
+ * The providers whose adapter can supply an installer. `registry.test.ts` pins
+ * this list to the adapters declaring `capabilities.installer !== 'none'`.
+ */
+export const EDR_INSTALLER_PROVIDER_KEYS = ['bitdefender'] as const;
+
+export type EdrInstallerProviderKey = (typeof EDR_INSTALLER_PROVIDER_KEYS)[number];
+
+export function isEdrInstallerProviderKey(key: string): key is EdrInstallerProviderKey {
+  return (EDR_INSTALLER_PROVIDER_KEYS as readonly string[]).includes(key);
+}
+
+/**
  * Vendor-neutral display labels for MSP-facing surfaces (feed, AI tools,
  * status). Breeze-generated, never vendor-supplied text. The customer portal
  * never shows these — it uses the generic "Managed endpoint protection".
