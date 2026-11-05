@@ -59,7 +59,8 @@ type FailureLatch struct {
 	// Now is the clock; nil means time.Now. A test seam.
 	Now func() time.Time
 
-	mu sync.Mutex
+	mu        sync.Mutex
+	warnedBad bool // guarded by mu
 }
 
 // FailureLatchDelay is the wait after the n-th consecutive failure of one
@@ -103,22 +104,40 @@ func (l *FailureLatch) loadLocked() (FailureLatchState, bool) {
 	f, err := os.Open(l.Path)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			log.Warn("update failure latch unreadable; treating as empty", "path", l.Path, "error", err.Error())
+			l.warnBadOnce("update failure latch unreadable; treating as empty", err)
 		}
 		return FailureLatchState{}, false
 	}
 	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, failureLatchFileMax+1))
-	if err != nil || len(data) > failureLatchFileMax {
-		log.Warn("update failure latch unreadable or oversized; treating as empty", "path", l.Path)
+	if err == nil && len(data) > failureLatchFileMax {
+		err = errors.New("file exceeds size limit")
+	}
+	if err != nil {
+		l.warnBadOnce("update failure latch unreadable or oversized; treating as empty", err)
 		return FailureLatchState{}, false
 	}
 	var st FailureLatchState
 	if err := json.Unmarshal(data, &st); err != nil || st.Version == "" || st.Failures < 1 {
-		log.Warn("update failure latch is corrupt; treating as empty", "path", l.Path)
+		if err == nil {
+			err = errors.New("missing version or failure count")
+		}
+		l.warnBadOnce("update failure latch is corrupt; treating as empty until the next update outcome rewrites it", err)
 		return FailureLatchState{}, false
 	}
+	l.warnedBad = false
 	return st, true
+}
+
+// warnBadOnce logs a damaged-latch warning once until the latch reads cleanly
+// again. Load runs on every heartbeat that carries an offer, and the warning
+// ships at the default level, so repeating it would flood the server logs.
+func (l *FailureLatch) warnBadOnce(msg string, err error) {
+	if l.warnedBad {
+		return
+	}
+	l.warnedBad = true
+	log.Warn(msg, "path", l.Path, "error", err.Error())
 }
 
 // Remaining reports whether version is latched now and, if so, how long until

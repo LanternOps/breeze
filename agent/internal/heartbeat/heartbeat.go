@@ -997,6 +997,9 @@ type Heartbeat struct {
 	// Episode state for upgrades deferred by an in-progress backup job, so a
 	// deferral that persists is logged above Info (update_outcome.go, #9751).
 	upgradeBackupDeferral backupDeferralState
+	// Last latch notice logged at warn by this process (update_outcome.go).
+	updateLatchNoticeMu  sync.Mutex
+	updateLatchNoticeKey string
 
 	// Path to the agent state file, set by main after startup.
 	statePath                   string
@@ -2351,10 +2354,9 @@ func (h *Heartbeat) Start() {
 	// after mass restart of agents. Skip jitter if restarting after self-update
 	// so the new version is reported immediately.
 	interval := time.Duration(h.config.HeartbeatIntervalSeconds) * time.Second
-	marker, restartedForUpdate := consumeUpdateMarker()
 	// Before the first heartbeat: that heartbeat re-offers the target, and a
 	// version whose swap did not take must already be latched by then (#9751).
-	h.reconcileUpdateOutcome(marker)
+	marker, restartedForUpdate := h.startupUpdateReconcile(defaultUpdateMarkerPath())
 	if restartedForUpdate {
 		log.Info("post-update restart: sending immediate heartbeat (jitter skipped)",
 			"markerVersion", marker.Version, "runningVersion", h.agentVersion)
@@ -8843,9 +8845,21 @@ func (h *Heartbeat) noteCodeSignatureFailure(targetVersion string) {
 
 // doUpgrade contains the actual upgrade logic, called by handleUpgrade.
 func (h *Heartbeat) doUpgrade(targetVersion string) {
+	if h.upgradeHeldBeforeAttempt(targetVersion) {
+		return
+	}
+
+	log.Info("upgrade requested", "targetVersion", targetVersion)
+	h.doUpgradeAttempt(targetVersion)
+}
+
+// upgradeHeldBeforeAttempt runs every gate that must hold an offer back
+// BEFORE doUpgrade announces the attempt (update_status) or downloads
+// anything. Returns true when the offer is skipped this heartbeat.
+func (h *Heartbeat) upgradeHeldBeforeAttempt(targetVersion string) bool {
 	if h.containmentBlocksUpgrade() {
 		log.Info("upgrade skipped: network isolation is active", "targetVersion", targetVersion)
-		return
+		return true
 	}
 	// Checked before sendUpdateStatus and before any download work: the server
 	// re-sends the same upgradeTo on every heartbeat, so without this the
@@ -8855,7 +8869,7 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	if h.untrustedReleaseBackoffActive(targetVersion) {
 		log.Debug("upgrade skipped: server recently refused this version as untrusted; backing off",
 			"targetVersion", targetVersion)
-		return
+		return true
 	}
 	// Same reason as above: the server re-sends the same upgradeTo every
 	// heartbeat, so without this gate a version whose binary cannot pass
@@ -8863,24 +8877,25 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	if h.codeSignatureBackoffActive(targetVersion) {
 		log.Debug("upgrade skipped: this version's binary recently failed macOS code signature verification; backing off",
 			"targetVersion", targetVersion)
-		return
+		return true
 	}
 	// #7516: same reason again, for an agent (or blocking backup) artifact
 	// that failed checksum/manifest verification. Exponential per target, so
 	// an unsatisfiable offer costs a handful of downloads, not one a minute,
 	// while a NEW offer is attempted on the very next heartbeat.
 	if h.upgradeDeferredByArtifactBackoff(targetVersion) {
-		return
+		return true
 	}
-	// #9751: an earlier attempt at this version restarted on the previous
+	// #9751: an earlier attempt at this version came back on the previous
 	// binary (on Windows, the detached swap helper failed). That outcome is
 	// only visible after the restart, so in-memory backoffs never see it;
 	// this latch is persisted and doubles per failure up to a daily retry.
-	if h.upgradeDeferredByFailureLatch(targetVersion) {
-		return
-	}
+	return h.upgradeDeferredByFailureLatch(targetVersion)
+}
 
-	log.Info("upgrade requested", "targetVersion", targetVersion)
+// doUpgradeAttempt announces and runs one upgrade attempt. Only doUpgrade
+// calls it, after upgradeHeldBeforeAttempt.
+func (h *Heartbeat) doUpgradeAttempt(targetVersion string) {
 
 	h.sendUpdateStatus(targetVersion)
 	// Give the WebSocket write goroutine time to flush the update_status

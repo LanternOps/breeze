@@ -2,6 +2,7 @@ package updater
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,6 +174,40 @@ func TestFailureLatch_CorruptStateIsIgnoredAndOverwritten(t *testing.T) {
 	}
 	if st.Failures != 1 {
 		t.Fatalf("got %d failures, want a fresh streak of 1", st.Failures)
+	}
+}
+
+// An update that fails before handing off to a restart must not leave its
+// marker behind: the next unrelated start would report the version as a swap
+// that did not take effect and latch it (#9751).
+func TestUpdateMarkerTxn_RemovesOnlyItsOwnMarkerOnError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), UpdateMarkerName)
+	orig := updateMarkerPath
+	updateMarkerPath = func() string { return path }
+	t.Cleanup(func() { updateMarkerPath = orig })
+
+	var ok updateMarkerTxn
+	ok.write("0.124.0")
+	ok.abandonOnError(nil)
+	if data, err := os.ReadFile(path); err != nil || string(data) != "0.124.0" {
+		t.Fatalf("a successful hand-off must keep the marker (data %q, err %v)", data, err)
+	}
+
+	var failed updateMarkerTxn
+	failed.write("0.124.0")
+	failed.abandonOnError(errors.New("failed to spawn update helper"))
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("a failed update must remove the marker it wrote (stat err %v)", err)
+	}
+
+	// A marker this update did not write (another component's update) stays.
+	if err := os.WriteFile(path, []byte("0.124.0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var early updateMarkerTxn
+	early.abandonOnError(errors.New("download failed"))
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("an update that never wrote the marker must not remove one (stat err %v)", err)
 	}
 }
 

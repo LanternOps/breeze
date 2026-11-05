@@ -59,10 +59,7 @@ const helperFailureLog = "\ufeffBreeze update-helper failure at 2026-10-20T02:41
 func TestReconcileUpdateOutcome_FailedSwapLatchesAndCarriesTheHelperReason(t *testing.T) {
 	f := newOutcomeFixture(t, "0.122.1")
 	markerAt := f.clk.t.Add(-10 * time.Second)
-	logPath := filepath.Join(f.logDir, "breeze-update-failure-638650000000000000.log")
-	if err := os.WriteFile(logPath, []byte(helperFailureLog), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	logPath := writeHelperLog(t, f.logDir, "638650000000000000", helperFailureLog, markerAt.Add(5*time.Second))
 
 	f.h.reconcileUpdateOutcome(updateMarker{Version: "0.124.0", WrittenAt: markerAt})
 
@@ -121,6 +118,180 @@ func TestReconcileUpdateOutcome_IgnoresHelperLogsOlderThanTheAttempt(t *testing.
 	st, _ := f.h.updateLatch.Load()
 	if st.Reason != updateHelperNoLogReason {
 		t.Fatalf("reason = %q, want the no-log fallback (the only log predates the attempt)", st.Reason)
+	}
+	if _, err := os.Stat(stale); err != nil {
+		t.Fatalf("a log that predates the attempt must be left alone, stat err %v", err)
+	}
+}
+
+// writeHelperLog writes a helper failure log named like the script's, with an
+// explicit mtime so tests never depend on the real clock.
+func writeHelperLog(t *testing.T, dir, stamp, body string, mod time.Time) string {
+	t.Helper()
+	p := filepath.Join(dir, updater.UpdateHelperFailureLogPrefix+stamp+".log")
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(p, mod, mod); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestReadUpdateHelperFailure_SelectionAndParsing(t *testing.T) {
+	since := time.Date(2026, 10, 20, 2, 40, 0, 0, time.UTC)
+	t.Run("newest fresh log wins and every fresh log is removed", func(t *testing.T) {
+		dir := t.TempDir()
+		older := writeHelperLog(t, dir, "1", "exception: older failure\r\n", since.Add(time.Second))
+		newer := writeHelperLog(t, dir, "2", "exception: newer failure\r\n", since.Add(2*time.Second))
+		got := readUpdateHelperFailure(dir, since)
+		if got != "update helper failed: newer failure" {
+			t.Fatalf("got %q, want the newest log's exception", got)
+		}
+		for _, p := range []string{older, newer} {
+			if _, err := os.Stat(p); !os.IsNotExist(err) {
+				t.Fatalf("%s should have been removed", filepath.Base(p))
+			}
+		}
+	})
+	t.Run("later block in the same file wins", func(t *testing.T) {
+		dir := t.TempDir()
+		writeHelperLog(t, dir, "1", "operation: first\nexception: first\nexception: second\noperation: second\n", since)
+		if got := readUpdateHelperFailure(dir, since); got != "update helper failed: second (operation: second)" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("operation only", func(t *testing.T) {
+		dir := t.TempDir()
+		writeHelperLog(t, dir, "1", "operation: Stop-Service\n", since)
+		if got := readUpdateHelperFailure(dir, since); got != "update helper failed during: Stop-Service" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("a log with nothing usable says so instead of claiming there was none", func(t *testing.T) {
+		dir := t.TempDir()
+		p := writeHelperLog(t, dir, "1", "garbage\nmore garbage\n", since)
+		if got := readUpdateHelperFailure(dir, since); got != updateHelperUnparseableReason {
+			t.Fatalf("got %q, want the unparseable reason", got)
+		}
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatal("a considered log is removed even when it could not be parsed")
+		}
+	})
+	t.Run("a directory matching the pattern is neither read nor removed", func(t *testing.T) {
+		dir := t.TempDir()
+		d := filepath.Join(dir, updater.UpdateHelperFailureLogPrefix+"dir.log")
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if got := readUpdateHelperFailure(dir, since.Add(-time.Hour)); got != "" {
+			t.Fatalf("got %q, want no reason from a directory", got)
+		}
+		if _, err := os.Stat(d); err != nil {
+			t.Fatalf("directory must be left alone, stat err %v", err)
+		}
+	})
+	t.Run("control characters and overlong fields are bounded", func(t *testing.T) {
+		dir := t.TempDir()
+		writeHelperLog(t, dir, "1", "exception: a\x1b[31mb\tc "+strings.Repeat("x", 1000)+"\n", since)
+		got := readUpdateHelperFailure(dir, since)
+		if strings.ContainsAny(got, "\x1b\t") {
+			t.Fatalf("got %q, control characters must be dropped", got)
+		}
+		if len(got) > len("update helper failed: ")+updateHelperFieldMax+len("…") {
+			t.Fatalf("got %d bytes, field must be bounded", len(got))
+		}
+	})
+}
+
+// A helper log written just before the marker's timestamp (clock skew,
+// timestamp granularity) still belongs to the attempt.
+func TestReconcileUpdateOutcome_HelperLogWithinSlackIsUsed(t *testing.T) {
+	f := newOutcomeFixture(t, "0.122.1")
+	markerAt := f.clk.t
+	writeHelperLog(t, f.logDir, "1", "exception: just before the marker\n", markerAt.Add(-30*time.Second))
+	f.h.reconcileUpdateOutcome(updateMarker{Version: "0.124.0", WrittenAt: markerAt})
+	st, _ := f.h.updateLatch.Load()
+	if st.Reason != "update helper failed: just before the marker" {
+		t.Fatalf("reason = %q, want the log inside the slack window", st.Reason)
+	}
+}
+
+// If the latch cannot be written, reconcile must not panic, and nothing is
+// held back (the error is logged; the next heartbeat retries).
+func TestReconcileUpdateOutcome_LatchWriteFailureDoesNotBlockOrPanic(t *testing.T) {
+	f := newOutcomeFixture(t, "0.122.1")
+	blocker := filepath.Join(t.TempDir(), "a-file")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.h.updateLatch.Path = filepath.Join(blocker, "latch.json") // parent is a file
+	f.h.reconcileUpdateOutcome(updateMarker{Version: "0.124.0", WrittenAt: f.clk.t})
+	if f.h.upgradeDeferredByFailureLatch("0.124.0") {
+		t.Fatal("an unpersisted latch must not block")
+	}
+}
+
+func TestStartupUpdateReconcile_LatchesFromTheMarkerFile(t *testing.T) {
+	f := newOutcomeFixture(t, "0.122.1")
+	marker := filepath.Join(t.TempDir(), updater.UpdateMarkerName)
+	if err := os.WriteFile(marker, []byte("0.124.0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, restarted := f.h.startupUpdateReconcile(marker)
+	if !restarted || m.Version != "0.124.0" {
+		t.Fatalf("got (%+v, %v), want the marker's version and restarted=true", m, restarted)
+	}
+	if !f.h.upgradeDeferredByFailureLatch("0.124.0") {
+		t.Fatal("the version named by the marker must be latched before the first heartbeat")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("the marker must be consumed")
+	}
+
+	// A legacy empty marker still means "restarted for an update" (skip
+	// jitter) but carries no outcome to record.
+	f2 := newOutcomeFixture(t, "0.122.1")
+	if err := os.WriteFile(marker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, restarted := f2.h.startupUpdateReconcile(marker); !restarted {
+		t.Fatal("an empty marker still reports a post-update restart")
+	}
+	if st, ok := f2.h.updateLatch.Load(); ok {
+		t.Fatalf("an empty marker latched %+v", st)
+	}
+}
+
+// The latch must be checked among the gates that run before doUpgrade
+// announces the attempt (update_status) or downloads anything.
+func TestUpgradeHeldBeforeAttempt_IncludesTheFailureLatch(t *testing.T) {
+	f := newOutcomeFixture(t, "0.122.1")
+	if f.h.upgradeHeldBeforeAttempt("0.124.0") {
+		t.Fatal("nothing latched: the offer must proceed")
+	}
+	f.h.reconcileUpdateOutcome(updateMarker{Version: "0.124.0", WrittenAt: f.clk.t})
+	if !f.h.upgradeHeldBeforeAttempt("0.124.0") {
+		t.Fatal("a latched version must be held before the attempt is announced")
+	}
+	if f.h.upgradeHeldBeforeAttempt("0.125.0") {
+		t.Fatal("a different version must proceed")
+	}
+}
+
+// The hold and the retry are each a warn once per latch state, not per beat.
+func TestFirstLatchNotice_OncePerLatchState(t *testing.T) {
+	h := &Heartbeat{}
+	st := updater.FailureLatchState{Version: "0.124.0", Failures: 1, LastFailureAt: time.Unix(100, 0)}
+	if !h.firstLatchNotice("hold", st) || h.firstLatchNotice("hold", st) {
+		t.Fatal("hold notice must fire exactly once for one latch state")
+	}
+	if !h.firstLatchNotice("retry", st) {
+		t.Fatal("the retry after a hold is a new notice")
+	}
+	st.Failures, st.LastFailureAt = 2, time.Unix(200, 0)
+	if !h.firstLatchNotice("hold", st) {
+		t.Fatal("a new failure is a new latch state")
 	}
 }
 
@@ -189,26 +360,38 @@ func TestConsumeUpdateMarkerAt_ReturnsVersionAndRemovesTheFile(t *testing.T) {
 func TestBackupDeferral_EscalatesWhenItPersists(t *testing.T) {
 	h := &Heartbeat{}
 	t0 := time.Date(2026, 10, 20, 2, 41, 0, 0, time.UTC)
-	steps := []struct {
-		at   time.Duration
-		ver  string
-		want string
-	}{
-		{0, "0.124.0", "warn"},                          // a new episode is announced once
-		{time.Minute, "0.124.0", "debug"},               // then quiet while it is plausibly a normal job
-		{59 * time.Minute, "0.124.0", "debug"},          //
-		{time.Hour, "0.124.0", "error"},                 // an hour in, it is a problem
-		{2 * time.Hour, "0.124.0", "debug"},             // reported once, not every beat
-		{25 * time.Hour, "0.124.0", "error"},            // and again a day later
-		{25*time.Hour + time.Minute, "0.125.0", "warn"}, // a new target is a new episode
-	}
-	for _, s := range steps {
-		if got := h.noteUpgradeDeferredByBackup(s.ver, t0.Add(s.at)); got != s.want {
-			t.Fatalf("at +%s for %s: level %q, want %q", s.at, s.ver, got, s.want)
+	// One deferral per ~60 s heartbeat for 26 hours of a job that never ends:
+	// warn at the start, error at 1 h and again at 25 h, debug otherwise.
+	loud := map[int]string{0: "warn", 60: "error", 25 * 60: "error"}
+	for minute := 0; minute <= 26*60; minute++ {
+		want, ok := loud[minute]
+		if !ok {
+			want = "debug"
 		}
+		if got := h.noteUpgradeDeferredByBackup("0.124.0", t0.Add(time.Duration(minute)*time.Minute)); got != want {
+			t.Fatalf("at +%dm: level %q, want %q", minute, got, want)
+		}
+	}
+	// A new target is a new episode.
+	if got := h.noteUpgradeDeferredByBackup("0.125.0", t0.Add(26*time.Hour+time.Minute)); got != "warn" {
+		t.Fatalf("new target: level %q, want warn", got)
 	}
 	h.clearUpgradeBackupDeferral()
 	if got := h.noteUpgradeDeferredByBackup("0.125.0", t0.Add(26*time.Hour)); got != "warn" {
 		t.Fatalf("after the deferral cleared, the next one is a new episode; got %q", got)
+	}
+}
+
+// A deferral long after the last one (the episode ended without the clear
+// call, e.g. an earlier gate returned) is a new episode, not a days-long one.
+func TestBackupDeferral_SilenceStartsANewEpisode(t *testing.T) {
+	h := &Heartbeat{}
+	t0 := time.Date(2026, 10, 20, 2, 41, 0, 0, time.UTC)
+	h.noteUpgradeDeferredByBackup("0.124.0", t0)
+	if got := h.noteUpgradeDeferredByBackup("0.124.0", t0.Add(3*24*time.Hour)); got != "warn" {
+		t.Fatalf("got %q, want a fresh episode after a long silence", got)
+	}
+	if got := h.noteUpgradeDeferredByBackup("0.124.0", t0.Add(3*24*time.Hour-time.Minute)); got != "warn" {
+		t.Fatalf("got %q, want a fresh episode when the clock moves backwards", got)
 	}
 }
