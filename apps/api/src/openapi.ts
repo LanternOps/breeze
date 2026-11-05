@@ -444,6 +444,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           ramTotalMb: { type: 'integer', nullable: true },
           diskTotalGb: { type: 'integer', nullable: true },
           serialNumber: { type: 'string', nullable: true },
+          productSku: { type: 'string', nullable: true, description: 'System SKU from SMBIOS (the HP product number); null until reported' },
           manufacturer: { type: 'string', nullable: true },
           model: { type: 'string', nullable: true },
           motherboardManufacturer: { type: 'string', nullable: true },

@@ -185,6 +185,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/patchSeverityOverlay.ts': 'effective per-device severity/category SQL fragments + aggregate for the patch catalog list (#9387 gap 1); read model only, applied inside a device_patches query the caller already scoped via resolveOutstandingDeviceScope, selects no targets',
   'services/patchSeveritySource.ts': 'provenance (vendor/derived) of device-reported severities for the patch catalog read path (#9387 gap 2); RLS + resolveOutstandingDeviceScope-scoped read, selects no targets',
   'services/scriptProposals/queries.ts': 'Proposal detail read model for the UI; device ids derived from an org-scoped proposal row',
+  'services/scriptProposals/reviewOverride.ts': 'A person signing one proposal (#10954): reads only its own targetDeviceIds, pinned to its org, each re-checked as parked by dispatchScriptToDevice',
   'services/softwarePolicyInstallPreview.ts': 'Dry-run device count shown to the operator before confirming a fleet install',
   'services/softwarePolicyCoverage.ts': 'request path (#9635): counts which devices a software policy governs for the coverage indicator, and checks an org default list would govern any of the (already holding-org-refused) write org\'s devices; selects nothing to act on',
   'services/ticketTriage.ts': 'Site-scoped read model/aggregate for ticket-triage quality stats',

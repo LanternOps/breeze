@@ -916,12 +916,47 @@ func normalizePreflightErr(err error) error {
 	return err
 }
 
+// UpdateMarkerName is the transient marker in config.ConfigDir() that the
+// updater writes, holding the target version, just before it hands off to a
+// restart. The next agent start consumes it (heartbeat/update_outcome.go).
+const UpdateMarkerName = ".update-restart"
+
+// UpdateHelperFailureLogPrefix names the Windows restart helper's failure log,
+// ${env:TEMP}\<prefix><stamp>.log (buildRestartScript). The heartbeat reads it
+// after a swap that did not take (#9751), so both sides use this constant.
+const UpdateHelperFailureLogPrefix = "breeze-update-failure-"
+
+// updateMarkerPath is the marker location; a test seam.
+var updateMarkerPath = func() string { return filepath.Join(config.ConfigDir(), UpdateMarkerName) }
+
 // writeUpdateMarker creates a transient file that tells the new process
-// to skip startup jitter and send an immediate heartbeat.
+// to skip startup jitter and send an immediate heartbeat, and lets it check
+// whether the update took effect (#9751).
 func writeUpdateMarker(version string) {
-	markerPath := filepath.Join(config.ConfigDir(), ".update-restart")
+	markerPath := updateMarkerPath()
 	if err := os.WriteFile(markerPath, []byte(version), 0600); err != nil {
-		log.Warn("failed to write update marker", "path", markerPath, "error", err.Error())
+		log.Warn("failed to write update marker; the next start cannot tell whether this update took effect",
+			"path", markerPath, "targetVersion", version, "error", err.Error())
+	}
+}
+
+// updateMarkerTxn removes the marker an update wrote when that update then
+// returns an error without handing off to a restart. A marker left behind would
+// make the next, unrelated start (crash, reboot) report this version as a swap
+// that did not take effect and latch it (#9751), and skip its startup jitter.
+type updateMarkerTxn struct{ written bool }
+
+func (m *updateMarkerTxn) write(version string) {
+	writeUpdateMarker(version)
+	m.written = true
+}
+
+// abandonOnError removes the marker when err is non-nil and this update wrote
+// one. A marker it did not write (another component's update) is left alone.
+func (m *updateMarkerTxn) abandonOnError(err error) {
+	if err != nil && m.written {
+		removeUpdateMarker()
+		m.written = false
 	}
 }
 
@@ -939,7 +974,7 @@ func writeUpdateMarker(version string) {
 // wrote. The cost is bounded to that restart losing its jitter skip; the
 // write-side of the same race predates this function.
 func removeUpdateMarker() {
-	markerPath := filepath.Join(config.ConfigDir(), ".update-restart")
+	markerPath := updateMarkerPath()
 	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
 		log.Warn("failed to remove update marker", "path", markerPath, "error", err.Error())
 	}
@@ -998,7 +1033,9 @@ func (u *Updater) UpdateToWithOptions(version string, opts UpdateOptions) error 
 // updateTo is the unexported implementation shared by UpdateTo and
 // UpdateToWithOptions. opts.UserHelper, when non-nil, is threaded through to
 // RestartWithHelper on Windows.
-func (u *Updater) updateTo(version string, opts UpdateOptions) error {
+func (u *Updater) updateTo(version string, opts UpdateOptions) (retErr error) {
+	var marker updateMarkerTxn
+	defer func() { marker.abandonOnError(retErr) }()
 	if err := checkIsolationCompanions(opts); err != nil {
 		return err
 	}
@@ -1051,7 +1088,7 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 			removeCleanup(tempPath)
 			return err
 		}
-		writeUpdateMarker(version)
+		marker.write(version)
 		// User-helper and backup swaps are wired in by the heartbeat-layer
 		// caller (heartbeat.doUpgrade), not here — the updater package is
 		// component-agnostic, and downloading a second component requires
@@ -1093,7 +1130,7 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 	//    root. (issue: macOS update RCE.)
 	if runtime.GOOS == "darwin" {
 		defer removeCleanup(tempPath)
-		writeUpdateMarker(version)
+		marker.write(version)
 		pkgUpdater := u.withVerifiedPkgSize(manifestPayload)
 		pkgChecksum, pkgErr := pkgAssetChecksum(manifestPayload, version)
 		if pkgErr != nil {
@@ -1160,7 +1197,7 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 		}
 	}
 
-	writeUpdateMarker(version)
+	marker.write(version)
 	if err := Restart(); err != nil {
 		if rbErr := u.Rollback(); rbErr != nil {
 			log.Error("rollback also failed after restart error", "restartError", err, "rollbackError", rbErr)

@@ -456,6 +456,8 @@ export const deviceHardware = pgTable('device_hardware', {
   diskTotalGb: integer('disk_total_gb'),
   gpuModel: varchar('gpu_model', { length: 255 }),
   serialNumber: varchar('serial_number', { length: 100 }),
+  // #9593: SMBIOS system SKU (HP's product number). NULL until an agent reports one.
+  productSku: varchar('product_sku', { length: 100 }),
   manufacturer: varchar('manufacturer', { length: 255 }),
   model: varchar('model', { length: 255 }),
   motherboardManufacturer: varchar('motherboard_manufacturer', { length: 255 }),

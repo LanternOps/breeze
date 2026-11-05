@@ -1,4 +1,4 @@
-import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
+import { AI_AGENT_RUN_STATUSES, utf8MaxBytes } from '@breeze/shared';
 /**
  * AI Tool Input Schemas
  *
@@ -224,7 +224,9 @@ export const executeCommandPayloadSchema = z.object({
   ]).describe('event_logs_query: severity filter — critical, error, warning, information (or "info"), verbose, or level number 1-5.').optional(),
   source: z.string().max(255).describe('event_logs_query: filter by event source/provider name.').optional(),
   eventId: z.coerce.number().int().describe('event_logs_query: filter by numeric event ID.').optional(),
-  query: z.string().max(2000).describe('event_logs_query: raw XPath filter; cannot combine with level/source/eventId.').optional(),
+  // The agent refuses an XPath query over 4096 UTF-8 bytes (Go len(),
+  // eventlogs.go maxEventLogXPathBytes); zod counts code points (#9976).
+  query: z.string().max(2000).check(utf8MaxBytes(4096, 'query exceeds 4096 bytes')).describe('event_logs_query: raw XPath filter; cannot combine with level/source/eventId.').optional(),
   page: z.coerce.number().int().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
 }).passthrough();

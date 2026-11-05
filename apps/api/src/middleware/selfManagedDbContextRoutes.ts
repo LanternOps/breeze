@@ -28,6 +28,10 @@ interface SelfManagedRoute {
 }
 
 const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
+  // Human override of a failed script review (#10954). The proposal claim, the
+  // audit row and the execution rows must all COMMIT before any command is sent
+  // (#7103: an agent can otherwise answer a row the result path cannot see).
+  { method: 'POST', pattern: /^\/api\/v1\/ai\/script-proposals\/[0-9a-f-]{36}\/override-run\/?$/i },
   // YARA rule test upload (#6263 W04-2): the sandboxed `breeze-yarac match`
   // child runs up to 30 s; inside the request transaction it would pin a
   // pooled connection idle-in-transaction (#1105). The handler reads the set

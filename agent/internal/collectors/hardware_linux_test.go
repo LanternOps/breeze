@@ -5,6 +5,7 @@ package collectors
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -41,6 +42,39 @@ func TestCollectLinuxGPUModelLspciPresent(t *testing.T) {
 	}
 	if rec.count() != 1 {
 		t.Fatalf("spawn count %d, want 1", rec.count())
+	}
+}
+
+func TestCollectLinuxProductSKU(t *testing.T) {
+	root := t.TempDir() + "/"
+	prev := dmiRoot
+	dmiRoot = root
+	t.Cleanup(func() { dmiRoot = prev })
+
+	dmiWarningOnce = sync.Once{}
+	t.Cleanup(func() { dmiWarningOnce = sync.Once{} })
+	if got := collectLinuxProductSKU(); got != "" {
+		t.Fatalf("missing file: got %q", got)
+	}
+	unspent := false
+	dmiWarningOnce.Do(func() { unspent = true })
+	if !unspent {
+		t.Fatal("a missing product_sku spent the one-shot DMI warning")
+	}
+
+	write := func(value string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, "product_sku"), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("5S3F8EA#ABB\n")
+	if got := collectLinuxProductSKU(); got != "5S3F8EA#ABB" {
+		t.Fatalf("got %q", got)
+	}
+	write("To Be Filled By O.E.M.\n")
+	if got := collectLinuxProductSKU(); got != "" {
+		t.Fatalf("placeholder: got %q", got)
 	}
 }
 
