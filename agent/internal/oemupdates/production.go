@@ -39,8 +39,13 @@ func (p procExec) Run(ctx context.Context, spec ExecSpec) (ExecResult, error) {
 	// cannot tell the two apart.
 	var killed atomic.Bool
 	cmd.Cancel = func() error {
-		killed.Store(true)
-		return cmd.Process.Kill()
+		// Only a kill that landed counts: a process that already exited keeps
+		// its own exit code (Kill then returns os.ErrProcessDone).
+		err := cmd.Process.Kill()
+		if err == nil {
+			killed.Store(true)
+		}
+		return err
 	}
 	err := cmd.Run()
 	if p.onExit != nil {
