@@ -696,6 +696,14 @@ type ToolFreeLane interface {
 	Ready() (ToolState, Outcome, error)
 }
 
+// HardwareCheckedLane is a lane that must refuse a machine that is not its vendor's.
+// EnsureTool asks before it fetches or runs anything. It can only refuse, so unlike
+// ToolFreeLane it needs no marker. It must not spawn a process.
+type HardwareCheckedLane interface {
+	Lane
+	CheckHardware() (Outcome, error)
+}
+
 // Lane is one vendor's update path.
 type Lane interface {
 	ID() string

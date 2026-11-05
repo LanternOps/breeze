@@ -17,8 +17,8 @@ import (
 // pass any binary signed by a prerequisite's publisher (Microsoft) off as the
 // vendor tool's installer and run it as SYSTEM.
 //
-// The Dell values are researched, not confirmed on hardware; the Dell lab wave
-// (W10) confirms the real signer names and download hosts.
+// The values are researched, not confirmed on hardware; each vendor's lab wave
+// (Dell W10, HP W14) confirms the real signer names and download hosts.
 //
 //go:embed allowlist.json
 var allowlistJSON []byte
