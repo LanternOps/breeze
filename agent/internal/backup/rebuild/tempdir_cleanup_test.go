@@ -1,7 +1,10 @@
 package rebuild
 
 import (
+	"errors"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,9 +18,12 @@ import (
 const systemVolumeInfoDir = "System Volume Information"
 
 // removeAllTolerant removes dir, retrying transient failures. A failure that
-// persists and is about "System Volume Information" is returned as tolerated
+// persists and is a permission error on that exact directory is returned as tolerated
 // (the caller logs it); any other persistent failure is returned as fatal.
 func removeAllTolerant(dir string, attempts int, delay time.Duration, removeAll func(string) error) (tolerated, fatal error) {
+	if attempts < 1 {
+		attempts = 1
+	}
 	var err error
 	for i := 0; i < attempts; i++ {
 		if err = removeAll(dir); err == nil {
@@ -27,30 +33,11 @@ func removeAllTolerant(dir string, attempts int, delay time.Duration, removeAll 
 			time.Sleep(delay)
 		}
 	}
-	if strings.Contains(err.Error(), systemVolumeInfoDir) {
+	var pe *fs.PathError
+	if errors.As(err, &pe) && strings.EqualFold(filepath.Base(strings.ReplaceAll(pe.Path, `\`, "/")), systemVolumeInfoDir) && errors.Is(pe.Err, fs.ErrPermission) {
 		return err, nil
 	}
 	return nil, err
-}
-
-// newMountTestRoot returns a test-owned temp root. Register it BEFORE
-// attaching the VHDX so the (LIFO) cleanup runs after the detach.
-func newMountTestRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "brz-mnt-")
-	if err != nil {
-		t.Fatalf("MkdirTemp: %v", err)
-	}
-	t.Cleanup(func() {
-		tolerated, fatal := removeAllTolerant(dir, 5, 200*time.Millisecond, os.RemoveAll)
-		if tolerated != nil {
-			t.Logf("leaving %s: %v (system-owned directory on a mounted volume)", dir, tolerated)
-		}
-		if fatal != nil {
-			t.Errorf("cleanup %s: %v", dir, fatal)
-		}
-	})
-	return dir
 }
 
 func TestRemoveAllTolerant(t *testing.T) {
@@ -83,4 +70,18 @@ func TestRemoveAllTolerant(t *testing.T) {
 			t.Fatalf("tolerated=%v fatal=%v; want nil, error", tol, fatal)
 		}
 	})
+}
+
+func TestRemoveAllTolerant_OnlyTheExactDirectory(t *testing.T) {
+	// "System Volume Information" as a parent component, or a non-permission
+	// cause, must stay fatal.
+	for _, e := range []error{
+		&os.PathError{Op: "unlink", Path: `x\System Volume Information\file`, Err: os.ErrPermission},
+		&os.PathError{Op: "openfdat", Path: `x\System Volume Information`, Err: os.ErrInvalid},
+	} {
+		tol, fatal := removeAllTolerant("d", 2, 0, func(string) error { return e })
+		if tol != nil || fatal == nil {
+			t.Errorf("%v: tolerated=%v fatal=%v; want fatal", e, tol, fatal)
+		}
+	}
 }
