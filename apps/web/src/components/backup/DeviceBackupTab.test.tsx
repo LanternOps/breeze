@@ -754,6 +754,19 @@ describe('DeviceBackupTab', () => {
       expect(banner.className).not.toMatch(/destructive/);
     });
 
+    it('does not frame a historic run as "completed with warnings" over the recoverable index drop note (#11026)', async () => {
+      mockStatusWithVss(null, {
+        status: 'completed',
+        errorLog: 'bounded: snapshot file index omitted (17950 entries): the result exceeded the 4934464 byte server result budget, so per-file restore browsing is unavailable for this snapshot',
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      await screen.findByText('Job History');
+      expect(screen.queryByTestId('backup-last-job-diagnostic')).toBeNull();
+      expect(document.body.textContent).not.toContain('snapshot file index');
+    });
+
     it('styles the diagnostic as an error when the run actually failed', async () => {
       mockStatusWithVss(null, { status: 'failed', errorLog: 'upload destination unreachable' });
 

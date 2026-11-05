@@ -544,6 +544,36 @@ describe('BackupDashboard usage history chart', () => {
     expect(screen.queryByText(/reparse point/i)).toBeNull();
   });
 
+  it('keeps the recoverable index drop note out of a recent job\'s red error line (#11026)', async () => {
+    const indexNote = 'snapshot file index omitted (17950 entries): the result exceeded the 4934464 byte server result budget, so per-file restore browsing is unavailable for this snapshot';
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({
+          data: {
+            stats: [],
+            recentJobs: [
+              { id: 'job-stopped', device: 'edge-03', config: 'Primary S3', status: 'failed', started: '5m ago', duration: '3m', size: '85 B', errorLog: `backup stopped || bounded: ${indexNote}` },
+              { id: 'job-clean', device: 'edge-04', config: 'Primary S3', status: 'completed', started: '6m ago', duration: '3m', size: '85 B', errorLog: `bounded: ${indexNote}` },
+            ],
+            storageProviders: [],
+            attentionItems: [],
+          },
+        });
+      }
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    await screen.findByText('edge-04');
+    expect(screen.getByText('backup stopped')).toBeTruthy();
+    expect(screen.queryByText(/snapshot file index/i)).toBeNull();
+  });
+
   it('counts completed_with_errors jobs as successful restore points in the 24h success rate (#5396)', async () => {
     // completed_with_errors is a restorable snapshot, so it belongs in the
     // numerator (like completed) as well as the denominator — not just the

@@ -22,7 +22,7 @@ let permissionsState: any;
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'limit', 'orderBy', 'returning', 'set']) {
+  for (const method of ['from', 'where', 'limit', 'orderBy', 'returning', 'set', 'leftJoin']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -31,6 +31,17 @@ function chainMock(resolvedValue: unknown = []) {
 const selectMock = vi.fn(() => chainMock([]));
 const updateMock = vi.fn(() => chainMock([]));
 const authorizeResilienceResourcesMock = vi.fn();
+// #11026: work deferred until the request's DB context exits; tests run it
+// explicitly so they can assert it did not run inside the context.
+let afterContextWork: Array<() => unknown> = [];
+const runAfterContext = async () => {
+  const work = afterContextWork;
+  afterContextWork = [];
+  for (const run of work) await run();
+};
+const enqueueHydrationMock = vi.fn(async (..._args: unknown[]) => 'job-1');
+// When set, requirePermission grants only these `resource:action` pairs.
+let grantedPermissions: Set<string> | null = null;
 let authState = {
   principal: { kind: 'user_session' as const },
   user: { id: '11111111-1111-4111-8111-111111111111', email: 'test@example.com', name: 'Test User' },
@@ -48,6 +59,14 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runAfterDbContextExit: (_label: string, work: () => unknown) => { afterContextWork.push(work); },
+}));
+
+const captureExceptionMock = vi.fn();
+vi.mock('../../services/sentry', () => ({ captureException: (...args: unknown[]) => captureExceptionMock(...args) }));
+
+vi.mock('../../jobs/backupSnapshotFileIndexWorker', () => ({
+  enqueueSnapshotFileIndexHydration: (...args: unknown[]) => enqueueHydrationMock(...args),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -124,7 +143,10 @@ vi.mock('../../middleware/auth', () => ({
     }
     return next();
   }),
-  requirePermission: vi.fn(() => (c: any, next: any) => next()),
+  requirePermission: vi.fn((resource: string, action: string) => (c: any, next: any) =>
+    !grantedPermissions || grantedPermissions.has(`${resource}:${action}`)
+      ? next()
+      : c.json({ error: 'Permission denied' }, 403)),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requireMfa: vi.fn(() => (c: any, next: any) => next()),
 }));
@@ -168,6 +190,11 @@ describe('snapshot routes', () => {
     updateMock.mockReset();
     updateMock.mockImplementation(() => chainMock([]));
     permissionsState = undefined;
+    grantedPermissions = null;
+    afterContextWork = [];
+    enqueueHydrationMock.mockReset();
+    captureExceptionMock.mockReset();
+    enqueueHydrationMock.mockResolvedValue('job-1');
     authorizeResilienceResourcesMock.mockResolvedValue({ resources: [] });
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', authState);
@@ -431,6 +458,171 @@ describe('snapshot routes', () => {
       headers: { Authorization: 'Bearer token' },
     });
     expect((await sub.json()).manifestUnavailable).toBe(false);
+  });
+
+  describe('#11026 browse builds the file index on demand', () => {
+    // The row readSnapshotIndexView selects: index columns, attestation, hasRows.
+    const indexRow = (overrides: Record<string, unknown> = {}) => ({
+      id: SNAPSHOT_ID, fileCount: 18000, fileIndexStatus: 'none', fileIndexManifestSha256: null,
+      fileIndexError: null, fileIndexHydratedAt: null, integrityStatus: 'pending', storageIdentity: 's3::endpoint::bucket',
+      attestationStatus: null, attestationManifestSha256: null, hasRows: false, ...overrides,
+    });
+    const browse = () => app.request(`/backup/snapshots/${SNAPSHOT_ID}/browse`, {
+      method: 'GET', headers: { Authorization: 'Bearer token' },
+    });
+
+    it('a none snapshot with files and no rows reads as building, and requests hydration once, after the context exits', async () => {
+      selectMock.mockReturnValueOnce(chainMock([indexRow()]));
+      listDirMock.mockResolvedValueOnce({ entries: [], nextCursor: null });
+      const res = await browse();
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.index).toEqual({ state: 'building' });
+      expect(body.manifestUnavailable).toBe(true);
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+      await runAfterContext();
+      expect(enqueueHydrationMock).toHaveBeenCalledTimes(1);
+      expect(enqueueHydrationMock).toHaveBeenCalledWith(SNAPSHOT_ID, 'browse');
+    });
+
+    it('an enqueue that rejects still answers 200 and is logged', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      selectMock.mockReturnValueOnce(chainMock([indexRow()]));
+      listDirMock.mockResolvedValueOnce({ entries: [], nextCursor: null });
+      enqueueHydrationMock.mockRejectedValueOnce(new Error('redis down'));
+      const res = await browse();
+      expect(res.status).toBe(200);
+      await runAfterContext();
+      expect(consoleError).toHaveBeenCalled();
+      // A queue outage must be visible, not only a log line.
+      expect(captureExceptionMock).toHaveBeenCalledWith(expect.objectContaining({ message: 'redis down' }));
+      consoleError.mockRestore();
+    });
+
+    it('a complete index is ready and requests nothing', async () => {
+      selectMock.mockReturnValueOnce(chainMock([indexRow({ fileIndexStatus: 'complete', fileIndexManifestSha256: 'a'.repeat(64), hasRows: true })]));
+      listDirMock.mockResolvedValueOnce({ entries: [{ name: 'C:', path: '/C:', type: 'directory' }], nextCursor: null });
+      const body = await (await browse()).json();
+      expect(body.index).toEqual({ state: 'ready' });
+      await runAfterContext();
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+    });
+
+    it("another org's snapshot is 404 and requests nothing", async () => {
+      selectMock.mockReturnValueOnce(chainMock([]));
+      const res = await browse();
+      expect(res.status).toBe(404);
+      await runAfterContext();
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+      expect(listDirMock).not.toHaveBeenCalled();
+    });
+
+    it('a site-restricted caller without access is refused and requests nothing', async () => {
+      permissionsState = { allowedSiteIds: [SITE_A] };
+      authorizeResilienceResourcesMock.mockRejectedValueOnce(new ResilienceAuthorizationError(403, 'site_access_denied'));
+      const res = await browse();
+      expect(res.status).toBe(403);
+      await runAfterContext();
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+    });
+
+    it('never returns file_index_error text, only the failure code', async () => {
+      const secret = 'https://storage.example/bucket/snapshots/x/manifest.json?X-Amz-Signature=abc';
+      selectMock.mockReturnValueOnce(chainMock([indexRow({
+        fileIndexStatus: 'failed', fileIndexError: `provider_error: ${secret}`, fileIndexHydratedAt: new Date(Date.now() - 60 * 60 * 1000),
+      })]));
+      listDirMock.mockResolvedValueOnce({ entries: [], nextCursor: null });
+      const res = await browse();
+      const text = await res.text();
+      expect(text).not.toContain(secret);
+      expect(text).not.toContain('X-Amz');
+      expect(JSON.parse(text).index).toEqual({ state: 'unavailable', failure: 'provider_error', retryable: true, deviceLocal: false });
+    });
+  });
+
+  describe('#11026 POST /snapshots/:id/file-index/rebuild', () => {
+    const rebuild = () => app.request(`/backup/snapshots/${SNAPSHOT_ID}/file-index/rebuild`, {
+      method: 'POST', headers: { Authorization: 'Bearer token' },
+    });
+    const failedRow = (error: string) => ({
+      id: SNAPSHOT_ID, fileCount: 5, fileIndexStatus: 'failed', fileIndexManifestSha256: null, fileIndexError: error,
+      fileIndexHydratedAt: new Date(Date.now() - 60 * 60 * 1000), integrityStatus: 'pending', storageIdentity: 's3::e::b',
+      attestationStatus: null, attestationManifestSha256: null, hasRows: false,
+    });
+
+    it('backup:read alone is 403 and enqueues nothing', async () => {
+      grantedPermissions = new Set(['backup:read']);
+      const res = await rebuild();
+      expect(res.status).toBe(403);
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+    });
+
+    it('backup:write is 202 building, enqueues a forced rebuild, and writes an audit record', async () => {
+      grantedPermissions = new Set(['backup:write']);
+      selectMock.mockReturnValueOnce(chainMock([failedRow('manifest_invalid: bad json')]));
+      const res = await rebuild();
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ index: { state: 'building' } });
+      expect(enqueueHydrationMock).toHaveBeenCalledWith(SNAPSHOT_ID, 'rebuild', { force: true });
+      expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'backup.snapshot.file_index.rebuild',
+        resourceId: SNAPSHOT_ID,
+        details: expect.objectContaining({ previousState: 'unavailable', previousFailure: 'manifest_invalid' }),
+      }));
+    });
+
+    it('resets a failed index to none before it enqueues, so the first poll cannot read the stale failure', async () => {
+      selectMock.mockReturnValueOnce(chainMock([failedRow('provider_error: x')]));
+      const order: string[] = [];
+      updateMock.mockImplementationOnce(() => { order.push('reset'); return chainMock([]); });
+      enqueueHydrationMock.mockImplementationOnce(async () => { order.push('enqueue'); return 'job-1'; });
+      expect((await rebuild()).status).toBe(202);
+      expect(order).toEqual(['reset', 'enqueue']);
+      const resetChain = updateMock.mock.results[0]!.value as { set: ReturnType<typeof vi.fn> };
+      expect(resetChain.set).toHaveBeenCalledWith({ fileIndexStatus: 'none', fileIndexError: null });
+    });
+
+    it.each(['attestation_failed: no match', 'manifest_differs_from_attestation: digest x'])(
+      'an integrity failure (%s) is 409 attestation_failed and enqueues nothing',
+      async (error) => {
+        selectMock.mockReturnValueOnce(chainMock([failedRow(error)]));
+        const res = await rebuild();
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ code: 'attestation_failed' });
+        expect(enqueueHydrationMock).not.toHaveBeenCalled();
+        expect(writeRouteAuditMock).not.toHaveBeenCalled();
+      },
+    );
+
+    it('a mismatched attestation is 409 attestation_failed', async () => {
+      selectMock.mockReturnValueOnce(chainMock([{ ...failedRow('provider_error: x'), attestationStatus: 'mismatch', attestationManifestSha256: 'a'.repeat(64) }]));
+      expect((await rebuild()).status).toBe(409);
+    });
+
+    it('an unknown snapshot is 404', async () => {
+      selectMock.mockReturnValueOnce(chainMock([]));
+      expect((await rebuild()).status).toBe(404);
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+    });
+
+    it('a queue that cannot take the request is an honest 503, with no audit record', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      selectMock.mockReturnValueOnce(chainMock([failedRow('provider_error: x')]));
+      enqueueHydrationMock.mockRejectedValueOnce(new Error('redis down'));
+      const res = await rebuild();
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ code: 'rebuild_unavailable' });
+      expect(captureExceptionMock).toHaveBeenCalled();
+      expect(writeRouteAuditMock).not.toHaveBeenCalled();
+      consoleError.mockRestore();
+    });
+
+    it('a site-restricted caller without access is refused', async () => {
+      permissionsState = { allowedSiteIds: [SITE_A] };
+      authorizeResilienceResourcesMock.mockRejectedValueOnce(new ResilienceAuthorizationError(403, 'site_access_denied'));
+      expect((await rebuild()).status).toBe(403);
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+    });
   });
 
   it('returns protection fields in snapshot responses', async () => {
