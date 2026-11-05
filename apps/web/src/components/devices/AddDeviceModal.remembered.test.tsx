@@ -192,6 +192,7 @@ describe('AddDeviceModal — remembers the last still-valid token and link (#109
         expect(await screen.findByText('enroll_token_1')).toBeDefined();
         const reuse = screen.getByTestId('cli-token-reuse');
         expect(reuse.textContent).not.toMatch(/unless/);
+        expect(reuse.textContent).toMatch(/^Generated earlier\. Valid until /);
         expect(reuse.textContent).toContain(formatDateTime(JSON.parse(sessionStorage.getItem(KEY)!).sites[SITE_A.id].cli.expiresAt));
         expect(cliKeyLookups()).toHaveLength(1);
         expect(mintCalls('/devices/onboarding-token')).toHaveLength(1);
@@ -222,6 +223,32 @@ describe('AddDeviceModal — remembers the last still-valid token and link (#109
 
         await waitFor(() => expect(JSON.parse(sessionStorage.getItem(KEY) ?? '{"sites":{}}').sites[SITE_A.id]?.cli).toBeUndefined());
         expect(screen.queryByText('enroll_token_1')).toBeNull();
+      });
+
+      it('a check that answers "consumed" after Generate new cannot wipe the new token', async () => {
+        let answer!: (r: Response) => void;
+        const held = new Promise<Response>((r) => { answer = r; });
+        let mints = 0;
+        routeFetch({
+          token: () => {
+            mints += 1;
+            return json({
+              token: `enroll_token_${mints}`, maxUsage: 5, siteId: SITE_A.id,
+              expiresAt: inMs(HOUR), serverUrl: 'https://api.example.test', childKeyId: `cli-key-${mints}`,
+            });
+          },
+          childKey: () => held,
+        });
+        const { reopen } = renderModal();
+        await generateCliToken();
+        reopen();
+        fireEvent.click(screen.getByTestId('tab-cli'));
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/enrollment-keys/cli-key-1'));
+        fireEvent.click(screen.getByTestId('cli-regenerate-token'));
+        await screen.findByText('enroll_token_2');
+        await act(async () => { answer(json({ id: 'cli-key-1', expiresAt: inMs(HOUR), maxUsage: 5, usageCount: 5 })); });
+        expect(screen.getByText('enroll_token_2')).toBeDefined();
+        expect(JSON.parse(sessionStorage.getItem(KEY)!).sites[SITE_A.id].cli.value).toBe('enroll_token_2');
       });
 
       it('does not show a token when the check itself fails, but keeps it for the next open', async () => {

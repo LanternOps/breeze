@@ -131,7 +131,7 @@ function useExpiryTimer(expiresAt: string | null, onExpire: () => void) {
  * still 410s. "unknown" means the check itself failed, which says nothing about
  * the key.
  */
-async function checkInstallerLinkChild(
+async function checkRememberedChildKey(
   childKeyId: string,
 ): Promise<
   | { status: "usable"; remainingUses: number | null }
@@ -142,7 +142,7 @@ async function checkInstallerLinkChild(
     const res = await fetchWithAuth(`/enrollment-keys/${childKeyId}`);
     if (res.status === 404) return { status: "unusable" };
     if (!res.ok) {
-      console.warn("[AddDeviceModal] could not check a remembered link", {
+      console.warn("[AddDeviceModal] could not check a remembered child key", {
         childKeyId,
         status: res.status,
       });
@@ -164,7 +164,7 @@ async function checkInstallerLinkChild(
       ? { status: "usable", remainingUses }
       : { status: "unusable" };
   } catch (err) {
-    console.warn("[AddDeviceModal] could not check a remembered link", {
+    console.warn("[AddDeviceModal] could not check a remembered child key", {
       childKeyId,
       error: err instanceof Error ? err.message : String(err),
     });
@@ -478,8 +478,9 @@ export default function AddDeviceModal({
 
   // #10923: on every open and site change, show what this site already has
   // instead of an empty Generate state. A link is checked with the server before
-  // it is shown. A CLI token cannot be, because its route returns no key id, so
-  // it stands on its stored expiry and its copy says it may be used up.
+  // it is shown, and so is a CLI token whose mint returned a key id (#11116). A
+  // token from an API that predates the id stands on its stored expiry and its
+  // copy says it may be used up.
   useEffect(() => {
     const cliGeneration = ++cliDisplayGeneration.current;
     const linkGeneration = ++linkDisplayGeneration.current;
@@ -507,7 +508,7 @@ export default function AddDeviceModal({
         // #11116: hidden until the key check answers, like a remembered link.
         // A token minted by an API that predates the key id has none and falls
         // back to the stored expiry, with copy that says it may be used up.
-        void checkInstallerLinkChild(cli.childKeyId).then((check) => {
+        void checkRememberedChildKey(cli.childKeyId).then((check) => {
           if (cliGeneration !== cliDisplayGeneration.current) return;
           if (check.status === "unusable") {
             forgetEnrollmentArtifact(userId, selectedSiteId, "cli");
@@ -522,7 +523,7 @@ export default function AddDeviceModal({
     }
     if (!link) return;
 
-    void checkInstallerLinkChild(link.childKeyId).then((check) => {
+    void checkRememberedChildKey(link.childKeyId).then((check) => {
       if (linkGeneration !== linkDisplayGeneration.current) return;
       if (check.status === "unusable") {
         forgetEnrollmentArtifact(userId, selectedSiteId, "link");
