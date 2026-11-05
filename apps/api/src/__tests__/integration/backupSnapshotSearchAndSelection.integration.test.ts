@@ -213,7 +213,9 @@ describe('resolveSelectedSnapshotPathsInDb', () => {
       await seedMany(snap.id, 'C:\\mix\\a', 25_000);
       await seedMany(snap.id, 'C:/mix/b', 25_000);
       expect(await resolveSelectedSnapshotPathsInDb(snap.id, ['C:/mix'])).toMatchObject({ ok: false, reason: 'too_many' });
-
+    });
+    // A second partner in its own transaction: partner locks are taken before org locks.
+    await withSystemDbAccessContext(async () => {
       const small = await seedSnapshot([]);
       await seedMany(small.id, 'C:\\mix\\a', 50);
       await seedMany(small.id, 'C:/mix/b', 50);
