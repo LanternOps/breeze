@@ -15,7 +15,7 @@ import { getTestDb } from './setup';
 import { createOrganization, createPartner } from './db-utils';
 import { replayMigration } from './replayMigration';
 
-const FILE = '2027-01-20-150000-alert-lifecycle-defaults.sql';
+const FILE = '2027-01-20-175000-alert-lifecycle-defaults.sql';
 
 type Row = Record<string, unknown>;
 
