@@ -131,10 +131,11 @@ func TestReleaseHandlerRefusesWhenNotElevated(t *testing.T) {
 	}
 }
 
-// A lane this agent does not build never took anything over.
+// A lane this agent does not build never took anything over. Lenovo is the
+// lane no agent builds yet (Dell, Surface and HP are registered in lanes.go).
 func TestReleaseHandlerUnbuiltLaneHasNothingToRestore(t *testing.T) {
-	s := installReleaseSeams(t, "windows", true, oemupdates.ReleaseResult{Lane: "hp", Outcome: oemupdates.ReleaseRestored})
-	r := handleOemUpdateRelease(nil, releaseCmd(map[string]any{"lane": "hp"}))
+	s := installReleaseSeams(t, "windows", true, oemupdates.ReleaseResult{Lane: "lenovo", Outcome: oemupdates.ReleaseRestored})
+	r := handleOemUpdateRelease(nil, releaseCmd(map[string]any{"lane": "lenovo"}))
 	if r.Status != "completed" || s.called != nil {
 		t.Fatalf("status = %q, called = %v", r.Status, s.called)
 	}
