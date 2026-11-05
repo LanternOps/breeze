@@ -22,6 +22,8 @@ type FeatureTabShellProps = {
    * library targeting row) to block a save the server would 400 on anyway.
    */
   saveDisabled?: boolean;
+  /** data-testid for the Save button, for tabs whose tests or E2E need to target it. */
+  saveTestId?: string;
   error?: string;
   onSave: () => void;
   onRemove?: () => void;
@@ -41,6 +43,7 @@ export default function FeatureTabShell({
   configuredButInactive,
   saving,
   saveDisabled,
+  saveTestId,
   error,
   onSave,
   onRemove,
@@ -151,6 +154,7 @@ export default function FeatureTabShell({
           {!isInherited && (
             <button
               type="button"
+              data-testid={saveTestId}
               onClick={onSave}
               disabled={saving || saveDisabled}
               className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
