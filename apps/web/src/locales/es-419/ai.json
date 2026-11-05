@@ -583,7 +583,16 @@
       "pending_other": "{{count}} pasos esperan tu aprobación",
       "waiting": "Hay pasos esperando tu aprobación",
       "review": "Revisar en Aprobaciones"
-    }
+    },
+    "stepApprovals": {
+      "title": "Esperando tu aprobación",
+      "wispFor": "Wisp para {{name}}",
+      "approve": "Aprobar",
+      "reject": "Rechazar",
+      "waitingForApprover": "Esperando a un aprobador"
+    },
+    "continue": "Continuar",
+    "continueMessage": "Continuar la solución de problemas de la ejecución {{runId}}."
   },
   "aiModelPicker": {
     "chooseModel": "Elegir un modelo",
@@ -868,7 +877,8 @@
       "checkIn": "Revisión programada",
       "summary": "Resumen",
       "open": "Abrir",
-      "unread": "No leído"
+      "unread": "No leído",
+      "specialistResult": "Informe del especialista"
     },
     "welcome": {
       "title": "Estoy revisando {{scope}}.",
