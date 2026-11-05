@@ -52,7 +52,12 @@ vi.mock('./watches', () => ({ listWatches: h.listWatches }));
 vi.mock('./activity', () => ({ listActivity: h.listActivity }));
 vi.mock('./threads', () => ({ getOrCreateThread: h.getOrCreateThread }));
 vi.mock('./notifyUser', () => ({ notifyUser: h.notifyUser }));
-vi.mock('./nudgePreferences', () => ({ loadNudgeBookkeeping: h.loadNudgeBookkeeping, markBriefSent: h.markBriefSent }));
+vi.mock('./nudgePreferences', async (importOriginal) => ({
+  // The two zone reads stay real: they run on the recorded `db` select chain, table by table.
+  ...(await importOriginal<typeof import('./nudgePreferences')>()),
+  loadNudgeBookkeeping: h.loadNudgeBookkeeping,
+  markBriefSent: h.markBriefSent,
+}));
 vi.mock('./nudgeLinks', () => ({ mobileDeepLink: (threadId: string) => `breeze://wisp/thread/${threadId}` }));
 vi.mock('../sentry', () => ({ captureException: h.captureException }));
 vi.mock('../../config/env', async (importOriginal) => ({
@@ -287,10 +292,43 @@ describe('runMorningBriefs', () => {
   const NOW = new Date('2026-10-24T12:30:00Z'); // 08:30 EDT
 
   /** Every buildBrief call reads the grant row again. */
-  function queueSweep(grants: Array<Record<string, unknown>>, devices: Array<{ userId: string; timezone: string | null }> = []) {
+  function queueSweep(
+    grants: Array<Record<string, unknown>>,
+    devices: Array<{ userId: string; timezone: string | null }> = [],
+    partners: Array<{ id: string; timezone: string }> = [],
+  ) {
     h.selectQueue.wisp_grants = [grants, ...Array.from({ length: 10 }, () => [{ currentRevisionId: REVISION, status: 'active' }])];
     h.selectQueue.mobile_devices = [devices];
+    h.selectQueue.partners = [partners];
   }
+
+  describe('the fallback zone with no chosen preference (#10402)', () => {
+    // 12:30Z = 05:30 PDT (not due), 06:30 MDT (not due), 08:30 EDT (due), 12:30 UTC (due).
+    const book = (browserTimezone: string | null) => new Map([[USER, { prefs: prefs(), lastDigestAt: null, lastBriefAt: null, browserTimezone }]]);
+
+    it('a browser zone beats the partner zone', async () => {
+      queueSweep([grantRow()], [], [{ id: PARTNER, timezone: 'America/New_York' }]);
+      h.loadNudgeBookkeeping.mockResolvedValue(book('America/Denver'));
+      await expect(runMorningBriefs(NOW)).resolves.toEqual({ due: 0, sent: 0, suppressed: 0 });
+    });
+
+    it('a phone zone beats the browser zone', async () => {
+      queueSweep([grantRow()], [{ userId: USER, timezone: 'America/New_York' }], []);
+      h.loadNudgeBookkeeping.mockResolvedValue(book('America/Denver'));
+      await expect(runMorningBriefs(NOW)).resolves.toEqual({ due: 1, sent: 1, suppressed: 0 });
+    });
+
+    it('with no phone and no browser the partner zone decides, not UTC', async () => {
+      queueSweep([grantRow()], [], [{ id: PARTNER, timezone: 'America/Los_Angeles' }]);
+      await expect(runMorningBriefs(NOW)).resolves.toEqual({ due: 0, sent: 0, suppressed: 0 });
+      expect(h.notifyUser).not.toHaveBeenCalled();
+    });
+
+    it('with nothing known it is UTC', async () => {
+      queueSweep([grantRow()], [], []);
+      await expect(runMorningBriefs(NOW)).resolves.toEqual({ due: 1, sent: 1, suppressed: 0 });
+    });
+  });
 
   it('is dark while wispEnabled() is false: no read, no brief', async () => {
     h.wispEnabled.mockReturnValueOnce(false);

@@ -892,11 +892,15 @@
       "summary": "Sintesi",
       "open": "Apri",
       "unread": "Non letto",
-      "specialistResult": "Report dello specialista"
+      "specialistResult": "Report dello specialista",
+      "firstLook": "Prima occhiata"
     },
     "welcome": {
       "title": "Sto dando un’occhiata a {{scope}}.",
       "body": "Il tuo primo riepilogo arriva ogni mattina, appena ho dato un’occhiata. Nel frattempo, chiedimi pure qualsiasi cosa.",
+      "firstLookTitle": "Ho dato una prima occhiata a {{scope}}.",
+      "firstLookBody": "Quello che ho trovato è nel post qui sopra. Chiedimi pure qualsiasi cosa.",
+      "briefAt": "Il tuo riepilogo del mattino arriva alle {{time}} ({{timezone}}).",
       "suggestions": {
         "needsMe": {
           "label": "Cosa richiede la mia attenzione oggi?",

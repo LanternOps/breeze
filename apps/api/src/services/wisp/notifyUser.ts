@@ -4,8 +4,9 @@
  *
  * Callers: the assessment finalizer's `nudge` step, the incident correlator's
  * partner-level nudge, the digest sweep, the morning brief and the check-in
- * fire path (services/wisp/checkIns.ts, #10991) and the specialist post-back
- * (services/wisp/specialistResult.ts, #11085)
+ * fire path (services/wisp/checkIns.ts, #10991), the specialist post-back
+ * (services/wisp/specialistResult.ts, #11085) and the first-look post
+ * (services/wisp/firstLook.ts, #10402)
  * (pinned by notifyUser.callers.contract.test.ts). None is reached while
  * `wispEnabled()` is false.
  *
@@ -53,7 +54,7 @@ import { incWispNudge } from '../wispMetrics';
 
 /** The post kind of each nudge kind (explicit: a budget notice is never a post). */
 const POST_KIND: Record<WispNudgeKind, ThreadPostKind> = {
-  concern: 'nudge', digest: 'digest', brief: 'brief', check_in: 'check_in', specialist_result: 'specialist_result',
+  concern: 'nudge', digest: 'digest', brief: 'brief', check_in: 'check_in', specialist_result: 'specialist_result', first_look: 'first_look',
 };
 
 /** `wisp.specialist_result:<runId>:<status>` or `wisp.specialist_step:<intentId>:<status>` (specialistResult.ts). */
@@ -103,6 +104,11 @@ export type NudgePayload = {
   push?: false;
 };
 
+/** One first-look post per grant (#10402). */
+export function firstLookDedupeKey(grantId: string): string {
+  return `wisp.first_look:${grantId}`;
+}
+
 export type NudgeSuppressedReason = 'quiet_hours' | 'prefs' | 'backoff' | null;
 export type NotifyUserResult = { inApp: boolean; pushed: number; suppressed: NudgeSuppressedReason };
 
@@ -123,6 +129,7 @@ const BACKOFF: NotifyUserResult = { inApp: false, pushed: 0, suppressed: 'backof
  *   digest  → wisp.digest:<thread>:<now floored to the cadence, UTC>
  *   brief   → wisp.brief:<thread>:<local date>
  *   check_in → wisp.check_in:<check-in id> (one delivery per check-in, ever)
+ *   first_look → wisp.first_look:<grant> (one per grant, ever)
  */
 export function nudgeDedupeKey(k: {
   kind?: WispNudgeKind;
@@ -140,6 +147,7 @@ export function nudgeDedupeKey(k: {
     if (!k.checkInId) throw new Error('nudgeDedupeKey: a check_in key needs checkInId');
     return `wisp.check_in:${k.checkInId}`;
   }
+  if (kind === 'first_look') return firstLookDedupeKey(k.grantId);
   if (kind === 'concern') {
     return `wisp.nudge:${k.concernId}:${k.grantId}:${k.nextEligibleNudgeAt?.toISOString() ?? 'first'}`;
   }
@@ -413,8 +421,8 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
   if (p.concernId) await countNudge(p.concernId, p.grantId, now);
 
   // Phase 4 — push, outside every DB context. Withheld entirely (not a
-  // suppression) for `push: false` and every specialist report.
-  const pushKind = p.kind === 'specialist_result' || p.push === false ? null : p.kind;
+  // suppression) for `push: false`, every specialist report and the first look.
+  const pushKind = p.kind === 'specialist_result' || p.kind === 'first_look' || p.push === false ? null : p.kind;
   let pushTokens = pushKind ? decision.pushTokens : [];
   let suppressed = pushKind ? decision.suppressed : null;
   if (pushTokens.length > 0) {

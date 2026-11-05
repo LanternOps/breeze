@@ -26,7 +26,7 @@
  */
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { ENTITLEMENTS } from '@breeze/shared';
+import { ENTITLEMENTS, WISP_BRIEF_TIMEZONE_MAX } from '@breeze/shared';
 import { wispEnabled } from '../config/env';
 import { runAfterDbContextCommit } from '../db';
 import { zValidator } from '../lib/validation';
@@ -35,6 +35,7 @@ import { requireEntitlement } from '../middleware/entitlement';
 import { EntitlementResolutionError } from '../services/entitlements';
 import { EVENT_TYPES, publishEvent } from '../services/eventBus';
 import { PERMISSIONS } from '../services/permissions';
+import { captureException } from '../services/sentry';
 import { grantSettingsBounds } from '../services/wisp/budget';
 import {
   createGrant,
@@ -49,6 +50,7 @@ import {
   WispGrantError,
   type WispGrant,
 } from '../services/wisp/grants';
+import { saveBrowserTimezone } from '../services/wisp/nudgePreferences';
 import { wispConcernsRoutes } from './wispConcerns';
 import { wispThreadRoutes } from './wispThreads';
 import { wispThreadLinkRoutes } from './wispThreadLinks';
@@ -166,7 +168,14 @@ function publishGrantEvent(type: typeof EVENT_TYPES.WISP_GRANT_CREATED | typeof 
   );
 }
 
-const createBody = z.object({ orgId: uuid.nullable(), stepUpGrantId: z.string().min(1).max(200) }).strict();
+const createBody = z.object({
+  orgId: uuid.nullable(),
+  stepUpGrantId: z.string().min(1).max(200),
+  // #10402: the zone the browser reports, for the morning brief. Not validated
+  // as a zone here: one this server's ICU does not know must not cost the grant
+  // (saveBrowserTimezone ignores it).
+  browserTimezone: z.string().max(WISP_BRIEF_TIMEZONE_MAX).optional(),
+}).strict();
 const refreshBody = z.object({ stepUpGrantId: z.string().min(1).max(200), unattendedReads: z.literal(true).optional() }).strict();
 const previewQuery = z.object({ orgId: uuid.optional(), grantId: uuid.optional(), unattendedReads: z.literal('true').optional() });
 const listQuery = z.object({ view: z.enum(['mine', 'partner']).optional() });
@@ -227,6 +236,13 @@ wispRoutes.post('/grants', requireMfa(), zValidator('json', createBody), async (
   try {
     const grant = await createGrant({ auth, scope: { partnerId: auth.partnerId!, orgId: body.orgId }, stepUpGrantId: body.stepUpGrantId });
     publishGrantEvent(EVENT_TYPES.WISP_GRANT_CREATED, grant);
+    if (body.browserTimezone) {
+      // Best effort: the grant exists; the home sends this again on its next load.
+      await saveBrowserTimezone(auth.user.id, auth.partnerId!, body.browserTimezone).catch((err: unknown) => {
+        console.warn('[wisp] could not store the browser time zone', { grantId: grant.id, err });
+        captureException(err, c, { op: 'wisp.grants.browserTimezone', grantId: grant.id });
+      });
+    }
     return c.json(toDto(grant), 201);
   } catch (err) {
     return errorResponse(c, err);
