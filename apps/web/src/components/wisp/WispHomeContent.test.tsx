@@ -75,7 +75,7 @@ import WispHomeContent from './WispHomeContent';
 const payload = (over: Partial<WispHomePayload> = {}): WispHomePayload => ({
   thread: { id: 'th-1', grantId: 'g-1', summary: '', summaryUpdatedAt: null, lastSessionId: 's-9', focusOrgId: null, createdAt: '', updatedAt: '' },
   focusOrgName: null,
-  grant: { id: 'g-1', status: 'active', orgId: null, expiresAt: '2026-12-01T00:00:00Z', currentRevisionId: null, budgetCentsPerDay: 200, floorTickMinutes: 30, spentTodayCents: 0, budgetResetsAt: '2026-10-25T00:00:00Z', pausedReason: null, unattendedReads: false, unattendedReadsPinned: false },
+  grant: { id: 'g-1', status: 'active', orgId: null, expiresAt: '2026-12-01T00:00:00Z', currentRevisionId: null, budgetCentsPerDay: 200, floorTickMinutes: 30, spentTodayCents: 0, budgetResetsAt: '2026-10-25T00:00:00Z', pausedReason: null, unattendedReads: false, unattendedReadsPinned: false, summaryRefine: false },
   wideningAvailable: false,
   brief: { sentAt: new Date().toISOString(), sections: [{ heading: 'Overnight', lines: ['Two backups failed at Acme'] }] },
   needsYou: [],

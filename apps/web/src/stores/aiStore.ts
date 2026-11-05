@@ -68,6 +68,8 @@ export type WispState = {
   budgetResetsAt?: string;
   /** #10973: the grant's unattended-reads switch is effective (the server's pinned AND live answer). */
   unattendedReads?: boolean;
+  /** #10390: a closed session's summary is also written by the model, charged to the daily budget. */
+  summaryRefine?: boolean;
 } | null;
 
 export type WispTalkFocusRequest = {

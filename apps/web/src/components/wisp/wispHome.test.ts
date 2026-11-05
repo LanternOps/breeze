@@ -15,7 +15,7 @@ const concern = (id: string, severity: Concern['severity'], approvalIntentId: st
 const homePayload = (over: Partial<WispHomePayload> = {}): WispHomePayload => ({
   thread: { id: 'th-1', grantId: 'g-1', summary: 'Watching Acme', summaryUpdatedAt: null, lastSessionId: null, focusOrgId: null, createdAt: '2026-10-24T08:00:00Z', updatedAt: '2026-10-24T08:00:00Z' },
   focusOrgName: null,
-  grant: { id: 'g-1', status: 'active', orgId: null, expiresAt: '2026-11-24T08:00:00Z', currentRevisionId: 'r-1', budgetCentsPerDay: 200, floorTickMinutes: 30, spentTodayCents: 12, budgetResetsAt: '2026-10-25T00:00:00Z', pausedReason: null, unattendedReads: false, unattendedReadsPinned: false },
+  grant: { id: 'g-1', status: 'active', orgId: null, expiresAt: '2026-11-24T08:00:00Z', currentRevisionId: 'r-1', budgetCentsPerDay: 200, floorTickMinutes: 30, spentTodayCents: 12, budgetResetsAt: '2026-10-25T00:00:00Z', pausedReason: null, unattendedReads: false, unattendedReadsPinned: false, summaryRefine: false },
   wideningAvailable: false,
   brief: null,
   needsYou: [],

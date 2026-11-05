@@ -20,7 +20,7 @@
  *                          the grantor's nudge feedback. null = the grant is no
  *                          longer usable (the run finishes without a model call).
  *   rollupPartnerPicture   deterministic text of every live concern under the
- *                          ceiling → updateThreadSummary.
+ *                          ceiling → updateThreadPicture.
  *
  * DB access: every read here runs in a FRESH system context
  * (`runOutsideDbContext(withSystemDbAccessContext)`) — callers are the wake
@@ -59,7 +59,7 @@ import {
 import { recallForGrant } from './memoryBroker';
 import { assessableOrgIds } from './assessableOrgs';
 import { readinessInventory } from './readiness';
-import { getOrCreateThread, seedContextForSession, updateThreadSummary } from './threads';
+import { getOrCreateThread, seedContextForSession, updateThreadPicture } from './threads';
 import { listWatches } from './watches';
 import { incWispAssessment } from '../wispMetrics';
 import type {
@@ -81,7 +81,7 @@ const DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const NUDGE_FEEDBACK_LIMIT = 20;
 const NUDGE_FEEDBACK_PREFIX = 'nudge_feedback:';
 
-/** updateThreadSummary's ceiling (W04 truncates at the same length). */
+/** updateThreadPicture's ceiling (it truncates at the same length). */
 const PICTURE_MAX_CHARS = 4000;
 const PICTURE_SUMMARIES_PER_ORG = 3;
 /** sanitizeSweepText appends one '…' past `max`, so 79 keeps each summary ≤ 80. */
@@ -818,7 +818,8 @@ export function renderPartnerPicture(input: { generatedAt: Date; orgs: { orgId: 
 
 /**
  * Deterministic (no model) picture of every live concern under the grant's
- * current ceiling, written to the grant's thread summary. Throws
+ * current ceiling, written to the picture column of the grant's thread (#10390:
+ * never the session summary, which session close owns). Throws
  * GrantInactiveError when the grant cannot be used.
  */
 export async function rollupPartnerPicture(grantId: string): Promise<string> {
@@ -862,6 +863,6 @@ export async function rollupPartnerPicture(grantId: string): Promise<string> {
 
   const text = renderPartnerPicture({ generatedAt: new Date(), orgs });
   const thread = await getOrCreateThread(grantId);
-  await updateThreadSummary(thread.id, text);
+  await updateThreadPicture(thread.id, text);
   return text;
 }
