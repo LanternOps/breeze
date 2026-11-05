@@ -8,10 +8,6 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
-// errJournalUnusable reports that the checkpoint journal could not be bound
-// to a brokered run's snapshot id; the run proceeds without one.
-var errJournalUnusable = errors.New("checkpoint journal could not be bound to the issued snapshot id")
-
 // bindBrokeredJournal binds the run's checkpoint journal when the snapshot id
 // is issued by the control plane (a brokered writer). It runs right after
 // the journal is opened, before anything reads or writes storage:
@@ -68,7 +64,7 @@ func (m *BackupManager) bindBrokeredJournal(ctx context.Context, journal *snapsh
 			}
 		}
 		if err := journal.restartFreshWithID(issued); err != nil {
-			return false, fmt.Errorf("%w: %v", errJournalUnusable, err)
+			return false, err
 		}
 		journal.discardedOtherRun = reason
 		if err := journal.BindRun(jobID, dispatched); err != nil {
@@ -78,12 +74,17 @@ func (m *BackupManager) bindBrokeredJournal(ctx context.Context, journal *snapsh
 	}
 
 	if err := journal.BindRun(jobID, dispatched); err != nil {
+		// A journal under the issued id written for another job or base is
+		// restarted here, and a failed restart cannot be continued from.
+		if errors.Is(err, errJournalUnusable) {
+			return false, err
+		}
 		log.Warn("failed to bind checkpoint journal to this run", "error", err.Error())
 	}
 	if journal.snapshotID != issued {
 		reason := journal.discardedOtherRun
 		if err := journal.restartFreshWithID(issued); err != nil {
-			return false, fmt.Errorf("%w: %v", errJournalUnusable, err)
+			return false, err
 		}
 		journal.discardedOtherRun = reason
 		if err := journal.BindRun(jobID, dispatched); err != nil {

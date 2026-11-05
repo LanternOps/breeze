@@ -515,16 +515,28 @@ func (j *snapshotJournal) restartFresh() error {
 	return j.restartFreshWithID("")
 }
 
-// restartFreshWithID is restartFresh under a given snapshot id ("" mints
-// one).
+// errJournalUnusable reports that the checkpoint journal could not be restarted,
+// so it holds no resume state and no file (see restartFreshWithID). The run
+// proceeds without one.
+var errJournalUnusable = errors.New("checkpoint journal could not be restarted")
+
+// restartFreshWithID is restartFresh under a given snapshot id ("" mints one).
+//
+// The caller has already decided the old content must not be used, so a create
+// that fails still discards it: the journal keeps nothing of the old run in
+// memory, and with no file behind it every later append is refused. The error
+// wraps errJournalUnusable, and the run must drop the journal rather than carry
+// on with it. Whether the old file survives depends on how far the create got;
+// a later open either discards it again or finds it empty and starts afresh.
 func (j *snapshotJournal) restartFreshWithID(snapshotID string) error {
 	if j.file != nil {
 		_ = j.file.Close()
 		j.file = nil
 	}
-	fresh, _, err := createFreshJournalWithID(j.path, j.identity, snapshotID)
+	fresh, _, err := journalRestartCreateFn(j.path, j.identity, snapshotID)
 	if err != nil {
-		return err
+		j.clearResumeState(snapshotID)
+		return fmt.Errorf("%w: %w", errJournalUnusable, err)
 	}
 	j.file = fresh.file
 	j.writer = fresh.writer
@@ -537,6 +549,42 @@ func (j *snapshotJournal) restartFreshWithID(snapshotID string) error {
 	j.resumed = false
 	j.continuedFromOtherJob = false
 	return nil
+}
+
+// clearResumeState leaves the journal as a restart that could not create its
+// file does: no entries, no records, and a new snapshot identity, so nothing
+// still names the run being discarded.
+func (j *snapshotJournal) clearResumeState(snapshotID string) {
+	if snapshotID == "" {
+		snapshotID = newSnapshotID()
+	}
+	j.writer = nil
+	j.snapshotID = snapshotID
+	j.header = journalHeader{
+		SnapshotID:    snapshotID,
+		CreatedAt:     time.Now().UTC(),
+		Identity:      j.identity,
+		FormatVersion: journalFormatVersion,
+	}
+	j.createdAt = j.header.CreatedAt
+	j.entries = nil
+	j.verifications = nil
+	j.resumedBytesTotal = 0
+	j.resumed = false
+	j.continuedFromOtherJob = false
+}
+
+// journalRestartCreateFn is a test seam over createFreshJournalWithID for a
+// restart only, so a create that fails can be exercised while the journal it
+// would replace opens normally.
+var journalRestartCreateFn = createFreshJournalWithID
+
+// setJournalRestartCreateFnForTest overrides journalRestartCreateFn. Call the
+// returned restore func (typically via defer) to put the real create back.
+func setJournalRestartCreateFnForTest(fn func(path, identity, snapshotID string) (*snapshotJournal, bool, error)) (restore func()) {
+	old := journalRestartCreateFn
+	journalRestartCreateFn = fn
+	return func() { journalRestartCreateFn = old }
 }
 
 // ContinueRun binds a resumed journal to this run's job WITHOUT discarding
