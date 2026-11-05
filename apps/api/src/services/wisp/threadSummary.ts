@@ -7,7 +7,8 @@
  *     A session rotated right after the close is seeded before any model call
  *     could finish, so it must find something true.
  *  2. `refineThreadSummary` then replaces the digest with a model-written
- *     "Concluded / Open" note, when a model call is allowed and works.
+ *     "Concluded / Open" note, when the grant opted in (`summary_refine`, default
+ *     off) and a model call is allowed and works. Otherwise the digest stays.
  *
  * The session's closing line is never the summary: "Ask me to check back in
  * 5–10 minutes" carries nothing the next session can use. The assessment rollup

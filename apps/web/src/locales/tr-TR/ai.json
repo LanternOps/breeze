@@ -702,6 +702,10 @@
         "securityLog": "Güvenlik olay günlüğünde arama yap",
         "deviceNote": "Bir cihaz hakkında not kaydet",
         "applies": "Yeni konuşmalara ve yeni arka plan çalıştırmalarına uygulanır."
+      },
+      "summaryRefine": {
+        "title": "Model tarafından yazılan oturum notları",
+        "description": "Bir konuşma bittiğinde model, varılan sonuçları ve hâlâ açık olanları yazar. Her not bir model çağrısıdır ve Wisp'in günlük bütçesinden düşülür. Kapalıyken Wisp bunun yerine basit bir özet tutar."
       }
     },
     "focus": {
@@ -747,7 +751,10 @@
       "unattendedReadsOn": "Gözetimsiz okumalar açıldı",
       "unattendedReadsOnFailed": "Gözetimsiz okumalar açılamadı",
       "unattendedReadsOff": "Gözetimsiz okumalar kapatıldı",
-      "unattendedReadsOffFailed": "Gözetimsiz okumalar kapatılamadı"
+      "unattendedReadsOffFailed": "Gözetimsiz okumalar kapatılamadı",
+      "summaryRefineOn": "Oturum notları açıldı",
+      "summaryRefineOff": "Oturum notları kapatıldı",
+      "summaryRefineFailed": "Oturum notları değiştirilemedi"
     },
     "spend": {
       "meter": "Bugün {{budget}} içinden {{spent}}",

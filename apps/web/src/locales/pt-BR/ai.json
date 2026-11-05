@@ -702,6 +702,10 @@
         "securityLog": "Pesquisar no log de eventos de segurança",
         "deviceNote": "Salvar uma nota sobre um dispositivo",
         "applies": "Aplica-se a novas conversas e a novas execuções em segundo plano."
+      },
+      "summaryRefine": {
+        "title": "Notas de sessão escritas pelo modelo",
+        "description": "Quando uma conversa termina, o modelo escreve o que foi concluído e o que continua em aberto. Cada nota é uma chamada ao modelo e conta para o orçamento diário do Wisp. Quando desativado, o Wisp mantém um resumo simples."
       }
     },
     "focus": {
@@ -747,7 +751,10 @@
       "unattendedReadsOn": "Leituras sem supervisão ativadas",
       "unattendedReadsOnFailed": "Não foi possível ativar as leituras sem supervisão",
       "unattendedReadsOff": "Leituras sem supervisão desativadas",
-      "unattendedReadsOffFailed": "Não foi possível desativar as leituras sem supervisão"
+      "unattendedReadsOffFailed": "Não foi possível desativar as leituras sem supervisão",
+      "summaryRefineOn": "Notas de sessão ativadas",
+      "summaryRefineOff": "Notas de sessão desativadas",
+      "summaryRefineFailed": "Não foi possível alterar as notas de sessão"
     },
     "spend": {
       "meter": "{{spent}} de {{budget}} hoje",

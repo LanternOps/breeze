@@ -208,6 +208,12 @@ Everything Wisp does under a grant (assessments, specialist runs, tasks) is mete
 
 A partner admin can raise a grant's budget up to **5x the plan default**, never beyond the plan ceiling. The budget window is the UTC day. When a budget is exhausted, Wisp makes **no further model calls** under that grant until the window resets: assessments and specialist requests are skipped, while events are still recorded as concern updates by plain code and appear in your digest. The grant itself stays on (it is not paused), and the thread's spend meter shows the budget as used up.
 
+### Session notes
+
+When a conversation closes, Wisp leaves a plain digest on the thread: what was asked, what was checked and the last answer. **Model-written session notes** is a switch on your grant, off by default, under **Budget and check-in settings** in the Wisp header. When it is on, each close also makes one model call that replaces the digest with what was concluded and what is still open. The grantor or a partner admin can change it.
+
+Each note counts against the grant's daily budget and shows on the spend meter. Once the budget is spent, Wisp skips the call and keeps the digest. A close can happen with nobody watching, because an idle session is closed for you, so these calls can spend budget while you are away.
+
 ## Specialists
 
 When a concern needs focused work, Wisp can ask a **specialist** to do it. A request names a kind and a reason. Specialists are limited to one level deep: a specialist cannot request another specialist.

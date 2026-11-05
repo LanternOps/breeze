@@ -51,6 +51,7 @@ vi.mock('../entitlements', async (orig) => ({
 vi.mock('./grants', () => ({ pauseGrant: h.pauseGrant }));
 
 import { aiAgentRuns } from '../../db/schema/aiAgents';
+import { aiInvocations } from '../../db/schema/aiInvocations';
 import { wispGrants } from '../../db/schema/wisp';
 import {
   GrantNotFoundForBudgetError,
@@ -60,6 +61,7 @@ import {
   notifyBudgetExhaustedOnce,
   spendSummary,
   spentUnderGrant,
+  summaryRefineSourceRef,
   utcDayWindow,
 } from './budget';
 
@@ -135,7 +137,7 @@ describe('spentUnderGrant', () => {
     const now = new Date('2027-01-05T00:30:00.000Z');
     expect(await spentUnderGrant(GRANT, now)).toBe(137);
     expect(h.inSystemContext).toHaveBeenCalled();
-    expect(h.fromArgs).toEqual([aiAgentRuns]);
+    expect(h.fromArgs[0]).toBe(aiAgentRuns);
     const q = compile(h.whereArgs[0]);
     expect(q.sql).toContain('"ai_agent_runs"."grant_id" = $');
     expect(q.sql).toContain('"ai_agent_runs"."queued_at" >= $');
@@ -150,10 +152,30 @@ describe('spentUnderGrant', () => {
   });
 
   it('no runs → 0', async () => {
-    h.results.push([{ total: null }]);
+    h.results.push([{ total: null }], [{ total: null }]);
     expect(await spentUnderGrant(GRANT)).toBe(0);
-    h.results.push([]);
+    h.results.push([], []);
     expect(await spentUnderGrant(GRANT)).toBe(0);
+  });
+
+  // #10390: a model-written session summary (opt-in per grant) is not a run, so
+  // its settled ledger rows are added by their grant-keyed source_ref.
+  it("adds the grant's session-summary model calls from ai_invocations, by created_at in the same window", async () => {
+    h.results.push([{ total: '137' }], [{ total: '12' }]);
+    const now = new Date('2027-01-05T00:30:00.000Z');
+    expect(await spentUnderGrant(GRANT, now)).toBe(149);
+    expect(h.fromArgs).toEqual([aiAgentRuns, aiInvocations]);
+    const q = compile(h.whereArgs[1]);
+    expect(q.sql).toContain('"ai_invocations"."source_ref" = $');
+    expect(q.sql).toContain('"ai_invocations"."created_at" >= $');
+    expect(q.sql).toContain('"ai_invocations"."created_at" < $');
+    expect(q.params).toEqual(expect.arrayContaining([
+      `wisp_thread_summary:${GRANT}`, '2027-01-05T00:00:00.000Z', '2027-01-06T00:00:00.000Z',
+    ]));
+  });
+
+  it('summaryRefineSourceRef is the grant-keyed ledger ref', () => {
+    expect(summaryRefineSourceRef(GRANT)).toBe(`wisp_thread_summary:${GRANT}`);
   });
 });
 
@@ -167,6 +189,13 @@ describe('chargeableUnderGrant', () => {
     h.results.push([grantBudgetRow({ budgetCentsPerDay: 200 })], [{ total: 176 }]);
     await expect(chargeableUnderGrant(GRANT, 25)).resolves.toEqual({ ok: false, reason: 'budget_exhausted' });
     expect(h.pauseGrant).not.toHaveBeenCalled();
+  });
+
+  it('session-summary spend counts against the budget like run spend', async () => {
+    h.results.push([grantBudgetRow({ budgetCentsPerDay: 200 })], [{ total: 150 }], [{ total: 26 }]);
+    await expect(chargeableUnderGrant(GRANT, 25)).resolves.toEqual({ ok: false, reason: 'budget_exhausted' });
+    h.results.push([grantBudgetRow({ budgetCentsPerDay: 200 })], [{ total: 150 }], [{ total: 25 }]);
+    await expect(chargeableUnderGrant(GRANT, 25)).resolves.toEqual({ ok: true });
   });
 
   it('a zero budget refuses any positive estimate', async () => {

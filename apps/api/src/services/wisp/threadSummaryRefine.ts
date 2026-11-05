@@ -5,13 +5,18 @@
  * close is seeded with something true, and every way out of this file without a
  * model reply simply leaves the digest in place.
  *
- * Runs after the session closed, possibly with nobody watching (the eviction
- * sweep), so it spends only when the grant is active and has daily budget left
- * and the org's own budget gates pass. Billing copies the continuation summary
- * (routes/aiSessionContinue.ts): a SESSIONLESS reservation under its own key
- * prefix, budget-bounded output, settled with `sessionId: null`. An unrecorded
- * or failed settlement holds the reservation indeterminate; only an unsent
- * request is released. No DB connection is held across the provider call.
+ * Off unless the grant opts in (`wisp_grants.summary_refine`, default false): one
+ * model call per session close adds up, and it runs after the session closed,
+ * possibly with nobody watching (the eviction sweep). When on, it spends only when
+ * the grant is active and has daily budget left and the org's own budget gates
+ * pass, and the call is charged to the grant's daily budget: the settled ledger
+ * rows carry `summaryRefineSourceRef(grantId)`, which `spentUnderGrant` sums.
+ *
+ * Billing copies the continuation summary (routes/aiSessionContinue.ts): a
+ * SESSIONLESS reservation under its own key prefix, budget-bounded output, settled
+ * with `sessionId: null`. An unrecorded or failed settlement holds the reservation
+ * indeterminate; only an unsent request is released. No DB connection is held
+ * across the provider call.
  *
  * The output is model text over a transcript, so it is untrusted: the seed
  * sanitizes and fences it. Tool payloads never enter the input
@@ -42,7 +47,7 @@ import { settleInvocation } from '../aiModels/settleInvocation';
 import { turnBindingFrom } from '../aiModels/turnBinding';
 import { LlmUnavailableError } from '../llm/llmConfigResolver';
 import { captureException } from '../sentry';
-import { chargeableUnderGrant } from './budget';
+import { chargeableUnderGrant, summaryRefineSourceRef, utcDayWindow } from './budget';
 import { inSystemContext } from './grantAuthority';
 import { THREAD_SUMMARY_MAX_CHARS, truncateSummary } from './threadSummary';
 import { replaceClaimedThreadSummary } from './threads';
@@ -52,8 +57,6 @@ export const THREAD_SUMMARY_MODEL_MAX_TOKENS = 4096;
 /** Keeps a close cheap on any model; the newest messages win (`buildContinuationTranscript`). */
 export const THREAD_SUMMARY_INPUT_MAX_CHARS = 24_000;
 export const THREAD_SUMMARY_MODEL_TIMEOUT_MS = 60_000;
-/** The ledger's source_ref for this call. */
-export const THREAD_SUMMARY_SOURCE_REF = 'wisp_thread_summary';
 /** The idempotency-key prefix of the reservation (never `chat:`). */
 const RESERVATION_KEY_PREFIX = 'wisp-thread-summary:';
 /** Only answers "is this grant out of budget today"; the reservation bounds the real spend. */
@@ -101,7 +104,19 @@ function buildPrompt(input: RefineThreadSummaryInput): string {
   return previous === '' ? text : `<previous_summary>\n${previous}\n</previous_summary>\n\n${text}`;
 }
 
-/** The session's org and owner when its grant may still spend, else null. */
+/** Grants already told about today's exhausted budget, so a busy thread logs it once a UTC day. */
+const exhaustedLogged = new Set<string>();
+const EXHAUSTED_LOGGED_MAX = 1_000;
+
+function logBudgetExhaustedOnce(grantId: string): void {
+  const key = `${grantId}:${utcDayWindow(new Date()).key}`;
+  if (exhaustedLogged.has(key)) return;
+  if (exhaustedLogged.size >= EXHAUSTED_LOGGED_MAX) exhaustedLogged.clear();
+  exhaustedLogged.add(key);
+  console.warn('[wisp] thread summary stays a digest: the grant spent its daily budget', { grantId });
+}
+
+/** The session's org and owner when its grant opted in and may still spend, else null. */
 async function loadSpendTarget(sessionId: string): Promise<{ orgId: string; userId: string | null; grantId: string } | null> {
   return inSystemContext(async () => {
     const [session] = await db
@@ -111,11 +126,11 @@ async function loadSpendTarget(sessionId: string): Promise<{ orgId: string; user
       .limit(1);
     if (!session?.wispGrantId) return null;
     const [grant] = await db
-      .select({ status: wispGrants.status })
+      .select({ status: wispGrants.status, summaryRefine: wispGrants.summaryRefine })
       .from(wispGrants)
       .where(eq(wispGrants.id, session.wispGrantId))
       .limit(1);
-    if (grant?.status !== 'active') return null;
+    if (grant?.status !== 'active' || grant.summaryRefine !== true) return null;
     return { orgId: session.orgId, userId: session.userId, grantId: session.wispGrantId };
   });
 }
@@ -135,7 +150,10 @@ export async function refineThreadSummary(input: RefineThreadSummaryInput): Prom
     const { orgId, userId } = target;
 
     const charge = await chargeableUnderGrant(target.grantId, GRANT_BUDGET_ESTIMATE_CENTS);
-    if (!charge.ok) return;
+    if (!charge.ok) {
+      logBudgetExhaustedOnce(target.grantId);
+      return;
+    }
 
     const turn = await resolveSessionTurn({
       sessionId: input.sessionId, surface: 'chat', userId,
@@ -197,7 +215,7 @@ export async function refineThreadSummary(input: RefineThreadSummaryInput): Prom
           : messagesUsage(binding, attempts);
         const settled = await settleInvocation({
           binding, orgId, userId, sessionId: null, agentRunId: null,
-          sourceRef: THREAD_SUMMARY_SOURCE_REF, usage, outcome, reservationId,
+          sourceRef: summaryRefineSourceRef(target.grantId), usage, outcome, reservationId,
         });
         if (settled.unrecorded) await holdIndeterminate();
       } catch (settleError) {

@@ -131,6 +131,8 @@ export interface WispThreadGrantSummary {
   unattendedReads: boolean;
   /** #10973: the current revision pins the switch, whether or not it is on now. */
   unattendedReadsPinned: boolean;
+  /** #10390: a closed session's summary is also written by the model, charged to this grant's budget. */
+  summaryRefine: boolean;
 }
 
 /**

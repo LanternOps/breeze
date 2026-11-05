@@ -441,6 +441,21 @@ describe('PATCH /wisp/grants/:id/settings', () => {
     expect(await res.json()).toMatchObject({ code: 'SETTINGS_OUT_OF_BOUNDS' });
   });
 
+  it('#10390: summaryRefine reaches the service either way and comes back on the DTO; a non-boolean → 400', async () => {
+    for (const value of [true, false]) {
+      h.svc.updateGrantSettings.mockResolvedValueOnce(grant({ summaryRefine: value }));
+      const res = await patch(buildApp(), `/wisp/grants/${GRANT_ID}/settings`, { summaryRefine: value });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ summaryRefine: value });
+      expect(h.svc.updateGrantSettings).toHaveBeenLastCalledWith(expect.objectContaining({ patch: { summaryRefine: value } }));
+    }
+    h.svc.updateGrantSettings.mockClear();
+    for (const bad of ['true', 1, null]) {
+      expect((await patch(buildApp(), `/wisp/grants/${GRANT_ID}/settings`, { summaryRefine: bad })).status).toBe(400);
+    }
+    expect(h.svc.updateGrantSettings).not.toHaveBeenCalled();
+  });
+
   it('#10973: unattendedReads: true → 400 STEP_UP_REQUIRED, the service never runs', async () => {
     const res = await patch(buildApp(), `/wisp/grants/${GRANT_ID}/settings`, { unattendedReads: true });
     expect(res.status).toBe(400);

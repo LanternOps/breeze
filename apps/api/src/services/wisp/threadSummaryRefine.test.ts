@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   session: { orgId: 'org-1', userId: 'user-1', wispGrantId: 'grant-1' } as Record<string, unknown> | null,
-  grant: { status: 'active' } as Record<string, unknown> | null,
+  grant: { status: 'active', summaryRefine: true } as Record<string, unknown> | null,
   selects: 0,
   wispEnabled: vi.fn(() => true),
   chargeableUnderGrant: vi.fn(),
@@ -49,10 +49,14 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
 vi.mock('../../db/schema/ai', () => ({ aiSessions: { id: 'id', orgId: 'org_id', userId: 'user_id', wispGrantId: 'wisp_grant_id' } }));
-vi.mock('../../db/schema/wisp', () => ({ wispGrants: { id: 'id', status: 'status' } }));
+vi.mock('../../db/schema/wisp', () => ({ wispGrants: { id: 'id', status: 'status', summaryRefine: 'summary_refine' } }));
 vi.mock('../../config/env', () => ({ wispEnabled: h.wispEnabled }));
 vi.mock('./grantAuthority', () => ({ inSystemContext: vi.fn((fn: () => unknown) => fn()) }));
-vi.mock('./budget', () => ({ chargeableUnderGrant: h.chargeableUnderGrant }));
+// The real source-ref helper (the grant's daily budget sums by it); only the budget read is faked.
+vi.mock('./budget', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./budget')>()),
+  chargeableUnderGrant: h.chargeableUnderGrant,
+}));
 vi.mock('./threads', () => ({ replaceClaimedThreadSummary: h.replaceClaimedThreadSummary }));
 vi.mock('../sentry', () => ({ captureException: h.captureException }));
 vi.mock('../aiCostTracker', () => ({ checkBudgetDetailed: h.checkBudgetDetailed }));
@@ -82,7 +86,6 @@ import { ContinuationSummaryFailedError } from '../aiModels/continuation';
 import {
   THREAD_SUMMARY_INPUT_MAX_CHARS,
   THREAD_SUMMARY_MODEL_TIMEOUT_MS,
-  THREAD_SUMMARY_SOURCE_REF,
   refineThreadSummary,
 } from './threadSummaryRefine';
 import { THREAD_SUMMARY_MAX_CHARS } from './threadSummary';
@@ -109,7 +112,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.selects = 0;
   h.session = { orgId: 'org-1', userId: 'user-1', wispGrantId: 'grant-1' };
-  h.grant = { status: 'active' };
+  h.grant = { status: 'active', summaryRefine: true };
   h.wispEnabled.mockReturnValue(true);
   h.isAiBudgetLockTimeout.mockReturnValue(false);
   h.chargeableUnderGrant.mockResolvedValue({ ok: true });
@@ -127,7 +130,7 @@ beforeEach(() => {
 });
 
 describe('refineThreadSummary', () => {
-  it('replaces the digest with the model summary and settles the call without binding it to the session', async () => {
+  it('replaces the digest with the model summary and charges the call to the grant, not the session', async () => {
     await refineThreadSummary(input);
 
     expect(h.replaceClaimedThreadSummary).toHaveBeenCalledWith(
@@ -135,8 +138,10 @@ describe('refineThreadSummary', () => {
     );
     expect(h.settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
       orgId: 'org-1', userId: 'user-1', sessionId: null, agentRunId: null,
-      sourceRef: THREAD_SUMMARY_SOURCE_REF, reservationId: 'res-1',
+      // The grant's daily budget sums ai_invocations by this ref (budget.ts spentUnderGrant).
+      sourceRef: 'wisp_thread_summary:grant-1', reservationId: 'res-1',
     }));
+    expect(h.summarizeForContinuation).toHaveBeenCalledTimes(1);
     expect(h.anthropicClientFor).toHaveBeenCalledWith(expect.anything(), {
       surface: 'one_shot_wisp_thread_summary', orgId: 'org-1',
     });
@@ -210,6 +215,47 @@ describe('refineThreadSummary', () => {
     h.replaceClaimedThreadSummary.mockResolvedValue(false);
     await expect(refineThreadSummary(input)).resolves.toBeUndefined();
     expect(h.settleInvocation).toHaveBeenCalledTimes(1);
+  });
+
+  describe('the grant switch (summaryRefine, default off)', () => {
+    it('off: no model call, no budget read, no reservation; the digest is the summary', async () => {
+      h.grant = { status: 'active', summaryRefine: false };
+      await refineThreadSummary(input);
+      expectNoSpend();
+      expect(h.chargeableUnderGrant).not.toHaveBeenCalled();
+      expect(h.resolveSessionTurn).not.toHaveBeenCalled();
+      expect(h.reserveAiBudget).not.toHaveBeenCalled();
+    });
+
+    it('a grant row without the flag reads as off', async () => {
+      h.grant = { status: 'active' };
+      await refineThreadSummary(input);
+      expectNoSpend();
+      expect(h.reserveAiBudget).not.toHaveBeenCalled();
+    });
+
+    it('on: exactly one model call', async () => {
+      await refineThreadSummary(input);
+      expect(h.summarizeForContinuation).toHaveBeenCalledTimes(1);
+      expect(h.chargeableUnderGrant).toHaveBeenCalledWith('grant-1', expect.any(Number));
+    });
+
+    it('on but the grant budget is spent: skipped, and logged once per grant and UTC day', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        h.chargeableUnderGrant.mockResolvedValue({ ok: false, reason: 'budget_exhausted' });
+        h.session = { orgId: 'org-1', userId: 'user-1', wispGrantId: 'grant-exhausted' };
+        await refineThreadSummary(input);
+        h.selects = 0;
+        await refineThreadSummary(input);
+        expectNoSpend();
+        expect(h.reserveAiBudget).not.toHaveBeenCalled();
+        const logged = warn.mock.calls.filter((c) => String(c[0]).includes('daily budget'));
+        expect(logged).toHaveLength(1);
+      } finally {
+        warn.mockRestore();
+      }
+    });
   });
 
   describe('no model call', () => {

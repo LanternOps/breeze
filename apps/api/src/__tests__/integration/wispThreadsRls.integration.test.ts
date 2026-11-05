@@ -34,9 +34,12 @@ import {
   wispThreads,
   wispThreadSessions,
 } from '../../db/schema';
+import { aiInvocations } from '../../db/schema/aiInvocations';
 import { pgErrorCode, pgErrorConstraint } from '../../utils/pgErrors';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { attachSession } from '../../services/wisp/threads';
+import { buildWispOverview } from '../../services/wisp/adminOverview';
+import { chargeableUnderGrant, spentUnderGrant, summaryRefineSourceRef } from '../../services/wisp/budget';
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: null, userId: null,
@@ -760,5 +763,50 @@ describe('finalizeWispSessionSummary (W04 T5, Review Focus 5)', () => {
 
     // Idempotent: a second finalize writes nothing.
     await expect(finalizeWispSessionSummary(sessionA)).resolves.toEqual({ updated: false });
+  });
+});
+
+describe("#10390 a model-written session summary is charged to the grant's daily budget", () => {
+  // Pinned: "today" must not move between the insert and the read (a UTC-midnight flake otherwise).
+  const NOW = new Date();
+  const YESTERDAY = new Date(NOW.getTime() - 86_400_000);
+
+  const insertInvocation = (orgId: string, sourceRef: string, costCents: number, createdAt: Date) =>
+    asSystem(() => db.insert(aiInvocations).values({
+      orgId, surface: 'chat', fundingSource: 'platform', requestedModel: 'm', servedModel: 'm',
+      sourceRef, costCents, rateSnapshot: {}, createdAt,
+    }));
+
+  it('a new grant has the switch off', async () => {
+    const f = await seed();
+    const [row] = await asSystem(() => db.select({ on: wispGrants.summaryRefine }).from(wispGrants).where(eq(wispGrants.id, f.grantA.grantId)));
+    expect(row!.on).toBe(false);
+  });
+
+  it("sums the grant's own settled summaries for the UTC day, rounded up, and refuses once spent", async () => {
+    const f = await seed();
+    await insertInvocation(f.orgA1, summaryRefineSourceRef(f.grantA.grantId), 12.25, NOW);
+    await insertInvocation(f.orgA2, summaryRefineSourceRef(f.grantA.grantId), 0.5, NOW);
+    // None of these are this grant's spend today.
+    await insertInvocation(f.orgA1, summaryRefineSourceRef(f.grantA.grantId), 100, YESTERDAY);
+    await insertInvocation(f.orgB1, summaryRefineSourceRef(f.grantB.grantId), 50, NOW);
+    await insertInvocation(f.orgA1, 'continuation_summary', 70, NOW);
+
+    expect(await spentUnderGrant(f.grantA.grantId, NOW)).toBe(13);
+    expect(await spentUnderGrant(f.grantB.grantId, NOW)).toBe(50);
+
+    await asSystem(() => db.update(wispGrants).set({ budgetCentsPerDay: 14 }).where(eq(wispGrants.id, f.grantA.grantId)));
+    await expect(chargeableUnderGrant(f.grantA.grantId, 1, NOW)).resolves.toEqual({ ok: true });
+    await expect(chargeableUnderGrant(f.grantA.grantId, 2, NOW)).resolves.toEqual({ ok: false, reason: 'budget_exhausted' });
+  });
+
+  it('the admin overview counts a grant exhausted by summaries alone', async () => {
+    const f = await seed();
+    await asSystem(() => db.update(wispGrants).set({ budgetCentsPerDay: 10 }).where(eq(wispGrants.id, f.grantA.grantId)));
+    await insertInvocation(f.orgA1, summaryRefineSourceRef(f.grantA.grantId), 10, NOW);
+
+    const rows = await asSystem(() => buildWispOverview(NOW));
+    expect(rows.find((r) => r.partnerId === f.partnerA)).toMatchObject({ budgetExhaustedGrantsToday: 1 });
+    expect(rows.find((r) => r.partnerId === f.partnerB)).toMatchObject({ budgetExhaustedGrantsToday: 0 });
   });
 });
