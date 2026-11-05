@@ -194,7 +194,7 @@ describe('loadStandingLoopFacts', () => {
       firstLook: { assessedOrgs: 2, inFlight: 1, totalOrgs: 3 },
       brief: { timeLocal: '08:00', timezone: 'Europe/Berlin' },
     });
-    expect(h.briefScheduleFor).toHaveBeenCalledWith(ceiling.grantorUserId);
+    expect(h.briefScheduleFor).toHaveBeenCalledWith(ceiling.grantorUserId, ceiling.partnerId);
   });
 
   it('null when the grant row is gone', async () => {

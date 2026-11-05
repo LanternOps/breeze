@@ -215,17 +215,21 @@ export async function briefScheduleFor(
 ): Promise<{ timeLocal: string | null; timezone: string }> {
   const book = (await loadNudgeBookkeeping([userId])).get(userId);
   const prefs = book?.prefs ?? resolveWispNudgePrefs(null);
+  const timeLocal = prefs.briefTimeLocal !== null && BRIEF_TIME_RE.test(prefs.briefTimeLocal) ? prefs.briefTimeLocal : null;
+  // A valid preference zone wins outright: no device or partner read, as in the sweep.
+  const preferred = prefs.briefTimezone && resolveBriefTimezone({ preference: prefs.briefTimezone }) === prefs.briefTimezone
+    ? prefs.briefTimezone
+    : null;
+  if (preferred) return { timeLocal, timezone: preferred };
   const { phoneTz, partnerTz } = await inSystemContext(async () => ({
     phoneTz: await phoneTimezones([userId]),
     partnerTz: partnerId ? await partnerTimezones([partnerId]) : new Map<string, string>(),
   }));
   const timezone = resolveBriefTimezone({
-    preference: prefs.briefTimezone,
     phone: phoneTz.get(userId),
     browser: book?.browserTimezone,
     partner: partnerId ? partnerTz.get(partnerId) : null,
   });
-  const timeLocal = prefs.briefTimeLocal !== null && BRIEF_TIME_RE.test(prefs.briefTimeLocal) ? prefs.briefTimeLocal : null;
   return { timeLocal, timezone: safeTimeZone(timezone) };
 }
 
