@@ -39,11 +39,19 @@ type Marker struct {
 	// VerifyPending asks the next start after a reboot to report BitLocker and
 	// the BIOS version. Cleared once the report is accepted or given up on.
 	VerifyPending bool `json:"verifyPending"`
-	// VerifyAttempts counts failed report attempts across starts.
-	VerifyAttempts int `json:"verifyAttempts,omitempty"`
-	// InterruptReported is set once the restart's interrupted result has been
-	// handed to the outbox, so a second restart does not report it again.
-	InterruptReported bool `json:"interruptReported,omitempty"`
+	// VerifyAfter is the instant a boot must follow before verifying. Unset, it
+	// is EndedAt.
+	VerifyAfter *time.Time `json:"verifyAfter,omitempty"`
+}
+
+func (m Marker) verifyAfter() time.Time {
+	if m.VerifyAfter != nil {
+		return *m.VerifyAfter
+	}
+	if m.EndedAt != nil {
+		return *m.EndedAt
+	}
+	return m.StartedAt
 }
 
 // WriteMarker records m durably.
