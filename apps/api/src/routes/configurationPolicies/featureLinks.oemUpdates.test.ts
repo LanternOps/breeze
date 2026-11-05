@@ -327,6 +327,11 @@ describe('GET /oem-updates/gates (#11070)', () => {
     });
     expect(body.data.lanes[2]).toEqual({
       lane: 'hp',
+      shipped: true,
+      categories: { bios: false, firmware: false, driver: false, application: false },
+    });
+    expect(body.data.lanes[3]).toEqual({
+      lane: 'lenovo',
       shipped: false,
       categories: { bios: false, firmware: false, driver: false, application: false },
     });
