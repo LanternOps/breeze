@@ -1,7 +1,7 @@
 import type { z } from 'zod';
 import type {
-  EdrActionKey, EdrDetectionStatus, EdrEndpointHealth, EdrEndpointType, EdrIsolationState,
-  EdrOsPlatform, EdrSeverity, EdrVendorKind,
+  EdrActionKey, EdrDetectionStatus, EdrEndpointHealth, EdrEndpointType, EdrInstallerFetchErrorCode,
+  EdrIsolationState, EdrOsPlatform, EdrSeverity, EdrVendorKind,
 } from '@breeze/shared';
 import type { EdrProviderKey } from './registry';
 
@@ -186,6 +186,26 @@ export interface EdrActionTargetFacts {
 /** Did a sent-but-unconfirmed request take effect? */
 export type EdrReconcileVerdict = 'applied' | 'not_applied' | 'unknown';
 
+export type EdrInstallerPlatform = 'windows' | 'macos' | 'linux';
+export type EdrInstallerFileType = 'exe' | 'msi' | 'pkg' | 'dmg' | 'deb' | 'zip';
+export type { EdrInstallerFetchErrorCode };
+
+/** `data` is adapter-owned and opaque to the framework; it is sealed on the tenant row. */
+export type EdrInstallerFetchResult =
+  | { ok: true; data: unknown; expiresAt: Date | null }
+  | { ok: false; code: EdrInstallerFetchErrorCode };
+
+/** What dispatch sends the agent. `checksum: null` = the vendor publishes none. */
+export interface EdrInstallerSpec {
+  downloadUrl: string;
+  fileName: string;
+  fileType: EdrInstallerFileType;
+  silentInstallArgs: string;
+  checksum: string | null;
+}
+
+export type EdrInstallerBuildError = { error: 'platform_unsupported' | 'material_invalid' };
+
 export interface EdrCredentialField { name: string; label: string; secret: boolean; required: boolean }
 
 /** An inbound vendor push as the webhook route saw it: raw body text, header values. */
@@ -262,7 +282,19 @@ export interface EdrProviderAdapter {
   unregisterPush?(ctx: EdrAdapterContext, o: { url: string | null }): Promise<{ changed: boolean }>;
   /** W03 PR-B. Ask the vendor to send one test event to the registered URL. */
   sendTestPush?(ctx: EdrAdapterContext): Promise<void>;
+  /**
+   * W06. Hosts an installer link may point at. Separate from `hostAllowlist`
+   * (the API hosts): a download CDN is not somewhere Breeze sends the API key.
+   */
+  readonly installerHostAllowlist?: readonly string[];
+  /**
+   * W06. Sync worker vendor-I/O phase ONLY, never at dispatch: dispatch runs inside
+   * the install-remediation transaction (#1105). A vendor verdict about this
+   * tenant is a result; transport and auth failures throw `EdrProviderRequestError`.
+   */
+  fetchInstallerMaterial?(ctx: EdrAdapterContext, tenant: VendorEdrTenantRef): Promise<EdrInstallerFetchResult>;
+  /** W06. Pure and synchronous: no db, no fetch, no ctx. Validates `data` with the adapter's own schema. */
+  buildInstaller?(data: unknown, platform: EdrInstallerPlatform): EdrInstallerSpec | EdrInstallerBuildError;
   // Declared now, implemented later (types only — no framework code calls them):
   getDetections?(...a: unknown[]): Promise<VendorEdrDetection[]>;
-  getInstaller?(...a: unknown[]): Promise<unknown>;
 }
