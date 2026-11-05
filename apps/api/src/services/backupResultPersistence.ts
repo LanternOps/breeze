@@ -887,13 +887,29 @@ async function checkLateResultBaseFence(job: {
  * - Otherwise a snapshot with references still needs the referenced-origin
  *   index that token-mode recovery requires (W09, #6464).
  * - A snapshot whose index is already server-verified needs nothing.
+ * - A snapshot of more than EAGER_HYDRATION_MAX_ENTRIES entries is left for
+ *   its first use (#11026, Open Decision 3): its rows cost about 145 MB or more
+ *   per retained snapshot, most of which nobody opens. Browse, selective
+ *   restore, a brokered read and the recovery-creation preflight each request
+ *   the index when they find it missing, so nothing depends on it existing
+ *   beforehand. An unknown count keeps the request.
  */
+export const EAGER_HYDRATION_MAX_ENTRIES = 250_000;
+
+/** Entries a snapshot's index will hold: files the run backed up plus those it referenced. */
+export function indexedEntriesOf(result: { filesBackedUp?: number; referencedFiles?: number }): number | undefined {
+  if (result.filesBackedUp === undefined && result.referencedFiles === undefined) return undefined;
+  return (result.filesBackedUp ?? 0) + (result.referencedFiles ?? 0);
+}
+
 export function snapshotIndexHydrationReason(params: {
   storageIdentity: string | null;
   referencedFiles: number | undefined;
   fileIndexStatus: string | null | undefined;
+  indexedEntries: number | undefined;
 }): 'result_brokered_read' | 'result' | null {
   if (params.fileIndexStatus === 'complete') return null;
+  if (params.indexedEntries !== undefined && params.indexedEntries > EAGER_HYDRATION_MAX_ENTRIES) return null;
   if (params.storageIdentity?.startsWith('s3::')) {
     return 'result_brokered_read';
   }
@@ -1802,6 +1818,7 @@ export async function applyBackupCommandResultToJob(params: {
         storageIdentity: updatedJob.storageIdentity ?? null,
         referencedFiles: result.referencedFiles,
         fileIndexStatus: snapshot.fileIndexStatus,
+        indexedEntries: indexedEntriesOf(result),
       })
     : null;
   if (snapshot && hydrationReason) {
