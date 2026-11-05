@@ -1,6 +1,6 @@
 import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex, index, check, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import type { ImpactWeightOverrides, PartnerPurchaseSelection } from '@breeze/shared';
+import type { ImpactWeightOverrides, PartnerPurchaseSelection, RearmMode } from '@breeze/shared';
 
 export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'internal']);
 // `offboarding` (#2774) is the terminal-intent drain state: users locked out
@@ -212,11 +212,23 @@ export const partners = pgTable('partners', {
   // #2774 — NULL = not offboarding. Set on drain entry, cleared on
   // abort/finalize. Drain deadline = this + OFFBOARDING_DRAIN_WINDOW_HOURS.
   offboardingStartedAt: timestamp('offboarding_started_at', { withTimezone: true }),
+  // Alert re-arm lifecycle W2 (#10765): the partner DEFAULT every org and
+  // monitor inherits (org override → monitor override beat it). Read ONLY via
+  // services/alertLifecycle/resolve.ts (contract test). The rearm delay is set
+  // iff the mode is 'after_delay' (partners_alert_rearm_delay_chk).
+  alertAutoResolve: boolean('alert_auto_resolve').notNull().default(false),
+  alertRearmMode: text('alert_rearm_mode').$type<RearmMode>().notNull().default('new_evidence'),
+  alertRearmDelayMinutes: integer('alert_rearm_delay_minutes'),
+  alertCooldownMinutes: integer('alert_cooldown_minutes').notNull().default(5),
 }, (table) => [
   check('partners_agreement_default_expiry_days_check', sql`${table.agreementDefaultExpiryDays} BETWEEN 1 AND 365`),
   check('partners_agreement_reminder_interval_days_check',
     sql`${table.agreementReminderIntervalDays} IS NULL OR ${table.agreementReminderIntervalDays} BETWEEN 1 AND 30`),
   check('partners_agreement_max_reminders_check', sql`${table.agreementMaxReminders} BETWEEN 1 AND 10`),
+  check('partners_alert_rearm_mode_chk', sql`${table.alertRearmMode} IN ('new_evidence', 'after_delay')`),
+  check('partners_alert_rearm_delay_chk', sql`(${table.alertRearmMode} = 'after_delay') = (${table.alertRearmDelayMinutes} IS NOT NULL)
+    AND (${table.alertRearmDelayMinutes} IS NULL OR ${table.alertRearmDelayMinutes} BETWEEN 1 AND 1440)`),
+  check('partners_alert_cooldown_chk', sql`${table.alertCooldownMinutes} BETWEEN 0 AND 1440`),
   check('partners_purchase_selection_valid', sql`${table.purchaseSelection} IS NULL OR COALESCE((
   (
     jsonb_typeof(${table.purchaseSelection}) = 'object'
@@ -305,6 +317,15 @@ export const organizations = pgTable('organizations', {
   // code to execute on a vendor sandbox. Default false until the DPA review;
   // enforced at analysis-run ADMISSION (runService.ts), never in the catalog.
   aiExternalProcessing: boolean('ai_external_processing').notNull().default(false),
+  // Alert re-arm lifecycle W2 (#10765): org OVERRIDE of the partner's alert
+  // lifecycle default. Each NULL = inherit `partners.alert_*`; no defaults, no
+  // backfill. CHECKs (migration 2027-01-20-130000): mode in
+  // ('new_evidence','after_delay'), delay 1–1440 set iff mode = 'after_delay',
+  // cooldown 0–1440. Read ONLY via services/alertLifecycle/resolve.ts.
+  alertAutoResolve: boolean('alert_auto_resolve'),
+  alertRearmMode: text('alert_rearm_mode').$type<RearmMode>(),
+  alertRearmDelayMinutes: integer('alert_rearm_delay_minutes'),
+  alertCooldownMinutes: integer('alert_cooldown_minutes'),
   deletedAt: timestamp('deleted_at')
 }, (table) => ({
   orgPartnerUnique: uniqueIndex('organizations_id_partner_id_unique').on(table.id, table.partnerId),

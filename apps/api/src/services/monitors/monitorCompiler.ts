@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { NetworkCheckMonitorCondition } from '@breeze/shared';
+import { BUILTIN_ALERT_LIFECYCLE, type NetworkCheckMonitorCondition } from '@breeze/shared';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { alertTemplates, alertRules } from '../../db/schema/alerts';
@@ -159,9 +159,13 @@ export function buildCompiledTemplate(
     titleTemplate: spec.titleTemplate,
     messageTemplate: spec.messageTemplate,
     targets: null,
-    autoResolve: def.autoResolve,
+    // W2 (#10765): NOT NULL template columns get the built-in when the monitor
+    // inherits. These copies are never the runtime answer — the lifecycle
+    // loader resolves monitor → device org → partner per alert, because this
+    // template is shared by every org a partner-wide monitor reaches.
+    autoResolve: def.autoResolve ?? BUILTIN_ALERT_LIFECYCLE.autoResolve,
     autoResolveConditions: def.autoResolveConditions ?? null,
-    cooldownMinutes: def.cooldownMinutes,
+    cooldownMinutes: def.cooldownMinutes ?? BUILTIN_ALERT_LIFECYCLE.cooldownMinutes,
     isBuiltIn: true,
     managedByMonitorId: def.id,
   };
