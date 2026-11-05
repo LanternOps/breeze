@@ -222,6 +222,7 @@ export const partnerDeviceInventoryExportRecordSchema = strictPartnerExportRecor
     graphics: z.object({ model: nullableInventoryString }).strict(),
     motherboard: z.object({ manufacturer: nullableInventoryString, product: nullableInventoryString, version: nullableInventoryString }).strict(),
     firmware: z.object({ biosVersion: nullableInventoryString }).strict(),
+    system: z.object({ productSku: nullableInventoryString }).strict(),
   }).strict(),
   disks: z.array(z.object({
     id: z.string().uuid(), mountPoint: z.string().max(255), device: nullableInventoryString,
@@ -665,8 +666,9 @@ export const partnerAlertExportRecordSchema = z.object({
   deviceId: z.string().uuid().nullable(),
   // Current device hostname at read time: enrichment, NOT a feed event. A
   // device rename does not advance the feed and is excluded from `revision`.
-  // Limits are 2x the DB varchar length: Postgres counts characters, JS/Zod
-  // counts UTF-16 code units, and a non-BMP character is two units.
+  // Limits are 2x the DB varchar length, set when zod counted UTF-16 units.
+  // zod >=4.6 counts code points like Postgres, so 2x is now only headroom;
+  // kept rather than tightening a partner-facing response contract (#9976).
   deviceHostname: z.string().max(510).nullable(),
   severity: z.enum(PARTNER_ALERT_SEVERITIES),
   status: z.enum(PARTNER_ALERT_STATUSES),
@@ -727,7 +729,7 @@ const partnerTicketRequesterSchema = z.object({
   // The canonical requester PERSON (contacts) and the optional portal LOGIN.
   contactId: nullableUuid,
   portalUserId: nullableUuid,
-  // Snapshot taken at creation (2x varchar(255): UTF-16 units vs characters).
+  // Snapshot taken at creation (2x varchar(255); see deviceHostname above).
   name: z.string().max(510).nullable(),
   email: z.string().max(510).nullable(),
 }).strict();
@@ -939,7 +941,7 @@ export const partnerDeviceStatusRecordSchema = z.object({
   siteId: z.string().uuid(),
   status: z.enum(PARTNER_DEVICE_STATUSES),
   lastSeenAt: partnerExportTimestampSchema.nullable(),
-  // 2x the varchar(50) column: Postgres counts characters, Zod UTF-16 units.
+  // 2x the varchar(50) column; see deviceHostname above.
   agentVersion: z.string().max(100),
 }).strict();
 

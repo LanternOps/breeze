@@ -19,11 +19,15 @@
  * An attempt after this long a silence starts a NEW episode rather than
  * continuing the old one; and a record whose last attempt is older than this
  * is no longer "stuck" — the device stopped trying (offer withdrawn, pin
- * changed, agent backing off). Wider than the agent's longest per-version
- * retry cooldown (30 min, codeSignatureRetryCooldown) so a device retrying on
- * that cadence still reads as one continuous episode.
+ * changed). Wider than the agent's longest per-version retry wait so a device
+ * retrying on that cadence still reads as one continuous, stuck episode: the
+ * persisted update-failure latch (#9751, agent/internal/updater/failure_latch.go
+ * FailureLatchMax) backs a version whose swap did not take off to one retry a
+ * day. The 2 h on top covers the download, the restart and heartbeat jitter.
+ * The trade-off: a device whose offer was withdrawn mid-episode keeps its
+ * stuck flag for up to this long, until it converges or the record ages out.
  */
-export const AGENT_UPDATE_EPISODE_GAP_MS = 2 * 60 * 60 * 1000;
+export const AGENT_UPDATE_EPISODE_GAP_MS = 26 * 60 * 60 * 1000;
 
 /**
  * An update still unconverged this long after its first attempt is stuck. A

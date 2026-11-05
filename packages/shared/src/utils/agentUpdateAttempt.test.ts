@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import {
   AGENT_UPDATE_EPISODE_GAP_MS,
@@ -9,6 +11,44 @@ import {
 const NOW = new Date('2026-10-01T12:00:00Z');
 const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60_000);
 const EMPTY = { targetVersion: null, startedAt: null, lastAttemptAt: null, attemptCount: null };
+
+// Cross-language contract (#9751): the agent's persisted update-failure latch
+// (agent/internal/updater/failure_latch.go, FailureLatchMax) retries a version
+// whose swap did not take at most once per FailureLatchMax. The episode gap must
+// exceed that cap, or a device in that backoff would start a fresh episode on
+// every retry and drop out of the stuck flag while it is still stuck. The cap
+// is read from the Go source so changing it there fails this test.
+function agentFailureLatchMaxMs(): number {
+  const goSource = readFileSync(
+    fileURLToPath(new URL('../../../../agent/internal/updater/failure_latch.go', import.meta.url)),
+    'utf8',
+  );
+  const match = goSource.match(/FailureLatchMax\s*=\s*(\d+)\s*\*\s*time\.(Hour|Minute)\b/);
+  if (!match) throw new Error('FailureLatchMax = <n> * time.Hour|Minute not found in failure_latch.go');
+  return Number(match[1]) * (match[2] === 'Hour' ? 3_600_000 : 60_000);
+}
+
+describe('episode gap vs the agent retry cadence', () => {
+  it('is wider than the agent update-failure latch cap', () => {
+    const latchMaxMs = agentFailureLatchMaxMs();
+    expect(latchMaxMs).toBe(24 * 60 * 60 * 1000);
+    expect(AGENT_UPDATE_EPISODE_GAP_MS).toBeGreaterThan(latchMaxMs);
+  });
+
+  it('keeps a device retrying once a day flagged as stuck', () => {
+    const startedAt = minutesAgo(3 * 24 * 60);
+    const lastAttemptAt = minutesAgo(23 * 60);
+    expect(isAgentUpdateStuck({ targetVersion: '0.124.0', startedAt, lastAttemptAt }, NOW)).toBe(true);
+    // ...and a daily retry continues the same episode.
+    const next = nextAgentUpdateAttempt(
+      { targetVersion: '0.124.0', startedAt, lastAttemptAt: minutesAgo(24 * 60 + 5), attemptCount: 7 },
+      '0.124.0',
+      NOW,
+    );
+    expect(next.attemptCount).toBe(8);
+    expect(next.startedAt).toEqual(startedAt);
+  });
+});
 
 describe('nextAgentUpdateAttempt', () => {
   it('starts a new episode on the first attempt', () => {

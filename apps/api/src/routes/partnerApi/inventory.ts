@@ -208,6 +208,7 @@ function projectDeviceInventory(input: unknown) {
         product: nullableString(hardware.motherboardProduct, 255), version: nullableString(hardware.motherboardVersion, 255),
       },
       firmware: { biosVersion: nullableString(hardware.biosVersion, 100) },
+      system: { productSku: nullableString(hardware.productSku, 100) },
     },
     disks, interfaces, addresses,
     warranty: warrantySource ? {
@@ -288,7 +289,8 @@ async function selectDeviceInventoryRows(orgIds: string[], query: ExportQueryInp
         'memorySlotsTotal', h.memory_slots_total, 'memoryMaxCapacityMb', h.memory_max_capacity_mb,
         'memorySoldered', h.memory_soldered,
         'motherboardManufacturer', h.motherboard_manufacturer, 'motherboardProduct', h.motherboard_product,
-        'motherboardVersion', h.motherboard_version, 'biosVersion', h.bios_version
+        'motherboardVersion', h.motherboard_version, 'biosVersion', h.bios_version,
+        'productSku', h.product_sku
       ) FROM ${deviceHardware} h WHERE h.device_id = ${devices.id} AND h.org_id = ${devices.orgId} LIMIT 1
     )`,
     disks: sql<unknown[]>`COALESCE((SELECT jsonb_agg(item ORDER BY item->>'id') FROM (
