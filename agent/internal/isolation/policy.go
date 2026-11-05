@@ -53,9 +53,9 @@ func stampOf(spec Spec) *policyStamp {
 // adopt records the policy on j's episode and journals a change of revision.
 func (p policyStamp) adopt(j *journal.Journal, now time.Time) {
 	ep := j.Episode
-	switch {
-	case p.revision == ep.PolicyRevision:
-	case p.revision == "":
+	switch p.revision {
+	case ep.PolicyRevision:
+	case "":
 		j.Append(now, "policy_removed", ep.IsolationID, ep.Generation, ep.PolicyRevision)
 	default:
 		j.Append(now, "policy_applied", ep.IsolationID, ep.Generation, p.revision)
