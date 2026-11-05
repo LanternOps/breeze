@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+// Partner billing master switch is covered by quoteBillingGate.test.ts; pass-through here.
+vi.mock('./quoteBillingGate', () => ({ assertQuoteBillingEnabled: vi.fn() }));
 import { Param, SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 

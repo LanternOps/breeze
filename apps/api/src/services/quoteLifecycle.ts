@@ -38,6 +38,7 @@ import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { resolveThemeId, resolvePageSize } from './documentThemes';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { freezeDocumentFooter, resolveDocumentFooter } from './documentFooter';
+import { assertQuoteBillingEnabled } from './quoteBillingGate';
 import { loadContractBlockRenderData, resolveQuoteAutoVariables, findUnresolvedVariables, loadContractPdfInputs, type ContractBlockRenderData } from './contractTemplateRender';
 import { portalBase } from './portalUrl';
 import { emitQuoteEvent } from './quoteEvents';
@@ -548,6 +549,7 @@ export async function sendQuote(
   // inaccessible id 404s at getQuote and the lock dies with the transaction.
   await db.select({ id: quotes.id }).from(quotes).where(eq(quotes.id, id)).limit(1).for('update');
   let { quote, blocks, lines } = await getQuote(id, actor); // getQuote enforces org-access (404)
+  await assertQuoteBillingEnabled(quote.orgId); // before the tax-rate sync write and the claim
   if (quote.status !== 'draft') {
     // Phase 2 send is issue-once: a non-draft quote (already sent/viewed/etc.) cannot be re-sent.
     throw new QuoteServiceError(`Cannot send a quote in status ${quote.status}`, 409, 'INVALID_STATE');
@@ -1205,6 +1207,7 @@ export async function getQuoteShareLink(
   id: string, actor: QuoteActor,
 ): Promise<{ acceptUrl: string; origin: AcceptUrlOrigin; reissued: boolean; recipients: string[]; orgId: string }> {
   const { quote } = await getQuote(id, actor); // enforces org-access (404)
+  await assertQuoteBillingEnabled(quote.orgId); // the link is a live accept credential
   // Re-read the status under a row lock and gate on the FRESH value: getQuote's
   // snapshot can be stale by the time we mint or reproduce a link, and handing
   // out a live link to a just-superseded quote is exactly what supersede exists
@@ -1259,6 +1262,7 @@ export async function resendQuote(
     throw new Error('resendQuote: DB access context carries no metadata — cannot scope the deferred email delivery');
   }
   const { quote, blocks, lines } = await getQuote(id, actor); // enforces org-access (404)
+  await assertQuoteBillingEnabled(quote.orgId);
   // Same fresh-status gate as getQuoteShareLink: re-mailing a link for a quote
   // that was superseded between the read and here would put a dead document
   // back in the customer's inbox. The lock serializes against sendQuote's

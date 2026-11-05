@@ -7,14 +7,21 @@ import { runBulkIsolated } from '../../lib/bulkOps';
 import { deleteDraftContract, cancelContract } from '../../services/contractService';
 import { contractActorFrom, handleContractError } from './contracts';
 import { auditBillingDocument } from '../../services/billingDocumentAudit';
+import { assertBillingEnabledForPartner } from '../../services/billingEnabled';
+import { ContractServiceError, type ContractServiceErrorCode } from '../../services/contractTypes';
 
 export const contractBulkRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const writePerm = requirePermission(PERMISSIONS.CONTRACTS_WRITE.resource, PERMISSIONS.CONTRACTS_WRITE.action);
 const managePerm = requirePermission(PERMISSIONS.CONTRACTS_MANAGE.resource, PERMISSIONS.CONTRACTS_MANAGE.action);
+// Per-item errors would be tallied as 'skipped'; the master switch answers 404 for the whole call.
+const assertBulkBillingEnabled = (c: { get: (k: string) => unknown }) =>
+  assertBillingEnabledForPartner((c.get('auth') as AuthContext).partnerId,
+    (m, s, code) => new ContractServiceError(m, s, code as ContractServiceErrorCode));
 
 contractBulkRoutes.post('/bulk-delete', scopes, writePerm, zValidator('json', bulkContractIdsSchema), async (c) => {
   try {
+    await assertBulkBillingEnabled(c);
     const ctx = dbAccessContextFromAuth(c.get('auth') as AuthContext);
     const actor = contractActorFrom(c);
     const { ids } = c.req.valid('json');
@@ -24,8 +31,11 @@ contractBulkRoutes.post('/bulk-delete', scopes, writePerm, zValidator('json', bu
   } catch (err) { return handleContractError(c, err); }
 });
 
+// Decision (spec 2b): only bulk-cancel is gated; the single cancel stays open
+// (kept working with billing off, §7.2) — a known inconsistency.
 contractBulkRoutes.post('/bulk-cancel', scopes, managePerm, zValidator('json', bulkContractIdsSchema), async (c) => {
   try {
+    await assertBulkBillingEnabled(c);
     const ctx = dbAccessContextFromAuth(c.get('auth') as AuthContext);
     const actor = contractActorFrom(c);
     const { ids } = c.req.valid('json');

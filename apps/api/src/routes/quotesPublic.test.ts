@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
 import { Hono } from 'hono';
 import { secureHeaders } from 'hono/secure-headers';
 import type { SQL } from 'drizzle-orm';
@@ -35,6 +36,8 @@ vi.mock('../services/quoteAcceptToken', () => ({
   revokeQuoteAcceptJti: vi.fn(),
 }));
 vi.mock('../services/quoteLifecycle', () => ({ markQuoteViewed: vi.fn() }));
+// Partner billing master switch: covered by quoteBillingGate.test.ts; controllable here.
+vi.mock('../services/quoteBillingGate', () => ({ assertQuoteBillingEnabled: vi.fn() }));
 // Post-commit notify runs its own queries — mock it so where-call assertions
 // against the decline UPDATE stay pointed at the decline UPDATE.
 vi.mock('../services/quoteOutcomeNotify', () => ({ notifyQuoteOutcome: vi.fn().mockResolvedValue(undefined) }));
@@ -470,6 +473,60 @@ describe('quotesPublic POST /:token/decline + durable response capability', () =
     expect(body.code).toBe('RESPONSE_CONSUMED');
     // The lost Redis marker is re-armed so repeat replays die at the resolve() gate.
     expect(revokeQuoteAcceptJti).toHaveBeenCalledWith(JTI);
+  });
+});
+
+// Partner billing master switch (spec §7.2): accepting is a billing operation,
+// declining is not. A 404 BILLING_DISABLED accept must NOT revoke the link's jti,
+// so the same link works once billing is re-enabled.
+describe('quotesPublic accept/decline with partners.billing_enabled = false', () => {
+  const JTI = 'jti-billing-off';
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbResults.length = 0;
+    (verifyQuoteAcceptToken as ReturnType<typeof vi.fn>).mockResolvedValue({
+      quoteId: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, jti: JTI,
+    });
+    (isQuoteAcceptJtiRevoked as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    (revokeQuoteAcceptJti as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+  });
+
+  it('POST /accept answers 404 BILLING_DISABLED, writes nothing and does NOT revoke the jti', async () => {
+    const { QuoteServiceError } = await import('../services/quoteTypes');
+    const { assertQuoteBillingEnabled } = await import('../services/quoteBillingGate');
+    (assertQuoteBillingEnabled as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new QuoteServiceError('Not found', 404, 'BILLING_DISABLED'));
+    dbResults.push([]); // quoteBlocks pre-fetch — no contract blocks
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',
+      expiryDate: null, publicResponseJti: null, publicResponseConsumedAt: null, publicResponseOutcome: null,
+    }]); // acceptQuote's SELECT ... FOR UPDATE
+
+    const res = await app().request(`/quotes/public/${TOKEN}/accept`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ signerName: 'Sam Signer' }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found', code: 'BILLING_DISABLED' });
+    expect(assertQuoteBillingEnabled).toHaveBeenCalledWith(ORG_ID);
+    expect(revokeQuoteAcceptJti).not.toHaveBeenCalled();
+    const d = db as unknown as { set: { mock: { calls: unknown[][] } }; update: { mock: { calls: unknown[][] } } };
+    expect(d.set.mock.calls).toHaveLength(0);
+    expect(d.update.mock.calls).toHaveLength(0);
+  });
+
+  it('POST /decline keeps working (the gate is never consulted)', async () => {
+    const { assertQuoteBillingEnabled } = await import('../services/quoteBillingGate');
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',
+      expiryDate: null, publicResponseJti: null, publicResponseConsumedAt: null, publicResponseOutcome: null,
+    }]); // quote SELECT
+    dbResults.push([{ id: QUOTE_ID }]); // UPDATE ... RETURNING
+    const res = await app().request(`/quotes/public/${TOKEN}/decline`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'Budget cut' }),
+    });
+    expect(res.status).toBe(200);
+    expect(assertQuoteBillingEnabled).not.toHaveBeenCalled();
   });
 });
 

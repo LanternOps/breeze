@@ -11,6 +11,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { supersededAuditEvent } from '../../services/quoteSupersedeAudit';
 import { scheduleQuoteSend, cancelQuoteSend } from '../../jobs/quoteSendQueue';
 import { getQuote } from '../../services/quoteService';
+import { assertQuoteBillingEnabled } from '../../services/quoteBillingGate';
 import { writeQuoteImage, readQuoteImage, sniffImageMime, MAX_QUOTE_IMAGE_SIZE_BYTES, fetchRemoteImage, RemoteImageError, QUOTE_IMAGE_WEBP_REJECTED_MESSAGE, type RemoteImageFailureReason } from '../../services/quoteImageStorage';
 import { loadContractBlockRenderData } from '../../services/contractTemplateRender';
 import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -310,6 +311,7 @@ quoteLifecycleRoutes.post('/:id/schedule-send', scopes, sendPerm, zValidator('pa
   try {
     const actor = quoteActorFrom(c);
     const { quote, lines } = await getQuote(id, actor); // org-access 404
+    await assertQuoteBillingEnabled(quote.orgId);
     if (quote.status !== 'draft') return c.json({ error: 'Only a draft can be sent', code: 'INVALID_STATE' }, 409);
     if (!lines.some((l) => l.customerVisible)) return c.json({ error: 'Add at least one item before sending', code: 'QUOTE_EMPTY' }, 422);
     const { sendScheduledAt } = await scheduleQuoteSend(id, actor, {
@@ -392,7 +394,8 @@ quoteLifecycleRoutes.get('/:id/share-link', scopes, sendPerm, zValidator('param'
 quoteLifecycleRoutes.delete('/:id/schedule-send', scopes, sendPerm, zValidator('param', idParam), async (c) => {
   const id = c.req.valid('param').id;
   try {
-    await getQuote(id, quoteActorFrom(c)); // org-access 404
+    const { quote } = await getQuote(id, quoteActorFrom(c)); // org-access 404
+    await assertQuoteBillingEnabled(quote.orgId);
     const canceled = await cancelQuoteSend(id);
     return c.json({ data: { canceled } });
   } catch (err) { return handleServiceError(c, err); }
@@ -407,6 +410,7 @@ quoteLifecycleRoutes.post('/:id/images',
     const id = c.req.valid('param').id;
     try {
       const { quote } = await getQuote(id, quoteActorFrom(c)); // org-access 404
+      await assertQuoteBillingEnabled(quote.orgId);
 
       // JSON body → copy the image from a URL (server-side, not a hotlink).
       // Multipart (below) is unchanged.

@@ -9,6 +9,7 @@ import { assertTemplateVersionUsable, ContractTemplateServiceError } from './con
 import { catalogItems } from '../db/schema/catalog';
 import { pax8OrderLines, pax8Orders } from '../db/schema/pax8Orders';
 import { listQuoteOrders } from './quoteOrderService';
+import { assertQuoteBillingEnabled } from './quoteBillingGate';
 import { computeLineTotal } from './invoiceMath';
 import { resolveOrgTaxRate, resolveOrgTaxRateOn, OrgNotVisibleForTaxError, PartnerNotVisibleForTaxError } from './taxRateResolver';
 import { vendorIdentityFromAttributes } from './catalogVendorIdentity';
@@ -455,6 +456,9 @@ async function loadDraft(quoteId: string, actor: QuoteActor) {
   const [q] = await db.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1).for('update');
   if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
   assertQuoteAccess(actor, q);
+  // Partner billing master switch. loadDraft/lockDraftQuote are used by draft
+  // WRITERS only, never by reads or internal paths.
+  await assertQuoteBillingEnabled(q.orgId);
   if (q.status !== 'draft') throw new QuoteServiceError('Quote is not a draft', 409, 'NOT_A_DRAFT');
   return q;
 }
@@ -477,6 +481,7 @@ async function lockDraftQuote(tx: DbExecutor, quoteId: string, actor: QuoteActor
   const [q] = await tx.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1).for('update');
   if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
   assertQuoteAccess(actor, q);
+  await assertQuoteBillingEnabled(q.orgId);
   if (q.status !== 'draft') throw new QuoteServiceError('Quote is not a draft', 409, 'NOT_A_DRAFT');
   return q;
 }
@@ -532,6 +537,7 @@ export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
   const partnerId = resolvePartner(actor);
   assertOrg(actor, input.orgId);
   assertSite(actor, input.siteId ?? null);
+  await assertQuoteBillingEnabled(input.orgId);
   const taxRate = await resolveQuoteTaxRate(input.orgId, partnerId);
   // A new quote is stamped with its ORGANIZATION's currency unless the caller
   // names one explicitly (spec §5 — the org, not the partner, owns document
@@ -645,6 +651,7 @@ async function cloneQuoteCore(
 ) {
   assertRevisionCloneTarget(input, revision);
   const { quote: source, blocks, lines } = await getQuote(id, actor);
+  await assertQuoteBillingEnabled(source.orgId);
   const images = await db.select().from(quoteImages).where(eq(quoteImages.quoteId, id));
 
   const targetOrgId = input.orgId ?? source.orgId;
@@ -952,6 +959,7 @@ async function resolveQuoteLineageRoot(
  */
 export async function reviseQuote(id: string, actor: QuoteActor) {
   const { quote: parentRow } = await getQuote(id, actor);
+  await assertQuoteBillingEnabled(parentRow.orgId);
   // Lock the parent for the rest of this transaction and re-read its status.
   // getQuote's snapshot is unlocked, so a customer accept committing between
   // that read and the clone insert would otherwise let a revision draft attach

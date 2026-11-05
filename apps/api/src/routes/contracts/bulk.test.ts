@@ -17,6 +17,7 @@ vi.mock('../../services/contractService', () => ({
   computeContractEstimate: vi.fn(),
 }));
 
+vi.mock('../../services/billingEnabled', () => ({ assertBillingEnabledForPartner: vi.fn() }));
 // generate.ts uses these at module level
 vi.mock('../../services/invoiceService', () => ({ issueInvoice: vi.fn() }));
 vi.mock('../../services/invoicePdf', () => ({ sendInvoiceEmail: vi.fn() }));
@@ -54,6 +55,7 @@ vi.mock('../../services/auditEvents', async (importActual) => ({
 import { contractRoutes } from './index';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { deleteDraftContract, cancelContract } from '../../services/contractService';
+import { assertBillingEnabledForPartner } from '../../services/billingEnabled';
 
 const A = '11111111-1111-1111-1111-111111111111';
 const ORG = '33333333-3333-3333-3333-333333333333';
@@ -63,6 +65,25 @@ function post(path: string, body: unknown) {
 
 describe('contract bulk routes', () => {
   beforeEach(() => { vi.clearAllMocks(); gate.permGate = async (_c: any, next: any) => next(); });
+
+  it.each([
+    ['/bulk-delete'],
+    ['/bulk-cancel'],
+  ])('%s answers 404 BILLING_DISABLED when billing is off, without touching any contract', async (path) => {
+    (assertBillingEnabledForPartner as any).mockImplementationOnce(async (_p: unknown, make: any) => { throw make('Not found', 404, 'BILLING_DISABLED'); });
+    const res = await post(path, { ids: [A] });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found', code: 'BILLING_DISABLED' });
+    expect(deleteDraftContract).not.toHaveBeenCalled();
+    expect(cancelContract).not.toHaveBeenCalled();
+  });
+
+  it('checks the partner flag ONCE per bulk call, before the loop', async () => {
+    (deleteDraftContract as any).mockResolvedValue({ id: A, orgId: ORG, name: 'MSA' });
+    await post('/bulk-delete', { ids: [A, A] });
+    expect(assertBillingEnabledForPartner).toHaveBeenCalledTimes(1);
+    expect(assertBillingEnabledForPartner).toHaveBeenCalledWith('p1', expect.any(Function));
+  });
 
   it('bulk-delete deletes each draft', async () => {
     (deleteDraftContract as any).mockResolvedValue({ id: A, orgId: ORG, name: 'MSA' });
