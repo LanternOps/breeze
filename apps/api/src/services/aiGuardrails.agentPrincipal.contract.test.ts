@@ -309,6 +309,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_ai_agents', // A-W06 Tier-1 read
   'list_bmr_recoveries', // W17 (#6788) Tier-1 read: scalars only, device and site axes enforced in the handler
   'list_business_calendars', // #8973 W4 Tier-1 read
+  'list_check_ins', // Wisp check-ins (#10991 W03): Tier 1 read of the grant's own thread; refuses without auth.wispGrant
   'list_concerns', // Wisp W05a: Tier 1 concern read; refuses without auth.wispGrant, ceiling-filtered by the service
   'list_configuration_policies',
   'list_contracts',

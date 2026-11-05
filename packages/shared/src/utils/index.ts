@@ -71,3 +71,4 @@ export * from './businessTime';
 export * from './evidenceCursor';
 export * from './alertSubject';
 export * from './oemUpdates';
+export * from './alertLifecycle';

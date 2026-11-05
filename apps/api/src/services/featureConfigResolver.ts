@@ -54,7 +54,7 @@ import type { TokenPayload } from './jwt';
 import type { DbExecutor } from './monitors/monitorCompiler';
 import type { AutomationAssignmentLevel } from '../jobs/queueSchemas';
 import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
-import { resolveExecutionSafeGroupIds } from './executionTargetGating';
+import { resolveExecutionSafeGroupIds, type RefusedExecutionGroup } from './executionTargetGating';
 import { notHoldingOrgCondition, notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 // ============================================
@@ -3335,12 +3335,15 @@ export type ContainmentPolicy = ContainmentInlineSettings & {
   invalidStoredSettings: boolean;
   sourcePolicyId: string | null;
   featureLinkId: string | null;
+  /** The device's groups whose containment policy was not applied because they are execution-unsafe. */
+  refusedGroups: RefusedExecutionGroup[];
 };
 
 /**
  * Closest assignment wins, in the caller's own RLS context. The effective-link
  * view preserves inherited settings and their source. Extra permits grant a
- * capability, so self-selected execution-unsafe groups cannot supply this policy.
+ * capability, so self-selected execution-unsafe groups cannot supply this policy;
+ * the ones that tried are named in `refusedGroups` for the caller to audit.
  * Malformed stored settings fail closed to the fixed W1 defaults.
  */
 export async function resolveContainmentPolicy(
@@ -3348,7 +3351,7 @@ export async function resolveContainmentPolicy(
 ): Promise<ContainmentPolicy & { revision: string }> {
   const loaded = await loadDeviceHierarchy(deviceId);
   if (!loaded) return containmentPlatformDefault();
-  const { allowedGroupIds } = await resolveExecutionSafeGroupIds(loaded.groupIds);
+  const { allowedGroupIds, refusedGroups: refusedMemberships } = await resolveExecutionSafeGroupIds(loaded.groupIds);
   const hierarchy: DeviceHierarchy = { ...loaded, groupIds: allowedGroupIds };
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
@@ -3385,7 +3388,10 @@ export async function resolveContainmentPolicy(
       configPolicyAssignments.createdAt,
     );
 
-  if (rows.length === 0) return containmentPlatformDefault();
+  // A separate query, not a filter on the one above: a refused group must never reach that candidate set.
+  const refusedGroups = await refusedGroupsWithContainmentPolicy(hierarchy, refusedMemberships, roleOsConditions);
+
+  if (rows.length === 0) return { ...containmentPlatformDefault(), refusedGroups };
 
   const winner = sortByHierarchy(rows)[0]!;
   const parsed = containmentInlineSettingsSchema.safeParse(winner.inlineSettings);
@@ -3406,6 +3412,7 @@ export async function resolveContainmentPolicy(
       invalidStoredSettings: true,
       sourcePolicyId: winner.sourcePolicyId,
       featureLinkId: winner.featureLinkId,
+      refusedGroups,
     };
   }
   return {
@@ -3415,7 +3422,42 @@ export async function resolveContainmentPolicy(
     invalidStoredSettings: false,
     sourcePolicyId: winner.sourcePolicyId,
     featureLinkId: winner.featureLinkId,
+    refusedGroups,
   };
+}
+
+/** Of the groups refused for this device, those a containment policy is actually assigned to. */
+async function refusedGroupsWithContainmentPolicy(
+  hierarchy: DeviceHierarchy,
+  refused: RefusedExecutionGroup[],
+  roleOsConditions: SQL[],
+): Promise<RefusedExecutionGroup[]> {
+  if (refused.length === 0) return [];
+  const assigned = await db
+    .select({ targetId: configPolicyAssignments.targetId })
+    .from(configPolicyAssignments)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active'),
+        policyOwnershipCondition(hierarchy),
+      ),
+    )
+    .innerJoin(
+      configPolicyEffectiveFeatureLinks,
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'containment'),
+      ),
+    )
+    .where(and(
+      eq(configPolicyAssignments.level, 'device_group'),
+      inArray(configPolicyAssignments.targetId, refused.map((group) => group.id)),
+      ...roleOsConditions,
+    ));
+  const targets = new Set(assigned.map((row) => row.targetId));
+  return refused.filter((group) => targets.has(group.id));
 }
 
 function containmentRevision(settings: ContainmentInlineSettings): string {
@@ -3434,5 +3476,6 @@ function containmentPlatformDefault(): ContainmentPolicy & { revision: string } 
     invalidStoredSettings: false,
     sourcePolicyId: null,
     featureLinkId: null,
+    refusedGroups: [],
   };
 }

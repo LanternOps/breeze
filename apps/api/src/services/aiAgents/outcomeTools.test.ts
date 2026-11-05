@@ -19,6 +19,7 @@ import { narrativeToolAllowlist } from './narrativeProfile';
 import { triageToolAllowlist } from './triageProfile';
 import { designToolAllowlist } from './designProfile';
 import { assessmentToolAllowlist } from './assessmentProfile';
+import { troubleshootToolAllowlist } from './troubleshootProfile';
 import { patchToolAllowlist } from './patchProfile';
 import type { FleetDesignOutcomeRefs } from '@breeze/shared';
 
@@ -247,6 +248,8 @@ describe('submit_sweep_findings outcome tool (P2-2)', () => {
       remediation_research: ['submit_suggestions'],
       // Wisp W05b — read-only drill-down tier plus the five assessment outcome tools.
       assessment: assessmentToolAllowlist(['manage_services', 'run_script']),
+      // Wisp delegation W1 (#11084) — reads plus proposable tools, no outcome tool.
+      device_troubleshooting: troubleshootToolAllowlist(['manage_services', 'run_script']),
     };
 
     for (const profile of AI_AGENT_RUN_PROFILES) {

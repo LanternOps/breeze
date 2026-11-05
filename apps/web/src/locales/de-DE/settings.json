@@ -2747,6 +2747,7 @@
       "helpdesk": "Nimmt Tickets auf und schlägt Antworten und nächste Schritte vor.",
       "designer": "Liest die gesamte Flotte und erstellt ein begründetes Überwachungsdesign zur Freigabe durch einen Techniker.",
       "research": "Integriert. Recherchiert auf Anfrage ein Problem auf einem Gerät und schlägt sichere Lösungen vor. Führt nie etwas aus.",
+      "troubleshoot": "Integriert. Bearbeitet im Hintergrund ein einzelnes Gerät, wenn Wisp es übergibt. Jede gewünschte Änderung ist eine Anfrage, die eine Person genehmigt.",
       "researchLink": "Fix-Gedächtnis öffnen",
       "designerLink": "Flottendesign öffnen"
     },
@@ -2895,7 +2896,8 @@
       "patch": "Patch-Verwaltung",
       "helpdesk": "Helpdesk",
       "designer": "Flottendesigner",
-      "research": "Fehlerbehebungs-Recherche"
+      "research": "Fehlerbehebungs-Recherche",
+      "troubleshoot": "Geräte-Fehlerbehebung"
     },
     "modes": {
       "off": "Aus",
@@ -3700,6 +3702,7 @@
         "assign_security_training": "Sicherheitsschulung zuweisen",
         "browse_device_event_log": "Ereignisprotokoll eines Geräts durchsuchen",
         "browse_snapshots": "Backup-Snapshots",
+        "cancel_check_in": "Einen Wisp-Check-in abbrechen",
         "cancel_script_execution": "Skriptausführung abbrechen",
         "capture_agent_pprof": "Agent-Diagnosedaten erfassen",
         "collect_evidence": "Vorfallsbeweise sammeln",
@@ -3820,6 +3823,7 @@
         "list_ai_agents": "KI-Agent-Liste",
         "list_bmr_recoveries": "Bare-Metal-Wiederherstellungen",
         "list_business_calendars": "Geschäftszeitenkalender",
+        "list_check_ins": "Wisp-Check-ins",
         "list_concerns": "Wisp-Anliegen",
         "list_configuration_policies": "Liste der Konfigurationsrichtlinien",
         "list_contracts": "Vertragsliste",
@@ -3976,6 +3980,7 @@
         "run_script": "Skript ausführen",
         "s1_isolate_device": "SentinelOne: Gerät isolieren",
         "s1_threat_action": "SentinelOne-Bedrohungsaktionen",
+        "schedule_check_in": "Einen Wisp-Check-in planen",
         "search_agent_logs": "Agent-Protokolle durchsuchen",
         "search_catalog": "Produktkatalog durchsuchen",
         "search_documentation": "Dokumentation durchsuchen",

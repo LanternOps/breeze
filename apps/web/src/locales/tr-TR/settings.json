@@ -2747,6 +2747,7 @@
       "helpdesk": "Talepleri üstlenir; yanıt ve sonraki adım önerir.",
       "designer": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar.",
       "research": "Yerleşik. Bir teknisyen istediğinde bir cihazdaki tek bir sorunu araştırır ve güvenli çözümler önerir. Asla bir şey çalıştırmaz.",
+      "troubleshoot": "Yerleşiktir. Wisp devrettiğinde arka planda tek bir cihaz üzerinde çalışır. İstediği her değişiklik, bir kişinin onayladığı bir istektir.",
       "researchLink": "Düzeltme belleğini aç",
       "designerLink": "Filo tasarımını aç"
     },
@@ -2895,7 +2896,8 @@
       "patch": "Yama yönetimi",
       "helpdesk": "Yardım masası",
       "designer": "Filo tasarımcısı",
-      "research": "Çözüm araştırması"
+      "research": "Çözüm araştırması",
+      "troubleshoot": "Cihaz sorun giderme"
     },
     "modes": {
       "off": "Kapalı",
@@ -3700,6 +3702,7 @@
         "assign_security_training": "Güvenlik eğitimi ata",
         "browse_device_event_log": "Bir cihazın olay günlüğüne göz at",
         "browse_snapshots": "Yedekleme anlık görüntüleri",
+        "cancel_check_in": "Bir Wisp kontrolünü iptal et",
         "cancel_script_execution": "Betik çalıştırmayı iptal et",
         "capture_agent_pprof": "Aracı tanılama verisi yakala",
         "collect_evidence": "Olay kanıtlarını topla",
@@ -3820,6 +3823,7 @@
         "list_ai_agents": "Yapay zeka aracıları listesi",
         "list_bmr_recoveries": "Çıplak metal kurtarmaları",
         "list_business_calendars": "Çalışma saati takvimleri",
+        "list_check_ins": "Wisp kontrolleri",
         "list_concerns": "Wisp endişeleri",
         "list_configuration_policies": "Yapılandırma politikaları listesi",
         "list_contracts": "Sözleşme listesi",
@@ -3976,6 +3980,7 @@
         "run_script": "Bir betik çalıştır",
         "s1_isolate_device": "SentinelOne: cihazı izole et",
         "s1_threat_action": "SentinelOne tehdit eylemleri",
+        "schedule_check_in": "Bir Wisp kontrolü planla",
         "search_agent_logs": "Aracı günlüklerinde ara",
         "search_catalog": "Ürün kataloğunda ara",
         "search_documentation": "Belgelerde ara",

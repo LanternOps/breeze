@@ -374,10 +374,17 @@ export type AiStreamEvent =
   | {
       type: 'run_result';
       runId: string;
-      status: 'completed' | 'failed';
+      /**
+       * `awaiting_approval` (#11084): a device-troubleshooting run settled with
+       * steps a person must approve. Not terminal for the card's status copy,
+       * but the run will not move again on its own, so polling may stop.
+       */
+      status: 'completed' | 'failed' | 'awaiting_approval';
       /** `ai_agent_runs.summary` — narrative text, never a tool payload. */
       summary: string | null;
       artifacts: AiRunResultArtifactRef[];
+      /** Set with `awaiting_approval` only: how many of the run's intents are still pending. */
+      pendingIntentCount?: number;
     }
   // `usage` is set by the streaming manager's result case so client surfaces
   // can render turn cost (turn_complete). Technician UI ignores it.

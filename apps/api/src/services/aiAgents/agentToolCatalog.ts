@@ -521,6 +521,10 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   // Wisp W08 thread links (domain 'ai'), as W03/W05a chose.
   link_entity: 'tenancy',
   list_links: 'tenancy',
+  // Wisp check-in timers (domain 'ai', #10991 W03), as W03/W05a/W08 chose.
+  schedule_check_in: 'tenancy',
+  list_check_ins: 'tenancy',
+  cancel_check_in: 'tenancy',
   // Wisp W07 specialists (domain 'ai'), as W03/W05a chose. launch_specialist
   // is AGENT_HUMAN_ONLY_TOOLS and wisp_specialist_request is HUMAN_ONLY_TOOLS
   // (raised only by the coordinator); mapped for completeness.
@@ -575,6 +579,9 @@ export const AGENT_KIND_PRESETS: Readonly<Record<AiAgentKind, readonly string[]>
   designer: [],
   // AI Suggested Fixes W2 — research is system-provisioned and read-only: zero actions.
   research: [],
+  // Wisp delegation W1 (#11084) — never user-created; the provisioner stores
+  // its allowlist (troubleshootProvisioning.ts), so there is no create preset.
+  troubleshoot: [],
 };
 
 function isSessionOnly(name: string): boolean {
@@ -711,6 +718,7 @@ export function buildAgentToolCatalog(): AgentToolCatalogDto {
       helpdesk: [...AGENT_KIND_PRESETS.helpdesk],
       designer: [...AGENT_KIND_PRESETS.designer],
       research: [...AGENT_KIND_PRESETS.research],
+      troubleshoot: [...AGENT_KIND_PRESETS.troubleshoot],
     },
     unreachableTools: listUnreachableRegisteredTools(),
   };

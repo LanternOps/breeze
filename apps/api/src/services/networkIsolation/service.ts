@@ -20,6 +20,7 @@ import { generateEpisodeSecret, currentBreakGlassCodes } from './breakGlass';
 import { createEpisode, findUnresolvedEpisode, findUnconfirmedTombstone, withEpisodeLock, writeEpisodeSnapshot, toEpisodeSnapshot, listEpisodes, type EpisodeTx } from './episodeStore';
 import { applyEpisodeEvent, type EpisodeEvent } from './stateMachine';
 import { ISOLATION_SECRET_COLUMN } from './reconcile';
+import { NO_ISOLATION_POLICY, auditRefusedPolicyGroups, isolationPolicyPending, readIsolationPolicy } from './policy';
 import { captureException } from '../sentry';
 import { isolationStartGate, type IsolationStartRefusal } from './gates';
 export type { IsolationStartRefusal } from './gates';
@@ -64,7 +65,7 @@ async function partnerFor(tx: EpisodeTx, orgId: string) {
 }
 function safeEpisode(row: DeviceNetworkIsolation) {
   const { breakGlassSecretEnc: _secret, ...episode } = row;
-  return { ...episode, lastReportedGeneration: row.lastAgentReport && 'generation' in row.lastAgentReport ? row.lastAgentReport.generation : null };
+  return { ...episode, policyPending: isolationPolicyPending(row), lastReportedGeneration: row.lastAgentReport && 'generation' in row.lastAgentReport ? row.lastAgentReport.generation : null };
 }
 async function queue(device: { id: string; orgId: string }, type: 'execute_containment' | 'release_containment', commandId: string, payload: Record<string, unknown>, auth: AuthContext, expiresAt?: Date) {
   const result = await dispatchDeviceCommand({ deviceId: device.id, expectedOrgId: device.orgId, type, commandId,
@@ -92,8 +93,16 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
     if (await findUnconfirmedTombstone(tx, device.id)) return refuse('isolation_already_active');
     const remoteRelay = input.remoteRelay ?? false;
     if (remoteRelay && !process.env.TURN_HOST?.trim() && !process.env.TURN_TLS_HOST?.trim()) return refuse('relay_unavailable');
+    // Containment must not wait on policy: without one the device isolates on the fixed permits, and
+    // the next heartbeat that can read the policy adds its permits under a new generation.
+    let policy = NO_ISOLATION_POLICY;
+    try { policy = await readIsolationPolicy(device); auditRefusedPolicyGroups(device.orgId, policy); }
+    catch (error) {
+      console.error('[isolation] policy unavailable', { deviceId: device.id });
+      captureException(error, undefined, { phase: 'isolation_policy_unavailable', deviceId: device.id });
+    }
     let allow;
-    try { allow = buildIsolationAllowlist({ serverUrl: device.agentServerUrl ?? process.env.AGENT_SERVER_URL ?? '', remoteRelay }); }
+    try { allow = buildIsolationAllowlist({ serverUrl: device.agentServerUrl ?? process.env.AGENT_SERVER_URL ?? '', remoteRelay, policyExtras: policy.extras }); }
     catch (error) { if (error instanceof IsolationAllowlistError) return refuse('invalid_allowlist'); throw error; }
     const now = new Date();
     let incidentId = input.incidentId;
@@ -117,12 +126,12 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
       result: { commandId }, approvalRef: opts.approvalRef ?? null, executedAt: now });
     const created = await createEpisode(tx, { id, orgId: device.orgId, deviceId: device.id, incidentId, incidentActionId: actionId, commandId,
       requestedByKind: opts.requestedByKind, requestedByUserId: opts.requestedByKind === 'system' ? null : auth.user.id,
-      reason: input.reason, expiresAt, deadManSeconds: 0, remoteRelay, allowSnapshot: allow,
+      reason: input.reason, expiresAt, deadManSeconds: 0, remoteRelay, allowSnapshot: allow, allowSnapshotRevision: policy.revision,
       breakGlassSecretEnc: sealedSecret,
     });
     if (!created.ok) return refuse(created.error);
     await queue(device, 'execute_containment', commandId, { incidentId, actionId, actionType: 'network_isolation', breakGlassSecret: secret,
-      parameters: { isolationId: id, generation: 1, expiresAt: expiresAt.toISOString(), deadManSeconds: 0, remoteRelay, allow } }, auth, expiresAt);
+      parameters: { isolationId: id, generation: 1, expiresAt: expiresAt.toISOString(), deadManSeconds: 0, remoteRelay, allow, ...(policy.revision ? { policyRevision: policy.revision } : {}) } }, auth, expiresAt);
     const prev = toEpisodeSnapshot(created.episode);
     const transition = applyEpisodeEvent(prev, { type: 'dispatched', generation: 1, at: now });
     if (!('next' in transition) || !await writeEpisodeSnapshot(tx, id, prev, transition.next, now)) return refuse('isolation_conflict');
@@ -197,6 +206,6 @@ export async function listDeviceIsolations(auth: AuthContext, deviceId: string) 
     const unresolved = await findUnresolvedEpisode(tx, device.id);
     if (!reason && unresolved) reason = isUnresolvedTerminalIsolationState(unresolved.state) ? 'isolation_unacknowledged' : 'isolation_already_active';
     if (!reason && await findUnconfirmedTombstone(tx, device.id)) reason = 'isolation_already_active';
-    return { episodes: episodes.map(({ breakGlassSecretEnc: _secret, ...episode }: typeof episodes[number] & { breakGlassSecretEnc?: string }) => ({ ...episode, lastReportedGeneration: episode.lastAgentReport && 'generation' in episode.lastAgentReport ? episode.lastAgentReport.generation : null })), startEligibility: { allowed: reason === null, reason, networkIsolationUnsupportedReason: device.networkIsolationUnsupportedReason ?? null } };
+    return { episodes: episodes.map(({ breakGlassSecretEnc: _secret, ...episode }: typeof episodes[number] & { breakGlassSecretEnc?: string }) => ({ ...episode, policyPending: isolationPolicyPending(episode), lastReportedGeneration: episode.lastAgentReport && 'generation' in episode.lastAgentReport ? episode.lastAgentReport.generation : null })), startEligibility: { allowed: reason === null, reason, networkIsolationUnsupportedReason: device.networkIsolationUnsupportedReason ?? null } };
   });
 }

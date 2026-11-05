@@ -519,3 +519,88 @@ describe('reconcileOrphanCheckIns', () => {
     expect(enqueued).toContain(b.id);
   });
 });
+
+describe('next-turn consumption (W04 #10995, services/wisp/checkInTurn.ts)', () => {
+  /** The grantor's own request context, as POST /ai/sessions/:id/messages opens it. */
+  const grantorCtx = (fx: Fx): DbAccessContext => ({
+    scope: 'organization', orgId: fx.org.id, accessibleOrgIds: [fx.org.id], accessiblePartnerIds: [],
+    userId: fx.user.id, currentPartnerId: fx.partner.id,
+  });
+
+  /** Create and fire `n` check-ins, fired one minute apart (oldest first), staying under the scheduled cap. */
+  async function fired(fx: Fx, n: number, base: Date): Promise<string[]> {
+    const ids: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const row = await create(fx, new Date(), { instruction: `check ${i}` });
+      expect(await fireCheckIn(row.id, new Date(base.getTime() + i * MIN))).toBe('fired');
+      ids.push(row.id);
+    }
+    return ids;
+  }
+
+  runDb('the grantor reads only the grant\'s fired rows, oldest fired first, at most 5; consuming leaves the rest for the next turn', async () => {
+    const fx = await seed();
+    const base = new Date(Date.now() - 60 * MIN);
+    // Fired out of order: the 6th is older than all the others.
+    const ids = await fired(fx, 5, base);
+    const oldest = (await fired(fx, 1, new Date(base.getTime() - 10 * MIN)))[0]!;
+    const stillScheduled = await create(fx, new Date());
+    const cancelled = (await fired(fx, 1, base))[0]!;
+    await cancelCheckIn(fx.grantId, cancelled);
+    // Another grant of the same partner (another grantor) has its own fired row.
+    const other = await seed();
+    await fired(other, 1, base);
+
+    const { loadFiredCheckIns, markCheckInsConsumed } = await import('../../services/wisp/checkInTurn');
+    const first = await withDbAccessContext(grantorCtx(fx), () => loadFiredCheckIns(fx.grantId, fx.user.id));
+    expect(first.map((r) => r.id)).toEqual([oldest, ...ids.slice(0, 4)]);
+    expect(first[0]!.instruction).toBe('check 0');
+    expect(first[0]!.firedAt).toBeInstanceOf(Date);
+
+    const consumedAt = new Date();
+    expect(await withDbAccessContext(grantorCtx(fx), () =>
+      markCheckInsConsumed({ grantId: fx.grantId, ids: first.map((r) => r.id) }, consumedAt))).toBe(5);
+    for (const row of first) {
+      const after = (await rowOf(row.id))!;
+      expect(after.status).toBe('consumed');
+      expect(after.consumedAt!.getTime()).toBe(consumedAt.getTime());
+    }
+
+    const second = await withDbAccessContext(grantorCtx(fx), () => loadFiredCheckIns(fx.grantId, fx.user.id));
+    expect(second.map((r) => r.id)).toEqual([ids[4]]);
+    expect((await rowOf(stillScheduled.id))!.status).toBe('scheduled');
+    expect((await rowOf(cancelled))!.status).toBe('cancelled');
+  });
+
+  runDb('a row cancelled between the read and the consume stays cancelled', async () => {
+    const fx = await seed();
+    const [a, b] = await fired(fx, 2, new Date(Date.now() - 10 * MIN));
+    const { loadFiredCheckIns, markCheckInsConsumed } = await import('../../services/wisp/checkInTurn');
+    const read = await withDbAccessContext(grantorCtx(fx), () => loadFiredCheckIns(fx.grantId, fx.user.id));
+    expect(read.map((r) => r.id)).toEqual([a, b]);
+    await cancelCheckIn(fx.grantId, b!);
+    expect(await withDbAccessContext(grantorCtx(fx), () =>
+      markCheckInsConsumed({ grantId: fx.grantId, ids: [a!, b!] }))).toBe(1);
+    expect((await rowOf(a!))!.status).toBe('consumed');
+    expect((await rowOf(b!))!.status).toBe('cancelled');
+  });
+
+  runDb('another grant\'s id, another user, or a caller outside the row\'s org reads and consumes nothing', async () => {
+    const fx = await seed();
+    const [id] = await fired(fx, 1, new Date(Date.now() - 10 * MIN));
+    const other = await seed();
+    const { loadFiredCheckIns, markCheckInsConsumed } = await import('../../services/wisp/checkInTurn');
+
+    // Keyed on the grant: the row's id under another grant flips nothing.
+    expect(await withDbAccessContext(grantorCtx(other), () =>
+      markCheckInsConsumed({ grantId: other.grantId, ids: [id!] }))).toBe(0);
+    // Keyed on the grantor: the right grant with another user id reads nothing.
+    expect(await withDbAccessContext(grantorCtx(fx), () => loadFiredCheckIns(fx.grantId, other.user.id))).toEqual([]);
+    // RLS: a caller scoped to another org sees neither the row nor can it flip it.
+    expect(await withDbAccessContext(grantorCtx(other), () => loadFiredCheckIns(fx.grantId, fx.user.id))).toEqual([]);
+    expect(await withDbAccessContext(grantorCtx(other), () =>
+      markCheckInsConsumed({ grantId: fx.grantId, ids: [id!] }))).toBe(0);
+
+    expect((await rowOf(id!))!.status).toBe('fired');
+  });
+});

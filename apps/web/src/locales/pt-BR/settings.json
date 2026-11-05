@@ -2747,6 +2747,7 @@
       "helpdesk": "Assume chamados e propõe respostas e próximos passos.",
       "designer": "Lê toda a frota e escreve um projeto de monitoramento justificado para um técnico aprovar.",
       "research": "Integrado. Pesquisa um problema em um dispositivo quando um técnico pede e sugere correções seguras. Nunca executa nada.",
+      "troubleshoot": "Integrado. Trabalha em segundo plano em um dispositivo quando o Wisp o transfere. Cada alteração que ele deseja é uma solicitação que uma pessoa aprova.",
       "researchLink": "Abrir memória de correções",
       "designerLink": "Abrir design de frota"
     },
@@ -2895,7 +2896,8 @@
       "patch": "Aplicação de patches",
       "helpdesk": "Central de ajuda",
       "designer": "Projetista de frota",
-      "research": "Pesquisa de correções"
+      "research": "Pesquisa de correções",
+      "troubleshoot": "Solução de problemas de dispositivo"
     },
     "modes": {
       "off": "Desligado",
@@ -3700,6 +3702,7 @@
         "assign_security_training": "Atribuir treinamento de segurança",
         "browse_device_event_log": "Navegar no log de eventos de um dispositivo",
         "browse_snapshots": "Snapshots de backup",
+        "cancel_check_in": "Cancelar um acompanhamento do Wisp",
         "cancel_script_execution": "Cancelar uma execução de script",
         "capture_agent_pprof": "Capturar diagnósticos do agente",
         "collect_evidence": "Coletar evidências de incidente",
@@ -3820,6 +3823,7 @@
         "list_ai_agents": "Lista de agentes de IA",
         "list_bmr_recoveries": "Recuperações bare-metal",
         "list_business_calendars": "Calendários de horário comercial",
+        "list_check_ins": "Acompanhamentos do Wisp",
         "list_concerns": "Preocupações do Wisp",
         "list_configuration_policies": "Lista de políticas de configuração",
         "list_contracts": "Lista de contratos",
@@ -3976,6 +3980,7 @@
         "run_script": "Executar um script",
         "s1_isolate_device": "SentinelOne: isolar dispositivo",
         "s1_threat_action": "Ações sobre ameaças do SentinelOne",
+        "schedule_check_in": "Agendar um acompanhamento do Wisp",
         "search_agent_logs": "Pesquisar nos logs do agente",
         "search_catalog": "Pesquisar no catálogo de produtos",
         "search_documentation": "Pesquisar na documentação",

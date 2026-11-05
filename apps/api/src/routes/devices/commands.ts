@@ -9,6 +9,7 @@ import { deviceCommands, devices } from '../../db/schema';
 import { authMiddleware, requireInteractiveSession, requireMfa, requireScope, requirePermission, withAuthDbAccessContext, dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { getPagination, getDeviceWithOrgCheck, canAccessDeviceSite, projectPublicDevice } from './helpers';
+import { deviceCommandsInCurrentOrg } from './commandOrgScope';
 import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema, bulkMaintenanceSchema } from './schemas';
 import {
   MAINTENANCE_ENTRY_ALLOWED_STATUSES,
@@ -965,9 +966,8 @@ commandsRoutes.get(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    const listFilter = status
-      ? and(eq(deviceCommands.deviceId, deviceId), eq(deviceCommands.status, status))
-      : eq(deviceCommands.deviceId, deviceId);
+    const inScope = and(eq(deviceCommands.deviceId, deviceId), await deviceCommandsInCurrentOrg(device));
+    const listFilter = status ? and(inScope, eq(deviceCommands.status, status)) : inScope;
 
     const countResult = await db
       .select({ count: sql<number>`count(*)` })
@@ -1018,7 +1018,8 @@ commandsRoutes.get(
       .where(
         and(
           eq(deviceCommands.id, commandId),
-          eq(deviceCommands.deviceId, deviceId)
+          eq(deviceCommands.deviceId, deviceId),
+          await deviceCommandsInCurrentOrg(device)
         )
       )
       .limit(1);
@@ -1060,6 +1061,7 @@ commandsRoutes.post(
     // owning a `script_executions` / `deployment_results` row that is still
     // `pending` — and nothing revisits it, because the reaper only scans
     // pending/sent COMMANDS. The HTTP response is chosen after the commit.
+    const inCurrentOrg = await deviceCommandsInCurrentOrg(device);
     const outcome = await db.transaction(async (tx) => {
       // Read the payload BEFORE the update: `terminalPayloadErasureSet()` strips
       // it, and `returning()` reflects post-update values, so a propagator that
@@ -1072,7 +1074,7 @@ commandsRoutes.post(
           status: deviceCommands.status,
         })
         .from(deviceCommands)
-        .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.deviceId, deviceId)))
+        .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.deviceId, deviceId), inCurrentOrg))
         .limit(1);
 
       if (!existing) return { kind: 'not_found' } as const;
@@ -1173,6 +1175,7 @@ commandsRoutes.post(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
+    const inCurrentOrg = await deviceCommandsInCurrentOrg(device);
     const outcome = await db.transaction(async (tx) => {
       // Payload is read BEFORE the update: terminalPayloadErasureSet() strips
       // it, and the propagation keys on payload.executionId / patchJobId / ….
@@ -1186,7 +1189,7 @@ commandsRoutes.post(
           createdAt: deviceCommands.createdAt,
         })
         .from(deviceCommands)
-        .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.deviceId, deviceId)))
+        .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.deviceId, deviceId), inCurrentOrg))
         .limit(1);
 
       if (!existing) return { kind: 'not_found' } as const;

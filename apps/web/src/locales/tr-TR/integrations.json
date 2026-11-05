@@ -1518,6 +1518,16 @@
       "auto_external_code": "Otomatik",
       "manual_unmapped": "Bilerek eşlenmedi"
     },
+    "installer": {
+      "ready": "Yükleyici: hazır (alınma: {{time}})",
+      "packagesApiDisabled": "Yükleyici: API anahtarında Packages API etkin değil",
+      "noPackage": "Yükleyici: bu şirketin yükleme paketi yok",
+      "multiplePackages": "Yükleyici: bu şirketin birden fazla yükleme paketi var. Satıcı konsolunda birini bırakın",
+      "malformedResponse": "Yükleyici: satıcı, Breeze'in kullanamayacağı bir bağlantı döndürdü",
+      "urlRejected": "Yükleyici: satıcının bağlantısı, Breeze'in izin vermediği bir ana makineyi gösteriyor",
+      "vendorError": "Yükleyici: son bağlantı yenilemesi başarısız oldu. Breeze bir sonraki eşitlemede yeniden deneyecek",
+      "unavailable": "Yükleyici bağlantısı kullanılamıyor"
+    },
     "endpointsTitle": "Bağlanmamış uç noktalar",
     "endpointsHelp": "Bir Breeze cihazıyla otomatik eşleştirilemeyen EDR uç noktalarını bağlayın.",
     "endpointsFilter": "Uç nokta durumu",
