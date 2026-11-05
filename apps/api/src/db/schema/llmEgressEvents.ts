@@ -30,7 +30,7 @@ export const LLM_EGRESS_SURFACES = [
   // CHECK re-issued in 2027-01-08-140000-flow-ai-step-egress-surface.sql.
   'flow_ai_step',
   // #10390: the model-written Wisp session summary.
-  // CHECK re-issued in 2027-01-22-170000-wisp-threads-picture.sql.
+  // CHECK re-issued in 2027-01-22-190100-wisp-threads-picture.sql.
   'one_shot_wisp_thread_summary',
 ] as const;
 

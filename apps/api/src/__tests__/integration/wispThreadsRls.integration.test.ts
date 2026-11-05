@@ -642,7 +642,7 @@ describe('finalizeWispSessionSummary (W04 T5, Review Focus 5)', () => {
       await db.update(wispThreads).set({ summary: 'Concluded: a real summary.', summaryUpdatedAt: stamp, summarySessionId: claimant })
         .where(eq(wispThreads.id, claimedThread.id));
     });
-    const migrationSql = readFileSync(new URL('../../../migrations/2027-01-22-170000-wisp-threads-picture.sql', import.meta.url), 'utf8');
+    const migrationSql = readFileSync(new URL('../../../migrations/2027-01-22-190100-wisp-threads-picture.sql', import.meta.url), 'utf8');
     const replay = () => getTestDb().transaction(async (tx) => { await tx.execute(sql.raw(migrationSql)); });
     const rows = async () => asSystem(() => db
       .select({
