@@ -82,6 +82,7 @@ type HardwareState struct {
 	DiskTotalGB  uint64 `json:"diskTotalGb"`
 	BIOSVersion  string `json:"biosVersion"`
 	SerialNumber string `json:"serialNumber"`
+	ProductSKU   string `json:"productSku,omitempty"`
 	Motherboard  string `json:"motherboard"`
 }
 
@@ -541,15 +542,7 @@ func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {
 			snapshot.Hardware = c.lastSnapshot.Hardware
 		}
 	} else {
-		snapshot.Hardware = &HardwareState{
-			RAMTotalMB:   hardware.RAMTotalMB,
-			CPUModel:     hardware.CPUModel,
-			CPUCores:     hardware.CPUCores,
-			DiskTotalGB:  hardware.DiskTotalGB,
-			BIOSVersion:  hardware.BIOSVersion,
-			SerialNumber: hardware.SerialNumber,
-			Motherboard:  strings.TrimSpace(hardware.MotherboardManufacturer + " " + hardware.MotherboardProduct),
-		}
+		snapshot.Hardware = hardwareStateFrom(hardware)
 	}
 
 	if systemInfoErr != nil || systemInfo == nil {
@@ -1058,6 +1051,20 @@ func (c *ChangeTrackerCollector) diffUserAccounts(current *Snapshot) []ChangeRec
 	return changes
 }
 
+// hardwareStateFrom projects collected hardware onto the fields the tracker diffs.
+func hardwareStateFrom(hardware *HardwareInfo) *HardwareState {
+	return &HardwareState{
+		RAMTotalMB:   hardware.RAMTotalMB,
+		CPUModel:     hardware.CPUModel,
+		CPUCores:     hardware.CPUCores,
+		DiskTotalGB:  hardware.DiskTotalGB,
+		BIOSVersion:  hardware.BIOSVersion,
+		SerialNumber: hardware.SerialNumber,
+		ProductSKU:   hardware.ProductSKU,
+		Motherboard:  strings.TrimSpace(hardware.MotherboardManufacturer + " " + hardware.MotherboardProduct),
+	}
+}
+
 // diffHardware compares the current hardware state against the previous
 // snapshot. Hardware is a singleton (not a map), so there is no add/remove —
 // only field-level "modified"/"updated" events. Returns no records when
@@ -1114,6 +1121,12 @@ func (c *ChangeTrackerCollector) diffHardware(current *Snapshot) []ChangeRecord 
 	}
 	if prev.SerialNumber != cur.SerialNumber {
 		emit("System Serial", prev.SerialNumber, cur.SerialNumber)
+	}
+	// Only a real value replacing a real value counts. An empty prev is a snapshot
+	// from an agent older than this field (a false change on every device after
+	// upgrade); an empty cur is a collection gap, not a board swap.
+	if prev.ProductSKU != "" && cur.ProductSKU != "" && prev.ProductSKU != cur.ProductSKU {
+		emit("Product Number", prev.ProductSKU, cur.ProductSKU)
 	}
 	if prev.Motherboard != cur.Motherboard {
 		emit("Motherboard", prev.Motherboard, cur.Motherboard)

@@ -222,6 +222,7 @@ export const partnerDeviceInventoryExportRecordSchema = strictPartnerExportRecor
     graphics: z.object({ model: nullableInventoryString }).strict(),
     motherboard: z.object({ manufacturer: nullableInventoryString, product: nullableInventoryString, version: nullableInventoryString }).strict(),
     firmware: z.object({ biosVersion: nullableInventoryString }).strict(),
+    system: z.object({ productSku: nullableInventoryString }).strict(),
   }).strict(),
   disks: z.array(z.object({
     id: z.string().uuid(), mountPoint: z.string().max(255), device: nullableInventoryString,

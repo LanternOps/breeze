@@ -418,6 +418,16 @@ describe('GET /devices — response shape', () => {
     });
   });
 
+  it.each(['5S3F8EA#ABB', null])('includes hardware productSku %s in list rows (#9593)', async productSku => {
+    rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111', productSku }]);
+    const response = await app.request('/devices');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0]).toHaveProperty('hardware.productSku', productSku);
+    expect(vi.mocked(db.select).mock.calls[0]?.[0]).toMatchObject({
+      productSku: deviceHardware.productSku,
+    });
+  });
+
   it.each(['ok', 'warning', 'critical', 'unknown'] as const)('projects the hardware %s rollup on list rows', async health => {
     const { leftJoin } = rigDeviceListRows([{
       id: '11111111-1111-4111-8111-111111111111', hostname: 'hardware-host',
