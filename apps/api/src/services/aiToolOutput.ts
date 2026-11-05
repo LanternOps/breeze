@@ -1113,9 +1113,12 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // Anomaly rows carry metric names and free-form baseline/evidence JSON from the agent's collectors.
   manage_device_anomalies: new Set(['metricName', 'evidence', 'baselineSummary']),
   // Full-control W17 (#6788): a verification reason and a VSS writer's name, state and error come from the machine;
-  // an unparseable agent reply is shown raw. All are fenced as data, never instructions.
-  manage_backup_verification: new Set(['deviceName', 'reason', 'message']),
-  get_vss_status: new Set(['name', 'state', 'lastError', 'raw']),
+  // an unparseable agent reply is shown raw, and `error` can carry a hostname or a failed command's text. All are
+  // fenced as data, never instructions.
+  manage_backup_verification: new Set(['deviceName', 'reason', 'message', 'error']),
+  get_vss_status: new Set(['name', 'state', 'lastError', 'raw', 'error']),
+  // A C2C config's name and target addresses are typed by a person or filled from a mailbox directory.
+  manage_c2c_configs: new Set(['name', 'targetUsers']),
   // Full-control W08 (#6778). Node labels, roles, vendor / model / OS strings and frontier labels are collected
   // from the network (LLDP / CDP / SNMP / controller strings) or typed by an operator; manual notes and
   // template / policy / target names are operator-authored. They pass sanitizeTopologyAiText where projected and

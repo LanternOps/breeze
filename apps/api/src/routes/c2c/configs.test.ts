@@ -24,6 +24,7 @@ function chainMock(resolvedValue: unknown = []) {
 const selectMock = vi.fn(() => chainMock([]));
 const insertMock = vi.fn(() => chainMock([]));
 const updateMock = vi.fn(() => chainMock([]));
+const deleteMock = vi.fn(() => chainMock([]));
 const writeRouteAuditMock = vi.fn();
 
 vi.mock('../../db', () => ({
@@ -31,7 +32,7 @@ vi.mock('../../db', () => ({
     select: (...args: unknown[]) => selectMock(...(args as [])),
     insert: (...args: unknown[]) => insertMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
-    delete: vi.fn(() => chainMock([])),
+    delete: (...args: unknown[]) => deleteMock(...(args as [])),
   },
 }));
 
@@ -44,6 +45,8 @@ vi.mock('../../db/schema', () => ({
     id: 'c2c_connections.id',
     orgId: 'c2c_connections.org_id',
   },
+  c2cBackupJobs: { id: 'c2c_backup_jobs.id', orgId: 'c2c_backup_jobs.org_id', configId: 'c2c_backup_jobs.config_id' },
+  c2cBackupItems: { id: 'c2c_backup_items.id', orgId: 'c2c_backup_items.org_id', configId: 'c2c_backup_items.config_id' },
   c2cBackupConfigs: {
     id: 'c2c_backup_configs.id',
     orgId: 'c2c_backup_configs.org_id',
@@ -187,6 +190,30 @@ describe('c2c config routes', () => {
 
     expect(res.status).toBe(201);
     expect((await res.json()).storageConfigId).toBe(STORAGE_CONFIG_ID);
+  });
+
+  // #6788: c2c_backup_jobs and c2c_backup_items reference the config with no ON DELETE, so history refuses the delete.
+  it('route: delete with history answers 409, not 500, and writes no audit row', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{ id: 'job-1' }]));
+    const res = await app.request(`/c2c/configs/${STORAGE_CONFIG_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'CONFIG_HAS_HISTORY' });
+    expect(deleteMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('route: a job created mid-delete (23503) also answers 409', async () => {
+    deleteMock.mockReturnValueOnce({
+      where: () => ({ returning: () => Promise.reject(Object.assign(new Error('fk'), { code: '23503' })) }),
+    } as never);
+    const res = await app.request(`/c2c/configs/${STORAGE_CONFIG_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'CONFIG_HAS_HISTORY' });
+  });
+
+  it('route: a delete with no history and no matching row is a 404', async () => {
+    const res = await app.request(`/c2c/configs/${STORAGE_CONFIG_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(404);
   });
 
   it('rejects update when storage config is not in the scoped org', async () => {
