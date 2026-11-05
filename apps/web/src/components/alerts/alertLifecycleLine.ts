@@ -33,9 +33,9 @@ export function alertLifecycleLine(t: TFunction, context: unknown): string | nul
   if ((rearmMode as RearmMode) === 'after_delay' && !Number.isInteger(rearmDelayMinutes)) return null;
 
   const rearm = rearmMode === 'after_delay'
-    ? t('alertDetailPage.lifecycleLine.rearmAfterDelay', { minutes: rearmDelayMinutes })
-    : t('alertDetailPage.lifecycleLine.rearmNewEvidence');
-  return t('alertDetailPage.lifecycleLine.text', {
+    ? t('alerts:alertDetailPage.lifecycleLine.rearmAfterDelay', { minutes: rearmDelayMinutes })
+    : t('alerts:alertDetailPage.lifecycleLine.rearmNewEvidence');
+  return t('alerts:alertDetailPage.lifecycleLine.text', {
     rearm,
     minutes: cooldownMinutes,
     source: t(/* i18n-dynamic */ SOURCE_KEYS[source]),
