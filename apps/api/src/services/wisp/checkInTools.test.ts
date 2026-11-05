@@ -21,6 +21,16 @@ const { resolveEntityRef } = vi.hoisted(() => ({ resolveEntityRef: vi.fn() }));
 const { captureException } = vi.hoisted(() => ({ captureException: vi.fn() }));
 vi.mock('../sentry', () => ({ captureException }));
 
+// The real createCheckIn's first DB touch (the window cases below stop it there).
+const { dbGate } = vi.hoisted(() => ({ dbGate: vi.fn() }));
+vi.mock('../../db', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../db')>();
+  return {
+    ...actual,
+    runOutsideDbContext: (fn: () => unknown) => { dbGate(); return actual.runOutsideDbContext(fn as never); },
+  };
+});
+
 vi.mock('./checkIns', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./checkIns')>()),
   ...svc,
@@ -301,6 +311,24 @@ describe('wisp check-in tools — handlers', () => {
     }
   });
 
+  it('schedule_check_in: delayMinutes 1 and 10080 are inside the REAL service window on the handler\'s clock (it reaches the DB, not check_in_window)', async () => {
+    const real = await vi.importActual<typeof import('./checkIns')>('./checkIns');
+    for (const delayMinutes of [1, 10_080]) {
+      svc.createCheckIn.mockImplementationOnce(real.createCheckIn);
+      dbGate.mockImplementationOnce(() => { throw new Error('DB_REACHED'); });
+      await expect(run('schedule_check_in', { delayMinutes, instruction: INSTRUCTION }), String(delayMinutes)).rejects.toThrow('DB_REACHED');
+    }
+  });
+
+  it('schedule_check_in hands the service the PARSED input: a trimmed instruction, and an at with a non-UTC offset at its exact instant', async () => {
+    const at = new Date(Date.now() + 3 * 3_600_000);
+    const local = new Date(at.getTime() + 2 * 3_600_000).toISOString().replace('Z', '+02:00');
+    await run('schedule_check_in', { at: local, instruction: `  ${INSTRUCTION}\n ` });
+    const input = svc.createCheckIn.mock.calls[0]![1] as { dueAt: Date; instruction: string };
+    expect(input.instruction).toBe(INSTRUCTION);
+    expect(input.dueAt.getTime()).toBe(at.getTime());
+  });
+
   it('schedule_check_in rejects bad input before reading anything (no offset, both timings, neither, long instruction)', async () => {
     for (const input of [
       { at: '2026-11-04T14:30:00', instruction: INSTRUCTION },
@@ -335,6 +363,27 @@ describe('wisp check-in tools — handlers', () => {
     expect(svc.createCheckIn).not.toHaveBeenCalled();
   });
 
+  it('a resolveEntityRef that throws a ceiling violation is mapped, and nothing is created', async () => {
+    resolveEntityRef.mockRejectedValueOnce(new CeilingViolationError('org', 'outside'));
+    expect(await json(run('schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION, subject: { kind: 'device', id: DEVICE } }))).toEqual({
+      error: 'ceiling_violation', code: 'org',
+    });
+    expect(svc.createCheckIn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['resolveGrantCeiling', 'list_check_ins', {}],
+    ['threadForGrant', 'cancel_check_in', { checkInId: CHECK_IN }],
+    ['resolveEntityRef', 'schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION, subject: { kind: 'device', id: DEVICE } }],
+    ['listCheckIns', 'list_check_ins', {}],
+    ['cancelCheckIn', 'cancel_check_in', { checkInId: CHECK_IN }],
+  ] as const)('a plain %s failure propagates to the dispatcher (never a refusal string)', async (dep, name, input) => {
+    const boom = new Error(`${dep} down`);
+    const mocks: Record<string, ReturnType<typeof vi.fn>> = { resolveGrantCeiling, resolveEntityRef, ...svc };
+    mocks[dep]!.mockRejectedValueOnce(boom);
+    await expect(run(name, input)).rejects.toBe(boom);
+  });
+
   it('maps CheckInLimitReachedError, CheckInWindowError and the grant/ceiling refusals; an unknown failure propagates', async () => {
     svc.createCheckIn.mockRejectedValueOnce(new CheckInLimitReachedError(THREAD));
     expect(await json(run('schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION }))).toEqual({ error: 'check_in_limit_reached', limit: 5 });
@@ -351,6 +400,7 @@ describe('wisp check-in tools — handlers', () => {
     resolveGrantCeiling.mockRejectedValueOnce(new GrantInactiveError(GRANT, 'active', 'bad pin', 'corrupt'));
     expect(await json(run('list_check_ins', {}))).toEqual({ error: 'grant_corrupt' });
     expect(captureException).toHaveBeenCalledTimes(1);
+    expect(captureException.mock.calls[0]![2]).toEqual({ grantId: GRANT, op: 'wisp.check_in_tool' });
 
     svc.createCheckIn.mockRejectedValueOnce(new Error('db down'));
     await expect(run('schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION })).rejects.toThrow('db down');
@@ -404,6 +454,13 @@ describe('wisp check-in tools — handlers', () => {
     for (const input of [{ limit: 51 }, { limit: 0 }, { threadId: THREAD }]) {
       expect((await json(run('list_check_ins', input))).error).toBe('invalid_input');
     }
+  });
+
+  it('list_check_ins with exactly limit rows says nothing about more (one fence, no trailing line)', async () => {
+    svc.listCheckIns.mockResolvedValueOnce([row(), row({ id: CHECK_IN_2 })]);
+    const out = await run('list_check_ins', { limit: 2 });
+    expect(out).not.toContain('more pending');
+    expect(fencedBody(out).split('\n')).toHaveLength(2);
   });
 
   it('cancel_check_in: cancelCheckIn(grant, id); unknown or no longer cancellable → check_in_not_found', async () => {
