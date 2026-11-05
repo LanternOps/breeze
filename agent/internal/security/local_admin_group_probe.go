@@ -34,8 +34,15 @@ const (
 	// resolve domain members.
 	localAdminNetTimeout = 15 * time.Second
 
+	// localAdminMembersPS selects SID.Value because the SID itself serializes as
+	// an object. It reads Enabled only for members whose SID ends in -500 or -501,
+	// because Windows keeps the built-in Administrator in this group even while it
+	// is disabled. SilentlyContinue keeps a member Get-LocalUser cannot find (a
+	// domain account) out of the combined output, which has to parse as JSON.
 	localAdminMembersPS = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;" +
-		"Get-LocalGroupMember -SID 'S-1-5-32-544' | Select-Object Name,ObjectClass,SID,PrincipalSource | ConvertTo-Json -Compress"
+		"Get-LocalGroupMember -SID 'S-1-5-32-544' | Select-Object Name,@{n='SID';e={$_.SID.Value}},ObjectClass,PrincipalSource," +
+		"@{n='Enabled';e={if($_.SID.Value -match '-50[01]$'){(Get-LocalUser -SID $_.SID -ErrorAction SilentlyContinue).Enabled}else{$null}}}" +
+		" | ConvertTo-Json -Compress"
 
 	// localAdminNetGroupPS asks net.exe about the group by its localized name,
 	// translated from the SID. Stop matters: with no name, `net localgroup`
@@ -134,8 +141,13 @@ func localAdminSummaryFromCmdlet(parsed any) map[string]any {
 		if username == "" {
 			continue
 		}
-		sid, _ := stringFromAny(member["SID"])
-		entry := localAdminAccount(username, sid)
+		// Keep the HOST\ or DOMAIN\ prefix for display and drop it to compare.
+		accountName := username[strings.LastIndex(username, `\`)+1:]
+		isBuiltIn := isBuiltInAccount(cmdletMemberSID(member["SID"]), accountName)
+		// Only a reported false counts as disabled. The state of a built-in that
+		// could not be read stays a finding, and other members are not read.
+		enabled, known := boolFromAny(member["Enabled"])
+		entry := localAdminAccount(username, isBuiltIn, enabled || !known)
 		entry["objectType"] = member["ObjectClass"]
 		accounts = append(accounts, entry)
 	}
@@ -163,20 +175,45 @@ func localAdminSummaryFromNet() (map[string]any, error) {
 		if strings.HasPrefix(member, "S-1-") {
 			sid = member
 		}
-		accounts = append(accounts, localAdminAccount(member, sid))
+		// net prints local accounts bare, so the name is compared as printed: a
+		// prefixed Administrator here is a domain account. net cannot report
+		// whether an account is disabled.
+		accounts = append(accounts, localAdminAccount(member, isBuiltInAccount(sid, member), true))
 	}
 	return localAdminSummary("windows_net_localgroup", accounts), nil
 }
 
-func localAdminAccount(username, sid string) map[string]any {
-	isBuiltIn := strings.HasSuffix(strings.TrimSpace(sid), "-500") ||
-		strings.EqualFold(username, "Administrator")
+// cmdletMemberSID reads a member's SID as the string the script selects, or as
+// the object PowerShell serializes a SID to when it is selected as is.
+func cmdletMemberSID(value any) string {
+	if object, ok := value.(map[string]any); ok {
+		value = object["Value"]
+	}
+	sid, _ := stringFromAny(value)
+	return sid
+}
+
+// isBuiltInAccount goes by the well-known RIDs when there is a SID, because the
+// built-in accounts can be renamed and their names are localized. A domain's own
+// -500 and -501 match too. Other SID types, such as Entra's S-1-12-1, have no
+// well-known RIDs. The name is only for members with no SID.
+func isBuiltInAccount(sid, name string) bool {
+	if sid == "" {
+		return strings.EqualFold(name, "Administrator")
+	}
+	return strings.HasPrefix(sid, "S-1-5-21-") &&
+		(strings.HasSuffix(sid, "-500") || strings.HasSuffix(sid, "-501"))
+}
+
+// localAdminAccount sets defaultAccount only for an enabled built-in, because
+// the API raises default_account whenever that field is true.
+func localAdminAccount(username string, isBuiltIn, enabled bool) map[string]any {
 	entry := map[string]any{
 		"username":  username,
 		"isBuiltIn": isBuiltIn,
-		"enabled":   true,
+		"enabled":   enabled,
 	}
-	if isBuiltIn {
+	if isBuiltIn && enabled {
 		entry["defaultAccount"] = true
 	}
 	return entry
