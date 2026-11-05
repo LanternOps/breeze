@@ -425,6 +425,7 @@
         "breaches": "Verstöße",
         "breachCount_one": "{{count}} Verstoß",
         "breachCount_other": "{{count}} Verstöße",
+        "unavailable": "Die SLA-Zusammenfassung dieses Laufs konnte nicht gelesen werden und kann hier nicht angezeigt werden. Erstellen Sie den Bericht erneut.",
         "notes": "Was hier gemessen wird",
         "priorities": {
           "urgent": "Dringend",

@@ -425,6 +425,7 @@
         "breaches": "Incumplimientos",
         "breachCount_one": "{{count}} incumplimiento",
         "breachCount_other": "{{count}} incumplimientos",
+        "unavailable": "No se pudo leer el resumen de SLA de esta ejecución, por lo que no se puede mostrar aquí. Vuelva a generar el informe.",
         "notes": "Qué se mide",
         "priorities": {
           "urgent": "Urgente",

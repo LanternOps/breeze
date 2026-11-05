@@ -425,6 +425,7 @@
         "breaches": "İhlaller",
         "breachCount_one": "{{count}} ihlal",
         "breachCount_other": "{{count}} ihlal",
+        "unavailable": "Bu çalıştırmanın SLA özeti okunamadı, bu yüzden burada gösterilemiyor. Raporu yeniden oluşturun.",
         "notes": "Neler ölçülür",
         "priorities": {
           "urgent": "Acil",

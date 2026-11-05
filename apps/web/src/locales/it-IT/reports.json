@@ -425,6 +425,7 @@
         "breaches": "Violazioni",
         "breachCount_one": "{{count}} violazione",
         "breachCount_other": "{{count}} violazioni",
+        "unavailable": "Non è stato possibile leggere il riepilogo SLA di questa esecuzione, quindi non può essere mostrato qui. Genera di nuovo il report.",
         "notes": "Cosa viene misurato",
         "priorities": {
           "urgent": "Urgente",

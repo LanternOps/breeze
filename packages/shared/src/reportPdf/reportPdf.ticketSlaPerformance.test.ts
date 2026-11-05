@@ -93,6 +93,13 @@ describe('buildReportPdf: ticket_sla_performance', () => {
     expect(text).toContain('1h 05m');
   });
 
+  it('a period still running says what it was measured through', () => {
+    const s = summary();
+    const running = { ...s, period: { ...s.period, measuredThrough: '2026-10-15T12:00:00.000Z' } };
+    expect(extractText(buildReportPdf([], { ...opts, summary: running }))).toContain('Measured through Oct 15, 2026');
+    expect(extractText(buildReportPdf([], { ...opts, summary: s }))).not.toContain('Measured through');
+  });
+
   it('omits the subject column when includeSubjects is false', () => {
     const text = extractText(buildReportPdf([], { ...opts, summary: summary({ includeSubjects: false }) }));
     expect(text).not.toContain('Subject');

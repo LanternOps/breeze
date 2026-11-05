@@ -22,6 +22,7 @@ const KEYS = [
   'reports.reportPreview.slaPerformance.breachCount_one',
   'reports.reportPreview.slaPerformance.breachCount_other',
   'reports.reportPreview.slaPerformance.notes',
+  'reports.reportPreview.slaPerformance.unavailable',
   'reports.reportPreview.slaPerformance.priorities.urgent',
   'reports.reportPreview.slaPerformance.priorities.high',
   'reports.reportPreview.slaPerformance.priorities.normal',

@@ -425,6 +425,7 @@
         "breaches": "Breaches",
         "breachCount_one": "{{count}} breach",
         "breachCount_other": "{{count}} breaches",
+        "unavailable": "This run’s SLA summary could not be read, so it cannot be shown here. Generate the report again.",
         "notes": "What this measures",
         "priorities": {
           "urgent": "Urgent",

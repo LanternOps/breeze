@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import { emptyTicketSlaPerformanceSummary, type TicketSlaPerformanceSummary } from '@breeze/shared';
 import ReportPreview from './ReportPreview';
@@ -80,8 +80,12 @@ describe('ReportPreview: ticket_sla_performance', () => {
     expect(screen.queryByTestId('sla-performance-breach-count')).toBeNull();
   });
 
-  it('a stored summary of the wrong shape does not throw', () => {
+  it('a stored summary of the wrong shape says it cannot be shown, rather than rendering a blank panel', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(() => render(<ReportPreview data={dataOf({ period: null })} />)).not.toThrow();
     expect(screen.queryAllByTestId('sla-performance-priority-row')).toHaveLength(0);
+    expect(screen.getByTestId('sla-performance-unavailable')).toBeInTheDocument();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

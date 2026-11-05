@@ -45,7 +45,17 @@ function PriorityRow({ row, label }: { row: TicketSlaPerformanceRow; label: stri
  */
 export function TicketSlaPerformancePreview({ summary }: { summary: unknown }) {
   const { t } = useTranslation('reports');
-  if (!isTicketSlaPerformanceSummary(summary)) return null;
+  if (!isTicketSlaPerformanceSummary(summary)) {
+    // Never a blank panel: the generic cards and table are suppressed for this type.
+    console.warn('[ReportPreview] ticket_sla_performance summary has an unexpected shape', {
+      reason: summary ? 'summary_shape_mismatch' : 'summary_missing',
+    });
+    return (
+      <p data-testid="sla-performance-unavailable" className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+        {t('reports.reportPreview.slaPerformance.unavailable')}
+      </p>
+    );
+  }
 
   const notes = (
     <div className="rounded-lg border bg-card p-4">

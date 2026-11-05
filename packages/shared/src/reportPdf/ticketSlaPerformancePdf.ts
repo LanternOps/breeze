@@ -144,8 +144,13 @@ export function renderTicketSlaPerformanceReport(
   const { C, PAGE } = chrome;
   const measured = summary.period.start !== '';
   const orgName = summary.org?.orgName ?? '';
+  // A run during its own period counted nothing after it ran; say so on the face.
+  const clipped = measured && summary.period.measuredThrough < summary.period.end;
+  const through = clipped
+    ? ` · Measured through ${new Intl.DateTimeFormat('en-US', { timeZone: summary.period.timeZone, dateStyle: 'medium' }).format(new Date(summary.period.measuredThrough))}`
+    : '';
   const meta = measured
-    ? `${summary.period.label} · ${summary.period.timeZone} · Prepared ${opts.generatedAt}`
+    ? `${summary.period.label} · ${summary.period.timeZone}${through} · Prepared ${opts.generatedAt}`
     : `Prepared ${opts.generatedAt}`;
 
   let y = chrome.drawTitleBlock(doc, 'Service Level Performance', orgName, meta, PAGE.bandH + 14);

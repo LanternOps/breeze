@@ -425,6 +425,7 @@
         "breaches": "Manquements",
         "breachCount_one": "{{count}} manquement",
         "breachCount_other": "{{count}} manquements",
+        "unavailable": "Le résumé SLA de cette exécution est illisible et ne peut pas être affiché ici. Générez le rapport de nouveau.",
         "notes": "Ce qui est mesuré",
         "priorities": {
           "urgent": "Urgente",

@@ -88,9 +88,16 @@ export async function exportReport(
     if (rows.length === 0) throw new Error('No data to export');
     // #9956: a real workbook (was TSV text saved as .xls). Throws
     // XlsxLimitError past Excel's worksheet limits; callers surface the message.
-    const workbook = reportType === 'ticket_sla_performance' && isTicketSlaPerformanceSummary(summary)
-      ? slaPerformanceWorkbook(rows, summary)
-      : rowsToXlsx(rows);
+    let workbook: Uint8Array<ArrayBuffer>;
+    if (reportType === 'ticket_sla_performance') {
+      // A priorities-only workbook would read as complete while every breach is missing.
+      if (!isTicketSlaPerformanceSummary(summary)) {
+        throw new Error('This SLA performance run has no readable summary, so its breaches cannot be exported.');
+      }
+      workbook = slaPerformanceWorkbook(rows, summary);
+    } else {
+      workbook = rowsToXlsx(rows);
+    }
     downloadBlob(new Blob([workbook], { type: XLSX_MIME_TYPE }), `${baseFilename}.xlsx`);
     return;
   }
@@ -112,15 +119,21 @@ export async function exportReport(
   downloadBlob(doc.output('blob'), `${baseFilename}.pdf`);
 }
 
-/** The priority rows, then the breach list on its own sheet. A report without
- *  subjects has no subject column at all, not an empty one. */
+/** The priority rows, the breach list, then the report's notes, led by the
+ *  truncation disclosure the PDF also prints. A report without subjects has no
+ *  subject column at all, not an empty one. */
 function slaPerformanceWorkbook(rows: unknown[], summary: TicketSlaPerformanceSummary): Uint8Array<ArrayBuffer> {
-  const breaches = summary.includeSubjects
-    ? summary.breaches.rows
-    : summary.breaches.rows.map(({ subject: _subject, ...row }) => row);
+  const { breaches } = summary;
+  const breachRows = summary.includeSubjects
+    ? breaches.rows
+    : breaches.rows.map(({ subject: _subject, ...row }) => row);
+  const truncation = breaches.truncated
+    ? [`Breaches: showing ${breaches.rows.length} of ${breaches.available}. The stored report keeps at most ${breaches.cap}; totals count all of them.`]
+    : [];
   return sheetsToXlsx([
     { name: 'Priorities', rows },
-    { name: 'Breaches', rows: breaches },
+    { name: 'Breaches', rows: breachRows },
+    { name: 'Notes', rows: [...truncation, ...summary.notes].map((note) => ({ note })) },
   ]);
 }
 
