@@ -411,11 +411,11 @@ const generators = {
     execution: 'user', audience: 'any',
     requiredPermissions: REPORT_TYPE_REQUIRED_PERMISSIONS.ticket_sla_performance!,
     detailRowCap: UNCAPPED,
-    generate: async (scope, config, authority, evidence) => {
+    generate: async (scope, config, authority) => {
       orgOf(scope);
       const orgAuthority = orgAxisAuthority(authority, 'ticket_sla_performance');
       const { generateTicketSlaPerformanceReport } = await import('./businessReports/ticketSlaPerformanceReport');
-      return generateTicketSlaPerformanceReport(scope, config, orgAuthority, evidence);
+      return generateTicketSlaPerformanceReport(scope, config, orgAuthority);
     },
   },
 } satisfies { readonly [K in ReportType]: ReportTypeDef & { type: K } };

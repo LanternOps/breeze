@@ -30,3 +30,7 @@ export function effectiveDueSql(kind: SlaDueKind, alias: 't'): SQL {
   return sql.raw(`COALESCE(${alias}.${kind}_due_at, ${alias}.created_at
           + (${alias}.${kind}_sla_minutes + COALESCE(${alias}.sla_paused_minutes, 0)) * interval '1 minute')`);
 }
+
+/** Naive `timestamp` columns hold UTC; render them as ISO instants in SQL so
+ *  the output does not depend on the driver's timestamp parser. */
+export const isoInstantSql = (column: SQL): SQL => sql`to_char(${column}, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;

@@ -15,7 +15,7 @@ import { reportOwnerOfScope, runInReportScope, type ReportScope } from '../repor
 import type { ReportGenerationAuthority } from '../siteScope';
 import { NO_ORGS_NOTE, PARTNER_ORG_LIST_NOTE, ratio, rowsOf, SITE_RESTRICTED_NOTE } from './common';
 import { resolveReportOwnerTimezone, resolveReportPeriod, type ResolvedReportPeriod } from './period';
-import { effectiveDueSql, slaTicketEligibilitySql } from './ticketSlaSql';
+import { effectiveDueSql, isoInstantSql, slaTicketEligibilitySql } from './ticketSlaSql';
 
 /**
  * R1 — Ticket SLA attainment (`ticket_sla_attainment`, #3198 spec §3.3 R1).
@@ -182,10 +182,6 @@ function overallQuery(cte: SQL, scope: ReportScope): SQL {
     FROM outcomes o`;
 }
 
-/** Naive `timestamp` columns hold UTC; render them as ISO instants in SQL so
- *  the output does not depend on the driver's timestamp parser. */
-const iso = (column: SQL) => sql`to_char(${column}, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
-
 function detailQuery(cte: SQL, includeNoSla: boolean): SQL {
   const noSlaFilter = includeNoSla
     ? sql``
@@ -196,12 +192,12 @@ function detailQuery(cte: SQL, includeNoSla: boolean): SQL {
       o.org_id::text AS org_id, org.name AS org_name,
       o.subject, o.priority::text AS priority, o.category,
       o.assigned_to::text AS assigned_to, u.name AS assigned_to_name,
-      ${iso(sql`o.created_at`)} AS created_at,
-      ${iso(sql`o.first_response_at`)} AS first_response_at,
-      ${iso(sql`o.resolved_at`)} AS resolved_at,
+      ${isoInstantSql(sql`o.created_at`)} AS created_at,
+      ${isoInstantSql(sql`o.first_response_at`)} AS first_response_at,
+      ${isoInstantSql(sql`o.resolved_at`)} AS resolved_at,
       o.response_sla_minutes, o.resolution_sla_minutes, o.paused,
       o.response_outcome, o.resolution_outcome,
-      ${iso(sql`o.sla_breached_at`)} AS sla_breached_at, o.sla_breach_reason
+      ${isoInstantSql(sql`o.sla_breached_at`)} AS sla_breached_at, o.sla_breach_reason
     FROM outcomes o
     LEFT JOIN organizations org ON org.id = o.org_id
     LEFT JOIN users u ON u.id = o.assigned_to
