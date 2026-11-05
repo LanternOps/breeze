@@ -24,7 +24,7 @@ export type OemTakeoverState = (typeof OEM_TAKEOVER_STATES)[number];
 export type OemBitlockerState = 'on' | 'suspended' | 'off' | 'unknown';
 
 /**
- * One row per device for the vendor update command `oem_update_run` (#11065).
+ * One row per device for the vendor update command (#11065).
  * Device state, so `org_id` is the device's org, restamped by the composite FK
  * when the device moves. Run history stays in `device_commands.result`.
  */
