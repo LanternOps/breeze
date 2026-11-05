@@ -252,7 +252,7 @@ func TestPolicyWideningNeedsNewGenerationAfterNarrowing(t *testing.T) {
 }
 
 func TestPolicyRevisionRules(t *testing.T) {
-	second := policyExtra("198.18.0.0/24")
+	second := policyExtra("192.0.2.128/25")
 	first := policyExtra("203.0.113.0/24")
 	for _, tc := range []struct {
 		name   string
@@ -321,7 +321,7 @@ func TestRejectedPolicyBlockStoresNoSecret(t *testing.T) {
 func TestFailedPolicyRefreshRetriesAtSameGeneration(t *testing.T) {
 	h := newHarness(t)
 	first := h.heldPolicy(2)
-	second := policyExtra("198.18.0.0/24")
+	second := policyExtra("192.0.2.128/25")
 	h.iso.set(func(f *fakeIsolator) { f.failApplyN = f.applies + 1 })
 
 	h.m.Reconcile(context.Background(), h.policyBlock(3, revB, first, second))
@@ -384,7 +384,7 @@ func TestLegacyJournalAdoptsHeldEntriesOnly(t *testing.T) {
 	}
 
 	stripPolicy(h)
-	second := policyExtra("198.18.0.0/24")
+	second := policyExtra("192.0.2.128/25")
 	h.m.Reconcile(context.Background(), h.policyBlock(2, revB, first, second))
 	if h.installedHas(second) {
 		t.Fatal("a journal with no policy fields allowed a same-generation widening")
