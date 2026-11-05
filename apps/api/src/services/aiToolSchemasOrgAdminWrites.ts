@@ -20,13 +20,24 @@ export const REPORT_RECIPIENT_ACTIONS = ['list', 'add', 'remove', 'convert'] as 
  * chromeAccent) minus what the supervised `update` may never write: customCss
  * (served verbatim to customer browsers, Decision 3) and every sensitive and
  * permission flag (the four-eyes `set_sensitive_access`). The two parents stay:
- * `update` refuses them only when they would activate a dormant child.
+ * `update` refuses them only when they would activate a dormant child. The mask
+ * is spelled out so zod can type it; aiToolsOrgPortalSettings.test.ts checks it
+ * against PORTAL_SENSITIVE_FLAG_KEYS / PORTAL_PERMISSION_FLAG_KEYS, so a flag
+ * added to either list fails there until it is excluded here.
  */
-const UPDATE_EXCLUDED_KEYS = PORTAL_TOOL_SENSITIVE_KEYS.filter((key) => !(key in PORTAL_SENSITIVE_PARENTS));
+const UPDATE_EXCLUDED = {
+  customCss: true,
+  enableNetworkAlerts: true,
+  enableHourBlock: true,
+  enablePatchDetail: true,
+  enableVulnerabilityDetail: true,
+  enablePhysicalPlacement: true,
+  enableTrustPageEditing: true,
+} as const satisfies Partial<Record<Exclude<(typeof PORTAL_TOOL_SENSITIVE_KEYS)[number], keyof typeof PORTAL_SENSITIVE_PARENTS> | 'customCss', true>>;
 
 export const portalSettingsToolUpdateSchema = updatePortalSettingsSchema
   .extend({ chromeAccent: z.enum(PORTAL_CHROME_ACCENT_KEYS).nullable().optional() })
-  .omit(Object.fromEntries([...UPDATE_EXCLUDED_KEYS, 'customCss'].map((key) => [key, true])) as Record<string, true>)
+  .omit(UPDATE_EXCLUDED)
   .strict();
 
 /** `set_sensitive_access` flags: the sensitive, permission and parent keys only, each a boolean. */

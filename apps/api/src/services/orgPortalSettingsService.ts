@@ -319,15 +319,15 @@ export async function applyOrgPortalSettings(
         .limit(1)
         .for('update');
       const children = portalSensitiveActivations(body, locked);
-      if (children.length > 0) return { refused: children } as const;
+      if (children.length > 0) return { kind: 'refused' as const, children };
       const [written] = await tx
         .insert(portalBranding)
         .values({ orgId, ...body })
         .onConflictDoUpdate({ target: portalBranding.orgId, set: { ...body, updatedAt: new Date() } })
         .returning(portalSettingsColumns());
-      return { written } as const;
+      return { kind: 'written' as const, written };
     });
-    if ('refused' in outcome) return { ok: false, code: 'SENSITIVE_ACTIVATION', children: [...outcome.refused] };
+    if (outcome.kind === 'refused') return { ok: false, code: 'SENSITIVE_ACTIVATION', children: outcome.children };
     row = outcome.written;
   } else {
     // portal_branding has UNIQUE(org_id) — upsert keeps first-write and
