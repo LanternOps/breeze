@@ -389,7 +389,35 @@ describe('DeviceBackupTab', () => {
 
       const banner = await screen.findByTestId('backup-last-job-diagnostic');
       expect(banner.textContent).toContain('Last backup completed with errors');
-      expect(banner.textContent).not.toContain('Files could not be read');
+      expect(within(banner).queryByTestId('backup-failure-category')).toBeNull();
+      expect(within(banner).queryByRole('link')).toBeNull();
+      expect(banner.textContent).not.toContain('Some files were locked');
+    });
+
+    it('shows the diagnostic instead of 0 for a job with warning text but no category', async () => {
+      mockTab({
+        jobs: [{ ...baseJob, status: 'completed', errorLog: 'VSS shadow copy could not be created', failureCategory: null }],
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const row = await historyRow();
+      expect(within(row).getByTestId('backup-job-error-summary').textContent).toBe('VSS shadow copy could not be created');
+      expect(within(row).queryByTestId('backup-failure-category')).toBeNull();
+      expect(within(row).queryByText('0')).toBeNull();
+    });
+
+    it('still shows 0 for a job whose only note is skipped reparse points', async () => {
+      const reparseOnly =
+        '1 reparse point(s) were not backed up (junctions and mount points are skipped, not followed; 1 other): ' +
+        'C:\\a.exe (other reparse point, tag 0x8000001B)';
+      mockTab({ jobs: [{ ...baseJob, status: 'completed', errorLog: reparseOnly, failureCategory: null }] });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const row = await historyRow();
+      expect(within(row).queryByTestId('backup-job-error-summary')).toBeNull();
+      expect(within(row).getByText('0')).toBeTruthy();
     });
   });
 

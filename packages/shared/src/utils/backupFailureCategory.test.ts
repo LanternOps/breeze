@@ -116,6 +116,13 @@ const WRITER_CORPUS: Row[] = [
   ['failed', 'resume check failed, refusing to guess whether snapshots/a was already published: EOF', 'storage'],
   ['failed', 'the interrupted snapshot this backup continued is already published, but its manifest could not be read', 'storage'],
   ['failed', 'write to local destination: no space left on device', 'storage'],
+  // Local-path destination (agent/internal/backup/providers/local.go): a permission
+  // error on the destination is storage, not the source files.
+  ['failed', 'failed to create backup directory: mkdir /mnt/backups/x: permission denied', 'storage'],
+  ['partial', '2 of 10 files failed to upload: failed to create destination file: open /mnt/backups/x/a: permission denied', 'storage'],
+  ['failed', 'failed to close destination file: input/output error', 'storage'],
+  ['failed', 'failed to store backup file: rename /mnt/backups/x/a.tmp: access is denied', 'storage'],
+  ['partial', '1 of 5 files failed to upload: failed to stat source file: lstat C:\\a.pst: Access is denied.', 'source_access'],
   ['partial', '2 of 10 files failed to upload: failed to open source file: open C:\\a.pst: The process cannot access the file because it is being used by another process.', 'source_access'],
   ['failed', '10 of 10 files failed to upload: failed to upload file to s3: SignatureDoesNotMatch', 'storage'],
   ['failed', '4 file(s) could not be read during collection: open /srv/a: permission denied', 'source_access'],

@@ -552,7 +552,8 @@ describe('BackupDashboard usage history chart', () => {
         return makeJsonResponse({
           data: {
             stats: [],
-            recentJobs: [
+            // The key the API actually sends (GET /backup/dashboard → latestJobs).
+            latestJobs: [
               { id: 'job-bad', device: 'edge-05', config: 'Primary S3', status: 'failed', started: '5m ago', duration: '3m', size: '85 B', errorLog: 'Agent not connected', failureCategory: 'device_offline' },
               { id: 'job-ok', device: 'edge-06', config: 'Primary S3', status: 'completed', started: '6m ago', duration: '3m', size: '85 B', errorLog: null, failureCategory: null },
             ],

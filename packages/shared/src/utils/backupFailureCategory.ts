@@ -48,7 +48,7 @@ const RULES: ReadonlyArray<{ category: BackupFailureCategory; pattern: RegExp }>
   {
     category: 'storage',
     pattern:
-      /\bstorage session\b|\bsession is no longer usable\b|\brenew rejected\b|\bfailed to upload file to\b|\bbase_retired\b|\bstorage provider\b|\bbackups to s3 storage require\b|\bstorage location\b|\bkey prefix is invalid\b|\bbackup destination can no longer be used\b|\bpublish failed\b|\bresume check failed\b|\bmanifest could not be read\b|\bno space left on device\b/i,
+      /\bstorage session\b|\bsession is no longer usable\b|\brenew rejected\b|\bfailed to upload file to\b|\bfailed to (?:create backup directory|create destination file|close destination file|store backup file)\b|\bbase_retired\b|\bstorage provider\b|\bbackups to s3 storage require\b|\bstorage location\b|\bkey prefix is invalid\b|\bbackup destination can no longer be used\b|\bpublish failed\b|\bresume check failed\b|\bmanifest could not be read\b|\bno space left on device\b/i,
   },
   {
     category: 'agent',
@@ -63,7 +63,7 @@ const RULES: ReadonlyArray<{ category: BackupFailureCategory; pattern: RegExp }>
   {
     category: 'source_access',
     pattern:
-      /\bvss shadow copy\b|\bfailed to open source file\b|\bfiles? could not be read\b|\bfile\(s\) could not be read\b|\baccess is denied\b|\bpermission denied\b|\bbeing used by another process\b|\bsharing violation\b|\blive volume\b/i,
+      /\bvss shadow copy\b|\bfailed to (?:open|stat) source file\b|\bfiles? could not be read\b|\bfile\(s\) could not be read\b|\baccess is denied\b|\bpermission denied\b|\bbeing used by another process\b|\bsharing violation\b|\blive volume\b/i,
   },
   {
     category: 'cancelled',
