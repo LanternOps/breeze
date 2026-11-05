@@ -1119,6 +1119,10 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   get_vss_status: new Set(['name', 'state', 'lastError', 'raw', 'error']),
   // A C2C config's name and target addresses are typed by a person or filled from a mailbox directory.
   manage_c2c_configs: new Set(['name', 'targetUsers']),
+  // A recovery console reports these, and the columns accept any JSON (`bmrProgressSchema`).
+  list_bmr_recoveries: new Set(['failureReason', 'warnings', 'error']),
+  // Device, computer and customer names, and a provider's label, come from agents and vendors.
+  get_backup_health: new Set(['name', 'computerName', 'orgName', 'providerLabel']),
   // Full-control W08 (#6778). Node labels, roles, vendor / model / OS strings and frontier labels are collected
   // from the network (LLDP / CDP / SNMP / controller strings) or typed by an operator; manual notes and
   // template / policy / target names are operator-authored. They pass sanitizeTopologyAiText where projected and
