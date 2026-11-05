@@ -16,6 +16,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/ech"
+	"github.com/breeze-rmm/agent/internal/flashguard"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/securefs"
@@ -1445,6 +1446,11 @@ func runHeartbeatUpgrade(b *updater.TargetBackoff, journal *watchdog.Journal, co
 		b.Clear(component)
 		return
 	}
+	if errors.Is(err, flashguard.ErrFlashInProgress) {
+		// Not a failure: the next heartbeat offers it again.
+		journal.Log(watchdog.LevelInfo, "failover.upgrade_"+component+"_held", map[string]any{"version": version})
+		return
+	}
 	fields := map[string]any{
 		"version": version,
 		"error":   err.Error(),
@@ -1630,6 +1636,14 @@ func updateTrustConfig(journal *watchdog.Journal, component string) (*config.Con
 // downloads follow that promotion instead of pinning the dead primary captured
 // in cfg at startup (#2478).
 func doUpdateAgent(targetVersion string, serverURL func() string, tokens *tokenHolder, journal *watchdog.Journal) error {
+	// This replaces and restarts the agent, so it must not run during a firmware
+	// update. Held through the restart, so one cannot open partway through. A
+	// watchdog self-update needs no admission: it does not touch the agent.
+	done, err := flashguard.Default().AdmitPowerAction("watchdog_update_agent")
+	if err != nil {
+		return err
+	}
+	defer done()
 	tok := tokens.Get()
 	if tok == nil {
 		return fmt.Errorf("no auth token available")

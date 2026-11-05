@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/flashguard"
 	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/updater"
@@ -307,6 +308,18 @@ func applyDevUpdateAutoUpdatePolicy(h *Heartbeat, preserveAutoUpdate bool) {
 }
 
 func handleDevUpdateAgent(h *Heartbeat, start time.Time, downloadURL, checksum, version string, preserveAutoUpdate bool) tools.CommandResult {
+	// First, so a refused push has not already turned auto-update off.
+	done, err := flashguard.Default().AdmitPowerAction("dev_update_agent")
+	if err != nil {
+		return tools.NewErrorResult(fmt.Errorf("dev_update refused: %w", err), time.Since(start).Milliseconds())
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			done()
+		}
+	}()
+
 	applyDevUpdateAutoUpdatePolicy(h, preserveAutoUpdate)
 
 	// Resolve current binary path
@@ -332,7 +345,9 @@ func handleDevUpdateAgent(h *Heartbeat, start time.Time, downloadURL, checksum, 
 	u := updater.New(updaterCfg)
 
 	// Run the update in a goroutine since UpdateFromURL triggers a restart
+	handedOff = true
 	go func() {
+		defer done()
 		h.sendUpdateStatus(version)
 		// dev_push is agent-only — no user-helper swap on this path. If a
 		// future dev-push surface needs to swap a companion binary too, pass

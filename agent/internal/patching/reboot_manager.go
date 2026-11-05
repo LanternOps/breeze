@@ -28,6 +28,17 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/flashguard"
+)
+
+const (
+	// flashHoldRetryInterval is how often a reboot held for a firmware update
+	// asks again. Every section ends by itself within flashguard.MaxTTL, so this
+	// cannot go on for ever.
+	flashHoldRetryInterval = time.Minute
+
+	flashHoldResumeTitle = "Restarting Shortly"
+	flashHoldResumeBody  = "A firmware update has finished. Your computer will restart in about a minute. Save your work now."
 )
 
 // RebootState tracks the current reboot scheduling state. Serialised to the API
@@ -140,6 +151,13 @@ type RebootManager struct {
 	// osInvoking is set, and for the same reason — the manager cannot honour a
 	// promise it is about to contradict.
 	osAborting bool
+	// osCountdownEnds is when the countdown osInvoked describes runs out, plus
+	// flashguard.CountdownSlack. It stops OSCountdownArmed reporting a countdown
+	// someone aborted outside Breeze for ever.
+	osCountdownEnds time.Time
+	// flashHeld is true while this schedule's OS invocation is held for a
+	// firmware update. Cleared by every schedule and cancellation (cancelLocked).
+	flashHeld bool
 	// generation identifies the current schedule. time.Timer.Stop() does not
 	// wait for an AfterFunc callback that has already started — those run on
 	// their own goroutines — so stopping the timers is not enough on its own:
@@ -694,6 +712,10 @@ func (r *RebootManager) cancelLocked() {
 		t.Stop()
 	}
 	r.notifyTimers = nil
+	if r.flashHeld {
+		r.flashHeld = false
+		r.state.LastError = ""
+	}
 }
 
 // emitNotification delivers one rung of the warning ladder, as an interactive
@@ -851,6 +873,42 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 		r.mu.Unlock()
 		return
 	}
+	r.mu.Unlock()
+
+	// Admission touches the disk, so it runs outside the lock; the checks above
+	// are repeated once it returns. It is held through the OS invocation below,
+	// so a flash cannot start between this check and the shutdown.
+	done, admitErr := flashguard.Default().AdmitPowerAction("scheduled_reboot")
+
+	r.mu.Lock()
+	if r.stopped || gen != r.generation {
+		r.mu.Unlock()
+		if done != nil {
+			done()
+		}
+		return
+	}
+	if admitErr != nil {
+		// Hold, and ask again. The schedule stays live, so Cancel, Defer and a
+		// re-schedule all still work, and a reboot that has not happened does not
+		// count against the circuit breaker below.
+		if !r.flashHeld {
+			log.Info("reboot held until the firmware update finishes", "reason", admitErr.Error())
+		}
+		r.flashHeld = true
+		r.state.LastError = "held: a firmware update is in progress"
+		r.osTimer = r.afterFunc(flashHoldRetryInterval, func() {
+			r.runOSReboot(gen, grace)
+		})
+		r.mu.Unlock()
+		return
+	}
+	defer done()
+	resumingFromHold := r.flashHeld
+	if resumingFromHold {
+		r.flashHeld = false
+		r.state.LastError = ""
+	}
 
 	// Circuit breaker: check reboot frequency
 	now := r.nowFn()
@@ -898,7 +956,14 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 	r.osInvokeDone = make(chan struct{})
 	exec := r.execOSReboot
 	surface, campaign := r.surface, r.campaign
+	resumeNotifyFn := r.notifyFn
 	r.mu.Unlock()
+
+	// The ladder's closing notice may be hours old by now, and no reboot is ever
+	// silent.
+	if resumingFromHold && resumeNotifyFn != nil {
+		resumeNotifyFn(flashHoldResumeTitle, flashHoldResumeBody, "critical")
+	}
 
 	// Persist history before rebooting
 	r.saveRebootHistory()
@@ -933,7 +998,20 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 		return
 	}
 	r.osInvoked = true
+	r.osCountdownEnds = now.Add(grace + flashguard.CountdownSlack)
 	r.mu.Unlock()
+}
+
+// OSCountdownArmed reports whether the OS has been, or is being, told to go down,
+// or an abort of that is still in the air. A schedule still on this manager's own
+// timers does not count: it would hold for a flash rather than interrupt one.
+func (r *RebootManager) OSCountdownArmed() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.osInvoking || r.osAborting {
+		return true
+	}
+	return r.osInvoked && r.nowFn().Before(r.osCountdownEnds)
 }
 
 // finishOSInvokeLocked releases the invocation window: it clears osInvoking and

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/flashguard"
 	"github.com/breeze-rmm/agent/internal/safemode"
 )
 
@@ -27,6 +28,14 @@ func RebootToSafeMode(payload map[string]any) CommandResult {
 	}
 
 	slog.Info("reboot to safe mode requested", "delayMinutes", delay)
+
+	// Before the BCD flag: a refused reboot must not leave the next boot, organic
+	// or the one the firmware update needs, heading into Safe Mode.
+	done, err := flashguard.Default().AdmitPowerAction(CmdRebootSafeMode)
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("safe mode reboot refused: %w", err), time.Since(startTime).Milliseconds())
+	}
+	defer done()
 
 	// Build the command BEFORE touching the BCD flag, so a construction error
 	// can never strand the machine with safeboot set and no reboot scheduled.
@@ -58,6 +67,7 @@ func RebootToSafeMode(payload map[string]any) CommandResult {
 		return NewErrorResult(fmt.Errorf("%s", errMsg), time.Since(startTime).Milliseconds())
 	}
 
+	flashguard.Default().NoteCountdown(time.Duration(delay) * time.Minute)
 	slog.Info("safe mode reboot initiated", "delayMinutes", delay)
 
 	result := map[string]any{
