@@ -170,6 +170,10 @@ func (h *Heartbeat) putOemVerification(v oemupdates.Verification) error {
 		return fmt.Errorf("%w: %v", oemupdates.ErrVerificationRejected, err)
 	}
 	url := h.agentRouteURL("oem-updates/verification")
+	if !h.loopReady(http.MethodPut, url) {
+		// Deferred by a server Retry-After: transient, kept for a later try.
+		return errors.New("verification route deferred by server Retry-After")
+	}
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
 		"Authorization": {h.authHeader()},
@@ -178,6 +182,7 @@ func (h *Heartbeat) putOemVerification(v oemupdates.Verification) error {
 	defer cancel()
 	resp, err := httputil.Do(ctx, h.httpClient(), http.MethodPut, url, body, headers, h.retryCfg)
 	if err != nil {
+		h.noteLoopAnswer(http.MethodPut, url, err)
 		return err
 	}
 	defer resp.Body.Close()
