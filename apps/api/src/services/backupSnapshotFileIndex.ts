@@ -23,6 +23,7 @@ import { parseBackupObjectKey } from './backupObjectKey';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { indexMatchesAttestation } from './backupRestoreIntegrity';
 import { physicalKeyFor, sameKeyRoot, snapshotKeyRootOf, type SnapshotKeyRoot } from './backupKeyLayout';
+import { recordSnapshotFileIndex } from './backupMetrics';
 import {
   HYDRATING_STALE_MS,
   hydrationFailureFromError,
@@ -673,6 +674,22 @@ export async function hydrateSnapshotFileIndex(
      */
     includeUnreferenced?: boolean;
   },
+): Promise<HydrationOutcome> {
+  let outcome: HydrationOutcome;
+  try {
+    outcome = await runHydration(snapshotDbId, opts);
+  } catch (err) {
+    recordSnapshotFileIndex('hydration', 'provider_error');
+    throw err;
+  }
+  // The label stays a closed set: a status or a failure code, never the reason text.
+  recordSnapshotFileIndex('hydration', outcome.status === 'failed' ? outcome.failure : outcome.status);
+  return outcome;
+}
+
+async function runHydration(
+  snapshotDbId: string,
+  opts?: { force?: boolean; deps?: HydrationDeps; includeUnreferenced?: boolean },
 ): Promise<HydrationOutcome> {
   const deps = opts?.deps ?? defaultDeps();
   const now = deps.now?.() ?? new Date();
