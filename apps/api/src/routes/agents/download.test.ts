@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { generateWindowsInstallScript } from '../../services/windowsInstallScript';
 
 const { fetchVerifiedMacosPkgMock, fetchVerifiedHelperInstallerMock } = vi.hoisted(() => ({
   fetchVerifiedMacosPkgMock: vi.fn(),
@@ -1345,6 +1346,13 @@ describe('GET /install.ps1 — generated Windows installer', () => {
       else process.env.PUBLIC_API_URL = originalPublicApiUrl;
       if (originalApiUrl === undefined) delete process.env.API_URL;
       else process.env.API_URL = originalApiUrl;
+    }
+  });
+
+  it('doubles every PowerShell single-quote variant in the embedded server URL', () => {
+    for (const quote of ["'", '\u2018', '\u2019', '\u201a', '\u201b']) {
+      expect(generateWindowsInstallScript(`https://rmm.example/${quote}x`))
+        .toContain(`$serverUrl = 'https://rmm.example/${quote}${quote}x'`);
     }
   });
 
