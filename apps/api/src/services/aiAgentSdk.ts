@@ -317,6 +317,12 @@ export async function settleBlockedTurnForNewMessage(
 }
 
 /**
+ * Tools whose Tier-3 intent lives in the org their `orgId` argument names, not
+ * in the session org (W16 PR A, #6786). See createSessionPreToolUse.
+ */
+const INTENT_ORG_FROM_ARGUMENT_TOOLS: ReadonlySet<string> = new Set(['run_patch_plan', 'create_operator_task']);
+
+/**
  * Tracks the action_intents.id an inline Tier-3 execution is running under,
  * so createSessionPostToolUse can CAS it `executing -> completed|failed` once
  * the tool actually finishes (see the coordination invariant in the T3 block
@@ -1478,6 +1484,17 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       ? await loadProposalGuardrailContextInReach(input, (orgId) => proposalReach.canAccessOrg(orgId))
       : null;
     if (runScriptProposal?.proposalOrgId) intentOrgId = runScriptProposal.proposalOrgId;
+    // W16 PR A (#6786): a launch names the org it acts on, and a partner-scope
+    // session can be bound to another org in reach. The intent lives in the
+    // launched org, as with a proposal above: the approvers, the stored reason and
+    // a durable release's rebuilt authority are all keyed on `action_intents.org_id`,
+    // so a session-org intent would record the approval against the wrong tenant
+    // and refuse at a worker release. An org outside reach stays the session's, and
+    // the handler answers not found.
+    if (!flowTool && !tenant && INTENT_ORG_FROM_ARGUMENT_TOOLS.has(toolName) && typeof input.orgId === 'string'
+      && callReach(session, wispCall.current).canAccessOrg(input.orgId)) {
+      intentOrgId = input.orgId;
+    }
     const unattendedReads = unattendedReadsApply(session, wispCall.current, Boolean(flowTool || tenant));
     let guardrailCheck = flowTool
       ? (await import('./flows/flowToolGate')).guardrailCheckForFlowTool(flowTool)

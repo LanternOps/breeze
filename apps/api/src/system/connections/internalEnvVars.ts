@@ -88,6 +88,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AUTH_LEGACY_INVITE_PREVIEW_PATH: 'legacy route toggle',
   AUTH_REFRESH_RATE_LIMIT: 'rate limit knob',
   AUTH_REFRESH_RATE_WINDOW_SECONDS: 'rate limit knob',
+  USER_RATE_LIMIT_PER_MINUTE: 'rate limit knob',
   AUTH_TRANSITION_TEST_CONTROL_SECRET: 'test-only barrier secret',
   // AUTOMATION_*
   AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET: 'legacy compatibility toggle',

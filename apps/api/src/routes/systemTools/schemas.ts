@@ -112,6 +112,10 @@ export const fileMoveBodySchema = z.object({
   })).min(1).max(100),
 });
 
+export const fileMkdirBodySchema = z.object({
+  path: filePathString,
+});
+
 export const fileDeleteBodySchema = z.object({
   paths: z.array(filePathString).min(1).max(100),
   permanent: z.boolean().optional().default(false),

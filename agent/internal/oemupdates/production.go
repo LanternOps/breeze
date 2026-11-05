@@ -11,6 +11,8 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/authenticode"
 	"github.com/breeze-rmm/agent/internal/flashguard"
+	"github.com/breeze-rmm/agent/internal/oemupdates/bitlockerguard"
+	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
@@ -81,17 +83,43 @@ func (wallClock) Now() time.Time { return time.Now() }
 // come from the caller, which owns the config and the websocket.
 func ProductionDeps(preflight func() error, progress func(stage string)) Deps {
 	return Deps{
-		Exec:       procExec{},
-		Verifier:   authenticodeVerifier{},
-		Fetcher:    httpFetcher{client: &http.Client{Timeout: downloadTimeout}},
-		Power:      systemPower{},
-		Protectors: systemProtectors{},
-		System:     systemInfo{},
-		Clock:      wallClock{},
-		Store:      DefaultStore(),
-		Guard:      flashguard.Default(),
-		Preflight:  preflight,
-		Elevated:   isElevated,
-		Progress:   progress,
+		Exec:          procExec{},
+		Verifier:      authenticodeVerifier{},
+		Fetcher:       httpFetcher{client: &http.Client{Timeout: downloadTimeout}},
+		Power:         systemPower{},
+		Protectors:    systemProtectors{},
+		System:        systemInfo{},
+		Clock:         wallClock{},
+		Store:         DefaultStore(),
+		Guard:         flashguard.Default(),
+		Preflight:     preflight,
+		Elevated:      isElevated,
+		Progress:      progress,
+		BitLockerHeld: productionBitLockerHeld,
 	}
+}
+
+// ProductionGuardDeps wires the BitLocker guard to the real machine, with its
+// record in the same agent-owned store as the run marker.
+func ProductionGuardDeps() bitlockerguard.Deps {
+	return bitlockerguard.SystemDeps(DefaultStore(), systemInfo{}.BootTime, detectPendingReboot)
+}
+
+// detectPendingReboot is the registry reading the reboot manager uses. It cannot
+// fail: a key it cannot open reads as not pending.
+func detectPendingReboot() (bool, error) {
+	pending, _ := patching.DetectPendingReboot()
+	return pending, nil
+}
+
+// productionBitLockerHeld treats an unreadable record as not held. That only lets
+// the verification go ahead and report the volume as it is, which is true either
+// way, where the opposite would hold the report back until it aged out.
+func productionBitLockerHeld() bool {
+	held, err := bitlockerguard.Held(ProductionGuardDeps())
+	if err != nil {
+		log.Warn("bitlocker guard record unreadable", "error", err.Error())
+		return false
+	}
+	return held
 }

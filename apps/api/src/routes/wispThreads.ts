@@ -167,6 +167,7 @@ export type OwnThread = {
     pausedReason: string | null;
     unattendedReads: boolean;
     unattendedReadsPinned: boolean;
+    summaryRefine: boolean;
   };
 };
 
@@ -197,6 +198,7 @@ export async function loadOwnThread(c: Context): Promise<OwnThread | null> {
         grantPausedReason: wispGrants.pausedReason,
         grantUnattendedReads: wispGrants.unattendedReads,
         grantUnattendedReadsPinned: sql<boolean>`EXISTS (SELECT 1 FROM wisp_grant_revisions r WHERE r.id = ${wispGrants.currentRevisionId} AND r.ceiling_snapshot->>'unattendedReads' = 'true')`,
+        grantSummaryRefine: wispGrants.summaryRefine,
       })
       .from(wispThreads)
       .innerJoin(wispGrants, and(eq(wispGrants.id, wispThreads.grantId), eq(wispGrants.partnerId, wispThreads.partnerId)))
@@ -231,6 +233,7 @@ export async function loadOwnThread(c: Context): Promise<OwnThread | null> {
       pausedReason: row.grantPausedReason ?? null,
       unattendedReads: row.grantUnattendedReads === true && row.grantUnattendedReadsPinned === true,
       unattendedReadsPinned: row.grantUnattendedReadsPinned === true,
+      summaryRefine: row.grantSummaryRefine === true,
     },
   };
 }
@@ -302,6 +305,7 @@ export type GrantForPayload = {
   pausedReason: string | null;
   unattendedReads: boolean;
   unattendedReadsPinned: boolean;
+  summaryRefine: boolean;
 };
 
 /** GET / and GET /:id return the same members. */
@@ -329,6 +333,7 @@ export async function threadPayload(partnerId: string, thread: WispThread, grant
       pausedReason: grant.pausedReason,
       unattendedReads: grant.unattendedReads === true,
       unattendedReadsPinned: grant.unattendedReadsPinned === true,
+      summaryRefine: grant.summaryRefine === true,
     },
     wideningAvailable: widening,
   };

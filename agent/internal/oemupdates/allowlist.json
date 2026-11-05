@@ -10,5 +10,11 @@
         "hosts": ["builds.dotnet.microsoft.com", "download.visualstudio.microsoft.com"]
       }
     }
+  },
+  "hp": {
+    "tool": {
+      "publishers": ["HP Inc."],
+      "hosts": ["hpia.hpcloud.hp.com", "ftp.hp.com", "ftp.ext.hp.com"]
+    }
   }
 }

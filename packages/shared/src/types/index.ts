@@ -13,6 +13,7 @@ export * from './scriptAdmission';
 export * from './softwareInventoryObservation';
 export * from './scriptProposals';
 export * from './backupHealth';
+export * from './backupActiveJob';
 export * from './edr';
 export * from './aiModelRegistry';
 export * from './aiModelQuality';

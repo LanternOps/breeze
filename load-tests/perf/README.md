@@ -43,6 +43,19 @@ The script needs no root `.env`. It generates a throwaway one with random secret
 
 On macOS the record has `hardware.baselineGrade: false`: the figures describe the Docker VM, not fixed hardware. The comparator will not compare it with a baseline-grade record, so a local macOS run is for looking at numbers only.
 
+## Runner prerequisites
+
+A self-hosted runner for `perf.yml` needs:
+
+- Docker Engine with Compose v2
+- Go, at the version in `agent/go.mod`
+- Node, installed by the workflow's setup steps
+- `jq` and `openssl`
+- `build-essential`
+- `libpcap-dev` (the agent build imports `gopacket/pcap`; without it the build fails on `pcap.h`)
+
+After the simulator exits, `run-perf.sh` keeps the sampler running for `TAIL_SECONDS` (default `INTERVAL + 10`) so a sample lands after the window end; the comparator rejects a run without one.
+
 ## CLI
 
 ```bash

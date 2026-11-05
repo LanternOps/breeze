@@ -62,6 +62,7 @@ vi.mock('../../db', () => {
 });
 
 vi.mock('../dispatchDeviceCommand', () => ({ dispatchDeviceCommand: vi.fn() }));
+vi.mock('../partnerTrust.commands', () => ({ assertDeviceExecuteAllowed: vi.fn(async () => undefined) }));
 
 vi.mock('./toolManifest', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./toolManifest')>();
@@ -74,7 +75,13 @@ vi.mock('./toolManifest', async (importOriginal) => {
 });
 
 import { dispatchDeviceCommand } from '../dispatchDeviceCommand';
-import { dispatchOemUpdateRelease, dispatchOemUpdateRun, type OemDispatchInput } from './dispatch';
+import { assertDeviceExecuteAllowed } from '../partnerTrust.commands';
+import {
+  assertOemRunAllowedForActor,
+  dispatchOemUpdateRelease,
+  dispatchOemUpdateRun,
+  type OemDispatchInput,
+} from './dispatch';
 import { defaultOfflinePolicy } from '../commandOfflinePolicy';
 import { getLaneManifest, isLaneOpen, openCategoriesForLane } from './toolManifest';
 
@@ -275,7 +282,7 @@ describe('dispatchOemUpdateRun: categories', () => {
   it('a closed category is dropped, not sent', async () => {
     vi.mocked(openCategoriesForLane).mockReturnValue(['driver']);
     const res = await dispatchOemUpdateRun(input({ requestedCategories: ['bios', 'driver'] }));
-    expect(res).toEqual({ ok: true, commandId: COMMAND_ID, categories: ['driver'] });
+    expect(res).toEqual({ ok: true, commandId: COMMAND_ID, categories: ['driver'], skippedCategories: [] });
     expect(sentPayload().categories).toEqual(['driver']);
   });
 
@@ -290,9 +297,28 @@ describe('dispatchOemUpdateRun: categories', () => {
       requestedCategories: ['bios', 'firmware', 'driver'],
       rebootControlled: false,
     }));
-    expect(res).toMatchObject({ ok: true, categories: ['driver'] });
+    expect(res).toMatchObject({ ok: true, categories: ['driver'], skippedCategories: ['bios', 'firmware'] });
     expect(sentPayload().categories).toEqual(['driver']);
     expect(sentPayload().rebootControlled).toBe(false);
+  });
+
+  it('reports only what was open and dropped for the reboot, never a closed gate', async () => {
+    vi.mocked(openCategoriesForLane).mockReturnValue(['bios', 'driver']);
+    const res = await dispatchOemUpdateRun(input({
+      requestedCategories: ['bios', 'firmware', 'driver', 'application'],
+      rebootControlled: false,
+    }));
+    expect(res).toMatchObject({ ok: true, categories: ['driver'], skippedCategories: ['bios'] });
+  });
+
+  it('a run that controls the reboot skips nothing', async () => {
+    const res = await dispatchOemUpdateRun(input({ requestedCategories: ['bios', 'driver'], rebootControlled: true }));
+    expect(res).toMatchObject({ ok: true, categories: ['bios', 'driver'], skippedCategories: [] });
+  });
+
+  it('the trust check a route makes first names this command type', async () => {
+    await assertOemRunAllowedForActor(DEVICE_ID, USER_ID);
+    expect(assertDeviceExecuteAllowed).toHaveBeenCalledWith(DEVICE_ID, 'oem_update_run', USER_ID);
   });
 
   it('only bios without a reboot Breeze controls has nothing to send', async () => {

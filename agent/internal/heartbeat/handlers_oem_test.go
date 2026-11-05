@@ -111,9 +111,9 @@ func TestOemHandlerUnknownLaneFails(t *testing.T) {
 	}
 	// A real lane this agent does not build yet answers not_supported.
 	r = handleOemUpdateRun(nil, Command{ID: oemTestCmdID, Type: tools.CmdOemUpdateRun,
-		Payload: oemPayload(t, func(p map[string]any) { p["lane"] = "surface" })})
+		Payload: oemPayload(t, func(p map[string]any) { p["lane"] = "lenovo" })})
 	got := decodeOemResult(t, r)
-	if s.ran != nil || got.Outcome != oemupdates.OutcomeNotSupported || errorCodeString(got) != "lane_not_built" || got.Lane != "surface" {
+	if s.ran != nil || got.Outcome != oemupdates.OutcomeNotSupported || errorCodeString(got) != "lane_not_built" || got.Lane != "lenovo" {
 		t.Fatalf("result = %+v", got)
 	}
 }

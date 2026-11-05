@@ -87,6 +87,9 @@ type Deps struct {
 	Elevated func() bool
 	// Progress reports a stage; nil reports nothing.
 	Progress func(stage string)
+	// BitLockerHeld reports a suspension of ours still open. The post-reboot
+	// verification waits for it, because it reads BitLocker. Nil means none.
+	BitLockerHeld func() bool
 }
 
 func (d Deps) now() time.Time {

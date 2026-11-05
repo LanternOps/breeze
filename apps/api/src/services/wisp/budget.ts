@@ -13,6 +13,11 @@
  * running, and the grantor is told once per window
  * (`notifyBudgetExhaustedOnce`).
  *
+ * #10390: the spend is the grant's runs plus its model-written session summaries.
+ * A summary is not a run (no agent, no policy snapshot, nothing to trace), so it
+ * is read from the billing ledger by a grant-keyed `source_ref`, in the window its
+ * row was created. Chat turns stay outside this budget.
+ *
  * Every grant / run read runs in SYSTEM context: callers are workers and the
  * thread route, which have already established the grant id they hold.
  *
@@ -23,6 +28,7 @@ import { and, eq, gte, lt, ne, sql } from 'drizzle-orm';
 import type { PartnerPlan, WispLimits } from '@breeze/shared';
 import { db } from '../../db';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
+import { aiInvocations } from '../../db/schema/aiInvocations';
 import { wispGrants } from '../../db/schema/wisp';
 import { getEntitlements } from '../entitlements';
 import { deliverInApp } from './deliver';
@@ -50,6 +56,14 @@ const BUDGET_RAISE_MULTIPLIER = 5;
 /** The DB CHECK floor on `floor_tick_minutes`; entitlement limits can only raise it. */
 const MIN_FLOOR_TICK_MINUTES = 15;
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The `ai_invocations.source_ref` prefix of a model-written session summary; the grant id follows it. */
+export const SUMMARY_REFINE_SOURCE_REF_PREFIX = 'wisp_thread_summary:';
+
+/** The ledger ref that charges a model-written session summary to its grant's daily budget. */
+export function summaryRefineSourceRef(grantId: string): string {
+  return `${SUMMARY_REFINE_SOURCE_REF_PREFIX}${grantId}`;
+}
 
 /** The grant id a budget call was given does not exist. Never read as "ok" or "exhausted". */
 export class GrantNotFoundForBudgetError extends Error {
@@ -104,11 +118,16 @@ async function loadGrantBudget(grantId: string): Promise<GrantBudgetRow> {
   return { ...row, orgId: row.orgId ?? null };
 }
 
-/** SUM(cost_cents) of the grant's runs QUEUED in the UTC day `now` falls in, excluding skipped runs. */
+/**
+ * What the grant spent in the UTC day `now` falls in: its runs QUEUED that day,
+ * excluding skipped ones, plus its session summaries settled that day, rounded up
+ * to a whole cent (the ledger holds fractions; a budget never rounds in the
+ * spender's favour).
+ */
 export async function spentUnderGrant(grantId: string, now: Date = new Date()): Promise<number> {
   const { start, end } = utcDayWindow(now);
-  const [row] = await inSystemContext(() =>
-    db
+  const { runs, summaries } = await inSystemContext(async () => {
+    const runRows = await db
       .select({ total: sql<string | number | null>`coalesce(sum(${aiAgentRuns.costCents}), 0)::bigint` })
       .from(aiAgentRuns)
       .where(and(
@@ -116,9 +135,21 @@ export async function spentUnderGrant(grantId: string, now: Date = new Date()): 
         gte(aiAgentRuns.queuedAt, start),
         lt(aiAgentRuns.queuedAt, end),
         ne(aiAgentRuns.status, 'skipped'),
-      )),
-  );
-  return Number(row?.total ?? 0);
+      ));
+    const summaryRows = await db
+      .select({ total: sql<string | number | null>`ceil(coalesce(sum(${aiInvocations.costCents}), 0))::bigint` })
+      .from(aiInvocations)
+      .where(and(
+        // The ledger is the busiest table: the partner's orgs let ai_invocations_org_created_idx
+        // serve this, instead of reading a day of every tenant's rows on each budget check.
+        sql`${aiInvocations.orgId} IN (SELECT o.id FROM organizations o JOIN wisp_grants g ON g.partner_id = o.partner_id WHERE g.id = ${grantId}::uuid)`,
+        eq(aiInvocations.sourceRef, summaryRefineSourceRef(grantId)),
+        gte(aiInvocations.createdAt, start),
+        lt(aiInvocations.createdAt, end),
+      ));
+    return { runs: runRows[0], summaries: summaryRows[0] };
+  });
+  return Number(runs?.total ?? 0) + Number(summaries?.total ?? 0);
 }
 
 /** Both reads under ONE system context (the inner inSystemContext calls run in place). */

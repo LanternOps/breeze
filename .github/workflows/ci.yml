@@ -361,6 +361,9 @@ jobs:
       - name: Test CI policy manifest (W02)
         run: node --test .github/scripts/ci-policy.test.mjs
 
+      - name: Test CI gate verdict core (W02)
+        run: node --test .github/scripts/ci-gate.test.mjs
+
       - name: CI cache policy contract
         run: node --test .github/scripts/ci-cache-policy.test.mjs
 
@@ -4112,7 +4115,7 @@ jobs:
           # self-hoster who later flips the flag needs no database swap, which
           # is exactly the shape .env.example ships.
           POSTGRES_IMAGE_REF=pgvector/pgvector:pg16
-          REDIS_IMAGE_REF=redis:7-alpine
+          REDIS_IMAGE_REF=redis:8-alpine
           COTURN_IMAGE_REF=coturn/coturn:latest
           # Required in production by config/validate.ts (#625) — without
           # this, agents would accept unsigned release manifests. CI uses
@@ -4505,7 +4508,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
       redis:
-        image: redis:7-alpine
+        image: redis:8-alpine
         ports:
           - 6379:6379
         options: >-
@@ -4840,7 +4843,7 @@ jobs:
           BREEZE_BINARIES_IMAGE_REF=ghcr.io/lanternops/breeze/binaries:latest
           CADDY_IMAGE_REF=caddy:2-alpine
           POSTGRES_IMAGE_REF=pgvector/pgvector:pg16
-          REDIS_IMAGE_REF=redis:7-alpine
+          REDIS_IMAGE_REF=redis:8-alpine
           COTURN_IMAGE_REF=coturn/coturn:latest
           EOF
 
@@ -5030,6 +5033,28 @@ jobs:
     needs: [path-read-contracts, changes, workspace-runtime, docs-check, lint, release-ledger, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-shared, test-document-ui, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, lint-agent, test-agent, agent-windows-manifest-guard, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract, topology-browser-gate]
     if: ${{ !cancelled() }}
     steps:
+      # W02 (#10746): what this job saw as needs.<job>.result, for the gate's
+      # replay to compare with. Written by the candidate, so it is advisory and
+      # never authority. Neither step can fail CI Success, and each is capped.
+      - name: Record needs oracle (W02, advisory)
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: printf '%s\n' "${NEEDS_JSON}" > ci-needs-oracle.json
+
+      - name: Upload needs oracle (W02, advisory)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        # An artifact-service outage must not hold up the required check.
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ci-needs-oracle-attempt-${{ github.run_attempt }}
+          path: ci-needs-oracle.json
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Check all jobs passed
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
@@ -5477,3 +5502,37 @@ jobs:
           path: provenance.json
           retention-days: 7
           if-no-files-found: error
+
+  # W02 (#10746): replays the gate verdict (ci-gate.mjs) against recent real
+  # merge-queue runs and their recorded CI Success, with mutation controls.
+  # Dispatch-only and outside ci-success: it reports, it never gates.
+  ci-gate-replay:
+    name: CI Gate Replay
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout (gate scripts, full history)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            .github/workflows
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22.23.4'
+
+      # The token reaches git and gh only; ci-gate.mjs runs base-revision
+      # scripts with PATH alone.
+      - name: Replay the gate verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/ci-gate.mjs replay

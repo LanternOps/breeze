@@ -75,7 +75,7 @@ export async function loadStandingLoopFacts(ceiling: GrantCeiling): Promise<Stan
     floorTickMinutes: read.grant.floorTickMinutes,
     lastFloorTickAt: read.grant.lastFloorTickAt ?? null,
     firstLook: { assessedOrgs: Number(read.runs.assessedOrgs), inFlight: Number(read.runs.inFlight), totalOrgs: orgIds.length },
-    brief: await briefScheduleFor(ceiling.grantorUserId),
+    brief: await briefScheduleFor(ceiling.grantorUserId, ceiling.partnerId),
   };
 }
 

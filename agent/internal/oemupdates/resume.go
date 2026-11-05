@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io/fs"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/oemupdates/bitlockerguard"
 )
 
 var (
@@ -75,9 +77,38 @@ func RecoverInterrupted(deps Deps) error {
 	return nil
 }
 
+// ResumeBitLocker runs the BitLocker guard's resume pass, unless a run is live or
+// a flash section is open: both may own the suspension in the record, and a resume
+// under a staged capsule risks a recovery prompt. It runs at start and on a timer.
+//
+// A resume past the deadline is logged at WARN, which ships to the server. It is
+// not reported through the verification route: that route means "the device
+// rebooted" and would clear a reboot still owed. The reboot-overdue state already
+// tells the tech that reboot has not happened.
+func ResumeBitLocker(ctx context.Context, deps Deps, guard bitlockerguard.Deps) (bitlockerguard.Result, error) {
+	held := bitlockerguard.Result{Action: bitlockerguard.ActionHeld}
+	release, err := AcquireRunLock(deps.Store)
+	if err != nil {
+		return held, nil // a run is live; the record is its own
+	}
+	defer release()
+	if deps.Guard != nil {
+		if _, active := deps.Guard.Active(); active {
+			return held, nil
+		}
+	}
+	res, err := bitlockerguard.ResumeOnStart(ctx, guard)
+	if err == nil && res.Action == bitlockerguard.ActionResumed && res.Reason == bitlockerguard.ReasonDeadline {
+		log.Warn("BitLocker resumed after a firmware install because the reboot never happened; staged firmware has not applied",
+			"deadline", bitlockerguard.ResumeDeadline.String())
+	}
+	return res, err
+}
+
 // VerifyPending reports, after the reboot each needed, BitLocker and the BIOS
 // version for every recorded firmware install. It only reads: a volume still
-// suspended is reported, never changed (Decision 8). An entry ends when the
+// suspended is reported, never changed (Decision 8; ResumeBitLocker owns the
+// suspensions Breeze made itself, and runs first). An entry ends when the
 // report is accepted or rejected, or when it ages out; a transient failure
 // keeps it for the next start. It never touches the run marker.
 func VerifyPending(ctx context.Context, deps Deps, report func(Verification) error) error {
@@ -86,6 +117,12 @@ func VerifyPending(ctx context.Context, deps Deps, report func(Verification) err
 		return fmt.Errorf("read pending verifications: %w", err)
 	}
 	if len(list) == 0 {
+		return nil
+	}
+	// A volume the guard is about to resume would read "suspended" and raise an
+	// alert for nothing. The entries wait for the guard's next pass.
+	if deps.BitLockerHeld != nil && deps.BitLockerHeld() {
+		log.Debug("vendor update verification waits for the BitLocker guard")
 		return nil
 	}
 	if deps.System == nil || deps.Protectors == nil {

@@ -361,6 +361,8 @@ test('every code job is gated on the classifier', () => {
     // W4 (#10748): advisory provenance written after a green CI Success on any PR
     // (docs-only included); continue-on-error, never a gate. Pinned in queue-selection.test.mjs.
     'provenance-record',
+    // W02 (#10746): dispatch-only replay of the gate verdict; never a gate. Pinned in ci-gate.test.mjs.
+    'ci-gate-replay',
     'docs-check', // gated on the `docs` output instead — it is the one job a docs-only PR must run
     'build-mobile-ios', // inherits the gate through mobile-native-changes (pinned by mobile-native-ci.test.mjs)
     'recovery-media-e2e', // compound gate (code AND agent) — asserted separately below

@@ -683,6 +683,27 @@ type PrerequisiteHandler struct {
 	InstallArgs func(installer, logPath string) []string
 }
 
+// ToolFreeLane is a lane with no vendor tool to find, verify or install. EnsureTool
+// asks it instead of doing any of those, so a payload naming a tool cannot reach a
+// download or an install on this lane. Ready returns an empty outcome when the
+// lane can run; it must not spawn a process.
+//
+// toolFree is a marker: this skips every download, range and publisher check, so a
+// lane must ask for it by name and cannot get it by having a method called Ready.
+type ToolFreeLane interface {
+	Lane
+	toolFree()
+	Ready() (ToolState, Outcome, error)
+}
+
+// HardwareCheckedLane is a lane that must refuse a machine that is not its vendor's.
+// EnsureTool asks before it fetches or runs anything. It can only refuse, so unlike
+// ToolFreeLane it needs no marker. It must not spawn a process.
+type HardwareCheckedLane interface {
+	Lane
+	CheckHardware() (Outcome, error)
+}
+
 // Lane is one vendor's update path.
 type Lane interface {
 	ID() string

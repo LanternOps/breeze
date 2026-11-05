@@ -702,6 +702,10 @@
         "securityLog": "Search the Security event log",
         "deviceNote": "Save a note about a device",
         "applies": "Applies to new conversations and new background runs."
+      },
+      "summaryRefine": {
+        "title": "Model-written session notes",
+        "description": "When a conversation ends, the model writes what was concluded and what is still open. Each note is one model call and counts against Wisp's daily budget. When off, Wisp keeps a plain digest instead."
       }
     },
     "focus": {
@@ -747,7 +751,10 @@
       "unattendedReadsOn": "Unattended reads turned on",
       "unattendedReadsOnFailed": "Couldn't turn on unattended reads",
       "unattendedReadsOff": "Unattended reads turned off",
-      "unattendedReadsOffFailed": "Couldn't turn off unattended reads"
+      "unattendedReadsOffFailed": "Couldn't turn off unattended reads",
+      "summaryRefineOn": "Session notes turned on",
+      "summaryRefineOff": "Session notes turned off",
+      "summaryRefineFailed": "Couldn't change session notes"
     },
     "spend": {
       "meter": "{{spent}} of {{budget}} today",
@@ -892,11 +899,15 @@
       "summary": "Summary",
       "open": "Open",
       "unread": "Unread",
-      "specialistResult": "Specialist report"
+      "specialistResult": "Specialist report",
+      "firstLook": "First look"
     },
     "welcome": {
       "title": "I'm looking around {{scope}}.",
       "body": "Your first brief arrives each morning once I have had a look. Ask me anything in the meantime.",
+      "firstLookTitle": "I've had a first look at {{scope}}.",
+      "firstLookBody": "What I found is in the post above. Ask me anything about it.",
+      "briefAt": "Your morning brief goes out at {{time}} ({{timezone}}).",
       "suggestions": {
         "needsMe": {
           "label": "What needs me today?",
@@ -940,6 +951,12 @@
       "buttonPlain": "Ask AI about this",
       "draft": "About {{label}}: ",
       "switchFocus": "Wisp is focused on {{from}}. Switch to {{to}}?"
+    },
+    "plainChat": {
+      "new": "New plain chat",
+      "newDescription": "Breeze AI with every tool you have access to. Not Wisp.",
+      "wispDescription": "Wisp, under your grant",
+      "label": "Breeze AI · not Wisp"
     }
   },
   "wispConcerns": {

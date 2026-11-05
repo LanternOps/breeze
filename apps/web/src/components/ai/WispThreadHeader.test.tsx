@@ -392,6 +392,72 @@ describe('WispThreadHeader (W06 T14/T15: thread page mode, spend meter, pause, l
   });
 });
 
+describe('WispThreadHeader — model-written session notes switch (#10390)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.modalProps = null;
+    h.chat = { sessionId: null, wisp: null };
+    h.runAction.mockImplementation(async (o: { request: () => Promise<Response> }) => (await o.request()).json());
+    h.fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: 'g-1', summaryRefine: true }) });
+  });
+
+  const open = (w = wisp()) => {
+    render(<WispThreadHeader wisp={w} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    return screen.getByTestId('wisp-settings-summary-refine');
+  };
+
+  it('sits in its own section, outside the budget/tick form, off by default, and says it spends budget', () => {
+    const section = open();
+    expect(screen.getByTestId('wisp-summary-refine-switch')).toHaveAttribute('aria-checked', 'false');
+    expect(section.contains(screen.getByTestId('wisp-settings-save'))).toBe(false);
+    expect(section.textContent).toMatch(/daily budget/i);
+  });
+
+  it('turning it on autosaves through runAction with a toast and no step-up, and the store follows', async () => {
+    open();
+    await act(async () => { fireEvent.click(screen.getByTestId('wisp-summary-refine-switch')); });
+    expect(h.fetchWithAuth).toHaveBeenCalledWith('/wisp/grants/g-1/settings', { method: 'PATCH', body: JSON.stringify({ summaryRefine: true }) });
+    const action = h.runAction.mock.calls[0]![0] as { successMessage?: string; errorFallback?: string };
+    expect(action.successMessage).toBe('Session notes turned on');
+    expect(action.errorFallback).toBe("Couldn't change session notes");
+    expect(h.updateWisp).toHaveBeenCalledWith({ summaryRefine: true });
+    expect(screen.queryByTestId('wisp-refresh-modal-mock')).toBeNull();
+  });
+
+  it('turning it off autosaves the same way', async () => {
+    h.fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: 'g-1', summaryRefine: false }) });
+    open(wisp({ summaryRefine: true }));
+    expect(screen.getByTestId('wisp-summary-refine-switch')).toHaveAttribute('aria-checked', 'true');
+    await act(async () => { fireEvent.click(screen.getByTestId('wisp-summary-refine-switch')); });
+    expect(h.fetchWithAuth).toHaveBeenCalledWith('/wisp/grants/g-1/settings', { method: 'PATCH', body: JSON.stringify({ summaryRefine: false }) });
+    const action = h.runAction.mock.calls[0]![0] as { successMessage?: string };
+    expect(action.successMessage).toBe('Session notes turned off');
+    expect(h.updateWisp).toHaveBeenCalledWith({ summaryRefine: false });
+  });
+
+  it('a failure toasts once, leaves the store alone, and the switch keeps its value', async () => {
+    const { showToast } = await import('@/components/shared/Toast');
+    h.runAction.mockRejectedValueOnce(new Error('network'));
+    open();
+    await act(async () => { fireEvent.click(screen.getByTestId('wisp-summary-refine-switch')); });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: "Couldn't change session notes" }));
+    expect(h.updateWisp).not.toHaveBeenCalled();
+    expect(screen.getByTestId('wisp-summary-refine-switch')).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('a 401 is silent: the auth redirect handles it', async () => {
+    const { ActionError } = await import('@/lib/runAction');
+    const { showToast } = await import('@/components/shared/Toast');
+    const unauthorized = Object.assign(new (ActionError as unknown as new (message: string) => Error)('unauthorized'), { status: 401 });
+    h.runAction.mockRejectedValueOnce(unauthorized);
+    open();
+    await act(async () => { fireEvent.click(screen.getByTestId('wisp-summary-refine-switch')); });
+    expect(showToast).not.toHaveBeenCalled();
+    expect(h.updateWisp).not.toHaveBeenCalled();
+  });
+});
+
 describe('WispThreadHeader — unattended reads switch (#10973)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

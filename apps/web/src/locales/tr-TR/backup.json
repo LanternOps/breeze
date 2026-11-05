@@ -41,6 +41,7 @@
     "stalledTooltip": "{{minutes}} dakika boyunca veri alınmadı",
     "filesProgress": "{{done}} / {{total}} dosyalar",
     "speedValue": "{{value}}/s",
+    "etaValue": "yaklaşık {{value}} kaldı",
     "created": "Oluşturuldu",
     "updated": "Güncellendi",
     "files": "Dosyalar",
@@ -179,6 +180,7 @@
     "oneOrMoreVssWritersAreNotStable": "Bir veya daha fazla VSS yazıcısı kararlı değil. Bir sonraki çalıştırmadan önce en son yazıcı durumlarını gözden geçirin.",
     "vssUnprotectedVolumes": "VSS gölge kopyasından değil, canlı ciltten okuyun: {{volumes}}. Bu birimlerdeki kullanımdaki dosyalar atlanmış veya tutarsız bir durumda yakalanmış olabilir.",
     "lastBackupFailed": "Son yedekleme başarısız oldu",
+    "lastBackupFailedWithCategory": "Son yedekleme başarısız oldu: {{category}}",
     "lastBackupCompletedWithWarnings": "Son yedekleme uyarılarla tamamlandı",
     "lastBackupCompletedWithErrors": "Son yedekleme hatalarla tamamlandı",
     "writer": "Yazar",
@@ -223,7 +225,26 @@
     "hold": "Basılı tutun",
     "standard": "Standart",
     "restorePointCount_one": "{{count}} geri yükleme noktası",
-    "restorePointCount_other": "{{count}} geri yükleme noktaları"
+    "restorePointCount_other": "{{count}} geri yükleme noktaları",
+    "activePhase": {
+      "waiting_for_device": "Cihaza gönderildi, başlaması bekleniyor",
+      "queued_on_device": "Bu cihazdaki başka bir yedeklemenin bitmesi bekleniyor",
+      "resuming": "Yarıda kalan bir yedekleme sürdürülüyor",
+      "scanning": "Dosyalar taranıyor",
+      "backing_up": "Yedekleniyor"
+    },
+    "activeJobs": {
+      "title": "Yedekleme devam ediyor",
+      "processedOfTotal": "{{done}} / {{total}} işlendi",
+      "processed": "{{done}} işlendi",
+      "lastHeard": "Cihazdan son sinyal: {{relative}}",
+      "mode": {
+        "file": "Dosya yedeklemesi",
+        "system_image": "Sistem görüntüsü yedeklemesi",
+        "mssql": "SQL Server yedeklemesi",
+        "hyperv": "Hyper-V yedeklemesi"
+      }
+    }
   },
   "deviceVaultStatus": {
     "loadingVaultStatus": "Kasa durumu yükleniyor...",
@@ -651,7 +672,11 @@
     "providerEnforcedImmutabilityCannotBeReleasedFromBreeze": "Sağlayıcı tarafından zorlanan değişmezlik, Breeze'den yayınlanamaz.",
     "fileTree": "Dosya Ağacı",
     "noFileTreeAvailable": "Dosya ağacı mevcut değil.",
-    "fileIndexUnavailable": "Bu anlık görüntüde dosyalar var, ancak dosya dizini kullanılamadığı için burada listelenemiyorlar.",
+    "fileIndexBuilding": "Bu anlık görüntünün dosya listesi hazırlanıyor. Büyük yedeklerde bu birkaç dakika sürebilir.",
+    "fileIndexUnavailable": "Bu anlık görüntünün dosya listesi şu anda kullanılamıyor. Yine de anlık görüntünün tamamını geri yükleyebilirsiniz.",
+    "fileIndexIntegrityFailed": "Bu anlık görüntü bütünlük denetiminden geçemedi, bu nedenle dosyaları listelenemiyor.",
+    "fileIndexDeviceLocal": "Bu anlık görüntü cihazda depolanıyor ve Breeze dosya listesini henüz oradan okuyamıyor.",
+    "fileIndexRetry": "Tekrar dene",
     "path": "Yol:",
     "useTheRestoreWorkflowToRecoverOrExport": "Bu anlık görüntüdeki dosyaları kurtarmak veya dışa aktarmak için geri yükleme iş akışını kullanın.",
     "select": "Seç",
@@ -1184,5 +1209,40 @@
     "summary_one": "{{count}} yeniden ayrıştırma noktası atlandı: bağlantılar (junction) ve bağlama noktaları izlenmez ve geri yüklenmez. Bu beklenen bir durumdur, hata değildir.",
     "summary_other": "{{count}} yeniden ayrıştırma noktası atlandı: bağlantılar (junction) ve bağlama noktaları izlenmez ve geri yüklenmez. Bu beklenen bir durumdur, hata değildir.",
     "showDetails": "Atlanan yolları göster"
+  },
+  "failureCategory": {
+    "device_offline": {
+      "label": "Cihaz çevrimdışı",
+      "hint": "Cihaz yedekleme sırasında Breeze ile bağlantısını kaybetti. Yedekleme penceresi boyunca cihazı açık ve çevrimiçi tutun."
+    },
+    "timeout": {
+      "label": "Takıldı veya zaman aşımına uğradı",
+      "hint": "Yedekleme ilerlemeyi durdurdu veya süre sınırını aştı. Çok büyük yedeklemeler birden fazla pencere gerektirebilir. Cihazın yükünü ve yedekleme seçiminin boyutunu kontrol edin."
+    },
+    "storage": {
+      "label": "Depolama sorunu",
+      "hint": "Breeze yedekleme hedefine yazamadı veya yükleme yetkisinin süresi doldu. Depolama yapılandırmasını test edin; kimlik bilgilerini ve boş alanı kontrol edin."
+    },
+    "agent": {
+      "label": "Aracı sorunu",
+      "hint": "Cihazdaki yedekleme bileşeni beklenmedik şekilde durdu. Aracıyı güncelleyin ve yedeklemeyi yeniden çalıştırın. Sorun devam ederse cihazın aracı günlüklerini kontrol edin."
+    },
+    "configuration": {
+      "label": "Yapılandırma sorunu",
+      "hint": "Yedeklenecek geçerli bir şey yoktu veya iş başlarken yedekleme yapılandırması değişti. Cihazın yedekleme profilini gözden geçirin."
+    },
+    "source_access": {
+      "label": "Dosyalar okunamadı",
+      "hint": "Bazı dosyalar kilitliydi, kullanımdaydı veya aracı tarafından okunamıyordu. Aşağıda listelenen dosyaları ve VSS durumunu kontrol edin."
+    },
+    "cancelled": {
+      "label": "İptal edildi",
+      "hint": "Bitmeden önce bir kullanıcı veya Breeze tarafından durduruldu."
+    },
+    "unknown": {
+      "label": "Diğer hata",
+      "hint": "Breeze bu hatayı henüz tanımıyor. Tam ileti aşağıda gösteriliyor."
+    },
+    "troubleshootingLink": "Sorun giderme kılavuzu"
   }
 }

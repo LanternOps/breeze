@@ -30,6 +30,8 @@ const FILES = [
   'services/wisp/activity.ts',
   'services/wisp/concerns.ts',
   'services/wisp/partnerSettings.ts',
+  'services/wisp/nudgePreferences.ts',
+  'services/wisp/threadPosts.ts',
 ];
 
 const imports = (rel: string) => readFileSync(resolve(SRC, rel), 'utf8');

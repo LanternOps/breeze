@@ -101,7 +101,7 @@ import {
   commitDesktopStreamStartIntent,
   formatDesktopGeneration,
 } from '../../services/remoteDesktopStartIntent';
-import { remoteSessionStaleCondition } from '../../services/remoteSessionStaleness';
+import { originalRemoteSessionStart, remoteSessionStaleCondition } from '../../services/remoteSessionStaleness';
 import { getRedis } from '../../services/redis';
 import {
   desktopStartInFlightRedisKey,
@@ -191,7 +191,7 @@ async function storeAnswerDirectly(sessionId: string): Promise<void> {
   await getTestDb().update(remoteSessions).set({
     webrtcAnswer: 'v=0\r\nanswer\r\n',
     status: 'active',
-    startedAt: new Date(),
+    startedAt: originalRemoteSessionStart(),
   }).where(eq(remoteSessions.id, sessionId));
 }
 

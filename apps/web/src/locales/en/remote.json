@@ -209,6 +209,7 @@
       "copy": "Copy",
       "delete": "Delete",
       "download": "Download",
+      "mkdir": "New folder",
       "move": "Move",
       "purge": "Purge",
       "restore": "Restore",
@@ -250,6 +251,7 @@
     "emptyDirectory": "Empty Directory",
     "errors": {
       "copy": "Failed to copy",
+      "createFolder": "Failed to create folder",
       "delete": "Failed to delete",
       "download": "Failed to download",
       "downloadTooLarge": "Too large to download ({{size}}). The file browser transfers files up to {{max}}.",
@@ -264,6 +266,15 @@
     "home": "Home",
     "modified": "Modified",
     "moveTo": "Move To",
+    "newFolder": {
+      "action": "New folder",
+      "title": "New folder",
+      "nameLabel": "Folder name",
+      "location": "Will be created in {{path}}",
+      "created": "Created folder {{name}}",
+      "invalidName": "Folder names can't contain path separators or characters this device's file system doesn't allow.",
+      "nameExists": "A file or folder with this name already exists here."
+    },
     "selectedCount": "Selected Count",
     "size": "Size",
     "title": "File Manager",

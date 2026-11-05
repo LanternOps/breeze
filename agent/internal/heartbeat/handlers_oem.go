@@ -11,6 +11,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/httputil"
 	"github.com/breeze-rmm/agent/internal/oemupdates"
+	"github.com/breeze-rmm/agent/internal/oemupdates/bitlockerguard"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/privilege"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -225,8 +226,65 @@ func (h *Heartbeat) verifyOemUpdates() {
 	ctx, cancel := h.oemRunContext()
 	defer cancel()
 	deps := oemupdates.ProductionDeps(nil, nil)
-	if err := oemupdates.VerifyPending(ctx, deps, h.putOemVerification); err != nil && !errors.Is(err, context.Canceled) {
+	// The guard goes first: a volume this agent suspended comes back before anything
+	// reports its state.
+	watch := &oemBitLockerWatch{}
+	watch.pass(ctx, deps)
+	if err := oemVerifyPending(ctx, deps, h.putOemVerification); err != nil && !errors.Is(err, context.Canceled) {
 		log.Warn("vendor update verification incomplete", "error", err.Error())
+	}
+	// A suspended volume can wait days for its reboot, and this process may never
+	// restart in that time, so the guard keeps checking for as long as it runs.
+	ticker := time.NewTicker(oemBitLockerTick)
+	defer ticker.Stop()
+	watch.run(ctx, deps, ticker.C, func() {
+		if err := oemVerifyPending(ctx, deps, h.putOemVerification); err != nil && !errors.Is(err, context.Canceled) {
+			log.Warn("vendor update verification incomplete", "error", err.Error())
+		}
+	})
+}
+
+// oemBitLockerTick is how often the BitLocker guard looks at its record. Without
+// a record that is one small file read.
+const oemBitLockerTick = 10 * time.Minute
+
+// Seams, so the watch tests on any OS without a volume.
+var (
+	oemResumeBitLocker = oemupdates.ResumeBitLocker
+	oemGuardDeps       = oemupdates.ProductionGuardDeps
+	oemVerifyPending   = oemupdates.VerifyPending
+)
+
+// oemBitLockerWatch drives the guard's resume pass.
+type oemBitLockerWatch struct {
+	lastFailure string
+}
+
+// pass runs once and says whether a record closed, which is when a verification
+// held back for it can go. A failure warns once per distinct message.
+func (w *oemBitLockerWatch) pass(ctx context.Context, deps oemupdates.Deps) (closed bool) {
+	res, err := oemResumeBitLocker(ctx, deps, oemGuardDeps())
+	if err != nil {
+		if msg := err.Error(); msg != w.lastFailure && !errors.Is(err, context.Canceled) {
+			w.lastFailure = msg
+			log.Warn("BitLocker guard pass failed; it keeps trying", "error", msg)
+		}
+		return false
+	}
+	w.lastFailure = ""
+	return res.Action == bitlockerguard.ActionResumed || res.Action == bitlockerguard.ActionCleared
+}
+
+func (w *oemBitLockerWatch) run(ctx context.Context, deps oemupdates.Deps, tick <-chan time.Time, verify func()) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick:
+			if w.pass(ctx, deps) {
+				verify()
+			}
+		}
 	}
 }
 

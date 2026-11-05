@@ -27,6 +27,10 @@ import {
   dirSegments,
   listSnapshotDirectory,
 } from '../../services/backupSnapshotBrowse';
+import { readSnapshotIndexView, type SnapshotIndexView } from '../../services/backupSnapshotIndexView';
+import { enqueueSnapshotFileIndexHydration } from '../../jobs/backupSnapshotFileIndexWorker';
+import { requestFileIndexHydrationAfterContext } from './fileIndexHydrationRequest';
+import { captureException } from '../../services/sentry';
 import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
@@ -255,18 +259,8 @@ snapshotsRoutes.get('/snapshots/:id/browse', requirePermission(PERMISSIONS.BACKU
   ], 'read');
   if (!authorization.ok) return authorization.response;
 
-  const [row] = await db
-    .select()
-    .from(backupSnapshots)
-    .where(
-      and(
-        eq(backupSnapshots.id, snapshotId),
-        eq(backupSnapshots.orgId, orgId)
-      )
-    )
-    .limit(1);
-
-  if (!row) {
+  const index = await readSnapshotIndexView(snapshotId, orgId);
+  if (!index) {
     return c.json({ error: 'Snapshot not found' }, 404);
   }
 
@@ -275,27 +269,111 @@ snapshotsRoutes.get('/snapshots/:id/browse', requirePermission(PERMISSIONS.BACKU
     return c.json({ error: 'Invalid cursor' }, 400);
   }
 
+  // #11026: a snapshot with no index to list (persisted before eager
+  // hydration, or whose request or job failed) builds one from its manifest
+  // when someone browses it, instead of staying empty until a restore asks.
+  if (index.shouldRequestHydration) {
+    requestFileIndexHydrationAfterContext(index.id, 'browse');
+  }
+
   // Bounded, SQL-side one-level listing: only `limit + 1` grouped entries
   // leave Postgres, so the request's DB context is held for one cheap query
   // instead of materialising and serialising the whole file index (#8230).
+  // The listing itself only reads an index that may be trusted.
   const segments = dirSegments(query.dir);
   const page = await listSnapshotDirectory({
-    snapshotDbId: row.id,
+    snapshotDbId: index.id,
     segments,
     limit: query.limit,
     cursor,
   });
 
+  // Kept for web bundles that predate `index`.
   const manifestUnavailable =
-    segments.length === 0 && !cursor && page.entries.length === 0 && (row.fileCount ?? 0) > 0;
+    segments.length === 0 && !cursor && page.entries.length === 0 && (index.fileCount ?? 0) > 0;
   return c.json({
-    snapshotId: row.id,
+    snapshotId: index.id,
     manifestUnavailable,
+    index: index.view,
     dir: segments.length > 0 ? `/${segments.join('/')}` : '',
     data: page.entries,
     nextCursor: page.nextCursor,
   });
 });
+
+// #11026: build a snapshot's file list again from its manifest, for a person
+// whose browse ended in "can't read the list". Changes derived data only (the
+// index is rebuilt from bytes the attestation names), so it needs backup write
+// but not a fresh second factor.
+snapshotsRoutes.post(
+  '/snapshots/:id/file-index/rebuild',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
+  zValidator('param', snapshotIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if (!orgId) {
+      return c.json({ error: 'orgId is required for this scope' }, 400);
+    }
+
+    const { id: snapshotId } = c.req.valid('param');
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'snapshot', id: snapshotId, role: 'source' },
+    ], 'verify');
+    if (!authorization.ok) return authorization.response;
+
+    const index = await readSnapshotIndexView(snapshotId, orgId);
+    if (!index) {
+      return c.json({ error: 'Snapshot not found' }, 404);
+    }
+    // Rebuilding cannot help a snapshot whose stored bytes are not the
+    // attested ones: it would only fail the same way.
+    if (
+      index.view.state === 'unavailable'
+      && (index.view.failure === 'attestation_failed' || index.view.failure === 'manifest_differs_from_attestation')
+    ) {
+      return c.json({ error: "This snapshot failed its integrity check, so its file list can't be rebuilt.", code: 'attestation_failed' }, 409);
+    }
+
+    // A failed index stays failed until the worker claims it, and a person
+    // polling meanwhile would read the old failure back and stop. Set it to
+    // not-built first: the view then reads as building (and asks again on its
+    // own if this request is lost). Only a failed row: never one a hydration
+    // is running on or one that is complete.
+    await db
+      .update(backupSnapshots)
+      .set({ fileIndexStatus: 'none', fileIndexError: null })
+      .where(and(
+        eq(backupSnapshots.id, index.id),
+        eq(backupSnapshots.orgId, orgId),
+        eq(backupSnapshots.fileIndexStatus, 'failed'),
+      ));
+
+    try {
+      await enqueueSnapshotFileIndexHydration(index.id, 'rebuild', { force: true });
+    } catch (err) {
+      console.error(`[backup] Failed to request a file-index rebuild for snapshot ${index.id}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+      return c.json({ error: "Couldn't start rebuilding the file list. Try again in a moment.", code: 'rebuild_unavailable' }, 503);
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'backup.snapshot.file_index.rebuild',
+      resourceType: 'backup_snapshot',
+      resourceId: index.id,
+      details: {
+        snapshotIds: [index.id],
+        previousState: index.view.state,
+        ...(index.view.state === 'unavailable' ? { previousFailure: index.view.failure } : {}),
+      },
+    });
+
+    const building: SnapshotIndexView = { state: 'building' };
+    return c.json({ index: building }, 202);
+  },
+);
 
 snapshotsRoutes.post(
   '/snapshots/:id/legal-hold',

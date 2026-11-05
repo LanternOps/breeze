@@ -320,6 +320,7 @@
     "generateNewToken": "Générer un nouveau jeton",
     "generateNewLink": "Générer un nouveau lien",
     "cliTokenReuse": "Généré précédemment. Valide jusqu’au {{date}}, sauf si toutes ses inscriptions d’appareils ont déjà été utilisées.",
+    "cliTokenReuseVerified": "Généré précédemment. Valide jusqu’au {{date}}.",
     "linkReuse": "Généré précédemment pour {{platform}}. Valide jusqu’au {{date}}.",
     "generateToken": "Générer un jeton",
     "cliTokenNotGenerated": "Aucun jeton pour l’instant. Choisissez le site, le nombre d’appareils et l’expiration, puis générez un jeton. Chaque jeton est une clé d’inscription active.",
@@ -433,6 +434,18 @@
         "message": "Retirer {{hostname}} ? Il sera sorti de votre parc actif et ne sera plus surveillé. L’historique est conservé et vous pourrez le restaurer plus tard.",
         "confirm": "Retirer"
       },
+      "forcePermanentDelete": {
+        "confirm": "Supprimer quand même",
+        "reason": {
+          "agentReturned": "Une désinstallation a déjà été effectuée, mais l'agent s'est reconnecté depuis (il a été réinstallé).",
+          "cancelled": "La désinstallation de l'agent a été annulée avant son exécution.",
+          "expired": "L'agent n'est jamais revenu récupérer la désinstallation avant son expiration.",
+          "failed": "La commande de désinstallation s'est exécutée sur l'appareil, mais elle a signalé un échec.",
+          "none": "Aucune désinstallation d'agent n'a été mise en file d'attente pour cet appareil (il a été retiré en laissant l'agent installé)."
+        },
+        "risk": "Supprimer {{hostname}} maintenant peut laisser l'agent installé et actif sans que personne ne le gère. Cette action est irréversible.",
+        "title": "L'agent n'a pas confirmé sa suppression"
+      },
       "permanentDelete": {
         "title": "Supprimer {{hostname}} définitivement ?",
         "message": "Cela supprime tout l’historique de cet appareil : tickets, alertes, enregistrements de correctifs et de sauvegardes. Cette action est irréversible.",
@@ -508,7 +521,10 @@
     "shutdown": "Éteindre",
     "deviceSettings": "Paramètres de l’appareil",
     "installHomebrew": "Installer Homebrew",
-    "restartAgent": "Redémarrer l’agent"
+    "restartAgent": "Redémarrer l’agent",
+    "runVendorUpdates": "Exécuter les mises à jour du constructeur",
+    "runVendorUpdatesHint": "Exécute l’outil de mise à jour du constructeur sur cet appareil.",
+    "runVendorUpdatesAgentUpgradeRequired": "Mise à niveau de l’agent requise : les mises à jour du constructeur nécessitent l’agent {{version}} ou une version ultérieure"
   },
   "deviceActivityFeed": {
     "activity": "Activité",
@@ -945,6 +961,8 @@
     "backupStatusJobsSnapshotsAndVerification": "État de sauvegarde, tâches, instantanés et vérification",
     "theOsReportsAPendingReboot": "Le système d’exploitation signale un redémarrage imminent (Windows registre / Linux marqueurs de redémarrage requis).",
     "rebootPending": "Redémarrage en attente",
+    "backupRunning": "Sauvegarde en cours",
+    "backupRunningTooltip": "Une sauvegarde est en cours sur cet appareil. Ouvrez l'onglet Sauvegarde pour voir sa progression.",
     "restartScheduled": "Redémarrage programmé",
     "restartInProgress": "Redémarrage en cours",
     "restartScheduledFor": "Redémarrage programmé pour {{time}}",
@@ -955,6 +973,7 @@
     "restartCannotBePostponed": "Ne peut pas être reporté",
     "restartSourcePatchJob": "Demandé par une installation de correctifs",
     "restartSourceMaintenanceWindow": "Demandé par une fenêtre de maintenance",
+    "restartSourceOemUpdates": "Demandé par une exécution de mises à jour du constructeur",
     "restartSourceManual": "Demandé par un technicien",
     "restartSourceUnknown": "Redémarrage programmé",
     "agentV": "Agent c",
@@ -1038,6 +1057,10 @@
       "label": "approbation",
       "byRing": "définie par l'anneau de mise à jour lié",
       "manualOnly": "approbations manuelles uniquement (aucun anneau de mise à jour lié)"
+    },
+    "containment": {
+      "extraDestinations": "Destinations supplémentaires pendant l’isolement",
+      "invalid": "Les paramètres de confinement de cette politique ne sont pas valides : l’isolement utilise donc les valeurs par défaut fixes, sans destination supplémentaire."
     },
     "chainResolutionRule": "Le niveau décide d’abord : Appareil l’emporte sur Groupe d’appareils, puis Site, Organisation et Partenaire. La priorité (le plus petit nombre l’emporte) ne départage que les politiques d’un même niveau. Les fonctionnalités barrées ont été remplacées par une politique plus proche.",
     "featureOverriddenBy": "Remplacée par {{policy}}"
@@ -2688,6 +2711,7 @@
       "bulkMaintenanceSuccess_other": "{{count}} appareils {{verb}} mode maintenance",
       "bulkPurgeFailed": "Échec de la suppression définitive : {{reason}}",
       "bulkPurgeNoneDeleted": "Aucun appareil n'a été supprimé : {{reasons}}",
+      "bulkPurgeSkipUninstallNotConfirmed": "ignorés : l'agent n'a jamais confirmé sa désinstallation (supprimez-les un par un depuis l'appareil)",
       "bulkWakeAllFailed": "Réveil en vrac échoué",
       "bulkWakeSent": "Envoi d’un sillage en masse",
       "bulkWakeSomeFailed": "Bulk Wake Certains ont échoué",
@@ -4886,6 +4910,123 @@
       "device_decommissioned": "Un appareil mis hors service ne peut pas démarrer un nouvel isolement.",
       "device_pending_assignment": "Attribuez cet appareil à une organisation avant de lancer l’isolement.",
       "backup_helper_update_required": "Mettez à jour l’assistant de sauvegarde avant de lancer l’isolement."
+    }
+  },
+  "runVendorUpdatesDialog": {
+    "title": "Exécuter les mises à jour du constructeur",
+    "description": "Exécute maintenant l’outil de mise à jour de {{vendor}} sur {{hostname}}. Il peut installer des pilotes et des applications, et flasher le BIOS et le micrologiciel.",
+    "rebootLegend": "Si les mises à jour nécessitent un redémarrage",
+    "whenFinishedLabel": "Redémarrer à la fin",
+    "whenFinishedDescription": "Breeze redémarre l’appareil après l’exécution, avec l’avertissement que définit sa politique de correctifs. Les mises à jour du BIOS et du micrologiciel sont incluses.",
+    "leaveToMeLabel": "Je m’occupe du redémarrage",
+    "leaveToMeDescription": "Breeze ne redémarre pas l’appareil. Quelqu’un le redémarre plus tard pour terminer les mises à jour.",
+    "skippedNote": "Les mises à jour du BIOS et du micrologiciel sont ignorées avec ce choix, car elles nécessitent un redémarrage que Breeze contrôle. Les pilotes et les applications sont tout de même exécutés.",
+    "confirm": "Exécuter les mises à jour",
+    "submitting": "Démarrage...",
+    "cancel": "Annuler",
+    "genericError": "Impossible de démarrer les mises à jour du constructeur sur cet appareil.",
+    "queued": "Mises à jour du constructeur démarrées sur {{hostname}}.",
+    "queuedSkipped": "Mises à jour du constructeur démarrées sur {{hostname}}. Le BIOS et le micrologiciel ont été ignorés.",
+    "refusal": {
+      "flagOff": "Les mises à jour du constructeur ne sont pas activées pour cette organisation.",
+      "laneClosed": "Les mises à jour du constructeur ne sont pas encore disponibles pour le constructeur de cet appareil.",
+      "killSwitch": "Les mises à jour du constructeur sont suspendues pour le constructeur de cet appareil.",
+      "agentTooOld": "L’agent de cet appareil est trop ancien pour les mises à jour du constructeur. Mettez l’agent à jour vers la version {{version}} ou ultérieure.",
+      "notApplicable": "Les mises à jour du constructeur ne s’appliquent pas à cet appareil.",
+      "notSupported": "L’outil du constructeur ne prend pas en charge ce modèle.",
+      "ephemeral": "Les mises à jour du constructeur ne s’exécutent pas sur les appareils Quick Support.",
+      "parked": "Affectez cet appareil à une organisation avant d’exécuter les mises à jour du constructeur.",
+      "offline": "L’appareil n’est pas en ligne. Les mises à jour du constructeur ne démarrent que sur un appareil actuellement en ligne.",
+      "runInFlight": "Une exécution de mises à jour du constructeur est déjà en cours sur cet appareil.",
+      "noOpenCategories": "Rien ne peut s’exécuter avec ce choix. Seuls le BIOS et le micrologiciel sont disponibles ici : choisissez Redémarrer à la fin.",
+      "decommissioned": "Cet appareil est mis hors service, rien ne peut donc lui être envoyé.",
+      "cancelledAtClaim": "L’exécution a été annulée avant d’atteindre l’appareil. Réessayez."
+    }
+  },
+  "vendorUpdates": {
+    "title": "Mises à jour du constructeur",
+    "refreshState": "Actualiser",
+    "loadError": "Impossible de charger les mises à jour du constructeur pour cet appareil.",
+    "retryLoad": "Réessayer",
+    "empty": "Aucune mise à jour du constructeur n’a encore été exécutée sur cet appareil.",
+    "state": {
+      "upToDate": "À jour",
+      "overdue": "En retard",
+      "failing": "Nécessite une intervention",
+      "notSupported": "Modèle non pris en charge",
+      "notManaged": "Aucune planification",
+      "waitingForReboot": "En attente de redémarrage",
+      "rebootOverdue": "Redémarrage en retard"
+    },
+    "stateDescription": {
+      "upToDate": "La dernière exécution planifiée s’est terminée.",
+      "overdue": "Aucune exécution ne s’est terminée depuis l’échéance de la planification.",
+      "failing": "La dernière exécution ne s’est pas terminée. Voir ci-dessous la marche à suivre.",
+      "notSupported": "L’outil du constructeur ne prend pas en charge ce modèle.",
+      "notManaged": "Aucune politique ne planifie ici les mises à jour du constructeur. Vous pouvez toujours les exécuter à la demande.",
+      "notOffered": "Les mises à jour du constructeur ne sont pas disponibles sur cet appareil pour le moment.",
+      "waitingForReboot": "Les mises à jour sont installées et prennent effet après le prochain redémarrage.",
+      "rebootOverdue": "Un redémarrage est en attente depuis plus de trois jours."
+    },
+    "lastRunHeading": "Dernière exécution",
+    "outcomeLabel": "Résultat",
+    "noOutcomeYet": "En attente du rapport de l’appareil",
+    "errorCodeLabel": "Code d’erreur",
+    "toolVersionLabel": "Version de l’outil",
+    "lastAttemptLabel": "Démarrée",
+    "installedLabel": "Installées",
+    "failedLabel": "Échouées",
+    "rebootLabel": "Redémarrage",
+    "rebootPendingSince": "Redémarrage nécessaire depuis le {{date}}",
+    "rebootNotNeeded": "Aucun redémarrage nécessaire",
+    "outcome": {
+      "success": "Réussie",
+      "successRebootRequired": "Réussie, redémarrage nécessaire",
+      "noUpdates": "Aucune mise à jour trouvée",
+      "partial": "Installée en partie",
+      "failed": "Non terminée",
+      "notSupported": "Modèle non pris en charge",
+      "toolUnavailable": "Outil indisponible",
+      "blockedOnBattery": "Bloquée : sur batterie",
+      "blockedRebootPending": "Bloquée : redémarrage en attente",
+      "blockedNoRecoveryKey": "Bloquée : aucune clé de récupération",
+      "retryLater": "Nouvelle tentative prévue",
+      "interrupted": "Interrompue"
+    },
+    "outcomeHelp": {
+      "partial": "Certaines mises à jour ont été installées et d’autres non. Vérifiez les éléments échoués ci-dessous, puis exécutez de nouveau les mises à jour du constructeur.",
+      "failed": "L’outil du constructeur ne s’est pas terminé. Vérifiez le code d’erreur, puis exécutez de nouveau les mises à jour du constructeur.",
+      "notSupported": "L’outil du constructeur ne prend pas en charge ce modèle, donc Breeze cesse de le solliciter jusqu’à ce que la version de l’outil ou le modèle change.",
+      "toolUnavailable": "L’outil de mise à jour du constructeur n’est pas installé et n’a pas pu être récupéré. Vérifiez que l’appareil peut accéder au site de téléchargement du constructeur.",
+      "blockedOnBattery": "Le BIOS et le micrologiciel ne s’exécutent que sur secteur avec une batterie suffisante. Branchez l’appareil, puis exécutez de nouveau les mises à jour du constructeur.",
+      "blockedRebootPending": "L’appareil a déjà un redémarrage en attente. Une fois l’appareil redémarré, exécutez de nouveau les mises à jour du constructeur.",
+      "blockedNoRecoveryKey": "Le BIOS et le micrologiciel restent bloqués tant que Breeze ne détient pas la clé de récupération BitLocker actuelle de cet appareil. Sauvegardez la clé dans Breeze, puis exécutez de nouveau les mises à jour du constructeur.",
+      "retryLater": "L’outil du constructeur a demandé de réessayer plus tard. Breeze n’a rien modifié sur l’appareil.",
+      "interrupted": "L’exécution s’est arrêtée avant la fin, généralement parce que l’appareil a redémarré ou que l’agent s’est arrêté. Exécutez de nouveau les mises à jour du constructeur."
+    },
+    "categoriesHeading": "Ce qui peut s’exécuter sur cet appareil",
+    "category": {
+      "bios": "BIOS",
+      "firmware": "Micrologiciel",
+      "driver": "Pilotes",
+      "application": "Logiciels"
+    },
+    "gateOpen": "Disponible",
+    "gateClosed": "Pas encore disponible chez {{vendor}}. Breeze n’active chaque type de mise à jour qu’après l’avoir testé sur du matériel réel.",
+    "itemResult": {
+      "installed": "installée",
+      "failed": "échouée",
+      "skipped": "ignorée"
+    },
+    "history": {
+      "heading": "Historique des exécutions",
+      "loadError": "Impossible de charger l’historique des exécutions.",
+      "noResult": "Aucun résultat lisible",
+      "bySchedule": "Planification",
+      "byUnknown": "Inconnu",
+      "range": "{{from}}-{{to}} sur {{total}}",
+      "previousPage": "Précédent",
+      "nextPage": "Suivant"
     }
   }
 }
