@@ -54,9 +54,10 @@ const (
 		" | ConvertTo-Json -Compress"
 
 	// localAdminNetGroupPS asks net.exe about the group by its localized name,
-	// translated from the SID. Stop matters: with no name, `net localgroup`
-	// lists every group on the host. The encoding switches only after net has
-	// been captured, because PowerShell decodes native output with it.
+	// translated from the SID, then resolves the members it listed. Stop matters:
+	// with no name, `net localgroup` lists every group on the host. The encoding
+	// switches only after net has been captured, because PowerShell decodes native
+	// output with it.
 	localAdminNetGroupPS = "$ErrorActionPreference='Stop';" +
 		"$g=(New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')).Translate([System.Security.Principal.NTAccount]).Value.Split('\\')[-1];" +
 		"$o=& net localgroup $g;" +
@@ -66,10 +67,15 @@ const (
 		"'" + localAdminResolveMarker + "';" +
 		localAdminResolvePS
 
-	// localAdminResolvePS turns net's lines in $o into a JSON array of Name, SID
-	// and Enabled. It finds the members by the same layout parseNetLocalGroupMembers
-	// reads, so that it asks LSA only about them, and that parser still decides who
-	// is a member.
+	// localAdminResolvePS writes one line of JSON per member from net's lines in
+	// $o, with Name, SID and Enabled. It finds the members by the same layout
+	// parseNetLocalGroupMembers reads, so that it asks LSA only about them, and that
+	// parser still decides who is a member.
+	//
+	// A domain lookup can block on an unreachable domain controller until the
+	// timeout kills the script. So each member is written as soon as it resolves,
+	// and local names, which never leave the host, go first: the built-in accounts
+	// are resolved before any domain lookup can use up the budget.
 	//
 	// A name that does not translate, typically a domain member with no reachable
 	// domain controller, keeps a null SID and is classified by name. Enabled is read
@@ -80,9 +86,10 @@ const (
 	localAdminResolvePS = "try{" +
 		"$m=@();$b=$false;" +
 		"foreach($l in $o){$t=([string]$l).Trim();if($b){if($t){$m+=$t}}elseif($t -match '^-{3,}$'){$b=$true}};" +
-		"$r=@();" +
-		"for($i=0;$i -lt $m.Count-1;$i++){" +
-		"$n=$m[$i];$s=$null;$e=$null;" +
+		"$k=@();" +
+		"for($i=0;$i -lt $m.Count-1;$i++){$k+=$m[$i]};" +
+		"foreach($n in (@($k|Where-Object{$_ -notlike '*\\*'})+@($k|Where-Object{$_ -like '*\\*'}))){" +
+		"$s=$null;$e=$null;" +
 		"if($n -notlike 'S-1-*'){" +
 		"try{$s=(New-Object System.Security.Principal.NTAccount($n)).Translate([System.Security.Principal.SecurityIdentifier]).Value;" +
 		"if($s -match '-50[01]$'){" +
@@ -90,9 +97,8 @@ const (
 		"if($u){$e=-not $u.Disabled}" +
 		"}}catch{}" +
 		"};" +
-		"$r+=@{Name=$n;SID=$s;Enabled=$e}" +
-		"};" +
-		"ConvertTo-Json -Compress -InputObject @($r)" +
+		"ConvertTo-Json -Compress -InputObject @{Name=$n;SID=$s;Enabled=$e}" +
+		"}" +
 		"}catch{[string]$_}"
 )
 
@@ -111,7 +117,8 @@ var runLocalAdminPowerShell = func(timeout time.Duration, script string) (string
 	return string(output), err
 }
 
-// localAdminCmdletGate remembers that Get-LocalGroupMember cannot answer here.
+// localAdminCmdletGate remembers that Get-LocalGroupMember cannot answer here,
+// and whether the net path's resolver failure has been warned about since.
 type localAdminCmdletGate struct {
 	now func() time.Time
 
@@ -205,7 +212,7 @@ func localAdminSummaryFromCmdlet(parsed any) map[string]any {
 
 func localAdminSummaryFromNet() (map[string]any, error) {
 	output, runErr := runLocalAdminPowerShell(localAdminNetTimeout, localAdminNetGroupPS)
-	netOutput, resolverOutput, netComplete := strings.Cut(output, localAdminResolveMarker)
+	netOutput, resolverOutput, netComplete := splitLocalAdminNetOutput(output)
 	// Past the marker a failure can only be the resolver's, and net's answer stands.
 	if runErr != nil && !netComplete {
 		return nil, fmt.Errorf("net localgroup failed: %w: %s", runErr, truncateForLog(strings.TrimSpace(output), 300))
@@ -220,9 +227,13 @@ func localAdminSummaryFromNet() (map[string]any, error) {
 		return nil, errors.New("net localgroup listed no members of the Administrators group")
 	}
 	resolved, resolveErr := parseLocalAdminResolved(resolverOutput, runErr)
-	if resolveErr != nil && localAdminCmdlet.shouldWarnResolverFailure() {
-		log.Warn("could not resolve local administrators to SIDs; classifying them by name",
-			"error", resolveErr.Error())
+	if resolveErr != nil {
+		logResolverFailure := log.Debug
+		if localAdminCmdlet.shouldWarnResolverFailure() {
+			logResolverFailure = log.Warn
+		}
+		logResolverFailure("could not resolve every local administrator to a SID; classifying the rest by name",
+			"resolved", len(resolved), "error", resolveErr.Error())
 	}
 	accounts := make([]map[string]any, 0, len(members))
 	for _, member := range members {
@@ -235,32 +246,66 @@ func localAdminSummaryFromNet() (map[string]any, error) {
 		if strings.HasPrefix(member, "S-1-") {
 			sid = member
 		}
-		accounts = append(accounts, localAdminAccount(member, isBuiltInAccount(sid, member), localAdminMemberEnabled(entry["Enabled"])))
+		isBuiltIn := isBuiltInAccount(sid, member)
+		// A failed read of the state is otherwise indistinguishable from an enabled
+		// built-in. A domain's -500 lands here every tick, so this stays at Debug.
+		if _, known := boolFromAny(entry["Enabled"]); isBuiltIn && sid != "" && !known {
+			log.Debug("could not read whether a built-in administrator is enabled; counting it as enabled", "member", member)
+		}
+		accounts = append(accounts, localAdminAccount(member, isBuiltIn, localAdminMemberEnabled(entry["Enabled"])))
 	}
 	return localAdminSummary("windows_net_localgroup", accounts), nil
 }
 
-// parseLocalAdminResolved reads what localAdminResolvePS wrote, keyed by the name
-// as net printed it. An error means the resolver gave nothing to go by, not that
-// some name failed to translate, which it reports in-band with a null SID.
-func parseLocalAdminResolved(output string, runErr error) (map[string]map[string]any, error) {
-	if runErr != nil {
-		return nil, runErr
-	}
-	trimmed := strings.TrimSpace(output)
-	parsed, err := parseJSONValue(trimmed)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s", err, truncateForLog(trimmed, 200))
-	}
-	members := toObjectSlice(parsed)
-	if len(members) == 0 {
-		return nil, fmt.Errorf("no members in resolver output: %s", truncateForLog(trimmed, 200))
-	}
-	resolved := make(map[string]map[string]any, len(members))
-	for _, member := range members {
-		if name, ok := stringFromAny(member["Name"]); ok {
-			resolved[name] = member
+// splitLocalAdminNetOutput splits at the last line that is exactly the marker. A
+// member's name appears in the output too, and matching anywhere in it would let
+// an account named after the marker hide the members listed below it. A name
+// that is the whole line comes before the script's own marker, and JSON lines
+// after that marker cannot equal it. With no marker, net's output may be cut off.
+func splitLocalAdminNetOutput(output string) (netOutput, resolverOutput string, netComplete bool) {
+	lines := strings.Split(output, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) == localAdminResolveMarker {
+			return strings.Join(lines[:i], "\n"), strings.Join(lines[i+1:], "\n"), true
 		}
+	}
+	return output, "", false
+}
+
+// parseLocalAdminResolved reads what localAdminResolvePS wrote, keyed by the name
+// as net printed it. It keeps every complete line even when it also returns an
+// error, because a run killed partway still resolved the members before the kill.
+// An error means the resolver stopped short, not that some name failed to
+// translate, which it reports in-band with a null SID.
+func parseLocalAdminResolved(output string, runErr error) (map[string]map[string]any, error) {
+	resolved := map[string]map[string]any{}
+	var parseErr error
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		parsed, err := parseJSONValue(trimmed)
+		if err != nil {
+			if parseErr == nil {
+				parseErr = fmt.Errorf("%w: %s", err, truncateForLog(trimmed, 200))
+			}
+			continue
+		}
+		for _, member := range toObjectSlice(parsed) {
+			if name, ok := stringFromAny(member["Name"]); ok {
+				resolved[name] = member
+			}
+		}
+	}
+	if runErr != nil {
+		return resolved, runErr
+	}
+	if parseErr != nil {
+		return resolved, parseErr
+	}
+	if len(resolved) == 0 {
+		return resolved, fmt.Errorf("no members in resolver output: %s", truncateForLog(strings.TrimSpace(output), 200))
 	}
 	return resolved, nil
 }

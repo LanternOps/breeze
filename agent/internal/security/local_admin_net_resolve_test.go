@@ -11,14 +11,15 @@ import (
 )
 
 // netResolvedOutput is the shape localAdminNetGroupPS writes: net's own output,
-// the marker, then the resolver's JSON. Hand-written from that script, because
-// Windows PowerShell does not run on the hosts these tests run on.
-func netResolvedOutput(members []string, resolved string) string {
+// the marker, then one line of JSON per resolved member. Hand-written from that
+// script, because these tests fake runLocalAdminPowerShell and never start
+// PowerShell.
+func netResolvedOutput(members []string, resolved ...string) string {
 	return "Alias name     Administrators\r\n\r\nMembers\r\n\r\n" +
 		"-------------------------------------------------------------------------------\r\n" +
 		strings.Join(members, "\r\n") + "\r\n" +
 		"The command completed successfully.\r\n\r\n" +
-		localAdminResolveMarker + "\r\n" + resolved + "\r\n"
+		localAdminResolveMarker + "\r\n" + strings.Join(resolved, "\r\n") + "\r\n"
 }
 
 // netPathAccounts runs one tick on a host whose cmdlet has just failed.
@@ -138,7 +139,7 @@ func TestLocalAdminNetPathReadsResolvedMembers(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			accounts, err := netPathAccounts(t, netResolvedOutput([]string{tt.member}, "["+tt.resolved+"]"), nil)
+			accounts, err := netPathAccounts(t, netResolvedOutput([]string{tt.member}, tt.resolved), nil)
 			if err != nil {
 				t.Fatalf("collectLocalAdminSummaryWindows: %v", err)
 			}
@@ -163,7 +164,8 @@ func TestLocalAdminNetPathMembershipComesFromNet(t *testing.T) {
 	// A name the resolver reports that net did not list is not a member, and a
 	// member the resolver skipped still is one.
 	output := netResolvedOutput([]string{"opsadmin", "Administrator"},
-		`[{"Name":"opsadmin","SID":"S-1-5-21-1-2-3-500","Enabled":false},{"Name":"stranger","SID":"S-1-5-21-1-2-3-500","Enabled":true}]`)
+		`{"Name":"opsadmin","SID":"S-1-5-21-1-2-3-500","Enabled":false}`,
+		`{"Name":"stranger","SID":"S-1-5-21-1-2-3-500","Enabled":true}`)
 	accounts, err := netPathAccounts(t, output, nil)
 	if err != nil {
 		t.Fatalf("collectLocalAdminSummaryWindows: %v", err)
@@ -177,15 +179,120 @@ func TestLocalAdminNetPathMembershipComesFromNet(t *testing.T) {
 	}
 }
 
-func TestLocalAdminNetPathReadsASingleMemberObject(t *testing.T) {
-	// ConvertTo-Json unwraps a one-element array that reaches it down a pipeline.
-	output := netResolvedOutput([]string{"opsadmin"}, `{"Name":"opsadmin","SID":"S-1-5-21-1-2-3-500","Enabled":false}`)
-	accounts, err := netPathAccounts(t, output, nil)
-	if err != nil {
-		t.Fatalf("collectLocalAdminSummaryWindows: %v", err)
+func TestLocalAdminNetPathKeepsWhatResolvedBeforeAKill(t *testing.T) {
+	// The built-ins resolve first because a domain lookup can use up the budget.
+	// Losing them would bring back both misclassifications in #11057.
+	members := []string{"opsadmin", "Administrator", `CONTOSO\Domain Admins`, `CONTOSO\svc`}
+	want := []map[string]any{
+		{"username": "opsadmin", "isBuiltIn": true, "enabled": true, "defaultAccount": true},
+		{"username": "Administrator", "isBuiltIn": false, "enabled": true},
+		{"username": `CONTOSO\Domain Admins`, "isBuiltIn": false, "enabled": true},
+		{"username": `CONTOSO\svc`, "isBuiltIn": false, "enabled": true},
 	}
-	if accounts[0]["isBuiltIn"] != true || accounts[0]["enabled"] != false {
-		t.Fatalf("accounts[0] = %#v", accounts[0])
+	tests := map[string]struct {
+		lastLine string
+		err      error
+	}{
+		"killed between members":        {err: errLocalAdminTimeout},
+		"killed partway through a line": {lastLine: `{"Name":"CONTOSO\\Domain Admins","SID":"S-1-5-21-9`, err: errLocalAdminTimeout},
+		"an error ended the loop":       {lastLine: "The term 'ConvertTo-Json' is not recognized"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			output := netResolvedOutput(members,
+				`{"Name":"opsadmin","SID":"S-1-5-21-1-2-3-500","Enabled":true}`,
+				`{"Name":"Administrator","SID":"S-1-5-21-1-2-3-1001","Enabled":null}`,
+				tt.lastLine)
+			accounts, err := netPathAccounts(t, output, tt.err)
+			if err != nil {
+				t.Fatalf("collectLocalAdminSummaryWindows: %v", err)
+			}
+			if !reflect.DeepEqual(accounts, want) {
+				t.Fatalf("accounts = %#v\nwant %#v", accounts, want)
+			}
+		})
+	}
+}
+
+func TestLocalAdminResolverDetailStaysAtDebugAfterTheWarning(t *testing.T) {
+	var logs bytes.Buffer
+	logging.Init("text", "debug", &logs)
+	t.Cleanup(func() { logging.Init("text", "info", nil) })
+
+	fake := installFakeLocalAdminShell(t)
+	fake.cmdletOut, fake.cmdletErr = orphanedSIDFailure, errors.New("exit status 1")
+	fake.netOut = netResolvedOutput([]string{"Administrator"}, "not json")
+	for i := 0; i < 2; i++ {
+		if _, err := collectLocalAdminSummaryWindows(); err != nil {
+			t.Fatalf("tick %d: %v", i, err)
+		}
+	}
+	message := "could not resolve every local administrator"
+	if got := strings.Count(logs.String(), "level=WARN"); got != 1 {
+		t.Fatalf("logged %d warnings over 2 ticks, want 1:\n%s", got, logs.String())
+	}
+	if got := strings.Count(logs.String(), message); got != 2 {
+		t.Fatalf("logged the failure %d times over 2 ticks, want 2:\n%s", got, logs.String())
+	}
+}
+
+func TestLocalAdminNetPathMemberNamesCannotForgeTheMarker(t *testing.T) {
+	// An account in this group could otherwise be named to hide the members
+	// listed after it.
+	tests := map[string]string{
+		"name containing the marker":      `CONTOSO\` + localAdminResolveMarker + `-x`,
+		"name that is exactly the marker": localAdminResolveMarker,
+	}
+	for name, forged := range tests {
+		t.Run(name, func(t *testing.T) {
+			output := netResolvedOutput([]string{forged, "opsadmin"}, `{"Name":"opsadmin","SID":"S-1-5-21-1-2-3-500","Enabled":false}`)
+			accounts, err := netPathAccounts(t, output, nil)
+			if err != nil {
+				t.Fatalf("collectLocalAdminSummaryWindows: %v", err)
+			}
+			want := []map[string]any{
+				{"username": forged, "isBuiltIn": false, "enabled": true},
+				{"username": "opsadmin", "isBuiltIn": true, "enabled": false},
+			}
+			if !reflect.DeepEqual(accounts, want) {
+				t.Fatalf("accounts = %#v\nwant %#v", accounts, want)
+			}
+		})
+	}
+
+	t.Run("a name containing the marker does not vouch for a cut-off read", func(t *testing.T) {
+		output := "Members\r\n-------------------\r\nCONTOSO\\" + localAdminResolveMarker + "-x\r\nlabuser\r\n"
+		if accounts, err := netPathAccounts(t, output, errLocalAdminTimeout); err == nil {
+			t.Fatalf("want an error, got %#v", accounts)
+		}
+	})
+}
+
+func TestLocalAdminNetPathLogsAnUnreadBuiltInState(t *testing.T) {
+	// A failed Win32_UserAccount read leaves the resolver healthy and the account
+	// counted as enabled, so this line is the only trace of it.
+	message := "could not read whether a built-in administrator is enabled"
+	tests := map[string]struct {
+		resolved string
+		want     int
+	}{
+		"state not read":             {`{"Name":"Administrator","SID":"S-1-5-21-1-2-3-500","Enabled":null}`, 1},
+		"state read":                 {`{"Name":"Administrator","SID":"S-1-5-21-1-2-3-500","Enabled":false}`, 0},
+		"not built in":               {`{"Name":"Administrator","SID":"S-1-5-21-1-2-3-1001","Enabled":null}`, 0},
+		"name match, no SID to read": {`{"Name":"Administrator","SID":null,"Enabled":null}`, 0},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logging.Init("text", "debug", &logs)
+			t.Cleanup(func() { logging.Init("text", "info", nil) })
+			if _, err := netPathAccounts(t, netResolvedOutput([]string{"Administrator"}, tt.resolved), nil); err != nil {
+				t.Fatalf("collectLocalAdminSummaryWindows: %v", err)
+			}
+			if got := strings.Count(logs.String(), message); got != tt.want {
+				t.Fatalf("logged %d times, want %d:\n%s", got, tt.want, logs.String())
+			}
+		})
 	}
 }
 
@@ -274,7 +381,7 @@ func TestLocalAdminResolverFailureWarnsOncePerGateClosure(t *testing.T) {
 	// A healthy resolver is not worth a warning, including a domain name that
 	// did not translate, which is routine.
 	logs.Reset()
-	fake.netOut = netResolvedOutput([]string{`CONTOSO\Domain Admins`}, `[{"Name":"CONTOSO\\Domain Admins","SID":null,"Enabled":null}]`)
+	fake.netOut = netResolvedOutput([]string{`CONTOSO\Domain Admins`}, `{"Name":"CONTOSO\\Domain Admins","SID":null,"Enabled":null}`)
 	fake.now = fake.now.Add(localAdminCmdletFailureTTL)
 	if _, err := collectLocalAdminSummaryWindows(); err != nil {
 		t.Fatalf("healthy tick: %v", err)
@@ -311,11 +418,18 @@ func TestLocalAdminNetScriptResolverStaysQuietAndPortable(t *testing.T) {
 		// Only the RIDs the probe reports on are read, as on the cmdlet path.
 		"-match '-50[01]$'",
 		// No domain enumeration.
-		"-Filter 'LocalAccount=True'",
-		// One element stays an array.
-		"ConvertTo-Json -Compress -InputObject @($r)",
+		"Win32_UserAccount -Filter 'LocalAccount=True'",
+		// Disabled is the opposite of what the probe reports, and getting this
+		// backwards hides every enabled built-in.
+		"$e=-not $u.Disabled",
+		// The last non-blank line is the completion message, not a member.
+		"$i -lt $m.Count-1",
+		// A kill keeps only what was already written, so this is per member.
+		"ConvertTo-Json -Compress -InputObject @{Name=$n;SID=$s;Enabled=$e}",
 		// A printed SID already failed to resolve, so asking again only costs a lookup.
 		"-notlike 'S-1-*'",
+		// Local names first: only a domain lookup can block.
+		`(@($k|Where-Object{$_ -notlike '*\*'})+@($k|Where-Object{$_ -like '*\*'}))`,
 	} {
 		if !strings.Contains(localAdminNetGroupPS, want) {
 			t.Errorf("script is missing %q: %s", want, localAdminNetGroupPS)
