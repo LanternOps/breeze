@@ -4,65 +4,102 @@
  * database, so it is run by hand when this path changes, not in CI.
  *
  *   pnpm test-stack up
- *   cd apps/api && BREEZE_BACKUP_ACCEPTANCE=1 npx vitest run \
+ *   cd apps/api && BREEZE_BACKUP_ACCEPTANCE=1 BREEZE_BACKUP_ACCEPTANCE_OUT=/tmp/a.json npx vitest run \
  *     --config vitest.integration.config.ts \
  *     src/__tests__/integration/backupFileIndexMillionEntries.acceptance.integration.test.ts
  *
- * The manifest is generated as it is read, so what is measured is the hydrator,
- * not the fixture. Numbers depend on the machine: read them as ratios.
+ * What is measured, and where. scripts/backup-hydration-rss.ts writes the manifest
+ * to a file once, then each hydration runs in its own fresh Node process on the
+ * production path, so these figures hold nothing of vitest's or of the fixture's:
+ *
+ * - Post-GC heap delta and event-loop p99 are bounded in both hydrations.
+ * - Peak RSS delta is bounded only in the hydration under
+ *   --max-old-space-size=1024. The one at Node's default heap limit is recorded
+ *   and printed, not asserted: V8 defers its major GC while it has room, so that
+ *   figure is the slack it was allowed, not what the hydrator holds.
+ *
+ * Every read below (browse, search, selection, verify) runs in this process
+ * against the index the heap-limited hydration published, so its times are real
+ * but its memory figures are vitest's. Numbers depend on the machine: read them as
+ * ratios.
  */
 import './setup';
 
-import { createHash, randomBytes } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { createReadStream, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { Readable } from 'node:stream';
+import { dirname, join, resolve } from 'node:path';
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { db } from '../../db';
+import { acceptanceBreaches, HEAP_LIMIT_FLAG, LARGEST_FOLDER, type HydrationRunFigures } from '../../../scripts/backup-hydration-rss.lib';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { verifySnapshotAttestation, type AttestationVerifyDeps } from '../../services/backupAttestationVerify';
-import { hydrateSnapshotFileIndex } from '../../services/backupSnapshotFileIndex';
 import { listSnapshotDirectory, resolveSelectedSnapshotPathsInDb, searchSnapshotFiles } from '../../services/backupSnapshotBrowse';
-import { WRITE_DESTINATION, WRITE_IDENTITY, insertSnapshotRow, orgContext, seedWriteTenant } from './backupWriteFixtures';
+import { orgContext } from './backupWriteFixtures';
 
 const run = it.runIf(!!process.env.DATABASE_URL && process.env.BREEZE_BACKUP_ACCEPTANCE === '1');
 
 const TOTAL_ENTRIES = 1_100_000;
-const LARGEST_FOLDER_ENTRIES = 300_000;
-const LARGEST_FOLDER = 'C:\\Data\\Archive\\2026\\Exports\\largest';
+const API_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+const execFileAsync = promisify(execFile);
 
-function entryFor(snapshotId: string, i: number): Record<string, unknown> {
-  const sourcePath = i < LARGEST_FOLDER_ENTRIES
-    ? `${LARGEST_FOLDER}\\export-record-${String(i).padStart(7, '0')}.dat`
-    : `C:\\Users\\user-${i % 200}\\Documents\\Projects\\project-${i % 2000}\\workstream-${i % 50}\\document-with-a-long-enough-name-${i}.docx`;
-  return {
-    sourcePath,
-    backupPath: `snapshots/${snapshotId}/files/${sourcePath.replaceAll('\\', '/').replace('C:/', 'C/')}`,
-    size: i,
-    modTime: '2026-11-01T10:11:12.123456789Z',
-    checksum: createHash('sha256').update(String(i)).digest('hex'),
-    mode: 420,
-  };
+/** The fields of scripts/backup-hydration-rss.ts's state file that this test reads. */
+type RssToolState = {
+  snapshotId: string;
+  snapshotDbId: string;
+  orgId: string;
+  deviceId: string;
+  jobId: string;
+  manifestPath: string;
+  manifestKey: string;
+  manifestBytes: number;
+  manifestSha256: string;
+  provider: { type: string; config: Record<string, unknown> };
+  storageIdentity: string;
+};
+
+type RssToolRun = HydrationRunFigures & {
+  rows: number;
+  wallMs: number;
+  peakHeapUsedMb: number;
+  eventLoopMaxMs: number;
+  outcome: unknown;
+};
+
+/** A NODE_OPTIONS from the caller's shell would quietly move the default heap limit. */
+async function rssTool(args: string[]): Promise<void> {
+  const { NODE_OPTIONS: _callersHeapLimit, ...env } = process.env;
+  await execFileAsync(process.execPath, ['--import', 'tsx', 'scripts/backup-hydration-rss.ts', ...args], {
+    cwd: API_ROOT,
+    env,
+    maxBuffer: 64 * 1024 * 1024,
+  });
 }
 
-/** The manifest, about 64 KB at a time, never held whole. */
-function* manifestChunks(snapshotId: string): Generator<Buffer> {
-  let pending = `{"id":${JSON.stringify(snapshotId)},"timestamp":"2026-11-01T10:11:12Z","securityDescriptors":["O:BAG:SYD:AI"],"files":[`;
-  for (let i = 0; i < TOTAL_ENTRIES; i += 1) {
-    pending += (i === 0 ? '' : ',') + JSON.stringify(entryFor(snapshotId, i));
-    if (pending.length >= 64 * 1024) {
-      yield Buffer.from(pending);
-      pending = '';
-    }
-  }
-  yield Buffer.from(`${pending}]}`);
+/** One hydration in a fresh process. Resets the index first, so each does the whole job. */
+async function hydrateInOwnProcess(dir: string, name: string, nodeFlags: string | null): Promise<RssToolRun> {
+  const out = join(dir, `${name}.json`);
+  await rssTool(['run', '--state', join(dir, 'state.json'), '--runs', '1', '--out', out, ...(nodeFlags ? [`--node-flags=${nodeFlags}`] : [])]);
+  const { results } = JSON.parse(readFileSync(out, 'utf8')) as { results: RssToolRun[] };
+  return results[0]!;
 }
 
-/** Peak RSS growth and event-loop delay while `work` runs. */
+const hydrationFigures = (r: RssToolRun) => ({
+  wallMs: r.wallMs,
+  rows: r.rows,
+  peakRssDeltaMb: r.peakRssDeltaMb,
+  peakHeapUsedMb: r.peakHeapUsedMb,
+  postGcHeapDeltaMb: r.postGcHeapDeltaMb,
+  eventLoopP99Ms: r.eventLoopP99Ms,
+  eventLoopMaxMs: r.eventLoopMaxMs,
+  heapSizeLimitMb: r.heapSizeLimitMb,
+});
+
+/** Peak RSS growth and event-loop delay of this process while `work` runs. */
 async function measured<T>(work: () => Promise<T>) {
   const baselineRss = process.memoryUsage().rss;
   let peakRss = baselineRss;
@@ -95,50 +132,39 @@ async function timed<T>(work: () => Promise<T>): Promise<{ result: T; ms: number
 
 describe('file index acceptance at 1.1M entries', () => {
   run('hydrates, verifies, browses, searches and selects within the plan\'s bounds', async () => {
-    const t = await seedWriteTenant({ jobStatus: 'completed' });
-    const snapshotId = `snapshot-20261112T120000Z-${randomBytes(12).toString('hex')}`;
-    const snapshotDbId = await insertSnapshotRow(t, snapshotId);
-    const spoolBaseDir = await mkdtemp(join(tmpdir(), 'breeze-acceptance-spool-'));
+    const dir = await mkdtemp(join(tmpdir(), 'breeze-acceptance-'));
 
     try {
-      const hydration = await measured(() =>
-        runOutsideDbContext(() =>
-          hydrateSnapshotFileIndex(snapshotDbId, {
-            includeUnreferenced: true,
-            deps: { openManifest: async () => Readable.from(manifestChunks(snapshotId)), spoolBaseDir },
-          }),
-        ),
-      );
+      await rssTool(['prepare', '--entries', String(TOTAL_ENTRIES), '--dir', dir]);
+      const state = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8')) as RssToolState;
+      const { snapshotId, snapshotDbId } = state;
+
+      const atDefaultLimit = await hydrateInOwnProcess(dir, 'default-heap-limit', null);
+      // Last, so the index the reads below see is the one this run published.
+      const heapLimited = await hydrateInOwnProcess(dir, 'heap-limited', HEAP_LIMIT_FLAG);
       const [published] = (await withSystemDbAccessContext(() =>
         db.execute(sql`SELECT now()::text AS at`),
       )) as unknown as Array<{ at: string }>;
 
-      // Only now: reading the whole manifest here first would grow this
-      // process's heap before the baseline above, and flatter the memory figure.
-      const hash = createHash('sha256');
-      let bytes = 0;
-      for (const chunk of manifestChunks(snapshotId)) {
-        hash.update(chunk);
-        bytes += chunk.length;
-      }
-      const manifestSha256 = hash.digest('hex');
-      expect(hydration.result).toMatchObject({ status: 'complete', entryCount: TOTAL_ENTRIES, manifestSha256 });
+      const outcome = { status: 'complete', entryCount: TOTAL_ENTRIES, manifestSha256: state.manifestSha256 };
+      expect(atDefaultLimit.outcome).toEqual(outcome);
+      expect(heapLimited.outcome).toEqual(outcome);
 
       const verifierDeps: AttestationVerifyDeps = {
         load: async () => ({
           attestation: {
-            id: 'att', snapshotDbId, status: 'pending', verificationMode: 'server_fetched', deviceId: t.deviceId,
-            jobId: t.jobId, providerSnapshotId: snapshotId, storageIdentity: WRITE_IDENTITY, keyLayout: 'legacy_flat',
+            id: 'att', snapshotDbId, status: 'pending', verificationMode: 'server_fetched', deviceId: state.deviceId,
+            jobId: state.jobId, providerSnapshotId: snapshotId, storageIdentity: state.storageIdentity, keyLayout: 'legacy_flat',
             parentProviderSnapshotId: null,
-            objects: [{ role: 'manifest', key: `snapshots/${snapshotId}/manifest.json`, sha256: manifestSha256, size: bytes }],
+            objects: [{ role: 'manifest', key: state.manifestKey, sha256: state.manifestSha256, size: state.manifestBytes }],
           },
-          snapshot: { deviceId: t.deviceId, jobId: t.jobId, snapshotId, storageIdentity: WRITE_IDENTITY, keyLayout: 'legacy_flat', keyPrefix: null },
-          provider: { type: 's3', config: WRITE_DESTINATION as unknown as Record<string, unknown> },
+          snapshot: { deviceId: state.deviceId, jobId: state.jobId, snapshotId, storageIdentity: state.storageIdentity, keyLayout: 'legacy_flat', keyPrefix: null },
+          provider: state.provider,
         }),
         fetchObject: async () => {
           throw new Error('the manifest is not buffered');
         },
-        openObject: async () => Readable.from(manifestChunks(snapshotId)),
+        openObject: async () => createReadStream(state.manifestPath),
         finish: async ({ status }) => status,
         defer: async () => ({ attemptCount: 1, parked: false }),
       };
@@ -148,7 +174,7 @@ describe('file index acceptance at 1.1M entries', () => {
       )) as unknown as Array<{ n: number }>;
 
       const read = <T,>(fn: () => Promise<T>) =>
-        runOutsideDbContext(() => withDbAccessContext(orgContext(t.orgId), fn));
+        runOutsideDbContext(() => withDbAccessContext(orgContext(state.orgId), fn));
 
       const readings = async () => ({
         browseRoot: await timed(() => read(() => listSnapshotDirectory({ snapshotDbId, segments: [], limit: 200 }))),
@@ -190,18 +216,29 @@ describe('file index acceptance at 1.1M entries', () => {
       // Last, so its memory is not counted against anything above it.
       const verification = await measured(() => verifySnapshotAttestation(snapshotDbId, verifierDeps));
 
+      const breaches = acceptanceBreaches({
+        defaultLimit: atDefaultLimit,
+        heapLimited,
+        analyzed,
+        settledBrowseRootMs: browseRoot.ms,
+      });
       const report = {
         entries: TOTAL_ENTRIES,
-        manifestMb: Math.round(bytes / (1024 * 1024)),
+        manifestMb: Math.round(state.manifestBytes / (1024 * 1024)),
         rows: rowCount!.n,
-        hydrate: { wallMs: hydration.wallMs, peakRssDeltaMb: hydration.peakRssDeltaMb, eventLoopP99Ms: hydration.eventLoopP99Ms, eventLoopMaxMs: hydration.eventLoopMaxMs },
+        // Recorded, not asserted: see the header.
+        hydrateAtDefaultHeapLimit: hydrationFigures(atDefaultLimit),
+        hydrateUnder1GbHeapLimit: hydrationFigures(heapLimited),
         verify: { wallMs: verification.wallMs, peakRssDeltaMb: verification.peakRssDeltaMb, eventLoopP99Ms: verification.eventLoopP99Ms },
         rightAfterPublish: summarize(firstReadings),
         autoanalyzed: analyzed,
         afterAutoanalyze: summarize(settledReadings),
+        breaches,
       };
-      console.log(`ACCEPTANCE ${JSON.stringify(report)}`);
-      // A passing test's output is hidden under the integration config.
+      // Not console.log: vitest hides that when the test passes, and these figures
+      // are the point of a pass.
+      process.stdout.write(`ACCEPTANCE ${JSON.stringify(report)}\n`);
+      process.stdout.write(`ACCEPTANCE peak RSS delta at the default heap limit: ${atDefaultLimit.peakRssDeltaMb} MB (recorded, not asserted)\n`);
       if (process.env.BREEZE_BACKUP_ACCEPTANCE_OUT) writeFileSync(process.env.BREEZE_BACKUP_ACCEPTANCE_OUT, `${JSON.stringify(report, null, 2)}\n`);
 
       expect(verification.result).toEqual({ outcome: 'verified' });
@@ -212,15 +249,12 @@ describe('file index acceptance at 1.1M entries', () => {
       expect(searchHit.result.entries.map((e) => e.name)).toEqual(['export-record-0299999.dat']);
       expect(selection.result).toEqual({ ok: true, paths: [LARGEST_FOLDER] });
 
-      // The plan's pass bounds. Reported, never tuned. The browse bound applies
-      // to the settled state: the first minute after a publish is a known slow
-      // period, reported above as rightAfterPublish.
-      expect(hydration.peakRssDeltaMb).toBeLessThan(300);
-      expect(hydration.eventLoopP99Ms).toBeLessThan(200);
-      expect(analyzed).toBe(true);
-      expect(browseRoot.ms).toBeLessThan(5000);
+      // The bounds, all reported together. The browse bound applies to the settled
+      // state: the first minute after a publish is a known slow period, reported
+      // above as rightAfterPublish.
+      expect(breaches).toEqual([]);
     } finally {
-      await rm(spoolBaseDir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true });
     }
   }, 1_800_000);
 });

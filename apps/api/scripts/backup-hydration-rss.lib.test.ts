@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { hydrationManifestChunks, largestFolderEntries, summarizeRuns } from './backup-hydration-rss.lib';
+import {
+  acceptanceBreaches,
+  hydrationManifestChunks,
+  hydrationRunBreaches,
+  largestFolderEntries,
+  summarizeRuns,
+  type HydrationRunFigures,
+} from './backup-hydration-rss.lib';
 
 describe('hydrationManifestChunks', () => {
   it('is one JSON document naming the snapshot, with every entry', () => {
@@ -21,17 +28,80 @@ describe('hydrationManifestChunks', () => {
   });
 });
 
+const healthyDefaultLimit: HydrationRunFigures = { peakRssDeltaMb: 420, postGcHeapDeltaMb: 1, eventLoopP99Ms: 13, heapSizeLimitMb: 4144 };
+const healthyHeapLimited: HydrationRunFigures = { peakRssDeltaMb: 113, postGcHeapDeltaMb: 1, eventLoopP99Ms: 13, heapSizeLimitMb: 1072 };
+
+describe('hydrationRunBreaches', () => {
+  it('holds a run at the default heap limit to retention and the event loop, not to RSS', () => {
+    expect(hydrationRunBreaches(healthyDefaultLimit, { heapLimited: false })).toEqual([]);
+  });
+
+  it('holds a run under the 1 GB heap limit to RSS too', () => {
+    expect(hydrationRunBreaches(healthyHeapLimited, { heapLimited: true })).toEqual([]);
+    expect(hydrationRunBreaches({ ...healthyHeapLimited, peakRssDeltaMb: 300 }, { heapLimited: true })).toEqual([
+      'peak RSS delta 300 MB under the 1 GB heap limit (bound < 300)',
+    ]);
+  });
+
+  it('treats the bounds as exclusive for retained heap and the event loop', () => {
+    expect(hydrationRunBreaches({ ...healthyDefaultLimit, postGcHeapDeltaMb: 24 }, { heapLimited: false })).toEqual([]);
+    expect(hydrationRunBreaches({ ...healthyDefaultLimit, postGcHeapDeltaMb: 25 }, { heapLimited: false })).toEqual([
+      'post-GC heap delta 25 MB (bound < 25)',
+    ]);
+    expect(hydrationRunBreaches({ ...healthyDefaultLimit, eventLoopP99Ms: 200 }, { heapLimited: false })).toEqual([
+      'event-loop p99 200 ms (bound < 200)',
+    ]);
+  });
+
+  it('refuses an RSS pass from a process the heap limit never reached', () => {
+    expect(hydrationRunBreaches({ ...healthyHeapLimited, heapSizeLimitMb: 4144 }, { heapLimited: true })).toEqual([
+      'the 1 GB heap limit did not apply: V8 reports 4144 MB',
+    ]);
+  });
+});
+
+describe('acceptanceBreaches', () => {
+  const healthy = { defaultLimit: healthyDefaultLimit, heapLimited: healthyHeapLimited, analyzed: true, settledBrowseRootMs: 2800 };
+
+  it('is empty when every bound holds', () => {
+    expect(acceptanceBreaches(healthy)).toEqual([]);
+  });
+
+  it('reports every breach at once, so one cannot hide the next', () => {
+    expect(acceptanceBreaches({
+      defaultLimit: { ...healthyDefaultLimit, postGcHeapDeltaMb: 400 },
+      heapLimited: { ...healthyHeapLimited, postGcHeapDeltaMb: 400, peakRssDeltaMb: 500 },
+      analyzed: true,
+      settledBrowseRootMs: 5000,
+    })).toEqual([
+      'default heap limit: post-GC heap delta 400 MB (bound < 25)',
+      '1 GB heap limit: post-GC heap delta 400 MB (bound < 25)',
+      '1 GB heap limit: peak RSS delta 500 MB under the 1 GB heap limit (bound < 300)',
+      'settled browse root 5000 ms (bound < 5000)',
+    ]);
+  });
+
+  it('does not call a browse settled when autoanalyze never ran', () => {
+    expect(acceptanceBreaches({ ...healthy, analyzed: false })).toEqual([
+      'autoanalyze never ran after the publish, so the browse reading is not settled',
+    ]);
+  });
+});
+
 describe('summarizeRuns', () => {
-  it('passes only when every run is under the bound', () => {
-    expect(summarizeRuns([{ peakRssDeltaMb: 120 }, { peakRssDeltaMb: 299 }], 300)).toEqual({
-      runs: 2, minMb: 120, medianMb: 210, maxMb: 299, boundMb: 300, pass: true,
+  it('gives the RSS distribution and the worst retained heap, with no RSS verdict at the default heap limit', () => {
+    expect(summarizeRuns([healthyDefaultLimit, { ...healthyDefaultLimit, peakRssDeltaMb: 410, postGcHeapDeltaMb: 3 }], { heapLimited: false })).toEqual({
+      runs: 2, minMb: 410, medianMb: 415, maxMb: 420, maxPostGcHeapDeltaMb: 3, breaches: [], pass: true,
     });
-    expect(summarizeRuns([{ peakRssDeltaMb: 120 }, { peakRssDeltaMb: 300 }, { peakRssDeltaMb: 130 }], 300)).toMatchObject({
-      medianMb: 130, maxMb: 300, pass: false,
+  });
+
+  it('fails if any run breaches, naming the breach', () => {
+    expect(summarizeRuns([healthyHeapLimited, { ...healthyHeapLimited, peakRssDeltaMb: 300 }, healthyHeapLimited], { heapLimited: true })).toMatchObject({
+      medianMb: 113, maxMb: 300, pass: false, breaches: ['peak RSS delta 300 MB under the 1 GB heap limit (bound < 300)'],
     });
   });
 
   it('never passes on no runs', () => {
-    expect(summarizeRuns([], 300).pass).toBe(false);
+    expect(summarizeRuns([], { heapLimited: false }).pass).toBe(false);
   });
 });

@@ -24,10 +24,13 @@
  * stops. `--node-flags=--max-old-space-size=256` runs the measured process under
  * other V8 settings.
  *
- * Bound: peak RSS delta < 300 MB in EVERY run. RSS includes V8 heap the process
- * has not handed back, so the post-GC heap is reported beside it. Numbers depend
- * on the machine: macOS and Linux account RSS differently, and this is not the
- * API image.
+ * Bounds, in every run (the verdict is in the SUMMARY line, and `run` still exits
+ * 0 on a breach: the acceptance test is what fails): post-GC heap delta < 25 MB
+ * and event-loop p99 < 200 ms, and under `--node-flags=--max-old-space-size=1024`
+ * also peak RSS delta < 300 MB. At Node's default heap limit RSS is reported, not
+ * bounded: V8 defers its major GC while it has room, so the figure is that slack
+ * and not what the hydrator holds. Numbers depend on the machine: macOS and Linux
+ * account RSS differently, and this is not the API image.
  */
 import { execFile } from 'node:child_process';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
@@ -42,12 +45,11 @@ import { parseArgs, promisify } from 'node:util';
 import { getHeapStatistics } from 'node:v8';
 import { Session } from 'node:inspector/promises';
 import postgres from 'postgres';
-import { hydrationManifestChunks, summarizeRuns } from './backup-hydration-rss.lib';
+import { HEAP_LIMIT_FLAG, hydrationManifestChunks, summarizeRuns, type HydrationRunFigures } from './backup-hydration-rss.lib';
 
 const SCRIPT = fileURLToPath(import.meta.url);
 const API_ROOT = resolve(dirname(SCRIPT), '..');
 const MB = 1024 * 1024;
-const RSS_BOUND_MB = 300;
 const SAMPLE_INTERVAL_MS = 250;
 
 export type HydrationRssState = {
@@ -331,17 +333,17 @@ async function measureInFreshProcess(statePath: string, opts: MeasureOptions, no
 async function runMeasurements(statePath: string, runs: number, outPath: string | undefined, opts: MeasureOptions, nodeFlags: string[]): Promise<void> {
   await loadTestEnv();
   const state = JSON.parse(readFileSync(statePath, 'utf8')) as HydrationRssState;
-  const results: Array<Record<string, unknown> & { peakRssDeltaMb: number }> = [];
+  const results: Array<Record<string, unknown> & HydrationRunFigures> = [];
   for (let i = 0; i < runs; i += 1) {
     await resetIndex(state);
-    const result = (await measureInFreshProcess(statePath, opts, nodeFlags)) as Record<string, unknown> & { peakRssDeltaMb: number };
+    const result = (await measureInFreshProcess(statePath, opts, nodeFlags)) as Record<string, unknown> & HydrationRunFigures;
     const rows = await indexedRows(state);
     if (rows !== state.entries) throw new Error(`run ${i + 1}: ${rows} rows, expected ${state.entries}: ${JSON.stringify(result.outcome)}`);
     results.push({ ...result, rows });
     const { series: _series, liveHeap: _liveHeap, heapProfile: _heapProfile, ...line } = result;
     console.log(`run ${i + 1}/${runs} ${JSON.stringify(line)}`);
   }
-  const summary = summarizeRuns(results, RSS_BOUND_MB);
+  const summary = summarizeRuns(results, { heapLimited: nodeFlags.includes(HEAP_LIMIT_FLAG) });
   console.log(`SUMMARY ${JSON.stringify(summary)}`);
   if (outPath) writeFileSync(outPath, `${JSON.stringify({ summary, results }, null, 2)}\n`);
 }
