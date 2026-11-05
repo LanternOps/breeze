@@ -187,13 +187,16 @@ describe('adaptUnifiTopology: Wi-Fi materializer failure', () => {
     const boom = new Error('materializer exploded');
     mocks.materialize.mockRejectedValue(boom);
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const receipt = await adaptUnifiTopology('dev', collector, v2.report as never);
-    expect(mocks.materialize).toHaveBeenCalledTimes(1);
-    expect(receipt.accepted).toBe(true);
-    expect(receipt.resources).toHaveLength(v2.report.resources.length);
-    expect(receipt.resources.every(r => r.accepted)).toBe(true);
-    expect(mocks.captureException).toHaveBeenCalledWith(boom);
-    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('wifi current-state materialization failed'), 'materializer exploded');
-    consoleError.mockRestore();
+    try {
+      const receipt = await adaptUnifiTopology('dev', collector, v2.report as never);
+      expect(mocks.materialize).toHaveBeenCalledTimes(1);
+      expect(receipt.accepted).toBe(true);
+      expect(receipt.resources).toHaveLength(v2.report.resources.length);
+      expect(receipt.resources.every(r => r.accepted)).toBe(true);
+      expect(mocks.captureException).toHaveBeenCalledWith(boom);
+      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('wifi current-state materialization failed'), 'materializer exploded');
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

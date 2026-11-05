@@ -290,7 +290,7 @@ func TestClientOnlyIssuesGET_Spec12(t *testing.T) {
 
 var fixtureSecretRe = regexp.MustCompile(`(?i)x-api-key|apikey|api_key|authorization|bearer |-----BEGIN [A-Z ]*PRIVATE KEY-----`)
 
-// Sugestao nossa (not an explicit spec requirement): fixtures must never embed credentials.
+// Not a spec requirement: fixtures must never embed credentials.
 func TestFixturesContainNoSecrets(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("testdata", "*.json"))
 	if err != nil || len(files) == 0 {

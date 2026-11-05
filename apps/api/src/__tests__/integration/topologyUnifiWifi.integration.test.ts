@@ -342,9 +342,8 @@ describe('legacy reconcile device- and family-scoped writer fence', () => {
 
     // Malformed statistics body, digested as sent so the wire digest matches and only the body is wrong.
     const malformed = await f.report([f.resource('device_list', [apRow('ap-1')]), f.resource('statistics', [statRow('ap-1', { cpuUtilizationPct: 'not-a-number' })])], -30_000);
-    let malformedAccepted: boolean | null = null;
-    try { malformedAccepted = (await f.adapt(malformed)).resources.find(r => r.kind === 'statistics')!.accepted; } catch { /* a thrown rejection also writes nothing */ }
-    expect(malformedAccepted).not.toBe(true);
+    const malformedReceipt = await f.adapt(malformed);
+    expect(malformedReceipt.resources.find(r => r.kind === 'statistics')).toMatchObject({ accepted: false, reason: 'invalid_source_section' });
 
     await legacy(f, { devices: [{ unifiDeviceId: 'ap-1', unifiSiteId: 'default', mac: null, name: 'ap-1', cpuPct: 99, txBytes: 5, raw: {} },
       { unifiDeviceId: 'sw-9', unifiSiteId: 'default', mac: null, name: 'sw-9', cpuPct: 4, numClients: 2, raw: {} }] });
