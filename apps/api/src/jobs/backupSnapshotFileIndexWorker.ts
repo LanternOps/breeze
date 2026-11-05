@@ -141,6 +141,11 @@ async function processHydrationJob(job: Job<HydrationJobData>): Promise<{ status
   if (outcome.status === 'failed' && outcome.retryable) {
     throw new Error(`snapshot file-index hydration failed (retryable): ${outcome.failure}: ${outcome.reason}`);
   }
+  if (outcome.status === 'skipped' && outcome.reason === 'superseded') {
+    // Not an error (a newer claim, an org move or a newer result won), but a
+    // run that kept losing its claim would otherwise leave no trace.
+    console.warn(`[BackupSnapshotFileIndexWorker] Hydration of snapshot ${job.data.snapshotDbId} was superseded (reason: ${job.data.reason})`);
+  }
   return { status: outcome.status };
 }
 

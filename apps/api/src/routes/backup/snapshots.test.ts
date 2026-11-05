@@ -62,6 +62,9 @@ vi.mock('../../db', () => ({
   runAfterDbContextExit: (_label: string, work: () => unknown) => { afterContextWork.push(work); },
 }));
 
+const captureExceptionMock = vi.fn();
+vi.mock('../../services/sentry', () => ({ captureException: (...args: unknown[]) => captureExceptionMock(...args) }));
+
 vi.mock('../../jobs/backupSnapshotFileIndexWorker', () => ({
   enqueueSnapshotFileIndexHydration: (...args: unknown[]) => enqueueHydrationMock(...args),
 }));
@@ -190,6 +193,7 @@ describe('snapshot routes', () => {
     grantedPermissions = null;
     afterContextWork = [];
     enqueueHydrationMock.mockReset();
+    captureExceptionMock.mockReset();
     enqueueHydrationMock.mockResolvedValue('job-1');
     authorizeResilienceResourcesMock.mockResolvedValue({ resources: [] });
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
@@ -490,6 +494,8 @@ describe('snapshot routes', () => {
       expect(res.status).toBe(200);
       await runAfterContext();
       expect(consoleError).toHaveBeenCalled();
+      // A queue outage must be visible, not only a log line.
+      expect(captureExceptionMock).toHaveBeenCalledWith(expect.objectContaining({ message: 'redis down' }));
       consoleError.mockRestore();
     });
 
@@ -565,6 +571,17 @@ describe('snapshot routes', () => {
       }));
     });
 
+    it('resets a failed index to none before it enqueues, so the first poll cannot read the stale failure', async () => {
+      selectMock.mockReturnValueOnce(chainMock([failedRow('provider_error: x')]));
+      const order: string[] = [];
+      updateMock.mockImplementationOnce(() => { order.push('reset'); return chainMock([]); });
+      enqueueHydrationMock.mockImplementationOnce(async () => { order.push('enqueue'); return 'job-1'; });
+      expect((await rebuild()).status).toBe(202);
+      expect(order).toEqual(['reset', 'enqueue']);
+      const resetChain = updateMock.mock.results[0]!.value as { set: ReturnType<typeof vi.fn> };
+      expect(resetChain.set).toHaveBeenCalledWith({ fileIndexStatus: 'none', fileIndexError: null });
+    });
+
     it.each(['attestation_failed: no match', 'manifest_differs_from_attestation: digest x'])(
       'an integrity failure (%s) is 409 attestation_failed and enqueues nothing',
       async (error) => {
@@ -595,6 +612,7 @@ describe('snapshot routes', () => {
       const res = await rebuild();
       expect(res.status).toBe(503);
       expect(await res.json()).toMatchObject({ code: 'rebuild_unavailable' });
+      expect(captureExceptionMock).toHaveBeenCalled();
       expect(writeRouteAuditMock).not.toHaveBeenCalled();
       consoleError.mockRestore();
     });

@@ -176,10 +176,13 @@ describe('worker processor', () => {
     expect(hydrateMock).toHaveBeenCalledWith('snap-db-1', { includeUnreferenced: true, force: true });
   });
 
-  it('a superseded outcome completes the job without a retry', async () => {
+  it('a superseded outcome completes the job without a retry, and says so in the log', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     hydrateMock.mockResolvedValueOnce({ status: 'skipped', reason: 'superseded' });
     await initializeBackupSnapshotFileIndexWorker();
     await expect(capturedProcessorHolder.current!({ data: { snapshotDbId: 'x', reason: 'browse' } })).resolves.toEqual({ status: 'skipped' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('superseded'));
+    warn.mockRestore();
   });
 
   it('a complete or skipped outcome completes the job', async () => {

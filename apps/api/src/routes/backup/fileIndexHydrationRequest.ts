@@ -1,4 +1,5 @@
 import { runAfterDbContextExit } from '../../db';
+import { captureException } from '../../services/sentry';
 import {
   enqueueSnapshotFileIndexHydration,
   type SnapshotFileIndexHydrationReason,
@@ -21,6 +22,9 @@ export function requestFileIndexHydrationAfterContext(
       await enqueueSnapshotFileIndexHydration(snapshotDbId, reason);
     } catch (err) {
       console.error(`[backup] Failed to request file-index hydration for snapshot ${snapshotDbId} (${reason}):`, err);
+      // The person keeps seeing "preparing" while the queue is down; make the
+      // outage itself visible.
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
   });
 }

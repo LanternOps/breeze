@@ -11,7 +11,7 @@
  */
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { backupSnapshotFiles, backupSnapshots } from '../db/schema/backup';
+import { backupJobs, backupSnapshotFiles, backupSnapshots } from '../db/schema/backup';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { INDEX_BINDABLE_ATTESTATION_STATUSES, indexFailedOnAttestation } from './backupRestoreIntegrity';
 
@@ -83,13 +83,28 @@ export type SnapshotIndexViewInput = {
   integrityStatus: string | null;
   attestation: { status: string; manifestSha256: string } | null;
   hasRows: boolean;
+  /** Files UPLOADED by the run (backup_snapshots.file_count); null when the agent reported none. */
   fileCount: number | null;
+  /** Files the run took from older snapshots (backup_jobs.referenced_files). */
+  referencedFiles?: number | null;
   hydratedAt: Date | null;
   storageIdentity: string | null;
   now?: Date;
 };
 
 export type SnapshotIndexViewOutcome = { view: SnapshotIndexView; shouldRequestHydration: boolean };
+
+/**
+ * Whether a snapshot with no rows may still hold files. `file_count` counts
+ * only what the run uploaded, so an unchanged incremental reads 0 while every
+ * file comes from an older snapshot; and an unknown count is no evidence of an
+ * empty snapshot. Only a known zero of both is. The manifest settles the rest:
+ * a truly empty snapshot hydrates to a complete, empty index.
+ */
+function mayHaveFiles(input: Pick<SnapshotIndexViewInput, 'fileCount' | 'referencedFiles'>): boolean {
+  if (input.fileCount === null) return true;
+  return input.fileCount > 0 || (input.referencedFiles ?? 0) > 0;
+}
 
 export function snapshotIndexView(input: SnapshotIndexViewInput): SnapshotIndexViewOutcome {
   const { status, manifestSha256, attestation, hasRows } = input;
@@ -140,7 +155,7 @@ export function snapshotIndexView(input: SnapshotIndexViewInput): SnapshotIndexV
       // result can carry an empty list) reads the same as one never built, so
       // a snapshot with files is never shown as an empty tree.
       if (usableRows) return ready;
-      if (rowsFromOtherBytes || (input.fileCount ?? 0) > 0) return building(true);
+      if (rowsFromOtherBytes || mayHaveFiles(input)) return building(true);
       return ready;
   }
 }
@@ -166,10 +181,12 @@ export async function readSnapshotIndexView(
       storageIdentity: backupSnapshots.storageIdentity,
       attestationStatus: backupSnapshotAttestations.status,
       attestationManifestSha256: backupSnapshotAttestations.manifestSha256,
+      referencedFiles: backupJobs.referencedFiles,
       hasRows: sql<boolean>`EXISTS (SELECT 1 FROM ${backupSnapshotFiles} WHERE ${backupSnapshotFiles.snapshotDbId} = ${backupSnapshots.id})`,
     })
     .from(backupSnapshots)
     .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
+    .leftJoin(backupJobs, eq(backupJobs.id, backupSnapshots.jobId))
     .where(and(eq(backupSnapshots.id, snapshotDbId), eq(backupSnapshots.orgId, orgId)))
     .limit(1);
   if (!row) return null;
@@ -183,6 +200,7 @@ export async function readSnapshotIndexView(
       : null,
     hasRows: row.hasRows === true,
     fileCount: row.fileCount ?? null,
+    referencedFiles: row.referencedFiles ?? null,
     hydratedAt: row.fileIndexHydratedAt ?? null,
     storageIdentity: row.storageIdentity ?? null,
   });

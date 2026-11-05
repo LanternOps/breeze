@@ -286,11 +286,13 @@ export function boundIndexCondition(boundDigest: string | null): SQL {
  *    index must carry that digest; inline rows carry none and are unaffected.
  */
 export function readableIndexCondition(): SQL {
+  // Built from the same constants the JS rules read, so the two cannot drift.
+  const inList = (values: Iterable<string>) => sql.join([...values].map((v) => sql`${v}`), sql`, `);
   const failureCode = sql`split_part(coalesce(${backupSnapshots.fileIndexError}, ''), ':', 1)`;
   return and(
     sql`${backupSnapshots.integrityStatus} <> 'attestation_failed'`,
-    sql`(${backupSnapshotAttestations.id} IS NULL OR ${backupSnapshotAttestations.status} IN ('pending', 'verified', 'producer_only'))`,
-    sql`NOT (${backupSnapshots.fileIndexStatus} = 'failed' AND ${failureCode} IN ('manifest_differs_from_attestation', 'attestation_failed'))`,
+    sql`(${backupSnapshotAttestations.id} IS NULL OR ${backupSnapshotAttestations.status} IN (${inList(INDEX_BINDABLE_ATTESTATION_STATUSES)}))`,
+    sql`NOT (${backupSnapshots.fileIndexStatus} = 'failed' AND ${failureCode} IN (${inList(ATTESTATION_INDEX_FAILURES)}))`,
     sql`(
       ${backupSnapshotAttestations.id} IS NULL
       OR ${backupSnapshots.fileIndexManifestSha256} = ${backupSnapshotAttestations.manifestSha256}

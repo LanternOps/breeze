@@ -679,11 +679,15 @@ export async function hydrateSnapshotFileIndex(
   try {
     outcome = await runHydration(snapshotDbId, opts);
   } catch (err) {
-    recordSnapshotFileIndex('hydration', 'provider_error');
+    recordSnapshotFileIndex('hydration', 'error');
     throw err;
   }
-  // The label stays a closed set: a status or a failure code, never the reason text.
-  recordSnapshotFileIndex('hydration', outcome.status === 'failed' ? outcome.failure : outcome.status);
+  // The label stays a closed set: `complete`, a failure code, or a skip reason
+  // (superseded shows lost claims), never free text.
+  recordSnapshotFileIndex(
+    'hydration',
+    outcome.status === 'failed' ? outcome.failure : outcome.status === 'skipped' ? outcome.reason : outcome.status,
+  );
   return outcome;
 }
 
@@ -714,7 +718,13 @@ async function runHydration(
   try {
     return await verifyOriginsAndWrite(snapshotDbId, snapshot, parsedManifest.manifest);
   } catch (err) {
-    await failOutsideContext(snapshot, 'provider_error', err instanceof Error ? err.message : String(err));
+    try {
+      await failOutsideContext(snapshot, 'provider_error', err instanceof Error ? err.message : String(err));
+    } catch (recordErr) {
+      // Keep the original error: it is the one that explains the run. The
+      // claim then goes stale and is reclaimed.
+      console.error(`[backupSnapshotFileIndex] Could not record the failure of snapshot ${snapshotDbId}:`, recordErr);
+    }
     throw err;
   }
 }

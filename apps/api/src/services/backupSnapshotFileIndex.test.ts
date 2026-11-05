@@ -747,19 +747,40 @@ describe('hydration telemetry (#11026)', () => {
     expect(onSnapshotFileIndex).toHaveBeenCalledWith('hydration', 'manifest_missing', 1);
   });
 
-  it('counts a skipped run as skipped', async () => {
+  it('counts a skipped run by its reason', async () => {
     selectMock.mockReturnValueOnce(chainMock([snapshotRow({ fileIndexStatus: 'complete' })]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
     await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID);
-    expect(onSnapshotFileIndex).toHaveBeenCalledWith('hydration', 'skipped', 1);
+    expect(onSnapshotFileIndex).toHaveBeenCalledWith('hydration', 'already_complete', 1);
   });
 
-  it('counts a run that threw as provider_error, and still throws', async () => {
+  it('counts a superseded run as superseded, so lost claims are visible', async () => {
+    arrange();
+    fence.override = { fileIndexStatus: 'none' };
+    const bytes = manifestBytes([{ sourcePath: '/b', backupPath: 'snapshots/snap-current/files/b.gz', size: 20 }]);
+    await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) } });
+    expect(onSnapshotFileIndex).toHaveBeenCalledWith('hydration', 'superseded', 1);
+  });
+
+  it('counts a run that threw as error, and still throws', async () => {
     arrange();
     insertMock.mockImplementationOnce(() => { throw new Error('boom'); });
     const bytes = manifestBytes([{ sourcePath: '/b', backupPath: 'snapshots/snap-current/files/b.gz', size: 20 }]);
     await expect(hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) } })).rejects.toThrow('boom');
-    expect(onSnapshotFileIndex).toHaveBeenCalledWith('hydration', 'provider_error', 1);
+    expect(onSnapshotFileIndex).toHaveBeenCalledWith('hydration', 'error', 1);
+  });
+
+  it('rethrows the original error when recording the failure also fails', async () => {
+    arrange();
+    insertMock.mockImplementationOnce(() => { throw new Error('boom'); });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    // Claim succeeds; the outer catch's failure write then fails too.
+    updateMock
+      .mockImplementationOnce(() => chainMock([{ id: SNAPSHOT_DB_ID }]))
+      .mockImplementationOnce(() => { throw new Error('db gone'); });
+    const bytes = manifestBytes([{ sourcePath: '/b', backupPath: 'snapshots/snap-current/files/b.gz', size: 20 }]);
+    await expect(hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) } })).rejects.toThrow('boom');
+    consoleError.mockRestore();
   });
 });
 

@@ -232,6 +232,51 @@ describe('the listing and selective restore read only a trustworthy index', () =
     });
   });
 
+  // The listing gate (SQL) and the view (TS) state one rule twice. Over the
+  // whole grid, with rows present, the view says ready exactly when rows list.
+  runDb('the view says ready exactly when the gate lists rows, over status x attestation x digest x error', async () => {
+    const attested = sha('manifest');
+    const variants: Array<{ name: string; attestation: null | { digest: string; status: 'pending' | 'verified' | 'mismatch' }; integrity?: string }> = [
+      { name: 'no attestation', attestation: null },
+      { name: 'refused when reported', attestation: null, integrity: 'attestation_failed' },
+      { name: 'pending', attestation: { digest: attested, status: 'pending' } },
+      { name: 'verified', attestation: { digest: attested, status: 'verified' } },
+      { name: 'mismatch', attestation: { digest: attested, status: 'mismatch' } },
+    ];
+    const statuses = ['none', 'agent', 'hydrating', 'complete', 'failed'];
+    const digests = [null, attested, sha('other')];
+    const errors = ['provider_error: x', 'manifest_invalid: x', 'attestation_failed: x', 'manifest_differs_from_attestation: x'];
+    const disagreements: string[] = [];
+    let checked = 0;
+
+    // One tenant seed per transaction (the partner export lock hierarchy).
+    for (const variant of variants) {
+      await withSystemDbAccessContext(async () => {
+        const id = await seed();
+        const [own] = await db.select({ orgId: backupSnapshots.orgId }).from(backupSnapshots).where(eq(backupSnapshots.id, id));
+        if (variant.attestation) await attest(id, variant.attestation.digest, variant.attestation.status);
+        for (const status of statuses) {
+          for (const digest of digests) {
+            for (const error of status === 'failed' ? errors : [null]) {
+              await setIndex(id, { status, digest, error, ...(variant.integrity ? { integrity: variant.integrity } : {}) });
+              const listedAny = (await listed(id)).length > 0;
+              const pathsAny = (await readableSnapshotSourcePaths(id)).length > 0;
+              const view = await readSnapshotIndexView(id, own!.orgId);
+              const ready = view?.view.state === 'ready';
+              checked += 1;
+              if (ready !== listedAny || listedAny !== pathsAny) {
+                disagreements.push(`${variant.name} / ${status} / digest=${digest === null ? 'null' : digest === attested ? 'attested' : 'other'} / ${error}: view=${view?.view.state} listed=${listedAny} paths=${pathsAny}`);
+              }
+            }
+          }
+        }
+      });
+    }
+
+    expect(checked).toBe(variants.length * (4 * digests.length + errors.length * digests.length));
+    expect(disagreements).toEqual([]);
+  });
+
   runDb('the view read reports the rows it can see and agrees with the condition', async () => {
     await withSystemDbAccessContext(async () => {
       const id = await seed();

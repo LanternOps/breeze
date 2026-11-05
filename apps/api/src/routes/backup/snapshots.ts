@@ -30,6 +30,7 @@ import {
 import { readSnapshotIndexView, type SnapshotIndexView } from '../../services/backupSnapshotIndexView';
 import { enqueueSnapshotFileIndexHydration } from '../../jobs/backupSnapshotFileIndexWorker';
 import { requestFileIndexHydrationAfterContext } from './fileIndexHydrationRequest';
+import { captureException } from '../../services/sentry';
 import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
@@ -335,10 +336,25 @@ snapshotsRoutes.post(
       return c.json({ error: "This snapshot failed its integrity check, so its file list can't be rebuilt.", code: 'attestation_failed' }, 409);
     }
 
+    // A failed index stays failed until the worker claims it, and a person
+    // polling meanwhile would read the old failure back and stop. Set it to
+    // not-built first: the view then reads as building (and asks again on its
+    // own if this request is lost). Only a failed row: never one a hydration
+    // is running on or one that is complete.
+    await db
+      .update(backupSnapshots)
+      .set({ fileIndexStatus: 'none', fileIndexError: null })
+      .where(and(
+        eq(backupSnapshots.id, index.id),
+        eq(backupSnapshots.orgId, orgId),
+        eq(backupSnapshots.fileIndexStatus, 'failed'),
+      ));
+
     try {
       await enqueueSnapshotFileIndexHydration(index.id, 'rebuild', { force: true });
     } catch (err) {
       console.error(`[backup] Failed to request a file-index rebuild for snapshot ${index.id}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
       return c.json({ error: "Couldn't start rebuilding the file list. Try again in a moment.", code: 'rebuild_unavailable' }, 503);
     }
 

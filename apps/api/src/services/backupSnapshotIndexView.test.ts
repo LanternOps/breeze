@@ -24,6 +24,7 @@ function input(overrides: Partial<SnapshotIndexViewInput>): SnapshotIndexViewInp
     attestation: null,
     hasRows: false,
     fileCount: null,
+    referencedFiles: null,
     hydratedAt: null,
     storageIdentity: 's3::bucket',
     now: NOW,
@@ -53,7 +54,12 @@ describe('snapshotIndexView rule table', () => {
     ['none, rows', { status: 'none', hasRows: true, fileCount: 10 }, READY],
     ['none, no rows, files', { status: 'none', hasRows: false, fileCount: 18000 }, BUILDING_REQUEST],
     ['none, no rows, zero files', { status: 'none', hasRows: false, fileCount: 0 }, READY],
-    ['none, no rows, unknown file count', { status: 'none', hasRows: false, fileCount: null }, READY],
+    ['none, no rows, zero files and zero referenced', { status: 'none', hasRows: false, fileCount: 0, referencedFiles: 0 }, READY],
+    // file_count is files UPLOADED this run: an unchanged incremental uploads
+    // none and references every file from older snapshots.
+    ['none, no rows, unchanged incremental', { status: 'none', hasRows: false, fileCount: 0, referencedFiles: 12000 }, BUILDING_REQUEST],
+    // An unknown count is not evidence the snapshot is empty: the manifest decides.
+    ['none, no rows, unknown file count', { status: 'none', hasRows: false, fileCount: null }, BUILDING_REQUEST],
     ['hydrating, rows', { status: 'hydrating', hasRows: true, hydratedAt: NOW }, READY],
     ['hydrating, no rows', { status: 'hydrating', hasRows: false, fileCount: 10, hydratedAt: NOW }, BUILDING_WAIT],
     ['failed, attestation code, rows', { status: 'failed', error: 'manifest_differs_from_attestation: manifest digest x is not the attested y', hasRows: true },
@@ -99,6 +105,10 @@ describe('snapshotIndexView overrides', () => {
       view: { state: 'unavailable', failure: 'provider_error', retryable: true, deviceLocal: false },
       shouldRequestHydration: true,
     });
+  });
+
+  it('an agent index with no rows for an unchanged incremental is rebuilt', () => {
+    expect(snapshotIndexView(input({ status: 'agent', hasRows: false, fileCount: 0, referencedFiles: 40 }))).toEqual(BUILDING_REQUEST);
   });
 
   it('rows from other bytes on a none index are rebuilt even without a file count', () => {
