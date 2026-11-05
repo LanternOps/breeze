@@ -250,4 +250,5 @@ export * from './wispThreads';
 export * from './wispConcerns';
 export * from './wispThreadLinks';
 export * from './wispThreadPosts';
+export * from './wispCheckIns';
 export * from './aiMemoryBlocks';
