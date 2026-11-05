@@ -435,11 +435,11 @@ describe('AiRunCard (spec §5.5)', () => {
       }
     });
 
-    it('Reject sends deny', async () => {
+    it('Deny sends deny', async () => {
       decideIntentApproval.mockResolvedValue('decided');
       fetchWithAuth.mockResolvedValue(awaiting([intent('a')]));
       const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
-      fireEvent.click(await findByTestId('ai-run-card-step-reject-a'));
+      fireEvent.click(await findByTestId('ai-run-card-step-deny-a'));
       await waitFor(() => expect(decideIntentApproval).toHaveBeenCalledWith('req-a', 'deny', undefined, 'supervised'));
     });
 

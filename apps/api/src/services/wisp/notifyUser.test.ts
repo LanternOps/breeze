@@ -55,9 +55,13 @@ vi.mock('./nudgePreferences', () => ({ loadNudgePrefs: h.loadNudgePrefs }));
 vi.mock('./partnerNudgeSettings', () => ({ loadUrgentCapableSeverities: h.loadUrgentCapableSeverities }));
 vi.mock('../notificationThrottle', () => ({ checkNotificationThrottle: h.checkNotificationThrottle }));
 vi.mock('../ticketPush', () => ({ userPushTargetsQuery: h.userPushTargetsQuery }));
-vi.mock('./grantAuthority', () => ({ resolveGrantCeiling: h.resolveGrantCeiling }));
+vi.mock('./grantAuthority', () => ({
+  resolveGrantCeiling: h.resolveGrantCeiling,
+  GrantInactiveError: class GrantInactiveError extends Error {},
+}));
 
-import { decideNudgeDelivery, notifyUser, nudgeDedupeKey, type NudgePayload } from './notifyUser';
+import { GrantInactiveError } from './grantAuthority';
+import { decideNudgeDelivery, notifyUser, nudgeDedupeKey, resolveSpecialistPostAudience, type NudgePayload } from './notifyUser';
 
 const now = new Date('2026-10-24T10:07:00Z');
 const quiet = { start: '00:00', end: '23:59', enabled: true };
@@ -466,6 +470,7 @@ describe('notifyUser', () => {
 
   describe('specialist_result (W2 #11085)', () => {
     const ceiling = (o: { orgIds?: string[]; siteIds?: string[] | null; orgTerms?: Map<string, { siteIds: Set<string> | null }> } = {}) => ({
+      grantorUserId: 'u1',
       orgIds: new Set(o.orgIds ?? ['o2']),
       siteIds: o.siteIds === undefined || o.siteIds === null ? null : new Set(o.siteIds),
       orgTerms: o.orgTerms ?? new Map(),
@@ -511,9 +516,20 @@ describe('notifyUser', () => {
     });
 
     it('an inactive grant (the ceiling cannot be resolved even paused) throws and writes nothing', async () => {
-      h.resolveGrantCeiling.mockRejectedValueOnce(new Error('grant revoked'));
+      h.resolveGrantCeiling.mockRejectedValueOnce(new (GrantInactiveError as unknown as new () => Error)());
       queue([threadRow], deviceRows);
-      await expect(notifyUser(specialist)).rejects.toThrow('grant revoked');
+      await expect(notifyUser(specialist)).rejects.toThrow(/grant_inactive/);
+      expect(h.deliverInApp).not.toHaveBeenCalled();
+    });
+
+    it('a ceiling read that fails for another reason propagates as itself (not a refusal)', async () => {
+      h.resolveGrantCeiling.mockRejectedValueOnce(new Error('db down'));
+      await expect(resolveSpecialistPostAudience('g1', 'rev1', 'o2')).rejects.toThrow('db down');
+    });
+
+    it('a recipient other than the ceiling\'s grantor throws and writes nothing', async () => {
+      queue([threadRow], deviceRows);
+      await expect(notifyUser({ ...specialist, userId: 'u9' })).rejects.toThrow(/not the grantor/);
       expect(h.deliverInApp).not.toHaveBeenCalled();
     });
 

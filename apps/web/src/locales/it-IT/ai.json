@@ -588,7 +588,7 @@
       "title": "In attesa della tua approvazione",
       "wispFor": "Wisp per {{name}}",
       "approve": "Approva",
-      "reject": "Rifiuta",
+      "deny": "Rifiuta",
       "waitingForApprover": "In attesa di un approvatore"
     },
     "continue": "Continua",

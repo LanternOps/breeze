@@ -332,12 +332,12 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
                   </button>
                   <button
                     type="button"
-                    data-testid={`ai-run-card-step-reject-${intent.id}`}
+                    data-testid={`ai-run-card-step-deny-${intent.id}`}
                     disabled={decidingIds.has(intent.id)}
                     onClick={() => void decide(intent, 'deny')}
                     className="rounded border border-gray-300 px-2 py-1 disabled:opacity-50 dark:border-gray-600"
                   >
-                    {t('aiRunCard.stepApprovals.reject')}
+                    {t('aiRunCard.stepApprovals.deny')}
                   </button>
                 </div>
               ) : (

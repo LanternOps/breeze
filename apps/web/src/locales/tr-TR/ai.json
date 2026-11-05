@@ -588,7 +588,7 @@
       "title": "Onayınız bekleniyor",
       "wispFor": "{{name}} için Wisp",
       "approve": "Onayla",
-      "reject": "Reddet",
+      "deny": "Reddet",
       "waitingForApprover": "Bir onaylayıcı bekleniyor"
     },
     "continue": "Devam et",

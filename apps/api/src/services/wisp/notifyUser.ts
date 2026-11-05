@@ -48,7 +48,7 @@ import { webCheckInLink, webDeepLink } from './nudgeLinks';
 import { loadNudgePrefs } from './nudgePreferences';
 import { loadUrgentCapableSeverities } from './partnerNudgeSettings';
 import { recordThreadPost, type ThreadPostKind } from './threadPosts';
-import { resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
+import { GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
 import { incWispNudge } from '../wispMetrics';
 
 /** The post kind of each nudge kind (explicit: a budget notice is never a post). */
@@ -237,6 +237,28 @@ export function isOrgReadableOnThread(ceiling: Pick<GrantCeiling, 'orgIds' | 'si
   return (ceiling.orgTerms.get(orgId)?.siteIds ?? null) === null;
 }
 
+/**
+ * Who a specialist report about `orgId` goes to under (grant, revision), or
+ * why it may not go anywhere. The ONE non-route `allowPaused` read
+ * (allowPaused.contract.test.ts): READ-ONLY — the ceiling only answers "could
+ * the grant's own thread show this org" (`isOrgReadableOnThread`) and names
+ * the grantor; it never authorises an action. Paused is allowed on purpose: a
+ * run stopped by a pause must still say so on the thread (Review Focus 2),
+ * while a grantor who lost the org (or every org) gets nothing.
+ */
+export async function resolveSpecialistPostAudience(grantId: string, grantRevisionId: string, orgId: string):
+  Promise<{ ok: true; grantorUserId: string } | { ok: false; reason: 'grant_inactive' | 'org_out_of_ceiling' }> {
+  let ceiling: GrantCeiling;
+  try {
+    ceiling = await runOutsideDbContext(() => resolveGrantCeiling(grantId, grantRevisionId, { allowPaused: true }));
+  } catch (err) {
+    if (err instanceof GrantInactiveError) return { ok: false, reason: 'grant_inactive' };
+    throw err;
+  }
+  if (!isOrgReadableOnThread(ceiling, orgId)) return { ok: false, reason: 'org_out_of_ceiling' };
+  return { ok: true, grantorUserId: ceiling.grantorUserId };
+}
+
 const sameInstant = (a: Date | null, b: Date | null) => (a?.getTime() ?? null) === (b?.getTime() ?? null);
 
 export async function notifyUser(p: NudgePayload): Promise<NotifyUserResult> {
@@ -254,10 +276,11 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
   // timeline's org filter). Resolved before any context opens: the ceiling
   // read opens its own. Throws (nothing written) — the caller decides.
   if (p.specialist) {
-    const ceiling = await resolveGrantCeiling(p.grantId, p.specialist.grantRevisionId, { allowPaused: true });
-    if (!isOrgReadableOnThread(ceiling, p.specialist.orgId)) {
-      throw new Error(`notifyUser: org ${p.specialist.orgId} is outside what grant ${p.grantId}'s thread may show`);
+    const audience = await resolveSpecialistPostAudience(p.grantId, p.specialist.grantRevisionId, p.specialist.orgId);
+    if (!audience.ok) {
+      throw new Error(`notifyUser: org ${p.specialist.orgId} is outside what grant ${p.grantId}'s thread may show (${audience.reason})`);
     }
+    if (audience.grantorUserId !== p.userId) throw new Error(`notifyUser: user ${p.userId} is not the grantor of grant ${p.grantId}`);
   }
 
   // Phase 1 — reads, in one system context opened outside any request context.

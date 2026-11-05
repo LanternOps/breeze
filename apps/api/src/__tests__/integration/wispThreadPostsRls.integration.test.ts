@@ -210,6 +210,15 @@ describe('wisp_thread_posts RLS (partner-anchored, org-optional)', () => {
   });
 });
 
+describe('specialist_result isolation (W2 #11085)', () => {
+  it('a specialist_result post of org A1 is invisible to an org-A2 reader of the same partner thread', async () => {
+    const f = await seed();
+    const a1 = await insertPost(f, f.orgA1, { kind: 'specialist_result', dedupeKey: `wisp.specialist_result:${randomUUID()}:completed` });
+    expect(await visibleIds(orgContext(f.orgA1, f.partnerA))).toContain(a1.id);
+    expect(await visibleIds(orgContext(f.orgA2, f.partnerA))).not.toContain(a1.id);
+  });
+});
+
 describe('wisp_thread_posts constraints', () => {
   it('every composite FK pins the post to one partner (23503)', async () => {
     const f = await seed();

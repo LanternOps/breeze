@@ -34,7 +34,7 @@
  * `{ posted: false, reason }`. A real failure (DB, notifyUser) throws, and
  * the callers report it without failing the run or the release.
  */
-import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { wispEnabled } from '../../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { actionIntents } from '../../db/schema/actionIntents';
@@ -44,8 +44,7 @@ import { devices } from '../../db/schema/devices';
 import { wispThreadPosts } from '../../db/schema/wispThreadPosts';
 import { sanitizeUntrustedToolText } from '../aiInputSanitizer';
 import { captureException } from '../sentry';
-import { GrantInactiveError, resolveGrantCeiling } from './grantAuthority';
-import { isOrgReadableOnThread, notifyUser } from './notifyUser';
+import { notifyUser, resolveSpecialistPostAudience } from './notifyUser';
 import { getOrCreateThread } from './threads';
 
 /** The post body cap, in characters (code points), whatever it carries. */
@@ -222,16 +221,10 @@ async function pendingIntentCount(run: RunForPost): Promise<number> {
  */
 async function resolveDestination(run: { grantId: string; grantRevisionId: string; orgId: string }):
   Promise<{ ok: true; userId: string; threadId: string } | { ok: false; reason: SpecialistPostSkip }> {
-  let ceiling: Awaited<ReturnType<typeof resolveGrantCeiling>>;
-  try {
-    ceiling = await runOutsideDbContext(() => resolveGrantCeiling(run.grantId, run.grantRevisionId, { allowPaused: true }));
-  } catch (err) {
-    if (err instanceof GrantInactiveError) return { ok: false, reason: 'grant_inactive' };
-    throw err;
-  }
-  if (!isOrgReadableOnThread(ceiling, run.orgId)) return { ok: false, reason: 'org_out_of_ceiling' };
+  const audience = await resolveSpecialistPostAudience(run.grantId, run.grantRevisionId, run.orgId);
+  if (!audience.ok) return { ok: false, reason: audience.reason };
   const thread = await runOutsideDbContext(() => getOrCreateThread(run.grantId));
-  return { ok: true, userId: ceiling.grantorUserId, threadId: thread.id };
+  return { ok: true, userId: audience.grantorUserId, threadId: thread.id };
 }
 
 async function deliver(args: {
@@ -356,7 +349,8 @@ export async function resweepSpecialistResults(now: Date): Promise<{ scanned: nu
     .where(and(
       eq(aiAgentRuns.profile, PROFILE),
       inArray(aiAgentRuns.status, [...SETTLED_STATUSES]),
-      gte(sql`coalesce(${aiAgentRuns.finishedAt}, ${aiAgentRuns.queuedAt})`, since),
+      // Raw `sql` carries no column type to encode a Date with: bind the ISO string.
+      sql`coalesce(${aiAgentRuns.finishedAt}, ${aiAgentRuns.queuedAt}) >= ${since.toISOString()}::timestamptz`,
       sql`${aiAgentRuns.triggerRef}->>'source' = 'wisp_specialist'`,
       sql`${aiAgentRuns.grantId} IS NOT NULL`,
       sql`NOT EXISTS (

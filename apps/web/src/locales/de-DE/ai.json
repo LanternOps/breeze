@@ -588,7 +588,7 @@
       "title": "Wartet auf Ihre Genehmigung",
       "wispFor": "Wisp für {{name}}",
       "approve": "Genehmigen",
-      "reject": "Ablehnen",
+      "deny": "Ablehnen",
       "waitingForApprover": "Wartet auf einen Genehmiger"
     },
     "continue": "Fortsetzen",
