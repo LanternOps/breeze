@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { utf8MaxBytes } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { and, desc, eq, gte, inArray, ne, sql, type SQL } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
@@ -56,7 +57,7 @@ const remediationActionValues = [
   'mark_remediated'
 ] as const;
 
-const policyScopeSchema = z.object({
+export const policyScopeSchema = z.object({
   includePaths: z.array(z.string().min(1).max(2048)).max(256).optional(),
   excludePaths: z.array(z.string().min(1).max(2048)).max(256).optional(),
   fileTypes: z.array(z.string().min(1).max(32)).max(128).optional(),
@@ -65,7 +66,10 @@ const policyScopeSchema = z.object({
   timeoutSeconds: z.number().int().min(5).max(1800).optional(),
   suppressPaths: z.array(z.string().min(1).max(2048)).max(256).optional(),
   suppressPatternIds: z.array(z.string().min(1).max(80)).max(200).optional(),
-  suppressFilePathRegex: z.array(z.string().min(1).max(300)).max(80).optional(),
+  // The agent silently skips a pattern over 512 UTF-8 bytes (Go len(),
+  // sensitive_data_scan.go maxSensitiveRegexPatternBytes); zod counts code
+  // points, so the byte cap is pinned (#9976).
+  suppressFilePathRegex: z.array(z.string().min(1).max(300).check(utf8MaxBytes(512, 'pattern exceeds 512 bytes'))).max(80).optional(),
   ruleToggles: z.record(z.string(), z.boolean()).optional(),
 }).strict();
 

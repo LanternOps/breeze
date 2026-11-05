@@ -1,5 +1,6 @@
 import './topologyZod';
 import { z } from 'zod';
+import { utf8MaxBytes } from './unitLength';
 import { topologyFamilySchema, topologyHostnameSchema, topologyIpSchema, topologyJsonBytes, topologyPortSchema, topologyUtf8KeySchema } from './topologyPrimitives';
 export const topologyStableKeySchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
 /** Recipes a recurring policy may schedule. A routed trace is on-demand evidence only (M3 Task 9). */
@@ -11,7 +12,9 @@ export const topologyTargetDefinitionSchema = z.discriminatedUnion('kind', [
   z.object({ ...commonTarget, kind: z.literal('dns_name'), hostname: topologyHostnameSchema, expectedAddresses: z.array(topologyIpSchema).max(4), resolver: z.literal('configured_dns') }).strict(),
   z.object({ ...commonTarget, kind: z.literal('tcp'), host: z.union([topologyIpSchema, topologyHostnameSchema]), port: topologyPortSchema }).strict(),
   z.object({ ...commonTarget, kind: z.literal('https'), hostname: topologyHostnameSchema, port: topologyPortSchema,
-    path: z.string().min(1).max(2048).regex(/^\/(?!\/)[^\s#\\]*$/), method: z.enum(['GET', 'HEAD']), expectedStatus: z.number().int().min(100).max(599),
+    // utf8MaxBytes: the agent refuses a path over 2048 UTF-8 bytes (Go len(),
+    // networkdiagnostic/policy.go); zod counts code points (#9976).
+    path: z.string().min(1).max(2048).check(utf8MaxBytes(2048, 'path exceeds 2048 bytes')).regex(/^\/(?!\/)[^\s#\\]*$/), method: z.enum(['GET', 'HEAD']), expectedStatus: z.number().int().min(100).max(599),
     maxRedirects: z.number().int().min(0).max(2), proxyMode: z.enum(['direct', 'configured']),
   }).strict(),
 ]);
