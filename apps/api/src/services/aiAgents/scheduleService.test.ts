@@ -83,7 +83,8 @@ vi.mock('../../db', () => ({
     insert: vi.fn(() => ({
       values: vi.fn((values: Record<string, unknown>) => {
         dbState.inserted = values;
-        return { returning: vi.fn(async () => (dbState.insertReturning ? [dbState.insertReturning] : [])) };
+        const returning = vi.fn(async () => (dbState.insertReturning ? [dbState.insertReturning] : []));
+        return { returning, onConflictDoNothing: vi.fn(() => ({ returning })) };
       }),
     })),
     update: vi.fn(() => ({
@@ -1313,6 +1314,22 @@ describe('refuseArmedWidening (W16 Decision 3)', () => {
       const current = overrideRow({ sweepKinds: armed().sweepKinds });
       dbState.scheduleRows = [[current], [current], [armed()]];
       await expect(deleteSchedule(partnerAuth(), OVERRIDE_ID, guard)).resolves.toMatchObject({ id: OVERRIDE_ID, orgId: ORG_ID });
+    });
+  });
+
+  describe('refuseExistingOverride', () => {
+    const body = { ownerScope: 'organization' as const, orgId: ORG_ID, baselineScheduleId: BASELINE_ID, enabled: true, sweepKinds: [] as AiSweepKind[] };
+
+    it('a conflict is a coded refusal, never a raised unique violation', async () => {
+      dbState.scheduleRows = [[baselineRow()]];
+      dbState.insertReturning = null;
+      await expect(createSchedule(partnerAuth(), body, { refuseExistingOverride: true })).rejects.toMatchObject({ code: 'override_exists' });
+    });
+
+    it('a free slot creates the override', async () => {
+      dbState.scheduleRows = [[baselineRow()]];
+      dbState.insertReturning = overrideRow();
+      await expect(createSchedule(partnerAuth(), body, { refuseExistingOverride: true })).resolves.toMatchObject({ id: OVERRIDE_ID });
     });
   });
 

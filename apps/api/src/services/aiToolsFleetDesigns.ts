@@ -3,7 +3,8 @@
  * Design, over the same services as routes/fleetDesign.ts (W07-D2).
  *
  * Classes (aiGuardrails.ts, W16 plan class review):
- *  - `preview` and `applied` are tier-1 reads.
+ *  - `preview` and `applied` are tier 1: they write nothing. `preview` still needs
+ *    `devices:write` and MFA, as its route does, and takes a short row lock.
  *  - `run` and `document` are supervised. `run` is a recorded exception to the class
  *    rule (Decision 1): it uses credits and notifies people, but what it produces is
  *    findings.
@@ -44,6 +45,7 @@ import { auditToolWrite, bounded, json, jsonError, notFound, thrown } from './ai
 import { agentRefusal, isAgentPrincipal } from './aiToolsTicketOpsShared';
 import { orgAdminInputSchema, parseInput, restrictedSessionDenied } from './aiToolsOrgAdminShared';
 import { hasPermission, PERMISSIONS } from './permissions';
+import { captureException } from './sentry';
 import type { ToolExecutionContext } from './toolExecutionContext';
 
 const TOOL = 'manage_fleet_designs';
@@ -85,6 +87,14 @@ function scriptsWriteRefusal(): string {
 
 const REPORT_NOT_FOUND = () => notFound('Fleet Design');
 
+/**
+ * The refs one error envelope carries. The worker stores at most 64 KiB and records an
+ * error body it had to truncate as a COMPLETED release, and an approval can name
+ * thousands of refs. Counts stay whole; the ledger (`applied`) has every row.
+ */
+const ERROR_REF_CAP = 100;
+const firstRefs = <T>(refs: readonly T[] | undefined): T[] => (refs ?? []).slice(0, ERROR_REF_CAP);
+
 // ---------------------------------------------------------------------------
 // run
 // ---------------------------------------------------------------------------
@@ -92,31 +102,35 @@ const REPORT_NOT_FOUND = () => notFound('Fleet Design');
 async function runDesign(auth: AuthContext, orgId: string, siteId: string | undefined, context?: ToolExecutionContext): Promise<string> {
   const { launchFleetDesignRun } = await import('./fleetDesign/runLaunch');
   const intentId = context?.actionIntentId;
-  // A retried release of one intent is one run; a second approved card is a second run.
-  const result = await launchFleetDesignRun(
-    auth,
-    { orgId, ...(siteId ? { siteId } : {}) },
-    `design-ai-tool-${intentId ?? randomUUID()}`,
-    { replay: Boolean(intentId) },
-  );
-  const queued = result.ok && !result.enqueueFailed;
-  const skipped = result.ok ? (result.enqueueFailed ? 'enqueue_failed' : undefined) : result.code === 'SKIPPED' ? result.skipped : undefined;
-  const reachable = auth.canAccessOrg(orgId);
-  auditToolWrite(auth, {
-    orgId: reachable ? orgId : auth.orgId ?? null,
+  const audit = (resourceId: string | undefined, details: Record<string, unknown>, ok: boolean) => auditToolWrite(auth, {
+    orgId: auth.canAccessOrg(orgId) ? orgId : auth.orgId ?? null,
     partnerId: auth.partnerId ?? null,
     action: 'ai_fleet_design.run.manual_trigger',
     resourceType: 'ai_agent',
-    ...('agentId' in result ? { resourceId: result.agentId } : {}),
-    details: {
-      via: 'ai_tool',
-      siteId: siteId ?? null,
-      ...(result.ok ? { runId: result.runId, ...(result.replayed ? { replayed: true } : {}) } : {}),
-      ...(skipped ? { skipped } : {}),
-      ...(!result.ok && result.code !== 'SKIPPED' ? { refused: result.code, requestedOrgId: orgId } : {}),
-    },
-    result: queued ? 'success' : 'failure',
+    ...(resourceId ? { resourceId } : {}),
+    details: { via: 'ai_tool', siteId: siteId ?? null, ...details },
+    result: ok ? 'success' : 'failure',
   });
+  let result: Awaited<ReturnType<typeof launchFleetDesignRun>>;
+  try {
+    // A retried release of one intent is one run; a second approved card is a second run.
+    result = await launchFleetDesignRun(
+      auth,
+      { orgId, ...(siteId ? { siteId } : {}) },
+      `design-ai-tool-${intentId ?? randomUUID()}`,
+      { replay: Boolean(intentId) },
+    );
+  } catch (error) {
+    audit(undefined, { refused: 'THROWN', requestedOrgId: orgId }, false);
+    throw error;
+  }
+  const queued = result.ok && !result.enqueueFailed;
+  const skipped = result.ok ? (result.enqueueFailed ? 'enqueue_failed' : undefined) : result.code === 'SKIPPED' ? result.skipped : undefined;
+  audit('agentId' in result ? result.agentId : undefined, {
+    ...(result.ok ? { runId: result.runId, ...(result.replayed ? { replayed: true } : {}) } : {}),
+    ...(skipped ? { skipped } : {}),
+    ...(!result.ok && result.code !== 'SKIPPED' ? { refused: result.code, requestedOrgId: orgId } : {}),
+  }, queued);
   if (!result.ok && result.code === 'NOT_FOUND') return notFound('Organization or site');
   if (!result.ok && result.code === 'NO_DESIGNER_AGENT') {
     return jsonError('This organization has no designer agent. Enable it on the Fleet Design page.', 'NO_DESIGNER_AGENT');
@@ -186,8 +200,9 @@ async function applyDesign(auth: AuthContext, input: Record<string, unknown>, re
       return JSON.stringify({
         error: `The apply stopped at step ${result.partial.failedStep}. What it applied before that stays applied; use rollback to undo it.`,
         code: 'FLEET_DESIGN_PARTIAL',
-        applied: result.applied,
-        skipped: result.skipped,
+        applied: firstRefs(result.applied),
+        skipped: firstRefs(result.skipped),
+        counts: { applied: result.applied.length, skipped: result.skipped.length },
         failedStep: result.partial.failedStep,
         rollbackAvailable: result.rollbackAvailable,
       });
@@ -196,13 +211,21 @@ async function applyDesign(auth: AuthContext, input: Record<string, unknown>, re
   } catch (error) {
     if (error instanceof FleetDesignApplyError && error.code === 'blocked') {
       audit({ applied: 0, blocked: true }, false);
+      const blockers = (error.payload?.blockers ?? []) as unknown[];
+      const unaccepted = (error.payload?.unaccepted ?? []) as unknown[];
       return JSON.stringify({
         error: 'This approval is blocked; nothing was changed. Resolve the blockers and ask for a new approval.',
         code: 'BLOCKED',
-        blockers: error.payload?.blockers ?? [],
-        unaccepted: error.payload?.unaccepted ?? [],
+        blockers: firstRefs(blockers),
+        unaccepted: firstRefs(unaccepted),
+        counts: { blockers: blockers.length, unaccepted: unaccepted.length },
       });
     }
+    if (error instanceof FleetDesignApplyError && (error.code === 'not_found' || error.code === 'no_outcome')) {
+      audit({ refused: 'NOT_FOUND' }, false);
+      return REPORT_NOT_FOUND();
+    }
+    audit({ refused: 'THROWN' }, false);
     throw error;
   }
 }
@@ -213,21 +236,34 @@ async function rollbackDesign(auth: AuthContext, input: Record<string, unknown>,
   const { rollbackFleetDesign } = await import('./fleetDesign/rollback');
   // Without scripts:write everything else still rolls back; the service refuses only the script rows.
   const canWriteScripts = await can(auth, PERMISSIONS.SCRIPTS_WRITE);
-  const result = await rollbackFleetDesign(auth, reportRunId, requestLikeFromSnapshot({}), { canWriteScripts });
-  auditToolWrite(auth, {
+  const audit = (details: Record<string, unknown>, ok: boolean) => auditToolWrite(auth, {
     orgId: held.report.orgId,
     action: 'fleet_design.rollback',
     resourceType: 'report_run',
     resourceId: reportRunId,
-    details: { via: 'ai_tool', reportRunId, rolledBack: result.rolledBack.length, refused: result.refused.length },
-    result: result.refused.length === 0 ? 'success' : 'failure',
+    details: { via: 'ai_tool', reportRunId, ...details },
+    result: ok ? 'success' : 'failure',
   });
+  let result: Awaited<ReturnType<typeof rollbackFleetDesign>>;
+  try {
+    result = await rollbackFleetDesign(auth, reportRunId, requestLikeFromSnapshot({}), { canWriteScripts });
+  } catch (error) {
+    audit({ refused: 'THROWN' }, false);
+    throw error;
+  }
+  audit({
+    rolledBack: result.rolledBack.length,
+    refused: result.refused.length,
+    ...(result.refused.length > 0 ? { refusedItems: firstRefs(result.refused) } : {}),
+  }, result.refused.length === 0);
   if (result.refused.length > 0) {
+    // Not "because they changed": the service reports any failure on a row as modified_since_apply.
     return JSON.stringify({
-      error: 'Some items were not rolled back, because they changed after the apply. They stay as they are.',
+      error: 'Some items were not rolled back and stay as they are. Each refusal gives its reason.',
       code: 'ROLLBACK_PARTIAL',
-      rolledBack: result.rolledBack,
-      refused: result.refused,
+      rolledBack: firstRefs(result.rolledBack),
+      refused: firstRefs(result.refused),
+      counts: { rolledBack: result.rolledBack.length, refused: result.refused.length },
     });
   }
   return json({ rolledBack: result.rolledBack });
@@ -289,13 +325,22 @@ async function fileDocument(auth: AuthContext, reportRunId: string): Promise<str
     return json(result);
   } catch (error) {
     // The document services carry their own structural status and code, as the route maps them.
-    if (error && typeof error === 'object' && 'status' in error && 'code' in error
-      && typeof (error as { status: unknown }).status === 'number' && typeof (error as { code: unknown }).code === 'string') {
-      const e = error as { status: number; code: string; message?: string };
-      if (e.status < 500) return jsonError(e.message ?? e.code, e.code);
-      return jsonError('The document could not be filed', e.code);
-    }
-    throw error;
+    const known = error && typeof error === 'object' && 'status' in error && 'code' in error
+      && typeof (error as { status: unknown }).status === 'number' && typeof (error as { code: unknown }).code === 'string'
+      ? error as { status: number; code: string; message?: string }
+      : null;
+    auditToolWrite(auth, {
+      orgId: report.orgId,
+      action: 'fleet_design.document.file',
+      resourceType: 'report_run',
+      resourceId: reportRunId,
+      details: { via: 'ai_tool', reportRunId, refused: known?.code ?? 'THROWN' },
+      result: 'failure',
+    });
+    if (!known) throw error;
+    if (known.status < 500) return jsonError(known.message ?? known.code, known.code);
+    captureException(error);
+    return jsonError('The document could not be filed', known.code);
   }
 }
 

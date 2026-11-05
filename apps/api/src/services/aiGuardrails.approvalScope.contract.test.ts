@@ -1890,8 +1890,43 @@ describe('W16 PR B class rows (#6786)', () => {
     for (const action of ['run', 'preview', 'applied', 'document']) expect(isOrgWideGovernanceIntent('manage_fleet_designs', { action }), action).toBe(false);
   });
 
-  it('no action arms act mode: the description of every schedule write says nothing can', () => {
+  it('no schedule write can arm act mode', () => {
     expect(toolInputSchemas.manage_ai_agent_schedules?.safeParse({ action: 'update', scheduleId: '00000000-0000-4000-8000-000000000001', actMode: true }).success).toBe(false);
+  });
+
+  describe('approval copy', () => {
+    const SCHEDULE = '00000000-0000-4000-8000-000000000001';
+    const copy = (tool: string, input: Record<string, unknown>) => checkGuardrails(tool, input).description ?? '';
+
+    it('the two brakes read differently (Decision 3)', () => {
+      expect(copy('manage_ai_agent_schedules', { action: 'update', scheduleId: SCHEDULE, actMode: false })).toContain('stop unattended actions, including ones already waiting');
+      expect(copy('manage_ai_agent_schedules', { action: 'update', scheduleId: SCHEDULE, enabled: false })).toContain('stop future runs');
+    });
+
+    it('a brake never hides what else the same update changes', () => {
+      const text = copy('manage_ai_agent_schedules', { action: 'update', scheduleId: SCHEDULE, actMode: false, enabled: true, sweepKinds: ['disk_pressure', 'stale_agents'], cron: '0 * * * *', timezone: 'UTC' });
+      expect(text).toContain('stop unattended actions');
+      expect(text).toContain('turn its runs on');
+      expect(text).toContain('disk_pressure, stale_agents');
+      expect(text).toContain('0 * * * *');
+      expect(text).toContain('UTC');
+      const stopping = copy('manage_ai_agent_schedules', { action: 'update', scheduleId: SCHEDULE, enabled: false, cron: '0 * * * *' });
+      expect(stopping).toContain('stop future runs');
+      expect(stopping).toContain('0 * * * *');
+    });
+
+    it('create says what it costs and how far it reaches; delete says it cannot be undone', () => {
+      expect(copy('manage_ai_agent_schedules', { action: 'create', ownerScope: 'partner', kind: 'patch', agentId: SCHEDULE, cron: '0 2 * * *', timezone: 'UTC' })).toMatch(/every organization.*AI credits.*notify people/);
+      expect(copy('manage_ai_agent_schedules', { action: 'delete', scheduleId: SCHEDULE })).toContain('cannot be undone');
+    });
+
+    it('apply counts what it does and marks roles as billing; rollback and run say what they do', () => {
+      const text = copy('manage_fleet_designs', { action: 'apply', reportRunId: SCHEDULE, approval: { functions: ['a', 'a'], monitoring: ['m'], automation: [], roleCorrections: ['r', 's'] } });
+      expect(text).toContain('1 function groups');
+      expect(text).toContain('2 device role changes (billing)');
+      expect(copy('manage_fleet_designs', { action: 'rollback', reportRunId: SCHEDULE })).toContain('Monitoring it added stops');
+      expect(copy('manage_fleet_designs', { action: 'run', orgId: SCHEDULE })).toContain('nothing is applied');
+    });
   });
 });
 

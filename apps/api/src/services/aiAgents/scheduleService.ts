@@ -89,7 +89,10 @@ export type ScheduleValidationCode =
   // Full-control W16 (#6786, Decision 3): the AI tool's write would widen what an
   // armed schedule runs unattended, or change its cadence. Only a caller passing
   // `refuseArmedWidening` can see it; REST passes none.
-  | 'armed_widening_refused';
+  | 'armed_widening_refused'
+  // Full-control W16 PR B (#6786): only a caller passing `refuseExistingOverride` sees it. REST answers a raised
+  // ai_agent_schedules_org_baseline_uq violation with a 409 instead.
+  | 'override_exists';
 
 /**
  * Which `ai_agents.kind` each schedule kind runs. `Record<AiAgentScheduleKind,
@@ -490,6 +493,14 @@ function assertOrgActModeNotArming(actMode: boolean | null | undefined): void {
 export async function createSchedule(
   auth: AuthContext,
   input: CreateAiAgentScheduleInput,
+  options: {
+    /**
+     * Full-control W16 PR B (#6786): a second override of one baseline is a coded refusal rather than a raised unique
+     * violation. postgres-js rethrows a failed statement when the enclosing transaction ends even if the caller caught
+     * it, which would turn the AI tool's refusal into a thrown release. So the conflict never raises (as in ledger.ts).
+     */
+    refuseExistingOverride?: boolean;
+  } = {},
 ): Promise<AiAgentScheduleRow> {
   if (input.ownerScope === 'partner') {
     const partnerId = auth.partnerId;
@@ -542,7 +553,7 @@ export async function createSchedule(
   assertBaselineUsable(baseline, { orgPartnerId });
   assertKindsSubset(baseline, input.sweepKinds);
 
-  const [row] = await db
+  const insert = db
     .insert(aiAgentSchedules)
     .values({
       orgId: input.orgId,
@@ -567,8 +578,15 @@ export async function createSchedule(
       actMode: input.actMode ?? null,
       createdBy: auth.user.id,
       updatedAt: new Date(),
-    })
-    .returning();
+    });
+  if (options.refuseExistingOverride) {
+    const [created] = await insert.onConflictDoNothing().returning();
+    if (!created) {
+      throw new ScheduleValidationError('override_exists', 'This organization already has an override of that baseline; update it instead');
+    }
+    return created;
+  }
+  const [row] = await insert.returning();
   if (!row) throw new AgentAccessDeniedError('Schedule not created');
   return row;
 }

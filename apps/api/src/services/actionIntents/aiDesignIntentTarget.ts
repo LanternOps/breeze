@@ -7,7 +7,8 @@
  * approvers, its stored reason and a durable release's rebuilt authority are all keyed
  * on `action_intents.org_id`, so an approver of org A would otherwise be approving a
  * change to org B and a worker release would refuse. A partner baseline has no org:
- * its intent stays in the session org and the card says what it cascades.
+ * its intent stays in the session org, and a delete's card says how many organizations
+ * lose an override.
  *
  * Read as system, because the row may be in an org the session is not bound to. Nothing
  * here is an access check: the caller (`createSessionPreToolUse`) uses a target only

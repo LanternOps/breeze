@@ -148,9 +148,11 @@ async function rollbackRoleCorrection(ctx: RollbackCtx, row: FleetDesignLedgerRo
   // or discovery write means the technician has moved on. W16 PR B (#6786): the
   // source alone cannot say whose correction it is, because a later design also
   // writes 'ai', so the role must still be the one this design applied. A row from
-  // before the ledger recorded it reads the design's own proposal.
+  // before the ledger recorded it reads the design's own proposal; with neither there
+  // is no telling, so it is refused rather than matched on the source alone.
   const appliedRole = row.createdRefs?.deviceRole
     ?? ctx.outcome?.sections?.unsure?.roleCorrections?.find((r) => r.deviceId === deviceId)?.proposedRole;
+  if (!appliedRole) throw new RollbackRefused('modified_since_apply');
   const [updated] = await db
     .update(devices)
     .set({ deviceRole: before.deviceRole, deviceRoleSource: before.deviceRoleSource, updatedAt: new Date() })
@@ -158,7 +160,7 @@ async function rollbackRoleCorrection(ctx: RollbackCtx, row: FleetDesignLedgerRo
       eq(devices.id, deviceId),
       eq(devices.orgId, ctx.orgId),
       eq(devices.deviceRoleSource, 'ai'),
-      appliedRole ? eq(devices.deviceRole, appliedRole) : undefined,
+      eq(devices.deviceRole, appliedRole),
     ))
     .returning({ id: devices.id });
   if (!updated) throw new RollbackRefused('modified_since_apply');

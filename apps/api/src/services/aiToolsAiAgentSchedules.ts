@@ -24,7 +24,6 @@
 import { createAiAgentScheduleSchema, updateAiAgentScheduleSchema } from '@breeze/shared';
 import type { AiAgentScheduleRow } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
-import { isPgUniqueViolation } from '../utils/pgErrors';
 import type { AiTool } from './aiTools';
 import { AgentAccessDeniedError, AgentSiteCeilingDeniedError } from './aiAgents/access';
 import { ScheduleValidationError, createSchedule, deleteSchedule, updateSchedule } from './aiAgents/scheduleService';
@@ -65,9 +64,6 @@ function refusal(error: unknown): { message: string; code: string } | null {
   if (error instanceof AgentSiteCeilingDeniedError) return { message: error.message, code: 'ACCESS_DENIED' };
   // A foreign id and a missing one are the same answer, as on REST.
   if (error instanceof AgentAccessDeniedError) return { message: 'Schedule not found or access denied', code: 'NOT_FOUND' };
-  if (isPgUniqueViolation(error, 'ai_agent_schedules_org_baseline_uq')) {
-    return { message: 'This organization already has an override of that baseline; update it instead', code: 'override_exists' };
-  }
   return null;
 }
 
@@ -96,7 +92,7 @@ async function create(auth: AuthContext, input: Record<string, unknown>): Promis
   if (named !== undefined) return jsonError('create takes no actMode; arming is on the AI Agents page', 'VALIDATION_ERROR');
   const parsed = createAiAgentScheduleSchema.safeParse(fields);
   if (!parsed.success) return jsonError(issueText(parsed.error), 'VALIDATION_ERROR');
-  const row = await createSchedule(auth, parsed.data);
+  const row = await createSchedule(auth, parsed.data, { refuseExistingOverride: true });
   auditToolWrite(auth, {
     ...auditOwner(auth, row),
     action: CREATED_ACTION,

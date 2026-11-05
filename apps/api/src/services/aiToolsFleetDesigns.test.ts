@@ -85,6 +85,9 @@ function auth(over: Partial<AuthContext> = {}): AuthContext {
 
 const permissions = (...granted: string[]) => ({ permissions: granted.map((g) => { const [resource, action] = g.split(':'); return { resource, action }; }), scope: 'partner' });
 
+/** Past the worker's 64 KiB result cap: the most refs an approval can name, at their full length. */
+const refs = Array.from({ length: 2000 }, (_, i) => `roleCorrections:00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
+
 const emptyApproval = {};
 const automationApproval = { automation: ['automation:file_server:script:0'] };
 
@@ -300,6 +303,34 @@ describe('apply outcomes', () => {
     expect(h.audit.mock.calls[0]![1]).toMatchObject({ result: 'failure', details: expect.objectContaining({ partial: expect.anything() }) });
   });
 
+  it('a report with no stored design is the same not-found, with a failure audit row', async () => {
+    h.apply.mockRejectedValue(new (FleetDesignApplyError as never as new (c: string) => Error)('no_outcome'));
+    expect(parse(await run(input, auth(), released)).code).toBe('NOT_FOUND');
+    expect(h.audit.mock.calls[0]![1]).toMatchObject({ action: 'fleet_design.apply', result: 'failure' });
+  });
+
+  it('a thrown error leaves one failure audit row and no raw message', async () => {
+    h.apply.mockRejectedValue(new Error('connection to 10.0.0.5 refused'));
+    const out = parse(await run(input, auth(), released));
+    expect(JSON.stringify(out)).not.toContain('10.0.0.5');
+    expect(h.audit).toHaveBeenCalledTimes(1);
+    expect(h.audit.mock.calls[0]![1]).toMatchObject({ action: 'fleet_design.apply', orgId: ORG, result: 'failure', details: expect.objectContaining({ refused: 'THROWN', via: 'ai_tool' }) });
+  });
+
+  // The worker records an error body it had to truncate as a completed release.
+  it.each<[string, () => void, string]>([
+    ['a partial apply', () => h.apply.mockResolvedValue({ applied: refs, skipped: refs, partial: { failedStep: 3, reason: 'x' }, rollbackAvailable: true }), 'FLEET_DESIGN_PARTIAL'],
+    ['a blocked apply', () => h.apply.mockRejectedValue(new (FleetDesignApplyError as never as new (c: string, p: unknown) => Error)('blocked', { blockers: refs.map((itemRef) => ({ itemRef, reason: 'not_in_design' })), unaccepted: [] })), 'BLOCKED'],
+  ])('%s stays an error when huge: refs are capped, counts are whole', async (_label, arrange, code) => {
+    arrange();
+    const raw = await run(input, auth(), released);
+    expect(raw.length).toBeLessThan(32_000);
+    const out = parse(raw);
+    expect(out.code).toBe(code);
+    expect(out.counts).toBeTruthy();
+    expect(Object.values(out.counts)).toContain(refs.length);
+  });
+
   it('automation refs without scripts:write are refused before the lock', async () => {
     h.perms.mockResolvedValue(permissions('devices:write'));
     const out = parse(await run({ ...input, approval: automationApproval }, auth(), released));
@@ -324,7 +355,20 @@ describe('rollback outcomes', () => {
     h.rollback.mockResolvedValue({ rolledBack: ['a'], refused: [{ itemRef: 'b', reason: 'modified_since_apply' }] });
     const out = parse(await run(input, auth(), released));
     expect(out).toMatchObject({ code: 'ROLLBACK_PARTIAL', rolledBack: ['a'], refused: [{ itemRef: 'b' }] });
-    expect(h.audit.mock.calls[0]![1]).toMatchObject({ action: 'fleet_design.rollback', result: 'failure' });
+    // The refusal reason does not always mean someone edited the item, so the sentence must not claim it.
+    expect(out.error).not.toMatch(/because they changed/);
+    expect(h.audit.mock.calls[0]![1]).toMatchObject({
+      action: 'fleet_design.rollback',
+      result: 'failure',
+      details: expect.objectContaining({ refusedItems: [{ itemRef: 'b', reason: 'modified_since_apply' }] }),
+    });
+  });
+
+  it('a huge rollback with refusals stays an error: refs are capped, counts are whole', async () => {
+    h.rollback.mockResolvedValue({ rolledBack: refs, refused: refs.map((itemRef) => ({ itemRef, reason: 'modified_since_apply' })) });
+    const raw = await run(input, auth(), released);
+    expect(raw.length).toBeLessThan(32_000);
+    expect(parse(raw)).toMatchObject({ code: 'ROLLBACK_PARTIAL', counts: { rolledBack: refs.length, refused: refs.length } });
   });
 
   it('full success', async () => {
@@ -372,10 +416,11 @@ describe('document', () => {
     expect(h.audit.mock.calls[0]![1]).toMatchObject({ action: 'fleet_design.document.file', orgId: ORG, resourceType: 'org_document', resourceId: 'doc-1', result: 'success', details: expect.objectContaining({ via: 'ai_tool' }) });
   });
 
-  it('a service error keeps its code as an envelope', async () => {
+  it('a service error keeps its code as an envelope, with a failure audit row', async () => {
     h.file.mockRejectedValue(Object.assign(new Error('Storage is off'), { status: 503, code: 'blob_unavailable' }));
     const out = parse(await run(input, auth(), released));
     expect(out.code).toBe('blob_unavailable');
+    expect(h.audit.mock.calls[0]![1]).toMatchObject({ action: 'fleet_design.document.file', orgId: ORG, result: 'failure', details: expect.objectContaining({ refused: 'blob_unavailable' }) });
   });
 
   it('a foreign run is not found and files nothing', async () => {

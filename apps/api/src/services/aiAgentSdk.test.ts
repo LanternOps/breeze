@@ -2329,6 +2329,8 @@ describe('createSessionPreToolUse', () => {
           await createSessionPreToolUse(session)('manage_fleet_designs', { action: 'apply', reportRunId: RUN, approval: {} });
           expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ orgId: 'org-1' });
           expect(mockCaptureException).toHaveBeenCalledWith(boom);
+          // The approver must know the card is short, not read its silence as "nothing more to know".
+          expect(mockCreateActionIntent.mock.calls[0]![1].reason).toContain('could not be loaded');
           errSpy.mockRestore();
         });
 

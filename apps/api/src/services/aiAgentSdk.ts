@@ -1499,8 +1499,8 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     // W16 PR B (#6786, #11181): the two design tools name their org through a row, so
     // an approver of org A is never approving a change to org B. Same reach rule as
     // above; a target outside it adds nothing to the card, so a foreign id reveals
-    // nothing. A failed lookup is non-fatal: the intent stays in the session org, and
-    // the handler answers not found or refuses at release.
+    // nothing. A failed lookup is non-fatal: the intent stays in the session org, the
+    // handler answers not found or refuses at release, and the card says it is short.
     let designCardDetail: string | undefined;
     if (!flowTool && !tenant && AI_DESIGN_INTENT_TOOLS.has(toolName)) {
       try {
@@ -1513,6 +1513,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       } catch (err) {
         captureException(err instanceof Error ? err : new Error(String(err)));
         console.error('[AI-SDK] Failed to resolve a design tool\'s target org:', err);
+        designCardDetail = 'The details of this change could not be loaded, so this card may not show everything it affects.';
       }
     }
     const unattendedReads = unattendedReadsApply(session, wispCall.current, Boolean(flowTool || tenant));

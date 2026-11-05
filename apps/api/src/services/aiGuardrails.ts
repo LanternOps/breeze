@@ -474,7 +474,8 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   // Full-control W18 PR B (#6789): the portal settings read and the recipient list.
   manage_org_portal_settings: ['get'],
   manage_report_recipients: ['list'],
-  // Full-control W16 PR B (#6786): preview takes a short row lock and writes nothing; applied reads the ledger.
+  // Full-control W16 PR B (#6786): tier 1 because neither writes. preview takes a short row lock and still needs
+  // devices:write and MFA, as its route does; applied reads the ledger.
   manage_fleet_designs: ['preview', 'applied'],
   // W15 PR A (#6785): mapped products and subscription/order evidence reads.
   search_pax8_products: ['search', 'provision_details', 'dependencies', 'pricing'],
@@ -5236,13 +5237,17 @@ export function buildApprovalDescription(
           ? `Schedule ${input.kind ? `${w03Cap(String(input.kind))} ` : ''}runs of agent ${w03Id(input.agentId)} (${w03Cap(String(input.cron ?? ''))}, ${w03Cap(String(input.timezone ?? ''))}) for every organization. Each run uses AI credits and may notify people.`
           : `Set organization ${w03Id(input.orgId)}'s override of schedule ${w03Id(input.baselineScheduleId)}${input.enabled === false ? ', turning its runs off' : ''}. Each run uses AI credits and may notify people.`);
       } else if (action === 'update') {
-        const changed = Object.keys(input).filter((key) => key !== 'action' && key !== 'scheduleId');
-        // The two brakes are different, and the approver has to be able to tell them apart (Decision 3).
-        parts.push(input.actMode === false
-          ? `Stop unattended actions from schedule ${w03Id(input.scheduleId)}, including ones already waiting.`
-          : input.enabled === false
-            ? `Stop future runs of schedule ${w03Id(input.scheduleId)}.`
-            : `Change ${changed.join(', ') || '(nothing)'} on schedule ${w03Id(input.scheduleId)}.`);
+        // Every change the call makes: a brake on the card must not hide a widening beside it. The two brakes are
+        // different, and the approver has to be able to tell them apart (Decision 3).
+        const changes = [
+          ...(input.actMode === false ? ['stop unattended actions, including ones already waiting'] : []),
+          ...(input.enabled === false ? ['stop future runs'] : []),
+          ...(input.enabled === true ? ['turn its runs on'] : []),
+          ...(Array.isArray(input.sweepKinds) ? [`set its kinds to ${w03Cap(input.sweepKinds.join(', ') || '(none)')}`] : []),
+          ...(input.cron !== undefined ? [`run on cron ${w03Cap(String(input.cron))}`] : []),
+          ...(input.timezone !== undefined ? [`use timezone ${w03Cap(String(input.timezone))}`] : []),
+        ];
+        parts.push(`On schedule ${w03Id(input.scheduleId)}: ${changes.join('; ') || '(no change)'}.`);
       } else if (action === 'delete') {
         parts.push(`Delete schedule ${w03Id(input.scheduleId)}. If it is a baseline, every organization's override of it goes too. This cannot be undone.`);
       } else {

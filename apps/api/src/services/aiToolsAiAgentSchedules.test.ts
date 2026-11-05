@@ -152,6 +152,7 @@ describe('create', () => {
     expect(out).toMatchObject({ id: BASELINE, ownerScope: 'partner', enabled: true });
     expect(h.create.mock.calls[0]![1]).not.toHaveProperty('actMode');
     expect(h.create.mock.calls[0]![1]).toMatchObject({ ownerScope: 'partner', agentId: AGENT });
+    expect(h.create.mock.calls[0]![2]).toEqual({ refuseExistingOverride: true });
     expect(h.audit).toHaveBeenCalledTimes(1);
     expect(h.audit.mock.calls[0]![1]).toMatchObject({
       action: 'ai_agent.schedule.created', resourceType: 'ai_agent_schedule', resourceId: BASELINE, orgId: null, partnerId: PARTNER,
@@ -201,14 +202,12 @@ describe('update and delete', () => {
 });
 
 describe('errors are error envelopes with the route codes', () => {
-  const uniqueViolation = Object.assign(new Error('dup'), { code: '23505', constraint_name: 'ai_agent_schedules_org_baseline_uq' });
-
   it.each([
     ['a validation code', new (ScheduleValidationError as never as new (c: string, m: string) => Error)('armed_widening_refused', 'Armed'), 'armed_widening_refused'],
     ['a partner-wide denial', new PartnerWideWriteDeniedError(), 'PARTNER_WIDE_WRITE_DENIED'],
     ['a not-found access denial', new AgentAccessDeniedError('Schedule not found'), 'NOT_FOUND'],
     ['a site ceiling', new AgentSiteCeilingDeniedError(), 'ACCESS_DENIED'],
-    ['an existing override', uniqueViolation, 'override_exists'],
+    ['an existing override', new (ScheduleValidationError as never as new (c: string, m: string) => Error)('override_exists', 'Exists'), 'override_exists'],
   ])('%s', async (_label, error, code) => {
     h.update.mockRejectedValue(error);
     const out = parse(await run({ action: 'update', scheduleId: BASELINE, enabled: true }));

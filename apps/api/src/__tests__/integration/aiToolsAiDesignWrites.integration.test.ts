@@ -202,6 +202,17 @@ describe('manage_ai_agent_schedules released by the worker (Decision 8)', () => 
     await expect(schedulesOf(f.partner.id)).resolves.toHaveLength(0);
   });
 
+  runDb('a member with selected access can still release an override write in an org they reach', async () => {
+    const f = await seedSchedules('selected');
+    await getTestDb().update(partnerUsers).set({ orgIds: [f.org.id] }).where(eq(partnerUsers.id, f.membership.id));
+    const baseline = await seedBaseline(f.partner.id, f.agentId);
+    const override = await seedOverride(f.org.id, baseline);
+    const intent = await fileAndRelease(f.auth, 'manage_ai_agent_schedules', { action: 'update', scheduleId: override.id, enabled: false }, f.requester, { approverScope: 'partner' });
+    expect(intent.status, JSON.stringify(intent.result)).toBe('completed');
+    const [row] = await getTestDb().select().from(aiAgentSchedules).where(eq(aiAgentSchedules.id, override.id));
+    expect(row!.enabled).toBe(false);
+  });
+
   runDb('a baseline delete released after an override changed refuses, and the baseline survives', async () => {
     const f = await seedSchedules();
     const baseline = await seedBaseline(f.partner.id, f.agentId);
@@ -251,6 +262,23 @@ describe('manage_ai_agent_schedules against real rows', () => {
     const out = await run(auth, { action: 'create', ownerScope: 'organization', orgId: f.org.id, baselineScheduleId: foreignBaseline.id, enabled: true, sweepKinds: [] });
     expect(out.code).toBe('baseline_wrong_partner');
     await expect(getTestDb().select().from(aiAgentSchedules).where(eq(aiAgentSchedules.orgId, f.org.id))).resolves.toHaveLength(0);
+  });
+
+  runDb('an override with actMode null under an armed baseline is allowed: the absent override already inherits', async () => {
+    const f = await seedSchedules();
+    const baseline = await seedBaseline(f.partner.id, f.agentId, { actMode: true });
+    const out = await run(f.auth, { action: 'create', ownerScope: 'organization', orgId: f.org.id, baselineScheduleId: baseline.id, enabled: true, sweepKinds: ['disk_pressure'] });
+    expect(out.error, JSON.stringify(out)).toBeUndefined();
+    expect(out).toMatchObject({ ownerScope: 'organization', actMode: null });
+  });
+
+  runDb('a second override of the same baseline is override_exists, an envelope that survives the commit', async () => {
+    const f = await seedSchedules();
+    const baseline = await seedBaseline(f.partner.id, f.agentId);
+    await seedOverride(f.org.id, baseline);
+    const out = await run(f.auth, { action: 'create', ownerScope: 'organization', orgId: f.org.id, baselineScheduleId: baseline.id, enabled: true, sweepKinds: [] });
+    expect(out.code).toBe('override_exists');
+    await expect(getTestDb().select().from(aiAgentSchedules).where(eq(aiAgentSchedules.orgId, f.org.id))).resolves.toHaveLength(1);
   });
 
   runDb('an armed baseline refuses a widening from the tool', async () => {
@@ -338,7 +366,7 @@ async function seedDevice(orgId: string, siteId: string): Promise<string> {
   return device!.id;
 }
 
-function outcomeFor(deviceIds: string[]): FleetDesignOutcome {
+function outcomeFor(deviceIds: string[], roleCorrections: string[] = []): FleetDesignOutcome {
   const submission: FleetDesignSubmission = {
     found: { summary: ['fixture'], findings: [] },
     functions: [{ functionKey: 'file_server', deviceIds, confidence: 0.9, evidence: ['SMB shares active'] }],
@@ -351,7 +379,12 @@ function outcomeFor(deviceIds: string[]): FleetDesignOutcome {
     automation: [],
     legacy: [],
     baseline: { notes: [] },
-    unsure: { lowConfidenceFunctions: [], unreachableDevices: [], needsHuman: [], roleCorrections: [] },
+    unsure: {
+      lowConfidenceFunctions: [],
+      unreachableDevices: [],
+      needsHuman: [],
+      roleCorrections: roleCorrections.map((deviceId) => ({ deviceId, currentRole: 'unknown', proposedRole: 'server', evidence: ['SMB shares active'], billingRelevant: true })),
+    },
   } as unknown as FleetDesignSubmission;
   return fleetDesignOutcomeFromSubmission(submission, {
     deviceIds: new Set(deviceIds),
@@ -363,7 +396,7 @@ function outcomeFor(deviceIds: string[]): FleetDesignOutcome {
 async function seedFleet() {
   const f = await seedPartner(fleetGrants);
   const deviceIds = [await seedDevice(f.org.id, f.site.id), await seedDevice(f.org.id, f.site.id)];
-  const outcome = outcomeFor(deviceIds);
+  const outcome = outcomeFor(deviceIds, deviceIds);
   const [report] = await getTestDb().insert(reports).values({
     orgId: f.org.id, name: 'Fleet Design', type: 'ai_fleet_design', config: {}, schedule: 'one_time', format: 'pdf', createdBy: null,
   }).returning({ id: reports.id });
@@ -423,6 +456,28 @@ describe('manage_fleet_designs released by the worker', () => {
     expect(intent.status).toBe('failed');
     expect(intent.errorCode).toBe('content_changed');
     await expect(ledgerOf(f.reportRunId)).resolves.toHaveLength(before);
+  });
+
+  runDb('role rollback restores this design\'s role, and leaves a later AI correction alone', async () => {
+    const f = await seedFleet();
+    const [ours, later] = f.deviceIds as [string, string];
+    const roleOf = async (id: string) => (await getTestDb().select({ role: devices.deviceRole, source: devices.deviceRoleSource }).from(devices).where(eq(devices.id, id)))[0]!;
+    const before = await roleOf(ours);
+
+    const applied = await fileAndRelease(f.auth, 'manage_fleet_designs', applyInput(f.reportRunId, { ...functionsOnly, functions: [], roleCorrections: [ours, later] }), f.approver);
+    expect(applied.status, JSON.stringify(applied.result)).toBe('completed');
+    await expect(roleOf(ours)).resolves.toEqual({ role: 'server', source: 'ai' });
+    const ledger = await ledgerOf(f.reportRunId);
+    expect(ledger.every((r) => r.createdRefs?.deviceRole === 'server')).toBe(true);
+
+    // A later design corrected this one again: still source 'ai', but no longer this design's role.
+    await getTestDb().update(devices).set({ deviceRole: 'workstation' }).where(eq(devices.id, later));
+
+    const rolled = await fileAndRelease(f.auth, 'manage_fleet_designs', { action: 'rollback', reportRunId: f.reportRunId }, f.approver);
+    expect(rolled.status).toBe('failed');
+    expect(JSON.stringify(rolled.result)).toContain(`roleCorrections:${later}`);
+    await expect(roleOf(ours)).resolves.toEqual({ role: before.role, source: before.source });
+    await expect(roleOf(later)).resolves.toEqual({ role: 'workstation', source: 'ai' });
   });
 
   runDb('a rollback released after the policy gained an assignment refuses', async () => {

@@ -178,7 +178,7 @@ describe('rollbackFleetDesign — reverse order', () => {
   // matches" comparison (fixed; see that test's comment) and is kept
   // separate rather than folded in here.
   it('processes rows in reverse step order, continuing past a retired source refusal', async () => {
-    const roleRow = row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'discovered' } });
+    const roleRow = row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'discovered' }, createdRefs: { deviceRole: 'server' } });
     const retiredRow = row({ id: 'retired-1', itemRef: 'retired:0', itemKind: 'retired', step: 2, createdRefs: { policyId: 'p2', linkId: 'link-retired' }, beforeImage: { inlineSettings: { watches: [{ name: 'Spooler', enabled: true }] } } });
     const functionRow = row({ id: 'function-1', itemRef: 'functions:printer_server', itemKind: 'function', step: 1, createdRefs: { groupId: 'g-missing' }, beforeImage: { memberships: [], priorAssessmentIdByDevice: {} } });
 
@@ -530,7 +530,7 @@ describe('rollbackFleetDesign — function row (group + assessments)', () => {
 
 describe('rollbackFleetDesign — role correction', () => {
   it('restores the before-image only while the device is still deviceRoleSource=ai', async () => {
-    const roleRow = row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'discovered' } });
+    const roleRow = row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'discovered' }, createdRefs: { deviceRole: 'server' } });
     ledgerMock.loadLedger.mockResolvedValue([roleRow]);
     updateSeed(devices, [{ id: 'd9' }]); // simulates the WHERE deviceRoleSource='ai' matching
 
@@ -544,7 +544,7 @@ describe('rollbackFleetDesign — role correction', () => {
   });
 
   it('refuses when the device role source has moved on (no longer ai — e.g. a manual edit)', async () => {
-    const roleRow = row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'discovered' } });
+    const roleRow = row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'discovered' }, createdRefs: { deviceRole: 'server' } });
     ledgerMock.loadLedger.mockResolvedValue([roleRow]);
     updateSeed(devices, []); // WHERE deviceRoleSource='ai' matched nothing
 
@@ -577,6 +577,13 @@ describe('rollbackFleetDesign — role correction', () => {
       const result = await rollbackFleetDesign(makeAuth(), RUN);
 
       expect(result.refused).toEqual([{ itemRef: 'roleCorrections:d9', reason: 'modified_since_apply' }]);
+    });
+
+    it('with neither the ref nor a proposal it refuses, and writes nothing', async () => {
+      ledgerMock.loadLedger.mockResolvedValue([row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: before })]);
+      const result = await rollbackFleetDesign(makeAuth(), RUN);
+      expect(result.refused).toEqual([{ itemRef: 'roleCorrections:d9', reason: 'modified_since_apply' }]);
+      expect(dbHolder.updates).toEqual([]);
     });
 
     it("a row written before the ref existed falls back to the design's own proposal", async () => {
@@ -699,7 +706,7 @@ describe('rollbackFleetDesign — script row (W04)', () => {
   });
 
   it('rolls the script row back after step 5 and before step 1', async () => {
-    const roleRow = row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'auto' } });
+    const roleRow = row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'auto' }, createdRefs: { deviceRole: 'server' } });
     const functionRow = row({ id: 'function-1', itemRef: 'functions:x', itemKind: 'function', step: 1, createdRefs: { groupId: 'g-missing' }, beforeImage: { memberships: [], priorAssessmentIdByDevice: {} } });
     ledgerMock.loadLedger.mockResolvedValue([functionRow, scriptRow(), roleRow]);
     updateSeed(devices, [{ id: 'd9' }]);
