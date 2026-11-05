@@ -355,6 +355,9 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_ip_history', 'device_memory_modules',
   'device_metrics', 'device_mtls_certificates', 'device_network', 'device_patches',
   'device_process_samples', 'device_recovery_keys', 'device_registry_state',
+  // #11068 — vendor update status; restamped by its composite FK's ON UPDATE
+  // CASCADE (also in DEVICE_ORG_FK_CASCADE_TABLES below).
+  'device_oem_update_status',
   // #4755 — restore-checkpoint attempt ledger; restamped by its composite FK's
   // ON UPDATE CASCADE (also in DEVICE_ORG_FK_CASCADE_TABLES below).
   'device_restore_point_attempts',
@@ -463,6 +466,8 @@ export const DEVICE_ORG_FK_CASCADE_TABLES: readonly string[] = [
   'device_restore_point_attempts',
   // #6960 W03 — composite (device_id, org_id) FK ON UPDATE CASCADE.
   'security_agent_device_status',
+  // #11068 — composite (device_id, org_id) FK ON UPDATE CASCADE.
+  'device_oem_update_status',
   'device_wake_attempts',
   'device_wake_status',
 ];
@@ -720,6 +725,9 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // devices(id, org_id) ON DELETE CASCADE; leaf table, no children. Default
   // device_id predicate (no DEVICE_CASCADE_DELETE_PREDICATES entry).
   'device_restore_point_attempts',
+  // Vendor update status (#11068) — FK (device_id, org_id) -> devices(id, org_id)
+  // ON DELETE CASCADE; leaf table, no children.
+  'device_oem_update_status',
   // Network-isolation episodes (#10089) — FK (device_id, org_id) -> devices(id, org_id) ON DELETE CASCADE;
   // leaf table, no children. Device delete with an unresolved episode is refused upstream (W1c).
   'device_network_isolations',
