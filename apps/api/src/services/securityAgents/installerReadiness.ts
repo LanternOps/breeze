@@ -97,7 +97,8 @@ export function evaluatePlatformReadiness(
 }
 
 /**
- * Org half of readiness for many orgs at once (at most three queries per
+ * Org half of readiness for many orgs at once (one batched selection for a
+ * framework vendor; otherwise at most three queries per
  * vendor, whatever the org count). Every requested org gets an answer.
  *
  * Runs in its own system context: the vendor integration/mapping tables are

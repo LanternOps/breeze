@@ -135,7 +135,12 @@ describe('evaluatePlatformReadiness', () => {
 });
 
 describe('framework vendors (#8170)', () => {
-  const selection = (kind: string) => new Map([[ORG, { kind, count: 2, tenantId: 't', connectionId: 'c', expiresAt: null, sealedMaterial: 'must-not-be-read' }]]);
+  // A dispatch-shaped selection whose material throws if anything touches it.
+  const selection = (kind: string) => new Map([[ORG, Object.defineProperty(
+    { kind, count: 2, tenantId: 't', connectionId: 'c', expiresAt: null },
+    'sealedMaterial',
+    { enumerable: false, get: () => { throw new Error('readiness read the sealed material'); } },
+  )]]);
 
   it.each([
     ['ok', { ok: true }],
@@ -149,6 +154,7 @@ describe('framework vendors (#8170)', () => {
     loadInstallerTenantSelections.mockResolvedValue(selection(kind));
     const result = await loadOrgInstallerReadiness('bitdefender', [ORG]);
     expect(result.get(ORG)).toEqual(expected);
+    expect(decryptForColumn).not.toHaveBeenCalled();
   });
 
   it('an unreleased package is vendor_unavailable for every org, without reading a tenant', async () => {
@@ -184,11 +190,11 @@ describe('framework vendors (#8170)', () => {
     expect(result.get(ORG)).toEqual({ ok: false, reason: 'vendor_unavailable' });
   });
 
-  it('the result never carries tenant ids or material', async () => {
+  it('the result never carries tenant ids', async () => {
     releasedOverride = true;
     loadInstallerTenantSelections.mockResolvedValue(selection('ok'));
     const result = await loadOrgInstallerReadiness('bitdefender', [ORG]);
-    expect(JSON.stringify(Array.from(result.values()))).not.toMatch(/must-not-be-read|tenantId|connectionId/);
+    expect(Array.from(result.values())).toEqual([{ ok: true }]);
   });
 
   it('platform half: Windows ready, macOS needs MDM approval, Linux unsupported, and a platform comes before any org read', async () => {

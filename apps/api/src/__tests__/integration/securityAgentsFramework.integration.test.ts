@@ -39,6 +39,7 @@ import {
   softwarePolicies,
 } from '../../db/schema';
 import { ensureBuiltinPackage } from '../../services/builtinDeploymentPackages';
+import { resolveEdrInstaller } from '../../services/edrInstallerResolver';
 import { addFeatureLink } from '../../services/configurationPolicy';
 import { persistInstallerOutcomes } from '../../services/edrProviders/installerMaterial';
 import { processCheckPolicy } from '../../jobs/softwareComplianceWorker';
@@ -311,6 +312,15 @@ describe('security agents — EDR framework vendor on live Postgres (#8170)', ()
     expect(await commandsOn(f.dev.z)).toEqual([]);
   });
 
+  it('dispatch refuses on its own every org readiness refuses, and resolves the one it allows', async () => {
+    const f = await seed();
+    const resolve = (orgId: string) => resolveEdrInstaller({ provider: 'bitdefender', orgId, downloadUrlTemplate: null, silentInstallArgsTemplate: null });
+    expect(await resolve(f.orgs.a.id)).toMatchObject({ downloadUrl: LINK_URL, fileName: FILE_NAME });
+    expect(await resolve(f.orgs.b.id)).toEqual({ error: expect.stringContaining('installer link not fetched yet') });
+    expect(await resolve(f.orgs.c.id)).toEqual({ error: expect.stringContaining('maps to 2') });
+    expect(await resolve(f.orgs.d.id)).toEqual({ error: expect.stringContaining('not mapped') });
+  });
+
   it('readiness answers in one batch for orgs of different partners, each against its own partner tenant', async () => {
     const f = await seed();
     const readiness = await loadOrgInstallerReadiness('bitdefender', [f.orgs.a.id, f.orgs.d.id, f.orgs.z.id]);
@@ -403,9 +413,12 @@ describe('edr_endpoints coverage source on live Postgres (#8170)', () => {
     await setTenant(new Date());
     await expect(listA(f)).resolves.toHaveLength(1);
 
-    await withSystemDbAccessContext(() =>
-      db.update(edrConnections).set({ status: 'reauth_required' }).where(eq(edrConnections.id, f.connection)),
+    const setConnection = (values: { status?: 'connected' | 'reauth_required'; isActive?: boolean }) => withSystemDbAccessContext(() =>
+      db.update(edrConnections).set(values).where(eq(edrConnections.id, f.connection)),
     );
+    await setConnection({ status: 'reauth_required' });
+    await expect(listA(f)).resolves.toBeNull();
+    await setConnection({ status: 'connected', isActive: false });
     await expect(listA(f)).resolves.toBeNull();
   });
 
