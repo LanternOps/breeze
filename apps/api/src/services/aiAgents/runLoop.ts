@@ -207,7 +207,10 @@ import { loadProvenFixesForRun, profileConsultsFixMemory } from '../fixMemory/ru
 import type { ResearchToolRefs } from './researchSubmission';
 import { analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './analysisProfile';
 import { assessmentLimits, assessmentToolAllowlist, isAssessmentProfile } from './assessmentProfile';
-import { isTroubleshootProfile, troubleshootLimits, troubleshootToolAllowlist } from './troubleshootProfile';
+import {
+  isTroubleshootProfile, TROUBLESHOOT_MAX_ACTIONS_PER_RUN, troubleshootLimits, troubleshootToolAllowlist,
+} from './troubleshootProfile';
+import { emitRunProgress, progressLabelFor } from './runProgress';
 import { loadAssessmentContext } from '../wisp/assessment';
 import { watchPromptLines } from '../wisp/watches';
 import type { AgentRunAssessmentPromptContext } from './assessmentPrompt';
@@ -994,13 +997,27 @@ export function createAgentRunPreToolUse(args: {
       ...(downgradeReason ? { downgradeReason } : {}),
     };
 
-    // Tier gate, not a shortcut: createActionIntent throws
-    // ActionIntentTierError('tool_not_tier3') for anything tier <= 2, so a
-    // runner that funnelled every mutation through it would turn ordinary
-    // Tier-2 proposals into errors. Tier 2 proposals are recorded and stop
-    // there — there is no approval object for them.
+    // Tier gate, not a shortcut: createActionIntent admits an ai_agent
+    // principal's Tier-2 call as a supervised intent (P2-1) but throws
+    // ActionIntentTierError('tool_not_tier3') for tier <= 1. On every profile
+    // except device_troubleshooting a Tier-2 proposal is recorded and stops
+    // there (no approval object); a troubleshooting run mints one (below).
     let intentError: string | undefined;
-    if (check.tier === 3) {
+    // #11084 — a device-troubleshooting run is forced shadow, so EVERY change
+    // it wants is an approval request: Tier 2 too (intentService admits an
+    // ai_agent principal's Tier-2 intent as supervised, never
+    // policy-decidable). Capped per run so device output cannot flood the
+    // approvals queue; the refusal tells the model to stop and summarize.
+    const troubleshoot = isTroubleshootProfile(run);
+    if (troubleshoot && (check.tier === 2 || check.tier === 3)) {
+      const minted = outcome.proposedActions.filter((p) => p.intentId !== undefined).length;
+      if (minted >= TROUBLESHOOT_MAX_ACTIONS_PER_RUN) {
+        const reason = `This run already raised ${TROUBLESHOOT_MAX_ACTIONS_PER_RUN} approval requests, the most per run`;
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: `${reason}. Do not propose more; finish with your summary.` };
+      }
+    }
+    if (check.tier === 3 || (troubleshoot && check.tier === 2)) {
       try {
         const intent = await createActionIntent(agentAuth, {
           toolName,
@@ -1074,6 +1091,13 @@ export function createAgentRunPreToolUse(args: {
     }
 
     outcome.proposedActions.push(entry);
+    if (troubleshoot && entry.intentId) {
+      await emitRunProgress(
+        { orgId: run.orgId, runId: run.id },
+        'approval',
+        `Waiting for approval: ${progressLabelFor(toolName, action ?? null)}`,
+      );
+    }
     return {
       allowed: false,
       error: intentError
@@ -1263,6 +1287,16 @@ export function createAgentRunPreToolUse(args: {
       const reason = `${toolName} is not available to device_troubleshooting runs`;
       outcome.deniedActions.push({ tool: toolName, reason });
       return { allowed: false, error: reason };
+    }
+    // #11084 Review Focus 1 — the device pin, BEFORE anything is read or
+    // proposed: device output may tell the model to act on another device.
+    // The agent principal's `allowedDeviceIds` already refuses an execution,
+    // but a mutation would otherwise reach recordProposal and become an
+    // approval request for the other device. Refuse it here instead.
+    if (isTroubleshootProfile(run) && namesAnotherDevice(toolName, input, guardrailPolicy.deviceId ?? null)) {
+      const reason = 'a device_troubleshooting run is pinned to its device; a call naming any other device is refused';
+      outcome.deniedActions.push({ tool: toolName, reason });
+      return { allowed: false, error: `${reason}. Stay on the target device.` };
     }
 
     if (grantCeiling) {
@@ -1488,8 +1522,31 @@ export function createAgentRunPreToolUse(args: {
       return recordAllowedExecution(toolName, input, revalidated.pin, toolUseId);
     }
 
+    // #11084 — the run card's step feed: one beat per allowed call, labelled
+    // from the fixed map only (never tool input or output). emitRunProgress
+    // never throws.
+    if (isTroubleshootProfile(run)) {
+      await emitRunProgress({ orgId: run.orgId, runId: run.id }, 'tool', progressLabelFor(toolName, readToolAction(toolName, input) ?? null));
+    }
     return recordAllowedExecution(toolName, input, null, toolUseId);
   };
+}
+
+/**
+ * #11084 — true when the call names any device other than the run's own, via
+ * the tool's declared `deviceArgs` or the conventional `deviceId`/`deviceIds`
+ * keys. A malformed id (non-string) counts as another device: fail closed.
+ */
+function namesAnotherDevice(toolName: string, input: Record<string, unknown>, runDeviceId: string | null): boolean {
+  const keys = new Set<string>(['deviceId', 'deviceIds', ...(aiTools.get(toolName)?.deviceArgs ?? [])]);
+  for (const key of keys) {
+    const raw = input[key];
+    if (raw == null) continue;
+    for (const id of Array.isArray(raw) ? raw : [raw]) {
+      if (typeof id !== 'string' || id !== runDeviceId) return true;
+    }
+  }
+  return false;
 }
 
 /** Wisp W05b — the run's assessment call lists, created on the first captured call. */

@@ -95,6 +95,8 @@ export type WorkspaceCap =
 
 export type ChatRunDeliveryOutcome =
   | 'progress' | 'completed' | 'failed' | 'no_session' | 'run_missing'
+  /** #11084: a device-troubleshooting run settled waiting on approvals. */
+  | 'awaiting_approval'
   /**
    * The watch's org/session did not match the live session found under that
    * session id — a cross-tenant delivery was refused.

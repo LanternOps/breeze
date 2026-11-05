@@ -211,6 +211,29 @@ describe('chatRunBridge (spec §5.5)', () => {
     expect(captureException).toHaveBeenCalledTimes(1);
   });
 
+  // #11084: a device-troubleshooting run that settles with steps waiting for a
+  // person is a delivery too — the chat card stops spinning and links approvals.
+  it('publishes run_result for awaiting_approval with the pending intent count, once', async () => {
+    const { session, published } = fakeSession();
+    sessionGet.mockReturnValue(session);
+    readRunForDelivery.mockResolvedValue({
+      status: 'awaiting_approval', summary: 'Found a corrupt profile; asked to rebuild it.', artifacts: [], pendingIntentCount: 2,
+    });
+    watchRunForSession({ runId: RUN, sessionId: SESSION, orgId: ORG });
+
+    await deliverRunEvent({ type: 'ai.agent.run.awaiting_approval', payload: { runId: RUN } });
+    await deliverRunEvent({ type: 'ai.agent.run.awaiting_approval', payload: { runId: RUN } });
+
+    expect(published).toEqual([{
+      type: 'run_result', runId: RUN, status: 'awaiting_approval',
+      summary: 'Found a corrupt profile; asked to rebuild it.', artifacts: [], pendingIntentCount: 2,
+    }]);
+    // The summary is model-written from device output: injected as fenced DATA.
+    const injected = drainPendingRunResults(session as never) ?? '';
+    expect(injected).toContain('awaiting_approval');
+    expect(injected).toMatch(/<untrusted_data source="[^"]+">[\s\S]*Found a corrupt profile/);
+  });
+
   it('maps a failed run to a run_result the card can render', async () => {
     const { session, published } = fakeSession();
     sessionGet.mockReturnValue(session);
