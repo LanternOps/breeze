@@ -938,14 +938,16 @@ describe('#10542 — peer drop during a viewer reconnect', () => {
       sessionId: fx.sessionId,
       deviceId: fx.deviceId,
       startGeneration: SEED_GENERATION,
-      graceMs: 1,
+      // Long enough that the timer cannot fire while the hold's Redis write is
+      // in flight; the check below is handed a clock past the deadline instead.
+      graceMs: 60_000,
     })).toBe('held');
     // The holding instance goes away before its timer fires.
     __resetDesktopReconnectGraceForTest();
-    await new Promise((resolve) => setTimeout(resolve, 10));
 
     const session = { id: fx.sessionId, deviceId: fx.deviceId, desktopStartGeneration: SEED_GENERATION };
-    expect(await enforceExpiredDesktopReconnectHold(session)).toBe('ended');
+    expect(await enforceExpiredDesktopReconnectHold(session)).toBe('none');
+    expect(await enforceExpiredDesktopReconnectHold(session, Date.now() + 60_001)).toBe('ended');
     expect(await readFence(fx.sessionId)).toMatchObject({ status: 'disconnected' });
     expect(await isRevoked(fx.sessionId)).toBe(true);
   });
