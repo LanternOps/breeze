@@ -1070,6 +1070,10 @@ function asCaptureEnvelope(value: unknown): { artifact: Record<string, unknown>;
  * external vendor feed, or portal/email submission.
  */
 export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
+  // Full-control W18 PR B (#6789): portal text is typed by MSP staff and shown to customers; recipient names and
+  // emails are contacts. None becomes instructions.
+  manage_org_portal_settings: new Set(['welcomeMessage', 'footerText', 'customCss', 'supportEmail', 'supportPhone', 'logoUrl', 'partnerInvoiceFooter', 'partnerLogoUrl']),
+  manage_report_recipients: new Set(['name', 'email']),
   // Full-control W18 PR A (#6789): names and emails are typed by people (contacts, portal invitees, staff), role
   // names and descriptions by tenant admins, external-link labels by integrations. None becomes instructions.
   get_org_summary: new Set(['name', 'email', 'phone', 'siteName']),
