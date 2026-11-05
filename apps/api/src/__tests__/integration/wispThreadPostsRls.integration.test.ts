@@ -226,6 +226,14 @@ describe('wisp_thread_posts constraints', () => {
     await insertPost(f, f.orgA1, { link: null });
   });
 
+  it('a specialist_result post inserts (W2 #11085); an unknown kind still fails 23514', async () => {
+    const f = await seed();
+    const row = await insertPost(f, f.orgA1, { kind: 'specialist_result', dedupeKey: `wisp.specialist_result:${randomUUID()}:completed` });
+    expect(row.kind).toBe('specialist_result');
+    expect(row.orgId).toBe(f.orgA1);
+    await expectSqlState(() => insertPost(f, f.orgA1, { kind: 'specialist' as never }), '23514', 'wisp_thread_posts_kind_chk');
+  });
+
   it('one post per (thread, dedupe_key) — 23505; the same key on another thread is a different post', async () => {
     const f = await seed();
     const key = `wisp.brief:${f.threadA}:2026-10-25`;
