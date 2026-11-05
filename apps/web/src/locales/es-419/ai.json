@@ -892,11 +892,15 @@
       "summary": "Resumen",
       "open": "Abrir",
       "unread": "No leído",
-      "specialistResult": "Informe del especialista"
+      "specialistResult": "Informe del especialista",
+      "firstLook": "Primera revisión"
     },
     "welcome": {
       "title": "Estoy revisando {{scope}}.",
       "body": "Tu primer resumen llega cada mañana, una vez que haya echado un vistazo. Mientras tanto, pregúntame lo que quieras.",
+      "firstLookTitle": "Ya le di una primera revisión a {{scope}}.",
+      "firstLookBody": "Lo que encontré está en la publicación de arriba. Pregúntame lo que quieras al respecto.",
+      "briefAt": "Tu resumen de la mañana sale a las {{time}} ({{timezone}}).",
       "suggestions": {
         "needsMe": {
           "label": "¿Qué requiere mi atención hoy?",
@@ -940,6 +944,12 @@
       "buttonPlain": "Preguntar a la IA sobre esto",
       "draft": "Sobre {{label}}: ",
       "switchFocus": "Wisp se enfoca en {{from}}. ¿Cambiar a {{to}}?"
+    },
+    "plainChat": {
+      "new": "Nuevo chat simple",
+      "newDescription": "Breeze AI con todas las herramientas a las que tienes acceso. No es Wisp.",
+      "wispDescription": "Wisp, con tu permiso",
+      "label": "Breeze AI · no es Wisp"
     }
   },
   "wispConcerns": {

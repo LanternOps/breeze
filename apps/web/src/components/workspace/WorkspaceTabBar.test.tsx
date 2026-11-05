@@ -14,8 +14,9 @@ import { MAX_TABS, type TabState } from '@/stores/workspaceStore';
 
 const tabs = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `t${i}`, title: `Tab ${i}`, sessionId: null } as unknown as TabState));
 
-function renderBar(n: number) {
+function renderBar(n: number, opts: { grantActive?: boolean } = {}) {
   const onNewTab = vi.fn();
+  const onNewPlainTab = vi.fn();
   const onOpenPast = vi.fn();
   render(
     <WorkspaceTabBar
@@ -25,11 +26,45 @@ function renderBar(n: number) {
       onCloseTab={vi.fn()}
       onRenameTab={vi.fn()}
       onNewTab={onNewTab}
+      onNewPlainTab={onNewPlainTab}
+      wispGrantActive={opts.grantActive ?? false}
       onOpenPast={onOpenPast}
     />,
   );
-  return { onNewTab, onOpenPast };
+  return { onNewTab, onNewPlainTab, onOpenPast };
 }
+
+describe('the "+" menu with an active Wisp grant (#10289)', () => {
+  it('offers "New plain chat" next to the grant-backed "New chat"', async () => {
+    const user = userEvent.setup();
+    const { onNewTab, onNewPlainTab } = renderBar(1, { grantActive: true });
+    await user.click(screen.getByTestId('workspace-new-tab-menu'));
+    expect(screen.getByTestId('workspace-new-chat')).toHaveTextContent('New chat');
+    expect(screen.getByTestId('workspace-new-chat')).toHaveTextContent('Wisp, under your grant');
+    expect(screen.getByTestId('workspace-new-plain-chat')).toHaveTextContent('New plain chat');
+    await user.click(screen.getByTestId('workspace-new-plain-chat'));
+    expect(onNewPlainTab).toHaveBeenCalledTimes(1);
+    expect(onNewTab).not.toHaveBeenCalled();
+  });
+
+  it('without a grant there is no plain option and "New chat" has no description', async () => {
+    const user = userEvent.setup();
+    renderBar(1);
+    await user.click(screen.getByTestId('workspace-new-tab-menu'));
+    expect(screen.queryByTestId('workspace-new-plain-chat')).toBeNull();
+    expect(screen.getByTestId('workspace-new-chat').textContent).toBe('New chat');
+  });
+
+  it(`at ${MAX_TABS} tabs "New plain chat" is disabled too`, async () => {
+    const user = userEvent.setup();
+    const { onNewPlainTab } = renderBar(MAX_TABS, { grantActive: true });
+    await user.click(screen.getByTestId('workspace-new-tab-menu'));
+    const plain = screen.getByTestId('workspace-new-plain-chat');
+    expect(plain).toHaveAttribute('aria-disabled', 'true');
+    await user.click(plain);
+    expect(onNewPlainTab).not.toHaveBeenCalled();
+  });
+});
 
 describe('the "+" menu', () => {
   it('keeps the trigger look (New, with the shortcut hint) and opens a menu with both items', async () => {

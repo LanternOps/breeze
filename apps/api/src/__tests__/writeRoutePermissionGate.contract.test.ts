@@ -134,6 +134,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   // routes/agents/state.ts
   'PUT /api/v1/agents/:id/registry-state': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   'PUT /api/v1/agents/:id/config-state': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
+  // routes/agents/oemUpdates.ts
+  'PUT /api/v1/agents/:id/oem-updates/verification': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/storageSessions.ts
   'POST /api/v1/agents/:id/storage-sessions/:sessionId/:op': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/timeStatus.ts

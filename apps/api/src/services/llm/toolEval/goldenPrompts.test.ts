@@ -43,8 +43,14 @@ describe('GOLDEN_CASES', () => {
     // g120-g126 (full-control W17, #6788): backup verification, VSS, C2C configs, bare-metal recovery and backup health.
     // g127-g132 (full-control W18, #6789 PR A): org summary, readiness, audit retention, portal users, Breeze logins, roles.
     // g133-g135 (full-control W18, #6789 PR B): portal settings update, the four-eyes sensitive access, a recipient add.
-    expect(GOLDEN_CASES).toHaveLength(135);
-    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(135);
+    // g136-g137 (full-control W16, #6786 PR A): run the patch agent, delegate a service recovery, from ordinary chat.
+    expect(GOLDEN_CASES).toHaveLength(137);
+    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(137);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g136')?.expect[0]).toEqual({ tool: 'run_patch_plan' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g137')?.expect[0]).toEqual({ tool: 'create_operator_task' });
+    for (const id of ['g136', 'g137']) {
+      expect(GOLDEN_CASES.find((c) => c.id === id)?.expect.map((e) => e.tool), id).not.toContain('launch_specialist');
+    }
     expect(GOLDEN_CASES.find((c) => c.id === 'g133')?.expect[0]).toEqual({ tool: 'manage_org_portal_settings', action: 'update' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g134')?.expect[0]).toEqual({ tool: 'manage_org_portal_settings', action: 'set_sensitive_access' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g135')?.expect[0]).toEqual({ tool: 'manage_report_recipients', action: 'add' });

@@ -14,6 +14,7 @@ import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services
 import { resolveScopedOrgId } from './helpers';
 import { backupJobHistoryOrderBy } from '../../services/backupJobOrdering';
 import { jobListSchema } from './schemas';
+import { classifyBackupFailure } from '@breeze/shared';
 
 // Legacy `?status=` spellings this API has always accepted, mapped to the real
 // backup_status enum values. See the note at the use site in the list route.
@@ -770,5 +771,6 @@ function toJobResponse(row: typeof backupJobs.$inferSelect) {
     referencedFiles: row.referencedFiles ?? null,
     errorCount: row.errorCount ?? null,
     errorLog: row.errorLog ?? null,
+    failureCategory: classifyBackupFailure({ status: row.status, errorLog: row.errorLog }),
   };
 }

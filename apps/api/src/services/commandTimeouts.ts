@@ -214,6 +214,8 @@ export const BACKUP_JOB_ABSOLUTE_TIMEOUT_MS = TWENTY_FOUR_HOURS;
 export const CALLER_VERIFY_TIMEOUT_MS = WORKSTATION_TIMEOUT_MAX_MS + 30_000;
 
 const LONG_TIMEOUT_TYPES = new Set<string>([
+  // Vendor updates (#11065): a vendor tool download plus a firmware flash.
+  CommandTypes.OEM_UPDATE_RUN,
   CommandTypes.AGENT_ROLLBACK_V1,
   // #3525: deliberately NOT SHORT_TIMEOUT_TYPES. The generic reaper clocks
   // `pending` rows from createdAt (jobs/staleCommandReaper.ts), so a 5-minute

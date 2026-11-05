@@ -179,6 +179,7 @@
     "oneOrMoreVssWritersAreNotStable": "Um ou mais VSS writers não estão estáveis. Revise os estados mais recentes dos writers antes da próxima execução.",
     "vssUnprotectedVolumes": "Lido do volume ativo, não de uma cópia de sombra VSS: {{volumes}}. Arquivos em uso nesses volumes podem ter sido ignorados ou capturados em um estado inconsistente.",
     "lastBackupFailed": "O último backup falhou",
+    "lastBackupFailedWithCategory": "O último backup falhou: {{category}}",
     "lastBackupCompletedWithWarnings": "O último backup foi concluído com avisos",
     "lastBackupCompletedWithErrors": "O último backup foi concluído com erros",
     "writer": "Gravador",
@@ -651,7 +652,11 @@
     "providerEnforcedImmutabilityCannotBeReleasedFromBreeze": "A imutabilidade aplicada pelo provedor não pode ser liberada pelo Breeze.",
     "fileTree": "Árvore de arquivos",
     "noFileTreeAvailable": "Nenhuma árvore de arquivos disponível.",
-    "fileIndexUnavailable": "Este snapshot tem arquivos, mas o índice de arquivos não está disponível, então eles não podem ser listados aqui.",
+    "fileIndexBuilding": "Preparando a lista de arquivos deste snapshot. Isso pode levar alguns minutos em backups grandes.",
+    "fileIndexUnavailable": "A lista de arquivos deste snapshot não está disponível no momento. Você ainda pode restaurar o snapshot inteiro.",
+    "fileIndexIntegrityFailed": "Este snapshot falhou na verificação de integridade, então seus arquivos não podem ser listados.",
+    "fileIndexDeviceLocal": "Este snapshot está armazenado no dispositivo, e o Breeze ainda não consegue ler a lista de arquivos dele a partir de lá.",
+    "fileIndexRetry": "Tentar novamente",
     "path": "Caminho:",
     "useTheRestoreWorkflowToRecoverOrExport": "Use o fluxo de restauração para recuperar ou exportar arquivos deste snapshot.",
     "select": "Selecionar",
@@ -1184,5 +1189,40 @@
     "summary_one": "{{count}} ponto de nova análise ignorado: junções e pontos de montagem não são seguidos nem restaurados. Isso é esperado, não é um erro.",
     "summary_other": "{{count}} pontos de nova análise ignorados: junções e pontos de montagem não são seguidos nem restaurados. Isso é esperado, não é um erro.",
     "showDetails": "Mostrar caminhos ignorados"
+  },
+  "failureCategory": {
+    "device_offline": {
+      "label": "Dispositivo offline",
+      "hint": "O dispositivo perdeu a conexão com o Breeze durante o backup. Mantenha-o ligado e online durante toda a janela de backup."
+    },
+    "timeout": {
+      "label": "Travado ou tempo esgotado",
+      "hint": "O backup parou de avançar ou ultrapassou o limite de tempo. Backups muito grandes podem precisar de mais de uma janela. Verifique a carga do dispositivo e o tamanho da seleção de backup."
+    },
+    "storage": {
+      "label": "Problema de armazenamento",
+      "hint": "O Breeze não conseguiu gravar no destino do backup, ou a autorização de envio expirou. Teste a configuração de armazenamento e verifique as credenciais e o espaço livre."
+    },
+    "agent": {
+      "label": "Problema no agente",
+      "hint": "O componente de backup do dispositivo parou inesperadamente. Atualize o agente e execute o backup novamente. Se continuar acontecendo, verifique os logs do agente no dispositivo."
+    },
+    "configuration": {
+      "label": "Problema de configuração",
+      "hint": "Não havia nada válido para fazer backup, ou a configuração de backup mudou enquanto o trabalho estava iniciando. Revise o perfil de backup do dispositivo."
+    },
+    "source_access": {
+      "label": "Arquivos não puderam ser lidos",
+      "hint": "Alguns arquivos estavam bloqueados, em uso ou ilegíveis para o agente. Verifique os arquivos listados abaixo e o status do VSS."
+    },
+    "cancelled": {
+      "label": "Cancelado",
+      "hint": "Interrompido por um usuário, ou pelo Breeze, antes de terminar."
+    },
+    "unknown": {
+      "label": "Outro erro",
+      "hint": "O Breeze ainda não reconhece este erro. A mensagem completa é exibida abaixo."
+    },
+    "troubleshootingLink": "Guia de solução de problemas"
   }
 }

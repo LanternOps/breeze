@@ -43,3 +43,29 @@ export const OEM_OUTCOMES = [
   'interrupted',
 ] as const;
 export type OemOutcome = (typeof OEM_OUTCOMES)[number];
+
+/**
+ * Why the dispatch seam refused a run. Shared so the console's copy for each one is
+ * checked against this list. All of them are 409s except `device_not_found` (404) and
+ * `trust_denied` (403).
+ */
+export const OEM_DISPATCH_REFUSALS = [
+  'flag_off',
+  'lane_closed',
+  'kill_switch',
+  'agent_too_old',
+  'not_applicable',
+  'not_supported',
+  'ephemeral',
+  'parked',
+  'offline',
+  'run_in_flight',
+  'no_open_categories',
+  /** Unknown id, or a device no longer in the expected org. */
+  'device_not_found',
+  'decommissioned',
+  'trust_denied',
+  /** Queued, then terminalised by the socket push's own claim-time eligibility. */
+  'cancelled_at_claim',
+] as const;
+export type OemDispatchRefusal = (typeof OEM_DISPATCH_REFUSALS)[number];

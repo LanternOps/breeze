@@ -209,6 +209,7 @@
       "copy": "Kopieren",
       "delete": "Löschen",
       "download": "Herunterladen",
+      "mkdir": "Neuer Ordner",
       "move": "Verschieben",
       "purge": "Endgültig löschen",
       "restore": "Wiederherstellen",
@@ -250,6 +251,7 @@
     "emptyDirectory": "Leeres Verzeichnis",
     "errors": {
       "copy": "Kopieren fehlgeschlagen",
+      "createFolder": "Ordner konnte nicht erstellt werden",
       "delete": "Fehler beim Löschen",
       "download": "Download fehlgeschlagen",
       "downloadTooLarge": "Zu groß für den Download ({{size}}). Der Dateibrowser überträgt Dateien bis {{max}}.",
@@ -264,6 +266,15 @@
     "home": "Zuhause",
     "modified": "Geändert",
     "moveTo": "Verschieben nach",
+    "newFolder": {
+      "action": "Neuer Ordner",
+      "title": "Neuer Ordner",
+      "nameLabel": "Ordnername",
+      "location": "Wird erstellt in {{path}}",
+      "created": "Ordner {{name}} erstellt",
+      "invalidName": "Ordnernamen dürfen keine Pfadtrennzeichen oder vom Dateisystem dieses Geräts nicht erlaubte Zeichen enthalten.",
+      "nameExists": "Hier gibt es bereits eine Datei oder einen Ordner mit diesem Namen."
+    },
     "selectedCount": "Ausgewählte Anzahl",
     "size": "Größe",
     "title": "Dateimanager",

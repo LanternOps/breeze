@@ -10,7 +10,6 @@ import { db, runOutsideDbContext, withDbAccessContext } from '../db';
 import {
   backupConfigs,
   backupJobs,
-  backupSnapshotFiles,
   backupSnapshots,
   configPolicyFeatureLinks,
   configurationPolicies,
@@ -33,6 +32,7 @@ import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 import { authorizeAiRestore } from './aiToolsRestoreAuthorization';
 import { backupJobHistoryOrderBy, latestBackupRunOrderBy } from './backupJobOrdering';
 import { resolveSelectedSnapshotPaths, selectedSnapshotPathError } from './backupSelectedPaths';
+import { readableSnapshotSourcePaths } from './backupSnapshotBrowse';
 import { inArray } from 'drizzle-orm';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { restoreIntegrityRefusalForActor } from './backupRestoreActorGate';
@@ -768,12 +768,9 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
       let resolvedSelectedPaths: string[] = [];
       if (restoreType === 'selective') {
-        const snapshotFiles = await db
-          .select({ sourcePath: backupSnapshotFiles.sourcePath })
-          .from(backupSnapshotFiles)
-          .where(eq(backupSnapshotFiles.snapshotDbId, snapshot.id));
+        const sourcePaths = await readableSnapshotSourcePaths(snapshot.id);
 
-        if (snapshotFiles.length === 0) {
+        if (sourcePaths.length === 0) {
           return JSON.stringify({ error: 'Selective restore is unavailable for snapshots without indexed files' });
         }
 
@@ -781,7 +778,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         // form) back to the stored original the agent matches against.
         const resolution = resolveSelectedSnapshotPaths(
           selectedPaths ?? [],
-          snapshotFiles.map((row) => row.sourcePath)
+          sourcePaths
         );
         if (!resolution.ok) {
           return JSON.stringify({ error: selectedSnapshotPathError(resolution) });

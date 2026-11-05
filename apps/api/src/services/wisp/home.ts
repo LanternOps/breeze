@@ -17,14 +17,16 @@ import type { AuthContext } from '../../middleware/auth';
 import { currentActivity, listActivity } from './activity';
 import { listConcernsForCeiling } from './concerns';
 import { assertWithinCeiling, CeilingViolationError, inSystemContext, type GrantCeiling } from './grantAuthority';
+import { loadBriefSchedule } from './nudgePreferences';
 import { getPartnerSettings } from './partnerSettings';
 import { listWorkingSet } from './threadLinks';
+import { firstLookPostedAt } from './threadPosts';
 
 export const BRIEF_MAX_AGE_HOURS = 36;
 export const NEEDS_YOU_LIMIT = 50;
 export const HOME_ACTIVITY_LIMIT = 20;
 
-export type HomeSections = Pick<WispHomePayload, 'brief' | 'needsYou' | 'activity' | 'current' | 'links' | 'partner'>;
+export type HomeSections = Pick<WispHomePayload, 'brief' | 'needsYou' | 'activity' | 'current' | 'links' | 'partner' | 'briefSchedule' | 'firstLookAt'>;
 
 const SEVERITY_RANK: Record<Concern['severity'], number> = { high: 0, medium: 1, low: 2, info: 3 };
 
@@ -90,18 +92,20 @@ export async function buildHomeSections(input: {
   ceiling: GrantCeiling | null;
 }): Promise<HomeSections> {
   const { ceiling } = input;
-  const [brief, settings] = await Promise.all([
+  const [brief, settings, briefSchedule, firstLookAt] = await Promise.all([
     latestBrief(input.grantorUserId, input.grantId),
     getPartnerSettings(input.partnerId),
+    loadBriefSchedule(input.grantorUserId, input.partnerId),
+    firstLookPostedAt(input.threadId),
   ]);
   const partner = { enabled: settings.enabled };
   if (!ceiling) {
-    return { brief, needsYou: [], activity: { items: [], nextCursor: null }, current: null, links: [], partner };
+    return { brief, needsYou: [], activity: { items: [], nextCursor: null }, current: null, links: [], partner, briefSchedule, firstLookAt };
   }
   // Sequential: each reads through its own context; the links resolve one by one.
   const concerns = await listConcernsForCeiling(ceiling, { status: ['open', 'snoozed'] });
   const activity = await listActivity(ceiling, { limit: HOME_ACTIVITY_LIMIT, threadId: input.threadId });
   const current = currentWithinCeiling(ceiling, await currentActivity(input.grantId));
   const links = await listWorkingSet({ auth: input.auth, ceiling }, input.threadId, { concerns });
-  return { brief, needsYou: needsYouOrder(concerns), activity, current, links, partner };
+  return { brief, needsYou: needsYouOrder(concerns), activity, current, links, partner, briefSchedule, firstLookAt };
 }

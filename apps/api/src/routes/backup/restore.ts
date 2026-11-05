@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq, and, desc, gte, lte, sql, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { backupSnapshotFiles, backupSnapshots, restoreJobs, devices, deviceCommands } from '../../db/schema';
+import { backupSnapshots, restoreJobs, devices, deviceCommands } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
@@ -14,6 +14,9 @@ import { resolveScopedOrgId } from './helpers';
 import { attachDeviceNames, restoreModeFromTargetConfig } from './deviceNames';
 import { restoreListSchema, restoreSchema } from './schemas';
 import { resolveSelectedSnapshotPaths, selectedSnapshotPathError } from '../../services/backupSelectedPaths';
+import { readableSnapshotSourcePaths } from '../../services/backupSnapshotBrowse';
+import { readSnapshotIndexView } from '../../services/backupSnapshotIndexView';
+import { requestFileIndexHydrationAfterContext } from './fileIndexHydrationRequest';
 import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
@@ -242,20 +245,23 @@ restoreRoutes.post(
 
     let selectedPaths: string[] = [];
     if (payload.restoreType === 'selective') {
-      const snapshotFiles = await db
-        .select({ id: backupSnapshotFiles.id, sourcePath: backupSnapshotFiles.sourcePath })
-        .from(backupSnapshotFiles)
-        .where(eq(backupSnapshotFiles.snapshotDbId, snapshot.id));
+      const sourcePaths = await readableSnapshotSourcePaths(snapshot.id);
 
-      if (snapshotFiles.length === 0) {
-        return c.json({ error: 'Selective restore is unavailable for snapshots without indexed files' }, 409);
+      if (sourcePaths.length === 0) {
+        // #11026: a snapshot that has files but no index yet builds one, so
+        // the selection can be made once its list is ready.
+        const index = await readSnapshotIndexView(snapshot.id, orgId);
+        if (index?.shouldRequestHydration) {
+          requestFileIndexHydrationAfterContext(snapshot.id, 'browse');
+        }
+        return c.json({ error: 'Selective restore is unavailable for snapshots without indexed files', code: 'index_unavailable' }, 409);
       }
 
       // The browse tree shows forward-slash paths; map each selection back to
       // the stored original the agent indexed (and matches against).
       const resolution = resolveSelectedSnapshotPaths(
         payload.selectedPaths ?? [],
-        snapshotFiles.map((row) => row.sourcePath)
+        sourcePaths
       );
       if (!resolution.ok) {
         return c.json({ error: selectedSnapshotPathError(resolution) }, 400);

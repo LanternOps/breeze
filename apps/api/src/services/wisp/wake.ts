@@ -31,8 +31,10 @@ import { getBullMQConnection } from '../redis';
 import { notHoldingOrgCondition } from '../unassignedPool/selectorPredicate';
 import type { BreezeEvent } from '../eventBus';
 import { GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
-import { assessableOrgIds } from './assessableOrgs';
+import { assessableOrgIds, ONBOARDING_ORG_LIMIT } from './assessableOrgs';
 import type { AssessmentReason, DeterministicDigestHint } from './assessment';
+
+export { ONBOARDING_ORG_LIMIT };
 
 export const WISP_WAKE_QUEUE = 'wisp-wake';
 export const WISP_WAKE_DEBOUNCE_MS = 60_000;
@@ -40,9 +42,6 @@ export const WISP_WAKE_DEBOUNCE_MS = 60_000;
 // literal (scheduleRegistry.contract.test.ts resolves `repeat: { every }`
 // from same-file consts only); its test pins the two equal.
 export const WISP_WAKE_TICK_INTERVAL_MS = 5 * 60 * 1000;
-
-/** w00 A33: onboarding assesses at most this many orgs at once; the rest reach the floor tick. */
-export const ONBOARDING_ORG_LIMIT = 10;
 
 export const ASSESS_JOB = 'assess';
 const ASSESS_JOB_ATTEMPTS = 3;
@@ -417,19 +416,26 @@ async function loadActiveGrantPin(grantId: unknown): Promise<WakeGrantPin | null
   return { id: row.id, partnerId: row.partner_id, currentRevisionId: row.current_revision_id ?? null };
 }
 
-/** w00 A33: onboarding assessments for the first 10 orgs of the ceiling, alphabetical by org name. */
+/**
+ * w00 A33: which of a grant's assessable orgs onboarding assesses: the first 10,
+ * alphabetical by org name. Pure, and shared with the first-look post (#10402),
+ * which waits for this same list. Collation-independent: the DB's ORDER BY name
+ * depends on the database collation, the onboarding order must not.
+ */
+export function onboardingBatch<T extends { id: string; name: string }>(assessableOrgs: T[]): T[] {
+  return [...assessableOrgs]
+    .sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .slice(0, ONBOARDING_ORG_LIMIT);
+}
+
+/** w00 A33: onboarding assessments for the first 10 orgs of the ceiling. */
 async function onboardGrant(grantId: unknown): Promise<void> {
   const grant = await loadActiveGrantPin(grantId);
   if (!grant) return;
   const ceiling = await ceilingForGrant(grant);
   if (!ceiling) return;
   const assessable = assessableOrgIds(ceiling);
-  const orgs = (await loadLivePartnerOrgs(grant.partnerId))
-    .filter((o) => assessable.has(o.id))
-    // Collation-independent: the DB's ORDER BY name depends on the database
-    // collation, the onboarding order must not.
-    .sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-    .slice(0, ONBOARDING_ORG_LIMIT);
+  const orgs = onboardingBatch((await loadLivePartnerOrgs(grant.partnerId)).filter((o) => assessable.has(o.id)));
   for (const org of orgs) {
     await requestAssessment({ grantId: grant.id, orgId: org.id, reason: { kind: 'onboarding' } });
   }

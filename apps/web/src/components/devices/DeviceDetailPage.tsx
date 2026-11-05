@@ -8,6 +8,11 @@ import DeviceSettingsModal from "./DeviceSettingsModal";
 import ChangeSiteModal from "./ChangeSiteModal";
 import RemoveDeviceDialog from "./RemoveDeviceDialog";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
+import ForcePermanentDeleteDialog, {
+  permanentDeleteRequest,
+  uninstallNotConfirmedState,
+  type UninstallState,
+} from "./ForcePermanentDeleteDialog";
 import ScriptPickerModal, {
   type Script,
   type ScriptRunAsSelection,
@@ -25,7 +30,6 @@ import {
   exitMaintenanceMode,
   decommissionDevice,
   clearDeviceSessions,
-  permanentDeleteDevice,
   sendWakeCommand,
   watchWakeOutcome,
   WakeCommandError,
@@ -97,6 +101,12 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
   // count. Nothing is restorable afterwards, so it gets asked about first.
   const [pendingPermanentDelete, setPendingPermanentDelete] =
     useState<Device | null>(null);
+  // #11153: the API refused a permanent delete because the agent never
+  // confirmed its uninstall; confirming this dialog re-sends with force.
+  const [forceDelete, setForceDelete] = useState<{
+    device: Device;
+    state: UninstallState;
+  } | null>(null);
   const [changeSiteOpen, setChangeSiteOpen] = useState(false);
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [maintenanceDialogOpen, setMaintenanceDialogOpen] = useState(false);
@@ -419,6 +429,37 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
     void navigateTo(devicesHref);
   };
 
+  // `force` is only ever true when the operator chose "Delete anyway" in the
+  // force dialog after the API refused with UNINSTALL_NOT_CONFIRMED.
+  const runPermanentDelete = async (device: Device, force: boolean) => {
+    try {
+      await permanentDeleteRequest(device.id, {
+        force,
+        errorFallback: `Failed to delete ${device.hostname}`,
+      });
+      // No warning branch: the API returns `{ success: true }` and nothing
+      // else since #2787.
+      showToast({
+        type: "success",
+        message: `${device.hostname} has been permanently deleted`,
+      });
+      void navigateTo("/devices");
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      const state = uninstallNotConfirmedState(err);
+      if (state) {
+        setForceDelete({ device, state });
+        return;
+      }
+      if (!(err instanceof ActionError)) {
+        showToast({
+          type: "error",
+          message: `Failed to delete ${device.hostname}`,
+        });
+      }
+    }
+  };
+
   const handleAction = async (
     action: string,
     device: Device,
@@ -731,24 +772,7 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
           });
           setTimeout(async () => {
             if (pdCancelled) return;
-            try {
-              await permanentDeleteDevice(device.id);
-              // No warning branch: the API returns `{ success: true }` and
-              // nothing else since #2787 (see permanentDeleteDevice).
-              showToast({
-                type: "success",
-                message: `${device.hostname} has been permanently deleted`,
-              });
-              void navigateTo("/devices");
-            } catch (err) {
-              showToast({
-                type: "error",
-                message:
-                  err instanceof Error
-                    ? err.message
-                    : `Failed to delete ${device.hostname}`,
-              });
-            }
+            await runPermanentDelete(device, false);
           }, 5000);
           return;
         }
@@ -905,6 +929,19 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
             void handleAction("decommission", target, choice);
           }}
           confirmTestId="detail-remove-confirm"
+        />
+      )}
+      {forceDelete && (
+        <ForcePermanentDeleteDialog
+          hostname={forceDelete.device.hostname}
+          state={forceDelete.state}
+          onClose={() => setForceDelete(null)}
+          onConfirm={() => {
+            const target = forceDelete.device;
+            setForceDelete(null);
+            void runPermanentDelete(target, true);
+          }}
+          confirmTestId="detail-permanent-delete-force-confirm"
         />
       )}
       {/* #5023 — the purge-framed confirm, reusing the SAME

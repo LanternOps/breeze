@@ -13,7 +13,8 @@ import { alertRules } from '../db/schema';
  * these values.
  *
  * The partial unique index `alert_rules_builtin_anchor_uidx`
- * (migrations/2026-12-03-120000-builtin-alert-rule-unique-index.sql) enforces
+ * (migrations/2026-12-03-120000-builtin-alert-rule-unique-index.sql, last
+ * recreated by 2027-01-22-150000-builtin-alert-rule-oem-updates.sql) enforces
  * that identity, and its predicate lists these same strings. A new built-in
  * producer must add its source here AND ship a migration that recreates the
  * index with it, or concurrent first fire can create the rule twice again.
@@ -24,6 +25,9 @@ export const BUILT_IN_ALERT_RULE_SOURCES = [
   'maintenance-reboot-sweep',
   'policy-evaluation',
   'config-policy-compliance',
+  // Vendor updates (#11065): not-returned and protection-still-suspended alerts
+  // (services/oemUpdates/alerts.ts). Recreated in 2027-01-22-150000.
+  'oem-updates',
 ] as const;
 
 export type BuiltInAlertRuleSource = (typeof BUILT_IN_ALERT_RULE_SOURCES)[number];

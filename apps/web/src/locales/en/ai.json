@@ -892,11 +892,15 @@
       "summary": "Summary",
       "open": "Open",
       "unread": "Unread",
-      "specialistResult": "Specialist report"
+      "specialistResult": "Specialist report",
+      "firstLook": "First look"
     },
     "welcome": {
       "title": "I'm looking around {{scope}}.",
       "body": "Your first brief arrives each morning once I have had a look. Ask me anything in the meantime.",
+      "firstLookTitle": "I've had a first look at {{scope}}.",
+      "firstLookBody": "What I found is in the post above. Ask me anything about it.",
+      "briefAt": "Your morning brief goes out at {{time}} ({{timezone}}).",
       "suggestions": {
         "needsMe": {
           "label": "What needs me today?",
@@ -940,6 +944,12 @@
       "buttonPlain": "Ask AI about this",
       "draft": "About {{label}}: ",
       "switchFocus": "Wisp is focused on {{from}}. Switch to {{to}}?"
+    },
+    "plainChat": {
+      "new": "New plain chat",
+      "newDescription": "Breeze AI with every tool you have access to. Not Wisp.",
+      "wispDescription": "Wisp, under your grant",
+      "label": "Breeze AI · not Wisp"
     }
   },
   "wispConcerns": {

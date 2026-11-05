@@ -8,6 +8,8 @@ const h = vi.hoisted(() => ({
   currentActivity: vi.fn(),
   listWorkingSet: vi.fn(),
   getPartnerSettings: vi.fn(),
+  loadBriefSchedule: vi.fn(),
+  firstLookPostedAt: vi.fn(),
   briefRows: [] as unknown[],
   briefWhere: [] as unknown[],
 }));
@@ -16,6 +18,8 @@ vi.mock('./concerns', () => ({ listConcernsForCeiling: h.listConcernsForCeiling 
 vi.mock('./activity', () => ({ listActivity: h.listActivity, currentActivity: h.currentActivity }));
 vi.mock('./threadLinks', () => ({ listWorkingSet: h.listWorkingSet }));
 vi.mock('./partnerSettings', () => ({ getPartnerSettings: h.getPartnerSettings }));
+vi.mock('./nudgePreferences', () => ({ loadBriefSchedule: h.loadBriefSchedule }));
+vi.mock('./threadPosts', () => ({ firstLookPostedAt: h.firstLookPostedAt }));
 vi.mock('./grantAuthority', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   inSystemContext: <T>(fn: () => Promise<T>) => fn(),
@@ -38,6 +42,7 @@ const input = (over: Record<string, unknown> = {}) => ({
 
 const concern = (id: string, severity: Concern['severity'], approvalIntentId: string | null = null) =>
   ({ id, severity, approvalIntentId, status: 'open' }) as Concern;
+const SCHEDULE = { timeLocal: '08:00', timezone: 'America/Denver', browserTimezone: 'America/Denver' };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -48,6 +53,8 @@ beforeEach(() => {
   h.currentActivity.mockResolvedValue(null);
   h.listWorkingSet.mockResolvedValue([]);
   h.getPartnerSettings.mockResolvedValue({ enabled: true, urgentCapableSeverities: [] });
+  h.loadBriefSchedule.mockResolvedValue(SCHEDULE);
+  h.firstLookPostedAt.mockResolvedValue(null);
 });
 
 describe('needsYouOrder', () => {
@@ -80,7 +87,11 @@ describe('buildHomeSections', () => {
       current: { orgId: ORG, orgName: 'Acme', startedAt: '2027-01-05T08:00:00Z' },
       links: [{ id: 'l1' }],
       partner: { enabled: false },
+      briefSchedule: SCHEDULE,
+      firstLookAt: null,
     });
+    expect(h.loadBriefSchedule).toHaveBeenCalledWith('u1', 'p1');
+    expect(h.firstLookPostedAt).toHaveBeenCalledWith('t1');
     expect(h.listConcernsForCeiling).toHaveBeenCalledWith(ceiling, { status: ['open', 'snoozed'] });
     expect(h.listActivity).toHaveBeenCalledWith(ceiling, { limit: 20, threadId: 't1' });
     expect(h.listWorkingSet).toHaveBeenCalledWith({ auth: input().auth, ceiling }, 't1', { concerns: [concern('c1', 'high')] });
@@ -90,7 +101,16 @@ describe('buildHomeSections', () => {
   it('every section empty', async () => {
     expect(await buildHomeSections(input())).toEqual({
       brief: null, needsYou: [], activity: { items: [], nextCursor: null }, current: null, links: [], partner: { enabled: true },
+      briefSchedule: SCHEDULE, firstLookAt: null,
     });
+  });
+
+  it('#10402: reports when the first look was posted, paused grant included', async () => {
+    h.firstLookPostedAt.mockResolvedValue('2027-01-22T10:03:00.000Z');
+    expect((await buildHomeSections(input())).firstLookAt).toBe('2027-01-22T10:03:00.000Z');
+    const paused = await buildHomeSections(input({ ceiling: null }));
+    expect(paused.firstLookAt).toBe('2027-01-22T10:03:00.000Z');
+    expect(paused.briefSchedule).toEqual(SCHEDULE);
   });
 
   it('a paused/ended grant (no ceiling) shows brief + partner only; no ceiling-bound read runs', async () => {

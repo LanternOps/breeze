@@ -181,6 +181,7 @@ vi.mock('./auditEvents', () => ({
 vi.mock('./aiAgentSdkTools', () => ({
   TOOL_TIERS: {
     query_devices: 1,
+    draft_flow: 2,
     take_screenshot: 2,
     manage_tickets: 2,
     execute_command: 3,
@@ -608,6 +609,25 @@ describe('createSessionPreToolUse — Wisp delegation ceiling (W04 Task 4)', () 
     expect(result).toEqual({ allowed: true });
     expect(wisp.enforceWispCeiling).not.toHaveBeenCalled();
     expect(wisp.narrowAuthToCeiling).not.toHaveBeenCalled();
+  });
+
+  // #10289: "New plain chat" creates a session with no grant, which is how a
+  // human-only tool stays reachable while a grant is active.
+  it('draft_flow in a plain session never meets the ceiling gate', async () => {
+    const result = await createSessionPreToolUse(makeActiveSession({ wispGrant: null }))('draft_flow', { name: 'x' });
+
+    expect(result).toEqual({ allowed: true });
+    expect(wisp.enforceWispCeiling).not.toHaveBeenCalled();
+  });
+
+  it('draft_flow in a grant session still goes through the gate, and its refusal stands', async () => {
+    const message = "Wisp can't use this tool under your current grant.";
+    wisp.enforceWispCeiling.mockResolvedValue({ ok: false, refusal: { code: 'wisp_outside_ceiling', detail: 'tool', message } });
+
+    const result = await createSessionPreToolUse(wispSession())('draft_flow', { name: 'x' });
+
+    expect(result).toEqual({ allowed: false, error: message });
+    expect(wisp.enforceWispCeiling).toHaveBeenCalledWith(expect.objectContaining({ grant: GRANT, toolName: 'draft_flow' }));
   });
 
   it('a refusal returns { allowed: false, error: <refusal.message> } and writes wisp.ceiling_refused', async () => {
@@ -1423,7 +1443,7 @@ describe('runPreFlightChecks — Wisp thread re-seed (Review Focus 1)', () => {
 
     expect(result).toMatchObject({ ok: true, systemPrompt: 'rebuilt prompt\n## Wisp thread\nsummary' });
     expect(wisp.lookupWispGrant).toHaveBeenCalledWith('session-1');
-    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, expect.objectContaining({ user: expect.anything() }), CEILING, { type: 'device', id: 'd-1' });
+    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, expect.objectContaining({ user: expect.anything() }), CEILING, { type: 'device', id: 'd-1' }, makeResolvedModel('platform').logicalModel);
   });
 
   it('resolves and passes the ceiling before rebuilding record context, then reuses it for the seed', async () => {
@@ -1433,7 +1453,7 @@ describe('runPreFlightChecks — Wisp thread re-seed (Review Focus 1)', () => {
     expect(wisp.resolveGrantCeiling).toHaveBeenCalledWith(GRANT.grantId, GRANT.revisionId);
     expect(mockBuildSystemPrompt).toHaveBeenCalledWith(auth, page, undefined, CEILING);
     expect(wisp.resolveGrantCeiling.mock.invocationCallOrder[0]).toBeLessThan(mockBuildSystemPrompt.mock.invocationCallOrder[0]!);
-    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, auth, CEILING, page);
+    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, auth, CEILING, page, makeResolvedModel('platform').logicalModel);
   });
 
   it('refuses an inactive ceiling before building record context', async () => {
