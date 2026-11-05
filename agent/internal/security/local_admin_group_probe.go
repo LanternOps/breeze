@@ -21,6 +21,10 @@ import (
 // until the member is removed, so it switches this host to `net localgroup` for
 // a day rather than failing first on every five-minute tick.
 //
+// net lists members but no SIDs or account state, so the same script resolves
+// each listed name afterwards. net stays the only source of membership: when the
+// resolver fails, or a name does not translate, the member is classified by name.
+//
 // All of this is platform-neutral (every spawn goes through
 // runLocalAdminPowerShell) so it is tested on every OS.
 
@@ -30,9 +34,14 @@ const (
 	localAdminCmdletFailureTTL = 24 * time.Hour
 
 	localAdminCmdletTimeout = 10 * time.Second
-	// localAdminNetTimeout is longer because `net localgroup` may have to
-	// resolve domain members.
+	// localAdminNetTimeout is longer because `net localgroup` and the resolver
+	// may have to look up domain members.
 	localAdminNetTimeout = 15 * time.Second
+
+	// localAdminResolveMarker separates net's output from the resolver's JSON. The
+	// script writes it once net's output is complete, so it also proves that a run
+	// killed while resolving still delivered every member.
+	localAdminResolveMarker = "breeze-local-admin-resolve"
 
 	// localAdminMembersPS selects SID.Value because the SID itself serializes as
 	// an object. It reads Enabled only for members whose SID ends in -500 or -501,
@@ -45,15 +54,52 @@ const (
 		" | ConvertTo-Json -Compress"
 
 	// localAdminNetGroupPS asks net.exe about the group by its localized name,
-	// translated from the SID. Stop matters: with no name, `net localgroup`
-	// lists every group on the host. The encoding switches only after net has
-	// been captured, because PowerShell decodes native output with it.
+	// translated from the SID, then resolves the members it listed. Stop matters:
+	// with no name, `net localgroup` lists every group on the host. The encoding
+	// switches only after net has been captured, because PowerShell decodes native
+	// output with it.
 	localAdminNetGroupPS = "$ErrorActionPreference='Stop';" +
 		"$g=(New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')).Translate([System.Security.Principal.NTAccount]).Value.Split('\\')[-1];" +
 		"$o=& net localgroup $g;" +
 		"if($LASTEXITCODE -ne 0){exit $LASTEXITCODE};" +
 		"[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;" +
-		"$o"
+		"$o;" +
+		"'" + localAdminResolveMarker + "';" +
+		localAdminResolvePS
+
+	// localAdminResolvePS writes one line of JSON per member from net's lines in
+	// $o, with Name, SID and Enabled. It finds the members by the same layout
+	// parseNetLocalGroupMembers reads, so that it asks LSA only about them, and that
+	// parser still decides who is a member.
+	//
+	// A domain lookup can block on an unreachable domain controller until the
+	// timeout kills the script. So each member is written as soon as it resolves,
+	// and local names, which never leave the host, go first: the built-in accounts
+	// are resolved before any domain lookup can use up the budget.
+	//
+	// A name that does not translate, typically a domain member with no reachable
+	// domain controller, keeps a null SID and is classified by name. Enabled is read
+	// only for -500 and -501, as in localAdminMembersPS, but from Win32_UserAccount:
+	// Get-LocalUser ships in the module whose absence is one way onto this path. The
+	// outer catch writes the error in place of the JSON, so a PowerShell without
+	// ConvertTo-Json still reports net's members.
+	localAdminResolvePS = "try{" +
+		"$m=@();$b=$false;" +
+		"foreach($l in $o){$t=([string]$l).Trim();if($b){if($t){$m+=$t}}elseif($t -match '^-{3,}$'){$b=$true}};" +
+		"$k=@();" +
+		"for($i=0;$i -lt $m.Count-1;$i++){$k+=$m[$i]};" +
+		"foreach($n in (@($k|Where-Object{$_ -notlike '*\\*'})+@($k|Where-Object{$_ -like '*\\*'}))){" +
+		"$s=$null;$e=$null;" +
+		"if($n -notlike 'S-1-*'){" +
+		"try{$s=(New-Object System.Security.Principal.NTAccount($n)).Translate([System.Security.Principal.SecurityIdentifier]).Value;" +
+		"if($s -match '-50[01]$'){" +
+		"$u=Get-CimInstance Win32_UserAccount -Filter 'LocalAccount=True'|Where-Object{$_.SID -eq $s};" +
+		"if($u){$e=-not $u.Disabled}" +
+		"}}catch{}" +
+		"};" +
+		"ConvertTo-Json -Compress -InputObject @{Name=$n;SID=$s;Enabled=$e}" +
+		"}" +
+		"}catch{[string]$_}"
 )
 
 var errLocalAdminTimeout = errors.New("local administrators query timed out")
@@ -71,13 +117,15 @@ var runLocalAdminPowerShell = func(timeout time.Duration, script string) (string
 	return string(output), err
 }
 
-// localAdminCmdletGate remembers that Get-LocalGroupMember cannot answer here.
+// localAdminCmdletGate remembers that Get-LocalGroupMember cannot answer here,
+// and whether the net path's resolver failure has been warned about since.
 type localAdminCmdletGate struct {
 	now func() time.Time
 
-	mu       sync.Mutex
-	failedAt time.Time
-	failed   bool
+	mu             sync.Mutex
+	failedAt       time.Time
+	failed         bool
+	resolverWarned bool
 }
 
 var localAdminCmdlet = &localAdminCmdletGate{now: time.Now}
@@ -96,6 +144,17 @@ func (g *localAdminCmdletGate) close() {
 	defer g.mu.Unlock()
 	g.failed = true
 	g.failedAt = g.now()
+	g.resolverWarned = false
+}
+
+// shouldWarnResolverFailure answers true once each time the gate closes. The net
+// path runs every five minutes, and a resolver that fails once will keep failing.
+func (g *localAdminCmdletGate) shouldWarnResolverFailure() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	warn := !g.resolverWarned
+	g.resolverWarned = true
+	return warn
 }
 
 func collectLocalAdminSummaryWindows() (map[string]any, error) {
@@ -144,10 +203,7 @@ func localAdminSummaryFromCmdlet(parsed any) map[string]any {
 		// Keep the HOST\ or DOMAIN\ prefix for display and drop it to compare.
 		accountName := username[strings.LastIndex(username, `\`)+1:]
 		isBuiltIn := isBuiltInAccount(cmdletMemberSID(member["SID"]), accountName)
-		// Only a reported false counts as disabled. The state of a built-in that
-		// could not be read stays a finding, and other members are not read.
-		enabled, known := boolFromAny(member["Enabled"])
-		entry := localAdminAccount(username, isBuiltIn, enabled || !known)
+		entry := localAdminAccount(username, isBuiltIn, localAdminMemberEnabled(member["Enabled"]))
 		entry["objectType"] = member["ObjectClass"]
 		accounts = append(accounts, entry)
 	}
@@ -155,11 +211,13 @@ func localAdminSummaryFromCmdlet(parsed any) map[string]any {
 }
 
 func localAdminSummaryFromNet() (map[string]any, error) {
-	output, err := runLocalAdminPowerShell(localAdminNetTimeout, localAdminNetGroupPS)
-	if err != nil {
-		return nil, fmt.Errorf("net localgroup failed: %w: %s", err, truncateForLog(strings.TrimSpace(output), 300))
+	output, runErr := runLocalAdminPowerShell(localAdminNetTimeout, localAdminNetGroupPS)
+	netOutput, resolverOutput, netComplete := splitLocalAdminNetOutput(output)
+	// Past the marker a failure can only be the resolver's, and net's answer stands.
+	if runErr != nil && !netComplete {
+		return nil, fmt.Errorf("net localgroup failed: %w: %s", runErr, truncateForLog(strings.TrimSpace(output), 300))
 	}
-	members, err := parseNetLocalGroupMembers(output)
+	members, err := parseNetLocalGroupMembers(netOutput)
 	if err != nil {
 		return nil, err
 	}
@@ -168,19 +226,96 @@ func localAdminSummaryFromNet() (map[string]any, error) {
 	if len(members) == 0 {
 		return nil, errors.New("net localgroup listed no members of the Administrators group")
 	}
+	resolved, resolveErr := parseLocalAdminResolved(resolverOutput, runErr)
+	if resolveErr != nil {
+		logResolverFailure := log.Debug
+		if localAdminCmdlet.shouldWarnResolverFailure() {
+			logResolverFailure = log.Warn
+		}
+		logResolverFailure("could not resolve every local administrator to a SID; classifying the rest by name",
+			"resolved", len(resolved), "error", resolveErr.Error())
+	}
 	accounts := make([]map[string]any, 0, len(members))
 	for _, member := range members {
+		// A missing entry reads as a member nothing is known about. With no SID,
+		// the name is compared as printed: net prints local accounts bare, so a
+		// prefixed Administrator here is a domain account.
+		entry := resolved[member]
+		sid := cmdletMemberSID(entry["SID"])
 		// net prints a member whose SID does not resolve as the SID itself.
-		sid := ""
 		if strings.HasPrefix(member, "S-1-") {
 			sid = member
 		}
-		// net prints local accounts bare, so the name is compared as printed: a
-		// prefixed Administrator here is a domain account. net cannot report
-		// whether an account is disabled.
-		accounts = append(accounts, localAdminAccount(member, isBuiltInAccount(sid, member), true))
+		isBuiltIn := isBuiltInAccount(sid, member)
+		// A failed read of the state is otherwise indistinguishable from an enabled
+		// built-in. A domain's -500 lands here every tick, so this stays at Debug.
+		if _, known := boolFromAny(entry["Enabled"]); isBuiltIn && sid != "" && !known {
+			log.Debug("could not read whether a built-in administrator is enabled; counting it as enabled", "member", member)
+		}
+		accounts = append(accounts, localAdminAccount(member, isBuiltIn, localAdminMemberEnabled(entry["Enabled"])))
 	}
 	return localAdminSummary("windows_net_localgroup", accounts), nil
+}
+
+// splitLocalAdminNetOutput splits at the last line that is exactly the marker. A
+// member's name appears in the output too, and matching anywhere in it would let
+// an account named after the marker hide the members listed below it. A name
+// that is the whole line comes before the script's own marker, and JSON lines
+// after that marker cannot equal it. With no marker, net's output may be cut off.
+func splitLocalAdminNetOutput(output string) (netOutput, resolverOutput string, netComplete bool) {
+	lines := strings.Split(output, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) == localAdminResolveMarker {
+			return strings.Join(lines[:i], "\n"), strings.Join(lines[i+1:], "\n"), true
+		}
+	}
+	return output, "", false
+}
+
+// parseLocalAdminResolved reads what localAdminResolvePS wrote, keyed by the name
+// as net printed it. It keeps every complete line even when it also returns an
+// error, because a run killed partway still resolved the members before the kill.
+// An error means the resolver stopped short, not that some name failed to
+// translate, which it reports in-band with a null SID.
+func parseLocalAdminResolved(output string, runErr error) (map[string]map[string]any, error) {
+	resolved := map[string]map[string]any{}
+	var parseErr error
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		parsed, err := parseJSONValue(trimmed)
+		if err != nil {
+			if parseErr == nil {
+				parseErr = fmt.Errorf("%w: %s", err, truncateForLog(trimmed, 200))
+			}
+			continue
+		}
+		for _, member := range toObjectSlice(parsed) {
+			if name, ok := stringFromAny(member["Name"]); ok {
+				resolved[name] = member
+			}
+		}
+	}
+	if runErr != nil {
+		return resolved, runErr
+	}
+	if parseErr != nil {
+		return resolved, parseErr
+	}
+	if len(resolved) == 0 {
+		return resolved, fmt.Errorf("no members in resolver output: %s", truncateForLog(strings.TrimSpace(output), 200))
+	}
+	return resolved, nil
+}
+
+// localAdminMemberEnabled counts only a reported false as disabled. The state of
+// a built-in that could not be read stays a finding, and other members are not
+// read.
+func localAdminMemberEnabled(value any) bool {
+	enabled, known := boolFromAny(value)
+	return enabled || !known
 }
 
 // cmdletMemberSID reads a member's SID as the string the script selects, or as
