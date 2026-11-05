@@ -203,8 +203,8 @@ deviceActiveSessionRoutes.get(
           status: s.status,
           // Server-computed so the client never compares a server timestamp
           // against a skewed browser clock (same reason as tunnels' idleSeconds).
-          // Based on createdAt, which a WebRTC re-offer never rewrites (startedAt
-          // is re-stamped on every answer).
+          // Based on createdAt, which a WebRTC re-offer never rewrites. startedAt
+          // is NULL until the first answer.
           elapsedSeconds: Math.max(0, Math.floor((now.getTime() - s.createdAt.getTime()) / 1000)),
           isCurrentUser,
           userKey: userKeyFor(s.userId),
