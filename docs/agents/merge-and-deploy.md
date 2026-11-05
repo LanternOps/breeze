@@ -9,6 +9,54 @@ Moved verbatim from `CLAUDE.md` (2026-10-07). Read before merging a PR or deploy
 - Queue semantics to know: a PR must be green on its own head to be enqueued; the queue then runs `ci.yml` under the `merge_group` event with the smoke jobs blocking (they are non-blocking on `pull_request` only). The `changes` classifier runs there too (since #5863): a queue entry is classified from a `git diff` of `merge_group.base_sha...head_sha` with the same rules as a PR, so a docs-only entry skips the code jobs — and anything unresolvable falls back to the full suite. If the queue run fails, the PR is dequeued with a comment — fix and re-enqueue, do not bypass.
 - Any session may enqueue its own reviewed, green PR. Serialisation is the queue's job now, not a single-merger rule.
 
+## CI Gate (pinned merge-queue gate, #10746)
+
+`.github/workflows/ci-gate.yml`, job `CI Gate`. An org ruleset requires it and reads it from `main`, so a change cannot edit the gate that judges it. `CI Success` stays required and means what it did.
+
+**It does nothing until the org ruleset exists.** Both triggers are filtered to the never-matching branch `ci-gate-ruleset-only`, so the ordinary trigger never fires, and `gh run list --workflow ci-gate.yml` stays empty. The ruleset ignores those filters. To see the current state: `gh api orgs/LanternOps/rulesets --jq '.[]|{id,name,enforcement}'` (needs `admin:org`). `gh api repos/LanternOps/breeze/rules/branches/main --jq '[.[]|select(.type=="workflows")]'` lists the rule only under Active, because GitHub leaves evaluate and disabled rulesets out of that endpoint. The rollout is Evaluate first (cannot block a merge), then Active; the owner does both. Evidence and steps are in `docs/superpowers/plans/ci/2026-11-05-ci-throughput-w02.md`.
+
+**What it does:**
+- `merge_group`: `ci-gate.mjs verify` waits for the entry's `ci.yml` run, classifies the entry diff with the **base** revision's classifier, and runs the **base** revision's `ci-success` script against job results from the Actions API. Exit 0 only on `verdict=pass`.
+- `pull_request`: `ci-gate.mjs anchor` passes at once and uploads a record of the merge commit tested, for W05. A green `CI Gate` on a PR says nothing about tests. `CI Success` still judges the PR.
+
+**What it claims:** a PR cannot lower its own selection by editing the classifier, floor, reader map, the `changes` job, `ci-success.needs` or the `ci-success` script, or by skipping, removing or renaming a required job.
+
+**What it does not claim:** it does not prove tests ran honestly. A PR can still replace a job's `run:` under the same id, and can edit `package.json` test scripts, vitest config or the tests themselves. Do not describe it as more than a selection check.
+
+**Reading a run.** Each run logs exactly one `ci-gate: verdict=… reason=… event=… base=… head=… ci_run=… attempt=… policy_paths=… flags=… oracle=…` line. `ci-gate-identity:` has the workflow ref and sha. Reasons:
+
+| Reason | Meaning |
+|---|---|
+| `required_jobs_passed` | pass |
+| `required_jobs_failed:<jobs>` | the base script said no; these jobs are why |
+| `required_jobs_failed` | the base script said no, and no single job explains it; read the `ci-gate-script:` lines |
+| `not_pinned` | the workflow sha is not on `main`, so this is not the pinned copy, or the check could not run; `ci-gate-detail:` says which |
+| `base_unreadable` | a queue sha, base or head, could not be fetched or read; `ci-gate-detail:` says which and why |
+| `head_unreadable`, `head_unparseable`, `aggregator_unparseable`, `aggregator_exec`, `duplicate_job_name`, `continue_on_error_unsupported` | the verdict could not be computed; fails closed |
+| `ci_run_missing` | no `ci.yml` run for this exact sha within 15 minutes |
+| `ci_cancelled` | the entry's CI run was cancelled, usually a stale group |
+| `deadline` | still not finished after 140 minutes |
+| `api_error` | the Actions API failed for 15 consecutive minutes; infrastructure, not the PR |
+| `wrong_event`, `invalid_repository`, `error` | a bug in the gate or its wiring |
+| `anchor_written` | PR only: the anchor was recorded |
+| `merge_head_mismatch`, `anchor_invalid_input`, `anchor_error` | PR only, and still `verdict=pass`: no anchor was written, because `github.sha` was not a merge of the head, an input was bad, or writing it failed |
+
+`oracle=disagree:<n>` is a warning and never changes a verdict, but it means the gate's rollup differs from `needs.<job>.result`. Look into it. On a PR, no anchor is safe: W05 treats it as "run everything". So when counting verdicts, read `reason`, because a PR with no anchor also logs `verdict=pass`.
+
+**Changing the gate.** Any PR changing `ci-gate.mjs` or `ci-gate.yml` attaches a green replay run: `gh workflow run CI --ref <branch>`, then read the `ci-gate-replay:` line (`disagreements=0 controlFailures=0`). The dispatch cannot run `ci-gate.yml` itself. `pinned-ci-gate-invariants` in `check-workflow-security.mjs` fixes the workflow's shape.
+
+**Removing a required job takes two PRs.** The queue judges a PR with its base's `ci-success`, so deleting a job in the PR that drops it reads as `missing` and goes red. First drop it from `ci-success`'s `needs` and script, keeping the job. Delete the job in a later PR, once the first has landed. Changing only a display name needs no staging: job ids are the identity.
+
+### CI Gate rollback
+
+**Under Active, a broken gate blocks its own fix**, and a revert of itself. Enforcement goes off first, always, and only the owner can do it (`admin:org`).
+
+1. The owner sets the org ruleset to **Evaluate** or **Disabled**. In the UI: LanternOps → Settings → Repository → Rulesets → `Breeze pinned CI gate` → Enforcement status. By API: find the id with `gh api orgs/LanternOps/rulesets --jq '.[]|{id,name,enforcement}'`, then `gh api -X PUT orgs/LanternOps/rulesets/<id> -f enforcement=evaluate`.
+2. Confirm with `gh api repos/LanternOps/breeze/rules/branches/main --jq '[.[]|select(.type=="workflows")]'`. An empty list means the rule is no longer enforced, because that endpoint returns only active rules. `gh api orgs/LanternOps/rulesets/<id> --jq .enforcement` shows which state it is in.
+3. Only then touch the workflow or `ci-gate.mjs`.
+
+Do not remove or rename `ci-gate.yml` while the rule is Active.
+
 ## Production Deploy (EU + US droplets)
 
 Droplets pull from `/opt/breeze` and use mutable image tags driven by `BREEZE_VERSION` in `/opt/breeze/.env`. The flow is:

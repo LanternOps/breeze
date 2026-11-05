@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { isPolicyPath } from './ci-policy.mjs';
-import { createIO, workflowJobs } from './queue-selection.mjs';
+import { createIO, policyDigest, workflowJobs } from './queue-selection.mjs';
 
 const CLASSIFIER = '.github/scripts/classify-pr-paths.sh';
 const CLASSIFIER_SIDECARS = ['qemu-gate-paths.txt', 'integration-floor-paths.txt', 'path-reader-map.txt'];
@@ -36,6 +36,8 @@ export class GateError extends Error {
 const DERIVED_OUTPUTS = new Set(['mobile-native-changes.mobile']);
 const isSha = value => typeof value === 'string' && /^[a-f\d]{40}$/i.test(value);
 const nonEmptyLines = text => text.split('\n').filter(Boolean);
+// execFileSync's message starts "Command failed: <argv>". The cause is in stderr.
+const failureText = error => (nonEmptyLines(String(error?.stderr ?? '').trim())[0] ?? nonEmptyLines(String(error?.message ?? error))[0] ?? 'unknown failure').slice(0, 300);
 
 export function createGateIO(options = {}) {
   const io = createIO(options);
@@ -463,17 +465,17 @@ function readOracle(io, repository, run) {
 
 const QUEUE_REF = /^gh-readonly-queue\/[\w.-]+\/pr-(\d+)-([a-f\d]{40})$/;
 
-function hasCommit(io, sha) {
+function hasCommit(io, sha, onFailure = () => {}) {
   try { io.git(['cat-file', '-e', `${sha}^{commit}`]); return true; } catch { /* not local yet */ }
   // An ejected group's head may be gone from the server.
-  try { io.git(['fetch', '--no-tags', '--quiet', 'origin', sha]); io.git(['cat-file', '-e', `${sha}^{commit}`]); return true; } catch { return false; }
+  try { io.git(['fetch', '--no-tags', '--quiet', 'origin', sha]); io.git(['cat-file', '-e', `${sha}^{commit}`]); return true; } catch (error) { onFailure(error); return false; }
 }
 
 // The Actions API returns transient 5xx often enough that one attempt is a bug. Reads only.
 function ghJson(io, args) {
   for (let attempt = 1; ; attempt++) {
     try { return JSON.parse(io.gh(args)); } catch (error) {
-      if (attempt >= 3) throw new GateError('api_error', `${args[1]}: ${String(error.message ?? error).split('\n')[0]}`);
+      if (attempt >= 3) throw new GateError('api_error', `${args[1]}: ${failureText(error)}`);
       io.sleep?.(attempt * 5_000);
     }
   }
@@ -482,8 +484,9 @@ function ghJson(io, args) {
 export function runJobs(io, repository, runId) {
   // The default filter is the latest attempt, which is what needs.<job> sees.
   const pages = ghJson(io, ['api', `repos/${repository}/actions/runs/${runId}/jobs?per_page=100&filter=latest`, '--paginate', '--slurp']);
-  if (!Array.isArray(pages)) throw new GateError('api_error', 'jobs pagination');
-  return pages.flatMap(page => page.jobs ?? []).map(({ name, conclusion, status }) => ({ name, conclusion, status }));
+  // A page with no list is an API problem. Read as zero jobs, it would blame the candidate.
+  if (!Array.isArray(pages) || !pages.every(page => Array.isArray(page?.jobs))) throw new GateError('api_error', 'jobs pagination');
+  return pages.flatMap(page => page.jobs).map(({ name, conclusion, status }) => ({ name, conclusion, status }));
 }
 
 function queueSample(io, repository, run) {
@@ -611,10 +614,220 @@ export function recordFixture(io, { repository, runId }) {
   return { fixture, snapshots };
 }
 
+// ── Waiting for the candidate's CI run ───────────────────────────────────
+
+const MINUTE = 60_000;
+const POLL_MS = MINUTE;
+const RUN_MISSING_MS = 15 * MINUTE;
+const API_TOLERANCE_MS = 15 * MINUTE;
+const DEADLINE_MS = 140 * MINUTE; // the job allows 145; the queue's check timeout is 150
+
+function findCiRun(io, repository, headSha) {
+  const list = ghJson(io, ['api', `repos/${repository}/actions/workflows/ci.yml/runs?event=merge_group&head_sha=${headSha}&per_page=100`]);
+  // A body with no list is an API problem, not "no run yet", which would blame the candidate.
+  if (!Array.isArray(list?.workflow_runs)) throw new GateError('api_error', 'workflow runs: no list in the response');
+  const matching = list.workflow_runs.filter(run => run.path === CI_YML && run.event === 'merge_group' && run.head_sha === headSha);
+  return matching.sort((a, b) => b.id - a.id)[0] ?? null;
+}
+
+// The stop signal is timing only. Whatever CI Success says, the verdict comes from the results.
+export function waitForCi(io, { repository, headSha, headRef, deadlineMs = DEADLINE_MS }) {
+  const start = io.now();
+  let failingSince = null;
+  for (;;) {
+    const now = io.now();
+    if (now - start >= deadlineMs) return { reason: 'deadline' };
+    try {
+      const run = findCiRun(io, repository, headSha);
+      if (run?.status === 'completed' && run.conclusion === 'cancelled') return { reason: 'ci_cancelled', run };
+      const jobs = run ? runJobs(io, repository, run.id) : [];
+      failingSince = null;
+      if (!run && now - start >= RUN_MISSING_MS) return { reason: 'ci_run_missing', detail: `no CI run for ${headRef}` };
+      if (run?.status === 'completed' || jobs.some(job => job.name === 'CI Success' && job.status === 'completed')) return { run, jobs };
+    } catch (error) {
+      if (error?.code !== 'api_error') throw error;
+      failingSince ??= now;
+      if (io.now() - failingSince >= API_TOLERANCE_MS) return { reason: 'api_error', detail: error.message };
+    }
+    io.sleep(POLL_MS);
+  }
+}
+
+// ── Logging text the candidate can influence ─────────────────────────────
+//
+// The runner reads stdout and stderr for workflow commands. Paths, oracle values
+// and parser details all come from the candidate, so they are written as one
+// JSON-escaped line: they cannot start a line or carry a `##[` command.
+
+const logValue = value => JSON.stringify(value).replaceAll('##[', '#\\u0023[');
+const commandData = text => text.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
+const logSha = value => isSha(value) ? value : 'none';
+
+function gateLine({ verdict: outcome, reason, event, base, head, ciRun = 'none', attempt = 'none', policyPaths = [], flags = null, oracle = 'none' }) {
+  return `ci-gate: verdict=${outcome} reason=${reason} event=${/^\w+$/.test(event ?? '') ? event : 'none'} base=${logSha(base)} head=${logSha(head)} ` +
+    `ci_run=${ciRun} attempt=${attempt} policy_paths=${logValue(policyPaths)} flags=${logValue(flags)} oracle=${oracle}`;
+}
+
+// What E2 records. Verbatim, and never compared to anything: the shape of the
+// ref under a ruleset is not checked, and a wrong guess would reject every run.
+function logIdentity(io, env) {
+  io.stdout(`ci-gate-identity: workflow_ref=${env.GITHUB_WORKFLOW_REF ?? ''} workflow_sha=${logSha(env.GITHUB_WORKFLOW_SHA)} ` +
+    `gate_run=${env.GITHUB_RUN_ID ?? 'none'} gate_attempt=${env.GITHUB_RUN_ATTEMPT ?? 'none'}`);
+}
+
+// ── verify: the verdict for one queue entry ──────────────────────────────
+
+// The checkout is of workflow_sha, so candidate commits are not guaranteed local.
+// Returns why the commit cannot be had, or null once it is here.
+function fetchFailure(io, sha) {
+  let cause = 'not found';
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (hasCommit(io, sha, error => { cause = failureText(error); })) return null;
+    if (attempt < 3) io.sleep(attempt * 5_000);
+  }
+  return cause;
+}
+
+// Returns why the gate is not pinned, or null when it is.
+function pinFailure(io, workflowSha) {
+  if (!isSha(workflowSha)) return 'GITHUB_WORKFLOW_SHA is not a sha';
+  // The checkout normally wrote this ref; fetching it here means the answer does
+  // not depend on that. A failed fetch leaves what is local, and no ref is not pinned.
+  let fetchNote = '';
+  try { io.git(['fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main']); }
+  catch (error) { fetchNote = ` (fetching main failed: ${failureText(error)})`; }
+  try { io.git(['merge-base', '--is-ancestor', workflowSha, 'origin/main']); return null; } catch (error) {
+    // Exit 1 is the answer "no". Anything else means the check could not run.
+    const why = error?.status === 1 ? 'not an ancestor of origin/main' : `ancestry check failed: ${failureText(error)}`;
+    return `${workflowSha}: ${why}${fetchNote}`;
+  }
+}
+
+// Advisory: the artifact is candidate-written, so no outcome here can change a verdict.
+function checkOracle(io, repository, run, out) {
+  if (!Object.keys(out.results ?? {}).length) return 'none';
+  try {
+    const oracle = readOracle(io, repository, run);
+    if (!oracle) return 'absent';
+    const diffs = compareOracle(oracle, out.results, out.mobile);
+    for (const diff of diffs) io.stderr(`::warning title=ci-gate oracle disagreement::${commandData(logValue(diff))}`);
+    return diffs.length ? `disagree:${diffs.length}` : 'agree';
+  } catch (error) {
+    io.stderr(`::warning title=ci-gate oracle unreadable::${commandData(logValue(failureText(error)))}`);
+    return 'unreadable';
+  }
+}
+
+function reportPolicyPaths(io, env, policyPaths) {
+  if (!policyPaths.length) return;
+  const listed = policyPaths.map(logValue);
+  io.stdout(`::notice title=ci-gate policy paths::This entry touches ${listed.length} policy path(s): ${commandData(listed.join(', '))}`);
+  if (!env.GITHUB_STEP_SUMMARY) return;
+  try {
+    io.append(env.GITHUB_STEP_SUMMARY, `### CI Gate: this entry touches policy paths\n\n${listed.map(path => `- ${path}`).join('\n')}\n`);
+  } catch (error) { io.stderr(`ci-gate-detail: step summary not written: ${logValue(failureText(error))}`); }
+}
+
+function judgeEntry(io, env, { waitForCi: wait, verdict: decide }, line) {
+  const started = io.now();
+  if (env.GITHUB_EVENT_NAME !== 'merge_group') return { reason: 'wrong_event' };
+  const repository = env.GITHUB_REPOSITORY;
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repository ?? '')) return { reason: 'invalid_repository' };
+  const unpinned = pinFailure(io, env.GITHUB_WORKFLOW_SHA);
+  if (unpinned) return { reason: 'not_pinned', detail: unpinned };
+  if (!isSha(env.BASE_SHA) || !isSha(env.HEAD_SHA)) return { reason: 'base_unreadable', detail: 'invalid revision' };
+  for (const [name, sha] of [['base', env.BASE_SHA], ['head', env.HEAD_SHA]]) {
+    const cause = fetchFailure(io, sha);
+    if (cause) return { reason: 'base_unreadable', detail: `cannot fetch ${name} ${sha}: ${cause}` };
+  }
+
+  // The deadline covers the whole script, so a slow fetch cannot push it past the job timeout.
+  const waited = wait(io, { repository, headSha: env.HEAD_SHA, headRef: env.HEAD_REF, deadlineMs: DEADLINE_MS - (io.now() - started) });
+  if (waited.run) Object.assign(line, { ciRun: waited.run.id, attempt: waited.run.run_attempt });
+  if (waited.reason) return waited;
+
+  const out = decide(io, { baseSha: env.BASE_SHA, headSha: env.HEAD_SHA, apiJobs: waited.jobs, event: 'merge_group' });
+  Object.assign(line, { policyPaths: out.policyPaths ?? [], flags: out.flags ?? null, oracle: checkOracle(io, repository, waited.run, out) });
+  if (Object.keys(out.results ?? {}).length) io.stdout(`ci-gate-results: ${logValue(out.results)}`);
+  if (out.verdict !== 'pass') for (const text of nonEmptyLines(out.stdout ?? '')) io.stdout(`ci-gate-script: ${text}`);
+  return out;
+}
+
+// Exit 0 only on verdict=pass. Everything else, a thrown exception included, is
+// a fail with exactly one ci-gate line. The token reaches git and gh only.
+export function verify(io, env, deps = {}) {
+  const line = { verdict: 'fail', reason: 'error', event: env.GITHUB_EVENT_NAME, base: env.BASE_SHA, head: env.HEAD_SHA };
+  try {
+    logIdentity(io, env);
+    const out = judgeEntry(io, env, { waitForCi, verdict, ...deps }, line);
+    line.reason = out.reason;
+    line.verdict = out.verdict === 'pass' ? 'pass' : 'fail';
+    if (out.detail) io.stderr(`ci-gate-detail: ${logValue(out.detail)}`);
+    reportPolicyPaths(io, env, line.policyPaths ?? []);
+  } catch (error) {
+    line.verdict = 'fail';
+    line.reason = error instanceof GateError ? error.code : 'error';
+    io.stderr(`ci-gate-detail: ${logValue(failureText(error))}`);
+  }
+  io.stdout(gateLine(line));
+  return line.verdict === 'pass' ? 0 : 1;
+}
+
+// ── anchor: what a pull_request event tested, for W05 ────────────────────
+//
+// Always passes. On a PR the gate only records; `CI Success` still judges the PR
+// and the queue still judges the entry. No anchor is safe, because W05 treats
+// that as "run everything".
+
+export const ANCHOR_FILE = 'ci-gate-anchor.json';
+
+function writeAnchor(io, env) {
+  const merge = env.GITHUB_SHA;
+  const head = env.PR_HEAD_SHA;
+  const isCount = value => /^[1-9]\d*$/.test(value ?? '');
+  const invalid = [
+    ...(env.GITHUB_EVENT_NAME === 'pull_request' ? [] : ['GITHUB_EVENT_NAME']),
+    ...[['GITHUB_SHA', merge], ['PR_HEAD_SHA', head]].filter(([, value]) => !isSha(value)).map(([name]) => name),
+    ...['PR_NUMBER', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'].filter(name => !isCount(env[name])),
+  ];
+  if (invalid.length) return { reason: 'anchor_invalid_input', detail: `invalid: ${invalid.join(', ')}` };
+  const cause = fetchFailure(io, merge);
+  if (cause) return { reason: 'base_unreadable', detail: `cannot fetch ${merge}: ${cause}` };
+  // rev-parse --verify --quiet exits 1 with no output when there is no such parent.
+  const parent = number => { try { return io.git(['rev-parse', '--verify', '--quiet', `${merge}^${number}`]).trim(); } catch { return null; } };
+  const base = parent(1);
+  if (!isSha(base)) return { reason: 'base_unreadable', detail: `${merge} has no first parent` };
+  const second = parent(2);
+  if (second !== head) return { reason: 'merge_head_mismatch', base, detail: `M^2=${second ?? 'none'} expected ${head}` };
+  // `files` is W4's quoted listing, what a classifier reads. Policy paths come from
+  // an unquoted (-z) listing of the same diff, so an unusual name still matches.
+  const files = nonEmptyLines(io.git(['diff', '--name-only', '--no-renames', base, merge]));
+  const policyPaths = io.git(['diff', '-z', '--name-only', '--no-renames', base, merge]).split('\0').filter(Boolean).filter(isPolicyPath);
+  const policyInFiles = policyPaths.length > 0;
+  io.write(ANCHOR_FILE, `${JSON.stringify({ schema: 1, head_sha: head, merge_sha: merge, base_sha: base, pr_number: Number(env.PR_NUMBER), run_id: Number(env.GITHUB_RUN_ID),
+    run_attempt: Number(env.GITHUB_RUN_ATTEMPT), created_at: new Date(io.now()).toISOString(), files, files_source: 'merge-commit',
+    policy_digest: policyInFiles ? null : policyDigest(io, base), policy_in_files: policyInFiles }, null, 2)}\n`);
+  return { reason: 'anchor_written', base, policyPaths };
+}
+
+export function anchor(io, env) {
+  const line = { verdict: 'pass', reason: 'anchor_error', event: env.GITHUB_EVENT_NAME, head: env.PR_HEAD_SHA };
+  try {
+    logIdentity(io, env);
+    io.remove(ANCHOR_FILE); // A re-run must never upload a previous attempt's file.
+    Object.assign(line, writeAnchor(io, env));
+  } catch (error) { line.detail = failureText(error); }
+  if (line.reason !== 'anchor_written') io.stderr(`ci-gate-detail: no anchor written: ${line.reason} ${logValue(line.detail ?? '')}`);
+  io.stdout(gateLine(line));
+  return 0;
+}
+
 // ── CLI ──────────────────────────────────────────────────────────────────
 
 export function runCLI(io, args, env) {
   const repository = env.GITHUB_REPOSITORY;
+  if (args[0] === 'verify') return verify(io, env);
+  if (args[0] === 'anchor') return anchor(io, env);
   if (args[0] === 'replay') {
     const out = replay(io, { repository });
     io.stdout(`ci-gate-replay: evaluated=${out.evaluated} red=${out.red} disagreements=${out.disagreements.length} ` +
@@ -634,7 +847,7 @@ export function runCLI(io, args, env) {
     io.write(join(dir, `${name}.json`), `${JSON.stringify({ name, ...fixture }, null, 2)}\n`);
     return 0;
   }
-  throw new GateError('usage', 'ci-gate.mjs replay | record-fixture <run-id> <dir> <name>');
+  throw new GateError('usage', 'ci-gate.mjs verify | anchor | replay | record-fixture <run-id> <dir> <name>');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
