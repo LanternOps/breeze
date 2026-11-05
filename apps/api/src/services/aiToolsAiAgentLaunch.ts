@@ -106,10 +106,10 @@ export async function runPatchPlanHandler(
     if (!result.ok && result.code === 'NO_PATCH_AGENT') {
       return jsonError('This organization has no patch agent. Set one up in Settings → AI Agents.', 'NO_PATCH_AGENT');
     }
-    if (!queued) {
+    if (!result.ok || result.enqueueFailed) {
       return JSON.stringify({ error: 'The patch run was not started', code: 'RUN_SKIPPED', skipped });
     }
-    return json({ queued: true, runId: (result as { runId: string }).runId, ...(result.ok && result.replayed ? { replayed: true } : {}) });
+    return json({ queued: true, runId: result.runId, ...(result.replayed ? { replayed: true } : {}) });
   } catch (error) {
     return thrown(PATCH_TOOL, error);
   }
