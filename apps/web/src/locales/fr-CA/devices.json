@@ -320,6 +320,7 @@
     "generateNewToken": "Générer un nouveau jeton",
     "generateNewLink": "Générer un nouveau lien",
     "cliTokenReuse": "Généré précédemment. Valide jusqu’au {{date}}, sauf si toutes ses inscriptions d’appareils ont déjà été utilisées.",
+    "cliTokenReuseVerified": "Généré précédemment. Valide jusqu’au {{date}}.",
     "linkReuse": "Généré précédemment pour {{platform}}. Valide jusqu’au {{date}}.",
     "generateToken": "Générer un jeton",
     "cliTokenNotGenerated": "Aucun jeton pour l’instant. Choisissez le site, le nombre d’appareils et l’expiration, puis générez un jeton. Chaque jeton est une clé d’inscription active.",
@@ -1038,6 +1039,10 @@
       "label": "approbation",
       "byRing": "définie par l'anneau de mise à jour lié",
       "manualOnly": "approbations manuelles seulement (aucun anneau de mise à jour lié)"
+    },
+    "containment": {
+      "extraDestinations": "Destinations supplémentaires pendant l’isolement",
+      "invalid": "Les paramètres de confinement de cette politique ne sont pas valides. L’isolement utilise donc les valeurs par défaut fixes, sans destination supplémentaire."
     },
     "chainResolutionRule": "Le niveau décide d’abord : Appareil l’emporte sur Groupe d’appareils, puis Site, Organisation et Partenaire. La priorité (le plus petit nombre l’emporte) ne départage que les politiques d’un même niveau. Les fonctionnalités barrées ont été remplacées par une politique plus proche.",
     "featureOverriddenBy": "Remplacée par {{policy}}"

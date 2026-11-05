@@ -15,10 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func init() {
-	rootCmd.AddCommand(newSnapshotDirCommand())
-}
-
 // newSnapshotDirCommand is test-support only — NOT a release artifact, not
 // wired into the agent's IPC/backup_run command path. It exists solely to
 // seed a whole-machine file snapshot for the QEMU recovery-media

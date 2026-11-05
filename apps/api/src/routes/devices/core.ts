@@ -4,7 +4,7 @@ import { optionalJsonValidator, zValidator } from '../../lib/validation';
 import { and, asc, eq, gte, ne, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { deviceSearchCondition } from './searchFilter';
 import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
-import { createHash, randomBytes } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { getRedis } from '../../services/redis';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
 import { CLEARED_AGENT_CREDENTIALS } from '../../services/agentCredentialHashes';
@@ -1087,8 +1087,12 @@ coreRoutes.post(
     const key = `enroll_${randomBytes(24).toString('hex')}`;
     const keyHash = hashEnrollmentKey(key);
     const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
+    // #11116: chosen here, not by the column default, so the response can name
+    // the stored row without a RETURNING round trip.
+    const childKeyId = randomUUID();
 
     await db.insert(enrollmentKeys).values({
+      id: childKeyId,
       orgId,
       siteId,
       name: `Onboarding token (${new Date().toISOString().slice(0, 10)})`,
@@ -1104,6 +1108,9 @@ coreRoutes.post(
 
     return c.json({
       token: key,
+      // #11116: the minted key's row id (never the secret), so a client that
+      // remembers the token can check GET /enrollment-keys/:id before reusing it.
+      childKeyId,
       maxUsage,
       // #7035: echo the bound site so the UI can say where devices will land.
       siteId,

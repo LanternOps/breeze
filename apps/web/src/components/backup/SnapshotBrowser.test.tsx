@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import SnapshotBrowser from './SnapshotBrowser';
 import { fetchWithAuth } from '../../stores/auth';
@@ -390,8 +390,84 @@ describe('SnapshotBrowser', () => {
 
     render(<SnapshotBrowser />);
 
-    expect(await screen.findByText(/file index isn't available/i)).toBeTruthy();
+    expect(await screen.findByText(/file list isn't available right now/i)).toBeTruthy();
     expect(screen.queryByText(/may still be processing/i)).toBeNull();
+  });
+
+  describe('#11026 file list states', () => {
+    const withBrowse = (browse: (url: string) => unknown) => {
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.startsWith('/backup/snapshots/snap-1/browse') || url.endsWith('/file-index/rebuild')) {
+          const body = browse(url);
+          return body instanceof Response ? body : makeJsonResponse(body);
+        }
+        return base(input, init);
+      });
+    };
+    const browseCalls = () => fetchMock.mock.calls.map((c) => String(c[0])).filter((u) => u.includes('/browse'));
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('shows building, polls, and on ready discards the cached empty answer and lists the folders', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      let ready = false;
+      withBrowse(() => (ready
+        ? { index: { state: 'ready' }, data: [{ name: 'C:', path: '/C:', type: 'directory', fileCount: 3 }], nextCursor: null }
+        : { index: { state: 'building' }, manifestUnavailable: true, data: [], nextCursor: null }));
+
+      render(<SnapshotBrowser />);
+      expect((await screen.findByTestId('snapshot-index-building')).textContent).toMatch(/Preparing this snapshot's file list/);
+      expect(screen.queryByText(/may still be processing/i)).toBeNull();
+      expect(screen.queryByText(/isn't available/i)).toBeNull();
+
+      ready = true;
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+
+      await waitFor(() => expect(screen.queryByTestId('snapshot-index-building')).toBeNull());
+      expect((await screen.findAllByText('C:')).length).toBeGreaterThan(0);
+      const calls = browseCalls();
+      expect(calls).toContain('/backup/snapshots/snap-1/browse?limit=1');
+      expect(calls.filter((u) => u === '/backup/snapshots/snap-1/browse').length).toBe(2);
+    });
+
+    it('an integrity failure says so and offers no retry', async () => {
+      withBrowse(() => ({ index: { state: 'unavailable', failure: 'attestation_failed', retryable: false, deviceLocal: false }, data: [] }));
+      render(<SnapshotBrowser />);
+      expect((await screen.findByTestId('snapshot-index-unavailable')).textContent).toMatch(/failed its integrity check/);
+      expect(screen.queryByTestId('snapshot-index-retry')).toBeNull();
+    });
+
+    it('a device-local snapshot says the list cannot be read from there, with no retry', async () => {
+      withBrowse(() => ({ index: { state: 'unavailable', failure: 'manifest_missing', retryable: true, deviceLocal: true }, data: [] }));
+      render(<SnapshotBrowser />);
+      expect((await screen.findByTestId('snapshot-index-unavailable')).textContent).toMatch(/stored on the device/);
+      expect(screen.queryByTestId('snapshot-index-retry')).toBeNull();
+    });
+
+    it('a retryable failure offers a retry that posts the rebuild and shows building', async () => {
+      withBrowse((url) => (url.endsWith('/file-index/rebuild')
+        ? makeJsonResponse({ index: { state: 'building' } }, true, 202)
+        : { index: { state: 'unavailable', failure: 'provider_error', retryable: true, deviceLocal: false }, data: [] }));
+      render(<SnapshotBrowser />);
+      expect((await screen.findByTestId('snapshot-index-unavailable')).textContent).toMatch(/You can still restore the whole snapshot/);
+
+      fireEvent.click(screen.getByTestId('snapshot-index-retry'));
+
+      expect(await screen.findByTestId('snapshot-index-building')).toBeTruthy();
+      expect(fetchMock).toHaveBeenCalledWith('/backup/snapshots/snap-1/file-index/rebuild', { method: 'POST' });
+    });
+
+    it('a truly empty snapshot shows the existing empty message', async () => {
+      withBrowse(() => ({ index: { state: 'ready' }, data: [], nextCursor: null }));
+      render(<SnapshotBrowser />);
+      expect(await screen.findByText(/may still be processing/i)).toBeTruthy();
+      expect(screen.queryByTestId('snapshot-index-building')).toBeNull();
+      expect(screen.queryByTestId('snapshot-index-unavailable')).toBeNull();
+    });
   });
 
   it('gives the snapshot picker and the immutability select accessible names', async () => {

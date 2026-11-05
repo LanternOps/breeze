@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Captures the props the panel forwards, so the tab-id closure on
 // onIntentDecided can be asserted against the RENDERED tab.
@@ -230,6 +230,28 @@ describe('WorkspaceChatPanel - chat mode label (#10142)', () => {
   it('shows no label while the tab is still finding out', () => {
     render(<WorkspaceChatPanel tab={baseTab() as any} />);
     expect(screen.queryByTestId('workspace-chat-mode')).toBeNull();
+  });
+
+  describe('a plain chat beside an active grant (#10289)', () => {
+    afterEach(() => { (store as Record<string, unknown>).wispGrantAvailable = undefined; });
+
+    it('says "Breeze AI · not Wisp" when a grant is active', () => {
+      (store as Record<string, unknown>).wispGrantAvailable = true;
+      render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'plain' } }) as any} />);
+      expect(screen.getByTestId('workspace-chat-mode')).toHaveTextContent('Breeze AI · not Wisp');
+      expect(screen.getByTestId('workspace-chat-mode')).toHaveAttribute('data-mode', 'plain');
+    });
+
+    it('says it for a tab the user opened as plain, before any grant lookup has answered', () => {
+      render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'plain' }, plainChosen: true }) as any} />);
+      expect(screen.getByTestId('workspace-chat-mode')).toHaveTextContent('Breeze AI · not Wisp');
+    });
+
+    it('a Wisp tab keeps its Wisp label when a grant is active', () => {
+      (store as Record<string, unknown>).wispGrantAvailable = true;
+      render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: 'o' } }) as any} />);
+      expect(screen.getByTestId('workspace-chat-mode').textContent).toBe('Wisp');
+    });
   });
 });
 

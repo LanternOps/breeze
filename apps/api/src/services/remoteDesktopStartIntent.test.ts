@@ -185,10 +185,14 @@ describe('remoteDesktopStartIntent', () => {
       iceCandidates: [],
     });
     // Activation belongs to the agent's accepted result, never to the start
-    // decision. startedAt marks this start attempt: the stale-session cutoff
-    // for a connecting row and the lease hard deadline are measured from it,
-    // so a start waiting on its consent prompt is not expired as stale.
-    expect(written.startedAt).toBeInstanceOf(Date);
+    // decision. startedAt marks the first start attempt: the stale-session
+    // cutoff for a connecting row and the lease hard deadline are measured from
+    // it, so a start waiting on its consent prompt is not expired as stale. It
+    // is never a bare timestamp, because a reconnect must not restart the max
+    // duration (#11113). Real-Postgres proof of both halves:
+    // remoteSessionMaxDuration.integration.test.ts.
+    expect(written.startedAt).toBeDefined();
+    expect(written.startedAt).not.toBeInstanceOf(Date);
   });
 
   // #9182: trickled candidates belong to one start. A new offer starts a new

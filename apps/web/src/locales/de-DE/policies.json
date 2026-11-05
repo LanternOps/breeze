@@ -1200,7 +1200,17 @@
         "labelInvalid": "Geben Sie eine Bezeichnung mit 1 bis 100 Zeichen ein.",
         "fixRows": "Korrigieren Sie die markierten Ziele vor dem Speichern.",
         "limitReached": "Eine Richtlinie kann höchstens {{max}} zusätzliche Ziele enthalten.",
-        "parentInvalid": "Die übergeordnete Richtlinie enthält Ziele, die nicht mehr gültig sind. Korrigieren Sie sie dort, bevor Sie sie überschreiben."
+        "parentInvalid": "Die übergeordnete Richtlinie enthält Ziele, die nicht mehr gültig sind. Korrigieren Sie sie dort, bevor Sie sie überschreiben.",
+        "errors": {
+          "hostInvalid": "Geben Sie einen Hostnamen wie updates.example.com ein und verwenden Sie nur Buchstaben, Ziffern, Bindestriche und Punkte. Platzhalter sind nicht erlaubt.",
+          "hostIsAddress": "Dies ist eine IP-Adresse. Verwenden Sie dafür den Typ „IP-Bereich (CIDR)“.",
+          "hostLoopback": "Loopback-Hostnamen wie localhost sind nicht erlaubt.",
+          "cidrBlanket": "Ein /0-Bereich würde jede Adresse freigeben und ist daher nicht erlaubt.",
+          "cidrOutOfBounds": "Der Bereich muss mindestens /8 (IPv4) bzw. /32 (IPv6) sein und darf keine Loopback- oder unspezifizierten Adressen enthalten.",
+          "portsUnique": "Geben Sie jeden Port nur einmal an.",
+          "labelControlChars": "Die Bezeichnung darf keine Steuerzeichen enthalten.",
+          "generic": "Dieser Wert ist nicht zulässig."
+        }
       },
       "securityAgentsTab": {
         "title": "Sicherheitsagenten",

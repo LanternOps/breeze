@@ -52,6 +52,9 @@ function expectPinnedActions(text: string, where: string): void {
   const uses = [...text.matchAll(/^\s*(?:-\s+)?uses:\s*(.*)$/gm)].map((m) => m[1]!.trim());
   expect(uses.length, `${where} uses at least one action`).toBeGreaterThan(0);
   for (const u of uses) {
+    // Repo-local composites (./.github/actions/*) have no SHA to pin; check-workflow-security.mjs
+    // and ci-cache-policy.test.mjs make the same exception, and the composite's own `uses:` are pinned.
+    if (u.startsWith('./')) continue;
     expect(u, `${where}: "${u}" must be pinned to a 40-hex SHA with a # vX comment`).toMatch(
       /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+@[0-9a-f]{40} # v\S+$/,
     );

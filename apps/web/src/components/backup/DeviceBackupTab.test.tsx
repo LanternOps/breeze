@@ -335,6 +335,17 @@ describe('DeviceBackupTab', () => {
       expect(summary.getAttribute('title')).toBe('x'.repeat(80));
     });
 
+    it('keeps the recoverable index drop note out of the job history Errors cell (#11026)', async () => {
+      const indexNote = 'snapshot file index omitted (17950 entries): the result exceeded the 4934464 byte server result budget, so per-file restore browsing is unavailable for this snapshot';
+      mockTab({ jobs: [{ ...baseJob, status: 'failed', errorLog: `backup stopped || bounded: ${indexNote}`, failureCategory: 'cancelled' }] });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const row = await historyRow();
+      expect(within(row).getByTestId('backup-job-error-summary').textContent).toBe('backup stopped');
+      expect(row.textContent).not.toContain('snapshot file index');
+    });
+
     it('keeps the failed-file count next to the category', async () => {
       mockTab({ jobs: [{ ...baseJob, status: 'partial', errorCount: 4, errorLog: 'a.txt: in use', failureCategory: 'source_access' }] });
 
@@ -876,6 +887,19 @@ describe('DeviceBackupTab', () => {
       // A successful-but-degraded run is a WARNING, not an error.
       expect(banner.textContent).toContain('completed with warnings');
       expect(banner.className).not.toMatch(/destructive/);
+    });
+
+    it('does not frame a historic run as "completed with warnings" over the recoverable index drop note (#11026)', async () => {
+      mockStatusWithVss(null, {
+        status: 'completed',
+        errorLog: 'bounded: snapshot file index omitted (17950 entries): the result exceeded the 4934464 byte server result budget, so per-file restore browsing is unavailable for this snapshot',
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      await screen.findByText('Job History');
+      expect(screen.queryByTestId('backup-last-job-diagnostic')).toBeNull();
+      expect(document.body.textContent).not.toContain('snapshot file index');
     });
 
     it('styles the diagnostic as an error when the run actually failed', async () => {

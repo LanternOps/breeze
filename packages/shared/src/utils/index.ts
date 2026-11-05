@@ -54,6 +54,7 @@ export * from './hardwareLifecycle';
 export * from './backupHealth';
 export * from './backupReparseSkips';
 export * from './backupFailureCategory';
+export * from './backupFileIndexNote';
 export * from './identityAccess';
 export * from './threatDetection';
 export * from './endpointManagement';

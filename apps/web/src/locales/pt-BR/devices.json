@@ -320,6 +320,7 @@
     "generateNewToken": "Gerar novo token",
     "generateNewLink": "Gerar novo link",
     "cliTokenReuse": "Gerado anteriormente. Válido até {{date}}, a menos que todos os registros de dispositivos já tenham sido usados.",
+    "cliTokenReuseVerified": "Gerado anteriormente. Válido até {{date}}.",
     "linkReuse": "Gerado anteriormente para {{platform}}. Válido até {{date}}.",
     "generateToken": "Gerar token",
     "cliTokenNotGenerated": "Ainda não há token. Escolha o site, o número de dispositivos e a expiração e, em seguida, gere um token. Cada token é uma chave de registro ativa.",
@@ -1038,6 +1039,10 @@
       "label": "aprovação",
       "byRing": "definida pelo anel de atualização vinculado",
       "manualOnly": "somente aprovações manuais (nenhum anel de atualização vinculado)"
+    },
+    "containment": {
+      "extraDestinations": "Destinos adicionais durante o isolamento",
+      "invalid": "As configurações de contenção desta política não são válidas. Por isso, o isolamento usa os padrões fixos, sem destinos adicionais."
     },
     "chainResolutionRule": "O nível decide primeiro: Dispositivo vence Grupo de dispositivos, depois Site, Organização e Parceiro. A prioridade (vence o menor número) só desempata políticas do mesmo nível. Recursos riscados foram substituídos por uma política mais próxima.",
     "featureOverriddenBy": "Substituído por {{policy}}"

@@ -420,6 +420,29 @@ describe('device routes', () => {
       expect(values).toHaveBeenCalledWith(expect.objectContaining({ siteId: allowedSiteId }));
     });
 
+    // #11116: the web modal needs the minted key's id to run GET
+    // /enrollment-keys/:id on a remembered CLI token. The row id is chosen by
+    // the route and written in the insert, so the response id is the stored id.
+    it('returns the minted key id alongside the token (#11116)', async () => {
+      const siteId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue(siteRows([{ id: siteId }])) }),
+      } as any);
+      const values = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.insert).mockReturnValueOnce({ values } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.token).toMatch(/^enroll_/);
+      expect(body.childKeyId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ id: body.childKeyId }));
+    });
+
     // #7035: the automatic pick used to be `WHERE org_id = ? LIMIT 1` with no
     // ORDER BY, so a multi-site org's CLI key landed on whatever row Postgres
     // returned first. The documented default is the org's oldest site
