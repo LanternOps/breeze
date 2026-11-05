@@ -18,7 +18,8 @@ vi.mock('../../services/scriptProposals/queries', () => ({
 }));
 vi.mock('../../services/scriptProposals', () => ({ transitionProposal: vi.fn(), denyIntentForProposal: vi.fn() }));
 vi.mock('../../services/scriptProposals/authorNotify', () => ({ postProposalOutcomeToAuthor: vi.fn() }));
-vi.mock('../../services/auditEvents', () => ({
+vi.mock('../../services/auditEvents', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/auditEvents')>()),
   writeAuditEventAsync: (...a: unknown[]) => writeAuditEventAsync(...a),
 }));
 vi.mock('../../config/env', async (o) => ({ ...(await o<Record<string, unknown>>()), aiScriptAuthoringEnabled: () => true }));
