@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -1019,6 +1019,62 @@ describe('PartnerSettingsPage AI Budgets tab', () => {
     // Enabled still round-trips, so this is an omitted key, not an omitted tab.
     expect(settings.aiBudgets.enabled).toBe(true);
     expect(settings.aiBudgets).not.toHaveProperty('alertThresholdPercents');
+  });
+
+  // #9666: "not set" must reach the API as an absent key. The partner PATCH
+  // replaces the stored aiBudgets block wholesale, so an omitted `enabled`
+  // unlocks every organization's own AI switch; `false` would turn AI off for
+  // all of them.
+  it('choosing "not set" for AI access drops enabled from the payload and keeps the caps', async () => {
+    render(<PartnerSettingsPage />);
+    await screen.findByText('Partner Settings');
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+
+    const select = await screen.findByTestId('partner-ai-budget-enabled');
+    await user.selectOptions(select, '');
+
+    await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+    const settings = patchedSettings();
+    expect(settings.aiBudgets).not.toHaveProperty('enabled');
+    expect(settings.aiBudgets.monthlyBudgetCents).toBe(5000);
+  });
+
+  it('Off reaches the payload only after the confirm, with the caps kept', async () => {
+    render(<PartnerSettingsPage />);
+    await screen.findByText('Partner Settings');
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+
+    const select = await screen.findByTestId('partner-ai-budget-enabled');
+    await user.selectOptions(select, 'off');
+    await user.click(await screen.findByTestId('partner-ai-budget-off-confirm'));
+    expect(await screen.findByTestId('partner-ai-budget-off-warning')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+    expect(patchedSettings().aiBudgets).toMatchObject({ enabled: false, monthlyBudgetCents: 5000 });
+  });
+
+  it('cancelling the Off confirm leaves the tab clean and sends nothing', async () => {
+    render(<PartnerSettingsPage />);
+    await screen.findByText('Partner Settings');
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+
+    const select = await screen.findByTestId('partner-ai-budget-enabled');
+    await user.selectOptions(select, 'off');
+    const dialog = await screen.findByTestId('partner-ai-budget-off-confirm-dialog');
+    await user.click(within(dialog.closest('[role="dialog"]') as HTMLElement).getByRole('button', { name: /cancel/i }));
+
+    expect((select as HTMLSelectElement).value).toBe('on');
+    expect(screen.queryByTestId('partner-ai-budget-off-warning')).toBeNull();
+    expect(screen.getByRole('button', { name: /save settings/i })).toBeDisabled();
+    expect(fetchWithAuthMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH')).toBe(false);
   });
 
   it('blocks Save while the ladder text does not parse', async () => {

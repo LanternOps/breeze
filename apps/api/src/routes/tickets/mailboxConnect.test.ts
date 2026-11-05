@@ -42,6 +42,7 @@ const { authRef, mocks, IdentityError } = vi.hoisted(() => ({
     bindVerifiedTenant: vi.fn(async () => {}),
     listMailboxConnections: vi.fn(async (): Promise<unknown[]> => []),
     disableConnection: vi.fn(async () => true),
+    updateTrustedArcSealers: vi.fn(),
     updateGmailHandling: vi.fn(),
     createAdminConsentSession: vi.fn(),
     createIdentityVerificationSession: vi.fn(),
@@ -113,6 +114,7 @@ vi.mock('../../services/ticketMailbox/connectionService', () => ({
   listMailboxConnections: mocks.listMailboxConnections,
   disableConnection: mocks.disableConnection,
   updateGmailHandling: mocks.updateGmailHandling,
+  updateTrustedArcSealers: mocks.updateTrustedArcSealers,
   MAILBOX_VERIFICATION_FAILED: 'Mailbox verification failed',
 }));
 vi.mock('../../services/ticketMailbox/consentSessionService', () => ({
@@ -1300,6 +1302,101 @@ describe('POST /connect/gmail (production Gmail connect route, #6593)', () => {
     const response = await postGmail(app);
     expect(response.status).toBe(status);
     await expect(response.json()).resolves.toEqual({ error: `err:${code}` });
+    expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
+  });
+});
+
+describe('PATCH /connections/:id/trusted-arc-sealers (#10862)', () => {
+  let app: Hono;
+  const M365_ID = '33333333-3333-4333-8333-333333333333';
+
+  const patch = (target: Hono, body: unknown, id = M365_ID) =>
+    target.request(`/connections/${id}/trusted-arc-sealers`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authRef.current = adminAuth();
+    mocks.updateTrustedArcSealers.mockResolvedValue({ id: M365_ID, mailboxAddress: 'help@client.example' });
+    app = new Hono();
+    app.route('/', mailboxRoutes);
+  });
+
+  it('denies unauthenticated, read-only and non-MFA callers before the service', async () => {
+    authRef.current = null;
+    expect((await patch(app, { sealers: ['gateway.example'] })).status).toBe(401);
+    authRef.current = adminAuth({ permissions: new Set(['ticket_mailbox:read']) });
+    expect((await patch(app, { sealers: ['gateway.example'] })).status).toBe(403);
+    authRef.current = adminAuth({ mfa: false });
+    expect((await patch(app, { sealers: ['gateway.example'] })).status).toBe(403);
+    expect(mocks.updateTrustedArcSealers).not.toHaveBeenCalled();
+  });
+
+  it.each(['selected', 'none'] as const)('denies partner orgAccess=%s before the service or audit', async (orgAccess) => {
+    authRef.current = adminAuth({ partnerOrgAccess: orgAccess });
+    expect((await patch(app, { sealers: ['gateway.example'] })).status).toBe(403);
+    expect(mocks.updateTrustedArcSealers).not.toHaveBeenCalled();
+    expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('saves the list, audits once and returns it', async () => {
+    const response = await patch(app, { sealers: ['gateway.example', 'mx.gateway.example'] });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true, trustedArcSealers: ['gateway.example', 'mx.gateway.example'] });
+    expect(mocks.updateTrustedArcSealers).toHaveBeenCalledWith(M365_ID, PARTNER_ID, ['gateway.example', 'mx.gateway.example']);
+    expect(mocks.writeRouteAudit).toHaveBeenCalledTimes(1);
+    expect(mocks.writeRouteAudit.mock.calls[0]![1]).toMatchObject({
+      action: 'ticket_mailbox.trusted_arc_sealers_updated',
+      details: { provider: 'm365', sealers: ['gateway.example', 'mx.gateway.example'] },
+    });
+  });
+
+  it('accepts an empty list, which turns it off', async () => {
+    expect((await patch(app, { sealers: [] })).status).toBe(200);
+    expect(mocks.updateTrustedArcSealers).toHaveBeenCalledWith(M365_ID, PARTNER_ID, []);
+  });
+
+  it.each([
+    ['uppercase', ['Gateway.Example']],
+    ['single label', ['localhost']],
+    ['a public suffix alone', ['co.uk']],
+    ['a wildcard', ['*.gateway.example']],
+    ['an email address', ['a@gateway.example']],
+    ['a trailing dot', ['gateway.example.']],
+    ['a leading hyphen', ['-gateway.example']],
+    ['surrounding space', [' gateway.example']],
+    ['an IP address', ['192.0.2.1']],
+    ['a too-long name', [`${'a'.repeat(250)}.example`]],
+    ['a duplicate', ['gateway.example', 'gateway.example']],
+    ['too many entries', Array.from({ length: 11 }, (_, i) => `g${i}.example`)],
+    ["Exchange's own sealing domain", ['microsoft.com']],
+    ["a mail provider's shared sealing domain", ['google.com']],
+    ['a host under a shared provider domain', ['arc.outlook.com']],
+  ])('rejects %s before the service', async (_label, sealers) => {
+    expect((await patch(app, { sealers })).status).toBe(400);
+    expect(mocks.updateTrustedArcSealers).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown field, a missing or non-array list, and a non-uuid id', async () => {
+    expect((await patch(app, { sealers: [], extra: 1 })).status).toBe(400);
+    expect((await patch(app, {})).status).toBe(400);
+    expect((await patch(app, { sealers: 'gateway.example' })).status).toBe(400);
+    expect((await patch(app, { sealers: [] }, 'not-a-uuid')).status).toBe(400);
+    expect(mocks.updateTrustedArcSealers).not.toHaveBeenCalled();
+  });
+
+  it('denies organization scope before the service or audit', async () => {
+    authRef.current = adminAuth({ scope: 'organization', partnerId: null, partnerOrgAccess: null });
+    expect((await patch(app, { sealers: [] })).status).toBe(403);
+    expect(mocks.updateTrustedArcSealers).not.toHaveBeenCalled();
+    expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('404s when no matching Microsoft 365 connection exists and writes no audit', async () => {
+    mocks.updateTrustedArcSealers.mockResolvedValue(null);
+    expect((await patch(app, { sealers: [] })).status).toBe(404);
     expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
   });
 });

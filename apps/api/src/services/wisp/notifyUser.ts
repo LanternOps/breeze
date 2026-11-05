@@ -3,7 +3,8 @@
  * §7.4, §7.6; w00 "Nudges (W06)", A18, A20, A28, A29).
  *
  * Callers: the assessment finalizer's `nudge` step, the incident correlator's
- * partner-level nudge, the digest sweep and the morning brief
+ * partner-level nudge, the digest sweep, the morning brief and the check-in
+ * fire path (services/wisp/checkIns.ts, #10991)
  * (pinned by notifyUser.callers.contract.test.ts). None is reached while
  * `wispEnabled()` is false.
  *
@@ -42,14 +43,14 @@ import { isInQuietHours, type QuietHoursConfig } from '../quietHours';
 import { userPushTargetsQuery } from '../ticketPush';
 import { recipientState, recordNudge } from './concerns';
 import { deliverInApp, type ThreadPostDraft } from './deliver';
-import { webDeepLink } from './nudgeLinks';
+import { webCheckInLink, webDeepLink } from './nudgeLinks';
 import { loadNudgePrefs } from './nudgePreferences';
 import { loadUrgentCapableSeverities } from './partnerNudgeSettings';
 import { recordThreadPost, type ThreadPostKind } from './threadPosts';
 import { incWispNudge } from '../wispMetrics';
 
 /** The post kind of each nudge kind (explicit: a budget notice is never a post). */
-const POST_KIND: Record<WispNudgeKind, ThreadPostKind> = { concern: 'nudge', digest: 'digest', brief: 'brief' };
+const POST_KIND: Record<WispNudgeKind, ThreadPostKind> = { concern: 'nudge', digest: 'digest', brief: 'brief', check_in: 'check_in' };
 
 export type NudgePayload = {
   userId: string;
@@ -69,6 +70,12 @@ export type NudgePayload = {
   briefLocalDate?: string;
   /** kind 'brief' only: stored in the in-app row's `metadata.brief`. */
   briefSections?: BriefSection[];
+  /**
+   * Set iff kind === 'check_in' (#10991): the fired `wisp_check_ins` row. Its
+   * id is the dedupe key and the link fragment; its org (the thread's) is the
+   * notification's and the post's org.
+   */
+  checkIn?: { id: string; orgId: string | null };
 };
 
 export type NudgeSuppressedReason = 'quiet_hours' | 'prefs' | 'backoff' | null;
@@ -90,6 +97,7 @@ const BACKOFF: NotifyUserResult = { inApp: false, pushed: 0, suppressed: 'backof
  *   concern → wisp.nudge:<concern>:<grant>:<next_eligible_nudge_at | first>
  *   digest  → wisp.digest:<thread>:<now floored to the cadence, UTC>
  *   brief   → wisp.brief:<thread>:<local date>
+ *   check_in → wisp.check_in:<check-in id> (one delivery per check-in, ever)
  */
 export function nudgeDedupeKey(k: {
   kind?: WispNudgeKind;
@@ -100,8 +108,13 @@ export function nudgeDedupeKey(k: {
   now: Date;
   digestCadenceMinutes: number;
   briefLocalDate?: string;
+  checkInId?: string;
 }): string {
   const kind = k.kind ?? (k.concernId ? 'concern' : 'digest');
+  if (kind === 'check_in') {
+    if (!k.checkInId) throw new Error('nudgeDedupeKey: a check_in key needs checkInId');
+    return `wisp.check_in:${k.checkInId}`;
+  }
   if (kind === 'concern') {
     return `wisp.nudge:${k.concernId}:${k.grantId}:${k.nextEligibleNudgeAt?.toISOString() ?? 'first'}`;
   }
@@ -116,7 +129,8 @@ const PROACTIVITY_FLOOR: Record<WispNudgePreferences['proactivity'], number> = {
 /**
  * Who gets what (pure). Order: channels → proactivity floor (w00 A29: quiet ⇒
  * high only, normal ⇒ medium+, chatty ⇒ all; the brief and a nudge carrying
- * an approval card always pass; a digest ranks as medium) → per-device quiet
+ * an approval card always pass, and so does a check-in — the user's own thread
+ * asked for it; a digest ranks as medium) → per-device quiet
  * hours (a device breaks through only for an urgent-capable concern when the
  * user chose `urgent_only`; the brief ignores quiet hours — the user picked
  * its time). `suppressed` is null whenever something was pushed.
@@ -135,7 +149,7 @@ export function decideNudgeDelivery(input: {
   if (!prefs.channels.inApp && !prefs.channels.push) return { inApp: false, pushTokens: [], suppressed: 'prefs' };
   if (!prefs.channels.push) return { inApp, pushTokens: [], suppressed: 'prefs' };
 
-  const alwaysPush = input.kind === 'brief' || (input.kind === 'concern' && input.hasApprovalCard);
+  const alwaysPush = input.kind === 'brief' || input.kind === 'check_in' || (input.kind === 'concern' && input.hasApprovalCard);
   if (!alwaysPush) {
     const rank = input.severity ? SEVERITY_RANK[input.severity] : SEVERITY_RANK.medium;
     if (rank < PROACTIVITY_FLOOR[prefs.proactivity]) return { inApp, pushTokens: [], suppressed: 'prefs' };
@@ -173,6 +187,8 @@ function assertPayloadShape(p: NudgePayload): void {
   if (p.kind === 'concern' && !p.concernId) throw new Error('notifyUser: a concern nudge needs a concernId');
   if (p.kind !== 'concern' && p.concernId !== null) throw new Error(`notifyUser: a ${p.kind} nudge carries no concernId`);
   if (p.kind === 'brief' && !p.briefLocalDate) throw new Error('notifyUser: a brief needs briefLocalDate');
+  if (p.kind === 'check_in' && !p.checkIn?.id) throw new Error('notifyUser: a check_in nudge needs checkIn');
+  if (p.kind !== 'check_in' && p.checkIn !== undefined) throw new Error(`notifyUser: a ${p.kind} nudge carries no checkIn`);
 }
 
 const sameInstant = (a: Date | null, b: Date | null) => (a?.getTime() ?? null) === (b?.getTime() ?? null);
@@ -236,8 +252,8 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
   // Phase 2 — the in-app row and the thread post (one system context, closed
   // on return). The post is written whatever the channels (W02a, quorum B):
   // a push-only or all-off user still keeps the history on the thread.
-  const orgId = concern?.orgId ?? null;
-  const link = webDeepLink(p.threadId, p.concernId);
+  const orgId = p.checkIn ? p.checkIn.orgId : concern?.orgId ?? null;
+  const link = p.checkIn ? webCheckInLink(p.threadId, p.checkIn.id) : webDeepLink(p.threadId, p.concernId);
   const dedupeKey = nudgeDedupeKey({
     kind: p.kind,
     concernId: p.concernId,
@@ -247,6 +263,7 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
     now,
     digestCadenceMinutes: prefs.digestCadenceMinutes,
     briefLocalDate: p.briefLocalDate,
+    checkInId: p.checkIn?.id,
   });
   const post: ThreadPostDraft = {
     threadId: p.threadId,

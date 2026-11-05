@@ -130,6 +130,13 @@ export const backupQueueJobDataSchema = z.discriminatedUnion('type', [
     // that re-queue and when the wait began (ISO 8601), which bounds it.
     capabilityWaitAttempt: z.number().int().positive().optional(),
     capabilityWaitSince: z.string().datetime().optional(),
+    // #11013, set by the scheduler alone (never on a manual job, nor when the
+    // policy turned runMissedBackupsOnConnect off): how long this job may wait
+    // for an offline device. Absent means an offline device fails the job.
+    catchUpUntil: z.string().datetime().optional(),
+    // #11013: this dispatch was queued because the agent connected, for a job
+    // that is already waiting (backupEnqueue.enqueueBackupCatchUpDispatch).
+    catchUpDispatch: z.literal(true).optional(),
     meta: queueActorMetaSchema.optional(),
   }).strict(),
   z.object({

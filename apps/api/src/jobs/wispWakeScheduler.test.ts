@@ -35,6 +35,8 @@ const h = vi.hoisted(() => ({
   notifyBudgetExhaustedOnce: vi.fn(async (..._a: unknown[]) => true),
   captureException: vi.fn(),
   reconcilePartnerDisabled: vi.fn(async (..._a: unknown[]) => ({ paused: 0, resumed: 0 })),
+  fireCheckIn: vi.fn(async (..._a: unknown[]): Promise<'fired' | 'cancelled' | 'skipped'> => 'fired'),
+  reconcileOrphanCheckIns: vi.fn(async (..._a: unknown[]) => ({ refired: 0 })),
 }));
 
 vi.mock('../db', async () => {
@@ -106,6 +108,10 @@ vi.mock('../services/wisp/incidentCorrelator', () => ({
   correlateIncidents: (...a: unknown[]) => { h.order.push('correlateIncidents'); return h.correlateIncidents(...a); },
 }));
 vi.mock('../services/wisp/assessment', () => ({ enqueueAssessment: h.enqueueAssessment }));
+vi.mock('../services/wisp/checkIns', () => ({
+  fireCheckIn: (...a: unknown[]) => { h.order.push('fireCheckIn'); return h.fireCheckIn(...a); },
+  reconcileOrphanCheckIns: (...a: unknown[]) => { h.order.push('reconcileOrphanCheckIns'); return h.reconcileOrphanCheckIns(...a); },
+}));
 vi.mock('../services/wisp/budget', () => ({
   chargeableUnderGrant: h.chargeableUnderGrant,
   notifyBudgetExhaustedOnce: h.notifyBudgetExhaustedOnce,
@@ -114,6 +120,7 @@ vi.mock('../services/wisp/budget', () => ({
 import {
   initializeWispWakeScheduler,
   processAssessJob,
+  processCheckInJob,
   processWakeTick,
   shutdownWispWakeScheduler,
 } from './wispWakeScheduler';
@@ -191,6 +198,8 @@ beforeEach(() => {
   h.chargeableUnderGrant.mockImplementation(async () => ({ ok: true }));
   h.notifyBudgetExhaustedOnce.mockImplementation(async () => true);
   h.reconcilePartnerDisabled.mockImplementation(async () => ({ paused: 0, resumed: 0 }));
+  h.fireCheckIn.mockImplementation(async () => 'fired');
+  h.reconcileOrphanCheckIns.mockImplementation(async () => ({ refired: 0 }));
 });
 
 describe('processWakeTick', () => {
@@ -199,14 +208,14 @@ describe('processWakeTick', () => {
     const result = await processWakeTick(NOW);
     expect(result).toEqual({
       grantsTicked: 0, watchesFired: 0, staleTicketsPublished: 0, watchesStopped: 0,
-      grantsPaused: 0, grantsResumed: 0, ticketClustersOpened: 0, incidentsOpened: 0,
+      grantsPaused: 0, grantsResumed: 0, ticketClustersOpened: 0, incidentsOpened: 0, checkInsRefired: 0,
     });
     expect(h.executes).toHaveLength(0);
     expect(h.order).toEqual([]);
     expect(h.hasEntitlement).not.toHaveBeenCalled();
   });
 
-  it('runs the sections in order: reconcile, stop, floor, watches, stale, clusters, incidents', async () => {
+  it('runs the sections in order: reconcile, stop, floor, watches, check-in reconcile, stale, clusters, incidents', async () => {
     useFixtures({
       due: [{ id: G1, partner_id: P1, current_revision_id: REV, last_floor_tick_text: null }],
       orgs: [{ id: O1, name: 'A' }],
@@ -223,11 +232,12 @@ describe('processWakeTick', () => {
       'requestAssessment', // floor tick
       'claimDueWatches',
       'requestAssessment', // watch
+      'reconcileOrphanCheckIns',
       'pollStaleTickets',
       'pollTicketClusters',
       'correlateIncidents',
     ]);
-    for (const fn of [h.stopWatchesForInactiveGrants, h.pollStaleTickets, h.pollTicketClusters, h.correlateIncidents]) {
+    for (const fn of [h.stopWatchesForInactiveGrants, h.reconcileOrphanCheckIns, h.pollStaleTickets, h.pollTicketClusters, h.correlateIncidents]) {
       expect(fn).toHaveBeenCalledWith(NOW);
     }
   });
@@ -531,6 +541,26 @@ describe('processWakeTick', () => {
     err.mockRestore();
   });
 
+  it('processWakeTick reports checkInsRefired from the check-in reconcile', async () => {
+    h.reconcileOrphanCheckIns.mockImplementation(async () => ({ refired: 3 }));
+    const result = await processWakeTick(NOW);
+    expect(result.checkInsRefired).toBe(3);
+    expect(h.reconcileOrphanCheckIns).toHaveBeenCalledWith(NOW);
+  });
+
+  it('a check-in reconcile failure is reported and the later sections still run', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const boom = new Error('reconcile check-ins boom');
+    h.reconcileOrphanCheckIns.mockRejectedValue(boom);
+    h.correlateIncidents.mockImplementation(async () => ({ partnerIncidentsOpened: 1, updated: 0, autoClosed: 0 }));
+    const result = await processWakeTick(NOW);
+    expect(result.checkInsRefired).toBe(0);
+    expect(h.captureException).toHaveBeenCalledWith(boom, undefined, { component: 'wisp.wakeScheduler', op: 'tick_section', section: 'reconcileCheckIns' });
+    expect(h.pollStaleTickets).toHaveBeenCalledWith(NOW);
+    expect(result.incidentsOpened).toBe(1);
+    err.mockRestore();
+  });
+
   it('reports the pollers\' counts', async () => {
     h.pollStaleTickets.mockImplementation(async () => ({ scanned: 4, published: 3 }));
     h.pollTicketClusters.mockImplementation(async () => ({ scanned: 9, clustersOpened: 2, clustersUpdated: 1 }));
@@ -574,6 +604,38 @@ describe('processAssessJob', () => {
   });
 });
 
+describe('processCheckInJob', () => {
+  const CI = '00000000-0000-4000-8000-0000000000f1';
+
+  it('fires the check-in named by the job', async () => {
+    await processCheckInJob({ checkInId: CI });
+    expect(h.fireCheckIn).toHaveBeenCalledWith(CI);
+  });
+
+  it('returns without firing when wispEnabled() is false (the tick reconcile fires it once Wisp is back on)', async () => {
+    h.enabled = false;
+    await processCheckInJob({ checkInId: CI });
+    expect(h.fireCheckIn).not.toHaveBeenCalled();
+  });
+
+  it('drops a payload whose checkInId is not a uuid, logs and reports it, and does not throw', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    for (const data of [{ checkInId: 'nope' }, {}, null] as unknown[]) {
+      await expect(processCheckInJob(data as { checkInId: string })).resolves.toBeUndefined();
+    }
+    expect(h.fireCheckIn).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(3);
+    expect(h.captureException).toHaveBeenCalledTimes(3);
+    expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { component: 'wisp.wakeScheduler', op: 'check_in_malformed_payload' });
+    warn.mockRestore();
+  });
+
+  it('a fireCheckIn throw propagates so BullMQ retries', async () => {
+    h.fireCheckIn.mockRejectedValue(new Error('db blip'));
+    await expect(processCheckInJob({ checkInId: CI })).rejects.toThrow('db blip');
+  });
+});
+
 describe('worker lifecycle', () => {
   it('replaces the old tick repeatable and registers wisp-wake-tick every 5 minutes, concurrency 4', async () => {
     expect(WISP_WAKE_TICK_INTERVAL_MS).toBe(5 * 60 * 1000);
@@ -592,7 +654,7 @@ describe('worker lifecycle', () => {
     await shutdownWispWakeScheduler();
   });
 
-  it('the worker dispatches tick and assess by name and refuses unknown names', async () => {
+  it('the worker dispatches tick, assess and check-in by name and refuses unknown names', async () => {
     h.enabled = false;
     await initializeWispWakeScheduler();
     const processor = h.workers[0]!.processor;
@@ -602,6 +664,9 @@ describe('worker lifecycle', () => {
     expect(h.enqueueAssessment).toHaveBeenCalledWith({
       grantId: G1, orgId: O1, reason: { kind: 'tick' }, occurrenceKey: 'assess-job@1700000000000',
     });
+    const CI = '00000000-0000-4000-8000-0000000000f1';
+    await processor({ name: 'check-in', id: `wisp-check-in-${CI}`, timestamp: 1700000000000, data: { checkInId: CI } });
+    expect(h.fireCheckIn).toHaveBeenCalledWith(CI);
     await expect(processor({ name: 'mystery', data: {} })).rejects.toThrow(/unknown/);
     await shutdownWispWakeScheduler();
   });

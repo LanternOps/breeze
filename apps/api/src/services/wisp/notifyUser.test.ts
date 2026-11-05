@@ -128,6 +128,16 @@ describe('decideNudgeDelivery', () => {
       expect(decideNudgeDelivery({ ...base, kind: 'brief', severity: null, prefs: P({ proactivity: 'quiet' }), devices: [{ tokens: [tok('a')], quietHours: quiet }] }))
         .toEqual({ inApp: true, pushTokens: [tok('a')], suppressed: null });
     });
+    it('a check_in passes a quiet proactivity floor (the user asked for it)', () => {
+      expect(decideNudgeDelivery({ ...base, kind: 'check_in', severity: null, prefs: P({ proactivity: 'quiet' }), devices: dev }))
+        .toEqual({ inApp: true, pushTokens: [tok('a')], suppressed: null });
+    });
+    it('a check_in still withholds push in quiet hours, even with urgent_only', () => {
+      expect(decideNudgeDelivery({ ...base, kind: 'check_in', severity: null, prefs, devices: [{ tokens: [tok('a')], quietHours: quiet }] }))
+        .toEqual({ inApp: true, pushTokens: [], suppressed: 'quiet_hours' });
+      expect(decideNudgeDelivery({ ...base, kind: 'check_in', severity: null, prefs: P({ quietOverride: 'urgent_only' }), devices: [{ tokens: [tok('a')], quietHours: quiet }] }).suppressed)
+        .toBe('quiet_hours');
+    });
     it('a digest pushes under normal but not under quiet, and keeps quiet hours', () => {
       expect(decideNudgeDelivery({ ...base, kind: 'digest', severity: null, prefs, devices: dev }).pushTokens).toEqual([tok('a')]);
       expect(decideNudgeDelivery({ ...base, kind: 'digest', severity: null, prefs: P({ proactivity: 'quiet' }), devices: dev }).suppressed).toBe('prefs');
@@ -152,6 +162,17 @@ describe('nudgeDedupeKey', () => {
   it('brief key is the thread and the local date', () => {
     expect(nudgeDedupeKey({ kind: 'brief', concernId: null, grantId: 'g1', threadId: 't1', nextEligibleNudgeAt: null, now, digestCadenceMinutes: 240, briefLocalDate: '2026-10-24' }))
       .toBe('wisp.brief:t1:2026-10-24');
+  });
+});
+
+describe('nudgeDedupeKey check_in', () => {
+  it('a check_in key is wisp.check_in:<checkInId>, independent of time and cadence', () => {
+    const key = (n: Date, cadence: number) => nudgeDedupeKey({ kind: 'check_in', concernId: null, grantId: 'g1', threadId: 't1', nextEligibleNudgeAt: null, now: n, digestCadenceMinutes: cadence, checkInId: 'ci1' });
+    expect(key(now, 240)).toBe('wisp.check_in:ci1');
+    expect(key(new Date('2027-01-01T00:00:00Z'), 15)).toBe('wisp.check_in:ci1');
+  });
+  it('a check_in key without a checkInId throws (it would collide across check-ins)', () => {
+    expect(() => nudgeDedupeKey({ kind: 'check_in', concernId: null, grantId: 'g1', threadId: 't1', nextEligibleNudgeAt: null, now, digestCadenceMinutes: 15 })).toThrow();
   });
 });
 
@@ -395,6 +416,49 @@ describe('notifyUser', () => {
       await expect(notifyUser(payload)).rejects.toThrow('db blip');
       expect(h.recordNudge).not.toHaveBeenCalled();
       expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('check_in nudges (#10991)', () => {
+    const checkIn: NudgePayload = {
+      ...payload, kind: 'check_in', concernId: null, approvalIntentId: null, deepLink: 'breeze://wisp/thread/t1',
+      title: 'Check-in due: verify msiexec', body: 'Verify no msiexec processes remain', checkIn: { id: 'ci1', orgId: 'o7' },
+    };
+
+    it('a check_in nudge without checkIn throws; a non-check_in nudge with checkIn throws', async () => {
+      const { checkIn: _drop, ...noCheckIn } = checkIn;
+      await expect(notifyUser(noCheckIn)).rejects.toThrow(/check_in nudge needs checkIn/);
+      await expect(notifyUser({ ...payload, checkIn: { id: 'ci1', orgId: null } })).rejects.toThrow(/carries no checkIn/);
+      expect(h.deliverInApp).not.toHaveBeenCalled();
+    });
+
+    it('uses dedupe key wisp.check_in:<id>; the post is kind check_in with the check-in org and the #checkin link', async () => {
+      queue([threadRow], deviceRows);
+      await notifyUser(checkIn);
+      expect(h.recipientState).not.toHaveBeenCalled();
+      expect(h.recordNudge).not.toHaveBeenCalled();
+      expect(h.deliverInApp).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: 'o7',
+        priority: 'normal',
+        dedupeKey: 'wisp.check_in:ci1',
+        link: '/ai/wisp/thread/t1#checkin=ci1',
+        concernId: null,
+        post: {
+          threadId: 't1', partnerId: 'p1', grantId: 'g1', orgId: 'o7', kind: 'check_in',
+          title: 'Check-in due: verify msiexec', body: 'Verify no msiexec processes remain', link: '/ai/wisp/thread/t1#checkin=ci1',
+          sections: null, concernId: null,
+        },
+      }));
+      expect(h.dispatchPushToTokens).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ collapseId: 'wisp:check_in:t1' }), 'wisp-nudge');
+    });
+
+    it('with in-app off the check_in post is still written, keyed wisp.check_in:<id>', async () => {
+      queue([threadRow], deviceRows);
+      h.loadNudgePrefs.mockResolvedValue(P({ channels: { inApp: false, push: false } }));
+      h.recordThreadPost.mockResolvedValue({ created: true, id: 'post1' });
+      await notifyUser(checkIn);
+      expect(h.deliverInApp).not.toHaveBeenCalled();
+      expect(h.recordThreadPost).toHaveBeenCalledWith(expect.objectContaining({ kind: 'check_in', orgId: 'o7', dedupeKey: 'wisp.check_in:ci1', notificationId: null }));
     });
   });
 

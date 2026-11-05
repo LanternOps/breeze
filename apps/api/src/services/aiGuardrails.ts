@@ -330,6 +330,9 @@ export const TIER2_READONLY_ACTIONS: Record<string, string[]> = {
 // semantics as TIER2_READONLY_ACTIONS: keep the Tier-2 audit row, skip the
 // per-step prompt.
 export const TIER2_READONLY_TOOLS = new Set<string>([
+  // Full-control W17 (#6788): runs VSS_WRITER_LIST on the machine, so it is not tier 1; it changes nothing, and a
+  // supervised card per lookup is noise. The browse_device_event_log:list_logs and manage_services:list precedent.
+  'get_vss_status',
   'get_catalog_item',
   'get_contract',
   'get_invoice',
@@ -418,6 +421,10 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   manage_time_suggestions: ['list'],
   // Full-control W07 (#6777): the anomaly list is a read of metric rows (get_alert_correlations and
   // the extra get_fleet_health actions are whole-tool reads, so they need no entry).
+  // Full-control W17 (#6788): none of these writes. The routes' `refresh` flag does, and no tool input maps to it.
+  manage_backup_verification: ['health', 'list', 'readiness'],
+  list_bmr_recoveries: ['list', 'get'],
+  manage_c2c_configs: ['list'],
   manage_device_anomalies: ['list'],
   // The two whole-tool reads below are multiplexers with an `action` enum, so the tier-1
   // write-action contract wants their (all-read) vocabulary declared. `get_fleet_health`'s
@@ -643,6 +650,11 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_ticket_response_templates: ['create', 'update', 'delete'],
   // Full-control W07 (#6777): promoting an anomaly raises a real alert and publishes alert.triggered,
   // which reaches notification channels and ticket automation (spec Q2: reaches a person).
+  // Full-control W17 (#6788): run queues a command on the machine and cannot be unsent. C2C create and update choose
+  // whose mail is copied, to which storage and on what schedule, and auto_approve runs tier 2 unprompted; delete is
+  // not reversible. Create and cancel of a bare-metal recovery stay human.
+  manage_backup_verification: ['run'],
+  manage_c2c_configs: ['create', 'update', 'delete'],
   manage_device_anomalies: ['promote'],
   // Full-control W08 (#6778): see TIER3_SUPERVISED_ACTIONS.
   manage_topology_templates: ['publish_version', 'revoke_template'],
@@ -1013,6 +1025,9 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_ticket_attachments: ['delete'],
   manage_ticket_forms: ['create', 'update'],
   // Full-control W07 (#6777): see TIER3_ACTIONS.
+  // Full-control W17 (#6788): see TIER3_ACTIONS.
+  manage_backup_verification: ['run'],
+  manage_c2c_configs: ['create', 'update', 'delete'],
   manage_device_anomalies: ['promote'],
   // Full-control W08 (#6778): publishing makes a version appliable partner/org-wide and is not undoable;
   // revoking a template is terminal and disables every policy that references it; applying rewrites the
@@ -2794,6 +2809,24 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   // Full-control W13 PR B (#6783): the system-tools router (devices:execute), routes/tenantVariables.ts
   // (variables:read / variables:manage) and the remote router (remote:access).
+  // Full-control W17 (#6788): each mirrors its REST twin. Verification reads are organizations:read and the run is
+  // devices:execute (routes/backup/verification.ts); the VSS lookup runs a command (routes/backup/vss.ts); recovery
+  // and health reads are backup:read; C2C configs are organizations:read/write (routes/c2c/configs.ts).
+  manage_backup_verification: {
+    health: { resource: 'organizations', action: 'read' },
+    list: { resource: 'organizations', action: 'read' },
+    readiness: { resource: 'organizations', action: 'read' },
+    run: { resource: 'devices', action: 'execute' },
+  },
+  get_vss_status: { resource: 'devices', action: 'execute' },
+  list_bmr_recoveries: { resource: 'backup', action: 'read' },
+  get_backup_health: { resource: 'backup', action: 'read' },
+  manage_c2c_configs: {
+    list: { resource: 'organizations', action: 'read' },
+    create: { resource: 'organizations', action: 'write' },
+    update: { resource: 'organizations', action: 'write' },
+    delete: { resource: 'organizations', action: 'write' },
+  },
   browse_device_event_log: { resource: 'devices', action: 'execute' },
   manage_tenant_variables: {
     list: { resource: 'variables', action: 'read' },
@@ -5006,6 +5039,32 @@ export function buildApprovalDescription(
       }
       break;
     }
+
+    // Full-control W17 (#6788): the machine a check runs on, and whose mail a C2C config copies, where and when.
+    case 'manage_backup_verification':
+      if (action === 'run') {
+        const check = input.verificationType === 'test_restore' ? 'test restore' : 'integrity';
+        parts.push(`Run a backup ${check} check on device ${w03Id(input.deviceId)}. Queues a command on the machine.`);
+      } else {
+        parts.push(humanizeToolAction(toolName, action));
+      }
+      break;
+
+    case 'manage_c2c_configs':
+      if (action === 'create') {
+        const users = Array.isArray(input.targetUsers) ? input.targetUsers.length : 0;
+        const schedule = input.schedule && typeof input.schedule === 'object' ? (input.schedule as { frequency?: unknown }).frequency : undefined;
+        parts.push(`Create cloud-to-cloud backup config ${w03Cap(String(input.name ?? '(unnamed)'))}: `
+          + `${w03Cap(String(input.backupScope ?? '(unspecified)'))} for ${users} users, schedule ${w03Cap(String(schedule ?? 'none'))}.`);
+      } else if (action === 'update') {
+        const changed = Object.keys(input).filter((key) => !['action', 'orgId', 'configId'].includes(key));
+        parts.push(`Update cloud-to-cloud backup config ${w03Id(input.configId)}: ${w03Cap(changed.join(', ') || '(nothing)')}.`);
+      } else if (action === 'delete') {
+        parts.push(`Delete cloud-to-cloud backup config ${w03Id(input.configId)}. Refused if it has backup history.`);
+      } else {
+        parts.push(humanizeToolAction(toolName, action));
+      }
+      break;
 
     case 'manage_backup_profiles':
       if (action === 'create' && input.ownerScope === 'partner') {

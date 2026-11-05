@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strconv"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // maxShutdownDelayMinutes bounds the `delay` payload shared by the reboot,
@@ -88,7 +90,7 @@ func ForceReboot(_ map[string]any) CommandResult {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
-	if err := exec.Command(name, args...).Run(); err != nil {
+	if err := procspawn.Command(name, args...).Run(); err != nil {
 		return NewErrorResult(fmt.Errorf("failed to force reboot: %w", err), time.Since(startTime).Milliseconds())
 	}
 
@@ -132,9 +134,9 @@ func Lock(payload map[string]any) CommandResult {
 	var err error
 	switch runtime.GOOS {
 	case "windows":
-		err = exec.Command("rundll32.exe", "user32.dll,LockWorkStation").Run()
+		err = procspawn.Command("rundll32.exe", "user32.dll,LockWorkStation").Run()
 	case "darwin":
-		err = exec.Command("/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession", "-suspend").Run()
+		err = procspawn.Command("/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession", "-suspend").Run()
 	case "linux":
 		err = lockLinuxSession()
 	default:
@@ -205,13 +207,13 @@ func buildShutdownCommand(isReboot bool, delayMinutes int) (*exec.Cmd, error) {
 	if err != nil {
 		return nil, err
 	}
-	return exec.Command(name, args...), nil
+	return procspawn.Command(name, args...), nil
 }
 
 func lockLinuxSession() error {
 	var loginErr error
 	if path, err := exec.LookPath("loginctl"); err == nil {
-		loginErr = exec.Command(path, "lock-session").Run()
+		loginErr = procspawn.Command(path, "lock-session").Run()
 		if loginErr == nil {
 			return nil
 		}
@@ -221,7 +223,7 @@ func lockLinuxSession() error {
 
 	var dmErr error
 	if path, err := exec.LookPath("dm-tool"); err == nil {
-		dmErr = exec.Command(path, "lock").Run()
+		dmErr = procspawn.Command(path, "lock").Run()
 		if dmErr == nil {
 			return nil
 		}

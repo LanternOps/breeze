@@ -4,13 +4,14 @@ package tools
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 func listServicesOS(search, statusFilter string) ([]ServiceInfo, error) {
 	// Use systemctl to list all services
-	cmd := exec.Command("systemctl", "list-units", "--type=service", "--all", "--no-pager", "--plain")
+	cmd := procspawn.Command("systemctl", "list-units", "--type=service", "--all", "--no-pager", "--plain")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list services: %w", err)
@@ -74,7 +75,7 @@ func listServicesOS(search, statusFilter string) ([]ServiceInfo, error) {
 
 func getServiceOS(name string) (*ServiceInfo, error) {
 	// Get service status
-	cmd := exec.Command("systemctl", "show", name+".service",
+	cmd := procspawn.Command("systemctl", "show", name+".service",
 		"--property=LoadState,ActiveState,SubState,Description,ExecStart")
 	output, err := cmd.Output()
 	if err != nil {
@@ -109,7 +110,7 @@ func getServiceOS(name string) (*ServiceInfo, error) {
 }
 
 func startServiceOS(name string) error {
-	cmd := exec.Command("systemctl", "start", name+".service")
+	cmd := procspawn.Command("systemctl", "start", name+".service")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to start service: %w", err)
 	}
@@ -117,7 +118,7 @@ func startServiceOS(name string) error {
 }
 
 func stopServiceOS(name string) error {
-	cmd := exec.Command("systemctl", "stop", name+".service")
+	cmd := procspawn.Command("systemctl", "stop", name+".service")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to stop service: %w", err)
 	}
@@ -125,7 +126,7 @@ func stopServiceOS(name string) error {
 }
 
 func restartServiceOS(name string) error {
-	cmd := exec.Command("systemctl", "restart", name+".service")
+	cmd := procspawn.Command("systemctl", "restart", name+".service")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to restart service: %w", err)
 	}
@@ -133,7 +134,7 @@ func restartServiceOS(name string) error {
 }
 
 func getServiceStartType(name string) string {
-	cmd := exec.Command("systemctl", "is-enabled", name+".service")
+	cmd := procspawn.Command("systemctl", "is-enabled", name+".service")
 	output, _ := cmd.Output()
 	result := strings.TrimSpace(string(output))
 

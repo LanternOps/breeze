@@ -5,10 +5,11 @@ package terminal
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"os/user"
 	"syscall"
 	"unsafe"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // start starts the PTY session (macOS pure-Go implementation without cgo).
@@ -54,7 +55,7 @@ func (s *Session) start() error {
 	// Create the shell command as a login shell (-l) so that
 	// profile scripts are sourced and readline/line editing is
 	// fully initialised — matching what SSH and terminal emulators do.
-	cmd := exec.Command(s.Shell, "-l")
+	cmd := procspawn.Command(s.Shell, "-l")
 
 	// Build environment. LaunchDaemons have a very minimal env, so
 	// ensure HOME/USER/LOGNAME/SHELL are set for the shell to work.

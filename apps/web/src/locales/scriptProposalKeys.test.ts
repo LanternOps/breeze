@@ -15,6 +15,12 @@ const AI_KEYS = [
   'notRunAwaitingReview','notRunReviewed','notRunApproved','notRun',
   'reviewVerdictApprove','reviewVerdictChanges','reviewVerdictReject',
   'promoteDescription','ownerScopeOrganization','ownerScopePartner','nameRequired',
+  // #10954: the failed-review panel and the human override.
+  'reviewFailedTitle','reviewFailureUnknown','overrideApproved','overrideExplain',
+  'overrideRun','overrideRunNotice','overrideRunConfirm','overrideRunSuccess','overrideRunUndelivered',
+  'overrideSave','overrideSaveNotice',
+  'overrideErrorExpired','overrideErrorState','overrideErrorNotSoleApprover','overrideErrorStepUp',
+  'overrideErrorNoDevice','overrideErrorPolicy','overrideErrorStrict',
 ];
 const SCRIPT_KEYS = [
   'origin','originHuman','originAiProposal','originImported','originSystem','reviewed','editedSinceReview',

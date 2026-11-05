@@ -374,6 +374,12 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   search_c2c_items: 'backup_recovery',
   trigger_c2c_sync: 'backup_recovery',
   restore_c2c_items: 'backup_recovery',
+  // W17 (#6788). manage_c2c_configs is mapped too, but AGENT_HUMAN_ONLY_TOOLS keeps it out of the catalog.
+  manage_backup_verification: 'backup_recovery',
+  get_vss_status: 'backup_recovery',
+  list_bmr_recoveries: 'backup_recovery',
+  get_backup_health: 'backup_recovery',
+  manage_c2c_configs: 'backup_recovery',
 
   // ---- config_policies ----
   apply_configuration_policy: 'config_policies',

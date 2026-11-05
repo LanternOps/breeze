@@ -25,7 +25,7 @@ index — `get_feature_status` before starting any wave). Branch per wave:
 | W03 | Actions + AI + push hints (GravityZone first) | 2 (actions + AI, webhook/push) | W01 (W02 recommended first for the UI buttons) |
 | W04 | [Emsisoft cloud EMC adapter](2026-10-17-edr-provider-framework-w04-emsisoft.md) — #7436 gate cleared 2026-10-17 (cloud EMC only) | 2 (PR-A read adapter + framework extension points, PR-B actions + `edr_detection_action`) | W01 (+W03 for actions) |
 | W05 | Sophos Central adapter | 1 | W01 (+W03 for actions) |
-| W06 | Installer dispatch + #6960 hook | 1 | W01 + at least one adapter with `installer !== 'none'` |
+| W06 | [Installer dispatch + #6960 hook](2026-11-05-edr-provider-framework-w06-installer-dispatch.md) (draft) | 3 (W06.1 framework + GravityZone, W06.2 hook, W06.3 lab gate) | W01 + at least one adapter with `installer !== 'none'` |
 | W07 | Agent detection signatures (absorbs #7551 / PR #7634) | 1 residual (after #7634) | none |
 
 W01 → W02 / W03 (parallel after W01). W04 / W05 are adapter-only and can start any time after
@@ -254,6 +254,11 @@ gate against a Sophos Central Partner trial. 1 PR. Medium. Must not need any fra
 it does, that is an interface bug to fix in the framework, not a Sophos special case.
 
 ## W06 — Installer dispatch + #6960 hook
+
+> **Superseded by the wave plan** [`2026-11-05-edr-provider-framework-w06-installer-dispatch.md`](2026-11-05-edr-provider-framework-w06-installer-dispatch.md)
+> (2026-11-05, draft for approval): three PRs (framework + GravityZone dormant, security-agents hook dormant, owner lab
+> gate that enables both), `getInstaller` split into a sync-time fetch and a pure dispatch-time build, Emsisoft installer
+> proposed as a follow-up. The text below is kept as the original sketch.
 
 **Content.** `BuiltinProvider` widened to `'huntress' | 'sentinelone' | EdrProviderKey` (installer-
 capable subset); `edrInstallerResolver.ts` becomes a dispatch map with an **exhaustive switch that

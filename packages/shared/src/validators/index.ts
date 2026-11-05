@@ -1,5 +1,6 @@
 import { CONFIG_FEATURE_TYPES } from '../constants/configFeatureTypes';
 import { z } from 'zod';
+import { utf16Max } from './unitLength';
 import { applicationProvidersSchema } from './eventLogProviders';
 import {
   ACTOR_TYPES,
@@ -379,6 +380,7 @@ export const agentEnrollSchema = z.object({
     cpuCores: z.number().optional(),
     ramTotalMb: z.number().optional(),
     serialNumber: z.string().optional(),
+    productSku: z.string().optional(),
     manufacturer: z.string().optional(),
     model: z.string().optional(),
     motherboardManufacturer: z.string().optional(),
@@ -621,12 +623,6 @@ const patchSourceValueSchema = z.enum([
  */
 const PROVIDERLESS_PATCH_SOURCES = new Set<string>(['firmware', 'drivers']);
 
-// Length in UTF-16 code units (an astral char counts twice). zod <=4.5 measured
-// `.max()` this way; zod >=4.6 counts code points. The ring app-rules backfill
-// migration (2026-12-26-230000) emulates the UTF-16 rule in SQL, so it is
-// pinned explicitly rather than left to the zod version.
-const utf16Max = (max: number) => (v: string) => v.length <= max;
-
 /**
  * Patch sources an app rule may target. 'linux' (#9370) names an apt/dnf
  * package; the agent installs Linux updates one package at a time
@@ -635,12 +631,17 @@ const utf16Max = (max: number) => (v: string) => v.length <= max;
  */
 export const APP_RULE_SOURCES = ['third_party', 'custom', 'linux'] as const;
 
+// Lengths below are UTF-16 code units (an astral char counts twice), via the
+// shared `utf16Max` check. zod <=4.5 measured `.max()` this way; zod >=4.6
+// counts code points. The ring app-rules backfill migration (2026-12-26-230000)
+// emulates the UTF-16 rule in SQL, so it is pinned explicitly rather than left
+// to the zod version (#9976).
 export const policyAppRuleSchema = z.object({
   source: z.enum(APP_RULE_SOURCES),
-  packageId: z.string().min(1).refine(utf16Max(256), { message: 'Too long: expected <=256 characters' }),
-  displayName: z.string().refine(utf16Max(255), { message: 'Too long: expected <=255 characters' }).optional(),
+  packageId: z.string().min(1).check(utf16Max(256, 'Too long: expected <=256 characters')),
+  displayName: z.string().check(utf16Max(255, 'Too long: expected <=255 characters')).optional(),
   action: z.enum(['block', 'pin']),
-  pinnedVersion: z.string().min(1).refine(utf16Max(64), { message: 'Too long: expected <=64 characters' }).optional(),
+  pinnedVersion: z.string().min(1).check(utf16Max(64, 'Too long: expected <=64 characters')).optional(),
 }).superRefine((data, ctx) => {
   if (data.action === 'pin' && !data.pinnedVersion) {
     ctx.addIssue({
@@ -1467,3 +1468,4 @@ export * from './flowBudgets';
 export * from './flowWebhooks';
 export * from './flowConversions';
 export * from './networkIsolation';
+export * from './unitLength';

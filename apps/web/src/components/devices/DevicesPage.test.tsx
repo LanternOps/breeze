@@ -53,7 +53,8 @@ vi.mock('../../hooks/useEventStream', () => ({
   useEventStream: () => ({ subscribe: vi.fn() }),
 }));
 
-vi.mock('../../services/deviceActions', () => ({
+vi.mock('../../services/deviceActions', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../services/deviceActions')>(),
   sendDeviceCommand: vi.fn(),
   sendBulkCommand: vi.fn(),
   executeScript: vi.fn(),
@@ -64,8 +65,7 @@ vi.mock('../../services/deviceActions', () => ({
   bulkDecommissionDevices: vi.fn(),
   permanentDeleteDevice: vi.fn(),
   sendWakeCommand: vi.fn(),
-  sendBulkWakeCommand: vi.fn(),
-  summarizeBulkWakeFailures: vi.fn(() => ''),
+  requestBulkWakeCommand: vi.fn(),
   summarizeBulkCommandFailures: vi.fn(() => ''),
   watchWakeOutcome: vi.fn(),
   WakeCommandError: class WakeCommandError extends Error { code = 'x'; },
@@ -291,6 +291,9 @@ vi.mock('./DeviceList', () => ({
           two are mutually exclusive on screen. That conditional belongs to
           DeviceList/DeviceCard's own suites. */}
       {devices.map(d => (
+        <button key={`row-wake-${d.id}`} data-testid={`row-wake-${d.id}`} onClick={() => onAction?.('wake', d)} />
+      ))}
+      {devices.map(d => (
         <button
           key={`row-reboot-${d.id}`}
           type="button"
@@ -368,8 +371,8 @@ function rawDevice(id: string, hostname: string) {
   };
 }
 
-function jsonResponse(payload: unknown) {
-  return { ok: true, json: async () => payload } as unknown as Response;
+function jsonResponse(payload: unknown, status = 200) {
+  return { ok: status < 400, status, json: async () => payload } as unknown as Response;
 }
 
 /** Device ids the page POSTed to the single-device restore route. */
@@ -1616,9 +1619,9 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
   // by online/queued, and the org(s) it will hit.
   describe('bulk command confirm (#9032)', () => {
     async function selectFleet() {
-      const { sendBulkCommand, sendBulkWakeCommand } = await import('../../services/deviceActions');
+      const { sendBulkCommand, requestBulkWakeCommand } = await import('../../services/deviceActions');
       vi.mocked(sendBulkCommand).mockResolvedValue({ commands: [{}, {}], failed: [], skipped: [] } as never);
-      vi.mocked(sendBulkWakeCommand).mockResolvedValue({ succeeded: [], failed: [] } as never);
+      vi.mocked(requestBulkWakeCommand).mockResolvedValue(jsonResponse({ succeeded: [], failed: [] }));
       vi.mocked(fetchAllDevices).mockResolvedValue({
         data: [
           rawDevice(DEV_1, 'host-alpha'),
@@ -1626,7 +1629,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
         ],
       } as never);
       await renderMixedFleet([DEV_1, DEV_2]);
-      return { sendBulkCommand, sendBulkWakeCommand };
+      return { sendBulkCommand, requestBulkWakeCommand };
     }
 
     it('reboot asks first, names verb + online/queued split, and sends nothing until confirmed', async () => {
@@ -1692,12 +1695,12 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     });
 
     it('wake asks first', async () => {
-      const { sendBulkWakeCommand } = await selectFleet();
+      const { requestBulkWakeCommand } = await selectFleet();
       fireEvent.click(screen.getByTestId('bulk-wake'));
       const confirm = await screen.findByTestId('confirm-bulk-command');
-      expect(vi.mocked(sendBulkWakeCommand)).not.toHaveBeenCalled();
+      expect(vi.mocked(requestBulkWakeCommand)).not.toHaveBeenCalled();
       fireEvent.click(confirm);
-      await waitFor(() => expect(vi.mocked(sendBulkWakeCommand)).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(vi.mocked(requestBulkWakeCommand)).toHaveBeenCalledTimes(1));
     });
 
     it('maintenance-off asks first', async () => {
@@ -2028,17 +2031,17 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
   );
 
   it('does not skip or gate bulk Wake on device status — it exists precisely to reach devices that are not running (confirm only, #9032)', async () => {
-    const { sendBulkWakeCommand } = await import('../../services/deviceActions');
-    vi.mocked(sendBulkWakeCommand).mockResolvedValue({ sent: [], failed: [] } as never);
+    const { requestBulkWakeCommand } = await import('../../services/deviceActions');
+    vi.mocked(requestBulkWakeCommand).mockResolvedValue(jsonResponse({ succeeded: [], failed: [] }));
 
     boundaryFleet();
     await renderMixedFleet();
     fireEvent.click(screen.getByTestId('bulk-wake'));
     fireEvent.click(await screen.findByTestId('confirm-bulk-command')); // #9032
 
-    await waitFor(() => expect(vi.mocked(sendBulkWakeCommand)).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(vi.mocked(requestBulkWakeCommand)).toHaveBeenCalledTimes(1));
     expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
-    expect([...(vi.mocked(sendBulkWakeCommand).mock.calls[0][0] as string[])].sort()).toEqual(
+    expect([...(vi.mocked(requestBulkWakeCommand).mock.calls[0][0] as string[])].sort()).toEqual(
       [DEV_1, DEV_2, DEV_3].sort(),
     );
   });
@@ -2085,9 +2088,9 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
   // carrying detail === 2, because the platform click counter comes from the
   // time and distance between presses, never from the hit-test target.
   it('a double-click on confirm cannot fire an unrelated action underneath', async () => {
-    const { sendDeviceCommand, sendBulkWakeCommand } = await import('../../services/deviceActions');
+    const { sendDeviceCommand, requestBulkWakeCommand } = await import('../../services/deviceActions');
     vi.mocked(sendDeviceCommand).mockResolvedValue({ command: {} } as never);
-    vi.mocked(sendBulkWakeCommand).mockResolvedValue({ sent: [], failed: [] } as never);
+    vi.mocked(requestBulkWakeCommand).mockResolvedValue(jsonResponse({ succeeded: [], failed: [] }));
     vi.mocked(fetchAllDevices).mockResolvedValue({
       data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'online' }],
     } as never);
@@ -2109,7 +2112,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     fireEvent.mouseUp(wake, { detail: 2 });
     fireEvent.click(wake, { detail: 2 });
 
-    expect(vi.mocked(sendBulkWakeCommand)).not.toHaveBeenCalled();
+    expect(vi.mocked(requestBulkWakeCommand)).not.toHaveBeenCalled();
     expect(vi.mocked(sendDeviceCommand)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(sendDeviceCommand)).toHaveBeenCalledWith(DEV_1, 'reboot');
   });
@@ -3719,5 +3722,100 @@ describe('DevicesPage — empty states (#9036)', () => {
     await waitFor(() => expect(list.getAttribute('data-filter-ids')).not.toBe(''));
     fireEvent.click(screen.getByTestId('stub-clear-filters'));
     await waitFor(() => expect(screen.getByTestId('device-list').getAttribute('data-filter-ids')).toBe(''));
+  });
+});
+
+
+describe('DevicesPage wake refusals', () => {
+  beforeEach(async () => {
+    history.replaceState(null, '', '/devices');
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+    const actual = await vi.importActual<typeof import('../../services/deviceActions')>('../../services/deviceActions');
+    const mocked = await import('../../services/deviceActions');
+    vi.mocked(mocked.requestBulkWakeCommand).mockImplementation(actual.requestBulkWakeCommand);
+  });
+  it('single wake on TARGET_ONLINE names the device and shows the server message', async () => {
+    const { showToast } = await import('../shared/Toast');
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse({ code: 'TARGET_ONLINE', error: 'Target device is already online.' }, 412));
+    fireEvent.click(screen.getByTestId(`row-wake-${DEV_1}`));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'host-alpha: Target device is already online.' }));
+    expect(showToast).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [412, { code: 'TARGET_ONLINE', error: 'Target device is already online.' }],
+    [200, { success: false, code: 'TARGET_ONLINE', error: 'Target device is already online.' }],
+  ])('bulk refusal at HTTP %s toasts once', async (status, body) => {
+    const { showToast } = await import('../shared/Toast');
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse(body, status));
+    fireEvent.click(screen.getByTestId('bulk-wake'));
+    fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'Target device is already online.' }));
+    expect(showToast).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [{ succeeded: [{ deviceId: DEV_1 }], failed: [] }, 'success', 'Sent to 1, skipped 0'],
+    [{ succeeded: [], failed: [{ deviceId: DEV_1, code: 'TARGET_ONLINE' }] }, 'success', 'Sent to 0, skipped 1: 1 already online'],
+    [{ succeeded: [{ deviceId: DEV_1 }], failed: [{ deviceId: DEV_2, code: 'NO_RELAY' }] }, 'warning', 'Sent to 1, skipped 1: 1 with no online peer at their site'],
+    [{ succeeded: [], failed: [{ deviceId: DEV_1, code: 'NEW_CODE', message: 'Blocked by wake policy' }] }, 'error', 'Sent to 0, skipped 1: 1 Blocked by wake policy'],
+  ])('reports bulk outcomes without an extra toast', async (body, type, message) => {
+    const { showToast } = await import('../shared/Toast');
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse(body));
+    fireEvent.click(screen.getByTestId('bulk-wake'));
+    fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type, message }));
+    expect(showToast).toHaveBeenCalledTimes(1);
+  });
+
+  it('single wake success toasts and starts the outcome watcher', async () => {
+    const { showToast } = await import('../shared/Toast');
+    const { watchWakeOutcome } = await import('../../services/deviceActions');
+    vi.mocked(watchWakeOutcome).mockResolvedValue('aborted');
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse({
+      commandId: 'command-1', wakeAttemptId: 'attempt-1', type: 'wake_on_lan',
+      relay: { hostname: 'relay-example' }, broadcast: '192.0.2.255',
+    }, 202));
+    fireEvent.click(screen.getByTestId(`row-wake-${DEV_1}`));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Wake Sent Watching' }));
+    expect(watchWakeOutcome).toHaveBeenCalledWith(DEV_1, { signal: expect.any(AbortSignal) });
+    expect(showToast).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the auth redirect without an error toast on a single wake 401', async () => {
+    const { showToast } = await import('../shared/Toast');
+    const { handleSessionExpired } = await import('../../stores/auth');
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse({ error: 'Unauthorized' }, 401));
+    fireEvent.click(screen.getByTestId(`row-wake-${DEV_1}`));
+    await waitFor(() => expect(handleSessionExpired).toHaveBeenCalledTimes(1));
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it('bulk wake reports "Sent to N, skipped M" with skips grouped by code', async () => {
+    const { showToast } = await import('../shared/Toast');
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse({
+      succeeded: [{ deviceId: DEV_1 }],
+      failed: [
+        { deviceId: DEV_2, code: 'TARGET_ONLINE', message: 'Already online' },
+        { deviceId: DEV_3, code: 'TARGET_ONLINE', message: 'Already online' },
+      ],
+    }));
+    fireEvent.click(screen.getByTestId('bulk-wake'));
+    fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Sent to 1, skipped 2: 2 already online' }));
+    expect(showToast).toHaveBeenCalledTimes(1);
   });
 });

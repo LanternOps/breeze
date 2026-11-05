@@ -207,7 +207,7 @@ describe('viewer relay-only desktop admission', () => {
 
   for (const kind of ['ice-servers', 'offer'] as const) {
     describe(kind, () => {
-      it.each(['applied', 'verified'])('enforces TURN-only for %s', async (state) => {
+      it.each(['applying', 'applied', 'verified', 'release_requested', 'future_state_from_a_newer_api'])('enforces TURN-only for %s', async (state) => {
         findEpisode.mockResolvedValue({ state, remoteRelay: true });
         const result = await iceResult(kind);
         expect(result.relayOnly).toBe(true);
@@ -216,7 +216,7 @@ describe('viewer relay-only desktop admission', () => {
         ], username: expect.any(String), credential: expect.any(String) }]);
         expect(findEpisode).toHaveBeenCalledWith(tx, deviceId);
       });
-      it.each([null, 'applying', 'release_requested'])('preserves non-active %s wire format', async (state) => {
+      it.each([null, 'released', 'expired'])('preserves the wire format with episode state %s', async (state) => {
         findEpisode.mockResolvedValue(state ? { state, remoteRelay: false } : null);
         const result = await iceResult(kind);
         expect(result).not.toHaveProperty('relayOnly');

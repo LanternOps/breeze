@@ -1510,13 +1510,30 @@ mobileRoutes.post(
     // the single-transaction behaviour they had under the request tx.
     const { action } = data;
     if (action !== 'run_script') {
-      return withAuthDbAccessContext(auth, async () => {
+      const outcome = await withAuthDbAccessContext(auth, async () => {
         const target = await resolveQuickActionTarget(deviceId, auth, permissions);
         if (!target.ok) {
           return c.json({ error: target.error }, target.status);
         }
         return runNonScriptQuickAction(c, auth, target.device, action);
       });
+      if (outcome instanceof Response) return outcome;
+
+      // A prepared wake: its attempt and command have committed, so a fast
+      // relay result can find them.
+      const wake = await outcome.deliver();
+      if (!wake.ok) {
+        return c.json({ error: wake.message, code: wake.code }, 412);
+      }
+      return c.json({
+        action: 'wake',
+        commandId: wake.commandId,
+        wakeAttemptId: wake.wakeAttemptId,
+        relay: { deviceId: wake.relayDeviceId, hostname: wake.relayHostname },
+        network: wake.network,
+        broadcast: wake.broadcast,
+        macs: wake.macs,
+      }, 202);
     }
 
     // run_script: the target read commits on its own, then the service creates
@@ -1647,15 +1664,7 @@ async function runNonScriptQuickAction(
     if (!wake.ok) {
       return c.json({ error: wake.message, code: wake.code }, 412);
     }
-    return c.json({
-      action: 'wake',
-      commandId: wake.commandId,
-      wakeAttemptId: wake.wakeAttemptId,
-      relay: { deviceId: wake.relayDeviceId, hostname: wake.relayHostname },
-      network: wake.network,
-      broadcast: wake.broadcast,
-      macs: wake.macs,
-    }, 202);
+    return wake;
   }
 
   let cmdResult;

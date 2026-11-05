@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/watchdoginstall"
 )
 
@@ -168,7 +168,7 @@ func bootstrapWatchdog(opts bootstrapOptions) error {
 	runner := opts.runInstaller
 	if runner == nil {
 		runner = func(path string) error {
-			cmd := exec.Command(path, "service", "install")
+			cmd := procspawn.Command(path, "service", "install")
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			return cmd.Run()

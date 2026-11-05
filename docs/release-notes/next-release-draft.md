@@ -19,7 +19,10 @@ Last release: **v0.126.0** (2026-11-03).
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
 - **Alert notifications that were silently skipped start sending (#10926, #10944).** Rule, monitor and sourced alerts (patch job, maintenance reboot, policy and config compliance, backup, EDR, warranty, network monitor, script exit code and others) often lost their in-app notification, channel sends and escalations, because the notification job read the alert before its row was committed. After this upgrade those deliveries happen: in-app, email, **SMS**, Slack, Teams, PagerDuty, Pushover, webhooks, and **escalations**. Review notification routing, monitor delivery settings and escalation policies before or right after upgrading — SMS costs money and on-call staff will start getting paged for alerts that were quiet before. A row read too early now logs `PROCESS_ALERT_ROW_NOT_FOUND` instead of returning silently. No migration and no new env vars.
+- **Wake-on-LAN refuses online targets and records outcomes (#10839).** Waking a device that is already online now returns `TARGET_ONLINE` and sends nothing; a bulk wake reports how many devices it sent to and skipped. Each dispatched wake records an attempt, and a new one-minute `wake-attempt-sweep` job resolves it as `came_online`, `timed_out`, `send_failed` or `unknown` within about 12 minutes. A nightly job prunes closed attempts after 90 days (`WAKE_ATTEMPT_RETENTION_DAYS`, `WAKE_ATTEMPT_RETENTION_BATCH_SIZE`, `WAKE_ATTEMPT_RETENTION_MAX_BATCHES`; all optional).
 
 ## Features / API
 
 ## Migrations
+
+- `2027-01-20-170000-device-wake-tracking` adds `device_wake_status` and `device_wake_attempts`. `2027-01-20-170100` and `170200` build `(org_id, lower(mac_address))` indexes on `device_network` and `device_ip_history` with `CREATE INDEX CONCURRENTLY`, outside a transaction.

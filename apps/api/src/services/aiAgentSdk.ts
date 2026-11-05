@@ -1294,6 +1294,9 @@ interface PreHookLedgerState {
   rowWritten: boolean;
 }
 
+/** #10400: a tool call after the stream stopped the turn at its work-turn limit. */
+export const WORK_TURN_LIMIT_REFUSAL = 'This turn reached the conversation turn limit.';
+
 function createGatedSessionPreToolUse(session: ActiveSession) {
   return async (
     wispCall: { current: WispCallState | null },
@@ -1306,6 +1309,10 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     // carried on the terminal `return` so postToolUse can seal against the
     // right intent without relying solely on pendingIntentBySession.
     let createdIntentId: string | undefined;
+
+    // #10400: the stream stopped this turn at its work-turn limit; a call it
+    // emitted on the way out gets no gate, intent or approval card.
+    if (session.workTurnLimitStopped) return { allowed: false, error: WORK_TURN_LIMIT_REFUSAL };
 
     // The org a Tier-3 action intent for this call lives in. The session org,
     // except for a run_script whose reviewed proposal resolves to another org

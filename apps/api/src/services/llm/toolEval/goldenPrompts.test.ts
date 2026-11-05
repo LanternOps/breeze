@@ -23,7 +23,7 @@ const PENDING_DECLARATION = new Set<string>([]); // search_documentation was dec
 const BASELINE_UNDECLARED_TOOLS = new Set<string>([]);
 
 describe('GOLDEN_CASES', () => {
-  it('has 119 unique ids', () => {
+  it('has 126 unique ids', () => {
     // g68 (#8167 W03): EDR-framework containment. g69 (#8167 W03 PR-B): EDR "sync now".
     // g70-g75 (full-control W02, #6756; the plan's g73-g78): PSA/billing writes.
     // g76-g78 (full-control W03, #6757): backup restore, DR rehearsal, Hyper-V power.
@@ -40,8 +40,11 @@ describe('GOLDEN_CASES', () => {
     // g109-g111 (full-control W14, #6784 PR A): an org's rate card, publish a template version (supervised), device billing.
     // g112-g113 (full-control W14, #6784 PR B): generate a contract invoice (preview, then four-eyes), push to Xero (four-eyes).
     // g118-g119 (network-isolation W13, #10101): release an isolation (four-eyes); un-quarantining a file is never a release.
-    expect(GOLDEN_CASES).toHaveLength(119);
-    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(119);
+    // g120-g126 (full-control W17, #6788): backup verification, VSS, C2C configs, bare-metal recovery and backup health.
+    expect(GOLDEN_CASES).toHaveLength(126);
+    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(126);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g122')?.expect[0]).toEqual({ tool: 'manage_backup_verification', action: 'run' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g126')?.expect[0]).toEqual({ tool: 'get_backup_health' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g118')?.expect[0]).toEqual({ tool: 'release_containment' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g119')?.expect.map((e) => e.tool)).not.toContain('release_containment');
     expect(GOLDEN_CASES.find((c) => c.id === 'g116')?.expect).toEqual([{ tool: 'manage_pax8_orders', action: 'preview' }, { tool: 'manage_pax8_orders', action: 'submit' }]);

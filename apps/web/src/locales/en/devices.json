@@ -1485,6 +1485,7 @@
     "cancel": "Cancel",
     "editDisplayName": "Edit display name",
     "serialNumber": "Serial Number",
+    "productSku": "Product Number",
     "manufacturer": "Manufacturer",
     "model": "Model",
     "deviceRole": "Device Role",
@@ -1654,6 +1655,7 @@
       "ram": "RAM %",
       "lastSeen": "Last Seen",
       "serial": "Serial",
+      "productSku": "Product Number",
       "assetTag": "Asset Tag",
       "location": "Location",
       "source": "Source"
@@ -1671,6 +1673,7 @@
       "ram": "Sort by RAM usage",
       "lastSeen": "Sort by last seen time",
       "serial": "Sort by serial number",
+      "productSku": "Sort by product number",
       "assetTag": "Sort by asset tag",
       "location": "Sort by location",
       "source": "Sort by source"
@@ -2775,7 +2778,8 @@
       "bulkMoveSiteNotMovedForbidden": "{{devices}} (you do not have access to its site or to the target site)",
       "bulkMoveSiteNotMovedNotFound": "{{devices}} (no longer found; it may have been deleted)",
       "bulkMoveSiteNotMovedError": "{{devices}} (an unexpected error occurred; try again)",
-      "deviceMovedToSite": "{{hostname}} moved to a new site"
+      "deviceMovedToSite": "{{hostname}} moved to a new site",
+      "bulkWakeResult": "Sent to {{sent}}, skipped {{skipped}}"
     },
     "tryAgain": "Try again",
     "unknownDevice": "Unknown",
@@ -2813,7 +2817,18 @@
     "emptyOrgTitleUnnamed": "No devices in this organization yet",
     "emptyOrgDescription": "Install the agent on a machine in this organization to start monitoring it, or switch to all organizations to see the rest of your fleet.",
     "viewAllOrganizations": "View all organizations",
-    "importFromRmmShort": "Import"
+    "importFromRmmShort": "Import",
+    "wakeSkipReasons": {
+      "online": "already online",
+      "relayUnavailable": "with no online peer at their site",
+      "missingMac": "with no MAC on file (agent has not checked in)",
+      "missingSubnet": "with no usable IPv4 history",
+      "ipv6": "with IPv6 history only",
+      "relayDisconnected": "had relay disconnect mid-dispatch — retry",
+      "missingTarget": "not found or access denied",
+      "removed": "removed",
+      "invalidRelay": "with invalid relay override"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Add filter",

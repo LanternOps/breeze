@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -14,6 +13,8 @@ import (
 	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 func NewWriter() Writer {
@@ -27,7 +28,7 @@ func runTimeCommand(parent context.Context, name string, args ...string) (int, e
 		return 1, fmt.Errorf("locate %s: %w", name, err)
 	}
 	// Fixed filenames supplied only by commandWriter; never a policy-controlled path.
-	cmd := exec.CommandContext(ctx, filepath.Join(dir, name), args...)
+	cmd := procspawn.CommandContext(ctx, filepath.Join(dir, name), args...)
 	cmd.WaitDelay = time.Second
 	// Output is neither needed nor parsed; nil streams go to the null device.
 	err = cmd.Run()

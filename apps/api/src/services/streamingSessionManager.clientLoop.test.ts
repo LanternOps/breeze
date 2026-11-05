@@ -68,6 +68,9 @@ vi.mock('./aiAgentSdk', () => ({
 vi.mock('./aiToolOutput', () => ({ redactAiToolOutputText: (s: string) => s }));
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
 
+// Keeps the lazy real ./flows/flowTools graph (~5 s cold) out of whichever test reaches it first (#11011).
+vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
+
 import { StreamingSessionManager } from './streamingSessionManager';
 import type { AuthContext } from '../middleware/auth';
 import type { AiStreamEvent } from '@breeze/shared/types/ai';

@@ -1873,6 +1873,7 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 			DiskTotalGB:             hardwareInfo.DiskTotalGB,
 			GPUModel:                hardwareInfo.GPUModel,
 			SerialNumber:            hardwareInfo.SerialNumber,
+			ProductSKU:              hardwareInfo.ProductSKU,
 			Manufacturer:            hardwareInfo.Manufacturer,
 			Model:                   hardwareInfo.Model,
 			MotherboardManufacturer: hardwareInfo.MotherboardManufacturer,

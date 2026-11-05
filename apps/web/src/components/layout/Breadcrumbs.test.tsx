@@ -78,8 +78,8 @@ describe('Breadcrumbs shrink priority', () => {
 });
 
 
-// A crumb with `onClick` handles a plain click itself (e.g. pops history so a
-// list's filters survive) but stays a real link for modifier/middle clicks.
+// A crumb with `onClick` handles a plain click itself (e.g. a router
+// soft-navigation) but stays a real link for modifier/middle clicks.
 describe('Breadcrumbs onClick', () => {
   it('runs onClick and suppresses navigation on a plain left click', () => {
     const onClick = vi.fn();

@@ -127,6 +127,7 @@ function columnCell(id: ColumnId, d: Device, input: DevicesCsvInput): Cell {
     case 'vpn': return vpnList(d.activeVpns).map((v) => getVpnProviderLabel(v.provider)).join(', ');
     case 'serial':
       return cls === 'manual' ? d.serialNumber : cls === 'agent' ? d.hardware?.serialNumber : '';
+    case 'productSku': return isAgent(d) ? d.hardware?.productSku : '';
     case 'assetTag': return cls === 'manual' ? d.assetTag : '';
     case 'location': return cls === 'manual' ? d.location : '';
     case 'source': return cls === 'network' ? d.source : '';

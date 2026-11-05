@@ -107,7 +107,23 @@ import { authMiddleware } from '../middleware/auth';
 import { queueCommand } from '../services/commandQueue';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
-import { sensitiveDataRoutes } from './sensitiveData';
+import { policyScopeSchema, sensitiveDataRoutes } from './sensitiveData';
+
+describe('policyScopeSchema suppressFilePathRegex byte budget (#9976)', () => {
+  // The agent (sensitive_data_scan.go compileRegexSlice) silently SKIPS a
+  // pattern longer than 512 UTF-8 bytes, so the scan would run without the
+  // suppression. zod 4.6 counts `.max(300)` in code points (up to 1200 bytes).
+  const EMOJI = '\u{1F600}'; // 4 UTF-8 bytes
+
+  it('accepts a pattern that fits the agent byte cap', () => {
+    expect(policyScopeSchema.safeParse({ suppressFilePathRegex: [EMOJI.repeat(128)] }).success).toBe(true);
+    expect(policyScopeSchema.safeParse({ suppressFilePathRegex: ['a'.repeat(300)] }).success).toBe(true);
+  });
+
+  it('rejects a pattern within 300 code points but over 512 UTF-8 bytes', () => {
+    expect(policyScopeSchema.safeParse({ suppressFilePathRegex: [EMOJI.repeat(129)] }).success).toBe(false);
+  });
+});
 
 function mockDeviceLookup(rows: any[]) {
   vi.mocked(db.select).mockReturnValueOnce({
