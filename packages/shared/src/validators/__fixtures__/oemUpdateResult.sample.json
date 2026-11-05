@@ -1,0 +1,17 @@
+{
+  "lane": "dell",
+  "outcome": "success_reboot_required",
+  "toolVersion": "5.7.2",
+  "rawExitCode": 1,
+  "errorCode": null,
+  "rebootRequired": true,
+  "shutdownRequired": false,
+  "items": [
+    { "title": "Dell Latitude System BIOS", "category": "bios", "version": "1.21.0", "result": "installed" },
+    { "title": "Dell Thunderbolt Controller Firmware", "category": "firmware", "version": "1.0.4", "result": "installed" },
+    { "title": "Dell Wireless Network Driver", "category": "driver", "version": "23.40.0.4", "result": "installed" },
+    { "title": "Dell Display Manager", "category": "application", "version": "2.3.1", "result": "skipped" }
+  ],
+  "skippedCategories": [],
+  "takeover": "ok"
+}
