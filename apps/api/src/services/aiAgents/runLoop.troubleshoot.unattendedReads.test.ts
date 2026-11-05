@@ -58,6 +58,19 @@ vi.mock('./runProgress', async (importOriginal) => ({
   emitRunProgress: vi.fn(async () => undefined),
 }));
 
+const ledgerMocks = vi.hoisted(() => ({ startToolExecution: vi.fn() }));
+vi.mock('./executionLedger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./executionLedger')>()),
+  startToolExecution: ledgerMocks.startToolExecution,
+}));
+
+const toolMocks = vi.hoisted(() => ({ executeTool: vi.fn(async () => JSON.stringify({ ok: true })) }));
+vi.mock('../aiTools', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  executeTool: toolMocks.executeTool,
+}));
+
+import { __test__ as sdkTools } from '../aiAgentSdkTools';
 import { GrantInactiveError, type GrantCeiling } from '../wisp/grantAuthority';
 import { createAgentRunCallPairing, createAgentRunPreToolUse } from './runLoop';
 import { troubleshootToolAllowlist } from './troubleshootProfile';
@@ -79,6 +92,7 @@ function makeHook(args: {
   profile?: 'device_troubleshooting' | 'full';
   grantId?: string | null;
   registryKeys?: string[];
+  sessionId?: string | null;
 }) {
   const profile = args.profile ?? 'device_troubleshooting';
   const grantId = args.grantId === undefined ? 'g1' : args.grantId;
@@ -98,7 +112,7 @@ function makeHook(args: {
     } as never,
     outcome: args.outcome,
     intentIds: [],
-    sessionId: null,
+    sessionId: args.sessionId === undefined ? 'session-1' : args.sessionId,
     pairing: createAgentRunCallPairing(),
     actReservation: { count: 0 },
     runTargets: [],
@@ -119,6 +133,8 @@ let intentSeq = 0;
 beforeEach(() => {
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
   grantMocks.resolveGrantCeiling.mockReset().mockResolvedValue(ceiling());
+  ledgerMocks.startToolExecution.mockReset().mockResolvedValue('exec-1');
+  toolMocks.executeTool.mockClear();
   intentSeq = 0;
   intentMocks.createActionIntent.mockReset().mockImplementation(async () => ({
     id: `intent-${++intentSeq}`, status: 'pending_approval', errorCode: null,
@@ -141,6 +157,39 @@ describe('device_troubleshooting run, switch on', () => {
     const context = (result as { context?: { pinnedWispUnattendedRead?: { kind: string; pinned: unknown } } }).context;
     expect(context?.pinnedWispUnattendedRead?.kind).toBe(kind);
     expect(context?.pinnedWispUnattendedRead?.pinned).toEqual(input);
+  });
+
+  it('through the real SDK handler, the tool runs on the classified copy, not the model\'s object', async () => {
+    const hook = makeHook({ outcome: makeOutcome() });
+    const auth = { scope: 'organization', orgId: ORG_ID, accessibleOrgIds: [ORG_ID], partnerId: 'p1', user: { id: AGENT_ID } } as unknown as AuthContext;
+    const handler = sdkTools.makeHandler('registry_operations', () => auth, hook);
+    const input = { ...REGISTRY };
+    await handler(input);
+    expect(toolMocks.executeTool).toHaveBeenCalledTimes(1);
+    const dispatched = (toolMocks.executeTool.mock.calls[0] as unknown as unknown[])[1];
+    expect(dispatched).toEqual(REGISTRY);
+    expect(dispatched).not.toBe(input);
+  });
+
+  it('writes its ledger row, and the row is what lets it run', async () => {
+    await makeHook({ outcome: makeOutcome() })('registry_operations', REGISTRY, undefined, 'tu-1');
+    expect(ledgerMocks.startToolExecution).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1', toolName: 'registry_operations' }));
+  });
+
+  it('a failed ledger write asks instead of running with no record', async () => {
+    ledgerMocks.startToolExecution.mockRejectedValue(new Error('connection lost'));
+    const outcome = makeOutcome();
+    const result = await makeHook({ outcome })('registry_operations', REGISTRY, undefined, 'tu-1');
+    expect(result).toMatchObject({ allowed: false });
+    expect(outcome.proposedActions).toHaveLength(1);
+  });
+
+  it('a run with no session has nowhere to record it, so it asks', async () => {
+    const outcome = makeOutcome();
+    const result = await makeHook({ outcome, sessionId: null })('registry_operations', REGISTRY, undefined, 'tu-1');
+    expect(result).toMatchObject({ allowed: false });
+    expect(outcome.proposedActions).toHaveLength(1);
+    expect(ledgerMocks.startToolExecution).not.toHaveBeenCalled();
   });
 
   it('turned off between two calls inside the 15 s memo: the second call proposes', async () => {
@@ -225,6 +274,16 @@ describe('device_troubleshooting run, switch off', () => {
     grantMocks.resolveGrantCeiling.mockResolvedValue(ceiling({ unattendedReads: false }));
     await makeHook({ outcome: makeOutcome() })('registry_operations', REGISTRY, undefined, 'tu-1');
     expect(grantMocks.resolveGrantCeiling).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a troubleshooting run with no grant', () => {
+  it('proposes, and never reads a ceiling', async () => {
+    const outcome = makeOutcome();
+    const result = await makeHook({ outcome, grantId: null })('registry_operations', REGISTRY, undefined, 'tu-1');
+    expect(result).toMatchObject({ allowed: false });
+    expect(outcome.proposedActions).toHaveLength(1);
+    expect(grantMocks.resolveGrantCeiling).not.toHaveBeenCalled();
   });
 });
 

@@ -436,6 +436,22 @@ describe('WispThreadHeader — unattended reads switch (#10973)', () => {
     expect(h.updateWisp).toHaveBeenCalledWith(fresh);
   });
 
+  it('a committed refresh merges the switch at once, before the thread read can fail', async () => {
+    open();
+    fireEvent.click(screen.getByTestId('wisp-unattended-reads-switch'));
+    await act(async () => { (h.modalProps!.onRefreshed as (g: unknown) => void)({ unattendedReads: true }); });
+    expect(h.updateWisp).toHaveBeenCalledWith({ unattendedReads: true });
+  });
+
+  it('a cancelled turn-on leaves no flag behind for the next plain refresh', () => {
+    open();
+    fireEvent.click(screen.getByTestId('wisp-unattended-reads-switch'));
+    expect(h.modalProps?.refresh).toMatchObject({ unattendedReads: true });
+    act(() => { (h.modalProps!.onClose as () => void)(); });
+    fireEvent.click(screen.getByTestId('wisp-refresh-grant'));
+    expect(h.modalProps?.refresh).toEqual({ grantId: 'g-1', orgId: null });
+  });
+
   it('the plain Refresh button carries no flag: the server keeps the switch as it is', () => {
     render(<WispThreadHeader wisp={wisp({ unattendedReads: true })} orgName={null} wideningAvailable={false} />);
     fireEvent.click(screen.getByTestId('wisp-refresh-grant'));

@@ -18,6 +18,7 @@ import {
   type AgentGuardrailPolicy,
 } from './aiGuardrails';
 import { getToolTier } from './aiTools';
+import { classifyWispUnattendedRead } from './wisp/unattendedReads';
 
 const DEVICE = '11111111-1111-4111-8111-111111111111';
 const ON = { chatSession: true, wispUnattendedReads: true } as const;
@@ -69,6 +70,18 @@ describe('checkGuardrails with the switch on', () => {
     const check = checkGuardrails('execute_command', { deviceId: DEVICE, commandType: 'event_logs_query', payload: { logName: 'System' } }, ON);
     expect(check).toMatchObject({ tier: 2, readOnly: true });
     expect(check.wispUnattendedRead).toBeUndefined();
+  });
+});
+
+describe('the real tiers the chat gate depends on', () => {
+  it.each([
+    ['registry read_key', 'registry_operations', { action: 'read_key', deviceId: DEVICE, keyPath: 'HKLM\\SOFTWARE' }],
+    ['registry get_value', 'registry_operations', { action: 'get_value', deviceId: DEVICE, keyPath: 'HKLM\\SOFTWARE', valueName: 'Path' }],
+    ['Security query', 'execute_command', security({ query: XPATH })],
+    ['device note', 'set_device_context', { deviceId: DEVICE, contextType: 'issue', summary: 'Disk is failing' }],
+  ])('%s is Tier 2 and classified with the switch on', (_label, tool, input) => {
+    expect(checkGuardrails(tool, input, ON)).toMatchObject({ tier: 2, allowed: true });
+    expect(classifyWispUnattendedRead(tool, input)).not.toBeNull();
   });
 });
 

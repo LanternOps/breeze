@@ -429,6 +429,9 @@ export default function WispThreadHeader({
         defaultOrgId={wisp.scopeOrgId}
         refresh={{ grantId: wisp.grantId, orgId: wisp.scopeOrgId, ...(refreshEnables ? { unattendedReads: true as const } : {}) }}
         onClose={() => setRefreshOpen(false)}
+        onRefreshed={(grant) => {
+          if (typeof grant?.unattendedReads === 'boolean') updateWisp({ unattendedReads: grant.unattendedReads });
+        }}
         onGranted={(fresh) => {
           setRefreshOpen(false);
           updateWisp(fresh);

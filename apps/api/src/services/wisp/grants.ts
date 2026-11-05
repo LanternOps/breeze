@@ -604,8 +604,11 @@ export async function updateGrantSettings(input: {
   if (unattendedReads !== undefined) set.unattendedReads = unattendedReads;
   const [updated] = await db.update(wispGrants).set(set).where(eq(wispGrants.id, row.id)).returning();
   if (!updated) throw new WispGrantError('not_found', 'Wisp grant not found.');
+  // Before the audit: a failed read here aborts the request transaction, and
+  // the update with it, so no audit row may claim a change that rolled back.
+  const grant = await toGrantWithPin(updated);
   await audit({
-    grant: toGrant(updated),
+    grant,
     action: 'wisp.grant.settings_changed',
     actor: { type: 'user', id: auth.user.id, email: auth.user.email },
     details: {
@@ -621,7 +624,7 @@ export async function updateGrantSettings(input: {
       },
     },
   });
-  return toGrantWithPin(updated);
+  return grant;
 }
 
 /** w00 A29: the grantor's own off-switch. No step-up — pausing never widens. */

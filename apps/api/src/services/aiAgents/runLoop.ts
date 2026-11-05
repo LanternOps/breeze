@@ -1161,6 +1161,17 @@ export function createAgentRunPreToolUse(args: {
       : { allowed: true, context: runFrame };
   }
 
+  /** #10973: the ledger row for an unattended read, or null when there is none to rely on. */
+  async function startUnattendedReadExecution(toolName: string, input: Record<string, unknown>): Promise<string | null> {
+    if (!sessionId) return null;
+    try {
+      return await startToolExecution({ sessionId, toolName, toolInput: input });
+    } catch (error) {
+      console.error('[aiAgentRunLoop] unattended read has no ledger row — asking instead', { runId: run.id, toolName, error });
+      return null;
+    }
+  }
+
   return async (toolName, input, _mcpToolName, toolUseId) => {
     // No `.catch` — `isRunResourceScopeCurrent` already fails closed on a throw.
     if (args.revalidateResourceScope && (await args.revalidateResourceScope(toolName)) !== true) {
@@ -1419,8 +1430,15 @@ export function createAgentRunPreToolUse(args: {
           return { allowed: false, error: denial };
         }
         if (fresh.ceiling.unattendedReads) {
-          const allowed = await recordAllowedExecution(toolName, input, null, toolUseId);
-          return { ...allowed, context: { ...allowed.context, pinnedWispUnattendedRead: unattendedRead } };
+          // Unlike an ordinary allowed call, this one needs its ledger row: with
+          // no card, the row is the only record that it ran. Under the forced
+          // shadow mode, any such row in this profile is one of these reads.
+          // No row: ask instead, as the chat gate refuses on a failed audit write.
+          const executionId = await startUnattendedReadExecution(toolName, input);
+          if (executionId) {
+            recordAllowedCall(pairing, toolName, toolUseId, { executionId, actPin: null });
+            return { allowed: true, context: { ...runFrame, pinnedWispUnattendedRead: unattendedRead } };
+          }
         }
       }
       return recordProposal(check, toolName, input);

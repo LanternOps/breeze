@@ -1268,6 +1268,8 @@ describe('createSessionPreToolUse — grant-level unattended reads (#10973)', ()
     const result = await createSessionPreToolUse(session)(tool, input);
 
     expect(result).toMatchObject({ allowed: true, context: { pinnedWispUnattendedRead: { kind, pinned: input } } });
+    // The real guardrail honors the flag only with chatSession (aiGuardrails.wispUnattendedReads.test.ts).
+    expect(lastGuardrailContext()).toMatchObject({ chatSession: true, wispUnattendedReads: true });
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ toolName: tool, status: 'executing' }));
     expect(approvalCards(session)).toHaveLength(0);
     expect(waitForApproval).not.toHaveBeenCalled();

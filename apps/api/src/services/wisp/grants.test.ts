@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { wispGrantRevisions, wispGrants } from '../../db/schema';
 
 /**
@@ -91,6 +93,7 @@ import {
   wideningAvailable,
   resolveMaxGrants,
   listGrants,
+  getActiveGrantForUser,
   previewGrantCeiling,
   WispGrantError,
   GrantLimitReachedError,
@@ -710,6 +713,53 @@ describe('unattended reads (#10973): default off, step-up to enable, grantor-onl
     h.results.push([grantRow({ currentRevisionId: 'r2' })]);
     await refreshGrant({ auth: auth(), grantId: 'g1', stepUpGrantId: 'step-1' });
     expect(valuesInserted()[0]!.ceilingSnapshot).not.toHaveProperty('unattendedReads');
+  });
+
+  it('the refresh compares the switch: flipped since the row was read, the update misses and asks to retry', async () => {
+    h.results.push([grantRow({ unattendedReads: true })]);
+    h.results.push([{ maxRevision: 1 }]);
+    h.results.push([{ id: 'r2' }]);
+    h.results.push([]); // the compare-and-set matched nothing
+    await expect(refreshGrant({ auth: auth(), grantId: 'g1', stepUpGrantId: 'step-1' })).rejects.toMatchObject({ code: 'not_active' });
+    const rendered = callsOf('where').map((c) => new PgDialect().sqlToQuery(c.args[0] as SQL).sql);
+    expect(rendered.at(-1)).toMatch(/"unattended_reads" = \$/);
+  });
+
+  it('getActiveGrantForUser carries both flags, so the main thread entry shows the real switch', async () => {
+    h.results.push([grantRow({ unattendedReads: true })]);
+    h.results.push([{ id: 'r1' }]);
+    await expect(getActiveGrantForUser(USER, scope)).resolves.toMatchObject({ unattendedReads: true, unattendedReadsPinned: true });
+    h.results.push([grantRow({ unattendedReads: false })]);
+    h.results.push([{ id: 'r1' }]);
+    await expect(getActiveGrantForUser(USER, scope)).resolves.toMatchObject({ unattendedReads: false, unattendedReadsPinned: true });
+  });
+
+  it('listGrants maps the pin per row: pinned, unpinned, and no revision at all', async () => {
+    h.results.push([
+      grantRow({ id: 'a', currentRevisionId: 'r-a', unattendedReads: true }),
+      grantRow({ id: 'b', currentRevisionId: 'r-b', unattendedReads: false }),
+      grantRow({ id: 'c', currentRevisionId: null, unattendedReads: false }),
+    ]);
+    h.results.push([{ id: 'r-a' }]);
+    const grants = await listGrants({ auth: auth(), view: 'mine' });
+    expect(grants.map((g) => [g.id, g.unattendedReads, g.unattendedReadsPinned])).toEqual([
+      ['a', true, true], ['b', false, false], ['c', false, false],
+    ]);
+  });
+
+  it('pause and resume report the flags too', async () => {
+    h.results.push([grantRow({ unattendedReads: true })]);
+    h.results.push([grantRow({ status: 'paused', pausedReason: 'user_paused', unattendedReads: true })]);
+    h.results.push([{ id: 'r1' }]);
+    await expect(userPauseGrant({ auth: auth(), grantId: 'g1' })).resolves.toMatchObject({ unattendedReads: true, unattendedReadsPinned: true });
+  });
+
+  it('settings PATCH: a failed pin read writes no audit row, because the request transaction rolls back', async () => {
+    h.results.push([grantRow({ unattendedReads: true })]);
+    h.results.push([grantRow({ unattendedReads: false })]);
+    h.results.push(new Error('connection lost'));
+    await expect(updateGrantSettings({ auth: auth(), grantId: 'g1', patch: { unattendedReads: false } })).rejects.toThrow('connection lost');
+    expect(h.createAuditLogAsync).not.toHaveBeenCalled();
   });
 
   it('non-grantor cannot enable, even a partner admin', async () => {

@@ -16,6 +16,7 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
+import type { Context } from 'hono';
 
 const { publishEventMock } = vi.hoisted(() => ({
   publishEventMock: vi.fn<(...args: unknown[]) => Promise<string>>(async () => 'test-event-id'),
@@ -37,7 +38,9 @@ import {
   users,
   wispGrantRevisions,
   wispGrants,
+  wispThreads,
 } from '../../db/schema';
+import { loadOwnThread } from '../../routes/wispThreads';
 import type { WispCeilingSnapshot } from '../../db/schema/wisp';
 import type { AuthContext } from '../../middleware/auth';
 import { mintStepUpGrant, wispGrantResourceDigest } from '../../services/mfaStepUpGrant';
@@ -888,6 +891,22 @@ describe('unattended reads switch (#10973; 2027-01-21-180000)', () => {
     await expect(cascadeDeletePartner(t.partner.id, randomUUID())).resolves.toBeDefined();
     const left = await withDbAccessContext(SYSTEM_CTX, () => db.select().from(wispGrants).where(eq(wispGrants.partnerId, t.partner.id)));
     expect(left).toEqual([]);
+  });
+
+  it('GET /thread/:id reads the pin through its own SQL: live AND pinned, per revision', async () => {
+    const t = await seedTenant();
+    const { grantId } = await seedSwitchedOn(t);
+    const [thread] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(wispThreads).values({ grantId, partnerId: t.partner.id }).returning({ id: wispThreads.id }));
+    const auth = grantorAuth(t, randomUUID());
+    const context = { req: { param: () => thread!.id }, get: () => auth } as unknown as Context;
+    const read = () => asGrantor(t, () => loadOwnThread(context));
+
+    expect((await read())?.grant).toMatchObject({ unattendedReads: true, unattendedReadsPinned: true });
+    await asGrantor(t, () => db.update(wispGrants).set({ unattendedReads: false }).where(eq(wispGrants.id, grantId)));
+    expect((await read())?.grant).toMatchObject({ unattendedReads: false, unattendedReadsPinned: true });
+    await addRevision(grantId, t.partner.id, [t.org.id], { flagged: false, revision: 3 });
+    expect((await read())?.grant).toMatchObject({ unattendedReads: false, unattendedReadsPinned: false });
   });
 
   it('the existing guard rules still hold after the function was replaced', async () => {
