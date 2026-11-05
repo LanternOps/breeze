@@ -535,6 +535,12 @@ async function validateSpooledManifest(
   if (scanned.id !== snapshot.snapshotId) {
     return { outcome: await failOutsideContext(snapshot, 'manifest_invalid', `manifest id ${scanned.id} does not match snapshot ${snapshot.snapshotId}`) };
   }
+  // Not the same as `files: null`, which is how the agent writes an empty slice:
+  // no key at all means this is not a manifest, and publishing it would show an
+  // empty snapshot as a complete index.
+  if (!scanned.hasFilesKey) {
+    return { outcome: await failOutsideContext(snapshot, 'manifest_invalid', 'manifest has no files key') };
+  }
   if (invalidKey !== null) {
     return { outcome: await failOutsideContext(snapshot, 'manifest_key_invalid', `unparseable backupPath: ${invalidKey}`) };
   }

@@ -1,7 +1,7 @@
 // #11026 W02 T2: hydration over a stream. The manifest is spooled while hashing,
 // validated in one pass, then written in a second, inside the fenced transaction.
 import { createHash } from 'node:crypto';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
@@ -448,6 +448,15 @@ describe('hydrateSnapshotFileIndex over a stream', () => {
     expect(outcome).toMatchObject({ status: 'complete', entryCount: 0 });
   });
 
+  it('a manifest with no files key is invalid, not an empty snapshot', async () => {
+    loadSnapshot();
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, {
+      deps: deps(async () => stream(Buffer.from('{"id":"snap-current"}'))),
+    });
+    expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_invalid', retryable: false });
+    expect(transactionMock).not.toHaveBeenCalled();
+  });
+
   it('holds no DB context while the manifest downloads and validates', async () => {
     loadSnapshot();
     const order: string[] = [];
@@ -462,6 +471,15 @@ describe('hydrateSnapshotFileIndex over a stream', () => {
       }),
     });
     expect(order).toEqual(['download', 'transaction']);
+  });
+});
+
+describe('spoolManifest', () => {
+  it('releases the source when the spool directory cannot be created', async () => {
+    const { spoolManifest } = await import('./backupManifestSpool');
+    const source = Readable.from([Buffer.from('{}')]);
+    await expect(spoolManifest(source, { baseDir: join(spoolRoot, 'does-not-exist'), maxBytes: 1024 })).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(source.destroyed).toBe(true);
   });
 });
 
@@ -485,5 +503,22 @@ describe('cleanStaleManifestSpools', () => {
   it('does not throw when a directory cannot be read', async () => {
     const { cleanStaleManifestSpools } = await import('./backupManifestSpool');
     await expect(cleanStaleManifestSpools([join(spoolRoot, 'does-not-exist')])).resolves.toBeUndefined();
+  });
+
+  it('says so when a spool directory exists but cannot be read, and is quiet when it was never created', async () => {
+    const { cleanStaleManifestSpools } = await import('./backupManifestSpool');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await cleanStaleManifestSpools([join(spoolRoot, 'does-not-exist')]);
+      expect(warn).not.toHaveBeenCalled();
+
+      const notADirectory = join(spoolRoot, 'a-file');
+      await writeFile(notADirectory, 'x');
+      await expect(cleanStaleManifestSpools([notADirectory])).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain(notADirectory);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

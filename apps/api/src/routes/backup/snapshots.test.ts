@@ -590,8 +590,17 @@ describe('snapshot routes', () => {
       ['no query', ''],
       ['a limit over 100', 'q=ab&limit=101'],
       ['a limit of 0', 'q=ab&limit=0'],
+      ['a NUL in the query, which Postgres cannot take as text', 'q=ab%00cd'],
     ])('refuses %s with 400, without searching', async (_name, query) => {
       const res = await search(query);
+      expect(res.status).toBe(400);
+      expect(searchMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a cursor holding a NUL with 400, without searching', async () => {
+      selectMock.mockReturnValueOnce(chainMock([readyRow()]));
+      const cursor = Buffer.from('C:\\a\u0000b', 'utf8').toString('base64url');
+      const res = await search(`q=ab&cursor=${cursor}`);
       expect(res.status).toBe(400);
       expect(searchMock).not.toHaveBeenCalled();
     });

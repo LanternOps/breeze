@@ -71,8 +71,16 @@ export type SpoolManifestOptions = {
  * A rejection leaves nothing behind.
  */
 export async function spoolManifest(source: NodeJS.ReadableStream, options: SpoolManifestOptions): Promise<ManifestSpool> {
-  const base = options.baseDir ?? (await resolveManifestSpoolBase());
-  const dir = await mkdtemp(join(base, SPOOL_DIR_PREFIX));
+  let dir: string;
+  try {
+    const base = options.baseDir ?? (await resolveManifestSpoolBase());
+    dir = await mkdtemp(join(base, SPOOL_DIR_PREFIX));
+  } catch (err) {
+    // pipeline() below owns the source from there on. Until then nothing else
+    // would release an open download.
+    (source as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
+    throw err;
+  }
   const remove = async () => {
     await rm(dir, { recursive: true, force: true }).catch((err) => {
       console.warn(`[backupManifestSpool] Could not remove ${dir}; the next worker start sweeps it:`, err);
@@ -117,8 +125,12 @@ export async function cleanStaleManifestSpools(baseDirs?: readonly string[]): Pr
       let names: string[];
       try {
         names = await readdir(base);
-      } catch {
-        return; // Never created, or unreadable: nothing this sweep can do.
+      } catch (err) {
+        // Never created is normal. Anything else hides spools this sweep cannot remove.
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          console.warn(`[backupManifestSpool] Could not read ${base} to sweep it:`, err);
+        }
+        return;
       }
       await Promise.all(
         names

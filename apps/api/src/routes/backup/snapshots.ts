@@ -58,7 +58,8 @@ const snapshotBrowseQuerySchema = z.object({
 
 // #11026: `cursor` carries a stored path (up to 32k on Windows), base64url.
 const snapshotSearchQuerySchema = z.object({
-  q: z.string().min(SEARCH_QUERY_MIN_LENGTH).max(SEARCH_QUERY_MAX_LENGTH),
+  // Postgres cannot take a NUL as text: a 400, not a 500 from the query.
+  q: z.string().min(SEARCH_QUERY_MIN_LENGTH).max(SEARCH_QUERY_MAX_LENGTH).refine((q) => !q.includes('\0'), 'q must not contain a NUL'),
   limit: z.coerce.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT),
   cursor: z.string().max(65_536).optional(),
 });

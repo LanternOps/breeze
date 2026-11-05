@@ -8,7 +8,7 @@ import './setup';
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
   backupConfigs,
   backupJobs,
@@ -26,6 +26,8 @@ import {
   searchSnapshotFiles,
   SELECTION_PAGE_SIZE,
 } from '../../services/backupSnapshotBrowse';
+
+import { orgContext } from './backupWriteFixtures';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -129,6 +131,35 @@ describe('searchSnapshotFiles', () => {
       expect((await search(snap.id, 'caf\u0065\u0301')).entries.map((e) => e.name)).toEqual(['caf\u0065\u0301.txt']);
       expect((await search(snap.id, '\uFFFD')).entries.map((e) => e.name)).toEqual(['replacement-\uFFFD-char.txt']);
     });
+  });
+
+  runDb('finds a stored Windows path whichever separator the person types', async () => {
+    await withSystemDbAccessContext(async () => {
+      const snap = await seedSnapshot(paths);
+      const report = ['C:/Users/alex/Documents/Quarterly Report.pdf'];
+      // The browser shows forward slashes, so that is what gets typed.
+      expect((await search(snap.id, 'alex/documents/quarterly')).entries.map((e) => e.path)).toEqual(report);
+      expect((await search(snap.id, 'alex\\documents\\quarterly')).entries.map((e) => e.path)).toEqual(report);
+      // POSIX paths still match as stored.
+      expect((await search(snap.id, 'zoë/日本語')).entries.map((e) => e.name)).toEqual(['ファイル.txt']);
+    });
+  });
+
+  runDb("never reads another org's snapshot, by search or selection", async () => {
+    // Each in its own transaction: one may not take a second partner's lock.
+    const snap = await withSystemDbAccessContext(() => seedSnapshot(paths));
+    const { orgId: otherOrgId } = await withSystemDbAccessContext(() => seedSnapshot(['C:\\other\\file.txt']));
+    const asOrg = <T,>(orgId: string, fn: () => Promise<T>) =>
+      runOutsideDbContext(() => withDbAccessContext(orgContext(orgId), fn));
+
+    // The control: the same calls see the rows from inside the owning org.
+    expect((await asOrg(snap.orgId, () => search(snap.id, 'quarterly'))).entries).toHaveLength(1);
+    expect(await asOrg(snap.orgId, () => resolveSelectedSnapshotPathsInDb(snap.id, ['C:/Users/alex/Reports/notes.txt'])))
+      .toEqual({ ok: true, paths: ['C:\\Users\\alex\\Reports\\notes.txt'] });
+
+    expect((await asOrg(otherOrgId, () => search(snap.id, 'quarterly'))).entries).toEqual([]);
+    expect(await asOrg(otherOrgId, () => resolveSelectedSnapshotPathsInDb(snap.id, ['C:/Users/alex/Reports/notes.txt'])))
+      .toEqual({ ok: false, reason: 'no_readable_index' });
   });
 
   runDb('pages through matches, returning each once', async () => {

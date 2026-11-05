@@ -294,7 +294,8 @@ export function encodeSearchCursor(sourcePath: string): string {
 export function decodeSearchCursor(cursor: string): string | null {
   if (!/^[A-Za-z0-9_-]+$/.test(cursor)) return null;
   const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
-  return decoded.length > 0 ? decoded : null;
+  // Postgres cannot take a NUL as text, so it could never be a stored path.
+  return decoded.length > 0 && !decoded.includes('\0') ? decoded : null;
 }
 
 function lastSegment(sourcePath: string): string {
@@ -328,7 +329,9 @@ export async function searchSnapshotFiles(params: {
       .where(and(
         eq(backupSnapshotFiles.snapshotDbId, snapshotDbId),
         snapshotIndexIsReadable(snapshotDbId),
-        sql`position(lower(${query}::text) in lower(${backupSnapshotFiles.sourcePath})) > 0`,
+        // Compared as the browser shows paths (forward slashes), so a Windows path
+        // is found whichever separator was typed. chr(92) is a backslash.
+        sql`position(lower(${normalizeSnapshotPath(query)}::text) in lower(replace(${backupSnapshotFiles.sourcePath}, chr(92), '/'))) > 0`,
         afterSourcePath(after),
       ))
       .orderBy(asc(backupSnapshotFiles.sourcePath))
