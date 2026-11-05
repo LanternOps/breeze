@@ -35,6 +35,16 @@ import {
   SecurityAgentsLinkWriteError,
 } from '../../services/securityAgents/securityAgentsLinkWrite';
 import {
+  checkOemUpdatesLinkWrite,
+  OemUpdatesLinkWriteError,
+} from '../../services/oemUpdates/oemUpdatesLinkWrite';
+import {
+  checkOemUpdatesArmAllowed,
+  mayArmOemUpdates,
+  oemUpdatesPreviousForWrite,
+  overrideDeleteArmsOemUpdates,
+} from './oemUpdatesGate';
+import {
   getConfigPolicy,
   getRetiredFeatureLink,
   addFeatureLink,
@@ -282,6 +292,22 @@ featureLinkRoutes.post(
       return c.json({ error: 'containment is inline-only; featurePolicyId must not be set' }, 400);
     }
 
+    // #11070: arming (against the link in effect: the parent's, for a new
+    // override), NULL featurePolicyId, strict settings and closed category
+    // gates, in that order — see oemUpdatesLinkWrite.ts.
+    let oemUpdatesArmAuthorized = false;
+    if (data.featureType === 'oem_updates') {
+      oemUpdatesArmAuthorized = mayArmOemUpdates(auth, c.get('permissions') as UserPermissions | undefined);
+      const check = checkOemUpdatesLinkWrite({
+        featurePolicyId: data.featurePolicyId ?? null,
+        previous: oemUpdatesPreviousForWrite(policy),
+        next: data.inlineSettings ?? null,
+        armAuthorized: oemUpdatesArmAuthorized,
+      });
+      if (!check.ok) return c.json(check.refusal.body, check.refusal.status);
+      data.inlineSettings = check.inlineSettings;
+    }
+
     // Validate the referenced feature policy exists (only when a policy ID is provided)
     if (data.featurePolicyId) {
       // Most referenced feature policies are org-scoped and can't be linked to
@@ -520,6 +546,16 @@ featureLinkRoutes.post(
             undefined,
             { securityAgentsArmAuthorized },
           )
+        : data.featureType === 'oem_updates'
+        ? await addFeatureLink(
+            id,
+            data.featureType,
+            data.featurePolicyId,
+            data.inlineSettings,
+            { userId: auth.user.id },
+            undefined,
+            { oemUpdatesArmAuthorized },
+          )
         : await addFeatureLink(
             id,
             data.featureType,
@@ -535,6 +571,9 @@ featureLinkRoutes.post(
         return c.json({ error: error.message, code: WARRANTY_CONSENT_REFUSAL.code }, 400);
       }
       if (error instanceof SecurityAgentsLinkWriteError) {
+        return c.json(error.body, error.status);
+      }
+      if (error instanceof OemUpdatesLinkWriteError) {
         return c.json(error.body, error.status);
       }
       if (error instanceof BackupDestinationNotInOrgError) {
@@ -645,6 +684,21 @@ featureLinkRoutes.patch(
         featurePolicyId: data.featurePolicyId,
         inlineSettings: data.inlineSettings,
         armAuthorized: securityAgentsArmAuthorized,
+      });
+      if (!check.ok) return c.json(check.refusal.body, check.refusal.status);
+      if (data.inlineSettings !== undefined) data.inlineSettings = check.inlineSettings;
+    }
+
+    // #11070: same checks as POST, compared with the stored link.
+    const oemUpdatesWrite = existingLink.featureType === 'oem_updates';
+    let oemUpdatesArmAuthorized = false;
+    if (oemUpdatesWrite) {
+      oemUpdatesArmAuthorized = mayArmOemUpdates(auth, c.get('permissions') as UserPermissions | undefined);
+      const check = checkOemUpdatesLinkWrite({
+        featurePolicyId: data.featurePolicyId,
+        previous: existingLink.inlineSettings ?? null,
+        next: data.inlineSettings,
+        armAuthorized: oemUpdatesArmAuthorized,
       });
       if (!check.ok) return c.json(check.refusal.body, check.refusal.status);
       if (data.inlineSettings !== undefined) data.inlineSettings = check.inlineSettings;
@@ -852,6 +906,10 @@ featureLinkRoutes.patch(
         ? await updateFeatureLink(linkId, data, id, { userId: auth.user.id }, undefined, {
             securityAgentsArmAuthorized,
           })
+        : oemUpdatesWrite
+        ? await updateFeatureLink(linkId, data, id, { userId: auth.user.id }, undefined, {
+            oemUpdatesArmAuthorized,
+          })
         : await updateFeatureLink(linkId, data, id, { userId: auth.user.id });
     } catch (error) {
       if (error instanceof AutomationReferenceAuthorizationError) {
@@ -861,6 +919,9 @@ featureLinkRoutes.patch(
         return c.json({ error: error.message, code: WARRANTY_CONSENT_REFUSAL.code }, 400);
       }
       if (error instanceof SecurityAgentsLinkWriteError) {
+        return c.json(error.body, error.status);
+      }
+      if (error instanceof OemUpdatesLinkWriteError) {
         return c.json(error.body, error.status);
       }
       if (error instanceof BackupDestinationNotInOrgError) {
@@ -922,6 +983,14 @@ featureLinkRoutes.delete(
       && (parentUnresolved || warrantyLinkEnablesCollection(policy.parentPolicy?.featureLinks));
     if (revertStartsHpCmslCollection) {
       const gate = checkHpCmslWriteAllowed(auth, c.get('permissions') as UserPermissions | undefined);
+      if (!gate.allowed) return c.json(gate.body, 403);
+    }
+
+    // #11070: deleting an override reverts the policy to its parent's vendor
+    // updates link. When that revert arms beyond the override, it is arming
+    // through a second door. Fails CLOSED on an unresolved parent.
+    if (existingLink.featureType === 'oem_updates' && overrideDeleteArmsOemUpdates(policy)) {
+      const gate = checkOemUpdatesArmAllowed(auth, c.get('permissions') as UserPermissions | undefined);
       if (!gate.allowed) return c.json(gate.body, 403);
     }
 
