@@ -1,0 +1,11 @@
+{
+  "dell": {
+    "publishers": ["Dell Inc", "Microsoft Corporation"],
+    "hosts": [
+      "dl.dell.com",
+      "downloads.dell.com",
+      "builds.dotnet.microsoft.com",
+      "download.visualstudio.microsoft.com"
+    ]
+  }
+}
