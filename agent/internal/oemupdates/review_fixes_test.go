@@ -281,6 +281,21 @@ func TestBadErrorCodeIsReplaced(t *testing.T) {
 	}
 }
 
+// An early refusal carries the request's lane; one the contract rejects must
+// still come out of Run as a valid result.
+func TestEarlyRefusalWithAnUnknownLaneIsStillValid(t *testing.T) {
+	f := newRunFixture(t)
+	f.req.Lane = "acme"
+	f.deps.Store = nil
+	r := f.run()
+	if err := r.Validate(); err != nil {
+		t.Fatalf("Run returned %+v, which the contract rejects: %v", r, err)
+	}
+	if r.Outcome != OutcomeFailed || r.Lane != LaneDell {
+		t.Fatalf("result = %+v", r)
+	}
+}
+
 func TestRunWithoutRequiredSeamsFails(t *testing.T) {
 	for name, mutate := range map[string]func(*Deps){
 		"no store":    func(d *Deps) { d.Store = nil },
