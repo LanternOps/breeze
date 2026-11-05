@@ -5,6 +5,7 @@ import { psaTicketingJobDataSchema } from '../../jobs/queueSchemas';
 import { createInstrumentedQueue } from '../bullmqQueue';
 export const PSA_TICKETING_QUEUE = 'psa-ticketing';
 export type PsaTicketingJob = z.infer<typeof psaTicketingJobDataSchema>;
+const DEFERRED_WAKE_TIMEOUT_MS = 2_000;
 let queue: Queue<PsaTicketingJob> | null = null;
 export function ticketingQueue() {
   return (queue ??= createInstrumentedQueue<PsaTicketingJob>(PSA_TICKETING_QUEUE));
@@ -25,10 +26,36 @@ function enqueueWake(mappingId: string, op: PsaTicketingJob['op'], at: Date) {
   );
 }
 /**
+ * Nobody awaits a deferred wake, and the BullMQ connection's offline queue makes
+ * add() hang rather than reject while Redis is down. Time-box it so that outage
+ * still leaves a log line. The reconciler repairs the lost wake.
+ */
+async function deferredWake(mappingId: string, op: PsaTicketingJob['op'], at: Date) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      enqueueWake(mappingId, op, at),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`wake timed out after ${DEFERRED_WAKE_TIMEOUT_MS} ms`)),
+          DEFERRED_WAKE_TIMEOUT_MS
+        );
+        timer.unref?.();
+      }),
+    ]);
+  } catch (error) {
+    console.warn('[psa-ticketing] deferred wake failed; the reconciler will pick it up', {
+      mappingId, op, message: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+/**
  * The single enqueue path. Inside a held DB context the enqueue is deferred
  * until that context's transaction settles, so a Redis round trip never pins
  * its pooled connection (#1105, #10933) and a worker never reads the row before
- * the commit that made it due (#10926). The failure is then logged, not thrown.
+ * the commit that made it due (#10926). A deferred failure is logged, not thrown.
  * Deferred on exit, not commit: admission and connection resume commit on their
  * own connection and wake from inside a request context, so a request rollback
  * must not lose their wake. The worker derives its operation from committed
@@ -43,7 +70,7 @@ export async function wakeMapping(
   at = new Date()
 ) {
   if (hasDbAccessContext()) {
-    runAfterDbContextExit(`psa-ticketing.wake:${mappingId}`, () => enqueueWake(mappingId, op, at));
+    runAfterDbContextExit(`psa-ticketing.wake:${mappingId}`, () => deferredWake(mappingId, op, at));
     return;
   }
   await enqueueWake(mappingId, op, at);

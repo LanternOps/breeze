@@ -108,8 +108,8 @@ describe('wakeMapping inside a held DB context (#10933)', () => {
     expect(add).toHaveBeenCalledTimes(1);
   });
 
-  // Admission and the connection-resume sweep commit independently of the
-  // request, so a request rollback must not lose their wake. The worker derives
+  // Admission and resumeTicketingConnection commit on their own connection, so a
+  // request rollback must not lose their wake. The worker derives
   // its operation from committed state, so a wake after a rollback is a no-op.
   it('still enqueues when the request transaction rolls back', async () => {
     const { db, wakeMapping } = await load();
@@ -123,7 +123,7 @@ describe('wakeMapping inside a held DB context (#10933)', () => {
     expect(add).toHaveBeenCalledTimes(1);
   });
 
-  it('logs a deferred enqueue failure instead of throwing into the request', async () => {
+  it('logs a deferred enqueue failure with the mapping instead of throwing into the request', async () => {
     const { db, wakeMapping } = await load();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     add.mockRejectedValue(new Error('redis offline'));
@@ -135,10 +135,29 @@ describe('wakeMapping inside a held DB context (#10933)', () => {
     await settle();
     expect(add).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('psa-ticketing.wake'),
-      expect.objectContaining({ error: 'redis offline' }),
+      expect.stringContaining('[psa-ticketing] deferred wake failed'),
+      expect.objectContaining({ mappingId: 'mapping', op: 'create', message: 'redis offline' }),
     );
   });
+
+  // BullMQ's offline queue makes add() hang rather than reject while Redis is
+  // down, and nothing logs a promise that never settles.
+  it('reports a deferred enqueue that never settles', async () => {
+    const { db, wakeMapping } = await load();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    add.mockReturnValue(new Promise(() => {}));
+
+    await db.withSystemDbAccessContext(async () => {
+      await wakeMapping('mapping', 'create');
+    });
+
+    await vi.waitFor(() => {
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('[psa-ticketing] deferred wake failed'),
+        expect.objectContaining({ mappingId: 'mapping', message: expect.stringContaining('timed out') }),
+      );
+    }, { timeout: 5_000 });
+  }, 10_000);
 
   // Worker callers run with no context: a failed enqueue must still reject so
   // the job fails and BullMQ's retry/observability see it.

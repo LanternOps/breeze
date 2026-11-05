@@ -1,10 +1,11 @@
 /**
  * #10933: each route that wakes the PSA ticketing worker must reach BullMQ only
- * after the request's DB transaction has settled. The routes, admission, the
- * wake helpers, the instrumented queue and the #1105 tripwire (strict, so a
- * violation throws) are all real; only the postgres driver, the BullMQ Queue
- * class, auth and audit are faked. A `withSystemDbAccessContext` middleware
- * stands in for the transaction authMiddleware opens around a request.
+ * after the request's DB transaction has settled. Real: the routes, the admission
+ * flow, the wake helpers, the instrumented queue and the #1105 tripwire (strict,
+ * so a violation throws). Faked: the postgres driver, the BullMQ Queue class,
+ * Redis, auth, rate limiting, audit, the alert-access helper and admission's own
+ * load and insert. A `withSystemDbAccessContext` middleware stands in for the
+ * transaction authMiddleware opens around a request.
  *
  * A worker woken before the commit reads the row as it was before the re-arm,
  * finds nothing due and drops the wake (the #10926 shape). `events` records the
@@ -124,13 +125,16 @@ const CONNECTION = {
 };
 const PARTNER_BINDING = { serviceManagementMode: 'external', serviceManagementPsaConnectionId: CONNECTION_ID };
 
-function appUnderRequestTransaction() {
+function appUnderRequestTransaction(outcome: 'commit' | 'rollback') {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('auth' as never, AUTH as never);
     await withSystemDbAccessContext(async () => {
       await next();
       h.events.push('handler-returned');
+      if (outcome === 'rollback') throw new Error('request transaction rolled back');
+    }).catch((error: unknown) => {
+      if (outcome !== 'rollback') throw error;
     });
   });
   app.route('/alerts', alertPsaTicketRoutes);
@@ -139,7 +143,7 @@ function appUnderRequestTransaction() {
   return app;
 }
 
-const post = (path: string, body?: unknown) => appUnderRequestTransaction().request(path, {
+const post = (path: string, body?: unknown, outcome: 'commit' | 'rollback' = 'commit') => appUnderRequestTransaction(outcome).request(path, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body ?? {}),
@@ -230,27 +234,33 @@ describe('PSA ticketing wakes enqueue after the request transaction (#10933)', (
     expect(h.events.indexOf('update')).toBeLessThan(h.events.lastIndexOf('commit'));
   });
 
-  // The re-arm rolled back, so there is nothing to announce.
+  // The re-arm rolled back, so there is nothing to announce. The status and the
+  // recorded update prove each route got as far as registering its wake.
   it('a re-drive whose request transaction rolls back enqueues nothing', async () => {
     h.selects.push([CONNECTION], [PARTNER_BINDING]);
     h.updates.push([{ id: MAPPING_ID }]);
-    const app = new Hono();
-    app.use('*', async (c, next) => {
-      c.set('auth' as never, AUTH as never);
-      await withSystemDbAccessContext(async () => {
-        await next();
-        throw new Error('commit failed');
-      }).catch(() => undefined);
-    });
-    app.route('/psa/connections', psaAlertTicketingRoutes);
 
-    await app.request(`/psa/connections/${CONNECTION_ID}/alert-ticketing/redrive`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ states: ['failed'] }),
-    });
+    const res = await post(`/psa/connections/${CONNECTION_ID}/alert-ticketing/redrive`, { states: ['failed'] }, 'rollback');
     await settle();
 
+    expect(res.status).toBe(200);
+    expect(h.events).toContain('update');
+    expect(h.add).not.toHaveBeenCalled();
+  });
+
+  it('a create-anyway whose request transaction rolls back enqueues nothing', async () => {
+    h.selects.push(
+      [{ id: MAPPING_ID, connectionId: CONNECTION_ID, createState: 'needs_attention', createSnapshot: {} }],
+      [CONNECTION],
+      [PARTNER_BINDING],
+    );
+    h.updates.push([{ id: MAPPING_ID, connectionId: CONNECTION_ID, createState: 'never_attempted' }]);
+
+    const res = await post(`/psa/ticket-mappings/${MAPPING_ID}/create-anyway`, undefined, 'rollback');
+    await settle();
+
+    expect(res.status).toBe(200);
+    expect(h.events).toContain('update');
     expect(h.add).not.toHaveBeenCalled();
   });
 });
