@@ -27,8 +27,8 @@ type Device = {
   health?: string;
   alerts?: number;
   alertCount?: number;
-  compliance?: number;
-  compliancePercent?: number;
+  compliance?: number | null;
+  compliancePercent?: number | null;
   lastSeen?: string | number | Date;
   customerId?: string;
   customerName?: string;
@@ -63,8 +63,8 @@ type Customer = {
     open?: number;
     count?: number;
   };
-  compliancePercent?: number;
-  compliance?: number;
+  compliancePercent?: number | null;
+  compliance?: number | null;
   /** @deprecated wave 7 (#3779) — the API keeps sending a hardcoded 0 for one
    *  release so an already-loaded bundle can't break mid-deploy. NEVER read it. */
   mrr?: number;
@@ -86,7 +86,7 @@ type CustomerOverview = {
   healthLabel: HealthLabel;
   deviceCount: number;
   alertCount: number;
-  compliance: number;
+  compliance: number | null;
   /** Per-currency, first-seen order — the shape `sumByCurrency` produces and
    *  `formatMoney` consumes. An empty list means "no MRR", rendered as a dash;
    *  it is NEVER rendered as zero in some assumed currency. */
@@ -101,7 +101,7 @@ type DeviceOverview = {
   name: string;
   status: DeviceStatus;
   alerts: number;
-  compliance: number;
+  compliance: number | null;
   lastSeen: string;
   customerName: string;
 };
@@ -153,6 +153,16 @@ function normalizePercent(value: unknown): number {
   if (numeric === null) return 0;
   if (numeric <= 1) return numeric * 100;
   return numeric;
+}
+
+/** Like `normalizePercent`, but "no data" stays null so the UI can render a dash
+ *  instead of a confident 0% (the API sends null when no posture snapshot exists). */
+function normalizeNullablePercent(value: unknown): number | null {
+  return parseNumber(value) === null ? null : normalizePercent(value);
+}
+
+function renderPercent(value: number | null): string {
+  return value === null ? '—' : `${formatLocaleNumber(value, { maximumFractionDigits: 0 })}%`;
 }
 
 function normalizeCustomerId(customer: Customer, fallback: string): string {
@@ -219,8 +229,8 @@ function resolveAlertCount(customer: Customer): number {
   );
 }
 
-function resolveCompliance(customer: Customer): number {
-  return normalizePercent(customer.compliancePercent ?? customer.compliance);
+function resolveCompliance(customer: Customer): number | null {
+  return normalizeNullablePercent(customer.compliancePercent ?? customer.compliance);
 }
 
 /** Read the per-currency MRR groups off either payload shape. The deprecated
@@ -296,7 +306,7 @@ function normalizeDeviceData(customers: CustomerOverview[], fallbackDeviceName: 
       const id = device.id ?? `${customer.id}-device-${index}`;
       const name = device.name?.trim() || fallbackDeviceName(index + 1);
       const alerts = parseNumber(device.alertCount ?? device.alerts) ?? 0;
-      const compliance = normalizePercent(device.compliancePercent ?? device.compliance);
+      const compliance = normalizeNullablePercent(device.compliancePercent ?? device.compliance);
 
       return {
         id: String(id),
@@ -566,7 +576,7 @@ export default function PartnerDashboard() {
                           <span className="text-muted-foreground">{t('longTail.partner.PartnerDashboard.compliance')}</span>
                         </div>
                         <p className="mt-2 text-sm font-semibold">
-                          {formatLocaleNumber(customer.compliance, { maximumFractionDigits: 0 })}%
+                          {renderPercent(customer.compliance)}
                         </p>
                       </div>
                     </div>
@@ -753,7 +763,7 @@ export default function PartnerDashboard() {
                       {formatNumber(device.alerts)}
                     </td>
                     <td className="px-4 py-3 text-right text-foreground">
-                      {formatLocaleNumber(device.compliance, { maximumFractionDigits: 0 })}%
+                      {renderPercent(device.compliance)}
                     </td>
                     <td className="px-4 py-3 text-right text-muted-foreground">
                       {device.lastSeen}
