@@ -4983,7 +4983,7 @@
       "notSupported": "Das Tool des Herstellers unterstützt dieses Modell nicht, daher fragt Breeze nicht mehr an, bis sich die Tool-Version oder das Modell ändert.",
       "toolUnavailable": "Das Update-Tool des Herstellers ist nicht installiert und konnte nicht abgerufen werden. Prüfen Sie, ob das Gerät die Download-Seite des Herstellers erreichen kann.",
       "blockedOnBattery": "BIOS und Firmware laufen nur am Netzteil mit ausreichendem Akkustand. Schließen Sie das Gerät an und führen Sie die Herstellerupdates dann erneut aus.",
-      "blockedRebootPending": "Auf dem Gerät steht bereits ein Neustart aus. Starten Sie es neu und führen Sie die Herstellerupdates dann erneut aus.",
+      "blockedRebootPending": "Auf dem Gerät steht bereits ein Neustart aus. Führen Sie die Herstellerupdates erneut aus, sobald es neu gestartet wurde.",
       "blockedNoRecoveryKey": "BIOS und Firmware bleiben blockiert, bis Breeze den aktuellen BitLocker-Wiederherstellungsschlüssel dieses Geräts besitzt. Sichern Sie den Schlüssel in Breeze und führen Sie die Herstellerupdates dann erneut aus.",
       "retryLater": "Das Tool des Herstellers hat darum gebeten, es später erneut zu versuchen. Breeze hat nichts auf dem Gerät geändert.",
       "interrupted": "Der Lauf wurde vor dem Abschluss gestoppt, meist weil das Gerät neu gestartet wurde oder der Agent angehalten wurde. Führen Sie die Herstellerupdates erneut aus."

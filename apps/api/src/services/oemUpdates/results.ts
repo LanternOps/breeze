@@ -245,10 +245,20 @@ export async function applyOemUpdateResult(input: {
         .set(outcomeFields(parsed, status, command.payload, device.hardwareModel ?? null, now))
         .where(and(eq(deviceOemUpdateStatus.deviceId, deviceId), eq(deviceOemUpdateStatus.lastCommandId, commandId)));
 
-      // The tech agreed to restart a device in the org that asked. A device moved
-      // mid-run keeps its pending clock instead, for its new owner to act on.
-      if (parsed?.rebootRequired && techChoseRebootWhenFinished(command.payload) && command.submittedOrgId === device.orgId) {
-        runAfterDbContextCommit('oemUpdates.rebootWhenFinished', () => scheduleRebootWhenFinished(deviceId, device.orgId));
+      if (parsed?.rebootRequired && techChoseRebootWhenFinished(command.payload)) {
+        // The tech agreed to restart a device in the org that asked. A device moved
+        // mid-run keeps its pending clock instead, for its new owner to act on, and
+        // that owner's history does not show the run, so the skip is logged here.
+        if (command.submittedOrgId === device.orgId) {
+          runAfterDbContextCommit('oemUpdates.rebootWhenFinished', () => scheduleRebootWhenFinished(deviceId, device.orgId));
+        } else {
+          console.warn('[oemUpdates/results] no reboot: the device moved org during the run, or the run has no org stamp', {
+            commandId,
+            deviceId,
+            submittedOrgId: command.submittedOrgId,
+            orgId: device.orgId,
+          });
+        }
       }
 
       return parsed !== null && disarmsMonitor(parsed, status, command.payload);

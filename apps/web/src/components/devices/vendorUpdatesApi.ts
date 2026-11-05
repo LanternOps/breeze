@@ -1,4 +1,4 @@
-import type { OemCategory, OemLane, OemOutcome } from '@breeze/shared';
+import type { OemCategory, OemLane, OemOutcome, OemUpdateRunResult } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 
 /** GET /devices/:id/oem-updates/status (apps/api/src/routes/devices/oemUpdates.ts). */
@@ -34,12 +34,7 @@ export type OemStatusView = {
   gates: Record<OemCategory, 'open' | 'closed'>;
 };
 
-export type OemRunItem = {
-  title: string;
-  category: OemCategory;
-  version: string;
-  result: 'installed' | 'failed' | 'skipped';
-};
+export type OemRunItem = OemUpdateRunResult['items'][number];
 
 /** GET /devices/:id/oem-updates/history. */
 export type OemRunView = {
@@ -81,6 +76,13 @@ export async function readOemStatus(deviceId: string): Promise<OemStatusRead> {
   if (!response.ok) return { kind: 'error' };
   const body: unknown = await response.json().catch(() => null);
   return isStatusView(body) ? { kind: 'ok', view: body } : { kind: 'hidden' };
+}
+
+/** The action lives in the page header and the section on a tab: this is how the section hears. */
+export const OEM_RUN_QUEUED_EVENT = 'breeze:oem-update-run-queued';
+
+export function announceOemRunQueued(deviceId: string): void {
+  window.dispatchEvent(new CustomEvent(OEM_RUN_QUEUED_EVENT, { detail: { deviceId } }));
 }
 
 /** Product names, not translated (locales/TERMINOLOGY.md). */

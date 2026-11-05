@@ -4983,7 +4983,7 @@
       "notSupported": "Üreticinin aracı bu modeli desteklemiyor; bu yüzden Breeze, araç sürümü veya model değişene kadar sormayı bırakır.",
       "toolUnavailable": "Üreticinin güncelleme aracı kurulu değil ve indirilemedi. Cihazın üreticinin indirme sitesine ulaşabildiğini kontrol edin.",
       "blockedOnBattery": "BIOS ve donanım yazılımı yalnızca elektrik prizine takılıyken ve yeterli pil varken çalışır. Cihazı prize takın, ardından üretici güncellemelerini yeniden çalıştırın.",
-      "blockedRebootPending": "Cihazda zaten bekleyen bir yeniden başlatma var. Cihazı yeniden başlatın, ardından üretici güncellemelerini yeniden çalıştırın.",
+      "blockedRebootPending": "Cihazda zaten bekleyen bir yeniden başlatma var. Cihaz yeniden başladıktan sonra üretici güncellemelerini yeniden çalıştırın.",
       "blockedNoRecoveryKey": "Breeze bu cihazın güncel BitLocker kurtarma anahtarına sahip olana kadar BIOS ve donanım yazılımı engelli kalır. Anahtarı Breeze'e yedekleyin, ardından üretici güncellemelerini yeniden çalıştırın.",
       "retryLater": "Üreticinin aracı daha sonra yeniden denemeyi istedi. Breeze cihazda hiçbir şeyi değiştirmedi.",
       "interrupted": "Çalıştırma bitmeden durdu; genellikle cihaz yeniden başladığı veya ajan durduğu için. Üretici güncellemelerini yeniden çalıştırın."

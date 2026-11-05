@@ -4983,7 +4983,7 @@
       "notSupported": "The vendor's tool does not support this model, so Breeze stops asking until the tool version or the model changes.",
       "toolUnavailable": "The vendor's update tool is not installed and could not be fetched. Check that the device can reach the vendor's download site.",
       "blockedOnBattery": "BIOS and firmware only run on AC power with enough battery. Plug the device in, then run vendor updates again.",
-      "blockedRebootPending": "The device already has a restart waiting. Restart it, then run vendor updates again.",
+      "blockedRebootPending": "The device already has a restart waiting. Once it has restarted, run vendor updates again.",
       "blockedNoRecoveryKey": "BIOS and firmware stay blocked until Breeze holds this device's current BitLocker recovery key. Back up the key to Breeze, then run vendor updates again.",
       "retryLater": "The vendor's tool asked to try again later. Breeze did not change anything on the device.",
       "interrupted": "The run stopped before it finished, usually because the device restarted or the agent stopped. Run vendor updates again."

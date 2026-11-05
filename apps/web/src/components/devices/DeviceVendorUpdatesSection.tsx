@@ -6,6 +6,7 @@ import { OEM_CATEGORIES, type OemCategory, type OemLane, type OemOutcome } from 
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import {
+  OEM_RUN_QUEUED_EVENT,
   OEM_VENDOR_NAMES,
   readOemStatus,
   type OemDisplayState,
@@ -192,9 +193,14 @@ export default function DeviceVendorUpdatesSection({ deviceId }: { deviceId: str
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [historyFailed, setHistoryFailed] = useState(false);
-  const latestRead = useRef(0);
+  // Status and history answer independently: paging must not drop a refresh in flight.
+  const statusRead = useRef(0);
+  const historyRead = useRef(0);
+  const wantedOffset = useRef(0);
 
-  const loadHistory = useCallback(async (nextOffset: number, read: number) => {
+  const loadHistory = useCallback(async () => {
+    const read = ++historyRead.current;
+    const nextOffset = wantedOffset.current;
     let body: { runs?: unknown; total?: unknown } | null = null;
     try {
       const response = await fetchWithAuth(
@@ -204,7 +210,7 @@ export default function DeviceVendorUpdatesSection({ deviceId }: { deviceId: str
     } catch {
       body = null;
     }
-    if (read !== latestRead.current) return;
+    if (read !== historyRead.current) return;
     if (!body || !Array.isArray(body.runs)) {
       setHistoryFailed(true);
       return;
@@ -216,9 +222,9 @@ export default function DeviceVendorUpdatesSection({ deviceId }: { deviceId: str
   }, [deviceId]);
 
   const load = useCallback(async () => {
-    const read = ++latestRead.current;
+    const read = ++statusRead.current;
     const result = await readOemStatus(deviceId);
-    if (read !== latestRead.current) return;
+    if (read !== statusRead.current) return;
     if (result.kind === 'hidden') {
       setPhase('hidden');
       return;
@@ -231,8 +237,9 @@ export default function DeviceVendorUpdatesSection({ deviceId }: { deviceId: str
     setPhase('ready');
     // No run on record means no history to ask for.
     if (result.view.status) {
-      await loadHistory(0, read);
+      await loadHistory();
     } else {
+      historyRead.current += 1;
       setRuns([]);
       setTotal(0);
       setOffset(0);
@@ -241,16 +248,29 @@ export default function DeviceVendorUpdatesSection({ deviceId }: { deviceId: str
   }, [deviceId, loadHistory]);
 
   useEffect(() => {
+    wantedOffset.current = 0;
     setPhase('loading');
     void load();
     return () => {
       // A slower read for the previous device must not land on this one.
-      latestRead.current += 1;
+      statusRead.current += 1;
+      historyRead.current += 1;
     };
   }, [load]);
 
+  useEffect(() => {
+    const onRunQueued = (event: Event) => {
+      if ((event as CustomEvent<{ deviceId?: string }>).detail?.deviceId !== deviceId) return;
+      wantedOffset.current = 0;
+      void load();
+    };
+    window.addEventListener(OEM_RUN_QUEUED_EVENT, onRunQueued);
+    return () => window.removeEventListener(OEM_RUN_QUEUED_EVENT, onRunQueued);
+  }, [deviceId, load]);
+
   const goTo = (nextOffset: number) => {
-    void loadHistory(nextOffset, ++latestRead.current);
+    wantedOffset.current = nextOffset;
+    void loadHistory();
   };
 
   if (phase === 'hidden') return null;

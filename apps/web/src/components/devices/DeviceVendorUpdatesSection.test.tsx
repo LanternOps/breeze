@@ -7,6 +7,7 @@ const { fetchMock } = vi.hoisted(() => ({ fetchMock: vi.fn() }));
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: fetchMock }));
 
 import DeviceVendorUpdatesSection from './DeviceVendorUpdatesSection';
+import { announceOemRunQueued } from './vendorUpdatesApi';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 const CLOSED = { bios: 'closed', firmware: 'closed', driver: 'closed', application: 'closed' };
@@ -119,7 +120,7 @@ describe('DeviceVendorUpdatesSection', () => {
 
   it.each([
     ['blocked_on_battery', /AC power/i],
-    ['blocked_reboot_pending', /restart/i],
+    ['blocked_reboot_pending', /once it has restarted/i],
     ['tool_unavailable', /tool/i],
     ['not_supported', /model/i],
     ['interrupted', /stopped before/i],
@@ -261,6 +262,70 @@ describe('DeviceVendorUpdatesSection', () => {
     const root = await section();
     expect(within(root).getByTestId('vendor-updates-last-run')).toBeInTheDocument();
     expect(await within(root).findByTestId('vendor-updates-history-error')).toBeInTheDocument();
+  });
+
+  it("a late answer for the previous device never lands on this one", async () => {
+    const OTHER = '22222222-2222-4222-8222-222222222222';
+    let releaseFirst: (value: Response) => void = () => undefined;
+    fetchMock.mockImplementation((path: string) => {
+      if (path === `/devices/${DEVICE_ID}/oem-updates/status`) {
+        return new Promise<Response>((resolve) => { releaseFirst = resolve; });
+      }
+      return Promise.resolve(path.includes('/oem-updates/status')
+        ? ok(statusBody({ displayState: 'reboot_overdue' }))
+        : ok({ runs: [], total: 0 }));
+    });
+    const { rerender } = render(<DeviceVendorUpdatesSection deviceId={DEVICE_ID} />);
+    rerender(<DeviceVendorUpdatesSection deviceId={OTHER} />);
+    const root = await section();
+    expect(within(root).getByTestId('vendor-updates-state').getAttribute('data-state')).toBe('reboot_overdue');
+
+    releaseFirst(ok(statusBody({ displayState: 'up_to_date' })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(within(root).getByTestId('vendor-updates-state').getAttribute('data-state')).toBe('reboot_overdue');
+  });
+
+  it('paging while a refresh is in flight loses neither: the state lands and the page stays', async () => {
+    let releaseStatus: (value: Response) => void = () => undefined;
+    const history = async (path: string) => ok(path.includes('offset=5')
+      ? { runs: [run('run-6')], total: 6 }
+      : { runs: ['run-1', 'run-2', 'run-3', 'run-4', 'run-5'].map((id) => run(id)), total: 6 });
+    fetchMock.mockImplementation(async (path: string) =>
+      path.includes('/oem-updates/status') ? ok(statusBody()) : history(path));
+    render(<DeviceVendorUpdatesSection deviceId={DEVICE_ID} />);
+    const root = await section();
+    await within(root).findByTestId('vendor-updates-run-run-1');
+
+    fetchMock.mockImplementation((path: string) => path.includes('/oem-updates/status')
+      ? new Promise<Response>((resolve) => { releaseStatus = resolve; })
+      : history(path));
+    await userEvent.click(within(root).getByTestId('vendor-updates-refresh'));
+    await userEvent.click(within(root).getByTestId('vendor-updates-history-next'));
+    await within(root).findByTestId('vendor-updates-run-run-6');
+
+    releaseStatus(ok(statusBody({ displayState: 'reboot_overdue' })));
+    await waitFor(() =>
+      expect(within(root).getByTestId('vendor-updates-state').getAttribute('data-state')).toBe('reboot_overdue'));
+    expect(await within(root).findByTestId('vendor-updates-run-run-6')).toBeInTheDocument();
+  });
+
+  it('reads again when a run is queued for this device, and not for another', async () => {
+    answer(statusBody({ displayState: 'not_managed', status: null }));
+    render(<DeviceVendorUpdatesSection deviceId={DEVICE_ID} />);
+    const root = await section();
+    expect(within(root).getByTestId('vendor-updates-empty')).toBeInTheDocument();
+
+    answer(statusBody({ displayState: 'not_managed', status: lastRun({ lastOutcome: null }) }), { runs: [run('run-1', { outcome: null, items: [] })], total: 1 });
+    const statusReads = () => fetchMock.mock.calls.filter(([path]) => String(path).includes('/oem-updates/status')).length;
+    const before = statusReads();
+
+    announceOemRunQueued('33333333-3333-4333-8333-333333333333');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(statusReads()).toBe(before);
+
+    announceOemRunQueued(DEVICE_ID);
+    await within(root).findByTestId('vendor-updates-last-run');
+    expect(statusReads()).toBe(before + 1);
   });
 
   it('refresh reads the state again', async () => {

@@ -19,6 +19,7 @@ import {
   OEM_LANES,
   oemUpdateRunPayloadSchema,
   type OemCategory,
+  type OemDispatchRefusal,
   type OemLane,
 } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -59,24 +60,7 @@ export type OemDispatchInput = {
   actorUserId: string | null;
 };
 
-export type OemDispatchRefusal =
-  | 'flag_off'
-  | 'lane_closed'
-  | 'kill_switch'
-  | 'agent_too_old'
-  | 'not_applicable'
-  | 'not_supported'
-  | 'ephemeral'
-  | 'parked'
-  | 'offline'
-  | 'run_in_flight'
-  | 'no_open_categories'
-  /** Unknown id, or a device no longer in `expectedOrgId`. */
-  | 'device_not_found'
-  | 'decommissioned'
-  | 'trust_denied'
-  /** Queued, then terminalised by the socket push's own claim-time eligibility. */
-  | 'cancelled_at_claim';
+export type { OemDispatchRefusal };
 
 export type OemDispatchResult =
   | {

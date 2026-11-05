@@ -4983,7 +4983,7 @@
       "notSupported": "La herramienta del fabricante no admite este modelo, por lo que Breeze deja de consultar hasta que cambie la versión de la herramienta o el modelo.",
       "toolUnavailable": "La herramienta de actualización del fabricante no está instalada y no se pudo obtener. Verifique que el dispositivo pueda llegar al sitio de descargas del fabricante.",
       "blockedOnBattery": "El BIOS y el firmware solo se ejecutan con corriente alterna y batería suficiente. Conecte el dispositivo y luego ejecute de nuevo las actualizaciones del fabricante.",
-      "blockedRebootPending": "El dispositivo ya tiene un reinicio pendiente. Reinícielo y luego ejecute de nuevo las actualizaciones del fabricante.",
+      "blockedRebootPending": "El dispositivo ya tiene un reinicio pendiente. Cuando se haya reiniciado, ejecute de nuevo las actualizaciones del fabricante.",
       "blockedNoRecoveryKey": "El BIOS y el firmware siguen bloqueados hasta que Breeze tenga la clave de recuperación de BitLocker actual de este dispositivo. Respalde la clave en Breeze y luego ejecute de nuevo las actualizaciones del fabricante.",
       "retryLater": "La herramienta del fabricante pidió intentarlo más tarde. Breeze no cambió nada en el dispositivo.",
       "interrupted": "La ejecución se detuvo antes de finalizar, normalmente porque el dispositivo se reinició o el agente se detuvo. Ejecute de nuevo las actualizaciones del fabricante."

@@ -12,6 +12,25 @@ vi.mock('../shared/Toast', async () => {
 });
 
 import RunVendorUpdatesDialog from './RunVendorUpdatesDialog';
+import type { OemDispatchRefusal } from '@breeze/shared';
+
+// A new refusal in the API fails the typecheck here until it has its own copy. A 404
+// and a 403 are not answered inline, so those two are not the dialog's to word.
+const REFUSAL_REASONS: Record<Exclude<OemDispatchRefusal, 'device_not_found' | 'trust_denied'>, RegExp> = {
+  flag_off: /not turned on/i,
+  lane_closed: /not available yet/i,
+  kill_switch: /paused/i,
+  agent_too_old: /too old/i,
+  not_applicable: /do not apply/i,
+  not_supported: /does not support this model/i,
+  ephemeral: /Quick Support/,
+  parked: /Assign this device/,
+  offline: /not online/i,
+  run_in_flight: /already in progress/i,
+  no_open_categories: /reboot when finished/i,
+  decommissioned: /decommissioned/i,
+  cancelled_at_claim: /cancelled/i,
+};
 
 const DEVICE = { id: 'device-1', hostname: 'LAPTOP-07' };
 
@@ -102,20 +121,7 @@ describe('RunVendorUpdatesDialog', () => {
     expect(toastMock.mock.calls[0]![0].message).not.toMatch(/BIOS/);
   });
 
-  it.each([
-    ['flag_off', /not turned on/i],
-    ['lane_closed', /not available yet/i],
-    ['kill_switch', /paused/i],
-    ['not_applicable', /do not apply/i],
-    ['not_supported', /does not support this model/i],
-    ['ephemeral', /Quick Support/],
-    ['parked', /Assign this device/],
-    ['offline', /not online/i],
-    ['run_in_flight', /already in progress/i],
-    ['no_open_categories', /reboot when finished/i],
-    ['decommissioned', /decommissioned/i],
-    ['cancelled_at_claim', /cancelled/i],
-  ])('runAction used, 409 refusal shows its reason: %s', async (code, reason) => {
+  it.each(Object.entries(REFUSAL_REASONS))('runAction used, 409 refusal shows its reason: %s', async (code, reason) => {
     fetchMock.mockResolvedValue(respond(409, { error: 'server prose', code }));
     const { onClose, onCompleted } = renderDialog();
     await userEvent.click(whenFinished());

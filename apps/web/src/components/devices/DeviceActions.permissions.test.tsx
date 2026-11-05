@@ -1,8 +1,9 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OEM_UPDATE_MIN_AGENT_VERSION } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
+import { OEM_RUN_QUEUED_EVENT } from './vendorUpdatesApi';
 
 const h = vi.hoisted(() => ({ granted: new Set<string>() }));
 vi.mock('../../lib/permissions', () => ({
@@ -196,6 +197,101 @@ describe('DeviceActions — Run vendor updates (#11065)', () => {
     await openMore();
     const action = await screen.findByTestId('device-action-run-vendor-updates');
     expect(action.getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it("a late answer for the previous device does not offer the action on this one", async () => {
+    h.granted.add('devices:execute');
+    let releaseFirst: (value: Response) => void = () => undefined;
+    vi.mocked(fetchWithAuth).mockImplementation((path: string) => {
+      if (path === '/devices/device-1/oem-updates/status') {
+        return new Promise<Response>((resolve) => { releaseFirst = resolve; });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => statusBody(null) } as Response);
+    });
+    const { rerender } = render(<DeviceActions device={dell} compact />);
+    rerender(<DeviceActions device={{ ...dell, id: 'device-2' }} compact />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/devices/device-2/oem-updates/status'));
+
+    releaseFirst({ ok: true, status: 200, json: async () => statusBody('dell') } as Response);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await userEvent.click(screen.getByTestId('device-actions-menu'));
+    expect(item()).toBeNull();
+  });
+
+  it('a device change closes an open dialog: it was for the other device', async () => {
+    h.granted.add('devices:execute');
+    const { rerender } = render(<DeviceActions device={dell} compact />);
+    await openMore();
+    await userEvent.click(await screen.findByTestId('device-action-run-vendor-updates'));
+    expect(await screen.findByTestId('run-vendor-updates-dialog')).toBeInTheDocument();
+    rerender(<DeviceActions device={{ ...dell, id: 'device-2', hostname: 'edge-02' }} compact />);
+    // Still closed once the new device's lane has come back.
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/devices/device-2/oem-updates/status'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByTestId('run-vendor-updates-dialog')).toBeNull();
+  });
+
+  it('a queued run is announced, so the section on the Patches tab reads again', async () => {
+    h.granted.add('devices:execute');
+    const heard: string[] = [];
+    const listener = (event: Event) => heard.push((event as CustomEvent<{ deviceId: string }>).detail.deviceId);
+    window.addEventListener(OEM_RUN_QUEUED_EVENT, listener);
+    render(<DeviceActions device={dell} compact />);
+    await openMore();
+    await userEvent.click(await screen.findByTestId('device-action-run-vendor-updates'));
+    vi.mocked(fetchWithAuth).mockResolvedValue({
+      ok: true,
+      status: 202,
+      json: async () => ({ commandId: 'c-1', categories: ['driver'], skippedCategories: [] }),
+    } as Response);
+    await userEvent.click(screen.getByTestId('run-vendor-updates-reboot-when-finished'));
+    await userEvent.click(screen.getByTestId('run-vendor-updates-confirm'));
+    await waitFor(() => expect(heard).toEqual(['device-1']));
+    window.removeEventListener(OEM_RUN_QUEUED_EVENT, listener);
+  });
+
+  describe('at phone width', () => {
+    const originalMatchMedia = window.matchMedia;
+    beforeEach(() => {
+      window.matchMedia = ((query: string) => ({
+        matches: query.includes('max-width'),
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      })) as unknown as typeof window.matchMedia;
+      h.granted.add('devices:execute');
+    });
+    afterEach(() => {
+      window.matchMedia = originalMatchMedia;
+    });
+    const openSheet = async () => {
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/devices/device-1/oem-updates/status'));
+      await userEvent.click(screen.getByTestId('device-actions-sheet-trigger'));
+    };
+
+    it('opens the dialog from the sheet', async () => {
+      render(<DeviceActions device={dell} />);
+      await openSheet();
+      await userEvent.click(await screen.findByTestId('device-action-run-vendor-updates'));
+      expect(await screen.findByTestId('run-vendor-updates-dialog')).toBeInTheDocument();
+    });
+
+    it('not in the sheet with no lane', async () => {
+      answerStatus(null);
+      render(<DeviceActions device={dell} />);
+      await openSheet();
+      expect(item()).toBeNull();
+    });
+
+    it('disabled in the sheet with the upgrade hint below minimum agent', async () => {
+      render(<DeviceActions device={{ ...dell, agentVersion: '0.126.9' }} />);
+      await openSheet();
+      const action = await screen.findByTestId('device-action-run-vendor-updates');
+      expect(action.getAttribute('aria-disabled')).toBe('true');
+      expect(action).toHaveTextContent(OEM_UPDATE_MIN_AGENT_VERSION);
+      await userEvent.click(action);
+      expect(screen.queryByTestId('run-vendor-updates-dialog')).toBeNull();
+    });
   });
 
   it('disabled while offline, with the reason: a run only starts on a device online now', async () => {

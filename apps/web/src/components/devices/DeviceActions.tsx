@@ -30,7 +30,7 @@ import RemoveDeviceDialog from "./RemoveDeviceDialog";
 import { useIsolationMenu } from "./networkIsolation/useIsolationMenu";
 import ForceRebootDialog from "./ForceRebootDialog";
 import RunVendorUpdatesDialog from "./RunVendorUpdatesDialog";
-import { readOemStatus } from "./vendorUpdatesApi";
+import { announceOemRunQueued, readOemStatus } from "./vendorUpdatesApi";
 import { showToast } from "../shared/Toast";
 import {
   agentSupportsForceReboot,
@@ -480,10 +480,14 @@ export default function DeviceActions({
 
   useEffect(() => {
     setVendorLane(null);
+    setVendorUpdatesOpen(false);
     if (!asksForVendorLane) return;
     let current = true;
     void readOemStatus(device.id).then((read) => {
-      if (current && read.kind === "ok") setVendorLane(read.view.lane);
+      if (!current) return;
+      if (read.kind === "ok") setVendorLane(read.view.lane);
+      // Hidden is the safe answer, and the section on the Patches tab offers a retry.
+      else if (read.kind === "error") console.warn(`[DeviceActions] could not read vendor update status for ${device.id}`);
     });
     return () => {
       current = false;
@@ -629,7 +633,7 @@ export default function DeviceActions({
       device={{ id: device.id, hostname: device.hostname }}
       lane={vendorLane}
       onClose={() => setVendorUpdatesOpen(false)}
-      onCompleted={() => undefined}
+      onCompleted={() => announceOemRunQueued(device.id)}
     />
   );
 

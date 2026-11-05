@@ -439,15 +439,21 @@ export async function executeReboot(
     expectedOrgId?: string;
     /** Echoed back on the heartbeat as `rebootStatus.source`. Defaults to `patch_job`. */
     source?: 'patch_job' | 'oem_updates';
-    /**
-     * Commit the row on its own short transaction, then push it. For a caller with
-     * no DB context held, where a push from inside a transaction could reach an
-     * agent before the row is visible (#7103). Needs `expectedOrgId`, because the
-     * device lookup runs in system scope.
-     */
-    commitBeforeDelivery?: boolean;
-  } = {}
+  } & (
+    | { commitBeforeDelivery?: false }
+    | {
+        /**
+         * Commit the row on its own short transaction, then push it. For a caller with
+         * no DB context held, where a push from inside a transaction could reach an
+         * agent before the row is visible (#7103). Needs `expectedOrgId`, because the
+         * device lookup runs in system scope.
+         */
+        commitBeforeDelivery: true;
+        expectedOrgId: string;
+      }
+  ) = {}
 ): Promise<RebootResult> {
+  // The type requires it. A tenancy boundary is still worth checking at runtime.
   if (options.commitBeforeDelivery && !options.expectedOrgId) {
     return { success: false, error: 'commitBeforeDelivery requires expectedOrgId' };
   }
@@ -480,7 +486,7 @@ export async function executeReboot(
   };
   const result = options.commitBeforeDelivery
     ? await queueCommandForExecutionWithSystemPrecheck(deviceId, 'schedule_reboot', payload, {
-        expectedOrgId: options.expectedOrgId!,
+        expectedOrgId: options.expectedOrgId,
       })
     : await queueCommandForExecution(deviceId, 'schedule_reboot', payload, {
         expectedOrgId: options.expectedOrgId,

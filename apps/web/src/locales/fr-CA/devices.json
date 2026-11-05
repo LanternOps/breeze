@@ -4983,7 +4983,7 @@
       "notSupported": "L’outil du constructeur ne prend pas en charge ce modèle, donc Breeze cesse de le solliciter jusqu’à ce que la version de l’outil ou le modèle change.",
       "toolUnavailable": "L’outil de mise à jour du constructeur n’est pas installé et n’a pas pu être récupéré. Vérifiez que l’appareil peut accéder au site de téléchargement du constructeur.",
       "blockedOnBattery": "Le BIOS et le micrologiciel ne s’exécutent que sur secteur avec une batterie suffisante. Branchez l’appareil, puis exécutez de nouveau les mises à jour du constructeur.",
-      "blockedRebootPending": "L’appareil a déjà un redémarrage en attente. Redémarrez-le, puis exécutez de nouveau les mises à jour du constructeur.",
+      "blockedRebootPending": "L’appareil a déjà un redémarrage en attente. Une fois l’appareil redémarré, exécutez de nouveau les mises à jour du constructeur.",
       "blockedNoRecoveryKey": "Le BIOS et le micrologiciel restent bloqués tant que Breeze ne détient pas la clé de récupération BitLocker actuelle de cet appareil. Sauvegardez la clé dans Breeze, puis exécutez de nouveau les mises à jour du constructeur.",
       "retryLater": "L’outil du constructeur a demandé de réessayer plus tard. Breeze n’a rien modifié sur l’appareil.",
       "interrupted": "L’exécution s’est arrêtée avant la fin, généralement parce que l’appareil a redémarré ou que l’agent s’est arrêté. Exécutez de nouveau les mises à jour du constructeur."

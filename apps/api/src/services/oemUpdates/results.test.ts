@@ -464,6 +464,28 @@ describe('reboot when finished (#11065 W04)', () => {
     await Promise.all(state.afterCommit);
   });
 
+  it('a result whose transaction never commits queues no reboot', async () => {
+    whenFinished();
+    // Rollback: the deferred work is dropped, never run.
+    vi.mocked(runAfterDbContextCommit).mockImplementationOnce(() => undefined);
+    await apply(needsReboot());
+    await Promise.all(state.afterCommit);
+    expect(executeReboot).not.toHaveBeenCalled();
+  });
+
+  it('Dell exit 5 is a reboot the tech agreed to: blocked, and rebootRequired set', async () => {
+    whenFinished();
+    await applied(goodResult({ outcome: 'blocked_reboot_pending', rebootRequired: true, items: [] }));
+    expect(executeReboot).toHaveBeenCalledTimes(1);
+  });
+
+  it('flash_guard_busy is not: a section or a power action is already going, so nothing reboots over it', async () => {
+    whenFinished();
+    await applied(goodResult({ outcome: 'blocked_reboot_pending', rebootRequired: false, errorCode: 'flash_guard_busy', items: [] }));
+    expect(executeReboot).not.toHaveBeenCalled();
+    expect(state.updates[0]!.rebootPendingSince).toBeInstanceOf(Date);
+  });
+
   it('leave_to_me queues no reboot, and the clock still shows it is owed', async () => {
     whenFinished({ payload: { categories: ['driver'], trigger: 'on_demand', rebootControlled: false } });
     await applied(needsReboot());
@@ -498,16 +520,31 @@ describe('reboot when finished (#11065 W04)', () => {
   });
 
   it('a device moved mid-run gets no reboot: the consent was given under another org', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     whenFinished({ submittedOrgId: '99999999-9999-4999-8999-999999999999' });
     await applied(needsReboot());
     expect(executeReboot).not.toHaveBeenCalled();
     expect(state.updates[0]!.rebootPendingSince).toBeInstanceOf(Date);
+    // The new owner sees a pending reboot with no run of theirs behind it, so the skip leaves a trace.
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('moved'),
+      expect.objectContaining({ commandId: COMMAND_ID, deviceId: DEVICE_ID, submittedOrgId: '99999999-9999-4999-8999-999999999999', orgId: ORG_ID }),
+    );
+    warn.mockRestore();
   });
 
   it('a row with no stamp gets no reboot', async () => {
     whenFinished({ submittedOrgId: null });
     await applied(needsReboot());
     expect(executeReboot).not.toHaveBeenCalled();
+  });
+
+  it('leave_to_me is a choice, not something to warn about', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    whenFinished({ payload: { categories: ['driver'], trigger: 'on_demand', rebootControlled: false } });
+    await applied(needsReboot());
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('a superseded run queues no reboot', async () => {

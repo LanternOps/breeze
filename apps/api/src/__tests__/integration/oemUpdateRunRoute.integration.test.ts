@@ -19,13 +19,14 @@
  */
 import './setup';
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { withDbAccessContext } from '../../db';
 import { auditLogs, deviceCommands, deviceHardware, devices } from '../../db/schema';
 import { authMiddleware } from '../../middleware/auth';
+import { agentRoutes } from '../../routes/agents';
 import { deviceRoutes } from '../../routes/devices';
 import { commandResultHandlers } from '../../services/commandResultHandlers';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
@@ -270,6 +271,39 @@ describe('#11065 POST /devices/:id/oem-updates/run', () => {
         delayMinutes: 15,
         allowDeferral: false,
       });
+    });
+
+    it('over the real result route: one reboot after the commit, and a replayed result queues no second one', async () => {
+      const deviceId = await labDevice();
+      const { commandId } = await (await post(deviceId, { reboot: 'when_finished' })).json();
+
+      const agentToken = `brz_${randomUUID().replaceAll('-', '')}`;
+      const [device] = await getTestDb().update(devices)
+        .set({ agentTokenHash: createHash('sha256').update(agentToken).digest('hex') })
+        .where(eq(devices.id, deviceId))
+        .returning({ agentId: devices.agentId });
+      await getTestDb().update(deviceCommands).set({ status: 'sent' }).where(eq(deviceCommands.id, commandId));
+
+      const agentApp = new Hono();
+      agentApp.route('/api/v1/agents', agentRoutes);
+      const report = () => agentApp.request(`/api/v1/agents/${device!.agentId}/commands/${commandId}/result`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${agentToken}` },
+        body: JSON.stringify({ status: 'completed', exitCode: 0, stdout: JSON.stringify(needsReboot) }),
+      });
+
+      expect((await report()).status).toBe(200);
+      const reboot = await waitForReboot(deviceId);
+      expect(reboot?.payload).toMatchObject({ source: 'oem_updates' });
+
+      expect((await report()).status).toBe(200);
+      await new Promise((r) => setTimeout(r, 200));
+      expect(await rows(deviceId, 'schedule_reboot')).toHaveLength(1);
+
+      const [run] = await rows(deviceId, 'oem_update_run');
+      expect(run).toMatchObject({ status: 'completed' });
+      const history = await (await get(deviceId, 'history')).json();
+      expect(history.runs[0]).toMatchObject({ commandId, outcome: 'success_reboot_required', rebootRequired: true });
     });
 
     it('leave_to_me queues no reboot, and the device shows it is waiting for one', async () => {

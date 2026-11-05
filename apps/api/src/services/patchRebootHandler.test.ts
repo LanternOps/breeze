@@ -224,7 +224,7 @@ describe('executeReboot', () => {
       deferral: DEFERRAL_OFF,
       promptText: {},
       commitBeforeDelivery: true,
-    });
+    } as never);
     expect(res.success).toBe(false);
     expect(queueCommandForExecutionWithSystemPrecheck).not.toHaveBeenCalled();
     expect(queueCommandForExecution).not.toHaveBeenCalled();

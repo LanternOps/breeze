@@ -4983,7 +4983,7 @@
       "notSupported": "Lo strumento del produttore non supporta questo modello, quindi Breeze smette di richiederlo finché non cambiano la versione dello strumento o il modello.",
       "toolUnavailable": "Lo strumento di aggiornamento del produttore non è installato e non è stato possibile scaricarlo. Verifica che il dispositivo raggiunga il sito di download del produttore.",
       "blockedOnBattery": "BIOS e firmware vengono eseguiti solo con alimentazione di rete e batteria sufficiente. Collega il dispositivo all'alimentazione, poi esegui di nuovo gli aggiornamenti del produttore.",
-      "blockedRebootPending": "Il dispositivo ha già un riavvio in sospeso. Riavvialo, poi esegui di nuovo gli aggiornamenti del produttore.",
+      "blockedRebootPending": "Il dispositivo ha già un riavvio in sospeso. Dopo il riavvio, esegui di nuovo gli aggiornamenti del produttore.",
       "blockedNoRecoveryKey": "BIOS e firmware restano bloccati finché Breeze non possiede la chiave di ripristino BitLocker attuale di questo dispositivo. Salva la chiave in Breeze, poi esegui di nuovo gli aggiornamenti del produttore.",
       "retryLater": "Lo strumento del produttore ha chiesto di riprovare più tardi. Breeze non ha modificato nulla sul dispositivo.",
       "interrupted": "L'esecuzione si è fermata prima di terminare, di solito perché il dispositivo si è riavviato o l'agente si è fermato. Esegui di nuovo gli aggiornamenti del produttore."
