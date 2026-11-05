@@ -1368,6 +1368,51 @@ test('anchor: an earlier anchor file is never left to be uploaded', () => {
   assert.equal(r.written(), null);
 });
 
+// ── C2: the workflow and the script agree ────────────────────────────────
+
+const GATE_YML_PATH = join(REPO_ROOT, '.github/workflows/ci-gate.yml');
+const gateYml = () => readFileSync(GATE_YML_PATH, 'utf8');
+const gateStep = name => gateYml().split(/^      - (?=name: )/m).find(step => step.startsWith(`name: ${name}\n`)) ?? assert.fail(`no ${name} step`);
+
+test('ci-gate.yml: every env name verify and anchor read is set by its step, from event data', () => {
+  const verifyStep = gateStep('Judge the queue entry');
+  for (const [name, value] of Object.entries({ BASE_SHA: 'merge_group.base_sha', HEAD_SHA: 'merge_group.head_sha', HEAD_REF: 'merge_group.head_ref' })) {
+    assert.match(verifyStep, new RegExp(`^          ${name}: \\$\\{\\{ github\\.event\\.${value.replace('.', '\\.')} \\}\\}$`, 'm'), name);
+  }
+  const anchorStep = gateStep('Record the PR anchor');
+  assert.match(anchorStep, /^          PR_HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \}\}$/m);
+  assert.match(anchorStep, /^          PR_NUMBER: \$\{\{ github\.event\.pull_request\.number \}\}$/m);
+  // The rest are the runner's own variables, which a step cannot be denied.
+  const source = readFileSync(join(REPO_ROOT, '.github/scripts/ci-gate.mjs'), 'utf8');
+  const read = new Set([...source.matchAll(/env\.([A-Z_]+)/g)].map(match => match[1]));
+  const set = new Set([...gateYml().matchAll(/^          ([A-Z_]+): /gm)].map(match => match[1]));
+  for (const name of read) assert.ok(set.has(name) || name === 'PATH' || name.startsWith('GITHUB_'), `${name} is read but never set`);
+  assert.ok(read.has('BASE_SHA') && read.has('PR_HEAD_SHA'), 'the scan must see the event names');
+});
+
+test('ci-gate.yml: uploads exactly the file anchor writes, per attempt, for 7 days, never failing when absent', () => {
+  const upload = gateStep('Upload the PR anchor');
+  assert.match(upload, new RegExp(`^          path: ${gate.ANCHOR_FILE.replace('.', '\\.')}$`, 'm'));
+  assert.match(upload, /^          name: ci-gate-anchor-attempt-\$\{\{ github\.run_attempt \}\}$/m);
+  assert.match(upload, /^          retention-days: 7$/m);
+  assert.match(upload, /^          if-no-files-found: ignore$/m);
+});
+
+test('ci-gate.yml: pinned actions match the ones ci.yml uses', () => {
+  for (const action of ['actions/checkout', 'actions/setup-node', 'actions/upload-artifact']) {
+    const pin = gateYml().match(new RegExp(`uses: (${action}@[a-f\\d]{40}) # v\\d+`))?.[1];
+    assert.ok(pin, action);
+    assert.ok(realCi.includes(pin), `${pin} is not the pin ci.yml uses`);
+  }
+  assert.match(gateStep('Setup Node.js'), new RegExp(`node-version: '${realCi.match(/node-version: '(22\.[\d.]+)'/)[1].replace(/\./g, '\\.')}'`));
+});
+
+test('ci-gate.yml is a policy path, so a change to it never thins its own queue run', async () => {
+  const { POLICY_FILES, isPolicyPath } = await import('./ci-policy.mjs');
+  assert.ok(POLICY_FILES.includes('.github/workflows/ci-gate.yml'));
+  assert.ok(isPolicyPath('.github/workflows/ci-gate.yml'));
+});
+
 test('runCLI: verify and anchor are subcommands, and an unknown one is still a usage error', () => {
   const io = verifyIo({ git: args => { if (args[0] === 'merge-base') throw Error('no'); return ''; } });
   assert.equal(gate.runCLI(io, ['verify'], verifyEnv()), 1);
