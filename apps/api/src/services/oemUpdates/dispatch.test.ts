@@ -31,7 +31,7 @@ vi.mock('../../db', () => {
   return {
     db: {
       select: vi.fn((shape: Record<string, unknown>) => {
-        if ('partnerId' in shape) {
+        if ('partnerId' in shape || 'orgType' in shape) {
           selects = 0;
           return table(() => (state.device ? [state.device] : []), 'device');
         }
@@ -74,7 +74,8 @@ vi.mock('./toolManifest', async (importOriginal) => {
 });
 
 import { dispatchDeviceCommand } from '../dispatchDeviceCommand';
-import { dispatchOemUpdateRun, type OemDispatchInput } from './dispatch';
+import { dispatchOemUpdateRelease, dispatchOemUpdateRun, type OemDispatchInput } from './dispatch';
+import { defaultOfflinePolicy } from '../commandOfflinePolicy';
 import { getLaneManifest, isLaneOpen, openCategoriesForLane } from './toolManifest';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
@@ -430,5 +431,79 @@ describe('dispatchOemUpdateRun: the not-returned monitor', () => {
     await dispatchOemUpdateRun(input({ occurrenceKey: null }));
     expect(state.upsertSet).not.toHaveProperty('occurrenceKey');
     expect(state.upsertSet).not.toHaveProperty('lastOutcome');
+  });
+});
+
+describe('dispatchOemUpdateRelease', () => {
+  const release = (overrides: Partial<Parameters<typeof dispatchOemUpdateRelease>[0]> = {}) =>
+    dispatchOemUpdateRelease({ deviceId: DEVICE_ID, expectedOrgId: ORG_ID, lane: 'dell', actorUserId: USER_ID, ...overrides });
+
+  async function expectReleaseRefusal(refusal: string, overrides = {}): Promise<void> {
+    await expect(release(overrides)).resolves.toEqual({ ok: false, refusal });
+    expect(dispatchDeviceCommand).not.toHaveBeenCalled();
+  }
+
+  it('queues while the device is offline', async () => {
+    state.device = { ...eligibleDevice(), status: 'offline' };
+    await expect(release()).resolves.toEqual({ ok: true, commandId: COMMAND_ID });
+    const call = vi.mocked(dispatchDeviceCommand).mock.calls[0]![0];
+    expect(call.type).toBe('oem_update_release');
+    expect(call.payload).toEqual({ lane: 'dell' });
+    expect(call.expectedOrgId).toBe(ORG_ID);
+    // No override: the registry's own class decides, and it queues.
+    expect(call.offlinePolicy).toBeUndefined();
+    expect(defaultOfflinePolicy('oem_update_release').kind).toBe('queue');
+  });
+
+  it('agent below the release minimum is never sent one', async () => {
+    for (const agentVersion of ['0.126.0', null, 'garbage', '']) {
+      state.device = { ...eligibleDevice(), agentVersion };
+      await expectReleaseRefusal('agent_too_old');
+    }
+  });
+
+  it('does not check the feature flag, manifest gates or kill switches', async () => {
+    vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', 'false');
+    vi.stubEnv('BREEZE_OEM_UPDATES_DISABLED_LANES', 'dell');
+    vi.mocked(isLaneOpen).mockReturnValue(false);
+    await expect(release()).resolves.toEqual({ ok: true, commandId: COMMAND_ID });
+    vi.stubEnv('BREEZE_OEM_UPDATES_DISABLED_LANES', '');
+  });
+
+  it('a device in another org is device_not_found', async () => {
+    await expectReleaseRefusal('device_not_found', { expectedOrgId: OTHER_ORG_ID });
+  });
+
+  it('an unknown device is device_not_found', async () => {
+    state.device = null;
+    await expectReleaseRefusal('device_not_found');
+  });
+
+  it('refuses decommissioned, ephemeral and parked devices', async () => {
+    state.device = { ...eligibleDevice(), status: 'decommissioned' };
+    await expectReleaseRefusal('decommissioned');
+    state.device = { ...eligibleDevice(), isEphemeral: true };
+    await expectReleaseRefusal('ephemeral');
+    state.device = { ...eligibleDevice(), orgType: 'unassigned_pool' };
+    await expectReleaseRefusal('parked');
+  });
+
+  it('an existing pending or sent release is release_in_flight, after the per-device lock', async () => {
+    state.inFlight = [{ id: COMMAND_ID }];
+    state.order = [];
+    await expectReleaseRefusal('release_in_flight');
+    expect(state.order).toContain('lock');
+    expect(state.order.indexOf('lock')).toBeLessThan(state.order.indexOf('inFlight'));
+  });
+
+  it('does not write the status row (takeover state belongs to the scheduler)', async () => {
+    await release();
+    expect(state.upserts).toEqual([]);
+  });
+
+  it('reports a release terminalised at claim', async () => {
+    const deliver = vi.fn().mockResolvedValue({ ok: true, delivery: 'cancelled' });
+    vi.mocked(dispatchDeviceCommand).mockResolvedValue(queued({ deliver }));
+    await expect(release()).resolves.toEqual({ ok: false, refusal: 'cancelled_at_claim' });
   });
 });

@@ -65,6 +65,9 @@ const (
 	// (Dell Command Update first). The API is its only sender, through one gated
 	// dispatch seam; the agent decides alone which tools and hosts it trusts.
 	CmdOemUpdateRun = "oem_update_run"
+	// CmdOemUpdateRelease (#11065 W06) hands a vendor tool's own update
+	// schedule back: the agent restores only what its takeover changed.
+	CmdOemUpdateRelease = "oem_update_release"
 	// On-demand re-run of all inventory collectors. Triggers the same set of
 	// send*Inventory submissions the heartbeat fires periodically, so the API
 	// sees fresh hardware/software/network/etc. without waiting for the next

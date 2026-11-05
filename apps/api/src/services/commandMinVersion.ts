@@ -21,6 +21,7 @@ import {
   agentSupportsEndpointMessageRetract,
   agentSupportsEndpointMessaging,
   OEM_UPDATE_MIN_AGENT_VERSION,
+  OEM_UPDATE_RELEASE_MIN_AGENT_VERSION,
 } from '@breeze/shared';
 
 export const COMMAND_MIN_AGENT_VERSION: Readonly<Record<string, string>> = Object.freeze({
@@ -31,6 +32,7 @@ export const COMMAND_MIN_AGENT_VERSION: Readonly<Record<string, string>> = Objec
   // Vendor updates (#11065): checked fail-closed by the dispatch seam
   // (services/oemUpdates/dispatch.ts, agentSupportsOemUpdates) before queueing.
   oem_update_run: OEM_UPDATE_MIN_AGENT_VERSION,
+  oem_update_release: OEM_UPDATE_RELEASE_MIN_AGENT_VERSION,
 });
 
 /** Fails closed: null, unparseable and older versions are all false. */
