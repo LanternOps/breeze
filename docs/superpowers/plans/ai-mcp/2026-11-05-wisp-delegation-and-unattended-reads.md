@@ -3,7 +3,7 @@ spec: docs/superpowers/specs/ai-mcp/2026-10-19-wisp-orchestrator-design.md
 issues: [LanternOps/breeze#10974, LanternOps/breeze#10973]
 waves: [W1, W2, W3]
 depends_on: []
-tracking_issue: TBD (register_feature after approval — titles proposed in the plan PR body)
+tracking_issue: LanternOps/breeze#11083 (W01 #11084, W02 #11085, W03 #11086)
 ---
 
 # Wisp Delegation (device troubleshooting specialist, thread post-back) and Unattended Reads: Implementation Plan
