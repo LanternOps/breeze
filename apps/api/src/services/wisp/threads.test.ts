@@ -364,12 +364,25 @@ describe('seedContextForSession', () => {
     it('a failed fact read is captured and the section still renders, without numbers', async () => {
       h.threads = [threadRow];
       h.captureException.mockClear();
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       h.loadStandingLoopFacts.mockRejectedValueOnce(new Error('db down'));
       const out = await seedContextForSession(THREAD, ceiling, null, { model: 'claude-sonnet-5-5' });
       expect(out).toContain('## Wisp standing loop');
       expect(out).toContain('You are Wisp, running on claude-sonnet-5-5.');
       expect(out).not.toMatch(/\d+ of \d+ orgs/);
-      expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ op: 'wisp.seed_standing_loop' }));
+      expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { grantId: GRANT, op: 'wisp.seed_standing_loop' });
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining(`standing-loop facts of grant ${GRANT} failed`), expect.any(Error));
+      logged.mockRestore();
+    });
+
+    it('a grant row gone between ceiling and seed renders the numberless section, no capture', async () => {
+      h.threads = [threadRow];
+      h.captureException.mockClear();
+      h.loadStandingLoopFacts.mockResolvedValueOnce(null);
+      const out = await seedContextForSession(THREAD, ceiling, null, { model: 'claude-sonnet-5-5' });
+      expect(out).toContain('(schedule unavailable now)');
+      expect(out).not.toMatch(/\d+ of \d+ orgs/);
+      expect(h.captureException).not.toHaveBeenCalled();
     });
   });
 

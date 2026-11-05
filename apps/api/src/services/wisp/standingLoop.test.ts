@@ -3,16 +3,22 @@
  * the loader is checked against a mocked db and the brief schedule helper.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const h = vi.hoisted(() => ({
   selects: [] as unknown[][],
+  /** Every select issued: its projection and WHERE, for rendering. */
+  issued: [] as Array<{ fields: Record<string, unknown>; where: unknown }>,
   briefScheduleFor: vi.fn(),
 }));
 
 vi.mock('../../db', () => {
-  const select = vi.fn(() => {
+  const select = vi.fn((fields: Record<string, unknown>) => {
+    const entry = { fields, where: undefined as unknown };
+    h.issued.push(entry);
     const chain: Record<string, unknown> = {};
-    for (const m of ['from', 'where', 'limit']) chain[m] = () => chain;
+    for (const m of ['from', 'limit']) chain[m] = () => chain;
+    chain.where = (w: unknown) => { entry.where = w; return chain; };
     chain.then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
       Promise.resolve(h.selects.shift() ?? []).then(res, rej);
     return chain;
@@ -23,6 +29,7 @@ vi.mock('./grantAuthority', () => ({ inSystemContext: (fn: () => Promise<unknown
 vi.mock('./brief', () => ({ briefScheduleFor: h.briefScheduleFor }));
 
 import type { GrantCeiling } from './grantAuthority';
+import { ONBOARDING_ORG_LIMIT } from './assessableOrgs';
 import {
   STANDING_LOOP_MAX_BYTES,
   STANDING_LOOP_TYPICAL_MAX_BYTES,
@@ -44,7 +51,7 @@ describe('renderStandingLoop', () => {
     const out = renderStandingLoop(facts, 'claude-sonnet-5-5');
     expect(out).toContain('## Wisp standing loop');
     expect(out).toContain('7 of 12 orgs assessed, 3 queued');
-    expect(out).toMatch(/past the first 10/);
+    expect(out).toContain(`orgs past the first ${ONBOARDING_ORG_LIMIT} come up on floor ticks`);
     expect(out).toContain('every 45 min');
     expect(out).toContain('last 2026-11-05 14:30 UTC');
     expect(out).toMatch(/alerts/i);
@@ -77,7 +84,7 @@ describe('renderStandingLoop', () => {
       brief: { timeLocal: null, timezone: 'UTC' },
     }, 'm');
     expect(quiet).toContain('4 of 4 orgs assessed');
-    expect(quiet).not.toMatch(/queued|past the first 10/);
+    expect(quiet).not.toMatch(/queued|past the first/);
     expect(quiet).toContain('no tick yet');
     expect(quiet).toMatch(/Morning brief: off/);
 
@@ -130,7 +137,47 @@ describe('loadStandingLoopFacts', () => {
 
   beforeEach(() => {
     h.selects = [];
+    h.issued = [];
     h.briefScheduleFor.mockReset();
+  });
+
+  const render = (q: unknown) => {
+    const out = new PgDialect().sqlToQuery(q as never);
+    return { text: out.sql.replace(/\s+/g, ' '), params: out.params };
+  };
+
+  it('the grant read is keyed by grant AND partner; the run count by grant, the assessment profile and the assessable orgs', async () => {
+    h.selects.push(
+      [{ status: 'active', floorTickMinutes: 30, lastFloorTickAt: null }],
+      [{ assessedOrgs: 0, inFlight: 0 }],
+    );
+    h.briefScheduleFor.mockResolvedValue({ timeLocal: null, timezone: 'UTC' });
+    await loadStandingLoopFacts(ceiling);
+    expect(h.issued).toHaveLength(2);
+
+    const grantWhere = render(h.issued[0]!.where);
+    expect(grantWhere.text).toMatch(/"wisp_grants"\."id" = \$1 and "wisp_grants"\."partner_id" = \$2/);
+    expect(grantWhere.params).toEqual([ceiling.grantId, ceiling.partnerId]);
+
+    const runsWhere = render(h.issued[1]!.where);
+    expect(runsWhere.text).toMatch(/"ai_agent_runs"\."grant_id" = \$1 and "ai_agent_runs"\."profile" = \$2 and "ai_agent_runs"\."org_id" in \(\$3, \$4, \$5\)/);
+    expect(runsWhere.params).toEqual([ceiling.grantId, 'assessment', 'o1', 'o2', 'o3']);
+
+    const assessed = render(h.issued[1]!.fields.assessedOrgs);
+    expect(assessed.text).toMatch(/count\(DISTINCT "ai_agent_runs"\."org_id"\) FILTER \(WHERE "ai_agent_runs"\."status" in \(\$1, \$2\)\)/);
+    expect(assessed.params).toEqual(['completed', 'awaiting_approval']);
+    const inFlight = render(h.issued[1]!.fields.inFlight);
+    expect(inFlight.text).toMatch(/count\(\*\) FILTER \(WHERE "ai_agent_runs"\."status" in \(\$1, \$2\)\)/);
+    expect(inFlight.params).toEqual(['queued', 'running']);
+  });
+
+  it('a ceiling with no wholly reached org skips the run count (no empty IN) and reports 0 of 0', async () => {
+    h.selects.push([{ status: 'active', floorTickMinutes: 30, lastFloorTickAt: null }]);
+    h.briefScheduleFor.mockResolvedValue({ timeLocal: null, timezone: 'UTC' });
+    const siteRestricted = { ...ceiling, siteIds: new Set(['s1']) } as unknown as GrantCeiling;
+    const out = await loadStandingLoopFacts(siteRestricted);
+    expect(h.issued).toHaveLength(1);
+    expect(out?.firstLook).toEqual({ assessedOrgs: 0, inFlight: 0, totalOrgs: 0 });
   });
 
   it('reads the cadence, the floor-tick cursor, the first-look counts and the grantor brief schedule', async () => {
