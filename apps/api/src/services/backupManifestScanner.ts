@@ -12,7 +12,16 @@
  */
 import { StringDecoder } from 'node:string_decoder';
 import { getManyValues, isMany, none } from 'stream-chain/core';
-import { jsonParser } from 'stream-json/parser.js';
+import * as streamJsonParser from 'stream-json/parser.js';
+
+// The bare tokenizer: stream-json's documented named export for embedding
+// (llms.txt, "Parser"), which its 3.7.0 typings leave out. It turns each string
+// into a synchronous batch of tokens, where `parser()` wraps it in a generator
+// pipeline that costs a promise per token. UTF-8 decoding is done here instead,
+// with StringDecoder.
+const jsonParser = (streamJsonParser as unknown as {
+  jsonParser: (options: { packValues: boolean; streamValues: boolean }) => (input: string | typeof none) => unknown;
+}).jsonParser;
 
 /**
  * Largest single `files[]` entry, counted in characters plus a small charge per

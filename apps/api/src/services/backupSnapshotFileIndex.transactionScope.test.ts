@@ -1,10 +1,27 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Readable } from 'node:stream';
+
+// Keep spool files out of the repo's apps/api/data: the default spool dir derives from PATCH_REPORT_STORAGE_PATH.
+let spoolTmp: string;
+const prevPatchReportPath = process.env.PATCH_REPORT_STORAGE_PATH;
+beforeEach(() => {
+  spoolTmp = mkdtempSync(join(tmpdir(), 'breeze-spool-test-'));
+  process.env.PATCH_REPORT_STORAGE_PATH = join(spoolTmp, 'patch-reports');
+});
+afterEach(() => {
+  if (prevPatchReportPath === undefined) delete process.env.PATCH_REPORT_STORAGE_PATH;
+  else process.env.PATCH_REPORT_STORAGE_PATH = prevPatchReportPath;
+  rmSync(spoolTmp, { recursive: true, force: true });
+});
 
 // Proves a structural property: the manifest
 // network fetch must not run while a DB access context (a held pooled
 // connection / transaction) is open. `withSystemDbAccessContext` is
 // instrumented to track nesting depth instead of being a bare pass-through,
-// so `fetchManifestBytes` can assert on the depth at the moment it's called.
+// so `openManifest` can assert on the depth at the moment it's called.
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -127,16 +144,16 @@ describe('hydrateSnapshotFileIndex manifest-fetch transaction scope', () => {
 
     let depthDuringFetch: number | null = null;
     const deps = {
-      fetchManifestBytes: vi.fn(async () => {
+      openManifest: vi.fn(async () => {
         depthDuringFetch = contextDepth.current;
-        return Buffer.from(JSON.stringify({ id: 'snap-current', files: [] }), 'utf8');
+        return Readable.from([Buffer.from(JSON.stringify({ id: 'snap-current', files: [] }), 'utf8')]);
       }),
     };
 
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
 
     expect(outcome.status).toBe('complete');
-    expect(deps.fetchManifestBytes).toHaveBeenCalledTimes(1);
+    expect(deps.openManifest).toHaveBeenCalledTimes(1);
     expect(depthDuringFetch).toBe(0);
   });
 
@@ -146,9 +163,9 @@ describe('hydrateSnapshotFileIndex manifest-fetch transaction scope', () => {
 
     const contextCallOrder: string[] = [];
     const deps = {
-      fetchManifestBytes: vi.fn(async () => {
+      openManifest: vi.fn(async () => {
         contextCallOrder.push('fetch');
-        return Buffer.from(JSON.stringify({ id: 'snap-current', files: [] }), 'utf8');
+        return Readable.from([Buffer.from(JSON.stringify({ id: 'snap-current', files: [] }), 'utf8')]);
       }),
     };
 

@@ -23,12 +23,14 @@
  */
 import './setup';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { db, runOutsideDbContext, withDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import { drizzleBrokeredReadStore } from '../../services/backupStorageSessionStore';
 import { deliverRecoveryCommandIntegrity, defaultRecoveryCommandIntegrityDeps } from '../../services/backupRecoveryCommandIntegrity';
-import { defaultVerifyDeps, verifySnapshotAttestation } from '../../services/backupAttestationVerify';
+import { verifySnapshotAttestation } from '../../services/backupAttestationVerify';
+import { verifyDepsFromBytes } from '../helpers/verifyDepsFromBytes';
 import { hydrateSnapshotFileIndex, readSnapshotFileIndexState } from '../../services/backupSnapshotFileIndex';
 import { resolveRestoreIntegrity } from '../../services/backupRestoreIntegrity';
 import { listSnapshotDirectory, readableSnapshotSourcePaths } from '../../services/backupSnapshotBrowse';
@@ -110,10 +112,15 @@ async function indexRow(snapshotDbId: string): Promise<{ status: string; digest:
 }
 
 const verify = (snapshotDbId: string, bytes: Uint8Array) =>
-  verifySnapshotAttestation(snapshotDbId, { ...defaultVerifyDeps, fetchObject: vi.fn(async () => bytes) });
+  verifySnapshotAttestation(snapshotDbId, verifyDepsFromBytes(vi.fn(async () => bytes)));
 
-const hydrate = (snapshotDbId: string, fetchManifestBytes: () => Promise<Uint8Array>, force = false) =>
-  runOutsideDbContext(() => hydrateSnapshotFileIndex(snapshotDbId, { includeUnreferenced: true, force, deps: { fetchManifestBytes } }));
+// Wraps a bytes-returning stub as the stream-returning openManifest seam.
+const hydrate = (snapshotDbId: string, fetchManifest: () => Promise<Uint8Array>, force = false) =>
+  runOutsideDbContext(() => hydrateSnapshotFileIndex(snapshotDbId, {
+    includeUnreferenced: true,
+    force,
+    deps: { openManifest: async () => Readable.from([Buffer.from(await fetchManifest())]) },
+  }));
 
 async function seedSnapshot(t: WriteTenant): Promise<{ snapshotId: string; snapshotDbId: string; manifest: Uint8Array }> {
   const snapshotId = newId();
@@ -234,10 +241,7 @@ describe('file index bound to the snapshot attestation', () => {
         // object does not: the verifier decides `mismatch` while hydration of
         // the manifest is still in flight.
         verification = runOutsideDbContext(() =>
-          verifySnapshotAttestation(snapshotDbId, {
-            ...defaultVerifyDeps,
-            fetchObject: vi.fn(async () => manifestFor(snapshotId, 'stored-bytes-differ')),
-          }));
+          verifySnapshotAttestation(snapshotDbId, verifyDepsFromBytes(vi.fn(async () => manifestFor(snapshotId, 'stored-bytes-differ')))));
         return manifest;
       }).catch(() => null);
       await verification;
