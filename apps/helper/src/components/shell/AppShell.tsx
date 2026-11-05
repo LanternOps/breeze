@@ -10,6 +10,7 @@ import { NotificationsTab, useNotificationList } from '../../prompt/Notification
 import { chromeString } from '../../prompt/chrome';
 import { usePromptIdentity } from '../../prompt/identity';
 import ChatView from './ChatView';
+import { productName, useT, useUiContext } from '../../i18n/uiContext';
 
 const isMacOS = navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Macintosh');
 
@@ -67,6 +68,7 @@ function SessionHistory({
     loadSessions();
   }, [loadSessions]);
 
+  const t = useT();
   const handleSelect = (session: SessionSummary) => {
     loadSession(session.id);
     onSelectSession();
@@ -77,21 +79,21 @@ function SessionHistory({
       {/* No drag region / traffic-light spacer: this bar lives inside the shell's
           main region, whose header above owns the traffic lights and dragging. */}
       <div className="helper-history-header">
-        <span className="helper-history-title">History</span>
+        <span className="helper-history-title">{t('history.title')}</span>
         <div className="helper-header-drag-spacer" />
         <button onClick={onClose} className="helper-btn helper-btn-sm">
-          Back
+          {t('shell.back')}
         </button>
       </div>
       <div className="helper-history-list">
         {sessionsLoading && (
           <div className="helper-history-loading">
             <span className="helper-spinner" />
-            <span>Loading...</span>
+            <span>{t('shell.loading')}</span>
           </div>
         )}
         {!sessionsLoading && sessions.length === 0 && (
-          <div className="helper-history-empty">No conversations yet</div>
+          <div className="helper-history-empty">{t('history.empty')}</div>
         )}
         {sessions.map((s) => (
           <button
@@ -187,6 +189,7 @@ function DeviceBadge({ ctx }: { ctx: DeviceContext }) {
  * says to use the web or mobile approval surface for those.
  */
 function ScriptProposalSummary({ proposal }: { proposal: PendingApprovalScriptProposal }) {
+  const t = useT();
   return (
     <div className="helper-proposal" data-testid="helper-proposal">
       <div className="helper-proposal-head">
@@ -206,7 +209,7 @@ function ScriptProposalSummary({ proposal }: { proposal: PendingApprovalScriptPr
       {proposal.strictHits.length > 0 && (
         <div className="helper-proposal-strict">
           <div className="helper-proposal-strict-note" data-testid="helper-proposal-strict-note">
-            Dangerous patterns must be acknowledged from the Breeze web or mobile approval — this window cannot acknowledge them.
+            {t('approval.strictNote')}
           </div>
           <ul>
             {proposal.strictHits.map((hit, i) => (
@@ -216,7 +219,7 @@ function ScriptProposalSummary({ proposal }: { proposal: PendingApprovalScriptPr
         </div>
       )}
       <details className="helper-approval-details" data-testid="helper-proposal-body">
-        <summary data-testid="helper-proposal-body-toggle">Show script</summary>
+        <summary data-testid="helper-proposal-body-toggle">{t('approval.showScript')}</summary>
         <pre className="helper-approval-input">{proposal.content}</pre>
       </details>
     </div>
@@ -232,6 +235,7 @@ export function ToolApprovalPopup({
   onApprove: () => void;
   onDeny: () => void;
 }) {
+  const t = useT();
   const [remainingMs, setRemainingMs] = useState(AUTO_DENY_MS);
 
   useEffect(() => {
@@ -261,7 +265,7 @@ export function ToolApprovalPopup({
       <div className="helper-approval-card">
         <div className="helper-approval-header">
           <span className="helper-approval-icon">&#9888;</span>
-          <span className="helper-approval-title">Approval Required</span>
+          <span className="helper-approval-title">{t('approval.title')}</span>
         </div>
         <div className="helper-approval-body">
           <div className="helper-approval-desc">{approval.description}</div>
@@ -273,7 +277,7 @@ export function ToolApprovalPopup({
             <ScriptProposalSummary proposal={approval.scriptProposal} />
           ) : hasVisibleInput && (
             <details className="helper-approval-details">
-              <summary>Show parameters</summary>
+              <summary>{t('approval.showParameters')}</summary>
               <pre className="helper-approval-input">
                 {JSON.stringify(visibleInput, null, 2)}
               </pre>
@@ -281,13 +285,13 @@ export function ToolApprovalPopup({
           )}
         </div>
         <div className="helper-approval-footer">
-          <span className="helper-approval-countdown">Auto-deny {countdown}</span>
+          <span className="helper-approval-countdown">{t('approval.autoDeny', { countdown })}</span>
           <div className="helper-approval-actions">
             <button onClick={onDeny} className="helper-btn helper-btn-deny">
-              Deny
+              {t('approval.deny')}
             </button>
             <button onClick={onApprove} className="helper-btn helper-btn-allow">
-              Allow
+              {t('approval.allow')}
             </button>
           </div>
         </div>
@@ -306,6 +310,7 @@ type DeviceInfo = {
 };
 
 function DeviceInfoView({ onClose }: { onClose: () => void }) {
+  const t = useT();
   const [device, setDevice] = useState<DeviceInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -338,7 +343,7 @@ function DeviceInfoView({ onClose }: { onClose: () => void }) {
           setError('Failed to load device info');
         }
       })
-      .catch((e: Error) => setError(e.message || 'Failed to load device info'))
+      .catch((e: Error) => setError(e.message || t('deviceInfo.loadFailed')))
       .finally(() => setLoading(false));
   }, [agentConfig]);
 
@@ -347,49 +352,49 @@ function DeviceInfoView({ onClose }: { onClose: () => void }) {
       {/* No drag region / traffic-light spacer: this bar lives inside the shell's
           main region, whose header above owns the traffic lights and dragging. */}
       <div className="helper-history-header">
-        <span className="helper-history-title">Device Info</span>
+        <span className="helper-history-title">{t('deviceInfo.title')}</span>
         <div className="helper-header-drag-spacer" />
-        <button onClick={onClose} className="helper-btn helper-btn-sm">Back</button>
+        <button onClick={onClose} className="helper-btn helper-btn-sm">{t('shell.back')}</button>
       </div>
       <div className="helper-messages" style={{ padding: '16px' }}>
         {loading && (
           <div className="helper-history-loading">
             <span className="helper-spinner" />
-            <span>Loading...</span>
+            <span>{t('shell.loading')}</span>
           </div>
         )}
         {error && <div className="helper-error-banner"><span>{error}</span></div>}
         {device && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ padding: '12px', border: '1px solid var(--helper-border, #e5e7eb)', borderRadius: '8px' }}>
-              <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>Hostname</div>
+              <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>{t('deviceInfo.hostname')}</div>
               <div style={{ fontSize: '15px', fontWeight: 600 }}>{device.hostname}</div>
             </div>
             <div style={{ padding: '12px', border: '1px solid var(--helper-border, #e5e7eb)', borderRadius: '8px' }}>
-              <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>Operating System</div>
+              <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>{t('deviceInfo.os')}</div>
               <div style={{ fontSize: '15px', fontWeight: 600 }}>{device.osType} {device.osVersion}</div>
             </div>
             <div style={{ padding: '12px', border: '1px solid var(--helper-border, #e5e7eb)', borderRadius: '8px' }}>
-              <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>Status</div>
+              <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>{t('deviceInfo.status')}</div>
               <div style={{ fontSize: '15px', fontWeight: 600, color: device.status === 'online' ? '#22c55e' : '#ef4444' }}>
                 {device.status}
               </div>
             </div>
             {device.lastSeenAt && (
               <div style={{ padding: '12px', border: '1px solid var(--helper-border, #e5e7eb)', borderRadius: '8px' }}>
-                <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>Last Check-in</div>
+                <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>{t('deviceInfo.lastCheckin')}</div>
                 <div style={{ fontSize: '15px', fontWeight: 600 }}>{formatDate(device.lastSeenAt)}</div>
               </div>
             )}
             {device.agentVersion && (
               <div style={{ padding: '12px', border: '1px solid var(--helper-border, #e5e7eb)', borderRadius: '8px' }}>
-                <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>Agent Version</div>
+                <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>{t('deviceInfo.agentVersion')}</div>
                 <div style={{ fontSize: '15px', fontWeight: 600 }}>{device.agentVersion}</div>
               </div>
             )}
             {helperVersion && (
               <div style={{ padding: '12px', border: '1px solid var(--helper-border, #e5e7eb)', borderRadius: '8px' }}>
-                <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>Helper Version</div>
+                <div style={{ fontSize: '13px', color: 'var(--helper-muted, #6b7280)' }}>{t('deviceInfo.helperVersion')}</div>
                 <div style={{ fontSize: '15px', fontWeight: 600 }}>{helperVersion}</div>
               </div>
             )}
@@ -417,6 +422,8 @@ export function parseRequestSupportHash(hash: string): { locale: string; session
 // `mainView`. Connection gates and the username prompt stay full-screen ABOVE
 // this in App; by the time the shell mounts we are always connected + named.
 export default function AppShell() {
+  const t = useT();
+  const uiContext = useUiContext();
   const {
     sessionId,
     error,
@@ -546,9 +553,9 @@ export default function AppShell() {
   const showNotifications =
     prompts.entries.length > 0 || prompts.messages.length > 0 || mainView === 'notifications';
   const navOptions = [
-    ...(workspaceAvailable === true ? [{ key: 'files', label: 'Files' }] : []),
-    { key: 'chat', label: 'Chat' },
-    { key: 'history', label: 'History' },
+    ...(workspaceAvailable === true ? [{ key: 'files', label: t('shell.nav.files') }] : []),
+    { key: 'chat', label: t('shell.nav.chat') },
+    { key: 'history', label: t('shell.nav.history') },
     ...(showNotifications ? [{ key: 'notifications', label: chromeString('chrome.notifications', promptLocale) }] : []),
   ];
 
@@ -568,7 +575,7 @@ export default function AppShell() {
         <div className="helper-header-left" data-tauri-drag-region>
           {isMacOS && <div className="helper-traffic-light-spacer" />}
           <span className="helper-status-dot helper-status-connected" />
-          <span className="helper-title">Breeze Helper</span>
+          <span className="helper-title">{productName(uiContext)}</span>
         </div>
         <div className="helper-shell-nav">
           <SegmentedControl
@@ -585,28 +592,28 @@ export default function AppShell() {
               className="helper-btn helper-btn-sm helper-chat-toggle"
               data-testid="chat-toggle"
               aria-pressed={panelOpen}
-              title={panelOpen ? 'Hide chat' : 'Show chat'}
+              title={panelOpen ? t('shell.chat.hide') : t('shell.chat.show')}
             >
-              Chat
+              {t('shell.nav.chat')}
             </button>
           )}
           {chatScoped && sessionId && (
             <button
               onClick={() => flagSession('User flagged from helper')}
               className={`helper-btn helper-btn-sm${isFlagged ? ' helper-btn-flagged' : ''}`}
-              title={isFlagged ? 'Conversation flagged' : 'Flag conversation for review'}
+              title={isFlagged ? t('shell.flaggedTitle') : t('shell.flagTitle')}
               disabled={isFlagged}
             >
-              {isFlagged ? 'Flagged' : 'Flag'}
+              {isFlagged ? t('shell.flagged') : t('shell.flag')}
             </button>
           )}
           {chatScoped && (
             <button
               onClick={clearMessages}
               className="helper-btn helper-btn-sm"
-              title="New conversation"
+              title={t('shell.newTitle')}
             >
-              New
+              {t('shell.new')}
             </button>
           )}
           {!isMacOS && (
@@ -614,14 +621,14 @@ export default function AppShell() {
               <button
                 onClick={() => invoke('minimize_window').catch(() => {})}
                 className="helper-btn-window"
-                title="Minimize"
+                title={t('shell.minimize')}
               >
                 &#8211;
               </button>
               <button
                 onClick={() => invoke('hide_window').catch(() => {})}
                 className="helper-btn-window helper-btn-window-close"
-                title="Close to tray"
+                title={t('shell.closeToTray')}
               >
                 &#10005;
               </button>
