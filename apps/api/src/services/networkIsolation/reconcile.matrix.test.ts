@@ -211,16 +211,25 @@ describe('containment policy permits on the heartbeat (#10100)', () => {
     const block = await buildContainmentHeartbeatBlock(tx, { ...device, networkIsolationVersion: level as number | null | undefined });
     expect(scopes(block)).not.toContain('any');
     expect(store.resolvePolicy).not.toHaveBeenCalled();
+    expect(block.networkIsolation).not.toHaveProperty('policyRevision');
   });
   it('level 3: appends the policy permits as scope any', async () => {
     const block = await buildContainmentHeartbeatBlock(tx, { ...device, networkIsolationVersion: 3 });
     expect(store.resolvePolicy).toHaveBeenCalledWith(device.id);
     expect(block.networkIsolation!.allow).toContainEqual(EDR_ENTRY);
+    expect(block.networkIsolation).toHaveProperty('policyRevision', 'c1:policy');
+  });
+  it('level 3 with an empty policy: sends no revision although the resolver has one', async () => {
+    store.resolvePolicy.mockResolvedValue({ extraAllow: [], revision: 'c1:defaults', refusedGroups: [] });
+    const block = await buildContainmentHeartbeatBlock(tx, { ...device, networkIsolationVersion: 3 });
+    expect(scopes(block)).not.toContain('any');
+    expect(block.networkIsolation).not.toHaveProperty('policyRevision');
   });
   it('a tombstone never reads the policy or carries a permit', async () => {
     store.row = row('released');
     const block = await buildContainmentHeartbeatBlock(tx, { ...device, networkIsolationVersion: 3 });
     expect(block.networkIsolation).toMatchObject({ desired: 'released', allow: [] });
+    expect(block.networkIsolation).not.toHaveProperty('policyRevision');
     expect(store.resolvePolicy).not.toHaveBeenCalled();
   });
 });

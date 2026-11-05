@@ -119,6 +119,34 @@ describe('containmentDesiredBlockSchema (heartbeat response)', () => {
     expect(containmentDesiredBlockSchema.safeParse({ networkIsolation: { ...block, allow: allow.slice(0, 64) } }).success).toBe(true);
   });
 
+  describe('policyRevision (#10100)', () => {
+    const permit = { kind: 'host', host: 'edr.example.test', proto: 'tcp', ports: [443], scope: 'any' };
+    const withPolicy = { ...block, allow: [...block.allow, permit], policyRevision: `c1:${'a'.repeat(32)}` };
+    const parse = (networkIsolation: unknown) => containmentDesiredBlockSchema.safeParse({ networkIsolation }).success;
+
+    it('travels with a scope:"any" entry', () => {
+      expect(parse(withPolicy)).toBe(true);
+      expect(parse({ ...withPolicy, policyRevision: `c1i:${'b'.repeat(32)}` })).toBe(true);
+      expect(parse({ ...withPolicy, policyRevision: 'x'.repeat(128) })).toBe(true);
+    });
+
+    it('rejects a revision the agent would refuse', () => {
+      for (const policyRevision of ['', 'has space', 'tab\there', 'x'.repeat(129), 'caf\u00e9', 7, null]) {
+        expect(parse({ ...withPolicy, policyRevision }), String(policyRevision)).toBe(false);
+      }
+    });
+
+    it('is present if and only if the list has a scope:"any" entry', () => {
+      expect(parse({ ...block, allow: [...block.allow, permit] })).toBe(false);
+      expect(parse({ ...block, policyRevision: withPolicy.policyRevision })).toBe(false);
+      expect(parse(block)).toBe(true);
+    });
+
+    it('a tombstone never carries one', () => {
+      expect(parse({ ...block, desired: 'released', allow: [], policyRevision: withPolicy.policyRevision })).toBe(false);
+    });
+  });
+
   it('requires the networkIsolation key: absent never means "no change"', () => {
     expect(containmentDesiredBlockSchema.safeParse({}).success).toBe(false);
   });

@@ -131,7 +131,7 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
     });
     if (!created.ok) return refuse(created.error);
     await queue(device, 'execute_containment', commandId, { incidentId, actionId, actionType: 'network_isolation', breakGlassSecret: secret,
-      parameters: { isolationId: id, generation: 1, expiresAt: expiresAt.toISOString(), deadManSeconds: 0, remoteRelay, allow } }, auth, expiresAt);
+      parameters: { isolationId: id, generation: 1, expiresAt: expiresAt.toISOString(), deadManSeconds: 0, remoteRelay, allow, ...(policy.revision ? { policyRevision: policy.revision } : {}) } }, auth, expiresAt);
     const prev = toEpisodeSnapshot(created.episode);
     const transition = applyEpisodeEvent(prev, { type: 'dispatched', generation: 1, at: now });
     if (!('next' in transition) || !await writeEpisodeSnapshot(tx, id, prev, transition.next, now)) return refuse('isolation_conflict');

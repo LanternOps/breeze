@@ -192,6 +192,7 @@ describe('startNetworkIsolation', () => {
       expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).not.toHaveProperty('error');
       expect(sent().allow.every((entry: { scope: string }) => entry.scope === 'breeze')).toBe(true);
       expect(h.resolvePolicy).not.toHaveBeenCalled();
+      expect(sent()).not.toHaveProperty('policyRevision');
     });
     it('level 3: appends the policy permits as scope any, without their label', async () => {
       h.device.networkIsolationVersion = 3;
@@ -200,6 +201,13 @@ describe('startNetworkIsolation', () => {
       expect(h.resolvePolicy).toHaveBeenCalledWith(deviceId);
       expect(sent().allow).toContainEqual({ kind: 'host', host: 'edr.example.test', proto: 'tcp', ports: [443], scope: 'any' });
       expect(h.row.allowSnapshot).toEqual(sent().allow);
+      expect(sent().policyRevision).toBe('c1:policy');
+    });
+    it('level 3 with an empty policy: sends no revision although the resolver has one', async () => {
+      h.device.networkIsolationVersion = 3;
+      expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).not.toHaveProperty('error');
+      expect(h.resolvePolicy).toHaveBeenCalledWith(deviceId);
+      expect(sent()).not.toHaveProperty('policyRevision');
     });
     it('an unreadable policy still isolates, on the fixed permits, and reports the fault', async () => {
       h.device.networkIsolationVersion = 3;
@@ -209,6 +217,7 @@ describe('startNetworkIsolation', () => {
         expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).not.toHaveProperty('error');
         expect(sent().allow.every((entry: { scope: string }) => entry.scope === 'breeze')).toBe(true);
         expect(error).toHaveBeenCalledWith('[isolation] policy unavailable', { deviceId });
+        expect(sent()).not.toHaveProperty('policyRevision');
       } finally { error.mockRestore(); }
     });
   });

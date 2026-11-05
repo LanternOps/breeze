@@ -71,6 +71,7 @@ export async function buildContainmentHeartbeatBlock(tx: EpisodeTx, device: Isol
   try {
     const policy = await readIsolationPolicy(device);
     block.networkIsolation.allow = buildIsolationAllowlist({ serverUrl: device.agentServerUrl ?? process.env.AGENT_SERVER_URL ?? '', remoteRelay: row.remoteRelay, policyExtras: policy.extras });
+    if (policy.revision) block.networkIsolation.policyRevision = policy.revision;
   } catch (err) {
     throttled(`allow:${row.id}`, () => {
       const source = err instanceof IsolationAllowlistError ? 'configuration' : 'builder';
