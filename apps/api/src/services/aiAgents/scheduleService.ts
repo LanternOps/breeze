@@ -43,7 +43,7 @@ import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 import { aiAgentSchedules, aiAgents, organizations, partners, type AiAgentRow, type AiAgentScheduleRow } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
-import { effectiveSchedule } from './scheduleMerge';
+import { effectiveSchedule, scheduleWriteWidens } from './scheduleMerge';
 
 // Re-exported so every existing importer (`aiAgentSweepScheduler.ts`, the
 // tests) keeps its path; the function itself moved to `scheduleMerge.ts` so
@@ -85,7 +85,11 @@ export type ScheduleValidationCode =
   // schedule's kind. Distinct from `invalid_cron` so a client can tell "not a
   // cron" from "not a WEEKLY cron" without parsing the message.
   | 'invalid_cron_for_kind'
-  | 'invalid_timezone';
+  | 'invalid_timezone'
+  // Full-control W16 (#6786, Decision 3): the AI tool's write would widen what an
+  // armed schedule runs unattended, or change its cadence. Only a caller passing
+  // `refuseArmedWidening` can see it; REST passes none.
+  | 'armed_widening_refused';
 
 /**
  * Which `ai_agents.kind` each schedule kind runs. `Record<AiAgentScheduleKind,
@@ -569,14 +573,124 @@ export async function createSchedule(
   return row;
 }
 
+/**
+ * Full-control W16 (#6786, Decision 3). The AI tool passes `refuseArmedWidening`:
+ * while the baseline is armed, a write may only narrow. REST passes nothing and
+ * behaves exactly as before: arming and widening stay a person's call on the AI
+ * Agents page.
+ */
+export interface ScheduleWriteGuard {
+  refuseArmedWidening?: boolean;
+}
+
+/** The target row, locked: a concurrent REST disarm or arm is seen, not raced. */
+async function lockScheduleForGuard(auth: AuthContext, id: string): Promise<AiAgentScheduleRow> {
+  const [row] = await db
+    .select()
+    .from(aiAgentSchedules)
+    .where(and(eq(aiAgentSchedules.id, id), accessibleScheduleCondition(auth)))
+    .limit(1)
+    .for('update');
+  if (!row) throw new AgentAccessDeniedError('Schedule not found');
+  return row;
+}
+
+/**
+ * The baseline an override inherits arming from, read from PERSISTED rows: the
+ * flag-gated `resolveEffectiveScheduleActMode` reports false while the deployment
+ * flag is off, and an armed row must stay guarded through a flag flip.
+ *
+ * A partner or system caller holds `FOR SHARE` in this transaction. An org session
+ * cannot lock a partner row (the partner-wide branch is SELECT-only, see
+ * `loadBaselineForOverride`), so its read stays plain. That is safe for the arming
+ * race: reading "unarmed" just before a concurrent arm commits is the same as this
+ * write landing first, which the arming person then acts on.
+ */
+async function readGuardBaseline(auth: AuthContext, override: AiAgentScheduleRow): Promise<AiAgentScheduleRow> {
+  const query = db
+    .select()
+    .from(aiAgentSchedules)
+    .where(eq(aiAgentSchedules.id, override.baselineScheduleId as string))
+    .limit(1);
+  const [baseline] = auth.scope === 'organization' ? await query : await query.for('share');
+  // The FK is ON DELETE CASCADE, so this means the row is unreadable, not gone.
+  if (!baseline) {
+    throw new ScheduleValidationError('baseline_wrong_partner', 'Baseline schedule could not be read');
+  }
+  return baseline;
+}
+
+function refuseArmedWidening(detail: string): never {
+  throw new ScheduleValidationError(
+    'armed_widening_refused',
+    `This schedule's act mode is armed, so it runs actions unattended; this change could widen them (${detail}). `
+      + 'Disarm it on the AI Agents page first, or make a change that only narrows it.',
+  );
+}
+
+async function assertUpdateOnlyNarrows(
+  auth: AuthContext,
+  locked: AiAgentScheduleRow,
+  input: UpdateAiAgentScheduleInput,
+): Promise<void> {
+  const isBaseline = locked.partnerId !== null;
+  const baseline = isBaseline ? locked : await readGuardBaseline(auth, locked);
+  if (baseline.actMode !== true) return;
+
+  const merged = {
+    enabled: input.enabled ?? locked.enabled,
+    sweepKinds: input.sweepKinds ?? locked.sweepKinds,
+    actMode: input.actMode === undefined ? locked.actMode : input.actMode,
+  };
+  const [before, after] = isBaseline
+    ? [effectiveSchedule(locked, null), effectiveSchedule(merged, null)]
+    : [effectiveSchedule(baseline, locked), effectiveSchedule(baseline, merged)];
+  if (scheduleWriteWidens(before, after)) refuseArmedWidening('enabled, kinds or act mode');
+
+  if (isBaseline) {
+    if (input.cron !== undefined && input.cron !== locked.cron) refuseArmedWidening('cron');
+    // A non-IANA value falls through to the update's own invalid_timezone.
+    const timezone = input.timezone === undefined ? null : canonicalizeTimezone(input.timezone);
+    if (timezone !== null && timezone !== locked.timezone) refuseArmedWidening('timezone');
+  }
+}
+
+async function assertDeleteOnlyNarrows(auth: AuthContext, locked: AiAgentScheduleRow): Promise<void> {
+  // Deleting a baseline is exempt: it stops every run, and its digest is what binds
+  // the approval to the overrides it cascades.
+  if (locked.partnerId !== null) return;
+  const baseline = await readGuardBaseline(auth, locked);
+  if (baseline.actMode !== true) return;
+  if (scheduleWriteWidens(effectiveSchedule(baseline, locked), effectiveSchedule(baseline, null))) {
+    refuseArmedWidening('this override narrows it');
+  }
+}
+
 export async function updateSchedule(
   auth: AuthContext,
   id: string,
   input: UpdateAiAgentScheduleInput,
+  guard: ScheduleWriteGuard = {},
 ): Promise<AiAgentScheduleRow> {
-  const existing = await loadScheduleForWrite(auth, id);
-  assertAgentWriteAllowed(auth, { orgId: existing.orgId, partnerId: existing.partnerId });
+  const unlocked = await loadScheduleForWrite(auth, id);
+  assertAgentWriteAllowed(auth, { orgId: unlocked.orgId, partnerId: unlocked.partnerId });
+  if (!guard.refuseArmedWidening) return applyScheduleUpdate(auth, id, unlocked, input);
 
+  // After the write gate on purpose: an org session cannot lock a partner row, so
+  // it must get the gate's denial rather than a locked read that finds nothing.
+  return db.transaction(async () => {
+    const locked = await lockScheduleForGuard(auth, id);
+    await assertUpdateOnlyNarrows(auth, locked, input);
+    return applyScheduleUpdate(auth, id, locked, input);
+  });
+}
+
+async function applyScheduleUpdate(
+  auth: AuthContext,
+  id: string,
+  existing: AiAgentScheduleRow,
+  input: UpdateAiAgentScheduleInput,
+): Promise<AiAgentScheduleRow> {
   const patch: Partial<typeof aiAgentSchedules.$inferInsert> = {};
 
   if (existing.partnerId !== null) {
@@ -702,9 +816,27 @@ export async function updateSchedule(
   return row;
 }
 
-export async function deleteSchedule(auth: AuthContext, id: string): Promise<void> {
+export async function deleteSchedule(
+  auth: AuthContext,
+  id: string,
+  guard: ScheduleWriteGuard = {},
+): Promise<AiAgentScheduleRow> {
   const existing = await loadScheduleForWrite(auth, id);
   assertAgentWriteAllowed(auth, { orgId: existing.orgId, partnerId: existing.partnerId });
+  if (!guard.refuseArmedWidening) return applyScheduleDelete(auth, id, existing);
+
+  return db.transaction(async () => {
+    const locked = await lockScheduleForGuard(auth, id);
+    await assertDeleteOnlyNarrows(auth, locked);
+    return applyScheduleDelete(auth, id, locked);
+  });
+}
+
+async function applyScheduleDelete(
+  auth: AuthContext,
+  id: string,
+  existing: AiAgentScheduleRow,
+): Promise<AiAgentScheduleRow> {
   // Deleting a baseline cascades its org overrides in the DB
   // (baseline_schedule_id ... ON DELETE CASCADE) — no fan-out needed here.
   //
@@ -719,6 +851,7 @@ export async function deleteSchedule(auth: AuthContext, id: string): Promise<voi
     .where(and(eq(aiAgentSchedules.id, id), accessibleScheduleCondition(auth)))
     .returning({ id: aiAgentSchedules.id });
   if (deleted.length === 0) throw new AgentAccessDeniedError('Schedule not found');
+  return existing;
 }
 
 async function overridesFor(orgId: string, baselineIds: string[]): Promise<AiAgentScheduleRow[]> {
