@@ -47,7 +47,7 @@
  */
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import { and, desc, eq, lt, or } from 'drizzle-orm';
+import { and, desc, eq, lt, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { wispActivityQuerySchema, wispTimelineQuerySchema } from '@breeze/shared';
 import { aiArtifactCaptureEnabled } from '../config/env';
@@ -193,6 +193,8 @@ export async function loadOwnThread(c: Context): Promise<OwnThread | null> {
         grantBudgetCentsPerDay: wispGrants.budgetCentsPerDay,
         grantFloorTickMinutes: wispGrants.floorTickMinutes,
         grantPausedReason: wispGrants.pausedReason,
+        grantUnattendedReads: wispGrants.unattendedReads,
+        grantUnattendedReadsPinned: sql<boolean>`EXISTS (SELECT 1 FROM wisp_grant_revisions r WHERE r.id = ${wispGrants.currentRevisionId} AND r.ceiling_snapshot->>'unattendedReads' = 'true')`,
       })
       .from(wispThreads)
       .innerJoin(wispGrants, and(eq(wispGrants.id, wispThreads.grantId), eq(wispGrants.partnerId, wispThreads.partnerId)))
@@ -225,6 +227,8 @@ export async function loadOwnThread(c: Context): Promise<OwnThread | null> {
       budgetCentsPerDay: row.grantBudgetCentsPerDay,
       floorTickMinutes: row.grantFloorTickMinutes,
       pausedReason: row.grantPausedReason ?? null,
+      unattendedReads: row.grantUnattendedReads === true && row.grantUnattendedReadsPinned === true,
+      unattendedReadsPinned: row.grantUnattendedReadsPinned === true,
     },
   };
 }
@@ -294,6 +298,8 @@ export type GrantForPayload = {
   budgetCentsPerDay: number;
   floorTickMinutes: number;
   pausedReason: string | null;
+  unattendedReads: boolean;
+  unattendedReadsPinned: boolean;
 };
 
 /** GET / and GET /:id return the same members. */
@@ -319,6 +325,8 @@ export async function threadPayload(partnerId: string, thread: WispThread, grant
       budgetResetsAt: spend.budgetResetsAt.toISOString(),
       // W06b/W06c: a paused thread says why (A29 user pause vs system reasons).
       pausedReason: grant.pausedReason,
+      unattendedReads: grant.unattendedReads === true,
+      unattendedReadsPinned: grant.unattendedReadsPinned === true,
     },
     wideningAvailable: widening,
   };
