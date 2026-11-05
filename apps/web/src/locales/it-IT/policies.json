@@ -1200,7 +1200,17 @@
         "labelInvalid": "Inserisci un’etichetta da 1 a 100 caratteri.",
         "fixRows": "Correggi le destinazioni evidenziate prima di salvare.",
         "limitReached": "Un criterio può contenere al massimo {{max}} destinazioni aggiuntive.",
-        "parentInvalid": "Il criterio padre contiene destinazioni non più valide. Correggile nel criterio padre prima di sostituirlo."
+        "parentInvalid": "Il criterio padre contiene destinazioni non più valide. Correggile nel criterio padre prima di sostituirlo.",
+        "errors": {
+          "hostInvalid": "Inserisci un nome host, ad esempio updates.example.com. I caratteri jolly non sono consentiti.",
+          "hostIsAddress": "Questo è un indirizzo IP. Usa il tipo Intervallo IP (CIDR).",
+          "hostLoopback": "I nomi host di loopback, come localhost, non sono consentiti.",
+          "cidrBlanket": "Un intervallo /0 consentirebbe tutti gli indirizzi, quindi non è ammesso.",
+          "cidrOutOfBounds": "L’intervallo deve essere almeno /8 per IPv4 o /32 per IPv6 e non può includere indirizzi di loopback o non specificati.",
+          "portsUnique": "Indica ogni porta una sola volta.",
+          "labelControlChars": "L’etichetta non può contenere caratteri di controllo.",
+          "generic": "Questo valore non è consentito."
+        }
       },
       "securityAgentsTab": {
         "title": "Agenti di sicurezza",

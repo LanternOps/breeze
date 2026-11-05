@@ -1200,7 +1200,17 @@
         "labelInvalid": "Entrez un libellé de 1 à 100 caractères.",
         "fixRows": "Corrigez les destinations signalées avant d’enregistrer.",
         "limitReached": "Une politique peut contenir au plus {{max}} destinations supplémentaires.",
-        "parentInvalid": "La politique parente contient des destinations qui ne sont plus valides. Corrigez-les dans la politique parente avant de la remplacer."
+        "parentInvalid": "La politique parente contient des destinations qui ne sont plus valides. Corrigez-les dans la politique parente avant de la remplacer.",
+        "errors": {
+          "hostInvalid": "Entrez un nom d’hôte, par exemple updates.example.com. Les caractères génériques ne sont pas autorisés.",
+          "hostIsAddress": "Il s’agit d’une adresse IP. Utilisez plutôt le type Plage IP (CIDR).",
+          "hostLoopback": "Les noms d’hôte de bouclage, comme localhost, ne sont pas autorisés.",
+          "cidrBlanket": "Une plage /0 autoriserait toutes les adresses; elle n’est donc pas permise.",
+          "cidrOutOfBounds": "La plage doit être d’au moins /8 pour IPv4 ou /32 pour IPv6 et ne peut pas inclure d’adresses de bouclage ou non spécifiées.",
+          "portsUnique": "Indiquez chaque port une seule fois.",
+          "labelControlChars": "Le libellé ne peut pas contenir de caractères de contrôle.",
+          "generic": "Cette valeur n’est pas permise."
+        }
       },
       "securityAgentsTab": {
         "title": "Agents de sécurité",

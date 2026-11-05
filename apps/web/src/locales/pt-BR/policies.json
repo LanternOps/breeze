@@ -1200,7 +1200,17 @@
         "labelInvalid": "Informe um rótulo de 1 a 100 caracteres.",
         "fixRows": "Corrija os destinos destacados antes de salvar.",
         "limitReached": "Uma política pode ter no máximo {{max}} destinos adicionais.",
-        "parentInvalid": "A política pai tem destinos que não são mais válidos. Corrija-os na política pai antes de substituí-la."
+        "parentInvalid": "A política pai tem destinos que não são mais válidos. Corrija-os na política pai antes de substituí-la.",
+        "errors": {
+          "hostInvalid": "Informe um nome de host, por exemplo updates.example.com. Curingas não são permitidos.",
+          "hostIsAddress": "Este é um endereço IP. Use o tipo Intervalo de IP (CIDR) para ele.",
+          "hostLoopback": "Nomes de host de loopback, como localhost, não são permitidos.",
+          "cidrBlanket": "Um intervalo /0 liberaria todos os endereços e, por isso, não é permitido.",
+          "cidrOutOfBounds": "O intervalo deve ser de pelo menos /8 para IPv4 ou /32 para IPv6 e não pode incluir endereços de loopback ou não especificados.",
+          "portsUnique": "Informe cada porta apenas uma vez.",
+          "labelControlChars": "O rótulo não pode conter caracteres de controle.",
+          "generic": "Este valor não é permitido."
+        }
       },
       "securityAgentsTab": {
         "title": "Agentes de segurança",
