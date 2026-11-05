@@ -23,7 +23,9 @@ import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import { asList } from '@/lib/asList';
 import ReparseSkipNotice from './ReparseSkipNotice';
-import { splitReparseSkipNotice, stripInlineIndexDropNote } from '@breeze/shared';
+import BackupFailureCategoryBadge from './BackupFailureCategoryBadge';
+import { stripInternalTagPrefix, truncateErrorSummary } from './backupErrorText';
+import { splitReparseSkipNotice, stripInlineIndexDropNote, type BackupFailureCategory } from '@breeze/shared';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -57,6 +59,7 @@ type BackupJobRaw = {
   lastKeepaliveAt?: string | null;
   errorCount?: number | null;
   errorLog?: string | null;
+  failureCategory?: BackupFailureCategory | null;
   policyId?: string | null;
   featureLinkId?: string | null;
   snapshotId?: string | null;
@@ -78,6 +81,7 @@ type BackupJob = {
   // Full cleaned error text for the Errors cell tooltip; errorSummary is cut
   // to 60 characters for the table, so the whole reason has to live here.
   errorDetail: string | null;
+  failureCategory: BackupFailureCategory | null;
   // Live-progress fields (running rows). null when the agent never reported
   // progress (legacy agent) — the UI falls back to an indeterminate bar.
   transferredSize: number | null;
@@ -173,17 +177,6 @@ function formatDuration(startedAt?: string | null, completedAt?: string | null):
   return `${hours}h ${remainingMinutes}m`;
 }
 
-// Reaper- and worker-generated error text is sometimes prefixed with an
-// internal routing tag, e.g. `[stale-backup-reaper] snapshot lease expired`.
-// That tag is implementation detail, not something a user should have to
-// decode, so strip it wherever an error message reaches the UI. Display-only
-// — the underlying errorLog data is never mutated.
-const INTERNAL_TAG_PREFIX = /^\[[a-z0-9]+(?:-[a-z0-9]+)*\]\s+/;
-
-function stripInternalTagPrefix(message: string): string {
-  return message.replace(INTERNAL_TAG_PREFIX, '');
-}
-
 function formatTime(iso?: string | null): string {
   return formatDateTime(iso, {
     fallback: '--',
@@ -223,8 +216,9 @@ function mapJob(raw: BackupJobRaw): BackupJob {
     lastKeepaliveAt: raw.lastKeepaliveAt ?? null,
     errorCount: raw.errorCount ?? 0,
     errorDetail: cleanedErrorLog,
+    failureCategory: raw.failureCategory ?? null,
     errorSummary: cleanedErrorLog
-      ? cleanedErrorLog.length > 60 ? `${cleanedErrorLog.slice(0, 57)}...` : cleanedErrorLog
+      ? truncateErrorSummary(cleanedErrorLog)
       : raw.errorCount
         ? i18n.t('backup:backupJobList.errorCount', { count: raw.errorCount })
         : '-'
@@ -664,15 +658,20 @@ export default function BackupJobList() {
                         )}
                       </td>
                       <td className="px-4 py-3">
-                        {job.errorSummary !== '-' ? (
-                          <span
-                            data-testid="backup-job-error-summary"
-                            title={job.errorDetail ?? job.errorSummary}
-                            className="inline-flex items-center gap-1 text-xs font-medium text-destructive"
-                          >
-                            <AlertTriangle className="h-3.5 w-3.5" />
-                            {job.errorSummary}
-                          </span>
+                        {job.failureCategory || job.errorSummary !== '-' ? (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <BackupFailureCategoryBadge category={job.failureCategory} />
+                            {job.errorSummary !== '-' && (
+                              <span
+                                data-testid="backup-job-error-summary"
+                                title={job.errorDetail ?? job.errorSummary}
+                                className="inline-flex items-center gap-1 text-xs font-medium text-destructive"
+                              >
+                                <AlertTriangle className="h-3.5 w-3.5" />
+                                {job.errorSummary}
+                              </span>
+                            )}
+                          </div>
                         ) : (
                           <span className="text-xs text-muted-foreground">-</span>
                         )}
@@ -771,6 +770,11 @@ export default function BackupJobList() {
                                 <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
                                 {t('backupJobList.filesNotBackedUp', { count: job.errorCount })}
                               </p>
+                              {job.failureCategory && (
+                                <div className="mt-2">
+                                  <BackupFailureCategoryBadge category={job.failureCategory} showHint />
+                                </div>
+                              )}
                               <pre className="mt-2 whitespace-pre-wrap text-xs text-foreground">
                                 {detailNotes.diagnostic ?? 'No error log recorded.'}
                               </pre>
@@ -778,6 +782,11 @@ export default function BackupJobList() {
                           ) : (
                             <div className="mt-4">
                               <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('backupJobList.errorLog')}</p>
+                              {job.failureCategory && (
+                                <div className="mt-1">
+                                  <BackupFailureCategoryBadge category={job.failureCategory} showHint />
+                                </div>
+                              )}
                               <pre className="mt-1 whitespace-pre-wrap rounded-md border bg-background px-3 py-2 text-xs text-foreground">
                                 {detailNotes.diagnostic ?? 'No error log recorded.'}
                               </pre>

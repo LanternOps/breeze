@@ -306,6 +306,48 @@ describe('backup jobs routes', () => {
     }));
   });
 
+  it('GET /jobs returns failureCategory per row', async () => {
+    selectMock.mockReturnValueOnce(makeSelectChain([
+      {
+        job: makeJob({ id: 'job-failed', status: 'failed', errorLog: '[stale-backup-reaper] Device went offline during backup' }),
+        deviceName: 'Device',
+        deviceHostname: 'host',
+        configName: 'Primary Backup',
+      },
+      {
+        job: makeJob({ id: 'job-ok', status: 'completed', errorLog: null }),
+        deviceName: 'Device',
+        deviceHostname: 'host',
+        configName: 'Primary Backup',
+      },
+    ]));
+
+    const res = await app.request('/jobs');
+
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data[0].failureCategory).toBe('device_offline');
+    // Explicit null, not a dropped key: "nothing failed" is an answer.
+    expect(data[1]).toHaveProperty('failureCategory', null);
+  });
+
+  it('GET /jobs/:id returns failureCategory', async () => {
+    selectMock.mockReturnValueOnce(makeSelectChain([
+      {
+        job: makeJob({ status: 'failed', errorLog: 'backup helper exited unexpectedly' }),
+        deviceName: 'Device',
+        deviceHostname: 'host',
+        siteId: null,
+        configName: 'Primary Backup',
+      },
+    ]));
+
+    const res = await app.request('/jobs/job-1');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).failureCategory).toBe('agent');
+  });
+
   it('exposes live-progress fields (transferredSize, totalFiles, lastProgressAt) in the job response', async () => {
     permissionsState = undefined;
     const jobsChain = makeSelectChain([

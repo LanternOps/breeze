@@ -179,6 +179,7 @@
     "oneOrMoreVssWritersAreNotStable": "Einer oder mehrere VSS-Writer sind nicht stabil. Überprüfen Sie vor der nächsten Ausführung die neuesten Writer-Zustände.",
     "vssUnprotectedVolumes": "Vom Live-Volume gelesen, nicht von einer VSS-Schattenkopie: {{volumes}}. Auf diesen Volumes verwendete Dateien wurden möglicherweise übersprungen oder in einem inkonsistenten Zustand erfasst.",
     "lastBackupFailed": "Letzte Sicherung fehlgeschlagen",
+    "lastBackupFailedWithCategory": "Letzte Sicherung fehlgeschlagen: {{category}}",
     "lastBackupCompletedWithWarnings": "Letzte Sicherung mit Warnungen abgeschlossen",
     "lastBackupCompletedWithErrors": "Letzte Sicherung mit Fehlern abgeschlossen",
     "writer": "VSS-Writer",
@@ -1188,5 +1189,40 @@
     "summary_one": "{{count}} Analysepunkt übersprungen: Junctions und Bereitstellungspunkte werden nicht verfolgt und nicht wiederhergestellt. Das ist erwartet, kein Fehler.",
     "summary_other": "{{count}} Analysepunkte übersprungen: Junctions und Bereitstellungspunkte werden nicht verfolgt und nicht wiederhergestellt. Das ist erwartet, kein Fehler.",
     "showDetails": "Übersprungene Pfade anzeigen"
+  },
+  "failureCategory": {
+    "device_offline": {
+      "label": "Gerät offline",
+      "hint": "Das Gerät hat während der Sicherung die Verbindung zu Breeze verloren. Lassen Sie es während des gesamten Sicherungsfensters eingeschaltet und online."
+    },
+    "timeout": {
+      "label": "Hängt oder Zeitlimit überschritten",
+      "hint": "Die Sicherung hat keinen Fortschritt mehr gemacht oder ihr Zeitlimit überschritten. Sehr große Sicherungen können mehr als ein Fenster benötigen. Prüfen Sie die Auslastung des Geräts und den Umfang der Sicherungsauswahl."
+    },
+    "storage": {
+      "label": "Speicherproblem",
+      "hint": "Breeze konnte nicht in das Sicherungsziel schreiben, oder die Upload-Berechtigung ist abgelaufen. Testen Sie die Speicherkonfiguration und prüfen Sie deren Anmeldedaten und freien Speicherplatz."
+    },
+    "agent": {
+      "label": "Agent-Problem",
+      "hint": "Die Sicherungskomponente auf dem Gerät wurde unerwartet beendet. Aktualisieren Sie den Agent und führen Sie die Sicherung erneut aus. Wenn das wiederholt auftritt, prüfen Sie die Agent-Protokolle des Geräts."
+    },
+    "configuration": {
+      "label": "Konfigurationsproblem",
+      "hint": "Es gab nichts Gültiges zu sichern, oder die Sicherungskonfiguration wurde geändert, während der Auftrag startete. Überprüfen Sie das Sicherungsprofil des Geräts."
+    },
+    "source_access": {
+      "label": "Dateien konnten nicht gelesen werden",
+      "hint": "Einige Dateien waren gesperrt, in Verwendung oder für den Agent nicht lesbar. Prüfen Sie die unten aufgeführten Dateien und den VSS-Status."
+    },
+    "cancelled": {
+      "label": "Abgebrochen",
+      "hint": "Von einem Benutzer oder von Breeze beendet, bevor die Sicherung abgeschlossen war."
+    },
+    "unknown": {
+      "label": "Anderer Fehler",
+      "hint": "Breeze erkennt diesen Fehler noch nicht. Die vollständige Meldung wird unten angezeigt."
+    },
+    "troubleshootingLink": "Leitfaden zur Fehlerbehebung"
   }
 }

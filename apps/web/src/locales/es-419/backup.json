@@ -179,6 +179,7 @@
     "oneOrMoreVssWritersAreNotStable": "Uno o más escritores VSS no son estables. Revise los estados del escritor más reciente antes de la siguiente ejecución.",
     "vssUnprotectedVolumes": "Se leyó del volumen activo, no de una instantánea VSS: {{volumes}}. Los archivos en uso en estos volúmenes pueden haberse omitido o capturado en un estado inconsistente.",
     "lastBackupFailed": "La última copia de seguridad falló",
+    "lastBackupFailedWithCategory": "La última copia de seguridad falló: {{category}}",
     "lastBackupCompletedWithWarnings": "La última copia de seguridad se completó con advertencias",
     "lastBackupCompletedWithErrors": "La última copia de seguridad se completó con errores",
     "writer": "Escritor",
@@ -1188,5 +1189,40 @@
     "summary_one": "Se omitió {{count}} punto de reanálisis: las uniones y los puntos de montaje no se siguen ni se restauran. Es lo esperado, no es un error.",
     "summary_other": "Se omitieron {{count}} puntos de reanálisis: las uniones y los puntos de montaje no se siguen ni se restauran. Es lo esperado, no es un error.",
     "showDetails": "Mostrar rutas omitidas"
+  },
+  "failureCategory": {
+    "device_offline": {
+      "label": "Dispositivo sin conexión",
+      "hint": "El dispositivo perdió la conexión con Breeze durante la copia de seguridad. Manténgalo encendido y en línea durante toda la ventana de copia de seguridad."
+    },
+    "timeout": {
+      "label": "Detenida o con tiempo agotado",
+      "hint": "La copia de seguridad dejó de avanzar o superó su límite de tiempo. Las copias de seguridad muy grandes pueden necesitar más de una ventana. Revise la carga del dispositivo y el tamaño de la selección de copia de seguridad."
+    },
+    "storage": {
+      "label": "Problema de almacenamiento",
+      "hint": "Breeze no pudo escribir en el destino de la copia de seguridad, o la autorización de carga caducó. Pruebe la configuración de almacenamiento y revise sus credenciales y el espacio libre."
+    },
+    "agent": {
+      "label": "Problema del agente",
+      "hint": "El componente de copia de seguridad del dispositivo se detuvo de forma inesperada. Actualice el agente y vuelva a ejecutar la copia de seguridad. Si sigue ocurriendo, revise los registros del agente del dispositivo."
+    },
+    "configuration": {
+      "label": "Problema de configuración",
+      "hint": "No había nada válido para respaldar, o la configuración de copia de seguridad cambió mientras se iniciaba el trabajo. Revise el perfil de copia de seguridad del dispositivo."
+    },
+    "source_access": {
+      "label": "No se pudieron leer archivos",
+      "hint": "Algunos archivos estaban bloqueados, en uso o el agente no podía leerlos. Revise los archivos que se indican abajo y el estado de VSS."
+    },
+    "cancelled": {
+      "label": "Cancelada",
+      "hint": "Detenida por un usuario, o por Breeze, antes de terminar."
+    },
+    "unknown": {
+      "label": "Otro error",
+      "hint": "Breeze todavía no reconoce este error. El mensaje completo se muestra abajo."
+    },
+    "troubleshootingLink": "Guía de solución de problemas"
   }
 }

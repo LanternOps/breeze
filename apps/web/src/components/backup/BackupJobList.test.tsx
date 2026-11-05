@@ -1043,6 +1043,86 @@ describe('BackupJobList', () => {
     expect(within(row).queryByText('-')).toBeNull();
   });
 
+  describe('failure category (#11027)', () => {
+    const mockJobs = (...jobs: unknown[]) =>
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/jobs') return makeJsonResponse({ data: jobs });
+        if (url === '/backup/jobs/job-partial') return makeJsonResponse(jobs[0]);
+        return makeJsonResponse({ error: 'Not found' }, false, 404);
+      });
+
+    it('failed row shows category badge before the error summary', async () => {
+      mockJobs(partialJob({
+        status: 'failed',
+        errorCount: 0,
+        errorLog: 'failed to upload file to s3: SlowDown',
+        failureCategory: 'storage',
+      }));
+
+      render(<BackupJobList />);
+
+      const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+      const badge = within(row).getByTestId('backup-failure-category');
+      const summary = within(row).getByTestId('backup-job-error-summary');
+      expect(badge.getAttribute('data-category')).toBe('storage');
+      expect(badge.textContent).toBe('Storage problem');
+      expect(summary.textContent).toContain('failed to upload file to s3: SlowDown');
+      expect(badge.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('shows the badge on a cancelled row that has no error text', async () => {
+      mockJobs(partialJob({ status: 'cancelled', errorCount: 0, errorLog: null, failureCategory: 'cancelled' }));
+
+      render(<BackupJobList />);
+
+      const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+      expect(within(row).getByTestId('backup-failure-category').getAttribute('data-category')).toBe('cancelled');
+      expect(within(row).queryByTestId('backup-job-error-summary')).toBeNull();
+    });
+
+    it('renders no badge when the API sends no category', async () => {
+      mockJobs(partialJob({ status: 'completed', errorCount: 0, errorLog: null, failureCategory: null }));
+
+      render(<BackupJobList />);
+
+      const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+      expect(within(row).queryByTestId('backup-failure-category')).toBeNull();
+      expect(within(row).getByText('-')).toBeTruthy();
+    });
+
+    it('explains the category with its hint in the expanded details', async () => {
+      mockJobs(partialJob({
+        status: 'failed',
+        errorCount: 0,
+        errorLog: 'backup helper exited unexpectedly',
+        failureCategory: 'agent',
+      }));
+
+      render(<BackupJobList />);
+
+      const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+      expect(screen.queryByText(/stopped unexpectedly/)).toBeNull();
+      fireEvent.click(within(row).getByRole('button', { name: /details/i }));
+
+      await screen.findByText(/The backup component on the device stopped unexpectedly/);
+      expect(screen.getByRole('link', { name: 'Troubleshooting guide' })).toBeTruthy();
+    });
+
+    it('explains the category inside the files-not-backed-up block of a partial run', async () => {
+      mockJobs(partialJob({ failureCategory: 'source_access' }));
+
+      render(<BackupJobList />);
+
+      const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+      fireEvent.click(within(row).getByRole('button', { name: /details/i }));
+
+      const block = await screen.findByTestId('backup-job-files-not-backed-up');
+      expect(within(block).getByTestId('backup-failure-category').getAttribute('data-category')).toBe('source_access');
+      expect(within(block).getByText(/Some files were locked/)).toBeTruthy();
+    });
+  });
+
   it('strips the internal reaper tag prefix from the displayed error summary', async () => {
     fetchMock.mockImplementation(async (input) => {
       if (String(input) === '/backup/jobs') {

@@ -35,6 +35,7 @@ import {
   statusConfig
 } from './backupDashboardHelpers';
 import { splitReparseSkipNotice, stripInlineIndexDropNote } from '@breeze/shared';
+import BackupFailureCategoryBadge from './BackupFailureCategoryBadge';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 
@@ -317,6 +318,7 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
                     {jobDiagnostic ? (
                       <div className="mt-3 flex items-start gap-2 rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
                         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <BackupFailureCategoryBadge category={job.failureCategory} />
                         <span className="line-clamp-2">{jobDiagnostic}</span>
                       </div>
                     ) : null}
