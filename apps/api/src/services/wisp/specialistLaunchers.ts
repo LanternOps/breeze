@@ -353,10 +353,22 @@ async function deviceInOrg(orgId: string, deviceId: string): Promise<boolean> {
  * refused deterministically never asks first. The launchers still re-check at
  * launch: state can change while the card waits.
  */
+/**
+ * #10487 — a sweep occurrence admits one run of the org's effective TRIAGE
+ * agent (aiAgentSweepScheduler `case 'sweep'`), which per-org admission skips
+ * when that agent is missing, switched off or mode Off. Checked up front so
+ * the request is refused by name instead of "queued" and silently skipped.
+ */
+async function sweepAgentRefusal(orgId: string): Promise<PrerequisiteRefusal | null> {
+  const agent = await resolveLaunchableAgent(orgId, 'triage');
+  return agent.ok ? null : agent.refusal;
+}
+
 export const SPECIALIST_PREREQUISITES: Readonly<Record<SpecialistKind, (args: PrerequisiteArgs) => Promise<PrerequisiteRefusal | null>>> = Object.freeze({
   sweep: async ({ orgId, partnerId, params }) => {
     const { sweepKinds } = sweepParamsSchema.parse(params);
-    return (await findSweepSchedule(partnerId, orgId, sweepKinds)) ? null : { refused: 'no_sweep_schedule' };
+    if (!(await findSweepSchedule(partnerId, orgId, sweepKinds))) return { refused: 'no_sweep_schedule' };
+    return sweepAgentRefusal(orgId);
   },
   // The sandbox flag is the coordinator's gate (aiWorkspaceEnabled); admission owns the rest.
   analysis: async () => null,
@@ -402,7 +414,9 @@ export const SPECIALIST_PREREQUISITES: Readonly<Record<SpecialistKind, (args: Pr
 
 /**
  * A one-off occurrence of the partner's enabled sweep baseline, restricted to
- * this org and carrying the grant. `admitted` here means QUEUED: per-org
+ * this org and carrying the grant. The org's triage agent must be able to
+ * accept the run (#10487) — otherwise it refuses as the prerequisite does.
+ * `admitted` here means QUEUED: per-org
  * admission (budget, overrides, duplicate) happens in the occurrence job, and
  * its outcome lands on the sweep run, not on this result. Going through the sweep queue keeps the
  * system-collected evidence step a sweep run depends on. The run itself is
@@ -413,6 +427,9 @@ export async function launchSweep(ctx: LaunchContext): Promise<LaunchResult> {
   const params = sweepParamsSchema.parse(ctx.params);
   const entry = await findSweepSchedule(ctx.partnerId, ctx.orgId, params.sweepKinds);
   if (!entry) return { refused: 'no_sweep_schedule' };
+  // #10487: an occurrence whose run admission would skip is a refusal, not `admitted`.
+  const agentRefusal = await sweepAgentRefusal(ctx.orgId);
+  if (agentRefusal) return agentRefusal;
 
   const scheduleId = entry.baseline.id;
   const occurrenceKey = `wisp-${ctx.requestId}`;
