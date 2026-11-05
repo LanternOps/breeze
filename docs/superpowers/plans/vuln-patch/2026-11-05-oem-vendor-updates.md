@@ -4,7 +4,7 @@ spec_approved: 2026-11-04
 baseline_commit: 36f9d9ca53
 anchor_issue: 3855
 related: [3855, 4226, 5511, 5512, 6960]
-tracking_issue: not registered yet (see "Proposed registration")
+tracking_issue: LanternOps/breeze#11065 (W01 #11066, W02 #11067, W03 #11068, W04 #11069, W05 #11070, W06 #11071, W07 #11072, W08 #11073, W09 #11074, W10 #11075, W11 #11076, W12 #11077, W13 #11078, W14 #11079, W15 #11080, W16 #11081, W17 #11082)
 ---
 
 # Vendor Updates (Dell, Surface, HP, Lenovo) Implementation Plan
