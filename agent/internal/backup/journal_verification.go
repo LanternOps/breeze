@@ -281,7 +281,11 @@ func (v *resumeVerifier) prepareReadBacks(provider providers.BackupProvider, fil
 // the file is about to be uploaded over the object, so no record may be left
 // that lets a later job skip checking that object: at most one that still owes
 // the read-back.
-func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry SnapshotFile) bool {
+//
+// checked is false when a read the decision needed failed: the entry is not
+// reused, and the check did not complete. An entry a record let through without
+// a read did complete: an earlier pass did that work (#11014).
+func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry SnapshotFile) (reuse, checked bool) {
 	key := journalLookupKey(file)
 	rec, standing := v.standingRecord(key, entry)
 	started := time.Now()
@@ -293,13 +297,27 @@ func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry Sn
 	// file, still far cheaper than uploading it again; a mismatch or read
 	// error uploads the file afresh and the recorded digest is never replaced
 	// by anything but a new upload's.
-	if entry.Checksum == "" || (!standing && !checksumMatches(file.sourcePath, entry.Checksum)) {
+	match := entry.Checksum != ""
+	if match && !standing {
+		var err error
+		match, err = checksumMatches(file.sourcePath, entry.Checksum)
+		if err != nil {
+			log.Warn("could not read journaled file to check it; uploading it again",
+				"path", file.sourcePath,
+				"snapshotId", v.snapshotID,
+				"error", err.Error(),
+			)
+			v.journal.clearVerification(key)
+			return false, false
+		}
+	}
+	if !match {
 		log.Info("journaled file changed since it was uploaded; uploading it again",
 			"path", file.sourcePath,
 			"snapshotId", v.snapshotID,
 		)
 		v.journal.clearVerification(key)
-		return false
+		return false, true
 	}
 	if v.tainted[entry.BackupPath] {
 		// A pre-#5582 journal stored this file and a case twin at keys one
@@ -311,13 +329,13 @@ func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry Sn
 			"snapshotId", v.snapshotID,
 		)
 		v.journal.clearVerification(key)
-		return false
+		return false, true
 	}
 	if !v.verifyStored {
 		if !standing {
 			v.recordEvidence(file, entry, storedCheckNone, started)
 		}
-		return true
+		return true, true
 	}
 	if !v.canVerifyStored || isReferenceEntry(entry, v.snapshotID) {
 		// Only a literal entry, through a provider that can read it back, can
@@ -328,22 +346,26 @@ func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry Sn
 			"snapshotId", v.snapshotID,
 		)
 		v.journal.clearVerification(key)
-		return false
+		return false, true
 	}
 	if standing && storedCheckFresh(rec, time.Now()) {
 		v.reliedOnCachedStored = true
-		return true
+		return true, true
 	}
 	check, err := readBackStoredObject(ctx, v.digester, entry)
 	if err != nil {
-		log.Info("could not read back a journaled object from an earlier job; uploading it again",
-			"path", file.sourcePath,
-			"backupPath", entry.BackupPath,
-			"snapshotId", v.snapshotID,
-			"error", err.Error(),
-		)
+		// A stop cancels the read mid-flight; that says nothing about the
+		// object and is not worth a warning.
+		if ctx.Err() == nil {
+			log.Warn("could not read back a journaled object from an earlier job; uploading it again",
+				"path", file.sourcePath,
+				"backupPath", entry.BackupPath,
+				"snapshotId", v.snapshotID,
+				"error", err.Error(),
+			)
+		}
 		v.recordEvidence(file, entry, storedCheckNone, started)
-		return false
+		return false, false
 	}
 	v.recordEvidence(file, entry, check, started)
 	if check != storedCheckOK {
@@ -353,9 +375,9 @@ func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry Sn
 			"snapshotId", v.snapshotID,
 			"storedObjectCheck", string(check),
 		)
-		return false
+		return false, true
 	}
-	return true
+	return true, true
 }
 
 // recordEvidence journals what the pass just established about entry, unless

@@ -72,6 +72,11 @@ import { buildStoredCommandResult } from '../services/storedCommandResult';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES, type CriticalResultFamily } from '../services/agentCommandResultValidation';
 import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { captureException } from '../services/sentry';
+import {
+  DESKTOP_RECONNECT_GRACE_MS,
+  endHeldDesktopSessionNow,
+  holdDesktopPeerDropForReconnect,
+} from '../services/desktopReconnectGrace';
 import { ingestRestorePointOutcome } from '../services/restorePointIngest';
 import { publishEvent } from '../services/eventBus';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
@@ -2706,7 +2711,7 @@ async function processCommandResult(
     // blocking for the whole backup/restore. What makes the row reopenable
     // for the REAL result later is the BACKUP_QUEUE_ACK_RESULT_STATUS marker
     // written into the STORED result.status (see commandAcceptsAgentResultCondition).
-    const storedResult = buildStoredCommandResult(command.type, normalizedResult, stdout);
+    const storedResult = buildStoredCommandResult(command.type, normalizedResult, stdout, command.payload);
     const finalizedCommand = command;
     const commandPayload =
       command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
@@ -3888,45 +3893,67 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
               const stopReason = redactSecretsFromOutput(
                 typeof fastResult.stopReason === 'string' ? fastResult.stopReason.slice(0, 1024) : ''
               ) || null;
+              // #10542: a drop the viewer's own reconnect caused (the viewer
+              // marked the reconnect via its ICE-server fetch, then closed the
+              // old peer) waits DESKTOP_RECONNECT_GRACE_MS for the new offer
+              // instead of ending the session and revoking the token under it.
+              // A drop handled before the mark landed, every other drop, and
+              // any failure to decide end it now (Finding #5).
+              let peerDropHeld = false;
               try {
-                await runWithAgentDbAccess('agentWs.desktop.peerDisconnected', async () => {
-                  // Through the terminal-intent contract. The
-                  // endpoint is the source of this terminal fact — the agent
-                  // has already stopped — so the phase is 'confirmed' at once.
-                  const result = await commitDesktopTerminalIntent({
-                    sessionId,
-                    write: {
-                      status: 'disconnected',
-                      endedAt: new Date(),
-                      // Only fills errorMessage when it's still empty — never
-                      // overwrites a startup-probe failure text (#5284/#5295)
-                      // that a `desk-start` failure already stored there.
-                      ...(stopReason
-                        ? { errorMessage: sql`COALESCE(${remoteSessions.errorMessage}, ${stopReason})` }
-                        : {}),
-                    },
-                    phase: 'confirmed',
-                    where: [
-                      eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
-                      eq(remoteSessions.status, 'active'),
-                    ],
-                  });
-                  if (result.ok) {
-                    // Kill the viewer token too: a peer drop (tab crash, network
-                    // blip, agent restart) must not leave a still-valid token that
-                    // can resurrect the session via /viewer/offer. Finding #5.
-                    await revokeViewerSession(sessionId);
-                    console.log(`[AgentWs] Session ${sessionId} marked disconnected (peer dropped)`);
-                  }
-                });
-                // A WebSocket-fallback stream this agent stopped on its own
-                // (its lease lapsed or was revoked): end the local relay now
-                // so the viewer is told instead of left on a frozen frame.
-                if (isDesktopSessionOwnedByAgent(sessionId, agentId)) {
-                  closeDesktopRelayForStop(sessionId);
-                }
+                peerDropHeld = await holdDesktopPeerDropForReconnect({
+                  sessionId,
+                  deviceId: authenticatedAgent.deviceId,
+                  stopReason,
+                  relayOwned: isDesktopSessionOwnedByAgent(sessionId, agentId),
+                }) === 'held';
               } catch (err) {
-                console.error(`[AgentWs] Failed to update session disconnect:`, err);
+                console.error(`[AgentWs] Reconnect-hold decision failed for session ${sessionId}; ending it now:`, err);
+                captureException(err instanceof Error ? err : new Error(String(err)));
+              }
+              if (peerDropHeld) {
+                console.log(`[AgentWs] Session ${sessionId} peer dropped during a viewer reconnect; holding its end for ${DESKTOP_RECONNECT_GRACE_MS} ms`);
+              } else {
+                try {
+                  await runWithAgentDbAccess('agentWs.desktop.peerDisconnected', async () => {
+                    // Through the terminal-intent contract. The
+                    // endpoint is the source of this terminal fact — the agent
+                    // has already stopped — so the phase is 'confirmed' at once.
+                    const result = await commitDesktopTerminalIntent({
+                      sessionId,
+                      write: {
+                        status: 'disconnected',
+                        endedAt: new Date(),
+                        // Only fills errorMessage when it's still empty — never
+                        // overwrites a startup-probe failure text (#5284/#5295)
+                        // that a `desk-start` failure already stored there.
+                        ...(stopReason
+                          ? { errorMessage: sql`COALESCE(${remoteSessions.errorMessage}, ${stopReason})` }
+                          : {}),
+                      },
+                      phase: 'confirmed',
+                      where: [
+                        eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
+                        eq(remoteSessions.status, 'active'),
+                      ],
+                    });
+                    if (result.ok) {
+                      // Kill the viewer token too: a peer drop (tab crash, network
+                      // blip, agent restart) must not leave a still-valid token that
+                      // can resurrect the session via /viewer/offer. Finding #5.
+                      await revokeViewerSession(sessionId);
+                      console.log(`[AgentWs] Session ${sessionId} marked disconnected (peer dropped)`);
+                    }
+                  });
+                  // A WebSocket-fallback stream this agent stopped on its own
+                  // (its lease lapsed or was revoked): end the local relay now
+                  // so the viewer is told instead of left on a frozen frame.
+                  if (isDesktopSessionOwnedByAgent(sessionId, agentId)) {
+                    closeDesktopRelayForStop(sessionId);
+                  }
+                } catch (err) {
+                  console.error(`[AgentWs] Failed to update session disconnect:`, err);
+                }
               }
             }
           }
@@ -3966,6 +3993,12 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
             const expectedSessionId = extractDesktopSessionId(fastCommandId, 'desk-userend-');
             if (expectedSessionId && fastResult.sessionId === expectedSessionId) {
               const userEndDeviceId = authenticatedAgent.deviceId;
+              // #10542: if this session's end is being held for a viewer
+              // reconnect, the person at the device ending it ends it now.
+              await endHeldDesktopSessionNow(expectedSessionId, userEndDeviceId).catch((err) => {
+                console.error(`[AgentWs] Failed to end held session ${expectedSessionId} after the user ended it:`, err);
+                captureException(err instanceof Error ? err : new Error(String(err)));
+              });
               await recordDesktopSessionEndedByUser({
                 sessionId: expectedSessionId,
                 deviceId: userEndDeviceId,

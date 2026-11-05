@@ -17,6 +17,7 @@ import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 import { resetEntitlementsCache } from '@/lib/entitlementsCache';
 import { resetApproximateTotalCache } from '@/lib/approximateTotalCache';
 import { clearSsoReauthGrant } from '@/lib/ssoReauthGrant';
+import { clearRememberedEnrollmentArtifacts } from '@/lib/rememberedEnrollmentArtifacts';
 import { getSafeNext, loginPathWithNext } from '@/lib/authNext';
 import { isGlobalScopeRoute } from '@/lib/routeScope';
 import {
@@ -236,6 +237,9 @@ export const useAuthStore = create<AuthState>()(
         // #8862: the profile page's stashed SSO re-auth grant is bound to this
         // session; never let the next sign-in on this tab restore it.
         clearSsoReauthGrant();
+        // #10923: the Add Device modal's remembered tokens and links are live
+        // enrollment credentials, and sign-out does not unload this tab.
+        clearRememberedEnrollmentArtifacts();
         // An evicted session must never come back via a stray throttle-recovery
         // reload — the redirect to /login owns navigation from here.
         cancelThrottleReload();

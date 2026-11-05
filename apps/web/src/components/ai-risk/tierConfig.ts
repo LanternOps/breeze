@@ -458,7 +458,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'schedule_check_in', description: 'Ask Wisp to check back on its thread in 1 minute to 7 days', category: 'AI Governance' },
       { name: 'cancel_check_in', description: 'Cancel a check-in Wisp scheduled on its thread', category: 'AI Governance' },
       // Wisp specialists (W07a #9913): sweeps and sandbox analysis run on the call.
-      { name: 'launch_specialist (sweep/analysis)', description: 'Ask Wisp to hand a sweep or sandbox analysis to a specialist agent', category: 'AI Governance' },
+      { name: 'launch_specialist (sweep/analysis/device_troubleshooting)', description: 'Ask Wisp to hand a sweep, a sandbox analysis or a device investigation to a specialist agent', category: 'AI Governance' },
     ],
   },
   {

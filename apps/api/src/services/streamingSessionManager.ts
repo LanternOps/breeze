@@ -27,7 +27,7 @@ import type { AiStreamEvent, AiApprovalMode, AiPendingCardEvent } from '@breeze/
 import type { PendingRunResult } from './workspace/chatRunBridge';
 import { AsyncEventQueue } from '../utils/asyncQueue';
 import { prepareSdkChild, sdkModelOptions } from './aiModels/connectionFactory';
-import { takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
+import { takeGatewayFailure, takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
 import { PROVIDER_FAILURE_GENERIC_MESSAGE, providerFailureMessage } from './aiModels/providerFailureMessage';
 import { classifySdkAssistantError } from './aiModels/failover';
 import { catalogEndpointOf } from './aiModels/sdkChildEnv';
@@ -904,6 +904,8 @@ export class StreamingSessionManager {
       session.turnDisplay = turn.turnDisplay;
     }
     session.refusalObservation = newSdkTurnObservation();
+    // A note left by an earlier turn that ended with no result must not name this turn's failure.
+    takeGatewayFailureNote(session.breezeSessionId);
     // The state and its staleness clock move together: eviction reads
     // lastActivityAt to tell a live turn from a wedged one, and before this the
     // stamp was refreshed only in getOrCreate() — so a session that had been
@@ -1569,7 +1571,7 @@ export class StreamingSessionManager {
         this.stopThinking(session);
         // #7794: a model-gateway failure behind the timeout (the CLI keeps
         // retrying it) is the actionable part; say it.
-        const gatewayNote = takeGatewayFailureNote(session.breezeSessionId);
+        const gatewayNote = this.takeTurnGatewayNote(session);
         session.eventBus.publish({
           type: 'error',
           message: gatewayNote ? `AI request timed out. ${gatewayNote}` : 'AI request timed out. Please try again.',
@@ -2019,7 +2021,7 @@ export class StreamingSessionManager {
             // #7794: the model gateway's reason for this turn's failure, if it
             // had one. Always taken here, so a note from a retry that later
             // recovered never surfaces on a later turn.
-            const gatewayNote = takeGatewayFailureNote(session.breezeSessionId);
+            const gatewayNote = this.takeTurnGatewayNote(session);
             // #3095: use the session's canonical org id (from the aiSessions DB
             // row — always set), NOT `auth.orgId`, which is null for partner-
             // and system-scoped users. The old guard on `auth.orgId` silently
@@ -2132,7 +2134,7 @@ export class StreamingSessionManager {
       // this the only topology transport).
       const topologyTurn = Boolean(session.topologyInvestigation);
       await this.abortTopologyTurn(session);
-      const gatewayNote = takeGatewayFailureNote(session.breezeSessionId);
+      const gatewayNote = this.takeTurnGatewayNote(session);
       workTurnLimitReported = session.workTurnLimitStopped === true;
       session.eventBus.publish(workTurnLimitReported ? TURN_LIMIT_ERROR : {
         type: 'error',
@@ -2342,6 +2344,17 @@ export class StreamingSessionManager {
    * turn end — result, error, timeout, teardown — calls this, so a client is
    * never left showing "Thinking…" over a finished turn.
    */
+  /**
+   * The gateway's reason for this turn's failure, removed as it is read. A
+   * context-window refusal also marks the turn's observation, so that
+   * settlement records it by name (#10577).
+   */
+  private takeTurnGatewayNote(session: ActiveSession): string | null {
+    const failure = takeGatewayFailure(session.breezeSessionId);
+    if (failure?.code === 'context_window_exceeded') session.refusalObservation.contextWindowExceeded = true;
+    return failure?.message ?? null;
+  }
+
   private stopThinking(session: ActiveSession): void {
     if (session.thinkingBlockIndex == null) return;
     session.thinkingBlockIndex = null;

@@ -50,6 +50,7 @@ import {
   deliverRunEvent,
   drainPendingRunResults,
   unwatchRun,
+  watchRunForOriginSession,
   watchRunForSession,
   __setRunReaderForTests,
 } from './chatRunBridge';
@@ -209,6 +210,61 @@ describe('chatRunBridge (spec §5.5)', () => {
 
     expect(published).toEqual([]);
     expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  // #11084: a device-troubleshooting run that settles with steps waiting for a
+  // person is a delivery too — the chat card stops spinning and links approvals.
+  it('publishes run_result for awaiting_approval with the pending intent count, once', async () => {
+    const { session, published } = fakeSession();
+    sessionGet.mockReturnValue(session);
+    readRunForDelivery.mockResolvedValue({
+      status: 'awaiting_approval', summary: 'Found a corrupt profile; asked to rebuild it.', artifacts: [], pendingIntentCount: 2,
+    });
+    watchRunForSession({ runId: RUN, sessionId: SESSION, orgId: ORG });
+
+    await deliverRunEvent({ type: 'ai.agent.run.awaiting_approval', payload: { runId: RUN } });
+    await deliverRunEvent({ type: 'ai.agent.run.awaiting_approval', payload: { runId: RUN } });
+
+    expect(published).toEqual([{
+      type: 'run_result', runId: RUN, status: 'awaiting_approval',
+      summary: 'Found a corrupt profile; asked to rebuild it.', artifacts: [], pendingIntentCount: 2,
+    }]);
+    // The summary is model-written from device output: injected as fenced DATA.
+    const injected = drainPendingRunResults(session as never) ?? '';
+    expect(injected).toContain('awaiting_approval');
+    expect(injected).toMatch(/<untrusted_data source="[^"]+">[\s\S]*Found a corrupt profile/);
+  });
+
+  it('names the waiting steps to the model, and omits the line when nothing is left to decide', async () => {
+    const { session } = fakeSession();
+    sessionGet.mockReturnValue(session);
+    readRunForDelivery.mockResolvedValue({ status: 'awaiting_approval', summary: 'x', artifacts: [], pendingIntentCount: 2 });
+    watchRunForSession({ runId: RUN, sessionId: SESSION, orgId: ORG });
+    await deliverRunEvent({ type: 'ai.agent.run.awaiting_approval', payload: { runId: RUN } });
+    expect(drainPendingRunResults(session as never)).toContain('Steps waiting for approval: 2');
+
+    readRunForDelivery.mockResolvedValue({ status: 'awaiting_approval', summary: 'x', artifacts: [], pendingIntentCount: 0 });
+    watchRunForSession({ runId: RUN, sessionId: SESSION, orgId: ORG });
+    await deliverRunEvent({ type: 'ai.agent.run.awaiting_approval', payload: { runId: RUN } });
+    expect(drainPendingRunResults(session as never)).not.toContain('Steps waiting for approval');
+  });
+
+  // A partner-wide Wisp chat can hand off a device in another org. The bridge's
+  // tenant assertion stays strict, so that run is not watched at all: no false
+  // "registry bug" report, and the card's poll still shows the run.
+  it('watchRunForOriginSession attaches only to a live session of the same org', async () => {
+    const { session } = fakeSession();
+    sessionGet.mockReturnValue(session);
+    expect(watchRunForOriginSession({ runId: RUN, sessionId: SESSION, orgId: ORG })).toBe(true);
+    unwatchRun(RUN);
+
+    sessionGet.mockReturnValue(fakeSession({ orgId: 'another-org' }).session);
+    expect(watchRunForOriginSession({ runId: RUN, sessionId: SESSION, orgId: ORG })).toBe(false);
+    sessionGet.mockReturnValue(undefined);
+    expect(watchRunForOriginSession({ runId: RUN, sessionId: SESSION, orgId: ORG })).toBe(false);
+
+    await deliverRunEvent({ type: 'ai.agent.run.completed', payload: { runId: RUN } });
+    expect(readRunForDelivery).not.toHaveBeenCalled();
   });
 
   it('maps a failed run to a run_result the card can render', async () => {

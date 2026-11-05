@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
+  announceViewerReconnect,
   ANSWER_POLL_INITIAL_INTERVAL_MS,
   ANSWER_POLL_MAX_INTERVAL_MS,
   createWebRTCSession,
@@ -204,6 +205,44 @@ describe('createWebRTCSession — session-ended (401) handling', () => {
     await expect(createWebRTCSession(baseParams, videoEl)).rejects.toBeInstanceOf(
       SessionEndedError,
     );
+  });
+
+  // #10542: a reconnect whose ICE-server fetch already 401s is over. It must
+  // end at once, not build a peer, gather candidates and post an offer that can
+  // only 401 too.
+  it('throws SessionEndedError when the ICE-server fetch returns 401, without building a peer or posting an offer', async () => {
+    let offers = 0;
+    const createOffer = vi.spyOn(FakeRTCPeerConnection.prototype, 'createOffer');
+    stubFetch((url) => {
+      if (url.includes('/ice-servers')) return jsonResponse({ error: 'Session closed' }, 401);
+      if (url.includes('/viewer/offer')) {
+        offers += 1;
+        return jsonResponse('Session closed', 401);
+      }
+      if (url.includes('/viewer/session')) return jsonResponse('Session closed', 401);
+      return jsonResponse({}, 404);
+    });
+
+    const error = await createWebRTCSession(baseParams, videoEl).catch((err) => err);
+    expect(error).toBeInstanceOf(SessionEndedError);
+    expect(error.message).toBe(SESSION_ENDED_DEFAULT_MESSAGE);
+    expect(offers).toBe(0);
+    expect(createOffer).not.toHaveBeenCalled();
+  });
+
+  it('still falls back to STUN-only when the ICE-server fetch fails for another reason', async () => {
+    let offers = 0;
+    stubFetch((url) => {
+      if (url.includes('/ice-servers')) return jsonResponse({ error: 'boom' }, 500);
+      if (url.includes('/viewer/offer')) {
+        offers += 1;
+        return jsonResponse('Session ended', 401);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    await expect(createWebRTCSession(baseParams, videoEl)).rejects.toBeInstanceOf(SessionEndedError);
+    expect(offers).toBe(1);
   });
 
   // #5300: the no-video watchdog's swallowed capture error reaches
@@ -470,5 +509,49 @@ describe('createWebRTCSession — session-ended (401) handling', () => {
       // A flat 50ms poll would have issued ~300 here.
       expect(polls()).toBeLessThan(40);
     });
+  });
+});
+
+// #10542: before a WebRTC reconnect closes its old peer, the viewer tells the
+// API a reconnect is starting (an ICE-server fetch for the still-active
+// session). The API then holds the agent's drop report for that peer instead
+// of ending the session under the reconnect.
+describe('announceViewerReconnect (#10542)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('fetches the ICE servers for the session with the viewer token', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ iceServers: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+    await announceViewerReconnect(baseParams);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(String(url)).toContain('/api/v1/desktop-ws/sess-123/viewer/ice-servers');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer viewer-token');
+  });
+
+  it('never throws: a failed or refused announce just lets the reconnect go ahead', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('network down'); }));
+    await expect(announceViewerReconnect(baseParams)).resolves.toBeUndefined();
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse('Session closed', 401)));
+    await expect(announceViewerReconnect(baseParams)).resolves.toBeUndefined();
+  });
+
+  it('gives up after its timeout so a dead network cannot stall the reconnect', async () => {
+    vi.useFakeTimers();
+    let aborted = false;
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => {
+        aborted = true;
+        reject(new DOMException('aborted', 'AbortError'));
+      });
+    })));
+    const done = announceViewerReconnect(baseParams, 2_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(done).resolves.toBeUndefined();
+    expect(aborted).toBe(true);
   });
 });

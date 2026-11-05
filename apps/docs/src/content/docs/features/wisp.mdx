@@ -207,10 +207,13 @@ When a concern needs focused work, Wisp can ask a **specialist** to do it. A req
 | `patch_plan` | Drafts a patch plan | After you approve |
 | `remediation_research` | Researches a fix for a problem | After you approve |
 | `bulk_ticket_reply` | Sends one message to a list of tickets (for example, everyone hit by the same outage). The approval card shows the exact tickets and the exact message; no ticket is added after approval, and the batch stops at the first failure and reports | After you approve |
+| `device_troubleshooting` | Investigates one device toward one goal in the background. It reads freely, and every change it wants becomes its own approval request | When you ask in chat, like any ordinary tool call; after you approve, when Wisp asks during an assessment |
 
 The kinds marked "after you approve" appear as an approval card; nothing starts until a person says yes. When you approve one, it runs with **your** authority at that moment, and every normal gate still applies. Anything the specialist then wants to change creates its own approval, as usual. Specialist requests count against the same daily budget.
 
-`launch_specialist` itself runs only `sweep` and `analysis` on the call. `operator_recipe`, `patch_plan`, `remediation_research` and `bulk_ticket_reply` escalate to a supervised Tier-3 approval in chat.
+`launch_specialist` itself runs only `sweep`, `analysis` and `device_troubleshooting` on the call. `operator_recipe`, `patch_plan`, `remediation_research` and `bulk_ticket_reply` escalate to a supervised Tier-3 approval in chat.
+
+A `device_troubleshooting` run stays on the device it was given and refuses a call that names any other device. It never makes a change itself and raises at most three approval requests. Its steps appear on the run card, and the run appears under Workers in the Wisp rail. If the grant is paused or revoked mid-run, the run stops and is marked failed.
 
 Two refusals are user-visible. `bulk_reply_incomplete` means a bulk reply stopped part-way; what was sent and what was not is stored on the intent. `uncertain` means Wisp could not tell whether the work had taken effect, so it did not retry.
 

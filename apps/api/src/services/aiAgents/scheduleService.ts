@@ -110,6 +110,8 @@ const AGENT_KIND_MISMATCH: Readonly<Record<AiAgentKind, { code: ScheduleValidati
   helpdesk: { code: 'agent_kind_not_triage', message: 'Only a triage agent can be scheduled' },
   // research has no schedule kind; the entry exists only because the Record is keyed on every AiAgentKind.
   research: { code: 'agent_kind_not_triage', message: 'Only a triage agent can be scheduled' },
+  // troubleshoot (#11084) has no schedule kind either; same reason.
+  troubleshoot: { code: 'agent_kind_not_triage', message: 'Only a triage agent can be scheduled' },
 };
 
 /**

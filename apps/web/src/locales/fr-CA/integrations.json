@@ -1518,6 +1518,16 @@
       "auto_external_code": "Automatique",
       "manual_unmapped": "Volontairement non associé"
     },
+    "installer": {
+      "ready": "Programme d'installation : prêt (récupéré {{time}})",
+      "packagesApiDisabled": "Programme d'installation : l'API Packages n'est pas activée sur la clé d'API",
+      "noPackage": "Programme d'installation : cette entreprise n'a aucun paquet d'installation",
+      "multiplePackages": "Programme d'installation : cette entreprise a plus d'un paquet d'installation. Conservez-en un dans la console du fournisseur",
+      "malformedResponse": "Programme d'installation : le fournisseur a renvoyé un lien que Breeze ne peut pas utiliser",
+      "urlRejected": "Programme d'installation : le lien du fournisseur pointe vers un hôte que Breeze n'autorise pas",
+      "vendorError": "Programme d'installation : la dernière actualisation du lien a échoué. Breeze réessaiera à la prochaine synchronisation",
+      "unavailable": "Lien du programme d'installation non disponible"
+    },
     "endpointsTitle": "Terminaux non liés",
     "endpointsHelp": "Liez les terminaux EDR qui n'ont pas pu être associés automatiquement à un appareil Breeze.",
     "endpointsFilter": "État du terminal",

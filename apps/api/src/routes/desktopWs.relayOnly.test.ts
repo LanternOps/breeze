@@ -78,6 +78,12 @@ vi.mock('../services/viewerTokenRevocation', () => ({
   revokeViewerSession: vi.fn(async () => undefined),
 }));
 
+// #10542: no reconnect hold in these suites.
+vi.mock('../services/desktopReconnectGrace', () => ({
+  markDesktopViewerReconnectIntent: vi.fn(async () => true),
+  enforceExpiredDesktopReconnectHold: vi.fn(async () => 'none'),
+}));
+
 vi.mock('./agentWs', () => ({
   sendCommandToAgent: vi.fn(() => true),
   sendDesktopIceCandidateToAgent: vi.fn(() => true),

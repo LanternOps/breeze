@@ -604,6 +604,34 @@ describe('execution-plane run events (spec §5.5)', () => {
     expect(patch.chatRuns!.r1!.artifacts[0]!.name).toBe('failed-logons.csv');
   });
 
+  it('carries an awaiting_approval result and its pending count onto the run', () => {
+    const state = makeState();
+    let patch: Partial<StreamableState> = {};
+    processStreamEvent(
+      { type: 'run_result', runId: 'r1', status: 'awaiting_approval', summary: 'needs approval', artifacts: [], pendingIntentCount: 2 },
+      (fn) => { patch = fn(state); },
+      () => state,
+      null,
+    );
+    expect(patch.chatRuns!.r1).toMatchObject({ status: 'awaiting_approval', pendingIntentCount: 2 });
+  });
+
+  it('a run_progress after an awaiting_approval result keeps the status and pending count', () => {
+    const state = makeState();
+    state.chatRuns = {
+      r1: { runId: 'r1', status: 'awaiting_approval', progress: [], summary: null, artifacts: [], pendingIntentCount: 2 },
+    };
+    let patch: Partial<StreamableState> = {};
+    processStreamEvent(
+      { type: 'run_progress', runId: 'r1', step: 'late', label: 'Late', ordinal: 3 },
+      (fn) => { patch = fn(state); },
+      () => state,
+      null,
+    );
+    expect(patch.chatRuns!.r1).toMatchObject({ status: 'awaiting_approval', pendingIntentCount: 2 });
+    expect(patch.chatRuns!.r1!.progress).toHaveLength(1);
+  });
+
   it('keeps the progress already collected when the result arrives', () => {
     const state = makeState();
     state.chatRuns = {

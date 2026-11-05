@@ -5,6 +5,7 @@ import ConversionPendingBanner from './conversion/ConversionPendingBanner';
 import PendingPoliciesList from './conversion/PendingPoliciesList';
 import LegacyRulesTable from './LegacyRulesTable';
 import BuiltInAlertRules from './BuiltInAlertRules';
+import LifecycleDefaultsCard from './LifecycleDefaultsCard';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus, Trash2 } from 'lucide-react';
@@ -165,6 +166,10 @@ export default function MonitorsListPage() {
           <Plus className="h-4 w-4" />
           {t('monitoring:list.new')}
         </button>
+      </div>
+
+      <div id="lifecycle">
+        <LifecycleDefaultsCard />
       </div>
 
       <ConversionPendingBanner orgId={currentOrgId} onReview={() => showView('needs-conversion')} onConverted={() => void fetchMonitors()} revision={ledgerRevision} />

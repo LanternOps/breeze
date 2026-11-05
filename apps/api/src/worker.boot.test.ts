@@ -67,6 +67,7 @@ const mocks = vi.hoisted(() => {
     loadBuiltinExtensions: vi.fn(async () => {}),
     createExtensionStateStore: vi.fn(() => ({})),
     registerAiAgentEnqueuer: vi.fn(),
+    registerGatewayConnectionCheck: vi.fn(),
     registerAllEventSubscribers: vi.fn(),
     buildWebhookFanoutDeps: vi.fn(() => ({})),
     partnerTrustMode: vi.fn(() => 'off'),
@@ -155,6 +156,13 @@ vi.mock('./db', () => ({
 // AI model registry W01 (#7599): the boot path starts the platform model
 // snapshot refresher; it reads the database, which this suite mocks out.
 vi.mock('./services/aiModels/platformModels', () => ({ startPlatformModelSnapshotRefresher: vi.fn(() => () => undefined) }));
+// Mocked because the real module pulls in the model gateway and the whole
+// db/schema barrel: about 650 modules on the first import, enough to overrun
+// waitFor's budget when the runner is busy (the first test here took about 1.5s
+// of its 2s even on a passing CI run).
+vi.mock('./services/aiModels/gatewayConnectionState', () => ({
+  registerGatewayConnectionCheck: mocks.registerGatewayConnectionCheck,
+}));
 vi.mock('./services/redis', () => ({
   getRedis: mocks.getRedis,
   closeRedis: mocks.closeRedis,
@@ -302,6 +310,7 @@ beforeEach(() => {
   delete process.env.METRICS_SCRAPE_IP_ALLOWLIST;
 
   vi.clearAllMocks();
+  mocks.registerGatewayConnectionCheck.mockReset();
   mocks.shutdownPhaseCalls.length = 0;
 
   // Baseline "everything healthy" defaults; individual tests override.
@@ -400,6 +409,17 @@ describe('worker.ts boot (#4086 Task 6)', () => {
       'startRegisteredWorkers',
       'initializeEventDispatchWorker',
     ]);
+  });
+
+  it('registers the gateway connection check before any worker can dial', async () => {
+    const order: string[] = [];
+    mocks.registerGatewayConnectionCheck.mockImplementation(() => { order.push('registerGatewayConnectionCheck'); });
+    mocks.startRegisteredWorkers.mockImplementation(async () => { order.push('startRegisteredWorkers'); });
+
+    const worker = await importFreshWorker();
+    await waitFor(() => worker._getWorkerInitPhaseForTest() === 'started');
+
+    expect(order).toEqual(['registerGatewayConnectionCheck', 'startRegisteredWorkers']);
   });
 
   it('no AI model registry cutover sweep at worker boot (W08 #7606: partners are bootstrapped on demand by ensurePartnerCutover)', () => {

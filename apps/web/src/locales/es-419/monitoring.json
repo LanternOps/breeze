@@ -43,6 +43,42 @@
       "description": "Adjunte los monitores integrados a una política."
     }
   },
+  "lifecycle": {
+    "autoResolveOn": "Activado",
+    "autoResolveOff": "Desactivado",
+    "rearmLabel": "Rearmado",
+    "rearmNewEvidence": "Evidencia nueva",
+    "rearmAfterDelay": "Después de N minutos",
+    "rearmAfterMinutes_one": "Después de {{count}} minuto",
+    "rearmAfterMinutes_other": "Después de {{count}} minutos",
+    "rearmDelayLabel": "Rearmar después de (minutos)",
+    "rearmHelp": "Evidencia nueva: solo un evento que la alerta cerrada no haya visto la vuelve a abrir. Después de N minutos: los eventos más antiguos también pueden volver a abrirla una vez que hayan pasado N minutos desde que se cerró.",
+    "inheritOption": "Heredar ({{value}}, {{source}})",
+    "inheritOptionPlain": "Heredar",
+    "sources": {
+      "org": "Predeterminado de la organización",
+      "partner": "Predeterminado del partner",
+      "builtin": "Predeterminado integrado"
+    },
+    "errors": {
+      "cooldown": "Ingrese un número entero de 0 a 1440.",
+      "cooldownOrInherit": "Ingrese un número entero de 0 a 1440 o deje el campo en blanco para heredarlo.",
+      "rearmDelay": "Ingrese un número entero de minutos de 1 a 1440."
+    }
+  },
+  "lifecycleDefaults": {
+    "title": "Valores predeterminados del ciclo de vida",
+    "descriptionPartner": "El valor predeterminado para los monitores de todas las organizaciones. Una organización puede reemplazarlo, y la configuración propia de un monitor prevalece sobre ambos.",
+    "descriptionOrg": "Reemplaza el valor predeterminado del partner para esta organización. Deje un campo en blanco para heredarlo. La configuración propia de un monitor prevalece sobre este valor.",
+    "readOnly": "No tiene permiso para cambiar el valor predeterminado del partner.",
+    "saved": "Valores predeterminados del ciclo de vida guardados",
+    "overrideCount_one": "{{count}} monitor reemplaza este valor",
+    "overrideCount_other": "{{count}} monitores reemplazan este valor",
+    "errors": {
+      "load": "No se pudieron cargar los valores predeterminados del ciclo de vida.",
+      "save": "No se pudieron guardar los valores predeterminados del ciclo de vida."
+    }
+  },
   "editor": {
     "attachedToPolicy": "Monitor creado y adjuntado a la política",
     "titleNew": "Nuevo monitor",
@@ -53,11 +89,22 @@
     },
     "sections": {
       "watch": "Qué observar",
-      "noise": "Severidad y ruido",
+      "lifecycle": "Ciclo de vida de la alerta",
       "respond": "Responder",
       "notify": "Notificar",
       "escalate": "Escalar a una persona",
       "deployed": "Desplegado en"
+    },
+    "lifecycle": {
+      "overrides": {
+        "org": "Este monitor reemplaza el valor predeterminado de la organización ({{value}})",
+        "partner": "Este monitor reemplaza el valor predeterminado del partner ({{value}})",
+        "builtin": "Este monitor reemplaza el valor predeterminado integrado ({{value}})",
+        "unknown": "Este monitor reemplaza el valor predeterminado heredado."
+      },
+      "partnerWideHint": "Una organización con su propio valor predeterminado usa ese en lugar del valor heredado que se muestra aquí.",
+      "inheritedUnavailable": "No se pudieron cargar los valores heredados. Aun así, puede guardar.",
+      "windowWarning": "La ventana de eventos ({{window}} min) es más corta que el enfriamiento ({{cooldown}} min). Un evento nuevo durante el enfriamiento puede salir de la ventana antes de que la alerta se vuelva a abrir."
     },
     "tabs": {
       "settings": "Configuración",
