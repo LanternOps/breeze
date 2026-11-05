@@ -382,7 +382,7 @@ test('the PR-ref inventory found the workflows it is meant to police', () => {
   for (const name of SAVERS) assert.ok(!pr.includes(name), `${name} may save caches only because it never runs on a PR ref`);
 });
 
-for (const { name, text } of workflows.filter((w) => runsOnPrRefs(w.text) && !SAVERS.has(w.name))) {
+for (const { name, text } of workflows.filter((w) => !SAVERS.has(w.name))) {
   test(`${name} saves no Actions cache`, () => {
     assert.deepEqual(cacheViolations(text), []);
   });
@@ -397,6 +397,11 @@ const RESTORES = {
   'yara-pack.yml': ['restore-go-cache'],
   'ci-smoke-binary-source-github.yml': ['restore-pnpm-cache'],
   'ci-smoke-binary-source-local.yml': ['restore-pnpm-cache'],
+  // Main-only (schedule / dispatch): their built-in caches duplicated the seed's
+  // pnpm-* and go-* entries on main (node-cache-*, setup-go-*; #11119).
+  'perf.yml': ['restore-pnpm-cache', 'restore-go-cache'],
+  'ai-tool-eval.yml': ['restore-pnpm-cache'],
+  'workspace-nightly.yml': ['restore-pnpm-cache'],
 };
 const SETUP_FOR = { 'restore-pnpm-cache': 'pnpm/action-setup@', 'restore-go-cache': 'actions/setup-go@' };
 const gateOf = (step) => step.match(/^\s+if:\s*(.+)$/m)?.[1] ?? null;
@@ -451,4 +456,68 @@ test('the seed saves the Trivy DB under the key and path the composite restores,
   const download = steps(job.text, 6).find((s) => usesOf(s).startsWith('aquasecurity/trivy-action@'));
   assert.ok(download, 'seed-trivy-db has no trivy-action step');
   assert.match(download, /^\s+cache:\s*'false'\s*$/m, 'the seed must not also save through the action');
+});
+
+// ---- Superseded seed keys (#11119) ------------------------------------------
+// Keys are immutable, so a lockfile or go.sum change makes a second entry per OS
+// (pnpm-Linux 633 + 635 MB, go-* 1.3 + 1.2 GB side by side). Only the newest is
+// ever restored by its exact key; the seed deletes the rest of its family.
+const loadPrune = () => import('./ci-cache-prune.mjs');
+const entry = (key, extra = {}) => ({ id: key.length, key, ref: 'refs/heads/main', sizeInBytes: 100, lastAccessedAt: '2026-11-05T00:00:00Z', ...extra });
+
+test('planSuperseded deletes every other key of the family, never the kept one or another family', async () => {
+  const { planSuperseded } = await loadPrune();
+  const entries = [entry('pnpm-Linux-new'), entry('pnpm-Linux-old'), entry('pnpm-macOS-x'), entry('pnpm-Linux-older'), entry('golangci-lint-v2-Linux')];
+  const { deletions, warning } = planSuperseded(entries, { prefix: 'pnpm-Linux-', keep: 'pnpm-Linux-new' });
+  assert.equal(warning, null);
+  assert.deepEqual(deletions.map((e) => e.key).sort(), ['pnpm-Linux-old', 'pnpm-Linux-older']);
+});
+
+test('planSuperseded deletes nothing when the kept key is not listed (a failed or lagging save)', async () => {
+  const { planSuperseded } = await loadPrune();
+  const { deletions, warning } = planSuperseded([entry('go-Linux-old')], { prefix: 'go-Linux-', keep: 'go-Linux-new' });
+  assert.deepEqual(deletions, []);
+  assert.match(warning, /go-Linux-new/);
+});
+
+test('planSuperseded refuses a keep key outside its own prefix', async () => {
+  const { planSuperseded } = await loadPrune();
+  assert.throws(() => planSuperseded([], { prefix: 'go-Linux-', keep: 'pnpm-Linux-x' }), /prefix/);
+});
+
+// The prune step's KEEP must be the key the job just saved and PREFIX the family
+// its restore falls back to, or it deletes the live entry.
+const SUPERSEDED = {
+  'seed-pnpm': { save: 'Save pnpm cache', prefix: 'pnpm-${{ runner.os }}-' },
+  'seed-go': { save: 'Save Go cache', prefix: 'go-${{ runner.os }}-' },
+  'seed-trivy-db': { save: 'Save Trivy DB cache', prefix: 'cache-trivy-' },
+};
+for (const [jobName, { save, prefix }] of Object.entries(SUPERSEDED)) {
+  test(`${jobName} prunes its superseded keys after saving, with actions: write`, () => {
+    const job = jobBlocks(seedText()).find((j) => j.name === jobName);
+    assert.ok(job, `missing ${jobName}`);
+    assert.match(job.text, /^ {4}permissions:\n {6}contents: read\n {6}actions: write\b/m);
+    const jobSteps = steps(job.text, 6);
+    const saveAt = jobSteps.findIndex((s) => new RegExp(`name: ${save}$`, 'm').test(s));
+    const pruneAt = jobSteps.findIndex((s) => /ci-cache-prune\.mjs superseded/.test(s));
+    assert.ok(saveAt >= 0 && pruneAt > saveAt, `save at ${saveAt}, prune at ${pruneAt}`);
+    const prune = jobSteps[pruneAt];
+    assert.equal(withValue(prune, 'KEEP'), withValue(jobSteps[saveAt], 'key'));
+    assert.equal(withValue(prune, 'PREFIX'), prefix);
+    assert.match(prune, /^\s+continue-on-error: true$/m, 'pruning is housekeeping; it never fails the seed');
+    // Runs on a hit too, so a pair left by an earlier failed prune is cleared.
+    assert.doesNotMatch(prune, /^\s+if:/m);
+  });
+}
+
+test('the pnpm seed starts a new lockfile from an empty store, so the saved store is that lockfile only', () => {
+  const restore = seedStep('Restore pnpm cache');
+  assert.equal(withValue(restore, 'restore-keys'), null);
+});
+
+test('the Go seed drops the restored module cache before downloading a new go.sum', () => {
+  const warm = seedStep('Warm Go caches');
+  const clean = warm.search(/^\s+go clean -modcache$/m);
+  const download = warm.search(/go mod download/);
+  assert.ok(clean >= 0 && clean < download, 'go clean -modcache must run before go mod download');
 });

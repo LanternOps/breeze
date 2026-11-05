@@ -48,6 +48,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+    permissions:
+      contents: read
+      actions: write # Prune superseded keys below.
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -69,14 +72,17 @@ jobs:
         shell: bash
         run: echo "store=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
+      # Exact key only. Warming a new lockfile on top of the previous store saved
+      # both lockfiles' packages, and the next one three: the store only grew. A
+      # miss now installs into an empty store (`pnpm store prune` cannot do this
+      # safely: on macOS pnpm clones files rather than hard-linking them, and
+      # prune deletes every file with one link). See #10762.
       - name: Restore pnpm cache
         id: cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.pnpm.outputs.store }}
           key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: |
-            pnpm-${{ runner.os }}-
 
       - name: Warm pnpm store
         if: steps.cache.outputs.cache-hit != 'true'
@@ -100,6 +106,19 @@ jobs:
           path: ${{ steps.pnpm.outputs.store }}
           key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
 
+      # Keys are immutable, so each lockfile leaves a ~650 MB entry per OS behind,
+      # and the repo sits at its 10 GB limit (#11119). Only the newest is restored
+      # by exact key; CI falls back to it by prefix. Runs on a hit as well, to
+      # clear a pair an earlier failed prune left.
+      - name: Prune superseded pnpm caches
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          PREFIX: pnpm-${{ runner.os }}-
+        run: node .github/scripts/ci-cache-prune.mjs superseded --prefix "$PREFIX" --keep "$KEEP"
+
   seed-go:
     name: Seed Go cache (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -108,6 +127,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+    permissions:
+      contents: read
+      actions: write # Prune superseded keys below.
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -143,6 +165,11 @@ jobs:
         shell: bash
         working-directory: agent
         run: |
+          # The restore-keys fallback brings the previous go.sum's modules; drop
+          # them so the saved module cache is this go.sum only (it grew without
+          # bound before, #10762). GOCACHE is kept: it is what makes the warm
+          # cheap, and Go trims its own entries unused for five days.
+          go clean -modcache
           attempts=3
           for attempt in $(seq 1 "${attempts}"); do
             if go mod download; then
@@ -183,6 +210,16 @@ jobs:
             ${{ steps.go.outputs.gomodcache }}
             ${{ steps.go.outputs.gocache }}
           key: go-${{ runner.os }}-${{ hashFiles('agent/go.sum', 'agent/go.mod') }}
+
+      # Same as the pnpm prune: one Go entry per OS (1.2-1.4 GB each).
+      - name: Prune superseded Go caches
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: go-${{ runner.os }}-${{ hashFiles('agent/go.sum', 'agent/go.mod') }}
+          PREFIX: go-${{ runner.os }}-
+        run: node .github/scripts/ci-cache-prune.mjs superseded --prefix "$PREFIX" --keep "$KEEP"
 
   seed-golangci-lint:
     name: Seed golangci-lint binary cache
@@ -325,6 +362,9 @@ jobs:
     name: Seed Trivy DB cache
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write # Prune superseded keys below.
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -362,6 +402,16 @@ jobs:
         with:
           path: ${{ github.workspace }}/.cache/trivy
           key: cache-trivy-${{ steps.date.outputs.date }}
+
+      # A new key every day; only the newest is worth its ~100 MB.
+      - name: Prune superseded Trivy DB caches
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: cache-trivy-${{ steps.date.outputs.date }}
+          PREFIX: cache-trivy-
+        run: node .github/scripts/ci-cache-prune.mjs superseded --prefix "$PREFIX" --keep "$KEEP"
 
   # Buildkit layer caches (type=gha) are scoped like every other cache, so PR
   # builds read what main exports here. Builds mirror ci.yml's, no push.
