@@ -327,7 +327,7 @@ const BINDINGS: readonly Binding[] = [
   // Full-control W16 PR A (#6786): each launch binds to its "Run now" route (same permission and MFA).
   {
     tool: 'run_patch_plan', routeFile: 'patchPlan.ts', method: 'post', path: '/runs',
-    toolOnly: { extra: [], reason: 'Decision 6: refuses site- and device-restricted sessions, which the run reads already refuse; a release keys the run on its action intent.' },
+    toolOnly: { extra: [], reason: 'Decision 6: refuses site- and device-restricted sessions, which could not read a device-less run; a release keys the run on its action intent.' },
   },
   {
     tool: 'create_operator_task', routeFile: 'aiOperatorTasks.ts', method: 'post', path: '/tasks',

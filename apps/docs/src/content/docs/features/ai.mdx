@@ -909,7 +909,7 @@ The operator task and Fleet Design tools describe a whole organization, so a ses
 
 #### Starting a patch run or an AI task from chat
 
-Two tools start AI work, the same work as the **Run now** buttons. Both need one approval (supervised) and an MFA-verified session, so an API key cannot use them. AI agents and Wisp specialist sessions are never offered them.
+Two tools start AI work, the same work as the **Run now** buttons. Both need one approval (supervised) and an MFA-verified session; API keys and MCP connections cannot satisfy that while two-factor authentication is enabled. AI agents and Wisp specialist sessions are never offered them.
 
 | Tool | Tier | Description |
 |------|------|-------------|
@@ -918,7 +918,7 @@ Two tools start AI work, the same work as the **Run now** buttons. Both need one
 
 - **Every launch costs AI credits and can notify people**, which is why neither runs without an approval. They are supervised, not two-person, because the run itself only proposes: every effect on a device has its own approval, and the organization's run caps limit the spend.
 - **A retried approval is one run or task; approving the same request twice is two.** The launch is tied to the approval, not to its arguments.
-- **`run_patch_plan` refuses a session limited to some sites or devices**, because such a session cannot read the run's result. `create_operator_task` reports a device outside your sites as not found.
+- **`run_patch_plan` refuses a session limited to some sites or devices**, because a device-less run is hidden from such a session, so it could not read the result. `create_operator_task` reports a device outside your sites as not found.
 - **`create_operator_task` is service recovery only.** Onboarding and offboarding change people's accounts, so they stay on the Recipe Library page.
 
 All seven tools are now available in the assistant chat, not just over MCP. AI agents get the read actions by default and the write actions only when the agent's tool allowlist names them; tag changes are never available to agents. Public ticket comments, resolving a ticket, and changing a ticket's requester need approval, while internal notes do not. The billing price book tool is `manage_billing_catalog` (renamed from `manage_catalog`; the old name keeps working over MCP for one release).

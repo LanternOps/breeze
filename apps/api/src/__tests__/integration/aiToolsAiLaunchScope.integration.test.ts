@@ -19,6 +19,7 @@ import { aiAgentRuns, aiAgents, aiOperatorTasks } from '../../db/schema';
 import { buildDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { executeTool } from '../../services/aiTools';
 import { registerAgentRunEnqueuer, type AgentRunEnqueuer } from '../../services/aiAgents/runService';
+import { launchServiceRecoveryTask } from '../../services/aiOperator/serviceRecoveryLaunch';
 import { clearPermissionCache } from '../../services/permissions';
 import {
   assignUserToOrganization, createDevice, createOrganization, createPartner, createRole, createSite, createUser, grantRolePermissions,
@@ -127,6 +128,48 @@ describe('create_operator_task (#6786)', () => {
     expect(await tasksOf(f.org.id)).toHaveLength(0);
   });
 
+  // The case above is refused by the generic `deviceArgs` gate before the handler runs. This one calls the shared
+  // operation directly, the way the REST route does, so it shows the operation's own site check holds.
+  it('the shared operation refuses that device by itself: not found, no task row', async () => {
+    const out = await withDbAccessContext(contextOf(f.auth.restricted), () => launchServiceRecoveryTask(f.auth.restricted, {
+      orgId: f.org.id, recipeKey: 'service_recovery', recipeVersion: 1, deviceId: f.deviceB.id, serviceName: 'Spooler',
+      clientIdempotencyKey: `ai-tool:${randomUUID()}`,
+    }));
+    expect(out).toEqual({ ok: false, code: 'NOT_FOUND' });
+    expect(await tasksOf(f.org.id)).toHaveLength(0);
+  });
+
+  it('two concurrent releases of one intent are one task', async () => {
+    const input = { orgId: f.org.id, deviceId: f.deviceB.id, serviceName: 'Spooler' };
+    const intent = randomUUID();
+    const [a, b] = await Promise.all([
+      run('create_operator_task', input, f.auth.tech, intent),
+      run('create_operator_task', input, f.auth.tech, intent),
+    ]);
+    expect(a.taskId).toEqual(expect.any(String));
+    expect(b.taskId).toBe(a.taskId);
+    expect([a.replayed, b.replayed].sort()).toEqual([false, true]);
+    expect(await tasksOf(f.org.id)).toHaveLength(1);
+  });
+
+  it('a named alert must be on the device: another device\'s alert is not found, and no task row', async () => {
+    const deviceA = await createDevice({ orgId: f.org.id, siteId: f.siteA.id, hostname: `w16a-host-${randomUUID().slice(0, 8)}` });
+    const alertId = randomUUID();
+    await getTestDb().execute(sql`
+      INSERT INTO alerts (id, org_id, device_id, status, severity, title, message, triggered_at)
+      VALUES (${alertId}, ${f.org.id}, ${deviceA.id}, 'active', 'high', 'Spooler stopped', 'Spooler stopped', now())`);
+
+    const other = await run('create_operator_task', { orgId: f.org.id, deviceId: f.deviceB.id, serviceName: 'Spooler', alertId }, f.auth.tech, randomUUID());
+    expect(other.code).toBe('NOT_FOUND');
+    expect(await tasksOf(f.org.id)).toHaveLength(0);
+
+    // CONTROL: the same alert on its own device is the task's triggering alert.
+    const own = await run('create_operator_task', { orgId: f.org.id, deviceId: deviceA.id, serviceName: 'Spooler', alertId }, f.auth.tech, randomUUID());
+    expect(own).toMatchObject({ taskId: expect.any(String), replayed: false });
+    const [row] = await tasksOf(f.org.id);
+    expect(row).toMatchObject({ id: own.taskId, originKind: 'alert' });
+  });
+
   it('CONTROL: an unrestricted member admits one queued service-recovery task for the same device', async () => {
     const out = await run('create_operator_task', { orgId: f.org.id, deviceId: f.deviceB.id, serviceName: 'Spooler' }, f.auth.tech, randomUUID());
     expect(out).toMatchObject({ taskId: expect.any(String), replayed: false });
@@ -154,6 +197,13 @@ describe('run_patch_plan (#6786)', () => {
     const out = await run('run_patch_plan', { orgId: f.foreignOrg.id }, f.auth.tech, randomUUID());
     expect(out.code).toBe('NOT_FOUND');
     expect(await runsOf(f.foreignOrg.id)).toHaveLength(0);
+  });
+
+  it('a site-restricted member of the org is refused (Decision 6), and no run row is written', async () => {
+    const out = await run('run_patch_plan', { orgId: f.org.id }, f.auth.restricted, randomUUID());
+    expect(out.code).toBe('ACCESS_DENIED');
+    expect(await runsOf(f.org.id)).toHaveLength(0);
+    expect(enqueued).toEqual([]);
   });
 
   it('CONTROL: the caller\'s org admits one device-less patch run, and a retried release is that run', async () => {

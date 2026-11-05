@@ -5,10 +5,10 @@
  * not-found, the org's EFFECTIVE `patch` agent (admission re-resolves it and
  * re-checks `enabled` / `mode`), a device-less `profile: 'patch'` run.
  *
- * A patch run executes nothing: `patchLimits()` pins `maxActionsPerRun: 0`,
- * so every install it proposes becomes its own supervised
- * `manage_patches:install` card. The run still costs AI credits and notifies
- * the agent's recipients.
+ * A patch run executes nothing: `patchLimits()` pins the run loop's
+ * `maxActionsPerRun` to 0, and the installs it proposes are minted afterwards as
+ * supervised `manage_patches:install` cards. The run still costs AI credits and
+ * notifies the agent's recipients.
  *
  * The audit row stays with the caller (route: `writeRouteAudit`; tool:
  * `auditToolWrite`): admission writes none of its own.

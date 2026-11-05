@@ -118,7 +118,11 @@ function uuidParam(c: Context, name: string): string | null {
  * `POST /api/v1/ai/operator/tasks` — the only door that creates a task
  * (#5205 W08, #5246; spec §12's `POST /tasks` row).
  *
- * ORDER OF CHECKS IS THE CONTRACT, not a style choice:
+ * ORDER OF CHECKS IS THE CONTRACT, not a style choice. For a device-targeted
+ * recipe, steps 2-5 run in `launchServiceRecoveryTask`
+ * (services/aiOperator/serviceRecoveryLaunch.ts, W16 #6786), which the
+ * `create_operator_task` AI tool also calls; this route maps its codes to the
+ * statuses named below.
  *
  *  1. `.strict()` body (400). Spec §12: "Requests cannot supply a principal,
  *     effective policy, approval result, or trusted continuation token." A
@@ -131,9 +135,10 @@ function uuidParam(c: Context, name: string): string | null {
  *     for devices a read cannot see.
  *  4. Readiness recompute (422). Spec §12: "Recompute readiness on launch...
  *     A cached catalog or draft is never authority." Flags and recipe version
- *     are re-read here even though `admitServiceRecoveryTask` checks the flags
- *     again — the second check is the one that actually gates the insert; this
- *     one exists to produce an ACTIONABLE reason instead of a bare refusal.
+ *     are re-read before admission even though `admitServiceRecoveryTask`
+ *     checks the flags again — the second check is the one that actually gates
+ *     the insert; the first exists to produce an ACTIONABLE reason instead of a
+ *     bare refusal.
  *  5. Admission, which is idempotent on `clientIdempotencyKey` and enforces
  *     the task-wide policy ceilings (#6590) — including the pending cap,
  *     which it answers as `pending_cap_reached` and this route turns into

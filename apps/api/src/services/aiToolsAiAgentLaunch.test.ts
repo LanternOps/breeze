@@ -164,6 +164,15 @@ describe('run_patch_plan (#6786 T2)', () => {
     // A foreign org never gets a row written into it.
     expect((h.audit.mock.calls[0]![1] as Record<string, unknown>).orgId).toBeNull();
   });
+
+  it('a thrown admission writes one failure audit row and is an error envelope', async () => {
+    h.launchPatch.mockRejectedValue(new Error('connection reset'));
+    expectErrorEnvelope(await patch({ orgId: ORG }, auth(), { actionIntentId: INTENT }));
+    expect(h.audit).toHaveBeenCalledTimes(1);
+    expect(h.audit.mock.calls[0]![1]).toMatchObject({
+      orgId: ORG, action: 'ai_patch_plan.run.manual_trigger', result: 'failure', details: { via: 'ai_tool', refused: 'THROWN' },
+    });
+  });
 });
 
 describe('create_operator_task (#6786 T3)', () => {
@@ -245,6 +254,35 @@ describe('create_operator_task (#6786 T3)', () => {
     expect(h.audit.mock.calls[0]![1]).toMatchObject({
       orgId: ORG, action: 'ai_operator.task.create', resourceId: TASK, result: 'success',
       details: { via: 'ai_tool', recipeKey: 'service_recovery', deviceId: DEVICE, serviceName: 'Spooler', replayed: false },
+    });
+  });
+
+  it('a refused launch records what was asked for, and a foreign org is named without a row in it', async () => {
+    h.launchTask.mockResolvedValue({ ok: false, code: 'NOT_FOUND' });
+    await task({ ...INPUT, orgId: ORG_B }, auth(), { actionIntentId: INTENT });
+    expect(h.audit).toHaveBeenCalledTimes(1);
+    expect(h.audit.mock.calls[0]![1]).toMatchObject({
+      orgId: null, partnerId: 'p-1', result: 'failure',
+      details: { via: 'ai_tool', refused: 'NOT_FOUND', requestedOrgId: ORG_B, deviceId: DEVICE },
+    });
+  });
+
+  it('an alert refusal writes one failure audit row', async () => {
+    h.findAlert.mockResolvedValue(null);
+    await task({ ...INPUT, alertId: ALERT }, auth(), { actionIntentId: INTENT });
+    expect(h.audit).toHaveBeenCalledTimes(1);
+    expect(h.audit.mock.calls[0]![1]).toMatchObject({
+      orgId: ORG, action: 'ai_operator.task.create', result: 'failure',
+      details: { via: 'ai_tool', refused: 'ALERT_NOT_FOUND', alertId: ALERT },
+    });
+  });
+
+  it('a thrown admission writes one failure audit row and is an error envelope', async () => {
+    h.launchTask.mockRejectedValue(new Error('connection reset'));
+    expectErrorEnvelope(await task(INPUT, auth(), { actionIntentId: INTENT }));
+    expect(h.audit).toHaveBeenCalledTimes(1);
+    expect(h.audit.mock.calls[0]![1]).toMatchObject({
+      orgId: ORG, action: 'ai_operator.task.create', result: 'failure', details: { via: 'ai_tool', refused: 'THROWN' },
     });
   });
 

@@ -10,10 +10,11 @@
  * Classes (aiGuardrails.ts; W16 plan class review, Decision 1): both are Tier 3
  * SUPERVISED, a recorded exception to the class rule that would make an
  * irreversible launch that reaches people four-eyes. What each launches is
- * findings or per-effect approvals: a patch run has `maxActionsPerRun: 0`
- * (each proposed install is its own `manage_patches:install` card), and an
- * operator task asks for approval of every change it makes. Per-org caps bound
- * the credit spend. REST is one person + MFA.
+ * findings or per-effect approvals: a patch run executes nothing (`patchLimits`
+ * pins its run loop's `maxActionsPerRun` to 0; the installs it proposes are
+ * minted afterwards as `manage_patches:install` cards), and an operator task
+ * asks for approval of every change it makes. Per-org caps bound the credit
+ * spend. REST is one person + MFA.
  *
  * Exposure: both are in `AGENT_HUMAN_ONLY_TOOLS` (an agent that could call
  * them launches runs that launch runs), which also puts them in the Wisp grant
@@ -24,8 +25,9 @@
  * Gates beyond the shared operation:
  *  - both are MFA-gated as a whole (`MFA_GATED_TOOL_ACTIONS`), like REST;
  *  - `run_patch_plan` refuses a site- or device-restricted session outright
- *    (Decision 6, stricter than REST): the W10 run reads already refuse those
- *    sessions, so such a caller could start a run whose result it cannot read;
+ *    (Decision 6, stricter than REST): the run reads scope a site-restricted
+ *    session to runs on its devices, which a device-less patch run never matches,
+ *    so such a caller could start a run whose result it cannot read;
  *  - `create_operator_task` runs only as the release of its own approved
  *    intent: its idempotency key is `ai-tool:<intentId>`, so a retried release
  *    replays the first task and a second approved card is a second task. The
@@ -111,6 +113,13 @@ export async function runPatchPlanHandler(
     }
     return json({ queued: true, runId: result.runId, ...(result.replayed ? { replayed: true } : {}) });
   } catch (error) {
+    auditToolWrite(auth, {
+      ...auditOrg(auth, orgId),
+      action: 'ai_patch_plan.run.manual_trigger',
+      resourceType: 'ai_agent',
+      details: { via: 'ai_tool', refused: 'THROWN', requestedOrgId: orgId },
+      result: 'failure',
+    });
     return thrown(PATCH_TOOL, error);
   }
 }
@@ -138,6 +147,24 @@ export async function createOperatorTaskHandler(
   }
   const { orgId, deviceId, serviceName, alertId } = parsed.value;
 
+  // One row per outcome. REST writes none for this action, so the row has no twin.
+  const audit = (outcome: Record<string, unknown>, ok: boolean, taskId?: string) => auditToolWrite(auth, {
+    ...auditOrg(auth, orgId),
+    action: 'ai_operator.task.create',
+    resourceType: 'ai_operator_task',
+    ...(taskId ? { resourceId: taskId } : {}),
+    details: {
+      via: 'ai_tool',
+      recipeKey: 'service_recovery',
+      deviceId,
+      serviceName,
+      ...(alertId ? { alertId } : {}),
+      ...(ok ? {} : { requestedOrgId: orgId }),
+      ...outcome,
+    },
+    result: ok ? 'success' : 'failure',
+  });
+
   try {
     // The alert becomes the task's recurrence check, so it must be one the
     // caller can reach and must be about this device (stricter than REST,
@@ -146,6 +173,7 @@ export async function createOperatorTaskHandler(
       const { findAlertWithAccess } = await import('./aiToolsAlerts');
       const alert = await findAlertWithAccess(alertId, auth);
       if (!alert || alert.orgId !== orgId || alert.deviceId !== deviceId) {
+        audit({ refused: 'ALERT_NOT_FOUND' }, false);
         return jsonError('Alert not found for this device, or access denied', 'NOT_FOUND');
       }
     }
@@ -164,21 +192,8 @@ export async function createOperatorTaskHandler(
       clientIdempotencyKey: `ai-tool:${intentId}`,
     });
 
-    auditToolWrite(auth, {
-      ...auditOrg(auth, orgId),
-      action: 'ai_operator.task.create',
-      resourceType: 'ai_operator_task',
-      ...(result.ok ? { resourceId: result.taskId } : {}),
-      details: {
-        via: 'ai_tool',
-        recipeKey: SERVICE_RECOVERY_WORKFLOW_KEY,
-        deviceId,
-        serviceName,
-        ...(alertId ? { alertId } : {}),
-        ...(result.ok ? { replayed: result.replayed } : { refused: result.code }),
-      },
-      result: result.ok ? 'success' : 'failure',
-    });
+    if (result.ok) audit({ replayed: result.replayed }, true, result.taskId);
+    else audit({ refused: result.code }, false);
 
     if (!result.ok) {
       if (result.code === 'NOT_FOUND') return jsonError('Device not found or access denied', 'NOT_FOUND');
@@ -190,6 +205,7 @@ export async function createOperatorTaskHandler(
     }
     return json({ taskId: result.taskId, replayed: result.replayed, deviceId, serviceName });
   } catch (error) {
+    audit({ refused: 'THROWN' }, false);
     return thrown(OPERATOR_TOOL, error);
   }
 }

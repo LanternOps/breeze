@@ -1152,8 +1152,9 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   'wisp_specialist_request',
   // Full-control W16 PR A (#6786), Decision 1: a RECORDED EXCEPTION to the class rule. A launch cannot be undone
   // (credits) and it can notify people, which the rule would make four-eyes. Supervised instead, because what each
-  // launches is findings or per-effect approvals: a patch run has maxActionsPerRun 0 (every install it proposes is
-  // its own supervised manage_patches:install card), and an operator task asks approval for each change it makes.
+  // launches is findings or per-effect approvals: a patch run executes nothing (patchLimits pins the run loop to 0
+  // actions; proposed installs are minted afterwards as supervised manage_patches:install cards), and an operator
+  // task asks approval for each change it makes.
   // Per-org caps bound the spend; launch_specialist's patch_plan / operator_recipe kinds are already supervised; REST
   // "Run now" is one person + MFA. Signed off in the W16 PR A body. Moving either to four-eyes needs no other change.
   'run_patch_plan', 'create_operator_task',

@@ -114,10 +114,11 @@ export async function launchServiceRecoveryTask(
     };
   }
 
-  // (5) Admit. The requester's authorized ceiling is what was just checked
-  // (org + site, plus the caller's write permission and MFA); `requesterUserId`
-  // records WHOSE ceiling it is, which spec §5.1's "loss of that access pauses
-  // delegated execution" is later evaluated against.
+  // (5) Admit. The requester's authorized ceiling is the org and site checked
+  // above, plus the write permission and MFA each caller gates on (route
+  // middleware; tool dispatch and handler). `requesterUserId` records WHOSE
+  // ceiling it is, which spec §5.1's "loss of that access pauses delegated
+  // execution" is later evaluated against.
   const result = await admitServiceRecoveryTask({
     orgId: input.orgId,
     agentId,
