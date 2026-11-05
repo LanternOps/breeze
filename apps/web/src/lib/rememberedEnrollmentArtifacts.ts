@@ -59,6 +59,20 @@ interface StoredBlob {
 
 let secretInMemory: { userId: string; secret: string } | null = null;
 
+// Bumped by every clear. A mint captures it before its request and passes it
+// back to remember*, which refuses the write if a sign-out happened in between:
+// the modal may already be unmounted, so no React state can stop it.
+let rememberEpoch = 0;
+
+/** Capture before minting, and pass as `epoch` to rememberCliToken / rememberInstallerLink. */
+export function currentRememberEpoch(): number {
+  return rememberEpoch;
+}
+
+function clearedSince(epoch: number | undefined): boolean {
+  return epoch !== undefined && epoch !== rememberEpoch;
+}
+
 function isLive(expiresAt: unknown): expiresAt is string {
   if (typeof expiresAt !== 'string') return false;
   const expiresMs = Date.parse(expiresAt);
@@ -110,9 +124,13 @@ function writeBlob(blob: StoredBlob): void {
     sessionStorage.setItem(REMEMBERED_ENROLLMENT_ARTIFACTS_KEY, JSON.stringify(blob));
   } catch (err) {
     // Never log the blob itself: it holds live credentials.
-    console.warn('[rememberedEnrollmentArtifacts] could not store the entry', {
+    console.warn('[rememberedEnrollmentArtifacts] could not store the entry; forgetting all of them', {
       error: err instanceof Error ? err.name : 'unknown',
     });
+    // The old blob may still hold an entry this write was meant to drop (a
+    // replaced, expired or left-behind credential). Remembering nothing is the
+    // safe way to fail.
+    removeBlob();
   }
 }
 
@@ -165,16 +183,26 @@ function loadBlob(userId: string): StoredBlob {
 export function rememberCliToken(
   userId: string,
   siteId: string,
-  token: { value: string; expiresAt: string; maxUsage: number | null; serverUrl: string | null },
+  token: {
+    value: string;
+    expiresAt: string;
+    maxUsage: number | null;
+    serverUrl: string | null;
+    epoch?: number;
+  },
   enrollmentSecret?: string,
 ): void {
+  if (clearedSince(token.epoch)) return;
   if (enrollmentSecret) secretInMemory = { userId, secret: enrollmentSecret };
   if (!isLive(token.expiresAt)) return;
   const blob = loadBlob(userId);
   blob.sites[siteId] = {
     ...blob.sites[siteId],
     cli: {
-      ...token,
+      value: token.value,
+      expiresAt: token.expiresAt,
+      maxUsage: token.maxUsage,
+      serverUrl: token.serverUrl,
       childKeyId: null,
       secretRequired: Boolean(enrollmentSecret),
       createdAt: new Date(Date.now()).toISOString(),
@@ -192,13 +220,21 @@ export function rememberInstallerLink(
     maxUsage: number | null;
     childKeyId: string;
     platform: 'windows' | 'macos';
+    epoch?: number;
   },
 ): void {
-  if (!isLive(link.expiresAt)) return;
+  if (clearedSince(link.epoch) || !isLive(link.expiresAt)) return;
   const blob = loadBlob(userId);
   blob.sites[siteId] = {
     ...blob.sites[siteId],
-    link: { ...link, createdAt: new Date(Date.now()).toISOString() },
+    link: {
+      value: link.value,
+      expiresAt: link.expiresAt,
+      maxUsage: link.maxUsage,
+      childKeyId: link.childKeyId,
+      platform: link.platform,
+      createdAt: new Date(Date.now()).toISOString(),
+    },
   };
   writeBlob(blob);
 }
@@ -230,6 +266,7 @@ export function forgetSiteEnrollmentArtifacts(userId: string, siteId: string): v
 
 /** Sign-out: called from auth.ts's logout(). */
 export function clearRememberedEnrollmentArtifacts(): void {
+  rememberEpoch += 1;
   secretInMemory = null;
   removeBlob();
 }

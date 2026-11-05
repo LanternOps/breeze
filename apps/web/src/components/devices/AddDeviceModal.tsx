@@ -12,6 +12,7 @@ import {
 import { buildInstallCommands } from "@/lib/installCommands";
 import { navigateTo } from "@/lib/navigation";
 import {
+  currentRememberEpoch,
   forgetEnrollmentArtifact,
   forgetSiteEnrollmentArtifacts,
   readRememberedEnrollmentArtifacts,
@@ -124,9 +125,11 @@ function useExpiryTimer(expiresAt: string | null, onExpire: () => void) {
 
 /**
  * Asks the server whether a remembered link's child key can still be used
- * (#10923), on the same terms the public download route answers 410: past its
- * expiry, or usage_count at max_usage. "unknown" means the check itself failed,
- * which says nothing about the key.
+ * (#10923). Mirrors two of the public download route's 410 rules: past its
+ * expiry, or usage_count at max_usage. Not the third: a key inside
+ * INSTALLER_PARENT_MIN_REMAINING_SECONDS of expiry reads as usable here and
+ * still 410s. "unknown" means the check itself failed, which says nothing about
+ * the key.
  */
 async function checkInstallerLinkChild(
   childKeyId: string,
@@ -443,6 +446,15 @@ export default function AddDeviceModal({
   // a screen that is gone, so it neither displays nor stores anything (#10923).
   const cliDisplayGeneration = useRef(0);
   const linkDisplayGeneration = useRef(0);
+  // An unmounted modal (sign-out navigates away) shows nothing: anything still
+  // in flight resolves into a screen that is gone.
+  useEffect(
+    () => () => {
+      cliDisplayGeneration.current += 1;
+      linkDisplayGeneration.current += 1;
+    },
+    [],
+  );
 
   const clearCliToken = useCallback(() => {
     setOnboardingToken("");
@@ -533,6 +545,7 @@ export default function AddDeviceModal({
     if (!siteId || cliFetchInFlight.current) return;
     cliFetchInFlight.current = true;
     const generation = ++cliDisplayGeneration.current;
+    const epoch = currentRememberEpoch();
     const showTokenError = (message: string) => {
       if (generation === cliDisplayGeneration.current) setTokenError(message);
     };
@@ -609,9 +622,11 @@ export default function AddDeviceModal({
         rememberCliToken(
           userId,
           boundSiteId,
-          { value: data.token, expiresAt, maxUsage, serverUrl },
+          { value: data.token, expiresAt, maxUsage, serverUrl, epoch },
           data.enrollmentSecret || undefined,
         );
+      } else if (userId) {
+        console.warn("[AddDeviceModal] the token response had no expiresAt, so it is not remembered");
       }
     } catch (err) {
       showTokenError(
@@ -876,6 +891,7 @@ export default function AddDeviceModal({
   const handleGenerateLink = async () => {
     if (linkLoading || !selectedSiteId) return;
     const generation = ++linkDisplayGeneration.current;
+    const epoch = currentRememberEpoch();
     const showLinkError = (message: string) => {
       if (generation === linkDisplayGeneration.current) setLinkError(message);
     };
@@ -951,6 +967,13 @@ export default function AddDeviceModal({
           maxUsage,
           childKeyId: linkData.childKeyId,
           platform: selectedPlatform,
+          epoch,
+        });
+      } else if (userId) {
+        console.warn("[AddDeviceModal] the link response lacks a field it needs to be remembered", {
+          hasShortUrl: typeof linkData.shortUrl === "string",
+          hasChildKeyId: typeof linkData.childKeyId === "string",
+          hasExpiresAt: Boolean(expiresAt),
         });
       }
     } catch (err) {

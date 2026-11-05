@@ -321,7 +321,88 @@ describe('AddDeviceModal — remembers the last still-valid token and link (#109
     });
   });
 
+  describe('session', () => {
+    it('neither stores nor reads anything without a signed-in user id', async () => {
+      authState.user = { hasPassword: true };
+      const { reopen } = renderModal();
+      await generateLink();
+      await generateCliToken('enroll_token_2');
+      expect(sessionStorage.getItem(KEY)).toBeNull();
+
+      reopen();
+      fireEvent.click(screen.getByTestId('tab-cli'));
+      expect(await screen.findByTestId('cli-token-empty')).toBeDefined();
+    });
+
+    it('does not store a token whose mint resolves after sign-out', async () => {
+      let resolveMint: (response: Response) => void = () => {};
+      routeFetch({ token: () => new Promise<Response>((resolve) => { resolveMint = resolve; }) });
+      const view = renderModal();
+      fireEvent.click(screen.getByTestId('tab-cli'));
+      fireEvent.click(screen.getByTestId('cli-regenerate-token'));
+      await waitFor(() => expect(mintCalls('/devices/onboarding-token')).toHaveLength(1));
+
+      authState.user = null;
+      view.rerender(<AddDeviceModal isOpen onClose={vi.fn()} />);
+      await act(async () => {
+        resolveMint(json({ token: 'enroll_after_logout', maxUsage: 1, siteId: SITE_A.id, expiresAt: inMs(HOUR), enrollmentSecret: 'fleet-secret' }));
+      });
+
+      expect(screen.queryByText('enroll_after_logout')).toBeNull();
+      expect(sessionStorage.getItem(KEY)).toBeNull();
+    });
+  });
+
+  describe('sign-out while a mint is in flight', () => {
+    it('does not store a token that resolves after logout cleared storage and the modal unmounted', async () => {
+      let resolveMint: (response: Response) => void = () => {};
+      routeFetch({ token: () => new Promise<Response>((resolve) => { resolveMint = resolve; }) });
+      const view = renderModal();
+      fireEvent.click(screen.getByTestId('tab-cli'));
+      fireEvent.click(screen.getByTestId('cli-regenerate-token'));
+      await waitFor(() => expect(mintCalls('/devices/onboarding-token')).toHaveLength(1));
+
+      clearRememberedEnrollmentArtifacts();
+      view.unmount();
+      await act(async () => {
+        resolveMint(json({ token: 'enroll_orphan', maxUsage: 1, siteId: SITE_A.id, expiresAt: inMs(HOUR) }));
+      });
+
+      expect(sessionStorage.getItem(KEY)).toBeNull();
+    });
+  });
+
   describe('installer link', () => {
+    it('neither shows nor stores a link that resolves after the operator changed site', async () => {
+      let resolveLink: (response: Response) => void = () => {};
+      routeFetch({ link: () => new Promise<Response>((resolve) => { resolveLink = resolve; }) });
+      renderModal();
+      fireEvent.click(screen.getByTestId('generate-link'));
+      await waitFor(() => expect(mintCalls('/installer-link')).toHaveLength(1));
+
+      fireEvent.change(screen.getByTestId('installer-site'), { target: { value: SITE_B.id } });
+      await act(async () => {
+        resolveLink(json({ shortUrl: 'https://api.example.test/s/LATE', expiresAt: inMs(HOUR), maxUsage: 1, childKeyId: 'child-late' }));
+      });
+
+      expect(screen.queryByDisplayValue('https://api.example.test/s/LATE')).toBeNull();
+      expect(sessionStorage.getItem(KEY) ?? '').not.toContain('LATE');
+    });
+
+    it('labels a restored macOS link as macOS', async () => {
+      routeFetch({
+        link: () =>
+          json({ shortUrl: 'https://api.example.test/s/MAC', expiresAt: inMs(HOUR), maxUsage: 1, childKeyId: 'child-mac', platform: 'macos' }),
+      });
+      const { reopen } = renderModal();
+      fireEvent.click(screen.getByText('macOS (.zip)'));
+      await generateLink('https://api.example.test/s/MAC');
+
+      reopen();
+
+      expect((await screen.findByTestId('link-reuse')).textContent).toContain('macOS');
+    });
+
     it('labels the link button as Generate new once a link is on screen', async () => {
       renderModal();
       expect(screen.getByTestId('generate-link').textContent).toMatch(/Generate Link/);
@@ -384,6 +465,7 @@ describe('AddDeviceModal — remembers the last still-valid token and link (#109
 
     it.each([
       ['answers 500', () => json({ error: 'boom' }, 500)],
+      ['is refused (no organizations:read)', () => json({ error: 'Forbidden' }, 403)],
       ['cannot be reached', () => Promise.reject(new Error('network down'))],
     ])('hides the link but keeps it stored when the check %s', async (_label, childKey) => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

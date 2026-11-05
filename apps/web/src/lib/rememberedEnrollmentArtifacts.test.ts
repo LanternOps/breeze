@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   REMEMBERED_ENROLLMENT_ARTIFACTS_KEY as KEY,
   clearRememberedEnrollmentArtifacts,
+  currentRememberEpoch,
   forgetEnrollmentArtifact,
   forgetSiteEnrollmentArtifacts,
   readRememberedEnrollmentArtifacts,
@@ -112,6 +113,8 @@ describe('rememberedEnrollmentArtifacts (#10923)', () => {
     ['not JSON', '{nope'],
     ['the wrong shape', JSON.stringify({ userId: 'user-1', sites: { 'site-a': { cli: { value: 7 } } } })],
     ['no sites map', JSON.stringify({ userId: 'user-1' })],
+    ['a link with no child key id', JSON.stringify({ userId: 'user-1', sites: { 'site-a': { link: { ...link(), childKeyId: undefined, createdAt: 'x' } } } })],
+    ['a link for an unknown platform', JSON.stringify({ userId: 'user-1', sites: { 'site-a': { link: { ...link(), platform: 'linux', createdAt: 'x' } } } })],
     ['a null', 'null'],
   ])('treats a stored blob holding %s as empty', (_label, raw) => {
     sessionStorage.setItem(KEY, raw);
@@ -129,6 +132,34 @@ describe('rememberedEnrollmentArtifacts (#10923)', () => {
       throw new DOMException('blocked', 'SecurityError');
     });
     expect(readRememberedEnrollmentArtifacts('user-1', 'site-a')).toEqual({});
+  });
+
+  it('drops everything rather than keep an entry it was told to forget when the write fails', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    rememberCliToken('user-1', 'site-a', cli());
+    rememberCliToken('user-1', 'site-b', cli({ value: 'enroll_b' }));
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'QuotaExceededError');
+    });
+
+    forgetEnrollmentArtifact('user-1', 'site-a', 'cli');
+    setItem.mockRestore();
+
+    expect(readRememberedEnrollmentArtifacts('user-1', 'site-a')).toEqual({});
+    expect(sessionStorage.getItem(KEY) ?? '').not.toContain('enroll_abc');
+  });
+
+  it('refuses a write begun before a clear (a mint that resolves after sign-out)', () => {
+    const tokenEpoch = currentRememberEpoch();
+    const linkEpoch = currentRememberEpoch();
+    clearRememberedEnrollmentArtifacts();
+
+    rememberCliToken('user-1', 'site-a', { ...cli(), epoch: tokenEpoch }, 'fleet-secret');
+    rememberInstallerLink('user-1', 'site-a', { ...link(), epoch: linkEpoch });
+
+    expect(sessionStorage.getItem(KEY)).toBeNull();
+    rememberCliToken('user-1', 'site-a', cli());
+    expect(readRememberedEnrollmentArtifacts('user-1', 'site-a').cli?.enrollmentSecret).toBeUndefined();
   });
 
   // AGENT_ENROLLMENT_SECRET is deployment-wide and does not expire, unlike the
