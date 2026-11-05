@@ -301,12 +301,16 @@ export type ApplyPortalSettingsResult =
  * inside the same transaction as the upsert. A default row is inserted first
  * when none exists, so there is always a row to lock; a refusal can only come
  * from a row that already existed, so that insert never outlives a refusal.
+ *
+ * `onPersisted` runs once the row is written and BEFORE the provisioning hook,
+ * so the caller's audit row lands in the same order the route always wrote it
+ * (upsert, audit, hook): a hook failure can never leave a live change unaudited.
  */
 export async function applyOrgPortalSettings(
   orgId: string,
   body: PortalSettingsPatch,
   actorUserId: string,
-  opts: { refuseSensitiveActivation?: boolean } = {},
+  opts: { refuseSensitiveActivation?: boolean; onPersisted?: (row: PortalSettingsRow) => void } = {},
 ): Promise<ApplyPortalSettingsResult> {
   let row: PortalSettingsRow | undefined;
   if (opts.refuseSensitiveActivation) {
@@ -343,6 +347,7 @@ export async function applyOrgPortalSettings(
   }
 
   if (!row) return { ok: false, code: 'PERSIST_FAILED' };
+  opts.onPersisted?.(row);
 
   const requested = Object.fromEntries(
     PORTAL_VISIBILITY_FLAG_KEYS

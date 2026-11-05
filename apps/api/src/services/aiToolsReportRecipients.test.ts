@@ -87,10 +87,17 @@ describe('manage_report_recipients handler (#6789)', () => {
   });
 
   it('add always asks for the delivery gate, and audits', async () => {
-    h.add.mockResolvedValue({ ok: true, status: 201, value: { id: 'r-1' } });
+    h.add.mockResolvedValue({ ok: true, status: 201, value: { id: 'r-1' }, orgId: ORG });
     await run({ action: 'add', reportId: REPORT, contactId: CONTACT }, auth());
     expect(h.add).toHaveBeenCalledWith(REPORT, expect.anything(), PERMS, { contactId: CONTACT }, { requireDeliveryGate: true });
     expect(h.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ orgId: ORG, action: 'report.recipient.add', resourceId: REPORT }));
+  });
+
+  it('an add of a contact that is already a recipient (200) reports alreadyPresent and writes no audit row', async () => {
+    h.add.mockResolvedValue({ ok: true, status: 200, value: null, orgId: ORG });
+    const out = parse(await run({ action: 'add', reportId: REPORT, contactId: CONTACT }, auth()));
+    expect(out).toMatchObject({ added: false, alreadyPresent: true });
+    expect(h.audit).not.toHaveBeenCalled();
   });
 
   it('convert asks for the gate and a legacy address, and writes the contact audit event', async () => {

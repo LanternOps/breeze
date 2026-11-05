@@ -20,6 +20,7 @@ const state = vi.hoisted(() => ({
   updated: [] as unknown[],
   transactions: 0,
   lockedConfig: {} as Record<string, unknown>,
+  locks: [] as string[],
   gateMfa: true,
   getReport: vi.fn(),
   createContact: vi.fn(),
@@ -28,7 +29,7 @@ const state = vi.hoisted(() => ({
 function selectChain(result: unknown[]) {
   const chain: Record<string, any> = {};
   for (const m of ['from', 'innerJoin', 'orderBy', 'where', 'limit']) chain[m] = vi.fn(() => chain);
-  chain.for = vi.fn(() => Promise.resolve(result));
+  chain.for = vi.fn((mode: string) => { state.locks.push(mode); return Promise.resolve(result); });
   chain.then = (resolve: (v: unknown) => unknown) => Promise.resolve(result).then(resolve);
   return chain;
 }
@@ -121,6 +122,7 @@ beforeEach(() => {
   state.updated = [];
   state.transactions = 0;
   state.lockedConfig = {};
+  state.locks = [];
   state.gateMfa = true;
   state.getReport.mockReset();
   state.createContact.mockReset();
@@ -184,6 +186,14 @@ describe('removeReportRecipient (conditional predicate moved intact)', () => {
     expect(JSON.stringify(state.deleted[0])).toContain('"column":"r.mode","value":"add"');
   });
 
+  it("remove of a series 'remove' row with reports:export but no MFA is refused too", async () => {
+    state.getReport.mockResolvedValue(seriesChild);
+    state.gateMfa = false;
+    state.results = [[{ id: 'override-1' }]];
+    expect(await removeReportRecipient(REPORT_ID, auth, ALL, CONTACT_ID)).toEqual({ ok: false, status: 403, body: GATE_BODY });
+    expect(JSON.stringify(state.deleted[0])).toContain('"column":"r.mode","value":"add"');
+  });
+
   it("remove of an 'add' row needs only reports:write", async () => {
     state.getReport.mockResolvedValue(plain);
     const out = await removeReportRecipient(REPORT_ID, auth, WRITE_ONLY, CONTACT_ID);
@@ -199,6 +209,7 @@ describe('convertReportRecipient with the tool options (Decision 5)', () => {
     state.lockedConfig = { emailRecipients: ['someone@x.test'] };
     expect(await convertReportRecipient(REPORT_ID, auth, ALL, { email: 'Dana@X.test' }, 'user-1', { requireDeliveryGate: true, requireLegacyAddress: true }))
       .toEqual({ ok: false, status: 409, body: RECIPIENT_NOT_A_LEGACY_ADDRESS });
+    expect(state.locks).toEqual(['update']);
     expect(state.createContact).not.toHaveBeenCalled();
     expect(state.inserted).toEqual([]);
     expect(state.updated).toEqual([]);

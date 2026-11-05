@@ -49,7 +49,10 @@ function auth(over: Partial<AuthContext> = {}): AuthContext {
 beforeEach(() => {
   for (const fn of Object.values(h)) fn.mockReset();
   h.findOrg.mockImplementation(async (a: AuthContext, id: string) => (a.canAccessOrg(id) ? { id, partnerId: PARTNER } : null));
-  h.apply.mockImplementation(async (orgId: string, body: Record<string, unknown>) => ({ ok: true, row: {}, settings: { orgId, ...body } }));
+  h.apply.mockImplementation(async (orgId: string, body: Record<string, unknown>, _actor: string, opts?: { onPersisted?: (row: unknown) => void }) => {
+    opts?.onPersisted?.({});
+    return { ok: true, row: {}, settings: { orgId, ...body } };
+  });
 });
 
 describe('manage_org_portal_settings schema (#6789)', () => {
@@ -121,7 +124,7 @@ describe('manage_org_portal_settings handler (#6789)', () => {
 
   it('update writes through the guarded path and audits the changed fields', async () => {
     const out = parse(await run({ action: 'update', orgId: ORG, settings: { enableReports: true, welcomeMessage: 'Hi' } }, auth()));
-    expect(h.apply).toHaveBeenCalledWith(ORG, { enableReports: true, welcomeMessage: 'Hi' }, 'u-1', { refuseSensitiveActivation: true });
+    expect(h.apply).toHaveBeenCalledWith(ORG, { enableReports: true, welcomeMessage: 'Hi' }, 'u-1', expect.objectContaining({ refuseSensitiveActivation: true }));
     expect(out.settings.enableReports).toBe(true);
     expect(h.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       orgId: ORG, action: 'organization.portal_settings.update', details: expect.objectContaining({ changedFields: ['enableReports', 'welcomeMessage'] }),
@@ -135,6 +138,10 @@ describe('manage_org_portal_settings handler (#6789)', () => {
     expect(out.error).toContain('enablePhysicalPlacement');
     expect(out.error).toContain('set_sensitive_access');
     expect(h.audit).not.toHaveBeenCalled();
+    // From set_sensitive_access itself, the fix is to name the child in flags, not to switch tools.
+    const own = parse(await run({ action: 'set_sensitive_access', orgId: ORG, flags: { enableNetworkVisibility: true } }, auth()));
+    expect(own.code).toBe('SENSITIVE_ACTIVATION');
+    expect(own.error).toContain('Add each of those flags to flags');
   });
 
   it('update refuses a sensitive key, customCss, and an empty or missing settings object', async () => {
@@ -148,7 +155,7 @@ describe('manage_org_portal_settings handler (#6789)', () => {
 
   it('set_sensitive_access writes only the named flags through the guarded path', async () => {
     await run({ action: 'set_sensitive_access', orgId: ORG, flags: { enablePatchDetail: true, enableHourBlock: false } }, auth());
-    expect(h.apply).toHaveBeenCalledWith(ORG, { enablePatchDetail: true, enableHourBlock: false }, 'u-1', { refuseSensitiveActivation: true });
+    expect(h.apply).toHaveBeenCalledWith(ORG, { enablePatchDetail: true, enableHourBlock: false }, 'u-1', expect.objectContaining({ refuseSensitiveActivation: true }));
     expect(h.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'organization.portal_settings.update', details: expect.objectContaining({ sensitive: true }),
     }));

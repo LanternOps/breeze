@@ -1,10 +1,11 @@
 /**
  * Input schemas for the W18 PR B org-admin writers (full-control W18, #6789):
  * `manage_org_portal_settings` and `manage_report_recipients`. Each is one flat
- * `.strict()` object; the handler re-validates the action's own fields. Built
- * from the REST validators' shapes, so the tool and the route cannot disagree on
- * what a valid value is. No `z.undefined()` anywhere: it empties the model's
- * tool list.
+ * `.strict()` object; the handler re-validates the action's own fields. The
+ * portal schema is derived from the REST validator (`.extend().omit()`), so it
+ * cannot disagree with the route; the recipient fields are copied (see below)
+ * and pinned to the REST validators by a parity test. No `z.undefined()`
+ * anywhere: it empties the model's tool list.
  */
 import { z } from 'zod';
 import { PORTAL_CHROME_ACCENT_KEYS, updatePortalSettingsSchema } from '@breeze/shared';
@@ -23,7 +24,8 @@ export const REPORT_RECIPIENT_ACTIONS = ['list', 'add', 'remove', 'convert'] as 
  * `update` refuses them only when they would activate a dormant child. The mask
  * is spelled out so zod can type it; aiToolsOrgPortalSettings.test.ts checks it
  * against PORTAL_SENSITIVE_FLAG_KEYS / PORTAL_PERMISSION_FLAG_KEYS, so a flag
- * added to either list fails there until it is excluded here.
+ * added to either list fails that test until it is excluded here (`satisfies`
+ * only checks the keys named are valid, not that none is missing).
  */
 const UPDATE_EXCLUDED = {
   customCss: true,

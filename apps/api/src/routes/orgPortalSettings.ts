@@ -77,18 +77,20 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
       if (org instanceof Response) return org;
 
       const auth = c.get('auth') as AuthContext;
-      const result = await applyOrgPortalSettings(org.id, body, auth.user.id);
+      // The audit row is written once the upsert lands and before the
+      // report-provisioning hook, the order this route always used.
+      const result = await applyOrgPortalSettings(org.id, body, auth.user.id, {
+        onPersisted: () => writeRouteAudit(c, {
+          orgId: org.id,
+          action: 'organization.portal_settings.update',
+          resourceType: 'organization',
+          resourceId: org.id,
+          details: { changedFields: Object.keys(body) }
+        })
+      });
       if (!result.ok) {
         return c.json({ error: 'Failed to persist portal settings' }, 500);
       }
-
-      writeRouteAudit(c, {
-        orgId: org.id,
-        action: 'organization.portal_settings.update',
-        resourceType: 'organization',
-        resourceId: org.id,
-        details: { changedFields: Object.keys(body) }
-      });
 
       return c.json({ data: result.settings });
     }

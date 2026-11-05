@@ -9,14 +9,16 @@
  *  - `add`, `remove` and `convert` are supervised: a recipient on an org-owned
  *    definition is a live delivery (reportScheduleWorker.ts mails the report to
  *    it on schedule), so report data leaves Breeze.
- *  - `add` and `convert` always need `reports:export` + MFA (Decision 5, stricter
- *    than REST, which gates only a series child's add); `convert` accepts only an
+ *  - `add` and `convert` always need `reports:export` + MFA (Decision 5). Stricter
+ *    than REST: REST needs export + MFA only for a series child's add, and convert
+ *    carries MFA there but not export. `convert` accepts only an
  *    address already in the report's `config.emailRecipients`, so it moves an
  *    existing delivery and never adds one. `remove` keeps the route's conditional
  *    gate: removing a series exclusion restores a delivery and needs export + MFA.
  *
- * Partner-owned, system-managed and partner-only-delivery definitions refuse
- * every writer with the route's code. Agent-human-only (`AGENT_HUMAN_ONLY_TOOLS`);
+ * `add` and `convert` refuse partner-owned, system-managed and partner-only-
+ * delivery definitions with the route's code; `remove` refuses only partner-owned
+ * ones, as the route does (removing a stray contact is harmless). Agent-human-only (`AGENT_HUMAN_ONLY_TOOLS`);
  * a device-bound session cannot read and a site-restricted one cannot write.
  */
 import type { AuthContext } from '../middleware/auth';
@@ -105,8 +107,10 @@ export function registerReportRecipientsTool(aiTools: Map<string, AiTool>): void
         if (action === 'add') {
           const out = await addReportRecipient(reportId, auth, permissions, { contactId: contactId!, ...(mode ? { mode } : {}) }, { requireDeliveryGate: true });
           if (!out.ok) return refusal(out);
+          // 200 = the contact was already a recipient (onConflictDoNothing): nothing changed, nothing to audit.
+          if (out.status !== 201) return json({ added: false, alreadyPresent: true, reportId, contactId });
           auditToolWrite(auth, {
-            orgId: out.orgId ?? auth.orgId ?? null, partnerId: auth.partnerId, action: 'report.recipient.add',
+            orgId: out.orgId ?? null, action: 'report.recipient.add',
             resourceType: 'report', resourceId: reportId, details: { contactId, mode: mode ?? 'add' },
           });
           return json({ added: true, reportId, contactId, mode: mode ?? 'add', recipient: out.value });
@@ -116,7 +120,7 @@ export function registerReportRecipientsTool(aiTools: Map<string, AiTool>): void
           const out = await removeReportRecipient(reportId, auth, permissions, contactId!);
           if (!out.ok) return refusal(out);
           auditToolWrite(auth, {
-            orgId: out.orgId ?? auth.orgId ?? null, partnerId: auth.partnerId, action: 'report.recipient.remove',
+            orgId: out.orgId ?? null, action: 'report.recipient.remove',
             resourceType: 'report', resourceId: reportId, details: { contactId },
           });
           return json({ deleted: true, reportId, contactId });

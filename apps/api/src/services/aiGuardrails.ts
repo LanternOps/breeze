@@ -2903,8 +2903,6 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     link: { resource: 'agreements', action: 'write' },
   },
   get_device_billing: { resource: 'devices', action: 'read' },
-  // Full-control W14 PR B (#6784): routes/accounting/index.ts — accounting:read on the reads, accounting:manage on
-  // every write (the rest of each write's floor is in TOOL_ACTION_EXTRA_PERMISSIONS).
   // Full-control W18 PR B (#6789): each = its REST route's requirePermission (orgPortalSettings.ts, reports/recipients.ts).
   // add and convert also need reports:export (TOOL_ACTION_EXTRA_PERMISSIONS, Decision 5).
   manage_org_portal_settings: {
@@ -2918,6 +2916,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     remove: { resource: 'reports', action: 'write' },
     convert: { resource: 'reports', action: 'write' },
   },
+  // Full-control W14 PR B (#6784): routes/accounting/index.ts — accounting:read on the reads, accounting:manage on
+  // every write (the rest of each write's floor is in TOOL_ACTION_EXTRA_PERMISSIONS).
   manage_accounting_sync: {
     status: { resource: 'accounting', action: 'read' },
     owed_operations: { resource: 'accounting', action: 'read' },
@@ -3066,9 +3066,6 @@ export const TOOL_ACTION_EXTRA_PERMISSIONS: Record<
   string,
   Record<string, { resource: string; action: string }[]>
 > = {
-  // Full-control W14 PR B (#6784): the REST mapping writes add the entity's grant (organizations:write for a
-  // customer, catalog:write for an item, requireMappingWrite); the tool has no input-aware rows, so it requires BOTH
-  // (a tightening). Both push routes add invoices:write (requireInvoicePush).
   // Full-control W18 PR B (#6789, Decision 5): a recipient add or convert is a scheduled delivery of report data out
   // of Breeze, the bulk output reports:export gates on the download and generate paths (recipientGate.ts). REST
   // requires it only on a series child's add; the tool requires it on every add and convert (tool-only, declared).
@@ -3076,6 +3073,9 @@ export const TOOL_ACTION_EXTRA_PERMISSIONS: Record<
     add: [{ resource: 'reports', action: 'export' }],
     convert: [{ resource: 'reports', action: 'export' }],
   },
+  // Full-control W14 PR B (#6784): the REST mapping writes add the entity's grant (organizations:write for a
+  // customer, catalog:write for an item, requireMappingWrite); the tool has no input-aware rows, so it requires BOTH
+  // (a tightening). Both push routes add invoices:write (requireInvoicePush).
   manage_accounting_sync: {
     link_mapping: [{ resource: 'organizations', action: 'write' }, { resource: 'catalog', action: 'write' }],
     unlink_mapping: [{ resource: 'organizations', action: 'write' }, { resource: 'catalog', action: 'write' }],

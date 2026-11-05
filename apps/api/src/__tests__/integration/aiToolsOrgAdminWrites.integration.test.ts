@@ -132,7 +132,12 @@ describe('manage_org_portal_settings (W18 PR B, #6789)', () => {
       await tx.select({ id: portalBranding.id }).from(portalBranding).where(eq(portalBranding.orgId, f.orgA.id)).for('update');
       // The tool starts while the row is locked and the child is still off.
       pending = run('manage_org_portal_settings', { action: 'update', orgId: f.orgA.id, settings: { enableNetworkVisibility: true } }, f.auth.tech);
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      // Wait until the tool's backend is really blocked on a lock, so the case cannot pass on a slow start.
+      for (let i = 0; i < 100; i += 1) {
+        const waiting = await getTestDb().execute(sql`SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted`);
+        if (Number((waiting as unknown as Array<{ n: number }>)[0]?.n ?? (waiting as unknown as { rows: Array<{ n: number }> }).rows?.[0]?.n) > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
       await tx.update(portalBranding).set({ enableNetworkAlerts: true }).where(eq(portalBranding.orgId, f.orgA.id));
     });
     const out = await pending!;

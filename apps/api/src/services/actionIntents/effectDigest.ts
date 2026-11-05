@@ -513,7 +513,7 @@ const EFFECT_DIGEST_RESOLVERS: Record<
 
   // manage_org_portal_settings:set_sensitive_access (full-control W18 PR B, #6789; four-eyes, Decision 2). Pins the
   // org, the requested flags and the row's CURRENT value of every sensitive, permission and parent flag (a missing row
-  // pins as the defaults, all off). A flag changed after approval, including a child that a requested parent would now
+  // pins as the defaults, all off; a missing or deleted org does not pin). A flag changed after approval, including a child that a requested parent would now
   // activate, gives another digest and the release refuses. Mandatory per action (pinnedEffectPolicy.ts).
   'manage_org_portal_settings:set_sensitive_access': async (args, database) => {
     const orgId = typeof args.orgId === 'string' ? args.orgId.toLowerCase() : null;
@@ -523,6 +523,13 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     const requested = Object.entries(flags);
     if (requested.length === 0 || requested.some(([key, value]) => !keys.includes(key) || typeof value !== 'boolean')) return MISSING_ARG;
     if (!UUID_RE.test(orgId)) return TARGET_ABSENT;
+    // A missing or deleted org has nothing to approve (its stale portal row must not pin).
+    const [org] = await database
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))
+      .limit(1);
+    if (!org) return TARGET_ABSENT;
     const [row] = await database
       .select(Object.fromEntries(PORTAL_TOOL_SENSITIVE_KEYS.map((key) => [key, portalBranding[key]])))
       .from(portalBranding)

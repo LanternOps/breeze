@@ -137,6 +137,24 @@ describe('applyOrgPortalSettings', () => {
   });
 });
 
+describe('applyOrgPortalSettings ordering (audit before the provisioning hook)', () => {
+  it('onPersisted runs after the upsert and before onPortalFlagsChanged, on both paths; never on a refusal', async () => {
+    for (const opts of [{}, { refuseSensitiveActivation: true }]) {
+      calls.length = 0;
+      state.lockedRow = { ...DEFAULT_ROW };
+      onPortalFlagsChanged.mockImplementation(async () => { calls.push('hook'); });
+      await applyOrgPortalSettings(ORG, { enableReports: true }, 'u-1', { ...opts, onPersisted: () => calls.push('audit') });
+      expect(calls.slice(calls.findIndex((c) => c.endsWith('upsert')))).toEqual(
+        opts.refuseSensitiveActivation ? ['tx.upsert', 'db.commit', 'audit', 'hook'] : ['db.upsert', 'audit', 'hook'],
+      );
+    }
+    calls.length = 0;
+    state.lockedRow = { ...DEFAULT_ROW, enableHourBlock: true };
+    await applyOrgPortalSettings(ORG, { enableSupportUsage: true }, 'u-1', { refuseSensitiveActivation: true, onPersisted: () => calls.push('audit') });
+    expect(calls).not.toContain('audit');
+  });
+});
+
 describe('PORTAL_SENSITIVE_PARENTS', () => {
   it('every child is a sensitive flag and every parent is not', () => {
     for (const [parent, children] of Object.entries(PORTAL_SENSITIVE_PARENTS)) {

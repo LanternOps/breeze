@@ -14,11 +14,13 @@ const ORG = '11111111-1111-4111-8111-111111111111';
 const ORG_B = '22222222-2222-4222-8222-222222222222';
 const TOOL = 'manage_org_portal_settings';
 
-const state: { row: Record<string, unknown> | undefined; selected: string[] } = { row: undefined, selected: [] };
+const state: { row: Record<string, unknown> | undefined; selected: string[]; orgExists: boolean } = { row: undefined, selected: [], orgExists: true };
 const database = {
   select: (cols: Record<string, unknown>) => {
-    state.selected = Object.keys(cols);
-    return { from: () => ({ where: () => ({ limit: async () => (state.row ? [state.row] : []) }) }) };
+    const orgLookup = Object.keys(cols).join() === 'id';
+    if (!orgLookup) state.selected = Object.keys(cols);
+    const rows = orgLookup ? (state.orgExists ? [{ id: ORG }] : []) : (state.row ? [state.row] : []);
+    return { from: () => ({ where: () => ({ limit: async () => rows }) }) };
   },
 } as unknown as Database;
 
@@ -33,6 +35,7 @@ async function pinned(input: Record<string, unknown>): Promise<string> {
 beforeEach(() => {
   state.row = undefined;
   state.selected = [];
+  state.orgExists = true;
 });
 
 describe('manage_org_portal_settings:set_sensitive_access pin (#6789)', () => {
@@ -74,6 +77,13 @@ describe('manage_org_portal_settings:set_sensitive_access pin (#6789)', () => {
     expect(await pinned(args({ enableHourBlock: false, enablePatchDetail: true }))).toBe(a);
     expect(await pinned(args({ enablePatchDetail: true, enableHourBlock: false }, ORG_B))).not.toBe(a);
     expect(await pinned(args({ enablePatchDetail: false, enableHourBlock: false }))).not.toBe(a);
+  });
+
+  it('a missing or deleted org does not pin (TARGET_ABSENT), so the mandatory pin refuses the intent', async () => {
+    state.orgExists = false;
+    state.row = Object.fromEntries(PORTAL_TOOL_SENSITIVE_KEYS.map((k) => [k, false]));
+    expect(await computeEffectDigestOutcome(TOOL, args({ enablePatchDetail: true }), database))
+      .toEqual({ kind: 'unresolved', reason: 'target_absent' });
   });
 
   it('a missing or malformed org or flags argument does not pin', async () => {

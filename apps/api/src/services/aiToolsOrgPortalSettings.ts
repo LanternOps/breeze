@@ -62,25 +62,31 @@ async function write(auth: AuthContext, action: 'update' | 'set_sensitive_access
   const org = await findPortalSettingsOrg(auth, orgId);
   if (!org) return notFound('Organization');
 
-  const result = await applyOrgPortalSettings(org.id, parsed.body, auth.user.id, { refuseSensitiveActivation: true });
+  const changedFields = Object.keys(parsed.body);
+  const result = await applyOrgPortalSettings(org.id, parsed.body, auth.user.id, {
+    refuseSensitiveActivation: true,
+    // Audited once the row is written, before the report-provisioning hook (the route's order).
+    onPersisted: () => auditToolWrite(auth, {
+      orgId: org.id,
+      action: 'organization.portal_settings.update',
+      resourceType: 'organization',
+      resourceId: org.id,
+      details: { changedFields, ...(action === 'set_sensitive_access' ? { sensitive: true } : {}) },
+    }),
+  });
   if (!result.ok) {
     if (result.code === 'SENSITIVE_ACTIVATION') {
+      const fix = action === 'update'
+        ? 'Use set_sensitive_access and name each of those flags'
+        : 'Add each of those flags to flags';
       return jsonError(
         `Turning this on would also show portal users data whose own flag is already on: ${result.children.join(', ')}. `
-        + 'Use set_sensitive_access and name each of those flags (true to show it, false to keep it hidden).',
+        + `${fix} (true to show it, false to keep it hidden).`,
         'SENSITIVE_ACTIVATION',
       );
     }
     return jsonError('Failed to persist portal settings', 'PERSIST_FAILED');
   }
-  const changedFields = Object.keys(parsed.body);
-  auditToolWrite(auth, {
-    orgId: org.id,
-    action: 'organization.portal_settings.update',
-    resourceType: 'organization',
-    resourceId: org.id,
-    details: { changedFields, ...(action === 'set_sensitive_access' ? { sensitive: true } : {}) },
-  });
   return json({ updated: true, changedFields, settings: result.settings });
 }
 
