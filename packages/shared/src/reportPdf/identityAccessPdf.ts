@@ -26,7 +26,7 @@
  * conditional access: it is the section an auditor opens the document to read.
  */
 import type { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import { autoTable } from 'jspdf-autotable';
 import type {
   AdminSigninRow,
   CaPolicyRow,
