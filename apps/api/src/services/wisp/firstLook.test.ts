@@ -79,6 +79,15 @@ describe('renderFirstLookPost', () => {
     expect(body).toContain('2 organizations you reach only through some of their sites');
   });
 
+  it('an unread inventory says so instead of implying there are no gaps, and still names restricted orgs', () => {
+    const unread = renderFirstLookPost({ ...base, watchGaps: null }).body;
+    expect(unread).toContain("I couldn't check what I can't watch yet.");
+    expect(unread).not.toContain('What I can\'t watch yet:');
+    const restricted = renderFirstLookPost({ ...base, watchGaps: null, restrictedOrgs: 2 }).body;
+    expect(restricted).toContain("I couldn't check what I can't watch yet.");
+    expect(restricted).toContain('2 organizations you reach only through some of their sites');
+  });
+
   it('a singular queued org reads as one', () => {
     expect(renderFirstLookPost({ ...base, totalOrgs: 11, stillQueuedOrgs: 1 }).body).toContain('1 more is still queued');
   });

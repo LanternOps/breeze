@@ -158,7 +158,7 @@ export default function WispHomeContent() {
     saveBrowserTimezone(timezone)
       .then(() => load(true))
       .catch((err: unknown) => {
-        console.warn('[WispHomeContent] storing the browser time zone failed', err);
+        console.warn('[WispHomeContent] storing the browser time zone, or re-reading the home after it, failed', err);
       });
   }, [serverBrowserTimezone, load]);
 

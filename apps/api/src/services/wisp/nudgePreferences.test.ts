@@ -140,9 +140,12 @@ describe('saveBrowserTimezone (#10402)', () => {
     expect(Object.keys(ins!.conflict!.set).sort()).toEqual(['browserTimezone', 'updatedAt']);
   });
 
-  it('ignores a zone this server cannot resolve: nothing written', async () => {
+  it('ignores a zone this server cannot resolve: nothing written, and it leaves a trace', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     await expect(saveBrowserTimezone(USER, PARTNER, 'Mars/Olympus')).resolves.toBe(false);
     expect(h.inserts).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('browser time zone'), expect.objectContaining({ timezone: 'Mars/Olympus' }));
+    warn.mockRestore();
   });
 });
 

@@ -57,8 +57,9 @@ export async function processWispGrantReconcile(): Promise<
   try {
     const swept = await resweepFirstLookPosts(now);
     firstLookPosts = swept.posted;
-    if (swept.posted || swept.failed) {
-      console.log(`[WispGrantReconciler] first-look posts scanned=${swept.scanned} posted=${swept.posted} failed=${swept.failed}`);
+    const nothingLookedAt = swept.skipped.nothing_looked_at ?? 0;
+    if (swept.posted || swept.failed || nothingLookedAt) {
+      console.log(`[WispGrantReconciler] first-look posts scanned=${swept.scanned} posted=${swept.posted} failed=${swept.failed} nothingLookedAt=${nothingLookedAt}`);
     }
   } catch (err) {
     console.error('[WispGrantReconciler] first-look post re-sweep failed', err);

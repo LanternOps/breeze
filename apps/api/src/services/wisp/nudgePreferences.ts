@@ -120,7 +120,10 @@ export async function loadNudgeBookkeeping(userIds: string[]): Promise<Map<strin
  * server's ICU does not know is ignored (false): the browser's can be newer.
  */
 export async function saveBrowserTimezone(userId: string, partnerId: string, timezone: string): Promise<boolean> {
-  if (!updateWispBrowserTimezoneSchema.safeParse({ timezone }).success) return false;
+  if (!updateWispBrowserTimezoneSchema.safeParse({ timezone }).success) {
+    console.warn('[wisp.nudgePreferences] ignored a browser time zone this server does not know', { userId, timezone });
+    return false;
+  }
   await inSystemContext(async () => {
     await db.insert(wispNudgePreferences)
       .values({ userId, partnerId, browserTimezone: timezone })

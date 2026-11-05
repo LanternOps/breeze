@@ -31,7 +31,7 @@ beforeEach(() => {
   h.wispEnabled.mockReturnValue(true);
   h.reconcileActiveGrants.mockResolvedValue(grants);
   h.resweepSpecialistResults.mockResolvedValue({ scanned: 1, posted: 1, failed: 0 });
-  h.resweepFirstLookPosts.mockResolvedValue({ scanned: 0, posted: 0, failed: 0 });
+  h.resweepFirstLookPosts.mockResolvedValue({ scanned: 0, posted: 0, failed: 0, skipped: {} });
 });
 
 describe('processWispGrantReconcile', () => {
@@ -50,10 +50,18 @@ describe('processWispGrantReconcile', () => {
   });
 
   it('#10402: sweeps missing first-look posts too, whatever the specialist half did', async () => {
-    h.resweepFirstLookPosts.mockResolvedValue({ scanned: 2, posted: 1, failed: 0 });
+    h.resweepFirstLookPosts.mockResolvedValue({ scanned: 2, posted: 1, failed: 0, skipped: {} });
     h.resweepSpecialistResults.mockRejectedValue(new Error('db down'));
     await expect(processWispGrantReconcile()).resolves.toEqual({ skipped: false, ...grants, specialistPosts: 0, firstLookPosts: 1 });
     expect(h.resweepFirstLookPosts).toHaveBeenCalledTimes(1);
+  });
+
+  it('#10402: logs a grant whose batch finished without looking at anything, which posts nothing', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    h.resweepFirstLookPosts.mockResolvedValue({ scanned: 1, posted: 0, failed: 0, skipped: { nothing_looked_at: 1 } });
+    await processWispGrantReconcile();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('nothingLookedAt=1'));
+    log.mockRestore();
   });
 
   it('#10402: a throwing first-look sweep is reported and never fails the tick', async () => {

@@ -126,7 +126,8 @@ export function renderFirstLookPost(input: {
   /** In the ceiling but reached only through some sites: never assessed (assessableOrgIds). */
   restrictedOrgs: number;
   concerns: Record<ConcernSeverity, number>;
-  watchGaps: WatchGap[];
+  /** null = the readiness inventory could not be read: unknown, which must not read as "no gaps". */
+  watchGaps: WatchGap[] | null;
 }): { title: string; body: string } {
   const { totalOrgs, lookedAtOrgs, unfinishedOrgs, stillQueuedOrgs, restrictedOrgs, concerns, watchGaps } = input;
 
@@ -144,11 +145,16 @@ export function renderFirstLookPost(input: {
   const open = [...CONCERN_SEVERITIES].reverse().filter((s) => concerns[s] > 0).map((s) => `${concerns[s]} ${s}`);
   const concernLine = open.length > 0 ? `Open concerns: ${open.join(', ')}.` : 'No open concerns so far.';
 
-  const cannotWatch = watchGaps.map((g) => `${g.label} in ${orgs(g.orgCount)}`);
+  const cannotWatch = (watchGaps ?? []).map((g) => `${g.label} in ${orgs(g.orgCount)}`);
   if (restrictedOrgs > 0) cannotWatch.push(`${orgs(restrictedOrgs)} you reach only through some of their sites`);
 
   const paragraphs = [coverage.join(' '), concernLine];
-  if (cannotWatch.length > 0) paragraphs.push(`What I can't watch yet: ${cannotWatch.join('; ')}.`);
+  if (watchGaps === null) {
+    const known = cannotWatch.length > 0 ? ` I do know I can't watch ${cannotWatch.join('; ')}.` : '';
+    paragraphs.push(`I couldn't check what I can't watch yet.${known}`);
+  } else if (cannotWatch.length > 0) {
+    paragraphs.push(`What I can't watch yet: ${cannotWatch.join('; ')}.`);
+  }
   return {
     title: `First look done: ${lookedAtOrgs} of ${orgs(totalOrgs)}`,
     body: paragraphs.join('\n\n'),
@@ -189,14 +195,17 @@ async function loadRunProgress(grantId: string, orgIds: string[]): Promise<{ set
   };
 }
 
-/** Best effort: without the inventory the post simply says nothing about what cannot be watched. */
-async function loadWatchGaps(grantId: string, ceiling: GrantCeiling, orgIds: string[]): Promise<WatchGap[]> {
+/**
+ * Best effort: a failed inventory is null, and the post says it could not check.
+ * The post is written once, so it must not read as "no gaps" for good.
+ */
+async function loadWatchGaps(grantId: string, ceiling: GrantCeiling, orgIds: string[]): Promise<WatchGap[] | null> {
   try {
     return summarizeWatchGaps(await readinessInventory(ceiling, { orgIds }));
   } catch (err) {
-    console.warn('[wisp.firstLook] readiness inventory failed; the post omits what cannot be watched', { grantId, err });
+    console.warn('[wisp.firstLook] readiness inventory failed; the post says it could not check', { grantId, err });
     captureException(err, undefined, { op: 'wisp.firstLook.readiness', grantId });
-    return [];
+    return null;
   }
 }
 
@@ -258,7 +267,7 @@ export async function postFirstLookIfDone(grantId: string, now: Date = new Date(
     watchGaps: await loadWatchGaps(grant.id, ceiling, liveOrgIds),
   });
 
-  await notifyUser({
+  const delivered = await notifyUser({
     userId: grant.grantorUserId,
     category: 'wisp_nudge',
     kind: 'first_look',
@@ -270,18 +279,25 @@ export async function postFirstLookIfDone(grantId: string, now: Date = new Date(
     body,
     push: false,
   });
-  return { posted: true };
+  // 'backoff' here is the dedupe key's answer: another caller wrote the row first.
+  return delivered.suppressed === 'backoff' ? skip('already_posted') : { posted: true };
 }
 
-export type FirstLookResweepResult = { scanned: number; posted: number; failed: number };
+export type FirstLookResweepResult = {
+  scanned: number;
+  posted: number;
+  failed: number;
+  skipped: Partial<Record<FirstLookSkip, number>>;
+};
 
 /**
  * The grant reconciler's sweep: active grants in their first day with no first
  * look yet. Per-grant failures are reported, never thrown. A grant still inside
- * its grace period is a normal skip; it comes back on a later tick.
+ * its grace period is a normal skip; it comes back on a later tick. Skips are
+ * tallied so a batch that looked at nothing can be seen in the tick's log.
  */
 export async function resweepFirstLookPosts(now: Date): Promise<FirstLookResweepResult> {
-  const out: FirstLookResweepResult = { scanned: 0, posted: 0, failed: 0 };
+  const out: FirstLookResweepResult = { scanned: 0, posted: 0, failed: 0, skipped: {} };
   if (!wispEnabled()) return out;
   const candidates = await systemRead(() => db
     .select({ id: wispGrants.id })
@@ -303,6 +319,7 @@ export async function resweepFirstLookPosts(now: Date): Promise<FirstLookResweep
     try {
       const res = await postFirstLookIfDone(id, now);
       if (res.posted) out.posted += 1;
+      else out.skipped[res.reason] = (out.skipped[res.reason] ?? 0) + 1;
     } catch (err) {
       out.failed += 1;
       console.error('[wisp.firstLook] re-sweep post failed', { grantId: id, err });

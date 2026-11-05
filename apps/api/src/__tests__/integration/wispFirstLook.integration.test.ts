@@ -149,8 +149,12 @@ describe('postFirstLookIfDone (real Postgres)', () => {
   it('two runs finishing at once still leave one post', async () => {
     const t = await seedTenant(1);
     await seedRun(t, t.orgs[0]!, 'completed');
-    await Promise.all([postFirstLookIfDone(t.grantId), postFirstLookIfDone(t.grantId), postFirstLookIfDone(t.grantId)]);
+    const results = await Promise.all([postFirstLookIfDone(t.grantId), postFirstLookIfDone(t.grantId), postFirstLookIfDone(t.grantId)]);
     expect(await postsFor(t.grantId)).toHaveLength(1);
+    // Only the caller that wrote the row reports it: the sweep's counts must not be inflated.
+    expect(results.filter((r) => r.posted)).toHaveLength(1);
+    const notes = await sys(() => db.select().from(userNotifications).where(eq(userNotifications.dedupeKey, firstLookDedupeKey(t.grantId))));
+    expect(notes).toHaveLength(1);
   });
 
   it('holds while a batch org has no settled run, then posts once it settles', async () => {
@@ -216,16 +220,29 @@ describe('resweepFirstLookPosts (real Postgres)', () => {
     expect(post!.title).toBe('First look done: 1 of 2 organizations');
     expect(post!.body).toContain('1 more is still queued');
 
-    await resweepFirstLookPosts(later);
+    // The NOT EXISTS must match the key notifyUser wrote, or the grant is rescanned every tick for a day.
+    const second = await resweepFirstLookPosts(later);
+    expect(second.scanned).toBeLessThan(first.scanned);
+    expect(second.posted).toBe(0);
     expect(await postsFor(t.grantId)).toHaveLength(1);
   });
 
-  it('a revoked grant is not scanned', async () => {
+  it('a revoked grant is not scanned at all', async () => {
+    const later = new Date(Date.now() + FIRST_LOOK_GRACE_MS + 60_000);
     const t = await seedTenant(1);
-    await seedRun(t, t.orgs[0]!, 'completed');
+    await seedRun(t, t.orgs[0]!, 'failed'); // Never posts, so it stays a candidate while active.
+    const active = await resweepFirstLookPosts(later);
     await sys(() => db.update(wispGrants).set({ status: 'revoked' }).where(eq(wispGrants.id, t.grantId)));
-    await resweepFirstLookPosts(new Date(Date.now() + FIRST_LOOK_GRACE_MS + 60_000));
+    const revoked = await resweepFirstLookPosts(later);
+    expect(revoked.scanned).toBeLessThan(active.scanned);
     expect(await postsFor(t.grantId)).toHaveLength(0);
+  });
+
+  it('a batch nothing finished is counted, so it can be seen in the sweep log', async () => {
+    const t = await seedTenant(1);
+    await seedRun(t, t.orgs[0]!, 'failed');
+    const swept = await resweepFirstLookPosts(new Date(Date.now() + FIRST_LOOK_GRACE_MS + 60_000));
+    expect(swept.skipped.nothing_looked_at).toBeGreaterThanOrEqual(1);
   });
 });
 
