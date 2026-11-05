@@ -812,6 +812,7 @@
           "os": "İşletim Sistemi",
           "owner": "Sahip",
           "patch_level": "Yama düzeyi",
+          "product_number": "Ürün Numarası",
           "serial": "Seri",
           "site": "Sitesi",
           "status": "Durum"
