@@ -1,5 +1,6 @@
 /**
  * #11113 — a reconnect must not extend a remote desktop session's max duration.
+ * #11149 — and a session that is reconnecting must not be ended as stale.
  *
  * The lease hard deadline is `started_at + max duration`. A WebRTC reconnect
  * moves the row back to `connecting` and the agent answers again, so the row's
@@ -14,8 +15,9 @@
  */
 import './setup';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 
 // The teardown side effect (viewer-token revoke + durable stop relay) has its
 // own suite. Here only the verdict and the row matter.
@@ -26,7 +28,9 @@ vi.mock('../../services/remoteSessionTeardown', async (importOriginal) => ({
 
 import { withSystemDbAccessContext } from '../../db';
 import { devices, remoteSessions, users } from '../../db/schema';
+import { REAPER_DOMAINS } from '../../jobs/staleCommandReaper';
 import { createAgentWsHandlers } from '../../routes/agentWs';
+import { expireStaleSessions, expireStaleSessionsForUser } from '../../routes/remote/helpers';
 import {
   commitDesktopStartIntent,
   commitDesktopStreamStartIntent,
@@ -36,6 +40,7 @@ import {
   prepareRevocationLeaseForStart,
   renewRevocationLease,
 } from '../../services/remoteRevocationLease';
+import { remoteSessionStaleCondition } from '../../services/remoteSessionStaleness';
 import {
   assignUserToOrganization,
   createOrganization,
@@ -58,6 +63,7 @@ interface Fixture {
   deviceId: string;
   agentId: string;
   sessionId: string;
+  userId: string;
 }
 
 async function buildFixture(): Promise<Fixture> {
@@ -120,6 +126,7 @@ async function buildFixture(): Promise<Fixture> {
     deviceId: device!.id,
     agentId,
     sessionId: session!.id,
+    userId: user.id,
   };
 }
 
@@ -167,7 +174,11 @@ async function sendAnswer(f: Fixture, startCommandId: string): Promise<void> {
 
 async function readSession(sessionId: string) {
   const [row] = await getTestDb()
-    .select({ status: remoteSessions.status, startedAt: remoteSessions.startedAt })
+    .select({
+      status: remoteSessions.status,
+      startedAt: remoteSessions.startedAt,
+      lastStartAttemptAt: remoteSessions.lastStartAttemptAt,
+    })
     .from(remoteSessions)
     .where(eq(remoteSessions.id, sessionId))
     .limit(1);
@@ -194,6 +205,42 @@ async function liveSessionStartedAt(startedAt: Date): Promise<Fixture> {
   expect((await readSession(f.sessionId)).status).toBe('active');
   await backdateStart(f.sessionId, startedAt);
   return f;
+}
+
+async function backdateAttempt(sessionId: string, lastStartAttemptAt: Date): Promise<void> {
+  await getTestDb().update(remoteSessions).set({ lastStartAttemptAt }).where(eq(remoteSessions.id, sessionId));
+}
+
+function agoMs(ms: number): Date {
+  return new Date(Date.now() - ms);
+}
+
+const MINUTE_MS = 60 * 1000;
+
+async function readsAsStale(sessionId: string): Promise<boolean> {
+  const rows = await getTestDb()
+    .select({ id: remoteSessions.id })
+    .from(remoteSessions)
+    .where(and(eq(remoteSessions.id, sessionId), remoteSessionStaleCondition(new Date())));
+  return rows.length === 1;
+}
+
+async function runReaper(): Promise<void> {
+  const domain = REAPER_DOMAINS.find(([name]) => name === 'remoteSessions');
+  if (!domain) throw new Error('remoteSessions reaper domain missing');
+  await withSystemDbAccessContext(() => domain[1]());
+}
+
+/** Everything that can end a row by age: both stale cleanups, then the reaper. */
+async function runStaleCleanups(f: Fixture): Promise<void> {
+  await withSystemDbAccessContext(() => expireStaleSessions(f.orgId));
+  await withSystemDbAccessContext(() => expireStaleSessionsForUser(f.userId));
+  await runReaper();
+}
+
+function expectFresh(stamp: Date, before: number): void {
+  expect(stamp.getTime()).toBeGreaterThanOrEqual(before - 1_000);
+  expect(stamp.getTime()).toBeLessThanOrEqual(Date.now() + 1_000);
 }
 
 describe('#11113 remote session max duration across reconnects', () => {
@@ -307,5 +354,207 @@ describe('#11113 remote session max duration across reconnects', () => {
     expect(row.status).toBe('connecting');
     expect(row.startedAt!.getTime()).toBeGreaterThanOrEqual(before - 1_000);
     expect(row.startedAt!.getTime()).toBeLessThanOrEqual(after + 1_000);
+  });
+});
+
+describe('#11149 staleness is measured from the latest start attempt', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    ['long after the last answer', 60 * MINUTE_MS, 60 * MINUTE_MS],
+    ['a second reconnect, 90 s after the previous answer', 3 * MINUTE_MS, 1.5 * MINUTE_MS],
+  ])('a re-offer %s survives every stale cleanup', async (_label, startedAgoMs, answeredAgoMs) => {
+    const original = agoMs(startedAgoMs);
+    const f = await liveSessionStartedAt(original);
+    await getTestDb()
+      .update(remoteSessions)
+      .set({ createdAt: agoMs(startedAgoMs + MINUTE_MS) })
+      .where(eq(remoteSessions.id, f.sessionId));
+    await backdateAttempt(f.sessionId, agoMs(answeredAgoMs));
+
+    const before = Date.now();
+    await commitOffer(f);
+
+    expect(await readsAsStale(f.sessionId)).toBe(false);
+    await runStaleCleanups(f);
+
+    const row = await readSession(f.sessionId);
+    expect(row.status).toBe('connecting');
+    expectFresh(row.lastStartAttemptAt, before);
+    expect(row.startedAt!.getTime()).toBe(original.getTime());
+  });
+
+  it('a reconnect that falls back to the WebSocket path survives every stale cleanup', async () => {
+    const original = agoMs(60 * MINUTE_MS);
+    const f = await liveSessionStartedAt(original);
+    await commitOffer(f);
+    await backdateAttempt(f.sessionId, agoMs(3 * MINUTE_MS));
+
+    const before = Date.now();
+    const result = await withSystemDbAccessContext(() =>
+      commitDesktopStreamStartIntent({
+        sessionId: f.sessionId,
+        startCommandId: `desk-start-${f.sessionId}-${randomUUID()}`,
+        promptMode: 'off',
+        consentUnavailableBehavior: null,
+      }),
+    );
+    expect(result.ok).toBe(true);
+
+    expect(await readsAsStale(f.sessionId)).toBe(false);
+    await runStaleCleanups(f);
+
+    const row = await readSession(f.sessionId);
+    expect(row.status).toBe('connecting');
+    expectFresh(row.lastStartAttemptAt, before);
+    expect(row.startedAt!.getTime()).toBe(original.getTime());
+  });
+
+  it('an agent answer stamps the attempt and leaves the original start alone', async () => {
+    const original = agoMs(60 * MINUTE_MS);
+    const f = await liveSessionStartedAt(original);
+    const startCommandId = await commitOffer(f);
+    await backdateAttempt(f.sessionId, agoMs(MINUTE_MS));
+
+    const before = Date.now();
+    await sendAnswer(f, startCommandId);
+
+    const row = await readSession(f.sessionId);
+    expect(row.status).toBe('active');
+    expectFresh(row.lastStartAttemptAt, before);
+    expect(row.startedAt!.getTime()).toBe(original.getTime());
+  });
+
+  it('a first offer on an old pending row is measured from the offer', async () => {
+    const f = await buildFixture();
+    await getTestDb()
+      .update(remoteSessions)
+      .set({ createdAt: agoMs(11 * MINUTE_MS), lastStartAttemptAt: agoMs(11 * MINUTE_MS) })
+      .where(eq(remoteSessions.id, f.sessionId));
+
+    await commitOffer(f);
+    await runStaleCleanups(f);
+
+    expect((await readSession(f.sessionId)).status).toBe('connecting');
+  });
+
+  it('a new row starts its clock at creation, so an abandoned pending row still expires', async () => {
+    const before = Date.now();
+    const f = await buildFixture();
+    expectFresh((await readSession(f.sessionId)).lastStartAttemptAt, before);
+    expect(await readsAsStale(f.sessionId)).toBe(false);
+
+    await backdateAttempt(f.sessionId, agoMs(6 * MINUTE_MS));
+
+    expect(await readsAsStale(f.sessionId)).toBe(true);
+  });
+
+  it('an abandoned re-offer is stale 2 minutes after its attempt, however recent the start', async () => {
+    const f = await liveSessionStartedAt(new Date());
+    await commitOffer(f);
+    await backdateAttempt(f.sessionId, agoMs(3 * MINUTE_MS));
+
+    expect(await readsAsStale(f.sessionId)).toBe(true);
+    await runReaper();
+    expect((await readSession(f.sessionId)).status).toBe('connecting');
+
+    await withSystemDbAccessContext(() => expireStaleSessionsForUser(f.userId));
+    expect((await readSession(f.sessionId)).status).toBe('disconnected');
+  });
+
+  it('the reaper ends a connecting row 10 minutes after its attempt, however recent the start', async () => {
+    const f = await liveSessionStartedAt(new Date());
+    await commitOffer(f);
+    await backdateAttempt(f.sessionId, agoMs(11 * MINUTE_MS));
+
+    await runReaper();
+
+    expect((await readSession(f.sessionId)).status).toBe('disconnected');
+  });
+
+  it('an active row is never stale on age, however old its attempt', async () => {
+    const f = await liveSessionStartedAt(agoMs(60 * MINUTE_MS));
+    await backdateAttempt(f.sessionId, agoMs(60 * MINUTE_MS));
+
+    expect(await readsAsStale(f.sessionId)).toBe(false);
+    await runStaleCleanups(f);
+
+    expect((await readSession(f.sessionId)).status).toBe('active');
+  });
+
+  it('the hard deadline still fires on the original start while a fresh re-offer is in progress', async () => {
+    const f = await liveSessionStartedAt(agoMs(REVOCATION_LEASE_HARD_CAP_MS + MINUTE_MS));
+    const before = Date.now();
+    await commitOffer(f);
+    const row = await readSession(f.sessionId);
+    expect(row.status).toBe('connecting');
+    expectFresh(row.lastStartAttemptAt, before);
+
+    const renewal = await renewRevocationLease(f.sessionId);
+
+    expect(renewal).toMatchObject({ status: 'revoked', reason: 'hard_deadline' });
+    expect((await readSession(f.sessionId)).status).toBe('disconnected');
+  });
+
+  describe('migration', () => {
+    const ROLLBACK = new Error('roll back the migration replay');
+
+    it('backfills from the original start, then creation, in UTC, and re-applying changes nothing', async () => {
+      const answered = await buildFixture();
+      const neverAnswered = await buildFixture();
+      const migration = await readFile(
+        new URL('../../../migrations/2027-01-22-200100-remote-sessions-last-start-attempt.sql', import.meta.url),
+        'utf8',
+      );
+
+      // Everything runs in one transaction and rolls back, so the rest of the
+      // suite keeps its column.
+      await getTestDb()
+        .transaction(async (tx) => {
+          await tx.execute(sql`
+            UPDATE remote_sessions SET started_at = '2027-01-01 10:00:00', created_at = '2027-01-01 09:00:00'
+             WHERE id = ${answered.sessionId}::uuid`);
+          await tx.execute(sql`
+            UPDATE remote_sessions SET started_at = NULL, created_at = '2027-01-01 08:00:00'
+             WHERE id = ${neverAnswered.sessionId}::uuid`);
+          await tx.execute(sql`ALTER TABLE remote_sessions DROP COLUMN last_start_attempt_at`);
+          // A session zone that is not UTC: a bare cast would shift the backfill.
+          await tx.execute(sql`SET LOCAL TimeZone = 'America/New_York'`);
+
+          await tx.execute(sql.raw(migration));
+
+          const readStamp = async (sessionId: string) => {
+            const rows = await tx.execute(sql`
+              SELECT to_char(last_start_attempt_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') AS stamp
+                FROM remote_sessions WHERE id = ${sessionId}::uuid`);
+            return (rows as unknown as { stamp: string }[])[0]?.stamp;
+          };
+          expect(await readStamp(answered.sessionId)).toBe('2027-01-01 10:00:00');
+          expect(await readStamp(neverAnswered.sessionId)).toBe('2027-01-01 08:00:00');
+
+          await tx.execute(sql`
+            UPDATE remote_sessions SET last_start_attempt_at = '2027-01-02 00:00:00+00'
+             WHERE id = ${answered.sessionId}::uuid`);
+          await tx.execute(sql.raw(migration));
+          expect(await readStamp(answered.sessionId)).toBe('2027-01-02 00:00:00');
+
+          const columns = await tx.execute(sql`
+            SELECT is_nullable, column_default, data_type FROM information_schema.columns
+             WHERE table_schema = 'public' AND table_name = 'remote_sessions'
+               AND column_name = 'last_start_attempt_at'`);
+          expect((columns as unknown as Record<string, string>[])[0]).toEqual({
+            is_nullable: 'NO',
+            column_default: 'now()',
+            data_type: 'timestamp with time zone',
+          });
+
+          throw ROLLBACK;
+        })
+        .catch((err) => {
+          if (err !== ROLLBACK) throw err;
+        });
+    });
   });
 });
