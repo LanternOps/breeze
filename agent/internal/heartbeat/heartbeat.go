@@ -1337,6 +1337,9 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// a failed result for every command the previous process died running
 	// (#8296).
 	h.commandJournal.Recover(h.backupOutbox)
+	// After Recover has read the vendor update run marker for its synthetic
+	// result, and before any command can start a new run (#11065).
+	recoverOemRuns()
 	h.hwContext, h.hwCancel = context.WithCancel(context.Background())
 	h.initTimeSync()
 	h.initWorkloads()
@@ -2319,6 +2322,10 @@ func (h *Heartbeat) Start() {
 	// receive. Runs after the reconcile above so staged material is finished
 	// first. See maybeSelfInitiateCertRenewal.
 	go h.maybeSelfInitiateCertRenewal()
+
+	// #11065 — after a firmware update's reboot, report BitLocker and the BIOS
+	// version once. A no-op when nothing is pending.
+	go h.verifyOemUpdates()
 
 	// Proactively spawn helpers into user sessions so remote desktop works
 	// instantly after reboot (Windows service only). The SCM session event
