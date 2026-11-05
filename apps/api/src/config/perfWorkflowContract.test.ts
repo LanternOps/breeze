@@ -147,6 +147,9 @@ describe('perf.yml — self-hosted perf gate (#8146)', () => {
       expect(last, `${id} last step`).toMatch(/^name: Return workspace ownership to the runner$/m);
       expect(last, `${id} last step`).toMatch(/^ {8}if: always\(\)$/m);
       expect(last, `${id} last step`).toContain('chown -R');
+      expect(last, `${id} last step`).toContain('-v "$GITHUB_WORKSPACE:/w"');
+      expect(last, `${id} last step`).toContain('chown -R "$U:$G" /w');
+      expect(last, `${id} last step`).toMatch(/^ {8}continue-on-error: true$/m);
       expect(last, `${id} last step`).toMatch(/docker run --rm [\s\S]*alpine:\d+\.\d+@sha256:[0-9a-f]{64}/);
       expect(last, `${id} last step`).not.toMatch(/sudo/);
     }

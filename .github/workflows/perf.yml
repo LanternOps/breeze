@@ -158,6 +158,7 @@ jobs:
       # (apps/web/public, ...). Hand it back so the next run's checkout can clean it.
       - name: Return workspace ownership to the runner
         if: always()
+        continue-on-error: true
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE:/w" -e U="$(id -u)" -e G="$(id -g)" \
             alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
@@ -242,6 +243,7 @@ jobs:
       # (apps/web/public, ...). Hand it back so the next run's checkout can clean it.
       - name: Return workspace ownership to the runner
         if: always()
+        continue-on-error: true
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE:/w" -e U="$(id -u)" -e G="$(id -g)" \
             alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
