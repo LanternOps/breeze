@@ -179,7 +179,7 @@ export function registerC2CConfigTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_c2c_configs',
       description:
-        'Cloud-to-cloud backup configs. Actions: list; create (connectionId, name, backupScope); update (configId); delete (configId, refused when it has backup history). Writes choose whose mail is copied and need approval.',
+        'Cloud-to-cloud backup configs. Actions: list, create (connectionId, name, backupScope), update (configId), delete (configId, refused when it has backup history). Writes choose whose mail is copied and need approval.',
       input_schema: {
         type: 'object' as const,
         properties: {

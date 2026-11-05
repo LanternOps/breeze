@@ -60,10 +60,13 @@ const VSS_WRITERS_SHOWN = 200;
 const VSS_WRITER_NAME_MAX_CHARS = 256;
 const VSS_LAST_ERROR_MAX_CHARS = 500;
 
-/** Lazy: aiTools.ts imports this module, so a static value import would be a cycle. */
-async function verifyDeviceAccess(...args: Parameters<typeof import('./aiTools').verifyDeviceAccess>) {
-  const { verifyDeviceAccess: verify } = await import('./aiTools');
-  return verify(...args);
+/**
+ * The shared device gate (org, site and exact-device axes, never a parked device), loaded lazily:
+ * aiTools.ts imports this module, so a static value import would be a cycle.
+ */
+async function gatedDevice(...args: Parameters<typeof import('./aiTools').verifyDeviceAccess>) {
+  const { verifyDeviceAccess } = await import('./aiTools');
+  return verifyDeviceAccess(...args);
 }
 
 function str(value: unknown): string | undefined {
@@ -88,7 +91,7 @@ async function resolveDeviceOrg(
   deviceId: string,
   inputOrgId: string | undefined,
 ): Promise<{ orgId: string } | { error: string }> {
-  const access = await verifyDeviceAccess(deviceId, auth);
+  const access = await gatedDevice(deviceId, auth);
   if ('error' in access) return { error: notFound('Device') };
   if (inputOrgId && access.device.orgId !== inputOrgId) return { error: notFound('Device') };
   return { orgId: access.device.orgId };
@@ -350,7 +353,7 @@ export function registerBackupVerificationTools(aiTools: Map<string, AiTool>): v
       const deviceId = str(input.deviceId);
       if (!deviceId) return jsonError('deviceId is required', 'VALIDATION_ERROR');
       try {
-        const access = await verifyDeviceAccess(deviceId, auth, true);
+        const access = await gatedDevice(deviceId, auth, true);
         if ('error' in access) {
           return access.error.includes('not online') ? jsonError(access.error, 'DEVICE_OFFLINE') : notFound('Device');
         }

@@ -41,10 +41,13 @@ const FAILURE_REASON_MAX_CHARS = 2000;
 const WARNINGS_SHOWN = 10;
 const WARNING_MAX_CHARS = 500;
 
-/** Lazy: aiTools.ts imports this module, so a static value import would be a cycle. */
-async function verifyDeviceAccess(...args: Parameters<typeof import('./aiTools').verifyDeviceAccess>) {
-  const { verifyDeviceAccess: verify } = await import('./aiTools');
-  return verify(...args);
+/**
+ * The shared device gate (org, site and exact-device axes, never a parked device), loaded lazily:
+ * aiTools.ts imports this module, so a static value import would be a cycle.
+ */
+async function gatedDevice(...args: Parameters<typeof import('./aiTools').verifyDeviceAccess>) {
+  const { verifyDeviceAccess } = await import('./aiTools');
+  return verifyDeviceAccess(...args);
 }
 
 function str(value: unknown): string | undefined {
@@ -88,13 +91,18 @@ const RECOVERY_COLUMNS = {
   completedAt: bareMetalRecoveries.completedAt,
 };
 
-function selectRecoveries(where: SQL | undefined) {
+/** Every read carries the caller's site ceiling (through the recovered device) and exact-device axis in SQL. */
+function selectRecoveries(auth: AuthContext, where: SQL | undefined) {
   return db
     .select(RECOVERY_COLUMNS)
     .from(bareMetalRecoveries)
     .innerJoin(devices, eq(devices.id, bareMetalRecoveries.deviceId))
     .leftJoin(backupSnapshots, eq(backupSnapshots.id, bareMetalRecoveries.snapshotId))
-    .where(where);
+    .where(and(
+      where,
+      siteScopeCondition(auth, devices.siteId),
+      deviceScopeCondition(auth, bareMetalRecoveries.deviceId),
+    ));
 }
 
 type RecoveryRow = Awaited<ReturnType<typeof selectRecoveries>>[number];
@@ -139,17 +147,15 @@ function readOrgs(auth: AuthContext, inputOrgId: string | undefined): { orgIds: 
 async function listRecoveries(auth: AuthContext, input: Record<string, unknown>, orgIds: string[]): Promise<string> {
   const deviceId = str(input.deviceId);
   if (deviceId) {
-    const access = await verifyDeviceAccess(deviceId, auth);
+    const access = await gatedDevice(deviceId, auth);
     if ('error' in access || !orgIds.includes(access.device.orgId)) return notFound('Device');
   }
   if (siteAllowlistOf(auth)?.length === 0) {
     return bounded({ count: 0, recoveries: [], note: SITE_SCOPE_EMPTY_NOTE });
   }
-  const rows = await selectRecoveries(and(
+  const rows = await selectRecoveries(auth, and(
     orgIdIn(bareMetalRecoveries.orgId, orgIds),
     deviceId ? eq(bareMetalRecoveries.deviceId, deviceId) : undefined,
-    siteScopeCondition(auth, devices.siteId),
-    deviceScopeCondition(auth, bareMetalRecoveries.deviceId),
   ))
     .orderBy(desc(bareMetalRecoveries.createdAt))
     .limit(clampLimit(input.limit, 25, 50));
@@ -161,14 +167,15 @@ async function getRecovery(auth: AuthContext, input: Record<string, unknown>, or
   const recoveryId = str(input.recoveryId);
   if (!recoveryId) return jsonError('recoveryId is required for get', 'VALIDATION_ERROR');
 
-  const [row] = await selectRecoveries(and(
+  const [row] = await selectRecoveries(auth, and(
     eq(bareMetalRecoveries.id, recoveryId),
     orgIdIn(bareMetalRecoveries.orgId, orgIds),
   )).limit(1);
   if (!row) return notFound('Recovery');
   if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(row.deviceId)) return notFound('Recovery');
 
-  // Site lineage runs through the device being recovered, exactly as the route's loadAuthorizedRecovery does.
+  // The SQL above already applies both axes; the route's own lineage check (loadAuthorizedRecovery) runs too, so
+  // the tool refuses at least everything the route refuses.
   try {
     await authorizeResilienceResources({
       orgId: row.orgId,
