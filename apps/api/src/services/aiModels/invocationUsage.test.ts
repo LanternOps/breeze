@@ -382,8 +382,19 @@ describe('sdkTurnUsage — cumulative modelUsage is billed as per-key deltas aga
       expect(out.outcome.stopReason).toBe('context_window_exceeded');
     });
 
-    it('a turn with no result stays no_result: the flag only explains a result the CLI reported', () => {
+    it('a turn whose query died with no result after the refusal: the same', () => {
       const out = sdkTurnUsage({ binding: B, observation: windowExceeded(), previousSnapshot: null, result: null });
+      expect(out.usage).toEqual([]);
+      expect(out.usageNote).toBe('context_window_exceeded');
+      expect(out.usageConfirmed).toBe(true);
+    });
+
+    it.each([
+      ['an empty modelUsage', { subtype: 'success', is_error: true, modelUsage: {} }],
+      ['no modelUsage', { subtype: 'error_during_execution', is_error: true }],
+      ['no result', null],
+    ])('with output already served this turn, %s is not a confirmed zero: it stays no_result', (_name, result) => {
+      const out = sdkTurnUsage({ binding: B, observation: { ...windowExceeded(), sawOutput: true }, previousSnapshot: null, result: result as SdkResultLike | null });
       expect(out.usageNote).toBe('no_result');
       expect(out.usageConfirmed).toBe(false);
     });

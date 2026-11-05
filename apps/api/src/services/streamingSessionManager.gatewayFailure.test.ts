@@ -153,6 +153,39 @@ describe('gateway failure reason in the chat turn error (#7794)', () => {
       expect(settled.outcome.stopReason).toBe('context_window_exceeded');
     });
 
+    it('a query that throws after the refusal also settles by name', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      m.queryMock.mockImplementation(() => ({
+        async *[Symbol.asyncIterator]() { await gate; throw new Error('Claude Code process exited with code 1'); },
+        interrupt: vi.fn(), close: vi.fn(),
+      }));
+      const session = await manager.getOrCreate(
+        's-window-throw', baseDbSession, baseAuth, undefined, 'PROMPT', undefined, makeResolvedModel('openai_compatible'),
+      );
+      session.budgetReservationId = 'reservation-1';
+      noteGatewayFailure('s-window-throw', TOO_LARGE, 'context_window_exceeded');
+      release();
+      await session.processorPromise;
+      expect(errorMessages(session)).toEqual([TOO_LARGE]);
+      expect(lastSettlement().sdkUsage).toMatchObject({ usageNote: 'context_window_exceeded', usageConfirmed: true });
+    });
+
+    it('a note left by an earlier turn is dropped when the next turn starts', async () => {
+      const { session } = await runTurn('s-stale', [sdkResult()]);
+      noteGatewayFailure('s-stale', TOO_LARGE, 'context_window_exceeded');
+      session.state = 'idle';
+      expect(manager.tryTransitionToProcessing(session)).toBe(true);
+      expect(takeGatewayFailureNote('s-stale')).toBeNull();
+    });
+
+    it('a coded note on a turn that succeeded changes nothing', async () => {
+      const { errors } = await runTurn('s-window-ok', [sdkResult()],
+        () => noteGatewayFailure('s-window-ok', TOO_LARGE, 'context_window_exceeded'));
+      expect(errors).toEqual([]);
+      expect(lastSettlement().outcome.stopReason).not.toBe('context_window_exceeded');
+    });
+
     it('an uncoded gateway note still settles as before', async () => {
       await runTurn('s-uncoded', [{ ...sdkResult(), is_error: true, modelUsage: {} }],
         () => noteGatewayFailure('s-uncoded', NOTE));

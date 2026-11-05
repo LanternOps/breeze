@@ -3,6 +3,7 @@ import {
   CONTEXT_MIN_OUTPUT_TOKENS,
   CONTEXT_WINDOW_MEMO_MAX_ENTRIES,
   CONTEXT_WINDOW_MEMO_TTL_MS,
+  CONTEXT_WINDOW_REFUSAL_FRESH_MS,
   __resetContextWindowsForTests,
   contextSafetyMargin,
   contextWindowExceededMessage,
@@ -39,8 +40,24 @@ describe('parseContextLimitRejection (#10577)', () => {
     ['thousands separators',
       'maximum context length is 131,072 tokens (108,301 prompt tokens plus max_tokens 32,000)',
       131_072, 108_301],
+    ['vLLM wording with a lower bound',
+      'This model\'s maximum context length is 131072 tokens. However, you requested 32000 output tokens and your prompt contains at least 99073 input tokens, for a total of at least 131073 tokens.',
+      131_072, 99_073],
+    ['Azure wording',
+      'This model\'s maximum context length is 131072 tokens, however your messages resulted in 108301 tokens. Please reduce the length of the messages.',
+      131_072, 108_301],
   ])('reads %s', (_name, text, contextWindow, promptTokens) => {
     expect(parseContextLimitRejection(400, text, 32_000)).toEqual({ contextWindow, promptTokens });
+  });
+
+  it('reads a window stated as "of only"', () => {
+    expect(parseContextLimitRejection(400, 'the model is loaded with context length of only 4096 tokens', 32_000))
+      .toEqual({ contextWindow: 4_096, promptTokens: null });
+  });
+
+  it.each([413, 422])('reads a rejection sent as HTTP %i', (status) => {
+    expect(parseContextLimitRejection(status, 'maximum context length is 131072 tokens (108301 prompt tokens)', 32_000))
+      .toEqual({ contextWindow: 131_072, promptTokens: 108_301 });
   });
 
   it('derives the prompt from a stated total when no prompt count is given', () => {
@@ -131,6 +148,32 @@ describe('planRequest (#10577)', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     rememberContextLimit(KEY, { contextWindow: WINDOW, promptTokens: 100_000 }, 100_000);
     expect(planRequest(KEY, 32_000, WINDOW + 100)).toEqual({ kind: 'send', maxTokens: CONTEXT_MIN_OUTPUT_TOKENS });
+  });
+
+  it('the refusal threshold is 1.2 times the window', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    rememberContextLimit(KEY, { contextWindow: WINDOW, promptTokens: 100_000 }, 100_000);
+    const atThreshold = Math.ceil(WINDOW * 1.2);
+    expect(planRequest(KEY, 32_000, atThreshold).kind).toBe('too_large');
+    expect(planRequest(KEY, 32_000, atThreshold - 1).kind).toBe('send');
+  });
+
+  it('a window not reconfirmed recently never refuses alone: the endpoint is asked again, in case it was resized', () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    rememberContextLimit(KEY, { contextWindow: WINDOW, promptTokens: 100_000 }, 100_000);
+    vi.advanceTimersByTime(CONTEXT_WINDOW_REFUSAL_FRESH_MS + 1);
+    expect(planRequest(KEY, 32_000, WINDOW * 2)).toEqual({ kind: 'send', maxTokens: CONTEXT_MIN_OUTPUT_TOKENS });
+    rememberContextLimit(KEY, { contextWindow: WINDOW, promptTokens: WINDOW * 2 }, WINDOW * 2);
+    expect(planRequest(KEY, 32_000, WINDOW * 2).kind).toBe('too_large');
+  });
+
+  it('logs the first up-front cap for a remembered window, then stays quiet', () => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    rememberContextLimit(KEY, { contextWindow: WINDOW, promptTokens: 108_301 }, 108_301);
+    planRequest(KEY, 32_000, 108_301);
+    planRequest(KEY, 32_000, 108_301);
+    expect(log.mock.calls.filter(([l]) => String(l).includes('capping max_tokens'))).toHaveLength(1);
   });
 
   it('a window is scoped to its connection, config version and model', () => {

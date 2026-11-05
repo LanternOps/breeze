@@ -3,6 +3,7 @@ import { joinByoUrl } from '../byoEndpointPolicy';
 import { noteGatewayFailure } from '../failureNotes';
 import { forwardUpstream, readUpstreamErrorText } from '../forward';
 import { GATEWAY_ERROR_TEXT_MAX } from '../limits';
+import { scrubSecrets } from '../scrub';
 import { GatewayError, gatewayErrorBody, type AnthropicErrorType, type GatewayGrantRecord, type GatewayResponse } from '../types';
 import {
   contextWindowExceededMessage,
@@ -74,12 +75,15 @@ function logUpstreamFailure(grant: GatewayGrantRecord, call: UpstreamCallContext
     + `${detail ? `: ${detail}` : ''}`);
 }
 
-/** Bytes of a failed upstream's scrubbed reason shown in a log line or a chat turn. */
+/** Characters of a failed upstream's scrubbed reason shown in a log line or a chat turn. */
 const UPSTREAM_DETAIL_MAX = 300;
+
+const shortDetail = (grant: GatewayGrantRecord, detail: string): string =>
+  scrubSecrets(detail, [grant.credential.secret], UPSTREAM_DETAIL_MAX);
 
 function upstreamError(res: Response, grant: GatewayGrantRecord, call: UpstreamCallContext, fullDetail: string): GatewayResponse {
   const type = upstreamErrorType(res.status);
-  const detail = fullDetail.slice(0, UPSTREAM_DETAIL_MAX);
+  const detail = shortDetail(grant, fullDetail);
   logUpstreamFailure(grant, call, `upstream returned HTTP ${res.status}`, res, detail);
   const message = type === 'authentication_error'
     ? 'The endpoint rejected the connection\'s key.'
@@ -126,9 +130,15 @@ async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSi
     if (next.kind === 'too_large') return contextWindowRefusal(grant, call, next.contextWindow, next.promptTokens);
     if (next.kind === 'surface') return upstreamError(res, grant, call, detail);
     logUpstreamFailure(grant, call, `upstream rejected max_tokens ${plan.maxTokens} for its context window; retrying once with ${next.maxTokens}`,
-      res, detail.slice(0, UPSTREAM_DETAIL_MAX));
+      res, shortDetail(grant, detail));
     res = await send(next.maxTokens);
-    if (!res.ok) return upstreamError(res, grant, call, await readUpstreamErrorText(res, grant, UPSTREAM_DETAIL_MAX));
+    if (!res.ok) {
+      const retryDetail = await readUpstreamErrorText(res, grant, GATEWAY_ERROR_TEXT_MAX);
+      const again = parseContextLimitRejection(res.status, retryDetail, next.maxTokens);
+      if (!again) return upstreamError(res, grant, call, retryDetail);
+      rememberContextLimit(windowKey, again, call.promptTokensEstimate);
+      return contextWindowRefusal(grant, call, again.contextWindow, again.promptTokens ?? call.promptTokensEstimate);
+    }
   }
   if (!translated.stream) {
     let payload: unknown;

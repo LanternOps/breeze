@@ -426,8 +426,10 @@ export function sdkTurnUsage(input: {
   });
 
   // #10577: the gateway knows why this turn failed and that the refused call
-  // was served by nobody, so an empty reading is a confirmed zero, not a gap.
-  const windowRefused = errored && obs.contextWindowExceeded;
+  // was served by nobody. With no output seen from any other call either, an
+  // empty reading is a confirmed zero, not a gap. Output means an earlier call
+  // was served, so an empty reading stays untrusted.
+  const windowRefused = errored && obs.contextWindowExceeded && !obs.sawOutput;
   const stoppedAtWindow = (): SdkTurnUsageResult => ({
     usage: [],
     outcome: sdkOutcome(binding, obs, result, binding.wireModel),
@@ -436,6 +438,7 @@ export function sdkTurnUsage(input: {
     usageNote: 'context_window_exceeded',
   });
 
+  if (!result && windowRefused) return stoppedAtWindow();
   if (!result || result.startup_failure_reason !== undefined) return untrusted();
   const current = readModelUsage(result.modelUsage);
   if (current === null && windowRefused) return stoppedAtWindow();

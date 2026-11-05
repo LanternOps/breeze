@@ -17,6 +17,8 @@
 export const CONTEXT_MIN_OUTPUT_TOKENS = 1024;
 export const CONTEXT_WINDOW_MEMO_TTL_MS = 60 * 60_000;
 export const CONTEXT_WINDOW_MEMO_MAX_ENTRIES = 1_000;
+/** Refusing with no provider call needs a window the endpoint stated this recently; past it the endpoint is asked again. */
+export const CONTEXT_WINDOW_REFUSAL_FRESH_MS = 10 * 60_000;
 
 const MIN_PLAUSIBLE_WINDOW = 1024;
 const MAX_PLAUSIBLE_TOKENS = 100_000_000;
@@ -33,13 +35,14 @@ const MAX_ESTIMATE_RATIO = 4;
 
 const REJECTION_STATUSES: ReadonlySet<number> = new Set([400, 413, 422]);
 const WINDOW_PATTERNS = [
-  /context[ _](?:length|size|window)\s+(?:is|of)\s+([\d,]+)/i,
+  /context[ _](?:length|size|window)\s+(?:is|of)\s+(?:only\s+)?([\d,]+)/i,
   /"n_ctx"\s*:\s*(\d+)/,
 ];
 const PROMPT_PATTERNS = [
   /([\d,]+)\s+prompt tokens/i,
   /([\d,]+)\s+in the messages/i,
   /([\d,]+)\s+input tokens/i,
+  /messages resulted in\s+([\d,]+)\s+tokens/i,
   /"n_prompt_tokens"\s*:\s*(\d+)/,
 ];
 const TOTAL_PATTERN = /(?:requested|needs an?)\s+([\d,]+)(?:\s+tokens|-token)/i;
@@ -57,7 +60,7 @@ export type RejectionPlan =
   /** A cap would not change the request, so the endpoint's own reason stands. */
   | { kind: 'surface' };
 
-interface MemoEntry { contextWindow: number; estimateRatio: number; at: number }
+interface MemoEntry { contextWindow: number; estimateRatio: number; at: number; capLogged: boolean }
 
 const memo = new Map<string, MemoEntry>();
 const unknownLogged = new Set<string>();
@@ -114,7 +117,7 @@ export function rememberContextLimit(key: ContextWindowKey, reported: ReportedCo
     ? Math.min(MAX_ESTIMATE_RATIO, Math.max(MIN_ESTIMATE_RATIO, reported.promptTokens / estimatedPromptTokens))
     : previous?.estimateRatio ?? 1;
   memo.delete(k); // re-insert so Map order stays oldest-first
-  memo.set(k, { contextWindow: reported.contextWindow, estimateRatio, at: Date.now() });
+  memo.set(k, { contextWindow: reported.contextWindow, estimateRatio, at: Date.now(), capLogged: false });
   while (memo.size > CONTEXT_WINDOW_MEMO_MAX_ENTRIES) {
     const oldest = memo.keys().next().value;
     if (oldest === undefined) break;
@@ -143,11 +146,18 @@ export function planRequest(key: ContextWindowKey, requestedMaxTokens: number, e
     return { kind: 'send', maxTokens: requestedMaxTokens };
   }
   const promptTokens = Math.round(estimatedPromptTokens * entry.estimateRatio);
-  if (promptTokens >= entry.contextWindow * CLEARLY_OVER_WINDOW_FACTOR) {
+  const confirmedRecently = Date.now() - entry.at <= CONTEXT_WINDOW_REFUSAL_FRESH_MS;
+  if (confirmedRecently && promptTokens >= entry.contextWindow * CLEARLY_OVER_WINDOW_FACTOR) {
     return { kind: 'too_large', contextWindow: entry.contextWindow, promptTokens };
   }
   const room = Math.max(roomFor(entry.contextWindow, promptTokens), CONTEXT_MIN_OUTPUT_TOKENS);
-  return { kind: 'send', maxTokens: Math.min(requestedMaxTokens, room) };
+  const maxTokens = Math.min(requestedMaxTokens, room);
+  if (maxTokens < requestedMaxTokens && !entry.capLogged) {
+    entry.capLogged = true;
+    console.warn(`[modelGateway] capping max_tokens ${requestedMaxTokens} to ${maxTokens} for connection ${key.connectionId}, `
+      + `model ${JSON.stringify(key.model)} (context_window ${entry.contextWindow}, prompt_tokens_est ${promptTokens}).`);
+  }
+  return { kind: 'send', maxTokens };
 }
 
 /** Client-safe: built only from the two counts. */

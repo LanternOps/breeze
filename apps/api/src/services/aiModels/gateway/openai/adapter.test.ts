@@ -376,15 +376,35 @@ describe('openai_compatible adapter (real Anthropic client through the gateway)'
       expect(takeGatewayFailure('sess-over-reported')?.code).toBe('context_window_exceeded');
     });
 
-    it('a retry that is also rejected surfaces the endpoint\'s reason and stops at two calls', async () => {
+    it('a retry also rejected for its context window gets the specific error and stops at two calls', async () => {
       reply = (body) => { sent.push(body.max_tokens as number); return rejection(PROMPT, body.max_tokens as number); };
       const error = await ask('sess-twice').catch((e: unknown) => e);
       expect(sent).toEqual([32_000, CAPPED]);
       expect(error).toBeInstanceOf(Anthropic.BadRequestError);
-      const note = takeGatewayFailure('sess-twice');
-      expect(note?.message).toContain('The endpoint returned HTTP 400');
-      expect(note?.message).toContain('maximum context length');
+      expect(takeGatewayFailure('sess-twice')).toMatchObject({
+        code: 'context_window_exceeded',
+        message: expect.stringMatching(/larger context window/i),
+      });
+    });
+
+    it('a retry rejected for another reason surfaces that reason, uncoded', async () => {
+      reply = (body) => {
+        sent.push(body.max_tokens as number);
+        return sent.length === 1 ? rejection(PROMPT, 32_000) : new Response('{"error":{"message":"model is loading"}}', { status: 400 });
+      };
+      await ask('sess-retry-other').catch(() => {});
+      expect(sent).toEqual([32_000, CAPPED]);
+      const note = takeGatewayFailure('sess-retry-other');
+      expect(note?.message).toContain('model is loading');
       expect(note?.code).toBeNull();
+    });
+
+    it('a long upstream reason stays bounded and still shows that it was cut', async () => {
+      reply = () => new Response(`{"error":{"message":"${'y'.repeat(900)}"}}`, { status: 400 });
+      await ask('sess-long', 'hi').catch(() => {});
+      const note = takeGatewayFailure('sess-long');
+      expect(note?.message.length).toBeLessThan(360);
+      expect(note?.message.endsWith('…')).toBe(true);
     });
 
     it('with no known window the request is unchanged and another 400 is not retried', async () => {
