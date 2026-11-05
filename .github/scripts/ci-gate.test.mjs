@@ -1413,6 +1413,28 @@ test('ci-gate.yml is a policy path, so a change to it never thins its own queue 
   assert.ok(isPolicyPath('.github/workflows/ci-gate.yml'));
 });
 
+// ── C3: the runbook ──────────────────────────────────────────────────────
+
+test('docs: both agent docs describe CI Gate, and the rollback order is pinned', () => {
+  const merge = readFileSync(join(REPO_ROOT, 'docs/agents/merge-and-deploy.md'), 'utf8');
+  const testing = readFileSync(join(REPO_ROOT, 'docs/agents/testing.md'), 'utf8');
+  assert.match(merge, /CI Gate/);
+  assert.match(testing, /CI Gate/);
+  assert.match(merge, /^### CI Gate rollback$/m);
+
+  const rollback = merge.slice(merge.indexOf('### CI Gate rollback')).split(/^#{2,3} /m)[1];
+  const ruleset = rollback.search(/ruleset to \*\*Evaluate\*\* or \*\*Disabled\*\*/);
+  const confirm = rollback.indexOf('gh api repos/LanternOps/breeze/rules/branches/main');
+  const code = rollback.search(/only then/i);
+  assert.ok(ruleset >= 0, 'the owner turns the ruleset off');
+  assert.ok(confirm > ruleset, 'then confirms it');
+  assert.ok(code > confirm, 'and only then touches the workflow');
+
+  for (const claim of [/does not prove tests ran honestly/i, /drop it from `ci-success`/i, /later PR/i, /green replay run/i, /blocks its own fix/i]) {
+    assert.match(merge, claim);
+  }
+});
+
 test('runCLI: verify and anchor are subcommands, and an unknown one is still a usage error', () => {
   const io = verifyIo({ git: args => { if (args[0] === 'merge-base') throw Error('no'); return ''; } });
   assert.equal(gate.runCLI(io, ['verify'], verifyEnv()), 1);
