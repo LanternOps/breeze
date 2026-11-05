@@ -11,6 +11,7 @@ import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { resolveBackupProviderConfig, resolveBackupDestinationError, type BackupProviderConfig } from '../../services/backupProviderConfig';
 import { backupReadCredentialPayload } from '../../services/backupCommandCredentials';
 import { queueCommandForExecution } from '../../services/commandQueue';
+import type { AiOriginRef } from '@breeze/shared';
 import { publishEvent } from '../../services/eventBus';
 import { BACKUP_LOW_READINESS_THRESHOLD } from './constants';
 import {
@@ -86,11 +87,13 @@ export type RunBackupVerificationInput = {
   snapshotId?: string;
   source: string;
   requestedBy?: string | null;
+  /** Who decided this command, when an AI surface did (`requireAiOrigin`); stamped on the command row. */
+  aiOrigin?: AiOriginRef;
 };
 
 export type RunScheduledBackupVerificationInput = Omit<
   RunBackupVerificationInput,
-  'snapshotId' | 'requestedBy' | 'source'
+  'snapshotId' | 'requestedBy' | 'source' | 'aiOrigin'
 > & {
   backupJobId: string;
   source: 'post-backup-integrity-check' | 'weekly-test-restore';
@@ -755,7 +758,11 @@ async function runBackupVerificationInternal(
       // delivered, so it is never written to the command row.
       ...backupReadCredentialPayload(backupJob.configId, input.orgId, providerConfig.provider),
     },
-    { userId: input.requestedBy || undefined, expectedOrgId: input.orgId }
+    {
+      userId: input.requestedBy || undefined,
+      expectedOrgId: input.orgId,
+      ...(input.aiOrigin ? { aiOrigin: input.aiOrigin } : {}),
+    }
   );
 
   if (dispatchResult.error) {
