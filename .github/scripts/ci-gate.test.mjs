@@ -27,7 +27,7 @@ function repo(baseFiles, headFiles) {
   const commit = (files, message) => {
     for (const [path, text] of Object.entries(files)) {
       mkdirSync(dirname(join(cwd, path)), { recursive: true });
-      if (text === null) rmSync(join(cwd, path)); else writeFileSync(join(cwd, path), text);
+      if (text === null) rmSync(join(cwd, path), { force: true }); else writeFileSync(join(cwd, path), text);
     }
     git('add', '-A');
     git('commit', '-q', '--allow-empty', '-m', message);
@@ -213,4 +213,216 @@ test('runAggregator: an unmapped value is empty, which the script fails closed o
   const io = gate.createGateIO({ cwd: tempDir(), env: { PATH: process.env.PATH } });
   const script = '[[ "${LINT_RESULT}" == "" ]] && [[ "${RUST_CHANGED}" == "" ]] && [[ "${MOBILE_REQUIRED}" == "" ]]';
   assert.equal(gate.runAggregator(io, probeAggregator(script), { results: {}, flags: {}, outputs: {}, isPr: false }).passed, true);
+});
+
+// ── B2: job instances and rollup ─────────────────────────────────────────
+
+const api = (...pairs) => pairs.map(([name, conclusion]) => ({ name, conclusion, status: 'completed' }));
+const shards = (template, count, conclusion = 'success') =>
+  Array.from({ length: count }, (_, i) => [template.replace('${{ matrix.shard }}', String(i + 1)), conclusion]);
+const TEST_WEB = 'Test Web (shard ${{ matrix.shard }}/4)';
+const rollup = (job, jobs, event = 'merge_group', ci = realCi) => gate.rollup(job, api(...jobs), ci, { event });
+
+test('jobInstances: all five matrices in ci.yml parse, by name and count derived from the file', () => {
+  const matrixJobs = Object.entries(gate.workflowJobsOf(realCi)).filter(([, job]) => /^      matrix:$/m.test(job.body)).map(([id]) => id);
+  assert.deepEqual(matrixJobs.sort(), ['build-agent', 'build-smoke-images', 'integration-test', 'test-api', 'test-web']);
+  const counts = { 'test-api': 8, 'test-web': 4, 'integration-test': 16 };
+  for (const id of matrixJobs) {
+    const { template, expected } = gate.jobInstances(realCi, id);
+    assert.match(template, /\$\{\{ matrix\.\w+ \}\}/, id);
+    assert.equal(new Set(expected).size, expected.length, `${id}: expanded names are unique`);
+    for (const name of expected) assert.doesNotMatch(name, /\$\{\{/, `${id}: ${name}`);
+    if (counts[id]) assert.equal(expected.length, counts[id], id);
+  }
+  // The include matrices: one expansion per include entry, counted from the file.
+  const includes = id => (gate.workflowJobsOf(realCi)[id].body.split(/^      matrix:$/m)[1].match(/^ {10}- /gm) ?? []).length;
+  assert.equal(gate.jobInstances(realCi, 'build-agent').expected.length, includes('build-agent'));
+  assert.equal(gate.jobInstances(realCi, 'build-smoke-images').expected.length, includes('build-smoke-images'));
+  assert.ok(gate.jobInstances(realCi, 'build-smoke-images').expected.includes('Build Smoke Image (web)'));
+  assert.ok(gate.jobInstances(realCi, 'test-api').expected.includes('Test API (shard 8/8)'));
+});
+
+test('jobInstances: a plain job is its display name, or its id without one; an absent id is null', () => {
+  assert.deepEqual(gate.jobInstances(realCi, 'lint'), { template: 'Lint', expected: ['Lint'] });
+  assert.deepEqual(gate.jobInstances('name: CI\njobs:\n  bare-job:\n    runs-on: x\n', 'bare-job'), { template: 'bare-job', expected: ['bare-job'] });
+  assert.equal(gate.jobInstances(realCi, 'no-such-job'), null);
+});
+
+test('jobInstances: an unsupported name or matrix shape fails closed as head_unparseable', () => {
+  const bad = [
+    'jobs:\n  j:\n    name: J ${{ env.X }}\n',
+    'jobs:\n  j:\n    name: J (${{ matrix.n }})\n',
+    'jobs:\n  j:\n    name: J\n    strategy:\n      matrix:\n        n: [1, 2]\n',
+    'jobs:\n  j:\n    name: J (${{ matrix.n }})\n    strategy:\n      matrix:\n        n: ${{ fromJSON(needs.x.outputs.list) }}\n',
+    'jobs:\n  j:\n    name: J (${{ matrix.n }})\n    strategy:\n      matrix:\n        n: [1, 2]\n        m: [3, 4]\n',
+    'jobs:\n  j:\n    name: J (${{ matrix.n }})\n    strategy:\n      matrix:\n        n: [1, 2]\n        exclude:\n          - n: 1\n',
+    'jobs:\n  j:\n    name: J (${{ matrix.n }})\n    strategy:\n      matrix:\n        n: []\n',
+    'jobs:\n  j:\n    name: J (${{ matrix.other }})\n    strategy:\n      matrix:\n        include:\n          - n: 1\n',
+  ];
+  for (const ci of bad) assert.throws(() => gate.jobInstances(`name: CI\n${ci}`, 'j'), err => err.code === 'head_unparseable', ci);
+});
+
+test('rollup: a matrix all green with the full count is success', () => {
+  assert.equal(rollup('test-web', shards(TEST_WEB, 4)), 'success');
+});
+
+test('rollup: one failed shard is failure, one cancelled shard is cancelled, one absent shard is failure', () => {
+  const four = shards(TEST_WEB, 4);
+  assert.equal(rollup('test-web', [...four.slice(0, 3), [four[3][0], 'failure']]), 'failure');
+  assert.equal(rollup('test-web', [...four.slice(0, 3), [four[3][0], 'cancelled']]), 'cancelled');
+  assert.equal(rollup('test-web', [[four[0][0], 'failure'], ...four.slice(1, 3), [four[3][0], 'cancelled']]), 'failure');
+  assert.equal(rollup('test-web', four.slice(0, 3)), 'failure');
+  assert.equal(rollup('test-web', [...four.slice(0, 3), [four[3][0], 'timed_out']]), 'failure');
+  assert.equal(rollup('test-web', [...four.slice(0, 3), [four[3][0], null]]), 'failure');
+});
+
+test('rollup: a lone literal template is skipped only when skipped; never evidence that shards passed', () => {
+  assert.equal(rollup('test-web', [[TEST_WEB, 'skipped']]), 'skipped');
+  assert.equal(rollup('test-web', [[TEST_WEB, 'success']]), 'failure');
+  assert.equal(rollup('test-web', [[TEST_WEB, 'failure']]), 'failure');
+  assert.equal(rollup('test-web', [[TEST_WEB, 'skipped'], ...shards(TEST_WEB, 4)]), 'failure');
+  assert.equal(rollup('build-agent', [['Build Agent (${{ matrix.goos }}/${{ matrix.goarch }})', 'skipped']]), 'skipped');
+});
+
+test('rollup: mixed success and skipped shards are failure; a plain job keeps its conclusion', () => {
+  const four = shards(TEST_WEB, 4);
+  assert.equal(rollup('test-web', [...four.slice(0, 3), [four[3][0], 'skipped']]), 'failure');
+  assert.equal(rollup('test-web', shards(TEST_WEB, 4, 'skipped')), 'skipped');
+  for (const conclusion of ['success', 'failure', 'cancelled', 'skipped']) assert.equal(rollup('lint', [['Lint', conclusion]]), conclusion);
+  assert.equal(rollup('lint', [['Lint', 'neutral']]), 'failure');
+});
+
+test('rollup: a job id removed from the head is missing; a display-name change alone still rolls up', () => {
+  const deleted = realCi.replace(/^  test-shared:\n/m, '  test-shared-renamed:\n');
+  assert.notEqual(deleted, realCi);
+  assert.equal(rollup('test-shared', [['Test Shared', 'success']], 'merge_group', deleted), 'missing');
+  assert.equal(rollup('test-shared', [], 'merge_group'), 'missing');
+  const renamed = realCi.replace(/^(  test-shared:\n    name: )Test Shared$/m, '$1Shared package tests');
+  assert.notEqual(renamed, realCi);
+  assert.equal(rollup('test-shared', [['Shared package tests', 'success']], 'merge_group', renamed), 'success');
+  assert.equal(rollup('test-shared', [['Test Shared', 'success']], 'merge_group', renamed), 'missing');
+});
+
+test('rollup: two ids sharing one display name is duplicate_job_name', () => {
+  const dup = realCi.replace(/^(  test-shared:\n    name: )Test Shared$/m, '$1Test Viewer');
+  assert.notEqual(dup, realCi);
+  assert.throws(() => rollup('test-shared', [['Test Viewer', 'success']], 'merge_group', dup), err => err.code === 'duplicate_job_name');
+  assert.throws(() => rollup('test-viewer', [['Test Viewer', 'success']], 'merge_group', dup), err => err.code === 'duplicate_job_name');
+  // The same name twice in the API's job list is ambiguous too.
+  assert.throws(() => rollup('lint', [['Lint', 'success'], ['Lint', 'failure']]), err => err.code === 'duplicate_job_name');
+});
+
+test('rollup: no display name in the real ci.yml is shared by two jobs', () => {
+  const names = Object.keys(gate.workflowJobsOf(realCi)).flatMap(id => gate.jobInstances(realCi, id).expected);
+  assert.deepEqual(names.filter((name, i) => names.indexOf(name) !== i), []);
+});
+
+test('rollup: continue-on-error is only ever the PR expression on a ci-success.needs job', () => {
+  const { needs } = gate.extractAggregator(realCi);
+  const jobs = gate.workflowJobsOf(realCi);
+  for (const id of needs) {
+    const value = jobs[id].body.match(/^    continue-on-error: (.*)$/m)?.[1];
+    assert.ok(value === undefined || value === "${{ github.event_name == 'pull_request' }}", `${id}: ${value}`);
+  }
+  // On pull_request a failure under that expression is what needs.X.result reports: success.
+  const smoke = [['Smoke Test', 'failure']];
+  assert.equal(rollup('smoke-test', smoke, 'pull_request'), 'success');
+  assert.equal(rollup('smoke-test', smoke, 'merge_group'), 'failure');
+  assert.equal(rollup('lint', [['Lint', 'failure']], 'pull_request'), 'failure');
+  // Anything else on a needs job throws: its needs.X.result would not match the API conclusion.
+  for (const value of ['true', "${{ github.event_name != 'merge_group' }}"]) {
+    const edited = realCi.replace(/^(  lint:\n    name: Lint\n)/m, `$1    continue-on-error: ${value}\n`);
+    assert.notEqual(edited, realCi);
+    assert.throws(() => rollup('lint', [['Lint', 'failure']], 'merge_group', edited), err => err.code === 'continue_on_error_unsupported');
+  }
+});
+
+// ── B2: MOBILE_NATIVE_REQUIRED, derived from the base filter and closure ─
+
+const lockfile = (apiVersion, mobileVersion) => `lockfileVersion: '9.0'
+
+importers:
+
+  apps/api:
+    dependencies:
+      hono:
+        specifier: ^4.13.0
+        version: ${apiVersion}
+
+  apps/mobile:
+    dependencies:
+      react:
+        specifier: ^19.1.0
+        version: ${mobileVersion}
+
+packages:
+
+  hono@4.13.5:
+    resolution: {integrity: sha512-a}
+  hono@4.13.6:
+    resolution: {integrity: sha512-b}
+  react@19.1.0:
+    resolution: {integrity: sha512-c}
+  react@19.1.1:
+    resolution: {integrity: sha512-d}
+
+snapshots:
+
+  hono@4.13.5: {}
+  hono@4.13.6: {}
+  react@19.1.0: {}
+  react@19.1.1: {}
+`;
+const closureScript = readFileSync(join(REPO_ROOT, '.github/scripts/mobile-lockfile-closure.mjs'), 'utf8');
+const mobileRepo = (head, base = {}) => repo({
+  '.github/workflows/ci.yml': realCi, '.github/scripts/mobile-lockfile-closure.mjs': closureScript,
+  'pnpm-lock.yaml': lockfile('4.13.5', '19.1.0'), ...base }, head);
+const derive = (head, base) => {
+  const r = mobileRepo(head, base);
+  return gate.deriveMobileRequired(r.io, r.base, r.head, gate.baseFlags(r.io, r.base, r.head).changed);
+};
+
+test('deriveMobileRequired: mobile paths and ci.yml are native inputs; packages/shared is not', () => {
+  assert.equal(derive({ 'apps/mobile/x.ts': 'x' }), 'true');
+  assert.equal(derive({ '.github/workflows/ci.yml': `${realCi}\n# edit\n` }), 'true');
+  assert.equal(derive({ 'patches/a.patch': 'x' }), 'true');
+  assert.equal(derive({ 'packages/shared/x.ts': 'x' }), 'false');
+  assert.equal(derive({ 'apps/mobile-other/x.ts': 'x' }), 'false');
+});
+
+test('deriveMobileRequired: a lockfile change counts only when the mobile closure changed', () => {
+  assert.equal(derive({ 'pnpm-lock.yaml': lockfile('4.13.6', '19.1.0') }), 'false');
+  assert.equal(derive({ 'pnpm-lock.yaml': lockfile('4.13.6', '19.1.1') }), 'true');
+  assert.equal(derive({ 'package.json': '{}' }), 'false', 'root package.json with an identical lockfile');
+});
+
+test('deriveMobileRequired: the closure script and the filter come from the base', () => {
+  const lying = '#!/usr/bin/env node\nconsole.log("changed=false");\n';
+  // Editing the closure script is itself a native input, whatever the edit says.
+  assert.equal(derive({ 'pnpm-lock.yaml': lockfile('4.13.6', '19.1.1'), '.github/scripts/mobile-lockfile-closure.mjs': lying }), 'true');
+  // The base's (lying) script decides, not the truthful copy in the working tree.
+  const r = mobileRepo({ 'pnpm-lock.yaml': lockfile('4.13.6', '19.1.1') }, { '.github/scripts/mobile-lockfile-closure.mjs': lying });
+  writeFileSync(join(r.cwd, '.github/scripts/mobile-lockfile-closure.mjs'), closureScript);
+  assert.equal(gate.deriveMobileRequired(r.io, r.base, r.head, gate.baseFlags(r.io, r.base, r.head).changed), 'false');
+  // A head that drops apps/mobile/** from its own filter does not narrow the base's.
+  const narrowed = realCi.replace("              - 'apps/mobile/**'\n", '');
+  assert.notEqual(narrowed, realCi);
+  assert.equal(derive({ 'apps/mobile/x.ts': 'x', '.github/workflows/ci.yml': narrowed }), 'true');
+  assert.equal(derive({ 'apps/mobile/x.ts': 'x' }, { '.github/workflows/ci.yml': narrowed }), 'false');
+});
+
+test('deriveMobileRequired: closure failure or an unparseable filter is true (fail closed)', () => {
+  assert.equal(derive({ 'pnpm-lock.yaml': lockfile('4.13.6', '19.1.0') }, { '.github/scripts/mobile-lockfile-closure.mjs': 'process.exit(2)\n' }), 'true');
+  assert.equal(derive({ 'pnpm-lock.yaml': lockfile('4.13.6', '19.1.0') }, { '.github/scripts/mobile-lockfile-closure.mjs': null }), 'true');
+  assert.equal(derive({ 'pnpm-lock.yaml': null }), 'true');
+  for (const edit of [
+    ci => ci.replace("              - 'apps/mobile/**'", "              - 'apps/{mobile,other}/**'"),
+    ci => ci.replace("              - 'apps/mobile/**'", '              - apps/mobile/**'),
+    ci => ci.replace('            lockfile:\n', '            lockfiles:\n'),
+    ci => ci.replace("steps.lockfile.outputs.changed == 'true' }}", "steps.lockfile.outputs.changed == 'true' || steps.other.outputs.x == 'true' }}"),
+  ]) {
+    const baseCi = edit(realCi);
+    assert.notEqual(baseCi, realCi);
+    assert.equal(derive({ 'packages/shared/x.ts': 'x' }, { '.github/workflows/ci.yml': baseCi }), 'true');
+  }
 });
